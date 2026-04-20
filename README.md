@@ -22,7 +22,7 @@ FXRoute focuses on practical high-quality playback on real Linux audio hardware:
 - fast A/B comparison for filter and preset listening
 - Spotify desktop control through MPRIS / `playerctl`
 - responsive UI for desktop and mobile
-- careful sample-rate handling instead of treating resampling as an afterthought
+- careful sample-rate handling for high-quality playback, including high-resolution setups where the DAC and Linux audio chain support it
 
 ## Supported setup
 
