@@ -1,0 +1,7 @@
+[Unit]
+Description=Recover EasyEffects from a stale Flatpak runtime socket
+After=default.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/fxroute/scripts/easyeffects-stale-watchdog.sh

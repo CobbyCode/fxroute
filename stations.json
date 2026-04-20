@@ -1,0 +1,51 @@
+[
+  {
+    "id": "groovesalad",
+    "name": "Groove Salad",
+    "input_url": "https://somafm.com/groovesalad130.pls",
+    "stream_url": "https://ice4.somafm.com/groovesalad-256-mp3",
+    "image_url": "/static/station-art/groovesalad.png"
+  },
+  {
+    "id": "suburbsofgoa",
+    "name": "Suburbs of Goa",
+    "input_url": "https://somafm.com/suburbsofgoa130.pls",
+    "stream_url": "https://ice4.somafm.com/suburbsofgoa-128-aac",
+    "image_url": "/static/station-art/suburbsofgoa.png"
+  },
+  {
+    "id": "thetrip",
+    "name": "The Trip",
+    "input_url": "https://somafm.com/thetrip130.pls",
+    "stream_url": "https://ice4.somafm.com/thetrip-128-aac",
+    "image_url": "/static/station-art/thetrip.jpg"
+  },
+  {
+    "id": "poptron",
+    "name": "PopTron",
+    "input_url": "https://somafm.com/poptron130.pls",
+    "stream_url": "https://ice4.somafm.com/poptron-128-aac",
+    "image_url": "/static/station-art/poptron.png"
+  },
+  {
+    "id": "dubstep",
+    "name": "Dub Step Beyond",
+    "input_url": "https://somafm.com/dubstep256.pls",
+    "stream_url": "https://ice4.somafm.com/dubstep-256-mp3",
+    "image_url": "/static/station-art/dubstep.png"
+  },
+  {
+    "id": "live",
+    "name": "SomaFM Live",
+    "input_url": "https://somafm.com/live130.pls",
+    "stream_url": "https://ice4.somafm.com/live-128-aac",
+    "image_url": "/static/station-art/live.jpg"
+  },
+  {
+    "id": "gsclassic",
+    "name": "Groove Salad Classic",
+    "input_url": "https://somafm.com/gsclassic130.pls",
+    "stream_url": "https://ice4.somafm.com/gsclassic-128-aac",
+    "image_url": "/static/station-art/gsclassic.jpg"
+  }
+]

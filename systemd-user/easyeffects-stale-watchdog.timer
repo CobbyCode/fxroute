@@ -1,0 +1,11 @@
+[Unit]
+Description=Periodically check for a stale EasyEffects runtime socket
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+AccuracySec=15s
+Unit=easyeffects-stale-watchdog.service
+
+[Install]
+WantedBy=timers.target

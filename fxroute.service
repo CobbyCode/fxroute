@@ -1,0 +1,15 @@
+[Unit]
+Description=FXRoute
+After=default.target
+Documentation=file://%h/fxroute/README.md
+
+[Service]
+Type=simple
+WorkingDirectory=%h/fxroute
+EnvironmentFile=%h/fxroute/.env
+ExecStart=%h/fxroute/.venv/bin/python3 %h/fxroute/main.py
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

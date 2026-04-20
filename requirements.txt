@@ -1,0 +1,13 @@
+# Python dependencies only.
+# Note: Spotify control uses the external system tool `playerctl`, not a Python package.
+# Also recommended on the host: mpv, yt-dlp, ffmpeg, socat, playerctl.
+
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+pydantic==2.12.5
+pydantic-settings==2.13.1
+requests==2.31.0
+mutagen==1.47.0
+yt-dlp==2023.12.30
+python-dotenv==1.0.0
+python-multipart==0.0.9

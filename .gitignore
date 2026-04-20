@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtualenvs
+.venv/
+venv/
+
+# Local env / machine-specific
+.env
+.env.local
+*.log
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Runtime / temp
+/tmp/
+*.sock
+
+# Generated backups and large archives
+backups/
+manual_backup.zip
+*.tar.gz
+*.zip
+
+# Optional local test/media clutter
+test-inputs/
+node_modules/
+
+# Local scratch images dropped in the repo root
+/ChatGPT Image*
+/*.png
+/*.jpg
+/*.jpeg
+/*.webp
+/*.gif
