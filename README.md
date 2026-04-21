@@ -12,7 +12,9 @@ It is built for the kind of box you put next to a DAC, amp, or TV: a small Linux
 
 ## Why FXRoute
 
-FXRoute focuses on practical high-quality playback on real Linux audio hardware:
+FXRoute focuses on practical high-quality playback on real Linux audio hardware.
+
+FXRoute is built to remove as much Linux audio setup friction as possible, including the usual PipeWire / EasyEffects / sample-rate headaches that often turn into long manual setup guides.
 
 - browser control from any device on the local network
 - optimized for mini PCs, NUC-style hosts, and dedicated living-room audio boxes, but also perfectly usable on a normal Linux desktop or laptop
