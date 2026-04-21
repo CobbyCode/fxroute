@@ -168,15 +168,6 @@ FXRoute is designed to run as a **systemd user service** so playback stays tied 
 Minimal example unit file:
 - `fxroute.service`
 
-## Current limitations and assumptions
-
-- Spotify control uses the local desktop Spotify app through MPRIS / `playerctl`, not the Spotify Web API
-- EasyEffects features expect EasyEffects to exist and run in the user session
-- FXRoute is designed around PipeWire-era Linux audio, especially for EasyEffects integration and sample-rate handling
-- LAN comfort features such as `fxroute.local` and port-80 access depend on optional local network setup
-- import/download behavior depends on `yt-dlp`, and upstream sites can change over time
-- the project is currently Linux-focused
-
 ## Optional watchdog for stale EasyEffects Flatpak sockets
 
 If EasyEffects leaves a stale runtime socket behind, FXRoute ships an optional watchdog timer:
