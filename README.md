@@ -57,7 +57,6 @@ So the intended model is not "cloud server in a rack", but "dedicated Linux audi
 - a Linux desktop session with working PipeWire audio
 - `systemd --user` support
 - `mpv`, `ffmpeg`, Python 3, and `playerctl`
-- PipeWire plus its normal session management on the target distro
 - EasyEffects for DSP preset features
 - a browser on the same local network
 
