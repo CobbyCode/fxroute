@@ -56,10 +56,11 @@ So the intended model is not "cloud server in a rack", but "dedicated Linux audi
 
 ## What FXRoute needs
 
+On supported distros, the installer usually takes care of `mpv`, `ffmpeg`, Python 3, `playerctl`, and EasyEffects for you. In practice, the main requirements are:
+
 - a Linux desktop session with working PipeWire audio
-- `systemd --user` support
-- `mpv`, `ffmpeg`, Python 3, and `playerctl`
-- EasyEffects for DSP preset features, which the installer can usually set up for you on supported systems
+- `systemd --user` available in that session
+- a distro supported by the installer (`apt`, `dnf`, or `zypper`)
 - a browser on the same local network
 
 ## Quick start
