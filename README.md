@@ -19,7 +19,7 @@ FXRoute is built to remove as much Linux audio setup friction as possible, inclu
 - browser control from any device on the local network
 - optimized for mini PCs, NUC-style hosts, and dedicated living-room audio boxes, but also perfectly usable on a normal Linux desktop or laptop
 - local playback, playlists, and straightforward library import in one interface
-- SomaFM radio with live metadata
+- SomaFM radio with live metadata plus support for generic custom station URLs
 - EasyEffects-based DSP workflows with preset switching, convolver, PEQ, and practical helpers
 - digital room correction workflows through convolver presets and PEQ / REW-based tuning
 - fast A/B comparison for filter and preset listening
@@ -139,7 +139,7 @@ Typical URLs are:
 
 Basic flow:
 1. Open FXRoute in a browser on your local network.
-2. Use **Radio** for SomaFM streaming.
+2. Use **Radio** for SomaFM streaming or your own generic custom stations.
 3. Use **Library** for local playback, playlists, and import.
 4. Use **Library** import for quick file upload or URL-based import into the local collection.
 5. Use **Effects** for EasyEffects preset switching, convolver and PEQ work, DRC-oriented tuning workflows, DSP helpers, A/B listening, and utility controls like peak detection, headroom, limiter, delay, and bass enhancement.
@@ -197,7 +197,7 @@ The watchdog only intervenes in a narrow stale-socket case and is not required f
 fxroute/
 ├── main.py           # FastAPI app with REST + WebSocket endpoints
 ├── player.py         # MPV wrapper using JSON IPC
-├── stations.py       # SomaFM station fetcher with cache
+├── stations.py       # Editable station storage and stream URL handling
 ├── library.py        # Local music scanner (mutagen for metadata)
 ├── downloader.py     # yt-dlp integration with progress tracking
 ├── config.py         # Configuration from .env
@@ -251,6 +251,7 @@ Make sure your `.env` file exists and contains a valid `MUSIC_ROOT`, for example
 
 ### Stations not loading
 - the app falls back to a minimal station list if SomaFM API is unreachable
+- generic custom stations can still be added manually through the Radio manage flow
 - check network connectivity
 - stations may be temporarily unavailable
 
