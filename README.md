@@ -207,7 +207,10 @@ The installer normally creates `.env` for you with `MUSIC_ROOT=~/Music` and prep
 ### WebSocket connection fails
 - preferred LAN setup: Avahi/mDNS for `fxroute.local` plus Caddy on port 80
 - fallback direct app port: `http://<host-ip>:8000`
-- check firewall: `sudo ufw allow 8000`
+- check firewall for port `8000`, for example:
+  - Ubuntu: `sudo ufw allow 8000`
+  - Fedora: `sudo firewall-cmd --add-port=8000/tcp --permanent && sudo firewall-cmd --reload`
+  - openSUSE: `sudo firewall-cmd --add-port=8000/tcp --permanent && sudo firewall-cmd --reload`
 - verify the backend is running: `curl http://localhost:8000/api/status`
 - verify the reverse proxy is running: `curl http://localhost/api/status`
 
@@ -228,7 +231,6 @@ The installer normally creates `.env` for you with `MUSIC_ROOT=~/Music` and prep
 
 ### Stations not loading
 - the app falls back to a minimal station list if SomaFM API is unreachable
-- generic custom stations still need a reachable stream URL, so fully offline systems should only expect local/LAN streams to work
 - check network connectivity
 - stations may be temporarily unavailable
 
