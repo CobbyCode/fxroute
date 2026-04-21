@@ -10,6 +10,10 @@ It is built for the kind of box you put next to a DAC, amp, or TV: a small Linux
 | --- | --- | --- |
 | ![FXRoute Library view](media/screenshots/desktop-library-playlists.png) | ![FXRoute Spotify view](media/screenshots/desktop-spotify-player.png) | ![FXRoute DSP view](media/screenshots/desktop-dsp-presets-ab.png) |
 
+| Radio management | Library import | Filter import and PEQ editing |
+| --- | --- | --- |
+| ![FXRoute radio management view](media/screenshots/desktop-radio-manage-stations.png) | ![FXRoute Library import view](media/screenshots/desktop-library-import.png) | ![FXRoute DSP import and PEQ view](media/screenshots/desktop-dsp-import-peq-expanded.png) |
+
 ## Why FXRoute
 
 FXRoute focuses on practical high-quality playback on Linux audio systems.
