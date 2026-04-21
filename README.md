@@ -118,6 +118,14 @@ Useful optional settings:
 
 Downloads are stored under `MUSIC_ROOT/incoming` by default.
 
+### Uninstall
+
+If you want to remove FXRoute again later, run:
+
+```bash
+./uninstall.sh
+```
+
 ## Access and usage
 
 Typical URLs are:
