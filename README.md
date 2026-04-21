@@ -15,11 +15,13 @@ It is built for the kind of box you put next to a DAC, amp, or TV: a small Linux
 FXRoute focuses on practical high-quality playback on real Linux audio hardware:
 
 - browser control from any device on the local network
-- optimized for mini PCs, NUC-style hosts, and dedicated living-room audio boxes
+- optimized for mini PCs, NUC-style hosts, and dedicated living-room audio boxes, but also perfectly usable on a normal Linux desktop or laptop
 - local playback, playlists, and import in one interface
 - SomaFM radio with live metadata
-- EasyEffects preset switching and DSP helpers
+- EasyEffects-based DSP workflows with preset switching, convolver, PEQ, and practical helpers
+- digital room correction workflows through convolver presets and PEQ / REW-based tuning
 - fast A/B comparison for filter and preset listening
+- gapless playback for consecutive tracks at the same sample rate
 - Spotify desktop control through MPRIS / `playerctl`
 - responsive UI for desktop and mobile
 - careful sample-rate handling for high-quality playback, including high-resolution setups where the DAC and Linux audio chain support it
@@ -31,9 +33,7 @@ Validated so far:
 - Fedora
 - openSUSE Tumbleweed
 
-FXRoute works best on a Linux machine that is primarily acting as your playback host, even if you mostly control it from other devices on the LAN.
-
-Typical real-world setup:
+Typical real-world setup, but not a requirement:
 - mini PC or small desktop near the stereo, DAC, or TV
 - Linux desktop session on that machine
 - browser control from phone, tablet, or laptop
@@ -133,7 +133,7 @@ Basic flow:
 1. Open FXRoute in a browser on your local network.
 2. Use **Radio** for SomaFM streaming.
 3. Use **Library** for local playback, playlists, and import.
-4. Use **Effects** for EasyEffects preset switching, DSP helpers, and A/B listening.
+4. Use **Effects** for EasyEffects preset switching, convolver and PEQ work, DRC-oriented tuning workflows, DSP helpers, and A/B listening.
 5. Use **Spotify** to control a locally running Spotify desktop client.
 
 ## Running and service control
