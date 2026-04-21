@@ -8,7 +8,7 @@ It is built for the kind of box you put next to a DAC, amp, or TV: a small Linux
 
 | Library and playlist control | Spotify desktop control | DSP presets and A/B compare |
 | --- | --- | --- |
-| ![FXRoute Library view](media/screenshots/desktop-library-playlists.jpg) | ![FXRoute Spotify view](media/screenshots/desktop-spotify-player.png) | ![FXRoute DSP view](media/screenshots/desktop-dsp-presets-ab.png) |
+| ![FXRoute Library view](media/screenshots/desktop-library-playlists.png) | ![FXRoute Spotify view](media/screenshots/desktop-spotify-player.png) | ![FXRoute DSP view](media/screenshots/desktop-dsp-presets-ab.png) |
 
 ## Why FXRoute
 
