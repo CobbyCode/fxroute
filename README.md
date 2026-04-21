@@ -70,6 +70,13 @@ Clone the repo, enter the project directory, and run the installer from the proj
 ./install.sh
 ```
 
+If the script is not executable in your environment, use:
+
+```bash
+chmod +x install.sh
+./install.sh
+```
+
 For a non-interactive run:
 
 ```bash
