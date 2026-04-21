@@ -313,6 +313,12 @@ class EasyEffectsManager:
         if preset_name not in available:
             raise FileNotFoundError(f"Preset not found: {preset_name}")
 
+        if preset_name not in self.EXCLUDED_GLOBAL_EXTRAS_PRESETS:
+            try:
+                self._apply_global_extras_to_preset_name(preset_name, self.load_global_extras())
+            except Exception as e:
+                logger.warning("Failed to sync global extras into preset '%s' before load: %s", preset_name, e)
+
         socket_command = f"load_preset:output:{preset_name}"
         try:
             response = self._send_socket_command(socket_command, timeout=2.0)
@@ -772,10 +778,36 @@ class EasyEffectsManager:
         output = self._apply_extras_to_output(output, extras)
         return {"output": output}
 
+    def _apply_global_extras_to_preset_name(self, preset_name: str, extras: Optional[Dict[str, Any]] = None) -> bool:
+        if not preset_name or preset_name in self.EXCLUDED_GLOBAL_EXTRAS_PRESETS:
+            return False
+
+        preset_path = self.output_dir / f"{preset_name}.json"
+        if not preset_path.exists():
+            return False
+
+        normalized = self.normalize_effects_extras(extras if extras is not None else self.load_global_extras())
+        payload = json.loads(preset_path.read_text())
+        payload["output"] = self._apply_extras_to_output(payload.get("output", {}), normalized)
+        preset_path.write_text(json.dumps(payload, indent=2) + "\n")
+        return True
+
     def apply_global_extras_to_all_presets(self, extras: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         normalized = self.save_global_extras(extras)
-        skipped = sorted(self.EXCLUDED_GLOBAL_EXTRAS_PRESETS)
-        return {"extras": normalized, "updated": 0, "skipped": skipped}
+        updated = 0
+        skipped = []
+        for preset in self.list_presets():
+            preset_name = preset.get("name")
+            if not preset_name:
+                continue
+            if preset_name in self.EXCLUDED_GLOBAL_EXTRAS_PRESETS:
+                skipped.append(preset_name)
+                continue
+            if self._apply_global_extras_to_preset_name(preset_name, normalized):
+                updated += 1
+            else:
+                skipped.append(preset_name)
+        return {"extras": normalized, "updated": updated, "skipped": sorted(set(skipped))}
 
     def apply_global_extras_to_active_preset(self, extras: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         normalized = self.save_global_extras(extras)
@@ -784,14 +816,8 @@ class EasyEffectsManager:
             return {"extras": normalized, "updated": 0, "skipped": []}
         if active_preset in self.EXCLUDED_GLOBAL_EXTRAS_PRESETS:
             return {"extras": normalized, "updated": 0, "skipped": [active_preset]}
-
-        preset_path = self.output_dir / f"{active_preset}.json"
-        if not preset_path.exists():
+        if not self._apply_global_extras_to_preset_name(active_preset, normalized):
             return {"extras": normalized, "updated": 0, "skipped": [active_preset]}
-
-        payload = json.loads(preset_path.read_text())
-        payload["output"] = self._apply_extras_to_output(payload.get("output", {}), normalized)
-        preset_path.write_text(json.dumps(payload, indent=2) + "\n")
         return {"extras": normalized, "updated": 1, "skipped": []}
 
     def create_convolver_preset(self, preset_name: str, ir_filename: str, extras: Optional[Dict[str, Any]] = None) -> dict:

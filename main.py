@@ -1559,7 +1559,7 @@ async def save_easyeffects_extras(request: Request):
         raise HTTPException(status_code=400, detail="Invalid JSON body")
 
     extras = _resolve_effects_extras(_parse_effects_extras_from_json(body))
-    result = easyeffects_manager.apply_global_extras_to_active_preset(extras)
+    result = easyeffects_manager.apply_global_extras_to_all_presets(extras)
 
     active_preset = easyeffects_manager.get_active_preset()
     if active_preset and active_preset not in easyeffects_manager.EXCLUDED_GLOBAL_EXTRAS_PRESETS:

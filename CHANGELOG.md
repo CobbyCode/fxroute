@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.290 (2026-04-21)
+- Fixed EasyEffects global helper behavior so limiter, headroom, delay, and bass enhancer are now pushed into all non-Direct presets when changed, instead of only updating the currently active preset.
+- Hardened preset loading so FXRoute also syncs the saved global helper state into the target preset before loading it, which keeps A/B compare preset switches from drifting away from the helper checkboxes.
+
 ## 0.4.289 (2026-04-21)
 - Hardened the library import panel state so opening or closing the panel also resets the selected upload filename, preventing stale local file selections from lingering in the UI even when no upload is started.
 - Bumped the cache-busted frontend asset references in `static/index.html` so the import-panel hardening reaches deployed systems immediately.
