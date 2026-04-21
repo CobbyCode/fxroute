@@ -57,7 +57,7 @@ So the intended model is not "cloud server in a rack", but "dedicated Linux audi
 - a Linux desktop session with working PipeWire audio
 - `systemd --user` support
 - `mpv`, `ffmpeg`, Python 3, and `playerctl`
-- EasyEffects for DSP preset features
+- EasyEffects for DSP preset features, which the installer can usually set up for you on supported systems
 - a browser on the same local network
 
 ## Quick start
