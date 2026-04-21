@@ -74,7 +74,7 @@ from system_volume import SystemVolumeError, get_output_volume, set_output_volum
 
 logger = logging.getLogger(__name__)
 
-UPLOAD_AUDIO_EXTENSIONS = {".mp3", ".flac", ".ogg", ".m4a", ".aac", ".wav", ".wma", ".dsf", ".dff"}
+UPLOAD_AUDIO_EXTENSIONS = {".mp3", ".flac", ".ogg", ".m4a", ".aac", ".wav", ".wma"}
 ZIP_IGNORED_PARTS = {"__MACOSX"}
 ZIP_IGNORED_FILENAMES = {".ds_store", "thumbs.db"}
 
