@@ -78,7 +78,7 @@ It is currently not trying to be:
 
 ### Recommended install
 
-Run the installer from the project root:
+Clone the repo, enter the project directory, and run the installer from the project root:
 
 ```bash
 ./install.sh

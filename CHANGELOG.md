@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.287 (2026-04-21)
+- Fixed the Spotify tab frontend so Shuffle and Loop no longer preemptively disable each other before sending the real Spotify command. FXRoute now lets Spotify keep both active when the desktop app supports it.
+- Bumped the cache-busted frontend asset references in `static/index.html` so the updated Spotify control logic reaches deployed systems immediately.
+- Tightened `deploy.sh` so routine remote deploys do not copy `media/raw/`, `media/reference/`, or the local-only `scripts/prepare-public-export.sh` helper onto the playback host.
+
 ## 0.4.286 (2026-04-20)
 - Extended the installer/uninstaller bookkeeping for the optional LAN comfort layer. `install.sh` now records hostname, Avahi, and Caddy baseline/ownership state in `~/.config/fxroute/install-state.json`, so future uninstall runs can distinguish FXRoute-owned LAN changes from pre-existing user setup.
 - `uninstall.sh` now restores a previous hostname only when FXRoute had changed it and the hostname still matches the FXRoute-set value, only removes or disables Avahi when the recorded state says FXRoute introduced that Avahi state, and restores a previously active default `caddy.service` when FXRoute had disabled it for the FXRoute-owned reverse proxy.
@@ -27,7 +32,7 @@
 - Added a small uninstall comfort feature. FXRoute now records whether it installed EasyEffects itself, and `uninstall.sh` only offers to remove EasyEffects when that marker says the package originally came from the FXRoute installer. Existing user-managed EasyEffects installs are left alone.
 
 ## 0.4.278 (2026-04-20)
-- Fixed a radio-only samplerate renegotiation quirk seen mainly on `.104` Ubuntu. If a just-started radio stream briefly leaves the PipeWire sink at the wrong rate, FXRoute now does one narrow one-time EasyEffects preset bounce to re-negotiate the graph instead of touching normal local playback.
+- Fixed a radio-only samplerate renegotiation quirk seen on a real Ubuntu validation target. If a just-started radio stream briefly leaves the PipeWire sink at the wrong rate, FXRoute now does one narrow one-time EasyEffects preset bounce to re-negotiate the graph instead of touching normal local playback.
 - Fixed EasyEffects A/B compare persistence on reloads and cache resets. The frontend now respects the server-saved compare state (`presetA`/`presetB`) instead of accidentally dropping slot B when rebuilding state after refresh.
 
 ## 0.4.277 (2026-04-19)
@@ -88,7 +93,7 @@
 - Updated the Output extras helper text to `Global helpers. Applied automatically, except Direct.`
 
 ## 0.4.248 (2026-04-18)
-- Restored Spotify Shuffle/Loop controls in the tab. After re-checking on `.104`, both playerctl paths became writable again in the current Spotify context, so the temporary workaround that hid those controls has been reverted.
+- Restored Spotify Shuffle/Loop controls in the tab. After re-checking on a real validation system, both playerctl paths became writable again in the current Spotify context, so the temporary workaround that hid those controls has been reverted.
 
 ## 0.4.247 (2026-04-18)
 - Hid the non-working Spotify Shuffle/Loop buttons on the Linux playerctl/MPRIS path. Transport/seek still work, but shuffle/loop write attempts on this setup do not actually change Spotify state, so the UI no longer exposes dead controls.

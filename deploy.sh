@@ -5,8 +5,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT_DIR"
 
-REMOTE_HOST="${DEPLOY_HOST:-paul@192.168.178.104}"
-REMOTE_DIR="${DEPLOY_DIR:-/home/paul/fxroute}"
+REMOTE_HOST="${DEPLOY_HOST:-user@host}"
+REMOTE_DIR="${DEPLOY_DIR:-/home/user/fxroute}"
 REMOTE_SERVICE="${DEPLOY_SERVICE:-fxroute}"
 RESTART_SERVICE=0
 DRY_RUN=0
@@ -107,6 +107,9 @@ RSYNC_ARGS=(
   --exclude=outputs/
   --exclude=inputs/
   --exclude=tickets/
+  --exclude=media/raw/
+  --exclude=media/reference/
+  --exclude=scripts/prepare-public-export.sh
   --exclude=.mypy_cache/
   --exclude=.pytest_cache/
   --exclude='*.pyc'
