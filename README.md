@@ -220,7 +220,7 @@ The installer normally creates `.env` for you with `MUSIC_ROOT=~/Music` and prep
 - some sources have restrictions, try a different URL
 
 ### Effects do not apply
-- ensure EasyEffects is installed and running in the desktop session
+- on supported distros, the installer normally takes care of EasyEffects for you, but it still needs to be running in the desktop session
 - if preset loading fails, verify FXRoute is still talking to the intended EasyEffects instance
 
 ### Spotify tab is empty or controls do not work
