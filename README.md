@@ -168,31 +168,6 @@ Minimal example unit file:
 - import/download behavior depends on `yt-dlp`, and upstream sites can change over time
 - the project is currently Linux-focused
 
-## Deployment
-
-Use the deploy script to copy a full project tree consistently:
-
-```bash
-./deploy.sh
-```
-
-Useful variants:
-
-```bash
-./deploy.sh --dry-run
-./deploy.sh --restart
-./deploy.sh --delete
-```
-
-Override target details as needed:
-
-```bash
-DEPLOY_HOST=user@host ./deploy.sh --restart
-./deploy.sh --host user@host --dir /home/user/fxroute --service fxroute
-```
-
-If you keep project-specific defaults inside `deploy.sh`, treat them as local convenience values rather than public documentation.
-
 ## Optional watchdog for stale EasyEffects Flatpak sockets
 
 If EasyEffects leaves a stale runtime socket behind, FXRoute ships an optional watchdog timer:
