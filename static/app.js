@@ -4195,24 +4195,6 @@ async function spotifyCommand(action) {
     const gen = _spotifyPollGeneration;
     _spotifyCommandInFlight = true;
     try {
-        if (action === 'shuffle') {
-            const current = window.__spotifyLastData || await fetchSpotifyStatus();
-            if ((current.loop || 'none') !== 'none') {
-                const loopResp = await fetch('/api/spotify/loop', { method: 'POST' });
-                const loopData = await loopResp.json().catch(() => null);
-                if (gen !== _spotifyPollGeneration) return;
-                if (loopData) handleIncomingSpotifyState(loopData, { renderTab: true, renderFooter: true });
-            }
-        } else if (action === 'loop') {
-            const current = window.__spotifyLastData || await fetchSpotifyStatus();
-            if (current.shuffle) {
-                const shuffleResp = await fetch('/api/spotify/shuffle', { method: 'POST' });
-                const shuffleData = await shuffleResp.json().catch(() => null);
-                if (gen !== _spotifyPollGeneration) return;
-                if (shuffleData) handleIncomingSpotifyState(shuffleData, { renderTab: true, renderFooter: true });
-            }
-        }
-
         const resp = await fetch(`/api/spotify/${action}`, { method: 'POST' });
         const data = await resp.json().catch(() => null);
         if (gen !== _spotifyPollGeneration) return;
