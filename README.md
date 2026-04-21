@@ -16,7 +16,7 @@ FXRoute focuses on practical high-quality playback on real Linux audio hardware:
 
 - browser control from any device on the local network
 - optimized for mini PCs, NUC-style hosts, and dedicated living-room audio boxes, but also perfectly usable on a normal Linux desktop or laptop
-- local playback, playlists, and import in one interface
+- local playback, playlists, and straightforward library import in one interface
 - SomaFM radio with live metadata
 - EasyEffects-based DSP workflows with preset switching, convolver, PEQ, and practical helpers
 - digital room correction workflows through convolver presets and PEQ / REW-based tuning
@@ -137,8 +137,9 @@ Basic flow:
 1. Open FXRoute in a browser on your local network.
 2. Use **Radio** for SomaFM streaming.
 3. Use **Library** for local playback, playlists, and import.
-4. Use **Effects** for EasyEffects preset switching, convolver and PEQ work, DRC-oriented tuning workflows, DSP helpers, A/B listening, and utility controls like peak detection, headroom, limiter, delay, and bass enhancement.
-5. Use **Spotify** to control a locally running Spotify desktop client.
+4. Use **Library** import for quick file upload or URL-based import into the local collection.
+5. Use **Effects** for EasyEffects preset switching, convolver and PEQ work, DRC-oriented tuning workflows, DSP helpers, A/B listening, and utility controls like peak detection, headroom, limiter, delay, and bass enhancement.
+6. Use **Spotify** to control a locally running Spotify desktop client.
 
 ## Running and service control
 
