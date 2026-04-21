@@ -14,7 +14,7 @@ from config import get_settings
 logger = logging.getLogger(__name__)
 
 # Supported audio file extensions
-AUDIO_EXTENSIONS = {".mp3", ".flac", ".ogg", ".m4a", ".aac", ".wav", ".wma"}
+AUDIO_EXTENSIONS = {".mp3", ".flac", ".ogg", ".m4a", ".aac", ".wav", ".wma", ".dsf", ".dff"}
 
 
 class LibraryScanner:
