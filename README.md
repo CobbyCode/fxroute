@@ -142,7 +142,7 @@ Basic flow:
 2. Use **Radio** for SomaFM streaming or your own generic custom stations.
 3. Use **Library** for local playback, playlists, and import.
 4. Use **Library** import for quick file upload or URL-based import into the local collection.
-5. Use **Effects** for EasyEffects preset switching, convolver and PEQ work, DRC-oriented tuning workflows, DSP helpers, A/B listening, and utility controls like peak detection, headroom, limiter, delay, and bass enhancement.
+5. Use **Effects** for EasyEffects preset switching, convolver and PEQ work, DRC-oriented tuning workflows, DSP helpers, A/B listening, and utility controls like peak detection, headroom, limiter, delay, and bass enhancement. The built-in PEQ workflow currently supports up to 20 bands per side in v1.
 6. Use **Spotify** to control a locally running Spotify desktop client.
 
 ## Running and service control
@@ -222,10 +222,10 @@ fxroute/
 ## Troubleshooting
 
 ### "mpv is not installed"
-Install mpv: `sudo apt install mpv`
+On supported distros, the installer normally takes care of mpv for you. If you are running a manual/custom setup, install mpv and then retry.
 
 ### "MUSIC_ROOT is not set"
-Make sure your `.env` file exists and contains a valid `MUSIC_ROOT`, for example `MUSIC_ROOT=~/Music`
+The installer normally creates `.env` for you with `MUSIC_ROOT=~/Music` and prepares the default incoming folder. If you are running a manual/custom setup, make sure your `.env` exists and contains a valid `MUSIC_ROOT`.
 
 ### WebSocket connection fails
 - preferred LAN setup: Avahi/mDNS for `fxroute.local` plus Caddy on port 80
@@ -235,8 +235,8 @@ Make sure your `.env` file exists and contains a valid `MUSIC_ROOT`, for example
 - verify the reverse proxy is running: `curl http://localhost/api/status`
 
 ### Downloads fail
-- ensure yt-dlp is installed: `yt-dlp --version`
-- YouTube changes frequently, so if downloads consistently fail, update yt-dlp: `pip install -U yt-dlp`
+- on supported distros, the installer normally provides `yt-dlp` inside the FXRoute virtual environment for you
+- YouTube changes frequently, so if downloads consistently fail, updating `yt-dlp` may help
 - some sources have restrictions, try a different URL
 
 ### Effects do not apply
@@ -251,7 +251,7 @@ Make sure your `.env` file exists and contains a valid `MUSIC_ROOT`, for example
 
 ### Stations not loading
 - the app falls back to a minimal station list if SomaFM API is unreachable
-- generic custom stations can still be added manually through the Radio manage flow
+- generic custom stations still need a reachable stream URL, so fully offline systems should only expect local/LAN streams to work
 - check network connectivity
 - stations may be temporarily unavailable
 
