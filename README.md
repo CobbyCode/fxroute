@@ -34,6 +34,8 @@ Validated so far:
 - Fedora
 - openSUSE Tumbleweed
 
+FXRoute expects a modern PipeWire-based Linux desktop audio stack. On Ubuntu, 24.04+ is the clearest target; Fedora and openSUSE Tumbleweed already fit that model naturally.
+
 Typical real-world setup, but not a requirement:
 - mini PC or small desktop near the stereo, DAC, or TV
 - Linux desktop session on that machine
@@ -52,9 +54,10 @@ So the intended model is not "cloud server in a rack", but "dedicated Linux audi
 
 ## What FXRoute needs
 
-- a Linux desktop session with working audio
+- a Linux desktop session with working PipeWire audio
 - `systemd --user` support
 - `mpv`, `ffmpeg`, Python 3, and `playerctl`
+- PipeWire plus its normal session management on the target distro
 - EasyEffects for DSP preset features
 - a browser on the same local network
 
@@ -164,6 +167,7 @@ Minimal example unit file:
 
 - Spotify control uses the local desktop Spotify app through MPRIS / `playerctl`, not the Spotify Web API
 - EasyEffects features expect EasyEffects to exist and run in the user session
+- FXRoute is designed around PipeWire-era Linux audio, especially for EasyEffects integration and sample-rate handling
 - LAN comfort features such as `fxroute.local` and port-80 access depend on optional local network setup
 - import/download behavior depends on `yt-dlp`, and upstream sites can change over time
 - the project is currently Linux-focused
