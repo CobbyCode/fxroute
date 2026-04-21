@@ -2222,7 +2222,7 @@ function uploadTrackFile() {
             const successMessage = data.message || (data.kind === 'zip'
                 ? `Imported ${data.imported_track_count || 0} track${(data.imported_track_count || 0) === 1 ? '' : 's'} from ${data.filename}`
                 : `Uploaded ${data.filename}`);
-            elements.uploadTrackFile.value = '';
+            resetUploadAreaSelection('upload-track-file');
             state.upload = { filename: data.filename, status_text: successMessage, progress_percent: 100, status: 'complete' };
             updateDownloadUI();
             showToast(successMessage, 'success');
@@ -2234,6 +2234,7 @@ function uploadTrackFile() {
         } else {
             let msg = 'Upload failed';
             try { msg = JSON.parse(xhr.responseText).detail || msg; } catch (_) {}
+            resetUploadAreaSelection('upload-track-file');
             state.upload = { filename, status_text: msg, progress_percent: 0, status: 'error' };
             updateDownloadUI();
             showToast(msg, 'error');
@@ -2241,6 +2242,7 @@ function uploadTrackFile() {
         if (elements.uploadTrackBtn) elements.uploadTrackBtn.disabled = false;
     });
     xhr.addEventListener('error', () => {
+        resetUploadAreaSelection('upload-track-file');
         state.upload = { filename, status_text: 'Upload failed', progress_percent: 0, status: 'error' };
         updateDownloadUI();
         showToast('Upload failed', 'error');
@@ -2561,12 +2563,23 @@ function setupDownloadUrlDropArea() {
 }
 
 // Upload area: drag-over, filename display, auto-trigger
+function resetUploadAreaSelection(fileInputId) {
+    const input = document.getElementById(fileInputId);
+    if (!input) return;
+    const area = input.closest('.upload-area');
+    const filenameEl = area?.querySelector('.upload-area-filename');
+    const defaultFilenameText = filenameEl?.dataset.defaultText || filenameEl?.textContent || '';
+    input.value = '';
+    if (filenameEl) filenameEl.textContent = defaultFilenameText;
+}
+
 function setupUploadArea(areaId, fileInputId, onFile) {
     const area = document.getElementById(areaId);
     const input = document.getElementById(fileInputId);
     if (!area || !input) return;
     const filenameEl = area.querySelector('.upload-area-filename');
     const defaultFilenameText = filenameEl?.textContent || '';
+    if (filenameEl && !filenameEl.dataset.defaultText) filenameEl.dataset.defaultText = defaultFilenameText;
 
     const describeFileSelection = (files) => {
         const count = files?.length || 0;

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.288 (2026-04-21)
+- Fixed the library upload UI so the selected filename is cleared again after both successful and failed uploads, instead of leaving a stale filename visible in the import area.
+- Bumped the cache-busted frontend asset references in `static/index.html` so the upload UI fix reaches deployed systems immediately.
+
 ## 0.4.287 (2026-04-21)
 - Fixed the Spotify tab frontend so Shuffle and Loop no longer preemptively disable each other before sending the real Spotify command. FXRoute now lets Spotify keep both active when the desktop app supports it.
 - Bumped the cache-busted frontend asset references in `static/index.html` so the updated Spotify control logic reaches deployed systems immediately.
