@@ -60,19 +60,6 @@ So the intended model is not "cloud server in a rack", but "dedicated Linux audi
 - EasyEffects for DSP preset features
 - a browser on the same local network
 
-## Scope
-
-FXRoute is intentionally aimed at:
-- one personal playback host on the local network
-- remote control from desktop or mobile browsers
-- high-quality playback plus practical DSP control
-- dedicated audio PCs rather than generic cloud music infrastructure
-
-It is currently not trying to be:
-- a cloud-hosted music service
-- a shared multi-account streaming platform
-- a DAW or deep DSP design suite
-
 ## Quick start
 
 ### Recommended install
