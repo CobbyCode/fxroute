@@ -168,20 +168,6 @@ FXRoute is designed to run as a **systemd user service** so playback stays tied 
 Minimal example unit file:
 - `fxroute.service`
 
-## Optional watchdog for stale EasyEffects Flatpak sockets
-
-If EasyEffects leaves a stale runtime socket behind, FXRoute ships an optional watchdog timer:
-
-```bash
-chmod +x ~/fxroute/scripts/easyeffects-stale-watchdog.sh
-mkdir -p ~/.config/systemd/user
-cp ~/fxroute/systemd-user/easyeffects-stale-watchdog.* ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable --now easyeffects-stale-watchdog.timer
-```
-
-The watchdog only intervenes in a narrow stale-socket case and is not required for normal installs.
-
 ## Architecture
 
 ```text
