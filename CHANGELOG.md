@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.289 (2026-04-21)
+- Hardened the library import panel state so opening or closing the panel also resets the selected upload filename, preventing stale local file selections from lingering in the UI even when no upload is started.
+- Bumped the cache-busted frontend asset references in `static/index.html` so the import-panel hardening reaches deployed systems immediately.
+
 ## 0.4.288 (2026-04-21)
 - Fixed the library upload UI so the selected filename is cleared again after both successful and failed uploads, instead of leaving a stale filename visible in the import area.
 - Bumped the cache-busted frontend asset references in `static/index.html` so the upload UI fix reaches deployed systems immediately.

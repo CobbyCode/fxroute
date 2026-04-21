@@ -483,6 +483,7 @@ function closeLibraryImportPanel() {
     const searchWrap = elements.librarySearchInput ? elements.librarySearchInput.closest('.library-search-wrap') : null;
     const selectionToolbar = elements.selectAllTracksBtn ? elements.selectAllTracksBtn.closest('.library-selection-toolbar') : null;
     clearLibraryImportFeedbackIfIdle();
+    resetUploadAreaSelection('upload-track-file');
     elements.libraryImportPanel.classList.add('hidden');
     if (searchWrap) searchWrap.classList.remove('hidden');
     if (selectionToolbar) selectionToolbar.classList.remove('hidden');
@@ -3809,6 +3810,7 @@ function setupLibraryActions() {
             elements.playlistSaveRow.classList.add('hidden');
         }
         clearLibraryImportFeedbackIfIdle();
+        resetUploadAreaSelection('upload-track-file');
         elements.toggleImportBtn.textContent = '− Close';
     });
     if (elements.librarySearchInput) {
