@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.291 (2026-04-22)
+- Changed URL downloads to preserve the source audio format whenever possible instead of forcing a lossy MP3 transcode by default.
+- Added a clearer optional `DOWNLOAD_TRANSCODE_FORMAT` setting for users who explicitly want yt-dlp downloads converted, while treating the old `AUDIO_FORMAT=mp3` installer default as deprecated legacy config instead of a forced transcode.
+- Updated installer and docs so new setups no longer suggest MP3 as the default URL download format.
+- Bumped the cache-busted frontend asset references in `static/index.html` so deployed systems stay version-synced with `0.4.291`.
+
 ## 0.4.290 (2026-04-21)
 - Fixed EasyEffects global helper behavior so limiter, headroom, delay, and bass enhancer are now pushed into all non-Direct presets when changed, instead of only updating the currently active preset.
 - Hardened preset loading so FXRoute also syncs the saved global helper state into the target preset before loading it, which keeps A/B compare preset switches from drifting away from the helper checkboxes.

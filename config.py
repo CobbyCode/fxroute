@@ -35,7 +35,14 @@ class Settings(BaseSettings):
 
     # Optional with defaults
     DOWNLOADS_SUBDIR: str = Field("incoming", description="Subdirectory for downloads")
-    AUDIO_FORMAT: str = Field("mp3", description="Preferred audio format for downloads")
+    DOWNLOAD_TRANSCODE_FORMAT: Optional[str] = Field(
+        None,
+        description="Optional transcode format for URL downloads; leave unset to preserve the source format whenever possible",
+    )
+    AUDIO_FORMAT: Optional[str] = Field(
+        None,
+        description="Deprecated legacy transcode setting for URL downloads; kept only for backwards compatibility",
+    )
     LOG_LEVEL: str = Field("INFO", description="Logging level")
     MAX_DOWNLOADS: int = Field(1, description="Maximum concurrent downloads (V1=1)")
     HOST: str = Field("0.0.0.0", description="Bind host")
@@ -46,6 +53,29 @@ class Settings(BaseSettings):
     def download_dir(self) -> Path:
         """Full path to download directory."""
         return self.MUSIC_ROOT / self.DOWNLOADS_SUBDIR
+
+    @field_validator("DOWNLOAD_TRANSCODE_FORMAT", "AUDIO_FORMAT", mode="before")
+    @classmethod
+    def normalize_download_format(cls, v):
+        if v is None:
+            return None
+        if isinstance(v, str):
+            cleaned = v.strip().lower()
+            return cleaned or None
+        return str(v).strip().lower() or None
+
+    @property
+    def download_transcode_format(self) -> Optional[str]:
+        explicit = self.DOWNLOAD_TRANSCODE_FORMAT
+        if explicit in {None, "original", "source", "native", "keep", "none", "off", "best"}:
+            explicit = None
+        if explicit:
+            return explicit
+
+        legacy = self.AUDIO_FORMAT
+        if legacy in {None, "", "original", "source", "native", "keep", "none", "off", "best", "mp3"}:
+            return None
+        return legacy
 
     @field_validator("MUSIC_ROOT", mode="before")
     @classmethod

@@ -122,19 +122,22 @@ class Downloader:
             # Construct output template
             output_template = str(self.download_dir / "%(title)s.%(ext)s")
 
-            # yt-dlp command: extract audio only, best quality, no metadata changes
+            # yt-dlp command: prefer native audio downloads and keep the source format whenever possible.
+            # Optional transcoding can still be requested explicitly through DOWNLOAD_TRANSCODE_FORMAT.
             cmd = [
                 self._ytdlp_bin(),
-                "-x",  # extract audio
-                "--audio-format", self.settings.AUDIO_FORMAT,
-                "--audio-quality", "0",  # best quality
+                "-f", "bestaudio/best",
                 "-o", output_template,
                 "--progress",
                 "--newline",
-                "--postprocessor-args", "ffmpeg:-nostats -loglevel error",
                 "--no-playlist",
                 url,
             ]
+
+            transcode_format = self.settings.download_transcode_format
+            if transcode_format:
+                cmd[1:1] = ["-x", "--audio-format", transcode_format, "--audio-quality", "0"]
+                cmd.extend(["--postprocessor-args", "ffmpeg:-nostats -loglevel error"])
 
             logger.info(f"Starting yt-dlp: {' '.join(cmd)}")
             self._update_status("downloading", 0.0)

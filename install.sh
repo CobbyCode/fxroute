@@ -386,7 +386,6 @@ create_env_if_missing() {
   local env_example="$INSTALL_ROOT/.env.example"
   local music_root="$HOME/Music"
   local downloads_dir="incoming"
-  local audio_format="mp3"
   local log_level="INFO"
   local host="0.0.0.0"
   local port="8000"
@@ -410,7 +409,6 @@ create_env_if_missing() {
   cat > "$env_file" <<EOF
 MUSIC_ROOT=$music_root
 DOWNLOADS_SUBDIR=$downloads_dir
-AUDIO_FORMAT=$audio_format
 LOG_LEVEL=$log_level
 HOST=$host
 PORT=$port
