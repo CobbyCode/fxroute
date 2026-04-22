@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.292 (2026-04-22)
+- Fixed library scanning and upload/import acceptance for original-format URL downloads such as `.webm`, `.weba`, `.opus`, and `.oga`, so successful yt-dlp imports now appear in the library instead of being silently skipped.
+- Updated the Library import UI copy to reflect WebM/Opus support.
+- Bumped the cache-busted frontend asset references in `static/index.html` so deployed systems stay version-synced with `0.4.292`.
+
 ## 0.4.291 (2026-04-22)
 - Changed URL downloads to preserve the source audio format whenever possible instead of forcing a lossy MP3 transcode by default.
 - Added a clearer optional `DOWNLOAD_TRANSCODE_FORMAT` setting for users who explicitly want yt-dlp downloads converted, while treating the old `AUDIO_FORMAT=mp3` installer default as deprecated legacy config instead of a forced transcode.

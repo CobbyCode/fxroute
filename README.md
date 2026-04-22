@@ -145,7 +145,7 @@ Basic flow:
 1. Open FXRoute in a browser on your local network.
 2. Use **Radio** for SomaFM streaming or your own generic custom stations.
 3. Use **Library** for local playback, playlists, and import.
-4. Use **Library** import for quick file upload or URL-based import into the local collection. URL downloads now keep the source audio format whenever possible instead of forcing MP3 conversion.
+4. Use **Library** import for quick file upload or URL-based import into the local collection. URL downloads now keep the source audio format whenever possible instead of forcing MP3 conversion, including formats like WebM/Opus when that is what the source provides.
 5. Use **Effects** for EasyEffects preset switching, convolver and PEQ work, DRC-oriented tuning workflows, DSP helpers, A/B listening, and utility controls like peak detection, headroom, limiter, delay, and bass enhancement. The built-in PEQ workflow currently supports up to 20 bands per side in v1.
 6. Use **Spotify** to control a locally running Spotify desktop client.
 
