@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.293 (2026-04-22)
+- Tightened the yt-dlp format selector for URL imports from `bestaudio/best` to strict `bestaudio`, so FXRoute no longer falls back to combined video formats like MP4 when an audio-only stream is unavailable.
+- Bumped the cache-busted frontend asset references in `static/index.html` so deployed systems stay version-synced with `0.4.293`.
+
 ## 0.4.292 (2026-04-22)
 - Fixed library scanning and upload/import acceptance for original-format URL downloads such as `.webm`, `.weba`, `.opus`, and `.oga`, so successful yt-dlp imports now appear in the library instead of being silently skipped.
 - Updated the Library import UI copy to reflect WebM/Opus support.

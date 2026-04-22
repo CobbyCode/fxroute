@@ -126,7 +126,7 @@ class Downloader:
             # Optional transcoding can still be requested explicitly through DOWNLOAD_TRANSCODE_FORMAT.
             cmd = [
                 self._ytdlp_bin(),
-                "-f", "bestaudio/best",
+                "-f", "bestaudio",
                 "-o", output_template,
                 "--progress",
                 "--newline",
