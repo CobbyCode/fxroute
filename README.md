@@ -229,7 +229,7 @@ The installer normally creates `.env` for you with `MUSIC_ROOT=~/Music` and prep
 
 ### Spotify tab is empty or controls do not work
 - ensure Spotify is installed and currently running in the desktop session
-- ensure `playerctl` is installed: `playerctl --version`
+- ensure `playerctl` is available: `playerctl --version` (on supported distros, the installer normally takes care of it)
 - check whether Spotify is visible to MPRIS/playerctl: `playerctl --list-all | grep spotify`
 - if nothing shows up, start Spotify locally on the host and try again
 
