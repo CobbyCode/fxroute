@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.294 (2026-04-22)
+- Improved URL download error handling for common YouTube / outdated `yt-dlp` failures. FXRoute now shows a friendlier hint to check/update `yt-dlp` instead of surfacing only a low-level 403/Forbidden-style error.
+- Updated the README troubleshooting section with the exact `yt-dlp` update command: `cd ~/fxroute && .venv/bin/pip install -U yt-dlp`.
+
 ## 0.4.293 (2026-04-22)
 - Tightened the yt-dlp format selector for URL imports from `bestaudio/best` to strict `bestaudio`, so FXRoute no longer falls back to combined video formats like MP4 when an audio-only stream is unavailable.
 - Bumped the cache-busted frontend asset references in `static/index.html` so deployed systems stay version-synced with `0.4.293`.

@@ -21,6 +21,8 @@ logger = logging.getLogger(__name__)
 class Downloader:
     """Manages audio downloads from YouTube URLs using yt-dlp."""
 
+    YTDLP_UPDATE_COMMAND = "cd ~/fxroute && .venv/bin/pip install -U yt-dlp"
+
     def __init__(self):
         self.settings = get_settings()
         self.download_dir: Path = self.settings.download_dir
@@ -230,9 +232,11 @@ class Downloader:
                 logger.info(f"Download complete: {filename}")
                 self._notify_complete(filename)
             else:
-                error_msg = error_line or f"yt-dlp exited with code {process.returncode}"
+                raw_error_msg = error_line or f"yt-dlp exited with code {process.returncode}"
+                error_msg = self._friendly_download_error(raw_error_msg)
+                self._set_status_text(error_msg)
                 self._update_status("error", None, error=error_msg)
-                logger.error(error_msg)
+                logger.error(raw_error_msg)
 
         except Exception as e:
             logger.error(f"Download thread error: {e}")
@@ -243,6 +247,37 @@ class Downloader:
             with self._lock:
                 self._active_download = None
                 self._cancel_requested = False
+
+    def _friendly_download_error(self, raw_error: str) -> str:
+        """Map low-level yt-dlp/YouTube failures to friendlier end-user guidance."""
+        message = (raw_error or "").strip()
+        lowered = message.lower()
+        yt_dlp_update_hint = (
+            "YouTube download failed. yt-dlp may be outdated or YouTube may have changed something. "
+            f"Try updating yt-dlp with: {self.YTDLP_UPDATE_COMMAND}"
+        )
+
+        if any(token in lowered for token in [
+            "http error 403",
+            "forbidden",
+            "unable to download api page",
+            "precondition check failed",
+            "latest version using yt-dlp -u",
+            "latest version using  yt-dlp -u",
+            "nsig extraction failed",
+        ]):
+            return yt_dlp_update_hint
+
+        if any(token in lowered for token in [
+            "sign in to confirm",
+            "this video is unavailable",
+            "private video",
+            "members-only",
+            "login required",
+        ]):
+            return f"YouTube download failed: {message}"
+
+        return message or "Download failed"
 
     def _update_status(self, status: str, progress: Optional[float], error: Optional[str] = None):
         """Update active download status."""

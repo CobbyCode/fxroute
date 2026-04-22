@@ -221,7 +221,10 @@ The installer normally creates `.env` for you with `MUSIC_ROOT=~/Music` and prep
 ### Downloads fail
 - on supported distros, the installer normally provides `yt-dlp` inside the FXRoute virtual environment for you
 - URL downloads keep the source audio format whenever possible; if you explicitly want transcoding, set `DOWNLOAD_TRANSCODE_FORMAT` in `.env`
-- YouTube changes frequently, so if downloads consistently fail, updating `yt-dlp` may help
+- YouTube changes frequently, so if downloads consistently fail, update `yt-dlp` inside the FXRoute virtual environment:
+  ```bash
+  cd ~/fxroute && .venv/bin/pip install -U yt-dlp
+  ```
 - some sources have restrictions, try a different URL
 
 ### Effects do not apply
