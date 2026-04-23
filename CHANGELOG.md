@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.296 (2026-04-23)
+- Changed newly created convolver presets to default to `autogain: false` instead of `true`, so FXRoute no longer hides IR level differences behind automatic convolver gain compensation by default.
+- Bumped the cache-busted frontend asset references in `static/index.html` so deployed systems stay version-synced with `0.4.296`.
+
 ## 0.4.295 (2026-04-23)
 - Fixed FXRoute PEQ preset generation so EasyEffects-compatible filter type strings are now written for non-bell bands (`Lo-pass`, `Hi-pass`, `Lo-shelf`, `Hi-shelf`) instead of the previously mismatched labels that left those type fields blank in EasyEffects.
 - Fixed the built-in `Direct` preset so it is now a true helper-free empty chain instead of carrying a baked-in limiter. Existing `Direct.json` presets are automatically rewritten to the helper-free form when FXRoute lists EasyEffects presets.

@@ -837,7 +837,7 @@ class EasyEffectsManager:
         payload = self._build_effects_output(
             {
                 "convolver#0": {
-                    "autogain": True,
+                    "autogain": False,
                     "bypass": False,
                     "dry": -100.0,
                     "input-gain": 0.0,
