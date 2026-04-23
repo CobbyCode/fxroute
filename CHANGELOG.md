@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.295 (2026-04-23)
+- Fixed FXRoute PEQ preset generation so EasyEffects-compatible filter type strings are now written for non-bell bands (`Lo-pass`, `Hi-pass`, `Lo-shelf`, `Hi-shelf`) instead of the previously mismatched labels that left those type fields blank in EasyEffects.
+- Fixed the built-in `Direct` preset so it is now a true helper-free empty chain instead of carrying a baked-in limiter. Existing `Direct.json` presets are automatically rewritten to the helper-free form when FXRoute lists EasyEffects presets.
+- Bumped the cache-busted frontend asset references in `static/index.html` so deployed systems stay version-synced with `0.4.295`.
+
 ## 0.4.294 (2026-04-22)
 - Improved URL download error handling for common YouTube / outdated `yt-dlp` failures. FXRoute now shows a friendlier hint to check/update `yt-dlp` instead of surfacing only a low-level 403/Forbidden-style error.
 - Updated the README troubleshooting section with the exact `yt-dlp` update command: `cd ~/fxroute && .venv/bin/pip install -U yt-dlp`.

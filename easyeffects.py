@@ -253,6 +253,8 @@ class EasyEffectsManager:
         if not self.output_dir.exists():
             return []
 
+        self._ensure_pure_preset_exists()
+
         pinned_order = {
             "Direct": 0,
             "Neutral": 1,
@@ -864,10 +866,10 @@ class EasyEffectsManager:
     def _normalize_peq_band_list(self, bands: Any, field_path: str) -> List[Dict[str, Any]]:
         allowed_filter_types = {
             "bell": "Bell",
-            "low_shelf": "Low Shelf",
-            "high_shelf": "High Shelf",
-            "low_pass": "Low Pass",
-            "high_pass": "High Pass",
+            "low_shelf": "Lo-shelf",
+            "high_shelf": "Hi-shelf",
+            "low_pass": "Lo-pass",
+            "high_pass": "Hi-pass",
         }
 
         if not isinstance(bands, list):
@@ -1139,20 +1141,25 @@ class EasyEffectsManager:
         }
 
     def _ensure_pure_preset_exists(self) -> None:
-        """Ensure the built-in Direct fallback preset exists, creating it if necessary."""
-        preset_path = self.output_dir / f"{self.PURE_PRESET}.json"
-        if preset_path.exists():
+        """Ensure the built-in Direct fallback preset exists in true helper-free form."""
+        if not self.output_dir.exists():
             return
-        logger.info("Direct preset missing, recreating...")
-        self.create_peq_preset(
-            self.PURE_PRESET,
-            {
-                "enabled": True,
-                "mix": {"inputGainDb": 0.0, "outputGainDb": 0.0},
-                "params": {"bands": [], "channelMode": "dual"},
-            },
-            extras=None,
-        )
+
+        preset_path = self.output_dir / f"{self.PURE_PRESET}.json"
+        desired_payload = {"output": {"blocklist": [], "plugins_order": []}}
+
+        if preset_path.exists():
+            try:
+                existing_payload = json.loads(preset_path.read_text())
+                if existing_payload == desired_payload:
+                    return
+            except Exception:
+                pass
+            logger.info("Direct preset outdated or invalid, rewriting helper-free version...")
+        else:
+            logger.info("Direct preset missing, recreating helper-free version...")
+
+        preset_path.write_text(json.dumps(desired_payload, indent=2) + "\n")
 
     def delete_preset(self, preset_name: str) -> None:
         clean_name = Path(preset_name).stem.strip()
