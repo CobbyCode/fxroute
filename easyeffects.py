@@ -750,9 +750,12 @@ class EasyEffectsManager:
             plugins_order.append("limiter#0")
 
         target_plugin = None
-        helper_plugins = {"limiter#0", "bass_enhancer#0", "delay#0"}
+
+        def is_helper_plugin(plugin_name: str) -> bool:
+            return plugin_name in {"limiter#0", "bass_enhancer#0"} or plugin_name.startswith("delay#")
+
         for plugin_name in reversed(plugins_order):
-            if plugin_name in helper_plugins:
+            if is_helper_plugin(plugin_name):
                 continue
             plugin_payload = result.get(plugin_name)
             if isinstance(plugin_payload, dict):
@@ -760,7 +763,7 @@ class EasyEffectsManager:
                 break
         if target_plugin is None:
             for plugin_name, plugin_payload in reversed(list(result.items())):
-                if plugin_name in helper_plugins:
+                if is_helper_plugin(plugin_name):
                     continue
                 if "#" in plugin_name and isinstance(plugin_payload, dict):
                     target_plugin = plugin_payload
@@ -822,6 +825,88 @@ class EasyEffectsManager:
             return {"extras": normalized, "updated": 0, "skipped": [active_preset]}
         return {"extras": normalized, "updated": 1, "skipped": []}
 
+    def _read_preset_payload(self, preset_name: str) -> Dict[str, Any]:
+        clean_name = Path(preset_name).stem.strip()
+        if not clean_name:
+            raise ValueError("Invalid preset name")
+        preset_path = self.output_dir / f"{clean_name}.json"
+        if not preset_path.exists():
+            raise FileNotFoundError(f"Preset not found: {clean_name}")
+        try:
+            payload = json.loads(preset_path.read_text())
+        except Exception as e:
+            raise RuntimeError(f"Failed to read preset '{clean_name}': {e}") from e
+        if not isinstance(payload, dict):
+            raise RuntimeError(f"Preset '{clean_name}' is not a valid JSON object")
+        return payload
+
+    def combine_presets(self, preset_name: str, source_presets: List[str], extras: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+
+        clean_preset_name = Path(preset_name).stem.strip()
+        if not clean_preset_name:
+            raise ValueError("Invalid preset name")
+        if not isinstance(source_presets, list):
+            raise ValueError("source_presets must be an array")
+
+        normalized_sources = [Path(str(name)).stem.strip() for name in source_presets if str(name).strip()]
+        if len(normalized_sources) < 2:
+            raise ValueError("Select at least two presets to combine")
+        if len(set(normalized_sources)) != len(normalized_sources):
+            raise ValueError("Selected presets must be different")
+        if clean_preset_name in set(normalized_sources):
+            raise ValueError("New preset name must differ from the source presets")
+
+        helper_bases = {"limiter", "delay", "bass_enhancer"}
+        base_plugins: Dict[str, Any] = {}
+        base_order: List[str] = []
+        plugin_counters: Dict[str, int] = {}
+
+        for source_name in normalized_sources:
+            payload = self._read_preset_payload(source_name)
+            output = payload.get("output") if isinstance(payload.get("output"), dict) else {}
+            ordered_plugin_names = []
+            seen_plugin_names = set()
+
+            for plugin_name in output.get("plugins_order", []):
+                if isinstance(plugin_name, str) and plugin_name in output and plugin_name not in seen_plugin_names:
+                    ordered_plugin_names.append(plugin_name)
+                    seen_plugin_names.add(plugin_name)
+
+            for plugin_name, plugin_payload in output.items():
+                if plugin_name in {"plugins_order", "blocklist"} or not isinstance(plugin_payload, dict):
+                    continue
+                if plugin_name not in seen_plugin_names and "#" in plugin_name:
+                    ordered_plugin_names.append(plugin_name)
+                    seen_plugin_names.add(plugin_name)
+
+            for plugin_name in ordered_plugin_names:
+                plugin_payload = output.get(plugin_name)
+                if not isinstance(plugin_payload, dict):
+                    continue
+                plugin_base = plugin_name.split("#", 1)[0]
+                if plugin_base in helper_bases:
+                    continue
+                plugin_index = plugin_counters.get(plugin_base, 0)
+                plugin_counters[plugin_base] = plugin_index + 1
+                combined_name = f"{plugin_base}#{plugin_index}"
+                combined_payload = json.loads(json.dumps(plugin_payload))
+                if "output-gain" in combined_payload:
+                    combined_payload["output-gain"] = 0.0
+                base_plugins[combined_name] = combined_payload
+                base_order.append(combined_name)
+
+        combined_payload = self._build_effects_output(base_plugins, base_order, extras if extras is not None else self.load_global_extras())
+        preset_path = self.output_dir / f"{clean_preset_name}.json"
+        preset_path.write_text(json.dumps(combined_payload, indent=2) + "\n")
+        return {
+            "name": clean_preset_name,
+            "filename": preset_path.name,
+            "path": str(preset_path),
+            "source_presets": normalized_sources,
+            "plugin_count": len(base_order),
+        }
+
     def create_convolver_preset(self, preset_name: str, ir_filename: str, extras: Optional[Dict[str, Any]] = None) -> dict:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         available_irs = {entry["name"]: entry for entry in self.list_irs()}
@@ -866,6 +951,7 @@ class EasyEffectsManager:
     def _normalize_peq_band_list(self, bands: Any, field_path: str) -> List[Dict[str, Any]]:
         allowed_filter_types = {
             "bell": "Bell",
+            "gain": None,
             "low_shelf": "Lo-shelf",
             "high_shelf": "Hi-shelf",
             "low_pass": "Lo-pass",
@@ -917,6 +1003,17 @@ class EasyEffectsManager:
 
         return normalized_bands
 
+    def _split_peq_bands_and_gain(self, bands: List[Dict[str, Any]]) -> tuple[List[Dict[str, Any]], float]:
+        eq_bands: List[Dict[str, Any]] = []
+        gain_db_total = 0.0
+        for band in bands:
+            if band.get("filterType") == "gain":
+                if band.get("enabled", True):
+                    gain_db_total += float(band.get("gainDb", 0.0))
+                continue
+            eq_bands.append(band)
+        return eq_bands, gain_db_total
+
     def validate_peq_v1(self, peq_definition: Dict[str, Any]) -> Dict[str, Any]:
         if not isinstance(peq_definition, dict):
             raise ValueError("peq must be a JSON object")
@@ -960,63 +1057,91 @@ class EasyEffectsManager:
         normalized = self.validate_peq_v1(peq_definition)
         channel_mode = normalized["params"]["channelMode"]
 
-        def build_channel_bands(bands: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+        def build_channel_bands(bands: List[Dict[str, Any]], slot_count: int) -> Dict[str, Dict[str, Any]]:
             channel = {}
-            for index, band in enumerate(bands):
+            for index in range(slot_count):
+                band = bands[index] if index < len(bands) else None
                 channel[f"band{index}"] = {
-                    "frequency": band["frequencyHz"],
-                    "gain": band["gainDb"],
+                    "frequency": band["frequencyHz"] if band else 1000.0,
+                    "gain": band["gainDb"] if band else 0.0,
                     "mode": "RLC (BT)",
-                    "mute": not band["enabled"],
-                    "q": band["q"],
+                    "mute": (not band["enabled"]) if band else True,
+                    "q": band["q"] if band else 1.0,
                     "slope": "x1",
                     "solo": False,
-                    "type": band["easyEffectsType"],
+                    "type": band["easyEffectsType"] if band else "Bell",
                     "width": 4.0,
                 }
             return channel
 
         if channel_mode == "dual":
-            left_bands = normalized["params"].get("leftBands", [])
-            right_bands = normalized["params"].get("rightBands", [])
+            left_source_bands = normalized["params"].get("leftBands", [])
+            right_source_bands = normalized["params"].get("rightBands", [])
         else:
             shared_bands = normalized["params"].get("bands", [])
-            left_bands = shared_bands
-            right_bands = shared_bands
+            left_source_bands = shared_bands
+            right_source_bands = shared_bands
 
-        left = build_channel_bands(left_bands)
-        right = build_channel_bands(right_bands)
+        left_bands, left_gain_trim_db = self._split_peq_bands_and_gain(left_source_bands)
+        right_bands, right_gain_trim_db = self._split_peq_bands_and_gain(right_source_bands)
         num_bands = max(len(left_bands), len(right_bands))
 
-        preset_path = self.output_dir / f"{clean_preset_name}.json"
-        payload = self._build_effects_output(
-            {
-                "equalizer#0": {
-                    "balance": 0.0,
-                    "bypass": not normalized["enabled"],
-                    "input-gain": normalized["mix"]["inputGainDb"],
-                    "left": left,
-                    "mode": "IIR",
-                    "num-bands": num_bands,
-                    "output-gain": normalized["mix"]["outputGainDb"],
-                    "pitch-left": 0.0,
-                    "pitch-right": 0.0,
-                    "right": right,
-                    "split-channels": channel_mode == "dual",
-                },
-            },
-            ["equalizer#0"],
-            extras,
+        if channel_mode == "stereo-linked":
+            shared_gain_trim_db = left_gain_trim_db
+        else:
+            if abs(left_gain_trim_db - right_gain_trim_db) <= 1e-9:
+                shared_gain_trim_db = left_gain_trim_db
+            elif abs(left_gain_trim_db) <= 1e-9:
+                shared_gain_trim_db = right_gain_trim_db
+            elif abs(right_gain_trim_db) <= 1e-9:
+                shared_gain_trim_db = left_gain_trim_db
+            else:
+                raise ValueError(
+                    "Gain filter currently supports only shared stereo trim in dual mode; use the same Gain on both sides or a single shared Gain value"
+                )
+
+        needs_neutral_eq = num_bands == 0 and (
+            abs(shared_gain_trim_db) > 1e-9
+            or abs(normalized["mix"]["inputGainDb"]) > 1e-9
+            or abs(normalized["mix"]["outputGainDb"]) > 1e-9
         )
+        eq_slot_count = max(num_bands, 1 if needs_neutral_eq else 0)
+        left = build_channel_bands(left_bands, eq_slot_count)
+        right = build_channel_bands(right_bands, eq_slot_count)
+
+        base_plugins: Dict[str, Any] = {}
+        base_order: List[str] = []
+
+        if eq_slot_count > 0:
+            base_plugins["equalizer#0"] = {
+                "balance": 0.0,
+                "bypass": not normalized["enabled"],
+                "input-gain": normalized["mix"]["inputGainDb"] + shared_gain_trim_db,
+                "left": left,
+                "mode": "IIR",
+                "num-bands": eq_slot_count,
+                "output-gain": normalized["mix"]["outputGainDb"],
+                "pitch-left": 0.0,
+                "pitch-right": 0.0,
+                "right": right,
+                "split-channels": channel_mode == "dual",
+            }
+            base_order.append("equalizer#0")
+
+        preset_path = self.output_dir / f"{clean_preset_name}.json"
+        payload = self._build_effects_output(base_plugins, base_order, extras)
         preset_path.write_text(json.dumps(payload, indent=2) + "\n")
         return {
             "name": clean_preset_name,
             "filename": preset_path.name,
             "path": str(preset_path),
-            "band_count": num_bands,
+            "band_count": max(len(left_source_bands), len(right_source_bands)),
             "channel_mode": channel_mode,
-            "left_band_count": len(left_bands),
-            "right_band_count": len(right_bands),
+            "left_band_count": len(left_source_bands),
+            "right_band_count": len(right_source_bands),
+            "eq_band_count": num_bands,
+            "left_gain_trim_db": left_gain_trim_db,
+            "right_gain_trim_db": right_gain_trim_db,
         }
 
     def import_rew_peq_text(self, rew_text: str) -> Dict[str, Any]:

@@ -1,5 +1,55 @@
 # Changelog
 
+## 0.4.306 (2026-04-24)
+- Nudged the collapsed `Create PEQ preset` header block a touch further downward so it aligns more closely with the neighboring DSP cards.
+- Bumped the cache-busted frontend asset references in `static/index.html` so deployed systems stay version-synced with `0.4.306`.
+
+## 0.4.305 (2026-04-24)
+- Shortened the `Combine` save action label from `Save combined preset` to `Save`.
+- Nudged the collapsed `Create PEQ preset` card heading/subtext styling closer to the other DSP cards for a more even top-row appearance.
+- Bumped the cache-busted frontend asset references in `static/index.html` so deployed systems stay version-synced with `0.4.305`.
+
+## 0.4.304 (2026-04-24)
+- Polished the linked `Gain` UI in the PEQ editor so the mirrored side now also updates its visible dB value immediately.
+- Added a tiny `L/R linked` hint on `Gain` bands so the stereo-coupled behavior reads as intentional instead of looking like a bug.
+- Bumped the cache-busted frontend asset references in `static/index.html` so deployed systems stay version-synced with `0.4.304`.
+
+## 0.4.303 (2026-04-24)
+- Tightened the PEQ editor so `Gain` behaves as a linked stereo band in the UI: switching one side to `Gain` now mirrors the paired band type and dB value to the other side.
+- This prevents confusing mixed states like `Gain` on one side and `Bell` on the other while keeping the shared-stereo `Gain` model honest.
+- Bumped the cache-busted frontend asset references in `static/index.html` so deployed systems stay version-synced with `0.4.303`.
+
+## 0.4.302 (2026-04-24)
+- Reworked the new `Gain` filter type so it no longer exports through an internal Delay helper block.
+- `Gain` now behaves as a shared stereo trim on the EasyEffects EQ block, making the EE UI cleaner and keeping Headroom behavior consistent.
+- Removed the extra `Gain` explanatory subtitle in the PEQ editor and now reject mismatched dual left/right Gain totals with a clear validation error instead of exporting confusing behavior.
+- Bumped the cache-busted frontend asset references in `static/index.html` so deployed systems stay version-synced with `0.4.302`.
+
+## 0.4.301 (2026-04-24)
+- Fixed `Gain` PEQ export for dual-channel presets where only one side contains real EQ bands: FXRoute now pads the shorter EasyEffects EQ side with neutral muted bands instead of emitting an invalid empty side.
+- Stopped global headroom targeting from landing on the internal neutral `Gain` delay helper stage.
+- Bumped the cache-busted frontend asset references in `static/index.html` so deployed systems stay version-synced with `0.4.301`.
+
+## 0.4.300 (2026-04-24)
+- Added a dedicated `Gain` filter type to the PEQ editor while keeping the existing channel model.
+- `Gain` now hides the frequency/Q-style controls in the editor and exports as a neutral per-channel trim stage instead of pretending to be a tonal bell filter.
+- Bumped the cache-busted frontend asset references in `static/index.html` so deployed systems stay version-synced with `0.4.300`.
+
+## 0.4.299 (2026-04-24)
+- Shortened the `Combine` helper text so the tile reads more cleanly.
+- Fixed the mobile `Combine` preset-name field so it behaves like a normal compact action-row input instead of rendering oversized/square.
+- Bumped the cache-busted frontend asset references in `static/index.html` so deployed systems stay version-synced with `0.4.299`.
+
+## 0.4.298 (2026-04-24)
+- Refined the first `Compare & Combine` DSP pass: stereo IR imports now auto-import directly without an extra redundant button, while the channel-specific Left/Right create flow stays explicit.
+- Tightened the `Combine` tile layout so the preset name uses a normal single-line field, and expanded the combine flow to support up to three source presets while keeping mobile stacked and desktop compact.
+- Bumped the cache-busted frontend asset references in `static/index.html` so deployed systems stay version-synced with `0.4.298`.
+
+## 0.4.297 (2026-04-23)
+- Reworked the DSP preset area for the first `Compare & Combine` v1 pass: the permanent DSP import tile is replaced by a lower-row `Combine` tile, while filter import moves to a compact top-right `Import…` entry in the DSP area.
+- Added a small 2-preset combine workflow that creates a new preset from `Preset 1` and `Preset 2` without modifying the originals, while preserving source order and keeping the compare area focused on `Preset A`, `Preset B`, `Compare A/B`, and `Delete active`.
+- Bumped the cache-busted frontend asset references in `static/index.html` so deployed systems stay version-synced with `0.4.297`.
+
 ## 0.4.296 (2026-04-23)
 - Changed newly created convolver presets to default to `autogain: false` instead of `true`, so FXRoute no longer hides IR level differences behind automatic convolver gain compensation by default.
 - Bumped the cache-busted frontend asset references in `static/index.html` so deployed systems stay version-synced with `0.4.296`.

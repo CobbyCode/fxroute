@@ -48,6 +48,12 @@ let state = {
         presets: [],
         ir_count: 0,
         irs: [],
+        combineDraft: {
+            preset1: '',
+            preset2: '',
+            preset3: '',
+            presetName: '',
+        },
         peqDraft: {
             presetName: '',
             loadAfterCreate: false,
@@ -161,9 +167,10 @@ const elements = {
     effectsCompareToggle: document.getElementById('effects-compare-toggle'),
     effectsCompareActive: document.getElementById('effects-compare-active'),
     effectsCompareRow: document.getElementById('effects-compare-row'),
+    effectsToggleImportBtn: document.getElementById('effects-toggle-import'),
+    effectsImportPanel: document.getElementById('effects-import-panel'),
     effectsImportFile: document.getElementById('effects-import-file'),
     effectsImportFilename: document.getElementById('effects-import-filename'),
-    effectsImportSubmitBtn: document.getElementById('effects-import-submit'),
     effectsLimiterEnabled: document.getElementById('effects-limiter-enabled'),
     effectsHeadroomEnabled: document.getElementById('effects-headroom-enabled'),
     effectsHeadroomGainDb: document.getElementById('effects-headroom-gain-db'),
@@ -177,6 +184,11 @@ const elements = {
     effectsBassControlsWrap: document.getElementById('effects-bass-controls-wrap'),
     effectsExtrasFeedback: document.getElementById('effects-extras-feedback'),
     effectsRewDualPresetName: document.getElementById('effects-rew-dual-preset-name'),
+    effectsCombinePreset1: document.getElementById('effects-combine-preset-1'),
+    effectsCombinePreset2: document.getElementById('effects-combine-preset-2'),
+    effectsCombinePreset3: document.getElementById('effects-combine-preset-3'),
+    effectsCombinePresetName: document.getElementById('effects-combine-preset-name'),
+    effectsCombineSaveBtn: document.getElementById('effects-combine-save'),
     effectsRewLeftFile: document.getElementById('effects-rew-left-file'),
     effectsRewRightFile: document.getElementById('effects-rew-right-file'),
     effectsRewLeftText: document.getElementById('effects-rew-left-text'),
@@ -254,6 +266,39 @@ async function saveEffectsCompareState(compare) {
     } catch (e) {
         console.warn('Failed to persist effects compare state', e);
     }
+}
+
+function getDefaultEffectsCombineDraft() {
+    return {
+        preset1: '',
+        preset2: '',
+        preset3: '',
+        presetName: '',
+    };
+}
+
+function normalizeEffectsCombineDraft(draft = {}, presets = []) {
+    const presetSet = new Set((presets || []).filter(Boolean));
+    const chosen = [];
+    const pickUnique = (value) => {
+        const preset = presetSet.has(value) ? value : '';
+        if (!preset || chosen.includes(preset)) return '';
+        chosen.push(preset);
+        return preset;
+    };
+    return {
+        preset1: pickUnique(draft.preset1),
+        preset2: pickUnique(draft.preset2),
+        preset3: pickUnique(draft.preset3),
+        presetName: typeof draft.presetName === 'string' ? draft.presetName : '',
+    };
+}
+
+function setEffectsImportPanelOpen(shouldOpen) {
+    if (!elements.effectsImportPanel || !elements.effectsToggleImportBtn) return;
+    elements.effectsImportPanel.classList.toggle('hidden', !shouldOpen);
+    elements.effectsToggleImportBtn.setAttribute('aria-expanded', shouldOpen ? 'true' : 'false');
+    elements.effectsToggleImportBtn.textContent = shouldOpen ? 'Close import' : 'Import…';
 }
 
 function setupWebSocket() {
@@ -420,9 +465,11 @@ function handleWebSocketMessage(msg) {
             const presetNames = (data.presets || []).map(p => p.name);
             state.easyeffects = {
                 ...data,
+                combineDraft: state.easyeffects?.combineDraft || getDefaultEffectsCombineDraft(),
                 peqDraft: state.easyeffects?.peqDraft || { presetName: '', loadAfterCreate: false, leftBands: [defaultPeqBand()], rightBands: [defaultPeqBand()] },
                 compare: resolveEffectsCompareState(data.compare || prev, presetNames, data.active_preset || ''),
             };
+            state.easyeffects.combineDraft = normalizeEffectsCombineDraft(state.easyeffects.combineDraft, presetNames);
             renderEffects();
             break;
         case 'download_complete':
@@ -2740,9 +2787,47 @@ function updateEffectsPeqDisclosureLabel() {
 function setupEffectsActions() {
     if (elements.refreshEffectsBtn) elements.refreshEffectsBtn.addEventListener('click', fetchEffects);
     if (elements.effectsDeleteBtn) elements.effectsDeleteBtn.addEventListener('click', deleteEffectsPreset);
+    if (elements.effectsToggleImportBtn) {
+        elements.effectsToggleImportBtn.addEventListener('click', () => {
+            const shouldOpen = elements.effectsImportPanel?.classList.contains('hidden');
+            setEffectsImportPanelOpen(!!shouldOpen);
+        });
+    }
     if (elements.effectsImportFile) elements.effectsImportFile.addEventListener('change', handleEffectsImportFileChange);
-    if (elements.effectsImportSubmitBtn) elements.effectsImportSubmitBtn.addEventListener('click', submitEffectsImport);
     if (elements.effectsRewDualCreatePresetBtn) elements.effectsRewDualCreatePresetBtn.addEventListener('click', createDualFilterPreset);
+    if (elements.effectsCombinePreset1) {
+        elements.effectsCombinePreset1.addEventListener('change', (event) => {
+            state.easyeffects.combineDraft = state.easyeffects.combineDraft || getDefaultEffectsCombineDraft();
+            state.easyeffects.combineDraft.preset1 = event.target.value;
+            if (state.easyeffects.combineDraft.preset1 && state.easyeffects.combineDraft.preset1 === state.easyeffects.combineDraft.preset2) {
+                state.easyeffects.combineDraft.preset2 = '';
+                if (elements.effectsCombinePreset2) elements.effectsCombinePreset2.value = '';
+            }
+            renderEffectsCombine();
+        });
+    }
+    if (elements.effectsCombinePreset2) {
+        elements.effectsCombinePreset2.addEventListener('change', (event) => {
+            state.easyeffects.combineDraft = state.easyeffects.combineDraft || getDefaultEffectsCombineDraft();
+            state.easyeffects.combineDraft.preset2 = event.target.value;
+            renderEffectsCombine();
+        });
+    }
+    if (elements.effectsCombinePreset3) {
+        elements.effectsCombinePreset3.addEventListener('change', (event) => {
+            state.easyeffects.combineDraft = state.easyeffects.combineDraft || getDefaultEffectsCombineDraft();
+            state.easyeffects.combineDraft.preset3 = event.target.value;
+            renderEffectsCombine();
+        });
+    }
+    if (elements.effectsCombinePresetName) {
+        elements.effectsCombinePresetName.addEventListener('input', (event) => {
+            state.easyeffects.combineDraft = state.easyeffects.combineDraft || getDefaultEffectsCombineDraft();
+            state.easyeffects.combineDraft.presetName = event.target.value;
+            renderEffectsCombine();
+        });
+    }
+    if (elements.effectsCombineSaveBtn) elements.effectsCombineSaveBtn.addEventListener('click', createCombinedEffectsPreset);
     if (elements.effectsPeqPresetName) elements.effectsPeqPresetName.addEventListener('input', (event) => {
         if (!state.easyeffects?.peqDraft) return;
         state.easyeffects.peqDraft.presetName = event.target.value;
@@ -2792,7 +2877,9 @@ function setupEffectsActions() {
         void populateDualFilterTextareaFromFile('right', file);
     });
     updateEffectsImportUi();
+    setEffectsImportPanelOpen(false);
     resetPeqDraft();
+    renderEffectsCombine();
 }
 async function startDownload(urlOverride = null) {
     const url = (urlOverride || elements.downloadUrl.value || '').trim();
@@ -2949,6 +3036,7 @@ async function fetchEffects() {
         const presetNames = (data.presets || []).map(p => p.name);
         state.easyeffects = {
             ...data,
+            combineDraft: state.easyeffects?.combineDraft || getDefaultEffectsCombineDraft(),
             peqDraft: state.easyeffects?.peqDraft || {
                 presetName: '',
                 loadAfterCreate: false,
@@ -2957,6 +3045,7 @@ async function fetchEffects() {
             },
             compare: resolveEffectsCompareState(data.compare || prev, presetNames, data.active_preset || ''),
         };
+        state.easyeffects.combineDraft = normalizeEffectsCombineDraft(state.easyeffects.combineDraft, presetNames);
         if (!Array.isArray(state.easyeffects.peqDraft?.leftBands) || !state.easyeffects.peqDraft.leftBands.length) state.easyeffects.peqDraft.leftBands = [defaultPeqBand()];
         if (!Array.isArray(state.easyeffects.peqDraft?.rightBands) || !state.easyeffects.peqDraft.rightBands.length) state.easyeffects.peqDraft.rightBands = [defaultPeqBand()];
         if (data.global_extras) {
@@ -2983,6 +3072,15 @@ function defaultPeqBand() {
         gainDb: 0,
         q: 1,
     };
+}
+function isPeqGainBand(band = {}) {
+    return String(band?.filterType || '').toLowerCase() === 'gain';
+}
+function getPeqBandFallback(field, band = {}) {
+    if (field === 'frequencyHz') return Number.isFinite(Number(band?.frequencyHz)) ? Number(band.frequencyHz) : 1000;
+    if (field === 'q') return Number.isFinite(Number(band?.q)) ? Number(band.q) : 1;
+    if (field === 'gainDb') return Number.isFinite(Number(band?.gainDb)) ? Number(band.gainDb) : 0;
+    return 0;
 }
 function getDefaultPeqDraft() {
     return {
@@ -3019,17 +3117,66 @@ function removePeqBand(side, index) {
     state.easyeffects.peqDraft[key].splice(index, 1);
     renderPeqBands();
 }
+function ensurePeqBandExists(side, index) {
+    if (!state.easyeffects?.peqDraft) return null;
+    const key = side === 'right' ? 'rightBands' : 'leftBands';
+    state.easyeffects.peqDraft[key] = state.easyeffects.peqDraft[key] || [];
+    while (state.easyeffects.peqDraft[key].length <= index) {
+        state.easyeffects.peqDraft[key].push(defaultPeqBand());
+    }
+    return state.easyeffects.peqDraft[key][index] || null;
+}
+function getOtherPeqSide(side) {
+    return side === 'right' ? 'left' : 'right';
+}
+function syncLinkedPeqGainBand(side, index) {
+    if (!state.easyeffects?.peqDraft) return;
+    const sourceBand = ensurePeqBandExists(side, index);
+    const otherBand = ensurePeqBandExists(getOtherPeqSide(side), index);
+    if (!sourceBand || !otherBand) return;
+    otherBand.filterType = sourceBand.filterType;
+    otherBand.gainDb = sourceBand.gainDb;
+}
+function normalizeLinkedPeqGainBands() {
+    if (!state.easyeffects?.peqDraft) return;
+    const leftBands = state.easyeffects.peqDraft.leftBands || [];
+    const rightBands = state.easyeffects.peqDraft.rightBands || [];
+    const count = Math.max(leftBands.length, rightBands.length);
+    for (let index = 0; index < count; index += 1) {
+        const leftBand = leftBands[index] || null;
+        const rightBand = rightBands[index] || null;
+        if (isPeqGainBand(leftBand)) {
+            syncLinkedPeqGainBand('left', index);
+        } else if (isPeqGainBand(rightBand)) {
+            syncLinkedPeqGainBand('right', index);
+        }
+    }
+}
 function updatePeqBand(side, index, field, value) {
     if (!state.easyeffects?.peqDraft) return;
-    const key = side === 'right' ? 'rightBands' : 'leftBands';
-    const band = state.easyeffects.peqDraft[key][index];
+    const band = ensurePeqBandExists(side, index);
     if (!band) return;
     band[field] = value;
+
+    const otherBand = ensurePeqBandExists(getOtherPeqSide(side), index);
+    const gainLinked = isPeqGainBand(band) || isPeqGainBand(otherBand);
+    if (gainLinked && (field === 'filterType' || field === 'gainDb')) {
+        syncLinkedPeqGainBand(side, index);
+    }
+}
+function syncLinkedPeqGainBandValueInDom(side, index) {
+    const sourceBand = ensurePeqBandExists(side, index);
+    const otherSide = getOtherPeqSide(side);
+    const otherInput = document.querySelector(`[data-peq-side="${otherSide}"][data-peq-index="${index}"][data-peq-field="gainDb"]`);
+    if (sourceBand && otherInput) {
+        otherInput.value = String(sourceBand.gainDb);
+    }
 }
 function renderPeqBandColumn(container, side, bands) {
     if (!container) return;
     const filterTypeLabels = {
         bell: 'Bell',
+        gain: 'Gain',
         low_shelf: 'Low shelf',
         high_shelf: 'High shelf',
         low_pass: 'Low pass',
@@ -3039,34 +3186,41 @@ function renderPeqBandColumn(container, side, bands) {
         container.innerHTML = '<div class="effects-peq-empty">No bands yet.</div>';
         return;
     }
-    container.innerHTML = bands.map((band, index) => `
+    container.innerHTML = bands.map((band, index) => {
+        const isGain = isPeqGainBand(band);
+        return `
         <div class="effects-peq-band" data-peq-side="${side}" data-peq-band="${index}">
             <div class="effects-peq-band-header">
-                <div class="effects-peq-band-title">Band ${index + 1}</div>
+                <div>
+                    <div class="effects-peq-band-title">Band ${index + 1}</div>
+                    ${isGain ? '<div class="effects-peq-band-subtitle">L/R linked</div>' : ''}
+                </div>
                 <button type="button" class="btn-danger btn-inline" data-peq-remove="${side}:${index}">Remove</button>
             </div>
-            <div class="effects-peq-band-fields">
+            <div class="effects-peq-band-fields${isGain ? ' effects-peq-band-fields-gain' : ''}">
                 <div class="field-group">
                     <label>Type</label>
                     <select class="url-input" data-peq-side="${side}" data-peq-index="${index}" data-peq-field="filterType">
-                        ${['bell', 'low_shelf', 'high_shelf', 'low_pass', 'high_pass'].map(type => `<option value="${type}" ${band.filterType === type ? 'selected' : ''}>${filterTypeLabels[type]}</option>`).join('')}
+                        ${['bell', 'gain', 'low_shelf', 'high_shelf', 'low_pass', 'high_pass'].map(type => `<option value="${type}" ${band.filterType === type ? 'selected' : ''}>${filterTypeLabels[type]}</option>`).join('')}
                     </select>
-                </div>
-                <div class="field-group">
-                    <label>Freq (Hz)</label>
-                    <input type="number" class="url-input" min="20" max="20000" step="1" data-peq-side="${side}" data-peq-index="${index}" data-peq-field="frequencyHz" value="${band.frequencyHz}">
                 </div>
                 <div class="field-group">
                     <label>Gain (dB)</label>
                     <input type="number" class="url-input" min="-24" max="24" step="0.1" data-peq-side="${side}" data-peq-index="${index}" data-peq-field="gainDb" value="${band.gainDb}">
                 </div>
+                ${isGain ? '' : `
+                <div class="field-group">
+                    <label>Freq (Hz)</label>
+                    <input type="number" class="url-input" min="20" max="20000" step="1" data-peq-side="${side}" data-peq-index="${index}" data-peq-field="frequencyHz" value="${band.frequencyHz}">
+                </div>
                 <div class="field-group">
                     <label>Q</label>
                     <input type="number" class="url-input" min="0.1" max="20" step="0.1" data-peq-side="${side}" data-peq-index="${index}" data-peq-field="q" value="${band.q}">
-                </div>
+                </div>`}
             </div>
         </div>
-    `).join('');
+    `;
+    }).join('');
     container.querySelectorAll('[data-peq-remove]').forEach(button => {
         button.addEventListener('click', () => {
             const [targetSide, rawIndex] = String(button.dataset.peqRemove || '').split(':');
@@ -3074,17 +3228,38 @@ function renderPeqBandColumn(container, side, bands) {
         });
     });
     container.querySelectorAll('[data-peq-field]').forEach(input => {
-        input.addEventListener('change', () => {
+        const handleFieldUpdate = (live = false) => {
             const sideName = input.dataset.peqSide;
             const index = Number(input.dataset.peqIndex);
             const field = input.dataset.peqField;
             const value = field === 'filterType' ? input.value : Number(input.value);
             updatePeqBand(sideName, index, field, value);
-        });
+            const currentBand = ensurePeqBandExists(sideName, index);
+            if (field === 'filterType') {
+                renderPeqBands();
+                return;
+            }
+            if (field === 'gainDb' && isPeqGainBand(currentBand)) {
+                if (live) {
+                    syncLinkedPeqGainBandValueInDom(sideName, index);
+                } else {
+                    renderPeqBands();
+                }
+            }
+        };
+        input.addEventListener('change', () => handleFieldUpdate(false));
+        if (input.dataset.peqField === 'gainDb') {
+            input.addEventListener('input', () => handleFieldUpdate(true));
+        }
     });
 }
 function renderPeqBands() {
-    const draft = state.easyeffects?.peqDraft || getDefaultPeqDraft();
+    if (!state.easyeffects?.peqDraft) {
+        state.easyeffects = state.easyeffects || {};
+        state.easyeffects.peqDraft = getDefaultPeqDraft();
+    }
+    normalizeLinkedPeqGainBands();
+    const draft = state.easyeffects.peqDraft;
     renderPeqBandColumn(elements.effectsPeqLeftBands, 'left', draft.leftBands || []);
     renderPeqBandColumn(elements.effectsPeqRightBands, 'right', draft.rightBands || []);
     updateEffectsPeqDisclosureLabel();
@@ -3099,27 +3274,40 @@ function readPeqNumberInput(input, fallback) {
 function collectPeqBandsFromDom(side) {
     const container = side === 'right' ? elements.effectsPeqRightBands : elements.effectsPeqLeftBands;
     if (!container) return [];
-    return Array.from(container.querySelectorAll('[data-peq-band]')).map((bandEl, index) => ({
-        filterType: bandEl.querySelector(`[data-peq-side="${side}"][data-peq-index="${index}"][data-peq-field="filterType"]`)?.value || 'bell',
-        frequencyHz: readPeqNumberInput(bandEl.querySelector(`[data-peq-side="${side}"][data-peq-index="${index}"][data-peq-field="frequencyHz"]`), 1000),
-        gainDb: readPeqNumberInput(bandEl.querySelector(`[data-peq-side="${side}"][data-peq-index="${index}"][data-peq-field="gainDb"]`), 0),
-        q: readPeqNumberInput(bandEl.querySelector(`[data-peq-side="${side}"][data-peq-index="${index}"][data-peq-field="q"]`), 1),
-    }));
+    const draftBands = side === 'right' ? (state.easyeffects?.peqDraft?.rightBands || []) : (state.easyeffects?.peqDraft?.leftBands || []);
+    return Array.from(container.querySelectorAll('[data-peq-band]')).map((bandEl, index) => {
+        const draftBand = draftBands[index] || defaultPeqBand();
+        const filterType = bandEl.querySelector(`[data-peq-side="${side}"][data-peq-index="${index}"][data-peq-field="filterType"]`)?.value || 'bell';
+        return {
+            filterType,
+            frequencyHz: readPeqNumberInput(bandEl.querySelector(`[data-peq-side="${side}"][data-peq-index="${index}"][data-peq-field="frequencyHz"]`), getPeqBandFallback('frequencyHz', draftBand)),
+            gainDb: readPeqNumberInput(bandEl.querySelector(`[data-peq-side="${side}"][data-peq-index="${index}"][data-peq-field="gainDb"]`), getPeqBandFallback('gainDb', draftBand)),
+            q: readPeqNumberInput(bandEl.querySelector(`[data-peq-side="${side}"][data-peq-index="${index}"][data-peq-field="q"]`), getPeqBandFallback('q', draftBand)),
+        };
+    });
 }
 function validatePeqBands(side, bands) {
     for (let index = 0; index < bands.length; index += 1) {
         const band = bands[index] || {};
-        if (!Number.isFinite(band.frequencyHz) || band.frequencyHz < 20 || band.frequencyHz > 20000) {
+        const isGain = isPeqGainBand(band);
+        if (!isGain && (!Number.isFinite(band.frequencyHz) || band.frequencyHz < 20 || band.frequencyHz > 20000)) {
             return `${side} band ${index + 1}: frequency must be between 20 and 20000 Hz`;
         }
         if (!Number.isFinite(band.gainDb) || band.gainDb < -24 || band.gainDb > 24) {
             return `${side} band ${index + 1}: gain must be between -24 and 24 dB`;
         }
-        if (!Number.isFinite(band.q) || band.q < 0.1 || band.q > 20) {
+        if (!isGain && (!Number.isFinite(band.q) || band.q < 0.1 || band.q > 20)) {
             return `${side} band ${index + 1}: Q must be between 0.1 and 20`;
         }
     }
     return null;
+}
+function getPeqGainTotal(bands = []) {
+    return bands.reduce((sum, band) => {
+        if (!isPeqGainBand(band) || band?.enabled === false) return sum;
+        const value = Number(band?.gainDb);
+        return Number.isFinite(value) ? sum + value : sum;
+    }, 0);
 }
 async function createPeqPreset() {
     if (peqCreateInFlight) {
@@ -3152,6 +3340,16 @@ async function createPeqPreset() {
         peqCreateInFlight = false;
         if (elements.effectsStatus) elements.effectsStatus.innerHTML = `<div style="color: var(--danger);">${escapeHtml(validationError)}</div>`;
         showToast(validationError, 'error');
+        return;
+    }
+    const leftGainTotal = getPeqGainTotal(leftBands);
+    const rightGainTotal = getPeqGainTotal(rightBands);
+    const dualGainMismatch = Math.abs(leftGainTotal) > 1e-9 && Math.abs(rightGainTotal) > 1e-9 && Math.abs(leftGainTotal - rightGainTotal) > 1e-9;
+    if (dualGainMismatch) {
+        peqCreateInFlight = false;
+        const gainError = 'Gain currently works as shared stereo trim; use the same Gain on both sides or only one shared Gain value.';
+        if (elements.effectsStatus) elements.effectsStatus.innerHTML = `<div style="color: var(--danger);">${escapeHtml(gainError)}</div>`;
+        showToast(gainError, 'error');
         return;
     }
     state.easyeffects.peqDraft.leftBands = leftBands;
@@ -3241,13 +3439,18 @@ async function importRewPeqPreset() {
 function renderEffects() {
     const fx = state.easyeffects;
     const presets = fx.presets || [];
+    const presetNames = presets.map(p => p.name);
     elements.effectsInfo.textContent = fx.available
         ? `${fx.preset_count} presets, ${fx.ir_count || 0} IRs`
         : 'EasyEffects is not available';
+    if (fx.combineDraft) {
+        fx.combineDraft = normalizeEffectsCombineDraft(fx.combineDraft, presetNames);
+    }
     if (!fx.available) {
         elements.effectsDeleteBtn.disabled = true;
-        if (elements.effectsImportSubmitBtn) elements.effectsImportSubmitBtn.disabled = true;
+        if (elements.effectsToggleImportBtn) elements.effectsToggleImportBtn.disabled = true;
         if (elements.effectsRewDualCreatePresetBtn) elements.effectsRewDualCreatePresetBtn.disabled = true;
+        if (elements.effectsCombineSaveBtn) elements.effectsCombineSaveBtn.disabled = true;
         if (elements.effectsPeqAddLeftBandBtn) elements.effectsPeqAddLeftBandBtn.disabled = true;
         if (elements.effectsPeqAddRightBandBtn) elements.effectsPeqAddRightBandBtn.disabled = true;
         if (elements.effectsPeqCreatePresetBtn) elements.effectsPeqCreatePresetBtn.disabled = true;
@@ -3259,7 +3462,7 @@ function renderEffects() {
     } else {
         elements.effectsDeleteBtn.disabled = fx.active_preset === 'Direct' || fx.active_preset === 'Neutral';
     }
-    if (elements.effectsImportSubmitBtn) { elements.effectsImportSubmitBtn.disabled = false; }
+    if (elements.effectsToggleImportBtn) elements.effectsToggleImportBtn.disabled = false;
     if (elements.effectsRewDualCreatePresetBtn) elements.effectsRewDualCreatePresetBtn.disabled = false;
     if (elements.effectsPeqAddLeftBandBtn) elements.effectsPeqAddLeftBandBtn.disabled = false;
     if (elements.effectsPeqAddRightBandBtn) elements.effectsPeqAddRightBandBtn.disabled = false;
@@ -3267,6 +3470,7 @@ function renderEffects() {
     renderPeqBands();
     renderEffectsPresetStatus();
     renderEffectsCompare();
+    renderEffectsCombine();
 }
 function renderEffectsPresetStatus() {
     // The preset status is now shown inside the compare row via effectsCompareActive.
@@ -3344,6 +3548,96 @@ function renderEffectsCompare() {
         slotEl.classList.toggle('is-armed', effectiveActiveSide !== slot && !!slotPreset);
     });
     setEffectsCompareLoadBusy(effectsCompareLoadInFlight);
+}
+
+function getEffectsCombineValidationState() {
+    const preset1 = elements.effectsCombinePreset1?.value || '';
+    const preset2 = elements.effectsCombinePreset2?.value || '';
+    const preset3 = elements.effectsCombinePreset3?.value || '';
+    const presetName = elements.effectsCombinePresetName?.value?.trim() || '';
+    const selectedPresets = [preset1, preset2, preset3].filter(Boolean);
+    const isDuplicateSelection = new Set(selectedPresets).size !== selectedPresets.length;
+    return {
+        preset1,
+        preset2,
+        preset3,
+        presetName,
+        selectedPresets,
+        isValid: selectedPresets.length >= 2 && !!presetName && !isDuplicateSelection,
+        isDuplicateSelection,
+    };
+}
+
+function renderEffectsCombine() {
+    const fx = state.easyeffects || {};
+    const presets = (fx.presets || []).map(p => p.name);
+    const draft = fx.combineDraft || getDefaultEffectsCombineDraft();
+    if (!elements.effectsCombinePreset1 || !elements.effectsCombinePreset2 || !elements.effectsCombinePreset3 || !elements.effectsCombinePresetName) return;
+
+    const normalized = normalizeEffectsCombineDraft(draft, presets);
+    fx.combineDraft = normalized;
+
+    elements.effectsCombinePreset1.innerHTML = [`<option value="" ${!normalized.preset1 ? 'selected' : ''}>Select preset…</option>`].concat(
+        presets.map(n => `<option value="${escapeHtml(n)}" ${n === normalized.preset1 ? 'selected' : ''}>${escapeHtml(n)}</option>`)
+    ).join('');
+    elements.effectsCombinePreset2.innerHTML = [`<option value="" ${!normalized.preset2 ? 'selected' : ''}>Select preset…</option>`].concat(
+        presets.map(n => `<option value="${escapeHtml(n)}" ${n === normalized.preset2 ? 'selected' : ''}>${escapeHtml(n)}</option>`)
+    ).join('');
+    elements.effectsCombinePreset3.innerHTML = [`<option value="" ${!normalized.preset3 ? 'selected' : ''}>Optional…</option>`].concat(
+        presets.map(n => `<option value="${escapeHtml(n)}" ${n === normalized.preset3 ? 'selected' : ''}>${escapeHtml(n)}</option>`)
+    ).join('');
+    if (document.activeElement !== elements.effectsCombinePresetName) {
+        elements.effectsCombinePresetName.value = normalized.presetName || '';
+    }
+
+    const validation = getEffectsCombineValidationState();
+    if (elements.effectsCombineSaveBtn) {
+        elements.effectsCombineSaveBtn.disabled = !fx.available || !validation.isValid;
+    }
+}
+
+async function createCombinedEffectsPreset() {
+    const validation = getEffectsCombineValidationState();
+    if (validation.isDuplicateSelection) {
+        if (elements.effectsStatus) elements.effectsStatus.innerHTML = '<div style="color: var(--danger);">Each selected preset must be different.</div>';
+        showToast('Each selected preset must be different', 'error');
+        return;
+    }
+    if (validation.selectedPresets.length < 2) {
+        if (elements.effectsStatus) elements.effectsStatus.innerHTML = '<div style="color: var(--danger);">Choose at least two presets to combine.</div>';
+        showToast('Choose at least two presets to combine', 'error');
+        return;
+    }
+    if (!validation.presetName) {
+        if (elements.effectsStatus) elements.effectsStatus.innerHTML = '<div style="color: var(--danger);">Please enter a new preset name.</div>';
+        showToast('Please enter a new preset name', 'error');
+        elements.effectsCombinePresetName?.focus();
+        return;
+    }
+
+    if (elements.effectsCombineSaveBtn) elements.effectsCombineSaveBtn.disabled = true;
+    if (elements.effectsStatus) elements.effectsStatus.innerHTML = `<div>Saving combined preset: <strong>${escapeHtml(validation.presetName)}</strong>…</div>`;
+    try {
+        const resp = await fetch('/api/easyeffects/presets/combine', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                presetName: validation.presetName,
+                presetNames: validation.selectedPresets,
+            }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || 'Combined preset save failed');
+        state.easyeffects.combineDraft = getDefaultEffectsCombineDraft();
+        await fetchEffects();
+        if (elements.effectsStatus) elements.effectsStatus.innerHTML = '';
+        showToast(`Created combined preset: ${data.preset.name}`, 'success');
+    } catch (e) {
+        if (elements.effectsStatus) elements.effectsStatus.innerHTML = `<div style="color: var(--danger);">${escapeHtml(e.message || 'Combined preset save failed')}</div>`;
+        showToast(e.message || 'Combined preset save failed', 'error');
+    } finally {
+        renderEffectsCombine();
+    }
 }
 
 async function loadEffectsComparePreset(target, newSide, targetA, targetB) {
@@ -3636,7 +3930,6 @@ function setEffectsExtrasFeedback(message, cls) {
 function detectEffectsImportType(file) {
     if (!file || !file.name) return null;
     const lowerName = file.name.toLowerCase();
-    if (lowerName.endsWith('.txt')) return 'rew-peq';
     if (lowerName.endsWith('.irs') || lowerName.endsWith('.wav')) return 'convolver';
     return null;
 }
@@ -3645,46 +3938,45 @@ function updateEffectsImportUi() {
     const file = elements.effectsImportFile?.files?.[0] || null;
     const detectedType = detectEffectsImportType(file);
     if (elements.effectsImportFile) {
-        elements.effectsImportFile.accept = '.irs,.wav,.txt,text/plain,audio/wav';
+        elements.effectsImportFile.accept = '.irs,.wav,audio/wav';
     }
     if (elements.effectsImportFilename) {
         if (!file) {
             elements.effectsImportFilename.textContent = 'Stereo .irs or .wav for convolver.';
         } else if (detectedType === 'convolver') {
             elements.effectsImportFilename.textContent = file.name;
-        } else if (detectedType === 'rew-peq') {
-            elements.effectsImportFilename.textContent = `REW text: ${file.name}`;
         } else {
             elements.effectsImportFilename.textContent = `Unsupported file: ${file.name}`;
         }
     }
-    if (elements.effectsImportSubmitBtn) {
-        elements.effectsImportSubmitBtn.textContent = detectedType === 'rew-peq' ? 'Import REW preset' : 'Import preset';
+    const importArea = document.getElementById('effects-import-area');
+    if (importArea) {
+        importArea.classList.toggle('is-ready', detectedType === 'convolver');
     }
 }
 
 function handleEffectsImportFileChange() {
     updateEffectsImportUi();
+    const file = elements.effectsImportFile?.files?.[0] || null;
+    if (detectEffectsImportType(file) === 'convolver') {
+        void submitEffectsImport();
+    }
 }
 
 async function submitEffectsImport() {
     const file = elements.effectsImportFile?.files?.[0];
     const detectedType = detectEffectsImportType(file);
-    console.log('submitEffectsImport called', {fileName: file?.name, detectedType});
     if (!file) {
-        elements.effectsStatus.innerHTML = '<div style="color: var(--danger);">Please choose an import file first.</div>';
-        showToast('Please choose an import file first', 'error');
+        elements.effectsStatus.innerHTML = '<div style="color: var(--danger);">Please choose a stereo import file first.</div>';
+        showToast('Please choose a stereo import file first', 'error');
         return;
     }
-    if (!detectedType) {
-        elements.effectsStatus.innerHTML = '<div style="color: var(--danger);">Unsupported import file type. Use .irs, .wav, or .txt.</div>';
+    if (detectedType !== 'convolver') {
+        elements.effectsStatus.innerHTML = '<div style="color: var(--danger);">Unsupported import file type. Use .irs or .wav.</div>';
         showToast('Unsupported import file type', 'error');
         return;
     }
-    if (detectedType === 'convolver') {
-        return createConvolverPreset();
-    }
-    return importRewPeqPreset();
+    return createConvolverPreset();
 }
 async function createConvolverPreset() {
     if (effectsImportInFlight) {
@@ -3713,6 +4005,8 @@ async function createConvolverPreset() {
     formData.append('bass_amount', String(extras.bassAmount));
     formData.append('file', file);
     if (elements.effectsStatus) elements.effectsStatus.innerHTML = `<div>Importing: <strong>${escapeHtml(presetName)}</strong>…</div>`;
+    const importArea = document.getElementById('effects-import-area');
+    if (importArea) importArea.classList.add('is-busy');
     try {
         const resp = await fetch('/api/easyeffects/presets/create-with-ir', {
             method: 'POST',
@@ -3729,6 +4023,7 @@ async function createConvolverPreset() {
         if (elements.effectsStatus) elements.effectsStatus.innerHTML = `<div style="color: var(--danger);">${escapeHtml(e.message)}</div>`;
         showToast(e.message || 'Preset creation failed', 'error');
     } finally {
+        if (importArea) importArea.classList.remove('is-busy');
         effectsImportInFlight = false;
     }
 }
