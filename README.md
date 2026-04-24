@@ -24,9 +24,8 @@ FXRoute is built to remove as much Linux audio setup friction as possible, inclu
 - optimized for mini PCs, NUC-style hosts, and dedicated living-room audio boxes, but also perfectly usable on a normal Linux desktop or laptop
 - local playback, playlists, and straightforward library import in one interface
 - SomaFM radio with live metadata plus support for generic custom station URLs
-- EasyEffects-based DSP workflows with preset switching, convolver, PEQ, and practical helpers
+- EasyEffects-based DSP workflows with import, compare, combine, convolver, PEQ, and practical helpers
 - digital room correction workflows through convolver presets and PEQ / REW-based tuning
-- fast A/B comparison for filter and preset listening
 - gapless playback for consecutive tracks at the same sample rate
 - monitoring and utility features such as peak detection, headroom control, limiter, delay, and bass enhancement
 - Spotify desktop control through MPRIS / `playerctl`
