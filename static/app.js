@@ -46,7 +46,6 @@ let state = {
         preset_count: 0,
         active_preset: null,
         presets: [],
-        ir_count: 0,
         irs: [],
         combineDraft: {
             preset1: '',
@@ -3441,7 +3440,7 @@ function renderEffects() {
     const presets = fx.presets || [];
     const presetNames = presets.map(p => p.name);
     elements.effectsInfo.textContent = fx.available
-        ? `${fx.preset_count} presets, ${fx.ir_count || 0} IRs`
+        ? `${fx.preset_count} presets`
         : 'EasyEffects is not available';
     if (fx.combineDraft) {
         fx.combineDraft = normalizeEffectsCombineDraft(fx.combineDraft, presetNames);
@@ -3994,7 +3993,7 @@ async function createConvolverPreset() {
     const extras = collectEffectsExtras();
     const formData = new FormData();
     formData.append('preset_name', presetName);
-    formData.append('load_after_create', 'true');
+    formData.append('load_after_create', 'false');
     formData.append('limiter_enabled', extras.limiterEnabled ? 'true' : 'false');
     formData.append('headroom_enabled', extras.headroomEnabled ? 'true' : 'false');
     formData.append('headroom_gain_db', String(extras.headroomGainDb));

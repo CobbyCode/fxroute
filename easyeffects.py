@@ -12,7 +12,7 @@ import socket
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Set
 
 logger = logging.getLogger(__name__)
 
@@ -393,6 +393,68 @@ class EasyEffectsManager:
             )
         return irs
 
+    def _read_preset_payload(self, preset_name: str) -> Optional[Dict[str, Any]]:
+        clean_name = Path(preset_name).stem.strip()
+        if not clean_name:
+            return None
+
+        preset_path = self.output_dir / f"{clean_name}.json"
+        if not preset_path.exists():
+            return None
+
+        try:
+            payload = json.loads(preset_path.read_text())
+            return payload if isinstance(payload, dict) else None
+        except Exception as e:
+            logger.warning("Failed to parse EasyEffects preset '%s' for IR reference scan: %s", clean_name, e)
+            return None
+
+    def _extract_kernel_names_from_payload(self, payload: Optional[Dict[str, Any]]) -> Set[str]:
+        if not isinstance(payload, dict):
+            return set()
+
+        output = payload.get("output")
+        if not isinstance(output, dict):
+            return set()
+
+        kernel_names: Set[str] = set()
+        for plugin_payload in output.values():
+            if not isinstance(plugin_payload, dict):
+                continue
+            kernel_name = plugin_payload.get("kernel-name")
+            if isinstance(kernel_name, str):
+                normalized = kernel_name.strip()
+                if normalized:
+                    kernel_names.add(normalized)
+        return kernel_names
+
+    def _get_preset_kernel_names(self, preset_name: str) -> Set[str]:
+        return self._extract_kernel_names_from_payload(self._read_preset_payload(preset_name))
+
+    def _get_other_referenced_kernel_names(self, excluded_preset_name: str) -> Set[str]:
+        excluded_clean = Path(excluded_preset_name).stem.strip()
+        referenced: Set[str] = set()
+        for preset in self.list_presets():
+            preset_name = preset.get("name")
+            if not isinstance(preset_name, str) or preset_name == excluded_clean:
+                continue
+            referenced.update(self._get_preset_kernel_names(preset_name))
+        return referenced
+
+    def _find_ir_paths_for_kernel_name(self, kernel_name: str) -> List[Path]:
+        if not kernel_name or not self.irs_dir.exists():
+            return []
+
+        preferred_path = self.irs_dir / f"{Path(kernel_name).stem}.irs"
+        if preferred_path.exists() and preferred_path.is_file():
+            return [preferred_path]
+
+        matching_paths: List[Path] = []
+        for path in self.irs_dir.iterdir():
+            if path.is_file() and path.stem == kernel_name:
+                matching_paths.append(path)
+        return sorted(matching_paths)
+
     def _convert_wav_to_irs(self, source_path: Path, destination: Path) -> None:
         cmd = [
             "ffmpeg",
@@ -414,22 +476,25 @@ class EasyEffectsManager:
             stderr = (result.stderr or result.stdout or "Unknown ffmpeg error").strip()
             raise RuntimeError(f"IR conversion failed: {stderr}")
 
-    def upload_ir(self, source_path: Path, filename: str) -> dict:
+    def upload_ir(self, source_path: Path, filename: str, stored_name: Optional[str] = None) -> dict:
         self.irs_dir.mkdir(parents=True, exist_ok=True)
-        safe_name = Path(filename).name
-        if not safe_name:
+        source_safe_name = Path(filename).name
+        if not source_safe_name:
             raise ValueError("Invalid filename")
 
-        suffix = Path(safe_name).suffix.lower()
+        suffix = Path(source_safe_name).suffix.lower()
         if suffix not in {".irs", ".wav"}:
             raise ValueError("Unsupported IR file type. Please upload .irs or .wav")
 
+        target_name = Path(stored_name).name if stored_name else source_safe_name
+        if not target_name:
+            raise ValueError("Invalid stored IR filename")
+        destination = self.irs_dir / f"{Path(target_name).stem}.irs"
+
         if suffix == ".wav":
-            destination = self.irs_dir / f"{Path(safe_name).stem}.irs"
             self._convert_wav_to_irs(source_path, destination)
             stored_format = "irs"
         else:
-            destination = self.irs_dir / safe_name
             shutil.copyfile(source_path, destination)
             stored_format = "irs"
 
@@ -1295,15 +1360,34 @@ class EasyEffectsManager:
         preset_path = self.output_dir / f"{clean_name}.json"
         if not preset_path.exists():
             raise FileNotFoundError(f"Preset not found: {clean_name}")
+
+        preset_kernel_names = self._get_preset_kernel_names(clean_name)
+        referenced_elsewhere = self._get_other_referenced_kernel_names(clean_name)
         was_active = self.get_active_preset() == clean_name
         preset_path.unlink()
+
+        orphaned_kernel_names = preset_kernel_names - referenced_elsewhere
+        for kernel_name in sorted(orphaned_kernel_names):
+            for ir_path in self._find_ir_paths_for_kernel_name(kernel_name):
+                try:
+                    ir_path.unlink()
+                    logger.info("Deleted orphaned IR '%s' after removing preset '%s'", ir_path.name, clean_name)
+                except Exception as e:
+                    logger.warning(
+                        "Failed to delete orphaned IR '%s' after removing preset '%s': %s",
+                        ir_path,
+                        clean_name,
+                        e,
+                    )
+
         if was_active:
             logger.info("Deleted active preset '%s', switching to '%s'", clean_name, self.PURE_PRESET)
             self._ensure_pure_preset_exists()
             self.load_preset(self.PURE_PRESET)
 
     def create_convolver_preset_with_upload(self, preset_name: str, source_path: Path, filename: str, extras: Optional[Dict[str, Any]] = None) -> dict:
-        uploaded = self.upload_ir(source_path, filename)
+        stored_ir_name = f"{Path(preset_name).stem or 'convolver'}.irs"
+        uploaded = self.upload_ir(source_path, filename, stored_name=stored_ir_name)
         preset = self.create_convolver_preset(preset_name, uploaded["name"], extras=extras)
         return {"ir": uploaded, "preset": preset}
 
@@ -1332,7 +1416,6 @@ class EasyEffectsManager:
             "preset_count": len(presets),
             "active_preset": active_preset,
             "presets": presets,
-            "ir_count": len(irs),
             "irs": irs,
             "compare": self.load_compare_state(),
             "global_extras": self.load_global_extras(),
