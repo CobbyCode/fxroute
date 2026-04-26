@@ -130,7 +130,7 @@ Useful optional settings:
 
 Downloads are stored under `MUSIC_ROOT/incoming` by default.
 
-Background helpers should stay opt-in and outside the live audio settings UI. Things like Spotify autostart, Spotify cache cleanup, or optional automatic system package updates are better treated as setup/environment-driven helpers and should remain off by default unless the user explicitly enables them. When Spotify autostart is enabled, FXRoute starts Spotify through its own helper so it can run the optional cache cleanup first and then launch the detected Flatpak or native Spotify app.
+Background helpers stay opt-in and outside the live audio settings UI. `SPOTIFY_AUTOSTART`, `SPOTIFY_CACHE_CLEANUP`, and `SYSTEM_AUTO_UPDATE` are installer/env-driven and default to `off`. When Spotify autostart is enabled, FXRoute runs the cleanup helper first and then starts the detected Flatpak or native Spotify app.
 
 ### Uninstall
 
