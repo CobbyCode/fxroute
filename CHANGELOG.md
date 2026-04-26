@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.325 (2026-04-26)
+- Fixed installer BlueZ SPA plugin detection for Debian/Ubuntu multiarch hosts so `libspa-bluez5.so` under paths like `/usr/lib/x86_64-linux-gnu/...` is recognized correctly instead of triggering a false missing-plugin warning.
+- Made `uninstall.sh` preserve and restore preexisting EasyEffects autostart/watchdog files instead of deleting them unconditionally.
+- Re-validated the installer/uninstaller flow on real Ubuntu 24.04 and Fedora 43 hosts, including helper opt-in paths.
+
 ## 0.4.324 (2026-04-26)
 - Fixed Bluetooth-input samplerate detection for the live `.104` receiver case where the active BlueZ stream only exposes its rate via `wpctl inspect` (`node.rate` / `node.latency`) instead of `pactl list sources`.
 - This makes the compact Bluetooth status actually show details like `AAC · 48 kHz` during active Windows Bluetooth playback.
