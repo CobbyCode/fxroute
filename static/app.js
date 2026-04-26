@@ -66,6 +66,28 @@ let state = {
         mode: null,
         force_rate: null,
     },
+    settings: {
+        audioOutputs: {
+            available: false,
+            default_output: null,
+            selected_output: null,
+            current_output: null,
+            outputs: [],
+            notes: [],
+            pendingSelectionKey: null,
+        },
+        sourceMode: {
+            mode: 'app-playback',
+            modes: [],
+            default_input: null,
+            selected_input: null,
+            current_input: null,
+            inputs: [],
+            bluetooth: {},
+            notes: [],
+            pending: false,
+        },
+    },
     wsConnected: false,
 };
 // WebSocket
@@ -96,6 +118,7 @@ let libraryModeRequestInFlight = false;
 let effectsCompareLoadInFlight = false;
 let librarySelectionSyncTimer = null;
 let librarySelectionSyncRequestId = 0;
+let settingsStatusPollTimer = null;
 // Seek - globals
 let seekDragging = false;
 let seekPendingPos = null;
@@ -113,6 +136,14 @@ const EFFECTS_EXTRAS_VALUE_DEBOUNCE_MS = 2000;
 // DOM elements
 const elements = {
     offlineIndicator: document.getElementById('offline-indicator'),
+    settingsOpenBtn: document.getElementById('open-settings'),
+    settingsPanel: document.getElementById('settings-panel'),
+    settingsCloseBtn: document.getElementById('close-settings'),
+    settingsOutputSummary: document.getElementById('settings-output-summary'),
+    settingsOutputSelect: document.getElementById('settings-output-select'),
+    settingsSourceSelect: document.getElementById('settings-source-select'),
+    settingsSourceModeHint: document.getElementById('settings-source-mode-hint'),
+    settingsBluetoothStatus: document.getElementById('settings-bluetooth-status'),
     tabs: document.querySelectorAll('.tab-btn'),
     tabPanels: document.querySelectorAll('.tab-panel'),
     stationsGrid: document.getElementById('stations-grid'),
@@ -228,6 +259,7 @@ document.addEventListener('DOMContentLoaded', () => {
     try { setupWebSocket(); } catch(e) { console.error('setupWebSocket crashed:', e); }
     try { setupTabNavigation(); } catch(e) { console.error('setupTabNavigation crashed:', e); }
     try { setupPlaybackControls(); } catch(e) { console.error('setupPlaybackControls crashed:', e); }
+    try { setupSettingsActions(); } catch(e) { console.error('setupSettingsActions crashed:', e); }
     try { initSeek(); } catch(e) { console.error('initSeek crashed:', e); }
     try { setupStationActions(); } catch(e) { console.error('setupStationActions crashed:', e); }
     try { setupLibraryActions(); } catch(e) { console.error('setupLibraryActions crashed:', e); }
@@ -499,6 +531,327 @@ function setupTabNavigation() {
         });
     });
 }
+
+function setupSettingsActions() {
+    if (!elements.settingsOpenBtn || !elements.settingsPanel || !elements.settingsCloseBtn) return;
+    elements.settingsOpenBtn.addEventListener('click', () => toggleSettingsPanel(true));
+    elements.settingsCloseBtn.addEventListener('click', () => toggleSettingsPanel(false));
+    if (elements.settingsOutputSelect) {
+        elements.settingsOutputSelect.addEventListener('change', (event) => {
+            const outputKey = event.target.value || '';
+            if (outputKey) void saveAudioOutputSelection(outputKey);
+        });
+    }
+    if (elements.settingsSourceSelect) {
+        elements.settingsSourceSelect.addEventListener('change', (event) => {
+            const value = event.target.value || 'app-playback';
+            if (value === 'app-playback') {
+                void saveAudioSourceSelection('app-playback');
+            } else if (value === 'bluetooth-input') {
+                void saveAudioSourceSelection('bluetooth-input');
+            } else if (value.startsWith('external-input::')) {
+                void saveAudioSourceSelection('external-input', value.slice('external-input::'.length));
+            }
+        });
+    }
+    const backdrop = elements.settingsPanel.querySelector('.manage-overlay-backdrop');
+    if (backdrop) backdrop.addEventListener('click', () => toggleSettingsPanel(false));
+    document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape' && !elements.settingsPanel.classList.contains('hidden')) {
+            toggleSettingsPanel(false);
+        }
+    });
+    renderSettingsPanel();
+}
+
+function stopSettingsStatusPolling() {
+    if (settingsStatusPollTimer) {
+        clearInterval(settingsStatusPollTimer);
+        settingsStatusPollTimer = null;
+    }
+}
+
+function startSettingsStatusPolling() {
+    stopSettingsStatusPolling();
+    settingsStatusPollTimer = setInterval(() => {
+        if (!elements.settingsPanel || elements.settingsPanel.classList.contains('hidden')) {
+            stopSettingsStatusPolling();
+            return;
+        }
+        void fetchAudioSourceOverview();
+    }, 2500);
+}
+
+function toggleSettingsPanel(forceOpen = null) {
+    if (!elements.settingsPanel) return;
+    const shouldOpen = forceOpen === null
+        ? elements.settingsPanel.classList.contains('hidden')
+        : !!forceOpen;
+    elements.settingsPanel.classList.toggle('hidden', !shouldOpen);
+    if (elements.settingsOpenBtn) {
+        elements.settingsOpenBtn.setAttribute('aria-expanded', shouldOpen ? 'true' : 'false');
+    }
+    if (shouldOpen) {
+        renderSettingsPanel();
+        void Promise.all([fetchAudioOutputOverview(), fetchAudioSourceOverview()]);
+        startSettingsStatusPolling();
+        elements.settingsCloseBtn?.focus();
+    } else {
+        stopSettingsStatusPolling();
+    }
+}
+
+function formatRateKhz(rate) {
+    const numericRate = Number(rate);
+    if (!Number.isFinite(numericRate) || numericRate <= 0) return '';
+    return `${(numericRate / 1000).toFixed(1).replace(/\.0$/, '')} kHz`;
+}
+
+function formatBluetoothModeStatus(bluetooth = {}) {
+    const detailParts = [];
+    if (bluetooth.active_codec) detailParts.push(String(bluetooth.active_codec).toUpperCase());
+    const rateLabel = formatRateKhz(bluetooth.active_rate);
+    if (rateLabel) detailParts.push(rateLabel);
+    const detailSuffix = detailParts.length ? ` (${detailParts.join(' · ')})` : '';
+    if (bluetooth.connected_device) return `${bluetooth.connected_device}${detailSuffix}`;
+    switch (bluetooth.state) {
+        case 'streaming':
+            return `streaming${detailSuffix}`;
+        case 'connected':
+            return `connected${detailSuffix}`;
+        case 'discoverable':
+        case 'pairing':
+            return 'discoverable, waiting for device';
+        case 'idle':
+            return bluetooth.receiver_enabled ? 'receiver ready' : 'available';
+        case 'error':
+            return 'error';
+        default:
+            return bluetooth.available ? 'unavailable' : 'not detected';
+    }
+}
+
+function renderSettingsPanel() {
+    const overview = state.settings?.audioOutputs || {};
+    const defaultOutput = overview.default_output || null;
+    const selectedOutput = overview.selected_output || defaultOutput || null;
+    const currentOutput = overview.current_output || null;
+    const outputs = Array.isArray(overview.outputs) ? overview.outputs : [];
+    const pendingSelectionKey = overview.pendingSelectionKey || null;
+    const selectableOutputs = outputs.filter((output) => !!output.selectable);
+    const effectiveSelectedKey = selectedOutput?.key || currentOutput?.key || defaultOutput?.target_name || '';
+
+    if (elements.settingsOutputSummary) {
+        if (!overview.available) {
+            elements.settingsOutputSummary.textContent = 'Outputs unavailable.';
+        } else {
+            elements.settingsOutputSummary.textContent = `Current: ${currentOutput?.label || defaultOutput?.target_label || 'Unknown output'}`;
+        }
+    }
+
+    if (elements.settingsOutputSelect) {
+        const options = selectableOutputs.map((output) => {
+            const label = output.label || output.name || 'Unknown output';
+            return `<option value="${escapeHtml(output.key || '')}">${escapeHtml(label)}</option>`;
+        });
+        elements.settingsOutputSelect.innerHTML = options.join('') || '<option value="">No outputs available</option>';
+        if (effectiveSelectedKey) elements.settingsOutputSelect.value = effectiveSelectedKey;
+        elements.settingsOutputSelect.disabled = !overview.available || !!pendingSelectionKey || !selectableOutputs.length;
+    }
+
+    const sourceOverview = state.settings?.sourceMode || {};
+    const sourceInputs = Array.isArray(sourceOverview.inputs) ? sourceOverview.inputs : [];
+    const bluetooth = sourceOverview.bluetooth || {};
+    const currentSourceInput = sourceOverview.current_input || sourceOverview.default_input || null;
+    const selectedSourceInput = sourceOverview.selected_input || currentSourceInput || null;
+    const currentMode = sourceOverview.mode || 'app-playback';
+    const bluetoothSelectable = !!bluetooth.selectable;
+
+    if (elements.settingsSourceSelect) {
+        const inputOptions = [
+            '<option value="app-playback">App playback</option>',
+            ...sourceInputs.map((input) => `<option value="external-input::${escapeHtml(input.key || '')}">External input — ${escapeHtml(input.label || input.name || 'Unknown input')}</option>`),
+            `<option value="bluetooth-input"${bluetoothSelectable ? '' : ' disabled'}>Bluetooth input</option>`,
+        ];
+        elements.settingsSourceSelect.innerHTML = inputOptions.join('');
+        if (currentMode === 'external-input') {
+            elements.settingsSourceSelect.value = `external-input::${selectedSourceInput?.key || currentSourceInput?.key || ''}`;
+        } else if (currentMode === 'bluetooth-input') {
+            elements.settingsSourceSelect.value = 'bluetooth-input';
+        } else {
+            elements.settingsSourceSelect.value = 'app-playback';
+        }
+        elements.settingsSourceSelect.disabled = !!sourceOverview.pending;
+    }
+    if (elements.settingsSourceModeHint) {
+        if (currentMode === 'external-input') {
+            elements.settingsSourceModeHint.textContent = `Current: ${selectedSourceInput?.label || currentSourceInput?.label || 'No inputs detected'}`;
+        } else if (currentMode === 'bluetooth-input') {
+            elements.settingsSourceModeHint.textContent = 'Current: Bluetooth input';
+        } else {
+            elements.settingsSourceModeHint.textContent = 'Current: App playback';
+        }
+    }
+    if (elements.settingsBluetoothStatus) {
+        const bluetoothNote = Array.isArray(bluetooth.notes) && bluetooth.notes.length ? ` · ${bluetooth.notes[0]}` : '';
+        elements.settingsBluetoothStatus.textContent = `Bluetooth: ${formatBluetoothModeStatus(bluetooth)}${bluetoothNote}`;
+    }
+    applySourceModeUiState();
+}
+
+function externalInputModeActive() {
+    return state.settings?.sourceMode?.mode === 'external-input';
+}
+
+function nonAppSourceModeActive() {
+    return ['external-input', 'bluetooth-input'].includes(state.settings?.sourceMode?.mode);
+}
+
+function applySourceModeUiState() {
+    const nonAppSourceActive = nonAppSourceModeActive();
+    ['radio', 'spotify', 'library'].forEach((tabId) => {
+        const tabButton = document.querySelector(`.tab-btn[data-tab="${tabId}"]`);
+        const tabPanel = document.getElementById(`tab-${tabId}`);
+        if (tabButton) tabButton.classList.toggle('hidden', nonAppSourceActive);
+        if (tabPanel) tabPanel.classList.toggle('hidden', nonAppSourceActive);
+    });
+    if (elements.playbackBar) {
+        elements.playbackBar.classList.toggle('hidden', nonAppSourceActive);
+    }
+    if (nonAppSourceActive && ['radio', 'spotify', 'library'].includes(window.__visibleTab)) {
+        switchTab('effects');
+    }
+}
+
+async function saveAudioOutputSelection(key) {
+    if (!key) return;
+    state.settings.audioOutputs.pendingSelectionKey = key;
+    renderSettingsPanel();
+    try {
+        const resp = await fetch('/api/audio/outputs', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ key }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || 'Failed to save audio output');
+        state.settings.audioOutputs = {
+            available: !!data.available,
+            default_output: data.default_output || null,
+            selected_output: data.selected_output || null,
+            current_output: data.current_output || null,
+            outputs: Array.isArray(data.outputs) ? data.outputs : [],
+            notes: Array.isArray(data.notes) ? data.notes : [],
+            pendingSelectionKey: null,
+        };
+        renderSettingsPanel();
+        showToast('Audio output updated', 'success');
+    } catch (error) {
+        state.settings.audioOutputs.pendingSelectionKey = null;
+        renderSettingsPanel();
+        showToast(error.message || 'Failed to save audio output', 'error');
+    }
+}
+
+async function fetchAudioOutputOverview() {
+    try {
+        const resp = await fetch('/api/audio/outputs');
+        if (!resp.ok) throw new Error('Failed to fetch audio outputs');
+        const data = await resp.json();
+        state.settings.audioOutputs = {
+            available: !!data.available,
+            default_output: data.default_output || null,
+            selected_output: data.selected_output || null,
+            current_output: data.current_output || null,
+            outputs: Array.isArray(data.outputs) ? data.outputs : [],
+            notes: Array.isArray(data.notes) ? data.notes : [],
+            pendingSelectionKey: null,
+        };
+        renderSettingsPanel();
+    } catch (e) {
+        state.settings.audioOutputs = {
+            available: false,
+            default_output: null,
+            selected_output: null,
+            current_output: null,
+            outputs: [],
+            notes: [e.message || 'Failed to fetch audio outputs'],
+            pendingSelectionKey: null,
+        };
+        renderSettingsPanel();
+    }
+}
+
+async function saveAudioSourceSelection(mode, inputKey = '') {
+    const nextMode = ['external-input', 'bluetooth-input'].includes(mode) ? mode : 'app-playback';
+    state.settings.sourceMode.pending = true;
+    state.settings.sourceMode.mode = nextMode;
+    renderSettingsPanel();
+    try {
+        const resp = await fetch('/api/audio/source-mode', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mode: nextMode, inputKey: inputKey || null }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || 'Failed to save source mode');
+        state.settings.sourceMode = {
+            mode: data.mode || 'app-playback',
+            modes: Array.isArray(data.modes) ? data.modes : [],
+            default_input: data.default_input || null,
+            selected_input: data.selected_input || null,
+            current_input: data.current_input || null,
+            inputs: Array.isArray(data.inputs) ? data.inputs : [],
+            bluetooth: data.bluetooth || {},
+            notes: Array.isArray(data.notes) ? data.notes : [],
+            pending: false,
+        };
+        renderSettingsPanel();
+        const successMessage = nextMode === 'external-input'
+            ? 'External input mode enabled'
+            : (nextMode === 'bluetooth-input' ? 'Bluetooth input mode enabled' : 'App playback mode enabled');
+        showToast(successMessage, 'success');
+    } catch (error) {
+        state.settings.sourceMode.pending = false;
+        renderSettingsPanel();
+        showToast(error.message || 'Failed to save source mode', 'error');
+        void fetchAudioSourceOverview();
+    }
+}
+
+async function fetchAudioSourceOverview() {
+    try {
+        const resp = await fetch('/api/audio/source-mode');
+        if (!resp.ok) throw new Error('Failed to fetch source mode');
+        const data = await resp.json();
+        state.settings.sourceMode = {
+            mode: data.mode || 'app-playback',
+            modes: Array.isArray(data.modes) ? data.modes : [],
+            default_input: data.default_input || null,
+            selected_input: data.selected_input || null,
+            current_input: data.current_input || null,
+            inputs: Array.isArray(data.inputs) ? data.inputs : [],
+            bluetooth: data.bluetooth || {},
+            notes: Array.isArray(data.notes) ? data.notes : [],
+            pending: false,
+        };
+        renderSettingsPanel();
+    } catch (e) {
+        state.settings.sourceMode = {
+            mode: 'app-playback',
+            modes: [{ key: 'app-playback', label: 'App playback', selectable: true }],
+            default_input: null,
+            selected_input: null,
+            current_input: null,
+            inputs: [],
+            bluetooth: {},
+            notes: [e.message || 'Failed to fetch source mode'],
+            pending: false,
+        };
+        renderSettingsPanel();
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Source model (three separate concepts)
 // ---------------------------------------------------------------------------
@@ -542,8 +895,6 @@ function switchTab(tabId) {
     elements.tabs.forEach(t => t.classList.toggle('active', t.dataset.tab === tabId));
     elements.tabPanels.forEach(p => p.classList.toggle('active', p.id === `tab-${tabId}`));
     window.__visibleTab = tabId;
-    // No footer change. No playback change. Just UI.
-    // But if switching to Spotify tab, render its internal state and refresh/poll it.
     if (tabId === 'spotify') {
         const d = window.__spotifyLastData;
         if (d) renderSpotify(d);
@@ -570,6 +921,7 @@ function globalTogglePlayback() {
         togglePlayback();
     }
 }
+
 function globalPrevious() {
     if (getEffectivePlaybackControlSource() === 'spotify') {
         spotifyCommand('previous');
@@ -577,6 +929,7 @@ function globalPrevious() {
         previousInQueue();
     }
 }
+
 function globalNext() {
     if (getEffectivePlaybackControlSource() === 'spotify') {
         spotifyCommand('next');
@@ -585,13 +938,13 @@ function globalNext() {
     }
 }
 
-// Seek routing based on FOOTER SOURCE (what's actually showing in footer)
 function globalSeekChange() {
     if (window.__footerSource === 'spotify') {
         const spotifyData = window.__spotifyLastData;
         if (spotifyData && spotifyData.duration) window.__spotifySeeking = true;
     }
 }
+
 function globalSeekEnd() {
     if (window.__footerSource === 'spotify') {
         window.__spotifySeeking = false;
@@ -600,10 +953,9 @@ function globalSeekEnd() {
             const posSec = (parseFloat(elements.seekSlider.value) / 1000) * spotifyData.duration;
             spotifySeek(posSec);
         }
-    } else {
-        // MPV seek (existing logic handled by seekEnd function below)
     }
 }
+
 function setupPlaybackControls() {
     if (!elements.btnPlayPause || !elements.volumeSlider) {
         console.error('Playback controls are missing in the DOM');
@@ -629,6 +981,7 @@ function setupPlaybackControls() {
     updatePlaybackUI();
     renderLibraryModeButtons();
 }
+
 async function stopPlayback() {
     try {
         const resp = await fetch('/api/stop', { method: 'POST' });
@@ -1440,7 +1793,7 @@ function highlightActiveTrack() {
 // Library
 async function fetchInitialData() {
     startSampleratePolling();
-    await Promise.all([fetchStations(), fetchTracks(), fetchEffects(), fetchPlaybackStatus(), fetchSamplerateStatus(), fetchDownloadStatus()]);
+    await Promise.all([fetchStations(), fetchTracks(), fetchEffects(), fetchPlaybackStatus(), fetchSamplerateStatus(), fetchDownloadStatus(), fetchAudioOutputOverview(), fetchAudioSourceOverview()]);
     await fetchPlaylists();
 }
 async function fetchPlaybackStatus() {

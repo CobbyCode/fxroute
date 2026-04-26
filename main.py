@@ -55,7 +55,20 @@ from library import LibraryScanner
 from downloader import Downloader
 from easyeffects import EasyEffectsManager
 from peak_monitor import EasyEffectsPeakMonitor
-from samplerate import get_samplerate_status
+from samplerate import (
+    SOURCE_MODE_APP_PLAYBACK,
+    SOURCE_MODE_BLUETOOTH_INPUT,
+    SOURCE_MODE_EXTERNAL_INPUT,
+    apply_persisted_audio_output_selection,
+    disconnect_connected_bluetooth_audio_sources,
+    get_audio_output_overview,
+    get_audio_source_overview,
+    get_bluetooth_audio_overview,
+    get_samplerate_status,
+    set_audio_output_selection,
+    set_audio_source_selection,
+    set_bluetooth_receiver_enabled,
+)
 from spotify import (
     playerctl_available,
     spotify_installed,
@@ -90,6 +103,13 @@ peak_monitor_transition_lock = None
 peak_monitor_context_signature = None
 easyeffects_preset_load_lock = None
 source_transition_lock = None
+external_input_loopback_module_id = None
+external_input_loopback_source_name = None
+bluetooth_input_source_name = None
+bluetooth_monitor_task = None
+bluetooth_agent_process = None
+current_source_mode = SOURCE_MODE_APP_PLAYBACK
+latest_spotify_state = None
 current_track_info = None
 last_track_info = None
 playback_queue = []
@@ -745,6 +765,44 @@ async def sync_peak_monitor_for_spotify_state(data: dict):
                 await manager.broadcast({"type": "playback_peak_warning", "data": peak_monitor.snapshot()})
 
 
+async def sync_peak_monitor_for_source_mode_state(source_overview: dict | None = None):
+    global peak_monitor_playback_armed, peak_monitor, player_instance, peak_monitor_transition_lock, peak_monitor_context_signature
+    if not peak_monitor:
+        return
+    if peak_monitor_transition_lock is None:
+        peak_monitor_transition_lock = asyncio.Lock()
+
+    async with peak_monitor_transition_lock:
+        overview = source_overview or get_audio_source_overview()
+        bluetooth = overview.get("bluetooth") or {}
+        is_bt_streaming = bool(
+            overview.get("mode") == SOURCE_MODE_BLUETOOTH_INPUT
+            and bluetooth.get("state") == "streaming"
+            and bluetooth.get("connected_device")
+        )
+        desired_signature = None
+        if is_bt_streaming:
+            desired_signature = f"bluetooth:{bluetooth.get('connected_device')}:{bluetooth.get('active_codec') or ''}"
+
+        if is_bt_streaming and (not peak_monitor_playback_armed or peak_monitor_context_signature != desired_signature):
+            peak_monitor_playback_armed = True
+            peak_monitor_context_signature = desired_signature
+            logger.info("Starting peak monitor for active Bluetooth input: %s", desired_signature)
+            await peak_monitor.restart()
+            await manager.broadcast({"type": "playback_peak_warning", "data": peak_monitor.snapshot()})
+        elif (not is_bt_streaming) and peak_monitor_playback_armed and str(peak_monitor_context_signature or "").startswith("bluetooth:"):
+            player_state = player_instance.state if player_instance else {}
+            spotify_state = await get_spotify_ui_state()
+            is_local_playing = bool(player_state.get("current_file") and not player_state.get("paused") and not player_state.get("ended"))
+            is_spotify_playing = bool(spotify_state.get("available") and spotify_state.get("status") == "Playing")
+            if not is_local_playing and not is_spotify_playing:
+                logger.info("Stopping peak monitor because Bluetooth input is no longer actively streaming")
+                await peak_monitor.stop()
+                peak_monitor_playback_armed = False
+                peak_monitor_context_signature = None
+                await manager.broadcast({"type": "playback_peak_warning", "data": peak_monitor.snapshot()})
+
+
 async def refresh_peak_monitor_after_effects_change(reason: str = "effects-change"):
     global peak_monitor, peak_monitor_playback_armed, peak_monitor_context_signature, player_instance
     if not peak_monitor or not peak_monitor_playback_armed:
@@ -825,7 +883,9 @@ async def on_download_progress(progress):
         await manager.broadcast({"type": "download_error", "data": data})
 
 async def broadcast_spotify_state(data=None):
+    global latest_spotify_state
     data = await get_spotify_ui_state(data)
+    latest_spotify_state = data
     await sync_peak_monitor_for_spotify_state(data)
     await manager.broadcast({"type": "spotify", "data": data})
     return data
@@ -856,10 +916,254 @@ async def pause_local_playback_for_spotify_broadcast():
     except Exception:
         pass
 
+
+async def _run_pactl_command(*args: str) -> str:
+    proc = await asyncio.create_subprocess_exec(
+        "pactl", *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        raise RuntimeError(stderr.decode(errors="ignore").strip() or f"pactl {' '.join(args)} failed")
+    return stdout.decode(errors="ignore").strip()
+
+
+async def _run_pw_link_command(*args: str) -> str:
+    proc = await asyncio.create_subprocess_exec(
+        "pw-link", *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        raise RuntimeError(stderr.decode(errors="ignore").strip() or f"pw-link {' '.join(args)} failed")
+    return stdout.decode(errors="ignore").strip()
+
+
+async def _disconnect_external_input_source(source_name: str | None) -> None:
+    normalized = (source_name or "").strip()
+    if not normalized:
+        return
+    for channel in ("FL", "FR"):
+        source_port = f"{normalized}:capture_{channel}"
+        sink_port = f"easyeffects_sink:playback_{channel}"
+        try:
+            await _run_pw_link_command("-d", source_port, sink_port)
+        except Exception:
+            pass
+
+
+async def _disable_external_input_loopback() -> None:
+    global external_input_loopback_module_id, external_input_loopback_source_name
+    previous_source = external_input_loopback_source_name
+    if external_input_loopback_module_id is not None:
+        try:
+            await _run_pactl_command("unload-module", str(external_input_loopback_module_id))
+            logger.info("Disabled legacy external-input loopback module %s", external_input_loopback_module_id)
+        except Exception as exc:
+            logger.warning("Failed to unload legacy external-input loopback module %s: %s", external_input_loopback_module_id, exc)
+    await _disconnect_external_input_source(previous_source)
+    external_input_loopback_module_id = None
+    external_input_loopback_source_name = None
+
+
+async def _ensure_external_input_loopback(source_name: str) -> None:
+    global external_input_loopback_module_id, external_input_loopback_source_name
+    normalized = (source_name or "").strip()
+    if not normalized:
+        raise RuntimeError("Missing source name for external-input monitoring")
+    if external_input_loopback_source_name == normalized:
+        return
+    await _disable_external_input_loopback()
+    for channel in ("FL", "FR"):
+        source_port = f"{normalized}:capture_{channel}"
+        sink_port = f"easyeffects_sink:playback_{channel}"
+        try:
+            await _run_pw_link_command(source_port, sink_port)
+        except Exception as exc:
+            message = str(exc).lower()
+            if "file exists" not in message and "exists" not in message:
+                raise
+    external_input_loopback_module_id = None
+    external_input_loopback_source_name = normalized
+    logger.info("Enabled direct external-input monitoring from %s to easyeffects_sink", normalized)
+
+
+async def _sync_external_input_monitoring(source_overview: dict | None = None) -> dict:
+    overview = source_overview or get_audio_source_overview()
+    if overview.get("mode") != SOURCE_MODE_EXTERNAL_INPUT:
+        await _disable_external_input_loopback()
+        return overview
+    current_input = overview.get("selected_input") or overview.get("current_input") or {}
+    source_name = current_input.get("source_key") or current_input.get("name")
+    if not source_name:
+        await _disable_external_input_loopback()
+        return overview
+    await _ensure_external_input_loopback(str(source_name))
+    return overview
+
+
+async def _disconnect_bluetooth_input_source(source_name: str | None) -> None:
+    normalized = (source_name or "").strip()
+    if not normalized:
+        return
+    try:
+        await _link_bluetooth_source_to_easyeffects(normalized, disconnect=True)
+    except Exception:
+        pass
+
+
+async def _stop_bluetooth_audio_agent() -> None:
+    global bluetooth_agent_process
+    proc = bluetooth_agent_process
+    bluetooth_agent_process = None
+    if not proc:
+        return
+    if proc.returncode is None:
+        proc.terminate()
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=3)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+
+
+async def _ensure_bluetooth_audio_agent() -> None:
+    global bluetooth_agent_process
+    proc = bluetooth_agent_process
+    if proc and proc.returncode is None:
+        return
+    agent_script = BASE_DIR / "bluez_audio_agent.py"
+    bluetooth_agent_process = await asyncio.create_subprocess_exec(
+        str(agent_script),
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    await asyncio.sleep(0.4)
+    if bluetooth_agent_process.returncode is not None:
+        stderr = await bluetooth_agent_process.stderr.read()
+        bluetooth_agent_process = None
+        raise RuntimeError((stderr or b"BlueZ audio agent exited immediately").decode(errors="ignore").strip())
+
+
+async def _clear_bluetooth_input_monitoring_links() -> None:
+    global bluetooth_input_source_name
+    previous_source = bluetooth_input_source_name
+    bluetooth_input_source_name = None
+    await _disconnect_bluetooth_input_source(previous_source)
+
+
+async def _link_bluetooth_source_to_easyeffects(source_name: str, disconnect: bool = False) -> None:
+    normalized = (source_name or "").strip()
+    if not normalized:
+        return
+    action = "-d" if disconnect else None
+    failures: list[str] = []
+    for channel in ("FL", "FR"):
+        sink_port = f"easyeffects_sink:playback_{channel}"
+        linked = False
+        attempted_messages: list[str] = []
+        for source_port in (f"{normalized}:capture_{channel}", f"{normalized}:output_{channel}"):
+            try:
+                if action:
+                    await _run_pw_link_command(action, source_port, sink_port)
+                else:
+                    await _run_pw_link_command(source_port, sink_port)
+                linked = True
+                break
+            except Exception as exc:
+                message = str(exc)
+                lower = message.lower()
+                if disconnect:
+                    if "no such file" in lower or "not linked" in lower:
+                        linked = True
+                        break
+                else:
+                    if "file exists" in lower or "exists" in lower or "already linked" in lower:
+                        linked = True
+                        break
+                attempted_messages.append(f"{source_port} -> {sink_port}: {message}")
+        if not linked:
+            failures.append(f"{channel}: " + " | ".join(attempted_messages))
+
+    if failures:
+        raise RuntimeError("failed to link ports: " + "; ".join(failures))
+
+
+async def _disable_bluetooth_input_monitoring() -> None:
+    await _clear_bluetooth_input_monitoring_links()
+    await _stop_bluetooth_audio_agent()
+    try:
+        disconnected = disconnect_connected_bluetooth_audio_sources()
+        if disconnected:
+            logger.info("Disconnected Bluetooth audio source devices while leaving bluetooth-input mode: %s", ", ".join(disconnected))
+    except Exception as exc:
+        logger.warning("Failed to disconnect Bluetooth audio source devices: %s", exc)
+
+
+async def _ensure_bluetooth_input_loopback(source_name: str) -> None:
+    global bluetooth_input_source_name
+    normalized = (source_name or "").strip()
+    if not normalized:
+        raise RuntimeError("Missing Bluetooth source name for monitoring")
+    if bluetooth_input_source_name == normalized:
+        return
+    await _clear_bluetooth_input_monitoring_links()
+    await _link_bluetooth_source_to_easyeffects(normalized)
+    bluetooth_input_source_name = normalized
+    logger.info("Enabled Bluetooth input monitoring from %s to easyeffects_sink", normalized)
+
+
+async def _sync_bluetooth_input_monitoring(source_overview: dict | None = None) -> dict:
+    overview = source_overview or get_audio_source_overview()
+    if overview.get("mode") != SOURCE_MODE_BLUETOOTH_INPUT:
+        await _disable_bluetooth_input_monitoring()
+        try:
+            set_bluetooth_receiver_enabled(False)
+        except Exception as exc:
+            logger.warning("Failed to disable Bluetooth receiver mode: %s", exc)
+        return overview
+
+    bt_state = overview.get("bluetooth") or {}
+    if not bt_state.get("selectable"):
+        raise RuntimeError("Bluetooth input is not currently available")
+
+    await _ensure_bluetooth_audio_agent()
+    if not bt_state.get("discoverable") or not bt_state.get("pairable"):
+        set_bluetooth_receiver_enabled(True)
+    bt_overview = get_bluetooth_audio_overview()
+    receiver_session = bt_overview.get("receiver_session") or {}
+    source_name = receiver_session.get("source_name")
+    if not source_name:
+        await _clear_bluetooth_input_monitoring_links()
+        return get_audio_source_overview()
+
+    await _ensure_bluetooth_input_loopback(str(source_name))
+    return get_audio_source_overview()
+
+
+async def _bluetooth_input_monitor_loop() -> None:
+    while True:
+        try:
+            overview = get_audio_source_overview()
+            if overview.get("mode") == SOURCE_MODE_BLUETOOTH_INPUT:
+                overview = await _sync_bluetooth_input_monitoring(overview)
+                await sync_peak_monitor_for_source_mode_state(overview)
+            elif bluetooth_input_source_name:
+                await _disable_bluetooth_input_monitoring()
+                await sync_peak_monitor_for_source_mode_state(overview)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.debug("Bluetooth input monitor loop check failed: %s", exc)
+        await asyncio.sleep(3)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan: startup and shutdown."""
-    global settings, player_instance, library_scanner, downloader, easyeffects_manager, peak_monitor, peak_monitor_playback_armed, peak_monitor_transition_lock, peak_monitor_context_signature, easyeffects_preset_load_lock, source_transition_lock
+    global settings, player_instance, library_scanner, downloader, easyeffects_manager, peak_monitor, peak_monitor_playback_armed, peak_monitor_transition_lock, peak_monitor_context_signature, easyeffects_preset_load_lock, source_transition_lock, external_input_loopback_module_id, external_input_loopback_source_name, bluetooth_input_source_name, bluetooth_monitor_task, bluetooth_agent_process, current_source_mode, latest_spotify_state
 
     # Startup
     logger.info("Starting FXRoute...")
@@ -896,7 +1200,32 @@ async def lifespan(app: FastAPI):
         peak_monitor_context_signature = None
         easyeffects_preset_load_lock = asyncio.Lock()
         source_transition_lock = asyncio.Lock()
+        latest_spotify_state = await get_spotify_ui_state()
         logger.info("EasyEffects output peak monitor initialized")
+
+        try:
+            applied_output = apply_persisted_audio_output_selection()
+            if applied_output and applied_output.get("selected_output"):
+                logger.info("Re-applied persisted audio output selection: %s", applied_output["selected_output"].get("target_label"))
+        except Exception as exc:
+            logger.warning("Failed to re-apply persisted audio output selection: %s", exc)
+
+        try:
+            applied_source = get_audio_source_overview()
+            applied_source = await _sync_external_input_monitoring(applied_source)
+            applied_source = await _sync_bluetooth_input_monitoring(applied_source)
+            current_source_mode = applied_source.get("mode") or SOURCE_MODE_APP_PLAYBACK
+            if applied_source.get("mode") == SOURCE_MODE_EXTERNAL_INPUT:
+                logger.info(
+                    "Re-applied persisted external-input monitoring: %s",
+                    ((applied_source.get("selected_input") or applied_source.get("current_input") or {}).get("label") or "unknown input"),
+                )
+            elif applied_source.get("mode") == SOURCE_MODE_BLUETOOTH_INPUT:
+                logger.info("Re-applied persisted Bluetooth input mode")
+        except Exception as exc:
+            logger.warning("Failed to re-apply source monitoring: %s", exc)
+
+        bluetooth_monitor_task = asyncio.create_task(_bluetooth_input_monitor_loop())
 
         # Register callbacks for state changes
         player_instance.register_callbacks(on_player_state_change)
@@ -912,6 +1241,18 @@ async def lifespan(app: FastAPI):
     if player_instance:
         player_instance.stop()
         logger.info("MPV player stopped")
+    if bluetooth_monitor_task:
+        bluetooth_monitor_task.cancel()
+        try:
+            await bluetooth_monitor_task
+        except asyncio.CancelledError:
+            pass
+    await _disable_bluetooth_input_monitoring()
+    try:
+        set_bluetooth_receiver_enabled(False)
+    except Exception:
+        pass
+    await _disable_external_input_loopback()
     if peak_monitor:
         await peak_monitor.stop()
         logger.info("EasyEffects output peak monitor stopped")
@@ -1492,6 +1833,82 @@ async def get_status():
 async def audio_samplerate_status():
     return get_samplerate_status()
 
+
+@app.get("/api/audio/outputs")
+async def audio_output_overview():
+    return get_audio_output_overview()
+
+
+@app.post("/api/audio/outputs")
+async def save_audio_output_selection_route(request: Request):
+    try:
+        body = await request.json()
+        output_key = str(body.get("key", "")).strip()
+    except Exception:
+        raise HTTPException(status_code=400, detail='Invalid JSON body, expected {"key": <string>}')
+
+    try:
+        result = set_audio_output_selection(output_key)
+        await refresh_peak_monitor_after_effects_change("audio-output-switch")
+        return result
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to switch audio output: {exc}")
+
+
+@app.get("/api/audio/source-mode")
+async def audio_source_overview():
+    return get_audio_source_overview()
+
+
+@app.get("/api/audio/bluetooth")
+async def audio_bluetooth_overview():
+    return get_bluetooth_audio_overview()
+
+
+async def _pause_all_app_playback_for_external_input() -> None:
+    global player_instance
+    try:
+        if player_instance and player_instance._running:
+            player_instance.stop_playback()
+            await manager.broadcast({"type": "playback", "data": build_playback_payload(player_instance.state)})
+    except Exception:
+        pass
+    try:
+        spotify_state = await get_spotify_ui_state()
+        if spotify_state.get("status") == "Playing":
+            data = await spotify_pause()
+            await broadcast_spotify_state(data)
+    except Exception:
+        pass
+
+
+@app.post("/api/audio/source-mode")
+async def save_audio_source_selection_route(request: Request):
+    try:
+        body = await request.json()
+        mode = str(body.get("mode", "")).strip()
+        input_key = str(body.get("inputKey", body.get("input_key", ""))).strip() or None
+    except Exception:
+        raise HTTPException(status_code=400, detail='Invalid JSON body, expected {"mode": <string>, "inputKey": <string?>}')
+
+    global current_source_mode
+    try:
+        result = set_audio_source_selection(mode, input_key)
+        result = await _sync_external_input_monitoring(result)
+        result = await _sync_bluetooth_input_monitoring(result)
+        current_source_mode = result.get("mode") or SOURCE_MODE_APP_PLAYBACK
+        if result.get("mode") in {SOURCE_MODE_EXTERNAL_INPUT, SOURCE_MODE_BLUETOOTH_INPUT}:
+            await _pause_all_app_playback_for_external_input()
+        await sync_peak_monitor_for_source_mode_state(result)
+        return result
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to save source mode: {exc}")
+
+
 def _parse_effects_extras_from_json(body: dict) -> dict:
     limiter_enabled = bool(body.get("limiterEnabled", body.get("limiter_enabled", False)))
     headroom_enabled = bool(body.get("headroomEnabled", body.get("headroom_enabled", False)))
@@ -1604,6 +2021,50 @@ async def save_easyeffects_compare(request: Request):
     status = easyeffects_manager.get_status()
     await manager.broadcast({"type": "easyeffects", "data": status})
     return {"status": "ok", "compare": compare}
+
+@app.post("/api/easyeffects/presets/combine")
+async def combine_easyeffects_presets(request: Request):
+    global easyeffects_manager
+    if not easyeffects_manager:
+        raise HTTPException(status_code=503, detail="EasyEffects manager not available")
+
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid JSON body, expected {'presetName': '...', 'presetNames': ['Preset 1', 'Preset 2']}",
+        )
+
+    preset_name = (body.get("presetName") or body.get("preset_name") or "").strip()
+    preset_names = body.get("presetNames", body.get("preset_names")) or []
+    load_after_create = bool(body.get("loadAfterCreate", body.get("load_after_create", False)))
+
+    if not preset_name:
+        raise HTTPException(status_code=400, detail="presetName is required")
+    if not isinstance(preset_names, list):
+        raise HTTPException(status_code=400, detail="presetNames must be an array")
+
+    try:
+        created = easyeffects_manager.combine_presets(preset_name, preset_names)
+        if load_after_create:
+            easyeffects_manager.load_preset(created["name"])
+        status = easyeffects_manager.get_status()
+        await manager.broadcast({"type": "easyeffects", "data": status})
+        if load_after_create:
+            await refresh_peak_monitor_after_effects_change("combine-presets")
+        return {
+            "status": "ok",
+            "preset": created,
+            "loaded": bool(load_after_create),
+            "active_preset": status.get("active_preset"),
+        }
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/easyeffects/presets/load")
 async def load_easyeffects_preset(request: Request):

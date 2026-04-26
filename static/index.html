@@ -12,7 +12,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=0.4.143">
     <link rel="manifest" href="/static/site.webmanifest?v=0.4.143">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/static/style.css?v=0.4.306">
+    <link rel="stylesheet" href="/static/style.css?v=0.4.324">
 </head>
 <body>
     <!-- Offline indicator -->
@@ -24,7 +24,7 @@
     <main id="app">
         <!-- Header -->
         <header class="header">
-            <div class="brand-lockup" aria-label="FXRoute">
+            <button id="open-settings" class="brand-lockup brand-lockup-button" type="button" aria-label="Open technical settings" aria-haspopup="dialog" aria-expanded="false">
                 <span class="brand-mark" aria-hidden="true">
                     <span class="brand-mark-f">F</span><span class="brand-mark-x">X</span>
                 </span>
@@ -32,12 +32,57 @@
                     <span class="brand-title"><span class="brand-title-fx">FX</span>Route</span>
                     <span class="brand-subtitle">local audio control</span>
                 </div>
-            </div>
+            </button>
             <div id="connection-badge" class="connection-badge">
                 <span id="connection-dot" class="connection-dot online"></span>
                 <span id="connection-text">Online</span>
             </div>
         </header>
+
+        <div id="settings-panel" class="manage-overlay hidden">
+            <div class="manage-overlay-backdrop"></div>
+            <section class="manage-dialog settings-dialog" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+                <div class="manage-dialog-header">
+                    <div>
+                        <h2 id="settings-title" class="section-title">Technical settings</h2>
+                        <p class="section-subtitle">Audio routing and system controls.</p>
+                    </div>
+                    <button id="close-settings" class="btn-ghost btn-close-manage" type="button">
+                        <span class="btn-ghost-icon">✕</span>
+                        <span>Close</span>
+                    </button>
+                </div>
+
+                <div class="effects-stack settings-stack">
+                    <section class="radio-manage-section settings-section">
+                        <div class="radio-manage-section-header">
+                            <h3>Audio Output</h3>
+                            <p id="settings-output-summary">Loading outputs…</p>
+                        </div>
+                        <div class="field-group settings-field-group">
+                            <label for="settings-output-select">Device</label>
+                            <select id="settings-output-select" class="url-input">
+                                <option value="">Loading…</option>
+                            </select>
+                        </div>
+                    </section>
+
+                    <section class="radio-manage-section settings-section">
+                        <div class="radio-manage-section-header">
+                            <h3>Source</h3>
+                            <p id="settings-source-mode-hint">Loading sources…</p>
+                        </div>
+                        <div class="field-group settings-field-group">
+                            <label for="settings-source-select">Input</label>
+                            <select id="settings-source-select" class="url-input" disabled>
+                                <option value="app-playback" selected>Loading…</option>
+                            </select>
+                            <p id="settings-bluetooth-status" class="settings-inline-note">Bluetooth: loading…</p>
+                        </div>
+                    </section>
+                </div>
+            </section>
+        </div>
 
         <!-- Tabs -->
         <nav class="tabs">
@@ -552,6 +597,6 @@
     <!-- Toast notifications -->
     <div id="toast-container" class="toast-container"></div>
 
-    <script src="/static/app.js?v=0.4.306"></script>
+    <script src="/static/app.js?v=0.4.324"></script>
 </body>
 </html>

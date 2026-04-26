@@ -1,5 +1,64 @@
 # Changelog
 
+## 0.4.324 (2026-04-26)
+- Fixed Bluetooth-input samplerate detection for the live `.104` receiver case where the active BlueZ stream only exposes its rate via `wpctl inspect` (`node.rate` / `node.latency`) instead of `pactl list sources`.
+- This makes the compact Bluetooth status actually show details like `AAC · 48 kHz` during active Windows Bluetooth playback.
+
+## 0.4.323 (2026-04-26)
+- Added Bluetooth-input samplerate to the compact Settings status so active receiver sessions can show details like `AAC · 48 kHz` alongside the connected device label.
+
+## 0.4.322 (2026-04-26)
+- Fixed Bluetooth-input loopback port matching to accept BlueZ stream nodes that expose `output_FL/FR` instead of `capture_FL/FR`, so `bluetooth-input` no longer throws `failed to link ports: No such file or directory` on `.104`.
+- This lets the Bluetooth monitor loop stay alive and start the EasyEffects `pw-record` peak detector during active Bluetooth playback.
+
+## 0.4.321 (2026-04-26)
+- Started/stopped the EasyEffects peak monitor for active Bluetooth input streaming, so `pw-record`-based clipping detection follows Bluetooth playback too.
+- When leaving `bluetooth-input` mode, FXRoute now actively disconnects connected Bluetooth audio-source devices so stale 48 kHz Bluetooth streams do not keep the PipeWire/EasyEffects path pinned during later app-playback samplerate switching.
+
+## 0.4.320 (2026-04-26)
+- Fixed Bluetooth status reporting in Settings by detecting active BlueZ receiver streams via `wpctl`, so connected device name and codec (for example AAC) can surface even when `pactl list short sources` is empty.
+- Removed the duplicate Bluetooth status wording in the Settings source section and added lightweight polling while the Settings dialog is open so connection state updates live.
+
+## 0.4.319 (2026-04-26)
+- Fixed Bluetooth receiver pairing confirmation by registering the BlueZ audio agent with `DisplayYesNo` capability instead of `NoInputNoOutput`, so Windows confirmation requests are accepted instead of being auto-rejected.
+
+## 0.4.318 (2026-04-26)
+- Added a persistent BlueZ audio agent for Bluetooth input mode so paired/trusted devices can get service authorization while FXRoute is acting as a Bluetooth audio receiver.
+- Kept the agent alive while Bluetooth input mode is active even before an actual BlueZ audio source appears, instead of tearing it down too early.
+
+## 0.4.317 (2026-04-26)
+- Relaxed Bluetooth receiver availability detection so hosts with BlueZ + WirePlumber + the PipeWire BlueZ SPA plugin installed no longer show `Bluetooth receiver mode is not currently available` just because no active BlueZ audio node exists yet.
+- This should make the new Bluetooth input mode on `.104` become selectable when the local Bluetooth audio stack is present but idle.
+
+## 0.4.316 (2026-04-26)
+- Added a compact live `Bluetooth input` source option in Settings, with an honest status line that shows receiver availability, discoverable/waiting state, and the connected device/codec when one is present.
+- Enabled a conservative Bluetooth receiver-mode path for `bluetooth-input`: FXRoute now toggles pairable/discoverable mode only while that source mode is active and disables it again on exit.
+- Added conservative Bluetooth-input monitoring into `easyeffects_sink` so an active BlueZ input source follows the accepted DSP path without changing the existing audio-output selection behavior.
+- Fixed `POST /api/audio/source-mode` to return the updated overview for every source mode and bumped frontend cache-busting to `0.4.316`.
+
+## 0.4.315 (2026-04-26)
+- Added a first conservative Bluetooth read-only inventory pass with `GET /api/audio/bluetooth`, reporting adapter/stack readiness, role availability, known devices, and any detected receiver session without changing live routing behavior.
+- Extended `GET /api/audio/source-mode` with Bluetooth status metadata and a non-selectable `bluetooth-input` mode placeholder so the backend can advertise the next feature slice safely before activation exists.
+- Extended `GET /api/audio/outputs` with Bluetooth-oriented metadata fields (`transport`, `device_class`, `profile`, `active_codec`) for detected BT sinks while keeping output switching behavior unchanged.
+
+## 0.4.309 (2026-04-25)
+- Added a compact `Source Mode` write path backed by `GET/POST /api/audio/source-mode`, with persisted mode/input selection and real PipeWire input inventory rendered with human-readable labels.
+- Filtered monitor sources out of the external-input list, kept the UI dropdown-based, and automatically fallback to `App playback` when no real inputs are currently available.
+- When `External input` is selected, the frontend hides Radio/Spotify/Library tabs and the backend conservatively quiesces app playback so the DSP/output baseline is not competing with local sources.
+- Bumped the cache-busted frontend asset references in `static/index.html` so deployed systems stay version-synced with `0.4.309`.
+
+## 0.4.308 (2026-04-25)
+- Turned the Settings `Audio Output` inventory into a conservative writable selector backed by `POST /api/audio/outputs`, with `System Default` kept first and explicit outputs shown with human-readable labels.
+- Added persisted output-selection state under the user config directory so explicit overrides can be re-applied on startup and `System Default` can restore the previously captured PipeWire default when available.
+- Kept the EasyEffects virtual sink non-selectable in the UI to reduce routing-regression risk while still showing active/selected output state separately in the compact settings panel.
+- Bumped the cache-busted frontend asset references in `static/index.html` so deployed systems stay version-synced with `0.4.308`.
+
+## 0.4.307 (2026-04-25)
+- Turned the existing FXRoute header logo into a compact technical-settings entry point instead of adding a new dedicated settings button.
+- Added a first read-only Audio Output inventory via `/api/audio/outputs`, showing `System Default` first and explicit detected outputs after it.
+- Added a documented placeholder `Source Mode` section in settings while keeping current playback/routing behavior unchanged.
+- Bumped the cache-busted frontend asset references in `static/index.html` so deployed systems stay version-synced with `0.4.307`.
+
 ## 0.4.306 (2026-04-24)
 - Nudged the collapsed `Create PEQ preset` header block a touch further downward so it aligns more closely with the neighboring DSP cards.
 - Bumped the cache-busted frontend asset references in `static/index.html` so deployed systems stay version-synced with `0.4.306`.
