@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.328 (2026-04-26)
+- Changed EasyEffects helper handling so limiter, delay, and bass-enhancer helper plugins stay in the output chain and toggle via plugin `bypass` instead of being physically added/removed from the preset graph on every UI toggle.
+- This is intended to reduce the short volume jump/click when enabling or disabling those helpers during active playback, since the graph shape stays stable and only helper state changes.
+
 ## 0.4.327 (2026-04-26)
 - Refreshed the EasyEffects `pw-record` peak monitor after global helper/extras changes, so toggling limiter, delay, or bass helper plugins during active playback rebinds the PipeWire capture links instead of leaving clipping detection disconnected.
 - Headroom-only changes still behave as before, but helper plugins that add/remove nodes now get the same peak-monitor refresh path as preset loads and other effect graph changes.

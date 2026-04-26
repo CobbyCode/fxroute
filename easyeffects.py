@@ -729,7 +729,7 @@ class EasyEffectsManager:
 
     def _delay_plugin_payload(self, delay: Dict[str, Any]) -> Dict[str, Any]:
         return {
-            "bypass": False,
+            "bypass": not delay.get("enabled", False),
             "centimeters-l": 0.0,
             "centimeters-r": 0.0,
             "dry-l": -80.01,
@@ -756,7 +756,7 @@ class EasyEffectsManager:
         return {
             "amount": bass_enh["params"]["amount"],
             "blend": bass_enh["params"]["blend"],
-            "bypass": False,
+            "bypass": not bass_enh.get("enabled", False),
             "floor": 20.0,
             "floor-active": False,
             "harmonics": bass_enh["params"]["harmonics"],
@@ -773,7 +773,7 @@ class EasyEffectsManager:
             "alr-knee-smooth": -5.0,
             "alr-release": 50.0,
             "attack": limiter["params"]["attackMs"],
-            "bypass": False,
+            "bypass": not limiter.get("enabled", False),
             "dithering": "None",
             "gain-boost": True,
             "input-gain": 0.0,
@@ -797,22 +797,15 @@ class EasyEffectsManager:
     def _apply_extras_to_output(self, output: Dict[str, Any], extras: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         normalized = self.normalize_effects_extras(extras)
         result = dict(output or {})
-        plugins_order = [entry for entry in list(result.get("plugins_order", [])) if entry not in {"delay#0", "limiter#0", "bass_enhancer#0"}]
-        result.pop("delay#0", None)
-        result.pop("limiter#0", None)
-        result.pop("bass_enhancer#0", None)
+        helper_plugin_names = ["delay#0", "bass_enhancer#0", "limiter#0"]
+        plugins_order = list(result.get("plugins_order", []))
 
-        if normalized["delay"].get("enabled"):
-            result["delay#0"] = self._delay_plugin_payload(normalized["delay"])
-            plugins_order.append("delay#0")
+        result["delay#0"] = self._delay_plugin_payload(normalized["delay"])
+        result["bass_enhancer#0"] = self._bass_enhancer_plugin_payload(normalized["bass_enhancer"])
+        result["limiter#0"] = self._limiter_plugin_payload(normalized["limiter"])
 
-        if normalized["bass_enhancer"].get("enabled"):
-            result["bass_enhancer#0"] = self._bass_enhancer_plugin_payload(normalized["bass_enhancer"])
-            plugins_order.append("bass_enhancer#0")
-
-        if normalized["limiter"].get("enabled"):
-            result["limiter#0"] = self._limiter_plugin_payload(normalized["limiter"])
-            plugins_order.append("limiter#0")
+        plugins_order = [entry for entry in plugins_order if entry not in helper_plugin_names]
+        plugins_order.extend(helper_plugin_names)
 
         target_plugin = None
 
