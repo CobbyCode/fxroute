@@ -25,6 +25,7 @@ let state = {
             detected: false,
             hold_ms: 0,
             threshold: 1.0,
+            vu_db: null,
             target: null,
             last_over_at: null,
             last_error: null,
@@ -205,6 +206,9 @@ const elements = {
     effectsHeadroomEnabled: document.getElementById('effects-headroom-enabled'),
     effectsHeadroomGainDb: document.getElementById('effects-headroom-gain-db'),
     effectsHeadroomGainWrap: document.getElementById('effects-headroom-gain-wrap'),
+    effectsAutogainEnabled: document.getElementById('effects-autogain-enabled'),
+    effectsAutogainTargetDb: document.getElementById('effects-autogain-target-db'),
+    effectsAutogainTargetWrap: document.getElementById('effects-autogain-target-wrap'),
     effectsDelayEnabled: document.getElementById('effects-delay-enabled'),
     effectsDelayInputsWrap: document.getElementById('effects-delay-inputs-wrap'),
     effectsDelayLeftMs: document.getElementById('effects-delay-left-ms'),
@@ -212,6 +216,9 @@ const elements = {
     effectsBassEnabled: document.getElementById('effects-bass-enabled'),
     effectsBassAmount: document.getElementById('effects-bass-amount'),
     effectsBassControlsWrap: document.getElementById('effects-bass-controls-wrap'),
+    effectsToneEffectEnabled: document.getElementById('effects-tone-effect-enabled'),
+    effectsToneEffectWrap: document.getElementById('effects-tone-effect-wrap'),
+    effectsToneEffectMode: document.getElementById('effects-tone-effect-mode'),
     effectsExtrasFeedback: document.getElementById('effects-extras-feedback'),
     effectsRewDualPresetName: document.getElementById('effects-rew-dual-preset-name'),
     effectsCombinePreset1: document.getElementById('effects-combine-preset-1'),
@@ -246,6 +253,7 @@ const elements = {
     btnClearQueue: document.getElementById('btn-clear-queue'),
     queueStatus: document.getElementById('queue-status'),
     samplerateStatus: document.getElementById('samplerate-status'),
+    outputLevelBadge: document.getElementById('output-level-badge'),
     peakWarningBadge: document.getElementById('peak-warning-badge'),
     seekSlider: document.getElementById('seek-slider'),
     seekCurrent: document.getElementById('seek-current'),
@@ -426,9 +434,15 @@ function handleWebSocketMessage(msg) {
                         limiterEnabled: !!state.easyeffects.global_extras?.limiter?.enabled,
                         headroomEnabled: !!state.easyeffects.global_extras?.headroom?.enabled,
                         headroomGainDb: Number(state.easyeffects.global_extras?.headroom?.params?.gainDb ?? -3),
+                        autogainEnabled: !!state.easyeffects.global_extras?.autogain?.enabled,
+                        autogainTargetDb: Number(state.easyeffects.global_extras?.autogain?.params?.targetDb ?? -12),
                         delayEnabled: !!state.easyeffects.global_extras?.delay?.enabled,
                         delayLeftMs: Number(state.easyeffects.global_extras?.delay?.params?.leftMs || 0),
                         delayRightMs: Number(state.easyeffects.global_extras?.delay?.params?.rightMs || 0),
+                        bassEnabled: !!state.easyeffects.global_extras?.bass_enhancer?.enabled,
+                        bassAmount: Number(state.easyeffects.global_extras?.bass_enhancer?.params?.amount || 0),
+                        toneEffectEnabled: !!state.easyeffects.global_extras?.tone_effect?.enabled,
+                        toneEffectMode: String(state.easyeffects.global_extras?.tone_effect?.mode || 'crystalizer'),
                     });
                 }
                 renderEffects();
@@ -1481,18 +1495,26 @@ function renderSamplerateUI() {
 }
 function renderPeakWarningBadge() {
     const warning = state.playback.output_peak_warning || {};
-    const show = !!warning.detected;
+    const showPeak = !!warning.detected;
     const title = warning.target?.description || warning.target?.source_name || 'EasyEffects output monitor';
+    const vuDb = Number.isFinite(Number(warning.vu_db)) ? Number(warning.vu_db) : null;
 
     if (elements.peakWarningBadge) {
-        elements.peakWarningBadge.classList.add('hidden');
-        elements.peakWarningBadge.title = '';
+        elements.peakWarningBadge.classList.toggle('hidden', !showPeak);
+        elements.peakWarningBadge.title = showPeak ? `Post-EasyEffects output peak detected on ${title}` : '';
+    }
+
+    if (elements.outputLevelBadge) {
+        const showVu = !!warning.available && vuDb !== null;
+        elements.outputLevelBadge.classList.toggle('hidden', !showVu);
+        elements.outputLevelBadge.textContent = showVu ? `${Math.round(vuDb)} dB` : '';
+        elements.outputLevelBadge.title = showVu ? `Post-EasyEffects output level (slow VU) on ${title}` : '';
     }
 
     if (elements.playbackEq) {
-        elements.playbackEq.classList.toggle('peak-alert', show);
-        elements.playbackEq.title = show ? `Post-EasyEffects output peak detected on ${title}` : '';
-        if (show) {
+        elements.playbackEq.classList.toggle('peak-alert', showPeak);
+        elements.playbackEq.title = showPeak ? `Post-EasyEffects output peak detected on ${title}` : '';
+        if (showPeak) {
             elements.playbackEq.innerHTML = '<span class="peak-alert-label">PEAK</span>';
         } else if (!elements.playbackEq.querySelector('.bar')) {
             elements.playbackEq.innerHTML = '<span class="bar"></span><span class="bar"></span><span class="bar"></span><span class="bar"></span>';
@@ -3093,11 +3115,15 @@ async function createDualFilterPreset() {
         formData.append('limiter_enabled', extras.limiterEnabled ? 'true' : 'false');
         formData.append('headroom_enabled', extras.headroomEnabled ? 'true' : 'false');
         formData.append('headroom_gain_db', String(extras.headroomGainDb));
+        formData.append('autogain_enabled', extras.autogainEnabled ? 'true' : 'false');
+        formData.append('autogain_target_db', String(extras.autogainTargetDb));
         formData.append('delay_enabled', extras.delayEnabled ? 'true' : 'false');
         formData.append('delay_left_ms', String(extras.delayLeftMs));
         formData.append('delay_right_ms', String(extras.delayRightMs));
         formData.append('bass_enabled', extras.bassEnabled ? 'true' : 'false');
         formData.append('bass_amount', String(extras.bassAmount));
+        formData.append('tone_effect_enabled', extras.toneEffectEnabled ? 'true' : 'false');
+        formData.append('tone_effect_mode', extras.toneEffectMode);
         if (leftFile) formData.append('left_file', leftFile);
         if (rightFile) formData.append('right_file', rightFile);
 
@@ -3188,7 +3214,14 @@ function setupEffectsActions() {
     if (elements.effectsPeqAddRightBandBtn) elements.effectsPeqAddRightBandBtn.addEventListener('click', () => addPeqBand('right'));
     if (elements.effectsPeqCreatePresetBtn) elements.effectsPeqCreatePresetBtn.addEventListener('click', createPeqPreset);
     // Track focus to avoid resetting input values while user is typing
-    [elements.effectsHeadroomGainDb, elements.effectsDelayLeftMs, elements.effectsDelayRightMs, elements.effectsBassAmount].forEach(el => {
+    [
+        elements.effectsHeadroomGainDb,
+        elements.effectsAutogainTargetDb,
+        elements.effectsDelayLeftMs,
+        elements.effectsDelayRightMs,
+        elements.effectsBassAmount,
+        elements.effectsToneEffectMode,
+    ].forEach(el => {
         if (!el) return;
         el.addEventListener('focus', () => _activeEditing.add(el));
         el.addEventListener('input', () => saveEffectsExtrasDebounced(EFFECTS_EXTRAS_VALUE_DEBOUNCE_MS));
@@ -3204,11 +3237,19 @@ function setupEffectsActions() {
         updateEffectsExtrasUi();
         saveEffectsExtrasDebounced(EFFECTS_EXTRAS_TOGGLE_DEBOUNCE_MS);
     });
+    elements.effectsAutogainEnabled.addEventListener('change', () => {
+        updateEffectsExtrasUi();
+        saveEffectsExtrasDebounced(EFFECTS_EXTRAS_TOGGLE_DEBOUNCE_MS);
+    });
     elements.effectsDelayEnabled.addEventListener('change', () => {
         updateEffectsExtrasUi();
         saveEffectsExtrasDebounced(EFFECTS_EXTRAS_TOGGLE_DEBOUNCE_MS);
     });
     elements.effectsBassEnabled.addEventListener('change', () => {
+        updateEffectsExtrasUi();
+        saveEffectsExtrasDebounced(EFFECTS_EXTRAS_TOGGLE_DEBOUNCE_MS);
+    });
+    elements.effectsToneEffectEnabled.addEventListener('change', () => {
         updateEffectsExtrasUi();
         saveEffectsExtrasDebounced(EFFECTS_EXTRAS_TOGGLE_DEBOUNCE_MS);
     });
@@ -3405,11 +3446,15 @@ async function fetchEffects() {
                 limiterEnabled: !!data.global_extras?.limiter?.enabled,
                 headroomEnabled: !!data.global_extras?.headroom?.enabled,
                 headroomGainDb: Number(data.global_extras?.headroom?.params?.gainDb ?? -3),
+                autogainEnabled: !!data.global_extras?.autogain?.enabled,
+                autogainTargetDb: Number(data.global_extras?.autogain?.params?.targetDb ?? -12),
                 delayEnabled: !!data.global_extras?.delay?.enabled,
                 delayLeftMs: Number(data.global_extras?.delay?.params?.leftMs || 0),
                 delayRightMs: Number(data.global_extras?.delay?.params?.rightMs || 0),
                 bassEnabled: !!data.global_extras?.bass_enhancer?.enabled,
                 bassAmount: Number(data.global_extras?.bass_enhancer?.params?.amount || 0),
+                toneEffectEnabled: !!data.global_extras?.tone_effect?.enabled,
+                toneEffectMode: String(data.global_extras?.tone_effect?.mode || 'crystalizer'),
             });
         }
         renderEffects();
@@ -3762,11 +3807,15 @@ async function importRewPeqPreset() {
     formData.append('limiter_enabled', extras.limiterEnabled ? 'true' : 'false');
     formData.append('headroom_enabled', extras.headroomEnabled ? 'true' : 'false');
     formData.append('headroom_gain_db', String(extras.headroomGainDb));
+    formData.append('autogain_enabled', extras.autogainEnabled ? 'true' : 'false');
+    formData.append('autogain_target_db', String(extras.autogainTargetDb));
     formData.append('delay_enabled', extras.delayEnabled ? 'true' : 'false');
     formData.append('delay_left_ms', String(extras.delayLeftMs));
     formData.append('delay_right_ms', String(extras.delayRightMs));
     formData.append('bass_enabled', extras.bassEnabled ? 'true' : 'false');
     formData.append('bass_amount', String(extras.bassAmount));
+    formData.append('tone_effect_enabled', extras.toneEffectEnabled ? 'true' : 'false');
+    formData.append('tone_effect_mode', extras.toneEffectMode);
     formData.append('file', file);
     if (elements.effectsStatus) elements.effectsStatus.innerHTML = `<div>Importing REW PEQ: <strong>${escapeHtml(presetName)}</strong>…</div>`;
     try {
@@ -4129,6 +4178,8 @@ async function switchEffectsPreset() {
 // Track which inputs are currently being edited by the user
 const _activeEditing = new Set();
 const EFFECTS_HEADROOM_ALLOWED_GAIN_DB = new Set([-2, -3, -4, -5, -6]);
+const EFFECTS_AUTOGAIN_ALLOWED_TARGET_DB = new Set([-9, -12, -15, -18]);
+const EFFECTS_TONE_EFFECT_MODES = new Set(['crystalizer', 'maximizer']);
 
 function normalizeEffectsHeadroomGainDb(value, fallback = -3) {
     const numeric = Number(value);
@@ -4137,11 +4188,27 @@ function normalizeEffectsHeadroomGainDb(value, fallback = -3) {
     return EFFECTS_HEADROOM_ALLOWED_GAIN_DB.has(rounded) ? rounded : fallback;
 }
 
+function normalizeEffectsAutogainTargetDb(value, fallback = -12) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return fallback;
+    const rounded = Math.round(numeric);
+    return EFFECTS_AUTOGAIN_ALLOWED_TARGET_DB.has(rounded) ? rounded : fallback;
+}
+
+function normalizeEffectsToneEffectMode(value, fallback = 'crystalizer') {
+    const normalized = String(value || fallback).trim().toLowerCase();
+    return EFFECTS_TONE_EFFECT_MODES.has(normalized) ? normalized : fallback;
+}
+
 function applyEffectsExtras(extras = {}) {
     if (elements.effectsLimiterEnabled) elements.effectsLimiterEnabled.checked = !!extras.limiterEnabled;
     if (elements.effectsHeadroomEnabled) elements.effectsHeadroomEnabled.checked = !!extras.headroomEnabled;
     if (elements.effectsHeadroomGainDb && !_activeEditing.has(elements.effectsHeadroomGainDb)) {
         elements.effectsHeadroomGainDb.value = String(normalizeEffectsHeadroomGainDb(extras.headroomGainDb, -3));
+    }
+    if (elements.effectsAutogainEnabled) elements.effectsAutogainEnabled.checked = !!extras.autogainEnabled;
+    if (elements.effectsAutogainTargetDb && !_activeEditing.has(elements.effectsAutogainTargetDb)) {
+        elements.effectsAutogainTargetDb.value = String(normalizeEffectsAutogainTargetDb(extras.autogainTargetDb, -12));
     }
     if (elements.effectsDelayEnabled) elements.effectsDelayEnabled.checked = !!extras.delayEnabled;
     if (elements.effectsDelayLeftMs && !_activeEditing.has(elements.effectsDelayLeftMs)) elements.effectsDelayLeftMs.value = String(Number(extras.delayLeftMs || 0));
@@ -4151,6 +4218,10 @@ function applyEffectsExtras(extras = {}) {
     if (elements.effectsBassAmount && !!extras.bassEnabled && !_activeEditing.has(elements.effectsBassAmount)) {
         elements.effectsBassAmount.value = String(Number(extras.bassAmount || 0));
     }
+    if (elements.effectsToneEffectEnabled) elements.effectsToneEffectEnabled.checked = !!extras.toneEffectEnabled;
+    if (elements.effectsToneEffectMode && !_activeEditing.has(elements.effectsToneEffectMode)) {
+        elements.effectsToneEffectMode.value = normalizeEffectsToneEffectMode(extras.toneEffectMode, 'crystalizer');
+    }
     updateEffectsExtrasUi();
 }
 
@@ -4158,11 +4229,17 @@ function updateEffectsExtrasUi() {
     if (elements.effectsHeadroomGainWrap) {
         elements.effectsHeadroomGainWrap.classList.toggle('hidden', !elements.effectsHeadroomEnabled?.checked);
     }
+    if (elements.effectsAutogainTargetWrap) {
+        elements.effectsAutogainTargetWrap.classList.toggle('hidden', !elements.effectsAutogainEnabled?.checked);
+    }
     if (elements.effectsDelayInputsWrap) {
         elements.effectsDelayInputsWrap.classList.toggle('hidden', !elements.effectsDelayEnabled?.checked);
     }
     if (elements.effectsBassControlsWrap) {
         elements.effectsBassControlsWrap.classList.toggle('hidden', !elements.effectsBassEnabled?.checked);
+    }
+    if (elements.effectsToneEffectWrap) {
+        elements.effectsToneEffectWrap.classList.toggle('hidden', !elements.effectsToneEffectEnabled?.checked);
     }
 }
 
@@ -4173,11 +4250,15 @@ function loadSavedEffectsExtras() {
         limiterEnabled: !!fx.global_extras?.limiter?.enabled,
         headroomEnabled: !!fx.global_extras?.headroom?.enabled,
         headroomGainDb: Number(fx.global_extras?.headroom?.params?.gainDb ?? -3),
+        autogainEnabled: !!fx.global_extras?.autogain?.enabled,
+        autogainTargetDb: Number(fx.global_extras?.autogain?.params?.targetDb ?? -12),
         delayEnabled: !!fx.global_extras?.delay?.enabled,
         delayLeftMs: Number(fx.global_extras?.delay?.params?.leftMs || 0),
         delayRightMs: Number(fx.global_extras?.delay?.params?.rightMs || 0),
         bassEnabled: !!fx.global_extras?.bass_enhancer?.enabled,
         bassAmount: Number(fx.global_extras?.bass_enhancer?.params?.amount || 0),
+        toneEffectEnabled: !!fx.global_extras?.tone_effect?.enabled,
+        toneEffectMode: String(fx.global_extras?.tone_effect?.mode || 'crystalizer'),
     });
 }
 
@@ -4185,11 +4266,13 @@ function describeEffectsExtras(extras) {
     const parts = [];
     parts.push(extras.limiterEnabled ? 'Limiter ON (-1.0 dB)' : 'Limiter OFF');
     parts.push(extras.headroomEnabled ? `Headroom ON (${Number(extras.headroomGainDb || 0).toFixed(0)} dB)` : 'Headroom OFF');
+    parts.push(extras.autogainEnabled ? `Autogain ON (${extras.autogainTargetDb} dB)` : 'Autogain OFF');
     parts.push(
         extras.delayEnabled
             ? `Delay ON (${extras.delayLeftMs} ms L, ${extras.delayRightMs} ms R)`
             : 'Delay OFF'
     );
+    parts.push(extras.toneEffectEnabled ? `Tone ON (${normalizeEffectsToneEffectMode(extras.toneEffectMode, 'crystalizer')})` : 'Tone OFF');
     return parts.join(' • ');
 }
 
@@ -4225,11 +4308,15 @@ function collectEffectsExtras() {
         limiterEnabled: elements.effectsLimiterEnabled?.checked || false,
         headroomEnabled: elements.effectsHeadroomEnabled?.checked || false,
         headroomGainDb: normalizeEffectsHeadroomGainDb(elements.effectsHeadroomGainDb?.value, -3),
+        autogainEnabled: elements.effectsAutogainEnabled?.checked || false,
+        autogainTargetDb: normalizeEffectsAutogainTargetDb(elements.effectsAutogainTargetDb?.value, -12),
         delayEnabled: elements.effectsDelayEnabled?.checked || false,
         delayLeftMs: parseFloat(elements.effectsDelayLeftMs?.value || '0'),
         delayRightMs: parseFloat(elements.effectsDelayRightMs?.value || '0'),
         bassEnabled: elements.effectsBassEnabled?.checked || false,
         bassAmount: parseFloat(elements.effectsBassAmount?.value || '0'),
+        toneEffectEnabled: elements.effectsToneEffectEnabled?.checked || false,
+        toneEffectMode: normalizeEffectsToneEffectMode(elements.effectsToneEffectMode?.value, 'crystalizer'),
     };
 }
 
@@ -4253,11 +4340,13 @@ async function _doSaveEffectsExtras(phase) {
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) throw new Error(data.detail || 'Failed to save output extras');
         state.easyeffects = state.easyeffects || {};
-        state.easyeffects.global_extras = {
+        state.easyeffects.global_extras = data.extras || {
             limiter: { enabled: !!extras.limiterEnabled, params: { thresholdDb: -1.0, attackMs: 5.0, releaseMs: 50.0, lookaheadMs: 5.0, stereoLinkPercent: 100.0 } },
             headroom: { enabled: !!extras.headroomEnabled, params: { gainDb: extras.headroomGainDb } },
+            autogain: { enabled: !!extras.autogainEnabled, params: { targetDb: extras.autogainTargetDb } },
             delay: { enabled: !!extras.delayEnabled, params: { leftMs: extras.delayLeftMs, rightMs: extras.delayRightMs } },
             bass_enhancer: { enabled: !!extras.bassEnabled, params: { amount: extras.bassAmount, harmonics: 8.5, scope: 100.0, blend: 0.0 } },
+            tone_effect: { enabled: !!extras.toneEffectEnabled, mode: extras.toneEffectMode },
         };
         setEffectsExtrasFeedback('Saved', 'success');
         renderEffects();
@@ -4350,11 +4439,15 @@ async function createConvolverPreset() {
     formData.append('limiter_enabled', extras.limiterEnabled ? 'true' : 'false');
     formData.append('headroom_enabled', extras.headroomEnabled ? 'true' : 'false');
     formData.append('headroom_gain_db', String(extras.headroomGainDb));
+    formData.append('autogain_enabled', extras.autogainEnabled ? 'true' : 'false');
+    formData.append('autogain_target_db', String(extras.autogainTargetDb));
     formData.append('delay_enabled', extras.delayEnabled ? 'true' : 'false');
     formData.append('delay_left_ms', String(extras.delayLeftMs));
     formData.append('delay_right_ms', String(extras.delayRightMs));
     formData.append('bass_enabled', extras.bassEnabled ? 'true' : 'false');
     formData.append('bass_amount', String(extras.bassAmount));
+    formData.append('tone_effect_enabled', extras.toneEffectEnabled ? 'true' : 'false');
+    formData.append('tone_effect_mode', extras.toneEffectMode);
     formData.append('file', file);
     if (elements.effectsStatus) elements.effectsStatus.innerHTML = `<div>Importing: <strong>${escapeHtml(presetName)}</strong>…</div>`;
     const importArea = document.getElementById('effects-import-area');

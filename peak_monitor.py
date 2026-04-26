@@ -15,10 +15,19 @@ logger = logging.getLogger(__name__)
 PEAK_THRESHOLD = 1.0
 HOLD_SECONDS = 0.03
 READ_SIZE = 4096
-DISCOVERY_INTERVAL = 2.0
-LINK_DISCOVERY_TIMEOUT = 8.0
+DISCOVERY_INTERVAL = 0.4
+LINK_DISCOVERY_TIMEOUT = 3.0
+PORT_DISCOVERY_POLL_INTERVAL = 0.1
+LINK_RETRY_ATTEMPTS = 12
+LINK_RETRY_INTERVAL = 0.12
+ERROR_RETRY_INTERVAL = 0.35
+RESTART_SETTLE_SECONDS = 0.1
 CONSECUTIVE_HITS_REQUIRED = 2
 CAPTURE_NODE_NAME = "fxroute_peak_capture"
+VU_FLOOR_DB = -60.0
+VU_ATTACK_SECONDS = 0.18
+VU_RELEASE_SECONDS = 0.85
+VU_EMIT_INTERVAL = 0.25
 
 
 @dataclass
@@ -40,6 +49,9 @@ class EasyEffectsPeakMonitor:
         self._last_over_at: Optional[float] = None
         self._last_error: Optional[str] = None
         self._consecutive_hits = 0
+        self._vu_db: Optional[float] = None
+        self._last_vu_update_at: Optional[float] = None
+        self._last_vu_emit_at = 0.0
 
     async def start(self):
         if self._task and not self._task.done():
@@ -49,7 +61,7 @@ class EasyEffectsPeakMonitor:
 
     async def restart(self):
         await self.stop()
-        await asyncio.sleep(0.25)
+        await asyncio.sleep(RESTART_SETTLE_SECONDS)
         await self.start()
 
     async def stop(self):
@@ -74,6 +86,9 @@ class EasyEffectsPeakMonitor:
         self._hold_until = 0.0
         self._consecutive_hits = 0
         self._last_error = None
+        self._vu_db = None
+        self._last_vu_update_at = None
+        self._last_vu_emit_at = 0.0
 
     def snapshot(self) -> dict:
         now = time.monotonic()
@@ -84,6 +99,7 @@ class EasyEffectsPeakMonitor:
             "detected": active,
             "hold_ms": hold_ms,
             "threshold": PEAK_THRESHOLD,
+            "vu_db": round(self._vu_db, 1) if self._vu_db is not None else None,
             "target": {
                 "source_id": self._target.source_id,
                 "source_name": self._target.source_name,
@@ -110,7 +126,7 @@ class EasyEffectsPeakMonitor:
                 self._last_error = str(exc)
                 logger.warning("EasyEffects peak monitor target discovery failed: %s", exc)
                 await self._emit_if_changed(force=True)
-                await asyncio.sleep(1)
+                await asyncio.sleep(ERROR_RETRY_INTERVAL)
                 continue
 
             if target is None:
@@ -134,7 +150,7 @@ class EasyEffectsPeakMonitor:
                 self._last_error = str(exc)
                 logger.warning("EasyEffects peak monitor capture failed: %s", exc)
                 await self._emit_if_changed(force=True)
-                await asyncio.sleep(1)
+                await asyncio.sleep(ERROR_RETRY_INTERVAL)
 
     async def _capture_target(self, target: MonitorTarget):
         cmd = [
@@ -175,6 +191,8 @@ class EasyEffectsPeakMonitor:
                 now = time.monotonic()
                 if chunk:
                     peak = self._chunk_peak(chunk)
+                    rms = self._chunk_rms(chunk)
+                    self._update_vu_db(self._linear_to_db(rms), now)
                     if peak >= PEAK_THRESHOLD:
                         self._consecutive_hits += 1
                         if self._consecutive_hits >= CONSECUTIVE_HITS_REQUIRED:
@@ -185,9 +203,14 @@ class EasyEffectsPeakMonitor:
                         self._consecutive_hits = 0
                 elif self._proc.returncode is not None:
                     break
+                else:
+                    self._update_vu_db(VU_FLOOR_DB, now)
                 if self._hold_until and now >= self._hold_until:
                     self._hold_until = 0.0
                     await self._emit_if_changed(force=True)
+                elif now - self._last_vu_emit_at >= VU_EMIT_INTERVAL:
+                    self._last_vu_emit_at = now
+                    await self._emit_if_changed()
             if self._hold_until and time.monotonic() >= self._hold_until:
                 self._hold_until = 0.0
                 await self._emit_if_changed(force=True)
@@ -243,20 +266,20 @@ class EasyEffectsPeakMonitor:
                 capture_fr = f"{CAPTURE_NODE_NAME}:input_FR"
             if capture_fl and capture_fr and target_fl in text and target_fr in text:
                 break
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(PORT_DISCOVERY_POLL_INTERVAL)
 
         if not capture_fl or not capture_fr:
             raise RuntimeError("Peak capture ports did not appear")
 
         last_error = None
-        for _ in range(8):
+        for _ in range(LINK_RETRY_ATTEMPTS):
             try:
                 await self._run_link(target_fl, capture_fl)
                 await self._run_link(target_fr, capture_fr)
                 return
             except Exception as exc:
                 last_error = exc
-                await asyncio.sleep(0.25)
+                await asyncio.sleep(LINK_RETRY_INTERVAL)
 
         raise RuntimeError(str(last_error) if last_error else "Peak capture link failed")
 
@@ -339,6 +362,24 @@ class EasyEffectsPeakMonitor:
         candidates.sort(key=lambda item: (-item[0], item[1].source_id))
         return candidates[0][1]
 
+    def _update_vu_db(self, target_db: float, now: float):
+        target_db = max(VU_FLOOR_DB, min(6.0, target_db))
+        if self._vu_db is None or self._last_vu_update_at is None:
+            self._vu_db = target_db
+            self._last_vu_update_at = now
+            return
+        elapsed = max(0.001, now - self._last_vu_update_at)
+        tau = VU_ATTACK_SECONDS if target_db > self._vu_db else VU_RELEASE_SECONDS
+        alpha = 1.0 - math.exp(-elapsed / tau)
+        self._vu_db = self._vu_db + ((target_db - self._vu_db) * alpha)
+        self._last_vu_update_at = now
+
+    @staticmethod
+    def _linear_to_db(value: float) -> float:
+        if not math.isfinite(value) or value <= 0.0:
+            return VU_FLOOR_DB
+        return 20.0 * math.log10(value)
+
     @staticmethod
     def _chunk_peak(chunk: bytes) -> float:
         if len(chunk) < 4:
@@ -354,3 +395,21 @@ class EasyEffectsPeakMonitor:
             if value > peak:
                 peak = value
         return peak
+
+    @staticmethod
+    def _chunk_rms(chunk: bytes) -> float:
+        if len(chunk) < 4:
+            return 0.0
+        usable = len(chunk) - (len(chunk) % 4)
+        if usable <= 0:
+            return 0.0
+        sum_squares = 0.0
+        count = 0
+        for (sample,) in struct.iter_unpack("<f", chunk[:usable]):
+            if not math.isfinite(sample):
+                continue
+            sum_squares += float(sample) * float(sample)
+            count += 1
+        if count <= 0:
+            return 0.0
+        return math.sqrt(sum_squares / count)

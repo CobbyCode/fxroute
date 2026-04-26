@@ -2180,6 +2180,7 @@ input[type="number"]::-webkit-outer-spin-button {
 }
 .samplerate-status,
 .queue-status,
+.output-level-badge,
 .peak-warning-badge {
     display: inline-flex;
     align-items: center;
@@ -2199,6 +2200,12 @@ input[type="number"]::-webkit-outer-spin-button {
 .queue-status {
     background: var(--accent-dim);
     color: var(--accent);
+}
+.output-level-badge {
+    background: rgba(16, 185, 129, 0.12);
+    color: #a7f3d0;
+    border: 1px solid rgba(16, 185, 129, 0.18);
+    font-variant-numeric: tabular-nums;
 }
 .peak-warning-badge {
     background: rgba(239, 68, 68, 0.14);

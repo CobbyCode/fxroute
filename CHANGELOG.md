@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.4.336 (2026-04-27)
+- Tightened the EasyEffects `pw-record` monitor reconnect path so it reattaches faster after preset/helper graph changes: discovery polling, link retries, and restart settle waits are all shorter now.
+- This keeps the stable reconnect behavior Paul already liked, but should cut the "few seconds until it is attached again" delay noticeably during live use.
+
+## 0.4.335 (2026-04-27)
+- Removed the duplicate footer `Peak` badge next to the new dB readout, so clipping is now only indicated by the playback wave visual while the slow dB/VU badge stays readable and calm.
+
+## 0.4.334 (2026-04-27)
+- Added a slow, readable post-EasyEffects dB readout next to the playback wave/peak area, driven by the existing `pw-record` monitor but smoothed like a simple VU meter instead of mirroring fast peaks.
+- The backend now emits a gently averaged RMS-based `vu_db` level, and the frontend renders it as a compact badge such as `-10 dB` while keeping the existing fast peak warning behavior intact.
+
+## 0.4.333 (2026-04-27)
+- Reordered the helper plugin chain slightly so `bass_enhancer#0` now sits before `delay#0`, with `autogain#0` still after both and `limiter#0` still last.
+- This matches Paul’s preferred visual/processing order better without changing the compact helper UI or the checkbox/dropdown logic from `0.4.332`.
+
+## 0.4.332 (2026-04-26)
+- Refined the new Tone helper UI so it follows the same logic as the other extras: a dedicated checkbox now enables/disables the tone effect, while the dropdown only chooses between `Crystalizer` and `Maximizer`.
+- Kept the selected Tone flavor persistent even while the checkbox is off, so re-enabling the helper restores the previous choice instead of forcing `Off` as a separate dropdown mode.
+
+## 0.4.331 (2026-04-26)
+- Added the new compact EasyEffects helper pass Paul requested: Autogain now lives under Protection with a target-dB dropdown, and Tone now offers a mutually exclusive `Off` / `Crystalizer` / `Maximizer` selector.
+- Matched the new helper plugin payloads to the real EasyEffects preset data on `.104`, while keeping `autogain`, `crystalizer`, and `maximizer` permanently present in the graph and toggled via `bypass` so live switching stays consistent with the earlier helper-toggle work.
+
 ## 0.4.330 (2026-04-26)
 - When rewriting presets for the global headroom helper, FXRoute now clears helper-managed `output-gain` on all non-helper plugins before assigning headroom to the selected target plugin.
 - This prevents stale old headroom values from lingering on a previous plugin after the headroom target selection changes, which was visible on mixed presets like `3plusc`.

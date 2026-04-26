@@ -12,7 +12,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=0.4.143">
     <link rel="manifest" href="/static/site.webmanifest?v=0.4.143">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/static/style.css?v=0.4.330">
+    <link rel="stylesheet" href="/static/style.css?v=0.4.336">
 </head>
 <body>
     <!-- Offline indicator -->
@@ -380,6 +380,17 @@
                                                 </label>
                                             </div>
                                         </div>
+                                        <div class="effects-extras-row effects-extras-row-helpers">
+                                            <label class="checkbox-row"><input type="checkbox" id="effects-autogain-enabled"> Autogain</label>
+                                            <label for="effects-autogain-target-db" id="effects-autogain-target-wrap" class="effects-headroom-gain-wrap hidden">
+                                                <select id="effects-autogain-target-db" class="url-input effects-headroom-select">
+                                                    <option value="-9">-9 dB</option>
+                                                    <option value="-12" selected>-12 dB</option>
+                                                    <option value="-15">-15 dB</option>
+                                                    <option value="-18">-18 dB</option>
+                                                </select>
+                                            </label>
+                                        </div>
                                     </section>
                                     <section class="effects-extras-group">
                                         <div class="effects-extras-group-header">
@@ -420,6 +431,15 @@
                                                     </div>
                                                 </div>
                                             </div>
+                                        </div>
+                                        <div class="effects-extras-row effects-extras-row-helpers">
+                                            <label class="checkbox-row"><input type="checkbox" id="effects-tone-effect-enabled"> Tone effect</label>
+                                            <label for="effects-tone-effect-mode" id="effects-tone-effect-wrap" class="effects-headroom-gain-wrap hidden">
+                                                <select id="effects-tone-effect-mode" class="url-input effects-headroom-select">
+                                                    <option value="crystalizer" selected>Crystalizer</option>
+                                                    <option value="maximizer">Maximizer</option>
+                                                </select>
+                                            </label>
                                         </div>
                                     </section>
                                 </div>
@@ -560,7 +580,7 @@
             <div class="playback-meta-row">
                 <div id="samplerate-status" class="samplerate-status hidden">Auto · 44.1 kHz</div>
                 <div id="queue-status" class="queue-status hidden">Queue 1 / 1</div>
-                <div id="peak-warning-badge" class="peak-warning-badge hidden">Peak</div>
+                <div id="output-level-badge" class="output-level-badge hidden">-60 dB</div>
             </div>
             <!-- Seek slider row (hidden for radio) -->
             <div class="seek-row">
@@ -597,6 +617,6 @@
     <!-- Toast notifications -->
     <div id="toast-container" class="toast-container"></div>
 
-    <script src="/static/app.js?v=0.4.330"></script>
+    <script src="/static/app.js?v=0.4.336"></script>
 </body>
 </html>

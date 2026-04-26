@@ -88,6 +88,21 @@ class EasyEffectsManager:
         },
     }
 
+    AUTOGAIN_DEFAULTS = {
+        "enabled": False,
+        "params": {
+            "targetDb": -12.0,
+            "reference": "Geometric Mean (MSI)",
+            "silenceThresholdDb": -70.0,
+            "maximumHistorySeconds": 15,
+        },
+    }
+
+    TONE_EFFECT_DEFAULTS = {
+        "enabled": False,
+        "mode": "crystalizer",
+    }
+
     def __init__(self, home: Optional[Path] = None):
         self.home = Path(home or Path.home())
         self.runtime = self._detect_runtime()
@@ -648,6 +663,49 @@ class EasyEffectsManager:
             },
         }
 
+    def _normalize_autogain_v1(self, autogain_definition: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        if autogain_definition is None:
+            autogain_definition = self.AUTOGAIN_DEFAULTS
+        if not isinstance(autogain_definition, dict):
+            raise ValueError("autogain must be an object")
+        params = autogain_definition.get("params") if isinstance(autogain_definition.get("params"), dict) else {}
+        target_db = float(params.get("targetDb", self.AUTOGAIN_DEFAULTS["params"]["targetDb"]))
+        if not -30.0 <= target_db <= 0.0:
+            raise ValueError("autogain.params.targetDb must be between -30 and 0")
+        silence_threshold_db = float(params.get("silenceThresholdDb", self.AUTOGAIN_DEFAULTS["params"]["silenceThresholdDb"]))
+        maximum_history_seconds = int(params.get("maximumHistorySeconds", self.AUTOGAIN_DEFAULTS["params"]["maximumHistorySeconds"]))
+        reference = str(params.get("reference", self.AUTOGAIN_DEFAULTS["params"]["reference"]) or self.AUTOGAIN_DEFAULTS["params"]["reference"]).strip() or self.AUTOGAIN_DEFAULTS["params"]["reference"]
+        return {
+            "enabled": bool(autogain_definition.get("enabled", False)),
+            "params": {
+                "targetDb": target_db,
+                "reference": reference,
+                "silenceThresholdDb": silence_threshold_db,
+                "maximumHistorySeconds": maximum_history_seconds,
+            },
+        }
+
+    def _normalize_tone_effect_v1(self, tone_definition: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        if tone_definition is None:
+            tone_definition = self.TONE_EFFECT_DEFAULTS
+        if isinstance(tone_definition, str):
+            tone_definition = {"mode": tone_definition}
+        if not isinstance(tone_definition, dict):
+            raise ValueError("tone_effect must be an object")
+        raw_mode = str(tone_definition.get("mode", self.TONE_EFFECT_DEFAULTS["mode"]) or self.TONE_EFFECT_DEFAULTS["mode"]).strip().lower()
+        enabled = bool(tone_definition.get("enabled", raw_mode != "off"))
+        if raw_mode == "off":
+            mode = self.TONE_EFFECT_DEFAULTS["mode"]
+            enabled = False
+        else:
+            mode = raw_mode
+        if mode not in {"crystalizer", "maximizer"}:
+            raise ValueError("tone_effect.mode must be one of: crystalizer, maximizer")
+        return {
+            "enabled": enabled,
+            "mode": mode,
+        }
+
     def normalize_effects_extras(self, extras: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         extras = extras or {}
         return {
@@ -658,6 +716,8 @@ class EasyEffectsManager:
             "headroom": self._normalize_headroom_v1(extras.get("headroom")) if extras.get("headroom") else self._normalize_headroom_v1(None),
             "delay": self._normalize_delay_v1(extras.get("delay")) if extras.get("delay") else self._normalize_delay_v1(None),
             "bass_enhancer": self._normalize_bass_enhancer_v1(extras.get("bass_enhancer")) if extras.get("bass_enhancer") else self._normalize_bass_enhancer_v1(None),
+            "autogain": self._normalize_autogain_v1(extras.get("autogain")) if extras.get("autogain") else self._normalize_autogain_v1(None),
+            "tone_effect": self._normalize_tone_effect_v1(extras.get("tone_effect")) if extras.get("tone_effect") is not None else self._normalize_tone_effect_v1(None),
         }
 
     def load_global_extras(self) -> Dict[str, Any]:
@@ -794,23 +854,67 @@ class EasyEffectsManager:
             "threshold": limiter["params"]["thresholdDb"],
         }
 
+    def _autogain_plugin_payload(self, autogain: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "bypass": not autogain.get("enabled", False),
+            "force-silence": False,
+            "input-gain": 0.0,
+            "maximum-history": autogain["params"]["maximumHistorySeconds"],
+            "output-gain": 0.0,
+            "reference": autogain["params"]["reference"],
+            "silence-threshold": autogain["params"]["silenceThresholdDb"],
+            "target": autogain["params"]["targetDb"],
+        }
+
+    def _crystalizer_plugin_payload(self, tone_effect: Dict[str, Any]) -> Dict[str, Any]:
+        payload = {
+            "adaptive-intensity": True,
+            "bypass": not (tone_effect.get("enabled") and tone_effect.get("mode") == "crystalizer"),
+            "fixed-quantum": False,
+            "input-gain": 0.0,
+            "output-gain": 0.0,
+            "oversampling": True,
+            "oversampling-quality": 5.0,
+            "transition-band": 120.0,
+        }
+        for index in range(13):
+            payload[f"band{index}"] = {
+                "bypass": False,
+                "intensity": -2.0 if index == 2 else 0.0,
+                "mute": False,
+            }
+        return payload
+
+    def _maximizer_plugin_payload(self, tone_effect: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "bypass": not (tone_effect.get("enabled") and tone_effect.get("mode") == "maximizer"),
+            "input-gain": 0.0,
+            "output-gain": 0.0,
+            "release": 25.0,
+            "threshold": 0.0,
+        }
+
     def _apply_extras_to_output(self, output: Dict[str, Any], extras: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         normalized = self.normalize_effects_extras(extras)
         result = dict(output or {})
-        helper_plugin_names = ["delay#0", "bass_enhancer#0", "limiter#0"]
+        helper_plugin_names = ["crystalizer#0", "maximizer#0", "bass_enhancer#0", "delay#0", "autogain#0", "limiter#0"]
+        helper_plugin_set = set(helper_plugin_names)
         plugins_order = list(result.get("plugins_order", []))
 
-        result["delay#0"] = self._delay_plugin_payload(normalized["delay"])
+        result["crystalizer#0"] = self._crystalizer_plugin_payload(normalized["tone_effect"])
+        result["maximizer#0"] = self._maximizer_plugin_payload(normalized["tone_effect"])
         result["bass_enhancer#0"] = self._bass_enhancer_plugin_payload(normalized["bass_enhancer"])
+        result["delay#0"] = self._delay_plugin_payload(normalized["delay"])
+        result["autogain#0"] = self._autogain_plugin_payload(normalized["autogain"])
         result["limiter#0"] = self._limiter_plugin_payload(normalized["limiter"])
 
-        plugins_order = [entry for entry in plugins_order if entry not in helper_plugin_names]
+        plugins_order = [entry for entry in plugins_order if entry not in helper_plugin_set]
         plugins_order.extend(helper_plugin_names)
 
         target_plugin = None
 
         def is_helper_plugin(plugin_name: str) -> bool:
-            return plugin_name in {"limiter#0", "bass_enhancer#0"} or plugin_name.startswith("delay#")
+            return plugin_name in helper_plugin_set
 
         for plugin_name in plugins_order:
             if is_helper_plugin(plugin_name):
@@ -922,7 +1026,7 @@ class EasyEffectsManager:
         if clean_preset_name in set(normalized_sources):
             raise ValueError("New preset name must differ from the source presets")
 
-        helper_bases = {"limiter", "delay", "bass_enhancer"}
+        helper_bases = {"limiter", "delay", "bass_enhancer", "autogain", "crystalizer", "maximizer"}
         base_plugins: Dict[str, Any] = {}
         base_order: List[str] = []
         plugin_counters: Dict[str, int] = {}

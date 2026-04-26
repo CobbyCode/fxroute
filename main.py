@@ -695,6 +695,7 @@ def build_playback_payload(state: Optional[dict] = None) -> dict:
         "detected": False,
         "hold_ms": 0,
         "threshold": 1.0,
+        "vu_db": None,
         "target": None,
         "last_over_at": None,
         "last_error": None,
@@ -818,7 +819,7 @@ async def refresh_peak_monitor_after_effects_change(reason: str = "effects-chang
 
     logger.info("Refreshing peak monitor after %s", reason)
     peak_monitor_context_signature = None
-    await asyncio.sleep(0.25)
+    await asyncio.sleep(0.1)
 
     if is_spotify_playing:
         await sync_peak_monitor_for_spotify_state(spotify_state)
@@ -1913,17 +1914,27 @@ def _parse_effects_extras_from_json(body: dict) -> dict:
     limiter_enabled = bool(body.get("limiterEnabled", body.get("limiter_enabled", False)))
     headroom_enabled = bool(body.get("headroomEnabled", body.get("headroom_enabled", False)))
     headroom_gain_db = float(body.get("headroomGainDb", body.get("headroom_gain_db", -3.0)) or -3.0)
+    autogain_enabled = bool(body.get("autogainEnabled", body.get("autogain_enabled", False)))
+    autogain_target_db = float(body.get("autogainTargetDb", body.get("autogain_target_db", -12.0)) or -12.0)
     delay_enabled = bool(body.get("delayEnabled", body.get("delay_enabled", False)))
     delay_left_ms = float(body.get("delayLeftMs", body.get("delay_left_ms", 0.0)) or 0.0)
     delay_right_ms = float(body.get("delayRightMs", body.get("delay_right_ms", 0.0)) or 0.0)
     bass_enabled = bool(body.get("bassEnabled", body.get("bass_enabled", False)))
     bass_amount = float(body.get("bassAmount", body.get("bass_amount", 0.0)) or 0.0)
+    tone_effect_enabled = bool(body.get("toneEffectEnabled", body.get("tone_effect_enabled", False)))
+    tone_effect_mode = str(body.get("toneEffectMode", body.get("tone_effect_mode", "crystalizer")) or "crystalizer").strip().lower()
     return {
         "limiter": {"enabled": limiter_enabled},
         "headroom": {
             "enabled": headroom_enabled,
             "params": {
                 "gainDb": headroom_gain_db,
+            },
+        },
+        "autogain": {
+            "enabled": autogain_enabled,
+            "params": {
+                "targetDb": autogain_target_db,
             },
         },
         "delay": {
@@ -1941,6 +1952,10 @@ def _parse_effects_extras_from_json(body: dict) -> dict:
                 "scope": 100.0,
                 "blend": 0.0,
             },
+        },
+        "tone_effect": {
+            "enabled": tone_effect_enabled,
+            "mode": tone_effect_mode,
         },
     }
 
@@ -2140,9 +2155,13 @@ async def create_convolver_preset(
     limiter_enabled: bool = Form(False),
     headroom_enabled: bool = Form(False),
     headroom_gain_db: float = Form(-3.0),
+    autogain_enabled: bool = Form(False),
+    autogain_target_db: float = Form(-12.0),
     delay_enabled: bool = Form(False),
     delay_left_ms: float = Form(0.0),
     delay_right_ms: float = Form(0.0),
+    tone_effect_enabled: bool = Form(False),
+    tone_effect_mode: str = Form("crystalizer"),
 ):
     global easyeffects_manager
     if not easyeffects_manager:
@@ -2151,10 +2170,12 @@ async def create_convolver_preset(
     extras = _resolve_effects_extras({
         "limiter": {"enabled": limiter_enabled},
         "headroom": {"enabled": headroom_enabled, "params": {"gainDb": headroom_gain_db}},
+        "autogain": {"enabled": autogain_enabled, "params": {"targetDb": autogain_target_db}},
         "delay": {
             "enabled": delay_enabled,
             "params": {"leftMs": delay_left_ms, "rightMs": delay_right_ms},
         },
+        "tone_effect": {"enabled": tone_effect_enabled, "mode": tone_effect_mode},
     })
 
     try:
@@ -2184,11 +2205,15 @@ async def create_convolver_preset_with_ir(
     limiter_enabled: bool = Form(False),
     headroom_enabled: bool = Form(False),
     headroom_gain_db: float = Form(-3.0),
+    autogain_enabled: bool = Form(False),
+    autogain_target_db: float = Form(-12.0),
     delay_enabled: bool = Form(False),
     delay_left_ms: float = Form(0.0),
     delay_right_ms: float = Form(0.0),
     bass_enabled: bool = Form(False),
     bass_amount: float = Form(0.0),
+    tone_effect_enabled: bool = Form(False),
+    tone_effect_mode: str = Form("crystalizer"),
     file: UploadFile = File(...),
 ):
     global easyeffects_manager
@@ -2198,6 +2223,7 @@ async def create_convolver_preset_with_ir(
     extras = _resolve_effects_extras({
         "limiter": {"enabled": limiter_enabled},
         "headroom": {"enabled": headroom_enabled, "params": {"gainDb": headroom_gain_db}},
+        "autogain": {"enabled": autogain_enabled, "params": {"targetDb": autogain_target_db}},
         "delay": {
             "enabled": delay_enabled,
             "params": {"leftMs": delay_left_ms, "rightMs": delay_right_ms},
@@ -2206,6 +2232,7 @@ async def create_convolver_preset_with_ir(
             "enabled": bass_enabled,
             "params": {"amount": bass_amount},
         },
+        "tone_effect": {"enabled": tone_effect_enabled, "mode": tone_effect_mode},
     })
 
     tmp_path = None
@@ -2298,11 +2325,15 @@ async def import_rew_peq_preset(
     limiter_enabled: bool = Form(False),
     headroom_enabled: bool = Form(False),
     headroom_gain_db: float = Form(-3.0),
+    autogain_enabled: bool = Form(False),
+    autogain_target_db: float = Form(-12.0),
     delay_enabled: bool = Form(False),
     delay_left_ms: float = Form(0.0),
     delay_right_ms: float = Form(0.0),
     bass_enabled: bool = Form(False),
     bass_amount: float = Form(0.0),
+    tone_effect_enabled: bool = Form(False),
+    tone_effect_mode: str = Form("crystalizer"),
     file: UploadFile = File(...),
 ):
     global easyeffects_manager
@@ -2321,6 +2352,7 @@ async def import_rew_peq_preset(
     extras = _resolve_effects_extras({
         "limiter": {"enabled": limiter_enabled},
         "headroom": {"enabled": headroom_enabled, "params": {"gainDb": headroom_gain_db}},
+        "autogain": {"enabled": autogain_enabled, "params": {"targetDb": autogain_target_db}},
         "delay": {
             "enabled": delay_enabled,
             "params": {"leftMs": delay_left_ms, "rightMs": delay_right_ms},
@@ -2329,6 +2361,7 @@ async def import_rew_peq_preset(
             "enabled": bass_enabled,
             "params": {"amount": bass_amount},
         },
+        "tone_effect": {"enabled": tone_effect_enabled, "mode": tone_effect_mode},
     })
 
     try:
@@ -2358,11 +2391,15 @@ async def import_dual_filter_preset(
     limiter_enabled: bool = Form(False),
     headroom_enabled: bool = Form(False),
     headroom_gain_db: float = Form(-3.0),
+    autogain_enabled: bool = Form(False),
+    autogain_target_db: float = Form(-12.0),
     delay_enabled: bool = Form(False),
     delay_left_ms: float = Form(0.0),
     delay_right_ms: float = Form(0.0),
     bass_enabled: bool = Form(False),
     bass_amount: float = Form(0.0),
+    tone_effect_enabled: bool = Form(False),
+    tone_effect_mode: str = Form("crystalizer"),
     left_file: Optional[UploadFile] = File(None),
     right_file: Optional[UploadFile] = File(None),
 ):
@@ -2376,6 +2413,7 @@ async def import_dual_filter_preset(
     extras = _resolve_effects_extras({
         "limiter": {"enabled": limiter_enabled},
         "headroom": {"enabled": headroom_enabled, "params": {"gainDb": headroom_gain_db}},
+        "autogain": {"enabled": autogain_enabled, "params": {"targetDb": autogain_target_db}},
         "delay": {
             "enabled": delay_enabled,
             "params": {"leftMs": delay_left_ms, "rightMs": delay_right_ms},
@@ -2384,6 +2422,7 @@ async def import_dual_filter_preset(
             "enabled": bass_enabled,
             "params": {"amount": bass_amount},
         },
+        "tone_effect": {"enabled": tone_effect_enabled, "mode": tone_effect_mode},
     })
 
     def _detect_upload_kind(upload: Optional[UploadFile]) -> Optional[str]:
