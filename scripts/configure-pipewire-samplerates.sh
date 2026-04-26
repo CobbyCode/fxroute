@@ -47,6 +47,7 @@ apply_config() {
   mkdir -p "$CONFIG_DIR"
 
   if [[ -f "$CONFIG_FILE" ]] && [[ "$(cat "$CONFIG_FILE")" == "$DESIRED_CONFIG_CONTENT" ]]; then
+    pw-metadata -n settings 0 clock.force-rate 0 >/dev/null || true
     echo "PipeWire allowed-rates drop-in already up to date: $CONFIG_FILE"
     show_status
     return 0
