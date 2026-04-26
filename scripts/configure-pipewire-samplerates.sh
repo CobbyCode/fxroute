@@ -5,6 +5,13 @@ CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/pipewire/pipewire.conf.d"
 CONFIG_FILE="$CONFIG_DIR/20-audio-mini-pc-samplerates.conf"
 BACKUP_SUFFIX="$(date +%Y%m%d_%H%M%S)"
 RATES_DEFAULT=(44100 48000 88200 96000 176400 192000 352800 384000 705600 768000)
+DESIRED_CONFIG_CONTENT=$(cat <<'EOF'
+context.properties = {
+    default.clock.rate = 48000
+    default.clock.allowed-rates = [ 44100 48000 88200 96000 176400 192000 352800 384000 705600 768000 ]
+}
+EOF
+)
 
 usage() {
   cat <<'EOF'
@@ -33,21 +40,23 @@ show_status() {
   fi
   echo
   echo "== pw-metadata settings =="
-  pw-metadata -n settings 0 | egrep "clock.rate|clock.force-rate|clock.allowed-rates" || true
+  pw-metadata -n settings 0 | grep -E "clock.rate|clock.force-rate|clock.allowed-rates" || true
 }
 
 apply_config() {
   mkdir -p "$CONFIG_DIR"
+
+  if [[ -f "$CONFIG_FILE" ]] && [[ "$(cat "$CONFIG_FILE")" == "$DESIRED_CONFIG_CONTENT" ]]; then
+    echo "PipeWire allowed-rates drop-in already up to date: $CONFIG_FILE"
+    show_status
+    return 0
+  fi
+
   if [[ -f "$CONFIG_FILE" ]]; then
     cp "$CONFIG_FILE" "$CONFIG_FILE.bak.$BACKUP_SUFFIX"
   fi
 
-  cat > "$CONFIG_FILE" <<'EOF'
-context.properties = {
-    default.clock.rate = 48000
-    default.clock.allowed-rates = [ 44100 48000 88200 96000 176400 192000 352800 384000 705600 768000 ]
-}
-EOF
+  printf '%s\n' "$DESIRED_CONFIG_CONTENT" > "$CONFIG_FILE"
 
   restart_services
   sleep 2
