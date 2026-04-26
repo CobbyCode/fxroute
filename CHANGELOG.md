@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.329 (2026-04-26)
+- Changed headroom helper placement logic to target the first non-helper plugin in `plugins_order` instead of the last one, so mixed chains like `3plusc` apply headroom at the front of the real processing chain.
+- This matches the intended safety behavior better for combined presets where early EQ/convolver stages should receive the headroom before later filters.
+
 ## 0.4.328 (2026-04-26)
 - Changed EasyEffects helper handling so limiter, delay, and bass-enhancer helper plugins stay in the output chain and toggle via plugin `bypass` instead of being physically added/removed from the preset graph on every UI toggle.
 - This is intended to reduce the short volume jump/click when enabling or disabling those helpers during active playback, since the graph shape stays stable and only helper state changes.

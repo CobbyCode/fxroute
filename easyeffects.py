@@ -812,7 +812,7 @@ class EasyEffectsManager:
         def is_helper_plugin(plugin_name: str) -> bool:
             return plugin_name in {"limiter#0", "bass_enhancer#0"} or plugin_name.startswith("delay#")
 
-        for plugin_name in reversed(plugins_order):
+        for plugin_name in plugins_order:
             if is_helper_plugin(plugin_name):
                 continue
             plugin_payload = result.get(plugin_name)
@@ -820,7 +820,7 @@ class EasyEffectsManager:
                 target_plugin = plugin_payload
                 break
         if target_plugin is None:
-            for plugin_name, plugin_payload in reversed(list(result.items())):
+            for plugin_name, plugin_payload in result.items():
                 if is_helper_plugin(plugin_name):
                     continue
                 if "#" in plugin_name and isinstance(plugin_payload, dict):
