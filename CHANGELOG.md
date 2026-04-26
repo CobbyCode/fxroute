@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.326 (2026-04-26)
+- Reduced helper-toggle audio disruption by avoiding unnecessary PipeWire/WirePlumber restarts when the samplerate drop-in is already unchanged.
+- Kept the no-op samplerate apply path resetting `clock.force-rate` back to `0`, so helper-only reapply still clears a stuck forced rate without bouncing the whole user audio stack.
+- Fixed the frontend cache-busting tags in `static/index.html` to match the released version again.
+
 ## 0.4.325 (2026-04-26)
 - Fixed installer BlueZ SPA plugin detection for Debian/Ubuntu multiarch hosts so `libspa-bluez5.so` under paths like `/usr/lib/x86_64-linux-gnu/...` is recognized correctly instead of triggering a false missing-plugin warning.
 - Made `uninstall.sh` preserve and restore preexisting EasyEffects autostart/watchdog files instead of deleting them unconditionally.
