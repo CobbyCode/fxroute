@@ -695,7 +695,8 @@ setup_spotify_autostart() {
   local enabled_value="$(read_env_value SPOTIFY_AUTOSTART "$env_file")"
   local autostart_dir="$HOME/.config/autostart"
   local desktop_file="$autostart_dir/fxroute-spotify.desktop"
-  local exec_cmd=""
+  local legacy_desktop_file="$autostart_dir/spotify-clean-start.desktop"
+  local script_path="$INSTALL_ROOT/scripts/spotify-autostart.sh"
 
   mkdir -p "$autostart_dir"
 
@@ -705,16 +706,28 @@ setup_spotify_autostart() {
     return
   fi
 
-  if ! exec_cmd="$(detect_spotify_autostart_command)"; then
+  if ! detect_spotify_autostart_command >/dev/null; then
     rm -f "$desktop_file"
     warn "Spotify autostart is enabled in .env, but no local Spotify desktop app (Flatpak or native) was found"
     return
   fi
 
+  [[ -f "$script_path" ]] || {
+    warn "Spotify autostart could not be enabled because $script_path is missing"
+    return
+  }
+
+  chmod +x "$script_path"
+
+  if [[ -f "$legacy_desktop_file" ]] && grep -q "spotify-clean-start.sh" "$legacy_desktop_file"; then
+    rm -f "$legacy_desktop_file"
+    pass "legacy Spotify clean-start autostart replaced"
+  fi
+
   cat > "$desktop_file" <<EOF
 [Desktop Entry]
 Type=Application
-Exec=$exec_cmd
+Exec=$script_path
 Hidden=false
 NoDisplay=false
 X-GNOME-Autostart-enabled=true
