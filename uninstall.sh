@@ -29,7 +29,7 @@ Safe by default:
 - removes optional Spotify cache cleanup timer/service
 - removes optional system package update timer/service
 - removes FXRoute helper scripts
-- removes EasyEffects autostart entry created by installer
+- removes EasyEffects and optional Spotify autostart entries created by installer
 - removes the optional FXRoute Caddy reverse proxy service/config if present
 - restores the previous default `caddy.service` when FXRoute had disabled it to take over port 80
 
@@ -157,6 +157,7 @@ remove_helpers() {
 
 remove_autostart() {
   remove_file_if_exists "$HOME/.config/autostart/easyeffects.desktop"
+  remove_file_if_exists "$HOME/.config/autostart/fxroute-spotify.desktop"
 }
 
 remove_optional_caddy_proxy() {
@@ -480,7 +481,7 @@ main() {
   log "Removing helper scripts"
   remove_helpers
 
-  log "Removing EasyEffects autostart entry"
+  log "Removing EasyEffects / Spotify autostart entries"
   remove_autostart
 
   log "Removing optional FXRoute Caddy reverse proxy"

@@ -448,6 +448,7 @@ LOG_LEVEL=$log_level
 HOST=$host
 PORT=$port
 MAX_DOWNLOADS=$max_downloads
+SPOTIFY_AUTOSTART=off
 SPOTIFY_CACHE_CLEANUP=off
 SPOTIFY_CACHE_CLEANUP_INTERVAL_HOURS=24
 SYSTEM_AUTO_UPDATE=off
@@ -673,6 +674,55 @@ Comment=Start EasyEffects in background for FXRoute
 EOF
 
   pass "EasyEffects autostart configured ($EASYEFFECTS_MODE)"
+}
+
+detect_spotify_autostart_command() {
+  if flatpak_app_installed "com.spotify.Client"; then
+    printf 'flatpak run com.spotify.Client\n'
+    return 0
+  fi
+
+  if command -v spotify >/dev/null 2>&1; then
+    printf 'spotify\n'
+    return 0
+  fi
+
+  return 1
+}
+
+setup_spotify_autostart() {
+  local env_file="$INSTALL_ROOT/.env"
+  local enabled_value="$(read_env_value SPOTIFY_AUTOSTART "$env_file")"
+  local autostart_dir="$HOME/.config/autostart"
+  local desktop_file="$autostart_dir/fxroute-spotify.desktop"
+  local exec_cmd=""
+
+  mkdir -p "$autostart_dir"
+
+  if ! env_setting_enabled "$enabled_value"; then
+    rm -f "$desktop_file"
+    pass "Spotify autostart disabled"
+    return
+  fi
+
+  if ! exec_cmd="$(detect_spotify_autostart_command)"; then
+    rm -f "$desktop_file"
+    warn "Spotify autostart is enabled in .env, but no local Spotify desktop app (Flatpak or native) was found"
+    return
+  fi
+
+  cat > "$desktop_file" <<EOF
+[Desktop Entry]
+Type=Application
+Exec=$exec_cmd
+Hidden=false
+NoDisplay=false
+X-GNOME-Autostart-enabled=true
+Name=Spotify
+Comment=Start Spotify automatically for FXRoute
+EOF
+
+  pass "Spotify autostart configured"
 }
 
 write_install_state() {
@@ -1224,6 +1274,7 @@ main() {
   write_service_unit
   install_watchdog_if_needed
   setup_easyeffects_autostart
+  setup_spotify_autostart
   install_helpers
   configure_optional_maintenance_helpers
   validate_http

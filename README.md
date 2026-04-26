@@ -122,8 +122,15 @@ Useful optional settings:
 - `LOG_LEVEL=INFO`
 - `HOST=0.0.0.0`
 - `PORT=8000`
+- `SPOTIFY_AUTOSTART=off|on`
+- `SPOTIFY_CACHE_CLEANUP=off|on`
+- `SPOTIFY_CACHE_CLEANUP_INTERVAL_HOURS=24`
+- `SYSTEM_AUTO_UPDATE=off|on`
+- `SYSTEM_AUTO_UPDATE_INTERVAL_HOURS=24`
 
 Downloads are stored under `MUSIC_ROOT/incoming` by default.
+
+Background helpers should stay opt-in and outside the live audio settings UI. Things like Spotify autostart, Spotify cache cleanup, or optional automatic system package updates are better treated as setup/environment-driven helpers and should remain off by default unless the user explicitly enables them.
 
 ### Uninstall
 
