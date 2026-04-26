@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.330 (2026-04-26)
+- When rewriting presets for the global headroom helper, FXRoute now clears helper-managed `output-gain` on all non-helper plugins before assigning headroom to the selected target plugin.
+- This prevents stale old headroom values from lingering on a previous plugin after the headroom target selection changes, which was visible on mixed presets like `3plusc`.
+
 ## 0.4.329 (2026-04-26)
 - Changed headroom helper placement logic to target the first non-helper plugin in `plugins_order` instead of the last one, so mixed chains like `3plusc` apply headroom at the front of the real processing chain.
 - This matches the intended safety behavior better for combined presets where early EQ/convolver stages should receive the headroom before later filters.

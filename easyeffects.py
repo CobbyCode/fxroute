@@ -826,6 +826,13 @@ class EasyEffectsManager:
                 if "#" in plugin_name and isinstance(plugin_payload, dict):
                     target_plugin = plugin_payload
                     break
+        for plugin_name in plugins_order:
+            if is_helper_plugin(plugin_name):
+                continue
+            plugin_payload = result.get(plugin_name)
+            if isinstance(plugin_payload, dict) and "output-gain" in plugin_payload:
+                plugin_payload["output-gain"] = 0.0
+
         if isinstance(target_plugin, dict) and "output-gain" in target_plugin:
             target_plugin["output-gain"] = normalized["headroom"]["params"]["gainDb"] if normalized["headroom"].get("enabled") else 0.0
 
