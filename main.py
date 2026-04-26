@@ -1987,6 +1987,7 @@ async def save_easyeffects_extras(request: Request):
 
     status = easyeffects_manager.get_status()
     await manager.broadcast({"type": "easyeffects", "data": status})
+    await refresh_peak_monitor_after_effects_change("global-extras-update")
     return {
         "status": "ok",
         "extras": result["extras"],

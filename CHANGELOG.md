@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.327 (2026-04-26)
+- Refreshed the EasyEffects `pw-record` peak monitor after global helper/extras changes, so toggling limiter, delay, or bass helper plugins during active playback rebinds the PipeWire capture links instead of leaving clipping detection disconnected.
+- Headroom-only changes still behave as before, but helper plugins that add/remove nodes now get the same peak-monitor refresh path as preset loads and other effect graph changes.
+
 ## 0.4.326 (2026-04-26)
 - Reduced helper-toggle audio disruption by avoiding unnecessary PipeWire/WirePlumber restarts when the samplerate drop-in is already unchanged.
 - Kept the no-op samplerate apply path resetting `clock.force-rate` back to `0`, so helper-only reapply still clears a stuck forced rate without bouncing the whole user audio stack.
