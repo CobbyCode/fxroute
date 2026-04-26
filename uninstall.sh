@@ -26,6 +26,8 @@ Options:
 Safe by default:
 - removes FXRoute user service
 - removes watchdog timer/service
+- removes optional Spotify cache cleanup timer/service
+- removes optional system package update timer/service
 - removes FXRoute helper scripts
 - removes EasyEffects autostart entry created by installer
 - removes the optional FXRoute Caddy reverse proxy service/config if present
@@ -115,6 +117,34 @@ remove_watchdog() {
   systemctl --user disable --now easyeffects-stale-watchdog.timer >/dev/null 2>&1 || true
   remove_file_if_exists "$HOME/.config/systemd/user/easyeffects-stale-watchdog.service"
   remove_file_if_exists "$HOME/.config/systemd/user/easyeffects-stale-watchdog.timer"
+}
+
+remove_spotify_cleanup_helper() {
+  systemctl --user disable --now fxroute-spotify-cache-cleanup.timer >/dev/null 2>&1 || true
+  remove_file_if_exists "$HOME/.config/systemd/user/fxroute-spotify-cache-cleanup.service"
+  remove_file_if_exists "$HOME/.config/systemd/user/fxroute-spotify-cache-cleanup.timer"
+}
+
+remove_optional_system_update_helper() {
+  local service_path="/etc/systemd/system/fxroute-system-update.service"
+  local timer_path="/etc/systemd/system/fxroute-system-update.timer"
+  local sudo_cmd=()
+
+  if [[ ! -e "$service_path" && ! -e "$timer_path" ]]; then
+    return 0
+  fi
+
+  if command -v sudo >/dev/null 2>&1; then
+    sudo_cmd=(sudo)
+  else
+    warn "Cannot remove optional FXRoute system update helper because sudo is unavailable"
+    return 0
+  fi
+
+  "${sudo_cmd[@]}" systemctl disable --now fxroute-system-update.timer >/dev/null 2>&1 || true
+  "${sudo_cmd[@]}" rm -f "$service_path" "$timer_path"
+  "${sudo_cmd[@]}" systemctl daemon-reload >/dev/null 2>&1 || true
+  log "Removed optional FXRoute system update helper"
 }
 
 remove_helpers() {
@@ -440,6 +470,12 @@ main() {
 
   log "Removing EasyEffects watchdog units"
   remove_watchdog
+
+  log "Removing optional Spotify cache cleanup helper"
+  remove_spotify_cleanup_helper
+
+  log "Removing optional system update helper"
+  remove_optional_system_update_helper
 
   log "Removing helper scripts"
   remove_helpers

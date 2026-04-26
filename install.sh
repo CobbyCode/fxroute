@@ -381,6 +381,41 @@ else:
 PY
 }
 
+read_env_value() {
+  local key="$1"
+  local env_file="${2:-$INSTALL_ROOT/.env}"
+  [[ -f "$env_file" ]] || return 0
+  awk -F= -v wanted="$key" '
+    $0 !~ /^[[:space:]]*#/ && $1 == wanted {
+      sub(/^[^=]*=/, "", $0)
+      print $0
+      exit
+    }
+  ' "$env_file"
+}
+
+env_setting_enabled() {
+  local normalized="${1,,}"
+  case "$normalized" in
+    1|true|yes|on|enabled)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+env_interval_hours_or_default() {
+  local raw_value="$1"
+  local default_value="$2"
+  if [[ "$raw_value" =~ ^[1-9][0-9]*$ ]]; then
+    printf '%s\n' "$raw_value"
+  else
+    printf '%s\n' "$default_value"
+  fi
+}
+
 create_env_if_missing() {
   local env_file="$INSTALL_ROOT/.env"
   local env_example="$INSTALL_ROOT/.env.example"
@@ -413,6 +448,10 @@ LOG_LEVEL=$log_level
 HOST=$host
 PORT=$port
 MAX_DOWNLOADS=$max_downloads
+SPOTIFY_CACHE_CLEANUP=off
+SPOTIFY_CACHE_CLEANUP_INTERVAL_HOURS=24
+SYSTEM_AUTO_UPDATE=off
+SYSTEM_AUTO_UPDATE_INTERVAL_HOURS=24
 EOF
 
   mkdir -p "$music_root/$downloads_dir"
@@ -705,6 +744,141 @@ EOF
 
   chmod +x "$bin_dir"/fxroute-*
   pass "helper commands installed in $bin_dir"
+}
+
+configure_spotify_cache_cleanup_helper() {
+  local env_file="$INSTALL_ROOT/.env"
+  local user_systemd_dir="$HOME/.config/systemd/user"
+  local service_name="fxroute-spotify-cache-cleanup.service"
+  local timer_name="fxroute-spotify-cache-cleanup.timer"
+  local script_path="$INSTALL_ROOT/scripts/spotify-cache-cleanup.sh"
+  local enabled_value="$(read_env_value SPOTIFY_CACHE_CLEANUP "$env_file")"
+  local interval_value="$(read_env_value SPOTIFY_CACHE_CLEANUP_INTERVAL_HOURS "$env_file")"
+  local interval_hours="$(env_interval_hours_or_default "$interval_value" 24)"
+
+  mkdir -p "$user_systemd_dir"
+
+  if ! env_setting_enabled "$enabled_value"; then
+    systemctl --user disable --now "$timer_name" >/dev/null 2>&1 || true
+    rm -f "$user_systemd_dir/$service_name" "$user_systemd_dir/$timer_name"
+    systemctl --user daemon-reload >/dev/null 2>&1 || true
+    pass "Spotify cache cleanup helper disabled"
+    return
+  fi
+
+  [[ -f "$script_path" ]] || {
+    warn "Spotify cache cleanup helper could not be enabled because $script_path is missing"
+    return
+  }
+
+  chmod +x "$script_path"
+
+  cat > "$user_systemd_dir/$service_name" <<EOF
+[Unit]
+Description=FXRoute Spotify cache cleanup
+After=default.target
+
+[Service]
+Type=oneshot
+ExecStart=$script_path
+EOF
+
+  cat > "$user_systemd_dir/$timer_name" <<EOF
+[Unit]
+Description=Run FXRoute Spotify cache cleanup periodically
+
+[Timer]
+OnBootSec=20min
+OnUnitActiveSec=${interval_hours}h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+  if systemctl --user daemon-reload && systemctl --user enable --now "$timer_name"; then
+    pass "Spotify cache cleanup helper enabled (${interval_hours}h)"
+  else
+    warn "Spotify cache cleanup helper files were installed, but the timer could not be enabled in this shell"
+  fi
+}
+
+configure_system_auto_update_helper() {
+  local env_file="$INSTALL_ROOT/.env"
+  local service_name="fxroute-system-update.service"
+  local timer_name="fxroute-system-update.timer"
+  local service_path="/etc/systemd/system/$service_name"
+  local timer_path="/etc/systemd/system/$timer_name"
+  local script_path="$INSTALL_ROOT/scripts/system-package-update.sh"
+  local enabled_value="$(read_env_value SYSTEM_AUTO_UPDATE "$env_file")"
+  local interval_value="$(read_env_value SYSTEM_AUTO_UPDATE_INTERVAL_HOURS "$env_file")"
+  local interval_hours="$(env_interval_hours_or_default "$interval_value" 24)"
+  local tmp_service=""
+  local tmp_timer=""
+
+  if ! env_setting_enabled "$enabled_value"; then
+    "${SUDO_CMD[@]}" systemctl disable --now "$timer_name" >/dev/null 2>&1 || true
+    "${SUDO_CMD[@]}" rm -f "$service_path" "$timer_path" >/dev/null 2>&1 || true
+    "${SUDO_CMD[@]}" systemctl daemon-reload >/dev/null 2>&1 || true
+    pass "Optional system auto-update helper disabled"
+    return
+  fi
+
+  [[ -f "$script_path" ]] || {
+    warn "System auto-update helper could not be enabled because $script_path is missing"
+    return
+  }
+
+  chmod +x "$script_path"
+  tmp_service="$(mktemp)"
+  tmp_timer="$(mktemp)"
+
+  cat > "$tmp_service" <<EOF
+[Unit]
+Description=FXRoute optional system package update helper
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=$script_path
+EOF
+
+  cat > "$tmp_timer" <<EOF
+[Unit]
+Description=Run FXRoute optional system package updates periodically
+
+[Timer]
+OnBootSec=30min
+OnUnitActiveSec=${interval_hours}h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+  if ! "${SUDO_CMD[@]}" install -m 644 "$tmp_service" "$service_path"; then
+    rm -f "$tmp_service" "$tmp_timer"
+    warn "System auto-update helper could not be enabled because $service_path could not be written"
+    return
+  fi
+  if ! "${SUDO_CMD[@]}" install -m 644 "$tmp_timer" "$timer_path"; then
+    rm -f "$tmp_service" "$tmp_timer"
+    warn "System auto-update helper could not be enabled because $timer_path could not be written"
+    return
+  fi
+  rm -f "$tmp_service" "$tmp_timer"
+
+  if "${SUDO_CMD[@]}" systemctl daemon-reload && "${SUDO_CMD[@]}" systemctl enable --now "$timer_name"; then
+    pass "Optional system auto-update helper enabled (${interval_hours}h)"
+  else
+    warn "Optional system auto-update helper files were installed, but the timer could not be enabled in this shell"
+  fi
+}
+
+configure_optional_maintenance_helpers() {
+  configure_spotify_cache_cleanup_helper
+  configure_system_auto_update_helper
 }
 
 validate_http() {
@@ -1051,6 +1225,7 @@ main() {
   install_watchdog_if_needed
   setup_easyeffects_autostart
   install_helpers
+  configure_optional_maintenance_helpers
   validate_http
   validate_tools
   print_summary
