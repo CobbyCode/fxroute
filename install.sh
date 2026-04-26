@@ -20,8 +20,12 @@ PACKAGE_MANAGER=""
 PACKAGE_INSTALL_CMD=()
 SUDO_CMD=()
 INSTALL_STATE_FILE="$HOME/.config/fxroute/install-state.json"
+FXROUTE_BACKUP_DIR="$HOME/.config/fxroute/backups"
 EASYEFFECTS_INSTALLED_BY_FXROUTE=0
 EASYEFFECTS_INSTALL_METHOD=""
+EASYEFFECTS_AUTOSTART_BACKED_UP=0
+EASYEFFECTS_WATCHDOG_SERVICE_BACKED_UP=0
+EASYEFFECTS_WATCHDOG_TIMER_BACKED_UP=0
 MDNS_HOSTNAME=""
 LAN_HOSTNAME_BEFORE=""
 LAN_HOSTNAME_AFTER=""
@@ -117,6 +121,39 @@ fi
 
 require_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "Required command missing: $1"
+}
+
+bt_plugin_present() {
+  local candidates=(
+    /usr/lib64/spa-0.2/bluez5/libspa-bluez5.so
+    /usr/lib/spa-0.2/bluez5/libspa-bluez5.so
+    /usr/lib/x86_64-linux-gnu/spa-0.2/bluez5/libspa-bluez5.so
+    /usr/lib/aarch64-linux-gnu/spa-0.2/bluez5/libspa-bluez5.so
+    /usr/lib/arm-linux-gnueabihf/spa-0.2/bluez5/libspa-bluez5.so
+  )
+  local path
+
+  for path in "${candidates[@]}"; do
+    [[ -f "$path" ]] && return 0
+  done
+
+  shopt -s nullglob
+  local matches=(/usr/lib/*-linux-gnu/spa-0.2/bluez5/libspa-bluez5.so)
+  shopt -u nullglob
+  [[ ${#matches[@]} -gt 0 ]]
+}
+
+backup_user_file_once() {
+  local path="$1"
+  local backup_name="$2"
+  local backup_path="$FXROUTE_BACKUP_DIR/$backup_name"
+
+  [[ -e "$path" || -L "$path" ]] || return 1
+  [[ -e "$backup_path" || -L "$backup_path" ]] && return 0
+
+  mkdir -p "$FXROUTE_BACKUP_DIR"
+  cp -a "$path" "$backup_path"
+  return 0
 }
 
 valid_local_hostname() {
@@ -279,19 +316,25 @@ pkg_install() {
 ensure_native_packages() {
   local core_packages=()
   local support_packages=(curl git socat)
+  local audio_stack_packages=()
   local missing_packages=()
   local missing_support=()
+  local missing_audio_stack=()
   local need_venv_pkg=0
+  local need_bt_plugin_pkg=0
 
   case "$PACKAGE_MANAGER" in
     apt)
       core_packages=(python3 python3-pip python3-venv mpv ffmpeg playerctl flatpak)
+      audio_stack_packages=(bluez wireplumber pipewire-bin pipewire-pulse pulseaudio-utils libspa-0.2-bluetooth)
       ;;
     dnf)
       core_packages=(python3 python3-pip mpv ffmpeg playerctl flatpak)
+      audio_stack_packages=(bluez wireplumber pipewire-utils pipewire-pulseaudio pulseaudio-utils)
       ;;
     zypper)
       core_packages=(python3 python3-pip mpv ffmpeg playerctl flatpak)
+      audio_stack_packages=(bluez wireplumber pipewire-tools pipewire-pulseaudio pulseaudio-utils pipewire-spa-plugins-0_2)
       ;;
   esac
 
@@ -305,12 +348,21 @@ ensure_native_packages() {
       missing_support+=("$cmd")
     fi
   done
+  for cmd in bluetoothctl wpctl pw-cli pactl; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+      missing_audio_stack+=("$cmd")
+    fi
+  done
+
+  if ! bt_plugin_present; then
+    need_bt_plugin_pkg=1
+  fi
 
   if ! python3 -m venv --help >/dev/null 2>&1; then
     need_venv_pkg=1
   fi
 
-  if [[ ${#missing_packages[@]} -eq 0 && ${#missing_support[@]} -eq 0 && $need_venv_pkg -eq 0 ]]; then
+  if [[ ${#missing_packages[@]} -eq 0 && ${#missing_support[@]} -eq 0 && ${#missing_audio_stack[@]} -eq 0 && $need_venv_pkg -eq 0 && $need_bt_plugin_pkg -eq 0 ]]; then
     pass "native packages already available"
     return
   fi
@@ -320,6 +372,9 @@ ensure_native_packages() {
   fi
   if [[ ${#missing_support[@]} -gt 0 ]]; then
     pkg_install "${support_packages[@]}"
+  fi
+  if [[ ${#missing_audio_stack[@]} -gt 0 || $need_bt_plugin_pkg -eq 1 ]]; then
+    pkg_install "${audio_stack_packages[@]}"
   fi
 
   if [[ $need_venv_pkg -eq 1 ]] && ! python3 -m venv --help >/dev/null 2>&1; then
@@ -336,9 +391,12 @@ ensure_native_packages() {
     esac
   fi
 
-  for cmd in python3 mpv ffmpeg playerctl flatpak curl; do
+  for cmd in python3 mpv ffmpeg playerctl flatpak curl git socat bluetoothctl wpctl pw-cli pactl; do
     command -v "$cmd" >/dev/null 2>&1 || die "Expected command missing after package install: $cmd"
   done
+  if ! bt_plugin_present; then
+    warn "PipeWire BlueZ SPA plugin is still missing; Bluetooth input mode will not be available until the host provides libspa-bluez5.so"
+  fi
   pass "native packages installed"
 }
 
@@ -589,13 +647,21 @@ install_watchdog_if_needed() {
   local user_systemd_dir="$HOME/.config/systemd/user"
   local watchdog_timer_src="$INSTALL_ROOT/systemd-user/easyeffects-stale-watchdog.timer"
   local watchdog_script="$INSTALL_ROOT/scripts/easyeffects-stale-watchdog.sh"
+  local watchdog_service_path="$user_systemd_dir/easyeffects-stale-watchdog.service"
+  local watchdog_timer_path="$user_systemd_dir/easyeffects-stale-watchdog.timer"
 
   [[ -f "$watchdog_timer_src" && -f "$watchdog_script" ]] || return
   chmod +x "$watchdog_script"
 
   if [[ "$EASYEFFECTS_MODE" == "flatpak" ]]; then
     mkdir -p "$user_systemd_dir"
-    cat > "$user_systemd_dir/easyeffects-stale-watchdog.service" <<EOF
+    if backup_user_file_once "$watchdog_service_path" "easyeffects-stale-watchdog.service.pre-fxroute"; then
+      EASYEFFECTS_WATCHDOG_SERVICE_BACKED_UP=1
+    fi
+    if backup_user_file_once "$watchdog_timer_path" "easyeffects-stale-watchdog.timer.pre-fxroute"; then
+      EASYEFFECTS_WATCHDOG_TIMER_BACKED_UP=1
+    fi
+    cat > "$watchdog_service_path" <<EOF
 [Unit]
 Description=Recover EasyEffects from a stale Flatpak runtime socket
 After=default.target
@@ -604,7 +670,7 @@ After=default.target
 Type=oneshot
 ExecStart=$watchdog_script
 EOF
-    cp "$watchdog_timer_src" "$user_systemd_dir/"
+    cp "$watchdog_timer_src" "$watchdog_timer_path"
     if systemctl --user daemon-reload && systemctl --user enable --now easyeffects-stale-watchdog.timer; then
       pass "Flatpak EasyEffects watchdog timer enabled"
     else
@@ -660,6 +726,10 @@ setup_easyeffects_autostart() {
 
   if [[ "$EASYEFFECTS_MODE" == "native" ]]; then
     exec_cmd="easyeffects --gapplication-service"
+  fi
+
+  if backup_user_file_once "$desktop_file" "easyeffects.desktop.pre-fxroute"; then
+    EASYEFFECTS_AUTOSTART_BACKED_UP=1
   fi
 
   cat > "$desktop_file" <<EOF
@@ -747,7 +817,10 @@ write_install_state() {
   "easyeffects": {
     "installed_by_fxroute": $( [[ $EASYEFFECTS_INSTALLED_BY_FXROUTE -eq 1 ]] && echo true || echo false ),
     "install_method": "${EASYEFFECTS_INSTALL_METHOD:-$EASYEFFECTS_MODE}",
-    "detected_mode": "$EASYEFFECTS_MODE"
+    "detected_mode": "$EASYEFFECTS_MODE",
+    "autostart_backed_up": $( [[ $EASYEFFECTS_AUTOSTART_BACKED_UP -eq 1 ]] && echo true || echo false ),
+    "watchdog_service_backed_up": $( [[ $EASYEFFECTS_WATCHDOG_SERVICE_BACKED_UP -eq 1 ]] && echo true || echo false ),
+    "watchdog_timer_backed_up": $( [[ $EASYEFFECTS_WATCHDOG_TIMER_BACKED_UP -eq 1 ]] && echo true || echo false )
   },
   "lan_comfort": {
     "hostname_before": "$LAN_HOSTNAME_BEFORE",
@@ -921,13 +994,13 @@ WantedBy=timers.target
 EOF
 
   if ! "${SUDO_CMD[@]}" install -m 644 "$tmp_service" "$service_path"; then
+    warn "Failed to install optional system auto-update service"
     rm -f "$tmp_service" "$tmp_timer"
-    warn "System auto-update helper could not be enabled because $service_path could not be written"
     return
   fi
   if ! "${SUDO_CMD[@]}" install -m 644 "$tmp_timer" "$timer_path"; then
+    warn "Failed to install optional system auto-update timer"
     rm -f "$tmp_service" "$tmp_timer"
-    warn "System auto-update helper could not be enabled because $timer_path could not be written"
     return
   fi
   rm -f "$tmp_service" "$tmp_timer"
@@ -935,7 +1008,7 @@ EOF
   if "${SUDO_CMD[@]}" systemctl daemon-reload && "${SUDO_CMD[@]}" systemctl enable --now "$timer_name"; then
     pass "Optional system auto-update helper enabled (${interval_hours}h)"
   else
-    warn "Optional system auto-update helper files were installed, but the timer could not be enabled in this shell"
+    warn "Optional system auto-update helper files were installed, but the timer could not be enabled"
   fi
 }
 
@@ -963,6 +1036,10 @@ validate_tools() {
   mpv --version >/dev/null 2>&1 && pass "mpv available" || fail "mpv available"
   ffmpeg -version >/dev/null 2>&1 && pass "ffmpeg available" || fail "ffmpeg available"
   playerctl --version >/dev/null 2>&1 && pass "playerctl available" || fail "playerctl available"
+  command -v pactl >/dev/null 2>&1 && pass "pactl available" || fail "pactl available"
+  command -v wpctl >/dev/null 2>&1 && pass "wpctl available" || fail "wpctl available"
+  command -v pw-cli >/dev/null 2>&1 && pass "pw-cli available" || fail "pw-cli available"
+  command -v bluetoothctl >/dev/null 2>&1 && pass "bluetoothctl available" || fail "bluetoothctl available"
   "$INSTALL_ROOT/.venv/bin/yt-dlp" --version >/dev/null 2>&1 && pass "yt-dlp available from venv" || fail "yt-dlp available from venv"
 
   detect_easyeffects_mode
@@ -977,6 +1054,19 @@ validate_tools() {
   else
     fail "EasyEffects socket found"
     warn "EasyEffects socket is not present yet. This can be normal until EasyEffects has been launched in the user session."
+  fi
+
+  if bt_plugin_present; then
+    pass "PipeWire BlueZ SPA plugin found"
+  else
+    fail "PipeWire BlueZ SPA plugin found"
+    warn "Bluetooth input mode needs the PipeWire BlueZ SPA plugin (libspa-bluez5.so) on the host."
+  fi
+
+  if bluetoothctl show >/dev/null 2>&1; then
+    pass "BlueZ controller query works"
+  else
+    warn "bluetoothctl show failed in this shell. Bluetooth input mode will stay unavailable until BlueZ is active and an adapter/controller is visible."
   fi
 
   if systemctl --user is-enabled "$SERVICE_NAME" >/dev/null 2>&1; then

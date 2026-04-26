@@ -11,6 +11,7 @@ REMOVE_PROJECT_DIR=0
 REMOVE_EASYEFFECTS_BOOTSTRAP=0
 ASSUME_YES=0
 INSTALL_STATE_FILE="$HOME/.config/fxroute/install-state.json"
+FXROUTE_BACKUP_DIR="$HOME/.config/fxroute/backups"
 
 usage() {
   cat <<EOF
@@ -108,6 +109,22 @@ remove_file_if_exists() {
   fi
 }
 
+restore_backed_up_file_or_remove() {
+  local path="$1"
+  local backup_name="$2"
+  local backup_path="$FXROUTE_BACKUP_DIR/$backup_name"
+
+  if [[ -e "$backup_path" || -L "$backup_path" ]]; then
+    mkdir -p "$(dirname "$path")"
+    rm -f "$path"
+    mv "$backup_path" "$path"
+    log "Restored $path from backup"
+    return 0
+  fi
+
+  remove_file_if_exists "$path"
+}
+
 remove_service() {
   systemctl --user disable --now "$SERVICE_NAME" >/dev/null 2>&1 || true
   remove_file_if_exists "$HOME/.config/systemd/user/$SERVICE_NAME.service"
@@ -115,8 +132,8 @@ remove_service() {
 
 remove_watchdog() {
   systemctl --user disable --now easyeffects-stale-watchdog.timer >/dev/null 2>&1 || true
-  remove_file_if_exists "$HOME/.config/systemd/user/easyeffects-stale-watchdog.service"
-  remove_file_if_exists "$HOME/.config/systemd/user/easyeffects-stale-watchdog.timer"
+  restore_backed_up_file_or_remove "$HOME/.config/systemd/user/easyeffects-stale-watchdog.service" "easyeffects-stale-watchdog.service.pre-fxroute"
+  restore_backed_up_file_or_remove "$HOME/.config/systemd/user/easyeffects-stale-watchdog.timer" "easyeffects-stale-watchdog.timer.pre-fxroute"
 }
 
 remove_spotify_cleanup_helper() {
@@ -156,7 +173,7 @@ remove_helpers() {
 }
 
 remove_autostart() {
-  remove_file_if_exists "$HOME/.config/autostart/easyeffects.desktop"
+  restore_backed_up_file_or_remove "$HOME/.config/autostart/easyeffects.desktop" "easyeffects.desktop.pre-fxroute"
   remove_file_if_exists "$HOME/.config/autostart/fxroute-spotify.desktop"
 }
 
@@ -501,6 +518,8 @@ main() {
   remove_easyeffects_if_requested
   remove_project_dir_if_requested
   remove_file_if_exists "$INSTALL_STATE_FILE"
+  rmdir "$FXROUTE_BACKUP_DIR" >/dev/null 2>&1 || true
+  rmdir "$(dirname "$FXROUTE_BACKUP_DIR")" >/dev/null 2>&1 || true
 
   log "Uninstall complete"
 }
