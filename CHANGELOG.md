@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.338 (2026-04-27)
+- When deleting the currently active EasyEffects preset, FXRoute now falls back to `Neutral` instead of `Direct`.
+- This keeps global helpers like headroom effective after deletion, while `Direct` remains helper-free by design.
+
+## 0.4.337 (2026-04-27)
+- Added a second compare-row line below `Listening:` that shows the preset origin chain in English: combined presets render `Chain: Preset A → Preset B → ...`, while regular presets stay calm and consistent with `Chain: Single preset`.
+- Combined presets created by FXRoute now persist their `source_presets` provenance in preset metadata so the UI can keep showing the chain later instead of only immediately after creation.
+
 ## 0.4.336 (2026-04-27)
 - Tightened the EasyEffects `pw-record` monitor reconnect path so it reattaches faster after preset/helper graph changes: discovery polling, link retries, and restart settle waits are all shorter now.
 - This keeps the stable reconnect behavior Paul already liked, but should cut the "few seconds until it is attached again" delay noticeably during live use.

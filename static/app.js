@@ -197,6 +197,7 @@ const elements = {
     effectsCompareB: document.getElementById('effects-compare-b'),
     effectsCompareToggle: document.getElementById('effects-compare-toggle'),
     effectsCompareActive: document.getElementById('effects-compare-active'),
+    effectsCompareChain: document.getElementById('effects-compare-chain'),
     effectsCompareRow: document.getElementById('effects-compare-row'),
     effectsToggleImportBtn: document.getElementById('effects-toggle-import'),
     effectsImportPanel: document.getElementById('effects-import-panel'),
@@ -3908,9 +3909,23 @@ function setEffectsCompareLoadBusy(isBusy) {
     if (elements.effectsCompareToggle) elements.effectsCompareToggle.disabled = effectsCompareLoadInFlight;
 }
 
+function getEffectsChainLabelForPreset(presetName, presetMap = new Map()) {
+    if (!presetName) return 'Chain: —';
+    const preset = presetMap.get(presetName);
+    const sourcePresets = Array.isArray(preset?.source_presets)
+        ? preset.source_presets.map(name => String(name || '').trim()).filter(Boolean)
+        : [];
+    if (sourcePresets.length >= 2) {
+        return `Chain: ${sourcePresets.join(' → ')}`;
+    }
+    return 'Chain: Single preset';
+}
+
 function renderEffectsCompare() {
     const fx = state.easyeffects;
-    const presets = (fx.presets || []).map(p => p.name);
+    const presetEntries = fx.presets || [];
+    const presets = presetEntries.map(p => p.name);
+    const presetMap = new Map(presetEntries.map(preset => [preset.name, preset]));
     const { compare, activePreset, effectiveActiveSide, presetA, presetB } = getEffectsCompareState();
 
     if (!elements.effectsCompareRow) return;
@@ -3929,14 +3944,19 @@ function renderEffectsCompare() {
     ).join('');
 
     let activeLabel = 'Listening: —';
+    let chainPresetName = '';
     if (effectiveActiveSide === 'A' && compare.presetA) {
         activeLabel = `Listening: A · ${compare.presetA}`;
+        chainPresetName = compare.presetA;
     } else if (effectiveActiveSide === 'B' && compare.presetB) {
         activeLabel = `Listening: B · ${compare.presetB}`;
+        chainPresetName = compare.presetB;
     } else if (activePreset) {
         activeLabel = `Listening: ${activePreset}`;
+        chainPresetName = activePreset;
     }
     if (elements.effectsCompareActive) elements.effectsCompareActive.textContent = activeLabel;
+    if (elements.effectsCompareChain) elements.effectsCompareChain.textContent = getEffectsChainLabelForPreset(chainPresetName, presetMap);
     const badge = document.getElementById('effects-compare-active-badge');
     if (badge) {
         badge.classList.toggle('is-side-a', effectiveActiveSide === 'A');

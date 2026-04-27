@@ -1182,8 +1182,10 @@ body {
 
 .effects-compare-active-badge {
     display: flex;
+    flex-direction: column;
     justify-content: center;
     align-items: center;
+    gap: 0.22rem;
     width: 100%;
     padding: 0.9rem 1rem;
     background: rgba(110, 231, 183, 0.08);
@@ -1199,9 +1201,16 @@ body {
 .effects-compare-active-badge span {
     display: block;
     width: 100%;
-    font-size: inherit;
-    font-weight: inherit;
     color: inherit;
+}
+
+.effects-compare-chain {
+    font-size: 0.8rem;
+    font-weight: 600;
+    opacity: 0.88;
+    line-height: 1.35;
+    white-space: normal;
+    overflow-wrap: anywhere;
 }
 
 .effects-compare-active-badge.is-side-a {

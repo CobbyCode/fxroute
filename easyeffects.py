@@ -282,11 +282,19 @@ class EasyEffectsManager:
 
         presets = []
         for path in preset_paths:
+            source_presets: List[str] = []
+            try:
+                payload = json.loads(path.read_text())
+                if isinstance(payload, dict):
+                    source_presets = self._extract_source_presets_from_payload(payload)
+            except Exception:
+                source_presets = []
             presets.append(
                 {
                     "name": path.stem,
                     "filename": path.name,
                     "path": str(path),
+                    "source_presets": source_presets,
                 }
             )
         return presets
@@ -952,6 +960,31 @@ class EasyEffectsManager:
         output = self._apply_extras_to_output(output, extras)
         return {"output": output}
 
+    @staticmethod
+    def _normalize_source_presets(source_presets: Optional[List[str]]) -> List[str]:
+        normalized = [Path(str(name)).stem.strip() for name in (source_presets or []) if str(name).strip()]
+        return [name for name in normalized if name]
+
+    def _extract_source_presets_from_payload(self, payload: Dict[str, Any]) -> List[str]:
+        fxroute_meta = payload.get("fxroute") if isinstance(payload.get("fxroute"), dict) else {}
+        if isinstance(fxroute_meta, dict):
+            normalized = self._normalize_source_presets(
+                fxroute_meta.get("source_presets") or fxroute_meta.get("sourcePresets") or []
+            )
+            if normalized:
+                return normalized
+        return self._normalize_source_presets(payload.get("source_presets") or payload.get("sourcePresets") or [])
+
+    def _attach_preset_metadata(self, payload: Dict[str, Any], source_presets: Optional[List[str]] = None) -> Dict[str, Any]:
+        result = dict(payload or {})
+        normalized_sources = self._normalize_source_presets(source_presets)
+        fxroute_meta = result.get("fxroute") if isinstance(result.get("fxroute"), dict) else {}
+        if normalized_sources:
+            fxroute_meta = {**fxroute_meta, "source_presets": normalized_sources}
+        if fxroute_meta:
+            result["fxroute"] = fxroute_meta
+        return result
+
     def _apply_global_extras_to_preset_name(self, preset_name: str, extras: Optional[Dict[str, Any]] = None) -> bool:
         if not preset_name or preset_name in self.EXCLUDED_GLOBAL_EXTRAS_PRESETS:
             return False
@@ -1066,6 +1099,7 @@ class EasyEffectsManager:
                 base_order.append(combined_name)
 
         combined_payload = self._build_effects_output(base_plugins, base_order, extras if extras is not None else self.load_global_extras())
+        combined_payload = self._attach_preset_metadata(combined_payload, source_presets=normalized_sources)
         preset_path = self.output_dir / f"{clean_preset_name}.json"
         preset_path.write_text(json.dumps(combined_payload, indent=2) + "\n")
         return {
@@ -1485,9 +1519,9 @@ class EasyEffectsManager:
                     )
 
         if was_active:
-            logger.info("Deleted active preset '%s', switching to '%s'", clean_name, self.PURE_PRESET)
-            self._ensure_pure_preset_exists()
-            self.load_preset(self.PURE_PRESET)
+            fallback_preset = "Neutral"
+            logger.info("Deleted active preset '%s', switching to '%s'", clean_name, fallback_preset)
+            self.load_preset(fallback_preset)
 
     def create_convolver_preset_with_upload(self, preset_name: str, source_path: Path, filename: str, extras: Optional[Dict[str, Any]] = None) -> dict:
         stored_ir_name = f"{Path(preset_name).stem or 'convolver'}.irs"
