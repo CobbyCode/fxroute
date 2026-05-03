@@ -89,13 +89,7 @@ Tested installer targets so far include:
 
 The installer prefers **Flatpak EasyEffects** when it installs EasyEffects itself. This is the most reproducible path and normally provides the EasyEffects control socket used by FXRoute for faster preset switching and recovery.
 
-If a user already has a native/package-manager EasyEffects installation, FXRoute can use it. Older native EasyEffects builds may not expose the control socket; in that case FXRoute falls back to EasyEffects CLI control where possible.
-
-Recommended reproducible setup:
-
-```bash
-flatpak install --user flathub com.github.wwmm.easyeffects
-```
+If EasyEffects is already installed through the system package manager or managed manually by the user, FXRoute can use that installation instead. Older native EasyEffects builds may not expose the control socket; in that case FXRoute falls back to EasyEffects CLI control where possible.
 
 ## Quick start
 
