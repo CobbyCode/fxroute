@@ -70,7 +70,7 @@ Typical setup:
 - optional Spotify desktop client in the same session
 - control from any browser on the LAN
 
-The desktop session matters because FXRoute coordinates real local audio applications and PipeWire routes, not a remote cloud playback backend.
+The desktop session matters because FXRoute coordinates real local audio applications and PipeWire routes, not a remote cloud playback backend. In socket mode, EasyEffects runs as a background service in the user session.
 
 ## Requirements
 
