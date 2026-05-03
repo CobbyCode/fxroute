@@ -98,11 +98,7 @@ chmod +x install.sh
 ./install.sh
 ```
 
-Minimal config in `.env` when needed:
-
-```env
-MUSIC_ROOT=~/Music
-```
+The installer creates `.env` automatically and preserves it on reruns. For manual setup, copy `.env.example` to `.env` and adjust at least `MUSIC_ROOT` when needed.
 
 Default user service:
 
