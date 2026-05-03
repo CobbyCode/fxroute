@@ -35,12 +35,12 @@ It is built for mini PCs, desktops, ARM boards, and dedicated stereo boxes that 
   <tr>
     <td width="33%"><img src="media/screenshots/mobile/01-library.png" alt="FXRoute mobile library"></td>
     <td width="33%"><img src="media/screenshots/mobile/02-solutions.png" alt="FXRoute mobile solutions"></td>
-    <td width="33%"><img src="media/screenshots/mobile/05-dsp-controls.png" alt="FXRoute mobile DSP controls"></td>
+    <td width="33%"><img src="media/screenshots/mobile/03-create-fir-preset.png" alt="FXRoute mobile FIR preset editor"></td>
   </tr>
   <tr>
     <td align="center"><strong>Mobile library</strong></td>
     <td align="center"><strong>Mobile solutions</strong></td>
-    <td align="center"><strong>Mobile DSP</strong></td>
+    <td align="center"><strong>Mobile PEQ preset</strong></td>
   </tr>
 </table>
 
