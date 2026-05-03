@@ -90,8 +90,8 @@ On supported distros, `install.sh` handles most of this.
 Tested installer targets so far include:
 
 - Ubuntu 24.04 on x86_64
-- openSUSE Tumbleweed on x86_64 test hosts
-- Fedora-family x86_64 validation hosts for selected installer/runtime paths
+- openSUSE Tumbleweed on x86_64
+- Fedora-family x86_64 systems
 - Armbian 26.2.1 / Ubuntu 24.04 Noble on ARM64 (`aarch64`, Khadas VIM1S)
 
 ARM64/Armbian support is expected to work with conservative performance expectations on slower boards.
