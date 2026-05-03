@@ -47,7 +47,7 @@ It is built for mini PCs, desktops, ARM boards, and dedicated stereo boxes that 
 ## What it does
 
 - browser UI for desktop and mobile control
-- local music playback with queue, playlists, uploads, ZIP album imports, and media URL imports when host tools support them
+- local music playback with queue, playlists, uploads, ZIP album imports, and media URL imports
 - internet radio with built-in and custom stations
 - Spotify desktop control through `playerctl` / MPRIS
 - EasyEffects preset switching, PEQ, convolver import, output helpers, and A/B compare
