@@ -50,7 +50,10 @@ firewall_cmd_path() {
   if [[ -z "$path" && -x /usr/bin/firewall-cmd ]]; then
     path="/usr/bin/firewall-cmd"
   fi
-  [[ -n "$path" ]] && printf '%s\n' "$path"
+  if [[ -n "$path" ]]; then
+    printf '%s\n' "$path"
+  fi
+  return 0
 }
 
 firewall_offline_cmd_path() {
@@ -59,7 +62,10 @@ firewall_offline_cmd_path() {
   if [[ -z "$path" && -x /usr/bin/firewall-offline-cmd ]]; then
     path="/usr/bin/firewall-offline-cmd"
   fi
-  [[ -n "$path" ]] && printf '%s\n' "$path"
+  if [[ -n "$path" ]]; then
+    printf '%s\n' "$path"
+  fi
+  return 0
 }
 
 while [[ $# -gt 0 ]]; do
@@ -177,13 +183,41 @@ remove_autostart() {
   remove_file_if_exists "$HOME/.config/autostart/fxroute-spotify.desktop"
 }
 
+remove_optional_mdns_guard() {
+  local sudo_cmd=()
+  local service_path="/etc/systemd/system/fxroute-mdns-guard.service"
+  local timer_path="/etc/systemd/system/fxroute-mdns-guard.timer"
+  local script_path="/usr/local/sbin/fxroute-mdns-guard.sh"
+
+  if [[ ! -e "$service_path" && ! -e "$timer_path" && ! -e "$script_path" ]]; then
+    return 0
+  fi
+
+  if command -v sudo >/dev/null 2>&1; then
+    sudo_cmd=(sudo)
+  else
+    warn "Cannot remove optional FXRoute mDNS guard because sudo is unavailable"
+    return 0
+  fi
+
+  "${sudo_cmd[@]}" systemctl disable --now fxroute-mdns-guard.timer fxroute-mdns-guard.service >/dev/null 2>&1 || true
+  if [[ -x "$script_path" ]]; then
+    "${sudo_cmd[@]}" "$script_path" remove >/dev/null 2>&1 || true
+  fi
+  "${sudo_cmd[@]}" rm -f "$service_path" "$timer_path" "$script_path"
+  "${sudo_cmd[@]}" systemctl daemon-reload >/dev/null 2>&1 || true
+  log "Removed optional FXRoute mDNS guard"
+}
+
 remove_optional_caddy_proxy() {
   local service_name="fxroute-caddy.service"
   local service_path="/etc/systemd/system/$service_name"
   local config_path="/etc/fxroute/Caddyfile"
+  local cert_path="/etc/fxroute/certs/fxroute-local-root.crt"
+  local caddy_data_dir="/var/lib/fxroute-caddy"
   local sudo_cmd=()
 
-  if [[ ! -e "$service_path" && ! -e "$config_path" ]]; then
+  if [[ ! -e "$service_path" && ! -e "$config_path" && ! -e "$cert_path" && ! -e "$caddy_data_dir" ]]; then
     return 0
   fi
 
@@ -195,7 +229,9 @@ remove_optional_caddy_proxy() {
   fi
 
   "${sudo_cmd[@]}" systemctl disable --now "$service_name" >/dev/null 2>&1 || true
-  "${sudo_cmd[@]}" rm -f "$service_path" "$config_path"
+  "${sudo_cmd[@]}" rm -f "$service_path" "$config_path" "$cert_path"
+  "${sudo_cmd[@]}" rm -rf "$caddy_data_dir"
+  "${sudo_cmd[@]}" rmdir /etc/fxroute/certs >/dev/null 2>&1 || true
   "${sudo_cmd[@]}" rmdir /etc/fxroute >/dev/null 2>&1 || true
   "${sudo_cmd[@]}" systemctl daemon-reload >/dev/null 2>&1 || true
   log "Removed optional FXRoute Caddy reverse proxy"
@@ -289,8 +325,8 @@ remove_firewalld_service_if_requested() {
     return 0
   fi
 
-  firewall_cmd="$(firewall_cmd_path)"
-  firewall_offline_cmd="$(firewall_offline_cmd_path)"
+  firewall_cmd="$(firewall_cmd_path || true)"
+  firewall_offline_cmd="$(firewall_offline_cmd_path || true)"
 
   if [[ -n "$firewall_cmd" ]] && "${sudo_cmd[@]}" "$firewall_cmd" --state >/dev/null 2>&1; then
     if ! "${sudo_cmd[@]}" "$firewall_cmd" --permanent --remove-service="$service" >/dev/null 2>&1; then
@@ -501,6 +537,9 @@ main() {
   log "Removing EasyEffects / Spotify autostart entries"
   remove_autostart
 
+  log "Removing optional FXRoute mDNS guard"
+  remove_optional_mdns_guard
+
   log "Removing optional FXRoute Caddy reverse proxy"
   remove_optional_caddy_proxy
 
@@ -514,6 +553,7 @@ main() {
   remove_avahi_if_requested
   remove_firewalld_service_if_requested mdns ".local LAN access"
   remove_firewalld_service_if_requested http "port-80 LAN access"
+  remove_firewalld_service_if_requested https "port-443 LAN access"
   remove_bootstrap_presets_if_requested
   remove_easyeffects_if_requested
   remove_project_dir_if_requested

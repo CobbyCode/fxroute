@@ -3,6 +3,7 @@
 import json
 import logging
 import mimetypes
+import os
 import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -105,14 +106,29 @@ DEFAULT_STATIONS = [
 _cached_stations: Optional[List[Station]] = None
 
 
+def _config_dir() -> Path:
+    root = Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config"))
+    return root / "fxroute"
+
+
 def _stations_file() -> Path:
+    return _config_dir() / "stations.json"
+
+
+def _legacy_stations_file() -> Path:
     return BASE_DIR / "stations.json"
 
 
 def _ensure_storage() -> Path:
     path = _stations_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
     if not path.exists():
-        path.write_text(json.dumps(DEFAULT_STATIONS, indent=2) + "\n", encoding="utf-8")
+        legacy_path = _legacy_stations_file()
+        if legacy_path.exists():
+            path.write_text(legacy_path.read_text(encoding="utf-8"), encoding="utf-8")
+            logger.info("Migrated stations storage to %s", path)
+        else:
+            path.write_text(json.dumps(DEFAULT_STATIONS, indent=2) + "\n", encoding="utf-8")
     return path
 
 

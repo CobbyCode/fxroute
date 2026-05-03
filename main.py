@@ -4,10 +4,13 @@
 
 import json
 import logging
+import re
 import shutil
 import time
 import asyncio
 import random
+import subprocess
+import tempfile
 import zipfile
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -17,6 +20,7 @@ import uvicorn
 from fastapi import FastAPI, Request, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File, Form
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.background import BackgroundTask
 
 from config import get_settings
 
@@ -25,13 +29,28 @@ STATIC_DIR = BASE_DIR / "static"
 
 # Cooldown to prevent rapid mpv IPC flooding (ms)
 PLAY_COMMAND_COOLDOWN_MS = 400
-LOCAL_TRACK_SWITCH_SETTLE_MS = 180
-SOURCE_HANDOFF_SETTLE_MS = 180
+LOCAL_TRACK_SWITCH_SETTLE_MS = 260
+SOURCE_HANDOFF_SETTLE_MS = 260
+PIPEWIRE_HANDOFF_RELEASE_TIMEOUT_MS = 1800
+PIPEWIRE_HANDOFF_POLL_INTERVAL_MS = 50
+PEAK_MONITOR_INACTIVE_GRACE_MS = 450
+PEAK_MONITOR_RESTART_SETTLE_MS = 320
+PEAK_MONITOR_RATE_MATCH_TIMEOUT_MS = 900
 RADIO_SAMPLERATE_RENEGOTIATE_DELAY_MS = 1200
 RADIO_SAMPLERATE_PRESET_BOUNCE_DELAY_MS = 350
 
 # Track last play command time to debounce rapid requests
 _last_play_command_time = 0.0
+
+
+def _path_within_root(path: Path, root: Path) -> bool:
+    try:
+        resolved_path = path.resolve()
+        resolved_root = root.resolve()
+    except Exception:
+        return False
+    return resolved_path == resolved_root or resolved_root in resolved_path.parents
+
 
 def _can_send_play_command():
     """Debounce rapid play/pause/seek commands to prevent mpv IPC overload."""
@@ -42,8 +61,343 @@ def _can_send_play_command():
     _last_play_command_time = now
     return True
 
+
+def _cleanup_temp_file(path: Path):
+    path.unlink(missing_ok=True)
+
+
+def _list_sink_inputs() -> list[dict]:
+    try:
+        completed = subprocess.run(["pactl", "list", "sink-inputs"], capture_output=True, text=True, check=False, timeout=1.5)
+    except Exception:
+        return []
+    if completed.returncode != 0:
+        return []
+
+    entries: list[dict] = []
+    current: dict | None = None
+    in_properties = False
+    for raw_line in completed.stdout.splitlines():
+        if raw_line.startswith("Sink Input #"):
+            if current:
+                entries.append(current)
+            current = {"id": raw_line.split("#", 1)[1].strip(), "properties": {}}
+            in_properties = False
+            continue
+        if current is None:
+            continue
+
+        stripped = raw_line.strip()
+        if stripped.startswith("Sample Specification:"):
+            match = re.search(r"(\d+)\s*Hz\b", stripped)
+            if match:
+                try:
+                    current["sample_rate"] = int(match.group(1))
+                except ValueError:
+                    pass
+            continue
+        if stripped == "Properties:":
+            in_properties = True
+            continue
+        if not stripped:
+            in_properties = False
+            continue
+        if in_properties:
+            if " = " not in stripped:
+                continue
+            key, value = stripped.split(" = ", 1)
+            current["properties"][key.strip()] = value.strip().strip('"')
+
+    if current:
+        entries.append(current)
+    return entries
+
+
+def _list_mpv_sink_inputs() -> list[dict]:
+    return [
+        entry
+        for entry in _list_sink_inputs()
+        if (entry.get("properties") or {}).get("application.name") == "mpv"
+        or (entry.get("properties") or {}).get("application.id") == "mpv"
+        or (entry.get("properties") or {}).get("node.name") == "mpv"
+    ]
+
+
+def _list_spotify_sink_inputs() -> list[dict]:
+    return [
+        entry
+        for entry in _list_sink_inputs()
+        if (entry.get("properties") or {}).get("application.name") == "spotify"
+        or (entry.get("properties") or {}).get("application.id") == "spotify"
+        or (entry.get("properties") or {}).get("node.name") == "spotify"
+        or (entry.get("properties") or {}).get("media.name") == "Spotify"
+    ]
+
+
+def _get_first_sink_input_samplerate(entries: list[dict]) -> Optional[int]:
+    for entry in entries:
+        rate = entry.get("sample_rate")
+        if isinstance(rate, int) and rate > 0:
+            return rate
+    return None
+
+
+async def _wait_for_sink_input_release(list_fn, timeout_ms: int) -> bool:
+    deadline = time.monotonic() + max(timeout_ms, 0) / 1000
+    while time.monotonic() <= deadline:
+        if not list_fn():
+            return True
+        await asyncio.sleep(PIPEWIRE_HANDOFF_POLL_INTERVAL_MS / 1000)
+    return not list_fn()
+
+
+async def _wait_for_pipewire_mpv_release(timeout_ms: int = PIPEWIRE_HANDOFF_RELEASE_TIMEOUT_MS) -> bool:
+    return await _wait_for_sink_input_release(_list_mpv_sink_inputs, timeout_ms)
+
+
+async def _wait_for_pipewire_spotify_release(timeout_ms: int = PIPEWIRE_HANDOFF_RELEASE_TIMEOUT_MS) -> bool:
+    return await _wait_for_sink_input_release(_list_spotify_sink_inputs, timeout_ms)
+
+
+async def _wait_for_pipewire_spotify_samplerate_alignment(
+    timeout_ms: int = PIPEWIRE_HANDOFF_RELEASE_TIMEOUT_MS,
+) -> tuple[bool, Optional[int], Optional[int]]:
+    deadline = time.monotonic() + max(timeout_ms, 0) / 1000
+    last_stream_rate: Optional[int] = None
+    last_sink_rate: Optional[int] = None
+    while time.monotonic() <= deadline:
+        spotify_inputs = _list_spotify_sink_inputs()
+        last_stream_rate = _get_first_sink_input_samplerate(spotify_inputs)
+        if spotify_inputs and last_stream_rate:
+            try:
+                samplerate_status = get_samplerate_status()
+            except Exception:
+                samplerate_status = {}
+            sink_rate = samplerate_status.get("active_rate")
+            last_sink_rate = sink_rate if isinstance(sink_rate, int) and sink_rate > 0 else None
+            if last_sink_rate == last_stream_rate:
+                return True, last_stream_rate, last_sink_rate
+        await asyncio.sleep(PIPEWIRE_HANDOFF_POLL_INTERVAL_MS / 1000)
+    return False, last_stream_rate, last_sink_rate
+
+
+async def _recover_spotify_samplerate_alignment() -> tuple[bool, Optional[int], Optional[int]]:
+    """Retry a stuck Spotify start with one controlled pause/play release cycle."""
+    global source_transition_lock
+    if source_transition_lock is None:
+        source_transition_lock = asyncio.Lock()
+    async with source_transition_lock:
+        data = await spotify_pause()
+        released = await _wait_for_pipewire_spotify_release()
+        if not released:
+            await asyncio.sleep(SOURCE_HANDOFF_SETTLE_MS / 1000)
+        data = await spotify_play()
+        if data.get("status") != "Playing":
+            return False, None, None
+        return await _wait_for_pipewire_spotify_samplerate_alignment()
+
+
+async def _complete_spotify_entry_handoff() -> dict:
+    global spotify_samplerate_recovery_active
+    await pause_local_playback_for_spotify_broadcast()
+    await asyncio.sleep(SOURCE_HANDOFF_SETTLE_MS / 1000)
+    data = await spotify_play()
+    if data.get("status") == "Playing":
+        aligned, stream_rate, sink_rate = await _wait_for_pipewire_spotify_samplerate_alignment()
+        if not aligned and not spotify_samplerate_recovery_active:
+            logger.warning(
+                "Spotify samplerate did not align on entry handoff; leaving recovery to watcher: spotify_stream_rate=%s sink_rate=%s",
+                stream_rate,
+                sink_rate,
+            )
+        elif not aligned:
+            logger.info(
+                "Spotify samplerate still settling during active recovery: spotify_stream_rate=%s sink_rate=%s",
+                stream_rate,
+                sink_rate,
+            )
+    return data
+
+
+async def _wait_for_samplerate_alignment(expected_rate: Optional[int], timeout_ms: int = PEAK_MONITOR_RATE_MATCH_TIMEOUT_MS) -> bool:
+    if not expected_rate or expected_rate <= 0:
+        return False
+    deadline = time.monotonic() + max(timeout_ms, 0) / 1000
+    while time.monotonic() <= deadline:
+        try:
+            samplerate_status = get_samplerate_status()
+        except Exception:
+            samplerate_status = {}
+        sink_rate = samplerate_status.get("active_rate")
+        if isinstance(sink_rate, int) and sink_rate == expected_rate:
+            return True
+        await asyncio.sleep(PIPEWIRE_HANDOFF_POLL_INTERVAL_MS / 1000)
+    return False
+
+
+def _set_pipewire_force_rate(rate: int) -> None:
+    completed = subprocess.run(
+        ["pw-metadata", "-n", "settings", "0", "clock.force-rate", str(rate)],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=1.5,
+    )
+    if completed.returncode != 0:
+        stderr = (completed.stderr or "").strip()
+        raise RuntimeError(stderr or f"pw-metadata clock.force-rate {rate} failed")
+
+
+async def _release_local_samplerate_prearm(expected_rate: int, generation: int, reason: str) -> None:
+    global local_samplerate_prearm_generation
+    try:
+        aligned = await _wait_for_samplerate_alignment(expected_rate, timeout_ms=1200)
+        if generation != local_samplerate_prearm_generation:
+            return
+        _set_pipewire_force_rate(0)
+        logger.info(
+            "Local samplerate pre-arm released: reason=%s expected_rate=%s aligned=%s",
+            reason,
+            expected_rate,
+            aligned,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.warning(
+            "Local samplerate pre-arm release failed: reason=%s expected_rate=%s error=%s",
+            reason,
+            expected_rate,
+            exc,
+        )
+
+
+async def _prearm_known_local_samplerate(track_info: dict | None, reason: str) -> tuple[Optional[int], Optional[int]]:
+    global local_samplerate_prearm_generation
+    track_info = track_info or {}
+    if track_info.get("source") != "local":
+        return None, None
+
+    target_rate = track_info.get("sample_rate_hz")
+    if not isinstance(target_rate, int) or target_rate <= 0:
+        logger.info("Local samplerate pre-arm skipped: no known sample_rate_hz reason=%s", reason)
+        return None, None
+
+    try:
+        samplerate_status = get_samplerate_status()
+    except Exception as exc:
+        logger.info("Local samplerate pre-arm skipped: samplerate status unavailable reason=%s error=%s", reason, exc)
+        return None, None
+
+    active_rate = samplerate_status.get("active_rate")
+    force_rate = samplerate_status.get("force_rate")
+    allowed_rates = samplerate_status.get("allowed_rates") or []
+    if allowed_rates and target_rate not in allowed_rates:
+        logger.info(
+            "Local samplerate pre-arm skipped: target_rate=%s not in allowed_rates=%s reason=%s",
+            target_rate,
+            allowed_rates,
+            reason,
+        )
+        return None, None
+
+    if active_rate == target_rate and force_rate in {None, 0, target_rate}:
+        logger.info(
+            "Local samplerate pre-arm not needed: reason=%s target_rate=%s active_rate=%s force_rate=%s",
+            reason,
+            target_rate,
+            active_rate,
+            force_rate,
+        )
+        return None, None
+
+    _set_pipewire_force_rate(target_rate)
+    local_samplerate_prearm_generation += 1
+    generation = local_samplerate_prearm_generation
+    logger.info(
+        "Local samplerate pre-arm applied: reason=%s target_rate=%s active_rate=%s force_rate=%s title=%s",
+        reason,
+        target_rate,
+        active_rate,
+        force_rate,
+        track_info.get("title") or track_info.get("id"),
+    )
+    return target_rate, generation
+
+
+def _is_local_playback_active(state: dict | None) -> bool:
+    state = state or {}
+    return bool(state.get("current_file") and not state.get("paused") and not state.get("ended"))
+
+
+def _is_spotify_playback_active(state: dict | None) -> bool:
+    state = state or {}
+    return bool(state.get("available") and state.get("status") == "Playing")
+
+
+def _has_local_footer_context(state: dict | None) -> bool:
+    state = state or {}
+    track = current_track_info or state.get("current_track") or {}
+    source = (track or {}).get("source")
+    if source not in {"local", "radio"}:
+        return False
+    return bool(
+        state.get("current_file")
+        or state.get("playing")
+        or state.get("paused")
+        or state.get("ended")
+    )
+
+
+def _get_authoritative_footer_owner(playback_state: dict | None = None, spotify_state: dict | None = None) -> str:
+    global current_footer_owner, latest_spotify_state, player_instance
+    playback_state = playback_state or (player_instance.state if player_instance else {})
+    spotify_state = spotify_state or latest_spotify_state or {}
+    if _has_local_footer_context(playback_state):
+        current_footer_owner = "local"
+        return current_footer_owner
+    if _is_spotify_playback_active(spotify_state):
+        current_footer_owner = "spotify"
+        return current_footer_owner
+    return current_footer_owner or "local"
+
+
+async def _apply_hard_playback_handoff(previous_file: Optional[str], next_url: Optional[str], handoff_reason: Optional[str], transition_reason: str) -> None:
+    if not player_instance:
+        return
+    logger.info(
+        "Applying hard handoff before %s (%s): %s -> %s",
+        transition_reason,
+        handoff_reason,
+        previous_file,
+        next_url,
+    )
+    player_instance.stop_playback()
+    released = await _wait_for_pipewire_mpv_release()
+    if not released:
+        settle_ms = LOCAL_TRACK_SWITCH_SETTLE_MS if handoff_reason == "manual local track switch" else SOURCE_HANDOFF_SETTLE_MS
+        logger.warning(
+            "Timed out waiting for mpv PipeWire stream release before %s; falling back to %sms settle",
+            transition_reason,
+            settle_ms,
+        )
+        await asyncio.sleep(settle_ms / 1000)
+
+
+def _dedupe_archive_name(name: str, used_names: set[str]) -> str:
+    candidate = Path(name or "track").name or "track"
+    stem = Path(candidate).stem or "track"
+    suffix = Path(candidate).suffix
+    index = 2
+    while candidate in used_names:
+        candidate = f"{stem}-{index}{suffix}"
+        index += 1
+    used_names.add(candidate)
+    return candidate
+
 from models import (
     DeleteTracksRequest,
+    DownloadTracksRequest,
     PlaylistSaveRequest,
     PlayRequest,
     StationUpsertRequest,
@@ -54,6 +408,7 @@ from playlists import delete_playlist, get_playlists, save_playlist
 from library import LibraryScanner
 from downloader import Downloader
 from easyeffects import EasyEffectsManager
+from measurement import MeasurementStore
 from peak_monitor import EasyEffectsPeakMonitor
 from samplerate import (
     SOURCE_MODE_APP_PLAYBACK,
@@ -97,6 +452,7 @@ player_instance = None
 library_scanner = None
 downloader = None
 easyeffects_manager = None
+measurement_store = None
 peak_monitor = None
 peak_monitor_playback_armed = False
 peak_monitor_transition_lock = None
@@ -108,8 +464,16 @@ external_input_loopback_source_name = None
 bluetooth_input_source_name = None
 bluetooth_monitor_task = None
 bluetooth_agent_process = None
+spotify_playerctl_watch_task = None
+spotify_playerctl_detect_task = None
+spotify_playerctl_last_trigger_at = 0.0
+spotify_samplerate_recovery_lock = None
+spotify_samplerate_recovery_active = False
+local_samplerate_prearm_generation = 0
 current_source_mode = SOURCE_MODE_APP_PLAYBACK
 latest_spotify_state = None
+current_footer_owner = "local"
+last_spotify_samplerate_recovery_at = 0.0
 current_track_info = None
 last_track_info = None
 playback_queue = []
@@ -352,11 +716,56 @@ def _current_track_matches(expected_track: dict | None) -> bool:
     if not expected_track:
         return False
     live_track = current_track_info or {}
-    return (
+    if not (
         live_track.get("source") == expected_track.get("source")
         and live_track.get("url") == expected_track.get("url")
         and live_track.get("id") == expected_track.get("id")
-    )
+    ):
+        return False
+    expected_url = expected_track.get("url")
+    current_file = (player_instance.state if player_instance else {}).get("current_file")
+    if expected_url and current_file and current_file != expected_url:
+        return False
+    return True
+
+
+def _playback_state_matches_track(state: dict | None, track: dict | None) -> bool:
+    state = state or {}
+    track = track or {}
+    source = track.get("source")
+    current_file = state.get("current_file")
+    track_url = track.get("url")
+    if source in {"local", "radio"} and current_file and track_url and current_file != track_url:
+        return False
+    return True
+
+
+async def _wait_for_player_current_file(expected_url: str | None, timeout_ms: int = 1600) -> bool:
+    if not expected_url or not player_instance:
+        return False
+    deadline = time.monotonic() + max(timeout_ms, 0) / 1000
+    while time.monotonic() <= deadline:
+        state = player_instance.state
+        if state.get("current_file") == expected_url:
+            return True
+        await asyncio.sleep(PIPEWIRE_HANDOFF_POLL_INTERVAL_MS / 1000)
+    return False
+
+
+async def _sync_peak_monitor_after_playback_transition(expected_track: dict | None, timeout_ms: int = 2500) -> None:
+    if not expected_track or expected_track.get("source") not in {"local", "radio"}:
+        return
+    settled = await _wait_for_player_current_file(expected_track.get("url"), timeout_ms=timeout_ms)
+    if not settled:
+        logger.info(
+            "Player transition still settling after play command: source=%s requested_url=%s state_file=%s",
+            expected_track.get("source"),
+            expected_track.get("url"),
+            (player_instance.state if player_instance else {}).get("current_file"),
+        )
+        return
+    if _current_track_matches(expected_track):
+        await sync_peak_monitor_for_playback_state(player_instance.state)
 
 
 def _get_player_audio_samplerate() -> Optional[int]:
@@ -374,9 +783,83 @@ def _get_player_audio_samplerate() -> Optional[int]:
     return rate if isinstance(rate, int) and rate > 0 else None
 
 
-async def _maybe_renegotiate_radio_samplerate(expected_track: dict | None) -> None:
+async def _wait_for_player_audio_samplerate(
+    timeout_ms: int = PEAK_MONITOR_RATE_MATCH_TIMEOUT_MS,
+) -> Optional[int]:
+    rate = _get_player_audio_samplerate()
+    if rate:
+        return rate
+    deadline = time.monotonic() + max(timeout_ms, 0) / 1000
+    while time.monotonic() <= deadline:
+        await asyncio.sleep(PIPEWIRE_HANDOFF_POLL_INTERVAL_MS / 1000)
+        rate = _get_player_audio_samplerate()
+        if rate:
+            return rate
+    return None
+
+
+async def _resolve_expected_playback_samplerate(source: str) -> Optional[int]:
+    rate = await _wait_for_player_audio_samplerate()
+    if rate or source != "radio":
+        return rate
+    await asyncio.sleep(RADIO_SAMPLERATE_RENEGOTIATE_DELAY_MS / 1000)
+    return await _wait_for_player_audio_samplerate(timeout_ms=1200)
+
+
+async def _bounce_easyeffects_preset_for_samplerate_recovery(
+    *,
+    source_label: str,
+    expected_rate: int,
+    sink_rate: int,
+    detail: str,
+    still_valid,
+) -> None:
     global easyeffects_manager, easyeffects_preset_load_lock
-    if not expected_track or expected_track.get("source") != "radio":
+    if not easyeffects_manager:
+        return
+
+    active_preset = easyeffects_manager.get_active_preset()
+    if not active_preset:
+        return
+
+    bounce_preset = "Neutral" if active_preset != "Neutral" else "Direct"
+    logger.info(
+        "%s samplerate mismatch detected, bouncing EasyEffects preset via %s: preset=%s expected_rate=%s sink_rate=%s detail=%s",
+        source_label,
+        bounce_preset,
+        active_preset,
+        expected_rate,
+        sink_rate,
+        detail,
+    )
+
+    if easyeffects_preset_load_lock is None:
+        easyeffects_preset_load_lock = asyncio.Lock()
+
+    async with easyeffects_preset_load_lock:
+        if not still_valid():
+            return
+        easyeffects_manager.load_preset(bounce_preset)
+        await asyncio.sleep(RADIO_SAMPLERATE_PRESET_BOUNCE_DELAY_MS / 1000)
+        if not still_valid():
+            return
+        easyeffects_manager.load_preset(active_preset)
+        status = easyeffects_manager.get_status()
+    await manager.broadcast({"type": "easyeffects", "data": status})
+    await refresh_peak_monitor_after_effects_change(f"{source_label.lower()}-samplerate-mismatch-recovery")
+    final_status = get_samplerate_status()
+    logger.info(
+        "%s samplerate mismatch recovery finished: preset=%s final_sink_rate=%s expected_rate=%s detail=%s",
+        source_label,
+        active_preset,
+        final_status.get("active_rate"),
+        expected_rate,
+        detail,
+    )
+
+
+async def _maybe_recover_samplerate_mismatch(expected_track: dict | None) -> None:
+    if not expected_track or expected_track.get("source") not in {"local", "radio"}:
         return
     if not easyeffects_manager or not player_instance or not player_instance._running:
         return
@@ -386,58 +869,163 @@ async def _maybe_renegotiate_radio_samplerate(expected_track: dict | None) -> No
     if not _current_track_matches(expected_track):
         return
 
-    mpv_rate = _get_player_audio_samplerate()
+    mpv_rate = await _resolve_expected_playback_samplerate(expected_track.get("source") or "")
     if not mpv_rate:
+        logger.info(
+            "Skipping samplerate mismatch recovery because player samplerate is still unavailable: source=%s url=%s",
+            expected_track.get("source"),
+            expected_track.get("url"),
+        )
         return
 
     try:
         samplerate_status = get_samplerate_status()
     except Exception as exc:
-        logger.debug("Radio samplerate renegotiation check failed: %s", exc)
+        logger.debug("Samplerate mismatch recovery check failed: %s", exc)
         return
 
     sink_rate = samplerate_status.get("active_rate")
     if not isinstance(sink_rate, int) or sink_rate <= 0 or sink_rate == mpv_rate:
         return
 
-    active_preset = easyeffects_manager.get_active_preset()
-    if not active_preset:
-        return
-
-    bounce_preset = "Neutral" if active_preset != "Neutral" else "Direct"
-    logger.info(
-        "Radio samplerate mismatch detected, bouncing EasyEffects preset via %s: preset=%s mpv_rate=%s sink_rate=%s track=%s",
-        bounce_preset,
-        active_preset,
-        mpv_rate,
-        sink_rate,
-        expected_track.get("url"),
-    )
-
-    if easyeffects_preset_load_lock is None:
-        easyeffects_preset_load_lock = asyncio.Lock()
-
     try:
-        async with easyeffects_preset_load_lock:
-            if not _current_track_matches(expected_track):
-                return
-            easyeffects_manager.load_preset(bounce_preset)
-            await asyncio.sleep(RADIO_SAMPLERATE_PRESET_BOUNCE_DELAY_MS / 1000)
-            if not _current_track_matches(expected_track):
-                return
-            easyeffects_manager.load_preset(active_preset)
-            status = easyeffects_manager.get_status()
-        await manager.broadcast({"type": "easyeffects", "data": status})
-        await refresh_peak_monitor_after_effects_change("radio-samplerate-renegotiate")
-        final_status = get_samplerate_status()
-        logger.info(
-            "Radio samplerate renegotiation finished: preset=%s final_sink_rate=%s mpv_rate=%s",
-            active_preset,
-            final_status.get("active_rate"),
-            mpv_rate,
+        await _bounce_easyeffects_preset_for_samplerate_recovery(
+            source_label="Local",
+            expected_rate=mpv_rate,
+            sink_rate=sink_rate,
+            detail=f"track={expected_track.get('url')} source={expected_track.get('source')}",
+            still_valid=lambda: _current_track_matches(expected_track),
         )
     except Exception as exc:
-        logger.warning("Radio samplerate renegotiation failed for %s: %s", expected_track.get("url"), exc)
+        logger.warning("Samplerate mismatch recovery failed for %s: %s", expected_track.get("url"), exc)
+
+
+async def _maybe_recover_spotify_samplerate_mismatch(
+    delay_ms: int = RADIO_SAMPLERATE_RENEGOTIATE_DELAY_MS,
+    reason: str = "unspecified",
+) -> None:
+    global last_spotify_samplerate_recovery_at, spotify_samplerate_recovery_lock, spotify_samplerate_recovery_active, latest_spotify_state
+    try:
+        spotify_state = await get_spotify_ui_state()
+        latest_spotify_state = spotify_state
+    except Exception:
+        spotify_state = latest_spotify_state or {}
+    logger.info(
+        "Spotify samplerate recovery entry: reason=%s delay_ms=%s footer_owner=%s spotify_status=%s",
+        reason,
+        delay_ms,
+        current_footer_owner,
+        spotify_state.get("status"),
+    )
+    try:
+        if spotify_samplerate_recovery_lock is None:
+            spotify_samplerate_recovery_lock = asyncio.Lock()
+        if spotify_samplerate_recovery_lock.locked():
+            logger.info("Spotify samplerate recovery skipped: lock busy reason=%s", reason)
+            return
+
+        if not easyeffects_manager:
+            logger.info("Spotify samplerate recovery skipped: no easyeffects_manager")
+            return
+
+        async with spotify_samplerate_recovery_lock:
+            spotify_samplerate_recovery_active = True
+            if delay_ms > 0:
+                await asyncio.sleep(delay_ms / 1000)
+
+            spotify_inputs = _list_spotify_sink_inputs()
+            spotify_rate = _get_first_sink_input_samplerate(spotify_inputs)
+            if not spotify_rate:
+                logger.info("Spotify samplerate recovery skipped: no spotify_rate (inputs=%s) reason=%s", len(spotify_inputs), reason)
+                return
+
+            spotify_state = await get_spotify_ui_state()
+            latest_spotify_state = spotify_state
+            if spotify_state.get("status") != "Playing":
+                logger.info("Spotify samplerate recovery skipped: status=%s reason=%s", spotify_state.get("status"), reason)
+                return
+
+            try:
+                samplerate_status = get_samplerate_status()
+            except Exception as exc:
+                logger.warning("Spotify samplerate recovery status check failed: %s", exc)
+                return
+
+            sink_rate = samplerate_status.get("active_rate")
+            logger.info(
+                "Spotify samplerate recovery probe: reason=%s footer_owner=%s spotify_inputs=%s spotify_rate=%s spotify_status=%s sink_rate=%s title=%s",
+                reason,
+                current_footer_owner,
+                len(spotify_inputs),
+                spotify_rate,
+                spotify_state.get("status"),
+                sink_rate,
+                spotify_state.get("title"),
+            )
+            if not isinstance(sink_rate, int) or sink_rate <= 0:
+                logger.info("Spotify samplerate recovery skipped: invalid sink_rate=%s spotify_rate=%s reason=%s", sink_rate, spotify_rate, reason)
+                return
+            if sink_rate == spotify_rate:
+                logger.info("Spotify samplerate recovery not needed: sink_rate=%s spotify_rate=%s reason=%s", sink_rate, spotify_rate, reason)
+                return
+
+            now = time.monotonic()
+            if now - last_spotify_samplerate_recovery_at < 4.0:
+                logger.info("Spotify samplerate recovery cooldown active: sink_rate=%s spotify_rate=%s delta=%.3f reason=%s", sink_rate, spotify_rate, now - last_spotify_samplerate_recovery_at, reason)
+                return
+            last_spotify_samplerate_recovery_at = now
+
+            logger.info("Spotify samplerate recovery proceeding: reason=%s sink_rate=%s spotify_rate=%s footer_owner=%s title=%s", reason, sink_rate, spotify_rate, current_footer_owner, spotify_state.get("title"))
+            aligned = False
+            restart_stream_rate = spotify_rate
+            restart_sink_rate = sink_rate
+            if reason.startswith("watcher:"):
+                logger.info(
+                    "Spotify samplerate recovery stage 1 skipped for watcher-confirmed mismatch: reason=%s sink_rate=%s spotify_rate=%s",
+                    reason,
+                    sink_rate,
+                    spotify_rate,
+                )
+            else:
+                logger.info("Spotify samplerate recovery stage 1: controlled Spotify start/stop")
+                try:
+                    aligned, restart_stream_rate, restart_sink_rate = await asyncio.wait_for(
+                        _recover_spotify_samplerate_alignment(),
+                        timeout=max(3.5, (PIPEWIRE_HANDOFF_RELEASE_TIMEOUT_MS / 1000) * 2.5),
+                    )
+                except asyncio.TimeoutError:
+                    aligned, restart_stream_rate, restart_sink_rate = False, None, None
+                    logger.warning(
+                        "Spotify samplerate recovery stage 1 timed out: reason=%s sink_rate=%s spotify_rate=%s title=%s",
+                        reason,
+                        sink_rate,
+                        spotify_rate,
+                        spotify_state.get("title"),
+                    )
+                logger.info(
+                    "Spotify samplerate recovery stage 1 result: reason=%s aligned=%s stream_rate=%s sink_rate=%s",
+                    reason,
+                    aligned,
+                    restart_stream_rate,
+                    restart_sink_rate,
+                )
+                if aligned:
+                    return
+                sink_rate = restart_sink_rate if isinstance(restart_sink_rate, int) and restart_sink_rate > 0 else sink_rate
+                spotify_rate = restart_stream_rate if isinstance(restart_stream_rate, int) and restart_stream_rate > 0 else spotify_rate
+
+            logger.info("Spotify samplerate recovery stage 2: EasyEffects preset bounce fallback")
+            await _bounce_easyeffects_preset_for_samplerate_recovery(
+                source_label="Spotify",
+                expected_rate=spotify_rate,
+                sink_rate=sink_rate,
+                detail=f"title={spotify_state.get('title')} artist={spotify_state.get('artist')}",
+                still_valid=lambda: bool(_list_spotify_sink_inputs()),
+            )
+    except Exception as exc:
+        logger.warning("Spotify samplerate mismatch recovery failed: %s", exc)
+    finally:
+        spotify_samplerate_recovery_active = False
 
 
 def _prepare_local_queue(track_id: str, queue_track_ids: Optional[list[str]] = None, shuffle: bool = False, loop: bool = False):
@@ -526,21 +1114,16 @@ async def _load_queue_track(index: int, *, transition_reason: str = "queue navig
         next_url=next_url,
     )
     if apply_hard_handoff:
-        logger.info(
-            "Applying hard handoff before %s (%s): %s -> %s",
-            transition_reason,
-            handoff_reason,
-            previous_file,
-            next_url,
-        )
-        player_instance.stop_playback()
-        settle_ms = LOCAL_TRACK_SWITCH_SETTLE_MS if handoff_reason == "manual local track switch" else SOURCE_HANDOFF_SETTLE_MS
-        await asyncio.sleep(settle_ms / 1000)
+        await _apply_hard_playback_handoff(previous_file, next_url, handoff_reason, transition_reason)
 
+    prearm_rate, prearm_generation = await _prearm_known_local_samplerate(next_track, f"{transition_reason}:queue")
     queue_transition_target_url = next_url
     try:
         player_instance.loadfile(next_url, mode="replace")
+        if prearm_rate and prearm_generation:
+            asyncio.create_task(_release_local_samplerate_prearm(prearm_rate, prearm_generation, f"{transition_reason}:queue"))
         player_instance.set_pause(False)
+        asyncio.create_task(_maybe_recover_samplerate_mismatch(next_track.copy()))
         return True
     except Exception:
         queue_transition_target_url = None
@@ -666,6 +1249,7 @@ async def get_spotify_ui_state(data: Optional[dict] = None) -> dict:
     source_volume = status.get("volume") if isinstance(status.get("volume"), (int, float)) else None
     status["source_volume"] = int(round(float(source_volume))) if source_volume is not None else None
     status["volume"] = get_output_volume_safe(status.get("source_volume") or 100)
+    status["footer_owner"] = _get_authoritative_footer_owner(spotify_state=status)
     return status
 
 
@@ -680,6 +1264,7 @@ def build_playback_payload(state: Optional[dict] = None) -> dict:
     playback_state["volume"] = get_output_volume_safe(int(round(float(source_volume))) if source_volume is not None else 100)
     playback_state["current_track"] = current_track_info
     playback_state["queue"] = _queue_payload()
+    playback_state["footer_owner"] = _get_authoritative_footer_owner(playback_state=playback_state)
 
     live_title = None
     if player_instance and current_track_info and current_track_info.get("source") == "radio":
@@ -718,17 +1303,39 @@ async def sync_peak_monitor_for_playback_state(state: dict):
     if peak_monitor_transition_lock is None:
         peak_monitor_transition_lock = asyncio.Lock()
     async with peak_monitor_transition_lock:
-        is_active_playback = bool(state.get("current_file") and not state.get("paused") and not state.get("ended"))
+        is_active_playback = _is_local_playback_active(state)
         source = (current_track_info or {}).get("source") or "unknown"
+        if is_active_playback and not _playback_state_matches_track(state, current_track_info):
+            logger.info(
+                "Skipping peak monitor sync during unsettled player transition: source=%s state_file=%s track_url=%s track_id=%s",
+                source,
+                state.get("current_file"),
+                (current_track_info or {}).get("url"),
+                (current_track_info or {}).get("id"),
+            )
+            return
         desired_signature = f"player:{source}:{state.get('current_file') or ''}" if is_active_playback else None
 
         if is_active_playback and (not peak_monitor_playback_armed or peak_monitor_context_signature != desired_signature):
             peak_monitor_playback_armed = True
             peak_monitor_context_signature = desired_signature
-            logger.info("Restarting peak monitor on playback context change to refresh PipeWire links: %s", desired_signature)
+            expected_rate = await _resolve_expected_playback_samplerate(source) if source in {"local", "radio"} else None
+            aligned = await _wait_for_samplerate_alignment(expected_rate) if expected_rate else False
+            if not aligned:
+                await asyncio.sleep(PEAK_MONITOR_RESTART_SETTLE_MS / 1000)
+            logger.info(
+                "Restarting peak monitor on playback context change to refresh PipeWire links: %s (expected_rate=%s aligned=%s)",
+                desired_signature,
+                expected_rate,
+                aligned,
+            )
             await peak_monitor.restart()
             await manager.broadcast({"type": "playback_peak_warning", "data": peak_monitor.snapshot()})
         elif not is_active_playback and peak_monitor_playback_armed:
+            await asyncio.sleep(PEAK_MONITOR_INACTIVE_GRACE_MS / 1000)
+            refreshed_player_state = player_instance.state if player_instance else {}
+            if refreshed_player_state.get("current_file") and not refreshed_player_state.get("paused") and not refreshed_player_state.get("ended"):
+                return
             spotify_state = await get_spotify_ui_state()
             if spotify_state.get("available") and spotify_state.get("status") == "Playing":
                 return
@@ -740,7 +1347,7 @@ async def sync_peak_monitor_for_playback_state(state: dict):
 
 
 async def sync_peak_monitor_for_spotify_state(data: dict):
-    global peak_monitor_playback_armed, peak_monitor, player_instance, peak_monitor_transition_lock, peak_monitor_context_signature
+    global peak_monitor_playback_armed, peak_monitor, player_instance, peak_monitor_transition_lock, peak_monitor_context_signature, spotify_samplerate_recovery_active
     if not peak_monitor:
         return
     if peak_monitor_transition_lock is None:
@@ -748,22 +1355,52 @@ async def sync_peak_monitor_for_spotify_state(data: dict):
 
     async with peak_monitor_transition_lock:
         player_state = player_instance.state if player_instance else {}
-        is_spotify_playing = bool(data.get("available") and data.get("status") == "Playing")
+        is_spotify_playing = _is_spotify_playback_active(data)
         desired_signature = "spotify:playing" if is_spotify_playing else None
 
         if is_spotify_playing and (not peak_monitor_playback_armed or peak_monitor_context_signature != desired_signature):
+            if spotify_samplerate_recovery_active:
+                logger.info("Delaying peak monitor restart while Spotify samplerate recovery is active")
+                return
+            aligned, spotify_rate, sink_rate = await _wait_for_pipewire_spotify_samplerate_alignment(
+                timeout_ms=PEAK_MONITOR_RATE_MATCH_TIMEOUT_MS,
+            )
+            if not aligned:
+                logger.info(
+                    "Deferring peak monitor restart for Spotify until samplerate aligns (spotify_rate=%s sink_rate=%s)",
+                    spotify_rate,
+                    sink_rate,
+                )
+                return
             peak_monitor_playback_armed = True
             peak_monitor_context_signature = desired_signature
-            logger.info("Starting peak monitor for active Spotify playback")
+            logger.info(
+                "Starting peak monitor for active Spotify playback (aligned=%s spotify_rate=%s sink_rate=%s)",
+                aligned,
+                spotify_rate,
+                sink_rate,
+            )
             await peak_monitor.restart()
             await manager.broadcast({"type": "playback_peak_warning", "data": peak_monitor.snapshot()})
         elif not is_spotify_playing and peak_monitor_playback_armed:
-            if not (player_state.get("current_file") and not player_state.get("paused") and not player_state.get("ended")):
-                logger.info("Stopping peak monitor because Spotify is no longer actively playing")
-                await peak_monitor.stop()
-                peak_monitor_playback_armed = False
-                peak_monitor_context_signature = None
-                await manager.broadcast({"type": "playback_peak_warning", "data": peak_monitor.snapshot()})
+            if spotify_samplerate_recovery_active:
+                logger.info("Keeping peak monitor armed while Spotify samplerate recovery is active")
+                return
+            await asyncio.sleep(PEAK_MONITOR_INACTIVE_GRACE_MS / 1000)
+            refreshed_player_state = player_instance.state if player_instance else {}
+            refreshed_spotify_state = await get_spotify_ui_state()
+            if spotify_samplerate_recovery_active:
+                logger.info("Keeping peak monitor armed while Spotify samplerate recovery is still active")
+                return
+            if _is_local_playback_active(refreshed_player_state):
+                return
+            if _is_spotify_playback_active(refreshed_spotify_state):
+                return
+            logger.info("Stopping peak monitor because Spotify is no longer actively playing")
+            await peak_monitor.stop()
+            peak_monitor_playback_armed = False
+            peak_monitor_context_signature = None
+            await manager.broadcast({"type": "playback_peak_warning", "data": peak_monitor.snapshot()})
 
 
 async def sync_peak_monitor_for_source_mode_state(source_overview: dict | None = None):
@@ -794,9 +1431,7 @@ async def sync_peak_monitor_for_source_mode_state(source_overview: dict | None =
         elif (not is_bt_streaming) and peak_monitor_playback_armed and str(peak_monitor_context_signature or "").startswith("bluetooth:"):
             player_state = player_instance.state if player_instance else {}
             spotify_state = await get_spotify_ui_state()
-            is_local_playing = bool(player_state.get("current_file") and not player_state.get("paused") and not player_state.get("ended"))
-            is_spotify_playing = bool(spotify_state.get("available") and spotify_state.get("status") == "Playing")
-            if not is_local_playing and not is_spotify_playing:
+            if not _is_local_playback_active(player_state) and not _is_spotify_playback_active(spotify_state):
                 logger.info("Stopping peak monitor because Bluetooth input is no longer actively streaming")
                 await peak_monitor.stop()
                 peak_monitor_playback_armed = False
@@ -819,12 +1454,25 @@ async def refresh_peak_monitor_after_effects_change(reason: str = "effects-chang
 
     logger.info("Refreshing peak monitor after %s", reason)
     peak_monitor_context_signature = None
-    await asyncio.sleep(0.1)
+    await asyncio.sleep(PEAK_MONITOR_RESTART_SETTLE_MS / 1000)
 
     if is_spotify_playing:
         await sync_peak_monitor_for_spotify_state(spotify_state)
     elif is_local_playing:
         await sync_peak_monitor_for_playback_state(player_state)
+
+
+async def _run_peak_monitor_refresh_after_effects_change(reason: str, timeout: float = 4.0):
+    try:
+        await asyncio.wait_for(refresh_peak_monitor_after_effects_change(reason), timeout=timeout)
+    except asyncio.TimeoutError:
+        logger.warning("Timed out refreshing peak monitor after %s", reason)
+    except Exception as e:
+        logger.warning("Failed refreshing peak monitor after %s: %s", reason, e)
+
+
+def schedule_peak_monitor_refresh_after_effects_change(reason: str = "effects-change"):
+    asyncio.create_task(_run_peak_monitor_refresh_after_effects_change(reason))
 
 
 # Callback functions
@@ -862,7 +1510,11 @@ async def on_player_state_change(state: dict):
             if len(playback_queue) > 1 and await _advance_playback_queue(transition_reason="queue auto-advance"):
                 return
             if single_track_loop and current_track_info and current_track_info.get("url"):
+                await _wait_for_pipewire_mpv_release()
+                prearm_rate, prearm_generation = await _prearm_known_local_samplerate(current_track_info, "single-track-loop")
                 player_instance.loadfile(current_track_info["url"], mode="replace")
+                if prearm_rate and prearm_generation:
+                    asyncio.create_task(_release_local_samplerate_prearm(prearm_rate, prearm_generation, "single-track-loop"))
                 return
         finally:
             queue_advancing = False
@@ -892,7 +1544,40 @@ async def broadcast_spotify_state(data=None):
     return data
 
 
+async def _spotify_player_present(timeout: float = 0.8) -> bool:
+    try:
+        import shutil
+        pc = shutil.which("playerctl")
+        if not pc:
+            return False
+        proc = await asyncio.create_subprocess_exec(
+            pc,
+            "-l",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        if proc.returncode != 0:
+            return False
+        players = stdout.decode(errors="ignore").splitlines()
+        return any(player.strip().lower() == "spotify" for player in players)
+    except Exception:
+        return False
+
+
 async def pause_spotify_for_local_playback_broadcast():
+    global current_footer_owner, latest_spotify_state
+    current_footer_owner = "local"
+    if not await _spotify_player_present():
+        latest_spotify_state = {
+            "available": playerctl_available(),
+            "installed": spotify_installed(),
+            "source": "spotify",
+            "status": "Stopped",
+            "footer_owner": "local",
+        }
+        await manager.broadcast({"type": "spotify", "data": latest_spotify_state})
+        return
     try:
         import shutil
         pc = shutil.which("playerctl")
@@ -908,12 +1593,16 @@ async def pause_spotify_for_local_playback_broadcast():
 
 
 async def pause_local_playback_for_spotify_broadcast():
-    global player_instance
+    global player_instance, current_footer_owner, current_track_info
+    current_footer_owner = "spotify"
     try:
         if player_instance and player_instance._running:
             player_instance.stop_playback()
+            current_track_info = None
             await manager.broadcast({"type": "playback", "data": build_playback_payload(player_instance.state)})
-            await asyncio.sleep(0.2)
+            released = await _wait_for_pipewire_mpv_release()
+            if not released:
+                await asyncio.sleep(SOURCE_HANDOFF_SETTLE_MS / 1000)
     except Exception:
         pass
 
@@ -942,17 +1631,37 @@ async def _run_pw_link_command(*args: str) -> str:
     return stdout.decode(errors="ignore").strip()
 
 
+async def _disconnect_ports(source_ports: tuple[str, ...], sink_port: str) -> None:
+    for source_port in source_ports:
+        try:
+            await _run_pw_link_command("-d", source_port, sink_port)
+            return
+        except Exception:
+            continue
+
+
+async def _connect_ports(source_ports: tuple[str, ...], sink_port: str) -> None:
+    last_exc: Exception | None = None
+    for source_port in source_ports:
+        try:
+            await _run_pw_link_command(source_port, sink_port)
+            return
+        except Exception as exc:
+            message = str(exc).lower()
+            if "file exists" in message or "exists" in message or "already linked" in message:
+                return
+            last_exc = exc
+    if last_exc:
+        raise last_exc
+
+
 async def _disconnect_external_input_source(source_name: str | None) -> None:
     normalized = (source_name or "").strip()
     if not normalized:
         return
     for channel in ("FL", "FR"):
-        source_port = f"{normalized}:capture_{channel}"
         sink_port = f"easyeffects_sink:playback_{channel}"
-        try:
-            await _run_pw_link_command("-d", source_port, sink_port)
-        except Exception:
-            pass
+        await _disconnect_ports((f"{normalized}:capture_{channel}",), sink_port)
 
 
 async def _disable_external_input_loopback() -> None:
@@ -981,11 +1690,9 @@ async def _ensure_external_input_loopback(source_name: str) -> None:
         source_port = f"{normalized}:capture_{channel}"
         sink_port = f"easyeffects_sink:playback_{channel}"
         try:
-            await _run_pw_link_command(source_port, sink_port)
-        except Exception as exc:
-            message = str(exc).lower()
-            if "file exists" not in message and "exists" not in message:
-                raise
+            await _connect_ports((source_port,), sink_port)
+        except Exception:
+            raise
     external_input_loopback_module_id = None
     external_input_loopback_source_name = normalized
     logger.info("Enabled direct external-input monitoring from %s to easyeffects_sink", normalized)
@@ -1059,34 +1766,17 @@ async def _link_bluetooth_source_to_easyeffects(source_name: str, disconnect: bo
     normalized = (source_name or "").strip()
     if not normalized:
         return
-    action = "-d" if disconnect else None
     failures: list[str] = []
     for channel in ("FL", "FR"):
         sink_port = f"easyeffects_sink:playback_{channel}"
-        linked = False
-        attempted_messages: list[str] = []
-        for source_port in (f"{normalized}:capture_{channel}", f"{normalized}:output_{channel}"):
-            try:
-                if action:
-                    await _run_pw_link_command(action, source_port, sink_port)
-                else:
-                    await _run_pw_link_command(source_port, sink_port)
-                linked = True
-                break
-            except Exception as exc:
-                message = str(exc)
-                lower = message.lower()
-                if disconnect:
-                    if "no such file" in lower or "not linked" in lower:
-                        linked = True
-                        break
-                else:
-                    if "file exists" in lower or "exists" in lower or "already linked" in lower:
-                        linked = True
-                        break
-                attempted_messages.append(f"{source_port} -> {sink_port}: {message}")
-        if not linked:
-            failures.append(f"{channel}: " + " | ".join(attempted_messages))
+        source_ports = (f"{normalized}:capture_{channel}", f"{normalized}:output_{channel}")
+        try:
+            if disconnect:
+                await _disconnect_ports(source_ports, sink_port)
+            else:
+                await _connect_ports(source_ports, sink_port)
+        except Exception as exc:
+            failures.append(f"{channel}: {exc}")
 
     if failures:
         raise RuntimeError("failed to link ports: " + "; ".join(failures))
@@ -1161,10 +1851,159 @@ async def _bluetooth_input_monitor_loop() -> None:
         await asyncio.sleep(3)
 
 
+async def _spotify_playerctl_event_detect_check(reason: str) -> None:
+    global spotify_playerctl_detect_task
+    try:
+        burst_delays = (0.05, 0.15, 0.30, 0.60)
+        last_snapshot: tuple[object, object, object, object] | None = None
+        for index, delay_s in enumerate(burst_delays):
+            if delay_s > 0:
+                await asyncio.sleep(delay_s if index == 0 else max(0.0, delay_s - burst_delays[index - 1]))
+            spotify_inputs = _list_spotify_sink_inputs()
+            spotify_rate = _get_first_sink_input_samplerate(spotify_inputs)
+            spotify_state = await get_spotify_ui_state()
+            samplerate_status = get_samplerate_status()
+            sink_rate = samplerate_status.get("active_rate")
+            last_snapshot = (
+                spotify_state.get("status"),
+                len(spotify_inputs),
+                spotify_rate,
+                sink_rate,
+            )
+            if spotify_state.get("status") == "Playing" and isinstance(spotify_rate, int) and isinstance(sink_rate, int):
+                if spotify_rate != sink_rate:
+                    logger.info(
+                        "Spotify detect watcher burst hit: reason=%s probe=%s/%s spotify_rate=%s sink_rate=%s title=%s",
+                        reason,
+                        index + 1,
+                        len(burst_delays),
+                        spotify_rate,
+                        sink_rate,
+                        spotify_state.get("title"),
+                    )
+                    logger.warning(
+                        "Spotify mismatch detected by watcher: reason=%s spotify_rate=%s sink_rate=%s title=%s",
+                        reason,
+                        spotify_rate,
+                        sink_rate,
+                        spotify_state.get("title"),
+                    )
+                    await _maybe_recover_spotify_samplerate_mismatch(delay_ms=0, reason=f"watcher:{reason}")
+                    break
+                logger.info(
+                    "Spotify detect watcher: reason=%s probe=%s/%s status=%s spotify_inputs=%s spotify_rate=%s sink_rate=%s footer_owner=%s title=%s",
+                    reason,
+                    index + 1,
+                    len(burst_delays),
+                    spotify_state.get("status"),
+                    len(spotify_inputs),
+                    spotify_rate,
+                    sink_rate,
+                    current_footer_owner,
+                    spotify_state.get("title"),
+                )
+                break
+        else:
+            if last_snapshot is not None:
+                status, inputs_count, spotify_rate, sink_rate = last_snapshot
+                logger.info(
+                    "Spotify detect watcher final: reason=%s probes=%s status=%s spotify_inputs=%s spotify_rate=%s sink_rate=%s footer_owner=%s",
+                    reason,
+                    len(burst_delays),
+                    status,
+                    inputs_count,
+                    spotify_rate,
+                    sink_rate,
+                    current_footer_owner,
+                )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.warning("Spotify playerctl detect check failed (%s): %s", reason, exc)
+    finally:
+        if spotify_playerctl_detect_task and spotify_playerctl_detect_task.done():
+            spotify_playerctl_detect_task = None
+
+
+def _schedule_spotify_playerctl_event_detect(reason: str) -> None:
+    global spotify_playerctl_detect_task, spotify_playerctl_last_trigger_at
+    now = time.monotonic()
+    if now - spotify_playerctl_last_trigger_at < 1.0:
+        return
+    spotify_playerctl_last_trigger_at = now
+    if spotify_playerctl_detect_task and not spotify_playerctl_detect_task.done():
+        spotify_playerctl_detect_task.cancel()
+    spotify_playerctl_detect_task = asyncio.create_task(
+        _spotify_playerctl_event_detect_check(reason),
+        name="spotify-playerctl-event-detect",
+    )
+
+
+async def _spotify_playerctl_watch_loop() -> None:
+    logger.info("Spotify playerctl watch loop entered")
+    playerctl_path = shutil.which("playerctl")
+    if not playerctl_path:
+        logger.info("Spotify playerctl watch skipped: playerctl not available")
+        return
+    logger.info("Spotify playerctl watch resolved playerctl path: %s", playerctl_path)
+    while True:
+        proc = None
+        try:
+            logger.info("Spotify playerctl watch spawning follow process")
+            proc = await asyncio.create_subprocess_exec(
+                playerctl_path,
+                "--player=spotify",
+                "metadata",
+                "--follow",
+                "--format",
+                "{{status}}|{{title}}|{{artist}}",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            assert proc.stdout is not None
+            logger.info("Spotify playerctl watch started")
+            while True:
+                line = await proc.stdout.readline()
+                if not line:
+                    break
+                text = line.decode(errors="ignore").strip()
+                if not text:
+                    continue
+                status, _, tail = text.partition("|")
+                if status == "Playing":
+                    _schedule_spotify_playerctl_event_detect(f"playerctl:{tail or 'playing'}")
+            stderr = b""
+            if proc.stderr:
+                try:
+                    stderr = await asyncio.wait_for(proc.stderr.read(), timeout=0.2)
+                except Exception:
+                    stderr = b""
+            if proc.returncode not in (0, None):
+                logger.warning("Spotify playerctl watch exited with %s: %s", proc.returncode, stderr.decode(errors="ignore").strip() or "no stderr")
+        except asyncio.CancelledError:
+            if proc and proc.returncode is None:
+                proc.terminate()
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=1)
+                except Exception:
+                    proc.kill()
+            raise
+        except Exception as exc:
+            logger.warning("Spotify playerctl watch loop failed: %s", exc)
+        finally:
+            if proc and proc.returncode is None:
+                proc.terminate()
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=1)
+                except Exception:
+                    proc.kill()
+        await asyncio.sleep(1.0)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan: startup and shutdown."""
-    global settings, player_instance, library_scanner, downloader, easyeffects_manager, peak_monitor, peak_monitor_playback_armed, peak_monitor_transition_lock, peak_monitor_context_signature, easyeffects_preset_load_lock, source_transition_lock, external_input_loopback_module_id, external_input_loopback_source_name, bluetooth_input_source_name, bluetooth_monitor_task, bluetooth_agent_process, current_source_mode, latest_spotify_state
+    global settings, player_instance, library_scanner, downloader, easyeffects_manager, measurement_store, peak_monitor, peak_monitor_playback_armed, peak_monitor_transition_lock, peak_monitor_context_signature, easyeffects_preset_load_lock, source_transition_lock, external_input_loopback_module_id, external_input_loopback_source_name, bluetooth_input_source_name, bluetooth_monitor_task, bluetooth_agent_process, spotify_playerctl_watch_task, spotify_playerctl_detect_task, spotify_playerctl_last_trigger_at, spotify_samplerate_recovery_lock, spotify_samplerate_recovery_active, current_source_mode, latest_spotify_state
 
     # Startup
     logger.info("Starting FXRoute...")
@@ -1195,13 +2034,19 @@ async def lifespan(app: FastAPI):
         easyeffects_manager = EasyEffectsManager()
         logger.info("EasyEffects manager initialized")
 
+        measurement_store = MeasurementStore()
+        logger.info("Measurement store initialized: %s", measurement_store.measurements_dir)
+
         peak_monitor = EasyEffectsPeakMonitor(on_change=on_peak_monitor_change)
         peak_monitor_playback_armed = False
         peak_monitor_transition_lock = asyncio.Lock()
         peak_monitor_context_signature = None
         easyeffects_preset_load_lock = asyncio.Lock()
         source_transition_lock = asyncio.Lock()
+        spotify_samplerate_recovery_lock = asyncio.Lock()
+        spotify_samplerate_recovery_active = False
         latest_spotify_state = await get_spotify_ui_state()
+        await sync_peak_monitor_for_spotify_state(latest_spotify_state)
         logger.info("EasyEffects output peak monitor initialized")
 
         try:
@@ -1227,6 +2072,9 @@ async def lifespan(app: FastAPI):
             logger.warning("Failed to re-apply source monitoring: %s", exc)
 
         bluetooth_monitor_task = asyncio.create_task(_bluetooth_input_monitor_loop())
+        spotify_playerctl_last_trigger_at = 0.0
+        logger.info("Starting Spotify playerctl watch task")
+        spotify_playerctl_watch_task = asyncio.create_task(_spotify_playerctl_watch_loop())
 
         # Register callbacks for state changes
         player_instance.register_callbacks(on_player_state_change)
@@ -1248,6 +2096,18 @@ async def lifespan(app: FastAPI):
             await bluetooth_monitor_task
         except asyncio.CancelledError:
             pass
+    if spotify_playerctl_watch_task:
+        spotify_playerctl_watch_task.cancel()
+        try:
+            await spotify_playerctl_watch_task
+        except asyncio.CancelledError:
+            pass
+    if spotify_playerctl_detect_task:
+        spotify_playerctl_detect_task.cancel()
+        try:
+            await spotify_playerctl_detect_task
+        except asyncio.CancelledError:
+            pass
     await _disable_bluetooth_input_monitoring()
     try:
         set_bluetooth_receiver_enabled(False)
@@ -1263,9 +2123,18 @@ app = FastAPI(lifespan=lifespan)
 # Static files
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
+def _effective_request_scheme(request: Request) -> str:
+    forwarded_proto = (request.headers.get("x-forwarded-proto") or "").split(",", 1)[0].strip().lower()
+    if forwarded_proto:
+        return forwarded_proto
+    return (request.url.scheme or "http").lower()
+
 @app.get("/", response_class=HTMLResponse)
-async def read_root():
-    return HTMLResponse(content=(STATIC_DIR / "index.html").read_text())
+async def read_root(request: Request):
+    html = (STATIC_DIR / "index.html").read_text()
+    if _effective_request_scheme(request) != "https":
+        html = re.sub(r'\s*<link rel="manifest" href="/static/site\.webmanifest\?v=[^"]+">\n?', '', html, count=1)
+    return HTMLResponse(content=html)
 
 @app.get("/favicon.ico")
 async def favicon_root():
@@ -1353,6 +2222,71 @@ async def remove_station(station_id: str):
 async def list_tracks():
     tracks = library_scanner.get_tracks()
     return [t.to_dict() for t in tracks]
+
+
+@app.get("/api/tracks/file/{track_id:path}")
+async def download_track_file(track_id: str):
+    tracks_by_id = {track.id: track for track in library_scanner.get_tracks(refresh=True)}
+    track = tracks_by_id.get(track_id)
+    if not track or not track.path:
+        raise HTTPException(status_code=404, detail="Track not found")
+    track_path = track.path.resolve()
+    if not _path_within_root(track_path, settings.MUSIC_ROOT):
+        raise HTTPException(status_code=403, detail="Track path outside music root")
+    if not track_path.is_file():
+        raise HTTPException(status_code=404, detail="Track file missing")
+    return FileResponse(track_path, filename=track_path.name)
+
+
+@app.post("/api/tracks/download")
+async def download_tracks(req: DownloadTracksRequest):
+    global library_scanner, settings
+    if not library_scanner or not settings:
+        raise HTTPException(status_code=503, detail="Library not available")
+    if not req.track_ids:
+        raise HTTPException(status_code=400, detail="track_ids is required")
+
+    tracks_by_id = {track.id: track for track in library_scanner.get_tracks(refresh=True)}
+    selected_tracks = []
+    seen_ids = set()
+    for track_id in req.track_ids:
+        if not track_id or track_id in seen_ids:
+            continue
+        seen_ids.add(track_id)
+        track = tracks_by_id.get(track_id)
+        if not track or not track.path:
+            raise HTTPException(status_code=404, detail=f"Track not found: {track_id}")
+        track_path = track.path.resolve()
+        if not _path_within_root(track_path, settings.MUSIC_ROOT):
+            raise HTTPException(status_code=403, detail="Track path outside music root")
+        if not track_path.is_file():
+            raise HTTPException(status_code=404, detail=f"Track file missing: {track_path.name}")
+        selected_tracks.append((track, track_path))
+
+    if not selected_tracks:
+        raise HTTPException(status_code=404, detail="No downloadable tracks found")
+    if len(selected_tracks) == 1:
+        _, track_path = selected_tracks[0]
+        return FileResponse(track_path, filename=track_path.name)
+
+    with tempfile.NamedTemporaryFile(prefix="fxroute-library-selection-", suffix=".zip", delete=False) as temp_file:
+        temp_zip_path = Path(temp_file.name)
+
+    used_names = set()
+    try:
+        with zipfile.ZipFile(temp_zip_path, "w", compression=zipfile.ZIP_STORED) as archive:
+            for _, track_path in selected_tracks:
+                archive.write(track_path, arcname=_dedupe_archive_name(track_path.name, used_names))
+    except Exception:
+        temp_zip_path.unlink(missing_ok=True)
+        raise
+
+    return FileResponse(
+        temp_zip_path,
+        filename="fxroute-library-selection.zip",
+        media_type="application/zip",
+        background=BackgroundTask(_cleanup_temp_file, temp_zip_path),
+    )
 
 
 @app.get("/api/playlists")
@@ -1526,7 +2460,7 @@ async def play_track(req: PlayRequest):
     track_id = req.track_id
     url = req.url
     queue_track_ids = req.queue_track_ids or []
-    global player_instance, current_track_info, last_track_info, source_transition_lock
+    global player_instance, current_track_info, last_track_info, source_transition_lock, current_footer_owner
     if not player_instance or not player_instance._running:
         raise HTTPException(status_code=503, detail="Player not available")
     if not _can_send_play_command():
@@ -1542,6 +2476,7 @@ async def play_track(req: PlayRequest):
     try:
         async with source_transition_lock:
             # Source exclusivity: pause Spotify and broadcast the new Spotify state
+            current_footer_owner = "local"
             await pause_spotify_for_local_playback_broadcast()
             play_url = url
             track_info = {"id": track_id, "title": track_id, "artist": "", "source": source, "url": play_url}
@@ -1573,9 +2508,6 @@ async def play_track(req: PlayRequest):
                 next_url=play_url,
             )
 
-            current_track_info = track_info
-            last_track_info = track_info
-
             if playback_queue_mode != "mpv_native":
                 _reset_mpv_loop_state()
 
@@ -1591,25 +2523,27 @@ async def play_track(req: PlayRequest):
                 player_instance.set_pause(False)
             else:
                 if apply_hard_handoff:
-                    logger.info(
-                        "Applying hard handoff before play (%s): %s -> %s",
-                        handoff_reason,
-                        previous_file,
-                        play_url,
-                    )
-                    player_instance.stop_playback()
-                    settle_ms = LOCAL_TRACK_SWITCH_SETTLE_MS if handoff_reason == "manual local track switch" else SOURCE_HANDOFF_SETTLE_MS
-                    await asyncio.sleep(settle_ms / 1000)
+                    await _apply_hard_playback_handoff(previous_file, play_url, handoff_reason, "play")
                 if playback_queue_mode == "mpv_native" and len(playback_queue) > 1:
+                    prearm_rate, prearm_generation = await _prearm_known_local_samplerate(track_info, "play:mpv-native-queue")
                     if not _prime_mpv_native_queue(playback_queue_index):
                         raise HTTPException(status_code=500, detail="Failed to initialize native mpv playlist")
+                    if prearm_rate and prearm_generation:
+                        asyncio.create_task(_release_local_samplerate_prearm(prearm_rate, prearm_generation, "play:mpv-native-queue"))
                 else:
+                    prearm_rate, prearm_generation = await _prearm_known_local_samplerate(track_info, "play")
                     player_instance.loadfile(play_url, mode="replace")
+                    if prearm_rate and prearm_generation:
+                        asyncio.create_task(_release_local_samplerate_prearm(prearm_rate, prearm_generation, "play"))
                     # Ensure MPV is unpaused after loadfile (it may stay paused if previously paused by Spotify)
                     player_instance.set_pause(False)
 
-            if source == "radio":
-                asyncio.create_task(_maybe_renegotiate_radio_samplerate(track_info.copy()))
+            current_track_info = track_info
+            last_track_info = track_info
+
+            if source in {"local", "radio"}:
+                asyncio.create_task(_sync_peak_monitor_after_playback_transition(track_info.copy()))
+                asyncio.create_task(_maybe_recover_samplerate_mismatch(track_info.copy()))
 
             return {
                 "status": "playing",
@@ -1665,7 +2599,12 @@ async def toggle_playback():
         raise HTTPException(status_code=409, detail="Nothing is available to replay")
 
     await pause_spotify_for_local_playback_broadcast()
+    await _wait_for_pipewire_mpv_release()
+    prearm_rate, prearm_generation = await _prearm_known_local_samplerate(replay_track, "replay")
     player_instance.loadfile(replay_url, mode="replace")
+    if prearm_rate and prearm_generation:
+        asyncio.create_task(_release_local_samplerate_prearm(prearm_rate, prearm_generation, "replay"))
+    asyncio.create_task(_maybe_recover_samplerate_mismatch((replay_track or {}).copy()))
     return {
         "status": "playing",
         "replayed": True,
@@ -1832,7 +2771,14 @@ async def get_status():
 
 @app.get("/api/audio/samplerate")
 async def audio_samplerate_status():
-    return get_samplerate_status()
+    status = get_samplerate_status()
+    logger.info(
+        "audio_samplerate_status entry: footer_owner=%s active_rate=%s sink_state=%s",
+        current_footer_owner,
+        status.get("active_rate"),
+        (status.get("relevant_sink") or {}).get("state"),
+    )
+    return status
 
 
 @app.get("/api/audio/outputs")
@@ -1874,6 +2820,9 @@ async def _pause_all_app_playback_for_external_input() -> None:
         if player_instance and player_instance._running:
             player_instance.stop_playback()
             await manager.broadcast({"type": "playback", "data": build_playback_payload(player_instance.state)})
+            released = await _wait_for_pipewire_mpv_release()
+            if not released:
+                await asyncio.sleep(SOURCE_HANDOFF_SETTLE_MS / 1000)
     except Exception:
         pass
     try:
@@ -2002,7 +2951,7 @@ async def save_easyeffects_extras(request: Request):
 
     status = easyeffects_manager.get_status()
     await manager.broadcast({"type": "easyeffects", "data": status})
-    await refresh_peak_monitor_after_effects_change("global-extras-update")
+    schedule_peak_monitor_refresh_after_effects_change("global-extras-update")
     return {
         "status": "ok",
         "extras": result["extras"],
@@ -2016,6 +2965,249 @@ async def list_easyeffects_presets():
     if not easyeffects_manager:
         raise HTTPException(status_code=503, detail="EasyEffects manager not available")
     return easyeffects_manager.get_status()
+
+
+@app.get("/api/easyeffects/presets/{preset_name}/file")
+async def download_easyeffects_preset_file(preset_name: str):
+    global easyeffects_manager
+    if not easyeffects_manager:
+        raise HTTPException(status_code=503, detail="EasyEffects manager not available")
+    preset = next((item for item in easyeffects_manager.list_presets() if item.get("name") == preset_name), None)
+    if not preset:
+        raise HTTPException(status_code=404, detail="Preset not found")
+    preset_path = Path(str(preset.get("path") or "")).resolve()
+    if not _path_within_root(preset_path, easyeffects_manager.output_dir):
+        raise HTTPException(status_code=403, detail="Preset path outside EasyEffects preset directory")
+    if not preset_path.is_file():
+        raise HTTPException(status_code=404, detail="Preset file missing")
+    return FileResponse(preset_path, filename=preset_path.name)
+
+@app.get("/api/measurements")
+async def list_measurements():
+    global measurement_store
+    if not measurement_store:
+        raise HTTPException(status_code=503, detail="Measurement store not available")
+    return measurement_store.list_measurements()
+
+@app.get("/api/measurements/inputs")
+async def list_measurement_inputs():
+    global measurement_store
+    if not measurement_store:
+        raise HTTPException(status_code=503, detail="Measurement store not available")
+    return measurement_store.list_inputs()
+
+
+@app.post("/api/measurements/calibrations")
+async def upload_measurement_calibration(calibration_file: UploadFile = File(...)):
+    global measurement_store
+    if not measurement_store:
+        raise HTTPException(status_code=503, detail="Measurement store not available")
+    filename = calibration_file.filename or "calibration.txt"
+    data = await calibration_file.read()
+    try:
+        return measurement_store.upload_calibration_file(filename, data)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.patch("/api/measurements/calibrations/active")
+async def set_active_measurement_calibration(request: Request):
+    global measurement_store
+    if not measurement_store:
+        raise HTTPException(status_code=503, detail="Measurement store not available")
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    calibration_ref = payload.get("calibration_file_id") if isinstance(payload, dict) else ""
+    return measurement_store.set_active_calibration_file_id(str(calibration_ref or ""))
+
+
+@app.delete("/api/measurements/calibrations/{calibration_id}")
+async def delete_measurement_calibration(calibration_id: str):
+    global measurement_store
+    if not measurement_store:
+        raise HTTPException(status_code=503, detail="Measurement store not available")
+    try:
+        return measurement_store.delete_calibration_file(calibration_id)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Calibration file not found")
+
+
+@app.get("/api/measurements/{measurement_id}/file")
+async def download_measurement_file(measurement_id: str):
+    global measurement_store
+    if not measurement_store:
+        raise HTTPException(status_code=503, detail="Measurement store not available")
+    measurement = next((item for item in measurement_store.list_measurements().get("measurements", []) if item.get("id") == measurement_id), None)
+    if not measurement:
+        raise HTTPException(status_code=404, detail="Measurement not found")
+    storage_path = Path(str(measurement.get("storage_path") or "")).resolve()
+    if not _path_within_root(storage_path, measurement_store.measurements_dir):
+        raise HTTPException(status_code=403, detail="Measurement path outside measurement storage")
+    if not storage_path.is_file():
+        raise HTTPException(status_code=404, detail="Measurement file missing")
+    return FileResponse(storage_path, filename=storage_path.name)
+
+@app.get("/api/browser-mic/certificate")
+async def download_browser_mic_certificate():
+    cert_path = Path("/etc/fxroute/certs/fxroute-local-root.crt")
+    if not cert_path.exists():
+        raise HTTPException(status_code=404, detail="Browser microphone certificate not available on this host")
+    return FileResponse(cert_path, filename="fxroute-local-root.crt", media_type="application/x-x509-ca-cert")
+
+@app.post("/api/measurements/start")
+async def start_measurement(
+    input_id: str = Form(...),
+    channel: str = Form("left"),
+    calibration_ref: str = Form(""),
+    calibration_file: Optional[UploadFile] = File(None),
+):
+    global measurement_store
+    if not measurement_store:
+        raise HTTPException(status_code=503, detail="Measurement store not available")
+
+    calibration_bytes = None
+    calibration_filename = None
+    if calibration_file is not None:
+        calibration_filename = calibration_file.filename or "calibration.txt"
+        calibration_bytes = await calibration_file.read()
+
+    try:
+        job = await measurement_store.start_measurement(
+            input_id=input_id,
+            channel=channel,
+            calibration_filename=calibration_filename,
+            calibration_bytes=calibration_bytes,
+            calibration_ref=calibration_ref,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    return {"status": "ok", "job": job}
+
+@app.get("/api/measurements/jobs/{job_id}")
+async def get_measurement_job(job_id: str):
+    global measurement_store
+    if not measurement_store:
+        raise HTTPException(status_code=503, detail="Measurement store not available")
+    try:
+        job = measurement_store.get_job(job_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Measurement job not found")
+    return {"status": "ok", "job": job}
+
+@app.post("/api/measurements/jobs/{job_id}/cancel")
+async def cancel_measurement_job(job_id: str):
+    global measurement_store
+    if not measurement_store:
+        raise HTTPException(status_code=503, detail="Measurement store not available")
+    try:
+        job = measurement_store.cancel_job(job_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Measurement job not found")
+    return {"status": "ok", "job": job}
+
+@app.post("/api/measurements/browser/start")
+async def start_browser_measurement(
+    channel: str = Form("left"),
+    calibration_ref: str = Form(""),
+    calibration_file: Optional[UploadFile] = File(None),
+):
+    global measurement_store
+    if not measurement_store:
+        raise HTTPException(status_code=503, detail="Measurement store not available")
+
+    calibration_bytes = None
+    calibration_filename = None
+    if calibration_file is not None:
+        calibration_filename = calibration_file.filename or "calibration.txt"
+        calibration_bytes = await calibration_file.read()
+
+    try:
+        job = await measurement_store.start_browser_measurement(
+            channel=channel,
+            calibration_filename=calibration_filename,
+            calibration_bytes=calibration_bytes,
+            calibration_ref=calibration_ref,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    return {"status": "ok", "job": job}
+
+@app.post("/api/measurements/browser/complete")
+async def complete_browser_measurement(
+    job_id: str = Form(...),
+    browser_input_label: str = Form("Browser microphone"),
+    browser_capture_meta: str = Form(""),
+    capture_file: UploadFile = File(...),
+):
+    global measurement_store
+    if not measurement_store:
+        raise HTTPException(status_code=503, detail="Measurement store not available")
+
+    capture_filename = capture_file.filename or "browser-capture.wav"
+    capture_bytes = await capture_file.read()
+    capture_meta = None
+    if browser_capture_meta.strip():
+        try:
+            capture_meta = json.loads(browser_capture_meta)
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="Invalid browser capture metadata JSON")
+
+    try:
+        job = await measurement_store.complete_browser_measurement(
+            job_id=job_id,
+            capture_filename=capture_filename,
+            capture_bytes=capture_bytes,
+            browser_input_label=browser_input_label,
+            browser_capture_meta=capture_meta,
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Measurement job not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    return {"status": "ok", "job": job}
+
+@app.post("/api/measurements/save")
+async def save_measurement(request: Request):
+    global measurement_store
+    if not measurement_store:
+        raise HTTPException(status_code=503, detail="Measurement store not available")
+
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    try:
+        saved = measurement_store.save_measurement(body)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"status": "ok", "measurement": saved}
+
+@app.delete("/api/measurements/{measurement_id}")
+async def delete_measurement(measurement_id: str):
+    global measurement_store
+    if not measurement_store:
+        raise HTTPException(status_code=503, detail="Measurement store not available")
+
+    try:
+        measurement_store.delete_measurement(measurement_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Measurement not found")
+    return {"status": "ok", "deleted": measurement_id}
 
 @app.post("/api/easyeffects/compare")
 async def save_easyeffects_compare(request: Request):
@@ -2068,7 +3260,7 @@ async def combine_easyeffects_presets(request: Request):
         status = easyeffects_manager.get_status()
         await manager.broadcast({"type": "easyeffects", "data": status})
         if load_after_create:
-            await refresh_peak_monitor_after_effects_change("combine-presets")
+            schedule_peak_monitor_refresh_after_effects_change("combine-presets")
         return {
             "status": "ok",
             "preset": created,
@@ -2112,7 +3304,7 @@ async def load_easyeffects_preset(request: Request):
                 easyeffects_manager.save_compare_state(compare)
             status = easyeffects_manager.get_status()
         await manager.broadcast({"type": "easyeffects", "data": status})
-        await refresh_peak_monitor_after_effects_change("preset-load")
+        schedule_peak_monitor_refresh_after_effects_change("preset-load")
         return {"status": "ok", "active_preset": preset_name, "compare": status.get("compare")}
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -2136,7 +3328,7 @@ async def upload_easyeffects_ir(file: UploadFile = File(...)):
         uploaded = easyeffects_manager.upload_ir(tmp_path, file.filename or tmp_path.name)
         status = easyeffects_manager.get_status()
         await manager.broadcast({"type": "easyeffects", "data": status})
-        await refresh_peak_monitor_after_effects_change("ir-upload")
+        schedule_peak_monitor_refresh_after_effects_change("ir-upload")
         return {"status": "ok", "ir": uploaded}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -2184,7 +3376,7 @@ async def create_convolver_preset(
             easyeffects_manager.load_preset(created["name"])
         status = easyeffects_manager.get_status()
         await manager.broadcast({"type": "easyeffects", "data": status})
-        await refresh_peak_monitor_after_effects_change("create-convolver")
+        schedule_peak_monitor_refresh_after_effects_change("create-convolver")
         return {
             "status": "ok",
             "preset": created,
@@ -2193,6 +3385,36 @@ async def create_convolver_preset(
         }
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/easyeffects/presets/import-json")
+async def import_easyeffects_preset_json(
+    file: UploadFile = File(...),
+    load_after_create: bool = Form(False),
+):
+    global easyeffects_manager
+    if not easyeffects_manager:
+        raise HTTPException(status_code=503, detail="EasyEffects manager not available")
+
+    try:
+        content = (await file.read()).decode("utf-8-sig")
+        created = easyeffects_manager.import_preset_json(file.filename or "preset.json", content)
+        if load_after_create:
+            easyeffects_manager.load_preset(created["name"])
+        status = easyeffects_manager.get_status()
+        await manager.broadcast({"type": "easyeffects", "data": status})
+        schedule_peak_monitor_refresh_after_effects_change("import-preset-json")
+        return {
+            "status": "ok",
+            "preset": created,
+            "loaded": bool(load_after_create),
+            "active_preset": status.get("active_preset"),
+        }
+    except UnicodeDecodeError as e:
+        raise HTTPException(status_code=400, detail=f"Preset JSON is not valid UTF-8 text: {e}")
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except RuntimeError as e:
@@ -2253,7 +3475,7 @@ async def create_convolver_preset_with_ir(
             easyeffects_manager.load_preset(created["preset"]["name"])
         status = easyeffects_manager.get_status()
         await manager.broadcast({"type": "easyeffects", "data": status})
-        await refresh_peak_monitor_after_effects_change("create-with-ir")
+        schedule_peak_monitor_refresh_after_effects_change("create-with-ir")
         return {
             "status": "ok",
             "ir": created["ir"],
@@ -2304,7 +3526,7 @@ async def create_peq_preset(request: Request):
             easyeffects_manager.load_preset(created["name"])
         status = easyeffects_manager.get_status()
         await manager.broadcast({"type": "easyeffects", "data": status})
-        await refresh_peak_monitor_after_effects_change("create-peq")
+        schedule_peak_monitor_refresh_after_effects_change("create-peq")
         return {
             "status": "ok",
             "preset": created,
@@ -2370,7 +3592,7 @@ async def import_rew_peq_preset(
             easyeffects_manager.load_preset(created["name"])
         status = easyeffects_manager.get_status()
         await manager.broadcast({"type": "easyeffects", "data": status})
-        await refresh_peak_monitor_after_effects_change("import-rew-peq")
+        schedule_peak_monitor_refresh_after_effects_change("import-rew-peq")
         return {
             "status": "ok",
             "preset": created,
@@ -2490,7 +3712,7 @@ async def import_dual_filter_preset(
             easyeffects_manager.load_preset(created["preset"]["name"] if import_kind == "dual-convolver" else created["name"])
         status = easyeffects_manager.get_status()
         await manager.broadcast({"type": "easyeffects", "data": status})
-        await refresh_peak_monitor_after_effects_change("import-filter-dual")
+        schedule_peak_monitor_refresh_after_effects_change("import-filter-dual")
         return {
             "status": "ok",
             "import_kind": import_kind,
@@ -2526,7 +3748,7 @@ async def delete_easyeffects_preset(request: Request):
         easyeffects_manager.delete_preset(preset_name)
         status = easyeffects_manager.get_status()
         await manager.broadcast({"type": "easyeffects", "data": status})
-        await refresh_peak_monitor_after_effects_change("preset-delete")
+        schedule_peak_monitor_refresh_after_effects_change("preset-delete")
         return {"status": "ok", "deleted": preset_name}
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -2582,7 +3804,11 @@ async def download_status():
 
 @app.get("/api/spotify/status")
 async def api_spotify_status():
-    return await get_spotify_ui_state()
+    global latest_spotify_state
+    data = await get_spotify_ui_state()
+    latest_spotify_state = data
+    await sync_peak_monitor_for_spotify_state(data)
+    return data
 
 
 @app.post("/api/spotify/play")
@@ -2591,9 +3817,7 @@ async def api_spotify_play():
     if source_transition_lock is None:
         source_transition_lock = asyncio.Lock()
     async with source_transition_lock:
-        # Source exclusivity: pause MPV when Spotify starts
-        await pause_local_playback_for_spotify_broadcast()
-        data = await spotify_play()
+        data = await _complete_spotify_entry_handoff()
         return await broadcast_spotify_state(data)
 
 
@@ -2609,11 +3833,11 @@ async def api_spotify_toggle():
     if source_transition_lock is None:
         source_transition_lock = asyncio.Lock()
     async with source_transition_lock:
-        # Source exclusivity: pause MPV when Spotify is about to play
         sd = await get_spotify_ui_state()
         if sd.get("status") != "Playing":
-            await pause_local_playback_for_spotify_broadcast()
-        data = await spotify_toggle()
+            data = await _complete_spotify_entry_handoff()
+        else:
+            data = await spotify_toggle()
         return await broadcast_spotify_state(data)
 
 

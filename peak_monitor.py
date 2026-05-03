@@ -8,6 +8,7 @@ import math
 import struct
 import time
 from dataclasses import dataclass
+from itertools import count
 from typing import Awaitable, Callable, Optional
 
 logger = logging.getLogger(__name__)
@@ -24,6 +25,7 @@ ERROR_RETRY_INTERVAL = 0.35
 RESTART_SETTLE_SECONDS = 0.1
 CONSECUTIVE_HITS_REQUIRED = 2
 CAPTURE_NODE_NAME = "fxroute_peak_capture"
+CAPTURE_NODE_SEQUENCE = count(1)
 VU_FLOOR_DB = -60.0
 VU_ATTACK_SECONDS = 0.18
 VU_RELEASE_SECONDS = 0.85
@@ -49,46 +51,68 @@ class EasyEffectsPeakMonitor:
         self._last_over_at: Optional[float] = None
         self._last_error: Optional[str] = None
         self._consecutive_hits = 0
+        self._capture_node_name: Optional[str] = None
         self._vu_db: Optional[float] = None
         self._last_vu_update_at: Optional[float] = None
         self._last_vu_emit_at = 0.0
 
     async def start(self):
         if self._task and not self._task.done():
+            logger.info("Peak monitor start skipped because task is already running")
             return
         self._running = True
         self._task = asyncio.create_task(self._run(), name="easyeffects-peak-monitor")
+        logger.info("Peak monitor start armed: task_created=true")
 
     async def restart(self):
+        restart_started_at = time.monotonic()
+        logger.info("Peak monitor restart requested")
         await self.stop()
+        stop_completed_at = time.monotonic()
+        logger.info("Peak monitor restart stop phase completed in %.3fs", stop_completed_at - restart_started_at)
         await asyncio.sleep(RESTART_SETTLE_SECONDS)
         await self.start()
+        logger.info("Peak monitor restart fully armed in %.3fs", time.monotonic() - restart_started_at)
 
     async def stop(self):
+        stop_started_at = time.monotonic()
+        had_task = bool(self._task and not self._task.done())
+        had_proc = bool(self._proc and self._proc.returncode is None)
         self._running = False
-        if self._proc and self._proc.returncode is None:
-            self._proc.terminate()
-            try:
-                await asyncio.wait_for(self._proc.wait(), timeout=2)
-            except Exception:
-                self._proc.kill()
+        task = self._task
+        self._task = None
+        proc = self._proc
         self._proc = None
-        if self._task:
-            self._task.cancel()
+        if task:
+            task.cancel()
+        if proc and proc.returncode is None:
+            proc.terminate()
             try:
-                await self._task
+                await asyncio.wait_for(proc.wait(), timeout=1.0)
+            except Exception:
+                proc.kill()
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=1.0)
+                except Exception:
+                    logger.warning("Peak monitor process did not exit cleanly during stop")
+        if task:
+            try:
+                await asyncio.wait_for(task, timeout=1.0)
             except asyncio.CancelledError:
                 pass
+            except asyncio.TimeoutError:
+                logger.warning("Peak monitor task did not cancel cleanly during stop")
             except Exception as exc:
                 logger.warning("Ignoring peak monitor shutdown error during stop: %s", exc)
-        self._task = None
         self._target = None
         self._hold_until = 0.0
         self._consecutive_hits = 0
+        self._capture_node_name = None
         self._last_error = None
         self._vu_db = None
         self._last_vu_update_at = None
         self._last_vu_emit_at = 0.0
+        logger.info("Peak monitor stop completed in %.3fs (had_task=%s had_proc=%s)", time.monotonic() - stop_started_at, had_task, had_proc)
 
     def snapshot(self) -> dict:
         now = time.monotonic()
@@ -153,6 +177,9 @@ class EasyEffectsPeakMonitor:
                 await asyncio.sleep(ERROR_RETRY_INTERVAL)
 
     async def _capture_target(self, target: MonitorTarget):
+        capture_started_at = time.monotonic()
+        capture_node_name = f"{CAPTURE_NODE_NAME}_{next(CAPTURE_NODE_SEQUENCE)}"
+        self._capture_node_name = capture_node_name
         cmd = [
             "pw-record",
             "--target",
@@ -160,7 +187,7 @@ class EasyEffectsPeakMonitor:
             "-P",
             "node.autoconnect=false",
             "-P",
-            f"node.name={CAPTURE_NODE_NAME}",
+            f"node.name={capture_node_name}",
             "--format",
             "f32",
             "--channels",
@@ -175,10 +202,13 @@ class EasyEffectsPeakMonitor:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
+        logger.info("Peak monitor pw-record spawned in %.3fs for capture node %s", time.monotonic() - capture_started_at, capture_node_name)
         assert self._proc.stdout is not None
         try:
             try:
-                await self._link_capture_stream(target)
+                link_started_at = time.monotonic()
+                await self._link_capture_stream(target, capture_node_name)
+                logger.info("Peak monitor link setup completed in %.3fs for capture node %s", time.monotonic() - link_started_at, capture_node_name)
             except Exception as exc:
                 logger.warning("Peak monitor link setup failed, continuing without capture links yet: %s", exc)
                 self._last_error = str(exc)
@@ -233,14 +263,18 @@ class EasyEffectsPeakMonitor:
                 except Exception:
                     self._proc.kill()
             self._proc = None
+            self._capture_node_name = None
 
-    async def _link_capture_stream(self, target: MonitorTarget):
+    async def _link_capture_stream(self, target: MonitorTarget, capture_node_name: str):
+        discovery_started_at = time.monotonic()
+        port_scan_attempts = 0
         capture_fl = None
         capture_fr = None
         target_fl = f"{target.source_name}:output_FL"
         target_fr = f"{target.source_name}:output_FR"
         deadline = time.monotonic() + LINK_DISCOVERY_TIMEOUT
         while time.monotonic() < deadline and self._running:
+            port_scan_attempts += 1
             if self._proc and self._proc.returncode not in (None, 0):
                 stderr = b""
                 if self._proc.stderr:
@@ -260,28 +294,111 @@ class EasyEffectsPeakMonitor:
             if proc.returncode != 0:
                 raise RuntimeError(stderr.decode(errors="ignore").strip() or "pw-cli ls Port failed")
             text = stdout.decode(errors="ignore")
-            if f'port.alias = "{CAPTURE_NODE_NAME}:input_FL"' in text and f'port.alias = "{CAPTURE_NODE_NAME}_probe:input_FL"' not in text:
-                capture_fl = f"{CAPTURE_NODE_NAME}:input_FL"
-            if f'port.alias = "{CAPTURE_NODE_NAME}:input_FR"' in text and f'port.alias = "{CAPTURE_NODE_NAME}_probe:input_FR"' not in text:
-                capture_fr = f"{CAPTURE_NODE_NAME}:input_FR"
-            if capture_fl and capture_fr and target_fl in text and target_fr in text:
+            for port in self._iter_ports(text):
+                alias = port["alias"]
+                port_name = port["port_name"]
+                node_id = port["node_id"]
+
+                if alias == f"{capture_node_name}:input_FL":
+                    capture_fl = alias
+                elif alias == f"{capture_node_name}:input_FR":
+                    capture_fr = alias
+
+                if node_id == target.source_id:
+                    if port_name == "output_FL":
+                        target_fl = f"{target.source_name}:output_FL"
+                    elif port_name == "output_FR":
+                        target_fr = f"{target.source_name}:output_FR"
+
+            if capture_fl and capture_fr and target_fl and target_fr:
+                logger.info(
+                    "Peak monitor port discovery completed in %.3fs after %d scans for %s (target_fl=%s target_fr=%s)",
+                    time.monotonic() - discovery_started_at,
+                    port_scan_attempts,
+                    capture_node_name,
+                    target_fl,
+                    target_fr,
+                )
                 break
             await asyncio.sleep(PORT_DISCOVERY_POLL_INTERVAL)
 
-        if not capture_fl or not capture_fr:
-            raise RuntimeError("Peak capture ports did not appear")
+        if not capture_fl or not capture_fr or not target_fl or not target_fr:
+            logger.warning(
+                "Peak monitor port discovery timed out in %.3fs after %d scans for %s "
+                "(capture_fl=%s capture_fr=%s target_fl=%s target_fr=%s target_id=%s target_name=%s)",
+                time.monotonic() - discovery_started_at,
+                port_scan_attempts,
+                capture_node_name,
+                capture_fl,
+                capture_fr,
+                target_fl,
+                target_fr,
+                target.source_id,
+                target.source_name,
+            )
+            raise RuntimeError("Peak monitor ports did not resolve in time")
 
         last_error = None
-        for _ in range(LINK_RETRY_ATTEMPTS):
+        link_attempt_started_at = time.monotonic()
+        for attempt in range(1, LINK_RETRY_ATTEMPTS + 1):
             try:
                 await self._run_link(target_fl, capture_fl)
                 await self._run_link(target_fr, capture_fr)
+                logger.info("Peak monitor pw-link completed in %.3fs after %d attempts for %s", time.monotonic() - link_attempt_started_at, attempt, capture_node_name)
                 return
             except Exception as exc:
                 last_error = exc
+                if attempt == 1 or attempt == LINK_RETRY_ATTEMPTS:
+                    logger.warning("Peak monitor pw-link attempt %d/%d failed for %s: %s", attempt, LINK_RETRY_ATTEMPTS, capture_node_name, exc)
                 await asyncio.sleep(LINK_RETRY_INTERVAL)
 
         raise RuntimeError(str(last_error) if last_error else "Peak capture link failed")
+
+    @staticmethod
+    def _iter_ports(text: str):
+        current_alias = ""
+        current_port_name = ""
+        current_node_id = 0
+        in_port = False
+
+        def flush():
+            nonlocal current_alias, current_port_name, current_node_id, in_port
+            if not in_port:
+                return None
+            port = {
+                "alias": current_alias,
+                "port_name": current_port_name,
+                "node_id": current_node_id,
+            }
+            current_alias = ""
+            current_port_name = ""
+            current_node_id = 0
+            in_port = False
+            return port
+
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            if line.startswith("id ") and ", type PipeWire:Interface:Port" in line:
+                port = flush()
+                if port is not None:
+                    yield port
+                in_port = True
+                continue
+            if not in_port:
+                continue
+            if line.startswith('port.alias = "'):
+                current_alias = line.split('"', 1)[1].rsplit('"', 1)[0]
+            elif line.startswith('port.name = "'):
+                current_port_name = line.split('"', 1)[1].rsplit('"', 1)[0]
+            elif line.startswith('node.id = '):
+                try:
+                    current_node_id = int(line.split('=', 1)[1].strip().strip('"'))
+                except Exception:
+                    current_node_id = 0
+
+        port = flush()
+        if port is not None:
+            yield port
 
     async def _run_link(self, output_port: str, input_port: str):
         proc = await asyncio.create_subprocess_exec(
@@ -300,6 +417,7 @@ class EasyEffectsPeakMonitor:
             raise RuntimeError(message)
 
     async def _discover_target(self) -> Optional[MonitorTarget]:
+        discover_started_at = time.monotonic()
         proc = await asyncio.create_subprocess_exec(
             "pw-cli",
             "ls",
@@ -358,9 +476,12 @@ class EasyEffectsPeakMonitor:
         flush_current()
 
         if not candidates:
+            logger.info("Peak monitor target discovery found no matching EasyEffects node in %.3fs", time.monotonic() - discover_started_at)
             return None
         candidates.sort(key=lambda item: (-item[0], item[1].source_id))
-        return candidates[0][1]
+        selected = candidates[0][1]
+        logger.info("Peak monitor target discovery selected %s (id=%s) in %.3fs from %d candidate(s)", selected.source_name, selected.source_id, time.monotonic() - discover_started_at, len(candidates))
+        return selected
 
     def _update_vu_db(self, target_db: float, now: float):
         target_db = max(VU_FLOOR_DB, min(6.0, target_db))

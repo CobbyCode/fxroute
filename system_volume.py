@@ -13,6 +13,17 @@ class SystemVolumeError(RuntimeError):
 TARGET_SINK = "@DEFAULT_AUDIO_SINK@"
 
 
+def _get_target_volume(target: str) -> int:
+    output = _run_command(["wpctl", "get-volume", target])
+    return _parse_wpctl_volume(output)
+
+
+def _set_target_volume(target: str, percent: int | float) -> int:
+    clamped = max(0, min(100, round(float(percent))))
+    _run_command(["wpctl", "set-volume", target, f"{clamped}%"])
+    return _get_target_volume(target)
+
+
 def _run_command(args: list[str]) -> str:
     result = subprocess.run(args, capture_output=True, text=True, check=False)
     if result.returncode != 0:
@@ -31,11 +42,22 @@ def _parse_wpctl_volume(output: str) -> int:
 
 
 def get_output_volume() -> int:
-    output = _run_command(["wpctl", "get-volume", TARGET_SINK])
-    return _parse_wpctl_volume(output)
+    return _get_target_volume(TARGET_SINK)
 
 
 def set_output_volume(percent: int | float) -> int:
-    clamped = max(0, min(100, round(float(percent))))
-    _run_command(["wpctl", "set-volume", TARGET_SINK, f"{clamped}%"])
-    return get_output_volume()
+    return _set_target_volume(TARGET_SINK, percent)
+
+
+def get_node_volume(target: str) -> int:
+    normalized = str(target or "").strip()
+    if not normalized:
+        raise SystemVolumeError("Node target is required")
+    return _get_target_volume(normalized)
+
+
+def set_node_volume(target: str, percent: int | float) -> int:
+    normalized = str(target or "").strip()
+    if not normalized:
+        raise SystemVolumeError("Node target is required")
+    return _set_target_volume(normalized, percent)

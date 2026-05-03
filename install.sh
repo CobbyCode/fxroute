@@ -40,10 +40,14 @@ CADDY_SERVICE_WAS_ACTIVE_BEFORE=0
 CADDY_INSTALLED_BY_FXROUTE=0
 DEFAULT_CADDY_DISABLED_BY_FXROUTE=0
 CADDY_PROXY_ENABLED=0
+CADDY_CERT_PATH=""
+MDNS_GUARD_ENABLED=0
 FIREWALLD_WAS_ACTIVE_BEFORE=0
 HTTP_WAS_ALLOWED_BEFORE=0
+HTTPS_WAS_ALLOWED_BEFORE=0
 MDNS_WAS_ALLOWED_BEFORE=0
 HTTP_OPENED_BY_FXROUTE=0
+HTTPS_OPENED_BY_FXROUTE=0
 MDNS_OPENED_BY_FXROUTE=0
 
 usage() {
@@ -161,6 +165,10 @@ valid_local_hostname() {
   [[ "$value" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]]
 }
 
+primary_lan_ip() {
+  hostname -I 2>/dev/null | awk '{print $1}'
+}
+
 avahi_is_present() {
   case "$PACKAGE_MANAGER" in
     apt)
@@ -184,12 +192,15 @@ firewall_cmd_path() {
   if [[ -z "$path" && -x /usr/bin/firewall-cmd ]]; then
     path="/usr/bin/firewall-cmd"
   fi
-  [[ -n "$path" ]] && printf '%s\n' "$path"
+  if [[ -n "$path" ]]; then
+    printf '%s\n' "$path"
+  fi
+  return 0
 }
 
 firewalld_is_active() {
   local firewall_cmd=""
-  firewall_cmd="$(firewall_cmd_path)"
+  firewall_cmd="$(firewall_cmd_path || true)"
   [[ -n "$firewall_cmd" ]] || return 1
   "${SUDO_CMD[@]}" "$firewall_cmd" --state >/dev/null 2>&1
 }
@@ -197,7 +208,7 @@ firewalld_is_active() {
 firewalld_query_service() {
   local service="$1"
   local firewall_cmd=""
-  firewall_cmd="$(firewall_cmd_path)"
+  firewall_cmd="$(firewall_cmd_path || true)"
   [[ -n "$firewall_cmd" ]] || return 1
   firewalld_is_active || return 1
   "${SUDO_CMD[@]}" "$firewall_cmd" --query-service="$service" >/dev/null 2>&1
@@ -208,7 +219,7 @@ ensure_firewalld_service_open() {
   local purpose="$2"
   local firewall_cmd=""
 
-  firewall_cmd="$(firewall_cmd_path)"
+  firewall_cmd="$(firewall_cmd_path || true)"
   [[ -n "$firewall_cmd" ]] || return 0
   firewalld_is_active || return 0
 
@@ -230,6 +241,7 @@ ensure_firewalld_service_open() {
 
   case "$service" in
     http) HTTP_OPENED_BY_FXROUTE=1 ;;
+    https) HTTPS_OPENED_BY_FXROUTE=1 ;;
     mdns) MDNS_OPENED_BY_FXROUTE=1 ;;
   esac
 
@@ -251,6 +263,7 @@ ensure_ufw_port_open() {
 
   case "$service" in
     http) port="80/tcp" ;;
+    https) port="443/tcp" ;;
     mdns) port="5353/udp" ;;
     fxroute-http) port="8000/tcp" ;;
     *) return 0 ;;
@@ -269,6 +282,7 @@ ensure_ufw_port_open() {
 
   case "$service" in
     http|fxroute-http) HTTP_OPENED_BY_FXROUTE=1 ;;
+    https) HTTPS_OPENED_BY_FXROUTE=1 ;;
     mdns) MDNS_OPENED_BY_FXROUTE=1 ;;
   esac
 
@@ -319,6 +333,9 @@ capture_lan_comfort_baseline() {
     if firewalld_query_service http; then
       HTTP_WAS_ALLOWED_BEFORE=1
     fi
+    if firewalld_query_service https; then
+      HTTPS_WAS_ALLOWED_BEFORE=1
+    fi
     if firewalld_query_service mdns; then
       MDNS_WAS_ALLOWED_BEFORE=1
     fi
@@ -364,9 +381,11 @@ ensure_native_packages() {
   local core_packages=()
   local support_packages=(curl git socat)
   local audio_stack_packages=()
+  local flatpak_runtime_packages=()
   local missing_packages=()
   local missing_support=()
   local missing_audio_stack=()
+  local missing_flatpak_runtime=()
   local need_venv_pkg=0
   local need_bt_plugin_pkg=0
 
@@ -374,6 +393,7 @@ ensure_native_packages() {
     apt)
       core_packages=(python3 python3-pip python3-venv mpv ffmpeg playerctl flatpak)
       audio_stack_packages=(bluez wireplumber pipewire-bin pipewire-pulse pulseaudio-utils libspa-0.2-bluetooth)
+      flatpak_runtime_packages=(libxcb-cursor0)
       ;;
     dnf)
       core_packages=(python3 python3-pip mpv ffmpeg playerctl flatpak)
@@ -409,7 +429,17 @@ ensure_native_packages() {
     need_venv_pkg=1
   fi
 
-  if [[ ${#missing_packages[@]} -eq 0 && ${#missing_support[@]} -eq 0 && ${#missing_audio_stack[@]} -eq 0 && $need_venv_pkg -eq 0 && $need_bt_plugin_pkg -eq 0 ]]; then
+  if [[ ${#flatpak_runtime_packages[@]} -gt 0 ]]; then
+    case "$PACKAGE_MANAGER" in
+      apt)
+        for pkg in "${flatpak_runtime_packages[@]}"; do
+          dpkg -s "$pkg" >/dev/null 2>&1 || missing_flatpak_runtime+=("$pkg")
+        done
+        ;;
+    esac
+  fi
+
+  if [[ ${#missing_packages[@]} -eq 0 && ${#missing_support[@]} -eq 0 && ${#missing_audio_stack[@]} -eq 0 && ${#missing_flatpak_runtime[@]} -eq 0 && $need_venv_pkg -eq 0 && $need_bt_plugin_pkg -eq 0 ]]; then
     pass "native packages already available"
     return
   fi
@@ -422,6 +452,9 @@ ensure_native_packages() {
   fi
   if [[ ${#missing_audio_stack[@]} -gt 0 || $need_bt_plugin_pkg -eq 1 ]]; then
     pkg_install "${audio_stack_packages[@]}"
+  fi
+  if [[ ${#missing_flatpak_runtime[@]} -gt 0 ]]; then
+    pkg_install "${missing_flatpak_runtime[@]}"
   fi
 
   if [[ $need_venv_pkg -eq 1 ]] && ! python3 -m venv --help >/dev/null 2>&1; then
@@ -459,6 +492,7 @@ sync_project_tree() {
   tar \
     --exclude='.git' \
     --exclude='.venv' \
+    --exclude='.env' \
     --exclude='__pycache__' \
     --exclude='backups' \
     --exclude='*.pyc' \
@@ -679,11 +713,11 @@ WantedBy=default.target
 EOF
 
   if systemctl --user daemon-reload; then
-    if systemctl --user enable --now "$SERVICE_NAME"; then
+    if systemctl --user enable "$SERVICE_NAME" && systemctl --user restart "$SERVICE_NAME"; then
       pass "systemd user service enabled"
     else
       fail "systemd user service enable/start"
-      warn "systemctl --user enable --now $SERVICE_NAME failed, likely because no active user bus is available in this shell"
+      warn "systemctl --user enable/restart $SERVICE_NAME failed, likely because no active user bus is available in this shell"
     fi
   else
     fail "systemd user daemon-reload"
@@ -896,10 +930,14 @@ write_install_state() {
     "caddy_installed_by_fxroute": $( [[ $CADDY_INSTALLED_BY_FXROUTE -eq 1 ]] && echo true || echo false ),
     "default_caddy_disabled_by_fxroute": $( [[ $DEFAULT_CADDY_DISABLED_BY_FXROUTE -eq 1 ]] && echo true || echo false ),
     "caddy_proxy_enabled": $( [[ $CADDY_PROXY_ENABLED -eq 1 ]] && echo true || echo false ),
+    "caddy_cert_path": "${CADDY_CERT_PATH}",
+    "mdns_guard_enabled": $( [[ $MDNS_GUARD_ENABLED -eq 1 ]] && echo true || echo false ),
     "firewalld_was_active_before": $( [[ $FIREWALLD_WAS_ACTIVE_BEFORE -eq 1 ]] && echo true || echo false ),
     "http_was_allowed_before": $( [[ $HTTP_WAS_ALLOWED_BEFORE -eq 1 ]] && echo true || echo false ),
+    "https_was_allowed_before": $( [[ $HTTPS_WAS_ALLOWED_BEFORE -eq 1 ]] && echo true || echo false ),
     "mdns_was_allowed_before": $( [[ $MDNS_WAS_ALLOWED_BEFORE -eq 1 ]] && echo true || echo false ),
     "http_opened_by_fxroute": $( [[ $HTTP_OPENED_BY_FXROUTE -eq 1 ]] && echo true || echo false ),
+    "https_opened_by_fxroute": $( [[ $HTTPS_OPENED_BY_FXROUTE -eq 1 ]] && echo true || echo false ),
     "mdns_opened_by_fxroute": $( [[ $MDNS_OPENED_BY_FXROUTE -eq 1 ]] && echo true || echo false )
   }
 }
@@ -1080,15 +1118,44 @@ configure_optional_maintenance_helpers() {
 validate_http() {
   local env_file="$INSTALL_ROOT/.env"
   local port
+  local service_pid=""
+  local port_listing=""
   port="$(grep '^PORT=' "$env_file" | cut -d= -f2- | tr -d '[:space:]')"
   [[ -n "$port" ]] || port=8000
 
-  sleep 3
+  local deadline=$((SECONDS + 30))
+  while (( SECONDS < deadline )); do
+    service_pid="$(systemctl --user show -p MainPID --value "${SERVICE_NAME}.service" 2>/dev/null || true)"
+    if [[ -n "$service_pid" && "$service_pid" != "0" ]] && systemctl --user is-active --quiet "${SERVICE_NAME}.service"; then
+      port_listing="$(ss -ltnp 2>/dev/null | grep -E ":${port}\\b" || true)"
+      if grep -q "pid=${service_pid}," <<<"$port_listing"; then
+        pass "HTTP port owned by FXRoute service"
+        break
+      fi
+    fi
+    sleep 1
+  done
+
+  service_pid="$(systemctl --user show -p MainPID --value "${SERVICE_NAME}.service" 2>/dev/null || true)"
+  if [[ -z "$service_pid" || "$service_pid" == "0" ]] || ! systemctl --user is-active --quiet "${SERVICE_NAME}.service"; then
+    fail "FXRoute service running"
+    warn "FXRoute user service is not active after install; check: systemctl --user status ${SERVICE_NAME}.service"
+    return
+  fi
+
+  port_listing="$(ss -ltnp 2>/dev/null | grep -E ":${port}\\b" || true)"
+  if ! grep -q "pid=${service_pid}," <<<"$port_listing"; then
+    fail "HTTP port owned by FXRoute service"
+    warn "Port ${port} is not owned by ${SERVICE_NAME}.service MainPID ${service_pid}; another process may be answering health checks"
+    [[ -n "$port_listing" ]] && warn "Port ${port} listeners: ${port_listing//$'\n'/; }"
+    return
+  fi
+  if [[ "$port" == "8000" ]]; then
+    ensure_lan_firewall_service_open fxroute-http "FXRoute HTTP LAN access"
+  fi
+
   if curl -fsS "http://127.0.0.1:${port}/api/status" >/dev/null 2>&1; then
     pass "HTTP health response"
-    if [[ "$port" == "8000" ]]; then
-      ensure_lan_firewall_service_open fxroute-http "FXRoute HTTP LAN access"
-    fi
   else
     fail "HTTP health response"
     warn "FXRoute did not answer on http://127.0.0.1:${port}/api/status yet"
@@ -1145,7 +1212,7 @@ print_summary() {
   local lan_ip=""
   local ee_launch_cmd=""
   [[ -f "$env_file" ]] && port="$(grep '^PORT=' "$env_file" | cut -d= -f2- | tr -d '[:space:]')"
-  lan_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  lan_ip="$(primary_lan_ip)"
 
   case "$EASYEFFECTS_MODE" in
     flatpak) ee_launch_cmd="flatpak run com.github.wwmm.easyeffects" ;;
@@ -1169,6 +1236,19 @@ print_summary() {
   echo "Open FXRoute:"
   echo " - Local: http://localhost:${port}"
   [[ -n "$lan_ip" ]] && echo " - LAN IP: http://${lan_ip}:${port}"
+  if [[ $CADDY_PROXY_ENABLED -eq 1 ]]; then
+    if [[ -n "$lan_ip" ]]; then
+      echo " - Browser mic HTTPS: https://${lan_ip}"
+    fi
+    if [[ -n "$MDNS_HOSTNAME" ]]; then
+      echo " - Optional .local HTTPS: https://${MDNS_HOSTNAME}.local"
+    fi
+    if [[ -n "$CADDY_CERT_PATH" ]]; then
+      echo " - Install this certificate on client devices, then reload the browser: ${CADDY_CERT_PATH}"
+    fi
+  else
+    echo " - If you want browser microphone capture on LAN devices, enable the optional Caddy HTTPS step."
+  fi
   echo " - If LAN access fails, check the host firewall for TCP ${port}."
   echo
   echo "Service: systemctl --user status $SERVICE_NAME"
@@ -1183,11 +1263,17 @@ print_summary() {
     echo " - Manual launch command: ${ee_launch_cmd}"
   fi
 
+  if [[ $MDNS_GUARD_ENABLED -eq 1 ]]; then
+    echo "mDNS guard: installed (keeps Spotify user-space mDNS from overriding Avahi host advertisement)"
+  fi
+
   if [[ ${#WARNINGS[@]} -gt 0 ]]; then
     echo
     echo "Warnings:"
     printf ' - %s\n' "${WARNINGS[@]}"
   fi
+
+  return 0
 }
 
 offer_optional_local_lan_name() {
@@ -1294,6 +1380,121 @@ offer_optional_local_lan_name() {
   echo "Optional LAN name ready: http://${MDNS_HOSTNAME}.local:${port}"
 }
 
+install_mdns_guard() {
+  local script_path="/usr/local/sbin/fxroute-mdns-guard.sh"
+  local service_path="/etc/systemd/system/fxroute-mdns-guard.service"
+  local timer_path="/etc/systemd/system/fxroute-mdns-guard.timer"
+  local tmp_script=""
+  local tmp_service=""
+  local tmp_timer=""
+
+  (systemctl is-active avahi-daemon >/dev/null 2>&1 || [[ -n "$MDNS_HOSTNAME" ]]) || return 0
+
+  if ! command -v nft >/dev/null 2>&1; then
+    if ! pkg_install nftables; then
+      warn "Could not install nftables for the FXRoute mDNS guard"
+      return 0
+    fi
+  fi
+
+  tmp_script="$(mktemp)"
+  tmp_service="$(mktemp)"
+  tmp_timer="$(mktemp)"
+  trap "trap - RETURN; rm -f '$tmp_script' '$tmp_service' '$tmp_timer'" RETURN
+
+  cat > "$tmp_script" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+NFT="/usr/sbin/nft"
+[[ -x "$NFT" ]] || NFT="$(command -v nft)"
+TABLE="fxroute_mdnsguard"
+USER_ID="$(id -u paul 2>/dev/null || echo 1000)"
+
+apply_rules() {
+  "$NFT" delete table inet "$TABLE" 2>/dev/null || true
+  "$NFT" -f - <<RULES
+ table inet ${TABLE} {
+   chain output {
+     type filter hook output priority 5; policy accept;
+     meta skuid ${USER_ID} ip daddr 224.0.0.251 udp dport 5353 counter drop comment "Block user-space mDNS v4 to keep Avahi host advertisement stable"
+     meta skuid ${USER_ID} ip6 daddr ff02::fb udp dport 5353 counter drop comment "Block user-space mDNS v6 to keep Avahi host advertisement stable"
+   }
+ }
+RULES
+}
+
+remove_rules() {
+  "$NFT" delete table inet "$TABLE" 2>/dev/null || true
+}
+
+status_rules() {
+  "$NFT" list table inet "$TABLE"
+}
+
+case "${1:-apply}" in
+  apply) apply_rules ;;
+  remove) remove_rules ;;
+  status) status_rules ;;
+  *) echo "usage: $0 [apply|remove|status]" >&2; exit 2 ;;
+ esac
+EOF
+
+  cat > "$tmp_service" <<'EOF'
+[Unit]
+Description=FXRoute mDNS guard for Spotify/Avahi coexistence
+After=firewalld.service network-online.target
+Wants=firewalld.service network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/fxroute-mdns-guard.sh apply
+ExecReload=/usr/local/sbin/fxroute-mdns-guard.sh apply
+EOF
+
+  cat > "$tmp_timer" <<'EOF'
+[Unit]
+Description=Re-apply FXRoute mDNS guard periodically
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=2min
+Persistent=true
+Unit=fxroute-mdns-guard.service
+
+[Install]
+WantedBy=timers.target
+EOF
+
+  if ! "${SUDO_CMD[@]}" install -m 755 "$tmp_script" "$script_path"; then
+    warn "Could not install FXRoute mDNS guard script"
+    return 0
+  fi
+  if ! "${SUDO_CMD[@]}" install -m 644 "$tmp_service" "$service_path"; then
+    warn "Could not install FXRoute mDNS guard service"
+    return 0
+  fi
+  if ! "${SUDO_CMD[@]}" install -m 644 "$tmp_timer" "$timer_path"; then
+    warn "Could not install FXRoute mDNS guard timer"
+    return 0
+  fi
+  if ! "${SUDO_CMD[@]}" systemctl daemon-reload; then
+    warn "Could not reload systemd after installing FXRoute mDNS guard"
+    return 0
+  fi
+  if ! "${SUDO_CMD[@]}" "$script_path" apply; then
+    warn "Could not apply the FXRoute mDNS guard rules"
+    return 0
+  fi
+  if ! "${SUDO_CMD[@]}" systemctl enable fxroute-mdns-guard.timer || ! "${SUDO_CMD[@]}" systemctl restart fxroute-mdns-guard.timer; then
+    warn "Could not enable the FXRoute mDNS guard timer"
+    return 0
+  fi
+
+  MDNS_GUARD_ENABLED=1
+  pass "FXRoute mDNS guard installed"
+  return 0
+}
+
 offer_optional_caddy_proxy() {
   local env_file="$INSTALL_ROOT/.env"
   local port="8000"
@@ -1306,33 +1507,43 @@ offer_optional_caddy_proxy() {
   local service_path="/etc/systemd/system/${service_name}.service"
   local config_dir="/etc/fxroute"
   local config_path="${config_dir}/Caddyfile"
+  local caddy_data_dir="/var/lib/fxroute-caddy"
+  local caddy_cert_dir="${config_dir}/certs"
+  local caddy_root_cert="${caddy_data_dir}/caddy/pki/authorities/local/root.crt"
+  local fxroute_caddy_active=0
 
-  [[ -n "$MDNS_HOSTNAME" ]] || return 0
   [[ -t 0 && -t 1 ]] || return 0
 
   [[ -f "$env_file" ]] && port="$(grep '^PORT=' "$env_file" | cut -d= -f2- | tr -d '[:space:]')"
-  lan_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  lan_ip="$(primary_lan_ip)"
+  [[ -n "$lan_ip" ]] || {
+    warn "Optional Caddy setup skipped because no LAN IP could be detected"
+    return 0
+  }
 
   echo
   if systemctl is-active "$service_name" >/dev/null 2>&1; then
-    CADDY_PROXY_ENABLED=1
-    ensure_lan_firewall_service_open http "FXRoute port-80 LAN access"
-    echo "Optional port-80 LAN URL already active: http://${MDNS_HOSTNAME}.local"
-    [[ -n "$lan_ip" ]] && echo "Port-80 LAN IP also works: http://${lan_ip}"
-    return 0
+    fxroute_caddy_active=1
+    echo "Optional Caddy HTTPS already active; refreshing FXRoute Caddy config: https://${lan_ip}"
+    if [[ -n "$MDNS_HOSTNAME" ]]; then
+      echo "Optional .local HTTPS also active: https://${MDNS_HOSTNAME}.local"
+    fi
+  else
+    echo "Optional HTTPS step for browser microphone access:"
+    echo "Enable Caddy so FXRoute can be reached as https://${lan_ip} with an installer-managed local certificate?"
+    if [[ -n "$MDNS_HOSTNAME" ]]; then
+      echo "If Avahi is active, the same certificate flow can also cover https://${MDNS_HOSTNAME}.local ."
+    fi
+    echo "This may require one more sudo step."
+    printf "Enable Caddy HTTPS reverse proxy? [y/N] "
+    read -r reply || return 0
+    case "${reply,,}" in
+      y|yes) ;;
+      *) return 0 ;;
+    esac
   fi
 
-  echo "Optional LAN comfort step 2:"
-  echo "Enable Caddy so FXRoute can also be reached without :${port}, for example http://${MDNS_HOSTNAME}.local ?"
-  echo "This may require one more sudo step."
-  printf "Enable port-80 Caddy reverse proxy? [y/N] "
-  read -r reply || return 0
-  case "${reply,,}" in
-    y|yes) ;;
-    *) return 0 ;;
-  esac
-
-  if ss -ltn '( sport = :80 )' 2>/dev/null | tail -n +2 | grep -q .; then
+  if [[ $fxroute_caddy_active -eq 0 ]] && ss -ltn '( sport = :80 )' 2>/dev/null | tail -n +2 | grep -q .; then
     warn "Optional Caddy setup skipped because TCP port 80 is already in use"
     return 0
   fi
@@ -1370,10 +1581,59 @@ offer_optional_caddy_proxy() {
   trap "trap - RETURN; rm -f '$tmp_caddy' '$tmp_service'" RETURN
 
   cat > "$tmp_caddy" <<EOF
-:80 {
+(fxroute_pna_headers) {
+    header {
+        Access-Control-Allow-Origin "*"
+        Access-Control-Allow-Methods "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+        Access-Control-Allow-Headers "*"
+        Access-Control-Allow-Private-Network "true"
+        Vary "Origin, Access-Control-Request-Method, Access-Control-Request-Headers, Access-Control-Request-Private-Network"
+    }
+}
+
+(fxroute_pna_preflight) {
+    @fxroute_pna_preflight {
+        method OPTIONS
+        header Origin *
+        header Access-Control-Request-Method *
+    }
+    handle @fxroute_pna_preflight {
+        import fxroute_pna_headers
+        respond "" 204
+    }
+}
+
+http://${lan_ip} {
+    import fxroute_pna_preflight
+    import fxroute_pna_headers
+    reverse_proxy 127.0.0.1:${port}
+}
+
+https://${lan_ip} {
+    import fxroute_pna_preflight
+    import fxroute_pna_headers
+    tls internal
     reverse_proxy 127.0.0.1:${port}
 }
 EOF
+
+  if [[ -n "$MDNS_HOSTNAME" ]]; then
+    cat >> "$tmp_caddy" <<EOF
+
+http://${MDNS_HOSTNAME}.local {
+    import fxroute_pna_preflight
+    import fxroute_pna_headers
+    reverse_proxy 127.0.0.1:${port}
+}
+
+https://${MDNS_HOSTNAME}.local {
+    import fxroute_pna_preflight
+    import fxroute_pna_headers
+    tls internal
+    reverse_proxy 127.0.0.1:${port}
+}
+EOF
+  fi
 
   cat > "$tmp_service" <<EOF
 [Unit]
@@ -1383,6 +1643,9 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+Environment=HOME=${caddy_data_dir}
+Environment=XDG_CONFIG_HOME=${caddy_data_dir}/config
+Environment=XDG_DATA_HOME=${caddy_data_dir}
 ExecStart=${caddy_bin} run --config ${config_path} --adapter caddyfile
 ExecReload=${caddy_bin} reload --config ${config_path} --adapter caddyfile
 Restart=on-failure
@@ -1392,7 +1655,7 @@ RestartSec=5
 WantedBy=multi-user.target
 EOF
 
-  if ! "${SUDO_CMD[@]}" install -d "$config_dir"; then
+  if ! "${SUDO_CMD[@]}" install -d "$config_dir" "$caddy_data_dir" "${caddy_data_dir}/config" "$caddy_cert_dir"; then
     warn "Optional Caddy setup failed while creating ${config_dir}"
     return 0
   fi
@@ -1409,23 +1672,39 @@ EOF
     warn "Optional Caddy setup failed during systemd daemon-reload"
     return 0
   fi
-  if ! "${SUDO_CMD[@]}" systemctl enable --now "${service_name}.service"; then
-    warn "Optional Caddy setup failed while enabling ${service_name}.service"
+  if ! "${SUDO_CMD[@]}" systemctl enable "${service_name}.service" || ! "${SUDO_CMD[@]}" systemctl restart "${service_name}.service"; then
+    warn "Optional Caddy setup failed while enabling/restarting ${service_name}.service"
     return 0
   fi
   CADDY_PROXY_ENABLED=1
-  sleep 2
-  if ! curl -fsS http://127.0.0.1/api/status >/dev/null 2>&1; then
-    warn "Optional Caddy setup finished, but the port-80 health check did not answer yet"
+  sleep 3
+  if ! curl -kfsS "https://${lan_ip}/api/status" >/dev/null 2>&1; then
+    warn "Optional Caddy setup finished, but the HTTPS health check did not answer yet"
     return 0
   fi
 
-  ensure_lan_firewall_service_open http "FXRoute port-80 LAN access"
+  if "${SUDO_CMD[@]}" test -f "$caddy_root_cert"; then
+    if ! "${SUDO_CMD[@]}" install -m 644 "$caddy_root_cert" "${caddy_cert_dir}/fxroute-local-root.crt"; then
+      warn "Caddy HTTPS is active, but the root certificate could not be copied into ${caddy_cert_dir}"
+    else
+      CADDY_CERT_PATH="${caddy_cert_dir}/fxroute-local-root.crt"
+    fi
+  else
+    warn "Caddy HTTPS is active, but the generated root certificate was not found at ${caddy_root_cert}"
+  fi
 
-  pass "optional Caddy reverse proxy configured (http://${MDNS_HOSTNAME}.local)"
+  ensure_lan_firewall_service_open http "FXRoute port-80 LAN access"
+  ensure_lan_firewall_service_open https "FXRoute port-443 LAN access"
+
+  pass "optional Caddy HTTPS reverse proxy configured (https://${lan_ip})"
   echo
-  echo "Optional port-80 LAN URL ready: http://${MDNS_HOSTNAME}.local"
-  [[ -n "$lan_ip" ]] && echo "Port-80 LAN IP also works: http://${lan_ip}"
+  echo "Optional Caddy HTTPS ready: https://${lan_ip}"
+  if [[ -n "$MDNS_HOSTNAME" ]]; then
+    echo "Optional .local HTTPS ready: https://${MDNS_HOSTNAME}.local"
+  fi
+  if [[ -n "$CADDY_CERT_PATH" ]]; then
+    echo "Install this certificate on client devices, then reload the browser: ${CADDY_CERT_PATH}"
+  fi
 }
 
 main() {
@@ -1448,9 +1727,10 @@ main() {
   configure_optional_maintenance_helpers
   validate_http
   validate_tools
-  print_summary
   offer_optional_local_lan_name
+  install_mdns_guard
   offer_optional_caddy_proxy
+  print_summary
   write_install_state
 }
 

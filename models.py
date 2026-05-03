@@ -104,3 +104,7 @@ class PlaylistSaveRequest(BaseModel):
 
 class DeleteTracksRequest(BaseModel):
     track_ids: list[str]
+
+
+class DownloadTracksRequest(BaseModel):
+    track_ids: list[str]

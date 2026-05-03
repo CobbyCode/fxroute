@@ -11,3 +11,4 @@ mutagen==1.47.0
 yt-dlp==2026.03.17
 python-dotenv==1.0.0
 python-multipart==0.0.9
+numpy==2.4.4

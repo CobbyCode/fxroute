@@ -2,6 +2,7 @@
 
 import json
 import logging
+import os
 import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -20,14 +21,32 @@ class Playlist:
 _cached_playlists: Optional[List[Playlist]] = None
 
 
+BASE_DIR = Path(__file__).resolve().parent
+
+
+def _config_dir() -> Path:
+    root = Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config"))
+    return root / "fxroute"
+
+
 def _playlists_file() -> Path:
-    return Path(__file__).resolve().parent / "playlists.json"
+    return _config_dir() / "playlists.json"
+
+
+def _legacy_playlists_file() -> Path:
+    return BASE_DIR / "playlists.json"
 
 
 def _ensure_storage() -> Path:
     path = _playlists_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
     if not path.exists():
-        path.write_text("[]\n", encoding="utf-8")
+        legacy_path = _legacy_playlists_file()
+        if legacy_path.exists():
+            path.write_text(legacy_path.read_text(encoding="utf-8"), encoding="utf-8")
+            logger.info("Migrated playlists storage to %s", path)
+        else:
+            path.write_text("[]\n", encoding="utf-8")
     return path
 
 

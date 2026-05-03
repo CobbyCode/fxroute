@@ -1,9 +1,449 @@
 # Changelog
 
-## 0.4.339 (2026-05-03)
-- Re-run installs now reuse an already available Caddy binary instead of invoking the package manager again, allowing the optional Caddy refresh path to complete even when unrelated system package activity is holding the dpkg frontend lock.
-- Added UFW handling for FXRoute LAN access so installs on hosts with UFW active open the application HTTP port plus optional Caddy HTTP/mDNS ports, instead of only handling firewalld-based systems.
+## 0.5.0 (2026-05-03)
+- Bumped the release line to `0.5.0` for the accumulated measurement, installer, EasyEffects, Bluetooth, sample-rate recovery, documentation, and UI stabilization work.
+- Refreshed the public README for the 0.5 line, including the current feature set, Armbian/ARM64 validation, Flatpak/native EasyEffects behavior, measurement workflow, Bluetooth handling, local HTTPS, and operating assumptions.
+- Fixed optional mDNS guard timer re-application by applying the guard directly during install, enabling only the timer, and keeping the guard service a true one-shot; uninstall now removes the nft rules explicitly before deleting the helper.
+- Re-run installs now restart the FXRoute user service and refresh/restart the FXRoute-owned Caddy service, so updated code and unit files become active immediately.
+- Added explicit HOME/XDG config environment for the optional FXRoute Caddy service so Caddy no longer starts with an empty home/config warning.
+- Re-run installs now reuse an already available Caddy binary instead of invoking the package manager again, allowing the optional HTTPS refresh path to complete even when unrelated system package activity is holding the dpkg frontend lock.
+- Added UFW handling for FXRoute LAN access so installs on hosts with UFW active open the application HTTP port plus optional Caddy HTTP/HTTPS ports, instead of only handling firewalld-based systems.
 - Installer now starts the configured EasyEffects background service immediately after writing autostart configuration, so peak monitoring and preset switching can come up during the initial install session instead of waiting for the next desktop login.
+- Installer HTTP validation now waits briefly for the restarted service to bind its port, avoiding false ownership failures on slower ARM64 systems where Uvicorn startup can take longer than the previous fixed delay.
+
+## 0.4.467 (2026-05-03)
+- Hardened installer validation for fresh user installs. Synced installs no longer copy a source `.env`, so port selection can avoid existing listeners, and HTTP validation now verifies that the configured port is owned by the newly installed FXRoute user service before accepting the health check.
+
+## 0.4.466 (2026-05-03)
+- Hardened EasyEffects preset switching for Flatpak installs. FXRoute now reports the active socket path, starts the EasyEffects background service when the socket is absent, removes unreachable stale socket files before recovery, and bounds the CLI fallback so preset switching cannot hang the API.
+
+## 0.4.465 (2026-05-03)
+- Open the firewalld `https` service when enabling the optional FXRoute Caddy proxy, and track/remove that opening during uninstall.
+
+## 0.4.464 (2026-05-03)
+- Refresh the exported local Caddy root certificate when the optional FXRoute Caddy proxy is already active, preventing stale certificate downloads after Caddy state changes.
+
+## 0.4.463 (2026-05-02)
+- Added a minimal dynamic `HTTPS certificate` link at the bottom of Technical settings.
+- Added the local HTTPS certificate download endpoint to the short manual.
+
+## 0.4.462 (2026-05-02)
+- Made the A/B compare `Delete active` button use the standard destructive red button styling for consistency with other delete actions.
+
+## 0.4.461 (2026-05-02)
+- Moved editable radio station and playlist storage to the user config directory (`$XDG_CONFIG_HOME/fxroute/` or `~/.config/fxroute/`) so installs/restores of the application directory no longer overwrite user-managed stations or playlists.
+- Added one-time migration from legacy project-local `stations.json` and `playlists.json` when the new config files do not exist yet.
+
+## 0.4.460 (2026-05-02)
+- Persisted the active Measure calibration file in backend-managed measurement settings. Measure setup now preselects the backend active calibration across reloads, browser cache clears, and other clients, including a persisted `No calibration file` state.
+- Added immediate calibration upload/select handling plus a red delete action next to the calibration selector. Deleting the active calibration resets Measure to `No calibration file`, and deletion is blocked while a measurement job is active.
+- Measurement jobs now fall back to the backend-selected calibration file when no per-run upload or explicit selection is supplied, while stale missing calibration references are cleared safely.
+
+## 0.4.459 (2026-05-02)
+- Hardened local/radio sample-rate expectation against PipeWire handoff lag. FXRoute now waits briefly for the player stream rate to appear before deciding whether a mismatch recovery is needed, including a slightly longer follow-up for radio renegotiation.
+- Tightened Spotify sample-rate recovery around watcher-confirmed mismatches. Watcher-confirmed mismatches now skip the less reliable controlled start/stop stage and fall through directly to the later recovery path, while the controlled stage itself is timeout-bounded so it cannot hang the service flow indefinitely.
+- Made Spotify peak-monitor handling calmer during recovery and short playback flaps. Peak monitoring now waits for Spotify/sample-rate alignment before arming, stays armed during active Spotify recovery, and only stops after a short re-check grace period when neither local playback nor Spotify playback is still active.
+- Improved EasyEffects peak-monitor restart robustness. Each `pw-record` start now uses a unique capture node name, stop/restart cancellation is stricter and faster, and port discovery/link setup now resolves against the canonical EasyEffects source ports again instead of ambiguous aliases.
+- Cleared stale local track context when local playback is explicitly stopped for Spotify takeover, reducing leftover local metadata during Spotify handoff.
+- Owner-source centralization changes from this cycle were rolled back. The retained build keeps the recovery-first behavior above and does not include an additional owner-source rewrite.
+- Kept the footer output-level badge width visually stable by formatting the displayed VU dB value as a two-digit frontend-only string (for example `-09 dB`). This was deployed as an isolated `static/app.js` change with no backend, samplerate, or `pw-record` path changes.
+
+## 0.4.458 (2026-05-01)
+- Moved footer source ownership back toward a backend-authoritative path. Playback and Spotify payloads now carry an authoritative `footer_owner`, and the frontend obeys that before any local heuristic reconciliation. This targets the remaining Spotify footer flash caused by competing frontend event ordering.
+
+## 0.4.457 (2026-05-01)
+- Tightened footer source ownership so active local/radio playback blocks Spotify footer ownership, even if Spotify status briefly still reports `Playing` during the handoff window. This complements the earlier single-track start lock and targets the remaining shorter Spotify flash after local playback was already confirmed.
+
+## 0.4.456 (2026-05-01)
+- Reworked the footer single-track start guard to clear only after the authoritative local playback event has been synchronized, not on the earlier `/api/play` success path. This targets the actual race where stale Spotify-playing state could still win ownership during the handoff window.
+
+## 0.4.455 (2026-05-01)
+- Reverted the narrow Spotify-footer ownership guard from `0.4.454`. Validation showed it increased footer jumps instead of reducing them.
+
+## 0.4.453 (2026-05-01)
+- Fixed the remaining footer control blink when switching from a prior playlist context to a single local track. The footer now keeps a narrow temporary single-track override until the matching play result lands, instead of briefly rendering stale previous/next state from an older queue snapshot.
+
+## 0.4.452 (2026-05-01)
+- Fixed the HTTP manifest suppression path to remove the manifest link generically instead of matching one stale cache-busted version string. This keeps `http://fxroute.local` from advertising PWA metadata even after normal asset-version bumps.
+
+## 0.4.451 (2026-05-01)
+- Stopped advertising the PWA manifest on plain HTTP responses. `http://fxroute.local` does not benefit from manifest/PWA behavior and some browsers could still try to escalate that path into `https://fxroute.local`, causing noisy mixed-origin/unsafe-load errors even after the bad redirect experiments were removed.
+
+## 0.4.450 (2026-05-01)
+- Removed the temporary `fxroute.local` redirect workaround again. It served as a short-lived diagnostic bypass but was not retained as the production fix.
+
+## 0.4.448 (2026-05-01)
+- Fixed stale PWA/asset version references in `index.html` for manifest and favicon files. The page shell had still pointed at `v=0.4.143`, which could drag old browser/PWA state back into a fresh session and confuse diagnosis around `fxroute.local`.
+
+## 0.4.446 (2026-05-01)
+- Fixed a footer control flicker on single-track local playback starts by resetting the optimistic local queue state immediately. This prevents previous/next from briefly appearing from stale queue context before the `/api/play` response arrives.
+
+## 0.4.445 (2026-04-30)
+- Restored the host measurement playback core to the last known-good validation path: fixed 48 kHz sweep generation again, direct playback to the active hardware sink again, and sink-monitor reference capture from that same sink again. This intentionally backs out the later sample-rate and Easy Effects playback-path experiments after they proved regressive for host measurement reliability.
+
+## 0.4.444 (2026-04-30)
+- Measurement playback now injects into `easyeffects_sink` when Easy Effects is present, while still taking the timing/reference monitor from the final hardware sink. This keeps the measurement sweep on the same practical host playback path as normal audio instead of bypassing processing and going straight to the DAC sink.
+
+## 0.4.443 (2026-04-30)
+- Measurement sample-rate selection now prefers the live PipeWire graph clock (`clock.rate`) instead of trusting the hardware sink's last reported active format. This avoids generating the sweep against a misleading 44.1 kHz sink status when the real running audio graph is still at 48 kHz.
+
+## 0.4.442 (2026-04-30)
+- Measurement playback is now tolerant of `pw-play` drain/exit hangs on the host DAC path. If the sweep process fails to return cleanly after the expected playback window, FXRoute now terminates the player and continues with the recorded host-reference analysis instead of failing the whole measurement job on a late PipeWire/DAC teardown quirk.
+
+## 0.4.441 (2026-04-30)
+- Measurement sweep playback now follows the active output sample rate instead of always generating/playing at 48 kHz. This avoids an unhealthy host-local sweep path when the active sink is currently running at 44.1 kHz and keeps the measurement stimulus aligned with the real output clock.
+
+## 0.4.440 (2026-04-30)
+- Reworked the measurement assistant around the now-host-only capture path: setup expands downward under the top controls, host input refresh is explicit, save naming moved below the graph next to smoothing chips and Save, and the top action row now follows the app's usual left-to-right control schema with Start on the left and Setup on the right.
+- Added host-measurement cancellation via the same start button while a measurement job is active, shortened the post-measurement completion text to the essential trusted-trace status, and cleaned up calibration wording so the empty selection clearly reads as `No calibration file`.
+
+## 0.4.439 (2026-04-30)
+- Removed browser/client microphone measurement from the active FXRoute measurement path and locked the product back to host-local capture only for now. The browser path is intentionally preserved only as an archival experiment branch after repeated validation room tests failed to make it trustworthy beyond near-speaker use.
+
+## 0.4.438 (2026-04-30)
+- Replaced the browser measurement timing path with a real acoustic-reference wrapper: Marker A + gap + ESS + gap + Marker B + tail, explicit emitted timing metadata, affine marker-based offset/drift correction, and full ESS deconvolution only after correction. Browser QC/retry logic now keys off marker confidence / ambiguity / fit residual / corrected sweep confidence instead of the old sweep-edge failure wording.
+
+## 0.4.437 (2026-04-30)
+- Added the first host-reference measurement implementation: host-local capture now records the active sink monitor as a reference channel plus the selected real mic as the measurement channel, derives timing from the reference path, applies the same offset/drift correction to the mic path, and exposes new reference-path QC/debug data. Host-reference mode now also refuses to pretend it is available when no real mic source is visible.
+
+## 0.4.436 (2026-04-30)
+- Fixed the browser retry/discard message so strong browser captures are no longer mislabeled as "very low" when the actual failure was timing/alignment. The UI now reports that distinction explicitly instead of implying the mic level was the main problem.
+
+## 0.4.435 (2026-04-30)
+- Reverted the browser-only acoustic timing marker experiment from `0.4.434`. Validation tests did not show a clear benefit and often remained unstable despite strong capture level, so browser measurements are back to the `0.4.433` timing behavior pending a follow-up alignment approach.
+
+## 0.4.434 (2026-04-30)
+- Added a browser-only acoustic timing marker before the sweep and wired the analyzer to use it as a coarse sweep-start hint before the normal multi-anchor timing fit. This is a first REW-like step toward more robust in-room browser alignment without changing host-local playback.
+
+## 0.4.433 (2026-04-30)
+- Rebalanced browser timing refinement for room-like captures: middle anchors now count more heavily in the fit, edge anchors count a bit less, and browser start/end scores now blend in middle-anchor support so room reflections are less likely to sink an otherwise coherent sweep.
+
+## 0.4.432 (2026-04-30)
+- Tuned the browser-only start-anchor search a bit further by widening the start-side timing search window again, aiming to bring moderate-level browser captures closer to host-local behavior without loosening the actual QC thresholds.
+
+## 0.4.431 (2026-04-30)
+- Made browser start-anchor timing search more forgiving without changing host-local behavior: `start-inner`, `start-body`, and `mid-low` now get a larger browser-only search window during timing refinement so moderate coarse-start error or start-side jitter is less likely to sink the run before the end anchors even look fine.
+
+## 0.4.430 (2026-04-30)
+- Added a very narrow browser-only start-alignment grace path: when browser capture level is already clearly strong, end alignment is solid, and drift is low, a just-barely-failing start score is now treated as a warning instead of forcing an automatic retry.
+
+## 0.4.429 (2026-04-30)
+- Reverted the experimental browser timing-fit inlier-mask refresh from `0.4.428` after validation showed measurement reliability getting worse instead of better.
+
+## 0.4.428 (2026-04-30)
+- Fixed a browser sweep timing-fit inconsistency: after the weighted anchor refit, FXRoute now refreshes the inlier mask from the refined residuals instead of keeping stale pre-refit outlier decisions. This should reduce false `weak-start-alignment` failures where `mid-low` was actually acceptable after the final fit.
+
+## 0.4.427 (2026-04-30)
+- Relaxed the browser-only sweep alignment QC a bit further (`fail 0.90`, `warn 0.94`) so realistic UMIK browser captures that already have healthy level are less likely to be rejected solely for slightly soft anchor confidence.
+
+## 0.4.426 (2026-04-30)
+- Relaxed the browser capture low-level warning thresholds to better match real UMIK/REW behavior: browser runs now warn below roughly `peak -45 dBFS` or `rms -60 dBFS` instead of the earlier overly aggressive `-40 / -55` cutoffs.
+
+## 0.4.425 (2026-04-30)
+- Browser measurement now temporarily pins the FXRoute output volume to 100% during sweep playback and restores the previous volume immediately afterward, so browser captures are not quietly undermined by a lower current system output setting.
+
+## 0.4.424 (2026-04-30)
+- Tightened the browser-mic selection path so permission/refresh requests reuse FXRoute's measurement constraints instead of opening a loose default `audio: true` stream.
+- Added deeper browser measurement recorder diagnostics (peak/rms, per-channel stats, captured frame/sample counts) so low-level browser runs can be traced to the recorder path versus later server-side analysis.
+- Refreshed the cache-busted frontend asset references so deployed clients load the new browser-measurement diagnostics build.
+
+## 0.4.423 (2026-04-30)
+- Split host-local sweep alignment QC from the stricter browser/default thresholds: host capture now treats repeated UMIK validation runs around ~0.84..0.90 as warning-level instead of hard-failing immediately, while browser/default capture keeps the existing tighter alignment gate.
+
+## 0.4.422 (2026-04-29)
+- Increased the PEQ `Add` button size so it sits more naturally beside the global EQ mode row and matches the surrounding button/row height better.
+
+## 0.4.421 (2026-04-29)
+- Refined the PEQ header layout so the global `EQ mode` control reads as a smaller left-side setting while `Add` stands more clearly on the right as its own action, reducing the oversized combined look.
+
+## 0.4.420 (2026-04-29)
+- Added a global PEQ `EQ mode` selector to the paired-band editor using the real EasyEffects equalizer modes found on a validation host: `IIR`, `FIR`, `FFT`, and `SPM`. The selected mode is now stored in the PEQ draft and written into `equalizer#0.mode` when creating presets.
+
+## 0.4.419 (2026-04-29)
+- Simplified the PEQ row model into strict Left/Right band pairs: `Add` always creates a full pair, `Remove` now operates on the whole pair from a single button, and the first base pair no longer shows a removable action at all.
+
+## 0.4.418 (2026-04-29)
+- Fixed the PEQ `Add` logic for uneven Left/Right band counts. When one side has a missing row because a non-linked band was deleted, `Add` now fills the shorter side first so the next Bell band lands in the visually corresponding row instead of creating a new orphaned row on the longer side.
+
+## 0.4.417 (2026-04-29)
+- Moved the PEQ `Add` button into its own centered row above the Left/Right panes so both band columns start at the same visual height again instead of one header sitting lower than the other.
+
+## 0.4.416 (2026-04-29)
+- Unified the PEQ builder flow further: there is now a single `Add` action that creates a paired Left/Right Bell band together, and changing a band's type now immediately flips the matching band on the other side to the same type instead of leaving it on Bell first. Gain and Delay still keep their existing special semantics on top of that.
+
+## 0.4.415 (2026-04-29)
+- Fixed `Remove` for linked PEQ special bands (`Gain` / `Delay`). Removing one of these linked slots now removes the matching band on both sides together instead of having the slot immediately recreated from the opposite channel during re-render.
+
+## 0.4.414 (2026-04-29)
+- Kept the new PEQ `Delay` type auto-opening on the matching Left/Right band slot, but stopped mirroring the actual delay millisecond value across channels. Delay now links the type only; L/R delay amounts remain independently editable.
+
+## 0.4.413 (2026-04-29)
+- Linked the new PEQ `Delay` type across Left/Right like the existing `Gain` special case, so choosing Delay on one side auto-mirrors the type and delay value to the matching band on the other side instead of leaving an accidental mixed Bell/Delay pair.
+
+## 0.4.412 (2026-04-29)
+- Added `Delay` as a selectable PEQ-style filter type in the dual-band preset builder. Delay bands now expose a dedicated `Delay (ms)` field in the same type chooser flow as the other PEQ types and generate a per-side EasyEffects delay plugin in the created preset instead of relying on the old standalone helper.
+
+## 0.4.411 (2026-04-28)
+- Removed the leftover `delay#0` helper plugin from generated EasyEffects output payloads, so Delay no longer keeps showing up in the EasyEffects GUI after the FXRoute Delay helper was intentionally removed from the current UX.
+
+## 0.4.410 (2026-04-28)
+- Re-armed the EasyEffects peak/pw-record monitor more reliably after app restarts and normal Spotify status polling by syncing the peak-monitor state during startup and on `/api/spotify/status`, so dB/peak indication does not stay dead just because FXRoute restarted while Spotify was already playing.
+
+## 0.4.409 (2026-04-28)
+- Fixed the frontend break introduced while removing the standalone Delay helper: missing Delay DOM nodes are now handled safely during effects UI initialization, so A/B filter switching, bass enhancer, tone effect, and unrelated later UI features like measurement controls no longer get knocked out by a null event-binding error.
+
+## 0.4.408 (2026-04-28)
+- Removed the standalone Delay helper from the current effects UI as the first step toward a later reintroduction in a better place, and stopped surfacing Delay in the compact extras summary so the visible helper model stays consistent.
+
+## 0.4.407 (2026-04-28)
+- Fixed the stereo import helper text being reverted by frontend runtime code, so `convolver` now actually stays visible in the main stereo-path hint instead of only existing in the static HTML.
+
+## 0.4.406 (2026-04-28)
+- Shortened the channel-specific import section label from `Left → left / Right → right` to a simpler `Left / Right`, because the longer wording read slightly misleadingly without adding useful guidance.
+
+## 0.4.405 (2026-04-28)
+- Tightened the filter-import hint text so the main stereo path explicitly mentions convolver files and the separate text boxes explicitly mention REW filters, without adding extra explanatory clutter.
+
+## 0.4.404 (2026-04-28)
+- Auto-selects the first existing calibration file in the measurement UI when no fresh upload is pending, so the selector no longer sits on the generic upload placeholder even though a stored calibration is already available.
+
+## 0.4.403 (2026-04-28)
+- Simplified the measurement calibration-file UI so it no longer shows the browser-native `Choose file / No file chosen` text, reuses the uploaded filename directly in the calibration selector when relevant, and only shows the lower active-calibration line when there is actually an active file to display.
+
+## 0.4.402 (2026-04-28)
+- Added explicit Private Network Access/CORS-friendly headers plus OPTIONS handling to the optional Caddy proxy, so plain-HTTP access on local hostnames/IPs has a better chance of staying usable in modern Chromium browsers instead of failing early on local-network preflight checks.
+
+## 0.4.401 (2026-04-28)
+- Refreshed the web cache-busting URLs so the Ubuntu validation host clients stop hanging onto the stale `0.4.395` frontend while installer/browser-mic follow-up fixes are already deployed on the host.
+
+## 0.4.400 (2026-04-28)
+- Added a real browser-mic certificate download endpoint at `/api/browser-mic/certificate` and pointed the measurement help there, so the UI no longer relies on a nonexistent `/static/fxroute-local-root.crt` file and can hand out the correct per-host Caddy root certificate on systems like the Ubuntu validation hosts.
+- Kept a small certificate reminder visible even when browser measurement already appears supported, because a manually bypassed warning page can still leave the trust state ambiguous for the user.
+
+## 0.4.399 (2026-04-28)
+- Added a compatibility fallback for older Ubuntu `pw-record` builds that do not support `--container` or `--sample-count`, so host-local measurements can still start, link PipeWire ports, and finish by terminating the recorder after playback instead of failing before capture begins.
+
+## 0.4.398 (2026-04-28)
+- Tightened host-local measurement input discovery so the selector only lists real audio capture sources from the Audio/Sources section, instead of leaking stream ports, peak-monitor internals, or unrelated video devices like `v4l2_input...` into the measurement input dropdown.
+
+## 0.4.397 (2026-04-28)
+- Fixed firewalld helper lookups so install/uninstall no longer abort on systems without `firewall-cmd`; this resolved an Ubuntu installer exit-code failure after a healthy Caddy startup.
+- Kept the earlier Ubuntu cleanup fixes for FXRoute-owned mDNS guard and Caddy artifacts, so repeated install/deinstall cycles on the test box complete more cleanly.
+
+## 0.4.396 (2026-04-28)
+- Fixed the optional Caddy HTTPS installer path so it can copy the generated root certificate from the privileged FXRoute Caddy data directory and no longer falls out of the script when the certificate notice is conditionally omitted.
+- Extended uninstall cleanup to remove the installer-managed `fxroute-mdns-guard` units and the FXRoute-owned Caddy cert/data leftovers, so test install/deinstall cycles leave a cleaner host behind.
+
+## 0.4.395 (2026-04-28)
+- Tightened the measurement graph's lower auto-scale bound so it no longer expands below `-24 dB`, which keeps the normal view a bit more focused when only a small low-end tail dips further down.
+
+## 0.4.394 (2026-04-28)
+- Kept `RemainAfterExit=yes` on the installer-managed `fxroute-mdns-guard` service so manual service reload/restart flows do not accidentally run `ExecStop` last and leave the guard removed.
+
+## 0.4.393 (2026-04-28)
+- Restored the optional `.local` installer hostname prompt to the simple `fxroute` default, since the installer already asks and the smarter derived suggestion did not add enough practical value.
+
+## 0.4.392 (2026-04-28)
+- Hardened the installer's LAN host path by adding an installer-managed `fxroute-mdns-guard` with a periodic re-apply timer, so Spotify user-space mDNS traffic is less likely to knock out Avahi `.local` host advertisement over time.
+- Reworked the optional Caddy step around browser-microphone HTTPS: it now targets the detected LAN IP as the primary HTTPS entry, keeps optional `.local` coverage when available, stores Caddy state under a dedicated FXRoute path, and copies the generated local root certificate into `/etc/fxroute/certs/` for client installation.
+- Improved installer summary/output so the chosen HTTPS path, optional `.local` path, certificate location, and mDNS guard presence are surfaced explicitly after setup.
+
+## 0.4.391 (2026-04-28)
+- Shortened the preset JSON import hint text in the filter import area to keep the UI compact.
+
+## 0.4.390 (2026-04-28)
+- Added a separate import path for FXRoute/EasyEffects preset `.json` files, so downloaded preset files can be re-imported directly without changing the existing REW/convolver import flows.
+- Kept the existing convolver, REW text, dual REW, and dual convolver import behavior intact while extending the generic stereo import area to also accept preset JSON files.
+
+## 0.4.389 (2026-04-28)
+- Simplified the DSP chain status line by removing the redundant repeated preset name/link after the chain description.
+
+## 0.4.388 (2026-04-28)
+- Restyled direct file links so they no longer look like default HTML links in the normal UI state, while keeping right-click/save behavior available.
+- Reworked measurement layout so the main controls sit above the graph, the setup panel is toggled by a normal `Setup` button, and the graph gets more horizontal space.
+- Removed noisy measurement summary/deletion count messaging from the measurement panel flow.
+
+## 0.4.387 (2026-04-28)
+- Added direct file download routes for library tracks, EasyEffects preset files, and saved measurement JSON files so browser links can point to the real file instead of an HTML view.
+- Updated the UI to expose those real-file links on track titles, saved/current measurement titles, and active preset status, enabling cleaner browser `Save link as…` / right-click save behavior without extra dedicated download buttons.
+
+## 0.4.386 (2026-04-28)
+- Forced saved-measurement graph rendering to use the same per-run accent color as the saved-run marker/list entry, so list and graph colors now stay fully aligned; current measurement remains a separate solid green line.
+
+## 0.4.385 (2026-04-28)
+- Stopped accepting a browser measurement after the final retry when it still matches the unstable bad-run signature; the run is now discarded instead of being shown as the current result.
+
+## 0.4.384 (2026-04-28)
+- Tightened browser bad-run auto-retry heuristics slightly beyond raw `clock-drift-high` detection by also rejecting the known drift-compensated / over-normalized bad-state signature.
+- Increased automatic browser retry allowance from 2 to 3 attempts so slightly stricter rejection remains practical during live measuring.
+
+## 0.4.383 (2026-04-28)
+- Kept saved-measurement graph traces aligned with their existing saved-run colors and moved the current measurement to its own dedicated solid green accent that the saved palette does not use.
+
+## 0.4.382 (2026-04-28)
+- Switched the measurement-path default to `Host-local capture`, keeping browser mic available as an explicit choice instead of the implicit starting path.
+- Shortened the path note text and changed the browser mic HTTPS guidance to point explicitly at the IP-based HTTPS URL/certificate flow.
+
+## 0.4.381 (2026-04-28)
+- Collapsed the less frequently used measurement options into a `Setup` dropdown so the always-used controls stay visible: channel, save name, start sweep, and save current.
+
+## 0.4.380 (2026-04-28)
+- Gave the current measurement a dedicated fixed accent color and kept it solid, while saved comparison traces now use separate accent colors and dashed lines more consistently.
+- Added an explicit `Close` action inside the open saved-runs area, alongside the existing `Open saved` / `Close saved` toggle label.
+
+## 0.4.379 (2026-04-28)
+- Replaced the generic QC warning count with a short inline reason label such as `volume low`, `soft start`, `soft end`, or `clock drift`.
+- Renamed the run list section to `Saved runs` and made the details toggle text explicit with `Open saved` / `Close saved`.
+
+## 0.4.378 (2026-04-28)
+- Simplified saved-run selection so the existing visibility checkbox is now the only selector for compare/delete workflows; removed the extra separate `Select` checkbox.
+- Made visible saved measurements stand out more clearly in both the list and graph: current run stays solid, compared saved runs use stronger accent colors and dashed lines.
+
+## 0.4.377 (2026-04-28)
+- Shortened the browser measurement help copy to a tighter user-facing line without the extra notebook/client/host wording.
+
+## 0.4.376 (2026-04-28)
+- Kept the saved-measurements section open while using `Select all` / saved-run selection so bulk cleanup does not collapse the list mid-action.
+
+## 0.4.375 (2026-04-28)
+- Simplified the calibration status line so it now shows just the selected filename instead of explanatory prefixes like `Reusing saved calibration:`.
+
+## 0.4.374 (2026-04-28)
+- Shortened the selected browser-microphone status line to `Selected: …` and trimmed verbose system wrapper text such as `Microphone (...)` when possible.
+
+## 0.4.373 (2026-04-28)
+- Shortened the measurement setup intro copy further to a more direct user-facing line: `Browser mic first. Host-local capture optional.`
+
+## 0.4.372 (2026-04-28)
+- Replaced another internal measurement subtitle/help cluster with simpler user-facing wording and removed remaining environment-specific validation-host references from the setup text.
+- Added saved-measurement bulk actions: per-run selection, `Select all`, and `Delete selected` for faster cleanup after test bursts.
+
+## 0.4.371 (2026-04-28)
+- Reworded the fixed-frequency-range helper text from internal working phrasing to the simpler user-facing `Frequency view: 20 Hz to 20 kHz.`
+
+## 0.4.370 (2026-04-28)
+- Cleaned up the first browser measurement texts so they no longer hardcode a validation host, repeat the same explanation twice, or read like internal implementation notes.
+- Deduplicated the reusable calibration-file selector by visible filename so repeated uploads of the same file do not clutter the UI with duplicate entries.
+- Simplified the saved-runs helper copy and renamed the secondary measurement mode label from environment-specific `Host-local capture` to the more portable `Host-local capture`.
+
+## 0.4.369 (2026-04-28)
+- Browser measurement now primes the capture path before the first sweep of a page session regardless of calibration selection, since recent live runs showed the first no-cal and with-cal attempts can both enter the same bad drift-compensated state.
+- Browser measurement now auto-retries once when the finished run reports the known bad timing signature (e.g. `clock-drift-high` / large drift ppm), discarding the unstable attempt from the active result so users are more likely to land on the good second run automatically.
+
+## 0.4.368 (2026-04-28)
+- Added a browser-path priming pass before the first calibrated sweep in a page session so the reproducible first calibrated browser run is less likely to start in a broken recorder/timing state.
+- Moved microphone calibration application earlier onto the analyzed spectrum before display-band reduction, making calibrated traces materially closer to REW instead of applying the correction only to already-binned display points.
+
+## 0.4.367 (2026-04-27)
+- Removed the trusted/review display cosmetics from the normal measurement graph UI so the graph now shows the full stored trace directly, without review-overlay toggles, compare-upper-limit badges, or auto-range logic that ignored out-of-band review points.
+
+## 0.4.366 (2026-04-27)
+- Added a browser-capture validity guard that rejects uploaded files which match the generated sweep stimulus too closely, so a fake/non-acoustic browser capture cannot be saved as if it were a real microphone measurement.
+
+## 0.4.365 (2026-04-27)
+- Tightened the meaning of browser QC warnings by lowering the soft-alignment warning threshold from `0.975` to `0.96`, while keeping the hard fail threshold at `0.92`, so completed runs are not noisily flagged unless their alignment is meaningfully soft.
+
+## 0.4.364 (2026-04-27)
+- Slightly relaxed the browser multi-anchor residual tolerance so valid near-pass captures with a small anchor spread no longer false-fail on a single borderline start anchor, while obviously weak end-alignments still fail QC.
+
+## 0.4.363 (2026-04-27)
+- Replaced the browser sweep timing refinement with a multi-anchor weighted fit that uses several inset anchors across the sweep body instead of depending on one fragile start-edge anchor and one fragile end-edge anchor.
+- Browser alignment QC now records per-anchor timing matches, rejects anchor outliers before fitting drift/start, and derives start/end confidence from multiple nearby anchors so valid captures are less likely to false-fail on softened sweep edges.
+
+## 0.4.362 (2026-04-27)
+- Made browser sweep alignment more tolerant of real client/playback timing slop by increasing the pre-sweep playback delay, widening the timing search margin, and adding a bit more end padding before browser analysis judges the run.
+
+## 0.4.361 (2026-04-27)
+- Fixed browser alignment QC scoring so a strong inverted-polarity alignment no longer looks artificially weak just because its raw correlation score is negative; the QC now judges alignment strength by correlation magnitude instead of the sign alone.
+
+## 0.4.360 (2026-04-27)
+- Fixed browser measurement job bookkeeping when backend analysis rejects a run: failed browser uploads now persist as `failed` jobs with the real QC error detail instead of getting stranded as `awaiting-upload` with no visible measurement state change.
+
+## 0.4.359 (2026-04-27)
+- Hardened browser measurement comparison behavior without bluntly chopping the upper band: isolated response outliers are now surfaced in QC, graph auto-range stays readable under raw/review overlays, and the visible comparison summary reflects the actual trusted upper limit.
+- Replaced the too-coarse browser high-frequency cap with targeted upper-edge handling so plausibly good browser traces can stay visible through the upper treble while only unstable final edge bins are treated more cautiously in review/QC.
+- Fixed a real 18–20 kHz browser-edge artifact in the analysis path by refusing to apply drift compensation to tiny near-zero timing estimates; meaningful drift is still compensated, but micro-corrections no longer trigger resampling that can collapse the final visible edge.
+
+## 0.4.358 (2026-04-27)
+- Stopped forcing the browser measurement recorder down a fixed 2-channel path by default; the browser capture now prefers a mono microphone capture and sizes the recorder to the actual track settings when available.
+- This is a conservative browser-path stability fix aimed especially at mono USB measurement microphones like UMIK-1, where an unnecessary stereo request could distort or destabilize repeated comparisons.
+
+## 0.4.357 (2026-04-27)
+- Added explicit browser microphone selection in the Measure setup so the browser path no longer silently relies on the notebook/default input when a UMIK or other external mic should be used.
+- Added a browser microphone detect/refresh step that can request permission once, populate device labels, and prefer a likely measurement mic when one is visible.
+- Added a browser-path calibration warning so applying a mic calibration file to an apparent onboard/default laptop microphone is flagged before starting the sweep.
+
+## 0.4.356 (2026-04-27)
+- Added a practical browser-measurement help box directly in the Measure tab, including the local certificate download link, the trust/import reminder, and the HTTPS reopen URL needed before notebook/browser microphone capture can work.
+- This keeps the browser path from feeling like a dead option and gives the user the exact next steps where the measurement flow actually starts.
+
+## 0.4.355 (2026-04-27)
+- Clarified the browser/client microphone path in the measurement UI: when FXRoute is opened over plain LAN HTTP, the app now explains that notebook/browser microphone capture needs a secure context (`HTTPS` or localhost) instead of looking like a dead selectable option.
+- The measurement start button now also makes that limitation explicit instead of silently presenting a non-working browser-mic route.
+
+## 0.4.354 (2026-04-27)
+- Added the first browser/client microphone measurement path as the primary measurement flow: the browser now records mic audio locally, coordinates a sweep played by FXRoute on the active output, uploads the recording, and reuses the existing sweep analysis/store path for the current trace.
+- Kept host-local validation capture available as a secondary route, while shifting the measurement UI toward browser-first wording and flow.
+
+## 0.4.353 (2026-04-27)
+- Cleaned up the measurement UI basics with shorter helper copy, simpler graph/status wording, and saved measurements moved into a collapsed section by default.
+- Added deletion for saved measurements from the UI and backend so old runs can be removed instead of accumulating forever.
+
+## 0.4.352 (2026-04-27)
+- Changed the host-local sweep to oversweep beyond the visible graph range: it now measures from about `10 Hz` up to `22 kHz`, while the normal display stays focused on `20 Hz .. 20 kHz`.
+- This keeps the user-facing graph range stable but gives the measurement core more room at both edges, which should help the visible 20 Hz and 20 kHz behavior without pretending those points sit directly on the sweep boundaries.
+
+## 0.4.351 (2026-04-27)
+- Removed the temporary conservative frequency clamp from the current host-local sweep display path so the current measurement shows the full available band instead of chopping it down around ~35 Hz .. ~15 kHz.
+- Also stopped auto-showing old saved measurements by default in the graph, and when raw/full-band review data exists for the current sweep the graph now prefers that full-band line instead of stacking another clipped current line on top.
+
+## 0.4.350 (2026-04-27)
+- Changed the current measurement behavior so a newly created sweep with raw/full-band review data shows that review overlay immediately by default instead of hiding it behind another manual toggle step.
+- This keeps the trusted trace present, but stops the UI from pretending the temporary conservative cutoff is the only thing worth showing right after a fresh measurement.
+
+## 0.4.349 (2026-04-27)
+- Made the raw/full-band review overlay control for the current measurement visible directly above the graph instead of effectively hiding it down in the comparison list.
+- Added a small range readout there as well so the current trusted vs review frequency span is obvious while testing.
+
+## 0.4.348 (2026-04-27)
+- Added an honest raw/full-band sweep review path alongside the conservative trusted trace: the normal measurement view stays trusted by default, while separate review traces can now be overlaid explicitly for broader 20 Hz .. 20 kHz evaluation.
+- Kept the distinction visible in both backend payloads and the measurement UI so raw review data is not mistaken for the normal trusted trace.
+
+## 0.4.347 (2026-04-27)
+- Upgraded the host-local sweep analysis core again: FXRoute now derives responses from inverse log-sweep deconvolution, adds first-pass anchor-based timing/clock compensation, and computes the displayed response from a windowed impulse-response path.
+- Kept the result format honest and separate from EasyEffects state while exposing extra analysis metadata for clock drift and impulse-response windowing.
+
+## 0.4.346 (2026-04-27)
+- Tightened measurement input discovery again so the normal input list excludes PipeWire monitor/output sources and only shows real capture inputs such as microphones or other actual source nodes.
+- Also deduplicated repeated source entries across the mixed `wpctl` / `pactl` discovery path, which had started surfacing duplicate UMIK/onboard inputs during the sweep-v2 fallback work.
+
+## 0.4.345 (2026-04-27)
+- Refined the host-local sweep measurement path with a more conservative sweep-v2 timing profile: a longer `7.0 s` sweep plus `0.5 s` lead-in and `1.25 s` tail.
+- Added conservative trusted-band metadata/selection for sweep display and hardened validation-host source discovery/linking so monitor-style PipeWire sources can complete the sweep path reliably during validation.
+
+## 0.4.344 (2026-04-27)
+- Replaced the host-local measurement stub on a validation host with the first real sweep path: FXRoute now generates a deterministic log sweep, plays it over the active output sink, records the selected PipeWire input in parallel, and returns a normalized transfer trace to the existing measurement UI.
+- Kept the method explicit in API/UI copy and metadata: this local mode now does sweep playback plus simple deconvolution, but it still stays separate from EasyEffects preset state, active PEQ state, Auto-PEQ, and any REW-style full workflow.
+
+## 0.4.343 (2026-04-27)
+- Fixed the host-local measurement capture routing on a validation host: measurement `pw-record` streams now start with autoconnect disabled and are manually linked to the selected PipeWire source ports, instead of silently falling back to `easyeffects_source`.
+- This makes the selected input choice effective again and keeps the UMIK path suitable for further signal validation.
+
+## 0.4.342 (2026-04-27)
+- Hardened the host-local measurement analysis so effectively silent captures now fail with an explicit no-signal message instead of producing a misleading flat line or a calibration-shaped trace.
+- This keeps calibration files from visually masquerading as real measurement content when the captured WAV contains no usable audio.
+
+## 0.4.341 (2026-04-27)
+- Clarified the measurement UI so the calibration file is explicitly optional in the setup copy, field label, and empty-state note.
+- Kept host-local measurement startup working without any calibration upload and labeled no-calibration captures as raw mic responses.
+
+## 0.4.340 (2026-04-27)
+- Hardened the first host-local measurement capture path so a usable `pw-record` WAV is accepted even on hosts where the tool exits non-zero after writing the requested sample-count capture.
+- Added the new measurement analysis dependency (`numpy`) to the project requirements so the deployed app environment matches the real-capture measurement code path.
+
+## 0.4.339 (2026-04-27)
+- Replaced the DSP measurement stub with a conservative real-capture flow: FXRoute now inventories PipeWire capture sources, can start a backend measurement job, records a short `pw-record` input capture, analyzes a normalized spectrum trace, and lets the current result be saved into the separate measurement store.
+- Added lightweight calibration-file plumbing for the measurement path and kept the scope explicit in both API/UI: this is a real short capture-spectrum workflow, not yet a sweep/deconvolution or Auto-PEQ feature, and it stays isolated from EasyEffects presets plus active PEQ state.
 
 ## 0.4.338 (2026-04-27)
 - When deleting the currently active EasyEffects preset, FXRoute now falls back to `Neutral` instead of `Direct`.

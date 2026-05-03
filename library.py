@@ -2,6 +2,7 @@
 
 import logging
 import os
+import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
@@ -12,6 +13,47 @@ from models import Track
 from config import get_settings
 
 logger = logging.getLogger(__name__)
+
+
+def _probe_sample_rate_with_ffprobe(filepath: Path) -> Optional[int]:
+    try:
+        completed = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "a:0",
+                "-show_entries",
+                "stream=sample_rate",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                str(filepath),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=3,
+        )
+    except Exception as e:
+        logger.debug(f"ffprobe sample-rate probe failed for {filepath}: {e}")
+        return None
+
+    if completed.returncode != 0:
+        stderr = (completed.stderr or "").strip()
+        if stderr:
+            logger.debug(f"ffprobe sample-rate probe returned {completed.returncode} for {filepath}: {stderr}")
+        return None
+
+    first_line = (completed.stdout or "").strip().splitlines()
+    if not first_line:
+        return None
+
+    try:
+        value = int(first_line[0].strip())
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
 
 # Supported audio file extensions
 AUDIO_EXTENSIONS = {".mp3", ".flac", ".ogg", ".oga", ".opus", ".m4a", ".aac", ".wav", ".wma", ".webm", ".weba"}
@@ -116,6 +158,8 @@ class LibraryScanner:
             except Exception as e:
                 logger.debug(f"Mutagen read error for {filepath}: {e}")
 
+            if sample_rate_hz is None:
+                sample_rate_hz = _probe_sample_rate_with_ffprobe(filepath)
 
             if not title:
                 title = filepath.stem

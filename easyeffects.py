@@ -10,6 +10,7 @@ import re
 import shutil
 import socket
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Set
@@ -157,8 +158,8 @@ class EasyEffectsManager:
             data_root = Path(os.environ.get("XDG_DATA_HOME") or (self.home / ".local/share"))
             socket_candidates = [host_runtime, flatpak_runtime, flatpak_tmp_runtime]
             cli_command = ["easyeffects"]
-            output_dir = data_root / "easyeffects/output"
-            irs_dir = data_root / "easyeffects/irs"
+            output_dir = config_root / "easyeffects/output"
+            irs_dir = config_root / "easyeffects/irs"
             db_file = config_root / "easyeffects/db/easyeffectsrc"
             global_extras_file = config_root / "easyeffects/agent-output-extras.json"
             compare_state_file = config_root / "easyeffects/agent-compare-state.json"
@@ -196,7 +197,11 @@ class EasyEffectsManager:
         native_runtime = self._build_runtime("native", native_available=native_available, flatpak_available=flatpak_available)
         flatpak_runtime = self._build_runtime("flatpak", native_available=native_available, flatpak_available=flatpak_available)
 
-        if flatpak_runtime.socket_path.exists() and not native_runtime.socket_path.exists():
+        if native_available and not flatpak_available:
+            selected = native_runtime
+        elif flatpak_available and not native_available:
+            selected = flatpak_runtime
+        elif flatpak_runtime.socket_path.exists() and not native_runtime.socket_path.exists():
             selected = flatpak_runtime
         elif native_runtime.socket_path.exists() and not flatpak_runtime.socket_path.exists():
             selected = native_runtime
@@ -208,14 +213,14 @@ class EasyEffectsManager:
             flatpak_score = self._runtime_score(flatpak_runtime)
             if native_score > flatpak_score:
                 selected = native_runtime
-            elif flatpak_score > native_score:
+            elif flatpak_score > native_score and flatpak_available:
                 selected = flatpak_runtime
             elif native_available:
                 selected = native_runtime
             elif flatpak_available:
                 selected = flatpak_runtime
             else:
-                selected = flatpak_runtime
+                selected = native_runtime
 
         selected = EasyEffectsRuntime(
             mode=selected.mode,
@@ -237,7 +242,110 @@ class EasyEffectsManager:
         return list(self.runtime.socket_candidates)
 
     def _socket_path(self) -> Path:
-        return self.runtime.socket_path
+        return next((candidate for candidate in self._socket_candidates() if candidate.exists()), self.runtime.socket_path)
+
+    def _runtime_status(self) -> Dict[str, Any]:
+        status = self.runtime.as_dict()
+        status["socket"] = str(self._socket_path())
+        return status
+
+    def _session_environment(self) -> Dict[str, str]:
+        env = os.environ.copy()
+        try:
+            result = subprocess.run(
+                ["systemctl", "--user", "show-environment"],
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+            if result.returncode == 0:
+                for line in result.stdout.splitlines():
+                    if "=" not in line:
+                        continue
+                    key, value = line.split("=", 1)
+                    if key and key not in env:
+                        env[key] = value
+        except Exception as e:
+            logger.debug("Failed to read user systemd environment for EasyEffects startup: %s", e)
+
+        env.setdefault("XDG_RUNTIME_DIR", str(self._runtime_dir()))
+        env.setdefault("DBUS_SESSION_BUS_ADDRESS", f"unix:path={env['XDG_RUNTIME_DIR']}/bus")
+        if not env.get("DISPLAY") and not env.get("WAYLAND_DISPLAY"):
+            env.setdefault("QT_QPA_PLATFORM", "offscreen")
+        return env
+
+    def _start_service_process(self) -> None:
+        if self.runtime.mode == "flatpak" and not self.runtime.flatpak_available:
+            raise RuntimeError("EasyEffects Flatpak is not installed")
+        if self.runtime.mode == "native" and not self.runtime.native_available:
+            raise RuntimeError("Native EasyEffects is not installed")
+
+        cmd = [*self.runtime.cli_command, "--gapplication-service"]
+        env = self._session_environment()
+        logger.info(
+            "Starting EasyEffects service via %s: %s (DISPLAY=%s, WAYLAND_DISPLAY=%s)",
+            self.runtime.mode,
+            cmd,
+            bool(env.get("DISPLAY")),
+            bool(env.get("WAYLAND_DISPLAY")),
+        )
+        subprocess.Popen(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=env,
+            start_new_session=True,
+        )
+
+    def _wait_for_socket(self, timeout: float = 8.0) -> Optional[Path]:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            socket_path = self._socket_path()
+            if socket_path.exists():
+                return socket_path
+            time.sleep(0.2)
+        return self._socket_path() if self._socket_path().exists() else None
+
+    def _discard_unreachable_socket_candidates(self) -> None:
+        for socket_path in self._socket_candidates():
+            if not socket_path.exists():
+                continue
+            try:
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                    client.settimeout(0.5)
+                    client.connect(str(socket_path))
+                continue
+            except Exception as e:
+                logger.warning("Removing unreachable EasyEffects socket candidate before service recovery: %s (%s)", socket_path, e)
+                try:
+                    socket_path.unlink()
+                except FileNotFoundError:
+                    pass
+                except Exception as unlink_error:
+                    logger.warning("Failed to remove stale EasyEffects socket %s: %s", socket_path, unlink_error)
+                lock_path = socket_path.with_name("easyeffects.lock")
+                try:
+                    lock_path.unlink()
+                except FileNotFoundError:
+                    pass
+                except Exception as unlink_error:
+                    logger.debug("Failed to remove EasyEffects lock %s: %s", lock_path, unlink_error)
+
+    def _ensure_service_socket(self, *, recover_stale: bool = False) -> Path:
+        if recover_stale:
+            self._discard_unreachable_socket_candidates()
+        socket_path = self._socket_path()
+        if socket_path.exists():
+            return socket_path
+        self._start_service_process()
+        socket_path = self._wait_for_socket(timeout=8.0)
+        if socket_path and socket_path.exists():
+            return socket_path
+        raise FileNotFoundError(
+            "EasyEffects control socket not found after service start attempt. Candidates: "
+            + ", ".join(str(path) for path in self._socket_candidates())
+        )
 
     def _send_socket_command(self, command: str, timeout: float = 2.0) -> str:
         last_error = None
@@ -299,7 +407,29 @@ class EasyEffectsManager:
             )
         return presets
 
+    def _get_active_preset_from_settings(self) -> Optional[str]:
+        if not shutil.which("gsettings"):
+            return None
+        try:
+            result = subprocess.run(
+                ["gsettings", "get", "com.github.wwmm.easyeffects", "last-used-output-preset"],
+                capture_output=True,
+                text=True,
+                env=self._session_environment(),
+                timeout=2,
+            )
+            if result.returncode == 0:
+                value = (result.stdout or "").strip().strip("'").strip('"')
+                return value or None
+        except Exception as e:
+            logger.debug("Failed to read EasyEffects active preset via gsettings: %s", e)
+        return None
+
     def _get_active_preset_from_db(self) -> Optional[str]:
+        settings_value = self._get_active_preset_from_settings()
+        if settings_value:
+            return settings_value
+
         if not self.db_file.exists():
             return None
 
@@ -345,34 +475,52 @@ class EasyEffectsManager:
                 logger.warning("Failed to sync global extras into preset '%s' before load: %s", preset_name, e)
 
         socket_command = f"load_preset:output:{preset_name}"
-        try:
+
+        def try_socket_load(context: str) -> bool:
             response = self._send_socket_command(socket_command, timeout=2.0)
             active_after_load = self.get_active_preset()
             if active_after_load == preset_name:
                 logger.info(
-                    "Loaded EasyEffects preset via control socket: %s (response=%r, verified_active=%r)",
+                    "Loaded EasyEffects preset via control socket (%s): %s (response=%r, verified_active=%r)",
+                    context,
                     preset_name,
                     response,
                     active_after_load,
                 )
-                return
+                return True
             logger.warning(
-                "EasyEffects socket load returned without verification, falling back to CLI: requested=%s response=%r verified_active=%r",
+                "EasyEffects socket load returned without verification (%s): requested=%s response=%r verified_active=%r",
+                context,
                 preset_name,
                 response,
                 active_after_load,
             )
-        except Exception as socket_error:
-            logger.warning("EasyEffects socket preset load failed, falling back to CLI: %s", socket_error)
+            return False
+
+        socket_error: Optional[Exception] = None
+        try:
+            if try_socket_load("existing-service"):
+                return
+        except Exception as e:
+            socket_error = e
+            logger.warning("EasyEffects socket preset load failed before service recovery: %s", e)
+
+        if any(socket_path.exists() for socket_path in self._socket_candidates()):
+            try:
+                self._ensure_service_socket(recover_stale=True)
+                if try_socket_load("service-recovery"):
+                    return
+            except Exception as e:
+                socket_error = e
+                logger.warning("EasyEffects socket preset load failed after service recovery: %s", e)
+        else:
+            logger.info("Skipping EasyEffects service socket recovery because no control socket candidate exists; using CLI fallback")
 
         cmd = [*self.runtime.cli_command, "--load-preset", preset_name]
-
-        env = os.environ.copy()
-        if not env.get("DISPLAY") and not env.get("WAYLAND_DISPLAY"):
-            env.setdefault("QT_QPA_PLATFORM", "offscreen")
+        env = self._session_environment()
 
         logger.info(
-            "Loading EasyEffects preset via %s CLI fallback: %s (cmd=%s DISPLAY=%s, WAYLAND_DISPLAY=%s, QT_QPA_PLATFORM=%s)",
+            "Loading EasyEffects preset via bounded %s CLI fallback: %s (cmd=%s DISPLAY=%s, WAYLAND_DISPLAY=%s, QT_QPA_PLATFORM=%s)",
             self.runtime.mode,
             preset_name,
             cmd,
@@ -380,7 +528,14 @@ class EasyEffectsManager:
             bool(env.get("WAYLAND_DISPLAY")),
             env.get("QT_QPA_PLATFORM"),
         )
-        result = subprocess.run(cmd, capture_output=True, text=True, env=env)
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=8)
+        except subprocess.TimeoutExpired as e:
+            raise RuntimeError(
+                "EasyEffects preset load timed out while socket control was unavailable. "
+                f"Last socket error: {socket_error}"
+            ) from e
+
         if result.returncode != 0:
             stderr = (result.stderr or result.stdout or "Unknown error").strip()
             if "could not connect to display" in stderr.lower() or "qt.qpa.plugin" in stderr.lower():
@@ -391,12 +546,12 @@ class EasyEffectsManager:
             raise RuntimeError(f"EasyEffects preset load failed: {stderr}")
 
         active_after_cli = self.get_active_preset()
-        if active_after_cli and active_after_cli != preset_name:
-            logger.warning(
-                "EasyEffects CLI load completed but active preset differs: requested=%s active=%s",
-                preset_name,
-                active_after_cli,
-            )
+        if active_after_cli == preset_name:
+            return
+        raise RuntimeError(
+            "EasyEffects preset load completed without verified active preset: "
+            f"requested={preset_name!r}, active={active_after_cli!r}, last_socket_error={socket_error!r}"
+        )
 
     def list_irs(self) -> List[dict]:
         if not self.irs_dir.exists():
@@ -772,6 +927,8 @@ class EasyEffectsManager:
 
         if inferred_active_side is not None:
             active_side = inferred_active_side
+        elif active_preset:
+            active_side = None
 
         return {
             "presetA": preset_a,
@@ -905,14 +1062,14 @@ class EasyEffectsManager:
     def _apply_extras_to_output(self, output: Dict[str, Any], extras: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         normalized = self.normalize_effects_extras(extras)
         result = dict(output or {})
-        helper_plugin_names = ["crystalizer#0", "maximizer#0", "bass_enhancer#0", "delay#0", "autogain#0", "limiter#0"]
-        helper_plugin_set = set(helper_plugin_names)
+        helper_plugin_names = ["crystalizer#0", "maximizer#0", "bass_enhancer#0", "autogain#0", "limiter#0"]
+        helper_plugin_set = set(helper_plugin_names + ["delay#0"])
         plugins_order = list(result.get("plugins_order", []))
 
         result["crystalizer#0"] = self._crystalizer_plugin_payload(normalized["tone_effect"])
         result["maximizer#0"] = self._maximizer_plugin_payload(normalized["tone_effect"])
         result["bass_enhancer#0"] = self._bass_enhancer_plugin_payload(normalized["bass_enhancer"])
-        result["delay#0"] = self._delay_plugin_payload(normalized["delay"])
+        result.pop("delay#0", None)
         result["autogain#0"] = self._autogain_plugin_payload(normalized["autogain"])
         result["limiter#0"] = self._limiter_plugin_payload(normalized["limiter"])
 
@@ -1042,6 +1199,32 @@ class EasyEffectsManager:
             raise RuntimeError(f"Preset '{clean_name}' is not a valid JSON object")
         return payload
 
+    def import_preset_json(self, preset_filename: str, preset_text: str) -> Dict[str, Any]:
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        clean_preset_name = Path(preset_filename).stem.strip()
+        if not clean_preset_name:
+            raise ValueError("Invalid preset name")
+        try:
+            payload = json.loads(preset_text)
+        except Exception as e:
+            raise ValueError(f"Preset JSON is invalid: {e}") from e
+        if not isinstance(payload, dict):
+            raise ValueError("Preset JSON must be an object")
+        output = payload.get("output")
+        if not isinstance(output, dict):
+            raise ValueError("Preset JSON does not look like an EasyEffects output preset")
+        plugins_order = output.get("plugins_order")
+        if plugins_order is not None and not isinstance(plugins_order, list):
+            raise ValueError("Preset JSON has an invalid plugins_order")
+        preset_path = self.output_dir / f"{clean_preset_name}.json"
+        preset_path.write_text(json.dumps(payload, indent=2) + "\n")
+        return {
+            "name": clean_preset_name,
+            "filename": preset_path.name,
+            "path": str(preset_path),
+            "source_presets": self._extract_source_presets_from_payload(payload),
+        }
+
     def combine_presets(self, preset_name: str, source_presets: List[str], extras: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1154,7 +1337,9 @@ class EasyEffectsManager:
     def _normalize_peq_band_list(self, bands: Any, field_path: str) -> List[Dict[str, Any]]:
         allowed_filter_types = {
             "bell": "Bell",
+            "notch": "Notch",
             "gain": None,
+            "delay": None,
             "low_shelf": "Lo-shelf",
             "high_shelf": "Hi-shelf",
             "low_pass": "Lo-pass",
@@ -1171,6 +1356,29 @@ class EasyEffectsManager:
             if not isinstance(band, dict):
                 raise ValueError(f"{field_path}[{index}] must be an object")
 
+            filter_type = str(band.get("filterType", "")).strip().lower()
+            if filter_type not in allowed_filter_types:
+                raise ValueError(
+                    f"{field_path}[{index}].filterType must be one of: {', '.join(sorted(allowed_filter_types))}"
+                )
+
+            if filter_type == "delay":
+                try:
+                    delay_ms = float(band.get("delayMs", 0.0))
+                except (TypeError, ValueError) as e:
+                    raise ValueError(f"{field_path}[{index}].delayMs has invalid numeric value") from e
+                if not 0.0 <= delay_ms <= 500.0:
+                    raise ValueError(f"{field_path}[{index}].delayMs must be between 0 and 500")
+                normalized_bands.append(
+                    {
+                        "delayMs": delay_ms,
+                        "filterType": filter_type,
+                        "easyEffectsType": allowed_filter_types[filter_type],
+                        "enabled": bool(band.get("enabled", True)),
+                    }
+                )
+                continue
+
             try:
                 frequency_hz = float(band["frequencyHz"])
                 gain_db = float(band["gainDb"])
@@ -1179,12 +1387,6 @@ class EasyEffectsManager:
                 raise ValueError(f"{field_path}[{index}] missing required field: {e.args[0]}") from e
             except (TypeError, ValueError) as e:
                 raise ValueError(f"{field_path}[{index}] has invalid numeric value") from e
-
-            filter_type = str(band.get("filterType", "")).strip().lower()
-            if filter_type not in allowed_filter_types:
-                raise ValueError(
-                    f"{field_path}[{index}].filterType must be one of: {', '.join(sorted(allowed_filter_types))}"
-                )
 
             if not 20.0 <= frequency_hz <= 20000.0:
                 raise ValueError(f"{field_path}[{index}].frequencyHz must be between 20 and 20000")
@@ -1206,16 +1408,21 @@ class EasyEffectsManager:
 
         return normalized_bands
 
-    def _split_peq_bands_and_gain(self, bands: List[Dict[str, Any]]) -> tuple[List[Dict[str, Any]], float]:
+    def _split_peq_bands_gain_and_delay(self, bands: List[Dict[str, Any]]) -> tuple[List[Dict[str, Any]], float, float]:
         eq_bands: List[Dict[str, Any]] = []
         gain_db_total = 0.0
+        delay_ms_total = 0.0
         for band in bands:
             if band.get("filterType") == "gain":
                 if band.get("enabled", True):
                     gain_db_total += float(band.get("gainDb", 0.0))
                 continue
+            if band.get("filterType") == "delay":
+                if band.get("enabled", True):
+                    delay_ms_total += float(band.get("delayMs", 0.0))
+                continue
             eq_bands.append(band)
-        return eq_bands, gain_db_total
+        return eq_bands, gain_db_total, delay_ms_total
 
     def validate_peq_v1(self, peq_definition: Dict[str, Any]) -> Dict[str, Any]:
         if not isinstance(peq_definition, dict):
@@ -1226,11 +1433,14 @@ class EasyEffectsManager:
             raise ValueError("peq.params must be an object")
 
         channel_mode = params.get("channelMode") or "stereo-linked"
+        eq_mode = str(params.get("eqMode") or "IIR").strip().upper()
+        if eq_mode not in {"IIR", "FIR", "FFT", "SPM"}:
+            raise ValueError("peq.params.eqMode currently supports only 'IIR', 'FIR', 'FFT', or 'SPM'")
         mix = peq_definition.get("mix") if isinstance(peq_definition.get("mix"), dict) else {}
         input_gain = float(mix.get("inputGainDb", 0.0))
         output_gain = float(mix.get("outputGainDb", 0.0))
 
-        normalized_params: Dict[str, Any] = {"channelMode": channel_mode}
+        normalized_params: Dict[str, Any] = {"channelMode": channel_mode, "eqMode": eq_mode}
         if channel_mode == "stereo-linked":
             normalized_params["bands"] = self._normalize_peq_band_list(params.get("bands"), "peq.params.bands")
         elif channel_mode == "dual":
@@ -1259,6 +1469,7 @@ class EasyEffectsManager:
 
         normalized = self.validate_peq_v1(peq_definition)
         channel_mode = normalized["params"]["channelMode"]
+        eq_mode = normalized["params"]["eqMode"]
 
         def build_channel_bands(bands: List[Dict[str, Any]], slot_count: int) -> Dict[str, Dict[str, Any]]:
             channel = {}
@@ -1285,8 +1496,8 @@ class EasyEffectsManager:
             left_source_bands = shared_bands
             right_source_bands = shared_bands
 
-        left_bands, left_gain_trim_db = self._split_peq_bands_and_gain(left_source_bands)
-        right_bands, right_gain_trim_db = self._split_peq_bands_and_gain(right_source_bands)
+        left_bands, left_gain_trim_db, left_delay_ms = self._split_peq_bands_gain_and_delay(left_source_bands)
+        right_bands, right_gain_trim_db, right_delay_ms = self._split_peq_bands_gain_and_delay(right_source_bands)
         num_bands = max(len(left_bands), len(right_bands))
 
         if channel_mode == "stereo-linked":
@@ -1321,7 +1532,7 @@ class EasyEffectsManager:
                 "bypass": not normalized["enabled"],
                 "input-gain": normalized["mix"]["inputGainDb"] + shared_gain_trim_db,
                 "left": left,
-                "mode": "IIR",
+                "mode": eq_mode,
                 "num-bands": eq_slot_count,
                 "output-gain": normalized["mix"]["outputGainDb"],
                 "pitch-left": 0.0,
@@ -1330,6 +1541,33 @@ class EasyEffectsManager:
                 "split-channels": channel_mode == "dual",
             }
             base_order.append("equalizer#0")
+
+        has_delay = abs(left_delay_ms) > 1e-9 or abs(right_delay_ms) > 1e-9
+        if has_delay:
+            base_plugins["delay#1"] = {
+                "bypass": not normalized["enabled"],
+                "centimeters-l": 0.0,
+                "centimeters-r": 0.0,
+                "dry-l": -80.01,
+                "dry-r": -80.01,
+                "input-gain": 0.0,
+                "invert-phase-l": False,
+                "invert-phase-r": False,
+                "meters-l": 0.0,
+                "meters-r": 0.0,
+                "mode-l": "Time",
+                "mode-r": "Time",
+                "output-gain": 0.0,
+                "sample-l": 0.0,
+                "sample-r": 0.0,
+                "temperature-l": 20.0,
+                "temperature-r": 20.0,
+                "time-l": left_delay_ms,
+                "time-r": right_delay_ms,
+                "wet-l": 0.0,
+                "wet-r": 0.0,
+            }
+            base_order.append("delay#1")
 
         preset_path = self.output_dir / f"{clean_preset_name}.json"
         payload = self._build_effects_output(base_plugins, base_order, extras)
@@ -1345,6 +1583,8 @@ class EasyEffectsManager:
             "eq_band_count": num_bands,
             "left_gain_trim_db": left_gain_trim_db,
             "right_gain_trim_db": right_gain_trim_db,
+            "left_delay_ms": left_delay_ms,
+            "right_delay_ms": right_delay_ms,
         }
 
     def import_rew_peq_text(self, rew_text: str) -> Dict[str, Any]:
@@ -1550,7 +1790,7 @@ class EasyEffectsManager:
         return {
             "available": self.output_dir.exists(),
             "mode": self.runtime.mode,
-            "runtime": self.runtime.as_dict(),
+            "runtime": self._runtime_status(),
             "preset_count": len(presets),
             "active_preset": active_preset,
             "presets": presets,

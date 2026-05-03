@@ -37,8 +37,12 @@ def _pipewire_bluez_plugin_available() -> bool:
     candidates = [
         "/usr/lib64/spa-0.2/bluez5/libspa-bluez5.so",
         "/usr/lib/spa-0.2/bluez5/libspa-bluez5.so",
+        "/usr/lib/*/spa-0.2/bluez5/libspa-bluez5.so",
     ]
-    return any(Path(candidate).exists() for candidate in candidates)
+    for candidate in candidates:
+        if any(Path("/").glob(candidate.lstrip("/"))):
+            return True
+    return False
 
 
 def _is_bluetooth_sink_name(name: str | None) -> bool:
@@ -1040,13 +1044,18 @@ def get_bluetooth_audio_overview() -> dict[str, Any]:
             }
 
     receiver_selectable = bool(bluetoothctl_available and adapter_present and pipewire_bluetooth_available and can_receive_audio)
+    connected_receiver_devices = [
+        device
+        for device in devices_by_address.values()
+        if device.get("connected") and bool((device.get("roles") or {}).get("can_stream_to_fxroute"))
+    ]
 
     receiver_state = "unavailable"
     if receiver_selectable:
         receiver_state = "discoverable" if (controller or {}).get("discoverable") else "idle"
     if receiver_session and receiver_session.get("streaming"):
         receiver_state = "streaming"
-    elif receiver_session:
+    elif receiver_session or connected_receiver_devices:
         receiver_state = "connected"
 
     devices = sorted(devices_by_address.values(), key=lambda item: ((not item.get("connected")), (item.get("alias") or item.get("name") or "").lower()))

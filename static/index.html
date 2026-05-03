@@ -5,14 +5,14 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <title>FXRoute</title>
-    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.4.143">
-    <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32x32.png?v=0.4.143">
-    <link rel="icon" type="image/png" sizes="16x16" href="/static/favicon-16x16.png?v=0.4.143">
-    <link rel="shortcut icon" href="/static/favicon.ico?v=0.4.143">
-    <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=0.4.143">
-    <link rel="manifest" href="/static/site.webmanifest?v=0.4.143">
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.4.458">
+    <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32x32.png?v=0.4.458">
+    <link rel="icon" type="image/png" sizes="16x16" href="/static/favicon-16x16.png?v=0.4.458">
+    <link rel="shortcut icon" href="/static/favicon.ico?v=0.4.458">
+    <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=0.4.458">
+    <link rel="manifest" href="/static/site.webmanifest?v=0.4.458">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/static/style.css?v=0.4.338">
+    <link rel="stylesheet" href="/static/style.css?v=0.5.0-reset">
 </head>
 <body>
     <!-- Offline indicator -->
@@ -80,6 +80,8 @@
                             <p id="settings-bluetooth-status" class="settings-inline-note">Bluetooth: loading…</p>
                         </div>
                     </section>
+
+                    <p class="settings-inline-note settings-certificate-note"><a id="settings-certificate-link" href="/api/browser-mic/certificate" target="_blank" rel="noopener noreferrer">HTTPS certificate</a></p>
                 </div>
             </section>
         </div>
@@ -193,6 +195,7 @@
                         <button id="library-loop" class="btn-secondary btn-icon-toggle" title="Loop queue" aria-label="Loop queue" aria-pressed="false">🔁</button>
                         <button id="toggle-import" class="btn-secondary">＋ Import</button>
                         <button id="refresh-library" class="btn-secondary btn-icon" title="Refresh library" aria-label="Refresh library">⟳</button>
+                        <button id="download-selected-tracks" class="btn-secondary btn-icon hidden" title="Download selected" aria-label="Download selected">⬇</button>
                         <button id="delete-selected-tracks" class="btn-secondary btn-icon hidden" title="Delete selected" aria-label="Delete selected">🗑</button>
                     </div>
                 </div>
@@ -237,7 +240,7 @@
                                 <label for="upload-track-file">Upload audio file or album ZIP</label>
                                 <div id="upload-track-area" class="upload-area upload-area-file-primary">
                                     <span class="upload-area-icon">🎵</span>
-                                    <span class="upload-area-text">Drop audio file or ZIP, or <u>browse</u></span>
+                                    <span class="upload-area-text">Drop audio file or ZIP, or&nbsp;<u>browse</u></span>
                                     <span id="upload-track-filename" class="upload-area-filename">Upload MP3, FLAC, WAV, OGG/Opus/WebM, M4A, or a ZIP album.</span>
                                     <input type="file" id="upload-track-file" class="upload-area-input" accept=".mp3,.flac,.ogg,.oga,.opus,.m4a,.aac,.wav,.wma,.webm,.weba,.zip,audio/*,application/zip">
                                 </div>
@@ -263,8 +266,8 @@
                             <p class="effects-subtitle">Compare presets, combine chains, or import filters on demand.</p>
                         </div>
                         <div class="effects-header-actions">
+                            <button id="effects-measure-open" class="btn-secondary btn-inline effects-header-action" type="button" aria-haspopup="dialog" aria-expanded="false">Measure</button>
                             <button id="effects-toggle-import" class="btn-secondary btn-inline effects-header-action" type="button" aria-expanded="false" aria-controls="effects-import-panel">Import…</button>
-                            <span class="effects-header-action-placeholder" aria-hidden="true"></span>
                         </div>
                     </div>
 
@@ -283,11 +286,11 @@
                             <div id="effects-import-area" class="upload-area upload-area-file-primary effects-filter-import-area">
                                 <span class="upload-area-icon">📁</span>
                                 <span class="upload-area-text">Drop stereo file or <u>browse</u></span>
-                                <span id="effects-import-filename" class="upload-area-filename">Stereo .irs or .wav for convolver.</span>
-                                <input type="file" id="effects-import-file" class="upload-area-input" accept=".irs,.wav,audio/wav">
+                                <span id="effects-import-filename" class="upload-area-filename">Stereo convolver .irs/.wav or Preset .json</span>
+                                <input type="file" id="effects-import-file" class="upload-area-input" accept=".irs,.wav,.json,audio/wav,application/json">
                             </div>
                             <div class="effects-import-section-head effects-import-section-head-secondary">
-                                <span class="effects-import-section-title">Left → left / Right → right</span>
+                                <span class="effects-import-section-title">Left / Right</span>
                                 <span class="effects-import-section-meta">Channel specific</span>
                             </div>
                             <div class="effects-rew-dual-grid">
@@ -301,7 +304,7 @@
                                         <span id="effects-rew-left-filename" class="upload-area-filename"></span>
                                         <input type="file" id="effects-rew-left-file" class="upload-area-input" accept=".irs,.wav,.txt,text/plain,audio/wav">
                                     </div>
-                                    <textarea id="effects-rew-left-text" class="url-input effects-rew-textarea" placeholder="Paste Left filter"></textarea>
+                                    <textarea id="effects-rew-left-text" class="url-input effects-rew-textarea" placeholder="Paste Left REW filter"></textarea>
                                 </div>
                                 <div class="effects-rew-pane">
                                     <div class="effects-rew-pane-header">
@@ -313,7 +316,7 @@
                                         <span id="effects-rew-right-filename" class="upload-area-filename"></span>
                                         <input type="file" id="effects-rew-right-file" class="upload-area-input" accept=".irs,.wav,.txt,text/plain,audio/wav">
                                     </div>
-                                    <textarea id="effects-rew-right-text" class="url-input effects-rew-textarea" placeholder="Paste Right filter"></textarea>
+                                    <textarea id="effects-rew-right-text" class="url-input effects-rew-textarea" placeholder="Paste Right REW filter"></textarea>
                                 </div>
                             </div>
                             <div class="effects-actions-row effects-actions-right effects-actions-rew-dual">
@@ -347,7 +350,7 @@
                                     </div>
                                     <div class="effects-compare-actions">
                                         <button id="effects-compare-toggle" class="btn-primary">Compare A/B</button>
-                                        <button id="effects-delete" class="btn-secondary btn-delete-subtle" title="Delete active preset" aria-label="Delete active preset">Delete active</button>
+                                        <button id="effects-delete" class="btn-danger" title="Delete active preset" aria-label="Delete active preset">Delete active</button>
                                     </div>
                                     <div id="effects-info" class="effects-info"></div>
                                     <div id="effects-status" class="effects-status"></div>
@@ -391,30 +394,6 @@
                                                     <option value="-18">-18 dB</option>
                                                 </select>
                                             </label>
-                                        </div>
-                                    </section>
-                                    <section class="effects-extras-group">
-                                        <div class="effects-extras-group-header">
-                                            <h4>Timing</h4>
-                                        </div>
-                                        <div class="effects-delay-settings">
-                                            <label class="checkbox-row"><input type="checkbox" id="effects-delay-enabled"> Delay</label>
-                                            <div id="effects-delay-inputs-wrap" class="delay-inputs delay-inputs-compact hidden">
-                                                <div class="delay-field delay-field-compact">
-                                                    <label for="effects-delay-left-ms">L</label>
-                                                    <div class="delay-input-wrap">
-                                                        <input type="number" id="effects-delay-left-ms" class="url-input delay-number-input" min="0" max="500" step="0.1" value="0">
-                                                        <span class="delay-unit">ms</span>
-                                                    </div>
-                                                </div>
-                                                <div class="delay-field delay-field-compact">
-                                                    <label for="effects-delay-right-ms">R</label>
-                                                    <div class="delay-input-wrap">
-                                                        <input type="number" id="effects-delay-right-ms" class="url-input delay-number-input" min="0" max="500" step="0.1" value="0">
-                                                        <span class="delay-unit">ms</span>
-                                                    </div>
-                                                </div>
-                                            </div>
                                         </div>
                                     </section>
                                     <section class="effects-extras-group">
@@ -480,23 +459,33 @@
                                 <summary class="effects-disclosure-summary">
                                     <div>
                                         <h3>Create PEQ preset</h3>
-                                        <p>Build separate Left and Right PEQ bands.</p>
+                                        <p>Build paired Left/Right PEQ bands.</p>
                                     </div>
                                     <span class="effects-disclosure-meta">Expand</span>
                                 </summary>
                                 <div class="effects-stack effects-disclosure-body">
+                                    <div class="effects-peq-add-row">
+                                        <div class="field-group effects-peq-mode-field">
+                                            <label for="effects-peq-mode-select">EQ mode</label>
+                                            <select id="effects-peq-mode-select" class="url-input">
+                                                <option value="IIR">IIR</option>
+                                                <option value="FIR">FIR</option>
+                                                <option value="FFT">FFT</option>
+                                                <option value="SPM">SPM</option>
+                                            </select>
+                                        </div>
+                                        <button id="effects-peq-add-band" class="btn-secondary btn-inline" type="button">Add</button>
+                                    </div>
                                     <div class="effects-rew-dual-grid effects-peq-dual-grid">
                                         <div class="effects-rew-pane effects-peq-pane">
                                             <div class="effects-rew-pane-header effects-peq-pane-header">
                                                 <span id="effects-peq-left-bands-label" class="effects-pane-title">Left bands</span>
-                                                <button id="effects-peq-add-left-band" class="btn-secondary btn-inline" type="button">Add</button>
                                             </div>
                                             <div id="effects-peq-left-bands" class="effects-peq-bands" aria-labelledby="effects-peq-left-bands-label"></div>
                                         </div>
                                         <div class="effects-rew-pane effects-peq-pane">
                                             <div class="effects-rew-pane-header effects-peq-pane-header">
                                                 <span id="effects-peq-right-bands-label" class="effects-pane-title">Right bands</span>
-                                                <button id="effects-peq-add-right-band" class="btn-secondary btn-inline" type="button">Add</button>
                                             </div>
                                             <div id="effects-peq-right-bands" class="effects-peq-bands" aria-labelledby="effects-peq-right-bands-label"></div>
                                         </div>
@@ -559,6 +548,140 @@
                 </div>
             </div>
         </section>
+
+        <div id="measurement-panel" class="manage-overlay measurement-overlay hidden">
+            <div class="manage-overlay-backdrop"></div>
+            <section class="manage-dialog measurement-dialog" role="dialog" aria-modal="true" aria-labelledby="measurement-title">
+                <div class="manage-dialog-header measurement-dialog-header">
+                    <div>
+                        <h2 id="measurement-title" class="section-title">Measurement assistant</h2>
+                        <p class="section-subtitle">Run a sweep, review it, then save the measurements you want to keep.</p>
+                    </div>
+                    <button id="measurement-close" class="btn-ghost btn-close-manage" type="button">
+                        <span class="btn-ghost-icon">✕</span>
+                        <span>Close</span>
+                    </button>
+                </div>
+                <div class="measurement-layout">
+                    <aside class="measurement-sidebar"></aside>
+                    <div class="measurement-main">
+                        <section class="effects-card measurement-card measurement-card-controls">
+                            <div class="measurement-actions measurement-actions-top">
+                                <div class="measurement-start-cluster">
+                                    <button id="measurement-start" class="btn-primary" type="button">Start host-local sweep</button>
+                                    <div class="measurement-channel-chip-row" id="measurement-channel-chip-row" aria-label="Channel selection">
+                                        <button type="button" class="measurement-chip is-active" data-measurement-channel="left">L</button>
+                                        <button type="button" class="measurement-chip" data-measurement-channel="right">R</button>
+                                        <button type="button" class="measurement-chip" data-measurement-channel="stereo">Stereo</button>
+                                    </div>
+                                    <div class="field-group hidden">
+                                        <label for="measurement-channel-select">Channel</label>
+                                        <select id="measurement-channel-select" class="url-input">
+                                            <option value="left">Left</option>
+                                            <option value="right">Right</option>
+                                            <option value="stereo">Stereo</option>
+                                        </select>
+                                    </div>
+                                </div>
+                                <button id="measurement-setup-toggle" class="btn-secondary" type="button">Setup</button>
+                            </div>
+                            <div id="measurement-setup-status" class="effects-info measurement-inline-status"></div>
+                        </section>
+                        <section class="effects-card measurement-card measurement-card-setup hidden" id="measurement-setup-card">
+                            <div class="effects-card-header">
+                                <h3>Setup</h3>
+                                <p>Mic input and calibration.</p>
+                            </div>
+                            <div class="effects-stack measurement-stack">
+                                <p id="measurement-mode-note" class="measurement-inline-note">Host-local capture on this system.</p>
+                                <div id="measurement-browser-help" class="measurement-browser-help hidden"></div>
+                                <div id="measurement-browser-input-group" class="field-group hidden">
+                                    <label for="measurement-browser-input-select">Browser microphone</label>
+                                    <select id="measurement-browser-input-select" class="url-input">
+                                        <option value="">Default browser microphone</option>
+                                    </select>
+                                    <button id="measurement-browser-input-refresh" class="btn-secondary" type="button">Detect / refresh browser microphones</button>
+                                    <p id="measurement-browser-input-note" class="measurement-inline-note">Pick the actual measurement mic here. Browser defaults are often the notebook onboard microphone.</p>
+                                </div>
+                                <div id="measurement-input-group" class="field-group hidden">
+                                    <label for="measurement-input-select">Host capture input</label>
+                                    <select id="measurement-input-select" class="url-input">
+                                        <option value="">Loading…</option>
+                                    </select>
+                                    <button id="measurement-input-refresh" class="btn-secondary" type="button">Detect / refresh host microphones</button>
+                                </div>
+                                <div class="field-group">
+                                    <label for="measurement-calibration-select">Calibration file (optional)</label>
+                                    <div class="measurement-calibration-select-row">
+                                        <select id="measurement-calibration-select" class="url-input">
+                                            <option value="">No calibration file</option>
+                                        </select>
+                                        <button id="measurement-calibration-delete" class="btn-danger" type="button">Delete</button>
+                                    </div>
+                                    <label for="measurement-calibration-file" id="measurement-calibration-upload" class="upload-area upload-area-file-primary measurement-calibration-upload-area">
+                                        <span class="upload-area-icon">📎</span>
+                                        <span class="upload-area-text">Drop calibration file or <u>upload</u></span>
+                                        <span id="measurement-calibration-upload-name" class="upload-area-filename">No calibration file selected.</span>
+                                        <input type="file" id="measurement-calibration-file" class="upload-area-input" accept=".txt,.csv,text/plain">
+                                    </label>
+                                    <p id="measurement-calibration-name" class="measurement-inline-note hidden"></p>
+                                </div>
+                            </div>
+                        </section>
+                        <section class="effects-card measurement-card measurement-card-graph">
+                            <div class="effects-card-header measurement-card-header-split">
+                                <div>
+                                    <h3>Measurement graph</h3>
+                                    <p>Frequency view: 20 Hz to 20 kHz.</p>
+                                </div>
+                                <div class="measurement-graph-header-actions">
+                                    <div id="measurement-summary" class="measurement-summary"></div>
+                                    <button id="measurement-clear" class="btn-danger measurement-clear-btn" type="button">Reset</button>
+                                </div>
+                            </div>
+                            <div id="measurement-graph-controls" class="effects-info measurement-inline-status"></div>
+                            <div class="measurement-graph-wrap">
+                                <canvas id="measurement-graph" class="measurement-graph" width="960" height="420"></canvas>
+                            </div>
+                            <div id="measurement-empty" class="measurement-empty hidden">No current or saved measurements yet.</div>
+                            <div class="measurement-save-row">
+                                <div id="measurement-smoothing-chips" class="measurement-smoothing-chips" aria-label="Graph smoothing">
+                                    <button type="button" class="measurement-chip" data-measurement-smoothing="raw">Raw</button>
+                                    <button type="button" class="measurement-chip is-active" data-measurement-smoothing="1/6-oct">1/6</button>
+                                    <button type="button" class="measurement-chip" data-measurement-smoothing="1/3-oct">1/3</button>
+                                    <button type="button" class="measurement-chip" data-measurement-smoothing="1/1-oct">1/1</button>
+                                </div>
+                                <input type="text" id="measurement-name" class="url-input measurement-name-input" placeholder="Measurement name" autocomplete="off" spellcheck="false">
+                                <button id="measurement-save" class="btn-secondary" type="button">Save current</button>
+                            </div>
+                            <section id="measurement-peq-panel" class="measurement-peq-panel hidden" aria-label="Measurement PEQ assistant" tabindex="-1">
+                                <div class="measurement-peq-panel-header">
+                                    <div>
+                                        <h4>PEQ assistant</h4>
+                                        <p>Sketch up to 4 temporary filters here, then transfer them into Create PEQ Preset.</p>
+                                    </div>
+                                </div>
+                                <div id="measurement-peq-chips" class="measurement-peq-chips"></div>
+                                <div id="measurement-peq-editor" class="measurement-peq-editor"></div>
+                                <div class="measurement-peq-take-row">
+                                    <button id="measurement-peq-take-left" class="btn-secondary" type="button">Take L</button>
+                                    <button id="measurement-peq-take-right" class="btn-secondary" type="button">Take R</button>
+                                    <button id="measurement-peq-take-both" class="btn-secondary" type="button">Take Both</button>
+                                </div>
+                                <div id="measurement-peq-take-feedback" class="measurement-peq-take-feedback" aria-live="polite"></div>
+                            </section>
+                        </section>
+                        <section class="effects-card measurement-card measurement-card-list">
+                            <div class="effects-card-header">
+                                <h3>Saved runs</h3>
+                                <p>Current run stays above. Saved runs open below.</p>
+                            </div>
+                            <div id="measurement-list" class="measurement-list"></div>
+                        </section>
+                    </div>
+                </div>
+            </section>
+        </div>
     </main>
 
     <!-- Playback bar (fixed bottom) -->
@@ -618,6 +741,6 @@
     <!-- Toast notifications -->
     <div id="toast-container" class="toast-container"></div>
 
-    <script src="/static/app.js?v=0.4.338"></script>
+    <script src="/static/app.js?v=0.5.0-reset"></script>
 </body>
 </html>

@@ -38,6 +38,7 @@ let state = {
         searchQuery: '',
         shuffle: false,
         loop: false,
+        selectionDownloadPending: false,
     },
     playlists: [],
     stations: [],
@@ -59,6 +60,50 @@ let state = {
             loadAfterCreate: false,
             leftBands: [],
             rightBands: [],
+        },
+    },
+    measurement: {
+        open: false,
+        loading: false,
+        inputsLoading: false,
+        startInFlight: false,
+        saveInFlight: false,
+        measurements: [],
+        currentMeasurement: null,
+        currentMeasurementSaved: false,
+        currentMeasurementName: '',
+        browserInputs: [],
+        browserInputsLoading: false,
+        browserPermissionGranted: false,
+        selectedBrowserInputId: '',
+        inputs: [],
+        selectedInputId: '',
+        selectedChannel: 'left',
+        displaySmoothing: '1/6-oct',
+        captureMode: 'host-local',
+        hostCaptureAvailable: false,
+        browserSupported: false,
+        browserInputLabel: '',
+        modeNote: '',
+        calibrationFilename: '',
+        calibrationOptions: [],
+        selectedCalibrationRef: '',
+        calibrationUpdating: false,
+        calibrationDeleting: false,
+        browserMeasurementPrimed: false,
+        visibilityById: {},
+        reviewVisibilityById: {},
+        savedGroupOpen: false,
+        setupOpen: false,
+        storage: null,
+        captureAvailable: false,
+        activeJobId: '',
+        statusText: 'Sweep ready. Calibration file is optional.',
+        peqAssistant: {
+            enabled: false,
+            filters: [],
+            activeFilterId: null,
+            dragFilterId: null,
         },
     },
     samplerate: {
@@ -98,7 +143,9 @@ let reconnectTimer = null;
 let wsConnectSerial = 0;
 let playbackActionInFlight = false;
 let pendingPlaybackRequestId = 0;
+let pendingFooterSingleTrackStart = null;
 let pauseActionRequestId = 0;
+const FOOTER_SINGLE_TRACK_START_LOCK_MS = 5000;
 let volumeTimer = null;
 let volumeRequestInFlight = false;
 let pendingVolume = null;
@@ -120,12 +167,19 @@ let effectsCompareLoadInFlight = false;
 let librarySelectionSyncTimer = null;
 let librarySelectionSyncRequestId = 0;
 let settingsStatusPollTimer = null;
+let measurementResizeScheduled = false;
+let measurementGraphPointerId = null;
+let measurementPeqTakeFeedbackTimer = null;
+let measurementPeqLastTouchCreateAt = 0;
 // Seek - globals
 let seekDragging = false;
 let seekPendingPos = null;
 const VOLUME_SEND_DEBOUNCE_MS = 120;
 const VOLUME_SYNC_GRACE_MS = 700;
 const VOLUME_CURVE_GAMMA = 0.6;
+const MEASUREMENT_PEQ_HANDLE_HIT_RADIUS_PX = 14;
+const MEASUREMENT_PEQ_TOUCH_HANDLE_HIT_RADIUS_PX = 24;
+const MEASUREMENT_PEQ_TOUCH_CREATE_COOLDOWN_MS = 350;
 const SPOTIFY_POLL_INTERVAL_MS = 1000;
 const SAMPLERATE_POLL_INTERVAL_MS = 5000;
 const SAMPLERATE_BURST_POLL_DELAYS_MS = [0, 120, 280, 520, 900, 1400, 2200, 3200];
@@ -145,6 +199,7 @@ const elements = {
     settingsSourceSelect: document.getElementById('settings-source-select'),
     settingsSourceModeHint: document.getElementById('settings-source-mode-hint'),
     settingsBluetoothStatus: document.getElementById('settings-bluetooth-status'),
+    settingsCertificateLink: document.getElementById('settings-certificate-link'),
     tabs: document.querySelectorAll('.tab-btn'),
     tabPanels: document.querySelectorAll('.tab-panel'),
     stationsGrid: document.getElementById('stations-grid'),
@@ -179,6 +234,7 @@ const elements = {
     savePlaylistBtn: document.getElementById('save-playlist'),
     playlistSaveRow: document.getElementById('playlist-save-row'),
     libraryInfo: document.getElementById('library-info'),
+    downloadSelectedTracksBtn: document.getElementById('download-selected-tracks'),
     deleteSelectedTracksBtn: document.getElementById('delete-selected-tracks'),
     tracksList: document.getElementById('tracks-list'),
     downloadUrlDropArea: document.getElementById('download-url-drop-area'),
@@ -196,6 +252,44 @@ const elements = {
     effectsCompareA: document.getElementById('effects-compare-a'),
     effectsCompareB: document.getElementById('effects-compare-b'),
     effectsCompareToggle: document.getElementById('effects-compare-toggle'),
+    effectsMeasureOpenBtn: document.getElementById('effects-measure-open'),
+    measurementPanel: document.getElementById('measurement-panel'),
+    measurementCloseBtn: document.getElementById('measurement-close'),
+    measurementSetupCard: document.getElementById('measurement-setup-card'),
+    measurementSetupToggleBtn: document.getElementById('measurement-setup-toggle'),
+    measurementModeSelect: document.getElementById('measurement-mode-select'),
+    measurementModeNote: document.getElementById('measurement-mode-note'),
+    measurementBrowserHelp: document.getElementById('measurement-browser-help'),
+    measurementBrowserInputGroup: document.getElementById('measurement-browser-input-group'),
+    measurementBrowserInputSelect: document.getElementById('measurement-browser-input-select'),
+    measurementBrowserInputRefreshBtn: document.getElementById('measurement-browser-input-refresh'),
+    measurementBrowserInputNote: document.getElementById('measurement-browser-input-note'),
+    measurementInputGroup: document.getElementById('measurement-input-group'),
+    measurementInputSelect: document.getElementById('measurement-input-select'),
+    measurementInputRefreshBtn: document.getElementById('measurement-input-refresh'),
+    measurementChannelSelect: document.getElementById('measurement-channel-select'),
+    measurementCalibrationSelect: document.getElementById('measurement-calibration-select'),
+    measurementCalibrationFile: document.getElementById('measurement-calibration-file'),
+    measurementCalibrationDeleteBtn: document.getElementById('measurement-calibration-delete'),
+    measurementCalibrationUploadName: document.getElementById('measurement-calibration-upload-name'),
+    measurementCalibrationName: document.getElementById('measurement-calibration-name'),
+    measurementNameInput: document.getElementById('measurement-name'),
+    measurementStartBtn: document.getElementById('measurement-start'),
+    measurementSaveBtn: document.getElementById('measurement-save'),
+    measurementClearBtn: document.getElementById('measurement-clear'),
+    measurementSetupStatus: document.getElementById('measurement-setup-status'),
+    measurementSummary: document.getElementById('measurement-summary'),
+    measurementGraphControls: document.getElementById('measurement-graph-controls'),
+    measurementGraph: document.getElementById('measurement-graph'),
+    measurementEmpty: document.getElementById('measurement-empty'),
+    measurementPeqPanel: document.getElementById('measurement-peq-panel'),
+    measurementPeqChips: document.getElementById('measurement-peq-chips'),
+    measurementPeqEditor: document.getElementById('measurement-peq-editor'),
+    measurementPeqTakeLeftBtn: document.getElementById('measurement-peq-take-left'),
+    measurementPeqTakeRightBtn: document.getElementById('measurement-peq-take-right'),
+    measurementPeqTakeBothBtn: document.getElementById('measurement-peq-take-both'),
+    measurementPeqTakeFeedback: document.getElementById('measurement-peq-take-feedback'),
+    measurementList: document.getElementById('measurement-list'),
     effectsCompareActive: document.getElementById('effects-compare-active'),
     effectsCompareChain: document.getElementById('effects-compare-chain'),
     effectsCompareRow: document.getElementById('effects-compare-row'),
@@ -235,9 +329,9 @@ const elements = {
     effectsPeqDisclosure: document.getElementById('effects-peq-disclosure'),
     effectsPeqDisclosureMeta: document.querySelector('#effects-peq-disclosure .effects-disclosure-meta'),
     effectsPeqPresetName: document.getElementById('effects-peq-preset-name'),
+    effectsPeqModeSelect: document.getElementById('effects-peq-mode-select'),
     effectsPeqLoadAfterCreate: document.getElementById('effects-peq-load-after-create'),
-    effectsPeqAddLeftBandBtn: document.getElementById('effects-peq-add-left-band'),
-    effectsPeqAddRightBandBtn: document.getElementById('effects-peq-add-right-band'),
+    effectsPeqAddBandBtn: document.getElementById('effects-peq-add-band'),
     effectsPeqLeftBands: document.getElementById('effects-peq-left-bands'),
     effectsPeqRightBands: document.getElementById('effects-peq-right-bands'),
     effectsPeqCreatePresetBtn: document.getElementById('effects-peq-create-preset'),
@@ -274,6 +368,7 @@ document.addEventListener('DOMContentLoaded', () => {
     try { setupLibraryActions(); } catch(e) { console.error('setupLibraryActions crashed:', e); }
     try { setupDownloadActions(); } catch(e) { console.error('setupDownloadActions crashed:', e); }
     try { setupEffectsActions(); } catch(e) { console.error('setupEffectsActions crashed:', e); }
+    try { setupMeasurementActions(); } catch(e) { console.error('setupMeasurementActions crashed:', e); }
     try { fetchInitialData(); } catch(e) { console.error('fetchInitialData crashed:', e); }
 });
 // WebSocket
@@ -451,7 +546,15 @@ function handleWebSocketMessage(msg) {
             break;
         case 'playback': {
             const nextTrackId = data?.current_track?.id || null;
-            const previousTrackId = lastSampleratePlaybackTrackId;
+            const nextSamplerateSignature = JSON.stringify({
+                trackId: nextTrackId,
+                source: data?.current_track?.source || null,
+                file: data?.current_file || null,
+                playing: !!data?.playing,
+                paused: !!data?.paused,
+                ended: !!data?.ended,
+            });
+            const previousSamplerateSignature = lastSampleratePlaybackSignature;
             footerDebug('ws-playback', {
                 payload: {
                     source: data?.current_track?.source || null,
@@ -464,15 +567,19 @@ function handleWebSocketMessage(msg) {
             // Always process WebSocket state updates — they are the authoritative source of truth.
             // playActionInFlight guards are only for local fetch responses (see playRadio/playLocal).
             mergePlaybackState(data);
+            const clearFooterSingleTrackLockAfterSync = footerSingleTrackStartLockSatisfied(state.playback);
             syncFooterOwnershipFromPlayback(data);
+            if (clearFooterSingleTrackLockAfterSync) {
+                clearPendingFooterSingleTrackStart();
+            }
             syncLibraryStateFromPlaybackContext();
             // Reset action guard so this client doesn't block its own UI from server state.
             playbackActionInFlight = false;
             updatePlaybackUI();
-            if (nextTrackId !== previousTrackId && data?.current_track?.source === 'local') {
+            if (data?.current_track?.source === 'local' && nextSamplerateSignature !== previousSamplerateSignature) {
                 triggerSamplerateBurstPolling();
             }
-            lastSampleratePlaybackTrackId = nextTrackId;
+            lastSampleratePlaybackSignature = nextSamplerateSignature;
             break;
         }
         case 'spotify':
@@ -512,7 +619,7 @@ function handleWebSocketMessage(msg) {
             state.easyeffects = {
                 ...data,
                 combineDraft: state.easyeffects?.combineDraft || getDefaultEffectsCombineDraft(),
-                peqDraft: state.easyeffects?.peqDraft || { presetName: '', loadAfterCreate: false, leftBands: [defaultPeqBand()], rightBands: [defaultPeqBand()] },
+                peqDraft: state.easyeffects?.peqDraft || { presetName: '', eqMode: 'IIR', loadAfterCreate: false, leftBands: [defaultPeqBand()], rightBands: [defaultPeqBand()] },
                 compare: resolveEffectsCompareState(data.compare || prev, presetNames, data.active_preset || ''),
             };
             state.easyeffects.combineDraft = normalizeEffectsCombineDraft(state.easyeffects.combineDraft, presetNames);
@@ -646,7 +753,18 @@ function formatBluetoothModeStatus(bluetooth = {}) {
     }
 }
 
+function settingsCertificateUrl() {
+    const host = String(window.location.host || window.location.hostname || '').trim();
+    return host ? `http://${host}/api/browser-mic/certificate` : '/api/browser-mic/certificate';
+}
+
 function renderSettingsPanel() {
+    if (elements.settingsCertificateLink) {
+        const certUrl = settingsCertificateUrl();
+        elements.settingsCertificateLink.href = certUrl;
+        elements.settingsCertificateLink.title = certUrl;
+    }
+
     const overview = state.settings?.audioOutputs || {};
     const defaultOutput = overview.default_output || null;
     const selectedOutput = overview.selected_output || defaultOutput || null;
@@ -910,6 +1028,7 @@ function switchTab(tabId) {
     elements.tabs.forEach(t => t.classList.toggle('active', t.dataset.tab === tabId));
     elements.tabPanels.forEach(p => p.classList.toggle('active', p.id === `tab-${tabId}`));
     window.__visibleTab = tabId;
+    highlightActiveTrack();
     if (tabId === 'spotify') {
         const d = window.__spotifyLastData;
         if (d) renderSpotify(d);
@@ -922,7 +1041,14 @@ function switchTab(tabId) {
     }
 }
 
+function getBackendFooterOwner(playback = state.playback, spotify = window.__spotifyLastData) {
+    const owner = playback?.footer_owner || spotify?.footer_owner || null;
+    return owner === 'spotify' || owner === 'local' ? owner : null;
+}
+
 function getEffectivePlaybackControlSource() {
+    const backendOwner = getBackendFooterOwner();
+    if (backendOwner) return backendOwner;
     if (spotifyPlayingOwnsFooter()) return 'spotify';
     if (localPlaybackHasFooterContext(state.playback) || localEndedPlaybackHasFooterContext(state.playback)) return 'local';
     if (spotifyPausedHasFooterContext()) return 'spotify';
@@ -1014,6 +1140,9 @@ function getTrackIdsInLibraryOrder(trackIds = []) {
     return [...new Set(ordered)];
 }
 function getSelectedPlayableTrackIds() {
+    return getTrackIdsInLibraryOrder(state.library.selectedTrackIds || []);
+}
+function getSelectedDownloadTrackIds() {
     return getTrackIdsInLibraryOrder(state.library.selectedTrackIds || []);
 }
 function renderLibraryModeButtons() {
@@ -1181,6 +1310,51 @@ function mergePlaybackState(data) {
     if (remoteVolume !== null) {
         applyRemoteVolume(remoteVolume);
     }
+}
+function buildOptimisticSingleTrackQueue(track) {
+    return {
+        active: false,
+        index: 0,
+        count: 1,
+        mode: state.playback.queue?.mode || 'app_replace',
+        tracks: track ? [track] : [],
+        loop: !!state.library.loop,
+        shuffle: false,
+    };
+}
+function footerSingleTrackStartLockActive(playback = state.playback) {
+    const pending = pendingFooterSingleTrackStart;
+    if (!pending) return false;
+    if (pending.expiresAt && Date.now() > pending.expiresAt) {
+        pendingFooterSingleTrackStart = null;
+        return false;
+    }
+    const track = playback?.current_track;
+    return !!(track && track.source === 'local' && track.id === pending.trackId);
+}
+
+function activeLocalPlaybackBlocksSpotifyOwnership(playback = state.playback) {
+    const track = playback?.current_track;
+    if (!(track && (track.source === 'local' || track.source === 'radio'))) return false;
+    return !!(playback?.playing && !playback?.ended);
+}
+
+function footerSingleTrackStartLockSatisfied(playback) {
+    const pending = pendingFooterSingleTrackStart;
+    if (!pending) return false;
+    const track = playback?.current_track;
+    return !!(
+        track
+        && track.source === 'local'
+        && track.id === pending.trackId
+        && (playback?.playing || playback?.paused || playback?.current_file)
+    );
+}
+
+function clearPendingFooterSingleTrackStart(requestId = null) {
+    if (!pendingFooterSingleTrackStart) return;
+    if (requestId !== null && pendingFooterSingleTrackStart.requestId !== requestId) return;
+    pendingFooterSingleTrackStart = null;
 }
 function getLibraryPlaybackContext(playback = state.playback) {
     const currentTrack = playback?.current_track;
@@ -1402,7 +1576,7 @@ async function handleVolumeChange(e) {
 let metadataPollTimer = null;
 let sampleratePollTimer = null;
 let samplerateBurstPollTimers = [];
-let lastSampleratePlaybackTrackId = null;
+let lastSampleratePlaybackSignature = null;
 let peakStatusPollTimer = null;
 function startMetadataPolling() {
     if (metadataPollTimer !== null) return;
@@ -1494,6 +1668,15 @@ function renderSamplerateUI() {
     elements.samplerateStatus.textContent = `${modePrefix}${khz} kHz`;
     elements.samplerateStatus.classList.remove('hidden');
 }
+function formatOutputLevelBadgeDb(level) {
+    const rounded = Math.round(Number(level));
+    if (!Number.isFinite(rounded)) return '';
+    const sign = rounded < 0 ? '-' : '';
+    const abs = Math.abs(rounded);
+    const digits = abs < 10 ? `0${abs}` : String(abs);
+    return `${sign}${digits} dB`;
+}
+
 function renderPeakWarningBadge() {
     const warning = state.playback.output_peak_warning || {};
     const showPeak = !!warning.detected;
@@ -1508,7 +1691,7 @@ function renderPeakWarningBadge() {
     if (elements.outputLevelBadge) {
         const showVu = !!warning.available && vuDb !== null;
         elements.outputLevelBadge.classList.toggle('hidden', !showVu);
-        elements.outputLevelBadge.textContent = showVu ? `${Math.round(vuDb)} dB` : '';
+        elements.outputLevelBadge.textContent = showVu ? formatOutputLevelBadgeDb(vuDb) : '';
         elements.outputLevelBadge.title = showVu ? `Post-EasyEffects output level (slow VU) on ${title}` : '';
     }
 
@@ -1524,8 +1707,9 @@ function renderPeakWarningBadge() {
 }
 function renderQueueUI() {
     const queue = state.playback.queue || {};
-    const hasQueue = queue.count > 1;
-    const queueIndex = typeof queue.index === 'number' ? queue.index : -1;
+    const footerSingleTrackOverride = footerSingleTrackStartLockActive();
+    const hasQueue = footerSingleTrackOverride ? false : queue.count > 1;
+    const queueIndex = footerSingleTrackOverride ? -1 : (typeof queue.index === 'number' ? queue.index : -1);
     const currentTrack = state.playback.current_track;
     const hasLocalTrack = currentTrack && currentTrack.source === 'local';
     state.library.shuffle = hasLocalTrack ? !!queue.shuffle : false;
@@ -1606,6 +1790,8 @@ function localEndedPlaybackHasFooterContext(playback = state.playback) {
 }
 
 function spotifyPlayingOwnsFooter(data = window.__spotifyLastData) {
+    if (footerSingleTrackStartLockActive()) return false;
+    if (activeLocalPlaybackBlocksSpotifyOwnership()) return false;
     return !!(data && data.available && data.status === 'Playing');
 }
 
@@ -1620,6 +1806,15 @@ function localFooterHoldHasContext(playback = state.playback) {
 }
 
 function reconcileFooterSource() {
+    const backendOwner = getBackendFooterOwner();
+    if (backendOwner === 'local') {
+        setFooterSource('local', 'backend-footer-owner-local');
+        return;
+    }
+    if (backendOwner === 'spotify') {
+        setFooterSource('spotify', 'backend-footer-owner-spotify');
+        return;
+    }
     if (spotifyPlayingOwnsFooter()) {
         setFooterSource('spotify', 'spotify-playing');
         return;
@@ -1659,8 +1854,23 @@ function syncFooterOwnershipFromPlayback(playback = state.playback) {
             liveTitle: playback?.live_title || null,
             playing: !!playback?.playing,
             paused: !!playback?.paused,
+            footerOwner: playback?.footer_owner || null,
         },
     });
+    const backendOwner = getBackendFooterOwner(playback);
+    if (backendOwner === 'local') {
+        _spotifyTakeoverUntil = 0;
+        setFooterSource('local', 'sync-playback-backend-owner-local');
+        if (!shouldPollSpotify()) {
+            _spotifyPollGeneration++;
+            stopSpotifyPoll();
+        }
+        return;
+    }
+    if (backendOwner === 'spotify') {
+        setFooterSource('spotify', 'sync-playback-backend-owner-spotify');
+        return;
+    }
     if (spotifyPlayingOwnsFooter()) {
         setFooterSource('spotify', 'sync-playback-spotify-still-playing');
         return;
@@ -1722,6 +1932,7 @@ function updatePlaybackUI() {
     if (window.__footerSource === 'spotify') {
         const spData = window.__spotifyLastData;
         if (!freezeActive && spData) updateFooterForSpotify(spData);
+        highlightActiveTrack();
         return;
     }
     // Set body dataset for CSS radio/song rules
@@ -1816,7 +2027,7 @@ function highlightActiveTrack() {
 // Library
 async function fetchInitialData() {
     startSampleratePolling();
-    await Promise.all([fetchStations(), fetchTracks(), fetchEffects(), fetchPlaybackStatus(), fetchSamplerateStatus(), fetchDownloadStatus(), fetchAudioOutputOverview(), fetchAudioSourceOverview()]);
+    await Promise.all([fetchStations(), fetchTracks(), fetchEffects(), fetchMeasurements(), fetchPlaybackStatus(), fetchSamplerateStatus(), fetchDownloadStatus(), fetchAudioOutputOverview(), fetchAudioSourceOverview()]);
     await fetchPlaylists();
 }
 async function fetchPlaybackStatus() {
@@ -2159,6 +2370,7 @@ function renderStations() {
             }
         });
     });
+    highlightActiveTrack();
 }
 function updateStationActionButtons() {
     const value = (elements.stationUrl?.value || '').trim();
@@ -2571,6 +2783,10 @@ function updateLibrarySelectionUI() {
     const totalSelectedCount = selectedIds.size;
     const hasSearch = !!(state.library.searchQuery || '').trim();
 
+    if (elements.downloadSelectedTracksBtn) {
+        elements.downloadSelectedTracksBtn.classList.toggle('hidden', totalSelectedCount === 0);
+        elements.downloadSelectedTracksBtn.disabled = totalSelectedCount === 0 || state.library.selectionDownloadPending;
+    }
     if (elements.deleteSelectedTracksBtn) {
         elements.deleteSelectedTracksBtn.classList.toggle('hidden', totalSelectedCount === 0);
     }
@@ -2745,6 +2961,59 @@ async function deletePlaylistById(playlistId) {
         showToast(e.message || 'Failed to delete playlist', 'error');
     }
 }
+function getDownloadFilenameFromResponse(resp, fallbackName = 'download') {
+    const header = resp.headers.get('Content-Disposition') || '';
+    const utf8Match = header.match(/filename\*=UTF-8''([^;]+)/i);
+    if (utf8Match && utf8Match[1]) {
+        try {
+            return decodeURIComponent(utf8Match[1]);
+        } catch (_) {
+            return utf8Match[1];
+        }
+    }
+    const plainMatch = header.match(/filename="?([^";]+)"?/i);
+    if (plainMatch && plainMatch[1]) return plainMatch[1];
+    return fallbackName;
+}
+function triggerBlobDownload(blob, filename) {
+    const objectUrl = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = objectUrl;
+    link.download = filename || 'download';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+}
+async function downloadSelectedTracks() {
+    const trackIds = getSelectedDownloadTrackIds();
+    if (trackIds.length === 0) {
+        showToast('Please select tracks first', 'error');
+        return;
+    }
+    state.library.selectionDownloadPending = true;
+    updateLibrarySelectionUI();
+    try {
+        const resp = await fetch('/api/tracks/download', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ track_ids: trackIds }),
+        });
+        if (!resp.ok) {
+            const data = await resp.json().catch(() => ({}));
+            throw new Error(data.detail || 'Download failed');
+        }
+        const blob = await resp.blob();
+        const filename = getDownloadFilenameFromResponse(resp, trackIds.length === 1 ? 'track' : 'fxroute-library-selection.zip');
+        triggerBlobDownload(blob, filename);
+        showToast(trackIds.length === 1 ? `Downloading ${filename}` : `Downloading ${trackIds.length} tracks`, 'success');
+    } catch (e) {
+        showToast(e.message || 'Download failed', 'error');
+    } finally {
+        state.library.selectionDownloadPending = false;
+        updateLibrarySelectionUI();
+    }
+}
 async function deleteSelectedTracks() {
     const trackIds = [...state.library.selectedTrackIds];
     if (trackIds.length === 0) {
@@ -2778,6 +3047,7 @@ async function deleteSelectedTracks() {
 }
 // Playback actions
 async function playRadio(stationId) {
+    pendingFooterSingleTrackStart = null;
     const station = state.stations.find(s => s.id === stationId);
     if (!station) {
         showToast('Station not found', 'error');
@@ -2848,6 +3118,11 @@ async function playLocal(trackId) {
     const selectedTrackIds = getSelectedPlayableTrackIds();
     const shouldUseSelectionQueue = selectedTrackIds.length > 1 && selectedTrackIds.includes(trackId);
     const requestId = ++pendingPlaybackRequestId;
+    pendingFooterSingleTrackStart = shouldUseSelectionQueue ? null : {
+        requestId,
+        trackId: track.id,
+        expiresAt: Date.now() + FOOTER_SINGLE_TRACK_START_LOCK_MS,
+    };
     playbackActionInFlight = true;
     armLocalFooterHold();
     armFooterContentFreeze();
@@ -2856,6 +3131,19 @@ async function playLocal(trackId) {
     state.playback.live_title = null;
     state.playback.playing = true;
     state.playback.paused = false;
+    state.playback.queue = shouldUseSelectionQueue
+        ? {
+            active: true,
+            index: Math.max(0, selectedTrackIds.indexOf(track.id)),
+            count: selectedTrackIds.length,
+            mode: state.playback.queue?.mode || 'app_replace',
+            tracks: selectedTrackIds
+                .map(id => state.library.tracks.find(item => item.id === id))
+                .filter(Boolean),
+            loop: !!state.library.loop,
+            shuffle: !!state.library.shuffle,
+        }
+        : buildOptimisticSingleTrackQueue(track);
     _spotifyTakeoverUntil = 0;
     if (window.__spotifyLastData && window.__spotifyLastData.status === 'Playing') {
         window.__spotifyLastData = { ...window.__spotifyLastData, status: 'Paused' };
@@ -2890,6 +3178,7 @@ async function playLocal(trackId) {
     } catch (e) {
         if (requestId !== pendingPlaybackRequestId) return;
         playbackActionInFlight = false;
+        clearPendingFooterSingleTrackStart(requestId);
         libraryModeSyncArmed = false;
         state.playback.playing = false;
         state.playback.paused = false;
@@ -3211,8 +3500,12 @@ function setupEffectsActions() {
         if (!state.easyeffects?.peqDraft) return;
         state.easyeffects.peqDraft.presetName = event.target.value;
     });
-    if (elements.effectsPeqAddLeftBandBtn) elements.effectsPeqAddLeftBandBtn.addEventListener('click', () => addPeqBand('left'));
-    if (elements.effectsPeqAddRightBandBtn) elements.effectsPeqAddRightBandBtn.addEventListener('click', () => addPeqBand('right'));
+    if (elements.effectsPeqModeSelect) elements.effectsPeqModeSelect.addEventListener('change', (event) => {
+        if (!state.easyeffects?.peqDraft) return;
+        state.easyeffects.peqDraft.eqMode = normalizePeqEqMode(event.target.value);
+        event.target.value = state.easyeffects.peqDraft.eqMode;
+    });
+    if (elements.effectsPeqAddBandBtn) elements.effectsPeqAddBandBtn.addEventListener('click', addPeqBandPair);
     if (elements.effectsPeqCreatePresetBtn) elements.effectsPeqCreatePresetBtn.addEventListener('click', createPeqPreset);
     // Track focus to avoid resetting input values while user is typing
     [
@@ -3233,24 +3526,24 @@ function setupEffectsActions() {
         });
     });
 
-    elements.effectsLimiterEnabled.addEventListener('change', () => saveEffectsExtrasDebounced(EFFECTS_EXTRAS_TOGGLE_DEBOUNCE_MS));
-    elements.effectsHeadroomEnabled.addEventListener('change', () => {
+    if (elements.effectsLimiterEnabled) elements.effectsLimiterEnabled.addEventListener('change', () => saveEffectsExtrasDebounced(EFFECTS_EXTRAS_TOGGLE_DEBOUNCE_MS));
+    if (elements.effectsHeadroomEnabled) elements.effectsHeadroomEnabled.addEventListener('change', () => {
         updateEffectsExtrasUi();
         saveEffectsExtrasDebounced(EFFECTS_EXTRAS_TOGGLE_DEBOUNCE_MS);
     });
-    elements.effectsAutogainEnabled.addEventListener('change', () => {
+    if (elements.effectsAutogainEnabled) elements.effectsAutogainEnabled.addEventListener('change', () => {
         updateEffectsExtrasUi();
         saveEffectsExtrasDebounced(EFFECTS_EXTRAS_TOGGLE_DEBOUNCE_MS);
     });
-    elements.effectsDelayEnabled.addEventListener('change', () => {
+    if (elements.effectsDelayEnabled) elements.effectsDelayEnabled.addEventListener('change', () => {
         updateEffectsExtrasUi();
         saveEffectsExtrasDebounced(EFFECTS_EXTRAS_TOGGLE_DEBOUNCE_MS);
     });
-    elements.effectsBassEnabled.addEventListener('change', () => {
+    if (elements.effectsBassEnabled) elements.effectsBassEnabled.addEventListener('change', () => {
         updateEffectsExtrasUi();
         saveEffectsExtrasDebounced(EFFECTS_EXTRAS_TOGGLE_DEBOUNCE_MS);
     });
-    elements.effectsToneEffectEnabled.addEventListener('change', () => {
+    if (elements.effectsToneEffectEnabled) elements.effectsToneEffectEnabled.addEventListener('change', () => {
         updateEffectsExtrasUi();
         saveEffectsExtrasDebounced(EFFECTS_EXTRAS_TOGGLE_DEBOUNCE_MS);
     });
@@ -3421,6 +3714,2513 @@ function updateDownloadUI() {
     elements.downloadStatus.innerHTML = html;
     elements.downloadStatus.classList.toggle('hidden', !html.trim());
 }
+function normalizeMeasurementTrace(trace = {}, index = 0) {
+    const points = Array.isArray(trace.points)
+        ? trace.points.filter(point => Array.isArray(point) && point.length === 2 && Number.isFinite(Number(point[0])) && Number.isFinite(Number(point[1]))).map(point => [Number(point[0]), Number(point[1])])
+        : [];
+    return {
+        kind: String(trace.kind || 'measured'),
+        label: String(trace.label || `Trace ${index + 1}`),
+        color: String(trace.color || ['#6ee7b7', '#a78bfa', '#f59e0b', '#60a5fa'][index % 4]),
+        role: String(trace.role || ''),
+        points,
+    };
+}
+
+function normalizeMeasurementEntry(measurement = {}, index = 0) {
+    const traces = Array.isArray(measurement.traces) ? measurement.traces.map((trace, traceIndex) => normalizeMeasurementTrace(trace, traceIndex)).filter(trace => trace.points.length) : [];
+    const reviewTraces = Array.isArray(measurement.review_traces) ? measurement.review_traces.map((trace, traceIndex) => normalizeMeasurementTrace(trace, traceIndex)).filter(trace => trace.points.length) : [];
+    return {
+        id: String(measurement.id || `measurement-${index + 1}`),
+        name: String(measurement.name || `Measurement ${index + 1}`),
+        created_at: String(measurement.created_at || ''),
+        channel: String(measurement.channel || 'left'),
+        input_device: measurement.input_device || {},
+        calibration: measurement.calibration || {},
+        summary: measurement.summary || {},
+        review_summary: measurement.review_summary || {},
+        analysis: measurement.analysis || {},
+        storage_path: measurement.storage_path || '',
+        traces,
+        review_traces: reviewTraces,
+    };
+}
+
+function normalizeMeasurementVisibility(measurements = [], previous = {}) {
+    const next = {};
+    measurements.forEach((measurement) => {
+        if (typeof previous?.[measurement.id] === 'boolean') {
+            next[measurement.id] = previous[measurement.id];
+        } else {
+            next[measurement.id] = false;
+        }
+    });
+    return next;
+}
+
+function formatMeasurementDate(value) {
+    if (!value) return 'Unknown date';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
+    return date.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
+}
+
+function normalizeMeasurementReviewVisibility(measurements = [], previous = {}) {
+    const next = {};
+    measurements.forEach((measurement) => {
+        next[measurement.id] = typeof previous?.[measurement.id] === 'boolean' ? previous[measurement.id] : false;
+    });
+    return next;
+}
+
+function getVisibleMeasurementEntries() {
+    const currentId = state.measurement.currentMeasurement?.id;
+    return (state.measurement.measurements || []).filter(measurement => measurement.id !== currentId && state.measurement.visibilityById?.[measurement.id]);
+}
+
+function getCurrentMeasurementEntry() {
+    return state.measurement.currentMeasurement ? normalizeMeasurementEntry(state.measurement.currentMeasurement, 0) : null;
+}
+
+function measurementReviewVisible(measurementId) {
+    return !!state.measurement.reviewVisibilityById?.[measurementId];
+}
+
+function getMeasurementDisplayTraces(measurement = {}) {
+    const reviewTraces = Array.isArray(measurement.review_traces) ? measurement.review_traces : [];
+    if (reviewTraces.length) return reviewTraces;
+    return Array.isArray(measurement.traces) ? measurement.traces : [];
+}
+
+function measurementSmoothingHalfWindowOctaves(mode = '1/6-oct') {
+    switch (String(mode || '1/6-oct')) {
+        case 'raw': return 0;
+        case '1/1-oct': return 0.5;
+        case '1/3-oct': return 1 / 6;
+        case '1/6-oct':
+        default:
+            return 1 / 12;
+    }
+}
+
+function smoothMeasurementTracePoints(points = [], mode = '1/6-oct') {
+    if (!Array.isArray(points) || points.length < 5 || mode === 'raw') return points;
+    const halfWindow = measurementSmoothingHalfWindowOctaves(mode);
+    if (!(halfWindow > 0)) return points;
+    return points.map(([frequency, level], index) => {
+        const logFrequency = Math.log2(Math.max(1e-9, frequency));
+        let weightedLevel = 0;
+        let totalWeight = 0;
+        for (let cursor = 0; cursor < points.length; cursor += 1) {
+            const [neighborFrequency, neighborLevel] = points[cursor];
+            const logDelta = Math.abs(Math.log2(Math.max(1e-9, neighborFrequency)) - logFrequency);
+            if (logDelta > halfWindow * 2.2) continue;
+            const distance = logDelta / halfWindow;
+            const weight = Math.exp(-(distance * distance) * 1.7);
+            weightedLevel += neighborLevel * weight;
+            totalWeight += weight;
+        }
+        return [frequency, totalWeight > 0 ? weightedLevel / totalWeight : level];
+    });
+}
+
+function trackFileUrl(trackId = '') {
+    return `/api/tracks/file/${encodeURIComponent(String(trackId || ''))}`;
+}
+
+function measurementFileUrl(measurementId = '') {
+    return `/api/measurements/${encodeURIComponent(String(measurementId || ''))}/file`;
+}
+
+function presetFileUrl(presetName = '') {
+    return `/api/easyeffects/presets/${encodeURIComponent(String(presetName || ''))}/file`;
+}
+
+const measurementComparePalette = ['#60a5fa', '#f59e0b', '#f472b6', '#a78bfa', '#f87171', '#facc15'];
+const measurementCurrentColor = '#22c55e';
+const measurementPeqPalette = ['#60a5fa', '#f59e0b', '#f472b6', '#a78bfa'];
+const measurementPeqTypes = ['bell', 'low_shelf', 'high_shelf', 'low_pass', 'high_pass', 'notch', 'gain'];
+const measurementPeqTypeLabels = {
+    bell: 'Bell',
+    low_shelf: 'Low shelf',
+    high_shelf: 'High shelf',
+    low_pass: 'Low pass',
+    high_pass: 'High pass',
+    notch: 'Notch',
+    gain: 'Gain',
+};
+
+function getSavedMeasurementColor(index = 0) {
+    return measurementComparePalette[index % measurementComparePalette.length] || '#60a5fa';
+}
+
+function getDefaultMeasurementPeqFilter(index = 0) {
+    return {
+        id: `measurement-peq-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        type: 'bell',
+        freqHz: 1000,
+        gainDb: 0,
+        q: 1,
+        color: measurementPeqPalette[index % measurementPeqPalette.length] || '#60a5fa',
+    };
+}
+
+function getDefaultMeasurementPeqState() {
+    return {
+        enabled: false,
+        filters: [],
+        activeFilterId: null,
+        dragFilterId: null,
+    };
+}
+
+function ensureMeasurementPeqState() {
+    if (!state.measurement) state.measurement = {};
+    if (!state.measurement.peqAssistant || typeof state.measurement.peqAssistant !== 'object') {
+        state.measurement.peqAssistant = getDefaultMeasurementPeqState();
+    }
+    if (!Array.isArray(state.measurement.peqAssistant.filters)) state.measurement.peqAssistant.filters = [];
+    if (typeof state.measurement.peqAssistant.enabled !== 'boolean') state.measurement.peqAssistant.enabled = state.measurement.peqAssistant.filters.length > 0;
+    return state.measurement.peqAssistant;
+}
+
+function getMeasurementPeqFilters() {
+    return ensureMeasurementPeqState().filters;
+}
+
+function getMeasurementPeqActiveFilter() {
+    const peq = ensureMeasurementPeqState();
+    return peq.filters.find((filter) => filter.id === peq.activeFilterId) || null;
+}
+
+function focusMeasurementPeqPanelContext() {
+    if (!elements.measurementPeqPanel || elements.measurementPeqPanel.classList.contains('hidden')) return;
+    elements.measurementPeqPanel.focus({ preventScroll: true });
+}
+
+function isEditableMeasurementPeqTarget(target) {
+    if (!(target instanceof Element)) return false;
+    return !!target.closest('input, select, textarea, [contenteditable="true"]');
+}
+
+function handleMeasurementPeqNumberInputArrowKey(event) {
+    const input = event.currentTarget;
+    if (!(input instanceof HTMLInputElement) || input.type !== 'number') return;
+    if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.key === 'ArrowUp') {
+        input.stepUp();
+    } else {
+        input.stepDown();
+    }
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
+function syncMeasurementPeqQInput(value) {
+    const input = elements.measurementPeqEditor?.querySelector('#measurement-peq-q');
+    if (input) input.value = Number(value).toFixed(2);
+}
+
+function stepActiveMeasurementPeqQ(direction = 1, step = 0.1) {
+    const activeFilter = getMeasurementPeqActiveFilter();
+    if (!activeFilter) return null;
+    const nextValue = stepMeasurementPeqQ(activeFilter.id, direction, step);
+    if (nextValue === null) return null;
+    syncMeasurementPeqQInput(nextValue);
+    scheduleMeasurementGraphRender();
+    return nextValue;
+}
+
+function handleMeasurementPeqGraphWheel(event) {
+    if (!elements.measurementPanel || elements.measurementPanel.classList.contains('hidden')) return;
+    if (!elements.measurementPeqPanel || elements.measurementPeqPanel.classList.contains('hidden')) return;
+    if (event.ctrlKey || event.metaKey || event.altKey) return;
+    if (ensureMeasurementPeqState().dragFilterId) return;
+    if (Math.abs(Number(event.deltaY) || 0) < 1) return;
+    const direction = event.deltaY > 0 ? -1 : 1;
+    const nextValue = stepActiveMeasurementPeqQ(direction, 0.1);
+    if (nextValue === null) return;
+    event.preventDefault();
+    focusMeasurementPeqPanelContext();
+}
+
+function selectMeasurementPeqFilter(filterId) {
+    const peq = ensureMeasurementPeqState();
+    peq.activeFilterId = peq.filters.some((filter) => filter.id === filterId) ? filterId : (peq.filters[0]?.id || null);
+}
+
+function clampMeasurementPeqFrequency(value) {
+    return Math.min(20000, Math.max(20, Number(value) || 20));
+}
+
+function clampMeasurementPeqGain(value) {
+    return Math.min(24, Math.max(-24, Number(value) || 0));
+}
+
+function clampMeasurementPeqQ(value) {
+    return Math.min(20, Math.max(0.1, Number(value) || 1));
+}
+
+function measurementXToFrequency(x, bounds) {
+    const minLog = Math.log10(20);
+    const maxLog = Math.log10(20000);
+    const ratio = Math.min(1, Math.max(0, (x - bounds.left) / Math.max(1, bounds.width)));
+    return 10 ** (minLog + ((maxLog - minLog) * ratio));
+}
+
+function measurementYToDb(y, bounds, range) {
+    const ratio = Math.min(1, Math.max(0, (y - bounds.top) / Math.max(1, bounds.height)));
+    return range.maxDb - (ratio * (range.maxDb - range.minDb));
+}
+
+function addMeasurementPeqFilter(defaults = {}) {
+    const peq = ensureMeasurementPeqState();
+    if (peq.filters.length >= 4) {
+        showToast('Measurement assistant supports up to 4 filters', 'warning');
+        return null;
+    }
+    const filter = {
+        ...getDefaultMeasurementPeqFilter(peq.filters.length),
+        ...defaults,
+    };
+    filter.freqHz = Math.round(clampMeasurementPeqFrequency(filter.freqHz));
+    filter.gainDb = Number(clampMeasurementPeqGain(filter.gainDb).toFixed(1));
+    filter.q = Number(clampMeasurementPeqQ(filter.q).toFixed(2));
+    peq.filters.push(filter);
+    peq.enabled = true;
+    peq.activeFilterId = filter.id;
+    return filter;
+}
+
+function createMeasurementPeqFilterFromPoint({ x, y, bounds, range }) {
+    return addMeasurementPeqFilter({
+        freqHz: measurementXToFrequency(x, bounds),
+        gainDb: measurementYToDb(y, bounds, range),
+    });
+}
+
+function updateMeasurementPeqFilter(filterId, updates = {}) {
+    const filter = getMeasurementPeqFilters().find((item) => item.id === filterId);
+    if (!filter) return;
+    if (updates.type) filter.type = measurementPeqTypes.includes(updates.type) ? updates.type : filter.type;
+    if (updates.freqHz !== undefined) filter.freqHz = Math.round(clampMeasurementPeqFrequency(updates.freqHz));
+    if (updates.gainDb !== undefined) filter.gainDb = Number(clampMeasurementPeqGain(updates.gainDb).toFixed(1));
+    if (updates.q !== undefined) filter.q = Number(clampMeasurementPeqQ(updates.q).toFixed(2));
+}
+
+function stepMeasurementPeqQ(filterId, direction = 1, step = 0.1) {
+    const filter = getMeasurementPeqFilters().find((item) => item.id === filterId);
+    if (!filter) return null;
+    const nextValue = clampMeasurementPeqQ((Number(filter.q) || 0) + (direction * step));
+    updateMeasurementPeqFilter(filterId, { q: nextValue });
+    return Number(nextValue.toFixed(2));
+}
+
+function stepMeasurementPeqGain(filterId, direction = 1, step = 0.1) {
+    const filter = getMeasurementPeqFilters().find((item) => item.id === filterId);
+    if (!filter) return null;
+    const nextValue = clampMeasurementPeqGain((Number(filter.gainDb) || 0) + (direction * step));
+    updateMeasurementPeqFilter(filterId, { gainDb: nextValue });
+    return Number(nextValue.toFixed(1));
+}
+
+function stepMeasurementPeqFrequency(filterId, direction = 1, step = 1) {
+    const filter = getMeasurementPeqFilters().find((item) => item.id === filterId);
+    if (!filter) return null;
+    const nextValue = clampMeasurementPeqFrequency((Number(filter.freqHz) || 20) + (direction * step));
+    updateMeasurementPeqFilter(filterId, { freqHz: nextValue });
+    return Math.round(nextValue);
+}
+
+function deleteMeasurementPeqFilter(filterId) {
+    const peq = ensureMeasurementPeqState();
+    peq.filters = peq.filters.filter((filter) => filter.id !== filterId);
+    peq.activeFilterId = peq.filters.some((filter) => filter.id === peq.activeFilterId) ? peq.activeFilterId : (peq.filters[0]?.id || null);
+    peq.enabled = peq.filters.length > 0;
+    peq.dragFilterId = null;
+}
+
+function resetMeasurementGraph() {
+    const peq = ensureMeasurementPeqState();
+    state.measurement.currentMeasurement = null;
+    state.measurement.currentMeasurementSaved = false;
+    state.measurement.currentMeasurementName = '';
+    peq.enabled = false;
+    peq.filters = [];
+    peq.activeFilterId = null;
+    peq.dragFilterId = null;
+    renderMeasurementPanel();
+    scheduleMeasurementGraphRender();
+}
+
+function measurementPeqFilterToBand(filter = {}) {
+    return {
+        filterType: filter.type || 'bell',
+        frequencyHz: Math.round(clampMeasurementPeqFrequency(filter.freqHz)),
+        gainDb: Number(clampMeasurementPeqGain(filter.gainDb).toFixed(1)),
+        q: Number(clampMeasurementPeqQ(filter.q).toFixed(2)),
+        delayMs: 0,
+    };
+}
+
+function showMeasurementPeqTakeFeedback(message) {
+    if (!elements.measurementPeqTakeFeedback) return;
+    elements.measurementPeqTakeFeedback.textContent = message;
+    elements.measurementPeqTakeFeedback.classList.add('is-visible');
+    if (measurementPeqTakeFeedbackTimer) clearTimeout(measurementPeqTakeFeedbackTimer);
+    measurementPeqTakeFeedbackTimer = setTimeout(() => {
+        elements.measurementPeqTakeFeedback?.classList.remove('is-visible');
+        measurementPeqTakeFeedbackTimer = null;
+    }, 2200);
+}
+
+function takeMeasurementPeqToPreset(mode = 'both') {
+    const peq = ensureMeasurementPeqState();
+    if (!peq.filters.length) {
+        showToast('Add at least one measurement PEQ filter first', 'warning');
+        return;
+    }
+    if (!state.easyeffects) state.easyeffects = {};
+    state.easyeffects.peqDraft = state.easyeffects.peqDraft || getDefaultPeqDraft();
+    const mappedBands = peq.filters.map((filter) => measurementPeqFilterToBand(filter));
+    if (mode === 'left') {
+        state.easyeffects.peqDraft.leftBands = mappedBands.map((band) => ({ ...band }));
+    } else if (mode === 'right') {
+        state.easyeffects.peqDraft.rightBands = mappedBands.map((band) => ({ ...band }));
+    } else {
+        state.easyeffects.peqDraft.leftBands = mappedBands.map((band) => ({ ...band }));
+        state.easyeffects.peqDraft.rightBands = mappedBands.map((band) => ({ ...band }));
+    }
+    if (elements.effectsPeqDisclosure) elements.effectsPeqDisclosure.open = true;
+    renderPeqBands();
+    const successMessage = mode === 'left'
+        ? 'Measurement PEQ replaced Left builder bands'
+        : (mode === 'right' ? 'Measurement PEQ replaced Right builder bands' : 'Measurement PEQ replaced Left and Right builder bands');
+    showMeasurementPeqTakeFeedback(mode === 'left' ? 'Left bands updated' : (mode === 'right' ? 'Right bands updated' : 'Left + Right bands updated'));
+    showToast(successMessage, 'success');
+}
+
+function getMeasurementGraphBounds(displayWidth, displayHeight) {
+    return {
+        left: 62,
+        top: 22,
+        width: Math.max(120, displayWidth - 84),
+        height: Math.max(120, displayHeight - 58),
+    };
+}
+
+function getMeasurementGraphRenderContext() {
+    const canvas = elements.measurementGraph;
+    if (!canvas) return null;
+    const displayWidth = Math.max(320, Math.round(canvas.clientWidth || canvas.width || 960));
+    const displayHeight = Math.max(260, Math.round(canvas.clientHeight || canvas.height || 420));
+    const bounds = getMeasurementGraphBounds(displayWidth, displayHeight);
+    const range = getMeasurementGraphRange(getGraphMeasurementEntries());
+    return { canvas, displayWidth, displayHeight, bounds, range };
+}
+
+function getMeasurementGraphPointerPosition(event) {
+    const context = getMeasurementGraphRenderContext();
+    if (!context) return null;
+    const rect = context.canvas.getBoundingClientRect();
+    return {
+        ...context,
+        x: event.clientX - rect.left,
+        y: event.clientY - rect.top,
+    };
+}
+
+function getMeasurementPeqHandlePosition(filter, bounds, range) {
+    return {
+        x: measurementFrequencyToX(filter.freqHz || 1000, bounds),
+        y: measurementDbToY(filter.gainDb || 0, bounds, range),
+    };
+}
+
+function getMeasurementPeqHandleHitRadius(pointerType = '') {
+    return pointerType === 'touch'
+        ? MEASUREMENT_PEQ_TOUCH_HANDLE_HIT_RADIUS_PX
+        : MEASUREMENT_PEQ_HANDLE_HIT_RADIUS_PX;
+}
+
+function findMeasurementPeqFilterHandleAtPosition(x, y, bounds, range, pointerType = '') {
+    const hitRadius = getMeasurementPeqHandleHitRadius(pointerType);
+    const filters = getMeasurementPeqFilters();
+    for (let index = filters.length - 1; index >= 0; index -= 1) {
+        const filter = filters[index];
+        const handle = getMeasurementPeqHandlePosition(filter, bounds, range);
+        const distance = Math.hypot(handle.x - x, handle.y - y);
+        if (distance <= hitRadius) return filter;
+    }
+    return null;
+}
+
+function measurementPeqWorkingLineHit(y, bounds, range) {
+    const zeroY = measurementDbToY(0, bounds, range);
+    return Math.abs(y - zeroY) <= 40;
+}
+
+function measurementPeqTouchCreateCoolingDown(pointerType = '') {
+    return pointerType === 'touch' && (Date.now() - measurementPeqLastTouchCreateAt) < MEASUREMENT_PEQ_TOUCH_CREATE_COOLDOWN_MS;
+}
+
+function markMeasurementPeqTouchCreate(pointerType = '') {
+    if (pointerType === 'touch') measurementPeqLastTouchCreateAt = Date.now();
+}
+
+function handleMeasurementGraphPointerDown(event) {
+    const pointer = getMeasurementGraphPointerPosition(event);
+    if (!pointer) return;
+    const { x, y, bounds, range } = pointer;
+    if (x < bounds.left || x > bounds.left + bounds.width || y < bounds.top || y > bounds.top + bounds.height) return;
+    const peq = ensureMeasurementPeqState();
+    const pointerType = String(event.pointerType || '');
+    const hitFilter = findMeasurementPeqFilterHandleAtPosition(x, y, bounds, range, pointerType);
+    if (hitFilter) {
+        if (pointerType === 'touch') event.preventDefault();
+        peq.enabled = true;
+        peq.activeFilterId = hitFilter.id;
+        peq.dragFilterId = hitFilter.id;
+        measurementGraphPointerId = event.pointerId;
+        elements.measurementGraph?.setPointerCapture?.(event.pointerId);
+        renderMeasurementPanel();
+        focusMeasurementPeqPanelContext();
+        return;
+    }
+    if (!measurementPeqWorkingLineHit(y, bounds, range)) return;
+    if (measurementPeqTouchCreateCoolingDown(pointerType)) return;
+    const created = createMeasurementPeqFilterFromPoint({ x, y, bounds, range });
+    if (!created) return;
+    if (pointerType === 'touch') event.preventDefault();
+    markMeasurementPeqTouchCreate(pointerType);
+    peq.dragFilterId = created.id;
+    measurementGraphPointerId = event.pointerId;
+    elements.measurementGraph?.setPointerCapture?.(event.pointerId);
+    renderMeasurementPanel();
+    focusMeasurementPeqPanelContext();
+}
+
+function handleMeasurementGraphPointerMove(event) {
+    const peq = ensureMeasurementPeqState();
+    if (!peq.dragFilterId || measurementGraphPointerId !== event.pointerId) return;
+    if (event.pointerType === 'touch') event.preventDefault();
+    const pointer = getMeasurementGraphPointerPosition(event);
+    if (!pointer) return;
+    const { x, y, bounds, range } = pointer;
+    updateMeasurementPeqFilter(peq.dragFilterId, {
+        freqHz: measurementXToFrequency(x, bounds),
+        gainDb: measurementYToDb(y, bounds, range),
+    });
+    scheduleMeasurementGraphRender();
+    renderMeasurementPanel();
+}
+
+function handleMeasurementGraphPointerUp(event) {
+    const peq = ensureMeasurementPeqState();
+    if (measurementGraphPointerId !== null && event.pointerId === measurementGraphPointerId && event.pointerType === 'touch') {
+        event.preventDefault();
+    }
+    if (measurementGraphPointerId !== null && event.pointerId === measurementGraphPointerId) {
+        elements.measurementGraph?.releasePointerCapture?.(event.pointerId);
+        measurementGraphPointerId = null;
+    }
+    peq.dragFilterId = null;
+}
+
+function buildMeasurementGraphEntry(measurement = {}, { current = false, compareIndex = 0 } = {}) {
+    const traces = getMeasurementDisplayTraces(measurement);
+    if (!traces.length) return null;
+    const smoothing = state.measurement.displaySmoothing || '1/6-oct';
+    return {
+        ...measurement,
+        traces: traces.map((trace) => ({
+            ...trace,
+            points: smoothMeasurementTracePoints(trace.points || [], smoothing),
+        })),
+        current,
+        graphColor: current ? measurementCurrentColor : getSavedMeasurementColor(compareIndex),
+    };
+}
+
+function getGraphMeasurementEntries() {
+    const entries = [];
+    const current = getCurrentMeasurementEntry();
+    const currentEntry = current ? buildMeasurementGraphEntry(current, { current: true }) : null;
+    if (currentEntry) entries.push(currentEntry);
+    getVisibleMeasurementEntries().forEach((measurement, index) => {
+        const entry = buildMeasurementGraphEntry(measurement, { current: false, compareIndex: index });
+        if (entry) entries.push(entry);
+    });
+    return entries;
+}
+
+function preferredMeasurementHttpsHost() {
+    const host = String(window.location.hostname || '').trim();
+    if (!host || host === 'fxroute.local') return '192.168.178.104';
+    return host;
+}
+
+function browserMeasurementSupportIssue() {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!window.isSecureContext) {
+        return `Browser mic needs HTTPS: https://${preferredMeasurementHttpsHost()}/`;
+    }
+    if (!navigator.mediaDevices?.getUserMedia) {
+        return 'This browser does not expose microphone capture via getUserMedia.';
+    }
+    if (!AudioContextClass) {
+        return 'This browser does not support Web Audio for the measurement recorder.';
+    }
+    return '';
+}
+
+function browserMeasurementSupported() {
+    return !browserMeasurementSupportIssue();
+}
+
+function measurementModeIsBrowser() {
+    return false;
+}
+
+function measurementModeReady() {
+    if (measurementModeIsBrowser()) return browserMeasurementSupported();
+    return !!state.measurement.hostCaptureAvailable && !!state.measurement.selectedInputId;
+}
+
+function describeMeasurementScope(scopeNote = '') {
+    if (measurementModeIsBrowser()) {
+        return browserMeasurementSupported()
+            ? 'Browser mic ready. FXRoute will play the sweep on the active output and this browser will upload the capture.'
+            : browserMeasurementSupportIssue();
+    }
+    if (scopeNote) return 'Host-local sweep ready. Full graph view is available after capture.';
+    return 'Host-local sweep ready. Calibration file is optional.';
+}
+
+function measurementModeNoteText() {
+    if (measurementModeIsBrowser()) {
+        return browserMeasurementSupported()
+            ? 'Browser mic over HTTPS.'
+            : browserMeasurementSupportIssue();
+    }
+    return 'Host-local capture on this system.';
+}
+
+function browserMeasurementHelpHtml() {
+    const host = preferredMeasurementHttpsHost();
+    const certUrl = `http://${host}/api/browser-mic/certificate`;
+    const httpsUrl = `https://${host}/`;
+    if (!measurementModeIsBrowser()) return '';
+    if (browserMeasurementSupported()) {
+        return `
+            <strong>Browser measurement path</strong>
+            <div class="measurement-inline-note">FXRoute plays the sweep, this browser records the mic, then uploads it for analysis.</div>
+            <div class="measurement-inline-note">If this browser showed a certificate warning earlier, install this host's cert here: <a href="${escapeHtml(certUrl)}" target="_blank" rel="noopener noreferrer">download cert</a>.</div>
+        `;
+    }
+    return `
+        <strong>Browser mic setup</strong>
+        <ol>
+            <li>Download the certificate: <a href="${escapeHtml(certUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(certUrl)}</a></li>
+            <li>Trust that certificate on the notebook/client.</li>
+            <li>Open FXRoute here: <a href="${escapeHtml(httpsUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(httpsUrl)}</a></li>
+        </ol>
+        <div class="measurement-inline-note">Browser microphone capture only works over trusted HTTPS.</div>
+    `;
+}
+
+function getUsableBrowserInputDevices(devices = []) {
+    const audioInputs = devices.filter(device => device.kind === 'audioinput');
+    const realInputs = audioInputs.filter(device => !['default', 'communications'].includes(device.deviceId));
+    const source = realInputs.length ? realInputs : audioInputs;
+    return source.map((device, index) => ({
+        id: String(device.deviceId || `browser-input-${index + 1}`),
+        label: String(device.label || `Browser microphone ${index + 1}`),
+        groupId: String(device.groupId || ''),
+    }));
+}
+
+function looksLikeMeasurementMicLabel(label = '') {
+    return /(umik|mini\s*dsp|measurement|usb)/i.test(String(label || ''));
+}
+
+function formatBrowserInputLabelShort(label = '') {
+    const text = String(label || '').trim();
+    if (!text) return '';
+    const parenMatch = text.match(/^Microphone\s*\((.+)\)$/i);
+    if (parenMatch?.[1]) return parenMatch[1].trim();
+    return text.replace(/^Microphone\s*/i, '').trim() || text;
+}
+
+function measurementHasCalibrationSelected() {
+    return !!(state.measurement.calibrationFilename || state.measurement.selectedCalibrationRef);
+}
+
+function buildBrowserMeasurementAudioConstraints(requestedInputId = '') {
+    return {
+        ...(requestedInputId ? { deviceId: { exact: requestedInputId } } : {}),
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false,
+        channelCount: { ideal: 1 },
+    };
+}
+
+function browserCalibrationWarningText() {
+    if (!measurementModeIsBrowser() || !measurementHasCalibrationSelected()) return '';
+    const selected = (state.measurement.browserInputs || []).find(input => input.id === state.measurement.selectedBrowserInputId);
+    const label = selected?.label || state.measurement.browserInputLabel || '';
+    if (!label) {
+        return 'A calibration file is selected. Make sure the browser microphone is really the same mic this calibration belongs to.';
+    }
+    if (looksLikeMeasurementMicLabel(label)) return '';
+    return `Calibration file is selected, but the browser microphone currently looks like “${label}”. If that is the notebook/onboard mic instead of the UMIK, the result will be misleading.`;
+}
+
+async function fetchBrowserInputs(requestPermission = false) {
+    if (!measurementModeIsBrowser() || !browserMeasurementSupported()) return;
+    if (!navigator.mediaDevices?.enumerateDevices) {
+        state.measurement.browserInputs = [];
+        state.measurement.selectedBrowserInputId = '';
+        renderMeasurementPanel();
+        return;
+    }
+    state.measurement.browserInputsLoading = true;
+    renderMeasurementPanel();
+    let tempStream = null;
+    try {
+        const existingDevices = await navigator.mediaDevices.enumerateDevices().catch(() => []);
+        const existingInputs = getUsableBrowserInputDevices(existingDevices);
+        const requestedInputId = existingInputs.some(input => input.id === state.measurement.selectedBrowserInputId)
+            ? state.measurement.selectedBrowserInputId
+            : (existingInputs.find(input => looksLikeMeasurementMicLabel(input.label))?.id || '');
+        if (requestPermission) {
+            tempStream = await navigator.mediaDevices.getUserMedia({
+                audio: buildBrowserMeasurementAudioConstraints(requestedInputId),
+            });
+            state.measurement.browserPermissionGranted = true;
+        }
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const inputs = getUsableBrowserInputDevices(devices);
+        state.measurement.browserInputs = inputs;
+        const preferred = inputs.find(input => looksLikeMeasurementMicLabel(input.label));
+        state.measurement.selectedBrowserInputId = inputs.some(input => input.id === state.measurement.selectedBrowserInputId)
+            ? state.measurement.selectedBrowserInputId
+            : (preferred?.id || inputs[0]?.id || '');
+        if (!state.measurement.startInFlight && !state.measurement.activeJobId) {
+            state.measurement.statusText = describeMeasurementScope();
+        }
+    } catch (error) {
+        console.error('fetchBrowserInputs failed', error);
+        if (requestPermission) {
+            state.measurement.statusText = error?.message || 'Browser microphone permission was not granted.';
+        }
+    } finally {
+        tempStream?.getTracks?.().forEach(track => track.stop());
+        state.measurement.browserInputsLoading = false;
+        renderMeasurementPanel();
+    }
+}
+
+function applyMeasurementCalibrationState(data) {
+    if (!data || typeof data !== 'object') return;
+    state.measurement.calibrationOptions = Array.isArray(data.calibrations) ? data.calibrations : state.measurement.calibrationOptions;
+    state.measurement.selectedCalibrationRef = String(data.active_calibration_file_id || '');
+    if (state.measurement.selectedCalibrationRef && !state.measurement.calibrationOptions.some(item => item.id === state.measurement.selectedCalibrationRef)) {
+        state.measurement.selectedCalibrationRef = '';
+    }
+    state.measurement.calibrationFilename = '';
+    if (elements.measurementCalibrationFile) elements.measurementCalibrationFile.value = '';
+}
+
+async function setActiveMeasurementCalibration(calibrationFileId) {
+    state.measurement.calibrationUpdating = true;
+    renderMeasurementPanel();
+    try {
+        const resp = await fetch('/api/measurements/calibrations/active', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ calibration_file_id: calibrationFileId || '' }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || 'Failed to save calibration selection');
+        applyMeasurementCalibrationState(data);
+        showToast(calibrationFileId ? 'Calibration file selected' : 'Calibration disabled', 'success');
+    } catch (error) {
+        console.error('setActiveMeasurementCalibration failed', error);
+        state.measurement.statusText = error.message || 'Failed to save calibration selection';
+        showToast(state.measurement.statusText, 'error');
+        await fetchMeasurements();
+    } finally {
+        state.measurement.calibrationUpdating = false;
+        renderMeasurementPanel();
+    }
+}
+
+async function uploadMeasurementCalibration(file) {
+    if (!file) return;
+    state.measurement.calibrationUpdating = true;
+    state.measurement.calibrationFilename = file.name || 'calibration.txt';
+    renderMeasurementPanel();
+    const formData = new FormData();
+    formData.append('calibration_file', file);
+    try {
+        const resp = await fetch('/api/measurements/calibrations', { method: 'POST', body: formData });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || 'Failed to upload calibration file');
+        applyMeasurementCalibrationState(data);
+        showToast('Calibration file uploaded and selected', 'success');
+    } catch (error) {
+        console.error('uploadMeasurementCalibration failed', error);
+        state.measurement.statusText = error.message || 'Failed to upload calibration file';
+        showToast(state.measurement.statusText, 'error');
+    } finally {
+        state.measurement.calibrationUpdating = false;
+        renderMeasurementPanel();
+    }
+}
+
+async function deleteSelectedMeasurementCalibration() {
+    const calibrationId = state.measurement.selectedCalibrationRef || '';
+    const selected = (state.measurement.calibrationOptions || []).find(option => option.id === calibrationId);
+    if (!calibrationId || !selected) {
+        showToast('No calibration file selected to delete', 'warning');
+        return;
+    }
+    if (state.measurement.startInFlight || state.measurement.activeJobId) {
+        showToast('Cannot delete calibration during an active measurement', 'warning');
+        return;
+    }
+    if (!window.confirm(`Delete calibration file "${selected.filename || calibrationId}"?`)) return;
+    state.measurement.calibrationDeleting = true;
+    renderMeasurementPanel();
+    try {
+        const resp = await fetch(`/api/measurements/calibrations/${encodeURIComponent(calibrationId)}`, { method: 'DELETE' });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || 'Failed to delete calibration file');
+        applyMeasurementCalibrationState(data);
+        showToast('Calibration file deleted', 'success');
+    } catch (error) {
+        console.error('deleteSelectedMeasurementCalibration failed', error);
+        state.measurement.statusText = error.message || 'Failed to delete calibration file';
+        showToast(state.measurement.statusText, 'error');
+    } finally {
+        state.measurement.calibrationDeleting = false;
+        renderMeasurementPanel();
+    }
+}
+
+async function fetchMeasurements() {
+    state.measurement.loading = true;
+    renderMeasurementPanel();
+    try {
+        const resp = await fetch('/api/measurements');
+        if (!resp.ok) throw new Error('Failed to fetch measurements');
+        const data = await resp.json();
+        const measurements = Array.isArray(data.measurements) ? data.measurements.map((measurement, index) => normalizeMeasurementEntry(measurement, index)) : [];
+        state.measurement.measurements = measurements;
+        state.measurement.visibilityById = normalizeMeasurementVisibility(measurements, state.measurement.visibilityById || {});
+        state.measurement.reviewVisibilityById = normalizeMeasurementReviewVisibility(measurements, state.measurement.reviewVisibilityById || {});
+        state.measurement.storage = data.storage || null;
+        state.measurement.calibrationOptions = Array.isArray(data.calibrations) ? data.calibrations : [];
+        state.measurement.selectedCalibrationRef = String(data.active_calibration_file_id || '');
+        if (state.measurement.selectedCalibrationRef && !state.measurement.calibrationOptions.some(item => item.id === state.measurement.selectedCalibrationRef)) {
+            state.measurement.selectedCalibrationRef = '';
+        }
+        if (!state.measurement.startInFlight && !state.measurement.saveInFlight && !state.measurement.activeJobId && !state.measurement.currentMeasurement) {
+            state.measurement.statusText = describeMeasurementScope(data.scope_note);
+        }
+    } catch (error) {
+        console.error('fetchMeasurements failed', error);
+        state.measurement.statusText = error.message || 'Failed to load measurements';
+        showToast(state.measurement.statusText, 'error');
+    } finally {
+        state.measurement.loading = false;
+        renderMeasurementPanel();
+    }
+}
+
+async function fetchMeasurementInputs() {
+    state.measurement.inputsLoading = true;
+    renderMeasurementPanel();
+    try {
+        const resp = await fetch('/api/measurements/inputs');
+        if (!resp.ok) throw new Error('Failed to fetch measurement inputs');
+        const data = await resp.json();
+        const inputs = Array.isArray(data.inputs) && data.inputs.length
+            ? data.inputs.map((input, index) => ({
+                id: String(input.id || `input-${index + 1}`),
+                label: String(input.label || input.id || `Input ${index + 1}`),
+                note: String(input.note || ''),
+            }))
+            : [];
+        state.measurement.inputs = inputs;
+        state.measurement.selectedInputId = inputs.some(input => input.id === state.measurement.selectedInputId)
+            ? state.measurement.selectedInputId
+            : (inputs[0]?.id || '');
+        state.measurement.hostCaptureAvailable = !!data.capture_available && !!inputs.length;
+        state.measurement.captureAvailable = state.measurement.hostCaptureAvailable;
+        state.measurement.modeNote = measurementModeNoteText();
+        if (!state.measurement.startInFlight && !state.measurement.activeJobId) {
+            if (!state.measurement.hostCaptureAvailable && !measurementModeIsBrowser()) {
+                state.measurement.statusText = inputs.length
+                    ? 'No available capture source is ready right now.'
+                    : 'No PipeWire capture sources are currently visible on this host.';
+            } else {
+                state.measurement.statusText = describeMeasurementScope(data.scope_note);
+            }
+        }
+    } catch (error) {
+        console.error('fetchMeasurementInputs failed', error);
+        state.measurement.inputs = [];
+        state.measurement.selectedInputId = '';
+        state.measurement.hostCaptureAvailable = false;
+        state.measurement.captureAvailable = false;
+        state.measurement.modeNote = measurementModeNoteText();
+        state.measurement.statusText = measurementModeIsBrowser() ? describeMeasurementScope() : (error.message || 'Failed to load capture inputs');
+    } finally {
+        state.measurement.inputsLoading = false;
+        renderMeasurementPanel();
+    }
+}
+
+function toggleMeasurementPanel(forceOpen = null) {
+    if (!elements.measurementPanel) return;
+    state.measurement.browserSupported = browserMeasurementSupported();
+    state.measurement.modeNote = measurementModeNoteText();
+    const shouldOpen = forceOpen === null ? elements.measurementPanel.classList.contains('hidden') : !!forceOpen;
+    state.measurement.open = shouldOpen;
+    elements.measurementPanel.classList.toggle('hidden', !shouldOpen);
+    if (elements.effectsMeasureOpenBtn) {
+        elements.effectsMeasureOpenBtn.setAttribute('aria-expanded', shouldOpen ? 'true' : 'false');
+    }
+    if (shouldOpen) {
+        renderMeasurementPanel();
+        void fetchMeasurementInputs();
+        scheduleMeasurementGraphRender();
+        elements.measurementCloseBtn?.focus();
+    }
+}
+
+function scheduleMeasurementGraphRender() {
+    if (measurementResizeScheduled) return;
+    measurementResizeScheduled = true;
+    window.requestAnimationFrame(() => {
+        measurementResizeScheduled = false;
+        drawMeasurementGraph();
+    });
+}
+
+function getSortedNumericValues(values = []) {
+    return values.filter(value => Number.isFinite(value)).sort((a, b) => a - b);
+}
+
+function getValueQuantile(sortedValues = [], quantile = 0.5) {
+    if (!sortedValues.length) return 0;
+    if (sortedValues.length === 1) return sortedValues[0];
+    const clamped = Math.min(1, Math.max(0, quantile));
+    const position = (sortedValues.length - 1) * clamped;
+    const lowerIndex = Math.floor(position);
+    const upperIndex = Math.ceil(position);
+    if (lowerIndex === upperIndex) return sortedValues[lowerIndex];
+    const weight = position - lowerIndex;
+    return sortedValues[lowerIndex] + ((sortedValues[upperIndex] - sortedValues[lowerIndex]) * weight);
+}
+
+function getMeasurementGraphRange(entries = []) {
+    const focusValues = [];
+    entries.forEach(entry => {
+        (entry.traces || []).forEach(trace => {
+            (trace.points || []).forEach(([, level]) => {
+                focusValues.push(level);
+            });
+        });
+    });
+    const values = getSortedNumericValues(focusValues);
+    if (!values.length) {
+        return { minDb: -18, maxDb: 18 };
+    }
+    const useRobustWindow = values.length >= 24;
+    const rawMinDb = useRobustWindow ? Math.min(getValueQuantile(values, 0.02), 0) : Math.min(...values, 0);
+    const rawMaxDb = useRobustWindow ? Math.max(getValueQuantile(values, 0.98), 0) : Math.max(...values, 0);
+    const peakAbs = Math.max(Math.abs(rawMinDb), Math.abs(rawMaxDb), 9);
+    const paddedPeakAbs = Math.ceil((peakAbs + 3) / 3) * 3;
+    return {
+        minDb: -Math.min(24, paddedPeakAbs),
+        maxDb: Math.min(24, paddedPeakAbs),
+    };
+}
+
+function measurementFrequencyToX(frequency, bounds) {
+    const minLog = Math.log10(20);
+    const maxLog = Math.log10(20000);
+    const valueLog = Math.log10(Math.min(20000, Math.max(20, frequency)));
+    return bounds.left + ((valueLog - minLog) / (maxLog - minLog)) * bounds.width;
+}
+
+function measurementDbToY(level, bounds, range) {
+    const ratio = (range.maxDb - level) / Math.max(1, range.maxDb - range.minDb);
+    return bounds.top + ratio * bounds.height;
+}
+
+function getMeasurementPeqFilterMagnitude(filter = {}, frequencyHz = 1000, sampleRate = 48000) {
+    const type = String(filter.type || 'bell');
+    if (type === 'gain') return clampMeasurementPeqGain(filter.gainDb || 0);
+
+    const freq = clampMeasurementPeqFrequency(filter.freqHz || 1000);
+    const q = clampMeasurementPeqQ(filter.q || 1);
+    const gainDb = clampMeasurementPeqGain(filter.gainDb || 0);
+    const A = 10 ** (gainDb / 40);
+    const w0 = (2 * Math.PI * freq) / sampleRate;
+    const cos = Math.cos(w0);
+    const sin = Math.sin(w0);
+    const alpha = sin / (2 * q);
+    let b0 = 1; let b1 = 0; let b2 = 0; let a0 = 1; let a1 = 0; let a2 = 0;
+
+    if (type === 'bell') {
+        b0 = 1 + (alpha * A);
+        b1 = -2 * cos;
+        b2 = 1 - (alpha * A);
+        a0 = 1 + (alpha / A);
+        a1 = -2 * cos;
+        a2 = 1 - (alpha / A);
+    } else if (type === 'notch') {
+        b0 = 1;
+        b1 = -2 * cos;
+        b2 = 1;
+        a0 = 1 + alpha;
+        a1 = -2 * cos;
+        a2 = 1 - alpha;
+    } else if (type === 'low_shelf' || type === 'high_shelf') {
+        const shelfAlpha = sin / 2 * Math.sqrt(Math.max(0, (A + (1 / A)) * ((1 / q) - 1) + 2));
+        const beta = 2 * Math.sqrt(A) * shelfAlpha;
+        if (type === 'low_shelf') {
+            b0 = A * ((A + 1) - ((A - 1) * cos) + beta);
+            b1 = 2 * A * ((A - 1) - ((A + 1) * cos));
+            b2 = A * ((A + 1) - ((A - 1) * cos) - beta);
+            a0 = (A + 1) + ((A - 1) * cos) + beta;
+            a1 = -2 * ((A - 1) + ((A + 1) * cos));
+            a2 = (A + 1) + ((A - 1) * cos) - beta;
+        } else {
+            b0 = A * ((A + 1) + ((A - 1) * cos) + beta);
+            b1 = -2 * A * ((A - 1) + ((A + 1) * cos));
+            b2 = A * ((A + 1) + ((A - 1) * cos) - beta);
+            a0 = (A + 1) - ((A - 1) * cos) + beta;
+            a1 = 2 * ((A - 1) - ((A + 1) * cos));
+            a2 = (A + 1) - ((A - 1) * cos) - beta;
+        }
+    } else if (type === 'low_pass' || type === 'high_pass') {
+        if (type === 'low_pass') {
+            b0 = (1 - cos) / 2;
+            b1 = 1 - cos;
+            b2 = (1 - cos) / 2;
+        } else {
+            b0 = (1 + cos) / 2;
+            b1 = -(1 + cos);
+            b2 = (1 + cos) / 2;
+        }
+        a0 = 1 + alpha;
+        a1 = -2 * cos;
+        a2 = 1 - alpha;
+    }
+
+    const omega = (2 * Math.PI * clampMeasurementPeqFrequency(frequencyHz)) / sampleRate;
+    const z1r = Math.cos(-omega);
+    const z1i = Math.sin(-omega);
+    const z2r = Math.cos(-2 * omega);
+    const z2i = Math.sin(-2 * omega);
+    const nr = b0 + (b1 * z1r) + (b2 * z2r);
+    const ni = (b1 * z1i) + (b2 * z2i);
+    const dr = a0 + (a1 * z1r) + (a2 * z2r);
+    const di = (a1 * z1i) + (a2 * z2i);
+    const numerator = Math.hypot(nr, ni);
+    const denominator = Math.max(1e-9, Math.hypot(dr, di));
+    return 20 * Math.log10(Math.max(1e-9, numerator / denominator));
+}
+
+function drawMeasurementPeqOverlay(ctx, bounds, range) {
+    const peq = ensureMeasurementPeqState();
+    if (!peq.enabled || !peq.filters.length) return;
+    const sampleFrequencies = Array.from({ length: 220 }, (_, index) => 20 * (10 ** ((Math.log10(20000 / 20) * index) / 219)));
+    const activeFilterId = peq.activeFilterId;
+
+    peq.filters.forEach((filter) => {
+        if (filter.type === 'gain') {
+            const y = measurementDbToY(filter.gainDb || 0, bounds, range);
+            ctx.strokeStyle = `${filter.color}88`;
+            ctx.lineWidth = filter.id === activeFilterId ? 1.7 : 1.1;
+            ctx.setLineDash([4, 4]);
+            ctx.beginPath();
+            ctx.moveTo(bounds.left, y);
+            ctx.lineTo(bounds.left + bounds.width, y);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            return;
+        }
+        ctx.strokeStyle = `${filter.color}${filter.id === activeFilterId ? 'dd' : '88'}`;
+        ctx.lineWidth = filter.id === activeFilterId ? 2 : 1.2;
+        ctx.beginPath();
+        sampleFrequencies.forEach((frequencyHz, index) => {
+            const level = getMeasurementPeqFilterMagnitude(filter, frequencyHz);
+            const x = measurementFrequencyToX(frequencyHz, bounds);
+            const y = measurementDbToY(level, bounds, range);
+            if (index === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+    });
+
+    ctx.strokeStyle = '#f8fafc';
+    ctx.lineWidth = 2.1;
+    ctx.beginPath();
+    sampleFrequencies.forEach((frequencyHz, index) => {
+        const summed = peq.filters.reduce((sum, filter) => sum + getMeasurementPeqFilterMagnitude(filter, frequencyHz), 0);
+        const x = measurementFrequencyToX(frequencyHz, bounds);
+        const y = measurementDbToY(summed, bounds, range);
+        if (index === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+
+    peq.filters.forEach((filter) => {
+        const handle = getMeasurementPeqHandlePosition(filter, bounds, range);
+        ctx.fillStyle = filter.color;
+        ctx.strokeStyle = filter.id === activeFilterId ? '#f8fafc' : 'rgba(15,23,42,0.9)';
+        ctx.lineWidth = filter.id === activeFilterId ? 2.4 : 1.5;
+        ctx.beginPath();
+        ctx.arc(handle.x, handle.y, filter.id === activeFilterId ? 7 : 5.5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+    });
+}
+
+function drawMeasurementGraph() {
+    const canvas = elements.measurementGraph;
+    if (!canvas || elements.measurementPanel?.classList.contains('hidden')) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const displayWidth = Math.max(320, Math.round(canvas.clientWidth || canvas.width || 960));
+    const displayHeight = Math.max(260, Math.round(canvas.clientHeight || canvas.height || 420));
+    const dpr = window.devicePixelRatio || 1;
+    const targetWidth = Math.round(displayWidth * dpr);
+    const targetHeight = Math.round(displayHeight * dpr);
+    if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
+        canvas.width = targetWidth;
+        canvas.height = targetHeight;
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, displayWidth, displayHeight);
+
+    ctx.fillStyle = '#161619';
+    ctx.fillRect(0, 0, displayWidth, displayHeight);
+
+    const graphEntries = getGraphMeasurementEntries();
+    const range = getMeasurementGraphRange(graphEntries);
+    const bounds = getMeasurementGraphBounds(displayWidth, displayHeight);
+
+    ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+    ctx.lineWidth = 1;
+    const dbStep = 6;
+    for (let db = range.minDb; db <= range.maxDb; db += dbStep) {
+        const y = measurementDbToY(db, bounds, range);
+        ctx.beginPath();
+        ctx.moveTo(bounds.left, y);
+        ctx.lineTo(bounds.left + bounds.width, y);
+        ctx.stroke();
+        ctx.fillStyle = db === 0 ? '#d1fae5' : 'rgba(236,236,240,0.72)';
+        ctx.font = '12px sans-serif';
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(`${db} dB`, bounds.left - 10, y);
+    }
+
+    [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000].forEach(frequency => {
+        const x = measurementFrequencyToX(frequency, bounds);
+        ctx.strokeStyle = frequency === 1000 ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.08)';
+        ctx.beginPath();
+        ctx.moveTo(x, bounds.top);
+        ctx.lineTo(x, bounds.top + bounds.height);
+        ctx.stroke();
+        ctx.fillStyle = 'rgba(236,236,240,0.72)';
+        ctx.font = '12px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'top';
+        ctx.fillText(frequency >= 1000 ? `${frequency / 1000}k` : `${frequency}`, x, bounds.top + bounds.height + 10);
+    });
+
+    const zeroY = measurementDbToY(0, bounds, range);
+    ctx.strokeStyle = '#6ee7b7';
+    ctx.lineWidth = 1.4;
+    ctx.setLineDash([6, 5]);
+    ctx.beginPath();
+    ctx.moveTo(bounds.left, zeroY);
+    ctx.lineTo(bounds.left + bounds.width, zeroY);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    graphEntries.forEach(entry => {
+        (entry.traces || []).forEach(trace => {
+            if (!trace.points.length) return;
+            const isReviewTrace = trace.role === 'raw-review';
+            ctx.strokeStyle = entry.graphColor || '#6ee7b7';
+            ctx.lineWidth = entry.current ? 2.8 : (isReviewTrace ? 1.8 : 2.1);
+            ctx.setLineDash(entry.current ? [] : (isReviewTrace ? [6, 5] : [10, 6]));
+            ctx.beginPath();
+            trace.points.forEach(([frequency, level], pointIndex) => {
+                const x = measurementFrequencyToX(frequency, bounds);
+                const y = Math.max(bounds.top, Math.min(bounds.top + bounds.height, measurementDbToY(level, bounds, range)));
+                if (pointIndex === 0) ctx.moveTo(x, y);
+                else ctx.lineTo(x, y);
+            });
+            ctx.stroke();
+            ctx.setLineDash([]);
+        });
+    });
+
+    drawMeasurementPeqOverlay(ctx, bounds, range);
+
+    ctx.strokeStyle = 'rgba(255,255,255,0.16)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(bounds.left, bounds.top, bounds.width, bounds.height);
+}
+
+function summarizeMeasurementBand(summary = {}, fallbackLabel = 'No points') {
+    return summary.point_count ? `${summary.point_count} pts · ${summary.min_hz || 20}–${summary.max_hz || 20000} Hz` : fallbackLabel;
+}
+
+function formatMeasurementUpperLimit(maxHz) {
+    const numericMaxHz = Number(maxHz);
+    if (!Number.isFinite(numericMaxHz) || numericMaxHz <= 0) return '';
+    if (numericMaxHz >= 1000) return `${(numericMaxHz / 1000).toFixed(numericMaxHz >= 10000 ? 1 : 2).replace(/\.0$/, '')}k`;
+    return `${Math.round(numericMaxHz)} Hz`;
+}
+
+function summarizeMeasurementEntry(measurement = {}) {
+    const displaySummary = (measurement.review_summary || {}).point_count ? (measurement.review_summary || {}) : (measurement.summary || {});
+    return summarizeMeasurementBand(displaySummary, 'No graph data');
+}
+
+function formatMeasurementQualityReason(item = {}) {
+    const code = String(item?.code || '').trim();
+    const message = String(item?.message || '').trim();
+    const lookup = {
+        'soft-start-alignment': 'soft start',
+        'soft-end-alignment': 'soft end',
+        'clock-drift-high': 'clock drift',
+        'capture-level-low': 'level low',
+        'capture-level-high': 'level high',
+        'volume-low': 'volume low',
+        'volume-high': 'volume high',
+    };
+    if (lookup[code]) return lookup[code];
+    if (/volume\s+low/i.test(message)) return 'volume low';
+    if (/volume\s+high/i.test(message)) return 'volume high';
+    if (/level\s+low/i.test(message)) return 'level low';
+    if (/level\s+high/i.test(message)) return 'level high';
+    if (/clock|drift/i.test(message)) return 'clock drift';
+    if (/start/i.test(message)) return 'soft start';
+    if (/end/i.test(message)) return 'soft end';
+    return 'qc warn';
+}
+
+function getMeasurementQualitySummary(measurement = {}) {
+    const items = Array.isArray(measurement.analysis?.quality_checks?.items) ? measurement.analysis.quality_checks.items : [];
+    const warnings = items.filter(item => item?.level === 'warning');
+    if (!warnings.length) return 'QC pass';
+    return formatMeasurementQualityReason(warnings[0]);
+}
+
+function getMeasurementQualityTitle(measurement = {}) {
+    const items = Array.isArray(measurement.analysis?.quality_checks?.items) ? measurement.analysis.quality_checks.items : [];
+    return items.map(item => item?.message).filter(Boolean).join(' · ');
+}
+
+function sleep(ms) {
+    return new Promise(resolve => window.setTimeout(resolve, ms));
+}
+
+function getMeasurementAudioContextClass() {
+    return window.AudioContext || window.webkitAudioContext || null;
+}
+
+function createMeasurementWavBlob(frames, sampleRate, channelCount) {
+    const totalFrames = frames.reduce((sum, frame) => sum + (frame[0]?.length || 0), 0);
+    const bytesPerSample = 2;
+    const blockAlign = channelCount * bytesPerSample;
+    const buffer = new ArrayBuffer(44 + totalFrames * blockAlign);
+    const view = new DataView(buffer);
+    const writeString = (offset, value) => {
+        for (let i = 0; i < value.length; i += 1) view.setUint8(offset + i, value.charCodeAt(i));
+    };
+    writeString(0, 'RIFF');
+    view.setUint32(4, 36 + totalFrames * blockAlign, true);
+    writeString(8, 'WAVE');
+    writeString(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, channelCount, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * blockAlign, true);
+    view.setUint16(32, blockAlign, true);
+    view.setUint16(34, bytesPerSample * 8, true);
+    writeString(36, 'data');
+    view.setUint32(40, totalFrames * blockAlign, true);
+    let offset = 44;
+    frames.forEach((frame) => {
+        const frameLength = frame[0]?.length || 0;
+        for (let i = 0; i < frameLength; i += 1) {
+            for (let channel = 0; channel < channelCount; channel += 1) {
+                const source = frame[Math.min(channel, frame.length - 1)] || frame[0];
+                const sample = Math.max(-1, Math.min(1, Number(source?.[i] || 0)));
+                view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+                offset += 2;
+            }
+        }
+    });
+    return new Blob([buffer], { type: 'audio/wav' });
+}
+
+function buildMeasurementRecorderWorkletSource() {
+    return `
+        class FxrouteMeasurementRecorder extends AudioWorkletProcessor {
+            process(inputs) {
+                const input = inputs[0] || [];
+                const copied = input.map((channel) => new Float32Array(channel));
+                let peak = 0;
+                for (const channel of copied) {
+                    for (let index = 0; index < channel.length; index += 1) {
+                        const value = Math.abs(channel[index] || 0);
+                        if (value > peak) peak = value;
+                    }
+                }
+                this.port.postMessage({ channels: copied, peak }, copied.map((channel) => channel.buffer));
+                return true;
+            }
+        }
+        registerProcessor('fxroute-measurement-recorder', FxrouteMeasurementRecorder);
+    `;
+}
+
+function collectBrowserCaptureMeta(track, recorder) {
+    const trackSettings = track?.getSettings?.() || {};
+    const trackConstraints = track?.getConstraints?.() || {};
+    const trackCapabilities = track?.getCapabilities?.() || {};
+    return {
+        inputLabel: track?.label || 'Browser microphone',
+        requestedInputId: state.measurement.selectedBrowserInputId || '',
+        secureContext: !!window.isSecureContext,
+        trackSettings: {
+            deviceId: trackSettings.deviceId || '',
+            channelCount: Number(trackSettings.channelCount || 0) || null,
+            sampleRate: Number(trackSettings.sampleRate || 0) || null,
+            echoCancellation: typeof trackSettings.echoCancellation === 'boolean' ? trackSettings.echoCancellation : null,
+            noiseSuppression: typeof trackSettings.noiseSuppression === 'boolean' ? trackSettings.noiseSuppression : null,
+            autoGainControl: typeof trackSettings.autoGainControl === 'boolean' ? trackSettings.autoGainControl : null,
+            latency: Number.isFinite(Number(trackSettings.latency)) ? Number(trackSettings.latency) : null,
+            sampleSize: Number(trackSettings.sampleSize || 0) || null,
+        },
+        trackConstraints,
+        trackCapabilities,
+        recorder: {
+            processingModel: recorder?.processingModel || '',
+            sampleRate: Number(recorder?.sampleRate || 0) || null,
+            channelCount: Number(recorder?.channelCount || 0) || null,
+            baseLatency: Number.isFinite(Number(recorder?.baseLatency)) ? Number(recorder.baseLatency) : null,
+            outputLatency: Number.isFinite(Number(recorder?.outputLatency)) ? Number(recorder.outputLatency) : null,
+            contextState: recorder?.contextState || '',
+            inputChannelCount: Number(recorder?.inputChannelCount || 0) || null,
+        },
+        browser: {
+            userAgent: navigator.userAgent || '',
+            platform: navigator.userAgentData?.platform || navigator.platform || '',
+            language: navigator.language || '',
+            visibilityState: document.visibilityState || '',
+        },
+    };
+}
+
+function getBrowserCaptureBlockingIssue(captureMeta = {}) {
+    const settings = captureMeta.trackSettings || {};
+    if (captureMeta.requestedInputId && settings.deviceId && captureMeta.requestedInputId !== settings.deviceId) {
+        return 'Browser measurement refused to start because the browser opened a different microphone than the one selected in FXRoute.';
+    }
+    if (settings.echoCancellation === true) return 'Browser measurement refused to start because echo cancellation is still enabled on the mic path.';
+    if (settings.noiseSuppression === true) return 'Browser measurement refused to start because noise suppression is still enabled on the mic path.';
+    if (settings.autoGainControl === true) return 'Browser measurement refused to start because automatic gain control is still enabled on the mic path.';
+    if (settings.sampleRate && settings.sampleRate !== 48000) return `Browser measurement refused to start because the browser mic is actually running at ${settings.sampleRate} Hz instead of 48 kHz.`;
+    return '';
+}
+
+function getBrowserCaptureCaution(captureMeta = {}) {
+    const recorder = captureMeta.recorder || {};
+    if (recorder.processingModel && recorder.processingModel !== 'audio-worklet') {
+        return 'Browser recorder fell back to ScriptProcessor, so timing may still be less stable than we want.';
+    }
+    return '';
+}
+
+function analyzeMeasurementRecorderFrames(frames = [], inputChannels = 1) {
+    const channelCount = Math.max(1, Number(inputChannels || 1) || 1);
+    const perChannelPeak = Array.from({ length: channelCount }, () => 0);
+    const perChannelEnergy = Array.from({ length: channelCount }, () => 0);
+    const perChannelSamples = Array.from({ length: channelCount }, () => 0);
+    let overallPeak = 0;
+    let overallEnergy = 0;
+    let overallSamples = 0;
+
+    for (const frameSet of frames) {
+        if (!Array.isArray(frameSet)) continue;
+        for (let channelIndex = 0; channelIndex < channelCount; channelIndex += 1) {
+            const channel = frameSet[channelIndex];
+            if (!(channel instanceof Float32Array) && !Array.isArray(channel)) continue;
+            const length = Number(channel.length || 0);
+            for (let sampleIndex = 0; sampleIndex < length; sampleIndex += 1) {
+                const sample = Number(channel[sampleIndex] || 0);
+                const abs = Math.abs(sample);
+                if (abs > perChannelPeak[channelIndex]) perChannelPeak[channelIndex] = abs;
+                if (abs > overallPeak) overallPeak = abs;
+                perChannelEnergy[channelIndex] += sample * sample;
+                perChannelSamples[channelIndex] += 1;
+                overallEnergy += sample * sample;
+                overallSamples += 1;
+            }
+        }
+    }
+
+    const perChannelRms = perChannelEnergy.map((energy, index) => {
+        const samples = perChannelSamples[index] || 0;
+        return samples > 0 ? Math.sqrt(energy / samples) : 0;
+    });
+    const overallRms = overallSamples > 0 ? Math.sqrt(overallEnergy / overallSamples) : 0;
+
+    return {
+        peak: overallPeak,
+        rms: overallRms,
+        framesCaptured: frames.length,
+        totalSamples: overallSamples,
+        perChannelPeak,
+        perChannelRms,
+        perChannelSamples,
+    };
+}
+
+async function createBrowserMeasurementRecorder(stream, preferredChannels = 1) {
+    const AudioContextClass = getMeasurementAudioContextClass();
+    if (!AudioContextClass) throw new Error('Web Audio is unavailable in this browser');
+    const audioContext = new AudioContextClass({ sampleRate: 48000, latencyHint: 'interactive' });
+    if (audioContext.state === 'suspended') {
+        await audioContext.resume().catch(() => {});
+    }
+    const source = audioContext.createMediaStreamSource(stream);
+    const inputChannels = Math.max(1, Math.min(2, source.channelCount || preferredChannels || 1));
+    const silence = audioContext.createGain();
+    silence.gain.value = 0;
+    const frames = [];
+    let peak = 0;
+    let stopImpl = null;
+    let processingModel = '';
+
+    if (audioContext.audioWorklet?.addModule && typeof AudioWorkletNode !== 'undefined') {
+        const moduleUrl = URL.createObjectURL(new Blob([buildMeasurementRecorderWorkletSource()], { type: 'application/javascript' }));
+        try {
+            await audioContext.audioWorklet.addModule(moduleUrl);
+            const node = new AudioWorkletNode(audioContext, 'fxroute-measurement-recorder', {
+                numberOfInputs: 1,
+                numberOfOutputs: 1,
+                channelCount: inputChannels,
+                channelCountMode: 'explicit',
+                channelInterpretation: 'speakers',
+            });
+            node.port.onmessage = (event) => {
+                const channels = Array.isArray(event.data?.channels) ? event.data.channels.map((channel) => new Float32Array(channel)) : [];
+                if (channels.length) frames.push(channels);
+                peak = Math.max(peak, Number(event.data?.peak || 0));
+            };
+            source.connect(node);
+            node.connect(silence);
+            silence.connect(audioContext.destination);
+            processingModel = 'audio-worklet';
+            stopImpl = async () => {
+                source.disconnect();
+                node.disconnect();
+                silence.disconnect();
+                node.port.onmessage = null;
+                URL.revokeObjectURL(moduleUrl);
+                const sampleRate = audioContext.sampleRate || 48000;
+                await audioContext.close().catch(() => {});
+                const analysis = analyzeMeasurementRecorderFrames(frames, inputChannels);
+                return {
+                    blob: createMeasurementWavBlob(frames, sampleRate, inputChannels),
+                    stats: {
+                        peak: Math.max(peak, Number(analysis.peak || 0)),
+                        rms: Number(analysis.rms || 0),
+                        framesCaptured: Number(analysis.framesCaptured || 0),
+                        totalSamples: Number(analysis.totalSamples || 0),
+                        perChannelPeak: Array.isArray(analysis.perChannelPeak) ? analysis.perChannelPeak : [],
+                        perChannelRms: Array.isArray(analysis.perChannelRms) ? analysis.perChannelRms : [],
+                        perChannelSamples: Array.isArray(analysis.perChannelSamples) ? analysis.perChannelSamples : [],
+                        processingModel: 'audio-worklet',
+                        sampleRate,
+                        channelCount: inputChannels,
+                    },
+                };
+            };
+        } catch (error) {
+            console.warn('AudioWorklet recorder setup failed, falling back to ScriptProcessor', error);
+            URL.revokeObjectURL(moduleUrl);
+        }
+    }
+
+    if (!stopImpl) {
+        const processor = audioContext.createScriptProcessor(4096, inputChannels, inputChannels);
+        processor.onaudioprocess = (event) => {
+            const channelFrames = [];
+            for (let channel = 0; channel < inputChannels; channel += 1) {
+                const data = new Float32Array(event.inputBuffer.getChannelData(Math.min(channel, event.inputBuffer.numberOfChannels - 1)));
+                channelFrames.push(data);
+                for (let index = 0; index < data.length; index += 1) {
+                    peak = Math.max(peak, Math.abs(data[index] || 0));
+                }
+            }
+            frames.push(channelFrames);
+        };
+        source.connect(processor);
+        processor.connect(silence);
+        silence.connect(audioContext.destination);
+        processingModel = 'script-processor';
+        stopImpl = async () => {
+            processor.disconnect();
+            silence.disconnect();
+            source.disconnect();
+            processor.onaudioprocess = null;
+            const sampleRate = audioContext.sampleRate || 48000;
+            await audioContext.close().catch(() => {});
+            const analysis = analyzeMeasurementRecorderFrames(frames, inputChannels);
+            return {
+                blob: createMeasurementWavBlob(frames, sampleRate, inputChannels),
+                stats: {
+                    peak: Math.max(peak, Number(analysis.peak || 0)),
+                    rms: Number(analysis.rms || 0),
+                    framesCaptured: Number(analysis.framesCaptured || 0),
+                    totalSamples: Number(analysis.totalSamples || 0),
+                    perChannelPeak: Array.isArray(analysis.perChannelPeak) ? analysis.perChannelPeak : [],
+                    perChannelRms: Array.isArray(analysis.perChannelRms) ? analysis.perChannelRms : [],
+                    perChannelSamples: Array.isArray(analysis.perChannelSamples) ? analysis.perChannelSamples : [],
+                    processingModel: 'script-processor',
+                    sampleRate,
+                    channelCount: inputChannels,
+                },
+            };
+        };
+    }
+
+    return {
+        sampleRate: audioContext.sampleRate || 48000,
+        channelCount: inputChannels,
+        processingModel,
+        baseLatency: Number.isFinite(Number(audioContext.baseLatency)) ? Number(audioContext.baseLatency) : null,
+        outputLatency: Number.isFinite(Number(audioContext.outputLatency)) ? Number(audioContext.outputLatency) : null,
+        contextState: audioContext.state || '',
+        inputChannelCount: inputChannels,
+        async stop() {
+            const result = await stopImpl();
+            this.processingModel = result.stats.processingModel;
+            this.sampleRate = result.stats.sampleRate;
+            this.channelCount = result.stats.channelCount;
+            this.contextState = 'closed';
+            return result;
+        },
+    };
+}
+
+async function primeBrowserMeasurementRecorder(stream, preferredChannels = 1) {
+    const primer = await createBrowserMeasurementRecorder(stream, preferredChannels);
+    await sleep(700);
+    await primer.stop();
+    state.measurement.browserMeasurementPrimed = true;
+}
+
+function getBrowserMeasurementAnalysis(job = {}) {
+    return job?.result?.analysis || job?.result?.measurement?.analysis || {};
+}
+
+function browserMeasurementDriftPpm(job = {}) {
+    return Number(getBrowserMeasurementAnalysis(job)?.clock?.drift_ppm || 0) || 0;
+}
+
+function browserMeasurementNormalizedByDb(job = {}) {
+    return Number(getBrowserMeasurementAnalysis(job)?.normalized_by_db || 0) || 0;
+}
+
+function browserMeasurementClockCompensated(job = {}) {
+    return !!getBrowserMeasurementAnalysis(job)?.clock?.compensated;
+}
+
+function browserMeasurementQualityCodes(job = {}) {
+    const items = getBrowserMeasurementAnalysis(job)?.quality_checks?.items || [];
+    return items.map(item => String(item?.code || '').trim()).filter(Boolean);
+}
+
+function browserMeasurementHasClockDriftWarning(job = {}) {
+    return browserMeasurementQualityCodes(job).includes('clock-drift-high');
+}
+
+function browserMeasurementQualityErrorCodes(job = {}) {
+    const items = getBrowserMeasurementAnalysis(job)?.quality_checks?.items || [];
+    return items
+        .filter(item => String(item?.level || '').trim() === 'error')
+        .map(item => String(item?.code || '').trim())
+        .filter(Boolean);
+}
+
+function browserMeasurementRetryMessage(job = {}) {
+    return String(job?.message || job?.result?.message || '').toLowerCase();
+}
+
+function browserMeasurementLowLevelHint(job = {}) {
+    const analysis = getBrowserMeasurementAnalysis(job);
+    const items = analysis?.quality_checks?.items || [];
+    const lowLevelItem = items.find(item => String(item?.code || '').trim() === 'capture-level-low');
+    if (lowLevelItem?.message) return String(lowLevelItem.message).trim();
+    const audit = analysis?.capture_audit || {};
+    const peakDbfs = Number(audit?.peak_dbfs);
+    const rmsDbfs = Number(audit?.rms_dbfs);
+    if (!Number.isFinite(peakDbfs) && !Number.isFinite(rmsDbfs)) return '';
+    const pieces = [];
+    if (Number.isFinite(peakDbfs)) pieces.push(`peak ${peakDbfs.toFixed(2)} dBFS`);
+    if (Number.isFinite(rmsDbfs)) pieces.push(`rms ${rmsDbfs.toFixed(2)} dBFS`);
+    if (!pieces.length) return '';
+    const errorCodes = browserMeasurementQualityErrorCodes(job);
+    const syncTimingErrors = ['weak-start-alignment', 'weak-end-alignment', 'insufficient-sync-bursts', 'sync-cluster-a-insufficient', 'sync-cluster-b-insufficient', 'sync-order-invalid', 'sync-fit-residual-high', 'sync-burst-residual-high', 'corrected-sweep-weak'];
+    if (errorCodes.some(code => syncTimingErrors.includes(code))) {
+        return `Browser capture level did not look obviously too low (${pieces.join(', ')}); this run failed on sync/timing confidence instead.`;
+    }
+    return `Latest browser capture stats: ${pieces.join(', ')}.`;
+}
+
+function browserMeasurementShouldRetry(job = {}) {
+    const driftPpm = Math.abs(browserMeasurementDriftPpm(job));
+    const normalizedByDb = browserMeasurementNormalizedByDb(job);
+    const compensated = browserMeasurementClockCompensated(job);
+    const qualityCodes = browserMeasurementQualityCodes(job);
+    const qualityErrorCodes = browserMeasurementQualityErrorCodes(job);
+    const retryMessage = browserMeasurementRetryMessage(job);
+    if (retryMessage.includes('should be retried automatically')) return true;
+    const retryableSyncCodes = ['weak-start-alignment', 'weak-end-alignment', 'insufficient-sync-bursts', 'sync-cluster-a-insufficient', 'sync-cluster-b-insufficient', 'sync-order-invalid', 'sync-fit-residual-high', 'sync-burst-residual-high', 'corrected-sweep-weak', 'browser-clock-drift-excessive'];
+    if (qualityErrorCodes.length && qualityErrorCodes.every(code => retryableSyncCodes.includes(code))) return true;
+    if (browserMeasurementHasClockDriftWarning(job)) return true;
+    if (driftPpm > 5000) return true;
+    if (compensated && driftPpm > 1500) return true;
+    if (compensated && normalizedByDb < -42) return true;
+    if (normalizedByDb < -46 && (qualityCodes.includes('soft-start-alignment') || qualityCodes.includes('soft-end-alignment'))) return true;
+    return false;
+}
+
+async function runBrowserMeasurementAttempt({
+    stream,
+    track,
+    browserInputLabel,
+    preferredRecorderChannels,
+    browserCaptureCaution,
+    attemptIndex = 0,
+    maxAttempts = 3,
+}) {
+    const recorder = await createBrowserMeasurementRecorder(stream, preferredRecorderChannels);
+    const browserCaptureMeta = collectBrowserCaptureMeta(track, recorder);
+    const blockingIssue = getBrowserCaptureBlockingIssue(browserCaptureMeta);
+    if (blockingIssue) throw new Error(blockingIssue);
+
+    const formData = new FormData();
+    formData.append('channel', state.measurement.selectedChannel || 'left');
+    const calibrationFile = elements.measurementCalibrationFile?.files?.[0];
+    if (calibrationFile) {
+        formData.append('calibration_file', calibrationFile);
+    } else if (state.measurement.selectedCalibrationRef) {
+        formData.append('calibration_ref', state.measurement.selectedCalibrationRef);
+    }
+
+    state.measurement.statusText = attemptIndex > 0
+        ? `Browser capture timing was unstable. Retrying automatically (${attemptIndex + 1}/${maxAttempts})…`
+        : (browserCaptureCaution || 'Browser microphone armed. Preparing FXRoute sweep…');
+    renderMeasurementPanel();
+    const startResp = await fetch('/api/measurements/browser/start', { method: 'POST', body: formData });
+    const startData = await startResp.json().catch(() => ({}));
+    if (!startResp.ok) throw new Error(startData.detail || 'Failed to start browser measurement');
+
+    const job = startData.job || {};
+    state.measurement.activeJobId = String(job.id || '');
+    state.measurement.statusText = String(job.message || 'Recording browser microphone…');
+    renderMeasurementPanel();
+
+    const captureInfo = job.browser_capture || {};
+    const recordDurationMs = Number(captureInfo.record_duration_ms || 11000);
+    await sleep(recordDurationMs);
+    state.measurement.statusText = 'Uploading browser capture…';
+    renderMeasurementPanel();
+
+    const { blob: captureBlob, stats: captureStats } = await recorder.stop();
+    browserCaptureMeta.recorder = {
+        ...(browserCaptureMeta.recorder || {}),
+        processingModel: captureStats?.processingModel || browserCaptureMeta.recorder?.processingModel || '',
+        sampleRate: Number(captureStats?.sampleRate || browserCaptureMeta.recorder?.sampleRate || 0) || null,
+        channelCount: Number(captureStats?.channelCount || browserCaptureMeta.recorder?.channelCount || 0) || null,
+        peak: Number.isFinite(Number(captureStats?.peak)) ? Number(captureStats.peak) : null,
+        rms: Number.isFinite(Number(captureStats?.rms)) ? Number(captureStats.rms) : null,
+        framesCaptured: Number.isFinite(Number(captureStats?.framesCaptured)) ? Number(captureStats.framesCaptured) : null,
+        totalSamples: Number.isFinite(Number(captureStats?.totalSamples)) ? Number(captureStats.totalSamples) : null,
+        perChannelPeak: Array.isArray(captureStats?.perChannelPeak) ? captureStats.perChannelPeak.map(value => Number(value || 0)) : [],
+        perChannelRms: Array.isArray(captureStats?.perChannelRms) ? captureStats.perChannelRms.map(value => Number(value || 0)) : [],
+        perChannelSamples: Array.isArray(captureStats?.perChannelSamples) ? captureStats.perChannelSamples.map(value => Number(value || 0)) : [],
+    };
+    console.info('FXRoute browser measurement recorder stats', browserCaptureMeta.recorder);
+    const completeForm = new FormData();
+    completeForm.append('job_id', state.measurement.activeJobId);
+    completeForm.append('browser_input_label', browserInputLabel);
+    completeForm.append('browser_capture_meta', JSON.stringify(browserCaptureMeta));
+    completeForm.append('capture_file', captureBlob, 'browser-measurement.wav');
+    const completeResp = await fetch('/api/measurements/browser/complete', { method: 'POST', body: completeForm });
+    const completeData = await completeResp.json().catch(() => ({}));
+    if (!completeResp.ok) throw new Error(completeData.detail || 'Failed to upload browser capture');
+    return completeData.job || {};
+}
+
+async function startBrowserMeasurement() {
+    if (!browserMeasurementSupported()) {
+        throw new Error('Browser microphone capture is not supported in this browser');
+    }
+
+    const calibrationWarning = browserCalibrationWarningText();
+    if (calibrationWarning && !window.confirm(`${calibrationWarning}\n\nContinue anyway?`)) {
+        state.measurement.statusText = 'Browser measurement cancelled so you can pick the correct microphone.';
+        renderMeasurementPanel();
+        return;
+    }
+
+    state.measurement.statusText = 'Requesting browser microphone permission…';
+    renderMeasurementPanel();
+
+    const stream = await navigator.mediaDevices.getUserMedia({
+        audio: buildBrowserMeasurementAudioConstraints(state.measurement.selectedBrowserInputId),
+    });
+    const track = stream.getAudioTracks?.()[0] || null;
+    const browserInputLabel = track?.label || 'Browser microphone';
+    const browserTrackSettings = track?.getSettings?.() || {};
+    const preferredRecorderChannels = Math.max(1, Math.min(2, Number(browserTrackSettings.channelCount || 1) || 1));
+    state.measurement.browserInputLabel = browserInputLabel;
+    state.measurement.browserPermissionGranted = true;
+    if (!state.measurement.browserMeasurementPrimed) {
+        state.measurement.statusText = measurementHasCalibrationSelected()
+            ? 'Priming browser capture path before calibrated sweep…'
+            : 'Priming browser capture path before sweep…';
+        renderMeasurementPanel();
+        await primeBrowserMeasurementRecorder(stream, preferredRecorderChannels);
+    }
+    const browserCaptureCaution = getBrowserCaptureCaution(collectBrowserCaptureMeta(track, {
+        sampleRate: 48000,
+        channelCount: preferredRecorderChannels,
+        processingModel: '',
+    }));
+    await fetchBrowserInputs(false);
+
+    try {
+        let completedJob = null;
+        const maxAttempts = 3;
+        for (let attemptIndex = 0; attemptIndex < maxAttempts; attemptIndex += 1) {
+            completedJob = await runBrowserMeasurementAttempt({
+                stream,
+                track,
+                browserInputLabel,
+                preferredRecorderChannels,
+                browserCaptureCaution,
+                attemptIndex,
+                maxAttempts,
+            });
+            if (!browserMeasurementShouldRetry(completedJob)) {
+                break;
+            }
+            if (attemptIndex === maxAttempts - 1) {
+                const lowLevelHint = browserMeasurementLowLevelHint(completedJob || {});
+                throw new Error(lowLevelHint
+                    ? `Browser measurement stayed unstable across all retry attempts. Discarded this capture; please run it once more. ${lowLevelHint}`
+                    : 'Browser measurement stayed unstable across all retry attempts. Discarded this capture; please run it once more.');
+            }
+            state.measurement.activeJobId = '';
+            state.measurement.statusText = 'Browser capture sync scaffold was unstable; discarding this run and retrying automatically…';
+            renderMeasurementPanel();
+            await sleep(400);
+        }
+
+        state.measurement.activeJobId = '';
+        state.measurement.currentMeasurement = normalizeMeasurementEntry(completedJob?.result?.measurement || {}, 0);
+        state.measurement.currentMeasurementName = state.measurement.currentMeasurement.name || '';
+        state.measurement.currentMeasurementSaved = false;
+        state.measurement.reviewVisibilityById[state.measurement.currentMeasurement.id] = !!state.measurement.currentMeasurement.review_traces?.length;
+        state.measurement.statusText = String(completedJob?.message || 'Browser microphone measurement finished.');
+        renderMeasurementPanel();
+        showToast(browserMeasurementShouldRetry(completedJob || {}) ? 'Measurement finished, but timing still looked unstable' : 'Measurement finished', browserMeasurementShouldRetry(completedJob || {}) ? 'warning' : 'success');
+    } finally {
+        stream.getTracks().forEach((streamTrack) => streamTrack.stop());
+    }
+}
+
+async function startHostMeasurement() {
+    if (!state.measurement.hostCaptureAvailable || !state.measurement.selectedInputId) {
+        state.measurement.statusText = 'No usable host capture source is available for a real measurement on this host.';
+        renderMeasurementPanel();
+        showToast(state.measurement.statusText, 'error');
+        return;
+    }
+
+    const formData = new FormData();
+    formData.append('input_id', state.measurement.selectedInputId);
+    formData.append('channel', state.measurement.selectedChannel || 'left');
+    const calibrationFile = elements.measurementCalibrationFile?.files?.[0];
+    if (calibrationFile) {
+        formData.append('calibration_file', calibrationFile);
+    } else if (state.measurement.selectedCalibrationRef) {
+        formData.append('calibration_ref', state.measurement.selectedCalibrationRef);
+    }
+
+    state.measurement.activeJobId = '';
+    state.measurement.currentMeasurementSaved = false;
+    state.measurement.statusText = 'Starting host-local sweep…';
+    renderMeasurementPanel();
+
+    const resp = await fetch('/api/measurements/start', { method: 'POST', body: formData });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data.detail || 'Failed to start measurement');
+    const job = data.job || {};
+    state.measurement.activeJobId = String(job.id || '');
+    state.measurement.statusText = String(job.message || 'Preparing sweep…');
+    renderMeasurementPanel();
+    await pollMeasurementJob(state.measurement.activeJobId);
+}
+
+async function startMeasurement() {
+    if (state.measurement.startInFlight || state.measurement.activeJobId) return;
+    state.measurement.browserSupported = browserMeasurementSupported();
+    if (!measurementModeReady()) {
+        state.measurement.statusText = measurementModeIsBrowser()
+            ? 'Browser microphone capture is unavailable in this browser.'
+            : 'No usable host capture source is available for a real measurement on this host.';
+        renderMeasurementPanel();
+        showToast(state.measurement.statusText, 'error');
+        return;
+    }
+
+    state.measurement.startInFlight = true;
+    state.measurement.activeJobId = '';
+    state.measurement.currentMeasurementSaved = false;
+    renderMeasurementPanel();
+
+    try {
+        if (measurementModeIsBrowser()) await startBrowserMeasurement();
+        else await startHostMeasurement();
+    } catch (error) {
+        console.error('startMeasurement failed', error);
+        state.measurement.statusText = error.message || 'Failed to start measurement';
+        showToast(state.measurement.statusText, 'error');
+    } finally {
+        state.measurement.startInFlight = false;
+        renderMeasurementPanel();
+    }
+}
+
+async function cancelMeasurement() {
+    const jobId = String(state.measurement.activeJobId || '');
+    if (!jobId) return;
+    state.measurement.statusText = 'Cancelling measurement…';
+    renderMeasurementPanel();
+    try {
+        const resp = await fetch(`/api/measurements/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || 'Failed to cancel measurement');
+        state.measurement.statusText = String(data.job?.message || 'Measurement cancelled.');
+    } catch (error) {
+        console.error('cancelMeasurement failed', error);
+        state.measurement.statusText = error.message || 'Failed to cancel measurement';
+        showToast(state.measurement.statusText, 'error');
+    } finally {
+        renderMeasurementPanel();
+    }
+}
+
+async function pollMeasurementJob(jobId) {
+    if (!jobId) return;
+    for (let attempt = 0; attempt < 120; attempt += 1) {
+        const resp = await fetch(`/api/measurements/jobs/${encodeURIComponent(jobId)}`);
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || 'Failed to fetch measurement job');
+        const job = data.job || {};
+        state.measurement.activeJobId = String(job.id || jobId);
+        state.measurement.statusText = String(job.message || state.measurement.statusText || 'Measurement running…');
+        if (job.status === 'completed' && job.result?.measurement) {
+            state.measurement.currentMeasurement = normalizeMeasurementEntry(job.result.measurement, 0);
+            state.measurement.currentMeasurementName = state.measurement.currentMeasurement.name || '';
+            state.measurement.currentMeasurementSaved = false;
+            state.measurement.reviewVisibilityById[state.measurement.currentMeasurement.id] = !!state.measurement.currentMeasurement.review_traces?.length;
+            state.measurement.statusText = String(job.message || 'Measurement finished.');
+            state.measurement.activeJobId = '';
+            renderMeasurementPanel();
+            showToast('Measurement finished', 'success');
+            return;
+        }
+        if (job.status === 'failed') {
+            state.measurement.activeJobId = '';
+            throw new Error(job.error?.detail || job.message || 'Measurement failed');
+        }
+        if (job.status === 'cancelled') {
+            state.measurement.activeJobId = '';
+            state.measurement.statusText = String(job.message || 'Measurement cancelled.');
+            renderMeasurementPanel();
+            showToast('Measurement cancelled', 'success');
+            return;
+        }
+        renderMeasurementPanel();
+        await sleep(800);
+    }
+    throw new Error('Measurement job timed out while waiting for completion');
+}
+
+async function saveCurrentMeasurement() {
+    const current = state.measurement.currentMeasurement;
+    if (!current || state.measurement.saveInFlight || state.measurement.currentMeasurementSaved) return;
+
+    const payload = JSON.parse(JSON.stringify(current));
+    payload.name = (state.measurement.currentMeasurementName || current.name || '').trim() || current.name || 'Measurement';
+
+    state.measurement.saveInFlight = true;
+    state.measurement.statusText = 'Saving current measurement…';
+    renderMeasurementPanel();
+    try {
+        const resp = await fetch('/api/measurements/save', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || 'Failed to save measurement');
+        state.measurement.currentMeasurementSaved = true;
+        state.measurement.currentMeasurement = normalizeMeasurementEntry(data.measurement || payload, 0);
+        state.measurement.currentMeasurementName = state.measurement.currentMeasurement.name || payload.name;
+        state.measurement.reviewVisibilityById[state.measurement.currentMeasurement.id] = measurementReviewVisible(state.measurement.currentMeasurement.id);
+        state.measurement.statusText = 'Measurement saved.';
+        await fetchMeasurements();
+        showToast('Measurement saved', 'success');
+    } catch (error) {
+        console.error('saveCurrentMeasurement failed', error);
+        state.measurement.statusText = error.message || 'Failed to save measurement';
+        showToast(state.measurement.statusText, 'error');
+    } finally {
+        state.measurement.saveInFlight = false;
+        renderMeasurementPanel();
+    }
+}
+
+async function deleteMeasurement(measurementId, measurementName = 'Measurement') {
+    if (!measurementId || state.measurement.saveInFlight || state.measurement.startInFlight) return;
+    if (!window.confirm(`Delete saved measurement \"${measurementName}\"?`)) return;
+    state.measurement.saveInFlight = true;
+    state.measurement.statusText = 'Deleting saved measurement…';
+    renderMeasurementPanel();
+    try {
+        const resp = await fetch(`/api/measurements/${encodeURIComponent(measurementId)}`, { method: 'DELETE' });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || 'Failed to delete measurement');
+        delete state.measurement.visibilityById[measurementId];
+        delete state.measurement.reviewVisibilityById[measurementId];
+        state.measurement.statusText = 'Saved runs updated.';
+        await fetchMeasurements();
+    } catch (error) {
+        console.error('deleteMeasurement failed', error);
+        state.measurement.statusText = error.message || 'Failed to delete measurement';
+        showToast(state.measurement.statusText, 'error');
+    } finally {
+        state.measurement.saveInFlight = false;
+        renderMeasurementPanel();
+    }
+}
+
+async function deleteSelectedMeasurements() {
+    if (state.measurement.saveInFlight || state.measurement.startInFlight) return;
+    const measurements = getVisibleMeasurementEntries();
+    if (!measurements.length) {
+        showToast('No saved measurements selected', 'warning');
+        return;
+    }
+    const label = measurements.length === 1 ? `saved measurement \"${measurements[0].name}\"` : `${measurements.length} saved measurements`;
+    if (!window.confirm(`Delete ${label}?`)) return;
+    state.measurement.saveInFlight = true;
+    state.measurement.statusText = `Deleting ${measurements.length === 1 ? 'saved measurement' : 'saved measurements'}…`;
+    renderMeasurementPanel();
+    let deletedCount = 0;
+    try {
+        for (const measurement of measurements) {
+            const resp = await fetch(`/api/measurements/${encodeURIComponent(measurement.id)}`, { method: 'DELETE' });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) throw new Error(data.detail || `Failed to delete ${measurement.name}`);
+            delete state.measurement.visibilityById[measurement.id];
+            delete state.measurement.reviewVisibilityById[measurement.id];
+            deletedCount += 1;
+        }
+        state.measurement.statusText = 'Saved runs updated.';
+        await fetchMeasurements();
+    } catch (error) {
+        console.error('deleteSelectedMeasurements failed', error);
+        state.measurement.statusText = error.message || 'Failed to delete selected measurements';
+        showToast(state.measurement.statusText, 'error');
+    } finally {
+        state.measurement.saveInFlight = false;
+        renderMeasurementPanel();
+    }
+}
+
+function renderMeasurementPanel() {
+    if (!elements.measurementSummary || !elements.measurementList) return;
+    const measurementState = state.measurement || {};
+    measurementState.browserSupported = browserMeasurementSupported();
+    measurementState.modeNote = measurementModeNoteText();
+    const usingBrowser = measurementModeIsBrowser();
+    const current = getCurrentMeasurementEntry();
+    const measurements = (measurementState.measurements || []).filter(measurement => measurement.id !== current?.id);
+    const graphEntries = getGraphMeasurementEntries();
+    const peq = ensureMeasurementPeqState();
+    const activePeqFilter = getMeasurementPeqActiveFilter();
+
+    if (elements.measurementSetupCard) {
+        elements.measurementSetupCard.classList.toggle('hidden', !measurementState.setupOpen);
+    }
+    if (elements.measurementSetupToggleBtn) {
+        elements.measurementSetupToggleBtn.textContent = measurementState.setupOpen ? 'Close setup' : 'Setup';
+        elements.measurementSetupToggleBtn.disabled = measurementState.startInFlight;
+    }
+    if (elements.measurementModeSelect) {
+        elements.measurementModeSelect.value = measurementState.captureMode || 'host-local';
+        elements.measurementModeSelect.disabled = measurementState.startInFlight;
+    }
+    if (elements.measurementModeNote) {
+        elements.measurementModeNote.textContent = measurementState.modeNote || '';
+    }
+    document.querySelectorAll('[data-measurement-channel]').forEach((button) => {
+        const active = (button.getAttribute('data-measurement-channel') || '') === (measurementState.selectedChannel || 'left');
+        button.classList.toggle('is-active', active);
+        button.disabled = measurementState.startInFlight;
+        button.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
+    document.querySelectorAll('[data-measurement-smoothing]').forEach((button) => {
+        const active = (button.getAttribute('data-measurement-smoothing') || '') === (measurementState.displaySmoothing || '1/6-oct');
+        button.classList.toggle('is-active', active);
+        button.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
+    if (elements.measurementBrowserHelp) {
+        const helpHtml = browserMeasurementHelpHtml();
+        elements.measurementBrowserHelp.classList.toggle('hidden', !helpHtml);
+        elements.measurementBrowserHelp.innerHTML = helpHtml;
+    }
+    if (elements.measurementBrowserInputGroup) {
+        elements.measurementBrowserInputGroup.classList.toggle('hidden', !usingBrowser);
+    }
+    if (elements.measurementBrowserInputSelect) {
+        const browserInputs = measurementState.browserInputs && measurementState.browserInputs.length
+            ? measurementState.browserInputs
+            : [{ id: '', label: measurementState.browserInputsLoading ? 'Detecting browser microphones…' : 'Default browser microphone' }];
+        elements.measurementBrowserInputSelect.innerHTML = browserInputs.map(input => `<option value="${escapeHtml(input.id)}" ${input.id === measurementState.selectedBrowserInputId ? 'selected' : ''}>${escapeHtml(input.label)}</option>`).join('');
+        elements.measurementBrowserInputSelect.disabled = !usingBrowser || measurementState.startInFlight || measurementState.browserInputsLoading;
+    }
+    if (elements.measurementBrowserInputRefreshBtn) {
+        elements.measurementBrowserInputRefreshBtn.disabled = !usingBrowser || measurementState.startInFlight || measurementState.browserInputsLoading || !measurementState.browserSupported;
+        elements.measurementBrowserInputRefreshBtn.textContent = measurementState.browserInputsLoading ? 'Detecting…' : 'Detect / refresh browser microphones';
+    }
+    if (elements.measurementBrowserInputNote) {
+        const calibrationWarning = browserCalibrationWarningText();
+        const selected = (measurementState.browserInputs || []).find(input => input.id === measurementState.selectedBrowserInputId);
+        const selectedLabel = selected?.label || measurementState.browserInputLabel || '';
+        elements.measurementBrowserInputNote.textContent = calibrationWarning
+            || (selectedLabel
+                ? `Selected: ${formatBrowserInputLabelShort(selectedLabel)}`
+                : 'Pick the actual measurement mic here. Browser defaults are often the notebook onboard microphone.');
+    }
+    if (elements.measurementInputGroup) {
+        elements.measurementInputGroup.classList.toggle('hidden', usingBrowser);
+    }
+    if (elements.measurementInputSelect) {
+        const inputs = measurementState.inputs && measurementState.inputs.length
+            ? measurementState.inputs
+            : [{ id: '', label: measurementState.inputsLoading ? 'Loading…' : 'No host capture inputs available' }];
+        elements.measurementInputSelect.innerHTML = inputs.map(input => `<option value="${escapeHtml(input.id)}" ${input.id === measurementState.selectedInputId ? 'selected' : ''}>${escapeHtml(input.label)}</option>`).join('');
+        elements.measurementInputSelect.disabled = usingBrowser || measurementState.inputsLoading || !measurementState.hostCaptureAvailable;
+    }
+    if (elements.measurementInputRefreshBtn) {
+        elements.measurementInputRefreshBtn.disabled = measurementState.startInFlight || measurementState.inputsLoading;
+        elements.measurementInputRefreshBtn.textContent = measurementState.inputsLoading ? 'Detecting…' : 'Detect / refresh host microphones';
+    }
+    if (elements.measurementChannelSelect) {
+        elements.measurementChannelSelect.value = measurementState.selectedChannel || 'left';
+        elements.measurementChannelSelect.disabled = measurementState.startInFlight;
+    }
+    if (elements.measurementCalibrationSelect) {
+        const options = [{ id: '', filename: 'No calibration file' }, ...(measurementState.calibrationOptions || [])];
+        elements.measurementCalibrationSelect.innerHTML = options.map(option => `<option value="${escapeHtml(option.id || '')}" ${(option.id || '') === (measurementState.selectedCalibrationRef || '') ? 'selected' : ''}>${escapeHtml(option.filename || 'Calibration')}</option>`).join('');
+        elements.measurementCalibrationSelect.disabled = measurementState.startInFlight || measurementState.calibrationUpdating || measurementState.calibrationDeleting;
+    }
+    if (elements.measurementCalibrationDeleteBtn) {
+        const canDeleteCalibration = !!measurementState.selectedCalibrationRef && !measurementState.startInFlight && !measurementState.activeJobId && !measurementState.calibrationUpdating && !measurementState.calibrationDeleting;
+        elements.measurementCalibrationDeleteBtn.disabled = !canDeleteCalibration;
+        elements.measurementCalibrationDeleteBtn.textContent = measurementState.calibrationDeleting ? 'Deleting…' : 'Delete';
+    }
+    if (elements.measurementCalibrationUploadName) {
+        elements.measurementCalibrationUploadName.textContent = measurementState.calibrationFilename || 'No calibration file selected.';
+    }
+    if (elements.measurementCalibrationName) {
+        const selectedCalibration = (measurementState.calibrationOptions || []).find(option => option.id === measurementState.selectedCalibrationRef);
+        const activeCalibrationLabel = measurementState.calibrationFilename
+            ? measurementState.calibrationFilename
+            : (selectedCalibration ? selectedCalibration.filename : '');
+        elements.measurementCalibrationName.textContent = activeCalibrationLabel;
+        elements.measurementCalibrationName.classList.toggle('hidden', !activeCalibrationLabel);
+    }
+    if (elements.measurementNameInput) {
+        elements.measurementNameInput.value = measurementState.currentMeasurementName || '';
+        elements.measurementNameInput.disabled = !current || measurementState.startInFlight || measurementState.saveInFlight;
+        elements.measurementNameInput.placeholder = current ? 'Name for save' : 'Available after capture';
+    }
+    if (elements.measurementStartBtn) {
+        const activeJobRunning = !!measurementState.activeJobId;
+        elements.measurementStartBtn.disabled = measurementState.calibrationUpdating || measurementState.calibrationDeleting
+            ? true
+            : (usingBrowser
+                ? (!activeJobRunning && !measurementState.browserSupported)
+                : (!activeJobRunning && (measurementState.inputsLoading || !measurementState.hostCaptureAvailable)));
+        elements.measurementStartBtn.textContent = activeJobRunning
+            ? 'Cancel measurement'
+            : (measurementState.startInFlight
+                ? 'Starting…'
+                : (usingBrowser
+                    ? (measurementState.browserSupported ? 'Start browser sweep' : 'Browser mic needs HTTPS')
+                    : 'Start host-local sweep'));
+    }
+    if (elements.measurementSaveBtn) {
+        elements.measurementSaveBtn.disabled = !current || measurementState.saveInFlight || measurementState.startInFlight || measurementState.currentMeasurementSaved;
+        elements.measurementSaveBtn.textContent = measurementState.saveInFlight ? 'Working…' : (measurementState.currentMeasurementSaved ? 'Saved' : 'Save current');
+    }
+    if (elements.measurementClearBtn) {
+        const hasResettableGraphState = !!current || !!peq.filters.length;
+        elements.measurementClearBtn.disabled = !hasResettableGraphState || measurementState.startInFlight || !!measurementState.activeJobId;
+    }
+    if (elements.measurementSetupStatus) {
+        elements.measurementSetupStatus.textContent = measurementState.statusText || describeMeasurementScope();
+    }
+    if (elements.measurementSummary) {
+        elements.measurementSummary.textContent = peq.filters.length ? `${peq.filters.length}/4 assistant filters` : '';
+    }
+    if (elements.measurementEmpty) {
+        elements.measurementEmpty.classList.toggle('hidden', graphEntries.length > 0);
+    }
+    if (elements.measurementGraphControls) {
+        elements.measurementGraphControls.textContent = current
+            ? 'Tap/click near 0 dB to add a filter, drag handles for freq/gain.'
+            : 'Run a sweep to see the graph.';
+    }
+    if (elements.measurementPeqPanel) {
+        elements.measurementPeqPanel.classList.toggle('hidden', !peq.enabled && !peq.filters.length);
+    }
+    if (elements.measurementPeqChips) {
+        elements.measurementPeqChips.innerHTML = Array.from({ length: 4 }, (_, index) => {
+            const filter = peq.filters[index] || null;
+            const active = filter && filter.id === peq.activeFilterId;
+            const classes = `measurement-peq-chip${active ? ' is-active' : ''}${filter ? '' : ' is-empty'}`;
+            const style = filter ? `style="border-color:${escapeHtml(filter.color)}66; background:${escapeHtml(filter.color)}22;${active ? ` color:${escapeHtml(filter.color)}; background:${escapeHtml(filter.color)}33;` : ''}"` : '';
+            return `<button type="button" class="${classes}" data-measurement-peq-slot="${index}" data-measurement-peq-chip="${filter ? escapeHtml(filter.id) : ''}" ${style}>F${index + 1}</button>`;
+        }).join('');
+    }
+    if (elements.measurementPeqEditor) {
+        if (!activePeqFilter) {
+            elements.measurementPeqEditor.innerHTML = '<div class="measurement-peq-editor-empty">Use F1-F4 or the graph near the fixed 0 dB line to add up to 4 temporary filters.</div>';
+        } else {
+            const hideFreqQ = activePeqFilter.type === 'gain';
+            elements.measurementPeqEditor.innerHTML = `
+                <div class="measurement-peq-editor-grid">
+                    <div class="field-group">
+                        <label for="measurement-peq-type">Type</label>
+                        <select id="measurement-peq-type" class="url-input" data-measurement-peq-field="type">
+                            ${measurementPeqTypes.map((type) => `<option value="${type}" ${activePeqFilter.type === type ? 'selected' : ''}>${measurementPeqTypeLabels[type] || type}</option>`).join('')}
+                        </select>
+                    </div>
+                    ${hideFreqQ ? '' : `
+                    <div class="field-group measurement-peq-direct-input-field">
+                        <label for="measurement-peq-freq">Frequency (Hz)</label>
+                        <div class="measurement-peq-stepper">
+                            <button type="button" class="btn-secondary measurement-peq-step-btn" data-measurement-peq-frequency-step="-1" aria-label="Decrease frequency">−</button>
+                            <input id="measurement-peq-freq" class="url-input measurement-peq-number-input" type="number" min="20" max="20000" step="1" inputmode="numeric" value="${Math.round(activePeqFilter.freqHz || 1000)}" data-measurement-peq-field="freqHz">
+                            <button type="button" class="btn-secondary measurement-peq-step-btn" data-measurement-peq-frequency-step="1" aria-label="Increase frequency">+</button>
+                        </div>
+                    </div>`}
+                    <div class="field-group measurement-peq-direct-input-field">
+                        <label for="measurement-peq-gain">Gain (dB)</label>
+                        <div class="measurement-peq-stepper">
+                            <button type="button" class="btn-secondary measurement-peq-step-btn" data-measurement-peq-gain-step="-1" aria-label="Decrease gain">−</button>
+                            <input id="measurement-peq-gain" class="url-input measurement-peq-number-input" type="number" min="-24" max="24" step="0.1" inputmode="decimal" value="${Number(activePeqFilter.gainDb || 0).toFixed(1)}" data-measurement-peq-field="gainDb">
+                            <button type="button" class="btn-secondary measurement-peq-step-btn" data-measurement-peq-gain-step="1" aria-label="Increase gain">+</button>
+                        </div>
+                    </div>
+                    ${hideFreqQ ? '' : `
+                    <div class="field-group measurement-peq-direct-input-field">
+                        <label for="measurement-peq-q">Q</label>
+                        <div class="measurement-peq-stepper">
+                            <button type="button" class="btn-secondary measurement-peq-step-btn" data-measurement-peq-q-step="-1" aria-label="Decrease Q">−</button>
+                            <input id="measurement-peq-q" class="url-input measurement-peq-number-input" type="number" min="0.1" max="20" step="0.1" inputmode="decimal" aria-keyshortcuts="ArrowUp ArrowDown" value="${Number(activePeqFilter.q || 1).toFixed(2)}" data-measurement-peq-field="q">
+                            <button type="button" class="btn-secondary measurement-peq-step-btn" data-measurement-peq-q-step="1" aria-label="Increase Q">+</button>
+                        </div>
+                    </div>`}
+                    <div class="measurement-peq-editor-actions">
+                        <button type="button" class="btn-danger" data-measurement-peq-delete="${escapeHtml(activePeqFilter.id)}">Delete</button>
+                    </div>
+                </div>
+            `;
+        }
+    }
+    if (elements.measurementPeqTakeLeftBtn) elements.measurementPeqTakeLeftBtn.disabled = !peq.filters.length;
+    if (elements.measurementPeqTakeRightBtn) elements.measurementPeqTakeRightBtn.disabled = !peq.filters.length;
+    if (elements.measurementPeqTakeBothBtn) elements.measurementPeqTakeBothBtn.disabled = !peq.filters.length;
+
+    elements.measurementPeqChips?.querySelectorAll('[data-measurement-peq-slot]').forEach((button) => {
+        button.addEventListener('click', () => {
+            const filterId = button.dataset.measurementPeqChip;
+            if (filterId) {
+                selectMeasurementPeqFilter(filterId);
+            } else {
+                const created = addMeasurementPeqFilter();
+                if (!created) return;
+            }
+            renderMeasurementPanel();
+            scheduleMeasurementGraphRender();
+            focusMeasurementPeqPanelContext();
+        });
+    });
+    elements.measurementPeqEditor?.querySelectorAll('[data-measurement-peq-field]').forEach((input) => {
+        const commit = (reRender) => {
+            const activeFilter = getMeasurementPeqActiveFilter();
+            if (!activeFilter) return;
+            const field = input.dataset.measurementPeqField;
+            const value = field === 'type' ? input.value : Number(input.value);
+            updateMeasurementPeqFilter(activeFilter.id, { [field]: value });
+            if (reRender) renderMeasurementPanel();
+            scheduleMeasurementGraphRender();
+        };
+        if (input instanceof HTMLInputElement && input.type === 'number') {
+            input.addEventListener('keydown', handleMeasurementPeqNumberInputArrowKey);
+        }
+        input.addEventListener('input', () => commit(input.dataset.measurementPeqField === 'type'));
+        input.addEventListener('change', () => commit(true));
+    });
+    elements.measurementPeqEditor?.querySelectorAll('[data-measurement-peq-frequency-step]').forEach((button) => {
+        button.addEventListener('click', () => {
+            const activeFilter = getMeasurementPeqActiveFilter();
+            if (!activeFilter) return;
+            const input = elements.measurementPeqEditor?.querySelector('#measurement-peq-freq');
+            const step = Number(input?.step) || 1;
+            const direction = Number(button.dataset.measurementPeqFrequencyStep || '0');
+            const nextValue = stepMeasurementPeqFrequency(activeFilter.id, direction, step);
+            if (nextValue === null) return;
+            if (input) input.value = String(nextValue);
+            scheduleMeasurementGraphRender();
+            focusMeasurementPeqPanelContext();
+        });
+    });
+    elements.measurementPeqEditor?.querySelectorAll('[data-measurement-peq-gain-step]').forEach((button) => {
+        button.addEventListener('click', () => {
+            const activeFilter = getMeasurementPeqActiveFilter();
+            if (!activeFilter) return;
+            const input = elements.measurementPeqEditor?.querySelector('#measurement-peq-gain');
+            const step = Number(input?.step) || 0.1;
+            const direction = Number(button.dataset.measurementPeqGainStep || '0');
+            const nextValue = stepMeasurementPeqGain(activeFilter.id, direction, step);
+            if (nextValue === null) return;
+            if (input) input.value = nextValue.toFixed(1);
+            scheduleMeasurementGraphRender();
+            focusMeasurementPeqPanelContext();
+        });
+    });
+    elements.measurementPeqEditor?.querySelectorAll('[data-measurement-peq-q-step]').forEach((button) => {
+        button.addEventListener('click', () => {
+            const activeFilter = getMeasurementPeqActiveFilter();
+            if (!activeFilter) return;
+            const input = elements.measurementPeqEditor?.querySelector('#measurement-peq-q');
+            const step = Number(input?.step) || 0.1;
+            const direction = Number(button.dataset.measurementPeqQStep || '0');
+            const nextValue = stepMeasurementPeqQ(activeFilter.id, direction, step);
+            if (nextValue === null) return;
+            if (input) input.value = nextValue.toFixed(2);
+            scheduleMeasurementGraphRender();
+            focusMeasurementPeqPanelContext();
+        });
+    });
+    elements.measurementPeqEditor?.querySelectorAll('[data-measurement-peq-delete]').forEach((button) => {
+        button.addEventListener('click', () => {
+            deleteMeasurementPeqFilter(button.dataset.measurementPeqDelete);
+            renderMeasurementPanel();
+            scheduleMeasurementGraphRender();
+        });
+    });
+
+    const currentHtml = current ? (() => {
+        const pointsLabel = summarizeMeasurementEntry(current);
+        const displayTraces = getMeasurementDisplayTraces(current);
+        const traceColor = measurementCurrentColor;
+        const badge = measurementState.currentMeasurementSaved
+            ? '<span class="measurement-badge measurement-badge-success">Saved</span>'
+            : '<span class="measurement-badge">Current</span>';
+        const calibrationLabel = current.calibration?.filename
+            ? `${current.calibration.filename}${current.calibration?.applied ? ' · applied' : ''}`
+            : 'No calibration';
+        const qualitySummary = getMeasurementQualitySummary(current);
+        const qualityTitle = getMeasurementQualityTitle(current);
+        const currentTitle = (measurementState.currentMeasurementSaved || current.storage_path)
+            ? `<a href="${escapeHtml(measurementFileUrl(current.id))}">${escapeHtml(current.name || 'Current sweep')}</a>`
+            : escapeHtml(current.name || 'Current sweep');
+        return `
+            <div class="measurement-list-item measurement-list-item-current">
+                <div class="measurement-list-row">
+                    <span class="measurement-toggle">
+                        <span class="measurement-swatch" style="background:${escapeHtml(traceColor)}"></span>
+                        <span class="measurement-list-title">${currentTitle}</span>
+                        ${badge}
+                    </span>
+                    <span class="measurement-list-meta">${escapeHtml(formatMeasurementDate(current.created_at))}</span>
+                </div>
+                <div class="measurement-list-row">
+                    <span class="measurement-list-meta">${escapeHtml(current.input_device?.label || 'Capture input')} · ${escapeHtml(String(current.channel || 'left'))}</span>
+                    <span class="measurement-list-points">${escapeHtml(pointsLabel)}</span>
+                </div>
+                <div class="measurement-list-row">
+                    <span class="measurement-list-meta" title="${escapeHtml(qualityTitle)}">${escapeHtml(calibrationLabel)} · ${escapeHtml(qualitySummary)}</span>
+                    <span class="measurement-list-meta">Visible trace: full graph data</span>
+                </div>
+            </div>
+        `;
+    })() : '<div class="measurement-list-item"><div class="measurement-list-row"><span class="measurement-list-meta">No current sweep yet.</span></div></div>';
+
+    const selectedSavedCount = measurements.filter(measurement => measurementState.visibilityById?.[measurement.id]).length;
+    const allSavedSelected = measurements.length > 0 && selectedSavedCount === measurements.length;
+
+    const savedItemsHtml = measurements.map((measurement, index) => {
+        const pointsLabel = summarizeMeasurementEntry(measurement);
+        const traceColor = getSavedMeasurementColor(index);
+        const isSelected = !!measurementState.visibilityById?.[measurement.id];
+        const qualitySummary = getMeasurementQualitySummary(measurement);
+        const qualityTitle = getMeasurementQualityTitle(measurement);
+        return `
+            <div class="measurement-list-item" style="${isSelected ? `border-color:${traceColor}; box-shadow: inset 0 0 0 1px ${traceColor}33; background: linear-gradient(180deg, rgba(255,255,255,0.03), ${traceColor}12);` : ''}">
+                <div class="measurement-list-row">
+                    <span class="measurement-toggle">
+                        <input type="checkbox" data-measurement-toggle="${escapeHtml(measurement.id)}" ${isSelected ? 'checked' : ''}>
+                        <span class="measurement-swatch" style="background:${escapeHtml(traceColor)}"></span>
+                        <span class="measurement-list-title"><a href="${escapeHtml(measurementFileUrl(measurement.id))}">${escapeHtml(measurement.name)}</a></span>
+                    </span>
+                    <span class="measurement-list-meta">${escapeHtml(formatMeasurementDate(measurement.created_at))}</span>
+                </div>
+                <div class="measurement-list-row">
+                    <span class="measurement-list-meta">${escapeHtml(measurement.input_device?.label || 'Capture input')} · ${escapeHtml(String(measurement.channel || 'left'))}</span>
+                    <span class="measurement-list-points">${escapeHtml(pointsLabel)}</span>
+                </div>
+                <div class="measurement-list-row">
+                    <span class="measurement-list-meta" title="${escapeHtml(qualityTitle)}">${escapeHtml(qualitySummary)} · ${isSelected ? 'visible, dashed compare trace' : 'hidden compare trace'}</span>
+                </div>
+            </div>
+        `;
+    }).join('');
+
+    const savedHtml = measurements.length
+        ? `
+            <details class="measurement-saved-group" ${measurementState.savedGroupOpen ? 'open' : ''}>
+                <summary>${measurementState.savedGroupOpen ? 'Close saved' : 'Open saved'} (${measurements.length})</summary>
+                <div class="measurement-saved-list">
+                    <div class="measurement-saved-toolbar">
+                        <div class="measurement-saved-toolbar-selection">
+                            <label class="measurement-list-meta measurement-select-all-toggle"><input type="checkbox" data-measurement-select-all ${allSavedSelected ? 'checked' : ''} ${measurementState.saveInFlight || measurementState.startInFlight ? 'disabled' : ''}>Select all</label>
+                            <button type="button" class="btn-danger measurement-saved-delete-action ${selectedSavedCount ? '' : 'is-inert'}" data-measurement-delete-selected ${selectedSavedCount ? '' : 'disabled'} ${measurementState.saveInFlight || measurementState.startInFlight ? 'disabled' : ''} aria-hidden="${selectedSavedCount ? 'false' : 'true'}">Delete selected</button>
+                        </div>
+                        <button type="button" class="btn-secondary" data-measurement-close-saved>Close</button>
+                    </div>
+                    ${savedItemsHtml}
+                </div>
+            </details>
+        `
+        : '';
+
+    elements.measurementList.innerHTML = `${currentHtml}${savedHtml}`;
+    elements.measurementList.querySelectorAll('.measurement-saved-group').forEach((details) => {
+        details.addEventListener('toggle', () => {
+            state.measurement.savedGroupOpen = !!details.open;
+        });
+    });
+    elements.measurementList.querySelectorAll('[data-measurement-toggle]').forEach((input) => {
+        input.addEventListener('change', () => {
+            state.measurement.visibilityById[input.dataset.measurementToggle] = !!input.checked;
+            state.measurement.savedGroupOpen = true;
+            renderMeasurementPanel();
+        });
+    });
+    elements.measurementList.querySelectorAll('[data-measurement-select-all]').forEach((input) => {
+        input.addEventListener('change', () => {
+            measurements.forEach((measurement) => {
+                state.measurement.visibilityById[measurement.id] = !!input.checked;
+            });
+            state.measurement.savedGroupOpen = true;
+            renderMeasurementPanel();
+        });
+    });
+    elements.measurementList.querySelectorAll('[data-measurement-delete-selected]').forEach((button) => {
+        button.addEventListener('click', () => {
+            deleteSelectedMeasurements();
+        });
+    });
+    elements.measurementList.querySelectorAll('[data-measurement-close-saved]').forEach((button) => {
+        button.addEventListener('click', () => {
+            state.measurement.savedGroupOpen = false;
+            renderMeasurementPanel();
+        });
+    });
+    scheduleMeasurementGraphRender();
+}
+
+function setupMeasurementActions() {
+    if (!elements.measurementPanel || !elements.effectsMeasureOpenBtn || !elements.measurementCloseBtn) return;
+    elements.effectsMeasureOpenBtn.addEventListener('click', () => toggleMeasurementPanel(true));
+    elements.measurementCloseBtn.addEventListener('click', () => toggleMeasurementPanel(false));
+    const backdrop = elements.measurementPanel.querySelector('.manage-overlay-backdrop');
+    if (backdrop) backdrop.addEventListener('click', () => toggleMeasurementPanel(false));
+    document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape' && !elements.measurementPanel.classList.contains('hidden')) {
+            toggleMeasurementPanel(false);
+        }
+    });
+    if (elements.measurementSetupToggleBtn) {
+        elements.measurementSetupToggleBtn.addEventListener('click', () => {
+            state.measurement.setupOpen = !state.measurement.setupOpen;
+            renderMeasurementPanel();
+        });
+    }
+    if (elements.measurementModeSelect) {
+        elements.measurementModeSelect.addEventListener('change', (event) => {
+            state.measurement.captureMode = event.target.value || 'host-local';
+            state.measurement.modeNote = measurementModeNoteText();
+            if (!state.measurement.startInFlight) {
+                state.measurement.statusText = describeMeasurementScope();
+            }
+            renderMeasurementPanel();
+        });
+    }
+    if (elements.measurementBrowserInputSelect) {
+        elements.measurementBrowserInputSelect.addEventListener('change', (event) => {
+            state.measurement.selectedBrowserInputId = event.target.value || '';
+            renderMeasurementPanel();
+        });
+    }
+    if (elements.measurementBrowserInputRefreshBtn) {
+        elements.measurementBrowserInputRefreshBtn.addEventListener('click', () => {
+            void fetchBrowserInputs(true);
+        });
+    }
+    if (elements.measurementInputSelect) {
+        elements.measurementInputSelect.addEventListener('change', (event) => {
+            state.measurement.selectedInputId = event.target.value || '';
+        });
+    }
+    if (elements.measurementInputRefreshBtn) {
+        elements.measurementInputRefreshBtn.addEventListener('click', () => {
+            void fetchMeasurementInputs();
+        });
+    }
+    if (elements.measurementChannelSelect) {
+        elements.measurementChannelSelect.addEventListener('change', (event) => {
+            state.measurement.selectedChannel = event.target.value || 'left';
+            renderMeasurementPanel();
+        });
+    }
+    document.querySelectorAll('[data-measurement-channel]').forEach((button) => {
+        button.addEventListener('click', () => {
+            state.measurement.selectedChannel = button.getAttribute('data-measurement-channel') || 'left';
+            if (elements.measurementChannelSelect) elements.measurementChannelSelect.value = state.measurement.selectedChannel;
+            renderMeasurementPanel();
+        });
+    });
+    document.querySelectorAll('[data-measurement-smoothing]').forEach((button) => {
+        button.addEventListener('click', () => {
+            state.measurement.displaySmoothing = button.getAttribute('data-measurement-smoothing') || '1/6-oct';
+            renderMeasurementPanel();
+            scheduleMeasurementGraphRender();
+        });
+    });
+    if (elements.measurementCalibrationSelect) {
+        elements.measurementCalibrationSelect.addEventListener('change', (event) => {
+            state.measurement.selectedCalibrationRef = event.target.value || '';
+            if (elements.measurementCalibrationFile) elements.measurementCalibrationFile.value = '';
+            state.measurement.calibrationFilename = '';
+            renderMeasurementPanel();
+            void setActiveMeasurementCalibration(state.measurement.selectedCalibrationRef);
+        });
+    }
+    if (elements.measurementCalibrationFile) {
+        elements.measurementCalibrationFile.addEventListener('change', () => {
+            const file = elements.measurementCalibrationFile.files?.[0];
+            if (file) {
+                void uploadMeasurementCalibration(file);
+            } else {
+                state.measurement.calibrationFilename = '';
+                renderMeasurementPanel();
+            }
+        });
+    }
+    if (elements.measurementCalibrationDeleteBtn) {
+        elements.measurementCalibrationDeleteBtn.addEventListener('click', () => { void deleteSelectedMeasurementCalibration(); });
+    }
+    if (elements.measurementNameInput) {
+        elements.measurementNameInput.addEventListener('input', (event) => {
+            state.measurement.currentMeasurementName = event.target.value || '';
+        });
+    }
+    if (elements.measurementStartBtn) {
+        elements.measurementStartBtn.addEventListener('click', () => {
+            if (state.measurement.activeJobId) {
+                void cancelMeasurement();
+                return;
+            }
+            void startMeasurement();
+        });
+    }
+    if (elements.measurementSaveBtn) {
+        elements.measurementSaveBtn.addEventListener('click', () => { void saveCurrentMeasurement(); });
+    }
+    if (elements.measurementClearBtn) {
+        elements.measurementClearBtn.addEventListener('click', () => resetMeasurementGraph());
+    }
+    if (elements.measurementPeqTakeLeftBtn) {
+        elements.measurementPeqTakeLeftBtn.addEventListener('click', () => takeMeasurementPeqToPreset('left'));
+    }
+    if (elements.measurementPeqTakeRightBtn) {
+        elements.measurementPeqTakeRightBtn.addEventListener('click', () => takeMeasurementPeqToPreset('right'));
+    }
+    if (elements.measurementPeqTakeBothBtn) {
+        elements.measurementPeqTakeBothBtn.addEventListener('click', () => takeMeasurementPeqToPreset('both'));
+    }
+    if (elements.measurementGraph) {
+        elements.measurementGraph.addEventListener('pointerdown', handleMeasurementGraphPointerDown);
+        elements.measurementGraph.addEventListener('pointermove', handleMeasurementGraphPointerMove);
+        elements.measurementGraph.addEventListener('pointerup', handleMeasurementGraphPointerUp);
+        elements.measurementGraph.addEventListener('pointercancel', handleMeasurementGraphPointerUp);
+        elements.measurementGraph.addEventListener('wheel', handleMeasurementPeqGraphWheel, { passive: false });
+    }
+    window.addEventListener('resize', () => {
+        if (!elements.measurementPanel.classList.contains('hidden')) {
+            scheduleMeasurementGraphRender();
+        }
+    });
+    renderMeasurementPanel();
+}
+
 async function fetchEffects() {
     try {
         const resp = await fetch('/api/easyeffects/presets');
@@ -3433,6 +6233,7 @@ async function fetchEffects() {
             combineDraft: state.easyeffects?.combineDraft || getDefaultEffectsCombineDraft(),
             peqDraft: state.easyeffects?.peqDraft || {
                 presetName: '',
+                eqMode: 'IIR',
                 loadAfterCreate: false,
                 leftBands: [defaultPeqBand()],
                 rightBands: [defaultPeqBand()],
@@ -3442,6 +6243,7 @@ async function fetchEffects() {
         state.easyeffects.combineDraft = normalizeEffectsCombineDraft(state.easyeffects.combineDraft, presetNames);
         if (!Array.isArray(state.easyeffects.peqDraft?.leftBands) || !state.easyeffects.peqDraft.leftBands.length) state.easyeffects.peqDraft.leftBands = [defaultPeqBand()];
         if (!Array.isArray(state.easyeffects.peqDraft?.rightBands) || !state.easyeffects.peqDraft.rightBands.length) state.easyeffects.peqDraft.rightBands = [defaultPeqBand()];
+        state.easyeffects.peqDraft.eqMode = normalizePeqEqMode(state.easyeffects.peqDraft?.eqMode);
         if (data.global_extras) {
             applyEffectsExtras({
                 limiterEnabled: !!data.global_extras?.limiter?.enabled,
@@ -3469,20 +6271,30 @@ function defaultPeqBand() {
         frequencyHz: 1000,
         gainDb: 0,
         q: 1,
+        delayMs: 0,
     };
 }
 function isPeqGainBand(band = {}) {
     return String(band?.filterType || '').toLowerCase() === 'gain';
 }
+function isPeqDelayBand(band = {}) {
+    return String(band?.filterType || '').toLowerCase() === 'delay';
+}
 function getPeqBandFallback(field, band = {}) {
     if (field === 'frequencyHz') return Number.isFinite(Number(band?.frequencyHz)) ? Number(band.frequencyHz) : 1000;
     if (field === 'q') return Number.isFinite(Number(band?.q)) ? Number(band.q) : 1;
     if (field === 'gainDb') return Number.isFinite(Number(band?.gainDb)) ? Number(band.gainDb) : 0;
+    if (field === 'delayMs') return Number.isFinite(Number(band?.delayMs)) ? Number(band.delayMs) : 0;
     return 0;
+}
+function normalizePeqEqMode(value, fallback = 'IIR') {
+    const normalized = String(value || fallback).trim().toUpperCase();
+    return ['IIR', 'FIR', 'FFT', 'SPM'].includes(normalized) ? normalized : fallback;
 }
 function getDefaultPeqDraft() {
     return {
         presetName: '',
+        eqMode: 'IIR',
         loadAfterCreate: false,
         leftBands: [defaultPeqBand()],
         rightBands: [defaultPeqBand()],
@@ -3491,28 +6303,37 @@ function getDefaultPeqDraft() {
 function resetPeqDraft() {
     state.easyeffects.peqDraft = getDefaultPeqDraft();
     if (elements.effectsPeqPresetName) elements.effectsPeqPresetName.value = '';
+    if (elements.effectsPeqModeSelect) elements.effectsPeqModeSelect.value = 'IIR';
     if (elements.effectsPeqLoadAfterCreate) elements.effectsPeqLoadAfterCreate.checked = false;
     renderPeqBands();
 }
-function addPeqBand(side) {
+function addPeqBandPair() {
     if (!state.easyeffects?.peqDraft) {
         state.easyeffects.peqDraft = getDefaultPeqDraft();
     }
-    const key = side === 'right' ? 'rightBands' : 'leftBands';
-    if ((state.easyeffects.peqDraft[key] || []).length >= 20) {
-        showToast(`Maximum 20 ${side} PEQ bands supported`, 'error');
+    const leftBands = state.easyeffects.peqDraft.leftBands || (state.easyeffects.peqDraft.leftBands = []);
+    const rightBands = state.easyeffects.peqDraft.rightBands || (state.easyeffects.peqDraft.rightBands = []);
+    if (leftBands.length >= 20 || rightBands.length >= 20) {
+        showToast('Maximum 20 Left and Right PEQ bands supported', 'error');
         return;
     }
-    state.easyeffects.peqDraft[key].push(defaultPeqBand());
+    leftBands.push(defaultPeqBand());
+    rightBands.push(defaultPeqBand());
     renderPeqBands();
 }
-function removePeqBand(side, index) {
-    const key = side === 'right' ? 'rightBands' : 'leftBands';
-    if (!state.easyeffects?.peqDraft || state.easyeffects.peqDraft[key].length <= 1) {
-        showToast(`At least one ${side} PEQ band is required`, 'error');
+function removePeqBandPair(index) {
+    if (!state.easyeffects?.peqDraft) {
+        showToast('At least one Left and one Right PEQ band is required', 'error');
         return;
     }
-    state.easyeffects.peqDraft[key].splice(index, 1);
+    const leftBands = state.easyeffects.peqDraft.leftBands || [];
+    const rightBands = state.easyeffects.peqDraft.rightBands || [];
+    if (leftBands.length <= 1 || rightBands.length <= 1 || index <= 0) {
+        showToast('Band 1 stays as the required base band', 'error');
+        return;
+    }
+    leftBands.splice(index, 1);
+    rightBands.splice(index, 1);
     renderPeqBands();
 }
 function ensurePeqBandExists(side, index) {
@@ -3527,15 +6348,17 @@ function ensurePeqBandExists(side, index) {
 function getOtherPeqSide(side) {
     return side === 'right' ? 'left' : 'right';
 }
-function syncLinkedPeqGainBand(side, index) {
+function syncLinkedPeqSpecialBand(side, index) {
     if (!state.easyeffects?.peqDraft) return;
     const sourceBand = ensurePeqBandExists(side, index);
     const otherBand = ensurePeqBandExists(getOtherPeqSide(side), index);
     if (!sourceBand || !otherBand) return;
     otherBand.filterType = sourceBand.filterType;
-    otherBand.gainDb = sourceBand.gainDb;
+    if (isPeqGainBand(sourceBand)) {
+        otherBand.gainDb = sourceBand.gainDb;
+    }
 }
-function normalizeLinkedPeqGainBands() {
+function normalizeLinkedPeqSpecialBands() {
     if (!state.easyeffects?.peqDraft) return;
     const leftBands = state.easyeffects.peqDraft.leftBands || [];
     const rightBands = state.easyeffects.peqDraft.rightBands || [];
@@ -3543,10 +6366,10 @@ function normalizeLinkedPeqGainBands() {
     for (let index = 0; index < count; index += 1) {
         const leftBand = leftBands[index] || null;
         const rightBand = rightBands[index] || null;
-        if (isPeqGainBand(leftBand)) {
-            syncLinkedPeqGainBand('left', index);
-        } else if (isPeqGainBand(rightBand)) {
-            syncLinkedPeqGainBand('right', index);
+        if (isPeqGainBand(leftBand) || isPeqDelayBand(leftBand)) {
+            syncLinkedPeqSpecialBand('left', index);
+        } else if (isPeqGainBand(rightBand) || isPeqDelayBand(rightBand)) {
+            syncLinkedPeqSpecialBand('right', index);
         }
     }
 }
@@ -3557,24 +6380,28 @@ function updatePeqBand(side, index, field, value) {
     band[field] = value;
 
     const otherBand = ensurePeqBandExists(getOtherPeqSide(side), index);
-    const gainLinked = isPeqGainBand(band) || isPeqGainBand(otherBand);
-    if (gainLinked && (field === 'filterType' || field === 'gainDb')) {
-        syncLinkedPeqGainBand(side, index);
+    const specialLinked = isPeqGainBand(band) || isPeqGainBand(otherBand) || isPeqDelayBand(band) || isPeqDelayBand(otherBand);
+    if (field === 'filterType') {
+        syncLinkedPeqSpecialBand(side, index);
+    } else if (specialLinked && (field === 'gainDb' || field === 'delayMs')) {
+        syncLinkedPeqSpecialBand(side, index);
     }
 }
-function syncLinkedPeqGainBandValueInDom(side, index) {
+function syncLinkedPeqSpecialBandValueInDom(side, index, field) {
     const sourceBand = ensurePeqBandExists(side, index);
     const otherSide = getOtherPeqSide(side);
-    const otherInput = document.querySelector(`[data-peq-side="${otherSide}"][data-peq-index="${index}"][data-peq-field="gainDb"]`);
-    if (sourceBand && otherInput) {
-        otherInput.value = String(sourceBand.gainDb);
-    }
+    const otherInput = document.querySelector(`[data-peq-side="${otherSide}"][data-peq-index="${index}"][data-peq-field="${field}"]`);
+    if (!sourceBand || !otherInput) return;
+    if (field === 'gainDb') otherInput.value = String(sourceBand.gainDb);
+    if (field === 'delayMs') otherInput.value = String(sourceBand.delayMs);
 }
 function renderPeqBandColumn(container, side, bands) {
     if (!container) return;
     const filterTypeLabels = {
         bell: 'Bell',
+        notch: 'Notch',
         gain: 'Gain',
+        delay: 'Delay',
         low_shelf: 'Low shelf',
         high_shelf: 'High shelf',
         low_pass: 'Low pass',
@@ -3586,22 +6413,29 @@ function renderPeqBandColumn(container, side, bands) {
     }
     container.innerHTML = bands.map((band, index) => {
         const isGain = isPeqGainBand(band);
+        const isDelay = isPeqDelayBand(band);
+        const showRemove = side === 'left' && index > 0;
         return `
         <div class="effects-peq-band" data-peq-side="${side}" data-peq-band="${index}">
             <div class="effects-peq-band-header">
                 <div>
                     <div class="effects-peq-band-title">Band ${index + 1}</div>
-                    ${isGain ? '<div class="effects-peq-band-subtitle">L/R linked</div>' : ''}
+                    ${(isGain || isDelay) ? '<div class="effects-peq-band-subtitle">L/R linked</div>' : ''}
                 </div>
-                <button type="button" class="btn-danger btn-inline" data-peq-remove="${side}:${index}">Remove</button>
+                ${showRemove ? `<button type="button" class="btn-danger btn-inline" data-peq-remove="${index}">Remove</button>` : '<span class="effects-peq-remove-spacer"></span>'}
             </div>
             <div class="effects-peq-band-fields${isGain ? ' effects-peq-band-fields-gain' : ''}">
                 <div class="field-group">
                     <label>Type</label>
                     <select class="url-input" data-peq-side="${side}" data-peq-index="${index}" data-peq-field="filterType">
-                        ${['bell', 'gain', 'low_shelf', 'high_shelf', 'low_pass', 'high_pass'].map(type => `<option value="${type}" ${band.filterType === type ? 'selected' : ''}>${filterTypeLabels[type]}</option>`).join('')}
+                        ${['bell', 'notch', 'gain', 'delay', 'low_shelf', 'high_shelf', 'low_pass', 'high_pass'].map(type => `<option value="${type}" ${band.filterType === type ? 'selected' : ''}>${filterTypeLabels[type]}</option>`).join('')}
                     </select>
                 </div>
+                ${isDelay ? `
+                <div class="field-group">
+                    <label>Delay (ms)</label>
+                    <input type="number" class="url-input" min="0" max="500" step="0.1" data-peq-side="${side}" data-peq-index="${index}" data-peq-field="delayMs" value="${Number.isFinite(Number(band.delayMs)) ? band.delayMs : 0}">
+                </div>` : `
                 <div class="field-group">
                     <label>Gain (dB)</label>
                     <input type="number" class="url-input" min="-24" max="24" step="0.1" data-peq-side="${side}" data-peq-index="${index}" data-peq-field="gainDb" value="${band.gainDb}">
@@ -3614,15 +6448,14 @@ function renderPeqBandColumn(container, side, bands) {
                 <div class="field-group">
                     <label>Q</label>
                     <input type="number" class="url-input" min="0.1" max="20" step="0.1" data-peq-side="${side}" data-peq-index="${index}" data-peq-field="q" value="${band.q}">
-                </div>`}
+                </div>`}`}
             </div>
         </div>
     `;
     }).join('');
     container.querySelectorAll('[data-peq-remove]').forEach(button => {
         button.addEventListener('click', () => {
-            const [targetSide, rawIndex] = String(button.dataset.peqRemove || '').split(':');
-            removePeqBand(targetSide, Number(rawIndex));
+            removePeqBandPair(Number(button.dataset.peqRemove));
         });
     });
     container.querySelectorAll('[data-peq-field]').forEach(input => {
@@ -3639,14 +6472,17 @@ function renderPeqBandColumn(container, side, bands) {
             }
             if (field === 'gainDb' && isPeqGainBand(currentBand)) {
                 if (live) {
-                    syncLinkedPeqGainBandValueInDom(sideName, index);
+                    syncLinkedPeqSpecialBandValueInDom(sideName, index, 'gainDb');
                 } else {
                     renderPeqBands();
                 }
             }
+            if (field === 'delayMs' && isPeqDelayBand(currentBand) && !live) {
+                renderPeqBands();
+            }
         };
         input.addEventListener('change', () => handleFieldUpdate(false));
-        if (input.dataset.peqField === 'gainDb') {
+        if (input.dataset.peqField === 'gainDb' || input.dataset.peqField === 'delayMs') {
             input.addEventListener('input', () => handleFieldUpdate(true));
         }
     });
@@ -3656,8 +6492,10 @@ function renderPeqBands() {
         state.easyeffects = state.easyeffects || {};
         state.easyeffects.peqDraft = getDefaultPeqDraft();
     }
-    normalizeLinkedPeqGainBands();
+    normalizeLinkedPeqSpecialBands();
     const draft = state.easyeffects.peqDraft;
+    draft.eqMode = normalizePeqEqMode(draft.eqMode);
+    if (elements.effectsPeqModeSelect) elements.effectsPeqModeSelect.value = draft.eqMode;
     renderPeqBandColumn(elements.effectsPeqLeftBands, 'left', draft.leftBands || []);
     renderPeqBandColumn(elements.effectsPeqRightBands, 'right', draft.rightBands || []);
     updateEffectsPeqDisclosureLabel();
@@ -3681,6 +6519,7 @@ function collectPeqBandsFromDom(side) {
             frequencyHz: readPeqNumberInput(bandEl.querySelector(`[data-peq-side="${side}"][data-peq-index="${index}"][data-peq-field="frequencyHz"]`), getPeqBandFallback('frequencyHz', draftBand)),
             gainDb: readPeqNumberInput(bandEl.querySelector(`[data-peq-side="${side}"][data-peq-index="${index}"][data-peq-field="gainDb"]`), getPeqBandFallback('gainDb', draftBand)),
             q: readPeqNumberInput(bandEl.querySelector(`[data-peq-side="${side}"][data-peq-index="${index}"][data-peq-field="q"]`), getPeqBandFallback('q', draftBand)),
+            delayMs: readPeqNumberInput(bandEl.querySelector(`[data-peq-side="${side}"][data-peq-index="${index}"][data-peq-field="delayMs"]`), getPeqBandFallback('delayMs', draftBand)),
         };
     });
 }
@@ -3688,6 +6527,13 @@ function validatePeqBands(side, bands) {
     for (let index = 0; index < bands.length; index += 1) {
         const band = bands[index] || {};
         const isGain = isPeqGainBand(band);
+        const isDelay = isPeqDelayBand(band);
+        if (isDelay) {
+            if (!Number.isFinite(band.delayMs) || band.delayMs < 0 || band.delayMs > 500) {
+                return `${side} band ${index + 1}: delay must be between 0 and 500 ms`;
+            }
+            continue;
+        }
         if (!isGain && (!Number.isFinite(band.frequencyHz) || band.frequencyHz < 20 || band.frequencyHz > 20000)) {
             return `${side} band ${index + 1}: frequency must be between 20 and 20000 Hz`;
         }
@@ -3750,8 +6596,10 @@ async function createPeqPreset() {
         showToast(gainError, 'error');
         return;
     }
+    const eqMode = normalizePeqEqMode(elements.effectsPeqModeSelect?.value || state.easyeffects.peqDraft?.eqMode);
     state.easyeffects.peqDraft.leftBands = leftBands;
     state.easyeffects.peqDraft.rightBands = rightBands;
+    state.easyeffects.peqDraft.eqMode = eqMode;
     if (elements.effectsPeqCreatePresetBtn) elements.effectsPeqCreatePresetBtn.disabled = true;
     if (elements.effectsStatus) elements.effectsStatus.innerHTML = `<div>Creating PEQ preset: <strong>${escapeHtml(presetName)}</strong>…</div>`;
     try {
@@ -3766,6 +6614,7 @@ async function createPeqPreset() {
                     enabled: true,
                     params: {
                         channelMode: 'dual',
+                        eqMode,
                         leftBands,
                         rightBands,
                     },
@@ -3853,8 +6702,8 @@ function renderEffects() {
         if (elements.effectsToggleImportBtn) elements.effectsToggleImportBtn.disabled = true;
         if (elements.effectsRewDualCreatePresetBtn) elements.effectsRewDualCreatePresetBtn.disabled = true;
         if (elements.effectsCombineSaveBtn) elements.effectsCombineSaveBtn.disabled = true;
-        if (elements.effectsPeqAddLeftBandBtn) elements.effectsPeqAddLeftBandBtn.disabled = true;
-        if (elements.effectsPeqAddRightBandBtn) elements.effectsPeqAddRightBandBtn.disabled = true;
+        if (elements.effectsPeqAddBandBtn) elements.effectsPeqAddBandBtn.disabled = true;
+        if (elements.effectsPeqModeSelect) elements.effectsPeqModeSelect.disabled = true;
         if (elements.effectsPeqCreatePresetBtn) elements.effectsPeqCreatePresetBtn.disabled = true;
         elements.effectsStatus.innerHTML = '';
         return;
@@ -3866,8 +6715,8 @@ function renderEffects() {
     }
     if (elements.effectsToggleImportBtn) elements.effectsToggleImportBtn.disabled = false;
     if (elements.effectsRewDualCreatePresetBtn) elements.effectsRewDualCreatePresetBtn.disabled = false;
-    if (elements.effectsPeqAddLeftBandBtn) elements.effectsPeqAddLeftBandBtn.disabled = false;
-    if (elements.effectsPeqAddRightBandBtn) elements.effectsPeqAddRightBandBtn.disabled = false;
+    if (elements.effectsPeqAddBandBtn) elements.effectsPeqAddBandBtn.disabled = false;
+    if (elements.effectsPeqModeSelect) elements.effectsPeqModeSelect.disabled = false;
     if (elements.effectsPeqCreatePresetBtn) elements.effectsPeqCreatePresetBtn.disabled = false;
     renderPeqBands();
     renderEffectsPresetStatus();
@@ -3921,6 +6770,12 @@ function getEffectsChainLabelForPreset(presetName, presetMap = new Map()) {
     return 'Chain: Single preset';
 }
 
+function renderPresetDownloadLink(presetName = '') {
+    const cleanName = String(presetName || '').trim();
+    if (!cleanName) return '—';
+    return `<a href="${escapeHtml(presetFileUrl(cleanName))}">${escapeHtml(cleanName)}</a>`;
+}
+
 function renderEffectsCompare() {
     const fx = state.easyeffects;
     const presetEntries = fx.presets || [];
@@ -3955,8 +6810,21 @@ function renderEffectsCompare() {
         activeLabel = `Listening: ${activePreset}`;
         chainPresetName = activePreset;
     }
-    if (elements.effectsCompareActive) elements.effectsCompareActive.textContent = activeLabel;
-    if (elements.effectsCompareChain) elements.effectsCompareChain.textContent = getEffectsChainLabelForPreset(chainPresetName, presetMap);
+    if (elements.effectsCompareActive) {
+        if (effectiveActiveSide === 'A' && compare.presetA) {
+            elements.effectsCompareActive.innerHTML = `Listening: A · ${renderPresetDownloadLink(compare.presetA)}`;
+        } else if (effectiveActiveSide === 'B' && compare.presetB) {
+            elements.effectsCompareActive.innerHTML = `Listening: B · ${renderPresetDownloadLink(compare.presetB)}`;
+        } else if (activePreset) {
+            elements.effectsCompareActive.innerHTML = `Listening: ${renderPresetDownloadLink(activePreset)}`;
+        } else {
+            elements.effectsCompareActive.textContent = activeLabel;
+        }
+    }
+    if (elements.effectsCompareChain) {
+        const chainLabel = getEffectsChainLabelForPreset(chainPresetName, presetMap);
+        elements.effectsCompareChain.textContent = chainLabel;
+    }
     const badge = document.getElementById('effects-compare-active-badge');
     if (badge) {
         badge.classList.toggle('is-side-a', effectiveActiveSide === 'A');
@@ -4184,15 +7052,9 @@ function setupEffectsCompareActions() {
 
 async function switchEffectsPreset() {
     // Preset switching now goes exclusively through toggleComparePreset
-    // (or the A/B dropdowns) — this function is kept for delete-from-active logic
-    return {
-        limiterEnabled: !!elements.effectsLimiterEnabled?.checked,
-        delayEnabled: !!elements.effectsDelayEnabled?.checked,
-        delayLeftMs: Number(elements.effectsDelayLeftMs?.value || 0),
-        delayRightMs: Number(elements.effectsDelayRightMs?.value || 0),
-        bassEnabled: !!elements.effectsBassEnabled?.checked,
-        bassAmount: Number(elements.effectsBassAmount?.value || 0),
-    };
+    // (or the A/B dropdowns) — this function is kept only as a harmless stub
+    // for older callers / delete-from-active flow remnants.
+    return null;
 }
 
 // Track which inputs are currently being edited by the user
@@ -4287,11 +7149,6 @@ function describeEffectsExtras(extras) {
     parts.push(extras.limiterEnabled ? 'Limiter ON (-1.0 dB)' : 'Limiter OFF');
     parts.push(extras.headroomEnabled ? `Headroom ON (${Number(extras.headroomGainDb || 0).toFixed(0)} dB)` : 'Headroom OFF');
     parts.push(extras.autogainEnabled ? `Autogain ON (${extras.autogainTargetDb} dB)` : 'Autogain OFF');
-    parts.push(
-        extras.delayEnabled
-            ? `Delay ON (${extras.delayLeftMs} ms L, ${extras.delayRightMs} ms R)`
-            : 'Delay OFF'
-    );
     parts.push(extras.toneEffectEnabled ? `Tone ON (${normalizeEffectsToneEffectMode(extras.toneEffectMode, 'crystalizer')})` : 'Tone OFF');
     return parts.join(' • ');
 }
@@ -4392,6 +7249,7 @@ function detectEffectsImportType(file) {
     if (!file || !file.name) return null;
     const lowerName = file.name.toLowerCase();
     if (lowerName.endsWith('.irs') || lowerName.endsWith('.wav')) return 'convolver';
+    if (lowerName.endsWith('.json')) return 'preset-json';
     return null;
 }
 
@@ -4399,12 +7257,12 @@ function updateEffectsImportUi() {
     const file = elements.effectsImportFile?.files?.[0] || null;
     const detectedType = detectEffectsImportType(file);
     if (elements.effectsImportFile) {
-        elements.effectsImportFile.accept = '.irs,.wav,audio/wav';
+        elements.effectsImportFile.accept = '.irs,.wav,.json,audio/wav,application/json';
     }
     if (elements.effectsImportFilename) {
         if (!file) {
-            elements.effectsImportFilename.textContent = 'Stereo .irs or .wav for convolver.';
-        } else if (detectedType === 'convolver') {
+            elements.effectsImportFilename.textContent = 'Stereo convolver .irs/.wav or Preset .json';
+        } else if (detectedType === 'convolver' || detectedType === 'preset-json') {
             elements.effectsImportFilename.textContent = file.name;
         } else {
             elements.effectsImportFilename.textContent = `Unsupported file: ${file.name}`;
@@ -4412,14 +7270,14 @@ function updateEffectsImportUi() {
     }
     const importArea = document.getElementById('effects-import-area');
     if (importArea) {
-        importArea.classList.toggle('is-ready', detectedType === 'convolver');
+        importArea.classList.toggle('is-ready', detectedType === 'convolver' || detectedType === 'preset-json');
     }
 }
 
 function handleEffectsImportFileChange() {
     updateEffectsImportUi();
     const file = elements.effectsImportFile?.files?.[0] || null;
-    if (detectEffectsImportType(file) === 'convolver') {
+    if (detectEffectsImportType(file)) {
         void submitEffectsImport();
     }
 }
@@ -4428,16 +7286,57 @@ async function submitEffectsImport() {
     const file = elements.effectsImportFile?.files?.[0];
     const detectedType = detectEffectsImportType(file);
     if (!file) {
-        elements.effectsStatus.innerHTML = '<div style="color: var(--danger);">Please choose a stereo import file first.</div>';
-        showToast('Please choose a stereo import file first', 'error');
+        elements.effectsStatus.innerHTML = '<div style="color: var(--danger);">Please choose an import file first.</div>';
+        showToast('Please choose an import file first', 'error');
         return;
     }
-    if (detectedType !== 'convolver') {
-        elements.effectsStatus.innerHTML = '<div style="color: var(--danger);">Unsupported import file type. Use .irs or .wav.</div>';
-        showToast('Unsupported import file type', 'error');
+    if (detectedType === 'convolver') {
+        return createConvolverPreset();
+    }
+    if (detectedType === 'preset-json') {
+        return importEffectsPresetJson();
+    }
+    elements.effectsStatus.innerHTML = '<div style="color: var(--danger);">Unsupported import file type. Use .irs, .wav, or preset .json.</div>';
+    showToast('Unsupported import file type', 'error');
+}
+
+async function importEffectsPresetJson() {
+    if (effectsImportInFlight) {
+        showToast('Import already in progress', 'warning');
         return;
     }
-    return createConvolverPreset();
+    effectsImportInFlight = true;
+    const file = elements.effectsImportFile?.files?.[0] || null;
+    if (!file) {
+        effectsImportInFlight = false;
+        showToast('Please select a preset JSON file first', 'error');
+        return;
+    }
+    const formData = new FormData();
+    formData.append('load_after_create', 'false');
+    formData.append('file', file);
+    if (elements.effectsStatus) elements.effectsStatus.innerHTML = `<div>Importing preset: <strong>${escapeHtml(file.name)}</strong>…</div>`;
+    const importArea = document.getElementById('effects-import-area');
+    if (importArea) importArea.classList.add('is-busy');
+    try {
+        const resp = await fetch('/api/easyeffects/presets/import-json', {
+            method: 'POST',
+            body: formData,
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || 'Preset JSON import failed');
+        await fetchEffects();
+        if (elements.effectsImportFile) elements.effectsImportFile.value = '';
+        updateEffectsImportUi();
+        if (elements.effectsStatus) elements.effectsStatus.innerHTML = '';
+        showToast(`Imported preset: ${data.preset?.name || file.name}`, 'success');
+    } catch (e) {
+        if (elements.effectsStatus) elements.effectsStatus.innerHTML = `<div style="color: var(--danger);">${escapeHtml(e.message)}</div>`;
+        showToast(e.message || 'Preset JSON import failed', 'error');
+    } finally {
+        if (importArea) importArea.classList.remove('is-busy');
+        effectsImportInFlight = false;
+    }
 }
 async function createConvolverPreset() {
     if (effectsImportInFlight) {
@@ -4582,6 +7481,9 @@ function setupLibraryActions() {
     }
     if (elements.selectAllTracksBtn) {
         elements.selectAllTracksBtn.addEventListener('click', toggleVisibleTrackSelection);
+    }
+    if (elements.downloadSelectedTracksBtn) {
+        elements.downloadSelectedTracksBtn.addEventListener('click', downloadSelectedTracks);
     }
     if (elements.savePlaylistBtn) {
         elements.savePlaylistBtn.addEventListener('click', savePlaylist);
