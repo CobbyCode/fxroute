@@ -144,7 +144,6 @@ pgrep -af easyeffects
 - FXRoute controls **locally running** audio tools.
 - It is designed for **trusted LAN use** and a dedicated listening machine.
 - EasyEffects handles the live DSP/convolver runtime; FXRoute focuses on control, workflow, preset generation, and tuning support.
-- The measurement workflow is practical and useful for tuning direction, but it is not a full replacement for dedicated acoustic measurement suites.
 - Fully headless operation is not the primary target.
 
 ## Manual
