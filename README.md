@@ -23,11 +23,11 @@ It is built for mini PCs, desktops, ARM boards, and dedicated stereo boxes that 
   </tr>
   <tr>
     <td width="50%"><img src="media/screenshots/desktop/12-measurement-editor.png" alt="FXRoute PEQ measurement editor"></td>
-    <td width="50%"><img src="media/screenshots/desktop/10-settings-audio-output.png" alt="FXRoute audio output settings"></td>
+    <td width="50%"><img src="media/screenshots/desktop/14-technical-settings.png" alt="FXRoute technical settings"></td>
   </tr>
   <tr>
     <td align="center"><strong>Measurement PEQ editor</strong></td>
-    <td align="center"><strong>Audio output and source settings</strong></td>
+    <td align="center"><strong>Technical settings</strong></td>
   </tr>
 </table>
 
