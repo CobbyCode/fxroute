@@ -236,6 +236,53 @@ ensure_firewalld_service_open() {
   pass "firewalld service opened ($service)"
 }
 
+ufw_is_active() {
+  command -v ufw >/dev/null 2>&1 || return 1
+  "${SUDO_CMD[@]}" ufw status 2>/dev/null | grep -qi '^Status: active\|^Status: Aktiv'
+}
+
+ensure_ufw_port_open() {
+  local service="$1"
+  local purpose="$2"
+  local port=""
+  local rule=""
+
+  ufw_is_active || return 0
+
+  case "$service" in
+    http) port="80/tcp" ;;
+    mdns) port="5353/udp" ;;
+    fxroute-http) port="8000/tcp" ;;
+    *) return 0 ;;
+  esac
+
+  if "${SUDO_CMD[@]}" ufw status 2>/dev/null | grep -Eq "^${port}[[:space:]]+ALLOW|^${port//\//\\/}[[:space:]]+ALLOW"; then
+    return 0
+  fi
+
+  rule="$port"
+  log "ufw allow $rule"
+  if ! "${SUDO_CMD[@]}" ufw allow "$rule" comment "$purpose"; then
+    warn "Optional LAN comfort could not open ufw rule '$rule' for $purpose"
+    return 0
+  fi
+
+  case "$service" in
+    http|fxroute-http) HTTP_OPENED_BY_FXROUTE=1 ;;
+    mdns) MDNS_OPENED_BY_FXROUTE=1 ;;
+  esac
+
+  pass "ufw rule opened ($rule)"
+}
+
+ensure_lan_firewall_service_open() {
+  local service="$1"
+  local purpose="$2"
+
+  ensure_firewalld_service_open "$service" "$purpose"
+  ensure_ufw_port_open "$service" "$purpose"
+}
+
 choose_sudo() {
   if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
     SUDO_CMD=()
@@ -744,6 +791,19 @@ Comment=Start EasyEffects in background for FXRoute
 EOF
 
   pass "EasyEffects autostart configured ($EASYEFFECTS_MODE)"
+
+  if systemctl --user daemon-reload >/dev/null 2>&1; then
+    if systemctl --user start app-easyeffects@autostart.service >/dev/null 2>&1; then
+      pass "EasyEffects background service started"
+      return
+    fi
+  fi
+
+  if nohup bash -lc "$exec_cmd" >/tmp/fxroute-easyeffects-start.log 2>&1 & then
+    pass "EasyEffects background service launch requested"
+  else
+    warn "EasyEffects autostart was configured, but the background service could not be started in this shell"
+  fi
 }
 
 detect_spotify_autostart_command() {
@@ -1026,6 +1086,9 @@ validate_http() {
   sleep 3
   if curl -fsS "http://127.0.0.1:${port}/api/status" >/dev/null 2>&1; then
     pass "HTTP health response"
+    if [[ "$port" == "8000" ]]; then
+      ensure_lan_firewall_service_open fxroute-http "FXRoute HTTP LAN access"
+    fi
   else
     fail "HTTP health response"
     warn "FXRoute did not answer on http://127.0.0.1:${port}/api/status yet"
@@ -1223,7 +1286,7 @@ offer_optional_local_lan_name() {
     AVAHI_ENABLED_BY_FXROUTE=1
   fi
 
-  ensure_firewalld_service_open mdns ".local LAN access"
+  ensure_lan_firewall_service_open mdns ".local LAN access"
 
   MDNS_HOSTNAME="$desired_host"
   pass "optional .local LAN name configured (${MDNS_HOSTNAME}.local:${port})"
@@ -1253,7 +1316,7 @@ offer_optional_caddy_proxy() {
   echo
   if systemctl is-active "$service_name" >/dev/null 2>&1; then
     CADDY_PROXY_ENABLED=1
-    ensure_firewalld_service_open http "FXRoute port-80 LAN access"
+    ensure_lan_firewall_service_open http "FXRoute port-80 LAN access"
     echo "Optional port-80 LAN URL already active: http://${MDNS_HOSTNAME}.local"
     [[ -n "$lan_ip" ]] && echo "Port-80 LAN IP also works: http://${lan_ip}"
     return 0
@@ -1274,15 +1337,18 @@ offer_optional_caddy_proxy() {
     return 0
   fi
 
-  if ! pkg_install caddy; then
-    warn "Optional Caddy setup failed while installing Caddy"
-    return 0
-  fi
-  if [[ $CADDY_WAS_PRESENT_BEFORE -eq 0 ]] && command -v caddy >/dev/null 2>&1; then
-    CADDY_INSTALLED_BY_FXROUTE=1
+  caddy_bin="$(command -v caddy || true)"
+  if [[ -z "$caddy_bin" ]]; then
+    if ! pkg_install caddy; then
+      warn "Optional Caddy setup failed while installing Caddy"
+      return 0
+    fi
+    if [[ $CADDY_WAS_PRESENT_BEFORE -eq 0 ]] && command -v caddy >/dev/null 2>&1; then
+      CADDY_INSTALLED_BY_FXROUTE=1
+    fi
+    caddy_bin="$(command -v caddy || true)"
   fi
 
-  caddy_bin="$(command -v caddy || true)"
   [[ -n "$caddy_bin" ]] || {
     warn "Optional Caddy setup failed because the caddy binary is not available after install"
     return 0
@@ -1354,7 +1420,7 @@ EOF
     return 0
   fi
 
-  ensure_firewalld_service_open http "FXRoute port-80 LAN access"
+  ensure_lan_firewall_service_open http "FXRoute port-80 LAN access"
 
   pass "optional Caddy reverse proxy configured (http://${MDNS_HOSTNAME}.local)"
   echo

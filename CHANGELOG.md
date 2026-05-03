@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.339 (2026-05-03)
+- Re-run installs now reuse an already available Caddy binary instead of invoking the package manager again, allowing the optional Caddy refresh path to complete even when unrelated system package activity is holding the dpkg frontend lock.
+- Added UFW handling for FXRoute LAN access so installs on hosts with UFW active open the application HTTP port plus optional Caddy HTTP/mDNS ports, instead of only handling firewalld-based systems.
+- Installer now starts the configured EasyEffects background service immediately after writing autostart configuration, so peak monitoring and preset switching can come up during the initial install session instead of waiting for the next desktop login.
+
 ## 0.4.338 (2026-04-27)
 - When deleting the currently active EasyEffects preset, FXRoute now falls back to `Neutral` instead of `Direct`.
 - This keeps global helpers like headroom effective after deletion, while `Direct` remains helper-free by design.
@@ -29,7 +34,7 @@
 
 ## 0.4.331 (2026-04-26)
 - Added a new compact EasyEffects helper pass: Autogain now lives under Protection with a target-dB dropdown, and Tone now offers a mutually exclusive `Off` / `Crystalizer` / `Maximizer` selector.
-- Matched the new helper plugin payloads to the real EasyEffects preset data on `.104`, while keeping `autogain`, `crystalizer`, and `maximizer` permanently present in the graph and toggled via `bypass` so live switching stays consistent with the earlier helper-toggle work.
+- Matched the new helper plugin payloads to observed EasyEffects preset data, while keeping `autogain`, `crystalizer`, and `maximizer` permanently present in the graph and toggled via `bypass` so live switching stays consistent with the earlier helper-toggle work.
 
 ## 0.4.330 (2026-04-26)
 - When rewriting presets for the global headroom helper, FXRoute now clears helper-managed `output-gain` on all non-helper plugins before assigning headroom to the selected target plugin.
@@ -58,14 +63,14 @@
 - Re-validated the installer/uninstaller flow on real Ubuntu 24.04 and Fedora 43 hosts, including helper opt-in paths.
 
 ## 0.4.324 (2026-04-26)
-- Fixed Bluetooth-input samplerate detection for the live `.104` receiver case where the active BlueZ stream only exposes its rate via `wpctl inspect` (`node.rate` / `node.latency`) instead of `pactl list sources`.
+- Fixed Bluetooth-input samplerate detection for receiver cases where the active BlueZ stream only exposes its rate via `wpctl inspect` (`node.rate` / `node.latency`) instead of `pactl list sources`.
 - This makes the compact Bluetooth status actually show details like `AAC · 48 kHz` during active Windows Bluetooth playback.
 
 ## 0.4.323 (2026-04-26)
 - Added Bluetooth-input samplerate to the compact Settings status so active receiver sessions can show details like `AAC · 48 kHz` alongside the connected device label.
 
 ## 0.4.322 (2026-04-26)
-- Fixed Bluetooth-input loopback port matching to accept BlueZ stream nodes that expose `output_FL/FR` instead of `capture_FL/FR`, so `bluetooth-input` no longer throws `failed to link ports: No such file or directory` on `.104`.
+- Fixed Bluetooth-input loopback port matching to accept BlueZ stream nodes that expose `output_FL/FR` instead of `capture_FL/FR`, so `bluetooth-input` no longer throws `failed to link ports: No such file or directory` on affected hosts.
 - This lets the Bluetooth monitor loop stay alive and start the EasyEffects `pw-record` peak detector during active Bluetooth playback.
 
 ## 0.4.321 (2026-04-26)
@@ -85,10 +90,10 @@
 
 ## 0.4.317 (2026-04-26)
 - Relaxed Bluetooth receiver availability detection so hosts with BlueZ + WirePlumber + the PipeWire BlueZ SPA plugin installed no longer show `Bluetooth receiver mode is not currently available` just because no active BlueZ audio node exists yet.
-- This should make the new Bluetooth input mode on `.104` become selectable when the local Bluetooth audio stack is present but idle.
+- This makes the new Bluetooth input mode selectable when the local Bluetooth audio stack is present but idle.
 
 ## 0.4.316 (2026-04-26)
-- Added a compact live `Bluetooth input` source option in Settings, with an honest status line that shows receiver availability, discoverable/waiting state, and the connected device/codec when one is present.
+- Added a compact live `Bluetooth input` source option in Settings, with a clear status line that shows receiver availability, discoverable/waiting state, and the connected device/codec when one is present.
 - Enabled a conservative Bluetooth receiver-mode path for `bluetooth-input`: FXRoute now toggles pairable/discoverable mode only while that source mode is active and disables it again on exit.
 - Added conservative Bluetooth-input monitoring into `easyeffects_sink` so an active BlueZ input source follows the accepted DSP path without changing the existing audio-output selection behavior.
 - Fixed `POST /api/audio/source-mode` to return the updated overview for every source mode and bumped frontend cache-busting to `0.4.316`.
@@ -233,7 +238,7 @@
 - Improved the installer end-of-run summary. It now calls out the local URL, LAN IP URL, and a `.local` mDNS/hostname hint more explicitly, reminds the user to check the firewall for the app port, and gives a clearer next-step hint for launching EasyEffects when the socket is still missing after install.
 
 ## 0.4.280 (2026-04-20)
-- Hardened installer EasyEffects detection after the `.70` validation round. `install.sh` now treats Flatpak EasyEffects as installed only when it actually appears in `flatpak list`, instead of trusting the broader `flatpak info` probe that could mis-detect the first reinstall immediately after a full uninstall.
+- Hardened installer EasyEffects detection after Ubuntu validation. `install.sh` now treats Flatpak EasyEffects as installed only when it actually appears in `flatpak list`, instead of trusting the broader `flatpak info` probe that could mis-detect the first reinstall immediately after a full uninstall.
 
 ## 0.4.279 (2026-04-20)
 - Added a small uninstall comfort feature. FXRoute now records whether it installed EasyEffects itself, and `uninstall.sh` only offers to remove EasyEffects when that marker says the package originally came from the FXRoute installer. Existing user-managed EasyEffects installs are left alone.
@@ -402,7 +407,7 @@
 - Removed hidden volume write side-effects from status/render paths introduced by the loudness fix. `build_playback_payload()` and `get_spotify_ui_state()` are read-only again instead of repeatedly forcing MPV/Spotify source volume back to 100 during ordinary polling, websocket broadcasts, and UI refreshes. This targets the likely regression where the graph became unstable even though `pw-record` plus native samplerate switching had previously coexisted.
 
 ## 0.4.214 (2026-04-17)
-- Reverted the experimental file-samplerate heuristic for peak-monitor control. We do not want product behavior to branch on ad-hoc per-file probing without understanding the real bug, because that kind of workaround already caused later regressions and confusion.
+- Reverted the experimental file-samplerate heuristic for peak-monitor control. Product behavior should not branch on ad-hoc per-file probing without a confirmed root cause, because that workaround class had already caused later regressions and confusion.
 
 ## 0.4.213 (2026-04-17)
 - Refined the peak-monitor rollback: instead of disabling `pw-record` for all local Library playback, FXRoute now probes the local file samplerate and only suspends the peak monitor for high-rate local tracks above 48 kHz. Normal local playback keeps peak monitoring, while native-kHz switching for high-rate content stays protected.
@@ -603,7 +608,7 @@
 - Fixed a detached peak-capture state where `pw-record` could stay running but lose its PipeWire links after source/track changes, leaving clipping detection dead even though the capture process still existed; peak-monitor restarts are now keyed to playback context changes so the capture path is rebuilt when the active player/track changes
 
 ## 0.4.150 (2026-04-15)
-- Switched local Library playback back onto the same peak-monitor lifecycle as Radio and Spotify for diagnosis, removing the temporary Library-specific suspension so `pw-record` can appear for all three sources while we trace the remaining global samplerate drift/upscaling behavior
+- Switched local Library playback back onto the same peak-monitor lifecycle as Radio and Spotify for diagnosis, removing the temporary Library-specific suspension so `pw-record` can appear for all three sources during tracing of the remaining global samplerate drift/upscaling behavior
 
 ## 0.4.149 (2026-04-15)
 - Fixed a Spotify-specific peak-monitor race where the normal MPV/player callback immediately stopped `pw-record` again with `Stopping peak monitor while playback is inactive` right after Spotify had started it; the player-side stop path now first checks whether Spotify is actively playing before tearing peak capture down
