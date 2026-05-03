@@ -80,7 +80,7 @@ EasyEffects is handled separately: fresh installs can use the installer-managed 
 
 Tested installer targets so far include:
 
-- Ubuntu 24.04 on x86_64
+- Ubuntu 24.04 and 26.04 on x86_64
 - openSUSE Tumbleweed on x86_64
 - Fedora-family x86_64 systems
 - Armbian 26.2.1 / Ubuntu 24.04 Noble on ARM64 (`aarch64`, Khadas VIM1S; PipeWire setup may be needed depending on the image)
