@@ -139,13 +139,6 @@ flatpak list --app | grep easyeffects
 pgrep -af easyeffects
 ```
 
-## Notes and limits
-
-- FXRoute controls **locally running** audio tools.
-- It is designed for **trusted LAN use** and a dedicated listening machine.
-- EasyEffects handles the live DSP/convolver runtime; FXRoute focuses on control, workflow, preset generation, and tuning support.
-- Fully headless operation is not the primary target.
-
 ## Manual
 
 See [MANUAL.md](MANUAL.md) for the short user manual.
