@@ -77,7 +77,6 @@ The desktop session matters because FXRoute coordinates real local audio applica
 Core requirements:
 
 - Linux with PipeWire
-- `systemd --user`
 - Python 3
 - `mpv`
 - `ffmpeg`
