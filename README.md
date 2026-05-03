@@ -4,7 +4,45 @@ FXRoute is a browser-based audio control surface for Linux listening machines.
 
 It is built for mini PCs, desktops, ARM boards, and dedicated stereo boxes that run local playback, EasyEffects DSP, radio, library playback, measurement tools, and optional Spotify desktop control — all remote-controlled from a phone, tablet, or laptop on the local network.
 
-![FXRoute desktop radio view](media/screenshots/desktop-radio-stations.png)
+<p align="center">
+  <img src="media/screenshots/desktop/13-measurement-graph-reset.png" alt="FXRoute measurement graph with PEQ assistant" width="780">
+</p>
+
+<p align="center">
+  <strong>Measure, compare, and sketch PEQ corrections directly in the browser.</strong>
+</p>
+
+<table>
+  <tr>
+    <td width="50%"><img src="media/screenshots/desktop/02-routing-player.png" alt="FXRoute routing and player view"></td>
+    <td width="50%"><img src="media/screenshots/desktop/04-dsp-presets.png" alt="FXRoute DSP preset controls"></td>
+  </tr>
+  <tr>
+    <td align="center"><strong>Playback and routing</strong></td>
+    <td align="center"><strong>DSP presets and A/B compare</strong></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="media/screenshots/desktop/12-measurement-editor.png" alt="FXRoute PEQ measurement editor"></td>
+    <td width="50%"><img src="media/screenshots/desktop/10-settings-audio-output.png" alt="FXRoute audio output settings"></td>
+  </tr>
+  <tr>
+    <td align="center"><strong>Measurement PEQ editor</strong></td>
+    <td align="center"><strong>Audio output and source settings</strong></td>
+  </tr>
+</table>
+
+<table>
+  <tr>
+    <td width="33%"><img src="media/screenshots/mobile/01-library.png" alt="FXRoute mobile library"></td>
+    <td width="33%"><img src="media/screenshots/mobile/02-solutions.png" alt="FXRoute mobile solutions"></td>
+    <td width="33%"><img src="media/screenshots/mobile/05-dsp-controls.png" alt="FXRoute mobile DSP controls"></td>
+  </tr>
+  <tr>
+    <td align="center"><strong>Mobile library</strong></td>
+    <td align="center"><strong>Mobile solutions</strong></td>
+    <td align="center"><strong>Mobile DSP</strong></td>
+  </tr>
+</table>
 
 ## What it does
 
