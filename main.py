@@ -474,6 +474,7 @@ current_source_mode = SOURCE_MODE_APP_PLAYBACK
 latest_spotify_state = None
 current_footer_owner = "local"
 last_spotify_samplerate_recovery_at = 0.0
+latest_player_state_seq_seen = 0
 current_track_info = None
 last_track_info = None
 playback_queue = []
@@ -1476,8 +1477,20 @@ def schedule_peak_monitor_refresh_after_effects_change(reason: str = "effects-ch
 
 
 # Callback functions
+def _mark_player_state_authoritative(state: dict | None) -> None:
+    global latest_player_state_seq_seen
+    seq = (state or {}).get("_seq")
+    if isinstance(seq, int):
+        latest_player_state_seq_seen = max(latest_player_state_seq_seen, seq)
+
+
 async def on_player_state_change(state: dict):
-    global queue_advancing, playback_queue_index, current_track_info, last_track_info, queue_transition_target_url
+    global queue_advancing, playback_queue_index, current_track_info, last_track_info, queue_transition_target_url, latest_player_state_seq_seen
+    seq = state.get("_seq")
+    if isinstance(seq, int):
+        if seq < latest_player_state_seq_seen:
+            return
+        latest_player_state_seq_seen = seq
 
     if queue_transition_target_url:
         current_file = state.get("current_file")
@@ -2540,6 +2553,7 @@ async def play_track(req: PlayRequest):
 
             current_track_info = track_info
             last_track_info = track_info
+            _mark_player_state_authoritative(player_instance.state)
 
             if source in {"local", "radio"}:
                 asyncio.create_task(_sync_peak_monitor_after_playback_transition(track_info.copy()))
@@ -2570,6 +2584,7 @@ async def pause_playback():
 
     player_instance.pause()
     new_state = player_instance.state
+    _mark_player_state_authoritative(new_state)
     return {
         "status": "paused" if new_state.get("paused") else "playing",
         "playback": build_playback_payload(new_state),
@@ -2588,6 +2603,7 @@ async def toggle_playback():
     if state.get("current_file") and not state.get("ended"):
         player_instance.pause()
         new_state = player_instance.state
+        _mark_player_state_authoritative(new_state)
         return {
             "status": "paused" if new_state.get("paused") else "playing",
             "playback": build_playback_payload(new_state),
@@ -2602,6 +2618,7 @@ async def toggle_playback():
     await _wait_for_pipewire_mpv_release()
     prearm_rate, prearm_generation = await _prearm_known_local_samplerate(replay_track, "replay")
     player_instance.loadfile(replay_url, mode="replace")
+    _mark_player_state_authoritative(player_instance.state)
     if prearm_rate and prearm_generation:
         asyncio.create_task(_release_local_samplerate_prearm(prearm_rate, prearm_generation, "replay"))
     asyncio.create_task(_maybe_recover_samplerate_mismatch((replay_track or {}).copy()))
@@ -2620,6 +2637,7 @@ async def stop_playback():
     _clear_playback_queue()
     _reset_mpv_loop_state()
     player_instance.stop_playback()
+    _mark_player_state_authoritative(player_instance.state)
     return {"status": "stopped"}
 
 @app.post("/api/volume")

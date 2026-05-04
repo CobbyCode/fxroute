@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.1 (2026-05-04)
+- Refined the measurement sweep path with a longer 11s sweep, denser display points, and frequency-dependent impulse-response windowing for more stable room/speaker curves.
+- Stabilized local playback footer ordering by throttling position-event broadcasts and ignoring stale playback state updates, preventing slow boards from briefly showing old play/pause states after a pause.
+- Corrected the README helper list so Delay is no longer described as a global DSP helper.
+
 ## 0.5.0 (2026-05-03)
 - Bumped the release line to `0.5.0` for the accumulated measurement, installer, EasyEffects, Bluetooth, sample-rate recovery, documentation, and UI stabilization work.
 - Refreshed the public README for the 0.5 line, including the current feature set, Armbian/ARM64 validation, Flatpak/native EasyEffects behavior, measurement workflow, Bluetooth handling, local HTTPS, and operating assumptions.

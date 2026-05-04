@@ -1301,6 +1301,12 @@ function queueVolumeSend(volume, immediate = false) {
 }
 function mergePlaybackState(data) {
     if (!data) return;
+    const incomingSeq = typeof data._seq === 'number' ? data._seq : null;
+    const currentSeq = typeof state.playback?._seq === 'number' ? state.playback._seq : null;
+    if (incomingSeq !== null && currentSeq !== null && incomingSeq < currentSeq) {
+        footerDebug('ignore-stale-playback-state', { incomingSeq, currentSeq });
+        return;
+    }
     const nextPlayback = { ...data };
     const remoteVolume = typeof nextPlayback.volume === 'number' ? nextPlayback.volume : null;
     if (remoteVolume !== null) {

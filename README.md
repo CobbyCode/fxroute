@@ -51,7 +51,7 @@ It is built for mini PCs, desktops, ARM boards, and dedicated stereo boxes that 
 - internet radio with built-in and custom stations
 - Spotify desktop control through `playerctl` / MPRIS
 - EasyEffects preset switching, PEQ, convolver import, output helpers, and A/B compare
-- global DSP helpers such as limiter, headroom, autogain, bass enhancement, delay, and tone modes
+- global DSP helpers such as limiter, headroom, autogain, bass enhancement, and tone modes
 - practical room/speaker measurement workflow with host microphone capture, calibration files, smoothing, saved runs, and PEQ draft transfer
 - sample-rate-aware playback handling for local files, radio, Spotify, and Bluetooth handoff cases
 - Bluetooth input visibility/control when the host audio stack supports it

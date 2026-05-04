@@ -42,9 +42,12 @@ class MPVWrapper:
             "playlist_pos": None,
             "ended": False,
             "error": None,
+            "_seq": 0,
         }
         self._callbacks = []
         self._last_end_reason: Optional[str] = None
+        self._last_position_notify_at = 0.0
+        self._last_position_notify_position = 0.0
         self._listener_socket: Optional[socket.socket] = None
         self._listener_thread: Optional[threading.Thread] = None
         self._observer_ids = {
@@ -234,7 +237,20 @@ class MPVWrapper:
                 position = float(data or 0.0)
                 if self._state.get("position") != position:
                     self._state["position"] = position
-                    changed = True
+                    # mpv can emit time-pos very frequently. On slower boards each
+                    # callback builds a full UI payload, so unthrottled position
+                    # events can backlog and arrive after a later pause/play state.
+                    # Keep local position current, but only broadcast coarse seek
+                    # progress; explicit pause/play/path events still notify
+                    # immediately through their own branches.
+                    now = time.monotonic()
+                    if (
+                        now - self._last_position_notify_at >= 0.5
+                        or abs(position - self._last_position_notify_position) >= 0.5
+                    ):
+                        self._last_position_notify_at = now
+                        self._last_position_notify_position = position
+                        changed = True
 
             elif name == "duration":
                 duration = float(data or 0.0)
@@ -403,6 +419,7 @@ class MPVWrapper:
 
     def _notify_callbacks(self):
         """Notify all callbacks with current state."""
+        self._state["_seq"] = int(self._state.get("_seq") or 0) + 1
         snapshot = self._state.copy()
         for callback, callback_loop in list(self._callbacks):
             try:

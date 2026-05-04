@@ -37,7 +37,7 @@ TRACE_COLORS = [
     "#f87171",
 ]
 
-SWEEP_V2_SECONDS = 7.0
+SWEEP_V2_SECONDS = 11.0
 SWEEP_V2_LEAD_IN_SECONDS = 0.5
 SWEEP_V2_TAIL_SECONDS = 1.25
 SWEEP_START_HZ = 10.0
@@ -45,7 +45,7 @@ SWEEP_END_HZ = 22_000.0
 HOST_SWEEP_PEAK_SCALE = 0.8
 TRUSTED_MIN_HZ = 20.0
 TRUSTED_MAX_HZ = 20_000.0
-DISPLAY_POINT_COUNT = 96
+DISPLAY_POINT_COUNT = 192
 EDGE_STABILITY_WINDOW_POINTS = 4
 EDGE_STABILITY_MAX_DELTA_DB = 6.0
 EDGE_STABILITY_MAX_SPAN_DB = 9.0
@@ -84,7 +84,11 @@ BROWSER_TIMING_WEIGHT_MULTIPLIERS = {
 }
 IR_WINDOW_PRE_SECONDS = 0.004
 IR_WINDOW_POST_SECONDS = 0.35
+IR_WINDOW_POST_LOW_SECONDS = 0.50
+IR_WINDOW_POST_HIGH_SECONDS = 0.18
 IR_WINDOW_FADE_SECONDS = 0.012
+IR_WINDOW_VARIABLE_LOW_HZ = 250.0
+IR_WINDOW_VARIABLE_HIGH_HZ = 1_200.0
 BROWSER_SWEEP_START_DELAY_SECONDS = 1.5
 BROWSER_SWEEP_END_PADDING_SECONDS = 1.5
 HOST_SWEEP_RECORD_PREROLL_SECONDS = 0.75
@@ -683,6 +687,7 @@ class MeasurementStore:
                 "clock": analysis["clock"],
                 "reference_path": analysis["reference_path"],
                 "impulse_response": analysis["impulse_response"],
+                "variable_window": analysis.get("variable_window"),
             },
             "limitations": [
                 "This path is a real host-local sweep playback and capture flow, but it is still a conservative sweep-v3 implementation.",
@@ -1317,18 +1322,18 @@ class MeasurementStore:
         impulse_response = self._fft_convolve(corrected_segment, inverse_sweep.astype(np.float64))
         reference_impulse_response = self._fft_convolve(corrected_reference_segment, inverse_sweep.astype(np.float64))
         windowed_ir, ir_meta = self._window_impulse_response(impulse_response, sample_rate)
+        response_frequencies, response_magnitude, variable_window_meta = self._build_variable_window_response(
+            impulse_response,
+            sample_rate,
+        )
         reference_ir_peak = float(np.max(np.abs(reference_impulse_response))) if reference_impulse_response.size else 0.0
         reference_ir_rms = float(np.sqrt(np.mean(np.square(reference_impulse_response, dtype=np.float64)))) if reference_impulse_response.size else 0.0
         reference_ir_peak_db = 20.0 * math.log10(max(reference_ir_peak, 1e-9))
         reference_ir_rms_db = 20.0 * math.log10(max(reference_ir_rms, 1e-9))
         reference_ir_sharpness_db = reference_ir_peak_db - reference_ir_rms_db
-        fft_size = self._next_pow2(max(sample_rate, windowed_ir.size * 2))
-        magnitude = np.abs(np.fft.rfft(windowed_ir, n=fft_size))
-        frequencies = np.fft.rfftfreq(fft_size, d=1.0 / sample_rate)
-
         display_data = self._build_display_points(
-            frequencies=frequencies,
-            magnitude=magnitude,
+            frequencies=response_frequencies,
+            magnitude=response_magnitude,
             calibration_curve=calibration_curve,
             browser_capture=browser_capture_meta is not None,
         )
@@ -1405,6 +1410,7 @@ class MeasurementStore:
                 "post_window_seconds": round(float(ir_meta["post_window_seconds"]), 6),
                 "peak_dbfs": round(float(ir_meta["peak_dbfs"]), 2),
             },
+            "variable_window": variable_window_meta,
         }
         hard_failures = [item["message"] for item in quality_checks["items"] if item.get("level") == "error"]
         if hard_failures:
@@ -2992,11 +2998,62 @@ class MeasurementStore:
             "polarity": -1.0 if raw_score < 0 else 1.0,
         }
 
-    def _window_impulse_response(self, impulse_response: np.ndarray, sample_rate: int) -> tuple[np.ndarray, dict[str, Any]]:
+    def _build_variable_window_response(self, impulse_response: np.ndarray, sample_rate: int) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
+        low_windowed, low_meta = self._window_impulse_response(
+            impulse_response,
+            sample_rate,
+            post_seconds=IR_WINDOW_POST_LOW_SECONDS,
+        )
+        mid_windowed, mid_meta = self._window_impulse_response(
+            impulse_response,
+            sample_rate,
+            post_seconds=IR_WINDOW_POST_SECONDS,
+        )
+        high_windowed, high_meta = self._window_impulse_response(
+            impulse_response,
+            sample_rate,
+            post_seconds=IR_WINDOW_POST_HIGH_SECONDS,
+        )
+        fft_size = self._next_pow2(max(sample_rate, low_windowed.size * 2, mid_windowed.size * 2, high_windowed.size * 2))
+        frequencies = np.fft.rfftfreq(fft_size, d=1.0 / sample_rate)
+        low_magnitude = np.abs(np.fft.rfft(low_windowed, n=fft_size))
+        mid_magnitude = np.abs(np.fft.rfft(mid_windowed, n=fft_size))
+        high_magnitude = np.abs(np.fft.rfft(high_windowed, n=fft_size))
+
+        blend = np.clip(
+            (frequencies - IR_WINDOW_VARIABLE_LOW_HZ) / max(IR_WINDOW_VARIABLE_HIGH_HZ - IR_WINDOW_VARIABLE_LOW_HZ, 1.0),
+            0.0,
+            1.0,
+        )
+        blend = blend * blend * (3.0 - (2.0 * blend))
+        upper_blend = np.clip(
+            (frequencies - IR_WINDOW_VARIABLE_HIGH_HZ) / max(IR_WINDOW_VARIABLE_HIGH_HZ, 1.0),
+            0.0,
+            1.0,
+        )
+        upper_blend = upper_blend * upper_blend * (3.0 - (2.0 * upper_blend))
+        low_mid = (low_magnitude * (1.0 - blend)) + (mid_magnitude * blend)
+        magnitude = (low_mid * (1.0 - upper_blend)) + (high_magnitude * upper_blend)
+        return frequencies, magnitude, {
+            "method": "frequency-dependent IR window blend",
+            "low_post_window_seconds": round(float(low_meta["post_window_seconds"]), 6),
+            "mid_post_window_seconds": round(float(mid_meta["post_window_seconds"]), 6),
+            "high_post_window_seconds": round(float(high_meta["post_window_seconds"]), 6),
+            "low_to_mid_hz": round(float(IR_WINDOW_VARIABLE_LOW_HZ), 3),
+            "mid_to_high_hz": round(float(IR_WINDOW_VARIABLE_HIGH_HZ), 3),
+        }
+
+    def _window_impulse_response(
+        self,
+        impulse_response: np.ndarray,
+        sample_rate: int,
+        *,
+        post_seconds: float = IR_WINDOW_POST_SECONDS,
+    ) -> tuple[np.ndarray, dict[str, Any]]:
         ir64 = impulse_response.astype(np.float64)
         peak_index = int(np.argmax(np.abs(ir64)))
         pre_samples = max(32, int(round(sample_rate * IR_WINDOW_PRE_SECONDS)))
-        post_samples = max(pre_samples * 2, int(round(sample_rate * IR_WINDOW_POST_SECONDS)))
+        post_samples = max(pre_samples * 2, int(round(sample_rate * post_seconds)))
         fade_samples = max(16, int(round(sample_rate * IR_WINDOW_FADE_SECONDS)))
         start = max(0, peak_index - pre_samples)
         end = min(ir64.size, peak_index + post_samples)
