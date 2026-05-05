@@ -645,6 +645,7 @@ body {
 .playlist-item .track-item-icon {
     color: var(--accent-purple);
 }
+.playlist-download-btn,
 .playlist-delete-btn {
     background: none;
     border: none;
@@ -655,6 +656,9 @@ body {
     opacity: 1;
     flex-shrink: 0;
     align-self: center;
+}
+.playlist-download-btn:hover {
+    color: var(--accent-blue);
 }
 .playlist-delete-btn:hover {
     color: var(--danger);

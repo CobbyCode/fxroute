@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.2 (2026-05-05)
+- Added M3U/M3U8 playlist import/export support while keeping FXRoute playlist storage in the existing internal JSON format.
+- Kept local/radio volume changes responsive by avoiding unnecessary Spotify status refreshes on the local output-volume endpoint.
+
 ## 0.5.1 (2026-05-04)
 - Refined the measurement sweep path with a longer 11s sweep, denser display points, and frequency-dependent impulse-response windowing for more stable room/speaker curves.
 - Stabilized local playback footer ordering by throttling position-event broadcasts and ignoring stale playback state updates, preventing slow boards from briefly showing old play/pause states after a pause.

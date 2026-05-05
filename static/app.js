@@ -2661,6 +2661,7 @@ function renderTracks() {
                     <div class="track-title">${escapeHtml(playlist.name)}</div>
                     <div class="track-artist">${playlist.track_count} track${playlist.track_count === 1 ? '' : 's'}</div>
                 </button>
+                <button class="playlist-download-btn" data-playlist-download="${escapeHtml(playlist.id)}" type="button" title="Export playlist as M3U8">⬇</button>
                 <button class="playlist-delete-btn" data-playlist-delete="${escapeHtml(playlist.id)}" type="button" title="Delete playlist">🗑</button>
             </div>`;
         }).join('');
@@ -2705,6 +2706,13 @@ function renderTracks() {
         input.addEventListener('change', () => toggleTrackSelection(input.dataset.trackId, input.checked));
     });
 
+    elements.tracksList.querySelectorAll('.playlist-download-btn[data-playlist-download]').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            const playlistId = btn.dataset.playlistDownload;
+            await downloadPlaylistById(playlistId);
+        });
+    });
     elements.tracksList.querySelectorAll('.playlist-delete-btn[data-playlist-delete]').forEach(btn => {
         btn.addEventListener('click', (e) => {
             e.stopPropagation();
@@ -2842,7 +2850,7 @@ async function refreshLibrary() {
 function uploadTrackFile() {
     const file = elements.uploadTrackFile.files[0];
     if (!file) {
-        showToast('Please choose an audio file or ZIP', 'error');
+        showToast('Please choose an audio file, playlist, or ZIP', 'error');
         return;
     }
     const formData = new FormData();
@@ -2872,6 +2880,7 @@ function uploadTrackFile() {
             updateDownloadUI();
             showToast(successMessage, 'success');
             refreshLibrary();
+            fetchPlaylists();
             setTimeout(() => {
                 state.upload = null;
                 updateDownloadUI();
@@ -2952,6 +2961,23 @@ async function loadPlaylistById(playlistId, options = {}) {
     showToast(missingCount > 0
         ? `Loaded ${validTrackIds.length}/${playlist.track_ids.length} tracks from ${playlist.name}`
         : `Loaded: ${playlist.name}`, 'info');
+}
+async function downloadPlaylistById(playlistId) {
+    const playlist = state.playlists.find(item => item.id === playlistId);
+    if (!playlist) return;
+    try {
+        const resp = await fetch(`/api/playlists/${encodeURIComponent(playlistId)}/export`);
+        if (!resp.ok) {
+            const data = await resp.json().catch(() => ({}));
+            throw new Error(data.detail || 'Playlist export failed');
+        }
+        const blob = await resp.blob();
+        const filename = getDownloadFilenameFromResponse(resp, `${playlist.name || 'playlist'}.m3u8`);
+        triggerBlobDownload(blob, filename);
+        showToast(`Downloading ${filename}`, 'success');
+    } catch (e) {
+        showToast(e.message || 'Playlist export failed', 'error');
+    }
 }
 async function deletePlaylistById(playlistId) {
     const playlist = state.playlists.find(item => item.id === playlistId);

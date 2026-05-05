@@ -12,7 +12,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=0.4.458">
     <link rel="manifest" href="/static/site.webmanifest?v=0.4.458">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/static/style.css?v=0.5.1">
+    <link rel="stylesheet" href="/static/style.css?v=0.5.2">
 </head>
 <body>
     <!-- Offline indicator -->
@@ -237,12 +237,12 @@
                                 </div>
                             </div>
                             <div class="field-group library-import-option">
-                                <label for="upload-track-file">Upload audio file or album ZIP</label>
+                                <label for="upload-track-file">Upload audio file, playlist, or album ZIP</label>
                                 <div id="upload-track-area" class="upload-area upload-area-file-primary">
                                     <span class="upload-area-icon">🎵</span>
                                     <span class="upload-area-text">Drop audio file or ZIP, or&nbsp;<u>browse</u></span>
-                                    <span id="upload-track-filename" class="upload-area-filename">Upload MP3, FLAC, WAV, OGG/Opus/WebM, M4A, or a ZIP album.</span>
-                                    <input type="file" id="upload-track-file" class="upload-area-input" accept=".mp3,.flac,.ogg,.oga,.opus,.m4a,.aac,.wav,.wma,.webm,.weba,.zip,audio/*,application/zip">
+                                    <span id="upload-track-filename" class="upload-area-filename">Upload MP3, FLAC, WAV, OGG/Opus/WebM, M4A, M3U/M3U8, or ZIP.</span>
+                                    <input type="file" id="upload-track-file" class="upload-area-input" accept=".mp3,.flac,.ogg,.oga,.opus,.m4a,.aac,.wav,.wma,.webm,.weba,.m3u,.m3u8,.zip,audio/*,application/zip,audio/x-mpegurl,application/vnd.apple.mpegurl">
                                 </div>
                             </div>
                         </div>
@@ -741,6 +741,6 @@
     <!-- Toast notifications -->
     <div id="toast-container" class="toast-container"></div>
 
-    <script src="/static/app.js?v=0.5.1"></script>
+    <script src="/static/app.js?v=0.5.2"></script>
 </body>
 </html>

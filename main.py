@@ -15,10 +15,11 @@ import zipfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import List, Optional
+from urllib.parse import unquote
 
 import uvicorn
 from fastapi import FastAPI, Request, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File, Form
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 
@@ -445,6 +446,7 @@ from system_volume import SystemVolumeError, get_output_volume, set_output_volum
 logger = logging.getLogger(__name__)
 
 UPLOAD_AUDIO_EXTENSIONS = {".mp3", ".flac", ".ogg", ".oga", ".opus", ".m4a", ".aac", ".wav", ".wma", ".webm", ".weba"}
+PLAYLIST_FILE_EXTENSIONS = {".m3u", ".m3u8"}
 ZIP_IGNORED_PARTS = {"__MACOSX"}
 ZIP_IGNORED_FILENAMES = {".ds_store", "thumbs.db"}
 
@@ -599,10 +601,130 @@ def _extract_zip_album(zip_path: Path, target_root: Path) -> dict:
         raise HTTPException(status_code=400, detail="Invalid ZIP archive")
 
     audio_files = [path for path in extracted_files if path.suffix.lower() in UPLOAD_AUDIO_EXTENSIONS]
+    playlist_files = [path for path in extracted_files if path.suffix.lower() in PLAYLIST_FILE_EXTENSIONS]
     return {
         "audio_files": audio_files,
+        "playlist_files": playlist_files,
         "extracted_files": extracted_files,
         "skipped_entries": skipped_entries,
+    }
+
+
+def _parse_m3u_entries(content: str) -> List[str]:
+    entries = []
+    for raw_line in (content or "").splitlines():
+        line = raw_line.strip().lstrip("\ufeff")
+        if not line or line.startswith("#"):
+            continue
+        entries.append(line)
+    return entries
+
+
+def _playlist_download_filename(name: str) -> str:
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", (name or "playlist").strip()).strip("-._")
+    return f"{slug or 'playlist'}.m3u8"
+
+
+def _track_relative_m3u_path(track) -> str:
+    if track.path and settings:
+        try:
+            return track.path.resolve().relative_to(settings.MUSIC_ROOT.resolve()).as_posix()
+        except Exception:
+            pass
+    return Path(track.url or track.id).name
+
+
+def _build_m3u_for_playlist(playlist) -> str:
+    tracks_by_id = {track.id: track for track in library_scanner.get_tracks(refresh=True)}
+    lines = ["#EXTM3U"]
+    for track_id in playlist.track_ids:
+        track = tracks_by_id.get(track_id)
+        if not track:
+            continue
+        duration = int(track.duration) if track.duration and track.duration > 0 else -1
+        label = track.title or Path(track.path or track_id).stem
+        if track.artist:
+            label = f"{track.artist} - {label}"
+        lines.append(f"#EXTINF:{duration},{label}")
+        lines.append(_track_relative_m3u_path(track))
+    return "\n".join(lines) + "\n"
+
+
+def _build_track_match_index(tracks) -> dict[str, str]:
+    matches = {}
+    ambiguous = set()
+
+    def add(key: str, track_id: str) -> None:
+        key = (key or "").replace("\\", "/").strip().lstrip("./").lower()
+        if not key:
+            return
+        if key in matches and matches[key] != track_id:
+            ambiguous.add(key)
+            matches.pop(key, None)
+            return
+        if key not in ambiguous:
+            matches[key] = track_id
+
+    for track in tracks:
+        if not track.path:
+            continue
+        path = track.path.resolve()
+        try:
+            rel = path.relative_to(settings.MUSIC_ROOT.resolve()).as_posix()
+            add(rel, track.id)
+        except Exception:
+            pass
+        add(path.as_posix(), track.id)
+        add(path.name, track.id)
+        if track.url:
+            add(str(track.url), track.id)
+    return matches
+
+
+def _resolve_m3u_track_ids(entries: List[str], base_dir: Optional[Path] = None, tracks=None) -> List[str]:
+    if tracks is None:
+        tracks = library_scanner.get_tracks(refresh=True)
+    match_index = _build_track_match_index(tracks)
+    track_ids = []
+    seen = set()
+
+    for entry in entries:
+        value = unquote(entry.strip().strip('"'))
+        if value.lower().startswith("file://"):
+            value = value[7:]
+        value = value.replace("\\", "/")
+        candidates = [value]
+        if base_dir and not Path(value).is_absolute():
+            try:
+                resolved = (base_dir / value).resolve()
+                candidates.append(resolved.as_posix())
+                candidates.append(resolved.relative_to(settings.MUSIC_ROOT.resolve()).as_posix())
+            except Exception:
+                pass
+        candidates.append(Path(value).name)
+
+        for candidate in candidates:
+            track_id = match_index.get(candidate.replace("\\", "/").strip().lstrip("./").lower())
+            if track_id and track_id not in seen:
+                seen.add(track_id)
+                track_ids.append(track_id)
+                break
+    return track_ids
+
+
+def _import_m3u_playlist(name: str, content: str, base_dir: Optional[Path] = None, tracks=None) -> Optional[dict]:
+    entries = _parse_m3u_entries(content)
+    track_ids = _resolve_m3u_track_ids(entries, base_dir=base_dir, tracks=tracks)
+    if not track_ids:
+        return None
+    playlist = save_playlist(Path(name).stem or "Imported playlist", track_ids)
+    return {
+        "id": playlist.id,
+        "name": playlist.name,
+        "track_ids": playlist.track_ids,
+        "track_count": len(playlist.track_ids),
+        "matched_track_count": len(track_ids),
+        "entry_count": len(entries),
     }
 
 
@@ -2401,6 +2523,22 @@ async def create_or_update_playlist(req: PlaylistSaveRequest):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@app.get("/api/playlists/{playlist_id}/export")
+async def export_playlist(playlist_id: str):
+    if not library_scanner or not settings:
+        raise HTTPException(status_code=503, detail="Library not available")
+    playlist = next((item for item in get_playlists() if item.id == playlist_id), None)
+    if not playlist:
+        raise HTTPException(status_code=404, detail="Playlist not found")
+    content = _build_m3u_for_playlist(playlist)
+    filename = _playlist_download_filename(playlist.name)
+    return Response(
+        content=content,
+        media_type="audio/x-mpegurl; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @app.delete("/api/playlists/{playlist_id}")
 async def remove_playlist(playlist_id: str):
     try:
@@ -2421,7 +2559,7 @@ async def upload_track(file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="A filename is required")
 
     suffix = Path(filename).suffix.lower()
-    if suffix not in UPLOAD_AUDIO_EXTENSIONS and suffix != ".zip":
+    if suffix not in UPLOAD_AUDIO_EXTENSIONS and suffix not in PLAYLIST_FILE_EXTENSIONS and suffix != ".zip":
         raise HTTPException(status_code=400, detail="Unsupported file type")
 
     target_dir = settings.download_dir
@@ -2442,9 +2580,10 @@ async def upload_track(file: UploadFile = File(...)):
             try:
                 extraction = _extract_zip_album(temp_zip_path, album_dir)
                 audio_files = extraction["audio_files"]
-                if not audio_files:
+                playlist_files = extraction["playlist_files"]
+                if not audio_files and not playlist_files:
                     shutil.rmtree(album_dir, ignore_errors=True)
-                    raise HTTPException(status_code=400, detail="ZIP contains no supported audio files")
+                    raise HTTPException(status_code=400, detail="ZIP contains no supported audio or playlist files")
             except Exception:
                 shutil.rmtree(album_dir, ignore_errors=True)
                 raise
@@ -2452,6 +2591,20 @@ async def upload_track(file: UploadFile = File(...)):
                 temp_zip_path.unlink(missing_ok=True)
 
             tracks = library_scanner.refresh(force=True)
+            imported_playlists = []
+            for playlist_path in playlist_files:
+                imported = _import_m3u_playlist(
+                    playlist_path.name,
+                    playlist_path.read_text(encoding="utf-8", errors="replace"),
+                    base_dir=playlist_path.parent,
+                    tracks=tracks,
+                )
+                if imported:
+                    imported_playlists.append(imported)
+            if not audio_files and not imported_playlists:
+                shutil.rmtree(album_dir, ignore_errors=True)
+                raise HTTPException(status_code=400, detail="Playlist did not match any library tracks")
+            playlist_part = f" and {len(imported_playlists)} playlist{'s' if len(imported_playlists) != 1 else ''}" if imported_playlists else ""
             return {
                 "status": "imported",
                 "kind": "zip",
@@ -2460,8 +2613,26 @@ async def upload_track(file: UploadFile = File(...)):
                 "path": str(album_dir),
                 "track_count": len(tracks),
                 "imported_track_count": len(audio_files),
+                "imported_playlist_count": len(imported_playlists),
+                "playlists": imported_playlists,
                 "skipped_entry_count": len(extraction["skipped_entries"]),
-                "message": f"Imported {len(audio_files)} track{'s' if len(audio_files) != 1 else ''} from {filename}",
+                "message": f"Imported {len(audio_files)} track{'s' if len(audio_files) != 1 else ''}{playlist_part} from {filename}",
+            }
+
+        if suffix in PLAYLIST_FILE_EXTENSIONS:
+            content = (await file.read()).decode("utf-8", errors="replace")
+            tracks = library_scanner.get_tracks(refresh=True)
+            imported = _import_m3u_playlist(filename, content, tracks=tracks)
+            if not imported:
+                raise HTTPException(status_code=400, detail="Playlist did not match any library tracks")
+            return {
+                "status": "imported",
+                "kind": "playlist",
+                "filename": filename,
+                "track_count": len(tracks),
+                "imported_playlist_count": 1,
+                "playlist": imported,
+                "message": f"Imported playlist {imported['name']} with {imported['track_count']} track{'s' if imported['track_count'] != 1 else ''}",
             }
 
         target_path = target_dir / filename
@@ -2731,8 +2902,10 @@ async def set_volume(request: Request):
     except SystemVolumeError as exc:
         raise HTTPException(status_code=500, detail=f"Failed to set output volume: {exc}")
     ensure_local_source_volume()
+    # Keep local/radio output-volume changes responsive. Spotify volume uses
+    # /api/spotify/volume, so this endpoint should not block on multiple
+    # playerctl/Spotify status reads on slow boards.
     await manager.broadcast({"type": "playback", "data": build_playback_payload(player_instance.state)})
-    await broadcast_spotify_state()
     return {"volume": applied_volume}
 
 @app.post("/api/playback/next")
