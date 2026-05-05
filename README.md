@@ -74,7 +74,7 @@ The user session matters because FXRoute coordinates local audio applications, E
 
 ## Requirements
 
-FXRoute is intended for a Linux desktop-session audio machine with PipeWire. On supported distros, `install.sh` installs and configures the required runtime tools such as Python dependencies, `mpv`, `ffmpeg`, `playerctl`, Bluetooth/PipeWire helpers, and service files.
+On supported distros, `install.sh` installs and configures the required runtime tools such as Python dependencies, `mpv`, `ffmpeg`, `playerctl`, Bluetooth/PipeWire helpers, and service files.
 
 EasyEffects is handled separately: fresh installs can use the installer-managed Flatpak path, while existing native/package-manager EasyEffects installs are accepted when already present.
 
