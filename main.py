@@ -38,6 +38,8 @@ PEAK_MONITOR_RESTART_SETTLE_MS = 320
 PEAK_MONITOR_RATE_MATCH_TIMEOUT_MS = 900
 RADIO_SAMPLERATE_RENEGOTIATE_DELAY_MS = 1200
 RADIO_SAMPLERATE_PRESET_BOUNCE_DELAY_MS = 350
+RADIO_RECONNECT_DELAY_SECONDS = 2.0
+RADIO_RECONNECT_MAX_ATTEMPTS = 5
 
 # Track last play command time to debounce rapid requests
 _last_play_command_time = 0.0
@@ -477,6 +479,10 @@ last_spotify_samplerate_recovery_at = 0.0
 latest_player_state_seq_seen = 0
 current_track_info = None
 last_track_info = None
+radio_reconnect_task = None
+radio_reconnect_attempts = 0
+radio_reconnect_url = None
+radio_reconnect_active_since = 0.0
 playback_queue = []
 playback_queue_original = []
 playback_queue_index = -1
@@ -1476,6 +1482,68 @@ def schedule_peak_monitor_refresh_after_effects_change(reason: str = "effects-ch
     asyncio.create_task(_run_peak_monitor_refresh_after_effects_change(reason))
 
 
+
+async def _radio_reconnect_after_delay(track_info: dict, attempt: int) -> None:
+    global radio_reconnect_task
+    try:
+        await asyncio.sleep(RADIO_RECONNECT_DELAY_SECONDS)
+        expected_url = (track_info or {}).get("url")
+        if not expected_url:
+            return
+        if not player_instance or not player_instance._running:
+            return
+        if not current_track_info or current_track_info.get("source") != "radio" or current_track_info.get("url") != expected_url:
+            return
+        state = player_instance.state
+        if state.get("current_file") and not state.get("ended"):
+            return
+        logger.info("Reconnecting radio stream after unexpected end: station=%s attempt=%s/%s", track_info.get("title") or track_info.get("id"), attempt, RADIO_RECONNECT_MAX_ATTEMPTS)
+        await _wait_for_pipewire_mpv_release()
+        player_instance.loadfile(expected_url, mode="replace")
+        player_instance.set_pause(False)
+        _mark_player_state_authoritative(player_instance.state)
+        asyncio.create_task(_maybe_recover_samplerate_mismatch(track_info.copy()))
+    except Exception as e:
+        logger.warning("Radio stream reconnect failed: %s", e)
+    finally:
+        radio_reconnect_task = None
+
+
+def _schedule_radio_reconnect_if_needed(state: dict) -> None:
+    global radio_reconnect_task, radio_reconnect_attempts, radio_reconnect_url, radio_reconnect_active_since
+    track_info = current_track_info or {}
+    track_url = track_info.get("url")
+    if track_info.get("source") != "radio" or not track_url:
+        return
+
+    if state.get("current_file") and not state.get("ended"):
+        if radio_reconnect_url != track_url:
+            radio_reconnect_url = track_url
+            radio_reconnect_attempts = 0
+            radio_reconnect_active_since = time.monotonic()
+        elif not radio_reconnect_active_since:
+            radio_reconnect_active_since = time.monotonic()
+        elif radio_reconnect_attempts and time.monotonic() - radio_reconnect_active_since >= 30.0:
+            radio_reconnect_attempts = 0
+        return
+
+    radio_reconnect_active_since = 0.0
+    if not (state.get("ended") and not state.get("current_file")):
+        return
+
+    if radio_reconnect_url != track_url:
+        radio_reconnect_url = track_url
+        radio_reconnect_attempts = 0
+    if radio_reconnect_attempts >= RADIO_RECONNECT_MAX_ATTEMPTS:
+        logger.warning("Radio stream ended and reconnect limit reached: station=%s url=%s", track_info.get("title") or track_info.get("id"), track_url)
+        return
+    if radio_reconnect_task and not radio_reconnect_task.done():
+        return
+
+    radio_reconnect_attempts += 1
+    radio_reconnect_task = asyncio.create_task(_radio_reconnect_after_delay(dict(track_info), radio_reconnect_attempts))
+
+
 # Callback functions
 def _mark_player_state_authoritative(state: dict | None) -> None:
     global latest_player_state_seq_seen
@@ -1532,6 +1600,7 @@ async def on_player_state_change(state: dict):
         finally:
             queue_advancing = False
 
+    _schedule_radio_reconnect_if_needed(state)
     await sync_peak_monitor_for_playback_state(state)
     await manager.broadcast({"type": "playback", "data": build_playback_payload(state)})
 
@@ -2473,7 +2542,7 @@ async def play_track(req: PlayRequest):
     track_id = req.track_id
     url = req.url
     queue_track_ids = req.queue_track_ids or []
-    global player_instance, current_track_info, last_track_info, source_transition_lock, current_footer_owner
+    global player_instance, current_track_info, last_track_info, source_transition_lock, current_footer_owner, radio_reconnect_attempts, radio_reconnect_url, radio_reconnect_active_since
     if not player_instance or not player_instance._running:
         raise HTTPException(status_code=503, detail="Player not available")
     if not _can_send_play_command():
@@ -2495,6 +2564,9 @@ async def play_track(req: PlayRequest):
             track_info = {"id": track_id, "title": track_id, "artist": "", "source": source, "url": play_url}
 
             if source == "radio":
+                radio_reconnect_attempts = 0
+                radio_reconnect_url = None
+                radio_reconnect_active_since = 0.0
                 _clear_playback_queue()
                 stations = get_stations()
                 for s in stations:
@@ -2630,10 +2702,13 @@ async def toggle_playback():
 
 @app.post("/api/stop")
 async def stop_playback():
-    global player_instance, current_track_info
+    global player_instance, current_track_info, radio_reconnect_attempts, radio_reconnect_url, radio_reconnect_active_since
     if not player_instance or not player_instance._running:
         raise HTTPException(status_code=503, detail="Player not available")
     current_track_info = None
+    radio_reconnect_attempts = 0
+    radio_reconnect_url = None
+    radio_reconnect_active_since = 0.0
     _clear_playback_queue()
     _reset_mpv_loop_state()
     player_instance.stop_playback()

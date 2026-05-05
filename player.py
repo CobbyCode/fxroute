@@ -82,6 +82,8 @@ class MPVWrapper:
             "--input-ipc-server=" + self.socket_path,
             "--no-video",
             "--quiet",
+            "--network-timeout=15",
+            "--stream-lavf-o=reconnect=1,reconnect_streamed=1,reconnect_at_eof=1,reconnect_delay_max=5",
         ]
         logger.info(f"Starting mpv: {' '.join(cmd)}")
         self.process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

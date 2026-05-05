@@ -3,6 +3,7 @@
 ## 0.5.1 (2026-05-04)
 - Refined the measurement sweep path with a longer 11s sweep, denser display points, and frequency-dependent impulse-response windowing for more stable room/speaker curves.
 - Stabilized local playback footer ordering by throttling position-event broadcasts and ignoring stale playback state updates, preventing slow boards from briefly showing old play/pause states after a pause.
+- Hardened internet radio playback by enabling mpv network reconnect options and adding a bounded app-level reconnect for unexpected radio stream endings.
 - Corrected the README helper list so Delay is no longer described as a global DSP helper.
 
 ## 0.5.0 (2026-05-03)
