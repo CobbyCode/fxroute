@@ -81,7 +81,7 @@
                         </div>
                     </section>
 
-                    <p class="settings-inline-note settings-certificate-note"><a id="settings-certificate-link" href="/api/browser-mic/certificate" target="_blank" rel="noopener noreferrer">HTTPS certificate</a></p>
+                    <p class="settings-inline-note settings-certificate-note"><a id="settings-certificate-link" href="/api/certificate/local-root" target="_blank" rel="noopener noreferrer">HTTPS certificate</a></p>
                 </div>
             </section>
         </div>
@@ -569,13 +569,13 @@
                             <div class="measurement-actions measurement-actions-top">
                                 <div class="measurement-start-cluster">
                                     <button id="measurement-start" class="btn-primary" type="button">Start host-local sweep</button>
-                                    <div class="measurement-channel-chip-row" id="measurement-channel-chip-row" aria-label="Channel selection">
+                                    <div class="measurement-channel-chip-row" id="measurement-channel-chip-row" aria-label="Speaker selection">
                                         <button type="button" class="measurement-chip is-active" data-measurement-channel="left">L</button>
                                         <button type="button" class="measurement-chip" data-measurement-channel="right">R</button>
                                         <button type="button" class="measurement-chip" data-measurement-channel="stereo">Stereo</button>
                                     </div>
                                     <div class="field-group hidden">
-                                        <label for="measurement-channel-select">Channel</label>
+                                        <label for="measurement-channel-select">Speaker</label>
                                         <select id="measurement-channel-select" class="url-input">
                                             <option value="left">Left</option>
                                             <option value="right">Right</option>
@@ -594,15 +594,6 @@
                             </div>
                             <div class="effects-stack measurement-stack">
                                 <p id="measurement-mode-note" class="measurement-inline-note">Host-local capture on this system.</p>
-                                <div id="measurement-browser-help" class="measurement-browser-help hidden"></div>
-                                <div id="measurement-browser-input-group" class="field-group hidden">
-                                    <label for="measurement-browser-input-select">Browser microphone</label>
-                                    <select id="measurement-browser-input-select" class="url-input">
-                                        <option value="">Default browser microphone</option>
-                                    </select>
-                                    <button id="measurement-browser-input-refresh" class="btn-secondary" type="button">Detect / refresh browser microphones</button>
-                                    <p id="measurement-browser-input-note" class="measurement-inline-note">Pick the actual measurement mic here. Browser defaults are often the notebook onboard microphone.</p>
-                                </div>
                                 <div id="measurement-input-group" class="field-group hidden">
                                     <label for="measurement-input-select">Host capture input</label>
                                     <select id="measurement-input-select" class="url-input">

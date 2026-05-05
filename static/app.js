@@ -72,25 +72,17 @@ let state = {
         currentMeasurement: null,
         currentMeasurementSaved: false,
         currentMeasurementName: '',
-        browserInputs: [],
-        browserInputsLoading: false,
-        browserPermissionGranted: false,
-        selectedBrowserInputId: '',
         inputs: [],
         selectedInputId: '',
         selectedChannel: 'left',
         displaySmoothing: '1/6-oct',
-        captureMode: 'host-local',
         hostCaptureAvailable: false,
-        browserSupported: false,
-        browserInputLabel: '',
         modeNote: '',
         calibrationFilename: '',
         calibrationOptions: [],
         selectedCalibrationRef: '',
         calibrationUpdating: false,
         calibrationDeleting: false,
-        browserMeasurementPrimed: false,
         visibilityById: {},
         reviewVisibilityById: {},
         savedGroupOpen: false,
@@ -257,13 +249,7 @@ const elements = {
     measurementCloseBtn: document.getElementById('measurement-close'),
     measurementSetupCard: document.getElementById('measurement-setup-card'),
     measurementSetupToggleBtn: document.getElementById('measurement-setup-toggle'),
-    measurementModeSelect: document.getElementById('measurement-mode-select'),
     measurementModeNote: document.getElementById('measurement-mode-note'),
-    measurementBrowserHelp: document.getElementById('measurement-browser-help'),
-    measurementBrowserInputGroup: document.getElementById('measurement-browser-input-group'),
-    measurementBrowserInputSelect: document.getElementById('measurement-browser-input-select'),
-    measurementBrowserInputRefreshBtn: document.getElementById('measurement-browser-input-refresh'),
-    measurementBrowserInputNote: document.getElementById('measurement-browser-input-note'),
     measurementInputGroup: document.getElementById('measurement-input-group'),
     measurementInputSelect: document.getElementById('measurement-input-select'),
     measurementInputRefreshBtn: document.getElementById('measurement-input-refresh'),
@@ -755,7 +741,7 @@ function formatBluetoothModeStatus(bluetooth = {}) {
 
 function settingsCertificateUrl() {
     const host = String(window.location.host || window.location.hostname || '').trim();
-    return host ? `http://${host}/api/browser-mic/certificate` : '/api/browser-mic/certificate';
+    return host ? `http://${host}/api/certificate/local-root` : '/api/certificate/local-root';
 }
 
 function renderSettingsPanel() {
@@ -4287,172 +4273,21 @@ function getGraphMeasurementEntries() {
     return entries;
 }
 
-function preferredMeasurementHttpsHost() {
-    const host = String(window.location.hostname || '').trim();
-    if (!host || host === 'fxroute.local') return '192.168.178.104';
-    return host;
-}
-
-function browserMeasurementSupportIssue() {
-    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-    if (!window.isSecureContext) {
-        return `Browser mic needs HTTPS: https://${preferredMeasurementHttpsHost()}/`;
-    }
-    if (!navigator.mediaDevices?.getUserMedia) {
-        return 'This browser does not expose microphone capture via getUserMedia.';
-    }
-    if (!AudioContextClass) {
-        return 'This browser does not support Web Audio for the measurement recorder.';
-    }
-    return '';
-}
-
-function browserMeasurementSupported() {
-    return !browserMeasurementSupportIssue();
-}
-
-function measurementModeIsBrowser() {
-    return false;
-}
-
 function measurementModeReady() {
-    if (measurementModeIsBrowser()) return browserMeasurementSupported();
     return !!state.measurement.hostCaptureAvailable && !!state.measurement.selectedInputId;
 }
 
 function describeMeasurementScope(scopeNote = '') {
-    if (measurementModeIsBrowser()) {
-        return browserMeasurementSupported()
-            ? 'Browser mic ready. FXRoute will play the sweep on the active output and this browser will upload the capture.'
-            : browserMeasurementSupportIssue();
-    }
     if (scopeNote) return 'Host-local sweep ready. Full graph view is available after capture.';
     return 'Host-local sweep ready. Calibration file is optional.';
 }
 
 function measurementModeNoteText() {
-    if (measurementModeIsBrowser()) {
-        return browserMeasurementSupported()
-            ? 'Browser mic over HTTPS.'
-            : browserMeasurementSupportIssue();
-    }
     return 'Host-local capture on this system.';
-}
-
-function browserMeasurementHelpHtml() {
-    const host = preferredMeasurementHttpsHost();
-    const certUrl = `http://${host}/api/browser-mic/certificate`;
-    const httpsUrl = `https://${host}/`;
-    if (!measurementModeIsBrowser()) return '';
-    if (browserMeasurementSupported()) {
-        return `
-            <strong>Browser measurement path</strong>
-            <div class="measurement-inline-note">FXRoute plays the sweep, this browser records the mic, then uploads it for analysis.</div>
-            <div class="measurement-inline-note">If this browser showed a certificate warning earlier, install this host's cert here: <a href="${escapeHtml(certUrl)}" target="_blank" rel="noopener noreferrer">download cert</a>.</div>
-        `;
-    }
-    return `
-        <strong>Browser mic setup</strong>
-        <ol>
-            <li>Download the certificate: <a href="${escapeHtml(certUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(certUrl)}</a></li>
-            <li>Trust that certificate on the notebook/client.</li>
-            <li>Open FXRoute here: <a href="${escapeHtml(httpsUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(httpsUrl)}</a></li>
-        </ol>
-        <div class="measurement-inline-note">Browser microphone capture only works over trusted HTTPS.</div>
-    `;
-}
-
-function getUsableBrowserInputDevices(devices = []) {
-    const audioInputs = devices.filter(device => device.kind === 'audioinput');
-    const realInputs = audioInputs.filter(device => !['default', 'communications'].includes(device.deviceId));
-    const source = realInputs.length ? realInputs : audioInputs;
-    return source.map((device, index) => ({
-        id: String(device.deviceId || `browser-input-${index + 1}`),
-        label: String(device.label || `Browser microphone ${index + 1}`),
-        groupId: String(device.groupId || ''),
-    }));
-}
-
-function looksLikeMeasurementMicLabel(label = '') {
-    return /(umik|mini\s*dsp|measurement|usb)/i.test(String(label || ''));
-}
-
-function formatBrowserInputLabelShort(label = '') {
-    const text = String(label || '').trim();
-    if (!text) return '';
-    const parenMatch = text.match(/^Microphone\s*\((.+)\)$/i);
-    if (parenMatch?.[1]) return parenMatch[1].trim();
-    return text.replace(/^Microphone\s*/i, '').trim() || text;
 }
 
 function measurementHasCalibrationSelected() {
     return !!(state.measurement.calibrationFilename || state.measurement.selectedCalibrationRef);
-}
-
-function buildBrowserMeasurementAudioConstraints(requestedInputId = '') {
-    return {
-        ...(requestedInputId ? { deviceId: { exact: requestedInputId } } : {}),
-        echoCancellation: false,
-        noiseSuppression: false,
-        autoGainControl: false,
-        channelCount: { ideal: 1 },
-    };
-}
-
-function browserCalibrationWarningText() {
-    if (!measurementModeIsBrowser() || !measurementHasCalibrationSelected()) return '';
-    const selected = (state.measurement.browserInputs || []).find(input => input.id === state.measurement.selectedBrowserInputId);
-    const label = selected?.label || state.measurement.browserInputLabel || '';
-    if (!label) {
-        return 'A calibration file is selected. Make sure the browser microphone is really the same mic this calibration belongs to.';
-    }
-    if (looksLikeMeasurementMicLabel(label)) return '';
-    return `Calibration file is selected, but the browser microphone currently looks like “${label}”. If that is the notebook/onboard mic instead of the UMIK, the result will be misleading.`;
-}
-
-async function fetchBrowserInputs(requestPermission = false) {
-    if (!measurementModeIsBrowser() || !browserMeasurementSupported()) return;
-    if (!navigator.mediaDevices?.enumerateDevices) {
-        state.measurement.browserInputs = [];
-        state.measurement.selectedBrowserInputId = '';
-        renderMeasurementPanel();
-        return;
-    }
-    state.measurement.browserInputsLoading = true;
-    renderMeasurementPanel();
-    let tempStream = null;
-    try {
-        const existingDevices = await navigator.mediaDevices.enumerateDevices().catch(() => []);
-        const existingInputs = getUsableBrowserInputDevices(existingDevices);
-        const requestedInputId = existingInputs.some(input => input.id === state.measurement.selectedBrowserInputId)
-            ? state.measurement.selectedBrowserInputId
-            : (existingInputs.find(input => looksLikeMeasurementMicLabel(input.label))?.id || '');
-        if (requestPermission) {
-            tempStream = await navigator.mediaDevices.getUserMedia({
-                audio: buildBrowserMeasurementAudioConstraints(requestedInputId),
-            });
-            state.measurement.browserPermissionGranted = true;
-        }
-        const devices = await navigator.mediaDevices.enumerateDevices();
-        const inputs = getUsableBrowserInputDevices(devices);
-        state.measurement.browserInputs = inputs;
-        const preferred = inputs.find(input => looksLikeMeasurementMicLabel(input.label));
-        state.measurement.selectedBrowserInputId = inputs.some(input => input.id === state.measurement.selectedBrowserInputId)
-            ? state.measurement.selectedBrowserInputId
-            : (preferred?.id || inputs[0]?.id || '');
-        if (!state.measurement.startInFlight && !state.measurement.activeJobId) {
-            state.measurement.statusText = describeMeasurementScope();
-        }
-    } catch (error) {
-        console.error('fetchBrowserInputs failed', error);
-        if (requestPermission) {
-            state.measurement.statusText = error?.message || 'Browser microphone permission was not granted.';
-        }
-    } finally {
-        tempStream?.getTracks?.().forEach(track => track.stop());
-        state.measurement.browserInputsLoading = false;
-        renderMeasurementPanel();
-    }
 }
 
 function applyMeasurementCalibrationState(data) {
@@ -4595,7 +4430,7 @@ async function fetchMeasurementInputs() {
         state.measurement.captureAvailable = state.measurement.hostCaptureAvailable;
         state.measurement.modeNote = measurementModeNoteText();
         if (!state.measurement.startInFlight && !state.measurement.activeJobId) {
-            if (!state.measurement.hostCaptureAvailable && !measurementModeIsBrowser()) {
+            if (!state.measurement.hostCaptureAvailable) {
                 state.measurement.statusText = inputs.length
                     ? 'No available capture source is ready right now.'
                     : 'No PipeWire capture sources are currently visible on this host.';
@@ -4610,7 +4445,7 @@ async function fetchMeasurementInputs() {
         state.measurement.hostCaptureAvailable = false;
         state.measurement.captureAvailable = false;
         state.measurement.modeNote = measurementModeNoteText();
-        state.measurement.statusText = measurementModeIsBrowser() ? describeMeasurementScope() : (error.message || 'Failed to load capture inputs');
+        state.measurement.statusText = error.message || 'Failed to load capture inputs';
     } finally {
         state.measurement.inputsLoading = false;
         renderMeasurementPanel();
@@ -4619,7 +4454,6 @@ async function fetchMeasurementInputs() {
 
 function toggleMeasurementPanel(forceOpen = null) {
     if (!elements.measurementPanel) return;
-    state.measurement.browserSupported = browserMeasurementSupported();
     state.measurement.modeNote = measurementModeNoteText();
     const shouldOpen = forceOpen === null ? elements.measurementPanel.classList.contains('hidden') : !!forceOpen;
     state.measurement.open = shouldOpen;
@@ -4973,530 +4807,6 @@ function sleep(ms) {
     return new Promise(resolve => window.setTimeout(resolve, ms));
 }
 
-function getMeasurementAudioContextClass() {
-    return window.AudioContext || window.webkitAudioContext || null;
-}
-
-function createMeasurementWavBlob(frames, sampleRate, channelCount) {
-    const totalFrames = frames.reduce((sum, frame) => sum + (frame[0]?.length || 0), 0);
-    const bytesPerSample = 2;
-    const blockAlign = channelCount * bytesPerSample;
-    const buffer = new ArrayBuffer(44 + totalFrames * blockAlign);
-    const view = new DataView(buffer);
-    const writeString = (offset, value) => {
-        for (let i = 0; i < value.length; i += 1) view.setUint8(offset + i, value.charCodeAt(i));
-    };
-    writeString(0, 'RIFF');
-    view.setUint32(4, 36 + totalFrames * blockAlign, true);
-    writeString(8, 'WAVE');
-    writeString(12, 'fmt ');
-    view.setUint32(16, 16, true);
-    view.setUint16(20, 1, true);
-    view.setUint16(22, channelCount, true);
-    view.setUint32(24, sampleRate, true);
-    view.setUint32(28, sampleRate * blockAlign, true);
-    view.setUint16(32, blockAlign, true);
-    view.setUint16(34, bytesPerSample * 8, true);
-    writeString(36, 'data');
-    view.setUint32(40, totalFrames * blockAlign, true);
-    let offset = 44;
-    frames.forEach((frame) => {
-        const frameLength = frame[0]?.length || 0;
-        for (let i = 0; i < frameLength; i += 1) {
-            for (let channel = 0; channel < channelCount; channel += 1) {
-                const source = frame[Math.min(channel, frame.length - 1)] || frame[0];
-                const sample = Math.max(-1, Math.min(1, Number(source?.[i] || 0)));
-                view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
-                offset += 2;
-            }
-        }
-    });
-    return new Blob([buffer], { type: 'audio/wav' });
-}
-
-function buildMeasurementRecorderWorkletSource() {
-    return `
-        class FxrouteMeasurementRecorder extends AudioWorkletProcessor {
-            process(inputs) {
-                const input = inputs[0] || [];
-                const copied = input.map((channel) => new Float32Array(channel));
-                let peak = 0;
-                for (const channel of copied) {
-                    for (let index = 0; index < channel.length; index += 1) {
-                        const value = Math.abs(channel[index] || 0);
-                        if (value > peak) peak = value;
-                    }
-                }
-                this.port.postMessage({ channels: copied, peak }, copied.map((channel) => channel.buffer));
-                return true;
-            }
-        }
-        registerProcessor('fxroute-measurement-recorder', FxrouteMeasurementRecorder);
-    `;
-}
-
-function collectBrowserCaptureMeta(track, recorder) {
-    const trackSettings = track?.getSettings?.() || {};
-    const trackConstraints = track?.getConstraints?.() || {};
-    const trackCapabilities = track?.getCapabilities?.() || {};
-    return {
-        inputLabel: track?.label || 'Browser microphone',
-        requestedInputId: state.measurement.selectedBrowserInputId || '',
-        secureContext: !!window.isSecureContext,
-        trackSettings: {
-            deviceId: trackSettings.deviceId || '',
-            channelCount: Number(trackSettings.channelCount || 0) || null,
-            sampleRate: Number(trackSettings.sampleRate || 0) || null,
-            echoCancellation: typeof trackSettings.echoCancellation === 'boolean' ? trackSettings.echoCancellation : null,
-            noiseSuppression: typeof trackSettings.noiseSuppression === 'boolean' ? trackSettings.noiseSuppression : null,
-            autoGainControl: typeof trackSettings.autoGainControl === 'boolean' ? trackSettings.autoGainControl : null,
-            latency: Number.isFinite(Number(trackSettings.latency)) ? Number(trackSettings.latency) : null,
-            sampleSize: Number(trackSettings.sampleSize || 0) || null,
-        },
-        trackConstraints,
-        trackCapabilities,
-        recorder: {
-            processingModel: recorder?.processingModel || '',
-            sampleRate: Number(recorder?.sampleRate || 0) || null,
-            channelCount: Number(recorder?.channelCount || 0) || null,
-            baseLatency: Number.isFinite(Number(recorder?.baseLatency)) ? Number(recorder.baseLatency) : null,
-            outputLatency: Number.isFinite(Number(recorder?.outputLatency)) ? Number(recorder.outputLatency) : null,
-            contextState: recorder?.contextState || '',
-            inputChannelCount: Number(recorder?.inputChannelCount || 0) || null,
-        },
-        browser: {
-            userAgent: navigator.userAgent || '',
-            platform: navigator.userAgentData?.platform || navigator.platform || '',
-            language: navigator.language || '',
-            visibilityState: document.visibilityState || '',
-        },
-    };
-}
-
-function getBrowserCaptureBlockingIssue(captureMeta = {}) {
-    const settings = captureMeta.trackSettings || {};
-    if (captureMeta.requestedInputId && settings.deviceId && captureMeta.requestedInputId !== settings.deviceId) {
-        return 'Browser measurement refused to start because the browser opened a different microphone than the one selected in FXRoute.';
-    }
-    if (settings.echoCancellation === true) return 'Browser measurement refused to start because echo cancellation is still enabled on the mic path.';
-    if (settings.noiseSuppression === true) return 'Browser measurement refused to start because noise suppression is still enabled on the mic path.';
-    if (settings.autoGainControl === true) return 'Browser measurement refused to start because automatic gain control is still enabled on the mic path.';
-    if (settings.sampleRate && settings.sampleRate !== 48000) return `Browser measurement refused to start because the browser mic is actually running at ${settings.sampleRate} Hz instead of 48 kHz.`;
-    return '';
-}
-
-function getBrowserCaptureCaution(captureMeta = {}) {
-    const recorder = captureMeta.recorder || {};
-    if (recorder.processingModel && recorder.processingModel !== 'audio-worklet') {
-        return 'Browser recorder fell back to ScriptProcessor, so timing may still be less stable than we want.';
-    }
-    return '';
-}
-
-function analyzeMeasurementRecorderFrames(frames = [], inputChannels = 1) {
-    const channelCount = Math.max(1, Number(inputChannels || 1) || 1);
-    const perChannelPeak = Array.from({ length: channelCount }, () => 0);
-    const perChannelEnergy = Array.from({ length: channelCount }, () => 0);
-    const perChannelSamples = Array.from({ length: channelCount }, () => 0);
-    let overallPeak = 0;
-    let overallEnergy = 0;
-    let overallSamples = 0;
-
-    for (const frameSet of frames) {
-        if (!Array.isArray(frameSet)) continue;
-        for (let channelIndex = 0; channelIndex < channelCount; channelIndex += 1) {
-            const channel = frameSet[channelIndex];
-            if (!(channel instanceof Float32Array) && !Array.isArray(channel)) continue;
-            const length = Number(channel.length || 0);
-            for (let sampleIndex = 0; sampleIndex < length; sampleIndex += 1) {
-                const sample = Number(channel[sampleIndex] || 0);
-                const abs = Math.abs(sample);
-                if (abs > perChannelPeak[channelIndex]) perChannelPeak[channelIndex] = abs;
-                if (abs > overallPeak) overallPeak = abs;
-                perChannelEnergy[channelIndex] += sample * sample;
-                perChannelSamples[channelIndex] += 1;
-                overallEnergy += sample * sample;
-                overallSamples += 1;
-            }
-        }
-    }
-
-    const perChannelRms = perChannelEnergy.map((energy, index) => {
-        const samples = perChannelSamples[index] || 0;
-        return samples > 0 ? Math.sqrt(energy / samples) : 0;
-    });
-    const overallRms = overallSamples > 0 ? Math.sqrt(overallEnergy / overallSamples) : 0;
-
-    return {
-        peak: overallPeak,
-        rms: overallRms,
-        framesCaptured: frames.length,
-        totalSamples: overallSamples,
-        perChannelPeak,
-        perChannelRms,
-        perChannelSamples,
-    };
-}
-
-async function createBrowserMeasurementRecorder(stream, preferredChannels = 1) {
-    const AudioContextClass = getMeasurementAudioContextClass();
-    if (!AudioContextClass) throw new Error('Web Audio is unavailable in this browser');
-    const audioContext = new AudioContextClass({ sampleRate: 48000, latencyHint: 'interactive' });
-    if (audioContext.state === 'suspended') {
-        await audioContext.resume().catch(() => {});
-    }
-    const source = audioContext.createMediaStreamSource(stream);
-    const inputChannels = Math.max(1, Math.min(2, source.channelCount || preferredChannels || 1));
-    const silence = audioContext.createGain();
-    silence.gain.value = 0;
-    const frames = [];
-    let peak = 0;
-    let stopImpl = null;
-    let processingModel = '';
-
-    if (audioContext.audioWorklet?.addModule && typeof AudioWorkletNode !== 'undefined') {
-        const moduleUrl = URL.createObjectURL(new Blob([buildMeasurementRecorderWorkletSource()], { type: 'application/javascript' }));
-        try {
-            await audioContext.audioWorklet.addModule(moduleUrl);
-            const node = new AudioWorkletNode(audioContext, 'fxroute-measurement-recorder', {
-                numberOfInputs: 1,
-                numberOfOutputs: 1,
-                channelCount: inputChannels,
-                channelCountMode: 'explicit',
-                channelInterpretation: 'speakers',
-            });
-            node.port.onmessage = (event) => {
-                const channels = Array.isArray(event.data?.channels) ? event.data.channels.map((channel) => new Float32Array(channel)) : [];
-                if (channels.length) frames.push(channels);
-                peak = Math.max(peak, Number(event.data?.peak || 0));
-            };
-            source.connect(node);
-            node.connect(silence);
-            silence.connect(audioContext.destination);
-            processingModel = 'audio-worklet';
-            stopImpl = async () => {
-                source.disconnect();
-                node.disconnect();
-                silence.disconnect();
-                node.port.onmessage = null;
-                URL.revokeObjectURL(moduleUrl);
-                const sampleRate = audioContext.sampleRate || 48000;
-                await audioContext.close().catch(() => {});
-                const analysis = analyzeMeasurementRecorderFrames(frames, inputChannels);
-                return {
-                    blob: createMeasurementWavBlob(frames, sampleRate, inputChannels),
-                    stats: {
-                        peak: Math.max(peak, Number(analysis.peak || 0)),
-                        rms: Number(analysis.rms || 0),
-                        framesCaptured: Number(analysis.framesCaptured || 0),
-                        totalSamples: Number(analysis.totalSamples || 0),
-                        perChannelPeak: Array.isArray(analysis.perChannelPeak) ? analysis.perChannelPeak : [],
-                        perChannelRms: Array.isArray(analysis.perChannelRms) ? analysis.perChannelRms : [],
-                        perChannelSamples: Array.isArray(analysis.perChannelSamples) ? analysis.perChannelSamples : [],
-                        processingModel: 'audio-worklet',
-                        sampleRate,
-                        channelCount: inputChannels,
-                    },
-                };
-            };
-        } catch (error) {
-            console.warn('AudioWorklet recorder setup failed, falling back to ScriptProcessor', error);
-            URL.revokeObjectURL(moduleUrl);
-        }
-    }
-
-    if (!stopImpl) {
-        const processor = audioContext.createScriptProcessor(4096, inputChannels, inputChannels);
-        processor.onaudioprocess = (event) => {
-            const channelFrames = [];
-            for (let channel = 0; channel < inputChannels; channel += 1) {
-                const data = new Float32Array(event.inputBuffer.getChannelData(Math.min(channel, event.inputBuffer.numberOfChannels - 1)));
-                channelFrames.push(data);
-                for (let index = 0; index < data.length; index += 1) {
-                    peak = Math.max(peak, Math.abs(data[index] || 0));
-                }
-            }
-            frames.push(channelFrames);
-        };
-        source.connect(processor);
-        processor.connect(silence);
-        silence.connect(audioContext.destination);
-        processingModel = 'script-processor';
-        stopImpl = async () => {
-            processor.disconnect();
-            silence.disconnect();
-            source.disconnect();
-            processor.onaudioprocess = null;
-            const sampleRate = audioContext.sampleRate || 48000;
-            await audioContext.close().catch(() => {});
-            const analysis = analyzeMeasurementRecorderFrames(frames, inputChannels);
-            return {
-                blob: createMeasurementWavBlob(frames, sampleRate, inputChannels),
-                stats: {
-                    peak: Math.max(peak, Number(analysis.peak || 0)),
-                    rms: Number(analysis.rms || 0),
-                    framesCaptured: Number(analysis.framesCaptured || 0),
-                    totalSamples: Number(analysis.totalSamples || 0),
-                    perChannelPeak: Array.isArray(analysis.perChannelPeak) ? analysis.perChannelPeak : [],
-                    perChannelRms: Array.isArray(analysis.perChannelRms) ? analysis.perChannelRms : [],
-                    perChannelSamples: Array.isArray(analysis.perChannelSamples) ? analysis.perChannelSamples : [],
-                    processingModel: 'script-processor',
-                    sampleRate,
-                    channelCount: inputChannels,
-                },
-            };
-        };
-    }
-
-    return {
-        sampleRate: audioContext.sampleRate || 48000,
-        channelCount: inputChannels,
-        processingModel,
-        baseLatency: Number.isFinite(Number(audioContext.baseLatency)) ? Number(audioContext.baseLatency) : null,
-        outputLatency: Number.isFinite(Number(audioContext.outputLatency)) ? Number(audioContext.outputLatency) : null,
-        contextState: audioContext.state || '',
-        inputChannelCount: inputChannels,
-        async stop() {
-            const result = await stopImpl();
-            this.processingModel = result.stats.processingModel;
-            this.sampleRate = result.stats.sampleRate;
-            this.channelCount = result.stats.channelCount;
-            this.contextState = 'closed';
-            return result;
-        },
-    };
-}
-
-async function primeBrowserMeasurementRecorder(stream, preferredChannels = 1) {
-    const primer = await createBrowserMeasurementRecorder(stream, preferredChannels);
-    await sleep(700);
-    await primer.stop();
-    state.measurement.browserMeasurementPrimed = true;
-}
-
-function getBrowserMeasurementAnalysis(job = {}) {
-    return job?.result?.analysis || job?.result?.measurement?.analysis || {};
-}
-
-function browserMeasurementDriftPpm(job = {}) {
-    return Number(getBrowserMeasurementAnalysis(job)?.clock?.drift_ppm || 0) || 0;
-}
-
-function browserMeasurementNormalizedByDb(job = {}) {
-    return Number(getBrowserMeasurementAnalysis(job)?.normalized_by_db || 0) || 0;
-}
-
-function browserMeasurementClockCompensated(job = {}) {
-    return !!getBrowserMeasurementAnalysis(job)?.clock?.compensated;
-}
-
-function browserMeasurementQualityCodes(job = {}) {
-    const items = getBrowserMeasurementAnalysis(job)?.quality_checks?.items || [];
-    return items.map(item => String(item?.code || '').trim()).filter(Boolean);
-}
-
-function browserMeasurementHasClockDriftWarning(job = {}) {
-    return browserMeasurementQualityCodes(job).includes('clock-drift-high');
-}
-
-function browserMeasurementQualityErrorCodes(job = {}) {
-    const items = getBrowserMeasurementAnalysis(job)?.quality_checks?.items || [];
-    return items
-        .filter(item => String(item?.level || '').trim() === 'error')
-        .map(item => String(item?.code || '').trim())
-        .filter(Boolean);
-}
-
-function browserMeasurementRetryMessage(job = {}) {
-    return String(job?.message || job?.result?.message || '').toLowerCase();
-}
-
-function browserMeasurementLowLevelHint(job = {}) {
-    const analysis = getBrowserMeasurementAnalysis(job);
-    const items = analysis?.quality_checks?.items || [];
-    const lowLevelItem = items.find(item => String(item?.code || '').trim() === 'capture-level-low');
-    if (lowLevelItem?.message) return String(lowLevelItem.message).trim();
-    const audit = analysis?.capture_audit || {};
-    const peakDbfs = Number(audit?.peak_dbfs);
-    const rmsDbfs = Number(audit?.rms_dbfs);
-    if (!Number.isFinite(peakDbfs) && !Number.isFinite(rmsDbfs)) return '';
-    const pieces = [];
-    if (Number.isFinite(peakDbfs)) pieces.push(`peak ${peakDbfs.toFixed(2)} dBFS`);
-    if (Number.isFinite(rmsDbfs)) pieces.push(`rms ${rmsDbfs.toFixed(2)} dBFS`);
-    if (!pieces.length) return '';
-    const errorCodes = browserMeasurementQualityErrorCodes(job);
-    const syncTimingErrors = ['weak-start-alignment', 'weak-end-alignment', 'insufficient-sync-bursts', 'sync-cluster-a-insufficient', 'sync-cluster-b-insufficient', 'sync-order-invalid', 'sync-fit-residual-high', 'sync-burst-residual-high', 'corrected-sweep-weak'];
-    if (errorCodes.some(code => syncTimingErrors.includes(code))) {
-        return `Browser capture level did not look obviously too low (${pieces.join(', ')}); this run failed on sync/timing confidence instead.`;
-    }
-    return `Latest browser capture stats: ${pieces.join(', ')}.`;
-}
-
-function browserMeasurementShouldRetry(job = {}) {
-    const driftPpm = Math.abs(browserMeasurementDriftPpm(job));
-    const normalizedByDb = browserMeasurementNormalizedByDb(job);
-    const compensated = browserMeasurementClockCompensated(job);
-    const qualityCodes = browserMeasurementQualityCodes(job);
-    const qualityErrorCodes = browserMeasurementQualityErrorCodes(job);
-    const retryMessage = browserMeasurementRetryMessage(job);
-    if (retryMessage.includes('should be retried automatically')) return true;
-    const retryableSyncCodes = ['weak-start-alignment', 'weak-end-alignment', 'insufficient-sync-bursts', 'sync-cluster-a-insufficient', 'sync-cluster-b-insufficient', 'sync-order-invalid', 'sync-fit-residual-high', 'sync-burst-residual-high', 'corrected-sweep-weak', 'browser-clock-drift-excessive'];
-    if (qualityErrorCodes.length && qualityErrorCodes.every(code => retryableSyncCodes.includes(code))) return true;
-    if (browserMeasurementHasClockDriftWarning(job)) return true;
-    if (driftPpm > 5000) return true;
-    if (compensated && driftPpm > 1500) return true;
-    if (compensated && normalizedByDb < -42) return true;
-    if (normalizedByDb < -46 && (qualityCodes.includes('soft-start-alignment') || qualityCodes.includes('soft-end-alignment'))) return true;
-    return false;
-}
-
-async function runBrowserMeasurementAttempt({
-    stream,
-    track,
-    browserInputLabel,
-    preferredRecorderChannels,
-    browserCaptureCaution,
-    attemptIndex = 0,
-    maxAttempts = 3,
-}) {
-    const recorder = await createBrowserMeasurementRecorder(stream, preferredRecorderChannels);
-    const browserCaptureMeta = collectBrowserCaptureMeta(track, recorder);
-    const blockingIssue = getBrowserCaptureBlockingIssue(browserCaptureMeta);
-    if (blockingIssue) throw new Error(blockingIssue);
-
-    const formData = new FormData();
-    formData.append('channel', state.measurement.selectedChannel || 'left');
-    const calibrationFile = elements.measurementCalibrationFile?.files?.[0];
-    if (calibrationFile) {
-        formData.append('calibration_file', calibrationFile);
-    } else if (state.measurement.selectedCalibrationRef) {
-        formData.append('calibration_ref', state.measurement.selectedCalibrationRef);
-    }
-
-    state.measurement.statusText = attemptIndex > 0
-        ? `Browser capture timing was unstable. Retrying automatically (${attemptIndex + 1}/${maxAttempts})…`
-        : (browserCaptureCaution || 'Browser microphone armed. Preparing FXRoute sweep…');
-    renderMeasurementPanel();
-    const startResp = await fetch('/api/measurements/browser/start', { method: 'POST', body: formData });
-    const startData = await startResp.json().catch(() => ({}));
-    if (!startResp.ok) throw new Error(startData.detail || 'Failed to start browser measurement');
-
-    const job = startData.job || {};
-    state.measurement.activeJobId = String(job.id || '');
-    state.measurement.statusText = String(job.message || 'Recording browser microphone…');
-    renderMeasurementPanel();
-
-    const captureInfo = job.browser_capture || {};
-    const recordDurationMs = Number(captureInfo.record_duration_ms || 11000);
-    await sleep(recordDurationMs);
-    state.measurement.statusText = 'Uploading browser capture…';
-    renderMeasurementPanel();
-
-    const { blob: captureBlob, stats: captureStats } = await recorder.stop();
-    browserCaptureMeta.recorder = {
-        ...(browserCaptureMeta.recorder || {}),
-        processingModel: captureStats?.processingModel || browserCaptureMeta.recorder?.processingModel || '',
-        sampleRate: Number(captureStats?.sampleRate || browserCaptureMeta.recorder?.sampleRate || 0) || null,
-        channelCount: Number(captureStats?.channelCount || browserCaptureMeta.recorder?.channelCount || 0) || null,
-        peak: Number.isFinite(Number(captureStats?.peak)) ? Number(captureStats.peak) : null,
-        rms: Number.isFinite(Number(captureStats?.rms)) ? Number(captureStats.rms) : null,
-        framesCaptured: Number.isFinite(Number(captureStats?.framesCaptured)) ? Number(captureStats.framesCaptured) : null,
-        totalSamples: Number.isFinite(Number(captureStats?.totalSamples)) ? Number(captureStats.totalSamples) : null,
-        perChannelPeak: Array.isArray(captureStats?.perChannelPeak) ? captureStats.perChannelPeak.map(value => Number(value || 0)) : [],
-        perChannelRms: Array.isArray(captureStats?.perChannelRms) ? captureStats.perChannelRms.map(value => Number(value || 0)) : [],
-        perChannelSamples: Array.isArray(captureStats?.perChannelSamples) ? captureStats.perChannelSamples.map(value => Number(value || 0)) : [],
-    };
-    console.info('FXRoute browser measurement recorder stats', browserCaptureMeta.recorder);
-    const completeForm = new FormData();
-    completeForm.append('job_id', state.measurement.activeJobId);
-    completeForm.append('browser_input_label', browserInputLabel);
-    completeForm.append('browser_capture_meta', JSON.stringify(browserCaptureMeta));
-    completeForm.append('capture_file', captureBlob, 'browser-measurement.wav');
-    const completeResp = await fetch('/api/measurements/browser/complete', { method: 'POST', body: completeForm });
-    const completeData = await completeResp.json().catch(() => ({}));
-    if (!completeResp.ok) throw new Error(completeData.detail || 'Failed to upload browser capture');
-    return completeData.job || {};
-}
-
-async function startBrowserMeasurement() {
-    if (!browserMeasurementSupported()) {
-        throw new Error('Browser microphone capture is not supported in this browser');
-    }
-
-    const calibrationWarning = browserCalibrationWarningText();
-    if (calibrationWarning && !window.confirm(`${calibrationWarning}\n\nContinue anyway?`)) {
-        state.measurement.statusText = 'Browser measurement cancelled so you can pick the correct microphone.';
-        renderMeasurementPanel();
-        return;
-    }
-
-    state.measurement.statusText = 'Requesting browser microphone permission…';
-    renderMeasurementPanel();
-
-    const stream = await navigator.mediaDevices.getUserMedia({
-        audio: buildBrowserMeasurementAudioConstraints(state.measurement.selectedBrowserInputId),
-    });
-    const track = stream.getAudioTracks?.()[0] || null;
-    const browserInputLabel = track?.label || 'Browser microphone';
-    const browserTrackSettings = track?.getSettings?.() || {};
-    const preferredRecorderChannels = Math.max(1, Math.min(2, Number(browserTrackSettings.channelCount || 1) || 1));
-    state.measurement.browserInputLabel = browserInputLabel;
-    state.measurement.browserPermissionGranted = true;
-    if (!state.measurement.browserMeasurementPrimed) {
-        state.measurement.statusText = measurementHasCalibrationSelected()
-            ? 'Priming browser capture path before calibrated sweep…'
-            : 'Priming browser capture path before sweep…';
-        renderMeasurementPanel();
-        await primeBrowserMeasurementRecorder(stream, preferredRecorderChannels);
-    }
-    const browserCaptureCaution = getBrowserCaptureCaution(collectBrowserCaptureMeta(track, {
-        sampleRate: 48000,
-        channelCount: preferredRecorderChannels,
-        processingModel: '',
-    }));
-    await fetchBrowserInputs(false);
-
-    try {
-        let completedJob = null;
-        const maxAttempts = 3;
-        for (let attemptIndex = 0; attemptIndex < maxAttempts; attemptIndex += 1) {
-            completedJob = await runBrowserMeasurementAttempt({
-                stream,
-                track,
-                browserInputLabel,
-                preferredRecorderChannels,
-                browserCaptureCaution,
-                attemptIndex,
-                maxAttempts,
-            });
-            if (!browserMeasurementShouldRetry(completedJob)) {
-                break;
-            }
-            if (attemptIndex === maxAttempts - 1) {
-                const lowLevelHint = browserMeasurementLowLevelHint(completedJob || {});
-                throw new Error(lowLevelHint
-                    ? `Browser measurement stayed unstable across all retry attempts. Discarded this capture; please run it once more. ${lowLevelHint}`
-                    : 'Browser measurement stayed unstable across all retry attempts. Discarded this capture; please run it once more.');
-            }
-            state.measurement.activeJobId = '';
-            state.measurement.statusText = 'Browser capture sync scaffold was unstable; discarding this run and retrying automatically…';
-            renderMeasurementPanel();
-            await sleep(400);
-        }
-
-        state.measurement.activeJobId = '';
-        state.measurement.currentMeasurement = normalizeMeasurementEntry(completedJob?.result?.measurement || {}, 0);
-        state.measurement.currentMeasurementName = state.measurement.currentMeasurement.name || '';
-        state.measurement.currentMeasurementSaved = false;
-        state.measurement.reviewVisibilityById[state.measurement.currentMeasurement.id] = !!state.measurement.currentMeasurement.review_traces?.length;
-        state.measurement.statusText = String(completedJob?.message || 'Browser microphone measurement finished.');
-        renderMeasurementPanel();
-        showToast(browserMeasurementShouldRetry(completedJob || {}) ? 'Measurement finished, but timing still looked unstable' : 'Measurement finished', browserMeasurementShouldRetry(completedJob || {}) ? 'warning' : 'success');
-    } finally {
-        stream.getTracks().forEach((streamTrack) => streamTrack.stop());
-    }
-}
-
 async function startHostMeasurement() {
     if (!state.measurement.hostCaptureAvailable || !state.measurement.selectedInputId) {
         state.measurement.statusText = 'No usable host capture source is available for a real measurement on this host.';
@@ -5532,11 +4842,8 @@ async function startHostMeasurement() {
 
 async function startMeasurement() {
     if (state.measurement.startInFlight || state.measurement.activeJobId) return;
-    state.measurement.browserSupported = browserMeasurementSupported();
     if (!measurementModeReady()) {
-        state.measurement.statusText = measurementModeIsBrowser()
-            ? 'Browser microphone capture is unavailable in this browser.'
-            : 'No usable host capture source is available for a real measurement on this host.';
+        state.measurement.statusText = 'No usable host capture source is available for a real measurement on this host.';
         renderMeasurementPanel();
         showToast(state.measurement.statusText, 'error');
         return;
@@ -5548,8 +4855,7 @@ async function startMeasurement() {
     renderMeasurementPanel();
 
     try {
-        if (measurementModeIsBrowser()) await startBrowserMeasurement();
-        else await startHostMeasurement();
+        await startHostMeasurement();
     } catch (error) {
         console.error('startMeasurement failed', error);
         state.measurement.statusText = error.message || 'Failed to start measurement';
@@ -5712,9 +5018,7 @@ async function deleteSelectedMeasurements() {
 function renderMeasurementPanel() {
     if (!elements.measurementSummary || !elements.measurementList) return;
     const measurementState = state.measurement || {};
-    measurementState.browserSupported = browserMeasurementSupported();
     measurementState.modeNote = measurementModeNoteText();
-    const usingBrowser = measurementModeIsBrowser();
     const current = getCurrentMeasurementEntry();
     const measurements = (measurementState.measurements || []).filter(measurement => measurement.id !== current?.id);
     const graphEntries = getGraphMeasurementEntries();
@@ -5727,10 +5031,6 @@ function renderMeasurementPanel() {
     if (elements.measurementSetupToggleBtn) {
         elements.measurementSetupToggleBtn.textContent = measurementState.setupOpen ? 'Close setup' : 'Setup';
         elements.measurementSetupToggleBtn.disabled = measurementState.startInFlight;
-    }
-    if (elements.measurementModeSelect) {
-        elements.measurementModeSelect.value = measurementState.captureMode || 'host-local';
-        elements.measurementModeSelect.disabled = measurementState.startInFlight;
     }
     if (elements.measurementModeNote) {
         elements.measurementModeNote.textContent = measurementState.modeNote || '';
@@ -5746,43 +5046,15 @@ function renderMeasurementPanel() {
         button.classList.toggle('is-active', active);
         button.setAttribute('aria-pressed', active ? 'true' : 'false');
     });
-    if (elements.measurementBrowserHelp) {
-        const helpHtml = browserMeasurementHelpHtml();
-        elements.measurementBrowserHelp.classList.toggle('hidden', !helpHtml);
-        elements.measurementBrowserHelp.innerHTML = helpHtml;
-    }
-    if (elements.measurementBrowserInputGroup) {
-        elements.measurementBrowserInputGroup.classList.toggle('hidden', !usingBrowser);
-    }
-    if (elements.measurementBrowserInputSelect) {
-        const browserInputs = measurementState.browserInputs && measurementState.browserInputs.length
-            ? measurementState.browserInputs
-            : [{ id: '', label: measurementState.browserInputsLoading ? 'Detecting browser microphones…' : 'Default browser microphone' }];
-        elements.measurementBrowserInputSelect.innerHTML = browserInputs.map(input => `<option value="${escapeHtml(input.id)}" ${input.id === measurementState.selectedBrowserInputId ? 'selected' : ''}>${escapeHtml(input.label)}</option>`).join('');
-        elements.measurementBrowserInputSelect.disabled = !usingBrowser || measurementState.startInFlight || measurementState.browserInputsLoading;
-    }
-    if (elements.measurementBrowserInputRefreshBtn) {
-        elements.measurementBrowserInputRefreshBtn.disabled = !usingBrowser || measurementState.startInFlight || measurementState.browserInputsLoading || !measurementState.browserSupported;
-        elements.measurementBrowserInputRefreshBtn.textContent = measurementState.browserInputsLoading ? 'Detecting…' : 'Detect / refresh browser microphones';
-    }
-    if (elements.measurementBrowserInputNote) {
-        const calibrationWarning = browserCalibrationWarningText();
-        const selected = (measurementState.browserInputs || []).find(input => input.id === measurementState.selectedBrowserInputId);
-        const selectedLabel = selected?.label || measurementState.browserInputLabel || '';
-        elements.measurementBrowserInputNote.textContent = calibrationWarning
-            || (selectedLabel
-                ? `Selected: ${formatBrowserInputLabelShort(selectedLabel)}`
-                : 'Pick the actual measurement mic here. Browser defaults are often the notebook onboard microphone.');
-    }
     if (elements.measurementInputGroup) {
-        elements.measurementInputGroup.classList.toggle('hidden', usingBrowser);
+        elements.measurementInputGroup.classList.remove('hidden');
     }
     if (elements.measurementInputSelect) {
         const inputs = measurementState.inputs && measurementState.inputs.length
             ? measurementState.inputs
             : [{ id: '', label: measurementState.inputsLoading ? 'Loading…' : 'No host capture inputs available' }];
         elements.measurementInputSelect.innerHTML = inputs.map(input => `<option value="${escapeHtml(input.id)}" ${input.id === measurementState.selectedInputId ? 'selected' : ''}>${escapeHtml(input.label)}</option>`).join('');
-        elements.measurementInputSelect.disabled = usingBrowser || measurementState.inputsLoading || !measurementState.hostCaptureAvailable;
+        elements.measurementInputSelect.disabled = measurementState.inputsLoading || !measurementState.hostCaptureAvailable;
     }
     if (elements.measurementInputRefreshBtn) {
         elements.measurementInputRefreshBtn.disabled = measurementState.startInFlight || measurementState.inputsLoading;
@@ -5822,16 +5094,10 @@ function renderMeasurementPanel() {
         const activeJobRunning = !!measurementState.activeJobId;
         elements.measurementStartBtn.disabled = measurementState.calibrationUpdating || measurementState.calibrationDeleting
             ? true
-            : (usingBrowser
-                ? (!activeJobRunning && !measurementState.browserSupported)
-                : (!activeJobRunning && (measurementState.inputsLoading || !measurementState.hostCaptureAvailable)));
+            : (!activeJobRunning && (measurementState.inputsLoading || !measurementState.hostCaptureAvailable));
         elements.measurementStartBtn.textContent = activeJobRunning
             ? 'Cancel measurement'
-            : (measurementState.startInFlight
-                ? 'Starting…'
-                : (usingBrowser
-                    ? (measurementState.browserSupported ? 'Start browser sweep' : 'Browser mic needs HTTPS')
-                    : 'Start host-local sweep'));
+            : (measurementState.startInFlight ? 'Starting…' : 'Start host-local sweep');
     }
     if (elements.measurementSaveBtn) {
         elements.measurementSaveBtn.disabled = !current || measurementState.saveInFlight || measurementState.startInFlight || measurementState.currentMeasurementSaved;
@@ -6133,27 +5399,6 @@ function setupMeasurementActions() {
         elements.measurementSetupToggleBtn.addEventListener('click', () => {
             state.measurement.setupOpen = !state.measurement.setupOpen;
             renderMeasurementPanel();
-        });
-    }
-    if (elements.measurementModeSelect) {
-        elements.measurementModeSelect.addEventListener('change', (event) => {
-            state.measurement.captureMode = event.target.value || 'host-local';
-            state.measurement.modeNote = measurementModeNoteText();
-            if (!state.measurement.startInFlight) {
-                state.measurement.statusText = describeMeasurementScope();
-            }
-            renderMeasurementPanel();
-        });
-    }
-    if (elements.measurementBrowserInputSelect) {
-        elements.measurementBrowserInputSelect.addEventListener('change', (event) => {
-            state.measurement.selectedBrowserInputId = event.target.value || '';
-            renderMeasurementPanel();
-        });
-    }
-    if (elements.measurementBrowserInputRefreshBtn) {
-        elements.measurementBrowserInputRefreshBtn.addEventListener('click', () => {
-            void fetchBrowserInputs(true);
         });
     }
     if (elements.measurementInputSelect) {

@@ -50,10 +50,6 @@ EDGE_STABILITY_WINDOW_POINTS = 4
 EDGE_STABILITY_MAX_DELTA_DB = 6.0
 EDGE_STABILITY_MAX_SPAN_DB = 9.0
 MIN_TRUSTED_POINTS = 24
-BROWSER_UPPER_EDGE_GUARD_START_HZ = 17_500.0
-BROWSER_UPPER_EDGE_REJECT_MAX_POINTS = 2
-BROWSER_UPPER_EDGE_SINGLE_POINT_MAX_DEVIATION_DB = 4.5
-BROWSER_UPPER_EDGE_SINGLE_POINT_MAX_DELTA_DB = 4.0
 RESPONSE_OUTLIER_NEIGHBOR_RADIUS = 2
 RESPONSE_OUTLIER_WARN_DB = 8.0
 RESPONSE_OUTLIER_FAIL_DB = 12.0
@@ -62,7 +58,6 @@ SWEEP_TIMING_ANCHOR_SECONDS = 0.35
 SWEEP_TIMING_MULTI_ANCHOR_SECONDS = 0.18
 SWEEP_TIMING_EDGE_INSET_SECONDS = 0.08
 SWEEP_TIMING_SEARCH_SECONDS = 0.35
-BROWSER_SWEEP_TIMING_START_SEARCH_MULTIPLIER = 2.25
 SWEEP_TIMING_MAX_ABS_PPM = 12_000.0
 SWEEP_TIMING_MIN_COMPENSATION_PPM = 75.0
 SWEEP_TIMING_RESIDUAL_TOLERANCE_SECONDS = 0.04
@@ -74,14 +69,6 @@ SWEEP_TIMING_ANCHOR_LAYOUT = (
     ("end-body", 0.82),
     ("end-inner", 0.94),
 )
-BROWSER_TIMING_WEIGHT_MULTIPLIERS = {
-    "start-inner": 0.8,
-    "start-body": 0.85,
-    "mid-low": 1.35,
-    "mid-high": 1.35,
-    "end-body": 0.85,
-    "end-inner": 0.8,
-}
 IR_WINDOW_PRE_SECONDS = 0.004
 IR_WINDOW_POST_SECONDS = 0.35
 IR_WINDOW_POST_LOW_SECONDS = 0.50
@@ -89,44 +76,12 @@ IR_WINDOW_POST_HIGH_SECONDS = 0.18
 IR_WINDOW_FADE_SECONDS = 0.012
 IR_WINDOW_VARIABLE_LOW_HZ = 250.0
 IR_WINDOW_VARIABLE_HIGH_HZ = 1_200.0
-BROWSER_SWEEP_START_DELAY_SECONDS = 1.5
-BROWSER_SWEEP_END_PADDING_SECONDS = 1.5
 HOST_SWEEP_RECORD_PREROLL_SECONDS = 0.75
 HOST_SWEEP_RECORD_POSTROLL_SECONDS = 0.75
 HOST_SWEEP_MAX_ATTEMPTS = 3
 HOST_SWEEP_RETRY_DELAY_SECONDS = 0.4
 HOST_SWEEP_AUTO_GAIN_RETRY_ATTEMPT = 1
 HOST_SWEEP_AUTO_GAIN_TARGET_PERCENT = 100
-BROWSER_MEASUREMENT_SAMPLE_RATE = 48_000
-BROWSER_REFERENCE_MODE_V2 = "browser-hybrid-reference-v2"
-BROWSER_MEASUREMENT_EXPERIMENT_ENABLED = False
-BROWSER_REFERENCE_PRE_ROLL_SECONDS = 0.3
-BROWSER_REFERENCE_SYNC_BURST_SECONDS = 0.22
-BROWSER_REFERENCE_SYNC_GAP_SECONDS = 0.05
-BROWSER_REFERENCE_SYNC_GUARD_SECONDS = 0.25
-BROWSER_REFERENCE_TAIL_SECONDS = 1.5
-BROWSER_REFERENCE_STOP_MARGIN_SECONDS = 0.2
-BROWSER_REFERENCE_SYNC_RAMP_SECONDS = 0.025
-BROWSER_REFERENCE_SYNC_START_HZ = 2_000.0
-BROWSER_REFERENCE_SYNC_END_HZ = 10_000.0
-BROWSER_REFERENCE_SYNC_SEEDS = (101, 211, 307, 401, 503, 601)
-BROWSER_REFERENCE_PROGRAM_PEAK = 10 ** (-6.0 / 20.0)
-BROWSER_REFERENCE_SYNC_PEAK_SCALE = 0.9
-BROWSER_REFERENCE_SWEEP_PEAK_SCALE = 0.6
-BROWSER_SYNC_MIN_TOTAL_BURSTS = 4
-BROWSER_SYNC_MIN_CLUSTER_BURSTS = 2
-BROWSER_SYNC_ACCEPT_WINDOW_SECONDS = 0.05
-BROWSER_SYNC_REFINED_WINDOW_SECONDS = 0.03
-BROWSER_SYNC_SCORE_WARN_THRESHOLD = 0.7
-BROWSER_SYNC_RATIO_WARN_THRESHOLD = 1.25
-BROWSER_SYNC_RESIDUAL_WARN_MS = 0.5
-BROWSER_SYNC_RESIDUAL_FAIL_MS = 1.0
-BROWSER_SYNC_MAX_RESIDUAL_WARN_MS = 1.0
-BROWSER_SYNC_MAX_RESIDUAL_FAIL_MS = 2.0
-BROWSER_DRIFT_WARN_PPM = 1_500.0
-BROWSER_DRIFT_FAIL_PPM = 6_000.0
-BROWSER_CORRECTED_SWEEP_SCORE_FAIL = 0.86
-BROWSER_CORRECTED_SWEEP_SCORE_WARN = 0.92
 ALIGNMENT_SCORE_FAIL_THRESHOLD = 0.90
 ALIGNMENT_SCORE_WARN_THRESHOLD = 0.94
 HOST_ALIGNMENT_SCORE_FAIL_THRESHOLD = 0.84
@@ -135,8 +90,6 @@ CAPTURE_CLIP_FAIL_DBFS = -0.2
 CAPTURE_CLIP_WARN_DBFS = -1.0
 CLOCK_DRIFT_WARN_PPM = 3_000.0
 CHANNEL_CORRELATION_WARN_THRESHOLD = 0.985
-BROWSER_CAPTURE_LEVEL_WARN_PEAK_DBFS = -45.0
-BROWSER_CAPTURE_LEVEL_WARN_RMS_DBFS = -60.0
 
 MEASUREMENT_SCOPE_NOTE = (
     "FXRoute measures with a host-local sweep through the active PipeWire output and selected microphone input. "
@@ -278,95 +231,6 @@ class MeasurementStore:
         self._job_tasks[job_id] = task
         return self.get_job(job_id)
 
-    async def start_browser_measurement(
-        self,
-        *,
-        channel: str,
-        calibration_filename: str | None = None,
-        calibration_bytes: bytes | None = None,
-        calibration_ref: str | None = None,
-    ) -> dict[str, Any]:
-        if not BROWSER_MEASUREMENT_EXPERIMENT_ENABLED:
-            raise RuntimeError("Browser/client microphone measurement is currently disabled while FXRoute is held to the host-local path.")
-
-        normalized_channel = str(channel or "left").strip().lower()
-        if normalized_channel not in {"left", "right", "stereo"}:
-            raise ValueError("channel must be left, right, or stereo")
-
-        calibration_meta = self._resolve_calibration_meta(
-            calibration_filename=calibration_filename,
-            calibration_bytes=calibration_bytes,
-            calibration_ref=calibration_ref,
-        )
-
-        sample_rate = BROWSER_MEASUREMENT_SAMPLE_RATE
-        job_id = f"browser-measurement-job-{uuid4().hex[:12]}"
-        now = self._utc_now()
-
-        playback_target = self._resolve_playback_target()
-        playback_path = self.playbacks_dir / f"{job_id}.wav"
-        sweep_meta = self._write_browser_reference_file(
-            playback_path,
-            sample_rate=sample_rate,
-            channel=normalized_channel,
-        )
-        playback_duration_seconds = float(sweep_meta["playback_duration_seconds"])
-        record_seconds = BROWSER_SWEEP_START_DELAY_SECONDS + playback_duration_seconds + BROWSER_REFERENCE_STOP_MARGIN_SECONDS
-
-        job = {
-            "id": job_id,
-            "status": "queued",
-            "created_at": now,
-            "updated_at": now,
-            "mode": "browser-microphone",
-            "channel": normalized_channel,
-            "calibration": calibration_meta or {"filename": "", "applied": False},
-            "message": "Browser microphone ready. Start recording and keep the browser open until upload finishes.",
-            "scope_note": MEASUREMENT_SCOPE_NOTE,
-            "result": None,
-            "error": None,
-            "browser_capture": {
-                "sample_rate": sample_rate,
-                "preferred_channels": 2,
-                "start_after_ms": int(round(BROWSER_SWEEP_START_DELAY_SECONDS * 1000)),
-                "record_duration_ms": int(round(record_seconds * 1000)),
-                "record_seconds": round(record_seconds, 3),
-                "playback_duration_seconds": round(playback_duration_seconds, 3),
-                "stop_margin_seconds": round(BROWSER_REFERENCE_STOP_MARGIN_SECONDS, 3),
-            },
-            "playback": {
-                "path": str(playback_path),
-                "duration_seconds": round(playback_duration_seconds, 3),
-                "sweep_seconds": round(float(sweep_meta["sweep_seconds"]), 3),
-                "lead_in_seconds": round(float(sweep_meta["pre_roll_seconds"]), 3),
-                "tail_seconds": round(float(sweep_meta["tail_seconds"]), 3),
-                "target_name": playback_target["target_name"],
-                "target_label": playback_target["target_label"],
-            },
-            "analysis_reference": {
-                "mode": BROWSER_REFERENCE_MODE_V2,
-                "sample_rate": sample_rate,
-                "analysis_sweep": sweep_meta["analysis_sweep"].tolist(),
-                "inverse_sweep": sweep_meta["inverse_sweep"].tolist(),
-                "sync_bursts": [
-                    {
-                        "name": str(burst["name"]),
-                        "cluster": str(burst["cluster"]),
-                        "seed": int(burst["seed"]),
-                        "start_emit": int(burst["start_emit"]),
-                        "end_emit": int(burst["end_emit"]),
-                        "template": burst["template"].tolist(),
-                    }
-                    for burst in sweep_meta["sync_bursts"]
-                ],
-                "emit": sweep_meta["emit"],
-            },
-        }
-        self._jobs[job_id] = job
-        self._persist_job(job)
-        task = asyncio.create_task(self._run_browser_playback_job(job_id))
-        self._job_tasks[job_id] = task
-        return self.get_job(job_id)
 
     def get_job(self, job_id: str) -> dict[str, Any]:
         job = self._jobs.get(job_id)
@@ -542,14 +406,13 @@ class MeasurementStore:
             raise RuntimeError("Selected capture input has no usable PipeWire source node")
         if source_node_name == "easyeffects_source" or source_node_name.endswith(".monitor"):
             raise RuntimeError("Refusing to measure through a non-microphone source; select a real PipeWire input")
-        if channel == "stereo":
-            raise RuntimeError("Host-reference capture currently requires a left or right speaker measurement")
 
+        playback_channel = channel
         playback_target = self._resolve_playback_target()
         host_reference = self._resolve_host_reference_capture(
             playback_target=playback_target,
             mic_source_node_name=source_node_name,
-            requested_channel=channel,
+            requested_channel=playback_channel,
         )
         sweep_meta = self._write_sweep_file(
             playback_path,
@@ -557,7 +420,7 @@ class MeasurementStore:
             sweep_seconds=sweep_seconds,
             lead_in_seconds=lead_in_seconds,
             tail_seconds=tail_seconds,
-            channel=channel,
+            channel=playback_channel,
         )
 
         calibration_curve = None
@@ -586,7 +449,7 @@ class MeasurementStore:
                     job_id=job_id,
                     mic_source_node_name=source_node_name,
                     reference_capture=host_reference,
-                    channel=channel,
+                    channel=playback_channel,
                     capture_channels=capture_channels,
                     capture_path=capture_path,
                     playback_path=playback_path,
@@ -892,282 +755,9 @@ class MeasurementStore:
         items = ((analysis.get("quality_checks") or {}).get("items") or [])
         return any(str(item.get("code") or "").strip() == code and item.get("level") == "warning" for item in items)
 
-    def _should_retry_browser_capture(self, exc: Exception) -> bool:
-        error_codes = self._capture_quality_error_codes(exc)
-        retryable = {
-            "weak-start-alignment",
-            "weak-end-alignment",
-            "insufficient-sync-bursts",
-            "sync-cluster-a-insufficient",
-            "sync-cluster-b-insufficient",
-            "sync-order-invalid",
-            "sync-fit-residual-high",
-            "sync-burst-residual-high",
-            "corrected-sweep-weak",
-            "browser-clock-drift-excessive",
-        }
-        return bool(error_codes) and error_codes.issubset(retryable)
 
-    async def _run_browser_playback_job(self, job_id: str) -> None:
-        job = self._jobs[job_id]
-        job["status"] = "recording"
-        job["updated_at"] = self._utc_now()
-        job["message"] = "Browser microphone recording armed. FXRoute will play the sweep shortly."
-        self._persist_job(job)
-        try:
-            result = await asyncio.to_thread(self._execute_browser_playback_job, deepcopy(job))
-            job["status"] = "awaiting-upload"
-            job["updated_at"] = self._utc_now()
-            job["message"] = "Sweep finished on FXRoute. Uploading browser capture…"
-            job["playback_result"] = result
-            job["error"] = None
-        except Exception as exc:
-            job["status"] = "failed"
-            job["updated_at"] = self._utc_now()
-            job["message"] = str(exc) or "Browser sweep playback failed"
-            job["error"] = {"detail": str(exc)}
-        finally:
-            self._persist_job(job)
 
-    def _execute_browser_playback_job(self, job: dict[str, Any]) -> dict[str, Any]:
-        playback = job.get("playback") or {}
-        playback_path = Path(str(playback.get("path") or "")).expanduser()
-        target_name = str(playback.get("target_name") or "").strip()
-        if not playback_path.exists():
-            raise RuntimeError("Browser playback sweep file is missing")
-        if not target_name:
-            raise RuntimeError("No active output target is available for browser sweep playback")
 
-        original_output_volume = None
-        pinned_output_volume = None
-        try:
-            original_output_volume = get_output_volume()
-            pinned_output_volume = set_output_volume(100)
-        except SystemVolumeError:
-            original_output_volume = None
-            pinned_output_volume = None
-
-        play_node_name = f"fxroute-browser-play-{job['id']}"
-        play_command = [
-            "pw-play",
-            "-P",
-            f"node.name={play_node_name}",
-            "--target",
-            target_name,
-            str(playback_path),
-        ]
-
-        time.sleep(BROWSER_SWEEP_START_DELAY_SECONDS)
-        play_process = subprocess.Popen(play_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        duration_seconds = float(playback.get("duration_seconds") or 0)
-        try:
-            play_stdout, play_stderr = play_process.communicate(timeout=max(duration_seconds, 1.0) + 8)
-        finally:
-            if play_process.poll() is None:
-                play_process.kill()
-                play_process.communicate(timeout=2)
-            if original_output_volume is not None:
-                try:
-                    set_output_volume(original_output_volume)
-                except SystemVolumeError:
-                    pass
-        if play_process.returncode != 0:
-            detail = (play_stderr or play_stdout or f"pw-play exited with {play_process.returncode}").strip()
-            raise RuntimeError(f"Sweep playback failed: {detail}")
-        return {
-            "play_node": play_node_name,
-            "target_name": target_name,
-            "target_label": str(playback.get("target_label") or target_name),
-            "original_output_volume": original_output_volume,
-            "pinned_output_volume": pinned_output_volume,
-        }
-
-    async def complete_browser_measurement(
-        self,
-        *,
-        job_id: str,
-        capture_filename: str,
-        capture_bytes: bytes,
-        browser_input_label: str | None = None,
-        browser_capture_meta: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        job = self._jobs.get(job_id)
-        if job is None:
-            path = self.job_records_dir / f"{job_id}.json"
-            if not path.exists():
-                raise KeyError(job_id)
-            job = json.loads(path.read_text(encoding="utf-8"))
-            self._jobs[job_id] = job
-        if job.get("mode") != "browser-microphone":
-            raise ValueError("Measurement job is not a browser microphone job")
-        if job.get("status") == "failed":
-            raise RuntimeError(str((job.get("error") or {}).get("detail") or job.get("message") or "Measurement failed"))
-        if job.get("status") == "completed":
-            return self.get_job(job_id)
-        if not capture_bytes:
-            raise ValueError("Browser capture file is required")
-
-        task = self._job_tasks.get(job_id)
-        if task is not None:
-            await task
-            if job.get("status") == "failed":
-                raise RuntimeError(str((job.get("error") or {}).get("detail") or job.get("message") or "Measurement failed"))
-
-        capture_path = self.captures_dir / f"{job_id}-{self._safe_filename(capture_filename or 'browser-capture.wav')}"
-        capture_path.write_bytes(capture_bytes)
-
-        playback_path_value = str((job.get("playback") or {}).get("path") or "").strip()
-        playback_path = Path(playback_path_value) if playback_path_value else None
-        playback_leak = self._detect_browser_capture_playback_leak(capture_path, playback_path)
-        if playback_leak is not None:
-            correlation = float(playback_leak.get("correlation") or 0.0)
-            residual_db = float(playback_leak.get("residual_db") or 0.0)
-            raise RuntimeError(
-                "Browser capture matches the generated playback sweep too closely "
-                f"(corr {correlation:.6f}, residual {residual_db:.1f} dB). "
-                "The uploaded file looks like the sweep stimulus, not a microphone recording."
-            )
-
-        calibration_meta = job.get("calibration") if isinstance(job.get("calibration"), dict) else {"filename": "", "applied": False}
-        calibration_curve = None
-        calibration_applied = False
-        if calibration_meta.get("path"):
-            calibration_curve = self._parse_calibration_file(Path(calibration_meta["path"]))
-            calibration_applied = calibration_curve is not None and len(calibration_curve[0]) >= 2
-        calibration_result = {
-            "filename": str(calibration_meta.get("filename") or ""),
-            "path": str(calibration_meta.get("path") or ""),
-            "applied": calibration_applied,
-        }
-
-        analysis_reference = job.get("analysis_reference") or {}
-        try:
-            try:
-                analysis_mode = str(analysis_reference.get("mode") or "")
-                if analysis_mode == BROWSER_REFERENCE_MODE_V2:
-                    analysis = self._analyze_browser_sync_scaffold_capture(
-                        capture_path,
-                        expected_sample_rate=int(analysis_reference.get("sample_rate") or 48_000),
-                        channel=str(job.get("channel") or "left"),
-                        reference_sweep=np.array(analysis_reference.get("analysis_sweep") or [], dtype=np.float32),
-                        inverse_sweep=np.array(analysis_reference.get("inverse_sweep") or [], dtype=np.float64),
-                        sync_bursts=analysis_reference.get("sync_bursts") or [],
-                        emit=analysis_reference.get("emit") or {},
-                        calibration_curve=calibration_curve,
-                        browser_capture_meta=browser_capture_meta,
-                        capture_label="Browser capture",
-                    )
-                elif analysis_mode == "browser-acoustic-reference-v1":
-                    analysis = self._analyze_browser_acoustic_reference_capture(
-                        capture_path,
-                        expected_sample_rate=int(analysis_reference.get("sample_rate") or 48_000),
-                        channel=str(job.get("channel") or "left"),
-                        reference_sweep=np.array(analysis_reference.get("analysis_sweep") or [], dtype=np.float32),
-                        inverse_sweep=np.array(analysis_reference.get("inverse_sweep") or [], dtype=np.float64),
-                        marker_a=np.array(analysis_reference.get("marker_a") or [], dtype=np.float32),
-                        marker_b=np.array(analysis_reference.get("marker_b") or [], dtype=np.float32),
-                        emit=analysis_reference.get("emit") or {},
-                        calibration_curve=calibration_curve,
-                        browser_capture_meta=browser_capture_meta,
-                        capture_label="Browser capture",
-                    )
-                else:
-                    analysis = self._analyze_sweep_capture(
-                        capture_path,
-                        expected_sample_rate=int(analysis_reference.get("sample_rate") or 48_000),
-                        channel=str(job.get("channel") or "left"),
-                        reference_sweep=np.array(analysis_reference.get("analysis_sweep") or [], dtype=np.float32),
-                        inverse_sweep=np.array(analysis_reference.get("inverse_sweep") or [], dtype=np.float64),
-                        calibration_curve=calibration_curve,
-                        browser_capture_meta=browser_capture_meta,
-                        capture_label="Browser capture",
-                    )
-            except CaptureQualityError as exc:
-                if not self._should_retry_browser_capture(exc) or not isinstance(exc.analysis, dict):
-                    raise
-                analysis = exc.analysis
-
-            measurement = self._build_measurement_from_analysis(
-                analysis,
-                input_device={
-                    "id": "browser-client-microphone",
-                    "label": str(browser_input_label or "Browser microphone"),
-                },
-                channel=str(job.get("channel") or "left"),
-                calibration=calibration_result,
-            )
-            warning_count = sum(1 for item in analysis.get("quality_checks", {}).get("items", []) if item.get("level") == "warning")
-            error_count = sum(1 for item in analysis.get("quality_checks", {}).get("items", []) if item.get("level") == "error")
-            completion_message = "Browser microphone measurement finished. Trusted trace is ready."
-            if error_count:
-                completion_message = "Browser microphone measurement finished, but capture timing was unstable. This run should be retried automatically."
-            elif warning_count:
-                completion_message = f"Browser microphone measurement finished with {warning_count} QC warning{'s' if warning_count != 1 else ''}."
-
-            playback = job.get("playback") or {}
-            playback_result = job.get("playback_result") or {}
-            job["status"] = "completed"
-            job["updated_at"] = self._utc_now()
-            job["message"] = completion_message
-            job["result"] = {
-                "measurement": measurement,
-                "calibration": calibration_result,
-                "capture": {
-                    "path": str(capture_path),
-                    "duration_seconds": round(float((job.get("browser_capture") or {}).get("record_seconds") or 0), 3),
-                    "sample_rate": int(analysis_reference.get("sample_rate") or 48_000),
-                    "input_label": str(browser_input_label or "Browser microphone"),
-                },
-                "playback": {
-                    "path": str(playback.get("path") or ""),
-                    "duration_seconds": round(float(playback.get("duration_seconds") or 0), 3),
-                    "sweep_seconds": round(float(playback.get("sweep_seconds") or 0), 3),
-                    "lead_in_seconds": round(float(playback.get("lead_in_seconds") or 0), 3),
-                    "tail_seconds": round(float(playback.get("tail_seconds") or 0), 3),
-                    "play_node": str(playback_result.get("play_node") or ""),
-                    "target_name": str(playback.get("target_name") or ""),
-                    "target_label": str(playback.get("target_label") or ""),
-                },
-                "analysis": {
-                    "method": analysis["method"],
-                    "rms_dbfs": analysis["rms_dbfs"],
-                    "peak_dbfs": analysis["peak_dbfs"],
-                    "normalized_by_db": analysis["normalized_by_db"],
-                    "alignment_samples": analysis["alignment_samples"],
-                    "alignment_seconds": analysis["alignment_seconds"],
-                    "window_count": analysis["window_count"],
-                    "trusted_min_hz": analysis["trusted_min_hz"],
-                    "trusted_max_hz": analysis["trusted_max_hz"],
-                    "raw_point_count": analysis["raw_point_count"],
-                    "review_point_count": analysis["review_point_count"],
-                    "display_point_count": analysis["display_point_count"],
-                    "trusted_band_meta": analysis["trusted_band_meta"],
-                    "review_band_meta": analysis["review_band_meta"],
-                    "quality_checks": analysis["quality_checks"],
-                    "capture_audit": analysis["capture_audit"],
-                    "clock": analysis["clock"],
-                    "impulse_response": analysis["impulse_response"],
-                },
-                "limitations": [
-                    "Primary browser path: the client browser records its own microphone while FXRoute plays the sweep on the active output.",
-                    "The client microphone, browser audio stack, and clock drift all affect the result; compare against REW before trusting fine corrections.",
-                    "Host-local .104 capture still exists as a secondary route when you want on-box PipeWire recording instead.",
-                    "Measurements stay separate from EasyEffects presets and active PEQ state. No Auto-PEQ or Copy-to-PEQ is included here.",
-                ],
-                "message": completion_message,
-                "scope_note": MEASUREMENT_SCOPE_NOTE,
-            }
-            job["calibration"] = deepcopy(calibration_result)
-            job["error"] = None
-            self._persist_job(job)
-            return self.get_job(job_id)
-        except Exception as exc:
-            job["status"] = "failed"
-            job["updated_at"] = self._utc_now()
-            job["message"] = str(exc) or "Browser capture analysis failed"
-            job["error"] = {"detail": str(exc)}
-            self._persist_job(job)
-            raise
 
     def _build_measurement_from_analysis(
         self,
@@ -1243,7 +833,6 @@ class MeasurementStore:
         reference_sweep: np.ndarray,
         inverse_sweep: np.ndarray,
         calibration_curve: tuple[np.ndarray, np.ndarray] | None,
-        browser_capture_meta: dict[str, Any] | None = None,
         capture_label: str = "Capture",
         reference_channel_index: int | None = None,
         analysis_channel_index: int | None = None,
@@ -1279,7 +868,6 @@ class MeasurementStore:
                 reference_sweep,
                 coarse_start,
                 sample_rate,
-                browser_capture=browser_capture_meta is not None,
             )
         else:
             timing = {
@@ -1326,12 +914,10 @@ class MeasurementStore:
             frequencies=response_frequencies,
             magnitude=response_magnitude,
             calibration_curve=calibration_curve,
-            browser_capture=browser_capture_meta is not None,
         )
         capture_audit = self._build_capture_audit(
             raw_signal=raw_signal,
             sample_rate=sample_rate,
-            browser_capture_meta=browser_capture_meta,
         )
         quality_checks = self._build_capture_quality_checks(
             capture_audit=capture_audit,
@@ -1408,857 +994,20 @@ class MeasurementStore:
             raise CaptureQualityError(capture_label, quality_checks["items"], analysis=analysis)
         return analysis
 
-    def _analyze_browser_acoustic_reference_capture(
-        self,
-        capture_path: Path,
-        *,
-        expected_sample_rate: int,
-        channel: str,
-        reference_sweep: np.ndarray,
-        inverse_sweep: np.ndarray,
-        marker_a: np.ndarray,
-        marker_b: np.ndarray,
-        emit: dict[str, Any],
-        calibration_curve: tuple[np.ndarray, np.ndarray] | None,
-        browser_capture_meta: dict[str, Any] | None = None,
-        capture_label: str = "Browser capture",
-    ) -> dict[str, Any]:
-        sample_rate, raw_signal = self._load_wav_array(capture_path)
-        signal = self._select_analysis_channel(raw_signal, channel=channel)
-        timing_signal = self._select_analysis_channel(raw_signal, channel=channel)
-        if sample_rate != expected_sample_rate:
-            raise RuntimeError(f"Unexpected capture sample rate: {sample_rate} Hz (expected {expected_sample_rate} Hz)")
-        if signal.size < max(marker_a.size, marker_b.size, reference_sweep.size):
-            raise RuntimeError("Capture is too short for browser acoustic-reference analysis")
 
-        rms = float(np.sqrt(np.mean(np.square(signal, dtype=np.float64))))
-        peak = float(np.max(np.abs(signal)))
-        rms_dbfs = 20.0 * math.log10(max(rms, 1e-9))
-        peak_dbfs = 20.0 * math.log10(max(peak, 1e-9))
-        if peak_dbfs <= -90.0 and rms_dbfs <= -100.0:
-            raise RuntimeError("Recorded sweep was effectively silent")
 
-        marker_a_match = self._detect_browser_timing_marker(timing_signal, marker_a, sample_rate)
-        marker_b_match = self._detect_browser_timing_marker(timing_signal, marker_b, sample_rate)
-        timing = self._estimate_browser_reference_timing(
-            signal=signal,
-            timing_signal=timing_signal,
-            reference_sweep=reference_sweep,
-            marker_a=marker_a,
-            marker_b=marker_b,
-            marker_a_match=marker_a_match,
-            marker_b_match=marker_b_match,
-            emit=emit,
-            sample_rate=sample_rate,
-        )
 
-        corrected_signal = timing["corrected_signal"]
-        corrected_timing_signal = timing["corrected_timing_signal"]
-        sweep_start = int(timing["sweep_start_emit"])
-        analysis_segment = corrected_signal[sweep_start:].astype(np.float64)
-        reference_segment = corrected_timing_signal[sweep_start:].astype(np.float64)
-        if analysis_segment.size < max(2048, reference_sweep.size // 4):
-            raise RuntimeError("Corrected browser sweep segment was too short after marker timing estimation")
-        corrected_segment_size = analysis_segment.size
-        captured_tail_samples = max(0, analysis_segment.size - int(reference_sweep.size))
 
-        impulse_response = self._fft_convolve(analysis_segment, inverse_sweep.astype(np.float64))
-        reference_impulse_response = self._fft_convolve(reference_segment, inverse_sweep.astype(np.float64))
-        windowed_ir, ir_meta = self._window_impulse_response(impulse_response, sample_rate)
-        reference_ir_peak = float(np.max(np.abs(reference_impulse_response))) if reference_impulse_response.size else 0.0
-        reference_ir_rms = float(np.sqrt(np.mean(np.square(reference_impulse_response, dtype=np.float64)))) if reference_impulse_response.size else 0.0
-        reference_ir_peak_db = 20.0 * math.log10(max(reference_ir_peak, 1e-9))
-        reference_ir_rms_db = 20.0 * math.log10(max(reference_ir_rms, 1e-9))
-        reference_ir_sharpness_db = reference_ir_peak_db - reference_ir_rms_db
-        fft_size = self._next_pow2(max(sample_rate, windowed_ir.size * 2))
-        magnitude = np.abs(np.fft.rfft(windowed_ir, n=fft_size))
-        frequencies = np.fft.rfftfreq(fft_size, d=1.0 / sample_rate)
 
-        display_data = self._build_display_points(
-            frequencies=frequencies,
-            magnitude=magnitude,
-            calibration_curve=calibration_curve,
-            browser_capture=True,
-        )
-        capture_audit = self._build_capture_audit(
-            raw_signal=raw_signal,
-            sample_rate=sample_rate,
-            browser_capture_meta=browser_capture_meta,
-        )
-        quality_checks = self._build_capture_quality_checks(
-            capture_audit=capture_audit,
-            timing=timing,
-            peak_dbfs=peak_dbfs,
-            trusted_band_meta=display_data["trusted_band_meta"],
-            trusted_max_hz=display_data["trusted_band"][1],
-            response_outliers=display_data.get("response_outliers") or [],
-            capture_label=capture_label,
-            expect_dual_mono_channels=True,
-        )
-        analysis = {
-            "method": "inverse log-sweep deconvolution with browser acoustic-reference marker timing correction",
-            "trusted_points": display_data["trusted_points"],
-            "review_points": display_data["review_points"],
-            "normalized_by_db": round(display_data["normalized_by"], 3),
-            "rms_dbfs": round(rms_dbfs, 2),
-            "peak_dbfs": round(peak_dbfs, 2),
-            "window_count": 1,
-            "alignment_samples": int(sweep_start),
-            "alignment_seconds": round(sweep_start / sample_rate, 6),
-            "trusted_min_hz": round(display_data["trusted_band"][0], 3),
-            "trusted_max_hz": round(display_data["trusted_band"][1], 3),
-            "raw_point_count": display_data["raw_point_count"],
-            "review_point_count": len(display_data["review_points"]),
-            "display_point_count": len(display_data["trusted_points"]),
-            "trusted_band_meta": display_data["trusted_band_meta"],
-            "review_band_meta": display_data["review_band_meta"],
-            "quality_checks": quality_checks,
-            "capture_audit": capture_audit,
-            "clock": {
-                "observed_sweep_samples": int(timing["observed_sweep_samples"]),
-                "reference_sweep_samples": int(reference_sweep.size),
-                "analysis_segment_samples": int(analysis_segment.size),
-                "corrected_segment_samples": int(corrected_segment_size),
-                "captured_tail_samples": int(captured_tail_samples),
-                "captured_tail_seconds": round(float(captured_tail_samples) / sample_rate, 6),
-                "stretch_ratio": round(float(timing["stretch_ratio"]), 8),
-                "drift_ppm": round(float(timing["drift_ppm"]), 2),
-                "compensated": True,
-                "anchor_seconds": 0.7,
-                "anchor_strategy": "marker-a-b affine fit",
-                "anchor_matches": timing["marker_matches"],
-                "start_score": round(float(timing["corrected_sweep_score"]), 5),
-                "end_score": round(float(timing["corrected_sweep_score"]), 5),
-                "timing_channel": "browser-acoustic-reference",
-                "marker_a_score": round(float(marker_a_match["score"]), 5),
-                "marker_a_peak_ratio": round(float(marker_a_match["peak_ratio"]), 5),
-                "marker_a_width_ms": round(float(marker_a_match["width_ms"]), 3),
-                "marker_b_score": round(float(marker_b_match["score"]), 5),
-                "marker_b_peak_ratio": round(float(marker_b_match["peak_ratio"]), 5),
-                "marker_b_width_ms": round(float(marker_b_match["width_ms"]), 3),
-                "marker_fit_residual_ms": round(float(timing["marker_fit_residual_ms"]), 3),
-                "marker_spacing_error_ms": round(float(timing["marker_spacing_error_ms"]), 3),
-                "corrected_sweep_score": round(float(timing["corrected_sweep_score"]), 5),
-                "emit": timing["emit"],
-            },
-            "reference_path": {
-                "channel": "browser-acoustic-reference",
-                "peak_dbfs": round(peak_dbfs, 2),
-                "rms_dbfs": round(rms_dbfs, 2),
-                "alignment_score": round(float(timing["corrected_sweep_score"]), 5),
-                "start_score": round(float(timing["corrected_sweep_score"]), 5),
-                "end_score": round(float(timing["corrected_sweep_score"]), 5),
-                "drift_ppm": round(float(timing["drift_ppm"]), 2),
-                "ir_peak_dbfs": round(reference_ir_peak_db, 2),
-                "ir_sharpness_db": round(reference_ir_sharpness_db, 2),
-                "clipped": bool(peak_dbfs >= CAPTURE_CLIP_FAIL_DBFS),
-            },
-            "impulse_response": {
-                "peak_index": int(ir_meta["peak_index"]),
-                "peak_seconds": round(float(ir_meta["peak_seconds"]), 6),
-                "window_start_index": int(ir_meta["window_start_index"]),
-                "window_end_index": int(ir_meta["window_end_index"]),
-                "window_seconds": round(float(ir_meta["window_seconds"]), 6),
-                "pre_window_seconds": round(float(ir_meta["pre_window_seconds"]), 6),
-                "post_window_seconds": round(float(ir_meta["post_window_seconds"]), 6),
-                "peak_dbfs": round(float(ir_meta["peak_dbfs"]), 2),
-            },
-        }
-        hard_failures = [item["message"] for item in quality_checks["items"] if item.get("level") == "error"]
-        if hard_failures:
-            raise CaptureQualityError(capture_label, quality_checks["items"], analysis=analysis)
-        return analysis
 
-    def _analyze_browser_sync_scaffold_capture(
-        self,
-        capture_path: Path,
-        *,
-        expected_sample_rate: int,
-        channel: str,
-        reference_sweep: np.ndarray,
-        inverse_sweep: np.ndarray,
-        sync_bursts: list[dict[str, Any]],
-        emit: dict[str, Any],
-        calibration_curve: tuple[np.ndarray, np.ndarray] | None,
-        browser_capture_meta: dict[str, Any] | None = None,
-        capture_label: str = "Browser capture",
-    ) -> dict[str, Any]:
-        sample_rate, raw_signal = self._load_wav_array(capture_path)
-        signal = self._select_analysis_channel(raw_signal, channel=channel)
-        timing_signal = self._select_analysis_channel(raw_signal, channel=channel)
-        if sample_rate != expected_sample_rate:
-            raise RuntimeError(f"Unexpected capture sample rate: {sample_rate} Hz (expected {expected_sample_rate} Hz)")
-        if reference_sweep.size == 0 or not sync_bursts:
-            raise RuntimeError("Browser sync scaffold metadata was incomplete")
-        if signal.size < reference_sweep.size:
-            raise RuntimeError("Capture is too short for browser sync-scaffold analysis")
 
-        rms = float(np.sqrt(np.mean(np.square(signal, dtype=np.float64))))
-        peak = float(np.max(np.abs(signal)))
-        rms_dbfs = 20.0 * math.log10(max(rms, 1e-9))
-        peak_dbfs = 20.0 * math.log10(max(peak, 1e-9))
-        if peak_dbfs <= -90.0 and rms_dbfs <= -100.0:
-            raise RuntimeError("Recorded sweep was effectively silent")
 
-        burst_defs = [
-            {
-                "name": str(burst.get("name") or "burst"),
-                "cluster": str(burst.get("cluster") or "?"),
-                "seed": int(burst.get("seed") or 0),
-                "start_emit": int(burst.get("start_emit") or 0),
-                "end_emit": int(burst.get("end_emit") or 0),
-                "template": np.array(burst.get("template") or [], dtype=np.float32),
-            }
-            for burst in sync_bursts
-        ]
-        burst_matches = []
-        for burst in burst_defs:
-            match = self._detect_browser_reference_template(
-                timing_signal,
-                burst["template"],
-                sample_rate,
-                low_hz=BROWSER_REFERENCE_SYNC_START_HZ,
-                high_hz=BROWSER_REFERENCE_SYNC_END_HZ,
-            )
-            burst_matches.append({**burst, "match": match})
 
-        timing = self._estimate_browser_sync_scaffold_timing(
-            signal=signal,
-            timing_signal=timing_signal,
-            reference_sweep=reference_sweep,
-            burst_matches=burst_matches,
-            emit=emit,
-            sample_rate=sample_rate,
-        )
 
-        corrected_signal = timing["corrected_signal"]
-        corrected_timing_signal = timing["corrected_timing_signal"]
-        sweep_start = int(timing["sweep_start_emit"])
-        analysis_segment = corrected_signal[sweep_start:].astype(np.float64)
-        reference_segment = corrected_timing_signal[sweep_start:].astype(np.float64)
-        if analysis_segment.size < max(2048, reference_sweep.size // 4):
-            raise RuntimeError("Corrected browser sweep segment was too short after sync scaffold estimation")
-        corrected_segment_size = analysis_segment.size
-        captured_tail_samples = max(0, analysis_segment.size - int(reference_sweep.size))
 
-        impulse_response = self._fft_convolve(analysis_segment, inverse_sweep.astype(np.float64))
-        reference_impulse_response = self._fft_convolve(reference_segment, inverse_sweep.astype(np.float64))
-        windowed_ir, ir_meta = self._window_impulse_response(impulse_response, sample_rate)
-        reference_ir_peak = float(np.max(np.abs(reference_impulse_response))) if reference_impulse_response.size else 0.0
-        reference_ir_rms = float(np.sqrt(np.mean(np.square(reference_impulse_response, dtype=np.float64)))) if reference_impulse_response.size else 0.0
-        reference_ir_peak_db = 20.0 * math.log10(max(reference_ir_peak, 1e-9))
-        reference_ir_rms_db = 20.0 * math.log10(max(reference_ir_rms, 1e-9))
-        reference_ir_sharpness_db = reference_ir_peak_db - reference_ir_rms_db
-        fft_size = self._next_pow2(max(sample_rate, windowed_ir.size * 2))
-        magnitude = np.abs(np.fft.rfft(windowed_ir, n=fft_size))
-        frequencies = np.fft.rfftfreq(fft_size, d=1.0 / sample_rate)
 
-        display_data = self._build_display_points(
-            frequencies=frequencies,
-            magnitude=magnitude,
-            calibration_curve=calibration_curve,
-            browser_capture=True,
-        )
-        capture_audit = self._build_capture_audit(
-            raw_signal=raw_signal,
-            sample_rate=sample_rate,
-            browser_capture_meta=browser_capture_meta,
-        )
-        quality_checks = self._build_capture_quality_checks(
-            capture_audit=capture_audit,
-            timing=timing,
-            peak_dbfs=peak_dbfs,
-            trusted_band_meta=display_data["trusted_band_meta"],
-            trusted_max_hz=display_data["trusted_band"][1],
-            response_outliers=display_data.get("response_outliers") or [],
-            capture_label=capture_label,
-            expect_dual_mono_channels=True,
-        )
-        analysis = {
-            "method": "inverse log-sweep deconvolution with browser sync-scaffold timing correction",
-            "trusted_points": display_data["trusted_points"],
-            "review_points": display_data["review_points"],
-            "normalized_by_db": round(display_data["normalized_by"], 3),
-            "rms_dbfs": round(rms_dbfs, 2),
-            "peak_dbfs": round(peak_dbfs, 2),
-            "window_count": 1,
-            "alignment_samples": int(sweep_start),
-            "alignment_seconds": round(sweep_start / sample_rate, 6),
-            "trusted_min_hz": round(display_data["trusted_band"][0], 3),
-            "trusted_max_hz": round(display_data["trusted_band"][1], 3),
-            "raw_point_count": display_data["raw_point_count"],
-            "review_point_count": len(display_data["review_points"]),
-            "display_point_count": len(display_data["trusted_points"]),
-            "trusted_band_meta": display_data["trusted_band_meta"],
-            "review_band_meta": display_data["review_band_meta"],
-            "quality_checks": quality_checks,
-            "capture_audit": capture_audit,
-            "clock": {
-                "observed_sweep_samples": int(timing["observed_sweep_samples"]),
-                "reference_sweep_samples": int(reference_sweep.size),
-                "analysis_segment_samples": int(analysis_segment.size),
-                "corrected_segment_samples": int(corrected_segment_size),
-                "captured_tail_samples": int(captured_tail_samples),
-                "captured_tail_seconds": round(float(captured_tail_samples) / sample_rate, 6),
-                "stretch_ratio": round(float(timing["stretch_ratio"]), 8),
-                "drift_ppm": round(float(timing["drift_ppm"]), 2),
-                "compensated": True,
-                "anchor_seconds": round(float(BROWSER_REFERENCE_SYNC_BURST_SECONDS), 4),
-                "anchor_strategy": "sync-scaffold multi-burst affine fit",
-                "anchor_matches": timing["burst_matches"],
-                "timing_channel": "browser-sync-scaffold",
-                "accepted_burst_count": int(timing["accepted_burst_count"]),
-                "accepted_cluster_a_count": int(timing["accepted_cluster_a_count"]),
-                "accepted_cluster_b_count": int(timing["accepted_cluster_b_count"]),
-                "fit_residual_rms_ms": round(float(timing["fit_residual_rms_ms"]), 3),
-                "max_burst_residual_ms": round(float(timing["max_burst_residual_ms"]), 3),
-                "cluster_order_valid": bool(timing["cluster_order_valid"]),
-                "corrected_sweep_score": round(float(timing["corrected_sweep_score"]), 5),
-                "emit": timing["emit"],
-            },
-            "reference_path": {
-                "channel": "browser-sync-scaffold",
-                "peak_dbfs": round(peak_dbfs, 2),
-                "rms_dbfs": round(rms_dbfs, 2),
-                "alignment_score": round(float(timing["corrected_sweep_score"]), 5),
-                "start_score": round(float(timing["corrected_sweep_score"]), 5),
-                "end_score": round(float(timing["corrected_sweep_score"]), 5),
-                "drift_ppm": round(float(timing["drift_ppm"]), 2),
-                "ir_peak_dbfs": round(reference_ir_peak_db, 2),
-                "ir_sharpness_db": round(reference_ir_sharpness_db, 2),
-                "clipped": bool(peak_dbfs >= CAPTURE_CLIP_FAIL_DBFS),
-            },
-            "impulse_response": {
-                "peak_index": int(ir_meta["peak_index"]),
-                "peak_seconds": round(float(ir_meta["peak_seconds"]), 6),
-                "window_start_index": int(ir_meta["window_start_index"]),
-                "window_end_index": int(ir_meta["window_end_index"]),
-                "window_seconds": round(float(ir_meta["window_seconds"]), 6),
-                "pre_window_seconds": round(float(ir_meta["pre_window_seconds"]), 6),
-                "post_window_seconds": round(float(ir_meta["post_window_seconds"]), 6),
-                "peak_dbfs": round(float(ir_meta["peak_dbfs"]), 2),
-            },
-        }
-        hard_failures = [item["message"] for item in quality_checks["items"] if item.get("level") == "error"]
-        if hard_failures:
-            raise CaptureQualityError(capture_label, quality_checks["items"], analysis=analysis)
-        return analysis
 
-    def _estimate_browser_sync_scaffold_timing(
-        self,
-        *,
-        signal: np.ndarray,
-        timing_signal: np.ndarray,
-        reference_sweep: np.ndarray,
-        burst_matches: list[dict[str, Any]],
-        emit: dict[str, Any],
-        sample_rate: int,
-    ) -> dict[str, Any]:
-        sweep_start_emit = int(emit.get("sweep_start_emit") or 0)
-        sweep_end_emit = int(emit.get("sweep_end_emit") or 0)
-        program_samples = int(emit.get("program_samples") or 0)
-        if sweep_end_emit <= sweep_start_emit or program_samples <= 0:
-            raise RuntimeError("Browser sync scaffold metadata was incomplete")
 
-        hypothesis = self._select_browser_sync_hypothesis(burst_matches, sample_rate)
-        accepted = hypothesis["accepted"]
-        alpha, beta = self._fit_affine_mapping(
-            [float(item["start_emit"]) for item in accepted],
-            [float(item["observed_start"]) for item in accepted],
-            [float(item["weight"]) for item in accepted],
-        )
-        refined = self._collect_sync_inliers(
-            burst_matches,
-            alpha,
-            beta,
-            sample_rate,
-            window_seconds=BROWSER_SYNC_REFINED_WINDOW_SECONDS,
-        )
-        accepted = refined["accepted"]
-        if refined["cluster_counts"]["A"] < BROWSER_SYNC_MIN_CLUSTER_BURSTS or refined["cluster_counts"]["B"] < BROWSER_SYNC_MIN_CLUSTER_BURSTS or len(accepted) < BROWSER_SYNC_MIN_TOTAL_BURSTS:
-            accepted = hypothesis["accepted"]
-            alpha = float(hypothesis["alpha"])
-            beta = float(hypothesis["beta"])
-        else:
-            alpha, beta = self._fit_affine_mapping(
-                [float(item["start_emit"]) for item in accepted],
-                [float(item["observed_start"]) for item in accepted],
-                [float(item["weight"]) for item in accepted],
-            )
-
-        if not np.isfinite(alpha) or alpha <= 0.0:
-            raise RuntimeError("Unable to estimate browser timing drift from sync scaffold")
-        drift_ppm = (alpha - 1.0) * 1_000_000.0
-        corrected_signal, corrected_timing_signal = self._warp_browser_reference_capture(
-            signal=signal,
-            timing_signal=timing_signal,
-            alpha=alpha,
-            beta=beta,
-            emit=emit,
-        )
-
-        corrected_matches = []
-        for burst in burst_matches:
-            corrected_match = self._detect_browser_reference_template(
-                corrected_timing_signal,
-                burst["template"],
-                sample_rate,
-                search_start=max(0, int(burst["start_emit"]) - int(round(sample_rate * 0.06))),
-                search_end=min(corrected_timing_signal.size, int(burst["end_emit"]) + int(round(sample_rate * 0.06))),
-                low_hz=BROWSER_REFERENCE_SYNC_START_HZ,
-                high_hz=BROWSER_REFERENCE_SYNC_END_HZ,
-            )
-            residual_ms = abs(float(corrected_match["index"]) - float(burst["start_emit"])) * 1000.0 / sample_rate
-            corrected_matches.append(
-                {
-                    "name": str(burst["name"]),
-                    "cluster": str(burst["cluster"]),
-                    "seed": int(burst["seed"]),
-                    "offset_samples": int(burst["start_emit"]),
-                    "score": round(float(burst["match"]["score"]), 5),
-                    "raw_score": round(float(burst["match"]["raw_score"]), 5),
-                    "polarity": int(-1 if float(burst["match"]["polarity"]) < 0 else 1),
-                    "observed_start": int(round(next((item["observed_start"] for item in accepted if item["name"] == burst["name"]), burst["match"]["index"]))),
-                    "residual_samples": int(round(float(corrected_match["index"]) - float(burst["start_emit"]))),
-                    "inlier": any(item["name"] == burst["name"] for item in accepted),
-                    "peak_ratio": round(float(burst["match"]["peak_ratio"]), 5),
-                    "width_ms": round(float(burst["match"]["width_ms"]), 3),
-                    "corrected_score": round(float(corrected_match["score"]), 5),
-                    "corrected_residual_ms": round(float(residual_ms), 3),
-                    "candidates": burst["match"]["candidates"],
-                }
-            )
-
-        fit_residuals_ms = [
-            abs((float(item["observed_start"]) - (alpha * float(item["start_emit"]) + beta)) * 1000.0 / sample_rate)
-            for item in accepted
-        ]
-        fit_residual_rms_ms = math.sqrt(sum(value * value for value in fit_residuals_ms) / max(len(fit_residuals_ms), 1))
-        max_burst_residual_ms = max((float(item["corrected_residual_ms"]) for item in corrected_matches if item["inlier"]), default=max(fit_residuals_ms, default=0.0))
-        corrected_sweep_segment = corrected_timing_signal[sweep_start_emit:sweep_end_emit]
-        corrected_sweep_score = self._normalized_correlation_score(corrected_sweep_segment, reference_sweep)
-        observed_sweep_samples = max(1, int(round(reference_sweep.size * alpha)))
-        ordered_inliers = [item for item in corrected_matches if item["inlier"]]
-        ordered_inliers.sort(key=lambda item: int(item["offset_samples"]))
-        cluster_order_valid = all(
-            int(ordered_inliers[index]["observed_start"]) < int(ordered_inliers[index + 1]["observed_start"])
-            for index in range(len(ordered_inliers) - 1)
-        )
-        accepted_cluster_a_count = sum(1 for item in corrected_matches if item["inlier"] and item["cluster"] == "A")
-        accepted_cluster_b_count = sum(1 for item in corrected_matches if item["inlier"] and item["cluster"] == "B")
-        return {
-            "method": "sync-scaffold-affine-reference",
-            "aligned_start": int(sweep_start_emit),
-            "aligned_end": int(sweep_end_emit),
-            "observed_sweep_samples": int(observed_sweep_samples),
-            "stretch_ratio": float(alpha),
-            "drift_ppm": float(drift_ppm),
-            "burst_matches": corrected_matches,
-            "accepted_burst_count": int(sum(1 for item in corrected_matches if item["inlier"])),
-            "accepted_cluster_a_count": int(accepted_cluster_a_count),
-            "accepted_cluster_b_count": int(accepted_cluster_b_count),
-            "fit_residual_rms_ms": float(fit_residual_rms_ms),
-            "max_burst_residual_ms": float(max_burst_residual_ms),
-            "cluster_order_valid": bool(cluster_order_valid),
-            "corrected_sweep_score": float(corrected_sweep_score),
-            "corrected_signal": corrected_signal,
-            "corrected_timing_signal": corrected_timing_signal,
-            "sweep_start_emit": int(sweep_start_emit),
-            "emit": dict(emit),
-        }
-
-    def _select_browser_sync_hypothesis(self, burst_matches: list[dict[str, Any]], sample_rate: int) -> dict[str, Any]:
-        best: dict[str, Any] | None = None
-        cluster_a = [burst for burst in burst_matches if str(burst["cluster"]) == "A"]
-        cluster_b = [burst for burst in burst_matches if str(burst["cluster"]) == "B"]
-        for burst_a in cluster_a:
-            for candidate_a in burst_a["match"]["candidates"]:
-                obs_a = float(candidate_a["index"])
-                emit_a = float(burst_a["start_emit"])
-                for burst_b in cluster_b:
-                    for candidate_b in burst_b["match"]["candidates"]:
-                        obs_b = float(candidate_b["index"])
-                        emit_b = float(burst_b["start_emit"])
-                        if obs_b <= obs_a or emit_b <= emit_a:
-                            continue
-                        alpha = (obs_b - obs_a) / (emit_b - emit_a)
-                        if not np.isfinite(alpha) or alpha <= 0.0:
-                            continue
-                        drift_ppm = abs(alpha - 1.0) * 1_000_000.0
-                        if drift_ppm > SWEEP_TIMING_MAX_ABS_PPM:
-                            continue
-                        beta = obs_a - (alpha * emit_a)
-                        collected = self._collect_sync_inliers(
-                            burst_matches,
-                            alpha,
-                            beta,
-                            sample_rate,
-                            window_seconds=BROWSER_SYNC_ACCEPT_WINDOW_SECONDS,
-                        )
-                        accepted = collected["accepted"]
-                        cluster_counts = collected["cluster_counts"]
-                        if cluster_counts["A"] < 1 or cluster_counts["B"] < 1 or len(accepted) < BROWSER_SYNC_MIN_TOTAL_BURSTS:
-                            continue
-                        ordered = [item["observed_start"] for item in sorted(accepted, key=lambda item: int(item["start_emit"]))]
-                        if any(float(ordered[index]) >= float(ordered[index + 1]) for index in range(len(ordered) - 1)):
-                            continue
-                        score = (
-                            len(accepted),
-                            min(cluster_counts["A"], cluster_counts["B"]),
-                            -float(collected["residual_rms_ms"]),
-                            float(sum(item["weight"] for item in accepted)),
-                        )
-                        if best is None or score > best["score"]:
-                            best = {
-                                "alpha": float(alpha),
-                                "beta": float(beta),
-                                "accepted": accepted,
-                                "cluster_counts": cluster_counts,
-                                "score": score,
-                            }
-        if best is None:
-            raise RuntimeError("Unable to recover a trustworthy browser sync scaffold fit")
-        return best
-
-    def _collect_sync_inliers(
-        self,
-        burst_matches: list[dict[str, Any]],
-        alpha: float,
-        beta: float,
-        sample_rate: int,
-        *,
-        window_seconds: float,
-    ) -> dict[str, Any]:
-        window_samples = max(1.0, float(window_seconds) * sample_rate)
-        accepted = []
-        cluster_counts = {"A": 0, "B": 0}
-        residuals_ms: list[float] = []
-        for burst in burst_matches:
-            predicted = (alpha * float(burst["start_emit"])) + beta
-            best_candidate: dict[str, Any] | None = None
-            best_residual = 0.0
-            for candidate in burst["match"]["candidates"]:
-                residual = float(candidate["index"]) - predicted
-                if abs(residual) > window_samples:
-                    continue
-                if best_candidate is None or abs(residual) < abs(best_residual) or (
-                    abs(abs(residual) - abs(best_residual)) <= 1.0 and float(candidate["score"]) > float(best_candidate["score"])
-                ):
-                    best_candidate = candidate
-                    best_residual = residual
-            if best_candidate is None:
-                continue
-            weight = self._browser_sync_candidate_weight(best_candidate, burst["match"])
-            residual_ms = abs(best_residual) * 1000.0 / sample_rate
-            accepted.append(
-                {
-                    "name": str(burst["name"]),
-                    "cluster": str(burst["cluster"]),
-                    "seed": int(burst["seed"]),
-                    "start_emit": int(burst["start_emit"]),
-                    "end_emit": int(burst["end_emit"]),
-                    "observed_start": int(round(float(best_candidate["index"]))),
-                    "score": float(best_candidate["score"]),
-                    "raw_score": float(best_candidate["raw_score"]),
-                    "peak_ratio": float(burst["match"]["peak_ratio"]),
-                    "width_ms": float(burst["match"]["width_ms"]),
-                    "weight": float(weight),
-                    "residual_ms": float(residual_ms),
-                }
-            )
-            cluster_counts[str(burst["cluster"])] += 1
-            residuals_ms.append(float(residual_ms))
-        residual_rms_ms = math.sqrt(sum(value * value for value in residuals_ms) / max(len(residuals_ms), 1))
-        return {
-            "accepted": accepted,
-            "cluster_counts": cluster_counts,
-            "residual_rms_ms": float(residual_rms_ms),
-        }
-
-    def _browser_sync_candidate_weight(self, candidate: dict[str, Any], match: dict[str, Any]) -> float:
-        score = max(float(candidate.get("score") or 0.0), 0.05)
-        ratio = max(float(match.get("peak_ratio") or 0.0), 1.0)
-        width_ms = max(float(match.get("width_ms") or 0.0), 0.25)
-        sharpness = 1.0 / max(width_ms, 0.25)
-        return score * min(ratio, 4.0) * sharpness
-
-    def _fit_affine_mapping(self, emit_points: list[float], observed_points: list[float], weights: list[float]) -> tuple[float, float]:
-        x = np.array(emit_points, dtype=np.float64)
-        y = np.array(observed_points, dtype=np.float64)
-        w = np.array(weights, dtype=np.float64)
-        if x.size < 2 or y.size != x.size or w.size != x.size:
-            raise RuntimeError("Not enough sync points for affine timing fit")
-        w = np.maximum(w, 1e-6)
-        design = np.column_stack([x, np.ones_like(x)])
-        weighted_design = design * np.sqrt(w)[:, None]
-        weighted_y = y * np.sqrt(w)
-        coeffs, *_ = np.linalg.lstsq(weighted_design, weighted_y, rcond=None)
-        return float(coeffs[0]), float(coeffs[1])
-
-    def _estimate_browser_reference_timing(
-        self,
-        *,
-        signal: np.ndarray,
-        timing_signal: np.ndarray,
-        reference_sweep: np.ndarray,
-        marker_a: np.ndarray,
-        marker_b: np.ndarray,
-        marker_a_match: dict[str, Any],
-        marker_b_match: dict[str, Any],
-        emit: dict[str, Any],
-        sample_rate: int,
-    ) -> dict[str, Any]:
-        marker_a_emit = int(emit.get("marker_a_start_emit") or 0)
-        marker_b_emit = int(emit.get("marker_b_start_emit") or 0)
-        sweep_start_emit = int(emit.get("sweep_start_emit") or 0)
-        sweep_end_emit = int(emit.get("sweep_end_emit") or 0)
-        program_samples = int(emit.get("program_samples") or 0)
-        if marker_b_emit <= marker_a_emit or sweep_end_emit <= sweep_start_emit or program_samples <= 0:
-            raise RuntimeError("Browser acoustic-reference metadata was incomplete")
-
-        marker_a_obs = float(marker_a_match["index"])
-        marker_b_obs = float(marker_b_match["index"])
-        observed_spacing = marker_b_obs - marker_a_obs
-        emitted_spacing = float(marker_b_emit - marker_a_emit)
-        if observed_spacing <= 0.0:
-            raise RuntimeError("Observed browser timing markers were out of order")
-        alpha = observed_spacing / emitted_spacing
-        if not np.isfinite(alpha) or alpha <= 0.0:
-            raise RuntimeError("Unable to estimate browser timing drift from markers")
-        beta = marker_a_obs - (alpha * marker_a_emit)
-        drift_ppm = (alpha - 1.0) * 1_000_000.0
-        corrected_signal, corrected_timing_signal = self._warp_browser_reference_capture(
-            signal=signal,
-            timing_signal=timing_signal,
-            alpha=alpha,
-            beta=beta,
-            emit=emit,
-        )
-
-        corrected_marker_a = self._detect_browser_timing_marker(
-            corrected_timing_signal,
-            marker_a,
-            sample_rate,
-            search_start=max(0, marker_a_emit - int(round(sample_rate * 0.08))),
-            search_end=min(corrected_timing_signal.size, marker_a_emit + marker_a.size + int(round(sample_rate * 0.08))),
-        )
-        corrected_marker_b = self._detect_browser_timing_marker(
-            corrected_timing_signal,
-            marker_b,
-            sample_rate,
-            search_start=max(0, marker_b_emit - int(round(sample_rate * 0.08))),
-            search_end=min(corrected_timing_signal.size, marker_b_emit + marker_b.size + int(round(sample_rate * 0.08))),
-        )
-        marker_a_error_ms = abs(float(corrected_marker_a["index"]) - marker_a_emit) * 1000.0 / sample_rate
-        marker_b_error_ms = abs(float(corrected_marker_b["index"]) - marker_b_emit) * 1000.0 / sample_rate
-        marker_fit_residual_ms = max(marker_a_error_ms, marker_b_error_ms)
-        corrected_spacing = float(corrected_marker_b["index"]) - float(corrected_marker_a["index"])
-        marker_spacing_error_ms = abs(corrected_spacing - emitted_spacing) * 1000.0 / sample_rate
-        corrected_sweep_segment = corrected_timing_signal[sweep_start_emit:sweep_end_emit]
-        corrected_sweep_score = self._normalized_correlation_score(corrected_sweep_segment, reference_sweep)
-        observed_sweep_samples = max(1, int(round(reference_sweep.size * alpha)))
-        marker_matches = [
-            {
-                "name": "marker-a",
-                "offset_samples": int(marker_a_emit),
-                "score": round(float(marker_a_match["score"]), 5),
-                "raw_score": round(float(marker_a_match["raw_score"]), 5),
-                "polarity": int(-1 if float(marker_a_match["polarity"]) < 0 else 1),
-                "observed_start": int(round(marker_a_obs)),
-                "residual_samples": int(round(float(corrected_marker_a["index"]) - marker_a_emit)),
-                "inlier": True,
-                "peak_ratio": round(float(marker_a_match["peak_ratio"]), 5),
-                "width_ms": round(float(marker_a_match["width_ms"]), 3),
-                "candidates": marker_a_match["candidates"],
-            },
-            {
-                "name": "marker-b",
-                "offset_samples": int(marker_b_emit),
-                "score": round(float(marker_b_match["score"]), 5),
-                "raw_score": round(float(marker_b_match["raw_score"]), 5),
-                "polarity": int(-1 if float(marker_b_match["polarity"]) < 0 else 1),
-                "observed_start": int(round(marker_b_obs)),
-                "residual_samples": int(round(float(corrected_marker_b["index"]) - marker_b_emit)),
-                "inlier": True,
-                "peak_ratio": round(float(marker_b_match["peak_ratio"]), 5),
-                "width_ms": round(float(marker_b_match["width_ms"]), 3),
-                "candidates": marker_b_match["candidates"],
-            },
-        ]
-        return {
-            "method": "marker-affine-reference",
-            "aligned_start": int(sweep_start_emit),
-            "aligned_end": int(sweep_end_emit),
-            "observed_sweep_samples": int(observed_sweep_samples),
-            "stretch_ratio": float(alpha),
-            "drift_ppm": float(drift_ppm),
-            "marker_matches": marker_matches,
-            "marker_a_score": float(marker_a_match["score"]),
-            "marker_a_peak_ratio": float(marker_a_match["peak_ratio"]),
-            "marker_b_score": float(marker_b_match["score"]),
-            "marker_b_peak_ratio": float(marker_b_match["peak_ratio"]),
-            "marker_fit_residual_ms": float(marker_fit_residual_ms),
-            "marker_spacing_error_ms": float(marker_spacing_error_ms),
-            "corrected_sweep_score": float(corrected_sweep_score),
-            "corrected_signal": corrected_signal,
-            "corrected_timing_signal": corrected_timing_signal,
-            "sweep_start_emit": int(sweep_start_emit),
-            "emit": dict(emit),
-        }
-
-    def _warp_browser_reference_capture(
-        self,
-        *,
-        signal: np.ndarray,
-        timing_signal: np.ndarray,
-        alpha: float,
-        beta: float,
-        emit: dict[str, Any],
-    ) -> tuple[np.ndarray, np.ndarray]:
-        program_samples = int(emit.get("program_samples") or 0)
-        stop_margin_samples = int(emit.get("stop_margin_samples") or 0)
-        corrected_size = max(program_samples + stop_margin_samples, 1)
-        emit_positions = np.arange(corrected_size, dtype=np.float64)
-        source_positions = beta + (alpha * emit_positions)
-        source_indices = np.arange(signal.size, dtype=np.float64)
-        corrected_signal = np.interp(source_positions, source_indices, signal.astype(np.float64), left=0.0, right=0.0)
-        corrected_timing_signal = np.interp(source_positions, source_indices, timing_signal.astype(np.float64), left=0.0, right=0.0)
-        return corrected_signal, corrected_timing_signal
-
-    def _detect_browser_timing_marker(
-        self,
-        signal: np.ndarray,
-        template: np.ndarray,
-        sample_rate: int,
-        search_start: int | None = None,
-        search_end: int | None = None,
-    ) -> dict[str, Any]:
-        return self._detect_browser_reference_template(
-            signal,
-            template,
-            sample_rate,
-            search_start=search_start,
-            search_end=search_end,
-            low_hz=BROWSER_REFERENCE_SYNC_START_HZ,
-            high_hz=BROWSER_REFERENCE_SYNC_END_HZ,
-        )
-
-    def _detect_browser_reference_template(
-        self,
-        signal: np.ndarray,
-        template: np.ndarray,
-        sample_rate: int,
-        *,
-        search_start: int | None = None,
-        search_end: int | None = None,
-        low_hz: float,
-        high_hz: float,
-    ) -> dict[str, Any]:
-        signal64 = signal.astype(np.float64)
-        template64 = template.astype(np.float64)
-        start = max(0, int(search_start or 0))
-        end = min(signal64.size, int(search_end or signal64.size))
-        region = signal64[start:end]
-        if region.size < template64.size:
-            raise RuntimeError("Browser timing search region was too short for template detection")
-        filter_low = max(low_hz * 0.9, 20.0)
-        filter_high = min((sample_rate / 2.0) - 200.0, high_hz * 1.02)
-        filtered_region = self._fft_bandpass(region, sample_rate, filter_low, filter_high)
-        best_result: dict[str, Any] | None = None
-        for stretch_ratio in np.linspace(0.994, 1.006, 13, dtype=np.float64):
-            template_size = max(1024, int(round(template64.size * stretch_ratio)))
-            stretched_template = self._resample_signal(template64, template_size)
-            filtered_template = self._fft_bandpass(stretched_template, sample_rate, filter_low, filter_high)
-            corr = self._fft_correlate(filtered_region, filtered_template[::-1])
-            valid = corr[filtered_template.size - 1 : filtered_region.size]
-            template_norm = float(np.linalg.norm(filtered_template))
-            if template_norm <= 1e-12 or valid.size == 0:
-                continue
-            energy = np.square(filtered_region, dtype=np.float64)
-            cumulative = np.concatenate([np.zeros(1, dtype=np.float64), np.cumsum(energy)])
-            window_energy = cumulative[filtered_template.size:] - cumulative[:-filtered_template.size]
-            denominator = np.sqrt(np.maximum(window_energy, 1e-12)) * template_norm
-            raw_scores = np.divide(valid, denominator, out=np.zeros_like(valid, dtype=np.float64), where=denominator > 1e-12)
-            abs_scores = np.abs(raw_scores)
-            best_index = int(np.argmax(abs_scores))
-            best_score = float(abs_scores[best_index])
-            if best_result is not None and best_score <= float(best_result["score"]):
-                continue
-            best_raw_score = float(raw_scores[best_index])
-            exclusion = max(1, filtered_template.size // 3)
-            second_mask = np.ones(abs_scores.size, dtype=bool)
-            second_mask[max(0, best_index - exclusion):min(abs_scores.size, best_index + exclusion + 1)] = False
-            second_score = float(np.max(abs_scores[second_mask])) if np.any(second_mask) else 0.0
-            peak_ratio = best_score / max(second_score, 1e-6)
-            width_samples = self._peak_width_samples(abs_scores, best_index, threshold=max(best_score * 0.5, 0.1))
-            candidates = self._top_marker_candidates(abs_scores, raw_scores, sample_rate, base_index=start)
-            best_result = {
-                "index": int(start + best_index),
-                "score": best_score,
-                "raw_score": best_raw_score,
-                "polarity": -1.0 if best_raw_score < 0 else 1.0,
-                "second_score": second_score,
-                "peak_ratio": float(peak_ratio),
-                "width_ms": float(width_samples) * 1000.0 / sample_rate,
-                "candidates": candidates,
-                "stretch_ratio": stretch_ratio,
-            }
-        if best_result is None:
-            raise RuntimeError("Unable to detect browser timing template")
-        return best_result
-
-    def _fft_bandpass(self, signal: np.ndarray, sample_rate: int, low_hz: float, high_hz: float) -> np.ndarray:
-        signal64 = signal.astype(np.float64)
-        if signal64.size == 0:
-            return signal64
-        spectrum = np.fft.rfft(signal64)
-        freqs = np.fft.rfftfreq(signal64.size, d=1.0 / sample_rate)
-        mask = (freqs >= max(low_hz, 0.0)) & (freqs <= min(high_hz, sample_rate / 2.0))
-        spectrum[~mask] = 0.0
-        return np.fft.irfft(spectrum, n=signal64.size)
-
-    def _normalized_correlation_score(self, signal: np.ndarray, template: np.ndarray) -> float:
-        signal64 = signal.astype(np.float64)
-        template64 = template.astype(np.float64)
-        size = min(signal64.size, template64.size)
-        if size <= 0:
-            return 0.0
-        signal64 = signal64[:size]
-        template64 = template64[:size]
-        denominator = float(np.linalg.norm(signal64) * np.linalg.norm(template64))
-        if denominator <= 1e-12:
-            return 0.0
-        return abs(float(np.dot(signal64, template64) / denominator))
-
-    def _peak_width_samples(self, values: np.ndarray, peak_index: int, threshold: float) -> int:
-        left = peak_index
-        right = peak_index
-        while left > 0 and float(values[left - 1]) >= threshold:
-            left -= 1
-        while right + 1 < values.size and float(values[right + 1]) >= threshold:
-            right += 1
-        return max(1, right - left + 1)
-
-    def _top_marker_candidates(self, abs_scores: np.ndarray, raw_scores: np.ndarray, sample_rate: int, limit: int = 5, base_index: int = 0) -> list[dict[str, Any]]:
-        if abs_scores.size == 0:
-            return []
-        order = np.argsort(abs_scores)[::-1]
-        exclusion = max(1, int(round(sample_rate * 0.08)))
-        chosen: list[int] = []
-        for index in order:
-            if any(abs(index - existing) <= exclusion for existing in chosen):
-                continue
-            chosen.append(int(index))
-            if len(chosen) >= limit:
-                break
-        return [
-            {
-                "index": int(base_index + index),
-                "score": round(float(abs_scores[index]), 5),
-                "raw_score": round(float(raw_scores[index]), 5),
-            }
-            for index in chosen
-        ]
 
     def _build_display_points(
         self,
@@ -2266,7 +1015,6 @@ class MeasurementStore:
         frequencies: np.ndarray,
         magnitude: np.ndarray,
         calibration_curve: tuple[np.ndarray, np.ndarray] | None,
-        browser_capture: bool,
     ) -> dict[str, Any]:
         analysis_limit_hz = min(float(frequencies[-1]) - 1.0, SWEEP_END_HZ)
         display_max_hz = min(analysis_limit_hz, TRUSTED_MAX_HZ)
@@ -2306,7 +1054,6 @@ class MeasurementStore:
 
         trusted_min_hz, trusted_max_hz, trusted_band_meta = self._select_trusted_band(
             raw_points,
-            browser_capture=browser_capture,
         )
         trusted_points = [point for point in raw_points if trusted_min_hz <= point[0] <= trusted_max_hz]
         if not trusted_points:
@@ -2345,8 +1092,6 @@ class MeasurementStore:
     def _select_trusted_band(
         self,
         raw_points: list[list[float]],
-        *,
-        browser_capture: bool = False,
     ) -> tuple[float, float, dict[str, Any]]:
         freqs = [float(point[0]) for point in raw_points]
         if not freqs:
@@ -2368,24 +1113,10 @@ class MeasurementStore:
         high_stable = self._edge_window_is_stable(levels[high_index - window_points + 1 : high_index + 1])
         edge_trimmed = low_index > 0 or high_index < total_points - 1
 
-        upper_edge_guard_applied = False
-        upper_edge_guard_rejected_points = 0
-        if browser_capture:
-            high_index, upper_edge_guard_rejected_points = self._apply_browser_upper_edge_guard(
-                freqs,
-                levels,
-                low_index=low_index,
-                high_index=high_index,
-                min_trusted_points=min_trusted_points,
-            )
-            upper_edge_guard_applied = upper_edge_guard_rejected_points > 0
-
         trimmed = low_index > 0 or high_index < total_points - 1
         selection_reasons = []
         if edge_trimmed:
             selection_reasons.append("edge-stability")
-        if upper_edge_guard_applied:
-            selection_reasons.append("upper-edge-guard")
         if trimmed and (high_index - low_index + 1) >= min_trusted_points:
             selection = "+".join(selection_reasons) + "-trimmed" if selection_reasons else "trimmed"
         elif not trimmed:
@@ -2402,55 +1133,8 @@ class MeasurementStore:
             "stable_low_edge": bool(low_stable),
             "stable_high_edge": bool(high_stable),
             "trusted_point_count": high_index - low_index + 1,
-            "upper_edge_guard_start_hz": round(float(BROWSER_UPPER_EDGE_GUARD_START_HZ), 3),
-            "upper_edge_guard_applied": bool(upper_edge_guard_applied),
-            "upper_edge_guard_rejected_points": int(upper_edge_guard_rejected_points),
-            "upper_edge_guard_reason": "browser final-edge instability" if upper_edge_guard_applied else "",
         }
 
-    def _apply_browser_upper_edge_guard(
-        self,
-        freqs: list[float],
-        levels: list[float],
-        *,
-        low_index: int,
-        high_index: int,
-        min_trusted_points: int,
-    ) -> tuple[int, int]:
-        guard_start_index = next((index for index in range(low_index, high_index + 1) if freqs[index] >= BROWSER_UPPER_EDGE_GUARD_START_HZ), high_index)
-        inspect_start = max(guard_start_index, high_index - BROWSER_UPPER_EDGE_REJECT_MAX_POINTS + 1)
-        earliest_unstable_index = None
-        for index in range(inspect_start, high_index + 1):
-            if self._browser_upper_edge_point_is_unstable(levels, index, low_index=low_index):
-                earliest_unstable_index = index
-                break
-        if earliest_unstable_index is None:
-            return high_index, 0
-        candidate_high = earliest_unstable_index - 1
-        if (candidate_high - low_index + 1) < min_trusted_points:
-            return high_index, 0
-        return candidate_high, high_index - candidate_high
-
-    @staticmethod
-    def _browser_upper_edge_point_is_unstable(
-        levels: list[float],
-        index: int,
-        *,
-        low_index: int,
-    ) -> bool:
-        if index <= low_index:
-            return False
-        context_start = max(low_index, index - 3)
-        context_levels = [levels[position] for position in range(context_start, index)]
-        if not context_levels:
-            return False
-        local_median = float(np.median(context_levels))
-        local_deviation = abs(float(levels[index]) - local_median)
-        delta_from_previous = abs(float(levels[index]) - float(levels[index - 1]))
-        return (
-            local_deviation >= BROWSER_UPPER_EDGE_SINGLE_POINT_MAX_DEVIATION_DB
-            or delta_from_previous >= BROWSER_UPPER_EDGE_SINGLE_POINT_MAX_DELTA_DB
-        )
 
     @staticmethod
     def _find_response_outliers(
@@ -2541,159 +1225,7 @@ class MeasurementStore:
             "channels": 2,
         }
 
-    def _write_browser_reference_file(
-        self,
-        path: Path,
-        *,
-        sample_rate: int,
-        channel: str,
-    ) -> dict[str, Any]:
-        sync_bursts = [
-            self._generate_browser_sync_burst(
-                sample_rate=sample_rate,
-                duration_seconds=BROWSER_REFERENCE_SYNC_BURST_SECONDS,
-                seed=seed,
-            )
-            for seed in BROWSER_REFERENCE_SYNC_SEEDS
-        ]
-        sweep = self._generate_log_sweep(
-            sample_rate=sample_rate,
-            duration_seconds=SWEEP_V2_SECONDS,
-            start_hz=SWEEP_START_HZ,
-            end_hz=SWEEP_END_HZ,
-            peak_scale=BROWSER_REFERENCE_SWEEP_PEAK_SCALE,
-        )
-        inverse_sweep = self._build_inverse_sweep(
-            sweep,
-            sample_rate=sample_rate,
-            duration_seconds=SWEEP_V2_SECONDS,
-            start_hz=SWEEP_START_HZ,
-            end_hz=SWEEP_END_HZ,
-        )
-        pre_roll = np.zeros(int(round(sample_rate * BROWSER_REFERENCE_PRE_ROLL_SECONDS)), dtype=np.float32)
-        burst_gap = np.zeros(int(round(sample_rate * BROWSER_REFERENCE_SYNC_GAP_SECONDS)), dtype=np.float32)
-        guard_gap = np.zeros(int(round(sample_rate * BROWSER_REFERENCE_SYNC_GUARD_SECONDS)), dtype=np.float32)
-        tail = np.zeros(int(round(sample_rate * BROWSER_REFERENCE_TAIL_SECONDS)), dtype=np.float32)
 
-        segments = [pre_roll]
-        burst_meta: list[dict[str, Any]] = []
-        names = ("A1", "A2", "A3", "B1", "B2", "B3")
-        current = int(pre_roll.size)
-        for index, burst in enumerate(sync_bursts[:3]):
-            segments.append(burst)
-            start_emit = current
-            current += int(burst.size)
-            burst_meta.append(
-                {
-                    "name": names[index],
-                    "cluster": "A",
-                    "seed": int(BROWSER_REFERENCE_SYNC_SEEDS[index]),
-                    "start_emit": int(start_emit),
-                    "end_emit": int(current),
-                }
-            )
-            if index != 2:
-                segments.append(burst_gap)
-                current += int(burst_gap.size)
-        segments.append(guard_gap)
-        current += int(guard_gap.size)
-        sweep_start = current
-        segments.append(sweep)
-        current += int(sweep.size)
-        sweep_end = current
-        segments.append(guard_gap)
-        current += int(guard_gap.size)
-        for local_index, burst in enumerate(sync_bursts[3:]):
-            index = local_index + 3
-            segments.append(burst)
-            start_emit = current
-            current += int(burst.size)
-            burst_meta.append(
-                {
-                    "name": names[index],
-                    "cluster": "B",
-                    "seed": int(BROWSER_REFERENCE_SYNC_SEEDS[index]),
-                    "start_emit": int(start_emit),
-                    "end_emit": int(current),
-                }
-            )
-            if index != 5:
-                segments.append(burst_gap)
-                current += int(burst_gap.size)
-        segments.append(tail)
-        mono_program = np.concatenate(segments).astype(np.float32)
-        program_peak = float(np.max(np.abs(mono_program))) or 1.0
-        mono_program = (mono_program * (BROWSER_REFERENCE_PROGRAM_PEAK / program_peak)).astype(np.float32)
-        sweep = mono_program[sweep_start:sweep_end].astype(np.float32)
-        burst_payload = []
-        for burst in burst_meta:
-            template = mono_program[int(burst["start_emit"]):int(burst["end_emit"])]
-            burst_payload.append({**burst, "template": template.astype(np.float32)})
-        emit = {
-            "program_sample_rate": int(sample_rate),
-            "program_samples": int(mono_program.size),
-            "sweep_start_emit": int(sweep_start),
-            "sweep_end_emit": int(sweep_end),
-            "sync_bursts": [
-                {
-                    "name": str(burst["name"]),
-                    "cluster": str(burst["cluster"]),
-                    "seed": int(burst["seed"]),
-                    "start_emit": int(burst["start_emit"]),
-                    "end_emit": int(burst["end_emit"]),
-                }
-                for burst in burst_payload
-            ],
-            "tail_samples": int(tail.size),
-            "stop_margin_samples": int(round(sample_rate * BROWSER_REFERENCE_STOP_MARGIN_SECONDS)),
-        }
-
-        if channel == "right":
-            playback = np.column_stack([np.zeros_like(mono_program), mono_program])
-        elif channel == "stereo":
-            playback = np.column_stack([mono_program, mono_program])
-        else:
-            playback = np.column_stack([mono_program, np.zeros_like(mono_program)])
-
-        self._write_wav(path, playback, sample_rate)
-        return {
-            "analysis_sweep": sweep,
-            "inverse_sweep": inverse_sweep,
-            "sync_bursts": burst_payload,
-            "emit": emit,
-            "samples": int(mono_program.size),
-            "channels": 2,
-            "sweep_seconds": SWEEP_V2_SECONDS,
-            "pre_roll_seconds": BROWSER_REFERENCE_PRE_ROLL_SECONDS,
-            "tail_seconds": BROWSER_REFERENCE_TAIL_SECONDS,
-            "playback_duration_seconds": mono_program.size / sample_rate,
-        }
-
-    def _generate_browser_sync_burst(
-        self,
-        *,
-        sample_rate: int,
-        duration_seconds: float,
-        seed: int,
-    ) -> np.ndarray:
-        sample_count = max(2048, int(round(sample_rate * duration_seconds)))
-        rng = np.random.default_rng(int(seed))
-        burst = rng.standard_normal(sample_count).astype(np.float64)
-        burst = self._fft_bandpass(burst, sample_rate, BROWSER_REFERENCE_SYNC_START_HZ, BROWSER_REFERENCE_SYNC_END_HZ)
-        spectrum = np.fft.rfft(burst)
-        freqs = np.fft.rfftfreq(sample_count, d=1.0 / sample_rate)
-        weights = np.ones_like(freqs)
-        valid = freqs >= max(BROWSER_REFERENCE_SYNC_START_HZ, 1.0)
-        weights[valid] = 1.0 / np.sqrt(np.maximum(freqs[valid] / BROWSER_REFERENCE_SYNC_START_HZ, 1.0))
-        burst = np.fft.irfft(spectrum * weights, n=sample_count)
-        ramp_samples = min(sample_count // 4, max(64, int(round(sample_rate * BROWSER_REFERENCE_SYNC_RAMP_SECONDS))))
-        if ramp_samples > 1:
-            ramp = 0.5 - (0.5 * np.cos(np.linspace(0.0, math.pi, ramp_samples, dtype=np.float64)))
-            burst[:ramp_samples] *= ramp
-            burst[-ramp_samples:] *= ramp[::-1]
-        peak = float(np.max(np.abs(burst))) or 1.0
-        burst = (float(BROWSER_REFERENCE_SYNC_PEAK_SCALE) * burst / peak).astype(np.float32)
-        return burst
 
     def _generate_log_sweep(
         self,
@@ -2746,7 +1278,6 @@ class MeasurementStore:
         reference_sweep: np.ndarray,
         coarse_start: int,
         sample_rate: int,
-        browser_capture: bool = False,
     ) -> dict[str, Any]:
         edge_anchor_samples = min(
             reference_sweep.size // 2,
@@ -2771,8 +1302,6 @@ class MeasurementStore:
         for anchor in anchors:
             expected_start = coarse_start + int(anchor["offset_samples"])
             local_search_margin = search_margin
-            if browser_capture and str(anchor.get("name")) in {"start-inner", "start-body", "mid-low"}:
-                local_search_margin = int(round(search_margin * BROWSER_SWEEP_TIMING_START_SEARCH_MULTIPLIER))
             search_start = max(0, expected_start - local_search_margin)
             search_end = min(signal.size, expected_start + anchor_samples + local_search_margin)
             match = self._find_best_alignment_in_region(
@@ -2796,7 +1325,6 @@ class MeasurementStore:
             matches=matches,
             reference_sweep_samples=reference_sweep.size,
             sample_rate=sample_rate,
-            browser_capture=browser_capture,
         )
         aligned_start = int(fit["aligned_start"])
         observed_sweep_samples = int(fit["observed_sweep_samples"])
@@ -2856,7 +1384,6 @@ class MeasurementStore:
         matches: list[dict[str, Any]],
         reference_sweep_samples: int,
         sample_rate: int,
-        browser_capture: bool = False,
     ) -> dict[str, Any]:
         if len(matches) < 2:
             raise RuntimeError("Sweep timing fit did not have enough anchors")
@@ -2865,11 +1392,6 @@ class MeasurementStore:
         observed = np.array([float(item["observed_start"]) for item in matches], dtype=np.float64)
         scores = np.array([max(float(item.get("score") or 0.0), 1e-6) for item in matches], dtype=np.float64)
         weights = np.square(scores)
-        if browser_capture:
-            weights = np.array([
-                weights[index] * float(BROWSER_TIMING_WEIGHT_MULTIPLIERS.get(str(item.get("name") or ""), 1.0))
-                for index, item in enumerate(matches)
-            ], dtype=np.float64)
         design = np.column_stack([np.ones(offsets.size, dtype=np.float64), offsets])
         sqrt_weights = np.sqrt(weights)
         weighted_design = design * sqrt_weights[:, None]
@@ -2899,8 +1421,8 @@ class MeasurementStore:
             observed_sweep_samples = int(reference_sweep_samples)
             slope = 1.0
 
-        start_score = self._aggregate_anchor_region_score(matches, inlier_mask, region="start", browser_capture=browser_capture)
-        end_score = self._aggregate_anchor_region_score(matches, inlier_mask, region="end", browser_capture=browser_capture)
+        start_score = self._aggregate_anchor_region_score(matches, inlier_mask, region="start")
+        end_score = self._aggregate_anchor_region_score(matches, inlier_mask, region="end")
         anchor_matches = []
         for index, item in enumerate(matches):
             anchor_matches.append(
@@ -2931,7 +1453,6 @@ class MeasurementStore:
         inlier_mask: np.ndarray,
         *,
         region: str,
-        browser_capture: bool = False,
     ) -> float:
         if region == "start":
             labels = {"start-inner", "start-body", "mid-low"}
@@ -2955,19 +1476,7 @@ class MeasurementStore:
             return 0.0
         region_scores.sort(reverse=True)
         top_scores = region_scores[:2]
-        base_score = float(sum(top_scores) / len(top_scores))
-        if not browser_capture:
-            return base_score
-
-        middle_labels = {"mid-low", "mid-high"}
-        middle_scores = collect_scores(middle_labels, only_inliers=True)
-        if len(middle_scores) < 2:
-            middle_scores = collect_scores(middle_labels, only_inliers=False)
-        if not middle_scores:
-            return base_score
-        middle_scores.sort(reverse=True)
-        middle_score = float(sum(middle_scores[:2]) / len(middle_scores[:2]))
-        return float((base_score * 0.6) + (middle_score * 0.4))
+        return float(sum(top_scores) / len(top_scores))
 
     def _find_best_alignment_in_region(self, region: np.ndarray, template: np.ndarray) -> dict[str, float]:
         region64 = region.astype(np.float64)
@@ -3213,39 +1722,6 @@ class MeasurementStore:
         sample_rate, raw_signal = self._load_wav_array(capture_path)
         return sample_rate, self._select_analysis_channel(raw_signal, channel=channel)
 
-    def _detect_browser_capture_playback_leak(self, capture_path: Path, playback_path: Path | None) -> dict[str, float] | None:
-        if playback_path is None or not playback_path.exists():
-            return None
-        try:
-            capture_sample_rate, capture_signal = self._load_wav_array(capture_path)
-            playback_sample_rate, playback_signal = self._load_wav_array(playback_path)
-        except Exception:
-            return None
-        if capture_sample_rate != playback_sample_rate or capture_signal.shape != playback_signal.shape:
-            return None
-        capture64 = capture_signal.astype(np.float64).reshape(-1)
-        playback64 = playback_signal.astype(np.float64).reshape(-1)
-        if capture64.size == 0 or playback64.size == 0:
-            return None
-        residual = capture64 - playback64
-        playback_rms = float(np.sqrt(np.mean(np.square(playback64))))
-        residual_rms = float(np.sqrt(np.mean(np.square(residual))))
-        if playback_rms <= 1e-9:
-            return None
-        correlation = 0.0
-        capture_std = float(np.std(capture64))
-        playback_std = float(np.std(playback64))
-        if capture_std > 1e-9 and playback_std > 1e-9:
-            correlation = float(np.corrcoef(capture64, playback64)[0, 1])
-        residual_db = 20.0 * math.log10(max(residual_rms / playback_rms, 1e-12))
-        max_abs_diff = float(np.max(np.abs(residual)))
-        if correlation >= 0.999999 and (residual_db <= -90.0 or max_abs_diff <= (1.0 / 32768.0)):
-            return {
-                "correlation": correlation,
-                "residual_db": residual_db,
-                "max_abs_diff": max_abs_diff,
-            }
-        return None
 
     def _select_analysis_channel(self, raw_signal: np.ndarray, *, channel: str, channel_index: int | None = None) -> np.ndarray:
         if raw_signal.ndim == 1 or raw_signal.shape[1] == 1:
@@ -3264,9 +1740,7 @@ class MeasurementStore:
         *,
         raw_signal: np.ndarray,
         sample_rate: int,
-        browser_capture_meta: dict[str, Any] | None,
     ) -> dict[str, Any]:
-        normalized_meta = self._normalize_browser_capture_meta(browser_capture_meta)
         channel_count = int(raw_signal.shape[1]) if raw_signal.ndim > 1 else 1
         duration_seconds = float(raw_signal.shape[0]) / float(sample_rate)
         peak = float(np.max(np.abs(raw_signal))) if raw_signal.size else 0.0
@@ -3304,82 +1778,8 @@ class MeasurementStore:
             "per_channel_rms_dbfs": per_channel_rms_dbfs,
             "stereo_correlation": stereo_correlation,
             "stereo_level_delta_db": stereo_level_delta_db,
-            "browser_capture_meta": normalized_meta,
         }
 
-    def _normalize_browser_capture_meta(self, browser_capture_meta: dict[str, Any] | None) -> dict[str, Any]:
-        meta = browser_capture_meta if isinstance(browser_capture_meta, dict) else {}
-        settings = meta.get("trackSettings") if isinstance(meta.get("trackSettings"), dict) else {}
-        constraints = meta.get("trackConstraints") if isinstance(meta.get("trackConstraints"), dict) else {}
-        capabilities = meta.get("trackCapabilities") if isinstance(meta.get("trackCapabilities"), dict) else {}
-        recorder = meta.get("recorder") if isinstance(meta.get("recorder"), dict) else {}
-        browser = meta.get("browser") if isinstance(meta.get("browser"), dict) else {}
-
-        def normalize_scalar(value: Any) -> Any:
-            if isinstance(value, bool):
-                return value
-            if isinstance(value, (int, float)):
-                return value
-            if isinstance(value, str):
-                text = value.strip()
-                return text or None
-            return None
-
-        def normalize_mapping(mapping: dict[str, Any]) -> dict[str, Any]:
-            return {str(key): normalize_scalar(value) for key, value in mapping.items() if normalize_scalar(value) is not None}
-
-        def normalize_number_list(values: Any) -> list[float]:
-            if not isinstance(values, list):
-                return []
-            normalized: list[float] = []
-            for value in values:
-                if value in {None, ""}:
-                    continue
-                try:
-                    normalized.append(float(value))
-                except (TypeError, ValueError):
-                    continue
-            return normalized
-
-        return {
-            "input_label": str(meta.get("inputLabel") or "").strip(),
-            "requested_input_id": str(meta.get("requestedInputId") or "").strip(),
-            "secure_context": bool(meta.get("secureContext")),
-            "track_settings": {
-                "device_id": str(settings.get("deviceId") or "").strip(),
-                "channel_count": int(settings.get("channelCount") or 0) if str(settings.get("channelCount") or "").strip() else None,
-                "sample_rate": int(settings.get("sampleRate") or 0) if str(settings.get("sampleRate") or "").strip() else None,
-                "echo_cancellation": settings.get("echoCancellation"),
-                "noise_suppression": settings.get("noiseSuppression"),
-                "auto_gain_control": settings.get("autoGainControl"),
-                "latency": float(settings.get("latency")) if settings.get("latency") not in {None, ""} else None,
-                "sample_size": int(settings.get("sampleSize") or 0) if str(settings.get("sampleSize") or "").strip() else None,
-            },
-            "track_constraints": normalize_mapping(constraints),
-            "track_capabilities": normalize_mapping(capabilities),
-            "recorder": {
-                "processing_model": str(recorder.get("processingModel") or "").strip(),
-                "sample_rate": int(recorder.get("sampleRate") or 0) if str(recorder.get("sampleRate") or "").strip() else None,
-                "channel_count": int(recorder.get("channelCount") or 0) if str(recorder.get("channelCount") or "").strip() else None,
-                "base_latency": float(recorder.get("baseLatency")) if recorder.get("baseLatency") not in {None, ""} else None,
-                "output_latency": float(recorder.get("outputLatency")) if recorder.get("outputLatency") not in {None, ""} else None,
-                "context_state": str(recorder.get("contextState") or "").strip(),
-                "input_channel_count": int(recorder.get("inputChannelCount") or 0) if str(recorder.get("inputChannelCount") or "").strip() else None,
-                "peak": float(recorder.get("peak")) if recorder.get("peak") not in {None, ""} else None,
-                "rms": float(recorder.get("rms")) if recorder.get("rms") not in {None, ""} else None,
-                "frames_captured": int(recorder.get("framesCaptured") or 0) if str(recorder.get("framesCaptured") or "").strip() else None,
-                "total_samples": int(recorder.get("totalSamples") or 0) if str(recorder.get("totalSamples") or "").strip() else None,
-                "per_channel_peak": normalize_number_list(recorder.get("perChannelPeak")),
-                "per_channel_rms": normalize_number_list(recorder.get("perChannelRms")),
-                "per_channel_samples": normalize_number_list(recorder.get("perChannelSamples")),
-            },
-            "browser": {
-                "user_agent": str(browser.get("userAgent") or "").strip(),
-                "platform": str(browser.get("platform") or "").strip(),
-                "language": str(browser.get("language") or "").strip(),
-                "visibility_state": str(browser.get("visibilityState") or "").strip(),
-            },
-        }
 
     def _build_capture_quality_checks(
         self,
@@ -3398,153 +1798,38 @@ class MeasurementStore:
         def add(level: str, code: str, message: str) -> None:
             items.append({"level": level, "code": code, "message": message})
 
-        meta = capture_audit.get("browser_capture_meta") or {}
-        settings = meta.get("track_settings") or {}
-        recorder = meta.get("recorder") or {}
         capture_subject = capture_label if capture_label else "Capture"
         capture_subject_lower = capture_subject[:1].lower() + capture_subject[1:] if capture_subject else "capture"
-        playback_subject = "browser/playback" if meta else "capture/playback"
-        if settings.get("echo_cancellation") is True:
-            add("error", "echo-cancellation-enabled", "Browser mic echo cancellation stayed enabled during capture.")
-        if settings.get("noise_suppression") is True:
-            add("error", "noise-suppression-enabled", "Browser mic noise suppression stayed enabled during capture.")
-        if settings.get("auto_gain_control") is True:
-            add("error", "auto-gain-enabled", "Browser mic automatic gain control stayed enabled during capture.")
-        track_sample_rate = settings.get("sample_rate")
-        if track_sample_rate and int(track_sample_rate) != BROWSER_MEASUREMENT_SAMPLE_RATE:
-            add("error", "unexpected-track-sample-rate", f"Browser track ran at {track_sample_rate} Hz instead of {BROWSER_MEASUREMENT_SAMPLE_RATE} Hz.")
-        recorder_model = recorder.get("processing_model")
-        if recorder_model and recorder_model != "audio-worklet":
-            add("warning", "script-processor-fallback", "Browser recorder fell back to ScriptProcessor; capture timing may still be fragile.")
+        playback_subject = "capture/playback"
         if peak_dbfs >= CAPTURE_CLIP_FAIL_DBFS:
             add("error", "capture-clipped", f"Recorded sweep clipped at {peak_dbfs:.2f} dBFS.")
         elif peak_dbfs >= CAPTURE_CLIP_WARN_DBFS:
             add("warning", "capture-near-clipping", f"Recorded sweep peaked very close to clipping ({peak_dbfs:.2f} dBFS).")
+
         rms_dbfs = float(capture_audit.get("rms_dbfs") or 0.0)
-        if meta and (peak_dbfs <= BROWSER_CAPTURE_LEVEL_WARN_PEAK_DBFS or rms_dbfs <= BROWSER_CAPTURE_LEVEL_WARN_RMS_DBFS):
-            input_label = str(meta.get("input_label") or "Browser microphone").strip() or "Browser microphone"
-            add(
-                "warning",
-                "capture-level-low",
-                f"Browser capture level was unusually low for sweep analysis (peak {peak_dbfs:.2f} dBFS, rms {rms_dbfs:.2f} dBFS, input {input_label}). This often means the wrong browser mic path, browser/OS input attenuation, or a much weaker acoustic capture state.",
-            )
         drift_ppm = abs(float(timing.get("drift_ppm") or 0.0))
-        timing_method = str(timing.get("method") or "")
-        if timing_method == "sync-scaffold-affine-reference":
-            accepted_total = int(timing.get("accepted_burst_count") or 0)
-            accepted_cluster_a = int(timing.get("accepted_cluster_a_count") or 0)
-            accepted_cluster_b = int(timing.get("accepted_cluster_b_count") or 0)
-            fit_residual_ms = float(timing.get("fit_residual_rms_ms") or 0.0)
-            max_burst_residual_ms = float(timing.get("max_burst_residual_ms") or 0.0)
-            corrected_sweep_score = float(timing.get("corrected_sweep_score") or 0.0)
-            cluster_order_valid = bool(timing.get("cluster_order_valid"))
-            burst_matches = timing.get("burst_matches") or []
-            if accepted_total < BROWSER_SYNC_MIN_TOTAL_BURSTS:
-                add("error", "insufficient-sync-bursts", f"Only {accepted_total}/6 sync bursts were trustworthy; need at least {BROWSER_SYNC_MIN_TOTAL_BURSTS}.")
-            elif accepted_total == BROWSER_SYNC_MIN_TOTAL_BURSTS:
-                add("warning", "sync-burst-count-low", f"Only {accepted_total}/6 sync bursts were trustworthy; this run is usable but thin.")
-            if accepted_cluster_a < BROWSER_SYNC_MIN_CLUSTER_BURSTS:
-                add("error", "sync-cluster-a-insufficient", f"Cluster A only produced {accepted_cluster_a} trustworthy sync burst(s).")
-            if accepted_cluster_b < BROWSER_SYNC_MIN_CLUSTER_BURSTS:
-                add("error", "sync-cluster-b-insufficient", f"Cluster B only produced {accepted_cluster_b} trustworthy sync burst(s).")
-            if not cluster_order_valid:
-                add("error", "sync-order-invalid", "Recovered sync bursts did not preserve the expected scaffold order.")
-            if fit_residual_ms > BROWSER_SYNC_RESIDUAL_FAIL_MS:
-                add("error", "sync-fit-residual-high", f"Sync scaffold fit residual stayed too high ({fit_residual_ms:.3f} ms RMS).")
-            elif fit_residual_ms > BROWSER_SYNC_RESIDUAL_WARN_MS:
-                add("warning", "sync-fit-residual-soft", f"Sync scaffold fit residual was higher than expected ({fit_residual_ms:.3f} ms RMS).")
-            if max_burst_residual_ms > BROWSER_SYNC_MAX_RESIDUAL_FAIL_MS:
-                add("error", "sync-burst-residual-high", f"At least one corrected sync burst stayed too far off ({max_burst_residual_ms:.3f} ms).")
-            elif max_burst_residual_ms > BROWSER_SYNC_MAX_RESIDUAL_WARN_MS:
-                add("warning", "sync-burst-residual-soft", f"At least one corrected sync burst was softer than expected ({max_burst_residual_ms:.3f} ms).")
-            weak_bursts = [item for item in burst_matches if float(item.get("score") or 0.0) < BROWSER_SYNC_SCORE_WARN_THRESHOLD]
-            ambiguous_bursts = [item for item in burst_matches if float(item.get("peak_ratio") or 0.0) < BROWSER_SYNC_RATIO_WARN_THRESHOLD]
-            if weak_bursts:
-                add("warning", "sync-burst-score-soft", f"{len(weak_bursts)} sync burst(s) matched more softly than expected.")
-            if ambiguous_bursts:
-                add("warning", "sync-burst-ratio-soft", f"{len(ambiguous_bursts)} sync burst(s) had ambiguous peak separation.")
-            if drift_ppm > BROWSER_DRIFT_FAIL_PPM:
-                add("error", "browser-clock-drift-excessive", f"Observed browser/playback drift was too large ({drift_ppm:.0f} ppm).")
-            elif drift_ppm > BROWSER_DRIFT_WARN_PPM:
-                add("warning", "clock-drift-high", f"Observed browser/playback drift was high ({drift_ppm:.0f} ppm).")
-            if corrected_sweep_score < BROWSER_CORRECTED_SWEEP_SCORE_FAIL:
-                add("error", "corrected-sweep-weak", f"Corrected sweep-body confidence stayed too weak ({corrected_sweep_score:.3f}).")
-            elif corrected_sweep_score < BROWSER_CORRECTED_SWEEP_SCORE_WARN:
-                add("warning", "corrected-sweep-soft", f"Corrected sweep-body confidence was softer than expected ({corrected_sweep_score:.3f}).")
-        elif timing_method == "marker-affine-reference":
-            marker_a_score = float(timing.get("marker_a_score") or 0.0)
-            marker_b_score = float(timing.get("marker_b_score") or 0.0)
-            marker_a_ratio = float(timing.get("marker_a_peak_ratio") or 0.0)
-            marker_b_ratio = float(timing.get("marker_b_peak_ratio") or 0.0)
-            fit_residual_ms = float(timing.get("marker_fit_residual_ms") or 0.0)
-            corrected_sweep_score = float(timing.get("corrected_sweep_score") or 0.0)
-            if marker_a_score < 0.82:
-                add("error", "marker-a-weak", f"Marker A detection was too weak ({marker_a_score:.3f}).")
-            elif marker_a_score < 0.90:
-                add("warning", "marker-a-soft", f"Marker A detection was softer than expected ({marker_a_score:.3f}).")
-            if marker_b_score < 0.82:
-                add("error", "marker-b-weak", f"Marker B detection was too weak ({marker_b_score:.3f}).")
-            elif marker_b_score < 0.90:
-                add("warning", "marker-b-soft", f"Marker B detection was softer than expected ({marker_b_score:.3f}).")
-            if marker_a_ratio < 1.4:
-                add("error", "marker-a-ambiguous", f"Marker A correlation was ambiguous (peak ratio {marker_a_ratio:.2f}).")
-            elif marker_a_ratio < 1.8:
-                add("warning", "marker-a-peak-ratio-soft", f"Marker A peak ratio was softer than expected ({marker_a_ratio:.2f}).")
-            if marker_b_ratio < 1.4:
-                add("error", "marker-b-ambiguous", f"Marker B correlation was ambiguous (peak ratio {marker_b_ratio:.2f}).")
-            elif marker_b_ratio < 1.8:
-                add("warning", "marker-b-peak-ratio-soft", f"Marker B peak ratio was softer than expected ({marker_b_ratio:.2f}).")
-            if fit_residual_ms > 1.0:
-                add("error", "marker-fit-residual-high", f"Marker timing residual stayed too high after correction ({fit_residual_ms:.3f} ms).")
-            elif fit_residual_ms > 0.5:
-                add("warning", "marker-fit-residual-soft", f"Marker timing residual was higher than expected ({fit_residual_ms:.3f} ms).")
-            if drift_ppm > BROWSER_DRIFT_FAIL_PPM:
-                add("error", "browser-clock-drift-excessive", f"Observed browser/playback drift was too large ({drift_ppm:.0f} ppm).")
-            elif drift_ppm > BROWSER_DRIFT_WARN_PPM:
-                add("warning", "clock-drift-high", f"Observed browser/playback drift was high ({drift_ppm:.0f} ppm).")
-            if corrected_sweep_score < BROWSER_CORRECTED_SWEEP_SCORE_FAIL:
-                add("error", "corrected-sweep-weak", f"Corrected sweep-body confidence stayed too weak ({corrected_sweep_score:.3f}).")
-            elif corrected_sweep_score < BROWSER_CORRECTED_SWEEP_SCORE_WARN:
-                add("warning", "corrected-sweep-soft", f"Corrected sweep-body confidence was softer than expected ({corrected_sweep_score:.3f}).")
-        else:
-            alignment_fail_threshold = ALIGNMENT_SCORE_FAIL_THRESHOLD
-            alignment_warn_threshold = ALIGNMENT_SCORE_WARN_THRESHOLD
-            if capture_label == "Host-local capture":
-                alignment_fail_threshold = HOST_ALIGNMENT_SCORE_FAIL_THRESHOLD
-                alignment_warn_threshold = HOST_ALIGNMENT_SCORE_WARN_THRESHOLD
-            start_score = float(timing.get("start_score") or 0.0)
-            end_score = float(timing.get("end_score") or 0.0)
-            browser_start_marginal_but_usable = bool(meta) and all([
-                start_score >= 0.87,
-                start_score < alignment_fail_threshold,
-                end_score >= 0.947,
-                peak_dbfs > -6.5,
-                rms_dbfs > -21.5,
-                drift_ppm <= 1000.0,
-            ])
-            if start_score < alignment_fail_threshold:
-                if browser_start_marginal_but_usable:
-                    add("warning", "soft-start-alignment", f"Sweep start alignment score was slightly soft for browser capture but still within the currently accepted usable range ({start_score:.3f}).")
-                else:
-                    add("error", "weak-start-alignment", f"Sweep start alignment score was too weak ({start_score:.3f}).")
-            elif start_score < alignment_warn_threshold:
-                add("warning", "soft-start-alignment", f"Sweep start alignment score was softer than expected ({start_score:.3f}).")
-            if end_score < alignment_fail_threshold:
-                add("error", "weak-end-alignment", f"Sweep end alignment score was too weak ({end_score:.3f}).")
-            elif end_score < alignment_warn_threshold:
-                add("warning", "soft-end-alignment", f"Sweep end alignment score was softer than expected ({end_score:.3f}).")
-            if drift_ppm > CLOCK_DRIFT_WARN_PPM:
-                add("warning", "clock-drift-high", f"Observed {playback_subject} clock drift was high ({drift_ppm:.0f} ppm).")
+        alignment_fail_threshold = ALIGNMENT_SCORE_FAIL_THRESHOLD
+        alignment_warn_threshold = ALIGNMENT_SCORE_WARN_THRESHOLD
+        if capture_label == "Host-local capture":
+            alignment_fail_threshold = HOST_ALIGNMENT_SCORE_FAIL_THRESHOLD
+            alignment_warn_threshold = HOST_ALIGNMENT_SCORE_WARN_THRESHOLD
+        start_score = float(timing.get("start_score") or 0.0)
+        end_score = float(timing.get("end_score") or 0.0)
+        if start_score < alignment_fail_threshold:
+            add("error", "weak-start-alignment", f"Sweep start alignment score was too weak ({start_score:.3f}).")
+        elif start_score < alignment_warn_threshold:
+            add("warning", "soft-start-alignment", f"Sweep start alignment score was softer than expected ({start_score:.3f}).")
+        if end_score < alignment_fail_threshold:
+            add("error", "weak-end-alignment", f"Sweep end alignment score was too weak ({end_score:.3f}).")
+        elif end_score < alignment_warn_threshold:
+            add("warning", "soft-end-alignment", f"Sweep end alignment score was softer than expected ({end_score:.3f}).")
+        if drift_ppm > CLOCK_DRIFT_WARN_PPM:
+            add("warning", "clock-drift-high", f"Observed {playback_subject} clock drift was high ({drift_ppm:.0f} ppm).")
+
         stereo_correlation = capture_audit.get("stereo_correlation")
         if expect_dual_mono_channels and capture_audit.get("channels", 1) >= 2 and stereo_correlation is not None and stereo_correlation < CHANNEL_CORRELATION_WARN_THRESHOLD:
             add("warning", "stereo-mismatch", f"{capture_subject} channels were not close dual-mono (corr {stereo_correlation:.3f}).")
-        if trusted_band_meta.get("upper_edge_guard_applied"):
-            add(
-                "warning",
-                "upper-edge-review-only",
-                f"Trusted comparison trace stops at {float(trusted_max_hz):.0f} Hz because the final {capture_subject_lower} edge point(s) were unstable; inspect raw/full-band review above that range only.",
-            )
-        elif not trusted_band_meta.get("stable_high_edge", True):
+        if not trusted_band_meta.get("stable_high_edge", True):
             add("warning", "high-edge-unstable", f"Trusted comparison trace stops at {float(trusted_max_hz):.0f} Hz because the high-frequency edge was unstable.")
         if response_outliers:
             worst_outlier = max(response_outliers, key=lambda item: float(item.get("deviation_db") or 0.0))

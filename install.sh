@@ -1238,7 +1238,7 @@ print_summary() {
   [[ -n "$lan_ip" ]] && echo " - LAN IP: http://${lan_ip}:${port}"
   if [[ $CADDY_PROXY_ENABLED -eq 1 ]]; then
     if [[ -n "$lan_ip" ]]; then
-      echo " - Browser mic HTTPS: https://${lan_ip}"
+      echo " - LAN HTTPS: https://${lan_ip}"
     fi
     if [[ -n "$MDNS_HOSTNAME" ]]; then
       echo " - Optional .local HTTPS: https://${MDNS_HOSTNAME}.local"
@@ -1247,7 +1247,7 @@ print_summary() {
       echo " - Install this certificate on client devices, then reload the browser: ${CADDY_CERT_PATH}"
     fi
   else
-    echo " - If you want browser microphone capture on LAN devices, enable the optional Caddy HTTPS step."
+    echo " - Optional LAN HTTPS is available via the Caddy setup step."
   fi
   echo " - If LAN access fails, check the host firewall for TCP ${port}."
   echo
@@ -1529,7 +1529,7 @@ offer_optional_caddy_proxy() {
       echo "Optional .local HTTPS also active: https://${MDNS_HOSTNAME}.local"
     fi
   else
-    echo "Optional HTTPS step for browser microphone access:"
+    echo "Optional LAN HTTPS setup:"
     echo "Enable Caddy so FXRoute can be reached as https://${lan_ip} with an installer-managed local certificate?"
     if [[ -n "$MDNS_HOSTNAME" ]]; then
       echo "If Avahi is active, the same certificate flow can also cover https://${MDNS_HOSTNAME}.local ."

@@ -3319,11 +3319,11 @@ async def download_measurement_file(measurement_id: str):
         raise HTTPException(status_code=404, detail="Measurement file missing")
     return FileResponse(storage_path, filename=storage_path.name)
 
-@app.get("/api/browser-mic/certificate")
-async def download_browser_mic_certificate():
+@app.get("/api/certificate/local-root")
+async def download_local_root_certificate():
     cert_path = Path("/etc/fxroute/certs/fxroute-local-root.crt")
     if not cert_path.exists():
-        raise HTTPException(status_code=404, detail="Browser microphone certificate not available on this host")
+        raise HTTPException(status_code=404, detail="Local root certificate not available on this host")
     return FileResponse(cert_path, filename="fxroute-local-root.crt", media_type="application/x-x509-ca-cert")
 
 @app.post("/api/measurements/start")
@@ -3377,71 +3377,6 @@ async def cancel_measurement_job(job_id: str):
         job = measurement_store.cancel_job(job_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="Measurement job not found")
-    return {"status": "ok", "job": job}
-
-@app.post("/api/measurements/browser/start")
-async def start_browser_measurement(
-    channel: str = Form("left"),
-    calibration_ref: str = Form(""),
-    calibration_file: Optional[UploadFile] = File(None),
-):
-    global measurement_store
-    if not measurement_store:
-        raise HTTPException(status_code=503, detail="Measurement store not available")
-
-    calibration_bytes = None
-    calibration_filename = None
-    if calibration_file is not None:
-        calibration_filename = calibration_file.filename or "calibration.txt"
-        calibration_bytes = await calibration_file.read()
-
-    try:
-        job = await measurement_store.start_browser_measurement(
-            channel=channel,
-            calibration_filename=calibration_filename,
-            calibration_bytes=calibration_bytes,
-            calibration_ref=calibration_ref,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    except RuntimeError as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
-    return {"status": "ok", "job": job}
-
-@app.post("/api/measurements/browser/complete")
-async def complete_browser_measurement(
-    job_id: str = Form(...),
-    browser_input_label: str = Form("Browser microphone"),
-    browser_capture_meta: str = Form(""),
-    capture_file: UploadFile = File(...),
-):
-    global measurement_store
-    if not measurement_store:
-        raise HTTPException(status_code=503, detail="Measurement store not available")
-
-    capture_filename = capture_file.filename or "browser-capture.wav"
-    capture_bytes = await capture_file.read()
-    capture_meta = None
-    if browser_capture_meta.strip():
-        try:
-            capture_meta = json.loads(browser_capture_meta)
-        except json.JSONDecodeError:
-            raise HTTPException(status_code=400, detail="Invalid browser capture metadata JSON")
-
-    try:
-        job = await measurement_store.complete_browser_measurement(
-            job_id=job_id,
-            capture_filename=capture_filename,
-            capture_bytes=capture_bytes,
-            browser_input_label=browser_input_label,
-            browser_capture_meta=capture_meta,
-        )
-    except KeyError:
-        raise HTTPException(status_code=404, detail="Measurement job not found")
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    except RuntimeError as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
     return {"status": "ok", "job": job}
 
 @app.post("/api/measurements/save")

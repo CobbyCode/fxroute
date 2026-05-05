@@ -1643,12 +1643,38 @@ body {
         align-items: stretch;
     }
 
+    .measurement-channel-chip-row,
+    .measurement-smoothing-chips {
+        width: 100%;
+        justify-content: center;
+    }
+
+    .measurement-card-setup,
+    .measurement-card-setup .measurement-stack,
+    .measurement-card-setup .field-group {
+        min-width: 0;
+    }
+
+    .measurement-card-setup .url-input,
+    #measurement-input-refresh {
+        width: 100%;
+        min-width: 0;
+    }
+
+    .measurement-calibration-select-row {
+        grid-template-columns: 1fr;
+    }
+
+    .measurement-calibration-select-row .btn-danger {
+        width: 100%;
+        min-width: 0;
+    }
+
     .measurement-peq-editor-actions .btn-danger,
     .measurement-peq-take-row .btn-secondary,
     .measurement-save-row .btn-secondary,
     #measurement-start,
-    #measurement-setup-toggle,
-    .measurement-chip {
+    #measurement-setup-toggle {
         width: 100%;
     }
 
@@ -1941,7 +1967,7 @@ body {
     justify-content: center;
     align-items: center;
     gap: 0.75rem;
-    padding-top: 0.15rem;
+    padding-top: 0.35rem;
     flex-wrap: wrap;
 }
 
