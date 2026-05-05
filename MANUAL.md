@@ -88,7 +88,9 @@ You can:
 - import from a media URL when supported by the installed tools
 - download or delete selected tracks
 
-Typical supported formats include MP3, FLAC, WAV, OGG/Opus/WebM, M4A, and ZIP album imports. Exact support depends on the host tools installed by the installer.
+Typical supported formats include MP3, FLAC, WAV, OGG/Opus/WebM, M4A, M3U/M3U8 playlists, and ZIP album imports. Exact support depends on the host tools installed by the installer.
+
+A NAS can be used as the library by mounting its SMB/Samba share locally, then setting `MUSIC_ROOT` in `.env` to that mount path, for example `/mnt/music`.
 
 ## 7. DSP and EasyEffects
 

@@ -98,7 +98,7 @@ chmod +x install.sh
 ./install.sh
 ```
 
-The installer creates `.env` automatically and preserves it on reruns. For manual setup, copy `.env.example` to `.env` and adjust at least `MUSIC_ROOT` when needed.
+The installer creates `.env` automatically and preserves it on reruns. For manual setup, copy `.env.example` to `.env` and adjust at least `MUSIC_ROOT` when needed. A NAS library can be used by mounting its SMB/Samba share locally, for example under `/mnt/music`, and setting `MUSIC_ROOT=/mnt/music`.
 
 Default user service:
 
