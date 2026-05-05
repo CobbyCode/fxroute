@@ -139,10 +139,8 @@ BROWSER_CAPTURE_LEVEL_WARN_PEAK_DBFS = -45.0
 BROWSER_CAPTURE_LEVEL_WARN_RMS_DBFS = -60.0
 
 MEASUREMENT_SCOPE_NOTE = (
-    "Real sweep capture v3 generates a deterministic host-local log sweep, plays it over the active output, "
-    "records the selected PipeWire input in parallel, and derives a normalized response trace from inverse-sweep deconvolution with "
-    "basic timing compensation and IR windowing. The sweep now measures beyond the visible range for better edge behavior, while the normal view stays focused on 20 Hz .. 20 kHz. "
-    "It stays separate from EasyEffects presets and active PEQ state, and it is intentionally not a full REW replacement."
+    "FXRoute measures with a host-local sweep through the active PipeWire output and selected microphone input. "
+    "The result is a practical response trace for comparison and PEQ drafting, independent of the active EasyEffects preset."
 )
 
 
@@ -215,14 +213,7 @@ class MeasurementStore:
                     "label": "Host-local capture",
                     "primary": True,
                     "available": any(item.get("available") for item in inputs),
-                    "note": "Primary path: FXRoute plays and records on the host via PipeWire.",
-                },
-                {
-                    "id": "browser-microphone",
-                    "label": "Browser / client microphone",
-                    "primary": False,
-                    "available": False,
-                    "note": "Currently disabled for real room measurement. Keep as an archival experiment path only.",
+                    "note": "FXRoute plays and records on the host via PipeWire.",
                 },
             ],
             "inputs": inputs,
