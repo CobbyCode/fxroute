@@ -39,6 +39,7 @@ PEAK_MONITOR_RESTART_SETTLE_MS = 320
 PEAK_MONITOR_RATE_MATCH_TIMEOUT_MS = 900
 RADIO_SAMPLERATE_RENEGOTIATE_DELAY_MS = 1200
 RADIO_SAMPLERATE_PRESET_BOUNCE_DELAY_MS = 350
+SPOTIFY_PREARM_SAMPLE_RATE_HZ = 44100
 RADIO_RECONNECT_DELAY_SECONDS = 2.0
 RADIO_RECONNECT_MAX_ATTEMPTS = 5
 
@@ -194,6 +195,7 @@ async def _recover_spotify_samplerate_alignment() -> tuple[bool, Optional[int], 
         released = await _wait_for_pipewire_spotify_release()
         if not released:
             await asyncio.sleep(SOURCE_HANDOFF_SETTLE_MS / 1000)
+        await _prearm_spotify_samplerate("spotify-recovery")
         data = await spotify_play()
         if data.get("status") != "Playing":
             return False, None, None
@@ -203,6 +205,7 @@ async def _recover_spotify_samplerate_alignment() -> tuple[bool, Optional[int], 
 async def _complete_spotify_entry_handoff() -> dict:
     global spotify_samplerate_recovery_active
     await pause_local_playback_for_spotify_broadcast()
+    await _prearm_spotify_samplerate("spotify-entry-handoff")
     await asyncio.sleep(SOURCE_HANDOFF_SETTLE_MS / 1000)
     data = await spotify_play()
     if data.get("status") == "Playing":
@@ -252,10 +255,20 @@ def _set_pipewire_force_rate(rate: int) -> None:
 
 
 async def _release_local_samplerate_prearm(expected_rate: int, generation: int, reason: str) -> None:
-    global local_samplerate_prearm_generation
+    global local_samplerate_prearm_generation, radio_samplerate_force_rate
     try:
         aligned = await _wait_for_samplerate_alignment(expected_rate, timeout_ms=1200)
         if generation != local_samplerate_prearm_generation:
+            return
+        if current_track_info and current_track_info.get("source") in {"local", "radio"}:
+            radio_samplerate_force_rate = expected_rate
+            logger.info(
+                "Local samplerate pre-arm retained for active playback: reason=%s expected_rate=%s aligned=%s source=%s",
+                reason,
+                expected_rate,
+                aligned,
+                current_track_info.get("source"),
+            )
             return
         _set_pipewire_force_rate(0)
         logger.info(
@@ -276,7 +289,7 @@ async def _release_local_samplerate_prearm(expected_rate: int, generation: int, 
 
 
 async def _prearm_known_local_samplerate(track_info: dict | None, reason: str) -> tuple[Optional[int], Optional[int]]:
-    global local_samplerate_prearm_generation
+    global local_samplerate_prearm_generation, radio_samplerate_force_rate
     track_info = track_info or {}
     if track_info.get("source") != "local":
         return None, None
@@ -315,6 +328,7 @@ async def _prearm_known_local_samplerate(track_info: dict | None, reason: str) -
         return None, None
 
     _set_pipewire_force_rate(target_rate)
+    radio_samplerate_force_rate = None
     local_samplerate_prearm_generation += 1
     generation = local_samplerate_prearm_generation
     logger.info(
@@ -326,6 +340,78 @@ async def _prearm_known_local_samplerate(track_info: dict | None, reason: str) -
         track_info.get("title") or track_info.get("id"),
     )
     return target_rate, generation
+
+
+def _get_current_pipewire_force_rate() -> Optional[int]:
+    try:
+        status = get_samplerate_status()
+    except Exception:
+        return None
+    force_rate = status.get("force_rate") if isinstance(status, dict) else None
+    return force_rate if isinstance(force_rate, int) and force_rate > 0 else 0
+
+
+async def _ensure_radio_samplerate_force(expected_rate: Optional[int], reason: str) -> bool:
+    global radio_samplerate_force_rate
+    if not isinstance(expected_rate, int) or expected_rate <= 0:
+        return False
+    try:
+        samplerate_status = get_samplerate_status()
+    except Exception:
+        samplerate_status = {}
+    active_rate = samplerate_status.get("active_rate") if isinstance(samplerate_status, dict) else None
+    force_rate = samplerate_status.get("force_rate") if isinstance(samplerate_status, dict) else None
+    if active_rate == expected_rate and force_rate == expected_rate:
+        radio_samplerate_force_rate = expected_rate
+        return True
+    if force_rate != expected_rate:
+        _set_pipewire_force_rate(expected_rate)
+        radio_samplerate_force_rate = expected_rate
+        logger.info(
+            "Radio samplerate force-rate applied: reason=%s expected_rate=%s active_rate=%s previous_force_rate=%s",
+            reason,
+            expected_rate,
+            active_rate,
+            force_rate,
+        )
+    return await _wait_for_samplerate_alignment(expected_rate, timeout_ms=1200)
+
+
+def _clear_radio_samplerate_force_if_active(reason: str) -> None:
+    global radio_samplerate_force_rate
+    if not radio_samplerate_force_rate:
+        return
+    current_force_rate = _get_current_pipewire_force_rate()
+    if current_force_rate == radio_samplerate_force_rate:
+        try:
+            _set_pipewire_force_rate(0)
+            logger.info("Radio samplerate force-rate released: reason=%s previous_force_rate=%s", reason, radio_samplerate_force_rate)
+        except Exception as exc:
+            logger.warning("Radio samplerate force-rate release failed: reason=%s error=%s", reason, exc)
+            return
+    radio_samplerate_force_rate = None
+
+
+async def _prearm_spotify_samplerate(reason: str) -> None:
+    global radio_samplerate_force_rate
+    expected_rate = SPOTIFY_PREARM_SAMPLE_RATE_HZ
+    try:
+        samplerate_status = get_samplerate_status()
+    except Exception:
+        samplerate_status = {}
+    active_rate = samplerate_status.get("active_rate") if isinstance(samplerate_status, dict) else None
+    force_rate = samplerate_status.get("force_rate") if isinstance(samplerate_status, dict) else None
+    if force_rate != expected_rate:
+        _set_pipewire_force_rate(expected_rate)
+        logger.info(
+            "Spotify samplerate pre-arm applied: reason=%s expected_rate=%s active_rate=%s previous_force_rate=%s",
+            reason,
+            expected_rate,
+            active_rate,
+            force_rate,
+        )
+    radio_samplerate_force_rate = expected_rate
+    await _wait_for_samplerate_alignment(expected_rate, timeout_ms=700)
 
 
 def _is_local_playback_active(state: dict | None) -> bool:
@@ -474,10 +560,12 @@ spotify_playerctl_last_trigger_at = 0.0
 spotify_samplerate_recovery_lock = None
 spotify_samplerate_recovery_active = False
 local_samplerate_prearm_generation = 0
+radio_samplerate_force_rate = None
 current_source_mode = SOURCE_MODE_APP_PLAYBACK
 latest_spotify_state = None
 current_footer_owner = "local"
 last_spotify_samplerate_recovery_at = 0.0
+last_app_samplerate_drift_repair_at = 0.0
 latest_player_state_seq_seen = 0
 current_track_info = None
 last_track_info = None
@@ -935,6 +1023,32 @@ async def _resolve_expected_playback_samplerate(source: str) -> Optional[int]:
     return await _wait_for_player_audio_samplerate(timeout_ms=1200)
 
 
+async def _sync_easyeffects_preset_for_playback_samplerate(
+    *,
+    sample_rate_hz: Optional[int],
+    reason: str,
+    detail: str = "",
+) -> None:
+    global easyeffects_manager
+    if not easyeffects_manager or not isinstance(sample_rate_hz, int) or sample_rate_hz <= 0:
+        return
+
+    active_preset = easyeffects_manager.get_active_preset()
+    if not active_preset or active_preset in easyeffects_manager.EXCLUDED_GLOBAL_EXTRAS_PRESETS:
+        return
+
+    logger.info(
+        "Syncing EasyEffects preset for playback samplerate: preset=%s sample_rate=%s reason=%s detail=%s",
+        active_preset,
+        sample_rate_hz,
+        reason,
+        detail,
+    )
+    easyeffects_manager.load_preset(active_preset, convolver_sample_rate_hz=sample_rate_hz)
+    status = easyeffects_manager.get_status()
+    await manager.broadcast({"type": "easyeffects", "data": status})
+
+
 async def _bounce_easyeffects_preset_for_samplerate_recovery(
     *,
     source_label: str,
@@ -972,7 +1086,7 @@ async def _bounce_easyeffects_preset_for_samplerate_recovery(
         await asyncio.sleep(RADIO_SAMPLERATE_PRESET_BOUNCE_DELAY_MS / 1000)
         if not still_valid():
             return
-        easyeffects_manager.load_preset(active_preset)
+        easyeffects_manager.load_preset(active_preset, convolver_sample_rate_hz=expected_rate)
         status = easyeffects_manager.get_status()
     await manager.broadcast({"type": "easyeffects", "data": status})
     await refresh_peak_monitor_after_effects_change(f"{source_label.lower()}-samplerate-mismatch-recovery")
@@ -1014,17 +1128,32 @@ async def _maybe_recover_samplerate_mismatch(expected_track: dict | None) -> Non
         return
 
     sink_rate = samplerate_status.get("active_rate")
-    if not isinstance(sink_rate, int) or sink_rate <= 0 or sink_rate == mpv_rate:
+    if not isinstance(sink_rate, int) or sink_rate <= 0:
+        return
+
+    if sink_rate == mpv_rate:
         return
 
     try:
-        await _bounce_easyeffects_preset_for_samplerate_recovery(
-            source_label="Local",
-            expected_rate=mpv_rate,
-            sink_rate=sink_rate,
-            detail=f"track={expected_track.get('url')} source={expected_track.get('source')}",
-            still_valid=lambda: _current_track_matches(expected_track),
+        source = expected_track.get("source")
+        if source in {"local", "radio"}:
+            try:
+                await _ensure_radio_samplerate_force(mpv_rate, f"{source}-samplerate-mismatch")
+            except Exception as exc:
+                logger.warning("Playback samplerate force-rate failed during mismatch recovery: %s", exc)
+        logger.info(
+            "Local/radio samplerate mismatch detected; syncing active EasyEffects preset without Neutral/Direct bounce: expected_rate=%s sink_rate=%s track=%s source=%s",
+            mpv_rate,
+            sink_rate,
+            expected_track.get("url"),
+            source,
         )
+        await _sync_easyeffects_preset_for_playback_samplerate(
+            sample_rate_hz=mpv_rate,
+            reason="local-samplerate-mismatch",
+            detail=f"sink_rate={sink_rate} track={expected_track.get('url')} source={expected_track.get('source')}",
+        )
+        await refresh_peak_monitor_after_effects_change("local-samplerate-mismatch")
     except Exception as exc:
         logger.warning("Samplerate mismatch recovery failed for %s: %s", expected_track.get("url"), exc)
 
@@ -1450,8 +1579,24 @@ async def sync_peak_monitor_for_playback_state(state: dict):
             peak_monitor_context_signature = desired_signature
             expected_rate = await _resolve_expected_playback_samplerate(source) if source in {"local", "radio"} else None
             aligned = await _wait_for_samplerate_alignment(expected_rate) if expected_rate else False
+            if source in {"local", "radio"} and expected_rate and not aligned:
+                try:
+                    aligned = await _ensure_radio_samplerate_force(expected_rate, f"peak-monitor-playback-transition:{source}")
+                except Exception as exc:
+                    logger.warning("Playback samplerate force-rate failed during playback transition: %s", exc)
+            elif source not in {"local", "radio"}:
+                _clear_radio_samplerate_force_if_active(f"playback-transition:{source}")
             if not aligned:
                 await asyncio.sleep(PEAK_MONITOR_RESTART_SETTLE_MS / 1000)
+            if expected_rate:
+                try:
+                    await _sync_easyeffects_preset_for_playback_samplerate(
+                        sample_rate_hz=expected_rate,
+                        reason="peak-monitor-playback-transition",
+                        detail=f"signature={desired_signature} aligned={aligned}",
+                    )
+                except Exception as exc:
+                    logger.warning("EasyEffects playback samplerate preset sync failed before peak monitor restart: %s", exc)
             logger.info(
                 "Restarting peak monitor on playback context change to refresh PipeWire links: %s (expected_rate=%s aligned=%s)",
                 desired_signature,
@@ -1469,6 +1614,7 @@ async def sync_peak_monitor_for_playback_state(state: dict):
             if spotify_state.get("available") and spotify_state.get("status") == "Playing":
                 return
             logger.info("Stopping peak monitor while playback is inactive")
+            _clear_radio_samplerate_force_if_active("playback-inactive")
             await peak_monitor.stop()
             peak_monitor_playback_armed = False
             peak_monitor_context_signature = None
@@ -1491,6 +1637,7 @@ async def sync_peak_monitor_for_spotify_state(data: dict):
             if spotify_samplerate_recovery_active:
                 logger.info("Delaying peak monitor restart while Spotify samplerate recovery is active")
                 return
+            await _prearm_spotify_samplerate("spotify-peak-monitor-sync")
             aligned, spotify_rate, sink_rate = await _wait_for_pipewire_spotify_samplerate_alignment(
                 timeout_ms=PEAK_MONITOR_RATE_MATCH_TIMEOUT_MS,
             )
@@ -3035,6 +3182,32 @@ async def get_status():
         return state
     return {"running": False}
 
+async def _maybe_repair_active_app_samplerate_drift(status: dict) -> None:
+    global last_app_samplerate_drift_repair_at
+    now = time.monotonic()
+    if now - last_app_samplerate_drift_repair_at < 2.0:
+        return
+    state = player_instance.state if player_instance and player_instance._running else {}
+    if not _is_local_playback_active(state) or not _playback_state_matches_track(state, current_track_info):
+        return
+    source = (current_track_info or {}).get("source")
+    if source not in {"local", "radio"}:
+        return
+    active_rate = status.get("active_rate") if isinstance(status, dict) else None
+    expected_rate = await _resolve_expected_playback_samplerate(source)
+    if not isinstance(expected_rate, int) or expected_rate <= 0 or active_rate == expected_rate:
+        return
+    last_app_samplerate_drift_repair_at = now
+    logger.info(
+        "Repairing active app samplerate drift from status poll: source=%s expected_rate=%s active_rate=%s track=%s",
+        source,
+        expected_rate,
+        active_rate,
+        (current_track_info or {}).get("url"),
+    )
+    await _ensure_radio_samplerate_force(expected_rate, f"status-drift-repair:{source}")
+
+
 @app.get("/api/audio/samplerate")
 async def audio_samplerate_status():
     status = get_samplerate_status()
@@ -3044,7 +3217,11 @@ async def audio_samplerate_status():
         status.get("active_rate"),
         (status.get("relevant_sink") or {}).get("state"),
     )
-    return status
+    try:
+        await _maybe_repair_active_app_samplerate_drift(status)
+    except Exception as exc:
+        logger.warning("Active app samplerate drift repair failed: %s", exc)
+    return get_samplerate_status()
 
 
 @app.get("/api/audio/outputs")

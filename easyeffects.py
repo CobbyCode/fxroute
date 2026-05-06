@@ -5,6 +5,7 @@
 import configparser
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -52,6 +53,14 @@ class EasyEffectsManager:
     PURE_PRESET = "Direct"
     PROTECTED_PRESETS = {"Direct", "Neutral"}
     EXCLUDED_GLOBAL_EXTRAS_PRESETS = {"Direct"}
+    CONVOLVER_SR_COMPENSATION_ANCHORS = [
+        (44100, 1.0),
+        (48000, 0.0),
+        (96000, -6.0),
+        (192000, -12.0),
+        (384000, -18.0),
+        (768000, -24.0),
+    ]
 
     LIMITER_DEFAULTS = {
         "enabled": True,
@@ -463,14 +472,18 @@ class EasyEffectsManager:
 
         return self._get_active_preset_from_db()
 
-    def load_preset(self, preset_name: str) -> None:
+    def load_preset(self, preset_name: str, convolver_sample_rate_hz: Optional[int] = None) -> None:
         available = {preset["name"] for preset in self.list_presets()}
         if preset_name not in available:
             raise FileNotFoundError(f"Preset not found: {preset_name}")
 
         if preset_name not in self.EXCLUDED_GLOBAL_EXTRAS_PRESETS:
             try:
-                self._apply_global_extras_to_preset_name(preset_name, self.load_global_extras())
+                self._apply_global_extras_to_preset_name(
+                    preset_name,
+                    self.load_global_extras(),
+                    convolver_sample_rate_hz=convolver_sample_rate_hz or self._get_active_sample_rate_hz(),
+                )
             except Exception as e:
                 logger.warning("Failed to sync global extras into preset '%s' before load: %s", preset_name, e)
 
@@ -1059,7 +1072,98 @@ class EasyEffectsManager:
             "threshold": 0.0,
         }
 
-    def _apply_extras_to_output(self, output: Dict[str, Any], extras: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    @classmethod
+    def _convolver_samplerate_compensation_db(cls, sample_rate_hz: Optional[int]) -> float:
+        if not isinstance(sample_rate_hz, int) or sample_rate_hz <= 0:
+            return 0.0
+
+        anchors = cls.CONVOLVER_SR_COMPENSATION_ANCHORS
+        rate = float(sample_rate_hz)
+        if rate <= anchors[0][0]:
+            low_rate, low_db = anchors[0]
+            high_rate, high_db = anchors[1]
+        elif rate >= anchors[-1][0]:
+            low_rate, low_db = anchors[-2]
+            high_rate, high_db = anchors[-1]
+        else:
+            low_rate, low_db = anchors[0]
+            high_rate, high_db = anchors[-1]
+            for left, right in zip(anchors, anchors[1:]):
+                if left[0] <= rate <= right[0]:
+                    low_rate, low_db = left
+                    high_rate, high_db = right
+                    break
+
+        low_log = math.log2(float(low_rate))
+        high_log = math.log2(float(high_rate))
+        if high_log == low_log:
+            return float(low_db)
+        position = (math.log2(rate) - low_log) / (high_log - low_log)
+        return float(low_db + ((high_db - low_db) * position))
+
+    @staticmethod
+    def _is_active_convolver_plugin(plugin_name: str, plugin_payload: Any) -> bool:
+        return (
+            isinstance(plugin_name, str)
+            and plugin_name.startswith("convolver#")
+            and isinstance(plugin_payload, dict)
+            and plugin_payload.get("bypass") is not True
+        )
+
+    def _apply_convolver_samplerate_compensation(self, output: Dict[str, Any], sample_rate_hz: Optional[int]) -> bool:
+        compensation_db = self._convolver_samplerate_compensation_db(sample_rate_hz)
+        if compensation_db == 0.0:
+            return False
+
+        ordered_plugin_names = [name for name in output.get("plugins_order", []) if isinstance(name, str)]
+        ordered_plugin_names.extend(
+            name
+            for name, payload in output.items()
+            if isinstance(name, str)
+            and name not in {"plugins_order", "blocklist"}
+            and name not in ordered_plugin_names
+            and isinstance(payload, dict)
+        )
+
+        for plugin_name in ordered_plugin_names:
+            plugin_payload = output.get(plugin_name)
+            if not self._is_active_convolver_plugin(plugin_name, plugin_payload):
+                continue
+            if "output-gain" not in plugin_payload:
+                continue
+            current_gain = plugin_payload.get("output-gain")
+            plugin_payload["output-gain"] = (current_gain if isinstance(current_gain, (int, float)) else 0.0) + compensation_db
+            logger.info(
+                "Applied hidden EasyEffects convolver sample-rate compensation: plugin=%s sample_rate=%s compensation_db=%.3f output_gain_db=%.3f",
+                plugin_name,
+                sample_rate_hz,
+                compensation_db,
+                plugin_payload["output-gain"],
+            )
+            return True
+        return False
+
+    def _get_active_sample_rate_hz(self) -> Optional[int]:
+        try:
+            from samplerate import get_samplerate_status
+
+            status = get_samplerate_status()
+        except Exception as e:
+            logger.warning("Failed to resolve active sample rate for EasyEffects convolver compensation: %s", e)
+            return None
+
+        for key in ("active_rate", "force_rate"):
+            rate = status.get(key) if isinstance(status, dict) else None
+            if isinstance(rate, int) and rate > 0:
+                return rate
+        return None
+
+    def _apply_extras_to_output(
+        self,
+        output: Dict[str, Any],
+        extras: Optional[Dict[str, Any]],
+        convolver_sample_rate_hz: Optional[int] = None,
+    ) -> Dict[str, Any]:
         normalized = self.normalize_effects_extras(extras)
         result = dict(output or {})
         helper_plugin_names = ["crystalizer#0", "maximizer#0", "bass_enhancer#0", "autogain#0", "limiter#0"]
@@ -1105,6 +1209,8 @@ class EasyEffectsManager:
         if isinstance(target_plugin, dict) and "output-gain" in target_plugin:
             target_plugin["output-gain"] = normalized["headroom"]["params"]["gainDb"] if normalized["headroom"].get("enabled") else 0.0
 
+        self._apply_convolver_samplerate_compensation(result, convolver_sample_rate_hz)
+
         result["plugins_order"] = plugins_order
         return result
 
@@ -1142,7 +1248,12 @@ class EasyEffectsManager:
             result["fxroute"] = fxroute_meta
         return result
 
-    def _apply_global_extras_to_preset_name(self, preset_name: str, extras: Optional[Dict[str, Any]] = None) -> bool:
+    def _apply_global_extras_to_preset_name(
+        self,
+        preset_name: str,
+        extras: Optional[Dict[str, Any]] = None,
+        convolver_sample_rate_hz: Optional[int] = None,
+    ) -> bool:
         if not preset_name or preset_name in self.EXCLUDED_GLOBAL_EXTRAS_PRESETS:
             return False
 
@@ -1152,7 +1263,11 @@ class EasyEffectsManager:
 
         normalized = self.normalize_effects_extras(extras if extras is not None else self.load_global_extras())
         payload = json.loads(preset_path.read_text())
-        payload["output"] = self._apply_extras_to_output(payload.get("output", {}), normalized)
+        payload["output"] = self._apply_extras_to_output(
+            payload.get("output", {}),
+            normalized,
+            convolver_sample_rate_hz=convolver_sample_rate_hz,
+        )
         preset_path.write_text(json.dumps(payload, indent=2) + "\n")
         return True
 

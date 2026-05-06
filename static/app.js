@@ -3470,6 +3470,11 @@ function updateEffectsPeqDisclosureLabel() {
     elements.effectsPeqDisclosureMeta.textContent = `L${leftCount} · R${rightCount} · ${actionLabel}`;
 }
 
+function clearEffectsPeqStatusOnCollapse() {
+    if (!elements.effectsPeqDisclosure || elements.effectsPeqDisclosure.open) return;
+    if (elements.effectsStatus) elements.effectsStatus.innerHTML = '';
+}
+
 function setupEffectsActions() {
     if (elements.refreshEffectsBtn) elements.refreshEffectsBtn.addEventListener('click', fetchEffects);
     if (elements.effectsDeleteBtn) elements.effectsDeleteBtn.addEventListener('click', deleteEffectsPreset);
@@ -3568,7 +3573,10 @@ function setupEffectsActions() {
     loadSavedEffectsExtras();
     setupEffectsCompareActions();
     if (elements.effectsPeqDisclosure) {
-        elements.effectsPeqDisclosure.addEventListener('toggle', updateEffectsPeqDisclosureLabel);
+        elements.effectsPeqDisclosure.addEventListener('toggle', () => {
+            updateEffectsPeqDisclosureLabel();
+            clearEffectsPeqStatusOnCollapse();
+        });
         updateEffectsPeqDisclosureLabel();
     }
     setupUploadArea('effects-import-area', 'effects-import-file', (file) => {
