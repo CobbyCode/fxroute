@@ -160,7 +160,6 @@ let librarySelectionSyncTimer = null;
 let librarySelectionSyncRequestId = 0;
 let settingsStatusPollTimer = null;
 let settingsOutputScanOnFocusDone = false;
-let settingsSourceScanOnFocusDone = false;
 let measurementInputScanOnFocusDone = false;
 let measurementResizeScheduled = false;
 let measurementGraphPointerId = null;
@@ -661,13 +660,6 @@ function setupSettingsActions() {
         });
     }
     if (elements.settingsSourceSelect) {
-        const scanSourcesOnceForSelect = () => {
-            if (settingsSourceScanOnFocusDone) return;
-            settingsSourceScanOnFocusDone = true;
-            void fetchAudioSourceOverview();
-        };
-        elements.settingsSourceSelect.addEventListener('pointerdown', scanSourcesOnceForSelect);
-        elements.settingsSourceSelect.addEventListener('focus', scanSourcesOnceForSelect);
         elements.settingsSourceSelect.addEventListener('change', (event) => {
             const value = event.target.value || 'app-playback';
             if (value === 'app-playback') {
@@ -718,7 +710,6 @@ function toggleSettingsPanel(forceOpen = null) {
     }
     if (shouldOpen) {
         settingsOutputScanOnFocusDone = false;
-        settingsSourceScanOnFocusDone = false;
         renderSettingsPanel();
         void Promise.all([fetchAudioOutputOverview(), fetchAudioSourceOverview()]);
         startSettingsStatusPolling();
@@ -809,7 +800,7 @@ function renderSettingsPanel() {
     const currentMode = sourceOverview.mode || 'app-playback';
     const bluetoothSelectable = !!bluetooth.selectable;
 
-    if (elements.settingsSourceSelect && !isSelectFocused(elements.settingsSourceSelect)) {
+    if (elements.settingsSourceSelect) {
         const inputOptions = [
             '<option value="app-playback">App playback</option>',
             ...sourceInputs.map((input) => `<option value="external-input::${escapeHtml(input.key || '')}">External input — ${escapeHtml(input.label || input.name || 'Unknown input')}</option>`),
