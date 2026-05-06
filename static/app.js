@@ -159,6 +159,9 @@ let effectsCompareLoadInFlight = false;
 let librarySelectionSyncTimer = null;
 let librarySelectionSyncRequestId = 0;
 let settingsStatusPollTimer = null;
+let settingsOutputScanOnFocusDone = false;
+let settingsSourceScanOnFocusDone = false;
+let measurementInputScanOnFocusDone = false;
 let measurementResizeScheduled = false;
 let measurementGraphPointerId = null;
 let measurementPeqTakeFeedbackTimer = null;
@@ -645,12 +648,26 @@ function setupSettingsActions() {
     elements.settingsOpenBtn.addEventListener('click', () => toggleSettingsPanel(true));
     elements.settingsCloseBtn.addEventListener('click', () => toggleSettingsPanel(false));
     if (elements.settingsOutputSelect) {
+        const scanOutputsOnceForSelect = () => {
+            if (settingsOutputScanOnFocusDone) return;
+            settingsOutputScanOnFocusDone = true;
+            void fetchAudioOutputOverview();
+        };
+        elements.settingsOutputSelect.addEventListener('pointerdown', scanOutputsOnceForSelect);
+        elements.settingsOutputSelect.addEventListener('focus', scanOutputsOnceForSelect);
         elements.settingsOutputSelect.addEventListener('change', (event) => {
             const outputKey = event.target.value || '';
             if (outputKey) void saveAudioOutputSelection(outputKey);
         });
     }
     if (elements.settingsSourceSelect) {
+        const scanSourcesOnceForSelect = () => {
+            if (settingsSourceScanOnFocusDone) return;
+            settingsSourceScanOnFocusDone = true;
+            void fetchAudioSourceOverview();
+        };
+        elements.settingsSourceSelect.addEventListener('pointerdown', scanSourcesOnceForSelect);
+        elements.settingsSourceSelect.addEventListener('focus', scanSourcesOnceForSelect);
         elements.settingsSourceSelect.addEventListener('change', (event) => {
             const value = event.target.value || 'app-playback';
             if (value === 'app-playback') {
@@ -700,6 +717,8 @@ function toggleSettingsPanel(forceOpen = null) {
         elements.settingsOpenBtn.setAttribute('aria-expanded', shouldOpen ? 'true' : 'false');
     }
     if (shouldOpen) {
+        settingsOutputScanOnFocusDone = false;
+        settingsSourceScanOnFocusDone = false;
         renderSettingsPanel();
         void Promise.all([fetchAudioOutputOverview(), fetchAudioSourceOverview()]);
         startSettingsStatusPolling();
@@ -744,6 +763,10 @@ function settingsCertificateUrl() {
     return host ? `http://${host}/api/certificate/local-root` : '/api/certificate/local-root';
 }
 
+function isSelectFocused(selectEl) {
+    return !!selectEl && document.activeElement === selectEl;
+}
+
 function renderSettingsPanel() {
     if (elements.settingsCertificateLink) {
         const certUrl = settingsCertificateUrl();
@@ -768,7 +791,7 @@ function renderSettingsPanel() {
         }
     }
 
-    if (elements.settingsOutputSelect) {
+    if (elements.settingsOutputSelect && !isSelectFocused(elements.settingsOutputSelect)) {
         const options = selectableOutputs.map((output) => {
             const label = output.label || output.name || 'Unknown output';
             return `<option value="${escapeHtml(output.key || '')}">${escapeHtml(label)}</option>`;
@@ -786,7 +809,7 @@ function renderSettingsPanel() {
     const currentMode = sourceOverview.mode || 'app-playback';
     const bluetoothSelectable = !!bluetooth.selectable;
 
-    if (elements.settingsSourceSelect) {
+    if (elements.settingsSourceSelect && !isSelectFocused(elements.settingsSourceSelect)) {
         const inputOptions = [
             '<option value="app-playback">App playback</option>',
             ...sourceInputs.map((input) => `<option value="external-input::${escapeHtml(input.key || '')}">External input — ${escapeHtml(input.label || input.name || 'Unknown input')}</option>`),
@@ -4470,6 +4493,7 @@ function toggleMeasurementPanel(forceOpen = null) {
         elements.effectsMeasureOpenBtn.setAttribute('aria-expanded', shouldOpen ? 'true' : 'false');
     }
     if (shouldOpen) {
+        measurementInputScanOnFocusDone = false;
         renderMeasurementPanel();
         void fetchMeasurementInputs();
         scheduleMeasurementGraphRender();
@@ -5057,7 +5081,7 @@ function renderMeasurementPanel() {
     if (elements.measurementInputGroup) {
         elements.measurementInputGroup.classList.remove('hidden');
     }
-    if (elements.measurementInputSelect) {
+    if (elements.measurementInputSelect && !isSelectFocused(elements.measurementInputSelect)) {
         const inputs = measurementState.inputs && measurementState.inputs.length
             ? measurementState.inputs
             : [{ id: '', label: measurementState.inputsLoading ? 'Loading…' : 'No host capture inputs available' }];
@@ -5410,6 +5434,13 @@ function setupMeasurementActions() {
         });
     }
     if (elements.measurementInputSelect) {
+        const scanMeasurementInputsOnceForSelect = () => {
+            if (measurementInputScanOnFocusDone) return;
+            measurementInputScanOnFocusDone = true;
+            void fetchMeasurementInputs();
+        };
+        elements.measurementInputSelect.addEventListener('pointerdown', scanMeasurementInputsOnceForSelect);
+        elements.measurementInputSelect.addEventListener('focus', scanMeasurementInputsOnceForSelect);
         elements.measurementInputSelect.addEventListener('change', (event) => {
             state.measurement.selectedInputId = event.target.value || '';
         });
