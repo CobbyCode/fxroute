@@ -251,6 +251,94 @@ class MeasurementStore:
         path.write_text(json.dumps(normalized, indent=2) + "\n", encoding="utf-8")
         return normalized
 
+    def merge_measurements(self, measurement_ids: list[str], name: str | None = None) -> dict[str, Any]:
+        normalized_ids = [self._slugify(item) for item in measurement_ids if str(item or "").strip()]
+        normalized_ids = list(dict.fromkeys(normalized_ids))
+        if len(normalized_ids) < 2:
+            raise ValueError("Select at least two saved measurements to merge")
+
+        measurements_by_id = {item.get("id"): item for item in self.list_measurements().get("measurements", [])}
+        measurements = []
+        for measurement_id in normalized_ids:
+            measurement = measurements_by_id.get(measurement_id)
+            if not measurement:
+                raise KeyError(measurement_id)
+            traces = measurement.get("traces") or []
+            if not traces or not traces[0].get("points"):
+                raise ValueError(f"Measurement has no mergeable trace: {measurement.get('name') or measurement_id}")
+            measurements.append(measurement)
+
+        source_traces = [measurement["traces"][0] for measurement in measurements]
+        min_hz = max(float(trace["points"][0][0]) for trace in source_traces)
+        max_hz = min(float(trace["points"][-1][0]) for trace in source_traces)
+        if not math.isfinite(min_hz) or not math.isfinite(max_hz) or min_hz >= max_hz:
+            raise ValueError("Selected measurements do not overlap in frequency range")
+
+        point_count = min(
+            DISPLAY_POINT_COUNT,
+            max(24, min(len(trace.get("points") or []) for trace in source_traces)),
+        )
+        target_log_freqs = np.linspace(math.log10(min_hz), math.log10(max_hz), point_count)
+        target_freqs = np.power(10.0, target_log_freqs)
+        interpolated_levels = []
+        for trace in source_traces:
+            points = trace.get("points") or []
+            freqs = np.array([float(point[0]) for point in points], dtype=float)
+            levels = np.array([float(point[1]) for point in points], dtype=float)
+            interpolated_levels.append(np.interp(target_log_freqs, np.log10(freqs), levels))
+
+        averaged_levels = np.mean(np.vstack(interpolated_levels), axis=0)
+        merged_points = [
+            [round(float(freq), 3), round(float(level), 3)]
+            for freq, level in zip(target_freqs, averaged_levels)
+        ]
+
+        now = self._utc_now()
+        base_name = str(name or "").strip() or f"Merged {len(measurements)} measurements"
+        payload = {
+            "id": f"merged-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{uuid4().hex[:6]}",
+            "name": base_name,
+            "created_at": now,
+            "input_device": {"id": "merged", "label": "Merged saved measurements"},
+            "channel": "merged",
+            "calibration": {"filename": "", "applied": False},
+            "display": deepcopy(DISPLAY_DEFAULTS),
+            "traces": [
+                {
+                    "kind": "merged-measurement-average",
+                    "label": f"{base_name} · averaged",
+                    "color": TRACE_COLORS[0],
+                    "role": "merged-average",
+                    "points": merged_points,
+                }
+            ],
+            "review_traces": [
+                {
+                    "kind": str(trace.get("kind") or "measured"),
+                    "label": str(measurement.get("name") or trace.get("label") or measurement.get("id")),
+                    "color": TRACE_COLORS[(index + 1) % len(TRACE_COLORS)],
+                    "role": "merge-source",
+                    "points": trace.get("points") or [],
+                }
+                for index, (measurement, trace) in enumerate(zip(measurements, source_traces))
+            ],
+            "measurement_kind": "merged-measurement-average-v1",
+            "notes": [
+                "Created by averaging the first trusted trace from each selected saved measurement over their shared frequency range.",
+                "Source measurements are kept unchanged; source traces are embedded as review traces for comparison.",
+            ],
+            "analysis": {
+                "method": "log-frequency interpolation and arithmetic dB average of selected saved measurement traces",
+                "source_measurement_ids": normalized_ids,
+                "source_measurement_names": [str(item.get("name") or item.get("id")) for item in measurements],
+                "source_count": len(measurements),
+                "merge_min_hz": round(min_hz, 3),
+                "merge_max_hz": round(max_hz, 3),
+                "display_point_count": len(merged_points),
+            },
+        }
+        return self.save_measurement(payload)
+
     def cancel_job(self, job_id: str) -> dict[str, Any]:
         job = self.get_job(job_id)
         status = str(job.get("status") or "")

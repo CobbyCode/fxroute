@@ -3573,6 +3573,30 @@ async def save_measurement(request: Request):
         raise HTTPException(status_code=400, detail=str(exc))
     return {"status": "ok", "measurement": saved}
 
+@app.post("/api/measurements/merge")
+async def merge_measurements(request: Request):
+    global measurement_store
+    if not measurement_store:
+        raise HTTPException(status_code=503, detail="Measurement store not available")
+
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    measurement_ids = body.get("measurementIds", body.get("measurement_ids")) if isinstance(body, dict) else []
+    name = body.get("name") if isinstance(body, dict) else ""
+    if not isinstance(measurement_ids, list):
+        raise HTTPException(status_code=400, detail="measurementIds must be an array")
+
+    try:
+        merged = measurement_store.merge_measurements(measurement_ids, str(name or ""))
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Measurement not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"status": "ok", "measurement": merged}
+
 @app.delete("/api/measurements/{measurement_id}")
 async def delete_measurement(measurement_id: str):
     global measurement_store

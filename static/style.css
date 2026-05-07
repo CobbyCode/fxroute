@@ -1457,10 +1457,12 @@ body {
     gap: 0.4rem;
 }
 
+.measurement-saved-merge-action,
 .measurement-saved-delete-action {
     min-width: 142px;
 }
 
+.measurement-saved-merge-action.is-inert,
 .measurement-saved-delete-action.is-inert {
     visibility: hidden;
     pointer-events: none;

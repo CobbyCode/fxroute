@@ -5038,6 +5038,51 @@ async function deleteSelectedMeasurements() {
     }
 }
 
+async function mergeSelectedMeasurements() {
+    if (state.measurement.saveInFlight || state.measurement.startInFlight) return;
+    const measurements = getVisibleMeasurementEntries();
+    if (measurements.length < 2) {
+        showToast('Select at least two saved measurements to merge', 'warning');
+        return;
+    }
+    const defaultName = `Merged ${measurements.length} measurements`;
+    const requestedName = window.prompt('Name for merged measurement file:', defaultName);
+    if (requestedName === null) return;
+    const name = requestedName.trim() || defaultName;
+
+    state.measurement.saveInFlight = true;
+    state.measurement.statusText = `Merging ${measurements.length} saved measurements…`;
+    renderMeasurementPanel();
+    try {
+        const resp = await fetch('/api/measurements/merge', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                name,
+                measurementIds: measurements.map(measurement => measurement.id),
+            }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || 'Failed to merge selected measurements');
+        const merged = normalizeMeasurementEntry(data.measurement || {}, 0);
+        if (merged.id) {
+            state.measurement.visibilityById[merged.id] = true;
+            state.measurement.reviewVisibilityById[merged.id] = false;
+        }
+        state.measurement.statusText = 'Merged measurement saved.';
+        await fetchMeasurements();
+        if (merged.id) state.measurement.visibilityById[merged.id] = true;
+        showToast(`Created merged measurement: ${merged.name || name}`, 'success');
+    } catch (error) {
+        console.error('mergeSelectedMeasurements failed', error);
+        state.measurement.statusText = error.message || 'Failed to merge selected measurements';
+        showToast(state.measurement.statusText, 'error');
+    } finally {
+        state.measurement.saveInFlight = false;
+        renderMeasurementPanel();
+    }
+}
+
 function renderMeasurementPanel() {
     if (!elements.measurementSummary || !elements.measurementList) return;
     const measurementState = state.measurement || {};
@@ -5361,6 +5406,7 @@ function renderMeasurementPanel() {
                     <div class="measurement-saved-toolbar">
                         <div class="measurement-saved-toolbar-selection">
                             <label class="measurement-list-meta measurement-select-all-toggle"><input type="checkbox" data-measurement-select-all ${allSavedSelected ? 'checked' : ''} ${measurementState.saveInFlight || measurementState.startInFlight ? 'disabled' : ''}>Select all</label>
+                            <button type="button" class="btn-secondary measurement-saved-merge-action ${selectedSavedCount >= 2 ? '' : 'is-inert'}" data-measurement-merge-selected ${selectedSavedCount >= 2 ? '' : 'disabled'} ${measurementState.saveInFlight || measurementState.startInFlight ? 'disabled' : ''} aria-hidden="${selectedSavedCount >= 2 ? 'false' : 'true'}">Merge selected</button>
                             <button type="button" class="btn-danger measurement-saved-delete-action ${selectedSavedCount ? '' : 'is-inert'}" data-measurement-delete-selected ${selectedSavedCount ? '' : 'disabled'} ${measurementState.saveInFlight || measurementState.startInFlight ? 'disabled' : ''} aria-hidden="${selectedSavedCount ? 'false' : 'true'}">Delete selected</button>
                         </div>
                         <button type="button" class="btn-secondary" data-measurement-close-saved>Close</button>
@@ -5391,6 +5437,11 @@ function renderMeasurementPanel() {
             });
             state.measurement.savedGroupOpen = true;
             renderMeasurementPanel();
+        });
+    });
+    elements.measurementList.querySelectorAll('[data-measurement-merge-selected]').forEach((button) => {
+        button.addEventListener('click', () => {
+            mergeSelectedMeasurements();
         });
     });
     elements.measurementList.querySelectorAll('[data-measurement-delete-selected]').forEach((button) => {
