@@ -3827,9 +3827,10 @@ function measurementReviewVisible(measurementId) {
 }
 
 function getMeasurementDisplayTraces(measurement = {}) {
+    const traces = Array.isArray(measurement.traces) ? measurement.traces : [];
     const reviewTraces = Array.isArray(measurement.review_traces) ? measurement.review_traces : [];
-    if (reviewTraces.length) return reviewTraces;
-    return Array.isArray(measurement.traces) ? measurement.traces : [];
+    if (reviewTraces.length && measurementReviewVisible(measurement.id)) return reviewTraces;
+    return traces;
 }
 
 function measurementSmoothingHalfWindowOctaves(mode = '1/6-oct') {
