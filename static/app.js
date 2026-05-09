@@ -5707,15 +5707,23 @@ function ensurePeqBandExists(side, index) {
 function getOtherPeqSide(side) {
     return side === 'right' ? 'left' : 'right';
 }
-function syncLinkedPeqSpecialBand(side, index) {
-    if (!state.easyeffects?.peqDraft) return;
+function getPeqLinkedSpecialType(leftBand = {}, rightBand = {}) {
+    if (isPeqGainBand(leftBand) && isPeqGainBand(rightBand)) return 'gain';
+    if (isPeqDelayBand(leftBand) && isPeqDelayBand(rightBand)) return 'delay';
+    return '';
+}
+function getPeqBandPair(side, index) {
+    if (!state.easyeffects?.peqDraft) return { sourceBand: null, otherBand: null };
     const sourceBand = ensurePeqBandExists(side, index);
     const otherBand = ensurePeqBandExists(getOtherPeqSide(side), index);
+    return { sourceBand, otherBand };
+}
+function syncLinkedPeqSpecialBand(side, index) {
+    const { sourceBand, otherBand } = getPeqBandPair(side, index);
     if (!sourceBand || !otherBand) return;
-    otherBand.filterType = sourceBand.filterType;
-    if (isPeqGainBand(sourceBand)) {
-        otherBand.gainDb = sourceBand.gainDb;
-    }
+    const linkedType = getPeqLinkedSpecialType(sourceBand, otherBand);
+    if (linkedType === 'gain') otherBand.gainDb = sourceBand.gainDb;
+    if (linkedType === 'delay') otherBand.delayMs = sourceBand.delayMs;
 }
 function normalizeLinkedPeqSpecialBands() {
     if (!state.easyeffects?.peqDraft) return;
@@ -5725,10 +5733,8 @@ function normalizeLinkedPeqSpecialBands() {
     for (let index = 0; index < count; index += 1) {
         const leftBand = leftBands[index] || null;
         const rightBand = rightBands[index] || null;
-        if (isPeqGainBand(leftBand) || isPeqDelayBand(leftBand)) {
+        if (getPeqLinkedSpecialType(leftBand, rightBand)) {
             syncLinkedPeqSpecialBand('left', index);
-        } else if (isPeqGainBand(rightBand) || isPeqDelayBand(rightBand)) {
-            syncLinkedPeqSpecialBand('right', index);
         }
     }
 }
@@ -5738,19 +5744,15 @@ function updatePeqBand(side, index, field, value) {
     if (!band) return;
     band[field] = value;
 
-    const otherBand = ensurePeqBandExists(getOtherPeqSide(side), index);
-    const specialLinked = isPeqGainBand(band) || isPeqGainBand(otherBand) || isPeqDelayBand(band) || isPeqDelayBand(otherBand);
-    if (field === 'filterType') {
-        syncLinkedPeqSpecialBand(side, index);
-    } else if (specialLinked && (field === 'gainDb' || field === 'delayMs')) {
+    if (field === 'gainDb' || field === 'delayMs') {
         syncLinkedPeqSpecialBand(side, index);
     }
 }
 function syncLinkedPeqSpecialBandValueInDom(side, index, field) {
-    const sourceBand = ensurePeqBandExists(side, index);
+    const { sourceBand, otherBand } = getPeqBandPair(side, index);
     const otherSide = getOtherPeqSide(side);
     const otherInput = document.querySelector(`[data-peq-side="${otherSide}"][data-peq-index="${index}"][data-peq-field="${field}"]`);
-    if (!sourceBand || !otherInput) return;
+    if (!sourceBand || !otherBand || !otherInput || !getPeqLinkedSpecialType(sourceBand, otherBand)) return;
     if (field === 'gainDb') otherInput.value = String(sourceBand.gainDb);
     if (field === 'delayMs') otherInput.value = String(sourceBand.delayMs);
 }
@@ -5773,13 +5775,15 @@ function renderPeqBandColumn(container, side, bands) {
     container.innerHTML = bands.map((band, index) => {
         const isGain = isPeqGainBand(band);
         const isDelay = isPeqDelayBand(band);
+        const otherBands = side === 'right' ? (state.easyeffects?.peqDraft?.leftBands || []) : (state.easyeffects?.peqDraft?.rightBands || []);
+        const isLinkedSpecialPair = !!getPeqLinkedSpecialType(band, otherBands[index] || null);
         const showRemove = side === 'left' && index > 0;
         return `
         <div class="effects-peq-band" data-peq-side="${side}" data-peq-band="${index}">
             <div class="effects-peq-band-header">
                 <div>
                     <div class="effects-peq-band-title">Band ${index + 1}</div>
-                    ${(isGain || isDelay) ? '<div class="effects-peq-band-subtitle">L/R linked</div>' : ''}
+                    ${isLinkedSpecialPair ? '<div class="effects-peq-band-subtitle">L/R linked</div>' : ''}
                 </div>
                 ${showRemove ? `<button type="button" class="btn-danger btn-inline" data-peq-remove="${index}">Remove</button>` : '<span class="effects-peq-remove-spacer"></span>'}
             </div>
@@ -5836,8 +5840,12 @@ function renderPeqBandColumn(container, side, bands) {
                     renderPeqBands();
                 }
             }
-            if (field === 'delayMs' && isPeqDelayBand(currentBand) && !live) {
-                renderPeqBands();
+            if (field === 'delayMs' && isPeqDelayBand(currentBand)) {
+                if (live) {
+                    syncLinkedPeqSpecialBandValueInDom(sideName, index, 'delayMs');
+                } else {
+                    renderPeqBands();
+                }
             }
         };
         input.addEventListener('change', () => handleFieldUpdate(false));
