@@ -5680,19 +5680,12 @@ function addPeqBandPair() {
     rightBands.push(defaultPeqBand());
     renderPeqBands();
 }
-function removePeqBandPair(index) {
-    if (!state.easyeffects?.peqDraft) {
-        showToast('At least one Left and one Right PEQ band is required', 'error');
-        return;
-    }
-    const leftBands = state.easyeffects.peqDraft.leftBands || [];
-    const rightBands = state.easyeffects.peqDraft.rightBands || [];
-    if (leftBands.length <= 1 || rightBands.length <= 1 || index <= 0) {
-        showToast('Band 1 stays as the required base band', 'error');
-        return;
-    }
-    leftBands.splice(index, 1);
-    rightBands.splice(index, 1);
+function removePeqBand(side, index) {
+    if (!state.easyeffects?.peqDraft) return;
+    const key = side === 'right' ? 'rightBands' : 'leftBands';
+    const bands = state.easyeffects.peqDraft[key] || [];
+    if (index < 0 || index >= bands.length) return;
+    bands.splice(index, 1);
     renderPeqBands();
 }
 function ensurePeqBandExists(side, index) {
@@ -5777,7 +5770,7 @@ function renderPeqBandColumn(container, side, bands) {
         const isDelay = isPeqDelayBand(band);
         const otherBands = side === 'right' ? (state.easyeffects?.peqDraft?.leftBands || []) : (state.easyeffects?.peqDraft?.rightBands || []);
         const isLinkedSpecialPair = !!getPeqLinkedSpecialType(band, otherBands[index] || null);
-        const showRemove = side === 'left' && index > 0;
+        const showRemove = true;
         return `
         <div class="effects-peq-band" data-peq-side="${side}" data-peq-band="${index}">
             <div class="effects-peq-band-header">
@@ -5785,7 +5778,7 @@ function renderPeqBandColumn(container, side, bands) {
                     <div class="effects-peq-band-title">Band ${index + 1}</div>
                     ${isLinkedSpecialPair ? '<div class="effects-peq-band-subtitle">L/R linked</div>' : ''}
                 </div>
-                ${showRemove ? `<button type="button" class="btn-danger btn-inline" data-peq-remove="${index}">Remove</button>` : '<span class="effects-peq-remove-spacer"></span>'}
+                ${showRemove ? `<button type="button" class="btn-danger btn-inline" data-peq-remove-side="${side}" data-peq-remove-index="${index}">Remove</button>` : '<span class="effects-peq-remove-spacer"></span>'}
             </div>
             <div class="effects-peq-band-fields${isGain ? ' effects-peq-band-fields-gain' : ''}">
                 <div class="field-group">
@@ -5816,9 +5809,9 @@ function renderPeqBandColumn(container, side, bands) {
         </div>
     `;
     }).join('');
-    container.querySelectorAll('[data-peq-remove]').forEach(button => {
+    container.querySelectorAll('[data-peq-remove-side][data-peq-remove-index]').forEach(button => {
         button.addEventListener('click', () => {
-            removePeqBandPair(Number(button.dataset.peqRemove));
+            removePeqBand(button.dataset.peqRemoveSide, Number(button.dataset.peqRemoveIndex));
         });
     });
     container.querySelectorAll('[data-peq-field]').forEach(input => {
@@ -5940,10 +5933,10 @@ async function createPeqPreset() {
     }
     const leftBands = collectPeqBandsFromDom('left');
     const rightBands = collectPeqBandsFromDom('right');
-    if (!leftBands.length || !rightBands.length) {
+    if (!leftBands.length && !rightBands.length) {
         peqCreateInFlight = false;
-        if (elements.effectsStatus) elements.effectsStatus.innerHTML = '<div style="color: var(--danger);">Please add at least one Left and one Right band.</div>';
-        showToast('Please add at least one Left and one Right band', 'error');
+        if (elements.effectsStatus) elements.effectsStatus.innerHTML = '<div style="color: var(--danger);">Please add at least one Left or Right band.</div>';
+        showToast('Please add at least one Left or Right band', 'error');
         return;
     }
     const validationError = validatePeqBands('Left', leftBands) || validatePeqBands('Right', rightBands);
