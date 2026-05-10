@@ -91,11 +91,28 @@ let state = {
         captureAvailable: false,
         activeJobId: '',
         statusText: 'Sweep ready. Calibration file is optional.',
+        assistMode: 'peq',
+        convolverAssistant: {
+            targetCurve: 'neutral',
+            rangeStartHz: 20,
+            rangeEndHz: 250,
+            maxBoostDb: 6,
+            maxCutDb: -9,
+            safetyMarginDb: 1,
+            autoGainEnabled: true,
+            sampleRate: '48000',
+            quality: 'linear_4096',
+            phaseMode: 'linear',
+            irLength: '4096',
+            dragMode: null,
+            draft: { left: null, right: null, presetName: '', nameTouched: false },
+        },
         peqAssistant: {
             enabled: false,
             filters: [],
             activeFilterId: null,
             dragFilterId: null,
+            draft: { leftBands: [], rightBands: [], presetName: '', nameTouched: false },
         },
     },
     samplerate: {
@@ -265,6 +282,8 @@ const elements = {
     measurementStartBtn: document.getElementById('measurement-start'),
     measurementSaveBtn: document.getElementById('measurement-save'),
     measurementClearBtn: document.getElementById('measurement-clear'),
+    measurementAssistMode: document.getElementById('measurement-assist-mode'),
+    measurementTargetCurve: document.getElementById('measurement-target-curve'),
     measurementSetupStatus: document.getElementById('measurement-setup-status'),
     measurementSummary: document.getElementById('measurement-summary'),
     measurementGraphControls: document.getElementById('measurement-graph-controls'),
@@ -273,10 +292,28 @@ const elements = {
     measurementPeqPanel: document.getElementById('measurement-peq-panel'),
     measurementPeqChips: document.getElementById('measurement-peq-chips'),
     measurementPeqEditor: document.getElementById('measurement-peq-editor'),
+    measurementPeqDraftSummary: document.getElementById('measurement-peq-draft-summary'),
+    measurementPeqPresetName: document.getElementById('measurement-peq-preset-name'),
     measurementPeqTakeLeftBtn: document.getElementById('measurement-peq-take-left'),
     measurementPeqTakeRightBtn: document.getElementById('measurement-peq-take-right'),
     measurementPeqTakeBothBtn: document.getElementById('measurement-peq-take-both'),
+    measurementPeqCreateBtn: document.getElementById('measurement-peq-create'),
     measurementPeqTakeFeedback: document.getElementById('measurement-peq-take-feedback'),
+    measurementConvolverPanel: document.getElementById('measurement-convolver-panel'),
+    measurementConvolverTarget: document.getElementById('measurement-convolver-target'),
+    measurementConvolverRangeStart: document.getElementById('measurement-convolver-range-start'),
+    measurementConvolverRangeEnd: document.getElementById('measurement-convolver-range-end'),
+    measurementConvolverMaxBoost: document.getElementById('measurement-convolver-max-boost'),
+    measurementConvolverSampleRate: document.getElementById('measurement-convolver-sample-rate'),
+    measurementConvolverQuality: document.getElementById('measurement-convolver-quality'),
+    measurementConvolverPresetName: document.getElementById('measurement-convolver-preset-name'),
+    measurementConvolverSummary: document.getElementById('measurement-convolver-summary'),
+    measurementConvolverWarnings: document.getElementById('measurement-convolver-warnings'),
+    measurementConvolverTakeLeftBtn: document.getElementById('measurement-convolver-take-left'),
+    measurementConvolverTakeRightBtn: document.getElementById('measurement-convolver-take-right'),
+    measurementConvolverTakeBothBtn: document.getElementById('measurement-convolver-take-both'),
+    measurementConvolverCreateBtn: document.getElementById('measurement-convolver-create'),
+    measurementConvolverFeedback: document.getElementById('measurement-convolver-feedback'),
     measurementList: document.getElementById('measurement-list'),
     effectsCompareActive: document.getElementById('effects-compare-active'),
     effectsCompareChain: document.getElementById('effects-compare-chain'),
@@ -3881,6 +3918,12 @@ const measurementComparePalette = ['#60a5fa', '#f59e0b', '#f472b6', '#a78bfa', '
 const measurementCurrentColor = '#22c55e';
 const measurementPeqPalette = ['#60a5fa', '#f59e0b', '#f472b6', '#a78bfa'];
 const measurementPeqTypes = ['bell', 'low_shelf', 'high_shelf', 'low_pass', 'high_pass', 'notch', 'gain'];
+const measurementConvolverCurves = {
+    neutral: { label: 'Neutral', shortLabel: 'Neutral', points: [[20, 0], [20000, 0]] },
+    bass_shelf: { label: 'Bass Shelf', shortLabel: 'Bass', points: [[20, 4], [30, 4], [50, 3], [80, 2], [120, 1], [200, 0], [1000, 0], [20000, 0]] },
+    harman: { label: 'Harman-style', shortLabel: 'Harman', points: [[20, 5], [30, 4.5], [50, 4], [80, 3], [120, 2], [200, 1], [500, 0.5], [1000, 0], [2000, -1], [5000, -2.5], [10000, -4], [20000, -5]] },
+    bk: { label: 'Bruel & Kjaer-style', shortLabel: 'BK', points: [[20, 2], [50, 2], [100, 1.5], [200, 1], [500, 0.5], [1000, 0], [2000, -0.5], [5000, -1.5], [10000, -2.5], [20000, -3.5]] },
+};
 const measurementPeqTypeLabels = {
     bell: 'Bell',
     low_shelf: 'Low shelf',
@@ -3912,6 +3955,7 @@ function getDefaultMeasurementPeqState() {
         filters: [],
         activeFilterId: null,
         dragFilterId: null,
+        draft: { leftBands: [], rightBands: [], presetName: '', nameTouched: false },
     };
 }
 
@@ -3920,9 +3964,15 @@ function ensureMeasurementPeqState() {
     if (!state.measurement.peqAssistant || typeof state.measurement.peqAssistant !== 'object') {
         state.measurement.peqAssistant = getDefaultMeasurementPeqState();
     }
-    if (!Array.isArray(state.measurement.peqAssistant.filters)) state.measurement.peqAssistant.filters = [];
-    if (typeof state.measurement.peqAssistant.enabled !== 'boolean') state.measurement.peqAssistant.enabled = state.measurement.peqAssistant.filters.length > 0;
-    return state.measurement.peqAssistant;
+    const peq = state.measurement.peqAssistant;
+    if (!Array.isArray(peq.filters)) peq.filters = [];
+    if (typeof peq.enabled !== 'boolean') peq.enabled = peq.filters.length > 0;
+    if (!peq.draft || typeof peq.draft !== 'object') peq.draft = { leftBands: [], rightBands: [], presetName: '', nameTouched: false };
+    if (!Array.isArray(peq.draft.leftBands)) peq.draft.leftBands = [];
+    if (!Array.isArray(peq.draft.rightBands)) peq.draft.rightBands = [];
+    if (typeof peq.draft.presetName !== 'string') peq.draft.presetName = '';
+    peq.draft.nameTouched = !!peq.draft.nameTouched;
+    return peq;
 }
 
 function getMeasurementPeqFilters() {
@@ -3932,6 +3982,96 @@ function getMeasurementPeqFilters() {
 function getMeasurementPeqActiveFilter() {
     const peq = ensureMeasurementPeqState();
     return peq.filters.find((filter) => filter.id === peq.activeFilterId) || null;
+}
+
+function clampMeasurementConvolverFrequency(value, fallback = 20) {
+    const numeric = Number(value);
+    return Math.min(20000, Math.max(20, Number.isFinite(numeric) ? numeric : fallback));
+}
+
+function getDefaultMeasurementConvolverState() {
+    return {
+        targetCurve: 'neutral',
+        rangeStartHz: 20,
+        rangeEndHz: 250,
+        maxBoostDb: 6,
+        maxCutDb: -9,
+        safetyMarginDb: 1,
+        autoGainEnabled: true,
+        sampleRate: '48000',
+        quality: 'linear_4096',
+        phaseMode: 'linear',
+        irLength: '4096',
+        dragMode: null,
+        draft: { left: null, right: null, presetName: '', nameTouched: false },
+    };
+}
+
+function ensureMeasurementConvolverState() {
+    if (!state.measurement) state.measurement = {};
+    const defaults = getDefaultMeasurementConvolverState();
+    if (!state.measurement.convolverAssistant || typeof state.measurement.convolverAssistant !== 'object') {
+        state.measurement.convolverAssistant = { ...defaults };
+    }
+    const conv = state.measurement.convolverAssistant;
+    Object.entries(defaults).forEach(([key, value]) => {
+        if (conv[key] === undefined || conv[key] === null || conv[key] === '') conv[key] = value;
+    });
+    conv.targetCurve = measurementConvolverCurves[conv.targetCurve] ? conv.targetCurve : defaults.targetCurve;
+    conv.rangeStartHz = Math.round(clampMeasurementConvolverFrequency(conv.rangeStartHz, defaults.rangeStartHz));
+    conv.rangeEndHz = Math.round(clampMeasurementConvolverFrequency(conv.rangeEndHz, defaults.rangeEndHz));
+    if (conv.rangeEndHz <= conv.rangeStartHz) conv.rangeEndHz = Math.min(20000, conv.rangeStartHz + 1);
+    conv.maxBoostDb = [0, 3, 6, 9].includes(Number(conv.maxBoostDb)) ? Number(conv.maxBoostDb) : defaults.maxBoostDb;
+    conv.maxCutDb = Math.min(0, Math.max(-24, Number(conv.maxCutDb) || defaults.maxCutDb));
+    conv.safetyMarginDb = Math.max(0, Number(conv.safetyMarginDb) || defaults.safetyMarginDb);
+    conv.sampleRate = ['44100', '48000', '88200', '96000', '176400', '192000'].includes(String(conv.sampleRate)) ? String(conv.sampleRate) : defaults.sampleRate;
+    const qualityAliases = { auto: 'linear_4096', normal: 'linear_4096', high: 'linear_8192' };
+    conv.quality = qualityAliases[String(conv.quality)] || String(conv.quality || defaults.quality);
+    conv.quality = ['linear_4096', 'linear_8192', 'linear_32768'].includes(conv.quality) ? conv.quality : defaults.quality;
+    conv.phaseMode = 'linear';
+    conv.irLength = String(getMeasurementConvolverFirLengthForType(conv.quality));
+    if (!conv.draft || typeof conv.draft !== 'object') conv.draft = { left: null, right: null, presetName: '', nameTouched: false };
+    if (!conv.draft.left || typeof conv.draft.left !== 'object') conv.draft.left = null;
+    if (!conv.draft.right || typeof conv.draft.right !== 'object') conv.draft.right = null;
+    if (typeof conv.draft.presetName !== 'string') conv.draft.presetName = '';
+    conv.draft.nameTouched = !!conv.draft.nameTouched;
+    return conv;
+}
+
+function setMeasurementAssistMode(mode) {
+    state.measurement.assistMode = mode === 'convolver' ? 'convolver' : 'peq';
+    ensureMeasurementConvolverState();
+    renderMeasurementPanel();
+    scheduleMeasurementGraphRender();
+}
+
+function getMeasurementConvolverCurveDb(curveKey, frequencyHz) {
+    const curve = measurementConvolverCurves[curveKey] || measurementConvolverCurves.neutral;
+    const points = curve.points || measurementConvolverCurves.neutral.points;
+    const frequency = clampMeasurementConvolverFrequency(frequencyHz);
+    if (frequency <= points[0][0]) return points[0][1];
+    for (let index = 1; index < points.length; index += 1) {
+        const [rightHz, rightDb] = points[index];
+        const [leftHz, leftDb] = points[index - 1];
+        if (frequency <= rightHz) {
+            const ratio = (Math.log10(frequency) - Math.log10(leftHz)) / Math.max(1e-9, Math.log10(rightHz) - Math.log10(leftHz));
+            return leftDb + ((rightDb - leftDb) * Math.min(1, Math.max(0, ratio)));
+        }
+    }
+    return points[points.length - 1][1];
+}
+
+function updateMeasurementConvolverField(field, value) {
+    const conv = ensureMeasurementConvolverState();
+    if (field === 'targetCurve') conv.targetCurve = measurementConvolverCurves[value] ? value : conv.targetCurve;
+    if (field === 'rangeStartHz') conv.rangeStartHz = Math.min(Math.round(clampMeasurementConvolverFrequency(value, conv.rangeStartHz)), conv.rangeEndHz - 1);
+    if (field === 'rangeEndHz') conv.rangeEndHz = Math.max(Math.round(clampMeasurementConvolverFrequency(value, conv.rangeEndHz)), conv.rangeStartHz + 1);
+    if (field === 'maxBoostDb') conv.maxBoostDb = [0, 3, 6, 9].includes(Number(value)) ? Number(value) : conv.maxBoostDb;
+    if (field === 'sampleRate') conv.sampleRate = String(value || '48000');
+    if (field === 'quality') conv.quality = String(value || 'linear_4096');
+    ensureMeasurementConvolverState();
+    renderMeasurementPanel();
+    scheduleMeasurementGraphRender();
 }
 
 function focusMeasurementPeqPanelContext() {
@@ -4084,6 +4224,7 @@ function deleteMeasurementPeqFilter(filterId) {
 
 function resetMeasurementGraph() {
     const peq = ensureMeasurementPeqState();
+    const conv = ensureMeasurementConvolverState();
     state.measurement.currentMeasurement = null;
     state.measurement.currentMeasurementSaved = false;
     state.measurement.currentMeasurementName = '';
@@ -4091,6 +4232,7 @@ function resetMeasurementGraph() {
     peq.filters = [];
     peq.activeFilterId = null;
     peq.dragFilterId = null;
+    Object.assign(conv, getDefaultMeasurementConvolverState());
     renderMeasurementPanel();
     scheduleMeasurementGraphRender();
 }
@@ -4116,30 +4258,448 @@ function showMeasurementPeqTakeFeedback(message) {
     }, 2200);
 }
 
+function getMeasurementPeqNameSuffix(date = new Date()) {
+    const pad = (value) => String(value).padStart(2, '0');
+    return `${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
+}
+
+function getMeasurementPeqDraftMode(peq = ensureMeasurementPeqState()) {
+    const hasLeft = !!peq.draft?.leftBands?.length;
+    const hasRight = !!peq.draft?.rightBands?.length;
+    if (hasLeft && hasRight) return 'both';
+    if (hasRight) return 'right';
+    if (hasLeft) return 'left';
+    return null;
+}
+
+function getMeasurementPeqPresetName(mode = 'both', options = {}) {
+    const prefix = mode === 'both' ? 'PEQ LR' : (mode === 'right' ? 'PEQ R' : 'PEQ L');
+    const count = ensureMeasurementPeqState().filters.length || 0;
+    const base = `${prefix} Measurement ${count}f`;
+    return options.unique ? `${base} ${getMeasurementPeqNameSuffix()}` : base;
+}
+
 function takeMeasurementPeqToPreset(mode = 'both') {
     const peq = ensureMeasurementPeqState();
     if (!peq.filters.length) {
         showToast('Add at least one measurement PEQ filter first', 'warning');
         return;
     }
-    if (!state.easyeffects) state.easyeffects = {};
-    state.easyeffects.peqDraft = state.easyeffects.peqDraft || getDefaultPeqDraft();
     const mappedBands = peq.filters.map((filter) => measurementPeqFilterToBand(filter));
     if (mode === 'left') {
-        state.easyeffects.peqDraft.leftBands = mappedBands.map((band) => ({ ...band }));
+        peq.draft.leftBands = mappedBands.map((band) => ({ ...band }));
     } else if (mode === 'right') {
-        state.easyeffects.peqDraft.rightBands = mappedBands.map((band) => ({ ...band }));
+        peq.draft.rightBands = mappedBands.map((band) => ({ ...band }));
     } else {
-        state.easyeffects.peqDraft.leftBands = mappedBands.map((band) => ({ ...band }));
-        state.easyeffects.peqDraft.rightBands = mappedBands.map((band) => ({ ...band }));
+        peq.draft.leftBands = mappedBands.map((band) => ({ ...band }));
+        peq.draft.rightBands = mappedBands.map((band) => ({ ...band }));
     }
-    if (elements.effectsPeqDisclosure) elements.effectsPeqDisclosure.open = true;
-    renderPeqBands();
+    const effectiveMode = getMeasurementPeqDraftMode(peq) || mode;
+    if (!peq.draft.nameTouched) peq.draft.presetName = getMeasurementPeqPresetName(effectiveMode, { unique: true });
+    state.easyeffects = state.easyeffects || {};
+    state.easyeffects.assistStack = state.easyeffects.assistStack || [];
+    state.easyeffects.assistStack.push({ type: 'peq', mode, createdAt: new Date().toISOString(), bands: mappedBands.map((band) => ({ ...band })) });
+    renderMeasurementPanel();
     const successMessage = mode === 'left'
-        ? 'Measurement PEQ replaced Left builder bands'
-        : (mode === 'right' ? 'Measurement PEQ replaced Right builder bands' : 'Measurement PEQ replaced Left and Right builder bands');
-    showMeasurementPeqTakeFeedback(mode === 'left' ? 'Left bands updated' : (mode === 'right' ? 'Right bands updated' : 'Left + Right bands updated'));
+        ? 'Measurement PEQ staged Left bands'
+        : (mode === 'right' ? 'Measurement PEQ staged Right bands' : 'Measurement PEQ staged Left and Right bands');
+    showMeasurementPeqTakeFeedback(mode === 'left' ? 'Left staged' : (mode === 'right' ? 'Right staged' : 'Left + Right staged'));
     showToast(successMessage, 'success');
+}
+
+async function createMeasurementPeqPresetFromDraft() {
+    if (peqCreateInFlight) {
+        showToast('PEQ preset creation already in progress', 'warning');
+        return;
+    }
+    const peq = ensureMeasurementPeqState();
+    const leftBands = (peq.draft?.leftBands || []).map((band) => ({ ...band }));
+    const rightBands = (peq.draft?.rightBands || []).map((band) => ({ ...band }));
+    if (!leftBands.length && !rightBands.length) {
+        showToast('Take L, R or Both into the PEQ draft first', 'warning');
+        return;
+    }
+    const validationError = validatePeqBands('Left', leftBands) || validatePeqBands('Right', rightBands);
+    if (validationError) {
+        showMeasurementPeqTakeFeedback(validationError);
+        showToast(validationError, 'error');
+        return;
+    }
+    const presetName = String(peq.draft?.presetName || '').trim() || getMeasurementPeqPresetName(getMeasurementPeqDraftMode(peq) || 'both', { unique: true });
+    peq.draft.presetName = presetName;
+    const eqMode = normalizePeqEqMode(state.easyeffects?.peqDraft?.eqMode || elements.effectsPeqModeSelect?.value || 'IIR');
+    peqCreateInFlight = true;
+    if (elements.measurementPeqCreateBtn) elements.measurementPeqCreateBtn.disabled = true;
+    showMeasurementPeqTakeFeedback(`Creating ${presetName}…`);
+    try {
+        const resp = await fetch('/api/easyeffects/presets/create-peq', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                presetName,
+                loadAfterCreate: false,
+                ...collectEffectsExtras(),
+                peq: {
+                    enabled: true,
+                    params: {
+                        channelMode: 'dual',
+                        eqMode,
+                        leftBands,
+                        rightBands,
+                    },
+                },
+            }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || 'PEQ preset creation failed');
+        await fetchEffects();
+        peq.draft.leftBands = [];
+        peq.draft.rightBands = [];
+        peq.draft.presetName = '';
+        peq.draft.nameTouched = false;
+        showMeasurementPeqTakeFeedback(`${presetName} created`);
+        showToast(`Created PEQ preset: ${data.preset?.name || presetName}`, 'success');
+    } catch (e) {
+        showMeasurementPeqTakeFeedback('PEQ preset creation failed');
+        showToast(e.message || 'PEQ preset creation failed', 'error');
+    } finally {
+        peqCreateInFlight = false;
+        renderMeasurementPanel();
+    }
+}
+
+function getMeasurementConvolverSelectedSourceEntries() {
+    return [getCurrentMeasurementEntry(), ...getVisibleMeasurementEntries()].filter(Boolean);
+}
+
+function getMeasurementConvolverSourceEntries() {
+    const selected = getMeasurementConvolverSelectedSourceEntries();
+    if (selected.length) return selected;
+    return (state.measurement?.measurements || []).filter(Boolean);
+}
+
+function getMeasurementConvolverMeasurementForSide(side = 'left') {
+    const desired = side === 'right' ? 'right' : 'left';
+    const candidates = getMeasurementConvolverSourceEntries();
+    const hasTrace = (measurement) => getMeasurementDisplayTraces(measurement || {}).length > 0;
+    return candidates.find((measurement) => String(measurement.channel || 'left').toLowerCase() === desired && hasTrace(measurement))
+        || candidates.find((measurement) => String(measurement.channel || '').toLowerCase() === 'stereo' && hasTrace(measurement))
+        || null;
+}
+
+function getMeasurementConvolverTracePoints(side = 'left') {
+    const measurement = getMeasurementConvolverMeasurementForSide(side);
+    const trace = getMeasurementDisplayTraces(measurement || {}).find((item) => (item.points || []).length) || null;
+    return trace ? smoothMeasurementTracePoints(trace.points || [], '1/6-oct') : [];
+}
+
+function analyzeMeasurementConvolverSide(side = 'left') {
+    const conv = ensureMeasurementConvolverState();
+    const points = getMeasurementConvolverTracePoints(side).filter(([frequency]) => frequency >= conv.rangeStartHz && frequency <= conv.rangeEndHz);
+    if (!points.length) return null;
+    const corrections = points.map(([frequency, measuredDb]) => {
+        const targetDb = getMeasurementConvolverCurveDb(conv.targetCurve, frequency);
+        const requestedDb = targetDb - measuredDb;
+        return {
+            frequency,
+            targetDb,
+            measuredDb,
+            requestedDb,
+            correctionDb: Math.min(conv.maxBoostDb, Math.max(conv.maxCutDb, requestedDb)),
+        };
+    });
+    const maxPositive = Math.max(0, ...corrections.map((item) => item.correctionDb));
+    const minCorrection = Math.min(...corrections.map((item) => item.correctionDb));
+    const autoGainDb = conv.autoGainEnabled ? Math.round((-(maxPositive + conv.safetyMarginDb)) * 2) / 2 : 0;
+    const lowBassBoost = corrections.some((item) => item.frequency < 40 && item.correctionDb > 0.25);
+    return { side, points: points.length, corrections, maxPositive, minCorrection, autoGainDb, lowBassBoost };
+}
+
+function getMeasurementConvolverSelectedSourceCount() {
+    return getMeasurementConvolverSelectedSourceEntries().filter((measurement) => getMeasurementDisplayTraces(measurement || {}).length > 0).length;
+}
+
+function getMeasurementConvolverMultiSourceWarning() {
+    return 'Multiple measurement curves are selected. Convolver uses measurement data as source; hide unrelated saved runs.';
+}
+
+function buildMeasurementConvolverWarnings(analyses = []) {
+    const conv = ensureMeasurementConvolverState();
+    const warnings = [];
+    if (conv.rangeEndHz > 1000) warnings.push('Wide-range correction can change speaker tonality.');
+    if (analyses.some((analysis) => analysis && analysis.autoGainDb < -6)) warnings.push('This correction needs high headroom. Consider reducing Max Boost or narrowing the correction range.');
+    if (analyses.some((analysis) => analysis && analysis.lowBassBoost)) warnings.push('Deep bass boost can demand much more amplifier power and speaker excursion.');
+    return warnings;
+}
+
+function formatMeasurementConvolverGain(value) {
+    const numeric = Number(value) || 0;
+    return `${numeric > 0 ? '+' : ''}${Number.isInteger(numeric) ? numeric.toFixed(0) : numeric.toFixed(1)}dB`;
+}
+
+function getMeasurementConvolverNameSuffix(date = new Date()) {
+    const pad = (value) => String(value).padStart(2, '0');
+    return `${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
+}
+
+function getMeasurementConvolverItemName(mode = 'both', autoGainDb = 0, options = {}) {
+    const conv = ensureMeasurementConvolverState();
+    const curve = measurementConvolverCurves[conv.targetCurve] || measurementConvolverCurves.neutral;
+    const prefix = mode === 'both' ? 'Conv LR' : (mode === 'right' ? 'Conv R' : 'Conv L');
+    const base = `${prefix} ${curve.shortLabel || curve.label} ${Math.round(conv.rangeStartHz)}-${Math.round(conv.rangeEndHz)}Hz ${formatMeasurementConvolverGain(autoGainDb)}`;
+    return options.unique ? `${base} ${getMeasurementConvolverNameSuffix()}` : base;
+}
+
+function showMeasurementConvolverFeedback(message) {
+    if (!elements.measurementConvolverFeedback) return;
+    elements.measurementConvolverFeedback.textContent = message;
+    elements.measurementConvolverFeedback.classList.add('is-visible');
+    setTimeout(() => elements.measurementConvolverFeedback?.classList.remove('is-visible'), 2600);
+}
+
+function getMeasurementConvolverSampleRate() {
+    const conv = ensureMeasurementConvolverState();
+    const selected = Number(conv.sampleRate);
+    return Number.isFinite(selected) && selected > 0 ? selected : 48000;
+}
+
+function getMeasurementConvolverFirLengthForType(type = 'linear_4096') {
+    if (type === 'linear_32768') return 32768;
+    if (type === 'linear_8192') return 8192;
+    return 4096;
+}
+
+function getMeasurementConvolverFirLength() {
+    const conv = ensureMeasurementConvolverState();
+    return getMeasurementConvolverFirLengthForType(conv.quality);
+}
+
+function getMeasurementConvolverTypeLabel(type = 'linear_4096') {
+    if (type === 'linear_32768') return 'Linear FIR 32768 taps';
+    if (type === 'linear_8192') return 'Linear FIR 8192 taps';
+    return 'Linear FIR 4096 taps';
+}
+
+function interpolateMeasurementConvolverCorrection(analysis, frequencyHz, autoGainDb) {
+    const corrections = analysis?.corrections || [];
+    if (!corrections.length) return autoGainDb;
+    if (frequencyHz < corrections[0].frequency || frequencyHz > corrections[corrections.length - 1].frequency) return autoGainDb;
+    for (let index = 1; index < corrections.length; index += 1) {
+        const left = corrections[index - 1];
+        const right = corrections[index];
+        if (frequencyHz <= right.frequency) {
+            const span = Math.max(1e-9, Math.log10(right.frequency) - Math.log10(left.frequency));
+            const ratio = (Math.log10(Math.max(1, frequencyHz)) - Math.log10(left.frequency)) / span;
+            const correctionDb = left.correctionDb + ((right.correctionDb - left.correctionDb) * Math.min(1, Math.max(0, ratio)));
+            return correctionDb + autoGainDb;
+        }
+    }
+    return corrections[corrections.length - 1].correctionDb + autoGainDb;
+}
+
+function buildMeasurementConvolverImpulse(analysis, sampleRate, length, autoGainDb) {
+    const half = Math.floor(length / 2);
+    const magnitudes = new Float64Array(half + 1);
+    for (let bin = 0; bin <= half; bin += 1) {
+        const frequency = (bin * sampleRate) / length;
+        const gainDb = interpolateMeasurementConvolverCorrection(analysis, Math.max(20, frequency), autoGainDb);
+        magnitudes[bin] = 10 ** (gainDb / 20);
+    }
+    const impulse = new Float32Array(length);
+    const shift = half;
+    for (let n = 0; n < length; n += 1) {
+        let sum = magnitudes[0] + (magnitudes[half] * Math.cos(Math.PI * n));
+        for (let bin = 1; bin < half; bin += 1) {
+            sum += 2 * magnitudes[bin] * Math.cos((2 * Math.PI * bin * n) / length);
+        }
+        impulse[(n + shift) % length] = sum / length;
+    }
+    return impulse;
+}
+
+function writeMeasurementConvolverWav(channels, sampleRate) {
+    const channelCount = channels.length;
+    const frameCount = channels[0]?.length || 0;
+    const bytesPerSample = 2;
+    const dataBytes = frameCount * channelCount * bytesPerSample;
+    const buffer = new ArrayBuffer(44 + dataBytes);
+    const view = new DataView(buffer);
+    const writeString = (offset, value) => Array.from(value).forEach((char, index) => view.setUint8(offset + index, char.charCodeAt(0)));
+    writeString(0, 'RIFF');
+    view.setUint32(4, 36 + dataBytes, true);
+    writeString(8, 'WAVE');
+    writeString(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, channelCount, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * channelCount * bytesPerSample, true);
+    view.setUint16(32, channelCount * bytesPerSample, true);
+    view.setUint16(34, 16, true);
+    writeString(36, 'data');
+    view.setUint32(40, dataBytes, true);
+    let offset = 44;
+    for (let frame = 0; frame < frameCount; frame += 1) {
+        for (let channel = 0; channel < channelCount; channel += 1) {
+            const sample = Math.max(-1, Math.min(1, channels[channel][frame] || 0));
+            view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+            offset += 2;
+        }
+    }
+    return new Blob([buffer], { type: 'audio/wav' });
+}
+
+function appendMeasurementConvolverExtras(formData) {
+    const extras = collectEffectsExtras();
+    formData.append('load_after_create', 'false');
+    formData.append('limiter_enabled', extras.limiterEnabled ? 'true' : 'false');
+    formData.append('headroom_enabled', extras.headroomEnabled ? 'true' : 'false');
+    formData.append('headroom_gain_db', String(extras.headroomGainDb));
+    formData.append('autogain_enabled', extras.autogainEnabled ? 'true' : 'false');
+    formData.append('autogain_target_db', String(extras.autogainTargetDb));
+    formData.append('delay_enabled', extras.delayEnabled ? 'true' : 'false');
+    formData.append('delay_left_ms', String(extras.delayLeftMs));
+    formData.append('delay_right_ms', String(extras.delayRightMs));
+    formData.append('bass_enabled', extras.bassEnabled ? 'true' : 'false');
+    formData.append('bass_amount', String(extras.bassAmount));
+    formData.append('tone_effect_enabled', extras.toneEffectEnabled ? 'true' : 'false');
+    formData.append('tone_effect_mode', extras.toneEffectMode);
+}
+
+async function createMeasurementConvolverPreset(mode, analyses, sharedAutoGainDb, itemName) {
+    const sampleRate = getMeasurementConvolverSampleRate();
+    const length = getMeasurementConvolverFirLength();
+    const filenameBase = itemName.replace(/[^a-z0-9._-]+/gi, '-').replace(/^-+|-+$/g, '') || 'measurement-convolver';
+    const bySide = Object.fromEntries(analyses.map((analysis) => [analysis.side, analysis]));
+    if (mode === 'both') {
+        const leftImpulse = buildMeasurementConvolverImpulse(bySide.left, sampleRate, length, sharedAutoGainDb);
+        const rightImpulse = buildMeasurementConvolverImpulse(bySide.right, sampleRate, length, sharedAutoGainDb);
+        const leftBlob = writeMeasurementConvolverWav([leftImpulse], sampleRate);
+        const rightBlob = writeMeasurementConvolverWav([rightImpulse], sampleRate);
+        const formData = new FormData();
+        formData.append('preset_name', itemName);
+        appendMeasurementConvolverExtras(formData);
+        formData.append('left_file', leftBlob, `${filenameBase}-L.wav`);
+        formData.append('right_file', rightBlob, `${filenameBase}-R.wav`);
+        const resp = await fetch('/api/easyeffects/presets/import-filter-dual', { method: 'POST', body: formData });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || 'Convolver preset creation failed');
+        return data;
+    }
+    const side = mode === 'right' ? 'right' : 'left';
+    const impulse = buildMeasurementConvolverImpulse(bySide[side], sampleRate, length, sharedAutoGainDb);
+    const blob = writeMeasurementConvolverWav([impulse], sampleRate);
+    const formData = new FormData();
+    formData.append('preset_name', itemName);
+    appendMeasurementConvolverExtras(formData);
+    formData.append('file', blob, `${filenameBase}-${side === 'right' ? 'R' : 'L'}.wav`);
+    const resp = await fetch('/api/easyeffects/presets/create-with-ir', { method: 'POST', body: formData });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data.detail || 'Convolver preset creation failed');
+    return data;
+}
+
+function takeMeasurementConvolverToDraft(mode = 'both') {
+    if (getMeasurementConvolverSelectedSourceCount() > 1) {
+        const warning = getMeasurementConvolverMultiSourceWarning();
+        showMeasurementConvolverFeedback(warning);
+        showToast(warning, 'warning');
+        return;
+    }
+    const sides = mode === 'left' ? ['left'] : (mode === 'right' ? ['right'] : ['left', 'right']);
+    const analyses = sides.map((side) => analyzeMeasurementConvolverSide(side));
+    if (analyses.some((analysis) => !analysis)) {
+        showToast('Run or show a measurement with points in the selected correction range first', 'warning');
+        return;
+    }
+    const conv = ensureMeasurementConvolverState();
+    sides.forEach((side, index) => {
+        const analysis = analyses[index];
+        conv.draft[side] = {
+            side,
+            createdAt: new Date().toISOString(),
+            analysis,
+            metadata: {
+                targetCurve: conv.targetCurve,
+                rangeStartHz: conv.rangeStartHz,
+                rangeEndHz: conv.rangeEndHz,
+                maxBoostDb: conv.maxBoostDb,
+                maxCutDb: conv.maxCutDb,
+                safetyMarginDb: conv.safetyMarginDb,
+                autoGainDb: analysis.autoGainDb,
+                sampleRate: getMeasurementConvolverSampleRate(),
+                quality: conv.quality,
+                phaseMode: conv.phaseMode,
+                irLength: getMeasurementConvolverFirLength(),
+            },
+        };
+    });
+    const sharedAutoGainDb = Math.min(...analyses.map((analysis) => analysis.autoGainDb));
+    const effectiveMode = conv.draft.left && conv.draft.right ? 'both' : mode;
+    if (!conv.draft.nameTouched) conv.draft.presetName = getMeasurementConvolverItemName(effectiveMode, sharedAutoGainDb, { unique: true });
+    renderMeasurementPanel();
+    const label = mode === 'both' ? 'Left + Right staged' : (mode === 'right' ? 'Right staged' : 'Left staged');
+    showMeasurementConvolverFeedback(label);
+    showToast(`Convolver draft updated: ${label}`, 'success');
+}
+
+async function createMeasurementConvolverPresetFromDraft() {
+    const conv = ensureMeasurementConvolverState();
+    const leftDraft = conv.draft?.left || null;
+    const rightDraft = conv.draft?.right || null;
+    const mode = leftDraft && rightDraft ? 'both' : (rightDraft ? 'right' : (leftDraft ? 'left' : null));
+    if (!mode) {
+        showToast('Take L, R or Both into the convolver draft first', 'warning');
+        return;
+    }
+    const drafts = mode === 'both' ? [leftDraft, rightDraft] : [mode === 'right' ? rightDraft : leftDraft];
+    const analyses = drafts.map((draft) => draft.analysis);
+    const sharedAutoGainDb = Math.min(...analyses.map((analysis) => analysis.autoGainDb));
+    const itemName = String(conv.draft?.presetName || '').trim() || getMeasurementConvolverItemName(mode, sharedAutoGainDb, { unique: true });
+    conv.draft.presetName = itemName;
+    if (elements.measurementConvolverCreateBtn) elements.measurementConvolverCreateBtn.disabled = true;
+    showMeasurementConvolverFeedback(`Creating ${itemName}…`);
+    try {
+        const created = await createMeasurementConvolverPreset(mode, analyses, sharedAutoGainDb, itemName);
+        const item = {
+            type: 'convolver',
+            mode,
+            name: itemName,
+            createdAt: new Date().toISOString(),
+            preset: created.preset || null,
+            ir: created.ir || null,
+            metadata: {
+                targetCurve: conv.targetCurve,
+                rangeStartHz: conv.rangeStartHz,
+                rangeEndHz: conv.rangeEndHz,
+                maxBoostDb: conv.maxBoostDb,
+                maxCutDb: conv.maxCutDb,
+                safetyMarginDb: conv.safetyMarginDb,
+                autoGainDb: sharedAutoGainDb,
+                sampleRate: getMeasurementConvolverSampleRate(),
+                quality: conv.quality,
+                phaseMode: conv.phaseMode,
+                irLength: getMeasurementConvolverFirLength(),
+                generatedIr: true,
+            },
+            analyses: analyses.map((analysis) => ({ side: analysis.side, points: analysis.points, maxPositive: analysis.maxPositive, minCorrection: analysis.minCorrection, autoGainDb: analysis.autoGainDb })),
+        };
+        state.easyeffects = state.easyeffects || {};
+        state.easyeffects.assistStack = state.easyeffects.assistStack || [];
+        state.easyeffects.assistStack.push(item);
+        conv.draft.left = null;
+        conv.draft.right = null;
+        conv.draft.presetName = '';
+        conv.draft.nameTouched = false;
+        await fetchEffects();
+        showMeasurementConvolverFeedback(`${itemName} created`);
+        showToast(`Created convolver preset: ${created.preset?.name || itemName}`, 'success');
+    } catch (e) {
+        showMeasurementConvolverFeedback('Convolver preset creation failed');
+        showToast(e.message || 'Convolver preset creation failed', 'error');
+    } finally {
+        renderMeasurementPanel();
+    }
 }
 
 function getMeasurementGraphBounds(displayWidth, displayHeight) {
@@ -4210,13 +4770,89 @@ function markMeasurementPeqTouchCreate(pointerType = '') {
     if (pointerType === 'touch') measurementPeqLastTouchCreateAt = Date.now();
 }
 
+function getMeasurementConvolverRangeHandleAtPosition(x, y, bounds) {
+    const conv = ensureMeasurementConvolverState();
+    const startX = measurementFrequencyToX(conv.rangeStartHz, bounds);
+    const endX = measurementFrequencyToX(conv.rangeEndHz, bounds);
+    if (y < bounds.top || y > bounds.top + bounds.height) return null;
+    if (Math.abs(x - startX) <= 12) return 'start';
+    if (Math.abs(x - endX) <= 12) return 'end';
+    if (x > startX && x < endX) return 'move';
+    return null;
+}
+
+function drawMeasurementTargetCurve(ctx, bounds, range) {
+    const conv = ensureMeasurementConvolverState();
+    const curve = measurementConvolverCurves[conv.targetCurve] || measurementConvolverCurves.neutral;
+    const frequencies = [20, 25, 31.5, 40, 50, 63, 80, 100, 125, 160, 200, 250, 315, 400, 500, 630, 800, 1000, 1250, 1600, 2000, 2500, 3150, 4000, 5000, 6300, 8000, 10000, 12500, 16000, 20000];
+    ctx.save();
+    ctx.strokeStyle = '#6ee7b7';
+    ctx.lineWidth = 1.4;
+    ctx.setLineDash([6, 5]);
+    ctx.beginPath();
+    frequencies.forEach((frequency, index) => {
+        const x = measurementFrequencyToX(frequency, bounds);
+        const y = Math.max(bounds.top, Math.min(bounds.top + bounds.height, measurementDbToY(getMeasurementConvolverCurveDb(conv.targetCurve, frequency), bounds, range)));
+        if (index === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#a7f3d0';
+    ctx.font = '12px sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'bottom';
+    ctx.fillText(`${curve.shortLabel || curve.label} target`, bounds.left + 8, bounds.top + bounds.height - 8);
+    ctx.restore();
+}
+
+function drawMeasurementConvolverRangeOverlay(ctx, bounds) {
+    if ((state.measurement?.assistMode || 'peq') !== 'convolver') return;
+    const conv = ensureMeasurementConvolverState();
+    const startX = measurementFrequencyToX(conv.rangeStartHz, bounds);
+    const endX = measurementFrequencyToX(conv.rangeEndHz, bounds);
+    ctx.save();
+    ctx.fillStyle = 'rgba(96, 165, 250, 0.16)';
+    ctx.fillRect(startX, bounds.top, Math.max(1, endX - startX), bounds.height);
+    ctx.strokeStyle = 'rgba(147, 197, 253, 0.85)';
+    ctx.lineWidth = 1.6;
+    ctx.setLineDash([5, 4]);
+    [startX, endX].forEach((rangeX) => {
+        ctx.beginPath();
+        ctx.moveTo(rangeX, bounds.top);
+        ctx.lineTo(rangeX, bounds.top + bounds.height);
+        ctx.stroke();
+    });
+    ctx.setLineDash([]);
+    ctx.fillStyle = 'rgba(191, 219, 254, 0.95)';
+    ctx.font = '12px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.fillText(`${Math.round(conv.rangeStartHz)}–${Math.round(conv.rangeEndHz)} Hz`, (startX + endX) / 2, bounds.top + 8);
+    ctx.restore();
+}
+
 function handleMeasurementGraphPointerDown(event) {
     const pointer = getMeasurementGraphPointerPosition(event);
     if (!pointer) return;
     const { x, y, bounds, range } = pointer;
     if (x < bounds.left || x > bounds.left + bounds.width || y < bounds.top || y > bounds.top + bounds.height) return;
-    const peq = ensureMeasurementPeqState();
     const pointerType = String(event.pointerType || '');
+    if ((state.measurement?.assistMode || 'peq') === 'convolver') {
+        const conv = ensureMeasurementConvolverState();
+        const dragMode = getMeasurementConvolverRangeHandleAtPosition(x, y, bounds);
+        if (!dragMode) return;
+        if (pointerType === 'touch') event.preventDefault();
+        conv.dragMode = dragMode;
+        conv.dragAnchorHz = measurementXToFrequency(x, bounds);
+        conv.dragStartHz = conv.rangeStartHz;
+        conv.dragEndHz = conv.rangeEndHz;
+        measurementGraphPointerId = event.pointerId;
+        elements.measurementGraph?.setPointerCapture?.(event.pointerId);
+        renderMeasurementPanel();
+        return;
+    }
+    const peq = ensureMeasurementPeqState();
     const hitFilter = findMeasurementPeqFilterHandleAtPosition(x, y, bounds, range, pointerType);
     if (hitFilter) {
         if (pointerType === 'touch') event.preventDefault();
@@ -4243,6 +4879,35 @@ function handleMeasurementGraphPointerDown(event) {
 }
 
 function handleMeasurementGraphPointerMove(event) {
+    const conv = ensureMeasurementConvolverState();
+    if (conv.dragMode && measurementGraphPointerId === event.pointerId) {
+        if (event.pointerType === 'touch') event.preventDefault();
+        const pointer = getMeasurementGraphPointerPosition(event);
+        if (!pointer) return;
+        const currentHz = measurementXToFrequency(pointer.x, pointer.bounds);
+        if (conv.dragMode === 'start') conv.rangeStartHz = Math.min(Math.round(clampMeasurementConvolverFrequency(currentHz)), conv.rangeEndHz - 1);
+        if (conv.dragMode === 'end') conv.rangeEndHz = Math.max(Math.round(clampMeasurementConvolverFrequency(currentHz)), conv.rangeStartHz + 1);
+        if (conv.dragMode === 'move') {
+            const ratio = Math.log10(currentHz / Math.max(1, conv.dragAnchorHz || currentHz));
+            const start = clampMeasurementConvolverFrequency((conv.dragStartHz || conv.rangeStartHz) * (10 ** ratio));
+            const end = clampMeasurementConvolverFrequency((conv.dragEndHz || conv.rangeEndHz) * (10 ** ratio));
+            const widthRatio = (conv.dragEndHz || conv.rangeEndHz) / Math.max(1, conv.dragStartHz || conv.rangeStartHz);
+            if (start <= 20) {
+                conv.rangeStartHz = 20;
+                conv.rangeEndHz = Math.min(20000, Math.round(20 * widthRatio));
+            } else if (end >= 20000) {
+                conv.rangeEndHz = 20000;
+                conv.rangeStartHz = Math.max(20, Math.round(20000 / widthRatio));
+            } else {
+                conv.rangeStartHz = Math.round(start);
+                conv.rangeEndHz = Math.round(end);
+            }
+        }
+        ensureMeasurementConvolverState();
+        scheduleMeasurementGraphRender();
+        renderMeasurementPanel();
+        return;
+    }
     const peq = ensureMeasurementPeqState();
     if (!peq.dragFilterId || measurementGraphPointerId !== event.pointerId) return;
     if (event.pointerType === 'touch') event.preventDefault();
@@ -4259,6 +4924,7 @@ function handleMeasurementGraphPointerMove(event) {
 
 function handleMeasurementGraphPointerUp(event) {
     const peq = ensureMeasurementPeqState();
+    const conv = ensureMeasurementConvolverState();
     if (measurementGraphPointerId !== null && event.pointerId === measurementGraphPointerId && event.pointerType === 'touch') {
         event.preventDefault();
     }
@@ -4267,6 +4933,10 @@ function handleMeasurementGraphPointerUp(event) {
         measurementGraphPointerId = null;
     }
     peq.dragFilterId = null;
+    conv.dragMode = null;
+    delete conv.dragAnchorHz;
+    delete conv.dragStartHz;
+    delete conv.dragEndHz;
 }
 
 function buildMeasurementGraphEntry(measurement = {}, { current = false, compareIndex = 0 } = {}) {
@@ -4740,15 +5410,7 @@ function drawMeasurementGraph() {
         ctx.fillText(frequency >= 1000 ? `${frequency / 1000}k` : `${frequency}`, x, bounds.top + bounds.height + 10);
     });
 
-    const zeroY = measurementDbToY(0, bounds, range);
-    ctx.strokeStyle = '#6ee7b7';
-    ctx.lineWidth = 1.4;
-    ctx.setLineDash([6, 5]);
-    ctx.beginPath();
-    ctx.moveTo(bounds.left, zeroY);
-    ctx.lineTo(bounds.left + bounds.width, zeroY);
-    ctx.stroke();
-    ctx.setLineDash([]);
+    drawMeasurementTargetCurve(ctx, bounds, range);
 
     graphEntries.forEach(entry => {
         (entry.traces || []).forEach(trace => {
@@ -4769,6 +5431,7 @@ function drawMeasurementGraph() {
         });
     });
 
+    drawMeasurementConvolverRangeOverlay(ctx, bounds);
     drawMeasurementPeqOverlay(ctx, bounds, range);
 
     ctx.strokeStyle = 'rgba(255,255,255,0.16)';
@@ -5091,7 +5754,9 @@ function renderMeasurementPanel() {
     const current = getCurrentMeasurementEntry();
     const measurements = (measurementState.measurements || []).filter(measurement => measurement.id !== current?.id);
     const graphEntries = getGraphMeasurementEntries();
+    const assistMode = measurementState.assistMode === 'convolver' ? 'convolver' : 'peq';
     const peq = ensureMeasurementPeqState();
+    const conv = ensureMeasurementConvolverState();
     const activePeqFilter = getMeasurementPeqActiveFilter();
 
     if (elements.measurementSetupCard) {
@@ -5172,26 +5837,47 @@ function renderMeasurementPanel() {
         elements.measurementSaveBtn.disabled = !current || measurementState.saveInFlight || measurementState.startInFlight || measurementState.currentMeasurementSaved;
         elements.measurementSaveBtn.textContent = measurementState.saveInFlight ? 'Working…' : (measurementState.currentMeasurementSaved ? 'Saved' : 'Save current');
     }
+    if (elements.measurementAssistMode) elements.measurementAssistMode.value = assistMode;
+    if (elements.measurementTargetCurve) {
+        elements.measurementTargetCurve.value = conv.targetCurve;
+        elements.measurementTargetCurve.classList.remove('hidden');
+    }
     if (elements.measurementClearBtn) {
-        const hasResettableGraphState = !!current || !!peq.filters.length;
+        const defaultConv = getDefaultMeasurementConvolverState();
+        const hasConvolverResettableState = assistMode === 'convolver' && (
+            conv.targetCurve !== defaultConv.targetCurve
+            || Math.round(conv.rangeStartHz) !== defaultConv.rangeStartHz
+            || Math.round(conv.rangeEndHz) !== defaultConv.rangeEndHz
+            || Number(conv.maxBoostDb) !== defaultConv.maxBoostDb
+            || String(conv.sampleRate) !== defaultConv.sampleRate
+            || String(conv.quality) !== defaultConv.quality
+        );
+        const hasResettableGraphState = !!current || !!peq.filters.length || hasConvolverResettableState;
         elements.measurementClearBtn.disabled = !hasResettableGraphState || measurementState.startInFlight || !!measurementState.activeJobId;
     }
     if (elements.measurementSetupStatus) {
         elements.measurementSetupStatus.textContent = measurementState.statusText || describeMeasurementScope();
     }
     if (elements.measurementSummary) {
-        elements.measurementSummary.textContent = peq.filters.length ? `${peq.filters.length}/4 assistant filters` : '';
+        if (assistMode === 'convolver') {
+            elements.measurementSummary.textContent = `${Math.round(conv.rangeStartHz)}–${Math.round(conv.rangeEndHz)} Hz`;
+        } else {
+            elements.measurementSummary.textContent = peq.filters.length ? `${peq.filters.length}/4 assistant filters` : '';
+        }
     }
     if (elements.measurementEmpty) {
         elements.measurementEmpty.classList.toggle('hidden', graphEntries.length > 0);
     }
     if (elements.measurementGraphControls) {
         elements.measurementGraphControls.textContent = current
-            ? 'Tap/click near 0 dB to add a filter, drag handles for freq/gain.'
+            ? (assistMode === 'convolver' ? 'Drag the blue range block or its edges to set the FIR correction range.' : 'Tap/click near 0 dB to add a filter, drag handles for freq/gain.')
             : 'Run a sweep to see the graph.';
     }
     if (elements.measurementPeqPanel) {
-        elements.measurementPeqPanel.classList.toggle('hidden', !peq.enabled && !peq.filters.length);
+        elements.measurementPeqPanel.classList.toggle('hidden', assistMode !== 'peq' || (!peq.enabled && !peq.filters.length));
+    }
+    if (elements.measurementConvolverPanel) {
+        elements.measurementConvolverPanel.classList.toggle('hidden', assistMode !== 'convolver');
     }
     if (elements.measurementPeqChips) {
         elements.measurementPeqChips.innerHTML = Array.from({ length: 4 }, (_, index) => {
@@ -5248,9 +5934,24 @@ function renderMeasurementPanel() {
             `;
         }
     }
+    const peqDraftLeftCount = peq.draft?.leftBands?.length || 0;
+    const peqDraftRightCount = peq.draft?.rightBands?.length || 0;
+    if (elements.measurementPeqDraftSummary) {
+        const draftMode = peqDraftLeftCount && peqDraftRightCount ? 'LR draft ready' : (peqDraftRightCount ? 'R draft ready' : (peqDraftLeftCount ? 'L draft ready' : 'no draft staged'));
+        elements.measurementPeqDraftSummary.innerHTML = `<div>Draft — ${escapeHtml(draftMode)} · L: ${peqDraftLeftCount} bands · R: ${peqDraftRightCount} bands</div>`;
+    }
+    if (elements.measurementPeqPresetName) {
+        const hasDraft = !!peqDraftLeftCount || !!peqDraftRightCount;
+        if (document.activeElement !== elements.measurementPeqPresetName) {
+            elements.measurementPeqPresetName.value = peq.draft?.presetName || '';
+        }
+        elements.measurementPeqPresetName.disabled = !hasDraft;
+        elements.measurementPeqPresetName.placeholder = hasDraft ? 'Preset name' : 'Take L/R/Both to generate a name';
+    }
     if (elements.measurementPeqTakeLeftBtn) elements.measurementPeqTakeLeftBtn.disabled = !peq.filters.length;
     if (elements.measurementPeqTakeRightBtn) elements.measurementPeqTakeRightBtn.disabled = !peq.filters.length;
     if (elements.measurementPeqTakeBothBtn) elements.measurementPeqTakeBothBtn.disabled = !peq.filters.length;
+    if (elements.measurementPeqCreateBtn) elements.measurementPeqCreateBtn.disabled = (!peqDraftLeftCount && !peqDraftRightCount) || !String(peq.draft?.presetName || '').trim() || peqCreateInFlight;
 
     elements.measurementPeqChips?.querySelectorAll('[data-measurement-peq-slot]').forEach((button) => {
         button.addEventListener('click', () => {
@@ -5332,6 +6033,49 @@ function renderMeasurementPanel() {
         });
     });
 
+    if (elements.measurementConvolverTarget) {
+        const optionsHtml = Object.entries(measurementConvolverCurves).map(([key, curve]) => `<option value="${escapeHtml(key)}" ${conv.targetCurve === key ? 'selected' : ''}>${escapeHtml(curve.label)}</option>`).join('');
+        if (elements.measurementConvolverTarget.innerHTML !== optionsHtml) elements.measurementConvolverTarget.innerHTML = optionsHtml;
+        elements.measurementConvolverTarget.value = conv.targetCurve;
+    }
+    if (elements.measurementConvolverRangeStart && document.activeElement !== elements.measurementConvolverRangeStart) elements.measurementConvolverRangeStart.value = String(Math.round(conv.rangeStartHz));
+    if (elements.measurementConvolverRangeEnd && document.activeElement !== elements.measurementConvolverRangeEnd) elements.measurementConvolverRangeEnd.value = String(Math.round(conv.rangeEndHz));
+    if (elements.measurementConvolverMaxBoost) elements.measurementConvolverMaxBoost.value = String(conv.maxBoostDb);
+    if (elements.measurementConvolverSampleRate) elements.measurementConvolverSampleRate.value = conv.sampleRate;
+    if (elements.measurementConvolverQuality) elements.measurementConvolverQuality.value = conv.quality;
+    const convAnalyses = ['left', 'right'].map((side) => analyzeMeasurementConvolverSide(side));
+    const left = convAnalyses[0];
+    const right = convAnalyses[1];
+    const leftDraft = conv.draft?.left || null;
+    const rightDraft = conv.draft?.right || null;
+    if (elements.measurementConvolverSummary) {
+        const curve = measurementConvolverCurves[conv.targetCurve] || measurementConvolverCurves.neutral;
+        const stackCount = (state.easyeffects?.assistStack || []).filter((item) => item.type === 'convolver').length;
+        const draftMode = leftDraft && rightDraft ? 'LR stereo draft ready' : (rightDraft ? 'R draft ready' : (leftDraft ? 'L draft ready' : 'no draft staged'));
+        elements.measurementConvolverSummary.innerHTML = `
+            <div><strong>${escapeHtml(curve.label)}</strong> · ${escapeHtml(getMeasurementConvolverTypeLabel(conv.quality))} · Max Boost +${conv.maxBoostDb} dB</div>
+            <div>Range data — L: ${left ? `${left.points} pts, gain ${formatMeasurementConvolverGain(left.autoGainDb)}` : 'none'} · R: ${right ? `${right.points} pts, gain ${formatMeasurementConvolverGain(right.autoGainDb)}` : 'none'}</div>
+            <div>Draft — ${escapeHtml(draftMode)} · created convolver items: ${stackCount}</div>
+        `;
+    }
+    if (elements.measurementConvolverPresetName) {
+        const hasDraft = !!leftDraft || !!rightDraft;
+        if (document.activeElement !== elements.measurementConvolverPresetName) {
+            elements.measurementConvolverPresetName.value = conv.draft?.presetName || '';
+        }
+        elements.measurementConvolverPresetName.disabled = !hasDraft;
+        elements.measurementConvolverPresetName.placeholder = hasDraft ? 'Preset name' : 'Take L/R/Both to generate a name';
+    }
+    if (elements.measurementConvolverWarnings) {
+        const warnings = buildMeasurementConvolverWarnings(convAnalyses);
+        elements.measurementConvolverWarnings.innerHTML = warnings.map((warning) => `<div>${escapeHtml(warning)}</div>`).join('');
+        elements.measurementConvolverWarnings.classList.toggle('hidden', !warnings.length);
+    }
+    if (elements.measurementConvolverTakeLeftBtn) elements.measurementConvolverTakeLeftBtn.disabled = !left;
+    if (elements.measurementConvolverTakeRightBtn) elements.measurementConvolverTakeRightBtn.disabled = !right;
+    if (elements.measurementConvolverTakeBothBtn) elements.measurementConvolverTakeBothBtn.disabled = !left || !right;
+    if (elements.measurementConvolverCreateBtn) elements.measurementConvolverCreateBtn.disabled = (!leftDraft && !rightDraft) || !String(conv.draft?.presetName || '').trim();
+
     const currentHtml = current ? (() => {
         const pointsLabel = summarizeMeasurementEntry(current);
         const displayTraces = getMeasurementDisplayTraces(current);
@@ -5345,8 +6089,8 @@ function renderMeasurementPanel() {
         const qualitySummary = getMeasurementQualitySummary(current);
         const qualityTitle = getMeasurementQualityTitle(current);
         const currentTitle = (measurementState.currentMeasurementSaved || current.storage_path)
-            ? `<a href="${escapeHtml(measurementFileUrl(current.id))}">${escapeHtml(current.name || 'Current sweep')}</a>`
-            : escapeHtml(current.name || 'Current sweep');
+            ? `<a href="${escapeHtml(measurementFileUrl(current.id))}" title="${escapeHtml(current.name || 'Current sweep')}">${escapeHtml(getCompactDisplayName(current.name || 'Current sweep', 24))}</a>`
+            : escapeHtml(getCompactDisplayName(current.name || 'Current sweep', 24));
         return `
             <div class="measurement-list-item measurement-list-item-current">
                 <div class="measurement-list-row">
@@ -5384,7 +6128,7 @@ function renderMeasurementPanel() {
                     <span class="measurement-toggle">
                         <input type="checkbox" data-measurement-toggle="${escapeHtml(measurement.id)}" ${isSelected ? 'checked' : ''}>
                         <span class="measurement-swatch" style="background:${escapeHtml(traceColor)}"></span>
-                        <span class="measurement-list-title"><a href="${escapeHtml(measurementFileUrl(measurement.id))}">${escapeHtml(measurement.name)}</a></span>
+                        <span class="measurement-list-title"><a href="${escapeHtml(measurementFileUrl(measurement.id))}" title="${escapeHtml(measurement.name)}">${escapeHtml(getCompactDisplayName(measurement.name, 24))}</a></span>
                     </span>
                     <span class="measurement-list-meta">${escapeHtml(formatMeasurementDate(measurement.created_at))}</span>
                 </div>
@@ -5556,6 +6300,52 @@ function setupMeasurementActions() {
     if (elements.measurementClearBtn) {
         elements.measurementClearBtn.addEventListener('click', () => resetMeasurementGraph());
     }
+    if (elements.measurementAssistMode) {
+        elements.measurementAssistMode.addEventListener('change', (event) => setMeasurementAssistMode(event.target.value));
+    }
+    if (elements.measurementTargetCurve) {
+        elements.measurementTargetCurve.addEventListener('change', (event) => updateMeasurementConvolverField('targetCurve', event.target.value));
+    }
+    [elements.measurementConvolverTarget, elements.measurementConvolverRangeStart, elements.measurementConvolverRangeEnd, elements.measurementConvolverMaxBoost, elements.measurementConvolverSampleRate, elements.measurementConvolverQuality].forEach((input) => {
+        if (!input) return;
+        const commit = () => updateMeasurementConvolverField(input.dataset.measurementConvolverField, input.value);
+        input.addEventListener('change', commit);
+        if (input instanceof HTMLInputElement) input.addEventListener('input', commit);
+    });
+    if (elements.measurementConvolverPresetName) {
+        elements.measurementConvolverPresetName.addEventListener('input', (event) => {
+            const conv = ensureMeasurementConvolverState();
+            conv.draft.presetName = event.target.value || '';
+            conv.draft.nameTouched = true;
+            if (elements.measurementConvolverCreateBtn) {
+                const hasDraft = !!conv.draft.left || !!conv.draft.right;
+                elements.measurementConvolverCreateBtn.disabled = !hasDraft || !conv.draft.presetName.trim();
+            }
+        });
+    }
+    if (elements.measurementConvolverTakeLeftBtn) {
+        elements.measurementConvolverTakeLeftBtn.addEventListener('click', () => takeMeasurementConvolverToDraft('left'));
+    }
+    if (elements.measurementConvolverTakeRightBtn) {
+        elements.measurementConvolverTakeRightBtn.addEventListener('click', () => takeMeasurementConvolverToDraft('right'));
+    }
+    if (elements.measurementConvolverTakeBothBtn) {
+        elements.measurementConvolverTakeBothBtn.addEventListener('click', () => takeMeasurementConvolverToDraft('both'));
+    }
+    if (elements.measurementConvolverCreateBtn) {
+        elements.measurementConvolverCreateBtn.addEventListener('click', () => { void createMeasurementConvolverPresetFromDraft(); });
+    }
+    if (elements.measurementPeqPresetName) {
+        elements.measurementPeqPresetName.addEventListener('input', (event) => {
+            const peq = ensureMeasurementPeqState();
+            peq.draft.presetName = event.target.value || '';
+            peq.draft.nameTouched = true;
+            if (elements.measurementPeqCreateBtn) {
+                const hasDraft = !!peq.draft.leftBands?.length || !!peq.draft.rightBands?.length;
+                elements.measurementPeqCreateBtn.disabled = !hasDraft || !peq.draft.presetName.trim() || peqCreateInFlight;
+            }
+        });
+    }
     if (elements.measurementPeqTakeLeftBtn) {
         elements.measurementPeqTakeLeftBtn.addEventListener('click', () => takeMeasurementPeqToPreset('left'));
     }
@@ -5564,6 +6354,9 @@ function setupMeasurementActions() {
     }
     if (elements.measurementPeqTakeBothBtn) {
         elements.measurementPeqTakeBothBtn.addEventListener('click', () => takeMeasurementPeqToPreset('both'));
+    }
+    if (elements.measurementPeqCreateBtn) {
+        elements.measurementPeqCreateBtn.addEventListener('click', () => { void createMeasurementPeqPresetFromDraft(); });
     }
     if (elements.measurementGraph) {
         elements.measurementGraph.addEventListener('pointerdown', handleMeasurementGraphPointerDown);
@@ -5597,6 +6390,7 @@ async function fetchEffects() {
                 leftBands: [defaultPeqBand()],
                 rightBands: [defaultPeqBand()],
             },
+            assistStack: Array.isArray(state.easyeffects?.assistStack) ? state.easyeffects.assistStack : [],
             compare: resolveEffectsCompareState(data.compare || prev, presetNames, data.active_preset || ''),
         };
         state.easyeffects.combineDraft = normalizeEffectsCombineDraft(state.easyeffects.combineDraft, presetNames);
@@ -6130,10 +6924,17 @@ function getEffectsChainLabelForPreset(presetName, presetMap = new Map()) {
     return 'Chain: Single preset';
 }
 
+function getCompactDisplayName(name = '', maxChars = 24) {
+    const cleanName = String(name || '').trim();
+    if (!cleanName || cleanName.length <= maxChars) return cleanName;
+    return `${cleanName.slice(0, Math.max(1, maxChars)).trimEnd()}…`;
+}
+
 function renderPresetDownloadLink(presetName = '') {
     const cleanName = String(presetName || '').trim();
     if (!cleanName) return '—';
-    return `<a href="${escapeHtml(presetFileUrl(cleanName))}">${escapeHtml(cleanName)}</a>`;
+    const displayName = getCompactDisplayName(cleanName, 24);
+    return `<a href="${escapeHtml(presetFileUrl(cleanName))}" title="${escapeHtml(cleanName)}">${escapeHtml(displayName)}</a>`;
 }
 
 function renderEffectsCompare() {

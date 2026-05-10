@@ -12,7 +12,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=0.4.458">
     <link rel="manifest" href="/static/site.webmanifest?v=0.4.458">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/static/style.css?v=0.5.2-peq-channel-remove">
+    <link rel="stylesheet" href="/static/style.css?v=0.5.2-mobile-name-v2">
 </head>
 <body>
     <!-- Offline indicator -->
@@ -627,6 +627,16 @@
                                 </div>
                                 <div class="measurement-graph-header-actions">
                                     <div id="measurement-summary" class="measurement-summary"></div>
+                                    <select id="measurement-assist-mode" class="url-input measurement-assist-select" aria-label="Measurement assist mode">
+                                        <option value="peq">PEQ</option>
+                                        <option value="convolver">Convolver</option>
+                                    </select>
+                                    <select id="measurement-target-curve" class="url-input measurement-assist-select" aria-label="Target curve">
+                                        <option value="neutral">Neutral</option>
+                                        <option value="bass_shelf">Bass Shelf</option>
+                                        <option value="harman">Harman-style</option>
+                                        <option value="bk">Bruel &amp; Kjaer-style</option>
+                                    </select>
                                     <button id="measurement-clear" class="btn-danger measurement-clear-btn" type="button">Reset</button>
                                 </div>
                             </div>
@@ -649,17 +659,86 @@
                                 <div class="measurement-peq-panel-header">
                                     <div>
                                         <h4>PEQ assistant</h4>
-                                        <p>Sketch up to 4 temporary filters here, then transfer them into Create PEQ Preset.</p>
+                                        <p>Sketch up to 4 temporary filters, stage L/R, then create a PEQ preset directly.</p>
                                     </div>
                                 </div>
                                 <div id="measurement-peq-chips" class="measurement-peq-chips"></div>
                                 <div id="measurement-peq-editor" class="measurement-peq-editor"></div>
+                                <div id="measurement-peq-draft-summary" class="measurement-convolver-summary"></div>
+                                <div class="field-group">
+                                    <label for="measurement-peq-preset-name">Preset Name</label>
+                                    <input id="measurement-peq-preset-name" class="url-input" type="text" placeholder="Take L/R/Both to generate a name" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+                                </div>
                                 <div class="measurement-peq-take-row">
                                     <button id="measurement-peq-take-left" class="btn-secondary" type="button">Take L</button>
                                     <button id="measurement-peq-take-right" class="btn-secondary" type="button">Take R</button>
                                     <button id="measurement-peq-take-both" class="btn-secondary" type="button">Take Both</button>
+                                    <button id="measurement-peq-create" class="btn-primary" type="button">Create PEQ Preset</button>
                                 </div>
                                 <div id="measurement-peq-take-feedback" class="measurement-peq-take-feedback" aria-live="polite"></div>
+                            </section>
+                            <section id="measurement-convolver-panel" class="measurement-peq-panel measurement-convolver-panel hidden" aria-label="Measurement Convolver assistant" tabindex="-1">
+                                <div class="measurement-peq-panel-header">
+                                    <div>
+                                        <h4>Convolver assistant</h4>
+                                        <p>Experimental FIR correction from the selected measurement range.</p>
+                                    </div>
+                                </div>
+                                <div class="measurement-convolver-grid">
+                                    <div class="field-group">
+                                        <label for="measurement-convolver-target">Target Curve</label>
+                                        <select id="measurement-convolver-target" class="url-input" data-measurement-convolver-field="targetCurve"></select>
+                                    </div>
+                                    <div class="field-group">
+                                        <label for="measurement-convolver-range-start">Range Start Hz</label>
+                                        <input id="measurement-convolver-range-start" class="url-input" type="number" min="20" max="20000" step="1" data-measurement-convolver-field="rangeStartHz">
+                                    </div>
+                                    <div class="field-group">
+                                        <label for="measurement-convolver-range-end">Range End Hz</label>
+                                        <input id="measurement-convolver-range-end" class="url-input" type="number" min="20" max="20000" step="1" data-measurement-convolver-field="rangeEndHz">
+                                    </div>
+                                    <div class="field-group">
+                                        <label for="measurement-convolver-max-boost">Max Boost</label>
+                                        <select id="measurement-convolver-max-boost" class="url-input" data-measurement-convolver-field="maxBoostDb">
+                                            <option value="0">Cuts only / 0 dB</option>
+                                            <option value="3">Safe / +3 dB</option>
+                                            <option value="6">Normal / +6 dB</option>
+                                            <option value="9">Strong / +9 dB</option>
+                                        </select>
+                                    </div>
+                                    <div class="field-group">
+                                        <label for="measurement-convolver-sample-rate">Sample Rate</label>
+                                        <select id="measurement-convolver-sample-rate" class="url-input" data-measurement-convolver-field="sampleRate">
+                                            <option value="44100">44.1 kHz</option>
+                                            <option value="48000">48 kHz</option>
+                                            <option value="88200">88.2 kHz</option>
+                                            <option value="96000">96 kHz</option>
+                                            <option value="176400">176.4 kHz</option>
+                                            <option value="192000">192 kHz</option>
+                                        </select>
+                                    </div>
+                                    <div class="field-group">
+                                        <label for="measurement-convolver-quality">Type</label>
+                                        <select id="measurement-convolver-quality" class="url-input" data-measurement-convolver-field="quality">
+                                            <option value="linear_4096">Linear FIR 4096 taps</option>
+                                            <option value="linear_8192">Linear FIR 8192 taps</option>
+                                            <option value="linear_32768">Linear FIR 32768 taps</option>
+                                        </select>
+                                    </div>
+                                </div>
+                                <div id="measurement-convolver-summary" class="measurement-convolver-summary"></div>
+                                <div class="field-group">
+                                    <label for="measurement-convolver-preset-name">Preset Name</label>
+                                    <input id="measurement-convolver-preset-name" class="url-input" type="text" placeholder="Take L/R/Both to generate a name" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+                                </div>
+                                <div id="measurement-convolver-warnings" class="measurement-convolver-warnings" aria-live="polite"></div>
+                                <div class="measurement-peq-take-row">
+                                    <button id="measurement-convolver-take-left" class="btn-secondary" type="button">Take L</button>
+                                    <button id="measurement-convolver-take-right" class="btn-secondary" type="button">Take R</button>
+                                    <button id="measurement-convolver-take-both" class="btn-secondary" type="button">Take Both</button>
+                                    <button id="measurement-convolver-create" class="btn-primary" type="button">Create Convolver Preset</button>
+                                </div>
+                                <div id="measurement-convolver-feedback" class="measurement-peq-take-feedback" aria-live="polite"></div>
                             </section>
                         </section>
                         <section class="effects-card measurement-card measurement-card-list">
@@ -732,6 +811,6 @@
     <!-- Toast notifications -->
     <div id="toast-container" class="toast-container"></div>
 
-    <script src="/static/app.js?v=0.5.2-peq-channel-remove"></script>
+    <script src="/static/app.js?v=0.5.2-mobile-name-v2"></script>
 </body>
 </html>
