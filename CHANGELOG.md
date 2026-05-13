@@ -3,6 +3,7 @@
 ## 0.6.1 (2026-05-13)
 - Added optional USB serial amplifier-controller support for status monitoring and input/auto-mode control.
 - Added a measurement convolver DSP guard layer with explicit Max Cut and optional Dip Guard controls, split FIR type/tap selection, 2048/16384 tap options, and a Linear phase 8192 default.
+- Split measurement/convolver DSP helpers into a standalone browser-loadable helper file with a lightweight smoke test.
 - Added Arch/Manjaro installer support via pacman, including Arch package names for Python, PipeWire, Bluetooth, Flatpak, and playback dependencies.
 - Made LAN IP detection portable on systems where `hostname -I` is unavailable by falling back to `ip route` / `ip addr` discovery.
 - Extended the optional system package update helper to support pacman-based systems.
