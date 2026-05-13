@@ -3401,22 +3401,85 @@ def _resolve_effects_extras(extras: dict | None = None) -> dict:
         return easyeffects_manager.load_global_extras()
     return easyeffects_manager.normalize_effects_extras(extras)
 
-@app.get("/api/easyeffects/extras")
-async def get_easyeffects_extras():
+
+def _require_easyeffects_manager():
     global easyeffects_manager
     if not easyeffects_manager:
         raise HTTPException(status_code=503, detail="EasyEffects manager not available")
+    return easyeffects_manager
+
+
+def _effects_extras_from_form(
+    *,
+    limiter_enabled: bool,
+    headroom_enabled: bool,
+    headroom_gain_db: float,
+    autogain_enabled: bool,
+    autogain_target_db: float,
+    delay_enabled: bool,
+    delay_left_ms: float,
+    delay_right_ms: float,
+    tone_effect_enabled: bool,
+    tone_effect_mode: str,
+    bass_enabled: bool | None = None,
+    bass_amount: float | None = None,
+) -> dict:
+    extras = {
+        "limiter": {"enabled": limiter_enabled},
+        "headroom": {"enabled": headroom_enabled, "params": {"gainDb": headroom_gain_db}},
+        "autogain": {"enabled": autogain_enabled, "params": {"targetDb": autogain_target_db}},
+        "delay": {
+            "enabled": delay_enabled,
+            "params": {"leftMs": delay_left_ms, "rightMs": delay_right_ms},
+        },
+        "tone_effect": {"enabled": tone_effect_enabled, "mode": tone_effect_mode},
+    }
+    if bass_enabled is not None or bass_amount is not None:
+        extras["bass_enhancer"] = {
+            "enabled": bool(bass_enabled),
+            "params": {"amount": 0.0 if bass_amount is None else bass_amount},
+        }
+    return _resolve_effects_extras(extras)
+
+
+async def _finish_easyeffects_preset_mutation(
+    *,
+    load_after_create: bool,
+    preset_name: str,
+    refresh_reason: str,
+    refresh_only_when_loaded: bool = False,
+) -> dict:
+    ee_manager = _require_easyeffects_manager()
+    if load_after_create:
+        ee_manager.load_preset(preset_name)
+    status = ee_manager.get_status()
+    await manager.broadcast({"type": "easyeffects", "data": status})
+    if load_after_create or not refresh_only_when_loaded:
+        schedule_peak_monitor_refresh_after_effects_change(refresh_reason)
+    return status
+
+
+def _raise_easyeffects_http_error(exc: Exception) -> None:
+    if isinstance(exc, FileNotFoundError):
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if isinstance(exc, ValueError):
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if isinstance(exc, RuntimeError):
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    raise exc
+
+@app.get("/api/easyeffects/extras")
+async def get_easyeffects_extras():
+    ee_manager = _require_easyeffects_manager()
     return {
         "status": "ok",
-        "extras": easyeffects_manager.load_global_extras(),
-        "excluded_presets": sorted(easyeffects_manager.EXCLUDED_GLOBAL_EXTRAS_PRESETS),
+        "extras": ee_manager.load_global_extras(),
+        "excluded_presets": sorted(ee_manager.EXCLUDED_GLOBAL_EXTRAS_PRESETS),
     }
 
 @app.post("/api/easyeffects/extras")
 async def save_easyeffects_extras(request: Request):
-    global easyeffects_manager
-    if not easyeffects_manager:
-        raise HTTPException(status_code=503, detail="EasyEffects manager not available")
+    ee_manager = _require_easyeffects_manager()
 
     try:
         body = await request.json()
@@ -3424,16 +3487,16 @@ async def save_easyeffects_extras(request: Request):
         raise HTTPException(status_code=400, detail="Invalid JSON body")
 
     extras = _resolve_effects_extras(_parse_effects_extras_from_json(body))
-    result = easyeffects_manager.apply_global_extras_to_all_presets(extras)
+    result = ee_manager.apply_global_extras_to_all_presets(extras)
 
-    active_preset = easyeffects_manager.get_active_preset()
-    if active_preset and active_preset not in easyeffects_manager.EXCLUDED_GLOBAL_EXTRAS_PRESETS:
+    active_preset = ee_manager.get_active_preset()
+    if active_preset and active_preset not in ee_manager.EXCLUDED_GLOBAL_EXTRAS_PRESETS:
         try:
-            easyeffects_manager.load_preset(active_preset)
+            ee_manager.load_preset(active_preset)
         except Exception as e:
             logger.warning("Failed to reload active preset after extras update: %s", e)
 
-    status = easyeffects_manager.get_status()
+    status = ee_manager.get_status()
     await manager.broadcast({"type": "easyeffects", "data": status})
     schedule_peak_monitor_refresh_after_effects_change("global-extras-update")
     return {
@@ -3445,10 +3508,7 @@ async def save_easyeffects_extras(request: Request):
 
 @app.get("/api/easyeffects/presets")
 async def list_easyeffects_presets():
-    global easyeffects_manager
-    if not easyeffects_manager:
-        raise HTTPException(status_code=503, detail="EasyEffects manager not available")
-    return easyeffects_manager.get_status()
+    return _require_easyeffects_manager().get_status()
 
 
 @app.get("/api/easyeffects/presets/{preset_name}/file")
@@ -3715,30 +3775,26 @@ async def delete_measurement(measurement_id: str):
 
 @app.post("/api/easyeffects/compare")
 async def save_easyeffects_compare(request: Request):
-    global easyeffects_manager
-    if not easyeffects_manager:
-        raise HTTPException(status_code=503, detail="EasyEffects manager not available")
+    ee_manager = _require_easyeffects_manager()
 
     try:
         body = await request.json()
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON body")
 
-    compare = easyeffects_manager.save_compare_state({
+    compare = ee_manager.save_compare_state({
         "presetA": body.get("presetA", body.get("preset_a", "")),
         "presetB": body.get("presetB", body.get("preset_b", "")),
         "activeSide": body.get("activeSide", body.get("active_side")),
     })
 
-    status = easyeffects_manager.get_status()
+    status = ee_manager.get_status()
     await manager.broadcast({"type": "easyeffects", "data": status})
     return {"status": "ok", "compare": compare}
 
 @app.post("/api/easyeffects/presets/combine")
 async def combine_easyeffects_presets(request: Request):
-    global easyeffects_manager
-    if not easyeffects_manager:
-        raise HTTPException(status_code=503, detail="EasyEffects manager not available")
+    ee_manager = _require_easyeffects_manager()
 
     try:
         body = await request.json()
@@ -3758,31 +3814,26 @@ async def combine_easyeffects_presets(request: Request):
         raise HTTPException(status_code=400, detail="presetNames must be an array")
 
     try:
-        created = easyeffects_manager.combine_presets(preset_name, preset_names)
-        if load_after_create:
-            easyeffects_manager.load_preset(created["name"])
-        status = easyeffects_manager.get_status()
-        await manager.broadcast({"type": "easyeffects", "data": status})
-        if load_after_create:
-            schedule_peak_monitor_refresh_after_effects_change("combine-presets")
+        created = ee_manager.combine_presets(preset_name, preset_names)
+        status = await _finish_easyeffects_preset_mutation(
+            load_after_create=load_after_create,
+            preset_name=created["name"],
+            refresh_reason="combine-presets",
+            refresh_only_when_loaded=True,
+        )
         return {
             "status": "ok",
             "preset": created,
             "loaded": bool(load_after_create),
             "active_preset": status.get("active_preset"),
         }
-    except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except RuntimeError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except (FileNotFoundError, ValueError, RuntimeError) as e:
+        _raise_easyeffects_http_error(e)
 
 @app.post("/api/easyeffects/presets/load")
 async def load_easyeffects_preset(request: Request):
-    global easyeffects_manager, easyeffects_preset_load_lock
-    if not easyeffects_manager:
-        raise HTTPException(status_code=503, detail="EasyEffects manager not available")
+    global easyeffects_preset_load_lock
+    ee_manager = _require_easyeffects_manager()
 
     try:
         body = await request.json()
@@ -3798,28 +3849,24 @@ async def load_easyeffects_preset(request: Request):
 
     try:
         async with easyeffects_preset_load_lock:
-            easyeffects_manager.load_preset(preset_name)
-            compare = easyeffects_manager.load_compare_state()
+            ee_manager.load_preset(preset_name)
+            compare = ee_manager.load_compare_state()
             if compare.get("presetA") == preset_name:
                 compare["activeSide"] = "A"
-                easyeffects_manager.save_compare_state(compare)
+                ee_manager.save_compare_state(compare)
             elif compare.get("presetB") == preset_name:
                 compare["activeSide"] = "B"
-                easyeffects_manager.save_compare_state(compare)
-            status = easyeffects_manager.get_status()
+                ee_manager.save_compare_state(compare)
+            status = ee_manager.get_status()
         await manager.broadcast({"type": "easyeffects", "data": status})
         schedule_peak_monitor_refresh_after_effects_change("preset-load")
         return {"status": "ok", "active_preset": preset_name, "compare": status.get("compare")}
-    except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except RuntimeError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except (FileNotFoundError, RuntimeError) as e:
+        _raise_easyeffects_http_error(e)
 
 @app.post("/api/easyeffects/irs/upload")
 async def upload_easyeffects_ir(file: UploadFile = File(...)):
-    global easyeffects_manager
-    if not easyeffects_manager:
-        raise HTTPException(status_code=503, detail="EasyEffects manager not available")
+    ee_manager = _require_easyeffects_manager()
 
     tmp_path = None
     try:
@@ -3829,8 +3876,8 @@ async def upload_easyeffects_ir(file: UploadFile = File(...)):
             tmp.write(await file.read())
             tmp_path = Path(tmp.name)
 
-        uploaded = easyeffects_manager.upload_ir(tmp_path, file.filename or tmp_path.name)
-        status = easyeffects_manager.get_status()
+        uploaded = ee_manager.upload_ir(tmp_path, file.filename or tmp_path.name)
+        status = ee_manager.get_status()
         await manager.broadcast({"type": "easyeffects", "data": status})
         schedule_peak_monitor_refresh_after_effects_change("ir-upload")
         return {"status": "ok", "ir": uploaded}
@@ -3859,58 +3906,52 @@ async def create_convolver_preset(
     tone_effect_enabled: bool = Form(False),
     tone_effect_mode: str = Form("crystalizer"),
 ):
-    global easyeffects_manager
-    if not easyeffects_manager:
-        raise HTTPException(status_code=503, detail="EasyEffects manager not available")
+    ee_manager = _require_easyeffects_manager()
 
-    extras = _resolve_effects_extras({
-        "limiter": {"enabled": limiter_enabled},
-        "headroom": {"enabled": headroom_enabled, "params": {"gainDb": headroom_gain_db}},
-        "autogain": {"enabled": autogain_enabled, "params": {"targetDb": autogain_target_db}},
-        "delay": {
-            "enabled": delay_enabled,
-            "params": {"leftMs": delay_left_ms, "rightMs": delay_right_ms},
-        },
-        "tone_effect": {"enabled": tone_effect_enabled, "mode": tone_effect_mode},
-    })
+    extras = _effects_extras_from_form(
+        limiter_enabled=limiter_enabled,
+        headroom_enabled=headroom_enabled,
+        headroom_gain_db=headroom_gain_db,
+        autogain_enabled=autogain_enabled,
+        autogain_target_db=autogain_target_db,
+        delay_enabled=delay_enabled,
+        delay_left_ms=delay_left_ms,
+        delay_right_ms=delay_right_ms,
+        tone_effect_enabled=tone_effect_enabled,
+        tone_effect_mode=tone_effect_mode,
+    )
 
     try:
-        created = easyeffects_manager.create_convolver_preset(preset_name, ir_filename, extras=extras)
-        if load_after_create:
-            easyeffects_manager.load_preset(created["name"])
-        status = easyeffects_manager.get_status()
-        await manager.broadcast({"type": "easyeffects", "data": status})
-        schedule_peak_monitor_refresh_after_effects_change("create-convolver")
+        created = ee_manager.create_convolver_preset(preset_name, ir_filename, extras=extras)
+        status = await _finish_easyeffects_preset_mutation(
+            load_after_create=load_after_create,
+            preset_name=created["name"],
+            refresh_reason="create-convolver",
+        )
         return {
             "status": "ok",
             "preset": created,
             "loaded": bool(load_after_create),
             "active_preset": status.get("active_preset"),
         }
-    except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except RuntimeError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except (FileNotFoundError, ValueError, RuntimeError) as e:
+        _raise_easyeffects_http_error(e)
 
 @app.post("/api/easyeffects/presets/import-json")
 async def import_easyeffects_preset_json(
     file: UploadFile = File(...),
     load_after_create: bool = Form(False),
 ):
-    global easyeffects_manager
-    if not easyeffects_manager:
-        raise HTTPException(status_code=503, detail="EasyEffects manager not available")
+    ee_manager = _require_easyeffects_manager()
 
     try:
         content = (await file.read()).decode("utf-8-sig")
-        created = easyeffects_manager.import_preset_json(file.filename or "preset.json", content)
-        if load_after_create:
-            easyeffects_manager.load_preset(created["name"])
-        status = easyeffects_manager.get_status()
-        await manager.broadcast({"type": "easyeffects", "data": status})
-        schedule_peak_monitor_refresh_after_effects_change("import-preset-json")
+        created = ee_manager.import_preset_json(file.filename or "preset.json", content)
+        status = await _finish_easyeffects_preset_mutation(
+            load_after_create=load_after_create,
+            preset_name=created["name"],
+            refresh_reason="import-preset-json",
+        )
         return {
             "status": "ok",
             "preset": created,
@@ -3919,19 +3960,15 @@ async def import_easyeffects_preset_json(
         }
     except UnicodeDecodeError as e:
         raise HTTPException(status_code=400, detail=f"Preset JSON is not valid UTF-8 text: {e}")
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except RuntimeError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except (ValueError, RuntimeError) as e:
+        _raise_easyeffects_http_error(e)
 
 @app.post("/api/easyeffects/presets/import-bundle")
 async def import_easyeffects_preset_bundle(
     file: UploadFile = File(...),
     load_after_create: bool = Form(False),
 ):
-    global easyeffects_manager
-    if not easyeffects_manager:
-        raise HTTPException(status_code=503, detail="EasyEffects manager not available")
+    ee_manager = _require_easyeffects_manager()
 
     with tempfile.NamedTemporaryFile(prefix="fxroute-preset-import-", suffix=".zip", delete=False) as temp_file:
         temp_zip_path = Path(temp_file.name)
@@ -3961,9 +3998,9 @@ async def import_easyeffects_preset_bundle(
                 preset_payload = json.loads(preset_text)
             except Exception as e:
                 raise HTTPException(status_code=400, detail=f"Preset JSON is invalid: {e}") from e
-            kernel_names = easyeffects_manager._extract_kernel_names_from_payload(preset_payload if isinstance(preset_payload, dict) else None)
+            kernel_names = ee_manager._extract_kernel_names_from_payload(preset_payload if isinstance(preset_payload, dict) else None)
 
-            easyeffects_manager.irs_dir.mkdir(parents=True, exist_ok=True)
+            ee_manager.irs_dir.mkdir(parents=True, exist_ok=True)
             imported_irs = []
             ir_members_by_stem = {}
             for member, rel in safe_members:
@@ -3978,22 +4015,22 @@ async def import_easyeffects_preset_bundle(
                     ir_members_by_stem[stem] = (member, clean_ir_name)
 
             for _, (member, clean_ir_name) in sorted(ir_members_by_stem.items()):
-                destination = easyeffects_manager.irs_dir / clean_ir_name
+                destination = ee_manager.irs_dir / clean_ir_name
                 with archive.open(member) as source, destination.open("wb") as target:
                     shutil.copyfileobj(source, target)
                 imported_irs.append(destination.name)
 
-            missing_kernels = [name for name in sorted(kernel_names) if not easyeffects_manager._find_ir_paths_for_kernel_name(name)]
+            missing_kernels = [name for name in sorted(kernel_names) if not ee_manager._find_ir_paths_for_kernel_name(name)]
             if missing_kernels:
                 raise HTTPException(status_code=400, detail=f"Preset bundle is missing IR file(s): {', '.join(missing_kernels)}")
 
             preset_filename = preset_rel.name if preset_rel.name.lower() != "preset.json" else (Path(file.filename or "preset.json").stem + ".json")
-            created = easyeffects_manager.import_preset_json(preset_filename, preset_text)
-            if load_after_create:
-                easyeffects_manager.load_preset(created["name"])
-            status = easyeffects_manager.get_status()
-            await manager.broadcast({"type": "easyeffects", "data": status})
-            schedule_peak_monitor_refresh_after_effects_change("import-preset-bundle")
+            created = ee_manager.import_preset_json(preset_filename, preset_text)
+            status = await _finish_easyeffects_preset_mutation(
+                load_after_create=load_after_create,
+                preset_name=created["name"],
+                refresh_reason="import-preset-bundle",
+            )
             return {
                 "status": "ok",
                 "preset": created,
@@ -4005,10 +4042,8 @@ async def import_easyeffects_preset_bundle(
         raise HTTPException(status_code=400, detail="Invalid ZIP archive")
     except UnicodeDecodeError as e:
         raise HTTPException(status_code=400, detail=f"Preset JSON is not valid UTF-8 text: {e}")
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except RuntimeError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except (ValueError, RuntimeError) as e:
+        _raise_easyeffects_http_error(e)
     finally:
         temp_zip_path.unlink(missing_ok=True)
 
@@ -4030,24 +4065,22 @@ async def create_convolver_preset_with_ir(
     tone_effect_mode: str = Form("crystalizer"),
     file: UploadFile = File(...),
 ):
-    global easyeffects_manager
-    if not easyeffects_manager:
-        raise HTTPException(status_code=503, detail="EasyEffects manager not available")
+    ee_manager = _require_easyeffects_manager()
 
-    extras = _resolve_effects_extras({
-        "limiter": {"enabled": limiter_enabled},
-        "headroom": {"enabled": headroom_enabled, "params": {"gainDb": headroom_gain_db}},
-        "autogain": {"enabled": autogain_enabled, "params": {"targetDb": autogain_target_db}},
-        "delay": {
-            "enabled": delay_enabled,
-            "params": {"leftMs": delay_left_ms, "rightMs": delay_right_ms},
-        },
-        "bass_enhancer": {
-            "enabled": bass_enabled,
-            "params": {"amount": bass_amount},
-        },
-        "tone_effect": {"enabled": tone_effect_enabled, "mode": tone_effect_mode},
-    })
+    extras = _effects_extras_from_form(
+        limiter_enabled=limiter_enabled,
+        headroom_enabled=headroom_enabled,
+        headroom_gain_db=headroom_gain_db,
+        autogain_enabled=autogain_enabled,
+        autogain_target_db=autogain_target_db,
+        delay_enabled=delay_enabled,
+        delay_left_ms=delay_left_ms,
+        delay_right_ms=delay_right_ms,
+        bass_enabled=bass_enabled,
+        bass_amount=bass_amount,
+        tone_effect_enabled=tone_effect_enabled,
+        tone_effect_mode=tone_effect_mode,
+    )
 
     tmp_path = None
     try:
@@ -4057,17 +4090,17 @@ async def create_convolver_preset_with_ir(
             tmp.write(await file.read())
             tmp_path = Path(tmp.name)
 
-        created = easyeffects_manager.create_convolver_preset_with_upload(
+        created = ee_manager.create_convolver_preset_with_upload(
             preset_name,
             tmp_path,
             file.filename or tmp_path.name,
             extras=extras,
         )
-        if load_after_create:
-            easyeffects_manager.load_preset(created["preset"]["name"])
-        status = easyeffects_manager.get_status()
-        await manager.broadcast({"type": "easyeffects", "data": status})
-        schedule_peak_monitor_refresh_after_effects_change("create-with-ir")
+        status = await _finish_easyeffects_preset_mutation(
+            load_after_create=load_after_create,
+            preset_name=created["preset"]["name"],
+            refresh_reason="create-with-ir",
+        )
         return {
             "status": "ok",
             "ir": created["ir"],
@@ -4075,12 +4108,8 @@ async def create_convolver_preset_with_ir(
             "loaded": bool(load_after_create),
             "active_preset": status.get("active_preset"),
         }
-    except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except RuntimeError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except (FileNotFoundError, ValueError, RuntimeError) as e:
+        _raise_easyeffects_http_error(e)
     except Exception as e:
         logger.error(f"EasyEffects create-with-ir failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -4090,9 +4119,7 @@ async def create_convolver_preset_with_ir(
 
 @app.post("/api/easyeffects/presets/create-peq")
 async def create_peq_preset(request: Request):
-    global easyeffects_manager
-    if not easyeffects_manager:
-        raise HTTPException(status_code=503, detail="EasyEffects manager not available")
+    ee_manager = _require_easyeffects_manager()
 
     try:
         body = await request.json()
@@ -4113,24 +4140,20 @@ async def create_peq_preset(request: Request):
         raise HTTPException(status_code=400, detail="peq is required")
 
     try:
-        created = easyeffects_manager.create_peq_preset(preset_name, peq_definition, extras=extras)
-        if load_after_create:
-            easyeffects_manager.load_preset(created["name"])
-        status = easyeffects_manager.get_status()
-        await manager.broadcast({"type": "easyeffects", "data": status})
-        schedule_peak_monitor_refresh_after_effects_change("create-peq")
+        created = ee_manager.create_peq_preset(preset_name, peq_definition, extras=extras)
+        status = await _finish_easyeffects_preset_mutation(
+            load_after_create=load_after_create,
+            preset_name=created["name"],
+            refresh_reason="create-peq",
+        )
         return {
             "status": "ok",
             "preset": created,
             "loaded": bool(load_after_create),
             "active_preset": status.get("active_preset"),
         }
-    except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except RuntimeError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except (FileNotFoundError, ValueError, RuntimeError) as e:
+        _raise_easyeffects_http_error(e)
 
 @app.post("/api/easyeffects/presets/import-rew-peq")
 async def import_rew_peq_preset(
@@ -4150,9 +4173,7 @@ async def import_rew_peq_preset(
     tone_effect_mode: str = Form("crystalizer"),
     file: UploadFile = File(...),
 ):
-    global easyeffects_manager
-    if not easyeffects_manager:
-        raise HTTPException(status_code=503, detail="EasyEffects manager not available")
+    ee_manager = _require_easyeffects_manager()
 
     try:
         content = await file.read()
@@ -4163,38 +4184,36 @@ async def import_rew_peq_preset(
     if not preset_name.strip():
         raise HTTPException(status_code=400, detail="preset_name is required")
 
-    extras = _resolve_effects_extras({
-        "limiter": {"enabled": limiter_enabled},
-        "headroom": {"enabled": headroom_enabled, "params": {"gainDb": headroom_gain_db}},
-        "autogain": {"enabled": autogain_enabled, "params": {"targetDb": autogain_target_db}},
-        "delay": {
-            "enabled": delay_enabled,
-            "params": {"leftMs": delay_left_ms, "rightMs": delay_right_ms},
-        },
-        "bass_enhancer": {
-            "enabled": bass_enabled,
-            "params": {"amount": bass_amount},
-        },
-        "tone_effect": {"enabled": tone_effect_enabled, "mode": tone_effect_mode},
-    })
+    extras = _effects_extras_from_form(
+        limiter_enabled=limiter_enabled,
+        headroom_enabled=headroom_enabled,
+        headroom_gain_db=headroom_gain_db,
+        autogain_enabled=autogain_enabled,
+        autogain_target_db=autogain_target_db,
+        delay_enabled=delay_enabled,
+        delay_left_ms=delay_left_ms,
+        delay_right_ms=delay_right_ms,
+        bass_enabled=bass_enabled,
+        bass_amount=bass_amount,
+        tone_effect_enabled=tone_effect_enabled,
+        tone_effect_mode=tone_effect_mode,
+    )
 
     try:
-        created = easyeffects_manager.create_peq_preset_from_rew_text(preset_name, rew_text, extras=extras)
-        if load_after_create:
-            easyeffects_manager.load_preset(created["name"])
-        status = easyeffects_manager.get_status()
-        await manager.broadcast({"type": "easyeffects", "data": status})
-        schedule_peak_monitor_refresh_after_effects_change("import-rew-peq")
+        created = ee_manager.create_peq_preset_from_rew_text(preset_name, rew_text, extras=extras)
+        status = await _finish_easyeffects_preset_mutation(
+            load_after_create=load_after_create,
+            preset_name=created["name"],
+            refresh_reason="import-rew-peq",
+        )
         return {
             "status": "ok",
             "preset": created,
             "loaded": bool(load_after_create),
             "active_preset": status.get("active_preset"),
         }
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except RuntimeError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except (ValueError, RuntimeError) as e:
+        _raise_easyeffects_http_error(e)
 
 @app.post("/api/easyeffects/presets/import-filter-dual")
 async def import_dual_filter_preset(
@@ -4217,27 +4236,25 @@ async def import_dual_filter_preset(
     left_file: Optional[UploadFile] = File(None),
     right_file: Optional[UploadFile] = File(None),
 ):
-    global easyeffects_manager
-    if not easyeffects_manager:
-        raise HTTPException(status_code=503, detail="EasyEffects manager not available")
+    ee_manager = _require_easyeffects_manager()
 
     if not preset_name.strip():
         raise HTTPException(status_code=400, detail="preset_name is required")
 
-    extras = _resolve_effects_extras({
-        "limiter": {"enabled": limiter_enabled},
-        "headroom": {"enabled": headroom_enabled, "params": {"gainDb": headroom_gain_db}},
-        "autogain": {"enabled": autogain_enabled, "params": {"targetDb": autogain_target_db}},
-        "delay": {
-            "enabled": delay_enabled,
-            "params": {"leftMs": delay_left_ms, "rightMs": delay_right_ms},
-        },
-        "bass_enhancer": {
-            "enabled": bass_enabled,
-            "params": {"amount": bass_amount},
-        },
-        "tone_effect": {"enabled": tone_effect_enabled, "mode": tone_effect_mode},
-    })
+    extras = _effects_extras_from_form(
+        limiter_enabled=limiter_enabled,
+        headroom_enabled=headroom_enabled,
+        headroom_gain_db=headroom_gain_db,
+        autogain_enabled=autogain_enabled,
+        autogain_target_db=autogain_target_db,
+        delay_enabled=delay_enabled,
+        delay_left_ms=delay_left_ms,
+        delay_right_ms=delay_right_ms,
+        bass_enabled=bass_enabled,
+        bass_amount=bass_amount,
+        tone_effect_enabled=tone_effect_enabled,
+        tone_effect_mode=tone_effect_mode,
+    )
 
     def _detect_upload_kind(upload: Optional[UploadFile]) -> Optional[str]:
         if not upload or not (upload.filename or "").strip():
@@ -4270,7 +4287,7 @@ async def import_dual_filter_preset(
             right_tmp = await _save_temp(right_file)
             tmp_paths.extend([left_tmp, right_tmp])
 
-            created = easyeffects_manager.create_convolver_preset_with_dual_uploads(
+            created = ee_manager.create_convolver_preset_with_dual_uploads(
                 preset_name,
                 left_tmp,
                 left_file.filename or left_tmp.name,
@@ -4292,7 +4309,7 @@ async def import_dual_filter_preset(
             if not left_text or not right_text:
                 raise HTTPException(status_code=400, detail="Provide Left and Right REW text, or Left and Right .irs/.wav files")
 
-            created = easyeffects_manager.create_dual_peq_preset_from_rew_texts(
+            created = ee_manager.create_dual_peq_preset_from_rew_texts(
                 preset_name,
                 left_text,
                 right_text,
@@ -4300,32 +4317,29 @@ async def import_dual_filter_preset(
             )
             import_kind = "dual-peq"
 
-        if load_after_create:
-            easyeffects_manager.load_preset(created["preset"]["name"] if import_kind == "dual-convolver" else created["name"])
-        status = easyeffects_manager.get_status()
-        await manager.broadcast({"type": "easyeffects", "data": status})
-        schedule_peak_monitor_refresh_after_effects_change("import-filter-dual")
+        created_preset = created["preset"] if import_kind == "dual-convolver" else created
+        status = await _finish_easyeffects_preset_mutation(
+            load_after_create=load_after_create,
+            preset_name=created_preset["name"],
+            refresh_reason="import-filter-dual",
+        )
         return {
             "status": "ok",
             "import_kind": import_kind,
-            "preset": created["preset"] if import_kind == "dual-convolver" else created,
+            "preset": created_preset,
             "ir": created.get("ir") if isinstance(created, dict) else None,
             "loaded": bool(load_after_create),
             "active_preset": status.get("active_preset"),
         }
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except RuntimeError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except (ValueError, RuntimeError) as e:
+        _raise_easyeffects_http_error(e)
     finally:
         for tmp_path in tmp_paths:
             tmp_path.unlink(missing_ok=True)
 
 @app.post("/api/easyeffects/presets/delete")
 async def delete_easyeffects_preset(request: Request):
-    global easyeffects_manager
-    if not easyeffects_manager:
-        raise HTTPException(status_code=503, detail="EasyEffects manager not available")
+    ee_manager = _require_easyeffects_manager()
 
     try:
         body = await request.json()
@@ -4337,15 +4351,13 @@ async def delete_easyeffects_preset(request: Request):
         raise HTTPException(status_code=400, detail="preset_name is required")
 
     try:
-        easyeffects_manager.delete_preset(preset_name)
-        status = easyeffects_manager.get_status()
+        ee_manager.delete_preset(preset_name)
+        status = ee_manager.get_status()
         await manager.broadcast({"type": "easyeffects", "data": status})
         schedule_peak_monitor_refresh_after_effects_change("preset-delete")
         return {"status": "ok", "deleted": preset_name}
-    except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except (FileNotFoundError, ValueError) as e:
+        _raise_easyeffects_http_error(e)
 
 @app.post("/api/library/refresh")
 async def refresh_library():
