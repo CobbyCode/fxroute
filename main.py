@@ -497,6 +497,7 @@ from playlists import delete_playlist, get_playlists, save_playlist
 from library import LibraryScanner
 from downloader import Downloader
 from easyeffects import EasyEffectsManager
+from hardware_controller import HardwareController
 from measurement import MeasurementStore
 from peak_monitor import EasyEffectsPeakMonitor
 from samplerate import (
@@ -544,6 +545,7 @@ downloader = None
 easyeffects_manager = None
 measurement_store = None
 peak_monitor = None
+hardware_controller = None
 peak_monitor_playback_armed = False
 peak_monitor_transition_lock = None
 peak_monitor_context_signature = None
@@ -2354,7 +2356,7 @@ async def _spotify_playerctl_watch_loop() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan: startup and shutdown."""
-    global settings, player_instance, library_scanner, downloader, easyeffects_manager, measurement_store, peak_monitor, peak_monitor_playback_armed, peak_monitor_transition_lock, peak_monitor_context_signature, easyeffects_preset_load_lock, source_transition_lock, external_input_loopback_module_id, external_input_loopback_source_name, bluetooth_input_source_name, bluetooth_monitor_task, bluetooth_agent_process, spotify_playerctl_watch_task, spotify_playerctl_detect_task, spotify_playerctl_last_trigger_at, spotify_samplerate_recovery_lock, spotify_samplerate_recovery_active, current_source_mode, latest_spotify_state
+    global settings, player_instance, library_scanner, downloader, easyeffects_manager, measurement_store, peak_monitor, hardware_controller, peak_monitor_playback_armed, peak_monitor_transition_lock, peak_monitor_context_signature, easyeffects_preset_load_lock, source_transition_lock, external_input_loopback_module_id, external_input_loopback_source_name, bluetooth_input_source_name, bluetooth_monitor_task, bluetooth_agent_process, spotify_playerctl_watch_task, spotify_playerctl_detect_task, spotify_playerctl_last_trigger_at, spotify_samplerate_recovery_lock, spotify_samplerate_recovery_active, current_source_mode, latest_spotify_state
 
     # Startup
     logger.info("Starting FXRoute...")
@@ -2387,6 +2389,9 @@ async def lifespan(app: FastAPI):
 
         measurement_store = MeasurementStore()
         logger.info("Measurement store initialized: %s", measurement_store.measurements_dir)
+
+        hardware_controller = HardwareController(device_path=settings.HARDWARE_CONTROLLER_DEVICE)
+        logger.info("Optional hardware controller initialized")
 
         peak_monitor = EasyEffectsPeakMonitor(on_change=on_peak_monitor_change)
         peak_monitor_playback_armed = False
@@ -2468,6 +2473,9 @@ async def lifespan(app: FastAPI):
     if peak_monitor:
         await peak_monitor.stop()
         logger.info("EasyEffects output peak monitor stopped")
+    if hardware_controller:
+        hardware_controller.close()
+        logger.info("Hardware controller closed")
 
 app = FastAPI(lifespan=lifespan)
 
@@ -3217,6 +3225,44 @@ async def audio_samplerate_status():
     except Exception as exc:
         logger.warning("Active app samplerate drift repair failed: %s", exc)
     return get_samplerate_status()
+
+
+@app.get("/api/hardware/status")
+async def hardware_status():
+    if hardware_controller is None:
+        return {"available": False, "connected": False, "status": {}, "notes": ["hardware controller not initialized"]}
+    return await asyncio.to_thread(hardware_controller.get_status)
+
+
+async def _run_hardware_command(command: str):
+    if hardware_controller is None:
+        return {"available": False, "connected": False, "status": {}, "notes": ["hardware controller not initialized"]}
+    return await asyncio.to_thread(hardware_controller.command, command)
+
+
+@app.post("/api/hardware/input/rca")
+async def hardware_input_rca():
+    return await _run_hardware_command("SET INPUT RCA")
+
+
+@app.post("/api/hardware/input/xlr")
+async def hardware_input_xlr():
+    return await _run_hardware_command("SET INPUT XLR")
+
+
+@app.post("/api/hardware/input/press")
+async def hardware_input_press():
+    return await _run_hardware_command("PRESS INPUT")
+
+
+@app.post("/api/hardware/auto/on")
+async def hardware_auto_on():
+    return await _run_hardware_command("AUTO ON")
+
+
+@app.post("/api/hardware/auto/off")
+async def hardware_auto_off():
+    return await _run_hardware_command("AUTO OFF")
 
 
 @app.get("/api/audio/outputs")

@@ -47,6 +47,10 @@ class Settings(BaseSettings):
     MAX_DOWNLOADS: int = Field(1, description="Maximum concurrent downloads (V1=1)")
     HOST: str = Field("0.0.0.0", description="Bind host")
     PORT: int = Field(8000, description="Bind port")
+    HARDWARE_CONTROLLER_DEVICE: Optional[str] = Field(
+        None,
+        description="Optional USB serial path for an FXRoute hardware controller, e.g. /dev/ttyACM0",
+    )
 
     # Derived
     @property

@@ -147,6 +147,19 @@ let state = {
             notes: [],
             pending: false,
         },
+        hardware: {
+            available: true,
+            connected: false,
+            device: null,
+            status: {},
+            raw: null,
+            input: null,
+            power: null,
+            trigger: null,
+            auto: null,
+            notes: [],
+            pending: false,
+        },
     },
     wsConnected: false,
 };
@@ -215,6 +228,13 @@ const elements = {
     settingsSourceSelect: document.getElementById('settings-source-select'),
     settingsSourceModeHint: document.getElementById('settings-source-mode-hint'),
     settingsBluetoothStatus: document.getElementById('settings-bluetooth-status'),
+    settingsHardwareSummary: document.getElementById('settings-hardware-summary'),
+    settingsHardwareDetail: document.getElementById('settings-hardware-detail'),
+    settingsHardwareRcaBtn: document.getElementById('settings-hardware-rca'),
+    settingsHardwareXlrBtn: document.getElementById('settings-hardware-xlr'),
+    settingsHardwarePressBtn: document.getElementById('settings-hardware-press'),
+    settingsHardwareAutoOnBtn: document.getElementById('settings-hardware-auto-on'),
+    settingsHardwareAutoOffBtn: document.getElementById('settings-hardware-auto-off'),
     settingsCertificateLink: document.getElementById('settings-certificate-link'),
     tabs: document.querySelectorAll('.tab-btn'),
     tabPanels: document.querySelectorAll('.tab-panel'),
@@ -722,6 +742,11 @@ function setupSettingsActions() {
             }
         });
     }
+    elements.settingsHardwareRcaBtn?.addEventListener('click', () => runHardwareCommand('/api/hardware/input/rca', 'RCA selected'));
+    elements.settingsHardwareXlrBtn?.addEventListener('click', () => runHardwareCommand('/api/hardware/input/xlr', 'XLR selected'));
+    elements.settingsHardwarePressBtn?.addEventListener('click', () => runHardwareCommand('/api/hardware/input/press', 'Input button pressed'));
+    elements.settingsHardwareAutoOnBtn?.addEventListener('click', () => runHardwareCommand('/api/hardware/auto/on', 'Auto mode enabled'));
+    elements.settingsHardwareAutoOffBtn?.addEventListener('click', () => runHardwareCommand('/api/hardware/auto/off', 'Auto mode disabled'));
     const backdrop = elements.settingsPanel.querySelector('.manage-overlay-backdrop');
     if (backdrop) backdrop.addEventListener('click', () => toggleSettingsPanel(false));
     document.addEventListener('keydown', (event) => {
@@ -746,7 +771,7 @@ function startSettingsStatusPolling() {
             stopSettingsStatusPolling();
             return;
         }
-        void fetchAudioSourceOverview();
+        void Promise.all([fetchAudioSourceOverview(), fetchHardwareStatus()]);
     }, 2500);
 }
 
@@ -762,7 +787,7 @@ function toggleSettingsPanel(forceOpen = null) {
     if (shouldOpen) {
         settingsOutputScanOnFocusDone = false;
         renderSettingsPanel();
-        void Promise.all([fetchAudioOutputOverview(), fetchAudioSourceOverview()]);
+        void Promise.all([fetchAudioOutputOverview(), fetchAudioSourceOverview(), fetchHardwareStatus()]);
         startSettingsStatusPolling();
         elements.settingsCloseBtn?.focus();
     } else {
@@ -807,6 +832,44 @@ function settingsCertificateUrl() {
 
 function isSelectFocused(selectEl) {
     return !!selectEl && document.activeElement === selectEl;
+}
+
+function formatHardwareBool(value, onLabel = 'on', offLabel = 'off') {
+    if (value === true) return onLabel;
+    if (value === false) return offLabel;
+    return 'unknown';
+}
+
+function renderHardwareController() {
+    const hardware = state.settings?.hardware || {};
+    const connected = !!hardware.connected;
+    const status = hardware.status || {};
+    const input = hardware.input || status.INPUT || 'unknown';
+    if (elements.settingsHardwareSummary) {
+        elements.settingsHardwareSummary.textContent = connected
+            ? `Connected${hardware.device ? `: ${hardware.device}` : ''}`
+            : 'Controller not detected.';
+    }
+    if (elements.settingsHardwareDetail) {
+        if (connected) {
+            const trigger = formatHardwareBool(hardware.trigger ?? status.TRIGGER, 'trigger active', 'trigger off');
+            const power = formatHardwareBool(hardware.power ?? status.POWER, 'power on', 'power off');
+            const auto = formatHardwareBool(hardware.auto ?? status.AUTO, 'auto on', 'auto off');
+            elements.settingsHardwareDetail.textContent = `Input: ${input} · ${trigger} · ${power} · ${auto}`;
+        } else {
+            const note = Array.isArray(hardware.notes) && hardware.notes.length ? hardware.notes[0] : 'USB controller is optional.';
+            elements.settingsHardwareDetail.textContent = note;
+        }
+    }
+    [
+        elements.settingsHardwareRcaBtn,
+        elements.settingsHardwareXlrBtn,
+        elements.settingsHardwarePressBtn,
+        elements.settingsHardwareAutoOnBtn,
+        elements.settingsHardwareAutoOffBtn,
+    ].forEach((button) => {
+        if (button) button.disabled = !connected || !!hardware.pending;
+    });
 }
 
 function renderSettingsPanel() {
@@ -880,6 +943,7 @@ function renderSettingsPanel() {
         const bluetoothNote = Array.isArray(bluetooth.notes) && bluetooth.notes.length ? ` · ${bluetooth.notes[0]}` : '';
         elements.settingsBluetoothStatus.textContent = `Bluetooth: ${formatBluetoothModeStatus(bluetooth)}${bluetoothNote}`;
     }
+    renderHardwareController();
     applySourceModeUiState();
 }
 
@@ -1001,6 +1065,67 @@ async function saveAudioSourceSelection(mode, inputKey = '') {
         showToast(error.message || 'Failed to save source mode', 'error');
         void fetchAudioSourceOverview();
     }
+}
+
+function normalizeHardwareStatus(data = {}) {
+    return {
+        available: data.available !== false,
+        connected: !!data.connected,
+        device: data.device || null,
+        status: data.status || {},
+        raw: data.raw || null,
+        input: data.input || data.status?.INPUT || null,
+        power: data.power ?? data.status?.POWER ?? null,
+        trigger: data.trigger ?? data.status?.TRIGGER ?? null,
+        auto: data.auto ?? data.status?.AUTO ?? null,
+        notes: Array.isArray(data.notes) ? data.notes : [],
+        pending: false,
+    };
+}
+
+async function fetchHardwareStatus() {
+    try {
+        const resp = await fetch('/api/hardware/status');
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || 'Failed to fetch hardware status');
+        state.settings.hardware = normalizeHardwareStatus(data);
+    } catch (e) {
+        state.settings.hardware = {
+            available: false,
+            connected: false,
+            device: null,
+            status: {},
+            raw: null,
+            input: null,
+            power: null,
+            trigger: null,
+            auto: null,
+            notes: [e.message || 'Failed to fetch hardware status'],
+            pending: false,
+        };
+    }
+    renderSettingsPanel();
+}
+
+async function runHardwareCommand(endpoint, successMessage) {
+    state.settings.hardware.pending = true;
+    renderSettingsPanel();
+    try {
+        const resp = await fetch(endpoint, { method: 'POST' });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || 'Hardware command failed');
+        state.settings.hardware = normalizeHardwareStatus(data);
+        if (state.settings.hardware.connected) {
+            showToast(successMessage, 'success');
+        } else {
+            showToast('Hardware controller not connected', 'warning');
+        }
+    } catch (e) {
+        state.settings.hardware.pending = false;
+        showToast(e.message || 'Hardware command failed', 'error');
+        void fetchHardwareStatus();
+    }
+    renderSettingsPanel();
 }
 
 async function fetchAudioSourceOverview() {

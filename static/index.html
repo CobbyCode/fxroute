@@ -81,6 +81,23 @@
                         </div>
                     </section>
 
+                    <section class="radio-manage-section settings-section">
+                        <div class="radio-manage-section-header">
+                            <h3>Amplifier Controller</h3>
+                            <p id="settings-hardware-summary">Controller not detected.</p>
+                        </div>
+                        <div class="field-group settings-field-group">
+                            <p id="settings-hardware-detail" class="settings-inline-note">USB controller is optional.</p>
+                            <div class="radio-manage-submit-row">
+                                <button id="settings-hardware-rca" class="btn-secondary" type="button" disabled>RCA</button>
+                                <button id="settings-hardware-xlr" class="btn-secondary" type="button" disabled>XLR</button>
+                                <button id="settings-hardware-press" class="btn-secondary" type="button" disabled>Press Input</button>
+                                <button id="settings-hardware-auto-on" class="btn-secondary" type="button" disabled>Auto On</button>
+                                <button id="settings-hardware-auto-off" class="btn-secondary" type="button" disabled>Auto Off</button>
+                            </div>
+                        </div>
+                    </section>
+
                     <p class="settings-inline-note settings-certificate-note"><a id="settings-certificate-link" href="/api/certificate/local-root" target="_blank" rel="noopener noreferrer">HTTPS certificate</a></p>
                 </div>
             </section>
@@ -855,6 +872,6 @@
     <!-- Toast notifications -->
     <div id="toast-container" class="toast-container"></div>
 
-    <script src="/static/app.js?v=0.6.1-dspguard-tabs-v2"></script>
+    <script src="/static/app.js?v=0.6.1-hardware-controller"></script>
 </body>
 </html>
