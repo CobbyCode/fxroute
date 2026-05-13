@@ -57,6 +57,7 @@ It is built for mini PCs, desktops, ARM boards, and dedicated stereo boxes that 
 - practical room/speaker measurement workflow with host microphone capture, calibration files, smoothing, saved runs, PEQ draft transfer, FIR/convolver preset creation, and custom REW-style house curves
 - sample-rate-aware playback handling for local files, radio, Spotify, and Bluetooth handoff cases
 - Bluetooth input visibility/control when the host audio stack supports it
+- optional USB serial amplifier-controller integration for RP2040/ESP32-style MCU input selectors
 - optional local HTTPS/Caddy setup with downloadable local certificate for trusted LAN clients
 - installer support for systemd user service, Flatpak EasyEffects, PipeWire/BlueZ dependencies, firewall comfort rules, and `.local` LAN naming
 
@@ -121,7 +122,11 @@ Typical URLs:
 - **DSP** — EasyEffects presets, PEQ, convolver import/export, helpers, A/B compare, and preset creation
 - **Measure** — practical host-mic measurement, PEQ/FIR tuning, calibration files, and custom house curves
 - **Spotify** — control a local Spotify desktop client
-- **Technical settings** — output selection, source state, Bluetooth status, and local certificate access
+- **Technical settings** — output selection, source state, Bluetooth status, optional amplifier-controller status/control, and local certificate access
+
+## Additional notes
+
+- Optional USB hardware controller: [`docs/HARDWARE_CONTROLLER.md`](docs/HARDWARE_CONTROLLER.md)
 
 ## Service commands
 

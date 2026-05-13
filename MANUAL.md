@@ -31,7 +31,7 @@ If the optional local HTTPS proxy is enabled, use:
 - `https://fxroute.local`
 - `https://<host-ip>`
 
-The top-left FXRoute logo opens **Technical settings**.
+The top-left FXRoute logo opens **Technical settings**. Optional USB amplifier-controller support is documented in [`docs/HARDWARE_CONTROLLER.md`](docs/HARDWARE_CONTROLLER.md).
 
 ## 3. Basic listening workflow
 
@@ -92,7 +92,15 @@ Typical supported formats include MP3, FLAC, WAV, OGG/Opus/WebM, M4A, M3U/M3U8 p
 
 A NAS can be used as the library by mounting its SMB/Samba share locally, then setting `MUSIC_ROOT` in `.env` to that mount path, for example `/mnt/music`.
 
-## 7. DSP and EasyEffects
+## 7. Optional amplifier controller
+
+If an RP2040/ESP32-style USB CDC controller is connected, FXRoute can show and override amplifier input-selector state from **Technical settings → Amplifier Controller**.
+
+The feature is optional. Without the MCU, FXRoute should behave normally and the card simply reports that no controller is detected.
+
+The current protocol, API routes, config key, and later hardware-test checklist are documented in [`docs/HARDWARE_CONTROLLER.md`](docs/HARDWARE_CONTROLLER.md).
+
+## 8. DSP and EasyEffects
 
 Use **DSP** for sound shaping and correction.
 
@@ -130,7 +138,7 @@ For the most reproducible setup, use the Flatpak package:
 flatpak install --user flathub com.github.wwmm.easyeffects
 ```
 
-## 8. Measurement assistant
+## 9. Measurement assistant
 
 Open **Measure** from the DSP page.
 
@@ -152,7 +160,7 @@ Think of it as a tuning assistant for broad room and speaker decisions: bass pro
 
 House curve files use simple REW-compatible frequency/dB pairs, one point per line, with frequency first. Spaces, tabs, or commas are accepted. Frequencies must be strictly increasing, and at least two points are required.
 
-## 9. Technical settings
+## 10. Technical settings
 
 Click the FXRoute logo to open **Technical settings**.
 
@@ -168,13 +176,13 @@ FXRoute does not need special integration for every LAN-audio tool. If another s
 
 Use this area when audio comes from the wrong output, the source mode looks wrong, Bluetooth input needs checking, or a client device needs the local HTTPS certificate.
 
-## 10. Local HTTPS certificate
+## 11. Local HTTPS certificate
 
 When the optional local HTTPS proxy is enabled, FXRoute creates a local certificate authority for the audio PC.
 
 Install the downloaded certificate only on devices you trust on your own LAN. Import it into the operating system or browser trust store as a trusted certificate authority. If the FXRoute Caddy certificate authority is regenerated, client devices may need the new certificate again.
 
-## 11. Good first checks
+## 12. Good first checks
 
 If something does not play:
 
@@ -199,7 +207,7 @@ flatpak list --app | grep easyeffects
 pgrep -af easyeffects
 ```
 
-## 12. What FXRoute expects
+## 13. What FXRoute expects
 
 FXRoute is designed for:
 
