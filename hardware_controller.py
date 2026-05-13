@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import glob
 import logging
 import threading
 import time
@@ -101,6 +100,15 @@ class HardwareController:
     def _ensure_connected_locked(self) -> bool:
         if self._serial is not None:
             return True
+        if not self.device_path:
+            self._latest_status = {
+                "connected": False,
+                "device": None,
+                "status": dict(self._latest_status.get("status") or {}),
+                "raw": self._latest_status.get("raw"),
+                "notes": ["controller disabled; set HARDWARE_CONTROLLER_DEVICE to enable"],
+            }
+            return False
         now = time.monotonic()
         if now - self._last_scan_at < 2.0:
             return False
@@ -108,9 +116,9 @@ class HardwareController:
         return self._scan_locked()
 
     def _candidate_paths(self) -> list[str]:
-        if self.device_path:
-            return [self.device_path]
-        return sorted(glob.glob("/dev/ttyACM*") + glob.glob("/dev/ttyUSB*"))
+        if not self.device_path:
+            return []
+        return [self.device_path]
 
     def _scan_locked(self) -> bool:
         try:

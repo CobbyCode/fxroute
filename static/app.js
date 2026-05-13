@@ -179,6 +179,7 @@ let pendingVolume = null;
 let volumeGestureActive = false;
 let effectsImportInFlight = false;
 let peqCreateInFlight = false;
+let convolverCreateInFlight = false;
 let optimisticVolume = null;
 let lastConfirmedVolume = state.playback.volume;
 let volumeSyncGraceUntil = 0;
@@ -1118,7 +1119,8 @@ async function runHardwareCommand(endpoint, successMessage) {
         if (state.settings.hardware.connected) {
             showToast(successMessage, 'success');
         } else {
-            showToast('Hardware controller not connected', 'warning');
+            const note = state.settings.hardware.notes?.[0];
+            showToast(note || 'Hardware controller not connected', 'warning');
         }
     } catch (e) {
         state.settings.hardware.pending = false;
@@ -4966,6 +4968,10 @@ function takeMeasurementConvolverToDraft(mode = 'both') {
 }
 
 async function createMeasurementConvolverPresetFromDraft() {
+    if (convolverCreateInFlight) {
+        showToast('Convolver preset creation already in progress', 'warning');
+        return;
+    }
     const conv = ensureMeasurementConvolverState();
     const leftDraft = conv.draft?.left || null;
     const rightDraft = conv.draft?.right || null;
@@ -4988,6 +4994,7 @@ async function createMeasurementConvolverPresetFromDraft() {
     const sharedAutoGainDb = Math.min(...analyses.map((analysis) => analysis.autoGainDb));
     const itemName = String(conv.draft?.presetName || '').trim() || getMeasurementConvolverItemName(mode, sharedAutoGainDb, { unique: true });
     conv.draft.presetName = itemName;
+    convolverCreateInFlight = true;
     if (elements.measurementConvolverCreateBtn) elements.measurementConvolverCreateBtn.disabled = true;
     showMeasurementConvolverFeedback(`Creating ${itemName}…`);
     try {
@@ -5037,6 +5044,7 @@ async function createMeasurementConvolverPresetFromDraft() {
         showMeasurementConvolverFeedback('Convolver preset creation failed');
         showToast(e.message || 'Convolver preset creation failed', 'error');
     } finally {
+        convolverCreateInFlight = false;
         renderMeasurementPanel();
     }
 }
@@ -6276,6 +6284,8 @@ function renderMeasurementPanel() {
             || Math.round(conv.rangeStartHz) !== defaultConv.rangeStartHz
             || Math.round(conv.rangeEndHz) !== defaultConv.rangeEndHz
             || Number(conv.maxBoostDb) !== defaultConv.maxBoostDb
+            || Number(conv.maxCutDb) !== defaultConv.maxCutDb
+            || String(conv.dipGuard) !== defaultConv.dipGuard
             || String(conv.sampleRate) !== defaultConv.sampleRate
             || String(conv.quality) !== defaultConv.quality
         );
@@ -6461,7 +6471,7 @@ function renderMeasurementPanel() {
     });
 
     if (elements.measurementConvolverTarget) {
-        const optionsHtml = Object.entries(measurementConvolverCurves).map(([key, curve]) => `<option value="${escapeHtml(key)}" ${conv.targetCurve === key ? 'selected' : ''}>${escapeHtml(curve.label)}</option>`).join('');
+        const optionsHtml = getMeasurementConvolverCurveOptions().map((curve) => `<option value="${escapeHtml(curve.key)}" ${conv.targetCurve === curve.key ? 'selected' : ''}>${escapeHtml(curve.label || curve.shortLabel || curve.key)}</option>`).join('');
         if (elements.measurementConvolverTarget.innerHTML !== optionsHtml) elements.measurementConvolverTarget.innerHTML = optionsHtml;
         elements.measurementConvolverTarget.value = conv.targetCurve;
     }
@@ -6509,7 +6519,7 @@ function renderMeasurementPanel() {
     if (elements.measurementConvolverTakeLeftBtn) elements.measurementConvolverTakeLeftBtn.disabled = !left;
     if (elements.measurementConvolverTakeRightBtn) elements.measurementConvolverTakeRightBtn.disabled = !right;
     if (elements.measurementConvolverTakeBothBtn) elements.measurementConvolverTakeBothBtn.disabled = !left || !right;
-    if (elements.measurementConvolverCreateBtn) elements.measurementConvolverCreateBtn.disabled = (!leftDraft && !rightDraft) || !String(conv.draft?.presetName || '').trim();
+    if (elements.measurementConvolverCreateBtn) elements.measurementConvolverCreateBtn.disabled = (!leftDraft && !rightDraft) || !String(conv.draft?.presetName || '').trim() || convolverCreateInFlight;
 
     const currentHtml = current ? (() => {
         const pointsLabel = summarizeMeasurementEntry(current);
@@ -6778,7 +6788,7 @@ function setupMeasurementActions() {
             conv.draft.nameTouched = true;
             if (elements.measurementConvolverCreateBtn) {
                 const hasDraft = !!conv.draft.left || !!conv.draft.right;
-                elements.measurementConvolverCreateBtn.disabled = !hasDraft || !conv.draft.presetName.trim();
+                elements.measurementConvolverCreateBtn.disabled = !hasDraft || !conv.draft.presetName.trim() || convolverCreateInFlight;
             }
         });
     }

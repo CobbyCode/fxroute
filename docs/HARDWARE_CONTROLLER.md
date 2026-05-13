@@ -8,7 +8,7 @@ Current target use case: an MCU controlling an Aiyima A70 input selector.
 
 - Completely optional: FXRoute must run normally when no MCU is connected.
 - No startup blocking: serial detection happens lazily through the hardware status API/UI polling.
-- Safe serial behavior: short read/write timeouts, reconnect by rescanning, and throttled logs.
+- Safe serial behavior: explicit opt-in device path, short read/write timeouts, reconnect by retrying that device, and throttled logs.
 - Small protocol surface: line-based text protocol, version 1.
 - Cached state: the last valid MCU status line is kept and returned where useful.
 
@@ -17,11 +17,11 @@ Current target use case: an MCU controlling an Aiyima A70 input selector.
 - `hardware_controller.py`
   - Implements `HardwareController`.
   - Uses `pyserial`.
-  - Scans `/dev/ttyACM*` and `/dev/ttyUSB*` unless a fixed device path is configured.
+  - Opens only the explicit `HARDWARE_CONTROLLER_DEVICE` path when configured.
   - Detects a compatible MCU with `PING` → `PONG`.
   - Parses semicolon-separated status lines.
   - Serial errors close the connection and are returned as status notes instead of crashing FXRoute.
-  - Re-scan is throttled to avoid tight reconnect loops.
+  - Reconnect retries are throttled to avoid tight loops.
   - Repeated log messages are throttled.
 - `requirements.txt`
   - Adds `pyserial==3.5`.
@@ -39,18 +39,15 @@ Current target use case: an MCU controlling an Aiyima A70 input selector.
 
 ## Optional configuration
 
-By default FXRoute scans:
+By default FXRoute does not open any serial device. This avoids touching unrelated USB serial hardware.
 
-- `/dev/ttyACM*`
-- `/dev/ttyUSB*`
-
-To force one serial device, set this in `.env`:
+To enable hardware control, set an explicit serial device in `.env`:
 
 ```env
 HARDWARE_CONTROLLER_DEVICE=/dev/ttyACM0
 ```
 
-If unset or wrong, FXRoute continues to run. The UI will show that the controller is not detected.
+If unset or wrong, FXRoute continues to run. When unset, the UI shows that the controller is disabled until `HARDWARE_CONTROLLER_DEVICE` is configured.
 
 ## Serial protocol v1
 
