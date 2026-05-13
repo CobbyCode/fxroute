@@ -102,12 +102,13 @@ let state = {
             rangeEndHz: 250,
             maxBoostDb: 6,
             maxCutDb: -9,
+            dipGuard: 'off',
             safetyMarginDb: 1,
             autoGainEnabled: true,
             sampleRate: '48000',
-            quality: 'linear_4096',
+            quality: 'linear_8192',
             phaseMode: 'linear',
-            irLength: '4096',
+            irLength: '8192',
             dragMode: null,
             draft: { left: null, right: null, presetName: '', nameTouched: false },
         },
@@ -313,7 +314,11 @@ const elements = {
     measurementConvolverRangeStart: document.getElementById('measurement-convolver-range-start'),
     measurementConvolverRangeEnd: document.getElementById('measurement-convolver-range-end'),
     measurementConvolverMaxBoost: document.getElementById('measurement-convolver-max-boost'),
+    measurementConvolverMaxCut: document.getElementById('measurement-convolver-max-cut'),
+    measurementConvolverDipGuard: document.getElementById('measurement-convolver-dip-guard'),
     measurementConvolverSampleRate: document.getElementById('measurement-convolver-sample-rate'),
+    measurementConvolverPhaseMode: document.getElementById('measurement-convolver-phase-mode'),
+    measurementConvolverIrLength: document.getElementById('measurement-convolver-ir-length'),
     measurementConvolverQuality: document.getElementById('measurement-convolver-quality'),
     measurementConvolverPresetName: document.getElementById('measurement-convolver-preset-name'),
     measurementConvolverSummary: document.getElementById('measurement-convolver-summary'),
@@ -4007,12 +4012,13 @@ function getDefaultMeasurementConvolverState() {
         rangeEndHz: 250,
         maxBoostDb: 6,
         maxCutDb: -9,
+        dipGuard: 'off',
         safetyMarginDb: 1,
         autoGainEnabled: true,
         sampleRate: '48000',
-        quality: 'linear_4096',
+        quality: 'linear_8192',
         phaseMode: 'linear',
-        irLength: '4096',
+        irLength: '8192',
         dragMode: null,
         draft: { left: null, right: null, presetName: '', nameTouched: false },
     };
@@ -4033,14 +4039,21 @@ function ensureMeasurementConvolverState() {
     conv.rangeEndHz = Math.round(clampMeasurementConvolverFrequency(conv.rangeEndHz, defaults.rangeEndHz));
     if (conv.rangeEndHz <= conv.rangeStartHz) conv.rangeEndHz = Math.min(20000, conv.rangeStartHz + 1);
     conv.maxBoostDb = [0, 3, 6, 9].includes(Number(conv.maxBoostDb)) ? Number(conv.maxBoostDb) : defaults.maxBoostDb;
-    conv.maxCutDb = Math.min(0, Math.max(-24, Number(conv.maxCutDb) || defaults.maxCutDb));
+    conv.maxCutDb = [-3, -6, -9, -12, -18, -24].includes(Number(conv.maxCutDb)) ? Number(conv.maxCutDb) : defaults.maxCutDb;
+    conv.dipGuard = ['off', 'gentle', 'adaptive'].includes(String(conv.dipGuard)) ? String(conv.dipGuard) : defaults.dipGuard;
     conv.safetyMarginDb = Math.max(0, Number(conv.safetyMarginDb) || defaults.safetyMarginDb);
     conv.sampleRate = ['44100', '48000', '88200', '96000', '176400', '192000'].includes(String(conv.sampleRate)) ? String(conv.sampleRate) : defaults.sampleRate;
     const qualityAliases = { auto: 'linear_4096', normal: 'linear_4096', high: 'linear_8192' };
-    conv.quality = qualityAliases[String(conv.quality)] || String(conv.quality || defaults.quality);
-    conv.quality = getMeasurementConvolverTypeKeys().includes(conv.quality) ? conv.quality : defaults.quality;
-    conv.phaseMode = getMeasurementConvolverPhaseModeForType(conv.quality);
-    conv.irLength = String(getMeasurementConvolverFirLengthForType(conv.quality));
+    const incomingQuality = qualityAliases[String(conv.quality)] || String(conv.quality || defaults.quality);
+    const hasValidPhaseMode = ['linear', 'minimum'].includes(String(conv.phaseMode));
+    const hasValidIrLength = measurementConvolverTapOptions.includes(Number(conv.irLength));
+    if ((!hasValidPhaseMode || !hasValidIrLength) && getMeasurementConvolverTypeKeys().includes(incomingQuality)) {
+        conv.phaseMode = getMeasurementConvolverPhaseModeForType(incomingQuality);
+        conv.irLength = String(getMeasurementConvolverFirLengthForType(incomingQuality));
+    }
+    conv.phaseMode = ['linear', 'minimum'].includes(String(conv.phaseMode)) ? String(conv.phaseMode) : defaults.phaseMode;
+    conv.irLength = measurementConvolverTapOptions.includes(Number(conv.irLength)) ? String(conv.irLength) : defaults.irLength;
+    conv.quality = `${conv.phaseMode}_${conv.irLength}`;
     if (!conv.draft || typeof conv.draft !== 'object') conv.draft = { left: null, right: null, presetName: '', nameTouched: false };
     if (!conv.draft.left || typeof conv.draft.left !== 'object') conv.draft.left = null;
     if (!conv.draft.right || typeof conv.draft.right !== 'object') conv.draft.right = null;
@@ -4092,11 +4105,17 @@ function updateMeasurementConvolverField(field, value) {
     if (field === 'rangeStartHz') conv.rangeStartHz = Math.min(Math.round(clampMeasurementConvolverFrequency(value, conv.rangeStartHz)), conv.rangeEndHz - 1);
     if (field === 'rangeEndHz') conv.rangeEndHz = Math.max(Math.round(clampMeasurementConvolverFrequency(value, conv.rangeEndHz)), conv.rangeStartHz + 1);
     if (field === 'maxBoostDb') conv.maxBoostDb = [0, 3, 6, 9].includes(Number(value)) ? Number(value) : conv.maxBoostDb;
+    if (field === 'maxCutDb') conv.maxCutDb = [-3, -6, -9, -12, -18, -24].includes(Number(value)) ? Number(value) : conv.maxCutDb;
+    if (field === 'dipGuard') conv.dipGuard = ['off', 'gentle', 'adaptive'].includes(String(value)) ? String(value) : conv.dipGuard;
     if (field === 'sampleRate') conv.sampleRate = String(value || '48000');
+    if (field === 'phaseMode') conv.phaseMode = ['linear', 'minimum'].includes(String(value)) ? String(value) : conv.phaseMode;
+    if (field === 'irLength') conv.irLength = measurementConvolverTapOptions.includes(Number(value)) ? String(value) : conv.irLength;
     if (field === 'quality') {
         const quality = String(value || 'linear_4096');
-        conv.quality = getMeasurementConvolverTypeKeys().includes(quality) ? quality : 'linear_4096';
-        conv.phaseMode = getMeasurementConvolverPhaseModeForType(conv.quality);
+        if (getMeasurementConvolverTypeKeys().includes(quality)) {
+            conv.phaseMode = getMeasurementConvolverPhaseModeForType(quality);
+            conv.irLength = String(getMeasurementConvolverFirLengthForType(quality));
+        }
     }
     ensureMeasurementConvolverState();
     renderMeasurementPanel();
@@ -4420,26 +4439,59 @@ function getMeasurementConvolverTracePoints(side = 'left') {
     return trace ? smoothMeasurementTracePoints(trace.points || [], '1/6-oct') : [];
 }
 
+function getMeasurementConvolverAdaptiveDipGuardStrength(frequencyHz) {
+    const frequency = clampMeasurementConvolverFrequency(frequencyHz);
+    const ratio = (Math.log10(frequency) - Math.log10(40)) / Math.max(1e-9, Math.log10(8000) - Math.log10(40));
+    return 0.25 + (0.65 * Math.min(1, Math.max(0, ratio)));
+}
+
+function applyMeasurementConvolverDipGuard(requestedCorrections, index, mode = 'off') {
+    const current = requestedCorrections[index];
+    if (!current || mode === 'off' || current.requestedDb <= 0) return { correctionDb: current?.requestedDb || 0, reductionDb: 0 };
+    const radius = 2;
+    const neighbors = [];
+    for (let neighborIndex = Math.max(0, index - radius); neighborIndex <= Math.min(requestedCorrections.length - 1, index + radius); neighborIndex += 1) {
+        if (neighborIndex !== index) neighbors.push(requestedCorrections[neighborIndex].requestedDb);
+    }
+    if (neighbors.length < 2) return { correctionDb: current.requestedDb, reductionDb: 0 };
+    neighbors.sort((a, b) => a - b);
+    const middle = Math.floor(neighbors.length / 2);
+    const localMedian = neighbors.length % 2 ? neighbors[middle] : ((neighbors[middle - 1] + neighbors[middle]) / 2);
+    const dipExcessDb = current.requestedDb - localMedian;
+    const freeFillDb = mode === 'adaptive' ? 1.5 : 2.5;
+    if (dipExcessDb <= freeFillDb) return { correctionDb: current.requestedDb, reductionDb: 0 };
+    const strength = mode === 'adaptive' ? getMeasurementConvolverAdaptiveDipGuardStrength(current.frequency) : 0.5;
+    const reductionDb = (dipExcessDb - freeFillDb) * strength;
+    return {
+        correctionDb: current.requestedDb - reductionDb,
+        reductionDb,
+    };
+}
+
 function analyzeMeasurementConvolverSide(side = 'left') {
     const conv = ensureMeasurementConvolverState();
     const points = getMeasurementConvolverTracePoints(side).filter(([frequency]) => frequency >= conv.rangeStartHz && frequency <= conv.rangeEndHz);
     if (!points.length) return null;
-    const corrections = points.map(([frequency, measuredDb]) => {
+    const requestedCorrections = points.map(([frequency, measuredDb]) => {
         const targetDb = getMeasurementConvolverCurveDb(conv.targetCurve, frequency);
         const requestedDb = targetDb - measuredDb;
+        return { frequency, targetDb, measuredDb, requestedDb };
+    });
+    let dipGuardReductionMaxDb = 0;
+    const corrections = requestedCorrections.map((item, index) => {
+        const guarded = applyMeasurementConvolverDipGuard(requestedCorrections, index, conv.dipGuard);
+        dipGuardReductionMaxDb = Math.max(dipGuardReductionMaxDb, guarded.reductionDb || 0);
         return {
-            frequency,
-            targetDb,
-            measuredDb,
-            requestedDb,
-            correctionDb: Math.min(conv.maxBoostDb, Math.max(conv.maxCutDb, requestedDb)),
+            ...item,
+            dipGuardDb: Math.round((guarded.reductionDb || 0) * 10) / 10,
+            correctionDb: Math.min(conv.maxBoostDb, Math.max(conv.maxCutDb, guarded.correctionDb)),
         };
     });
     const maxPositive = Math.max(0, ...corrections.map((item) => item.correctionDb));
     const minCorrection = Math.min(...corrections.map((item) => item.correctionDb));
     const autoGainDb = conv.autoGainEnabled ? Math.round((-(maxPositive + conv.safetyMarginDb)) * 2) / 2 : 0;
     const lowBassBoost = corrections.some((item) => item.frequency < 40 && item.correctionDb > 0.25);
-    return { side, points: points.length, corrections, maxPositive, minCorrection, autoGainDb, lowBassBoost };
+    return { side, points: points.length, corrections, maxPositive, minCorrection, autoGainDb, lowBassBoost, dipGuardReductionMaxDb: Math.round(dipGuardReductionMaxDb * 10) / 10 };
 }
 
 function getMeasurementConvolverSelectedSourceCount() {
@@ -4489,14 +4541,13 @@ function getMeasurementConvolverSampleRate() {
     return Number.isFinite(selected) && selected > 0 ? selected : 48000;
 }
 
-const measurementConvolverTypeOptions = [
-    { key: 'linear_4096', phaseMode: 'linear', taps: 4096, label: 'Linear FIR 4096 taps' },
-    { key: 'linear_8192', phaseMode: 'linear', taps: 8192, label: 'Linear FIR 8192 taps' },
-    { key: 'linear_32768', phaseMode: 'linear', taps: 32768, label: 'Linear FIR 32768 taps' },
-    { key: 'minimum_4096', phaseMode: 'minimum', taps: 4096, label: 'Minimum phase FIR 4096 taps' },
-    { key: 'minimum_8192', phaseMode: 'minimum', taps: 8192, label: 'Minimum phase FIR 8192 taps' },
-    { key: 'minimum_32768', phaseMode: 'minimum', taps: 32768, label: 'Minimum phase FIR 32768 taps' },
-];
+const measurementConvolverTapOptions = [2048, 4096, 8192, 16384, 32768];
+const measurementConvolverTypeOptions = ['linear', 'minimum'].flatMap((phaseMode) => measurementConvolverTapOptions.map((taps) => ({
+    key: `${phaseMode}_${taps}`,
+    phaseMode,
+    taps,
+    label: `${phaseMode === 'minimum' ? 'Min.' : 'Linear'} phase ${taps}`,
+})));
 
 function getMeasurementConvolverTypeOption(type = 'linear_4096') {
     return measurementConvolverTypeOptions.find((option) => option.key === type) || measurementConvolverTypeOptions[0];
@@ -4770,6 +4821,7 @@ function takeMeasurementConvolverToDraft(mode = 'both') {
                 rangeEndHz: conv.rangeEndHz,
                 maxBoostDb: conv.maxBoostDb,
                 maxCutDb: conv.maxCutDb,
+                dipGuard: conv.dipGuard,
                 safetyMarginDb: conv.safetyMarginDb,
                 autoGainDb: analysis.autoGainDb,
                 sampleRate: getMeasurementConvolverSampleRate(),
@@ -4835,6 +4887,7 @@ async function createMeasurementConvolverPresetFromDraft() {
                 rangeEndHz: draftMetadata.rangeEndHz || conv.rangeEndHz,
                 maxBoostDb: draftMetadata.maxBoostDb ?? conv.maxBoostDb,
                 maxCutDb: draftMetadata.maxCutDb ?? conv.maxCutDb,
+                dipGuard: draftMetadata.dipGuard ?? conv.dipGuard,
                 safetyMarginDb: draftMetadata.safetyMarginDb ?? conv.safetyMarginDb,
                 autoGainDb: sharedAutoGainDb,
                 sampleRate: generationOptions.sampleRate,
@@ -4843,7 +4896,7 @@ async function createMeasurementConvolverPresetFromDraft() {
                 irLength: generationOptions.irLength,
                 generatedIr: true,
             },
-            analyses: analyses.map((analysis) => ({ side: analysis.side, points: analysis.points, maxPositive: analysis.maxPositive, minCorrection: analysis.minCorrection, autoGainDb: analysis.autoGainDb })),
+            analyses: analyses.map((analysis) => ({ side: analysis.side, points: analysis.points, maxPositive: analysis.maxPositive, minCorrection: analysis.minCorrection, autoGainDb: analysis.autoGainDb, dipGuardReductionMaxDb: analysis.dipGuardReductionMaxDb })),
         };
         state.easyeffects = state.easyeffects || {};
         state.easyeffects.assistStack = state.easyeffects.assistStack || [];
@@ -6290,7 +6343,11 @@ function renderMeasurementPanel() {
     if (elements.measurementConvolverRangeStart && document.activeElement !== elements.measurementConvolverRangeStart) elements.measurementConvolverRangeStart.value = String(Math.round(conv.rangeStartHz));
     if (elements.measurementConvolverRangeEnd && document.activeElement !== elements.measurementConvolverRangeEnd) elements.measurementConvolverRangeEnd.value = String(Math.round(conv.rangeEndHz));
     if (elements.measurementConvolverMaxBoost) elements.measurementConvolverMaxBoost.value = String(conv.maxBoostDb);
+    if (elements.measurementConvolverMaxCut) elements.measurementConvolverMaxCut.value = String(conv.maxCutDb);
+    if (elements.measurementConvolverDipGuard) elements.measurementConvolverDipGuard.value = conv.dipGuard;
     if (elements.measurementConvolverSampleRate) elements.measurementConvolverSampleRate.value = conv.sampleRate;
+    if (elements.measurementConvolverPhaseMode) elements.measurementConvolverPhaseMode.value = conv.phaseMode;
+    if (elements.measurementConvolverIrLength) elements.measurementConvolverIrLength.value = String(conv.irLength);
     if (elements.measurementConvolverQuality) {
         const optionsHtml = measurementConvolverTypeOptions.map((option) => `<option value="${escapeHtml(option.key)}" ${conv.quality === option.key ? 'selected' : ''}>${escapeHtml(option.label)}</option>`).join('');
         if (elements.measurementConvolverQuality.innerHTML !== optionsHtml) elements.measurementConvolverQuality.innerHTML = optionsHtml;
@@ -6306,7 +6363,7 @@ function renderMeasurementPanel() {
         const hasCreatedConvolver = (state.easyeffects?.assistStack || []).some((item) => item.type === 'convolver');
         const draftStatus = (leftDraft || rightDraft) ? 'Draft ready' : (hasCreatedConvolver ? 'Convolver preset created' : 'No draft staged');
         elements.measurementConvolverSummary.innerHTML = `
-            <div><strong>${escapeHtml(curve.label)}</strong> · ${escapeHtml(getMeasurementConvolverTypeLabel(conv.quality))} · ${getMeasurementConvolverFirLength()} taps · Max Boost +${conv.maxBoostDb} dB</div>
+            <div><strong>${escapeHtml(curve.label)}</strong> · ${escapeHtml(getMeasurementConvolverTypeLabel(conv.quality))} · Max Boost +${conv.maxBoostDb} dB · Max Cut ${conv.maxCutDb} dB · Dip Guard ${escapeHtml(conv.dipGuard)}</div>
             <div>Range data — L: ${left ? `${left.points} pts, gain ${formatMeasurementConvolverGain(left.autoGainDb)}` : 'none'} · R: ${right ? `${right.points} pts, gain ${formatMeasurementConvolverGain(right.autoGainDb)}` : 'none'}</div>
             <div>${escapeHtml(draftStatus)}</div>
         `;
@@ -6583,7 +6640,7 @@ function setupMeasurementActions() {
     if (elements.measurementTargetCurve) {
         elements.measurementTargetCurve.addEventListener('change', (event) => updateMeasurementConvolverField('targetCurve', event.target.value));
     }
-    [elements.measurementConvolverTarget, elements.measurementConvolverRangeStart, elements.measurementConvolverRangeEnd, elements.measurementConvolverMaxBoost, elements.measurementConvolverSampleRate, elements.measurementConvolverQuality].forEach((input) => {
+    [elements.measurementConvolverTarget, elements.measurementConvolverRangeStart, elements.measurementConvolverRangeEnd, elements.measurementConvolverMaxBoost, elements.measurementConvolverMaxCut, elements.measurementConvolverDipGuard, elements.measurementConvolverSampleRate, elements.measurementConvolverPhaseMode, elements.measurementConvolverIrLength, elements.measurementConvolverQuality].forEach((input) => {
         if (!input) return;
         const commit = () => updateMeasurementConvolverField(input.dataset.measurementConvolverField, input.value);
         input.addEventListener('change', commit);

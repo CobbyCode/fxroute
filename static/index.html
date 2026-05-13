@@ -697,7 +697,7 @@
                                 <div class="measurement-peq-panel-header">
                                     <div>
                                         <h4>Convolver assistant</h4>
-                                        <p>Experimental FIR correction from the selected measurement range.</p>
+                                        <p>FIR correction from the selected measurement range.</p>
                                     </div>
                                 </div>
                                 <div class="measurement-convolver-grid">
@@ -723,6 +723,25 @@
                                         </select>
                                     </div>
                                     <div class="field-group">
+                                        <label for="measurement-convolver-max-cut">Max Cut</label>
+                                        <select id="measurement-convolver-max-cut" class="url-input" data-measurement-convolver-field="maxCutDb">
+                                            <option value="-3">Gentle / -3 dB</option>
+                                            <option value="-6">Safe / -6 dB</option>
+                                            <option value="-9">Normal / -9 dB</option>
+                                            <option value="-12">Deep / -12 dB</option>
+                                            <option value="-18">Strong / -18 dB</option>
+                                            <option value="-24">Max / -24 dB</option>
+                                        </select>
+                                    </div>
+                                    <div class="field-group">
+                                        <label for="measurement-convolver-dip-guard">Dip Guard</label>
+                                        <select id="measurement-convolver-dip-guard" class="url-input" data-measurement-convolver-field="dipGuard">
+                                            <option value="off">Off</option>
+                                            <option value="gentle">Gentle</option>
+                                            <option value="adaptive">Adaptive</option>
+                                        </select>
+                                    </div>
+                                    <div class="field-group">
                                         <label for="measurement-convolver-sample-rate">Sample Rate</label>
                                         <select id="measurement-convolver-sample-rate" class="url-input" data-measurement-convolver-field="sampleRate">
                                             <option value="44100">44.1 kHz</option>
@@ -734,14 +753,20 @@
                                         </select>
                                     </div>
                                     <div class="field-group">
-                                        <label for="measurement-convolver-quality">Type</label>
-                                        <select id="measurement-convolver-quality" class="url-input" data-measurement-convolver-field="quality">
-                                            <option value="linear_4096">Linear FIR 4096 taps</option>
-                                            <option value="linear_8192">Linear FIR 8192 taps</option>
-                                            <option value="linear_32768">Linear FIR 32768 taps</option>
-                                            <option value="minimum_4096">Minimum phase FIR 4096 taps</option>
-                                            <option value="minimum_8192">Minimum phase FIR 8192 taps</option>
-                                            <option value="minimum_32768">Minimum phase FIR 32768 taps</option>
+                                        <label for="measurement-convolver-phase-mode">Type</label>
+                                        <select id="measurement-convolver-phase-mode" class="url-input" data-measurement-convolver-field="phaseMode">
+                                            <option value="linear">Linear phase</option>
+                                            <option value="minimum">Min. phase</option>
+                                        </select>
+                                    </div>
+                                    <div class="field-group">
+                                        <label for="measurement-convolver-ir-length">Taps</label>
+                                        <select id="measurement-convolver-ir-length" class="url-input" data-measurement-convolver-field="irLength">
+                                            <option value="2048">2048</option>
+                                            <option value="4096">4096</option>
+                                            <option value="8192" selected>8192</option>
+                                            <option value="16384">16384</option>
+                                            <option value="32768">32768</option>
                                         </select>
                                     </div>
                                 </div>
@@ -830,6 +855,6 @@
     <!-- Toast notifications -->
     <div id="toast-container" class="toast-container"></div>
 
-    <script src="/static/app.js?v=0.6.0"></script>
+    <script src="/static/app.js?v=0.6.1-dspguard-tabs-v2"></script>
 </body>
 </html>
