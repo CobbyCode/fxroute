@@ -83,6 +83,10 @@ let state = {
         selectedCalibrationRef: '',
         calibrationUpdating: false,
         calibrationDeleting: false,
+        houseCurveFilename: '',
+        houseCurveOptions: [],
+        houseCurveUpdating: false,
+        houseCurveDeleting: false,
         visibilityById: {},
         reviewVisibilityById: {},
         savedGroupOpen: false,
@@ -278,6 +282,11 @@ const elements = {
     measurementCalibrationDeleteBtn: document.getElementById('measurement-calibration-delete'),
     measurementCalibrationUploadName: document.getElementById('measurement-calibration-upload-name'),
     measurementCalibrationName: document.getElementById('measurement-calibration-name'),
+    measurementHouseCurveSelect: document.getElementById('measurement-house-curve-select'),
+    measurementHouseCurveFile: document.getElementById('measurement-house-curve-file'),
+    measurementHouseCurveDeleteBtn: document.getElementById('measurement-house-curve-delete'),
+    measurementHouseCurveUploadName: document.getElementById('measurement-house-curve-upload-name'),
+    measurementHouseCurveName: document.getElementById('measurement-house-curve-name'),
     measurementNameInput: document.getElementById('measurement-name'),
     measurementStartBtn: document.getElementById('measurement-start'),
     measurementSaveBtn: document.getElementById('measurement-save'),
@@ -2320,10 +2329,12 @@ function stationArtFallbackSvg(station) {
 }
 
 function inferSomaStationSlug(station) {
+    const knownLocalArtSlugs = new Set(['groovesalad', 'suburbsofgoa', 'thetrip', 'poptron', 'dubstep', 'live', 'gsclassic', '7soul']);
     const inputUrl = (station?.input_url || station?.url || '').trim();
     const match = inputUrl.match(/somafm\.com\/([^/?#]+)/i);
     if (match && match[1]) {
-        return match[1].replace(/(256|130)?\.pls$/i, '').trim().toLowerCase();
+        const slug = match[1].replace(/(256|130)?\.pls$/i, '').trim().toLowerCase();
+        if (knownLocalArtSlugs.has(slug)) return slug;
     }
     const title = (station?.title || station?.name || '').trim().toLowerCase();
     const knownSlugs = {
@@ -4017,7 +4028,7 @@ function ensureMeasurementConvolverState() {
     Object.entries(defaults).forEach(([key, value]) => {
         if (conv[key] === undefined || conv[key] === null || conv[key] === '') conv[key] = value;
     });
-    conv.targetCurve = measurementConvolverCurves[conv.targetCurve] ? conv.targetCurve : defaults.targetCurve;
+    conv.targetCurve = getMeasurementConvolverCurveOptions().some((curve) => curve.key === conv.targetCurve) ? conv.targetCurve : defaults.targetCurve;
     conv.rangeStartHz = Math.round(clampMeasurementConvolverFrequency(conv.rangeStartHz, defaults.rangeStartHz));
     conv.rangeEndHz = Math.round(clampMeasurementConvolverFrequency(conv.rangeEndHz, defaults.rangeEndHz));
     if (conv.rangeEndHz <= conv.rangeStartHz) conv.rangeEndHz = Math.min(20000, conv.rangeStartHz + 1);
@@ -4027,8 +4038,8 @@ function ensureMeasurementConvolverState() {
     conv.sampleRate = ['44100', '48000', '88200', '96000', '176400', '192000'].includes(String(conv.sampleRate)) ? String(conv.sampleRate) : defaults.sampleRate;
     const qualityAliases = { auto: 'linear_4096', normal: 'linear_4096', high: 'linear_8192' };
     conv.quality = qualityAliases[String(conv.quality)] || String(conv.quality || defaults.quality);
-    conv.quality = ['linear_4096', 'linear_8192', 'linear_32768'].includes(conv.quality) ? conv.quality : defaults.quality;
-    conv.phaseMode = 'linear';
+    conv.quality = getMeasurementConvolverTypeKeys().includes(conv.quality) ? conv.quality : defaults.quality;
+    conv.phaseMode = getMeasurementConvolverPhaseModeForType(conv.quality);
     conv.irLength = String(getMeasurementConvolverFirLengthForType(conv.quality));
     if (!conv.draft || typeof conv.draft !== 'object') conv.draft = { left: null, right: null, presetName: '', nameTouched: false };
     if (!conv.draft.left || typeof conv.draft.left !== 'object') conv.draft.left = null;
@@ -4045,8 +4056,22 @@ function setMeasurementAssistMode(mode) {
     scheduleMeasurementGraphRender();
 }
 
+function getMeasurementConvolverCurveOptions() {
+    const customCurves = (state.measurement?.houseCurveOptions || [])
+        .filter((curve) => Array.isArray(curve.points) && curve.points.length >= 2)
+        .map((curve) => ({ key: `house:${curve.id}`, label: curve.filename || 'House curve', shortLabel: curve.filename || 'House', points: curve.points }));
+    return [
+        ...Object.entries(measurementConvolverCurves).map(([key, curve]) => ({ key, ...curve })),
+        ...customCurves,
+    ];
+}
+
+function getMeasurementConvolverCurve(curveKey) {
+    return getMeasurementConvolverCurveOptions().find((curve) => curve.key === curveKey) || measurementConvolverCurves.neutral;
+}
+
 function getMeasurementConvolverCurveDb(curveKey, frequencyHz) {
-    const curve = measurementConvolverCurves[curveKey] || measurementConvolverCurves.neutral;
+    const curve = getMeasurementConvolverCurve(curveKey);
     const points = curve.points || measurementConvolverCurves.neutral.points;
     const frequency = clampMeasurementConvolverFrequency(frequencyHz);
     if (frequency <= points[0][0]) return points[0][1];
@@ -4063,12 +4088,16 @@ function getMeasurementConvolverCurveDb(curveKey, frequencyHz) {
 
 function updateMeasurementConvolverField(field, value) {
     const conv = ensureMeasurementConvolverState();
-    if (field === 'targetCurve') conv.targetCurve = measurementConvolverCurves[value] ? value : conv.targetCurve;
+    if (field === 'targetCurve') conv.targetCurve = getMeasurementConvolverCurveOptions().some((curve) => curve.key === value) ? value : conv.targetCurve;
     if (field === 'rangeStartHz') conv.rangeStartHz = Math.min(Math.round(clampMeasurementConvolverFrequency(value, conv.rangeStartHz)), conv.rangeEndHz - 1);
     if (field === 'rangeEndHz') conv.rangeEndHz = Math.max(Math.round(clampMeasurementConvolverFrequency(value, conv.rangeEndHz)), conv.rangeStartHz + 1);
     if (field === 'maxBoostDb') conv.maxBoostDb = [0, 3, 6, 9].includes(Number(value)) ? Number(value) : conv.maxBoostDb;
     if (field === 'sampleRate') conv.sampleRate = String(value || '48000');
-    if (field === 'quality') conv.quality = String(value || 'linear_4096');
+    if (field === 'quality') {
+        const quality = String(value || 'linear_4096');
+        conv.quality = getMeasurementConvolverTypeKeys().includes(quality) ? quality : 'linear_4096';
+        conv.phaseMode = getMeasurementConvolverPhaseModeForType(conv.quality);
+    }
     ensureMeasurementConvolverState();
     renderMeasurementPanel();
     scheduleMeasurementGraphRender();
@@ -4373,9 +4402,7 @@ function getMeasurementConvolverSelectedSourceEntries() {
 }
 
 function getMeasurementConvolverSourceEntries() {
-    const selected = getMeasurementConvolverSelectedSourceEntries();
-    if (selected.length) return selected;
-    return (state.measurement?.measurements || []).filter(Boolean);
+    return getMeasurementConvolverSelectedSourceEntries();
 }
 
 function getMeasurementConvolverMeasurementForSide(side = 'left') {
@@ -4426,8 +4453,6 @@ function getMeasurementConvolverMultiSourceWarning() {
 function buildMeasurementConvolverWarnings(analyses = []) {
     const conv = ensureMeasurementConvolverState();
     const warnings = [];
-    if (conv.rangeEndHz > 1000) warnings.push('Wide-range correction can change speaker tonality.');
-    if (analyses.some((analysis) => analysis && analysis.autoGainDb < -6)) warnings.push('This correction needs high headroom. Consider reducing Max Boost or narrowing the correction range.');
     if (analyses.some((analysis) => analysis && analysis.lowBassBoost)) warnings.push('Deep bass boost can demand much more amplifier power and speaker excursion.');
     return warnings;
 }
@@ -4444,9 +4469,10 @@ function getMeasurementConvolverNameSuffix(date = new Date()) {
 
 function getMeasurementConvolverItemName(mode = 'both', autoGainDb = 0, options = {}) {
     const conv = ensureMeasurementConvolverState();
-    const curve = measurementConvolverCurves[conv.targetCurve] || measurementConvolverCurves.neutral;
+    const curve = getMeasurementConvolverCurve(conv.targetCurve);
     const prefix = mode === 'both' ? 'Conv LR' : (mode === 'right' ? 'Conv R' : 'Conv L');
-    const base = `${prefix} ${curve.shortLabel || curve.label} ${Math.round(conv.rangeStartHz)}-${Math.round(conv.rangeEndHz)}Hz ${formatMeasurementConvolverGain(autoGainDb)}`;
+    const phaseTag = getMeasurementConvolverPhaseTag(conv.phaseMode);
+    const base = `${prefix} ${phaseTag} ${curve.shortLabel || curve.label} ${Math.round(conv.rangeStartHz)}-${Math.round(conv.rangeEndHz)}Hz ${formatMeasurementConvolverGain(autoGainDb)}`;
     return options.unique ? `${base} ${getMeasurementConvolverNameSuffix()}` : base;
 }
 
@@ -4463,10 +4489,39 @@ function getMeasurementConvolverSampleRate() {
     return Number.isFinite(selected) && selected > 0 ? selected : 48000;
 }
 
+const measurementConvolverTypeOptions = [
+    { key: 'linear_4096', phaseMode: 'linear', taps: 4096, label: 'Linear FIR 4096 taps' },
+    { key: 'linear_8192', phaseMode: 'linear', taps: 8192, label: 'Linear FIR 8192 taps' },
+    { key: 'linear_32768', phaseMode: 'linear', taps: 32768, label: 'Linear FIR 32768 taps' },
+    { key: 'minimum_4096', phaseMode: 'minimum', taps: 4096, label: 'Minimum phase FIR 4096 taps' },
+    { key: 'minimum_8192', phaseMode: 'minimum', taps: 8192, label: 'Minimum phase FIR 8192 taps' },
+    { key: 'minimum_32768', phaseMode: 'minimum', taps: 32768, label: 'Minimum phase FIR 32768 taps' },
+];
+
+function getMeasurementConvolverTypeOption(type = 'linear_4096') {
+    return measurementConvolverTypeOptions.find((option) => option.key === type) || measurementConvolverTypeOptions[0];
+}
+
+function getMeasurementConvolverTypeKeys() {
+    return measurementConvolverTypeOptions.map((option) => option.key);
+}
+
+function getMeasurementConvolverPhaseModeForType(type = 'linear_4096') {
+    return getMeasurementConvolverTypeOption(type).phaseMode;
+}
+
+function getMeasurementConvolverPhaseLabel(phaseMode = 'linear') {
+    if (phaseMode === 'minimum') return 'Minimum phase FIR';
+    return 'Linear FIR';
+}
+
+function getMeasurementConvolverPhaseTag(phaseMode = 'linear') {
+    if (phaseMode === 'minimum') return 'Min';
+    return 'Lin';
+}
+
 function getMeasurementConvolverFirLengthForType(type = 'linear_4096') {
-    if (type === 'linear_32768') return 32768;
-    if (type === 'linear_8192') return 8192;
-    return 4096;
+    return getMeasurementConvolverTypeOption(type).taps;
 }
 
 function getMeasurementConvolverFirLength() {
@@ -4475,9 +4530,7 @@ function getMeasurementConvolverFirLength() {
 }
 
 function getMeasurementConvolverTypeLabel(type = 'linear_4096') {
-    if (type === 'linear_32768') return 'Linear FIR 32768 taps';
-    if (type === 'linear_8192') return 'Linear FIR 8192 taps';
-    return 'Linear FIR 4096 taps';
+    return getMeasurementConvolverTypeOption(type).label;
 }
 
 function interpolateMeasurementConvolverCorrection(analysis, frequencyHz, autoGainDb) {
@@ -4497,7 +4550,7 @@ function interpolateMeasurementConvolverCorrection(analysis, frequencyHz, autoGa
     return corrections[corrections.length - 1].correctionDb + autoGainDb;
 }
 
-function buildMeasurementConvolverImpulse(analysis, sampleRate, length, autoGainDb) {
+function buildMeasurementConvolverMagnitudeBins(analysis, sampleRate, length, autoGainDb) {
     const half = Math.floor(length / 2);
     const magnitudes = new Float64Array(half + 1);
     for (let bin = 0; bin <= half; bin += 1) {
@@ -4505,6 +4558,11 @@ function buildMeasurementConvolverImpulse(analysis, sampleRate, length, autoGain
         const gainDb = interpolateMeasurementConvolverCorrection(analysis, Math.max(20, frequency), autoGainDb);
         magnitudes[bin] = 10 ** (gainDb / 20);
     }
+    return magnitudes;
+}
+
+function buildMeasurementConvolverLinearImpulseFromMagnitudes(magnitudes, length) {
+    const half = Math.floor(length / 2);
     const impulse = new Float32Array(length);
     const shift = half;
     for (let n = 0; n < length; n += 1) {
@@ -4515,6 +4573,92 @@ function buildMeasurementConvolverImpulse(analysis, sampleRate, length, autoGain
         impulse[(n + shift) % length] = sum / length;
     }
     return impulse;
+}
+
+function fftMeasurementConvolverComplex(real, imag, inverse = false) {
+    const n = real.length;
+    for (let i = 1, j = 0; i < n; i += 1) {
+        let bit = n >> 1;
+        for (; j & bit; bit >>= 1) j ^= bit;
+        j ^= bit;
+        if (i < j) {
+            [real[i], real[j]] = [real[j], real[i]];
+            [imag[i], imag[j]] = [imag[j], imag[i]];
+        }
+    }
+    for (let len = 2; len <= n; len <<= 1) {
+        const angle = (inverse ? 2 : -2) * Math.PI / len;
+        const wLenReal = Math.cos(angle);
+        const wLenImag = Math.sin(angle);
+        for (let i = 0; i < n; i += len) {
+            let wReal = 1;
+            let wImag = 0;
+            for (let j = 0; j < len / 2; j += 1) {
+                const uReal = real[i + j];
+                const uImag = imag[i + j];
+                const vReal = (real[i + j + (len / 2)] * wReal) - (imag[i + j + (len / 2)] * wImag);
+                const vImag = (real[i + j + (len / 2)] * wImag) + (imag[i + j + (len / 2)] * wReal);
+                real[i + j] = uReal + vReal;
+                imag[i + j] = uImag + vImag;
+                real[i + j + (len / 2)] = uReal - vReal;
+                imag[i + j + (len / 2)] = uImag - vImag;
+                const nextWReal = (wReal * wLenReal) - (wImag * wLenImag);
+                wImag = (wReal * wLenImag) + (wImag * wLenReal);
+                wReal = nextWReal;
+            }
+        }
+    }
+    if (inverse) {
+        for (let i = 0; i < n; i += 1) {
+            real[i] /= n;
+            imag[i] /= n;
+        }
+    }
+}
+
+function buildMeasurementConvolverMinimumSpectrum(magnitudes, length) {
+    const half = Math.floor(length / 2);
+    const real = new Float64Array(length);
+    const imag = new Float64Array(length);
+    for (let bin = 0; bin <= half; bin += 1) real[bin] = Math.log(Math.max(1e-7, magnitudes[bin]));
+    for (let bin = half + 1; bin < length; bin += 1) real[bin] = real[length - bin];
+    fftMeasurementConvolverComplex(real, imag, true);
+    for (let index = 1; index < half; index += 1) {
+        real[index] *= 2;
+        imag[index] *= 2;
+    }
+    for (let index = half + 1; index < length; index += 1) {
+        real[index] = 0;
+        imag[index] = 0;
+    }
+    fftMeasurementConvolverComplex(real, imag, false);
+    const spectrumReal = new Float64Array(length);
+    const spectrumImag = new Float64Array(length);
+    for (let bin = 0; bin < length; bin += 1) {
+        const magnitude = Math.exp(Math.max(-24, Math.min(24, real[bin])));
+        spectrumReal[bin] = magnitude * Math.cos(imag[bin]);
+        spectrumImag[bin] = magnitude * Math.sin(imag[bin]);
+    }
+    return { real: spectrumReal, imag: spectrumImag };
+}
+
+function buildMeasurementConvolverImpulseFromSpectrum(real, imag) {
+    const length = real.length;
+    const workReal = new Float64Array(real);
+    const workImag = new Float64Array(imag);
+    fftMeasurementConvolverComplex(workReal, workImag, true);
+    const impulse = new Float32Array(length);
+    for (let index = 0; index < length; index += 1) impulse[index] = workReal[index];
+    return impulse;
+}
+
+function buildMeasurementConvolverImpulse(analysis, sampleRate, length, autoGainDb, phaseMode = 'linear') {
+    const magnitudes = buildMeasurementConvolverMagnitudeBins(analysis, sampleRate, length, autoGainDb);
+    if (phaseMode === 'minimum') {
+        const spectrum = buildMeasurementConvolverMinimumSpectrum(magnitudes, length);
+        return buildMeasurementConvolverImpulseFromSpectrum(spectrum.real, spectrum.imag);
+    }
+    return buildMeasurementConvolverLinearImpulseFromMagnitudes(magnitudes, length);
 }
 
 function writeMeasurementConvolverWav(channels, sampleRate) {
@@ -4566,14 +4710,15 @@ function appendMeasurementConvolverExtras(formData) {
     formData.append('tone_effect_mode', extras.toneEffectMode);
 }
 
-async function createMeasurementConvolverPreset(mode, analyses, sharedAutoGainDb, itemName) {
-    const sampleRate = getMeasurementConvolverSampleRate();
-    const length = getMeasurementConvolverFirLength();
+async function createMeasurementConvolverPreset(mode, analyses, sharedAutoGainDb, itemName, options = {}) {
+    const sampleRate = Number(options.sampleRate) || getMeasurementConvolverSampleRate();
+    const length = Number(options.irLength) || getMeasurementConvolverFirLength();
+    const phaseMode = ['linear', 'minimum'].includes(options.phaseMode) ? options.phaseMode : ensureMeasurementConvolverState().phaseMode;
     const filenameBase = itemName.replace(/[^a-z0-9._-]+/gi, '-').replace(/^-+|-+$/g, '') || 'measurement-convolver';
     const bySide = Object.fromEntries(analyses.map((analysis) => [analysis.side, analysis]));
     if (mode === 'both') {
-        const leftImpulse = buildMeasurementConvolverImpulse(bySide.left, sampleRate, length, sharedAutoGainDb);
-        const rightImpulse = buildMeasurementConvolverImpulse(bySide.right, sampleRate, length, sharedAutoGainDb);
+        const leftImpulse = buildMeasurementConvolverImpulse(bySide.left, sampleRate, length, sharedAutoGainDb, phaseMode);
+        const rightImpulse = buildMeasurementConvolverImpulse(bySide.right, sampleRate, length, sharedAutoGainDb, phaseMode);
         const leftBlob = writeMeasurementConvolverWav([leftImpulse], sampleRate);
         const rightBlob = writeMeasurementConvolverWav([rightImpulse], sampleRate);
         const formData = new FormData();
@@ -4587,7 +4732,7 @@ async function createMeasurementConvolverPreset(mode, analyses, sharedAutoGainDb
         return data;
     }
     const side = mode === 'right' ? 'right' : 'left';
-    const impulse = buildMeasurementConvolverImpulse(bySide[side], sampleRate, length, sharedAutoGainDb);
+    const impulse = buildMeasurementConvolverImpulse(bySide[side], sampleRate, length, sharedAutoGainDb, phaseMode);
     const blob = writeMeasurementConvolverWav([impulse], sampleRate);
     const formData = new FormData();
     formData.append('preset_name', itemName);
@@ -4653,6 +4798,15 @@ async function createMeasurementConvolverPresetFromDraft() {
         return;
     }
     const drafts = mode === 'both' ? [leftDraft, rightDraft] : [mode === 'right' ? rightDraft : leftDraft];
+    if (mode === 'both') {
+        const [leftMeta, rightMeta] = drafts.map((draft) => draft?.metadata || {});
+        const sameGeneration = ['sampleRate', 'quality', 'phaseMode', 'irLength'].every((key) => String(leftMeta[key] || '') === String(rightMeta[key] || ''));
+        if (!sameGeneration) {
+            showMeasurementConvolverFeedback('Retake L/R with matching Convolver type and sample rate');
+            showToast('Left and Right convolver drafts use different FIR settings. Retake Both for a matched comparison preset.', 'warning');
+            return;
+        }
+    }
     const analyses = drafts.map((draft) => draft.analysis);
     const sharedAutoGainDb = Math.min(...analyses.map((analysis) => analysis.autoGainDb));
     const itemName = String(conv.draft?.presetName || '').trim() || getMeasurementConvolverItemName(mode, sharedAutoGainDb, { unique: true });
@@ -4660,7 +4814,14 @@ async function createMeasurementConvolverPresetFromDraft() {
     if (elements.measurementConvolverCreateBtn) elements.measurementConvolverCreateBtn.disabled = true;
     showMeasurementConvolverFeedback(`Creating ${itemName}…`);
     try {
-        const created = await createMeasurementConvolverPreset(mode, analyses, sharedAutoGainDb, itemName);
+        const draftMetadata = drafts[0]?.metadata || {};
+        const generationOptions = {
+            sampleRate: draftMetadata.sampleRate || getMeasurementConvolverSampleRate(),
+            quality: draftMetadata.quality || conv.quality,
+            phaseMode: draftMetadata.phaseMode || conv.phaseMode,
+            irLength: draftMetadata.irLength || getMeasurementConvolverFirLength(),
+        };
+        const created = await createMeasurementConvolverPreset(mode, analyses, sharedAutoGainDb, itemName, generationOptions);
         const item = {
             type: 'convolver',
             mode,
@@ -4669,17 +4830,17 @@ async function createMeasurementConvolverPresetFromDraft() {
             preset: created.preset || null,
             ir: created.ir || null,
             metadata: {
-                targetCurve: conv.targetCurve,
-                rangeStartHz: conv.rangeStartHz,
-                rangeEndHz: conv.rangeEndHz,
-                maxBoostDb: conv.maxBoostDb,
-                maxCutDb: conv.maxCutDb,
-                safetyMarginDb: conv.safetyMarginDb,
+                targetCurve: draftMetadata.targetCurve || conv.targetCurve,
+                rangeStartHz: draftMetadata.rangeStartHz || conv.rangeStartHz,
+                rangeEndHz: draftMetadata.rangeEndHz || conv.rangeEndHz,
+                maxBoostDb: draftMetadata.maxBoostDb ?? conv.maxBoostDb,
+                maxCutDb: draftMetadata.maxCutDb ?? conv.maxCutDb,
+                safetyMarginDb: draftMetadata.safetyMarginDb ?? conv.safetyMarginDb,
                 autoGainDb: sharedAutoGainDb,
-                sampleRate: getMeasurementConvolverSampleRate(),
-                quality: conv.quality,
-                phaseMode: conv.phaseMode,
-                irLength: getMeasurementConvolverFirLength(),
+                sampleRate: generationOptions.sampleRate,
+                quality: generationOptions.quality,
+                phaseMode: generationOptions.phaseMode,
+                irLength: generationOptions.irLength,
                 generatedIr: true,
             },
             analyses: analyses.map((analysis) => ({ side: analysis.side, points: analysis.points, maxPositive: analysis.maxPositive, minCorrection: analysis.minCorrection, autoGainDb: analysis.autoGainDb })),
@@ -4783,7 +4944,7 @@ function getMeasurementConvolverRangeHandleAtPosition(x, y, bounds) {
 
 function drawMeasurementTargetCurve(ctx, bounds, range) {
     const conv = ensureMeasurementConvolverState();
-    const curve = measurementConvolverCurves[conv.targetCurve] || measurementConvolverCurves.neutral;
+    const curve = getMeasurementConvolverCurve(conv.targetCurve);
     const frequencies = [20, 25, 31.5, 40, 50, 63, 80, 100, 125, 160, 200, 250, 315, 400, 500, 630, 800, 1000, 1250, 1600, 2000, 2500, 3150, 4000, 5000, 6300, 8000, 10000, 12500, 16000, 20000];
     ctx.save();
     ctx.strokeStyle = '#6ee7b7';
@@ -5071,6 +5232,67 @@ async function deleteSelectedMeasurementCalibration() {
     }
 }
 
+function applyMeasurementHouseCurveState(data) {
+    if (!data || typeof data !== 'object') return;
+    state.measurement.houseCurveOptions = Array.isArray(data.house_curves) ? data.house_curves : state.measurement.houseCurveOptions;
+    state.measurement.houseCurveFilename = '';
+    if (elements.measurementHouseCurveFile) elements.measurementHouseCurveFile.value = '';
+}
+
+async function uploadMeasurementHouseCurve(file) {
+    if (!file) return;
+    state.measurement.houseCurveUpdating = true;
+    state.measurement.houseCurveFilename = file.name || 'house-curve.txt';
+    renderMeasurementPanel();
+    const formData = new FormData();
+    formData.append('house_curve_file', file);
+    try {
+        const resp = await fetch('/api/measurements/house-curves', { method: 'POST', body: formData });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || 'Failed to upload house curve file');
+        applyMeasurementHouseCurveState(data);
+        const uploadedId = data.uploaded_house_curve_id ? `house:${data.uploaded_house_curve_id}` : '';
+        if (uploadedId) updateMeasurementConvolverField('targetCurve', uploadedId);
+        showToast('House curve uploaded and selected', 'success');
+    } catch (error) {
+        console.error('uploadMeasurementHouseCurve failed', error);
+        state.measurement.statusText = error.message || 'Failed to upload house curve file';
+        showToast(state.measurement.statusText, 'error');
+    } finally {
+        state.measurement.houseCurveUpdating = false;
+        renderMeasurementPanel();
+    }
+}
+
+async function deleteSelectedMeasurementHouseCurve() {
+    const conv = ensureMeasurementConvolverState();
+    const selectedKey = String(conv.targetCurve || '');
+    const houseCurveId = selectedKey.startsWith('house:') ? selectedKey.slice(6) : '';
+    const selected = (state.measurement.houseCurveOptions || []).find(option => option.id === houseCurveId);
+    if (!houseCurveId || !selected) {
+        showToast('No house curve file selected to delete', 'warning');
+        return;
+    }
+    if (!window.confirm(`Delete house curve file "${selected.filename || houseCurveId}"?`)) return;
+    state.measurement.houseCurveDeleting = true;
+    renderMeasurementPanel();
+    try {
+        const resp = await fetch(`/api/measurements/house-curves/${encodeURIComponent(houseCurveId)}`, { method: 'DELETE' });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || 'Failed to delete house curve file');
+        applyMeasurementHouseCurveState(data);
+        if (conv.targetCurve === selectedKey) conv.targetCurve = 'neutral';
+        showToast('House curve file deleted', 'success');
+    } catch (error) {
+        console.error('deleteSelectedMeasurementHouseCurve failed', error);
+        state.measurement.statusText = error.message || 'Failed to delete house curve file';
+        showToast(state.measurement.statusText, 'error');
+    } finally {
+        state.measurement.houseCurveDeleting = false;
+        renderMeasurementPanel();
+    }
+}
+
 async function fetchMeasurements() {
     state.measurement.loading = true;
     renderMeasurementPanel();
@@ -5085,6 +5307,7 @@ async function fetchMeasurements() {
         state.measurement.storage = data.storage || null;
         state.measurement.calibrationOptions = Array.isArray(data.calibrations) ? data.calibrations : [];
         state.measurement.selectedCalibrationRef = String(data.active_calibration_file_id || '');
+        state.measurement.houseCurveOptions = Array.isArray(data.house_curves) ? data.house_curves : [];
         if (state.measurement.selectedCalibrationRef && !state.measurement.calibrationOptions.some(item => item.id === state.measurement.selectedCalibrationRef)) {
             state.measurement.selectedCalibrationRef = '';
         }
@@ -5819,6 +6042,29 @@ function renderMeasurementPanel() {
         elements.measurementCalibrationName.textContent = activeCalibrationLabel;
         elements.measurementCalibrationName.classList.toggle('hidden', !activeCalibrationLabel);
     }
+    if (elements.measurementHouseCurveSelect) {
+        const options = [{ id: '', filename: 'Built-in target curves only' }, ...(measurementState.houseCurveOptions || [])];
+        const selectedHouseCurveId = String(conv.targetCurve || '').startsWith('house:') ? String(conv.targetCurve).slice(6) : '';
+        elements.measurementHouseCurveSelect.innerHTML = options.map(option => `<option value="${escapeHtml(option.id || '')}" ${(option.id || '') === selectedHouseCurveId ? 'selected' : ''}>${escapeHtml(option.filename || 'House curve')}</option>`).join('');
+        elements.measurementHouseCurveSelect.disabled = measurementState.houseCurveUpdating || measurementState.houseCurveDeleting;
+    }
+    if (elements.measurementHouseCurveDeleteBtn) {
+        const canDeleteHouseCurve = String(conv.targetCurve || '').startsWith('house:') && !measurementState.houseCurveUpdating && !measurementState.houseCurveDeleting;
+        elements.measurementHouseCurveDeleteBtn.disabled = !canDeleteHouseCurve;
+        elements.measurementHouseCurveDeleteBtn.textContent = measurementState.houseCurveDeleting ? 'Deleting…' : 'Delete';
+    }
+    if (elements.measurementHouseCurveUploadName) {
+        elements.measurementHouseCurveUploadName.textContent = measurementState.houseCurveFilename || 'No house curve file selected.';
+    }
+    if (elements.measurementHouseCurveName) {
+        const selectedHouseCurveId = String(conv.targetCurve || '').startsWith('house:') ? String(conv.targetCurve).slice(6) : '';
+        const selectedHouseCurve = (measurementState.houseCurveOptions || []).find(option => option.id === selectedHouseCurveId);
+        const activeHouseCurveLabel = measurementState.houseCurveFilename
+            ? measurementState.houseCurveFilename
+            : (selectedHouseCurve ? selectedHouseCurve.filename : '');
+        elements.measurementHouseCurveName.textContent = activeHouseCurveLabel;
+        elements.measurementHouseCurveName.classList.toggle('hidden', !activeHouseCurveLabel);
+    }
     if (elements.measurementNameInput) {
         elements.measurementNameInput.value = measurementState.currentMeasurementName || '';
         elements.measurementNameInput.disabled = !current || measurementState.startInFlight || measurementState.saveInFlight;
@@ -5839,6 +6085,9 @@ function renderMeasurementPanel() {
     }
     if (elements.measurementAssistMode) elements.measurementAssistMode.value = assistMode;
     if (elements.measurementTargetCurve) {
+        elements.measurementTargetCurve.innerHTML = getMeasurementConvolverCurveOptions()
+            .map((curve) => `<option value="${escapeHtml(curve.key)}" ${conv.targetCurve === curve.key ? 'selected' : ''}>${escapeHtml(curve.label || curve.shortLabel || curve.key)}</option>`)
+            .join('');
         elements.measurementTargetCurve.value = conv.targetCurve;
         elements.measurementTargetCurve.classList.remove('hidden');
     }
@@ -6042,20 +6291,24 @@ function renderMeasurementPanel() {
     if (elements.measurementConvolverRangeEnd && document.activeElement !== elements.measurementConvolverRangeEnd) elements.measurementConvolverRangeEnd.value = String(Math.round(conv.rangeEndHz));
     if (elements.measurementConvolverMaxBoost) elements.measurementConvolverMaxBoost.value = String(conv.maxBoostDb);
     if (elements.measurementConvolverSampleRate) elements.measurementConvolverSampleRate.value = conv.sampleRate;
-    if (elements.measurementConvolverQuality) elements.measurementConvolverQuality.value = conv.quality;
+    if (elements.measurementConvolverQuality) {
+        const optionsHtml = measurementConvolverTypeOptions.map((option) => `<option value="${escapeHtml(option.key)}" ${conv.quality === option.key ? 'selected' : ''}>${escapeHtml(option.label)}</option>`).join('');
+        if (elements.measurementConvolverQuality.innerHTML !== optionsHtml) elements.measurementConvolverQuality.innerHTML = optionsHtml;
+        elements.measurementConvolverQuality.value = conv.quality;
+    }
     const convAnalyses = ['left', 'right'].map((side) => analyzeMeasurementConvolverSide(side));
     const left = convAnalyses[0];
     const right = convAnalyses[1];
     const leftDraft = conv.draft?.left || null;
     const rightDraft = conv.draft?.right || null;
     if (elements.measurementConvolverSummary) {
-        const curve = measurementConvolverCurves[conv.targetCurve] || measurementConvolverCurves.neutral;
-        const stackCount = (state.easyeffects?.assistStack || []).filter((item) => item.type === 'convolver').length;
-        const draftMode = leftDraft && rightDraft ? 'LR stereo draft ready' : (rightDraft ? 'R draft ready' : (leftDraft ? 'L draft ready' : 'no draft staged'));
+        const curve = getMeasurementConvolverCurve(conv.targetCurve);
+        const hasCreatedConvolver = (state.easyeffects?.assistStack || []).some((item) => item.type === 'convolver');
+        const draftStatus = (leftDraft || rightDraft) ? 'Draft ready' : (hasCreatedConvolver ? 'Convolver preset created' : 'No draft staged');
         elements.measurementConvolverSummary.innerHTML = `
-            <div><strong>${escapeHtml(curve.label)}</strong> · ${escapeHtml(getMeasurementConvolverTypeLabel(conv.quality))} · Max Boost +${conv.maxBoostDb} dB</div>
+            <div><strong>${escapeHtml(curve.label)}</strong> · ${escapeHtml(getMeasurementConvolverTypeLabel(conv.quality))} · ${getMeasurementConvolverFirLength()} taps · Max Boost +${conv.maxBoostDb} dB</div>
             <div>Range data — L: ${left ? `${left.points} pts, gain ${formatMeasurementConvolverGain(left.autoGainDb)}` : 'none'} · R: ${right ? `${right.points} pts, gain ${formatMeasurementConvolverGain(right.autoGainDb)}` : 'none'}</div>
-            <div>Draft — ${escapeHtml(draftMode)} · created convolver items: ${stackCount}</div>
+            <div>${escapeHtml(draftStatus)}</div>
         `;
     }
     if (elements.measurementConvolverPresetName) {
@@ -6279,6 +6532,30 @@ function setupMeasurementActions() {
     }
     if (elements.measurementCalibrationDeleteBtn) {
         elements.measurementCalibrationDeleteBtn.addEventListener('click', () => { void deleteSelectedMeasurementCalibration(); });
+    }
+    if (elements.measurementHouseCurveSelect) {
+        elements.measurementHouseCurveSelect.addEventListener('change', (event) => {
+            const houseCurveId = event.target.value || '';
+            if (elements.measurementHouseCurveFile) elements.measurementHouseCurveFile.value = '';
+            state.measurement.houseCurveFilename = '';
+            updateMeasurementConvolverField('targetCurve', houseCurveId ? `house:${houseCurveId}` : 'neutral');
+            renderMeasurementPanel();
+            scheduleMeasurementGraphRender();
+        });
+    }
+    if (elements.measurementHouseCurveFile) {
+        elements.measurementHouseCurveFile.addEventListener('change', () => {
+            const file = elements.measurementHouseCurveFile.files?.[0];
+            if (file) {
+                void uploadMeasurementHouseCurve(file);
+            } else {
+                state.measurement.houseCurveFilename = '';
+                renderMeasurementPanel();
+            }
+        });
+    }
+    if (elements.measurementHouseCurveDeleteBtn) {
+        elements.measurementHouseCurveDeleteBtn.addEventListener('click', () => { void deleteSelectedMeasurementHouseCurve(); });
     }
     if (elements.measurementNameInput) {
         elements.measurementNameInput.addEventListener('input', (event) => {
@@ -6565,6 +6842,7 @@ function renderPeqBandColumn(container, side, bands) {
         const otherBands = side === 'right' ? (state.easyeffects?.peqDraft?.leftBands || []) : (state.easyeffects?.peqDraft?.rightBands || []);
         const isLinkedSpecialPair = !!getPeqLinkedSpecialType(band, otherBands[index] || null);
         const showRemove = true;
+        const fieldIdPrefix = `effects-peq-${side}-${index}`;
         return `
         <div class="effects-peq-band" data-peq-side="${side}" data-peq-band="${index}">
             <div class="effects-peq-band-header">
@@ -6576,28 +6854,28 @@ function renderPeqBandColumn(container, side, bands) {
             </div>
             <div class="effects-peq-band-fields${isGain ? ' effects-peq-band-fields-gain' : ''}">
                 <div class="field-group">
-                    <label>Type</label>
-                    <select class="url-input" data-peq-side="${side}" data-peq-index="${index}" data-peq-field="filterType">
+                    <label for="${fieldIdPrefix}-type">Type</label>
+                    <select id="${fieldIdPrefix}-type" name="${fieldIdPrefix}-type" class="url-input" data-peq-side="${side}" data-peq-index="${index}" data-peq-field="filterType">
                         ${['bell', 'notch', 'gain', 'delay', 'low_shelf', 'high_shelf', 'low_pass', 'high_pass'].map(type => `<option value="${type}" ${band.filterType === type ? 'selected' : ''}>${filterTypeLabels[type]}</option>`).join('')}
                     </select>
                 </div>
                 ${isDelay ? `
                 <div class="field-group">
-                    <label>Delay (ms)</label>
-                    <input type="number" class="url-input" min="0" max="500" step="0.1" data-peq-side="${side}" data-peq-index="${index}" data-peq-field="delayMs" value="${Number.isFinite(Number(band.delayMs)) ? band.delayMs : 0}">
+                    <label for="${fieldIdPrefix}-delay">Delay (ms)</label>
+                    <input id="${fieldIdPrefix}-delay" name="${fieldIdPrefix}-delay" type="number" class="url-input" min="0" max="500" step="0.1" data-peq-side="${side}" data-peq-index="${index}" data-peq-field="delayMs" value="${Number.isFinite(Number(band.delayMs)) ? band.delayMs : 0}">
                 </div>` : `
                 <div class="field-group">
-                    <label>Gain (dB)</label>
-                    <input type="number" class="url-input" min="-24" max="24" step="0.1" data-peq-side="${side}" data-peq-index="${index}" data-peq-field="gainDb" value="${band.gainDb}">
+                    <label for="${fieldIdPrefix}-gain">Gain (dB)</label>
+                    <input id="${fieldIdPrefix}-gain" name="${fieldIdPrefix}-gain" type="number" class="url-input" min="-24" max="24" step="0.1" data-peq-side="${side}" data-peq-index="${index}" data-peq-field="gainDb" value="${band.gainDb}">
                 </div>
                 ${isGain ? '' : `
                 <div class="field-group">
-                    <label>Freq (Hz)</label>
-                    <input type="number" class="url-input" min="20" max="20000" step="1" data-peq-side="${side}" data-peq-index="${index}" data-peq-field="frequencyHz" value="${band.frequencyHz}">
+                    <label for="${fieldIdPrefix}-frequency">Freq (Hz)</label>
+                    <input id="${fieldIdPrefix}-frequency" name="${fieldIdPrefix}-frequency" type="number" class="url-input" min="20" max="20000" step="1" data-peq-side="${side}" data-peq-index="${index}" data-peq-field="frequencyHz" value="${band.frequencyHz}">
                 </div>
                 <div class="field-group">
-                    <label>Q</label>
-                    <input type="number" class="url-input" min="0.1" max="20" step="0.1" data-peq-side="${side}" data-peq-index="${index}" data-peq-field="q" value="${band.q}">
+                    <label for="${fieldIdPrefix}-q">Q</label>
+                    <input id="${fieldIdPrefix}-q" name="${fieldIdPrefix}-q" type="number" class="url-input" min="0.1" max="20" step="0.1" data-peq-side="${side}" data-peq-index="${index}" data-peq-field="q" value="${band.q}">
                 </div>`}`}
             </div>
         </div>
@@ -7411,6 +7689,7 @@ function detectEffectsImportType(file) {
     const lowerName = file.name.toLowerCase();
     if (lowerName.endsWith('.irs') || lowerName.endsWith('.wav')) return 'convolver';
     if (lowerName.endsWith('.json')) return 'preset-json';
+    if (lowerName.endsWith('.zip')) return 'preset-bundle';
     return null;
 }
 
@@ -7418,12 +7697,12 @@ function updateEffectsImportUi() {
     const file = elements.effectsImportFile?.files?.[0] || null;
     const detectedType = detectEffectsImportType(file);
     if (elements.effectsImportFile) {
-        elements.effectsImportFile.accept = '.irs,.wav,.json,audio/wav,application/json';
+        elements.effectsImportFile.accept = '.irs,.wav,.json,.zip,audio/wav,application/json,application/zip';
     }
     if (elements.effectsImportFilename) {
         if (!file) {
-            elements.effectsImportFilename.textContent = 'Stereo convolver .irs/.wav or Preset .json';
-        } else if (detectedType === 'convolver' || detectedType === 'preset-json') {
+            elements.effectsImportFilename.textContent = 'Stereo convolver .irs/.wav, Preset .json, or Bundle .zip';
+        } else if (detectedType === 'convolver' || detectedType === 'preset-json' || detectedType === 'preset-bundle') {
             elements.effectsImportFilename.textContent = file.name;
         } else {
             elements.effectsImportFilename.textContent = `Unsupported file: ${file.name}`;
@@ -7431,7 +7710,7 @@ function updateEffectsImportUi() {
     }
     const importArea = document.getElementById('effects-import-area');
     if (importArea) {
-        importArea.classList.toggle('is-ready', detectedType === 'convolver' || detectedType === 'preset-json');
+        importArea.classList.toggle('is-ready', detectedType === 'convolver' || detectedType === 'preset-json' || detectedType === 'preset-bundle');
     }
 }
 
@@ -7457,7 +7736,10 @@ async function submitEffectsImport() {
     if (detectedType === 'preset-json') {
         return importEffectsPresetJson();
     }
-    elements.effectsStatus.innerHTML = '<div style="color: var(--danger);">Unsupported import file type. Use .irs, .wav, or preset .json.</div>';
+    if (detectedType === 'preset-bundle') {
+        return importEffectsPresetBundle();
+    }
+    elements.effectsStatus.innerHTML = '<div style="color: var(--danger);">Unsupported import file type. Use .irs, .wav, preset .json, or bundle .zip.</div>';
     showToast('Unsupported import file type', 'error');
 }
 
@@ -7499,6 +7781,46 @@ async function importEffectsPresetJson() {
         effectsImportInFlight = false;
     }
 }
+async function importEffectsPresetBundle() {
+    if (effectsImportInFlight) {
+        showToast('Import already in progress', 'warning');
+        return;
+    }
+    effectsImportInFlight = true;
+    const file = elements.effectsImportFile?.files?.[0] || null;
+    if (!file) {
+        effectsImportInFlight = false;
+        showToast('Please select a preset bundle first', 'error');
+        return;
+    }
+    const formData = new FormData();
+    formData.append('load_after_create', 'false');
+    formData.append('file', file);
+    if (elements.effectsStatus) elements.effectsStatus.innerHTML = `<div>Importing bundle: <strong>${escapeHtml(file.name)}</strong>…</div>`;
+    const importArea = document.getElementById('effects-import-area');
+    if (importArea) importArea.classList.add('is-busy');
+    try {
+        const resp = await fetch('/api/easyeffects/presets/import-bundle', {
+            method: 'POST',
+            body: formData,
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || 'Preset bundle import failed');
+        await fetchEffects();
+        if (elements.effectsImportFile) elements.effectsImportFile.value = '';
+        updateEffectsImportUi();
+        if (elements.effectsStatus) elements.effectsStatus.innerHTML = '';
+        const irCount = Array.isArray(data.irs) ? data.irs.length : 0;
+        showToast(`Imported preset bundle: ${data.preset?.name || file.name}${irCount ? ` (${irCount} IR)` : ''}`, 'success');
+    } catch (e) {
+        if (elements.effectsStatus) elements.effectsStatus.innerHTML = `<div style="color: var(--danger);">${escapeHtml(e.message)}</div>`;
+        showToast(e.message || 'Preset bundle import failed', 'error');
+    } finally {
+        if (importArea) importArea.classList.remove('is-busy');
+        effectsImportInFlight = false;
+    }
+}
+
 async function createConvolverPreset() {
     if (effectsImportInFlight) {
         showToast('Import already in progress', 'warning');

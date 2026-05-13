@@ -2499,22 +2499,35 @@ async def apple_touch_icon_root():
 async def site_webmanifest_root():
     return FileResponse(STATIC_DIR / "site.webmanifest", media_type="application/manifest+json")
 
+def _station_art_url_if_available(url: Optional[str]) -> str:
+    value = str(url or "").strip()
+    if not value:
+        return ""
+    if value.startswith("/static/station-art/"):
+        art_path = (STATIC_DIR / "station-art" / Path(value).name).resolve()
+        if not _path_within_root(art_path, STATIC_DIR / "station-art") or not art_path.is_file():
+            return ""
+    return value
+
+
+def _station_api_payload(station):
+    image_url = _station_art_url_if_available(station.image_url)
+    custom_image_url = _station_art_url_if_available(station.custom_image_url)
+    return {
+        "id": station.id,
+        "title": station.name,
+        "image": custom_image_url or image_url or "",
+        "image_url": image_url,
+        "custom_image_url": custom_image_url,
+        "stream_url": station.stream_url,
+        "input_url": station.input_url or station.stream_url,
+        "artist": "Radio",
+    }
+
+
 @app.get("/api/stations")
 async def list_stations():
-    stations = get_stations()
-    return [
-        {
-            "id": s.id,
-            "title": s.name,
-            "image": s.custom_image_url or s.image_url or "",
-            "image_url": s.image_url or "",
-            "custom_image_url": s.custom_image_url or "",
-            "stream_url": s.stream_url,
-            "input_url": s.input_url or s.stream_url,
-            "artist": "Radio",
-        }
-        for s in stations
-    ]
+    return [_station_api_payload(station) for station in get_stations()]
 
 
 @app.post("/api/stations")
@@ -2523,16 +2536,7 @@ async def create_station(req: StationUpsertRequest):
         station = add_station(req.name, req.stream_url, req.custom_image_url)
         return {
             "status": "ok",
-            "station": {
-                "id": station.id,
-                "title": station.name,
-                "image": station.custom_image_url or station.image_url or "",
-                "image_url": station.image_url or "",
-                "custom_image_url": station.custom_image_url or "",
-                "stream_url": station.stream_url,
-                "input_url": station.input_url or station.stream_url,
-                "artist": "Radio",
-            },
+            "station": _station_api_payload(station),
         }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -2544,16 +2548,7 @@ async def edit_station(station_id: str, req: StationUpsertRequest):
         station = update_station(station_id, req.name, req.stream_url, req.custom_image_url)
         return {
             "status": "ok",
-            "station": {
-                "id": station.id,
-                "title": station.name,
-                "image": station.custom_image_url or station.image_url or "",
-                "image_url": station.image_url or "",
-                "custom_image_url": station.custom_image_url or "",
-                "stream_url": station.stream_url,
-                "input_url": station.input_url or station.stream_url,
-                "artist": "Radio",
-            },
+            "station": _station_api_payload(station),
         }
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -3423,6 +3418,41 @@ async def download_easyeffects_preset_file(preset_name: str):
         raise HTTPException(status_code=403, detail="Preset path outside EasyEffects preset directory")
     if not preset_path.is_file():
         raise HTTPException(status_code=404, detail="Preset file missing")
+    try:
+        payload = json.loads(preset_path.read_text())
+    except Exception:
+        payload = None
+    kernel_names = easyeffects_manager._extract_kernel_names_from_payload(payload) if isinstance(payload, dict) else set()
+    ir_paths = []
+    for kernel_name in sorted(kernel_names):
+        ir_paths.extend(easyeffects_manager._find_ir_paths_for_kernel_name(kernel_name))
+    if ir_paths:
+        with tempfile.NamedTemporaryFile(prefix="fxroute-preset-", suffix=".zip", delete=False) as temp_file:
+            temp_zip_path = Path(temp_file.name)
+        used_names = set()
+        try:
+            with zipfile.ZipFile(temp_zip_path, "w", compression=zipfile.ZIP_STORED) as archive:
+                archive.write(preset_path, arcname="preset.json")
+                for ir_path in ir_paths:
+                    if ir_path.is_file() and _path_within_root(ir_path.resolve(), easyeffects_manager.irs_dir):
+                        archive.write(ir_path, arcname=_dedupe_archive_name(ir_path.name, used_names))
+                        archive.write(ir_path, arcname=_dedupe_archive_name(f"{ir_path.stem}.wav", used_names))
+                manifest = {
+                    "type": "fxroute-preset-bundle",
+                    "version": 1,
+                    "preset": preset_path.name,
+                    "irs": [path.name for path in ir_paths if path.is_file()],
+                }
+                archive.writestr("manifest.json", json.dumps(manifest, indent=2) + "\n")
+        except Exception:
+            temp_zip_path.unlink(missing_ok=True)
+            raise
+        return FileResponse(
+            temp_zip_path,
+            filename=f"{preset_path.stem}.zip",
+            media_type="application/zip",
+            background=BackgroundTask(_cleanup_temp_file, temp_zip_path),
+        )
     return FileResponse(preset_path, filename=preset_path.name)
 
 @app.get("/api/measurements")
@@ -3479,6 +3509,32 @@ async def delete_measurement_calibration(calibration_id: str):
         raise HTTPException(status_code=400, detail=str(exc))
     except KeyError:
         raise HTTPException(status_code=404, detail="Calibration file not found")
+
+
+@app.post("/api/measurements/house-curves")
+async def upload_measurement_house_curve(house_curve_file: UploadFile = File(...)):
+    global measurement_store
+    if not measurement_store:
+        raise HTTPException(status_code=503, detail="Measurement store not available")
+    filename = house_curve_file.filename or "house-curve.txt"
+    data = await house_curve_file.read()
+    try:
+        return measurement_store.upload_house_curve_file(filename, data)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.delete("/api/measurements/house-curves/{house_curve_id}")
+async def delete_measurement_house_curve(house_curve_id: str):
+    global measurement_store
+    if not measurement_store:
+        raise HTTPException(status_code=503, detail="Measurement store not available")
+    try:
+        return measurement_store.delete_house_curve_file(house_curve_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except KeyError:
+        raise HTTPException(status_code=404, detail="House curve file not found")
 
 
 @app.get("/api/measurements/{measurement_id}/file")
@@ -3821,6 +3877,94 @@ async def import_easyeffects_preset_json(
         raise HTTPException(status_code=400, detail=str(e))
     except RuntimeError as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/easyeffects/presets/import-bundle")
+async def import_easyeffects_preset_bundle(
+    file: UploadFile = File(...),
+    load_after_create: bool = Form(False),
+):
+    global easyeffects_manager
+    if not easyeffects_manager:
+        raise HTTPException(status_code=503, detail="EasyEffects manager not available")
+
+    with tempfile.NamedTemporaryFile(prefix="fxroute-preset-import-", suffix=".zip", delete=False) as temp_file:
+        temp_zip_path = Path(temp_file.name)
+        temp_file.write(await file.read())
+
+    try:
+        with zipfile.ZipFile(temp_zip_path) as archive:
+            if archive.testzip() is not None:
+                raise HTTPException(status_code=400, detail="Invalid ZIP archive")
+            safe_members = []
+            for member in archive.infolist():
+                safe_relative = _is_safe_relative_zip_path(member.filename)
+                if safe_relative is None or member.is_dir():
+                    continue
+                safe_members.append((member, safe_relative))
+
+            json_members = [(member, rel) for member, rel in safe_members if rel.suffix.lower() == ".json" and rel.name.lower() != "manifest.json"]
+            preferred_json = next(((member, rel) for member, rel in json_members if rel.name.lower() == "preset.json"), None)
+            if preferred_json is None:
+                preferred_json = json_members[0] if len(json_members) == 1 else None
+            if preferred_json is None:
+                raise HTTPException(status_code=400, detail="Preset bundle must contain exactly one preset JSON")
+
+            preset_member, preset_rel = preferred_json
+            preset_text = archive.read(preset_member).decode("utf-8-sig")
+            try:
+                preset_payload = json.loads(preset_text)
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"Preset JSON is invalid: {e}") from e
+            kernel_names = easyeffects_manager._extract_kernel_names_from_payload(preset_payload if isinstance(preset_payload, dict) else None)
+
+            easyeffects_manager.irs_dir.mkdir(parents=True, exist_ok=True)
+            imported_irs = []
+            ir_members_by_stem = {}
+            for member, rel in safe_members:
+                if rel.suffix.lower() not in {".irs", ".wav"}:
+                    continue
+                clean_ir_name = Path(rel.name).name
+                stem = Path(clean_ir_name).stem
+                if kernel_names and stem not in kernel_names:
+                    continue
+                existing = ir_members_by_stem.get(stem)
+                if existing is None or rel.suffix.lower() == ".irs":
+                    ir_members_by_stem[stem] = (member, clean_ir_name)
+
+            for _, (member, clean_ir_name) in sorted(ir_members_by_stem.items()):
+                destination = easyeffects_manager.irs_dir / clean_ir_name
+                with archive.open(member) as source, destination.open("wb") as target:
+                    shutil.copyfileobj(source, target)
+                imported_irs.append(destination.name)
+
+            missing_kernels = [name for name in sorted(kernel_names) if not easyeffects_manager._find_ir_paths_for_kernel_name(name)]
+            if missing_kernels:
+                raise HTTPException(status_code=400, detail=f"Preset bundle is missing IR file(s): {', '.join(missing_kernels)}")
+
+            preset_filename = preset_rel.name if preset_rel.name.lower() != "preset.json" else (Path(file.filename or "preset.json").stem + ".json")
+            created = easyeffects_manager.import_preset_json(preset_filename, preset_text)
+            if load_after_create:
+                easyeffects_manager.load_preset(created["name"])
+            status = easyeffects_manager.get_status()
+            await manager.broadcast({"type": "easyeffects", "data": status})
+            schedule_peak_monitor_refresh_after_effects_change("import-preset-bundle")
+            return {
+                "status": "ok",
+                "preset": created,
+                "irs": imported_irs,
+                "loaded": bool(load_after_create),
+                "active_preset": status.get("active_preset"),
+            }
+    except zipfile.BadZipFile:
+        raise HTTPException(status_code=400, detail="Invalid ZIP archive")
+    except UnicodeDecodeError as e:
+        raise HTTPException(status_code=400, detail=f"Preset JSON is not valid UTF-8 text: {e}")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        temp_zip_path.unlink(missing_ok=True)
 
 @app.post("/api/easyeffects/presets/create-with-ir")
 async def create_convolver_preset_with_ir(

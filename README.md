@@ -5,12 +5,37 @@ FXRoute is a browser-based audio control surface for Linux listening machines.
 It is built for mini PCs, desktops, ARM boards, and dedicated stereo boxes that run local playback, EasyEffects DSP, radio, library playback, measurement tools, and optional Spotify desktop control — all remote-controlled from a phone, tablet, or laptop on the local network.
 
 <p align="center">
-  <img src="media/screenshots/desktop/13-measurement-graph-reset.png" alt="FXRoute measurement graph with PEQ assistant" width="780">
+  <img src="media/before-after-r.png" alt="FXRoute measurement graph showing raw and corrected right-channel response" width="780">
 </p>
 
 <p align="center">
-  <strong>Measure, compare, and sketch PEQ corrections directly in the browser.</strong>
+  <strong>Measure, compare, and turn room-response results into convolver/PEQ corrections directly in the browser.</strong>
 </p>
+
+<table>
+  <tr>
+    <td width="50%"><img src="media/l-raw-mlp.png" alt="FXRoute raw left-channel measurement"></td>
+    <td width="50%"><img src="media/r-raw-mlp.png" alt="FXRoute raw right-channel measurement"></td>
+  </tr>
+  <tr>
+    <td align="center"><strong>Left-channel raw measurement</strong></td>
+    <td align="center"><strong>Right-channel raw measurement</strong></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="media/before-after-l.png" alt="FXRoute left-channel before and after correction comparison"></td>
+    <td width="50%"><img src="media/settings.png" alt="FXRoute convolver assistant settings"></td>
+  </tr>
+  <tr>
+    <td align="center"><strong>Before/after correction</strong></td>
+    <td align="center"><strong>Convolver assistant</strong></td>
+  </tr>
+  <tr>
+    <td colspan="2" align="center"><img src="media/tablet.png" alt="FXRoute measurement workflow on a tablet-sized display" width="360"></td>
+  </tr>
+  <tr>
+    <td colspan="2" align="center"><strong>Tablet control</strong></td>
+  </tr>
+</table>
 
 <table>
   <tr>
@@ -50,9 +75,11 @@ It is built for mini PCs, desktops, ARM boards, and dedicated stereo boxes that 
 - local music playback with queue, playlists, uploads, ZIP album imports, and media URL imports
 - internet radio with built-in and custom stations
 - Spotify desktop control through `playerctl` / MPRIS
-- EasyEffects preset switching, PEQ, convolver import, output helpers, and A/B compare
+- EasyEffects preset switching, PEQ, convolver import/export, output helpers, and A/B compare
+- convolver preset bundles with EasyEffects `.irs`, REW-friendly `.wav` impulse copy, preset JSON, and reimport support
+- bundled 30-second 1 kHz stereo FLAC level tone at `-12 dBFS` for safe level checks
 - global DSP helpers such as limiter, headroom, autogain, bass enhancement, and tone modes
-- practical room/speaker measurement workflow with host microphone capture, calibration files, smoothing, saved runs, and PEQ draft transfer
+- practical room/speaker measurement workflow with host microphone capture, calibration files, smoothing, saved runs, PEQ draft transfer, FIR/convolver preset creation, and custom REW-style house curves
 - sample-rate-aware playback handling for local files, radio, Spotify, and Bluetooth handoff cases
 - Bluetooth input visibility/control when the host audio stack supports it
 - optional local HTTPS/Caddy setup with downloadable local certificate for trusted LAN clients
@@ -115,8 +142,8 @@ Typical URLs:
 
 - **Radio** — built-in and custom internet stations
 - **Library** — local files, playlists, uploads, imports, downloads, and deletion
-- **DSP** — EasyEffects presets, PEQ, convolver, helpers, A/B compare, and preset creation
-- **Measure** — practical host-mic measurement and tuning workflow
+- **DSP** — EasyEffects presets, PEQ, convolver import/export, helpers, A/B compare, and preset creation
+- **Measure** — practical host-mic measurement, PEQ/FIR tuning, calibration files, and custom house curves
 - **Spotify** — control a local Spotify desktop client
 - **Technical settings** — output selection, source state, Bluetooth status, and local certificate access
 

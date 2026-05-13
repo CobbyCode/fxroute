@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.6.0 (2026-05-12)
+- Added the measurement convolver/FIR workflow for creating EasyEffects-ready correction presets from saved measurements.
+- Added REW-style custom house curve import/delete support for measurement target curves.
+- Added convolver filter ZIP export/reimport, including EasyEffects `.irs` files and REW-friendly `.wav` impulse copies.
+- Added a bundled 30-second 1 kHz stereo FLAC level tone at `-12 dBFS` for safe level checks.
+- Improved DSP import documentation around stereo/separate impulse responses, REW filters, exported FXRoute filters, and compatible EasyEffects preset exports.
+- Cleaned up browser accessibility warnings in dynamic PEQ controls and avoided stale missing station-art requests.
+- Documented normal PipeWire/Pulse LAN-audio inputs such as `shairport-sync` / AirPlay and Scream LAN audio.
+
 ## 0.5.2 (2026-05-05)
 - Added M3U/M3U8 playlist import/export support while keeping FXRoute playlist storage in the existing internal JSON format.
 - Kept local/radio volume changes responsive by avoiding unnecessary Spotify status refreshes on the local output-volume endpoint.

@@ -12,7 +12,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=0.4.458">
     <link rel="manifest" href="/static/site.webmanifest?v=0.4.458">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/static/style.css?v=0.5.2-mobile-name-v2">
+    <link rel="stylesheet" href="/static/style.css?v=0.6.0">
 </head>
 <body>
     <!-- Offline indicator -->
@@ -617,6 +617,22 @@
                                     </label>
                                     <p id="measurement-calibration-name" class="measurement-inline-note hidden"></p>
                                 </div>
+                                <div class="field-group">
+                                    <label for="measurement-house-curve-select">House curve / target file (optional)</label>
+                                    <div class="measurement-calibration-select-row">
+                                        <select id="measurement-house-curve-select" class="url-input">
+                                            <option value="">Built-in target curves only</option>
+                                        </select>
+                                        <button id="measurement-house-curve-delete" class="btn-danger" type="button">Delete</button>
+                                    </div>
+                                    <label for="measurement-house-curve-file" id="measurement-house-curve-upload" class="upload-area upload-area-file-primary measurement-calibration-upload-area">
+                                        <span class="upload-area-icon">📎</span>
+                                        <span class="upload-area-text">Drop REW house curve file or <u>upload</u></span>
+                                        <span id="measurement-house-curve-upload-name" class="upload-area-filename">No house curve file selected.</span>
+                                        <input type="file" id="measurement-house-curve-file" class="upload-area-input" accept=".txt,.csv,text/plain">
+                                    </label>
+                                    <p id="measurement-house-curve-name" class="measurement-inline-note hidden"></p>
+                                </div>
                             </div>
                         </section>
                         <section class="effects-card measurement-card measurement-card-graph">
@@ -723,6 +739,9 @@
                                             <option value="linear_4096">Linear FIR 4096 taps</option>
                                             <option value="linear_8192">Linear FIR 8192 taps</option>
                                             <option value="linear_32768">Linear FIR 32768 taps</option>
+                                            <option value="minimum_4096">Minimum phase FIR 4096 taps</option>
+                                            <option value="minimum_8192">Minimum phase FIR 8192 taps</option>
+                                            <option value="minimum_32768">Minimum phase FIR 32768 taps</option>
                                         </select>
                                     </div>
                                 </div>
@@ -811,6 +830,6 @@
     <!-- Toast notifications -->
     <div id="toast-container" class="toast-container"></div>
 
-    <script src="/static/app.js?v=0.5.2-mobile-name-v2"></script>
+    <script src="/static/app.js?v=0.6.0"></script>
 </body>
 </html>

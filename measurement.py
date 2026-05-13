@@ -117,6 +117,7 @@ class MeasurementStore:
         self.jobs_dir = self.state_root / "fxroute" / "measurements"
         self.captures_dir = self.jobs_dir / "captures"
         self.calibrations_dir = self.jobs_dir / "calibrations"
+        self.house_curves_dir = self.jobs_dir / "house_curves"
         self.settings_path = self.jobs_dir / "settings.json"
         self.job_records_dir = self.jobs_dir / "jobs"
         self.playbacks_dir = self.jobs_dir / "playbacks"
@@ -125,6 +126,7 @@ class MeasurementStore:
             self.jobs_dir,
             self.captures_dir,
             self.calibrations_dir,
+            self.house_curves_dir,
             self.job_records_dir,
             self.playbacks_dir,
         ]:
@@ -151,6 +153,7 @@ class MeasurementStore:
             },
             "calibrations": self._list_calibration_files(),
             "active_calibration_file_id": self.get_active_calibration_file_id(),
+            "house_curves": self._list_house_curve_files(),
             "scope_note": MEASUREMENT_SCOPE_NOTE,
             "measurements": measurements,
         }
@@ -390,6 +393,28 @@ class MeasurementStore:
             "calibrations": files,
             "active_calibration_file_id": active_id,
         }
+
+    def upload_house_curve_file(self, filename: str, data: bytes) -> dict[str, Any]:
+        if not data:
+            raise ValueError("House curve file is empty")
+        points = self._parse_house_curve_bytes(data)
+        safe_name = self._safe_filename(filename or "house-curve.txt")
+        target_path = self.house_curves_dir / f"{uuid4().hex[:10]}-{safe_name}"
+        target_path.write_bytes(data)
+        return {"status": "ok", "house_curves": self._list_house_curve_files(), "uploaded_house_curve_id": target_path.name, "points": points}
+
+    def delete_house_curve_file(self, house_curve_ref: str) -> dict[str, Any]:
+        ref = Path(str(house_curve_ref or "")).name.strip()
+        if not ref:
+            raise ValueError("House curve file id is required")
+        path = self.house_curves_dir / ref
+        if not path.exists() or not path.is_file():
+            raise KeyError(ref)
+        path.unlink()
+        return {"status": "ok", "house_curves": self._list_house_curve_files()}
+
+    def get_house_curve_state(self) -> dict[str, Any]:
+        return {"status": "ok", "house_curves": self._list_house_curve_files()}
 
     def set_active_calibration_file_id(self, calibration_ref: str | None) -> dict[str, Any]:
         ref = Path(str(calibration_ref or "")).name.strip()
@@ -2017,10 +2042,69 @@ class MeasurementStore:
             "applied": False,
         }
 
+    def _list_house_curve_files(self) -> list[dict[str, Any]]:
+        entries: list[dict[str, Any]] = []
+        seen_filenames: set[str] = set()
+        for path in sorted(self.house_curves_dir.glob("*"), key=lambda item: item.stat().st_mtime, reverse=True):
+            if not path.is_file():
+                continue
+            display_name = self._display_house_curve_filename(path.name)
+            if display_name in seen_filenames:
+                continue
+            try:
+                points = self._parse_house_curve_bytes(path.read_bytes())
+            except Exception:
+                continue
+            seen_filenames.add(display_name)
+            entries.append(
+                {
+                    "id": path.name,
+                    "filename": display_name,
+                    "path": str(path),
+                    "points": points,
+                    "modified_at": datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).isoformat(),
+                }
+            )
+        return entries
+
     @staticmethod
     def _display_calibration_filename(value: str) -> str:
         name = Path(value or "").name
         return re.sub(r"^[0-9a-f]{10}-", "", name, count=1) or name or "calibration.txt"
+
+    @staticmethod
+    def _display_house_curve_filename(value: str) -> str:
+        name = Path(value or "").name
+        display_name = re.sub(r"^[0-9a-f]{10}-", "", name, count=1) or name or "house-curve.txt"
+        stem = Path(display_name).stem
+        return stem or display_name
+
+    @staticmethod
+    def _parse_house_curve_bytes(data: bytes) -> list[list[float]]:
+        text = data.decode("utf-8", errors="ignore")
+        points: list[list[float]] = []
+        previous_frequency = 0.0
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            if not line or not re.match(r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)", line):
+                continue
+            parts = re.split(r"[\s,;]+", line)
+            if len(parts) < 2:
+                continue
+            try:
+                frequency = float(parts[0])
+                offset = float(parts[1])
+            except ValueError:
+                continue
+            if not math.isfinite(frequency) or not math.isfinite(offset) or frequency <= 0:
+                continue
+            if frequency <= previous_frequency:
+                raise ValueError("House curve frequencies must be strictly increasing")
+            previous_frequency = frequency
+            points.append([frequency, offset])
+        if len(points) < 2:
+            raise ValueError("House curve needs at least two frequency / dB pairs")
+        return points
 
     def _parse_calibration_file(self, path: Path) -> tuple[np.ndarray, np.ndarray] | None:
         text = path.read_text(encoding="utf-8", errors="ignore")

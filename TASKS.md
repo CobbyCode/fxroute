@@ -34,6 +34,7 @@ Add a first technical settings surface to FXRoute without disrupting the current
 - [ ] FX-MEASURE-004 — Extend the assistant to 3-4 manual filters with enable/disable and Copy All to PEQ
 - [ ] FX-MEASURE-005 — Evaluate optional conservative Auto-PEQ later without turning the feature into a full REW replacement
 - [x] FX-CONVOLVER-001 — Implement experimental Convolver Assist v1 beside PEQ Assist with guarded PEQ mode behavior
+- [x] FX-CONVOLVER-PHASE-002 — Add and validate Linear/Minimum phase FIR comparison modes; remove unusable Mixed/Hybrid path
 
 ## Notes
 - Current accepted baseline already includes compare/combine, PEQ gain, IR cleanup, and no autoload on import.

@@ -41,7 +41,7 @@ A normal listening session looks like this:
 2. Use the bottom playback bar for play/pause, volume, seek, and queue control.
 3. Open **DSP** to choose or compare the sound profile.
 4. If you want to tune the room, open **Measure** from the DSP page.
-5. Save useful measurements or transfer rough PEQ ideas into a new preset.
+5. Save useful measurements, transfer rough PEQ ideas into a new preset, or create a convolver/FIR correction preset.
 
 EasyEffects does the live audio processing. FXRoute makes it easier to control, organize, compare, and edit presets.
 
@@ -100,18 +100,23 @@ Main tools:
 
 - **A/B compare** — switch between two presets while listening.
 - **Combine** — build a new preset from up to three existing presets.
-- **Import filter** — import stereo or separate left/right filters.
+- **Import filters** — import stereo filters, separate left/right filters, exported FXRoute filters, and compatible correction files.
 - **Create PEQ preset** — build left/right parametric EQ bands.
 - **Output extras** — add global helpers like protection limiter, headroom, autogain, bass enhancement, or tone effect.
 
-Typical DSP files:
+Typical import formats:
 
-- EasyEffects preset JSON
-- convolver `.irs` files
-- WAV impulse responses
-- REW text filters for left/right PEQ-style correction
+- stereo `.irs` or `.wav` impulse responses
+- separate left/right `.irs` or `.wav` impulse responses
+- REW text filters for PEQ-style correction
+- exported FXRoute filter ZIPs for reimport on the same or another FXRoute system
+- compatible EasyEffects preset exports
 
 Tip: use A/B compare while real music is playing. It is usually easier to judge a preset by switching quickly than by staring at numbers.
+
+For level checks, FXRoute includes a 30-second 1 kHz stereo FLAC tone at `-12 dBFS` peak: `/static/audio/level-tone-1khz-minus12dbfs-48k.flac`. It is intentionally not a 0 dBFS full-scale tone.
+
+When a convolver filter is exported from FXRoute, the download also includes a `.wav` copy of the impulse so it can be inspected in tools such as REW. Import the exported ZIP again through **DSP → Import filters** to restore the ready-to-use filter.
 
 ### EasyEffects installation mode
 
@@ -134,14 +139,18 @@ The measurement assistant is meant for practical room-tuning work:
 - choose left, right, or stereo measurement
 - select a host microphone
 - optionally load a microphone calibration file
+- optionally load a REW-style house curve text file as a target curve
 - run a sweep
 - view the frequency response from 20 Hz to 20 kHz
 - switch graph smoothing: raw, 1/6 octave, 1/3 octave, or 1 octave
 - save useful runs
 - use the PEQ assistant to sketch a few correction filters
+- use the convolver assistant to create FIR correction presets from saved measurements
 - transfer draft filters into **Create PEQ preset**
 
 Think of it as a tuning assistant for broad room and speaker decisions: bass problems, channel differences, correction direction, and sanity checks.
+
+House curve files use simple REW-compatible frequency/dB pairs, one point per line, with frequency first. Spaces, tabs, or commas are accepted. Frequencies must be strictly increasing, and at least two points are required.
 
 ## 9. Technical settings
 
@@ -152,7 +161,10 @@ Useful settings:
 - choose the audio output device
 - check the current source mode
 - see Bluetooth input status when the host supports it
+- use normal PipeWire/Pulse inputs created by tools such as `shairport-sync` / AirPlay or Scream LAN audio
 - download the local HTTPS certificate when the optional HTTPS proxy is enabled
+
+FXRoute does not need special integration for every LAN-audio tool. If another service creates a normal system audio input, it should appear like any other input in Technical settings.
 
 Use this area when audio comes from the wrong output, the source mode looks wrong, Bluetooth input needs checking, or a client device needs the local HTTPS certificate.
 
