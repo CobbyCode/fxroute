@@ -14,31 +14,6 @@ It is built for mini PCs, desktops, ARM boards, and dedicated stereo boxes that 
 
 <table>
   <tr>
-    <td width="50%"><img src="media/l-raw-mlp.png" alt="FXRoute raw left-channel measurement"></td>
-    <td width="50%"><img src="media/r-raw-mlp.png" alt="FXRoute raw right-channel measurement"></td>
-  </tr>
-  <tr>
-    <td align="center"><strong>Left-channel raw measurement</strong></td>
-    <td align="center"><strong>Right-channel raw measurement</strong></td>
-  </tr>
-  <tr>
-    <td width="50%"><img src="media/before-after-l.png" alt="FXRoute left-channel before and after correction comparison"></td>
-    <td width="50%"><img src="media/settings.png" alt="FXRoute convolver assistant settings"></td>
-  </tr>
-  <tr>
-    <td align="center"><strong>Before/after correction</strong></td>
-    <td align="center"><strong>Convolver assistant</strong></td>
-  </tr>
-  <tr>
-    <td colspan="2" align="center"><img src="media/tablet.png" alt="FXRoute measurement workflow on a tablet-sized display" width="360"></td>
-  </tr>
-  <tr>
-    <td colspan="2" align="center"><strong>Tablet control</strong></td>
-  </tr>
-</table>
-
-<table>
-  <tr>
     <td width="50%"><img src="media/screenshots/desktop/02-routing-player.png" alt="FXRoute routing and player view"></td>
     <td width="50%"><img src="media/screenshots/desktop/04-dsp-presets.png" alt="FXRoute DSP preset controls"></td>
   </tr>
