@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.1 (2026-05-13)
+- Added Arch/Manjaro installer support via pacman, including Arch package names for Python, PipeWire, Bluetooth, Flatpak, and playback dependencies.
+- Made LAN IP detection portable on systems where `hostname -I` is unavailable by falling back to `ip route` / `ip addr` discovery.
+- Extended the optional system package update helper to support pacman-based systems.
+
 ## 0.6.0 (2026-05-12)
 - Added the measurement convolver/FIR workflow for creating EasyEffects-ready correction presets from saved measurements.
 - Added REW-style custom house curve import/delete support for measurement target curves.

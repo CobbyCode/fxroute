@@ -166,7 +166,16 @@ valid_local_hostname() {
 }
 
 primary_lan_ip() {
-  hostname -I 2>/dev/null | awk '{print $1}'
+  local ip=""
+  ip="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
+  if [[ -z "$ip" ]] && command -v ip >/dev/null 2>&1; then
+    ip="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i=1; i<=NF; i++) if ($i == "src") {print $(i+1); exit}}' || true)"
+  fi
+  if [[ -z "$ip" ]] && command -v ip >/dev/null 2>&1; then
+    ip="$(ip -4 addr show scope global 2>/dev/null | awk '/inet / {sub(/\/.*/, "", $2); print $2; exit}' || true)"
+  fi
+  [[ -n "$ip" ]] && printf '%s\n' "$ip"
+  return 0
 }
 
 avahi_is_present() {
@@ -350,8 +359,10 @@ confirm_supported_distro() {
     PACKAGE_MANAGER="dnf"
   elif command -v zypper >/dev/null 2>&1; then
     PACKAGE_MANAGER="zypper"
+  elif command -v pacman >/dev/null 2>&1; then
+    PACKAGE_MANAGER="pacman"
   else
-    die "Unsupported distro. Expected apt, dnf, or zypper."
+    die "Unsupported distro. Expected apt, dnf, zypper, or pacman."
   fi
   pass "distro detection: $PACKAGE_MANAGER"
 }
@@ -373,6 +384,9 @@ pkg_install() {
       ;;
     zypper)
       run_cmd "${SUDO_CMD[@]}" zypper --non-interactive install --no-recommends "${packages[@]}"
+      ;;
+    pacman)
+      run_cmd "${SUDO_CMD[@]}" pacman -Syu --needed --noconfirm "${packages[@]}"
       ;;
   esac
 }
@@ -402,6 +416,10 @@ ensure_native_packages() {
     zypper)
       core_packages=(python3 python3-pip mpv ffmpeg playerctl flatpak)
       audio_stack_packages=(bluez wireplumber pipewire-tools pipewire-pulseaudio pulseaudio-utils pipewire-spa-plugins-0_2)
+      ;;
+    pacman)
+      core_packages=(python python-pip mpv ffmpeg playerctl flatpak)
+      audio_stack_packages=(bluez bluez-utils wireplumber pipewire pipewire-pulse libpulse)
       ;;
   esac
 
@@ -464,6 +482,9 @@ ensure_native_packages() {
         ;;
       zypper)
         pkg_install python3-virtualenv
+        ;;
+      pacman)
+        die "python venv support is missing after package install"
         ;;
       *)
         die "python3 venv support is missing after package install"
@@ -1331,7 +1352,7 @@ offer_optional_local_lan_name() {
 
   case "$PACKAGE_MANAGER" in
     apt) avahi_pkg="avahi-daemon" ;;
-    dnf|zypper) avahi_pkg="avahi" ;;
+    dnf|zypper|pacman) avahi_pkg="avahi" ;;
     *)
       warn "Skipping optional .local setup on unsupported distro package manager: $PACKAGE_MANAGER"
       return 0
