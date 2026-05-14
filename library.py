@@ -64,6 +64,20 @@ def _track_sort_key(track: Track) -> tuple:
     return (folder, disc, track_no, filename, (track.title or "").lower())
 
 
+def _filename_artist_title(filepath: Path) -> tuple[Optional[str], Optional[str]]:
+    """Best-effort fallback for files named like 'Artist - Title.ext'."""
+    stem = re.sub(r"\s+", " ", filepath.stem).strip()
+    parts = re.split(r"\s+-\s+", stem, maxsplit=1)
+    if len(parts) != 2:
+        return None, None
+    artist, title = (part.strip(" -_\t") for part in parts)
+    if not artist or not title:
+        return None, None
+    if len(artist) < 2 or len(title) < 2:
+        return None, None
+    return artist, title
+
+
 def _probe_sample_rate_with_ffprobe(filepath: Path) -> Optional[int]:
     try:
         completed = subprocess.run(
@@ -239,6 +253,12 @@ class LibraryScanner:
 
             if sample_rate_hz is None:
                 sample_rate_hz = _probe_sample_rate_with_ffprobe(filepath)
+
+            filename_artist, filename_title = _filename_artist_title(filepath)
+            if not title and filename_title:
+                title = filename_title
+            if not artist and filename_artist:
+                artist = filename_artist
 
             if not title:
                 title = filepath.stem
