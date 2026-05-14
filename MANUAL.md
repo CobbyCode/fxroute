@@ -80,7 +80,8 @@ Use **Library** for local files and imported music.
 You can:
 
 - play local tracks from the music folder
-- search by title or artist
+- browse by folder or use the full track list
+- search by folder, title, artist, album, or album artist
 - shuffle or loop the current queue
 - select multiple tracks
 - save selected tracks as a playlist
@@ -89,6 +90,8 @@ You can:
 - download or delete selected tracks
 
 Typical supported formats include MP3, FLAC, WAV, OGG/Opus/WebM, M4A, M3U/M3U8 playlists, and ZIP album imports. Exact support depends on the host tools installed by the installer.
+
+FXRoute keeps library and playlist lists text-only for speed. When a local track starts, the Now Playing cue can show available folder or embedded cover art. For files without metadata, names like `Artist - Title.ext` are used as a conservative fallback for display.
 
 A NAS can be used as the library by mounting its SMB/Samba share locally, then setting `MUSIC_ROOT` in `.env` to that mount path, for example `/mnt/music`.
 

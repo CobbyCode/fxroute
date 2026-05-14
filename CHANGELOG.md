@@ -1,7 +1,14 @@
 # Changelog
 
 ## Unreleased
+
+## 0.6.2 (2026-05-15)
 - Hide Spotify UI entry points unless a usable local Spotify client is actually installed, and ignore leftover Flatpak user data from previous Spotify installs.
+- Added folder browsing actions for the local library and improved folder/path-first ordering while honoring disc and track numbers when available.
+- Use local audio metadata for library search and display, including album, album artist, disc number, and track number fields.
+- Added a lightweight Now Playing cover cue for local tracks with lazy, cached cover lookup; library and playlist lists remain text-only.
+- Infer artist and title from `Artist - Title.ext` filenames only when matching metadata tags are missing.
+- Clarified installer access URLs and music-root prompting.
 
 ## 0.6.1 (2026-05-13)
 - Added optional USB serial amplifier-controller support for status monitoring and input/auto-mode control.
