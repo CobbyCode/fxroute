@@ -38,17 +38,36 @@ def playerctl_available() -> bool:
 
 
 def spotify_installed() -> bool:
+    """Return True only when a usable local Spotify client is installed.
+
+    Per-user Flatpak data in ~/.var/app/com.spotify.Client can survive an
+    uninstall, so it must not make the UI expose Spotify controls by itself.
+    """
     if shutil.which("spotify") is not None:
         return True
 
-    flatpak_markers = [
+    flatpak_cmd = shutil.which("flatpak")
+    if flatpak_cmd is not None:
+        try:
+            import subprocess
+
+            result = subprocess.run(
+                [flatpak_cmd, "info", "com.spotify.Client"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=1.5,
+                check=False,
+            )
+            if result.returncode == 0:
+                return True
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+    flatpak_install_markers = [
         Path.home() / ".local/share/flatpak/app/com.spotify.Client",
         Path("/var/lib/flatpak/app/com.spotify.Client"),
-        Path.home() / ".local/share/flatpak/exports/share/applications/com.spotify.Client.desktop",
-        Path("/var/lib/flatpak/exports/share/applications/com.spotify.Client.desktop"),
-        Path.home() / ".var/app/com.spotify.Client",
     ]
-    return any(marker.exists() for marker in flatpak_markers)
+    return any(marker.exists() for marker in flatpak_install_markers)
 
 # ---------------------------------------------------------------------------
 # Source capability flags (source-agnostic model)

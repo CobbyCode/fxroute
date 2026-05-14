@@ -1,5 +1,8 @@
 # Changelog
 
+## Unreleased
+- Hide Spotify UI entry points unless a usable local Spotify client is actually installed, and ignore leftover Flatpak user data from previous Spotify installs.
+
 ## 0.6.1 (2026-05-13)
 - Added optional USB serial amplifier-controller support for status monitoring and input/auto-mode control.
 - Added a measurement convolver DSP guard layer with explicit Max Cut and optional Dip Guard controls, split FIR type/tap selection, 2048/16384 tap options, and a Linear phase 8192 default.

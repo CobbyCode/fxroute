@@ -2027,8 +2027,12 @@ function reconcileFooterSource() {
     setFooterSource('local', 'fallback-local');
 }
 
+function spotifyIsInstalled(data = window.__spotifyLastData) {
+    return data?.installed === true;
+}
+
 function shouldPollSpotify() {
-    return window.__visibleTab === 'spotify' || window.__footerSource === 'spotify';
+    return spotifyIsInstalled() && (window.__visibleTab === 'spotify' || window.__footerSource === 'spotify');
 }
 
 function syncFooterOwnershipFromPlayback(playback = state.playback) {
@@ -8038,11 +8042,30 @@ function shouldAdoptSpotifyUpdate(data) {
     return window.__footerSource === 'spotify';
 }
 
+function setSpotifyUiVisibility(installed) {
+    const available = installed === true;
+    const visible = available && !nonAppSourceModeActive();
+    const tabPanel = document.getElementById('tab-spotify');
+    if (spotifyElements.tabBtn) {
+        spotifyElements.tabBtn.hidden = !available;
+        spotifyElements.tabBtn.style.display = available ? '' : 'none';
+        spotifyElements.tabBtn.classList.toggle('hidden', !visible);
+    }
+    if (tabPanel) {
+        tabPanel.hidden = !available;
+        tabPanel.classList.toggle('hidden', !visible);
+    }
+    if (!visible && window.__visibleTab === 'spotify') {
+        switchTab('radio');
+    }
+}
+
 function handleIncomingSpotifyState(data, options = {}) {
     if (!data) return;
     const { renderTab = true, renderFooter = true } = options;
-    if (spotifyElements.tabBtn) {
-        spotifyElements.tabBtn.style.display = data.installed === false ? 'none' : '';
+    setSpotifyUiVisibility(data.installed === true);
+    if (data.installed !== true) {
+        stopSpotifyPoll();
     }
     const previousTrackKey = spotifyTrackKey(window.__spotifyLastData || {});
     const nextTrackKey = spotifyTrackKey(data);
@@ -8091,8 +8114,10 @@ function renderSpotify(data) {
     const caps = data.capabilities || {};
 
     // ---- Tab visibility: hide tab entirely if Spotify not installed ----
-    if (el.tabBtn) {
-        el.tabBtn.style.display = data.installed === false ? 'none' : '';
+    setSpotifyUiVisibility(data.installed === true);
+    if (data.installed !== true) {
+        updateGlobalControlsForSource();
+        return;
     }
 
     // ---- Available check (playerctl missing) ----

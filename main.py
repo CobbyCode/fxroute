@@ -2294,6 +2294,9 @@ def _schedule_spotify_playerctl_event_detect(reason: str) -> None:
 
 async def _spotify_playerctl_watch_loop() -> None:
     logger.info("Spotify playerctl watch loop entered")
+    if not spotify_installed():
+        logger.info("Spotify playerctl watch skipped: Spotify client not installed")
+        return
     playerctl_path = shutil.which("playerctl")
     if not playerctl_path:
         logger.info("Spotify playerctl watch skipped: playerctl not available")
