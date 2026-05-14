@@ -175,6 +175,7 @@ let wsConnectSerial = 0;
 let playbackActionInFlight = false;
 let pendingPlaybackRequestId = 0;
 let nowPlayingCueTimer = null;
+let nowPlayingCueCoverAbort = null;
 let pendingFooterSingleTrackStart = null;
 let pauseActionRequestId = 0;
 const FOOTER_SINGLE_TRACK_START_LOCK_MS = 5000;
@@ -8044,37 +8045,67 @@ function trackCoverUrl(track) {
     if (!track || track.source !== 'local' || !track.id) return '';
     return `/api/tracks/cover/${encodeURIComponent(track.id)}`;
 }
+function scheduleNowPlayingCueRemoval(cue, delayMs = 4200) {
+    if (nowPlayingCueTimer) clearTimeout(nowPlayingCueTimer);
+    nowPlayingCueTimer = setTimeout(() => {
+        cue.classList.add('remove');
+        cue.addEventListener('animationend', () => cue.remove(), { once: true });
+        nowPlayingCueTimer = null;
+    }, delayMs);
+}
+async function revealNowPlayingCoverWhenReady(cue, img, coverUrl) {
+    if (!coverUrl) return;
+    const controller = new AbortController();
+    nowPlayingCueCoverAbort = controller;
+    const timeout = setTimeout(() => controller.abort(), 2500);
+    let objectUrl = '';
+    try {
+        const resp = await fetch(coverUrl, { signal: controller.signal, cache: 'force-cache' });
+        if (!resp.ok) return;
+        const blob = await resp.blob();
+        objectUrl = URL.createObjectURL(blob);
+        img.src = objectUrl;
+        if (img.decode) await img.decode();
+        if (!document.body.contains(cue) || nowPlayingCueCoverAbort !== controller) return;
+        img.classList.add('is-ready');
+        cue.classList.add('has-cover');
+        scheduleNowPlayingCueRemoval(cue, 3600);
+    } catch (e) {
+        // Slow/missing covers should not degrade the now-playing cue.
+    } finally {
+        clearTimeout(timeout);
+        if (nowPlayingCueCoverAbort === controller) nowPlayingCueCoverAbort = null;
+        if (objectUrl) {
+            setTimeout(() => URL.revokeObjectURL(objectUrl), 8000);
+        }
+    }
+}
 function showNowPlayingCue(track, message = 'Now playing') {
     if (!track) return;
     if (nowPlayingCueTimer) {
         clearTimeout(nowPlayingCueTimer);
         nowPlayingCueTimer = null;
     }
+    if (nowPlayingCueCoverAbort) {
+        nowPlayingCueCoverAbort.abort();
+        nowPlayingCueCoverAbort = null;
+    }
     elements.toastContainer.querySelectorAll('.now-playing-cue').forEach(item => item.remove());
     const cue = document.createElement('div');
-    cue.className = 'toast info now-playing-cue';
+    cue.className = 'toast info now-playing-cue no-cover';
     const coverUrl = trackCoverUrl(track);
     cue.innerHTML = `
-        <img class="now-playing-cover" alt="" loading="lazy">
+        <img class="now-playing-cover" alt="">
         <div class="now-playing-text">
             <div class="now-playing-label">${escapeHtml(message)}</div>
             <div class="now-playing-title">${escapeHtml(track.title || 'Unknown track')}</div>
             <div class="now-playing-meta">${escapeHtml([track.artist, track.album].filter(Boolean).join(' · '))}</div>
         </div>
     `;
-    const img = cue.querySelector('.now-playing-cover');
-    if (coverUrl) {
-        img.addEventListener('error', () => cue.classList.add('no-cover'), { once: true });
-        img.src = coverUrl;
-    } else {
-        cue.classList.add('no-cover');
-    }
     elements.toastContainer.appendChild(cue);
-    nowPlayingCueTimer = setTimeout(() => {
-        cue.classList.add('remove');
-        cue.addEventListener('animationend', () => cue.remove(), { once: true });
-        nowPlayingCueTimer = null;
-    }, 4200);
+    scheduleNowPlayingCueRemoval(cue, 4200);
+    const img = cue.querySelector('.now-playing-cover');
+    revealNowPlayingCoverWhenReady(cue, img, coverUrl);
 }
 // Library actions
 function setupLibraryActions() {

@@ -3403,17 +3403,21 @@ input[type="number"]::-webkit-outer-spin-button {
     padding: 0.65rem 0.85rem;
 }
 .now-playing-cover {
-    width: 56px;
+    width: 0;
     height: 56px;
     border-radius: 0.7rem;
     object-fit: cover;
     flex: 0 0 auto;
-    background: var(--bg-elevated);
+    opacity: 0;
+    border: 0;
+    box-shadow: none;
+    transition: width 0.18s var(--ease), opacity 0.18s var(--ease);
+}
+.now-playing-cue.has-cover .now-playing-cover.is-ready {
+    width: 56px;
+    opacity: 1;
     border: 1px solid var(--border);
     box-shadow: 0 6px 18px var(--shadow);
-}
-.now-playing-cue.no-cover .now-playing-cover {
-    display: none;
 }
 .now-playing-text {
     min-width: 0;
