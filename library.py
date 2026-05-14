@@ -2,6 +2,7 @@
 
 import logging
 import os
+import re
 import subprocess
 from datetime import datetime
 from pathlib import Path
@@ -36,6 +37,31 @@ def _first_tag_value(tags: Any, *keys: str) -> Optional[str]:
             if text:
                 return text
     return None
+
+
+def _tag_number(tags: Any, *keys: str) -> Optional[int]:
+    """Parse a numeric tag value such as '03', '3/12', or MP4 tuple values."""
+    raw = _first_tag_value(tags, *keys)
+    if not raw:
+        return None
+    match = re.search(r"\d+", raw)
+    if not match:
+        return None
+    try:
+        value = int(match.group(0))
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
+def _track_sort_key(track: Track) -> tuple:
+    """Stable library ordering: folder/file first, then tag track order within folders."""
+    path = track.path or Path("")
+    folder = path.parent.as_posix().lower()
+    filename = path.name.lower()
+    disc = track.disc_number if track.disc_number is not None else 0
+    track_no = track.track_number if track.track_number is not None else 9999
+    return (folder, disc, track_no, filename, (track.title or "").lower())
 
 
 def _probe_sample_rate_with_ffprobe(filepath: Path) -> Optional[int]:
@@ -147,8 +173,9 @@ class LibraryScanner:
                         except Exception as e:
                             logger.warning(f"Failed to read metadata for {filepath}: {e}")
 
-            # Sort by path for consistency
-            tracks.sort(key=lambda t: (t.title or '', t.path or Path('')))
+            # Keep large-library browsing predictable by grouping paths/folders first,
+            # while honoring tag track numbers inside the same folder/album when present.
+            tracks.sort(key=_track_sort_key)
 
             self._track_cache = tracks
             self._last_scan = datetime.now()
@@ -174,6 +201,8 @@ class LibraryScanner:
             artist = None
             album = None
             album_artist = None
+            track_number = None
+            disc_number = None
             duration = None
             sample_rate_hz = None
 
@@ -184,16 +213,20 @@ class LibraryScanner:
                     artist = _first_tag_value(audio.tags, "artist")
                     album = _first_tag_value(audio.tags, "album")
                     album_artist = _first_tag_value(audio.tags, "albumartist", "album_artist")
+                    track_number = _tag_number(audio.tags, "tracknumber")
+                    disc_number = _tag_number(audio.tags, "discnumber")
                 if audio and audio.info:
                     duration = audio.info.length
                     sample_rate_hz = getattr(audio.info, "sample_rate", None)
-                if not all([title, artist, album, album_artist]) or duration is None or sample_rate_hz is None:
+                if not all([title, artist, album, album_artist, track_number, disc_number]) or duration is None or sample_rate_hz is None:
                     raw_audio = MutagenFile(str(filepath), easy=False)
                     if raw_audio and raw_audio.tags:
                         title = title or _first_tag_value(raw_audio.tags, "TIT2", "\xa9nam")
                         artist = artist or _first_tag_value(raw_audio.tags, "TPE1", "\xa9ART")
                         album = album or _first_tag_value(raw_audio.tags, "TALB", "\xa9alb")
                         album_artist = album_artist or _first_tag_value(raw_audio.tags, "TPE2", "aART")
+                        track_number = track_number or _tag_number(raw_audio.tags, "TRCK", "trkn")
+                        disc_number = disc_number or _tag_number(raw_audio.tags, "TPOS", "disk")
                     if raw_audio and raw_audio.info:
                         if duration is None:
                             duration = getattr(raw_audio.info, "length", None)
@@ -222,6 +255,8 @@ class LibraryScanner:
                 artist=artist,
                 album=album,
                 album_artist=album_artist,
+                track_number=track_number,
+                disc_number=disc_number,
                 source="local",
                 url=str(filepath.absolute()),
                 duration=duration,
