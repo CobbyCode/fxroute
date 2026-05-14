@@ -11,6 +11,7 @@ SOURCE_DIR="$SCRIPT_DIR"
 INSTALL_ROOT="$DEFAULT_INSTALL_ROOT"
 LOCAL_PROJECT_MODE=0
 ASSUME_YES=0
+MUSIC_ROOT_OVERRIDE=""
 
 VALIDATION_RESULTS=()
 WARNINGS=()
@@ -58,6 +59,7 @@ Options:
   --target <dir>        Install or refresh into this directory (default: $DEFAULT_INSTALL_ROOT)
   --local-project       Install in-place from the current project directory
   --source <dir>        Use a different local project source directory
+  --music-root <dir>    Set the initial music library folder for new installs
   -y, --yes             Assume yes for package / Flatpak install prompts
   -h, --help            Show this help
 
@@ -85,6 +87,11 @@ while [[ $# -gt 0 ]]; do
       SOURCE_DIR="$2"
       shift 2
       ;;
+    --music-root)
+      [[ $# -ge 2 ]] || die "--music-root requires a directory"
+      MUSIC_ROOT_OVERRIDE="$2"
+      shift 2
+      ;;
     --local-project)
       LOCAL_PROJECT_MODE=1
       shift
@@ -107,6 +114,13 @@ expand_path() {
   python3 - <<'PY' "$1"
 import os, sys
 print(os.path.abspath(os.path.expanduser(sys.argv[1])))
+PY
+}
+
+dotenv_quote() {
+  python3 - <<'PY' "$1"
+import json, sys
+print(json.dumps(sys.argv[1]))
 PY
 }
 
@@ -576,10 +590,25 @@ env_interval_hours_or_default() {
   fi
 }
 
+choose_music_root() {
+  local default_music_root="$HOME/Music"
+  local chosen="$default_music_root"
+
+  if [[ -n "$MUSIC_ROOT_OVERRIDE" ]]; then
+    chosen="$MUSIC_ROOT_OVERRIDE"
+  elif [[ $ASSUME_YES -eq 0 && -t 0 ]]; then
+    printf '[fxroute] Music library folder [%s]: ' "$default_music_root" >&2
+    read -r chosen || chosen="$default_music_root"
+    chosen="${chosen:-$default_music_root}"
+  fi
+
+  expand_path "$chosen"
+}
+
 create_env_if_missing() {
   local env_file="$INSTALL_ROOT/.env"
   local env_example="$INSTALL_ROOT/.env.example"
-  local music_root="$HOME/Music"
+  local music_root
   local downloads_dir="incoming"
   local log_level="INFO"
   local host="0.0.0.0"
@@ -594,6 +623,8 @@ create_env_if_missing() {
 
   [[ -f "$env_example" ]] || die "Missing .env.example in install root"
 
+  music_root="$(choose_music_root)"
+
   local chosen_port
   chosen_port="$(pick_port "$port")"
   if [[ "$chosen_port" != "$port" ]]; then
@@ -602,7 +633,7 @@ create_env_if_missing() {
   fi
 
   cat > "$env_file" <<EOF
-MUSIC_ROOT=$music_root
+MUSIC_ROOT=$(dotenv_quote "$music_root")
 DOWNLOADS_SUBDIR=$downloads_dir
 LOG_LEVEL=$log_level
 HOST=$host
@@ -616,7 +647,7 @@ SYSTEM_AUTO_UPDATE_INTERVAL_HOURS=24
 EOF
 
   mkdir -p "$music_root/$downloads_dir"
-  pass ".env created"
+  pass ".env created (MUSIC_ROOT=$music_root)"
 }
 
 flatpak_app_installed() {
