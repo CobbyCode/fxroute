@@ -21,6 +21,8 @@ class Track:
     id: str
     title: str
     artist: Optional[str] = None
+    album: Optional[str] = None
+    album_artist: Optional[str] = None
     source: str = "local"  # "local" or "radio"
     url: Optional[str] = None
     duration: Optional[float] = None  # seconds
@@ -32,6 +34,8 @@ class Track:
             "id": self.id,
             "title": self.title,
             "artist": self.artist,
+            "album": self.album,
+            "album_artist": self.album_artist,
             "source": self.source,
             "url": self.url,
             "duration": self.duration,

@@ -15,6 +15,29 @@ from config import get_settings
 logger = logging.getLogger(__name__)
 
 
+def _first_tag_value(tags: Any, *keys: str) -> Optional[str]:
+    """Return the first non-empty tag value from a mutagen tag mapping."""
+    if not tags:
+        return None
+    for key in keys:
+        try:
+            values = tags.get(key)
+        except Exception:
+            values = None
+        if values is None:
+            continue
+        if not isinstance(values, (list, tuple)):
+            values = [values]
+        for value in values:
+            if hasattr(value, "text"):
+                text_values = getattr(value, "text") or []
+                value = text_values[0] if text_values else value
+            text = str(value).strip()
+            if text:
+                return text
+    return None
+
+
 def _probe_sample_rate_with_ffprobe(filepath: Path) -> Optional[int]:
     try:
         completed = subprocess.run(
@@ -149,28 +172,28 @@ class LibraryScanner:
             # Try to read metadata with mutagen
             title = None
             artist = None
+            album = None
+            album_artist = None
             duration = None
             sample_rate_hz = None
 
             try:
                 audio = MutagenFile(str(filepath), easy=True)
                 if audio and audio.tags:
-                    title = audio.get("title", [None])[0]
-                    artist = audio.get("artist", [None])[0]
+                    title = _first_tag_value(audio.tags, "title")
+                    artist = _first_tag_value(audio.tags, "artist")
+                    album = _first_tag_value(audio.tags, "album")
+                    album_artist = _first_tag_value(audio.tags, "albumartist", "album_artist")
                 if audio and audio.info:
                     duration = audio.info.length
                     sample_rate_hz = getattr(audio.info, "sample_rate", None)
-                # WAV with ID3: easy=True may not map TIT2/TPE1 to title/artist
-                if not title and not artist and audio and audio.tags:
-                    tIT2 = audio.tags.get("TIT2")
-                    if tIT2:
-                        title = tIT2.text[0] if hasattr(tIT2, "text") else str(tIT2)
-                    tpe1 = audio.tags.get("TPE1")
-                    if tpe1:
-                        artist = tpe1.text[0] if hasattr(tpe1, "text") else str(tpe1)
-
-                if duration is None or sample_rate_hz is None:
+                if not all([title, artist, album, album_artist]) or duration is None or sample_rate_hz is None:
                     raw_audio = MutagenFile(str(filepath), easy=False)
+                    if raw_audio and raw_audio.tags:
+                        title = title or _first_tag_value(raw_audio.tags, "TIT2", "\xa9nam")
+                        artist = artist or _first_tag_value(raw_audio.tags, "TPE1", "\xa9ART")
+                        album = album or _first_tag_value(raw_audio.tags, "TALB", "\xa9alb")
+                        album_artist = album_artist or _first_tag_value(raw_audio.tags, "TPE2", "aART")
                     if raw_audio and raw_audio.info:
                         if duration is None:
                             duration = getattr(raw_audio.info, "length", None)
@@ -188,11 +211,17 @@ class LibraryScanner:
                 title = filepath.stem
             if not artist:
                 artist = None
+            if not album:
+                album = None
+            if not album_artist:
+                album_artist = None
 
             return Track(
                 id=track_id,
-                title=filepath.stem,
+                title=title,
                 artist=artist,
+                album=album,
+                album_artist=album_artist,
                 source="local",
                 url=str(filepath.absolute()),
                 duration=duration,
