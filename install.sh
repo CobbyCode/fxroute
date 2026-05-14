@@ -124,6 +124,17 @@ print(json.dumps(sys.argv[1]))
 PY
 }
 
+dotenv_unquote() {
+  python3 - <<'PY' "$1"
+import json, sys
+raw = sys.argv[1]
+try:
+    print(json.loads(raw) if raw.startswith('"') else raw)
+except Exception:
+    print(raw)
+PY
+}
+
 SOURCE_DIR="$(expand_path "$SOURCE_DIR")"
 INSTALL_ROOT="$(expand_path "$INSTALL_ROOT")"
 
@@ -1261,9 +1272,16 @@ validate_tools() {
 print_summary() {
   local env_file="$INSTALL_ROOT/.env"
   local port="8000"
+  local music_root="$HOME/Music"
   local lan_ip=""
   local ee_launch_cmd=""
-  [[ -f "$env_file" ]] && port="$(grep '^PORT=' "$env_file" | cut -d= -f2- | tr -d '[:space:]')"
+  if [[ -f "$env_file" ]]; then
+    port="$(read_env_value PORT "$env_file" | tr -d '[:space:]')"
+    port="${port:-8000}"
+    music_root="$(read_env_value MUSIC_ROOT "$env_file")"
+    music_root="${music_root:-$HOME/Music}"
+    music_root="$(dotenv_unquote "$music_root")"
+  fi
   lan_ip="$(primary_lan_ip)"
 
   case "$EASYEFFECTS_MODE" in
@@ -1283,11 +1301,18 @@ print_summary() {
 
   echo "Install path: $INSTALL_ROOT"
   echo "EasyEffects mode: $EASYEFFECTS_MODE"
-  echo "Music folder: $HOME/Music"
+  echo "Music folder: $music_root"
   echo
   echo "Open FXRoute:"
   echo " - Local: http://localhost:${port}"
   [[ -n "$lan_ip" ]] && echo " - LAN IP: http://${lan_ip}:${port}"
+  if [[ -n "$MDNS_HOSTNAME" ]]; then
+    if [[ $CADDY_PROXY_ENABLED -eq 1 ]]; then
+      echo " - LAN name: http://${MDNS_HOSTNAME}.local"
+    else
+      echo " - LAN name: http://${MDNS_HOSTNAME}.local:${port}"
+    fi
+  fi
   if [[ $CADDY_PROXY_ENABLED -eq 1 ]]; then
     if [[ -n "$lan_ip" ]]; then
       echo " - LAN HTTPS: https://${lan_ip}"
