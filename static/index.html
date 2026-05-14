@@ -12,7 +12,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=0.4.458">
     <link rel="manifest" href="/static/site.webmanifest?v=0.4.458">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/static/style.css?v=0.6.0">
+    <link rel="stylesheet" href="/static/style.css?v=0.6.1-library-folder-actions">
 </head>
 <body>
     <!-- Offline indicator -->
@@ -217,6 +217,10 @@
                     </div>
                 </div>
                 <div class="library-actions-row">
+                    <div class="library-view-toggle" role="group" aria-label="Library view">
+                        <button id="library-view-tracks" class="btn-secondary btn-icon-toggle active" type="button" aria-pressed="true">Tracks</button>
+                        <button id="library-view-folders" class="btn-secondary btn-icon-toggle" type="button" aria-pressed="false">Folders</button>
+                    </div>
                     <div class="library-search-wrap">
                         <input
                             type="search"
@@ -269,6 +273,7 @@
                         <div id="download-status" class="download-status hidden"></div>
                     </div>
                 </div>
+                <div id="library-folder-path" class="library-folder-path hidden"></div>
                 <div class="loading">Loading library…</div>
                 <div id="tracks-list" class="tracks-list"></div>
                 <div id="library-info"></div>
@@ -873,6 +878,6 @@
     <div id="toast-container" class="toast-container"></div>
 
     <script src="/static/measurement_dsp.js?v=0.6.1-measurement-dsp-split"></script>
-    <script src="/static/app.js?v=0.6.1-spotify-visibility"></script>
+    <script src="/static/app.js?v=0.6.1-library-folder-actions"></script>
 </body>
 </html>

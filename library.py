@@ -5,7 +5,7 @@ import os
 import subprocess
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from mutagen import File as MutagenFile
 from mutagen.id3 import ID3NoHeaderError
 
@@ -69,6 +69,21 @@ class LibraryScanner:
         self._scan_in_progress = False
         self._last_scan: Optional[datetime] = None
         self._scan_error: Optional[str] = None
+        self._scan_started_at: Optional[datetime] = None
+        self._scan_current_dir: Optional[str] = None
+        self._scan_files_seen = 0
+        self._scan_audio_seen = 0
+        self._scan_tracks_found = 0
+
+    def prepare_scan_status(self):
+        """Mark a scan as active before scanner work starts."""
+        self._scan_in_progress = True
+        self._scan_error = None
+        self._scan_started_at = datetime.now()
+        self._scan_current_dir = None
+        self._scan_files_seen = 0
+        self._scan_audio_seen = 0
+        self._scan_tracks_found = 0
 
     def refresh(self, force: bool = False) -> List[Track]:
         """
@@ -79,8 +94,7 @@ class LibraryScanner:
             logger.warning("Scan already in progress, returning cached")
             return self._track_cache
 
-        self._scan_in_progress = True
-        self._scan_error = None
+        self.prepare_scan_status()
         tracks = []
 
         try:
@@ -91,13 +105,22 @@ class LibraryScanner:
 
             logger.info(f"Scanning music directory: {self.music_root}")
             for root, dirs, files in os.walk(self.music_root):
+                try:
+                    self._scan_current_dir = str(Path(root).relative_to(self.music_root))
+                except ValueError:
+                    self._scan_current_dir = str(root)
+                if self._scan_current_dir == ".":
+                    self._scan_current_dir = ""
                 for filename in files:
+                    self._scan_files_seen += 1
                     filepath = Path(root) / filename
                     if filepath.suffix.lower() in AUDIO_EXTENSIONS:
+                        self._scan_audio_seen += 1
                         try:
                             track = self._create_track_from_file(filepath)
                             if track:
                                 tracks.append(track)
+                                self._scan_tracks_found = len(tracks)
                         except Exception as e:
                             logger.warning(f"Failed to read metadata for {filepath}: {e}")
 
@@ -186,6 +209,20 @@ class LibraryScanner:
         if refresh or not self._track_cache:
             return self.refresh(force=refresh)
         return self._track_cache
+
+    def status(self) -> Dict[str, Any]:
+        """Return lightweight scan status for UI polling."""
+        return {
+            "scanning": self._scan_in_progress,
+            "track_count": len(self._track_cache),
+            "files_seen": self._scan_files_seen,
+            "audio_seen": self._scan_audio_seen,
+            "tracks_found": self._scan_tracks_found,
+            "current_dir": self._scan_current_dir,
+            "last_scan": self._last_scan.isoformat() if self._last_scan else None,
+            "started_at": self._scan_started_at.isoformat() if self._scan_started_at else None,
+            "error": self._scan_error,
+        }
 
     @property
     def scanning(self) -> bool:

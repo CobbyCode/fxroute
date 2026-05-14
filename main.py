@@ -2377,10 +2377,11 @@ async def lifespan(app: FastAPI):
         except MPVNotInstalledError as e:
             logger.error(f"Failed to start MPV: {e}")
 
-        # Initialize library scanner
+        # Initialize library scanner without blocking startup on large libraries.
         library_scanner = LibraryScanner()
-        library_scanner.refresh()
-        logger.info("Library scanner initialized")
+        library_scanner.prepare_scan_status()
+        asyncio.create_task(asyncio.to_thread(library_scanner.refresh, True))
+        logger.info("Library scanner initialized; initial scan running in background")
 
         # Initialize downloader
         downloader = Downloader()
@@ -4362,13 +4363,22 @@ async def delete_easyeffects_preset(request: Request):
     except (FileNotFoundError, ValueError) as e:
         _raise_easyeffects_http_error(e)
 
+@app.get("/api/library/status")
+async def library_status():
+    global library_scanner
+    if library_scanner:
+        return library_scanner.status()
+    return {"scanning": False, "track_count": 0, "error": "Library scanner not initialized"}
+
+
 @app.post("/api/library/refresh")
 async def refresh_library():
     global library_scanner
     if library_scanner:
-        library_scanner.refresh()
-        tracks = library_scanner.get_tracks()
-        return {"status": "scanning", "track_count": len(tracks)}
+        if not library_scanner.scanning:
+            library_scanner.prepare_scan_status()
+            asyncio.create_task(asyncio.to_thread(library_scanner.refresh, True))
+        return {"status": "scanning", **library_scanner.status()}
     return {"status": "error", "message": "Library scanner not initialized"}
 
 @app.post("/api/download")

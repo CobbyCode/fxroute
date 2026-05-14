@@ -35,6 +35,9 @@ let state = {
     library: {
         tracks: [],
         scanning: false,
+        scanStatus: null,
+        viewMode: 'tracks',
+        currentFolder: '',
         selectedTrackIds: [],
         searchQuery: '',
         shuffle: false,
@@ -215,6 +218,7 @@ const SPOTIFY_POLL_INTERVAL_MS = 1000;
 const SAMPLERATE_POLL_INTERVAL_MS = 5000;
 const SAMPLERATE_BURST_POLL_DELAYS_MS = [0, 120, 280, 520, 900, 1400, 2200, 3200];
 const LIBRARY_SELECTION_SYNC_DEBOUNCE_MS = 180;
+const LIBRARY_SCAN_POLL_INTERVAL_MS = 1200;
 const DOWNLOAD_STATUS_POLL_INTERVAL_MS = 1500;
 const PEAK_STATUS_POLL_INTERVAL_MS = 1200;
 const EFFECTS_EXTRAS_TOGGLE_DEBOUNCE_MS = 800;
@@ -265,6 +269,9 @@ const elements = {
     libraryLoopBtn: document.getElementById('library-loop'),
     libraryImportPanel: document.getElementById('library-import-panel'),
     refreshLibraryBtn: document.getElementById('refresh-library'),
+    libraryViewTracksBtn: document.getElementById('library-view-tracks'),
+    libraryViewFoldersBtn: document.getElementById('library-view-folders'),
+    libraryFolderPath: document.getElementById('library-folder-path'),
     librarySearchInput: document.getElementById('library-search'),
     playSelectedTracksBtn: document.getElementById('play-selected-tracks'),
     selectAllTracksBtn: document.getElementById('select-all-tracks'),
@@ -2775,12 +2782,33 @@ async function deleteSelectedStation() {
         showToast(e.message || 'Failed to delete station', 'error');
     }
 }
+async function fetchLibraryStatus() {
+    try {
+        const resp = await fetch('/api/library/status');
+        if (!resp.ok) throw new Error('Failed to fetch library status');
+        const status = await resp.json();
+        const wasScanning = !!state.library.scanning;
+        state.library.scanStatus = status;
+        state.library.scanning = !!status.scanning;
+        renderTracks();
+        if (status.scanning) {
+            setTimeout(fetchLibraryStatus, LIBRARY_SCAN_POLL_INTERVAL_MS);
+        } else if (wasScanning) {
+            await fetchTracks();
+        }
+        return status;
+    } catch (e) {
+        console.debug('Failed to fetch library status', e);
+        return null;
+    }
+}
 async function fetchTracks() {
     try {
         const resp = await fetch('/api/tracks');
         if (!resp.ok) throw new Error('Failed to fetch tracks');
         state.library.tracks = await resp.json();
-        state.library.scanning = false;
+        const status = await fetchLibraryStatus();
+        state.library.scanning = !!status?.scanning;
         renderTracks();
     } catch (e) {
         state.library.scanning = false;
@@ -2797,19 +2825,115 @@ async function fetchPlaylists() {
         console.debug('Failed to fetch playlists', e);
     }
 }
+function getTrackRelativePath(track) {
+    const id = String(track?.id || '');
+    if (id.startsWith('local_')) return id.slice(6);
+    const path = String(track?.path || track?.url || track?.title || '');
+    return path.split('/').filter(Boolean).slice(-1).join('/');
+}
+function getTrackFolder(track) {
+    const rel = getTrackRelativePath(track);
+    const parts = rel.split('/').filter(Boolean);
+    parts.pop();
+    return parts.join('/');
+}
+function getTrackFilename(track) {
+    const rel = getTrackRelativePath(track);
+    return rel.split('/').filter(Boolean).pop() || track?.title || '';
+}
+function trackMatchesLibraryQuery(track, query) {
+    if (!query) return true;
+    const haystack = [track.title, track.artist, track.path, track.url, track.id, getTrackRelativePath(track)]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+    return haystack.includes(query);
+}
+function isTrackInCurrentFolder(track) {
+    if (state.library.viewMode !== 'folders') return true;
+    return getTrackFolder(track) === (state.library.currentFolder || '');
+}
 function getFilteredTracks() {
     const tracks = state.library.tracks || [];
     const query = (state.library.searchQuery || '').trim().toLowerCase();
-    if (!query) return tracks;
-    return tracks.filter(track => {
-        const haystack = [track.title, track.artist, track.path, track.url, track.id]
-            .filter(Boolean)
-            .join(' ')
-            .toLowerCase();
-        return haystack.includes(query);
+    return tracks.filter(track => trackMatchesLibraryQuery(track, query) && isTrackInCurrentFolder(track));
+}
+function getTracksInFolder(folderPath) {
+    const folder = folderPath || '';
+    const prefix = folder ? `${folder}/` : '';
+    return (state.library.tracks || []).filter(track => {
+        const rel = getTrackRelativePath(track);
+        return folder ? rel.startsWith(prefix) : !!rel;
     });
 }
+function getFolderChildren() {
+    const tracks = state.library.tracks || [];
+    const current = state.library.currentFolder || '';
+    const prefix = current ? `${current}/` : '';
+    const query = (state.library.searchQuery || '').trim().toLowerCase();
+    const folders = new Map();
+    tracks.forEach(track => {
+        const rel = getTrackRelativePath(track);
+        if (!rel.startsWith(prefix)) return;
+        const rest = rel.slice(prefix.length);
+        const parts = rest.split('/').filter(Boolean);
+        if (parts.length <= 1) return;
+        const name = parts[0];
+        const folderPath = current ? `${current}/${name}` : name;
+        if (query && !folderPath.toLowerCase().includes(query) && !trackMatchesLibraryQuery(track, query)) return;
+        const entry = folders.get(folderPath) || { path: folderPath, name, count: 0 };
+        entry.count += 1;
+        folders.set(folderPath, entry);
+    });
+    return Array.from(folders.values()).sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+}
+function renderLibraryViewButtons() {
+    const folderMode = state.library.viewMode === 'folders';
+    if (elements.libraryViewTracksBtn) {
+        elements.libraryViewTracksBtn.classList.toggle('active', !folderMode);
+        elements.libraryViewTracksBtn.setAttribute('aria-pressed', folderMode ? 'false' : 'true');
+    }
+    if (elements.libraryViewFoldersBtn) {
+        elements.libraryViewFoldersBtn.classList.toggle('active', folderMode);
+        elements.libraryViewFoldersBtn.setAttribute('aria-pressed', folderMode ? 'true' : 'false');
+    }
+}
+function renderLibraryFolderPath() {
+    if (!elements.libraryFolderPath) return;
+    if (state.library.viewMode !== 'folders') {
+        elements.libraryFolderPath.classList.add('hidden');
+        elements.libraryFolderPath.innerHTML = '';
+        return;
+    }
+    const current = state.library.currentFolder || '';
+    const parts = current.split('/').filter(Boolean);
+    let html = `<button type="button" data-folder="">Music root</button>`;
+    let path = '';
+    parts.forEach(part => {
+        path = path ? `${path}/${part}` : part;
+        html += `<span>/</span><button type="button" data-folder="${escapeHtml(path)}">${escapeHtml(part)}</button>`;
+    });
+    elements.libraryFolderPath.innerHTML = html;
+    elements.libraryFolderPath.classList.remove('hidden');
+    elements.libraryFolderPath.querySelectorAll('button[data-folder]').forEach(btn => {
+        btn.addEventListener('click', () => setLibraryFolder(btn.dataset.folder || ''));
+    });
+}
+function formatLibraryScanStatus() {
+    const status = state.library.scanStatus;
+    if (!status) return '';
+    if (status.scanning) {
+        const found = status.tracks_found || status.audio_seen || 0;
+        const seen = status.files_seen || 0;
+        const dir = status.current_dir ? ` · ${status.current_dir}` : '';
+        return `Scanning library… ${found} audio tracks found, ${seen} files checked${dir}`;
+    }
+    if (status.error) return `Library scan error: ${status.error}`;
+    return '';
+}
 function renderTracks() {
+    renderLibraryViewButtons();
+    renderLibraryFolderPath();
     const allTracks = state.library.tracks || [];
     const filteredTracks = getFilteredTracks();
     const validSelectedIds = allTracks.length > 0
@@ -2818,26 +2942,39 @@ function renderTracks() {
     const selectedIds = new Set(validSelectedIds);
     state.library.selectedTrackIds = Array.from(selectedIds);
     const loadingEl = document.querySelector('#tab-library .loading');
+    const scanText = formatLibraryScanStatus();
 
     if (allTracks.length === 0) {
-        if (loadingEl) { loadingEl.textContent = 'No tracks yet. Import a file or URL to get started.'; loadingEl.style.display = ''; }
+        if (loadingEl) {
+            loadingEl.textContent = scanText || 'No tracks yet. Import a file or URL to get started.';
+            loadingEl.style.display = '';
+        }
         elements.tracksList.innerHTML = '';
         updateLibrarySelectionUI();
         return;
     }
-    if (filteredTracks.length === 0) {
-        if (loadingEl) { loadingEl.textContent = 'No matching tracks. Try a broader search.'; loadingEl.style.display = ''; }
-        elements.tracksList.innerHTML = '';
-        updateLibrarySelectionUI();
-        return;
+    if (loadingEl) {
+        loadingEl.textContent = scanText || '';
+        loadingEl.style.display = scanText ? '' : 'none';
+        loadingEl.classList.toggle('scan-status', !!scanText);
     }
-    if (loadingEl) loadingEl.style.display = 'none';
 
     const hasSearch = !!(state.library.searchQuery || '').trim();
+    const folderMode = state.library.viewMode === 'folders';
+    const childFolders = folderMode ? getFolderChildren() : [];
+    if (filteredTracks.length === 0 && childFolders.length === 0) {
+        if (loadingEl) {
+            loadingEl.textContent = hasSearch ? 'No matching tracks. Try a broader search.' : 'No tracks in this folder.';
+            loadingEl.style.display = '';
+        }
+        elements.tracksList.innerHTML = '';
+        updateLibrarySelectionUI();
+        return;
+    }
+
     let html = '';
 
-    // Playlist items at top (only when no search active)
-    if (!hasSearch && state.playlists.length > 0) {
+    if (!folderMode && !hasSearch && state.playlists.length > 0) {
         html += state.playlists.map(playlist => {
             const classes = ['track-item', 'playlist-item'];
             return `<div class="${classes.join(' ')}" data-playlist-id="${escapeHtml(playlist.id)}">
@@ -2852,26 +2989,61 @@ function renderTracks() {
         }).join('');
     }
 
-    // Track items
+    if (folderMode) {
+        html += childFolders.map(folder => `<div class="track-item folder-item" data-folder="${escapeHtml(folder.path)}">
+            <button class="track-play-button" data-folder="${escapeHtml(folder.path)}" type="button" title="Open folder">
+                <span class="track-item-icon">📁</span>
+                <div class="track-title">${escapeHtml(folder.name)}</div>
+                <div class="folder-count">${folder.count} track${folder.count === 1 ? '' : 's'}</div>
+            </button>
+            <div class="folder-actions" aria-label="Folder actions">
+                <button class="folder-action-btn" data-folder-play="${escapeHtml(folder.path)}" type="button" title="Play folder" aria-label="Play ${escapeHtml(folder.name)}">▶</button>
+                <button class="folder-action-btn" data-folder-select="${escapeHtml(folder.path)}" type="button" title="Select folder" aria-label="Select ${escapeHtml(folder.name)}">✓</button>
+            </div>
+        </div>`).join('');
+    }
+
     html += filteredTracks.map(track => {
         const isSelected = selectedIds.has(track.id);
         const artist = (track.artist || '').trim();
+        const rel = getTrackRelativePath(track);
+        const subline = artist || (folderMode ? getTrackFilename(track) : getTrackFolder(track));
         return `
             <div class="track-item ${isSelected ? 'selected' : ''}" data-track-id="${escapeHtml(track.id)}">
                 <label class="track-select">
                     <input type="checkbox" class="track-checkbox" data-track-id="${escapeHtml(track.id)}" ${isSelected ? 'checked' : ''}>
                     <span class="track-select-box"></span>
                 </label>
-                <button class="track-play-button" data-track-id="${escapeHtml(track.id)}" type="button">
+                <button class="track-play-button" data-track-id="${escapeHtml(track.id)}" type="button" title="${escapeHtml(rel)}">
                     <span class="track-item-icon">♫</span>
                     <div class="track-title">${escapeHtml(track.title)}</div>
-                    ${artist ? `<div class="track-artist">${escapeHtml(artist)}</div>` : ''}
+                    ${subline ? `<div class="track-artist">${escapeHtml(subline)}</div>` : ''}
                 </button>
             </div>
         `;
     }).join('');
 
     elements.tracksList.innerHTML = html;
+
+    elements.tracksList.querySelectorAll('.track-play-button[data-folder]').forEach(item => {
+        item.addEventListener('click', (e) => {
+            e.stopPropagation();
+            setLibraryFolder(item.dataset.folder || '');
+        });
+    });
+
+    elements.tracksList.querySelectorAll('.folder-action-btn[data-folder-play]').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            await playLibraryFolder(btn.dataset.folderPlay || '');
+        });
+    });
+    elements.tracksList.querySelectorAll('.folder-action-btn[data-folder-select]').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            toggleLibraryFolderSelection(btn.dataset.folderSelect || '');
+        });
+    });
 
     elements.tracksList.querySelectorAll('.track-play-button[data-track-id]').forEach(item => {
         item.addEventListener('click', (e) => {
@@ -2910,6 +3082,49 @@ function renderTracks() {
     });
 
     updateLibrarySelectionUI();
+}
+function setLibraryViewMode(mode) {
+    state.library.viewMode = mode === 'folders' ? 'folders' : 'tracks';
+    if (state.library.viewMode === 'tracks') state.library.currentFolder = '';
+    renderTracks();
+}
+function setLibraryFolder(folder) {
+    state.library.viewMode = 'folders';
+    state.library.currentFolder = folder || '';
+    renderTracks();
+}
+async function playLibraryFolder(folder) {
+    const tracks = getTracksInFolder(folder);
+    if (tracks.length === 0) {
+        showToast('Folder has no playable tracks', 'error');
+        return;
+    }
+    state.library.selectedTrackIds = tracks.map(track => track.id);
+    updateLibrarySelectionUI();
+    syncRenderedTrackSelection();
+    scheduleActiveLocalQueueSync();
+    await playLocal(tracks[0].id);
+}
+function toggleLibraryFolderSelection(folder) {
+    const folderTrackIds = getTracksInFolder(folder).map(track => track.id);
+    if (folderTrackIds.length === 0) {
+        showToast('Folder has no tracks to select', 'error');
+        return;
+    }
+    const selectedIds = new Set(state.library.selectedTrackIds);
+    const allSelected = folderTrackIds.every(id => selectedIds.has(id));
+    folderTrackIds.forEach(id => {
+        if (allSelected) {
+            selectedIds.delete(id);
+        } else {
+            selectedIds.add(id);
+        }
+    });
+    state.library.selectedTrackIds = Array.from(selectedIds);
+    updateLibrarySelectionUI();
+    syncRenderedTrackSelection();
+    scheduleActiveLocalQueueSync();
+    showToast(allSelected ? 'Folder selection cleared' : `Selected ${folderTrackIds.length} folder tracks`, 'info');
 }
 function toggleTrackSelection(trackId, selected) {
     const selectedIds = new Set(state.library.selectedTrackIds);
@@ -3018,18 +3233,18 @@ function updateLibrarySelectionUI() {
 async function refreshLibrary() {
     if (state.library.scanning) return;
     state.library.scanning = true;
-    elements.tracksList.innerHTML = '<div class="loading">Refreshing library…</div>';
+    state.library.scanStatus = { scanning: true, tracks_found: 0, files_seen: 0 };
+    renderTracks();
     try {
         const resp = await fetch('/api/library/refresh', { method: 'POST' });
         const data = await resp.json();
-        if (data.status === 'scanning') {
-            setTimeout(fetchTracks, 2000);
-        } else {
-            await fetchTracks();
-        }
+        if (!resp.ok || data.status === 'error') throw new Error(data.message || 'Refresh failed');
+        state.library.scanStatus = data;
+        setTimeout(fetchLibraryStatus, LIBRARY_SCAN_POLL_INTERVAL_MS);
     } catch (e) {
         showToast('Failed to refresh library', 'error');
         state.library.scanning = false;
+        renderTracks();
     }
 }
 function uploadTrackFile() {
@@ -7825,6 +8040,12 @@ function showToast(message, type = 'info') {
 // Library actions
 function setupLibraryActions() {
     elements.refreshLibraryBtn.addEventListener('click', refreshLibrary);
+    if (elements.libraryViewTracksBtn) {
+        elements.libraryViewTracksBtn.addEventListener('click', () => setLibraryViewMode('tracks'));
+    }
+    if (elements.libraryViewFoldersBtn) {
+        elements.libraryViewFoldersBtn.addEventListener('click', () => setLibraryViewMode('folders'));
+    }
     elements.toggleImportBtn.addEventListener('click', () => {
         const shouldOpen = elements.libraryImportPanel.classList.contains('hidden');
         if (!shouldOpen) {
