@@ -8,6 +8,7 @@ import re
 import shutil
 import time
 import asyncio
+import hashlib
 import random
 import subprocess
 import tempfile
@@ -21,12 +22,14 @@ import uvicorn
 from fastapi import FastAPI, Request, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File, Form
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
+from mutagen import File as MutagenFile
 from starlette.background import BackgroundTask
 
 from config import get_settings
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
+COVER_CACHE_DIR = BASE_DIR / "media" / "cache" / "covers"
 
 # Cooldown to prevent rapid mpv IPC flooding (ms)
 PLAY_COMMAND_COOLDOWN_MS = 400
@@ -2537,6 +2540,89 @@ def _station_api_payload(station):
     }
 
 
+def _cover_media_type(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix in {".jpg", ".jpeg"}:
+        return "image/jpeg"
+    if suffix == ".png":
+        return "image/png"
+    if suffix == ".webp":
+        return "image/webp"
+    return "application/octet-stream"
+
+
+def _folder_cover_for_track(track_path: Path) -> Optional[Path]:
+    names = (
+        "cover.jpg", "cover.jpeg", "cover.png", "cover.webp",
+        "folder.jpg", "folder.jpeg", "folder.png", "folder.webp",
+        "front.jpg", "front.jpeg", "front.png", "front.webp",
+    )
+    for name in names:
+        candidate = track_path.parent / name
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _embedded_cover_bytes(track_path: Path) -> tuple[Optional[bytes], Optional[str]]:
+    try:
+        audio = MutagenFile(str(track_path), easy=False)
+    except Exception as exc:
+        logger.debug("Cover metadata read failed for %s: %s", track_path, exc)
+        return None, None
+    if not audio:
+        return None, None
+
+    for picture in getattr(audio, "pictures", []) or []:
+        data = getattr(picture, "data", None)
+        mime = getattr(picture, "mime", None) or "image/jpeg"
+        if data:
+            return bytes(data), mime
+
+    tags = getattr(audio, "tags", None)
+    if not tags:
+        return None, None
+
+    for key, value in tags.items():
+        if str(key).startswith("APIC"):
+            data = getattr(value, "data", None)
+            mime = getattr(value, "mime", None) or "image/jpeg"
+            if data:
+                return bytes(data), mime
+
+    covers = tags.get("covr") if hasattr(tags, "get") else None
+    if covers:
+        first = covers[0]
+        image_format = getattr(first, "imageformat", None)
+        mime = "image/png" if image_format == 14 else "image/jpeg"
+        return bytes(first), mime
+
+    return None, None
+
+
+def _cached_embedded_cover(track_id: str, track_path: Path) -> tuple[Optional[Path], Optional[str]]:
+    try:
+        stat = track_path.stat()
+    except FileNotFoundError:
+        return None, None
+    cache_key = hashlib.sha256(f"{track_id}:{track_path}:{stat.st_mtime_ns}:{stat.st_size}".encode("utf-8")).hexdigest()
+    for suffix, media_type in ((".jpg", "image/jpeg"), (".png", "image/png"), (".webp", "image/webp")):
+        cached = COVER_CACHE_DIR / f"{cache_key}{suffix}"
+        if cached.is_file():
+            return cached, media_type
+
+    data, mime = _embedded_cover_bytes(track_path)
+    if not data:
+        return None, None
+    suffix = ".png" if mime == "image/png" else ".webp" if mime == "image/webp" else ".jpg"
+    COVER_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cached = COVER_CACHE_DIR / f"{cache_key}{suffix}"
+    tmp = cached.with_suffix(cached.suffix + ".tmp")
+    tmp.write_bytes(data)
+    tmp.replace(cached)
+    return cached, mime or _cover_media_type(cached)
+
+
 @app.get("/api/stations")
 async def list_stations():
     return [_station_api_payload(station) for station in get_stations()]
@@ -2594,6 +2680,31 @@ async def download_track_file(track_id: str):
     if not track_path.is_file():
         raise HTTPException(status_code=404, detail="Track file missing")
     return FileResponse(track_path, filename=track_path.name)
+
+
+@app.get("/api/tracks/cover/{track_id:path}")
+async def get_track_cover(track_id: str):
+    tracks_by_id = {track.id: track for track in library_scanner.get_tracks(refresh=False)}
+    track = tracks_by_id.get(track_id)
+    if not track or not track.path:
+        raise HTTPException(status_code=404, detail="Track not found")
+    track_path = track.path.resolve()
+    if not _path_within_root(track_path, settings.MUSIC_ROOT):
+        raise HTTPException(status_code=403, detail="Track path outside music root")
+    if not track_path.is_file():
+        raise HTTPException(status_code=404, detail="Track file missing")
+
+    folder_cover = _folder_cover_for_track(track_path)
+    if folder_cover:
+        cover_path = folder_cover.resolve()
+        if _path_within_root(cover_path, settings.MUSIC_ROOT):
+            return FileResponse(cover_path, media_type=_cover_media_type(cover_path))
+
+    cached_cover, media_type = _cached_embedded_cover(track_id, track_path)
+    if cached_cover and cached_cover.is_file():
+        return FileResponse(cached_cover, media_type=media_type or _cover_media_type(cached_cover))
+
+    raise HTTPException(status_code=404, detail="Cover not found")
 
 
 @app.post("/api/tracks/download")

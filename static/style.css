@@ -3394,6 +3394,52 @@ input[type="number"]::-webkit-outer-spin-button {
 .toast.success { border-left-color: var(--success); }
 .toast.error   { border-left-color: var(--danger); }
 .toast.info    { border-left-color: var(--accent); }
+.toast.now-playing-cue {
+    display: flex;
+    align-items: center;
+    gap: 0.8rem;
+    min-width: min(320px, calc(100vw - 2rem));
+    max-width: min(420px, calc(100vw - 2rem));
+    padding: 0.65rem 0.85rem;
+}
+.now-playing-cover {
+    width: 56px;
+    height: 56px;
+    border-radius: 0.7rem;
+    object-fit: cover;
+    flex: 0 0 auto;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    box-shadow: 0 6px 18px var(--shadow);
+}
+.now-playing-cue.no-cover .now-playing-cover {
+    display: none;
+}
+.now-playing-text {
+    min-width: 0;
+}
+.now-playing-label {
+    color: var(--text-muted);
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 0.12rem;
+}
+.now-playing-title,
+.now-playing-meta {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.now-playing-title {
+    color: var(--text-primary);
+    font-weight: 700;
+}
+.now-playing-meta {
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    margin-top: 0.1rem;
+}
 .toast.remove {
     animation: toastOut 0.25s ease-in forwards;
 }

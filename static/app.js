@@ -174,6 +174,7 @@ let reconnectTimer = null;
 let wsConnectSerial = 0;
 let playbackActionInFlight = false;
 let pendingPlaybackRequestId = 0;
+let nowPlayingCueTimer = null;
 let pendingFooterSingleTrackStart = null;
 let pauseActionRequestId = 0;
 const FOOTER_SINGLE_TRACK_START_LOCK_MS = 5000;
@@ -3608,7 +3609,7 @@ async function playLocal(trackId) {
         updatePlaybackUI();
         triggerSamplerateBurstPolling();
         const queueCount = (((data || {}).playback || {}).queue || {}).count || 0;
-        showToast(queueCount > 1 ? `Queue started: ${track.title} (${queueCount} tracks)` : `Now playing: ${track.title}`, 'info');
+        showNowPlayingCue(track, queueCount > 1 ? `Queue started · ${queueCount} tracks` : 'Now playing');
     } catch (e) {
         if (requestId !== pendingPlaybackRequestId) return;
         playbackActionInFlight = false;
@@ -8038,6 +8039,42 @@ function showToast(message, type = 'info') {
         toast.classList.add('remove');
         toast.addEventListener('animationend', () => toast.remove(), { once: true });
     }, 4000);
+}
+function trackCoverUrl(track) {
+    if (!track || track.source !== 'local' || !track.id) return '';
+    return `/api/tracks/cover/${encodeURIComponent(track.id)}`;
+}
+function showNowPlayingCue(track, message = 'Now playing') {
+    if (!track) return;
+    if (nowPlayingCueTimer) {
+        clearTimeout(nowPlayingCueTimer);
+        nowPlayingCueTimer = null;
+    }
+    elements.toastContainer.querySelectorAll('.now-playing-cue').forEach(item => item.remove());
+    const cue = document.createElement('div');
+    cue.className = 'toast info now-playing-cue';
+    const coverUrl = trackCoverUrl(track);
+    cue.innerHTML = `
+        <img class="now-playing-cover" alt="" loading="lazy">
+        <div class="now-playing-text">
+            <div class="now-playing-label">${escapeHtml(message)}</div>
+            <div class="now-playing-title">${escapeHtml(track.title || 'Unknown track')}</div>
+            <div class="now-playing-meta">${escapeHtml([track.artist, track.album].filter(Boolean).join(' · '))}</div>
+        </div>
+    `;
+    const img = cue.querySelector('.now-playing-cover');
+    if (coverUrl) {
+        img.addEventListener('error', () => cue.classList.add('no-cover'), { once: true });
+        img.src = coverUrl;
+    } else {
+        cue.classList.add('no-cover');
+    }
+    elements.toastContainer.appendChild(cue);
+    nowPlayingCueTimer = setTimeout(() => {
+        cue.classList.add('remove');
+        cue.addEventListener('animationend', () => cue.remove(), { once: true });
+        nowPlayingCueTimer = null;
+    }, 4200);
 }
 // Library actions
 function setupLibraryActions() {
