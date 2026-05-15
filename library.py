@@ -366,6 +366,7 @@ class LibraryScanner:
                     "tracks": [],
                     "folder_path": None,
                     "cover_source_track_id": None,
+                    "cover_source": None,
                 }
 
             entry = albums[key]
@@ -398,6 +399,8 @@ class LibraryScanner:
         # Clean up internal fields before returning
         for entry in result:
             del entry["tracks"]
+            del entry["folder_path"]
+            del entry["cover_source_track_id"]
             if "cover_source" not in entry:
                 entry["cover_source"] = None
 
