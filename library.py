@@ -1,17 +1,25 @@
 """Local music library scanner."""
 
+import hashlib
 import logging
 import os
 import re
 import subprocess
+from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from mutagen import File as MutagenFile
 from mutagen.id3 import ID3NoHeaderError
 
 from models import Track
 from config import get_settings
+
+ALBUM_COVER_NAMES = (
+    "cover.jpg", "cover.jpeg", "cover.png", "cover.webp",
+    "folder.jpg", "folder.jpeg", "folder.png", "folder.webp",
+    "front.jpg", "front.jpeg", "front.png", "front.webp",
+)
 
 logger = logging.getLogger(__name__)
 
@@ -322,3 +330,108 @@ class LibraryScanner:
     def error(self) -> Optional[str]:
         """Last scan error, if any."""
         return self._scan_error
+
+    # ── Album grouping ──────────────────────────────────────────────
+
+    def get_albums(self, refresh: bool = False) -> List[Dict[str, Any]]:
+        """
+        Group cached tracks into albums.
+        Returns a list of album dicts sorted by album_artist then album name.
+        Tracks without album tags are grouped into a synthetic 'Various' album
+        so they do not clutter the album view.
+        """
+        tracks = self.get_tracks(refresh=refresh)
+        if not tracks:
+            return []
+
+        albums = OrderedDict()
+
+        for track in tracks:
+            album_name = (track.album or "").strip()
+            album_artist = (track.album_artist or "").strip() or (track.artist or "").strip()
+
+            if not album_name:
+                # Loose tracks without album tag → 'Various'
+                album_name = "Various"
+                album_artist = "Various"
+
+            key = f"{album_artist.lower()}::{album_name.lower()}"
+
+            if key not in albums:
+                albums[key] = {
+                    "id": _album_id(album_artist, album_name),
+                    "name": album_name,
+                    "artist": album_artist,
+                    "track_count": 0,
+                    "tracks": [],
+                    "folder_path": None,
+                    "cover_source_track_id": None,
+                }
+
+            entry = albums[key]
+            entry["track_count"] += 1
+            entry["tracks"].append(track)
+
+            # Remember the folder path (all tracks in same album should share it)
+            if entry["folder_path"] is None and track.path:
+                entry["folder_path"] = track.path.parent
+
+            # Pick a cover source: first track that has folder cover, then first with embedded
+            if entry["cover_source_track_id"] is None and track.path:
+                if _has_folder_cover(track.path):
+                    entry["cover_source_track_id"] = track.id
+                    entry["cover_source"] = "folder"
+                elif entry["cover_source"] != "folder":
+                    # Only set embedded if we haven't found a folder cover yet
+                    if entry.get("cover_source") != "embedded":
+                        entry["cover_source_track_id"] = track.id
+                        entry["cover_source"] = "embedded"
+
+        # Sort: Various last, then by artist name, then album name
+        result = list(albums.values())
+        result.sort(key=lambda a: (
+            a["name"] == "Various",
+            a["artist"].lower(),
+            a["name"].lower(),
+        ))
+
+        # Clean up internal fields before returning
+        for entry in result:
+            del entry["tracks"]
+            if "cover_source" not in entry:
+                entry["cover_source"] = None
+
+        return result
+
+    def get_album_tracks(self, album_id: str) -> List[Track]:
+        """Return the track list for a given album id."""
+        tracks = self.get_tracks()
+        for track in tracks:
+            album_name = (track.album or "").strip() or "Various"
+            album_artist = (track.album_artist or "").strip() or (track.artist or "").strip() or "Various"
+            if _album_id(album_artist, album_name) == album_id:
+                return sorted(
+                    [t for t in tracks if _album_id(
+                        (t.album_artist or "").strip() or (t.artist or "").strip() or "Various",
+                        (t.album or "").strip() or "Various",
+                    ) == album_id],
+                    key=_track_sort_key,
+                )
+        return []
+
+
+def _album_id(artist: str, album: str) -> str:
+    """Stable album id from artist + album name."""
+    raw = f"{artist.lower()}::{album.lower()}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def _has_folder_cover(track_path: Path) -> bool:
+    """Check if the track's folder contains a cover image."""
+    if not track_path:
+        return False
+    parent = track_path.parent
+    for name in ALBUM_COVER_NAMES:
+        if (parent / name).is_file():
+            return True
+    return False

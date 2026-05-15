@@ -220,6 +220,7 @@
                     <div class="library-view-toggle" role="group" aria-label="Library view">
                         <button id="library-view-tracks" class="btn-secondary btn-icon-toggle active" type="button" aria-pressed="true">Tracks</button>
                         <button id="library-view-folders" class="btn-secondary btn-icon-toggle" type="button" aria-pressed="false">Folders</button>
+                        <button id="library-view-albums" class="btn-secondary btn-icon-toggle" type="button" aria-pressed="false">Albums</button>
                     </div>
                     <div class="library-search-wrap">
                         <input
@@ -276,6 +277,19 @@
                 <div id="library-folder-path" class="library-folder-path hidden"></div>
                 <div class="loading">Loading library…</div>
                 <div id="tracks-list" class="tracks-list"></div>
+                <div id="albums-grid" class="albums-grid hidden"></div>
+                <div id="album-detail" class="album-detail hidden">
+                    <button id="album-detail-back" class="btn-secondary btn-icon" aria-label="Back to albums">← Back</button>
+                    <div id="album-detail-header" class="album-detail-header">
+                        <img id="album-detail-cover" class="album-detail-cover" src="" alt="" />
+                        <div class="album-detail-meta">
+                            <h2 id="album-detail-name" class="album-detail-name"></h2>
+                            <p id="album-detail-artist" class="album-detail-artist"></p>
+                            <p id="album-detail-count" class="album-detail-count"></p>
+                        </div>
+                    </div>
+                    <div id="album-detail-tracks" class="album-detail-tracks tracks-list"></div>
+                </div>
                 <div id="library-info"></div>
             </div>
 

@@ -2561,6 +2561,33 @@ def _cover_media_type(path: Path) -> str:
     return "application/octet-stream"
 
 
+ALBUM_COVER_CACHE_DIR = BASE_DIR / "media" / "cache" / "album-covers"
+
+
+def _serve_thumbnail(image_path: Path, size: int = 256) -> FileResponse:
+    """Serve an image resized to a square thumbnail, with caching."""
+    from PIL import Image
+
+    image_path = image_path.resolve()
+    cache_key = hashlib.sha256(
+        f"{image_path}:{image_path.stat().st_mtime_ns}:{size}".encode()
+    ).hexdigest()[:16]
+    suffix = image_path.suffix.lower()
+    if suffix not in (".jpg", ".jpeg", ".png", ".webp"):
+        suffix = ".jpg"
+    cached = ALBUM_COVER_CACHE_DIR / f"{cache_key}{suffix}"
+    if cached.is_file():
+        return FileResponse(str(cached), media_type=_cover_media_type(cached))
+
+    ALBUM_COVER_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    img = Image.open(str(image_path))
+    img = img.convert("RGB")
+    img.thumbnail((size, size), Image.LANCZOS)
+    save_kwargs = {"quality": 85} if suffix in (".jpg", ".jpeg") else {}
+    img.save(str(cached), **save_kwargs)
+    return FileResponse(str(cached), media_type=_cover_media_type(cached))
+
+
 def _folder_cover_for_track(track_path: Path) -> Optional[Path]:
     names = (
         "cover.jpg", "cover.jpeg", "cover.png", "cover.webp",
@@ -2713,6 +2740,72 @@ async def get_track_cover(track_id: str):
     cached_cover, media_type = _cached_embedded_cover(track_id, track_path)
     if cached_cover and cached_cover.is_file():
         return FileResponse(cached_cover, media_type=media_type or _cover_media_type(cached_cover))
+
+    raise HTTPException(status_code=404, detail="Cover not found")
+
+
+@app.get("/api/albums")
+async def list_albums(query: Optional[str] = None):
+    """List albums grouped from the local library, optionally filtered by search query."""
+    if not library_scanner:
+        raise HTTPException(status_code=503, detail="Library not available")
+    albums = library_scanner.get_albums()
+    if query:
+        q = query.strip().lower()
+        filtered = []
+        for album in albums:
+            # Search in album name, artist, and track titles
+            match = (
+                q in album["name"].lower()
+                or q in album["artist"].lower()
+            )
+            if not match:
+                # Also search in track titles for this album
+                album_tracks = library_scanner.get_album_tracks(album["id"])
+                match = any(q in (t.title or "").lower() for t in album_tracks)
+            if match:
+                filtered.append(album)
+        albums = filtered
+    return albums
+
+
+@app.get("/api/albums/{album_id}/tracks")
+async def get_album_tracks(album_id: str):
+    """Return tracks for a specific album, sorted by disc/track number."""
+    if not library_scanner:
+        raise HTTPException(status_code=503, detail="Library not available")
+    tracks = library_scanner.get_album_tracks(album_id)
+    if not tracks:
+        raise HTTPException(status_code=404, detail="Album not found")
+    return [t.to_dict() for t in tracks]
+
+
+@app.get("/api/albums/{album_id}/cover")
+async def get_album_cover(album_id: str, size: int = 256):
+    """Return cover image for an album, resized to thumbnail.
+    Priority: folder cover > embedded cover > 404.
+    """
+    if not library_scanner:
+        raise HTTPException(status_code=503, detail="Library not available")
+    tracks = library_scanner.get_album_tracks(album_id)
+    if not tracks:
+        raise HTTPException(status_code=404, detail="Album not found")
+
+    # Try folder cover first (from any track in the album)
+    for track in tracks:
+        if not track.path:
+            continue
+        folder_cover = _folder_cover_for_track(track.path)
+        if folder_cover:
+            return _serve_thumbnail(folder_cover, size)
+
+    # Try embedded cover from first track that has one
+    for track in tracks:
+        if not track.path:
+            continue
+        cached_cover, media_type = _cached_embedded_cover(track.id, track.path)
+        if cached_cover and cached_cover.is_file():
+            return _serve_thumbnail(cached_cover, size)
 
     raise HTTPException(status_code=404, detail="Cover not found")
 
