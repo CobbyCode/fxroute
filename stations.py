@@ -1,5 +1,6 @@
 """Editable radio station storage and stream URL resolution."""
 
+import hashlib
 import json
 import logging
 import mimetypes
@@ -49,6 +50,7 @@ class Station:
     input_url: Optional[str] = None
     image_url: Optional[str] = None
     custom_image_url: Optional[str] = None
+    cached_custom_image_url: Optional[str] = None
 
 
 DEFAULT_STATIONS = [
@@ -217,7 +219,7 @@ def _extract_somafm_slug(name: str, input_url: str, stream_url: Optional[str] = 
 
 def _existing_station_art_path(slug: str) -> Optional[Path]:
     STATION_ART_DIR.mkdir(parents=True, exist_ok=True)
-    for suffix in (".png", ".jpg", ".jpeg", ".webp"):
+    for suffix in (".png", ".jpg", ".jpeg", ".webp", ".svg"):
         candidate = STATION_ART_DIR / f"{slug}{suffix}"
         if candidate.exists():
             return candidate
@@ -234,6 +236,61 @@ def _station_art_file_exists(value: Optional[str]) -> bool:
     except ValueError:
         return False
     return candidate.is_file()
+
+
+def _station_art_url_for_path(path: Path) -> str:
+    return f"/static/station-art/{path.name}"
+
+
+def _is_remote_image_url(value: Optional[str]) -> bool:
+    parsed = urlparse(str(value or "").strip())
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+def _cache_station_image_url(station_id: str, image_url: Optional[str], kind: str = "custom") -> Optional[str]:
+    if not _is_remote_image_url(image_url):
+        return None
+
+    STATION_ART_DIR.mkdir(parents=True, exist_ok=True)
+    source_url = str(image_url or "").strip()
+    key = hashlib.sha256(source_url.encode("utf-8")).hexdigest()[:12]
+    stem = f"{_slugify(station_id)}-{_slugify(kind)}-{key}"
+
+    for suffix in (".png", ".jpg", ".jpeg", ".webp", ".svg"):
+        existing = STATION_ART_DIR / f"{stem}{suffix}"
+        if existing.is_file():
+            return _station_art_url_for_path(existing)
+
+    try:
+        resp = requests.get(
+            source_url,
+            timeout=8,
+            headers={"User-Agent": "FXRoute/0.6 (+https://github.com/CobbyCode/fxroute)"},
+        )
+        if not resp.ok:
+            logger.debug("Failed to fetch station art %s: HTTP %s", source_url, resp.status_code)
+            return None
+        content_type = (resp.headers.get("content-type") or "").split(";")[0].strip().lower()
+        allowed_suffixes = {".png", ".jpg", ".jpeg", ".webp", ".svg"}
+        path_suffix = Path(urlparse(source_url).path).suffix.lower()
+        if not content_type.startswith("image/") and path_suffix not in allowed_suffixes:
+            return None
+        suffix = mimetypes.guess_extension(content_type) or path_suffix or ".jpg"
+        if suffix == ".jpe":
+            suffix = ".jpg"
+        if suffix not in allowed_suffixes:
+            suffix = ".jpg"
+        if len(resp.content) > 5 * 1024 * 1024:
+            logger.debug("Station art too large to cache: %s (%s bytes)", source_url, len(resp.content))
+            return None
+        target = STATION_ART_DIR / f"{stem}{suffix}"
+        tmp = target.with_suffix(target.suffix + ".tmp")
+        tmp.write_bytes(resp.content)
+        tmp.replace(target)
+        return _station_art_url_for_path(target)
+    except Exception as exc:
+        logger.debug("Failed to cache station art %s: %s", source_url, exc)
+        return None
 
 
 def _download_somafm_art(slug: str) -> Optional[Path]:
@@ -412,11 +469,27 @@ def get_stations() -> List[Station]:
             continue
         image_url = str(item.get("image_url") or "").strip() or None
         custom_image_url = str(item.get("custom_image_url") or "").strip() or None
+        cached_custom_image_url = str(item.get("cached_custom_image_url") or "").strip() or None
         if image_url and not _station_art_file_exists(image_url):
             logger.info("Station art cache entry missing, will refresh: station=%s image_url=%s", station_id, image_url)
             image_url = None
             item["image_url"] = None
             changed = True
+        if custom_image_url:
+            if cached_custom_image_url and not _station_art_file_exists(cached_custom_image_url):
+                cached_custom_image_url = None
+                item["cached_custom_image_url"] = None
+                changed = True
+            if not cached_custom_image_url:
+                cached_custom_image_url = _cache_station_image_url(station_id, custom_image_url, "custom")
+                if cached_custom_image_url:
+                    item["cached_custom_image_url"] = cached_custom_image_url
+                    changed = True
+        else:
+            cached_custom_image_url = None
+            if item.get("cached_custom_image_url"):
+                item["cached_custom_image_url"] = None
+                changed = True
         if not image_url:
             image_url = _auto_station_image_url(name, input_url, stream_url)
             if image_url:
@@ -430,6 +503,7 @@ def get_stations() -> List[Station]:
                 input_url=input_url,
                 image_url=image_url,
                 custom_image_url=custom_image_url,
+                cached_custom_image_url=cached_custom_image_url,
             )
         )
 
@@ -473,6 +547,7 @@ def update_station(station_id: str, name: str, input_url: str, custom_image_url:
         item["stream_url"] = stream_url
         item["image_url"] = _auto_station_image_url(item["name"], normalized_input_url, stream_url)
         item["custom_image_url"] = normalized_custom_image_url
+        item["cached_custom_image_url"] = None
         _save_raw_stations(raw)
         return Station(
             id=item["id"],
@@ -481,6 +556,7 @@ def update_station(station_id: str, name: str, input_url: str, custom_image_url:
             input_url=item.get("input_url"),
             image_url=item.get("image_url"),
             custom_image_url=item.get("custom_image_url"),
+            cached_custom_image_url=item.get("cached_custom_image_url"),
         )
     raise FileNotFoundError(f"Station not found: {station_id}")
 

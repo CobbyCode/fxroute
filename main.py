@@ -2536,12 +2536,14 @@ def _station_art_url_if_available(url: Optional[str]) -> str:
 def _station_api_payload(station):
     image_url = _station_art_url_if_available(station.image_url)
     custom_image_url = _station_art_url_if_available(station.custom_image_url)
+    cached_custom_image_url = _station_art_url_if_available(getattr(station, "cached_custom_image_url", None))
     return {
         "id": station.id,
         "title": station.name,
-        "image": custom_image_url or image_url or "",
+        "image": cached_custom_image_url or custom_image_url or image_url or "",
         "image_url": image_url,
         "custom_image_url": custom_image_url,
+        "cached_custom_image_url": cached_custom_image_url,
         "stream_url": station.stream_url,
         "input_url": station.input_url or station.stream_url,
         "artist": "Radio",
