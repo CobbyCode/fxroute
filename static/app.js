@@ -289,6 +289,7 @@ const elements = {
     albumDetailTracks: document.getElementById('album-detail-tracks'),
     playSelectedTracksBtn: document.getElementById('play-selected-tracks'),
     selectAllTracksBtn: document.getElementById('select-all-tracks'),
+    deleteFolderTracksBtn: document.getElementById('delete-folder-tracks'),
     playlistName: document.getElementById('playlist-name'),
     savePlaylistBtn: document.getElementById('save-playlist'),
     playlistSaveRow: document.getElementById('playlist-save-row'),
@@ -3430,12 +3431,13 @@ function updateLibrarySelectionUI() {
     const totalSelectedCount = selectedIds.size;
     const hasSearch = !!(state.library.searchQuery || '').trim();
 
+    const isTracksMode = state.library.viewMode === 'tracks';
     if (elements.downloadSelectedTracksBtn) {
-        elements.downloadSelectedTracksBtn.classList.toggle('hidden', totalSelectedCount === 0);
+        elements.downloadSelectedTracksBtn.classList.toggle('hidden', !isTracksMode || totalSelectedCount === 0);
         elements.downloadSelectedTracksBtn.disabled = totalSelectedCount === 0 || state.library.selectionDownloadPending;
     }
     if (elements.deleteSelectedTracksBtn) {
-        elements.deleteSelectedTracksBtn.classList.toggle('hidden', totalSelectedCount === 0);
+        elements.deleteSelectedTracksBtn.classList.toggle('hidden', !isTracksMode || totalSelectedCount === 0);
     }
     if (elements.playSelectedTracksBtn) {
         elements.playSelectedTracksBtn.disabled = totalSelectedCount === 0;
@@ -3448,6 +3450,22 @@ function updateLibrarySelectionUI() {
         } else {
             elements.selectAllTracksBtn.textContent = hasSearch ? 'Select visible' : 'Select all';
         }
+    }
+    // View-mode specific toolbar
+    const isFoldersMode = state.library.viewMode === 'folders';
+    const isAlbumsMode = state.library.viewMode === 'albums';
+    if (elements.selectAllTracksBtn) {
+        elements.selectAllTracksBtn.classList.toggle('hidden', !isTracksMode);
+    }
+    if (elements.deleteFolderTracksBtn) {
+        elements.deleteFolderTracksBtn.classList.toggle('hidden', !isFoldersMode && !isAlbumsMode);
+        elements.deleteFolderTracksBtn.disabled = isAlbumsMode; // no delete in album detail
+    }
+    if (elements.downloadSelectedTracksBtn) {
+        elements.downloadSelectedTracksBtn.classList.toggle('hidden', !isTracksMode || totalSelectedCount === 0 || state.library.selectionDownloadPending);
+    }
+    if (elements.deleteSelectedTracksBtn) {
+        elements.deleteSelectedTracksBtn.classList.toggle('hidden', !isTracksMode || totalSelectedCount === 0);
     }
     if (elements.libraryInfo) {
         const playlistText = filteredPlaylists.length > 0
