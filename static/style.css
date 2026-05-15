@@ -794,7 +794,8 @@ body {
     color: var(--accent-purple);
 }
 .playlist-download-btn,
-.playlist-delete-btn {
+.playlist-delete-btn,
+.folder-action-btn--delete {
     background: none;
     border: none;
     cursor: pointer;
@@ -808,7 +809,8 @@ body {
 .playlist-download-btn:hover {
     color: var(--accent-blue);
 }
-.playlist-delete-btn:hover {
+.playlist-delete-btn:hover,
+.folder-action-btn--delete:hover {
     color: var(--danger);
 }
 .library-import-panel {

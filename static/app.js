@@ -289,7 +289,6 @@ const elements = {
     albumDetailTracks: document.getElementById('album-detail-tracks'),
     playSelectedTracksBtn: document.getElementById('play-selected-tracks'),
     selectAllTracksBtn: document.getElementById('select-all-tracks'),
-    deleteFolderTracksBtn: document.getElementById('delete-folder-tracks'),
     playlistName: document.getElementById('playlist-name'),
     savePlaylistBtn: document.getElementById('save-playlist'),
     playlistSaveRow: document.getElementById('playlist-save-row'),
@@ -3051,7 +3050,7 @@ function renderTracks() {
             </button>
             <div class="folder-actions" aria-label="Folder actions">
                 <button class="folder-action-btn" data-folder-play="${escapeHtml(folder.path)}" type="button" title="Play folder" aria-label="Play ${escapeHtml(folder.name)}">▶</button>
-                <button class="folder-action-btn" data-folder-select="${escapeHtml(folder.path)}" type="button" title="Select folder" aria-label="Select ${escapeHtml(folder.name)}">✓</button>
+                <button class="folder-action-btn folder-action-btn--delete" data-folder-delete="${escapeHtml(folder.path)}" type="button" title="Delete folder" aria-label="Delete ${escapeHtml(folder.name)}">🗑</button>
             </div>
         </div>`).join('');
     }
@@ -3093,10 +3092,11 @@ function renderTracks() {
             await playLibraryFolder(btn.dataset.folderPlay || '');
         });
     });
-    elements.tracksList.querySelectorAll('.folder-action-btn[data-folder-select]').forEach(btn => {
-        btn.addEventListener('click', (e) => {
+    elements.tracksList.querySelectorAll('.folder-action-btn[data-folder-delete]').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
             e.stopPropagation();
-            toggleLibraryFolderSelection(btn.dataset.folderSelect || '');
+            const folder = btn.dataset.folderDelete || '';
+            await deleteLibraryFolder(folder);
         });
     });
 
@@ -3334,6 +3334,34 @@ async function playLibraryFolder(folder) {
     scheduleActiveLocalQueueSync();
     await playLocal(tracks[0].id);
 }
+
+async function deleteLibraryFolder(folder) {
+    const tracks = getTracksInFolder(folder);
+    if (tracks.length === 0) {
+        showToast('Folder is already empty', 'error');
+        return;
+    }
+    const folderName = folder.split('/').filter(Boolean).pop() || folder;
+    if (!confirm(`Delete "${folderName}"? This will remove ${tracks.length} track${tracks.length === 1 ? '' : 's'} from the library.`)) {
+        return;
+    }
+    try {
+        const resp = await fetch('/api/tracks/delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ track_ids: tracks.map(t => t.id) }),
+        });
+        if (!resp.ok) {
+            const data = await resp.json().catch(() => ({}));
+            throw new Error(data.detail || 'Delete failed');
+        }
+        showToast(`Deleted ${tracks.length} track${tracks.length === 1 ? '' : 's'}`, 'success');
+        // Refresh library
+        await fetchTracks();
+    } catch (e) {
+        showToast(`Failed to delete folder: ${e.message}`, 'error');
+    }
+}
 function toggleLibraryFolderSelection(folder) {
     const folderTrackIds = getTracksInFolder(folder).map(track => track.id);
     if (folderTrackIds.length === 0) {
@@ -3452,14 +3480,8 @@ function updateLibrarySelectionUI() {
         }
     }
     // View-mode specific toolbar
-    const isFoldersMode = state.library.viewMode === 'folders';
-    const isAlbumsMode = state.library.viewMode === 'albums';
     if (elements.selectAllTracksBtn) {
         elements.selectAllTracksBtn.classList.toggle('hidden', !isTracksMode);
-    }
-    if (elements.deleteFolderTracksBtn) {
-        elements.deleteFolderTracksBtn.classList.toggle('hidden', !isFoldersMode && !isAlbumsMode);
-        elements.deleteFolderTracksBtn.disabled = isAlbumsMode; // no delete in album detail
     }
     if (elements.downloadSelectedTracksBtn) {
         elements.downloadSelectedTracksBtn.classList.toggle('hidden', !isTracksMode || totalSelectedCount === 0 || state.library.selectionDownloadPending);
