@@ -224,6 +224,18 @@ def _existing_station_art_path(slug: str) -> Optional[Path]:
     return None
 
 
+def _station_art_file_exists(value: Optional[str]) -> bool:
+    value = str(value or "").strip()
+    if not value.startswith("/static/station-art/"):
+        return bool(value)
+    candidate = (STATION_ART_DIR / Path(value).name).resolve()
+    try:
+        candidate.relative_to(STATION_ART_DIR.resolve())
+    except ValueError:
+        return False
+    return candidate.is_file()
+
+
 def _download_somafm_art(slug: str) -> Optional[Path]:
     STATION_ART_DIR.mkdir(parents=True, exist_ok=True)
     existing = _existing_station_art_path(slug)
@@ -400,6 +412,11 @@ def get_stations() -> List[Station]:
             continue
         image_url = str(item.get("image_url") or "").strip() or None
         custom_image_url = str(item.get("custom_image_url") or "").strip() or None
+        if image_url and not _station_art_file_exists(image_url):
+            logger.info("Station art cache entry missing, will refresh: station=%s image_url=%s", station_id, image_url)
+            image_url = None
+            item["image_url"] = None
+            changed = True
         if not image_url:
             image_url = _auto_station_image_url(name, input_url, stream_url)
             if image_url:

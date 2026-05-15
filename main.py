@@ -1610,7 +1610,11 @@ async def sync_peak_monitor_for_playback_state(state: dict):
             )
             await peak_monitor.restart()
             await manager.broadcast({"type": "playback_peak_warning", "data": peak_monitor.snapshot()})
-        elif not is_active_playback and peak_monitor_playback_armed:
+        elif (
+            not is_active_playback
+            and peak_monitor_playback_armed
+            and str(peak_monitor_context_signature or "").startswith("player:")
+        ):
             await asyncio.sleep(PEAK_MONITOR_INACTIVE_GRACE_MS / 1000)
             refreshed_player_state = player_instance.state if player_instance else {}
             if refreshed_player_state.get("current_file") and not refreshed_player_state.get("paused") and not refreshed_player_state.get("ended"):
@@ -1663,7 +1667,11 @@ async def sync_peak_monitor_for_spotify_state(data: dict):
             )
             await peak_monitor.restart()
             await manager.broadcast({"type": "playback_peak_warning", "data": peak_monitor.snapshot()})
-        elif not is_spotify_playing and peak_monitor_playback_armed:
+        elif (
+            not is_spotify_playing
+            and peak_monitor_playback_armed
+            and str(peak_monitor_context_signature or "").startswith("spotify:")
+        ):
             if spotify_samplerate_recovery_active:
                 logger.info("Keeping peak monitor armed while Spotify samplerate recovery is active")
                 return
