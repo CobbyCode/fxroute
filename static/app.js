@@ -1593,7 +1593,7 @@ function syncLibraryStateFromPlaybackContext(force = false) {
             state.library.selectedTrackIds = [];
             state.library.shuffle = false;
             state.library.loop = false;
-            renderTracks();
+            renderLibraryView();
             renderLibraryModeButtons();
         }
         return;
@@ -1602,7 +1602,7 @@ function syncLibraryStateFromPlaybackContext(force = false) {
     state.library.selectedTrackIds = [...context.selectedTrackIds];
     state.library.shuffle = context.shuffle;
     state.library.loop = context.loop;
-    renderTracks();
+    renderLibraryView();
     renderLibraryModeButtons();
 }
 function getActiveLocalTrackId() {
@@ -2912,6 +2912,21 @@ function getFolderChildren() {
     });
     return Array.from(folders.values()).sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
 }
+function renderLibraryView() {
+    if (state.library.viewMode === 'albums') {
+        if (state.library.albumDetail) {
+            // Re-open the album detail if we were viewing one
+            const albumId = state.library.albumDetail.album.id;
+            state.library.albumDetail = null;
+            openAlbumDetail(albumId);
+        } else {
+            renderAlbums();
+        }
+    } else {
+        renderTracks();
+    }
+}
+
 function renderLibraryViewButtons() {
     const mode = state.library.viewMode;
     if (elements.libraryViewTracksBtn) {
