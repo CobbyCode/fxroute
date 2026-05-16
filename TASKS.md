@@ -35,6 +35,7 @@ Add a first technical settings surface to FXRoute without disrupting the current
 - [ ] FX-MEASURE-005 — Evaluate optional conservative Auto-PEQ later without turning the feature into a full REW replacement
 - [x] FX-CONVOLVER-001 — Implement experimental Convolver Assist v1 beside PEQ Assist with guarded PEQ mode behavior
 - [x] FX-CONVOLVER-PHASE-002 — Add and validate Linear/Minimum phase FIR comparison modes; remove unusable Mixed/Hybrid path
+- [x] FX-LIBRARY-PLAYLIST-SEARCH-001 — Add name-only playlist search to Library search
 
 ## Notes
 - Current accepted baseline already includes compare/combine, PEQ gain, IR cleanup, and no autoload on import.
@@ -52,3 +53,4 @@ Add a first technical settings surface to FXRoute without disrupting the current
 - DAC keep-awake remains intentionally deferred unless a clear reproducible DAC sleep/click problem returns.
 - Installer-managed Spotify cache cleanup and optional system package update helpers were implemented on 2026-04-26 as opt-in env-driven timers, intentionally kept out of the live settings UI and defaulted to `off`.
 - Emerging follow-up ideas for later evaluation: Bluetooth source, UPnP/DLNA renderer, max samplerate setting, distro-aware maintenance helpers.
+- Playlist search plan added on 2026-05-15: `outputs/fxroute-playlist-name-search-plan-2026-05-15.md`. Direction: match playlists by partial playlist name only; do not expand track search by playlist membership.

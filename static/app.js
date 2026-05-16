@@ -1938,7 +1938,7 @@ function renderQueueUI() {
     }
     if (elements.btnNext && window.__footerSource !== 'spotify') {
         elements.btnNext.classList.toggle('hidden', !hasQueue);
-        elements.btnNext.disabled = playbackActionInFlight || !hasQueue || queueIndex < 0 || queueIndex >= queue.count - 1;
+        elements.btnNext.disabled = playbackActionInFlight || !hasQueue || queueIndex < 0 || (queueIndex >= queue.count - 1 && !queue.loop && !queue.shuffle);
     }
     if (elements.btnClearQueue) {
         elements.btnClearQueue.classList.toggle('hidden', !hasQueue);
@@ -3223,6 +3223,7 @@ function renderAlbums() {
             <div class="album-art-wrap">
                 <img class="album-art" src="${escapeHtml(coverUrl)}"
                      alt="${escapeHtml(album.name)}"
+                     onload="this.classList.add('loaded')"
                      onerror="this.onerror=null;this.src='${fallbackSvg}'" />
             </div>
             <div class="album-name">${escapeHtml(album.name)}</div>

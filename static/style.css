@@ -606,6 +606,25 @@ body {
     flex-direction: column;
     gap: 0.3rem;
 }
+.album-detail-tracks .track-item {
+    align-items: center;
+}
+.album-detail-tracks .track-play-button {
+    min-height: 52px;
+}
+.track-duration {
+    align-self: stretch;
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-end;
+    flex: 0 0 4.4rem;
+    padding: 0.8rem 0 0.8rem 0.4rem;
+    color: var(--text-secondary);
+    font-size: 0.86rem;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+    white-space: nowrap;
+}
 
 @media (max-width: 640px) {
     .albums-grid {
@@ -614,6 +633,10 @@ body {
     .album-detail-cover {
         width: 120px;
         height: 120px;
+    }
+    .track-duration {
+        flex-basis: 3.8rem;
+        font-size: 0.8rem;
     }
 }
 
@@ -3185,10 +3208,10 @@ input[type="number"]::-webkit-outer-spin-button {
    ============================================================ */
 .playback-bar {
     position: fixed;
-    bottom: 6px;
+    bottom: 12px;
     left: 8px;
     right: 8px;
-    height: 84px;
+    height: 110px;
     background: rgba(22, 22, 25, 0.96);
     backdrop-filter: blur(18px);
     -webkit-backdrop-filter: blur(18px);
@@ -3198,7 +3221,7 @@ input[type="number"]::-webkit-outer-spin-button {
     grid-template-columns: minmax(0, 1fr) 1.8fr minmax(0, 1fr);
     align-items: center;
     gap: 0.85rem;
-    padding: 0.35rem 1.1rem;
+    padding: 0.72rem 1.1rem 1rem;
     z-index: 100;
     box-shadow: 0 10px 28px rgba(0, 0, 0, 0.22);
     transition: height 0.2s var(--ease), bottom 0.2s var(--ease), box-shadow 0.2s var(--ease), border-color 0.2s var(--ease);
@@ -3225,7 +3248,7 @@ input[type="number"]::-webkit-outer-spin-button {
     justify-self: center;
     width: 100%;
     min-width: 0;
-    overflow: hidden;
+    overflow: visible;
     flex: 1 1 auto;
 }
 /* Desktop center column: 2-row song info above seek slider */
@@ -3236,6 +3259,7 @@ input[type="number"]::-webkit-outer-spin-button {
     width: 100%;
     gap: 0.08rem;
     padding: 0.1rem 0.65rem 0;
+    transform: translateY(-2px);
 }
 .playback-meta-row {
     display: flex;
@@ -3245,6 +3269,7 @@ input[type="number"]::-webkit-outer-spin-button {
     min-height: 1.5rem;
     flex-wrap: wrap;
     width: 100%;
+    transform: translateY(-3px);
 }
 .samplerate-status,
 .queue-status,
@@ -3309,6 +3334,8 @@ input[type="number"]::-webkit-outer-spin-button {
     gap: 0.65rem;
     width: 100%;
     padding: 0 0.1rem;
+    overflow: visible;
+    transform: translateY(-2px);
 }
 /* Radio mode: radio visualizer placeholder */
 .playback-center 
@@ -3333,6 +3360,11 @@ input[type="number"]::-webkit-outer-spin-button {
     white-space: nowrap;
     min-width: 2.5ch;
     text-align: center;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    align-self: center;
+    height: 100%;
 }
 .seek-slider {
     -webkit-appearance: none;
@@ -3828,12 +3860,12 @@ input[type="number"]::-webkit-outer-spin-button {
     .playback-bar {
         display: flex;
         flex-direction: column;
-        bottom: 6px;
+        bottom: 12px;
         left: 6px;
         right: 6px;
         height: auto;
-        padding: 0.5rem 0.75rem 0.65rem;
-        gap: 0.28rem;
+        padding: 0.9rem 0.75rem 1.12rem;
+        gap: 0.2rem;
         align-items: stretch;
         border-radius: 15px;
     }
@@ -3873,7 +3905,7 @@ input[type="number"]::-webkit-outer-spin-button {
         display: flex !important;
         flex-direction: column;
         align-items: center;
-        gap: 0.24rem;
+        gap: 0.22rem;
         width: 100%;
     }
     /* Local tracks on mobile: show song info */
@@ -3907,8 +3939,8 @@ input[type="number"]::-webkit-outer-spin-button {
         flex-wrap: wrap;
     }
     .control-btn {
-        width: 48px;
-        height: 48px;
+        width: 46px;
+        height: 46px;
         font-size: 1.3rem;
     }
     .volume-slider {
@@ -3946,8 +3978,8 @@ input[type="number"]::-webkit-outer-spin-button {
             "track center ."
             "controls controls controls";
         height: auto;
-        gap: 0.7rem 0.9rem;
-        padding: 0.58rem 0.95rem 0.72rem;
+        gap: 0.78rem 0.9rem;
+        padding: 0.72rem 0.95rem 0.92rem;
     }
 
     .playback-bar .track-info {
@@ -3987,6 +4019,7 @@ input[type="number"]::-webkit-outer-spin-button {
 /* Radio mode: hide left column info, center the middle column content */
 .source-radio .playback-bar .playback-center .song-info {
     text-align: center;
+    padding-top: 0.42rem;
 }
 /* Radio: hide seek slider */
 .source-radio .playback-bar .playback-center .seek-row {

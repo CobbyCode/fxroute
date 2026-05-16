@@ -1399,8 +1399,19 @@ async def _advance_playback_queue(*, transition_reason: str = "queue advance") -
         return False
     next_index = playback_queue_index + 1
     if next_index >= len(playback_queue):
-        if playback_queue_loop:
-            next_index = 0
+        manual_shuffle_wrap = playback_queue_shuffle and transition_reason.startswith("manual queue next")
+        if playback_queue_loop or manual_shuffle_wrap:
+            if playback_queue_shuffle:
+                current_index = playback_queue_index if 0 <= playback_queue_index < len(playback_queue) else 0
+                current_track_id = (playback_queue[current_index] or {}).get("id")
+                current_track = dict(playback_queue[current_index])
+                remaining = [dict(track) for track in playback_queue if track.get("id") != current_track_id]
+                random.shuffle(remaining)
+                playback_queue[:] = [current_track] + remaining
+                playback_queue_index = 0
+                next_index = 1 if len(playback_queue) > 1 else 0
+            else:
+                next_index = 0
         else:
             _clear_playback_queue()
             return False
@@ -1425,12 +1436,13 @@ def _set_queue_shuffle(enabled: bool) -> bool:
     current_index = playback_queue_index if 0 <= playback_queue_index < len(playback_queue) else 0
     current_track_id = (playback_queue[current_index] or {}).get("id") if playback_queue else None
     if enabled:
-        prefix = playback_queue[: current_index + 1]
-        remaining = playback_queue[current_index + 1 :]
+        current_track = dict(playback_queue[current_index])
+        remaining = [dict(track) for track in playback_queue if track.get("id") != current_track_id]
         random.shuffle(remaining)
-        playback_queue = prefix + remaining
+        playback_queue = [current_track] + remaining
+        playback_queue_index = 0
         if playback_queue_mode == "mpv_native" and player_instance and player_instance._running:
-            _prime_mpv_native_queue(current_index)
+            _prime_mpv_native_queue(playback_queue_index)
     elif playback_queue_original:
         playback_queue = [dict(track) for track in playback_queue_original]
         if current_track_id:
