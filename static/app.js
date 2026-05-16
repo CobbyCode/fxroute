@@ -3197,11 +3197,7 @@ function renderAlbums() {
 
     let albums = state.library.albums || [];
     if (query) {
-        albums = albums.filter(a => {
-            const nameMatch = (a.name || '').toLowerCase().includes(query);
-            const artistMatch = (a.artist || '').toLowerCase().includes(query);
-            return nameMatch || artistMatch;
-        });
+        albums = albums.filter(albumMatchesLibraryQuery);
     }
 
     if (albums.length === 0) {
@@ -3235,6 +3231,22 @@ function renderAlbums() {
     elements.albumsGrid.querySelectorAll('.album-card').forEach(card => {
         card.addEventListener('click', () => openAlbumDetail(card.dataset.albumId));
     });
+}
+
+function albumMatchesLibraryQuery(album) {
+    const query = (state.library.searchQuery || '').trim().toLowerCase();
+    if (!query) return true;
+    const haystack = [
+        album.name,
+        album.artist,
+        ...(album.genres || []),
+        ...(album.years || []),
+        album.year,
+    ]
+        .filter(value => value !== null && value !== undefined && value !== '')
+        .join(' ')
+        .toLowerCase();
+    return haystack.includes(query);
 }
 
 async function openAlbumDetail(albumId) {
