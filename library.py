@@ -97,9 +97,6 @@ def _clean_import_folder_text(value: str) -> str:
 
 def _looks_like_import_album_dir(folder: Path) -> bool:
     """Return true for imported album folders, without affecting loose libraries."""
-    audio_count = sum(1 for child in folder.iterdir() if child.is_file() and child.suffix.lower() in AUDIO_EXTENSIONS)
-    if audio_count > 1:
-        return True
     return _folder_has_local_audio_playlist(folder)
 
 
