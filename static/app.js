@@ -3175,6 +3175,7 @@ async function fetchAlbums() {
 
 function renderAlbums() {
     renderLibraryViewButtons();
+    updateLibrarySelectionUI();
     const loadingEl = document.querySelector('#tab-library .loading');
     const query = (state.library.searchQuery || '').trim().toLowerCase();
 
