@@ -2807,7 +2807,19 @@ async def get_album_cover(album_id: str, size: int = 256):
         if cached_cover and cached_cover.is_file():
             return _serve_thumbnail(cached_cover, size)
 
-    raise HTTPException(status_code=404, detail="Cover not found")
+    # If no cover found, return a generated placeholder
+    import hashlib as _hl
+    _name = album_id[:16]
+    _h = int(_hl.md5(_name.encode()).hexdigest()[:6], 16)
+    _r, _g, _b = (_h >> 16) & 0xFF, (_h >> 8) & 0xFF, _h & 0xFF
+    _svg = (
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">'
+        f'<rect width="200" height="200" rx="16" fill="#{_r:02x}{_g:02x}{_b:02x}"/>'
+        f'<text x="100" y="108" text-anchor="middle" fill="white" font-size="48" '
+        f'font-weight="bold" font-family="system-ui,sans-serif">♪</text>'
+        f'</svg>'
+    )
+    return Response(content=_svg.encode(), media_type="image/svg+xml")
 
 
 @app.post("/api/tracks/download")

@@ -3221,7 +3221,7 @@ function renderAlbums() {
         <div class="album-card" data-album-id="${escapeHtml(album.id)}" role="button" tabindex="0">
             <div class="album-art-wrap">
                 <img class="album-art" src="${escapeHtml(coverUrl)}"
-                     alt="${escapeHtml(album.name)}" loading="lazy"
+                     alt="${escapeHtml(album.name)}"
                      onerror="this.onerror=null;this.src='${fallbackSvg}'" />
             </div>
             <div class="album-name">${escapeHtml(album.name)}</div>
