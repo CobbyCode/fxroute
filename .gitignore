@@ -20,6 +20,8 @@ venv/
 # Runtime / temp
 /tmp/
 *.sock
+/outputs/
+*.bak-*
 
 # Generated backups and large archives
 backups/
