@@ -1,6 +1,7 @@
 """Local music library scanner."""
 
 import hashlib
+import html
 import logging
 import os
 import re
@@ -84,6 +85,46 @@ def _filename_artist_title(filepath: Path) -> tuple[Optional[str], Optional[str]
     if len(artist) < 2 or len(title) < 2:
         return None, None
     return artist, title
+
+
+def _clean_import_folder_text(value: str) -> str:
+    """Normalize archive/folder names from web downloads for display metadata."""
+    text = (value or "").replace("_amp_", "&").replace("&amp;", "&")
+    text = html.unescape(text)
+    text = re.sub(r"\s+", " ", text).strip(" -_\t")
+    return text
+
+
+def _looks_like_import_album_dir(folder: Path) -> bool:
+    """Return true for imported album folders, without affecting loose libraries."""
+    if any(child.suffix.lower() in {".m3u", ".m3u8"} for child in folder.iterdir() if child.is_file()):
+        return True
+    audio_count = sum(1 for child in folder.iterdir() if child.is_file() and child.suffix.lower() in AUDIO_EXTENSIONS)
+    return audio_count > 1
+
+
+def _infer_album_from_folder_name(folder_name: str, track_artist: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    """
+    Best-effort album metadata for ZIP imports that contain no album tags.
+
+    Common Jamendo ZIP names look like:
+    "Artist - Album - 123456 --- Jamendo - MP3".
+    """
+    name = _clean_import_folder_text(folder_name)
+    name = re.sub(r"\s+---\s+.*$", "", name).strip()
+    parts = [_clean_import_folder_text(part) for part in re.split(r"\s+-\s+", name) if _clean_import_folder_text(part)]
+
+    if len(parts) >= 3 and re.fullmatch(r"\d{3,}", parts[-1]):
+        artist = parts[0]
+        album = " - ".join(parts[1:-1])
+    elif len(parts) >= 2:
+        artist = parts[0]
+        album = " - ".join(parts[1:])
+    else:
+        artist = _clean_import_folder_text(track_artist or "")
+        album = name
+
+    return (album or None), (artist or track_artist or None)
 
 
 def _probe_sample_rate_with_ffprobe(filepath: Path) -> Optional[int]:
@@ -268,6 +309,12 @@ class LibraryScanner:
             if not artist and filename_artist:
                 artist = filename_artist
 
+            if not album:
+                inferred_album, inferred_album_artist = self._infer_import_album(filepath, artist)
+                if inferred_album:
+                    album = inferred_album
+                    album_artist = album_artist or inferred_album_artist
+
             if not title:
                 title = filepath.stem
             if not artist:
@@ -295,6 +342,22 @@ class LibraryScanner:
         except Exception as e:
             logger.warning(f"Failed to create track for {filepath}: {e}")
             return None
+
+    def _infer_import_album(self, filepath: Path, track_artist: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+        """Infer album metadata only for imported archive folders lacking tags."""
+        folder = filepath.parent
+        try:
+            folder.relative_to(self.settings.download_dir)
+        except ValueError:
+            return None, None
+
+        try:
+            if not _looks_like_import_album_dir(folder):
+                return None, None
+        except OSError:
+            return None, None
+
+        return _infer_album_from_folder_name(folder.name, track_artist)
 
     def get_tracks(self, refresh: bool = False) -> List[Track]:
         """Get tracks list, optionally forcing a refresh."""
