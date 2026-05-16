@@ -3212,7 +3212,7 @@ input[type="number"]::-webkit-outer-spin-button {
     bottom: 12px;
     left: 8px;
     right: 8px;
-    height: 110px;
+    height: 102px;
     background: rgba(22, 22, 25, 0.96);
     backdrop-filter: blur(18px);
     -webkit-backdrop-filter: blur(18px);
@@ -3222,7 +3222,7 @@ input[type="number"]::-webkit-outer-spin-button {
     grid-template-columns: minmax(0, 1fr) 1.6fr minmax(0, 1fr);
     align-items: center;
     gap: 0.85rem;
-    padding: 0.72rem 1.1rem 1rem;
+    padding: 0.62rem 1.1rem 0.82rem;
     z-index: 100;
     box-shadow: 0 10px 28px rgba(0, 0, 0, 0.22);
     transition: height 0.2s var(--ease), bottom 0.2s var(--ease), box-shadow 0.2s var(--ease), border-color 0.2s var(--ease);
@@ -3862,8 +3862,8 @@ input[type="number"]::-webkit-outer-spin-button {
         left: 6px;
         right: 6px;
         height: auto;
-        padding: 0.9rem 0.75rem 1.12rem;
-        gap: 0.2rem;
+        padding: 0.78rem 0.75rem 0.96rem;
+        gap: 0.16rem;
         align-items: stretch;
         border-radius: 15px;
     }
@@ -3976,8 +3976,8 @@ input[type="number"]::-webkit-outer-spin-button {
             "track center ."
             "controls controls controls";
         height: auto;
-        gap: 0.78rem 0.9rem;
-        padding: 0.72rem 0.95rem 0.92rem;
+        gap: 0.66rem 0.9rem;
+        padding: 0.6rem 0.95rem 0.76rem;
     }
 
     .playback-bar .track-info {
