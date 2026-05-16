@@ -3304,11 +3304,10 @@ async function playTrackInAlbum(trackId, albumId) {
             knownIds.add(t.id);
         }
     }
-    // Use selection queue mechanism in playLocal: temporarily set selection to album tracks
-    const savedSelection = state.library.selectedTrackIds;
+    // Replace selection with album tracks – old selection is cleared
     state.library.selectedTrackIds = albumTrackIds;
+    updateLibrarySelectionUI();
     await playLocal(trackId);
-    state.library.selectedTrackIds = savedSelection;
 }
 
 function albumArtFallbackSvg(text) {
@@ -3458,20 +3457,12 @@ function updateLibrarySelectionUI() {
     const selectedVisibleCount = visibleIds.filter(id => selectedIds.has(id)).length;
     const totalSelectedCount = selectedIds.size;
     const hasSearch = !!(state.library.searchQuery || '').trim();
-
     const isTracksMode = state.library.viewMode === 'tracks';
-    if (elements.downloadSelectedTracksBtn) {
-        elements.downloadSelectedTracksBtn.classList.toggle('hidden', !isTracksMode || totalSelectedCount === 0);
-        elements.downloadSelectedTracksBtn.disabled = totalSelectedCount === 0 || state.library.selectionDownloadPending;
-    }
-    if (elements.deleteSelectedTracksBtn) {
-        elements.deleteSelectedTracksBtn.classList.toggle('hidden', !isTracksMode || totalSelectedCount === 0);
-    }
-    if (elements.playSelectedTracksBtn) {
-        elements.playSelectedTracksBtn.disabled = totalSelectedCount === 0;
-    }
+
+    // Select all: visible in all modes
     if (elements.selectAllTracksBtn) {
         const allVisibleSelected = filteredTracks.length > 0 && selectedVisibleCount === filteredTracks.length;
+        elements.selectAllTracksBtn.classList.toggle('hidden', false);
         elements.selectAllTracksBtn.disabled = filteredTracks.length === 0;
         if (allVisibleSelected) {
             elements.selectAllTracksBtn.textContent = hasSearch ? 'Clear visible' : 'Clear selection';
@@ -3479,15 +3470,21 @@ function updateLibrarySelectionUI() {
             elements.selectAllTracksBtn.textContent = hasSearch ? 'Select visible' : 'Select all';
         }
     }
-    // View-mode specific toolbar
-    if (elements.selectAllTracksBtn) {
-        elements.selectAllTracksBtn.classList.toggle('hidden', !isTracksMode);
-    }
+
+    // Download: tracks mode only
     if (elements.downloadSelectedTracksBtn) {
-        elements.downloadSelectedTracksBtn.classList.toggle('hidden', !isTracksMode || totalSelectedCount === 0 || state.library.selectionDownloadPending);
+        elements.downloadSelectedTracksBtn.classList.toggle('hidden', !isTracksMode || totalSelectedCount === 0);
+        elements.downloadSelectedTracksBtn.disabled = totalSelectedCount === 0 || state.library.selectionDownloadPending;
     }
+
+    // Delete: visible in all modes when tracks selected
     if (elements.deleteSelectedTracksBtn) {
-        elements.deleteSelectedTracksBtn.classList.toggle('hidden', !isTracksMode || totalSelectedCount === 0);
+        elements.deleteSelectedTracksBtn.classList.toggle('hidden', totalSelectedCount === 0);
+    }
+
+    // Play: visible when tracks selected
+    if (elements.playSelectedTracksBtn) {
+        elements.playSelectedTracksBtn.disabled = totalSelectedCount === 0;
     }
     if (elements.libraryInfo) {
         const playlistText = filteredPlaylists.length > 0
