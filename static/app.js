@@ -2318,7 +2318,7 @@ async function clearQueue() {
         state.library.shuffle = false;
         state.library.loop = false;
         lastLibraryPlaybackContextSignature = JSON.stringify({ selectedTrackIds: [], shuffle: false, loop: false });
-        renderTracks();
+        renderLibraryView();
         renderLibraryModeButtons();
         showToast('Queue cleared', 'info');
     } catch (e) {
