@@ -3461,7 +3461,6 @@ function updateLibrarySelectionUI() {
     const totalSelectedCount = selectedIds.size;
     const hasSearch = !!(state.library.searchQuery || '').trim();
     const isTracksMode = state.library.viewMode === 'tracks';
-    const isAlbumsMode = state.library.viewMode === 'albums';
 
     // Select all: visible in all modes
     if (elements.selectAllTracksBtn) {
@@ -3475,9 +3474,9 @@ function updateLibrarySelectionUI() {
         }
     }
 
-    // Download: visible in all modes except albums when tracks selected
+    // Download: visible in all modes when tracks selected
     if (elements.downloadSelectedTracksBtn) {
-        elements.downloadSelectedTracksBtn.classList.toggle('hidden', isAlbumsMode || totalSelectedCount === 0);
+        elements.downloadSelectedTracksBtn.classList.toggle('hidden', totalSelectedCount === 0);
         elements.downloadSelectedTracksBtn.disabled = totalSelectedCount === 0 || state.library.selectionDownloadPending;
     }
 
