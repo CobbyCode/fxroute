@@ -1593,7 +1593,7 @@ function syncLibraryStateFromPlaybackContext(force = false) {
             state.library.selectedTrackIds = [];
             state.library.shuffle = false;
             state.library.loop = false;
-            renderLibraryView();
+            if (state.library.viewMode !== 'albums') renderLibraryView();
             renderLibraryModeButtons();
         }
         return;
@@ -1602,7 +1602,7 @@ function syncLibraryStateFromPlaybackContext(force = false) {
     state.library.selectedTrackIds = [...context.selectedTrackIds];
     state.library.shuffle = context.shuffle;
     state.library.loop = context.loop;
-    renderLibraryView();
+    if (state.library.viewMode !== 'albums') renderLibraryView();
     renderLibraryModeButtons();
 }
 function getActiveLocalTrackId() {
