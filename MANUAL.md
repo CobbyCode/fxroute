@@ -2,7 +2,7 @@
 
 FXRoute turns a small Linux audio PC into a browser-controlled music and DSP box.
 
-Use it from a phone, tablet, or laptop on the local network to control playback, switch stereo EasyEffects presets, compare DSP profiles, import filters, run practical room measurements, and tune the result without touching the desktop.
+Use it from a phone, tablet, or laptop on the local network to control playback, switch EasyEffects stereo presets, compare DSP profiles, import filters, run practical room measurements, and tune the result without touching the desktop.
 
 ## 1. What FXRoute is for
 
@@ -10,7 +10,7 @@ FXRoute is useful when one local machine should act as a practical hi-fi control
 
 - play internet radio, Spotify, and local music
 - control volume, queue, play/pause, and track position from the browser
-- route audio through stereo EasyEffects DSP for live DSP
+- route audio through EasyEffects stereo DSP for live DSP
 - switch room-correction, PEQ, convolver, and tone presets
 - compare DSP presets quickly with A/B switching
 - measure the room/speaker response and use it as a tuning guide
@@ -80,7 +80,7 @@ Use **Library** for local files and imported music.
 You can:
 
 - play local tracks from the music folder
-- browse by folder or use the full track list
+- browse by folder, album, or use the full track list
 - search by folder, title, artist, album, or album artist
 - shuffle or loop the current queue
 - select multiple tracks
@@ -107,7 +107,7 @@ The current protocol, API routes, config key, and later hardware-test checklist 
 
 Use **DSP** for sound shaping and correction.
 
-Main tools for stereo DSP:
+Main tools:
 
 - **A/B compare** — switch between two presets while listening.
 - **Combine** — build a new preset from up to three existing presets.

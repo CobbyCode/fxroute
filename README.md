@@ -47,11 +47,11 @@ It is built for mini PCs, desktops, ARM boards, and dedicated stereo boxes that 
 ## What it does
 
 - browser UI for desktop and mobile control
-- local music playback with queue, playlists, folder browsing, uploads, ZIP album imports, and media URL imports
+- local music playback with queue, playlists, folder browsing, album browsing, uploads, ZIP album imports, and media URL imports
 - internet radio with built-in and custom stations
 - lightweight Now Playing cover cue for local tracks when folder or embedded cover art is available
 - Spotify desktop control through `playerctl` / MPRIS
-- stereo EasyEffects DSP: preset switching, PEQ, convolver import/export, output helpers, and A/B compare
+- EasyEffects stereo preset switching, PEQ, convolver import/export, output helpers, and A/B compare
 - convolver preset bundles with EasyEffects `.irs`, REW-friendly `.wav` impulse copy, preset JSON, and reimport support
 - bundled 30-second 1 kHz stereo FLAC level tone at `-12 dBFS` for safe level checks
 - global DSP helpers such as limiter, headroom, autogain, bass enhancement, and tone modes
@@ -74,7 +74,7 @@ Typical setup:
 - optional Spotify desktop client in the same session
 - control from any browser on the LAN
 
-The user session matters because FXRoute coordinates local audio applications, stereo EasyEffects DSP, MPRIS/playerctl, and PipeWire audio routes. In socket mode, EasyEffects runs as a background service in that session.
+The user session matters because FXRoute coordinates local audio applications, EasyEffects stereo, MPRIS/playerctl, and PipeWire audio routes. In socket mode, EasyEffects runs as a background service in that session.
 
 ## Requirements
 
@@ -120,7 +120,7 @@ Typical URLs:
 
 - **Radio** — built-in and custom internet stations
 - **Library** — local files, folder browsing, playlists, uploads, imports, downloads, and deletion
-- **DSP** — stereo EasyEffects DSP: presets, PEQ, convolver import/export, helpers, A/B compare, and preset creation
+- **DSP** — EasyEffects stereo presets, PEQ, convolver import/export, helpers, A/B compare, and preset creation
 - **Measure** — practical host-mic measurement, PEQ/FIR tuning, calibration files, and custom house curves
 - **Spotify** — control a local Spotify desktop client
 - **Technical settings** — output selection, source state, Bluetooth status, optional amplifier-controller status/control, and local certificate access
