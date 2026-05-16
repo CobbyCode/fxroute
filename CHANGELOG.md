@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## 0.6.3 (2026-05-16)
+- Added album browsing view with cover art grid, album detail page, and album-level play/add-to-queue actions.
+- Added album cover thumbnail caching via Pillow with folder-cover priority (cover.jpg/folder.jpg/front.jpg) and SVG fallback.
+- Added custom station artwork caching for remote station images.
+- Fixed station artwork refresh for SomaFM stations with stale local cache paths.
+- Fixed peak-monitor ownership drift between local playback and Spotify, preventing source/song-switch freezes.
+- Fixed shuffle/loop state not persisting across album view re-renders.
+- Fixed toolbar button visibility across all view modes (tracks, folders, albums).
+- Fixed folder cover detection to match filenames containing cover/folder/front/album/art.
+- Improved playback bar layout: removed volume percentage, tighter center column, larger control gaps, fixed-width volume slider.
+- Improved footer padding on desktop and tablet to prevent last library track from being obscured.
+- Clarified in README and MANUAL that FXRoute is a stereo DSP system (not a crossover/frequency router).
+- Added album browsing to README and MANUAL library descriptions.
+
 ## 0.6.2 (2026-05-15)
 - Hide Spotify UI entry points unless a usable local Spotify client is actually installed, and ignore leftover Flatpak user data from previous Spotify installs.
 - Added folder browsing actions for the local library and improved folder/path-first ordering while honoring disc and track numbers when available.
