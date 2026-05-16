@@ -97,8 +97,6 @@ def _clean_import_folder_text(value: str) -> str:
 
 def _looks_like_import_album_dir(folder: Path) -> bool:
     """Return true for imported album folders, without affecting loose libraries."""
-    if any(child.suffix.lower() in {".m3u", ".m3u8"} for child in folder.iterdir() if child.is_file()):
-        return True
     audio_count = sum(1 for child in folder.iterdir() if child.is_file() and child.suffix.lower() in AUDIO_EXTENSIONS)
     return audio_count > 1
 
@@ -347,8 +345,10 @@ class LibraryScanner:
         """Infer album metadata only for imported archive folders lacking tags."""
         folder = filepath.parent
         try:
-            folder.relative_to(self.settings.download_dir)
+            rel_folder = folder.relative_to(self.settings.download_dir)
         except ValueError:
+            return None, None
+        if rel_folder == Path("."):
             return None, None
 
         try:
