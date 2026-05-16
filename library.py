@@ -98,7 +98,33 @@ def _clean_import_folder_text(value: str) -> str:
 def _looks_like_import_album_dir(folder: Path) -> bool:
     """Return true for imported album folders, without affecting loose libraries."""
     audio_count = sum(1 for child in folder.iterdir() if child.is_file() and child.suffix.lower() in AUDIO_EXTENSIONS)
-    return audio_count > 1
+    if audio_count > 1:
+        return True
+    return _folder_has_local_audio_playlist(folder)
+
+
+def _folder_has_local_audio_playlist(folder: Path) -> bool:
+    for playlist in folder.iterdir():
+        if not playlist.is_file() or playlist.suffix.lower() not in {".m3u", ".m3u8"}:
+            continue
+        try:
+            lines = playlist.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            entry = line.strip()
+            if not entry or entry.startswith("#"):
+                continue
+            if re.match(r"^[a-z][a-z0-9+.-]*://", entry, re.IGNORECASE):
+                continue
+            candidate = (folder / entry).resolve()
+            try:
+                candidate.relative_to(folder.resolve())
+            except ValueError:
+                continue
+            if candidate.is_file() and candidate.suffix.lower() in AUDIO_EXTENSIONS:
+                return True
+    return False
 
 
 def _infer_album_from_folder_name(folder_name: str, track_artist: Optional[str]) -> tuple[Optional[str], Optional[str]]:
