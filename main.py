@@ -2780,15 +2780,30 @@ async def list_albums(query: Optional[str] = None):
         q = query.strip().lower()
         filtered = []
         for album in albums:
-            # Search in album name, artist, and track titles
+            # Search in album name, artist, genre, year, and track metadata.
             match = (
                 q in album["name"].lower()
                 or q in album["artist"].lower()
+                or q in " ".join(album.get("genres") or []).lower()
+                or q in " ".join(str(year) for year in (album.get("years") or [])).lower()
             )
             if not match:
-                # Also search in track titles for this album
                 album_tracks = library_scanner.get_album_tracks(album["id"])
-                match = any(q in (t.title or "").lower() for t in album_tracks)
+                match = any(
+                    q in " ".join(
+                        str(value)
+                        for value in (
+                            t.title,
+                            t.artist,
+                            t.album,
+                            t.album_artist,
+                            t.genre,
+                            t.year,
+                        )
+                        if value
+                    ).lower()
+                    for t in album_tracks
+                )
             if match:
                 filtered.append(album)
         albums = filtered

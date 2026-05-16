@@ -23,6 +23,8 @@ class Track:
     artist: Optional[str] = None
     album: Optional[str] = None
     album_artist: Optional[str] = None
+    genre: Optional[str] = None
+    year: Optional[int] = None
     track_number: Optional[int] = None
     disc_number: Optional[int] = None
     source: str = "local"  # "local" or "radio"
@@ -38,6 +40,8 @@ class Track:
             "artist": self.artist,
             "album": self.album,
             "album_artist": self.album_artist,
+            "genre": self.genre,
+            "year": self.year,
             "track_number": self.track_number,
             "disc_number": self.disc_number,
             "source": self.source,

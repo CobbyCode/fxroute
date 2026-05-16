@@ -2859,7 +2859,7 @@ function getTrackFilename(track) {
 }
 function trackMatchesLibraryQuery(track, query) {
     if (!query) return true;
-    const haystack = [track.title, track.artist, track.album, track.album_artist, track.path, track.url, track.id, getTrackRelativePath(track)]
+    const haystack = [track.title, track.artist, track.album, track.album_artist, track.genre, track.year, track.path, track.url, track.id, getTrackRelativePath(track)]
         .filter(Boolean)
         .join(' ')
         .toLowerCase();

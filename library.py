@@ -63,6 +63,20 @@ def _tag_number(tags: Any, *keys: str) -> Optional[int]:
     return value if value > 0 else None
 
 
+def _tag_year(tags: Any, *keys: str) -> Optional[int]:
+    raw = _first_tag_value(tags, *keys)
+    if not raw:
+        return None
+    match = re.search(r"(?:19|20)\d{2}", raw)
+    if not match:
+        return None
+    try:
+        year = int(match.group(0))
+    except ValueError:
+        return None
+    return year if 1900 <= year <= 2099 else None
+
+
 def _track_sort_key(track: Track) -> tuple:
     """Stable library ordering: folder/file first, then tag track order within folders."""
     path = track.path or Path("")
@@ -285,6 +299,8 @@ class LibraryScanner:
             artist = None
             album = None
             album_artist = None
+            genre = None
+            year = None
             track_number = None
             disc_number = None
             duration = None
@@ -297,6 +313,8 @@ class LibraryScanner:
                     artist = _first_tag_value(audio.tags, "artist")
                     album = _first_tag_value(audio.tags, "album")
                     album_artist = _first_tag_value(audio.tags, "albumartist", "album_artist")
+                    genre = _first_tag_value(audio.tags, "genre")
+                    year = _tag_year(audio.tags, "date", "year", "originaldate")
                     track_number = _tag_number(audio.tags, "tracknumber")
                     disc_number = _tag_number(audio.tags, "discnumber")
                 if audio and audio.info:
@@ -309,6 +327,8 @@ class LibraryScanner:
                         artist = artist or _first_tag_value(raw_audio.tags, "TPE1", "\xa9ART")
                         album = album or _first_tag_value(raw_audio.tags, "TALB", "\xa9alb")
                         album_artist = album_artist or _first_tag_value(raw_audio.tags, "TPE2", "aART")
+                        genre = genre or _first_tag_value(raw_audio.tags, "TCON", "\xa9gen")
+                        year = year or _tag_year(raw_audio.tags, "TDRC", "TYER", "TDOR", "\xa9day")
                         track_number = track_number or _tag_number(raw_audio.tags, "TRCK", "trkn")
                         disc_number = disc_number or _tag_number(raw_audio.tags, "TPOS", "disk")
                     if raw_audio and raw_audio.info:
@@ -351,6 +371,8 @@ class LibraryScanner:
                 artist=artist,
                 album=album,
                 album_artist=album_artist,
+                genre=genre,
+                year=year,
                 track_number=track_number,
                 disc_number=disc_number,
                 source="local",
@@ -450,6 +472,8 @@ class LibraryScanner:
                     "artist": album_artist,
                     "track_count": 0,
                     "tracks": [],
+                    "genres": set(),
+                    "years": set(),
                     "folder_path": None,
                     "cover_source_track_id": None,
                     "cover_source": None,
@@ -458,6 +482,10 @@ class LibraryScanner:
             entry = albums[key]
             entry["track_count"] += 1
             entry["tracks"].append(track)
+            if track.genre:
+                entry["genres"].add(str(track.genre).strip())
+            if track.year:
+                entry["years"].add(track.year)
 
             # Remember the folder path (all tracks in same album should share it)
             if entry["folder_path"] is None and track.path:
@@ -487,6 +515,10 @@ class LibraryScanner:
             del entry["tracks"]
             del entry["folder_path"]
             del entry["cover_source_track_id"]
+            entry["genres"] = sorted(entry["genres"], key=lambda item: item.lower())
+            sorted_years = sorted(entry["years"])
+            entry["years"] = sorted_years
+            entry["year"] = sorted_years[0] if sorted_years else None
             if "cover_source" not in entry:
                 entry["cover_source"] = None
 
