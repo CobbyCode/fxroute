@@ -3493,7 +3493,7 @@ input[type="number"]::-webkit-outer-spin-button {
     align-items: center;
     gap: 2px;
     height: 16px;
-    margin-left: 0.45rem;
+    margin-left: 1.15rem;
     margin-right: 0.15rem;
     vertical-align: middle;
 }
@@ -3689,7 +3689,7 @@ input[type="number"]::-webkit-outer-spin-button {
     .playback-bar .track-info .playback-eq {
         display: flex;
         margin: 0 auto;
-        transform: translateX(0.45rem);
+        transform: translateX(1.15rem);
     }
 }
 /* ============================================================
