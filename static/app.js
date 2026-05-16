@@ -3460,11 +3460,12 @@ function updateLibrarySelectionUI() {
     const hasSearch = !!(state.library.searchQuery || '').trim();
     const isTracksMode = state.library.viewMode === 'tracks';
 
-    // Select all: visible in all modes
+    // Select all: visible in tracks and folders mode, hidden in albums
     if (elements.selectAllTracksBtn) {
+        const isAlbumsMode = state.library.viewMode === 'albums';
         const allVisibleSelected = filteredTracks.length > 0 && selectedVisibleCount === filteredTracks.length;
-        elements.selectAllTracksBtn.classList.toggle('hidden', false);
-        elements.selectAllTracksBtn.disabled = filteredTracks.length === 0;
+        elements.selectAllTracksBtn.classList.toggle('hidden', isAlbumsMode);
+        elements.selectAllTracksBtn.disabled = isAlbumsMode || filteredTracks.length === 0;
         if (allVisibleSelected) {
             elements.selectAllTracksBtn.textContent = hasSearch ? 'Clear visible' : 'Clear selection';
         } else {
