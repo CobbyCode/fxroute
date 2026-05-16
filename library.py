@@ -409,18 +409,18 @@ class LibraryScanner:
     def get_album_tracks(self, album_id: str) -> List[Track]:
         """Return the track list for a given album id."""
         tracks = self.get_tracks()
+        result = []
         for track in tracks:
-            album_name = (track.album or "").strip() or "Various"
-            album_artist = (track.album_artist or "").strip() or (track.artist or "").strip() or "Various"
+            album_name = (track.album or "").strip()
+            album_artist = (track.album_artist or "").strip()
+            if not album_name:
+                album_name = "Various"
+                album_artist = "Various"
+            if not album_artist:
+                album_artist = (track.artist or "").strip() or "Various"
             if _album_id(album_artist, album_name) == album_id:
-                return sorted(
-                    [t for t in tracks if _album_id(
-                        (t.album_artist or "").strip() or (t.artist or "").strip() or "Various",
-                        (t.album or "").strip() or "Various",
-                    ) == album_id],
-                    key=_track_sort_key,
-                )
-        return []
+                result.append(track)
+        return sorted(result, key=_track_sort_key)
 
 
 def _album_id(artist: str, album: str) -> str:
