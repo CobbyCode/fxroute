@@ -3166,6 +3166,7 @@ async function fetchAlbums() {
         if (!res.ok) return;
         state.library.albums = await res.json();
         state.library.albumsLoaded = true;
+        state.library.albumsCacheToken = Date.now();
         if (state.library.viewMode === 'albums') renderAlbums();
     } catch (e) {
         console.warn('Failed to fetch albums', e);
@@ -3214,7 +3215,9 @@ function renderAlbums() {
     if (loadingEl) loadingEl.style.display = 'none';
 
     elements.albumsGrid.innerHTML = albums.map(album => {
-        const coverUrl = `/api/albums/${album.id}/cover`;
+        const coverUrl = `/api/albums/${album.id}/cover?v=${state.library.albumsCacheToken || ''}`;
+        const fallbackSvg = albumArtFallbackSvg(album.name || album.artist || 'Album');
+        const fallbackSvg = albumArtFallbackSvg(album.name || album.artist || 'Album');
         const fallbackSvg = albumArtFallbackSvg(album.name || album.artist || 'Album');
         return `
         <div class="album-card" data-album-id="${escapeHtml(album.id)}" role="button" tabindex="0">
@@ -3245,7 +3248,7 @@ async function openAlbumDetail(albumId) {
         state.library.albumDetail = { album, tracks };
 
         // Update detail header
-        const coverUrl = `/api/albums/${albumId}/cover`;
+        const coverUrl = `/api/albums/${albumId}/cover?v=${state.library.albumsCacheToken || ''}`;
         const fallbackSvg = albumArtFallbackSvg(album.name || album.artist || 'Album');
         elements.albumDetailCover.src = coverUrl;
         elements.albumDetailCover.onerror = function() { this.onerror = null; this.src = fallbackSvg; };
@@ -3458,6 +3461,7 @@ function updateLibrarySelectionUI() {
     const totalSelectedCount = selectedIds.size;
     const hasSearch = !!(state.library.searchQuery || '').trim();
     const isTracksMode = state.library.viewMode === 'tracks';
+    const isAlbumsMode = state.library.viewMode === 'albums';
 
     // Select all: visible in all modes
     if (elements.selectAllTracksBtn) {
@@ -3471,9 +3475,9 @@ function updateLibrarySelectionUI() {
         }
     }
 
-    // Download: tracks mode only
+    // Download: visible in all modes except albums when tracks selected
     if (elements.downloadSelectedTracksBtn) {
-        elements.downloadSelectedTracksBtn.classList.toggle('hidden', !isTracksMode || totalSelectedCount === 0);
+        elements.downloadSelectedTracksBtn.classList.toggle('hidden', isAlbumsMode || totalSelectedCount === 0);
         elements.downloadSelectedTracksBtn.disabled = totalSelectedCount === 0 || state.library.selectionDownloadPending;
     }
 
