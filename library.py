@@ -434,7 +434,18 @@ def _has_folder_cover(track_path: Path) -> bool:
     if not track_path:
         return False
     parent = track_path.parent
+    # First check exact names (fast path)
     for name in ALBUM_COVER_NAMES:
         if (parent / name).is_file():
             return True
+    # Then check for any image file with cover/folder/art in the name
+    try:
+        for f in parent.iterdir():
+            if not f.is_file():
+                continue
+            fl = f.name.lower()
+            if any(kw in fl for kw in ("cover", "folder", "front", "album", "art")) and fl.endswith((".jpg", ".jpeg", ".png", ".webp")):
+                return True
+    except OSError:
+        pass
     return False

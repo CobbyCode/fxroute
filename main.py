@@ -2589,15 +2589,29 @@ def _serve_thumbnail(image_path: Path, size: int = 256) -> FileResponse:
 
 
 def _folder_cover_for_track(track_path: Path) -> Optional[Path]:
-    names = (
+    """Find a cover image in the track's folder.
+    Priority: exact names (cover.jpg etc.) > any image with cover/folder/art in name.
+    """
+    parent = track_path.parent
+    # Fast path: exact names
+    for name in (
         "cover.jpg", "cover.jpeg", "cover.png", "cover.webp",
         "folder.jpg", "folder.jpeg", "folder.png", "folder.webp",
         "front.jpg", "front.jpeg", "front.png", "front.webp",
-    )
-    for name in names:
-        candidate = track_path.parent / name
+    ):
+        candidate = parent / name
         if candidate.is_file():
             return candidate
+    # Fallback: any image with cover/folder/front/album/art in the filename
+    try:
+        for f in sorted(parent.iterdir()):
+            if not f.is_file():
+                continue
+            fl = f.name.lower()
+            if any(kw in fl for kw in ("cover", "folder", "front", "album", "art")) and fl.endswith((".jpg", ".jpeg", ".png", ".webp")):
+                return f
+    except OSError:
+        pass
     return None
 
 
