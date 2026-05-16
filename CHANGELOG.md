@@ -4,6 +4,7 @@
 - Fixed album grouping for imported ZIP releases without embedded album tags by using valid local M3U/M3U8 playlists in import folders as the fallback album signal.
 - Kept loose imported files grouped under `Various` instead of turning mixed import folders into album cards.
 - Refined playback footer spacing and adjusted the footer visualizer position on desktop/tablet.
+- Refined the Album detail back button and kept the current Library view active after clearing the playback queue.
 
 ## 0.6.3 (2026-05-16)
 - Added album browsing view with cover art grid, album detail page, and album-level play/add-to-queue actions.
