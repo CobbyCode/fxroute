@@ -3493,7 +3493,8 @@ input[type="number"]::-webkit-outer-spin-button {
     align-items: center;
     gap: 2px;
     height: 16px;
-    margin-right: 0;
+    margin-left: 0.45rem;
+    margin-right: 0.15rem;
     vertical-align: middle;
 }
 .playback-eq .bar {
@@ -3685,7 +3686,11 @@ input[type="number"]::-webkit-outer-spin-button {
         min-height: min(960px, calc(100vh - 1rem));
         max-height: calc(100vh - 1rem);
     }
-    .playback-bar .track-info .playback-eq { margin: 0 auto; display: flex; }
+    .playback-bar .track-info .playback-eq {
+        display: flex;
+        margin: 0 auto;
+        transform: translateX(0.45rem);
+    }
 }
 /* ============================================================
    Responsive — Phone
@@ -3966,6 +3971,11 @@ input[type="number"]::-webkit-outer-spin-button {
     .playback-bar .track-info {
         display: flex !important;
         align-items: center;
+    }
+    .playback-bar .track-info .playback-eq {
+        margin-left: 0;
+        margin-right: 0;
+        transform: none;
     }
 }
 
