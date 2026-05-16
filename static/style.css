@@ -41,7 +41,7 @@ body {
     background: var(--bg-primary);
     color: var(--text-primary);
     min-height: 100vh;
-    padding-bottom: 90px;
+    padding-bottom: 150px;
     line-height: 1.5;
     -webkit-font-smoothing: antialiased;
 }
@@ -1775,6 +1775,7 @@ body {
 }
 
 @media (min-width: 641px) and (max-width: 980px) {
+    body { padding-bottom: 150px; }
     .measurement-overlay {
         padding: 0.5rem;
     }
@@ -3218,7 +3219,7 @@ input[type="number"]::-webkit-outer-spin-button {
     border: 1px solid rgba(255, 255, 255, 0.07);
     border-radius: 18px;
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 1.8fr minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr) 1.6fr minmax(0, 1fr);
     align-items: center;
     gap: 0.85rem;
     padding: 0.72rem 1.1rem 1rem;
@@ -3433,7 +3434,7 @@ input[type="number"]::-webkit-outer-spin-button {
 .controls {
     display: flex;
     align-items: center;
-    gap: 0.45rem;
+    gap: 0.65rem;
     flex-shrink: 0;
 }
 .control-btn {
@@ -3489,10 +3490,10 @@ input[type="number"]::-webkit-outer-spin-button {
 }
 .playback-eq {
     display: inline-flex;
-    align-items: flex-end;
+    align-items: center;
     gap: 2px;
     height: 16px;
-    margin-right: 0.4rem;
+    margin-right: 0;
     vertical-align: middle;
 }
 .playback-eq .bar {
@@ -3516,28 +3517,23 @@ input[type="number"]::-webkit-outer-spin-button {
     letter-spacing: 0.05em;
     line-height: 1;
 }
-.playback-eq .bar:nth-child(1) { height: 6px;  animation-delay: 0s; }
+.playback-eq .bar:nth-child(1) { height: 8px;  animation-delay: 0s; }
 .playback-eq .bar:nth-child(2) { height: 12px; animation-delay: 0.15s; }
-.playback-eq .bar:nth-child(3) { height: 8px;  animation-delay: 0.3s; }
+.playback-eq .bar:nth-child(3) { height: 10px; animation-delay: 0.3s; }
 .playback-eq .bar:nth-child(4) { height: 14px; animation-delay: 0.1s; }
 @keyframes eqPulse {
     0%   { transform: scaleY(0.3); }
     100% { transform: scaleY(1); }
 }
 .volume-slider {
-    flex: 0 1 100px;
+    flex: 0 0 90px;
     height: 6px;
     accent-color: var(--accent);
     cursor: pointer;
-    min-width: 0;
+    min-width: 70px;
 }
 .volume-display {
-    font-size: 0.8rem;
-    color: var(--text-secondary);
-    min-width: 38px;
-    text-align: right;
-    font-variant-numeric: tabular-nums;
-    flex-shrink: 0;
+    display: none;
 }
 /* ============================================================
    Toasts
@@ -3679,6 +3675,7 @@ input[type="number"]::-webkit-outer-spin-button {
 }
 
 @media (min-width: 641px) and (max-width: 980px) {
+    body { padding-bottom: 170px; }
     .measurement-overlay {
         padding: 0.5rem;
     }
@@ -3688,6 +3685,7 @@ input[type="number"]::-webkit-outer-spin-button {
         min-height: min(960px, calc(100vh - 1rem));
         max-height: calc(100vh - 1rem);
     }
+    .playback-bar .track-info .playback-eq { margin: 0 auto; display: flex; }
 }
 /* ============================================================
    Responsive — Phone
