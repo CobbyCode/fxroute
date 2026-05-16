@@ -3217,8 +3217,6 @@ function renderAlbums() {
     elements.albumsGrid.innerHTML = albums.map(album => {
         const coverUrl = `/api/albums/${album.id}/cover?v=${state.library.albumsCacheToken || ''}`;
         const fallbackSvg = albumArtFallbackSvg(album.name || album.artist || 'Album');
-        const fallbackSvg = albumArtFallbackSvg(album.name || album.artist || 'Album');
-        const fallbackSvg = albumArtFallbackSvg(album.name || album.artist || 'Album');
         return `
         <div class="album-card" data-album-id="${escapeHtml(album.id)}" role="button" tabindex="0">
             <div class="album-art-wrap">
