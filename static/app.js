@@ -3156,6 +3156,7 @@ function setLibraryViewMode(mode) {
     }
 }
 function setLibraryFolder(folder) {
+    updateLibrarySearchPlaceholder();
     state.library.viewMode = 'folders';
     state.library.currentFolder = folder || '';
     renderTracks();
@@ -3481,9 +3482,14 @@ function updateLibrarySearchControls() {
 }
 function updateLibrarySearchPlaceholder() {
     if (!elements.librarySearchInput) return;
-    const compact = window.matchMedia && window.matchMedia('(max-width: 600px)').matches;
-    const fullText = elements.librarySearchInput.dataset.placeholderFull || 'Search artists, albums, tracks…';
-    const compactText = elements.librarySearchInput.dataset.placeholderCompact || 'Search…';
+    const compact = window.matchMedia && window.matchMedia("(max-width: 600px)").matches;
+    const isAlbums = state.library.viewMode === "albums";
+    const fullText = isAlbums
+        ? (elements.librarySearchInput.dataset.placeholderAlbumsFull || "Search album, artist, genre, year…")
+        : (elements.librarySearchInput.dataset.placeholderFull || "Search folders, artists, tracks…");
+    const compactText = isAlbums
+        ? (elements.librarySearchInput.dataset.placeholderAlbumsCompact || "Search albums…")
+        : (elements.librarySearchInput.dataset.placeholderCompact || "Search…");
     elements.librarySearchInput.placeholder = compact ? compactText : fullText;
 }
 function clearLibrarySearch() {
