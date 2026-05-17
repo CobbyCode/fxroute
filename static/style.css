@@ -3240,7 +3240,7 @@ input[type="number"]::-webkit-outer-spin-button {
    ============================================================ */
 .playback-bar {
     position: fixed;
-    bottom: 12px;
+    bottom: 8px;
     left: 8px;
     right: 8px;
     height: 102px;
@@ -3914,7 +3914,7 @@ input[type="number"]::-webkit-outer-spin-button {
     .playback-bar {
         display: flex;
         flex-direction: column;
-        bottom: 12px;
+        bottom: 8px;
         left: 6px;
         right: 6px;
         height: auto;
