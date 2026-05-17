@@ -1919,6 +1919,12 @@ body {
         max-height: calc(100vh - 1.5rem);
     }
 
+    .measurement-dialog input,
+    .measurement-dialog select,
+    .measurement-dialog textarea {
+        font-size: 16px;
+    }
+
     .measurement-card-header-split,
     .measurement-list-row,
     .measurement-saved-toolbar,
@@ -1931,6 +1937,11 @@ body {
     .measurement-summary {
         text-align: left;
         max-width: none;
+    }
+
+    .measurement-saved-merge-action.is-inert,
+    .measurement-saved-delete-action.is-inert {
+        display: none;
     }
 
     .measurement-graph {
