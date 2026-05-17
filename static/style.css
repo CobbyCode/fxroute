@@ -3472,8 +3472,10 @@ input[type="number"]::-webkit-outer-spin-button {
     width: 42px;
     height: 42px;
     border-radius: 50%;
-    border: none;
-    background: var(--bg-elevated);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.015)),
+        var(--bg-elevated);
     color: var(--text-primary);
     font-size: 1.15rem;
     cursor: pointer;
@@ -3486,10 +3488,15 @@ input[type="number"]::-webkit-outer-spin-button {
     -webkit-appearance: none;
     appearance: none;
     outline: none;
-    box-shadow: none;
+    box-shadow: 0 5px 14px rgba(0, 0, 0, 0.18);
     flex-shrink: 0;
 }
-.control-btn:hover { background: var(--bg-hover); }
+.control-btn:hover {
+    background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.075), rgba(255, 255, 255, 0.025)),
+        var(--bg-hover);
+    border-color: rgba(255, 255, 255, 0.13);
+}
 .control-btn:focus,
 .control-btn:focus-visible {
     outline: none;
@@ -3497,6 +3504,18 @@ input[type="number"]::-webkit-outer-spin-button {
 }
 .control-btn:active { transform: scale(0.93); }
 .control-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+.control-btn:not(.control-btn-secondary):not(.control-btn-clear) {
+    background:
+        linear-gradient(180deg, rgba(110, 231, 183, 0.34), rgba(52, 211, 153, 0.14)),
+        rgba(16, 185, 129, 0.22);
+    border-color: rgba(110, 231, 183, 0.28);
+    color: #ecfdf5;
+}
+.control-btn:not(.control-btn-secondary):not(.control-btn-clear):hover {
+    background:
+        linear-gradient(180deg, rgba(110, 231, 183, 0.42), rgba(52, 211, 153, 0.18)),
+        rgba(16, 185, 129, 0.28);
+}
 .control-btn-secondary {
     width: 38px;
     height: 38px;
@@ -4058,40 +4077,54 @@ input[type="number"]::-webkit-outer-spin-button {
 
 @media (min-width: 981px) and (max-width: 1180px) {
     .playback-bar {
-        grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr) minmax(0, 1fr);
-        grid-template-areas:
-            "track center ."
-            "controls controls controls";
-        height: auto;
-        gap: 0.62rem 0.9rem;
-        padding: 0.62rem 1rem 0.86rem;
+        grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.48fr) minmax(258px, 0.95fr);
+        height: 102px;
+        gap: 0.72rem;
+        padding: 0.56rem 0.82rem 0.78rem;
     }
 
     .playback-bar .track-info {
-        grid-area: track;
+        min-width: 0;
     }
 
     .playback-bar .playback-center {
-        grid-area: center;
         justify-self: center;
     }
 
     .playback-bar .controls {
-        grid-area: controls;
-        width: fit-content;
+        justify-self: end;
+        width: auto;
         max-width: 100%;
-        margin: 0 auto;
-        padding: 0 0.35rem;
-        justify-content: center;
-        gap: 0.5rem;
+        margin: 0;
+        padding: 0;
+        justify-content: flex-end;
+        gap: 0.38rem;
         flex-wrap: nowrap;
     }
 
+    .playback-bar .control-btn {
+        width: 38px;
+        height: 38px;
+        font-size: 1.05rem;
+    }
+
+    .playback-bar .control-btn-secondary {
+        width: 34px;
+        height: 34px;
+        font-size: 0.86rem;
+    }
+
+    .playback-bar .control-btn-clear {
+        width: 30px;
+        height: 30px;
+        font-size: 0.78rem;
+    }
+
     .playback-bar .controls .volume-slider {
-        flex: 0 1 clamp(7.5rem, 16vw, 10.5rem);
-        width: clamp(7.5rem, 16vw, 10.5rem);
-        min-width: 7.5rem;
-        max-width: 10.5rem;
+        flex: 0 1 clamp(4.9rem, 8vw, 5.8rem);
+        width: clamp(4.9rem, 8vw, 5.8rem);
+        min-width: 4.9rem;
+        max-width: 5.8rem;
     }
 }
 /* Radio mode: hide left column info, center the middle column content */

@@ -6,7 +6,8 @@
 - Fixed album grouping for imported ZIP releases without embedded album tags by using valid local M3U/M3U8 playlists in import folders as the fallback album signal.
 - Kept loose imported files grouped under `Various` instead of turning mixed import folders into album cards.
 - Added Genre and Year metadata to local library tracks and album search.
-- Refined playback footer spacing and adjusted the footer visualizer position on desktop/tablet.
+- Refined playback footer spacing, adjusted the footer visualizer position on desktop/tablet, and constrained iPad Pro-width volume controls without forcing a taller footer.
+- Polished playback control button styling.
 - Refined the Album detail back button and kept the current Library view active after clearing the playback queue.
 
 ## 0.6.3 (2026-05-16)
