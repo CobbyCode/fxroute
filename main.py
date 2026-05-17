@@ -3265,9 +3265,24 @@ async def toggle_playback():
 
     state = player_instance.state
     if state.get("current_file") and not state.get("ended"):
-        player_instance.pause()
+        was_paused = bool(state.get("paused"))
+        prearm_rate = None
+        prearm_generation = None
+        if was_paused and _playback_state_matches_track(state, current_track_info):
+            source = (current_track_info or {}).get("source")
+            if source in {"local", "radio"}:
+                await pause_spotify_for_local_playback_broadcast()
+                prearm_rate, prearm_generation = await _prearm_known_local_samplerate(
+                    current_track_info,
+                    "toggle-resume",
+                )
+        player_instance.set_pause(False if was_paused else True)
         new_state = player_instance.state
         _mark_player_state_authoritative(new_state)
+        if was_paused and prearm_rate and prearm_generation:
+            asyncio.create_task(_release_local_samplerate_prearm(prearm_rate, prearm_generation, "toggle-resume"))
+        if was_paused and current_track_info and (current_track_info.get("source") in {"local", "radio"}):
+            asyncio.create_task(_maybe_recover_samplerate_mismatch((current_track_info or {}).copy()))
         return {
             "status": "paused" if new_state.get("paused") else "playing",
             "playback": build_playback_payload(new_state),
