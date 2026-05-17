@@ -3488,7 +3488,7 @@ function updateLibrarySearchPlaceholder() {
     const isAlbums = state.library.viewMode === "albums";
     const fullText = isAlbums
         ? (elements.librarySearchInput.dataset.placeholderAlbumsFull || "Search album, artist, genre, year…")
-        : (elements.librarySearchInput.dataset.placeholderFull || "Search folders, artists, tracks…");
+        : (elements.librarySearchInput.dataset.placeholderFull || "Search folder, artist, track…");
     const compactText = isAlbums
         ? (elements.librarySearchInput.dataset.placeholderAlbumsCompact || "Search albums…")
         : (elements.librarySearchInput.dataset.placeholderCompact || "Search…");
