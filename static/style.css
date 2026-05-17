@@ -4566,4 +4566,40 @@ input[type="number"]::-webkit-outer-spin-button {
         font-size: 16px;
         touch-action: manipulation;
     }
+
+    .measurement-saved-group {
+        padding: 0.1rem 0.1rem 0.25rem;
+    }
+
+    .measurement-saved-group > summary {
+        padding: 0.45rem 0.55rem;
+    }
+
+    .measurement-saved-list {
+        gap: 0.5rem;
+        padding: 0 0.15rem 0.15rem;
+    }
+
+    .measurement-saved-toolbar,
+    .measurement-saved-toolbar-selection {
+        gap: 0.5rem;
+    }
+
+    .measurement-list-item {
+        gap: 0.24rem;
+        padding: 0.62rem 0.68rem;
+    }
+
+    .measurement-list-row {
+        gap: 0.45rem;
+    }
+
+    .measurement-toggle {
+        gap: 0.48rem;
+    }
+
+    .measurement-saved-toolbar button {
+        min-height: 36px;
+        padding: 0.42rem 0.72rem;
+    }
 }
