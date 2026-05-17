@@ -116,6 +116,17 @@ Typical URLs:
 - `http://fxroute.local` when mDNS is enabled
 - `https://<host-ip>` or `https://fxroute.local` when the optional local HTTPS proxy is enabled
 
+## Updating
+
+To update an existing installation, re-run the installer:
+
+```bash
+./install.sh
+```
+
+It overwrites application files, refreshes the service unit, and restarts the service.
+Your `.env` and data are preserved.
+
 ## Main sections
 
 - **Radio** — built-in and custom internet stations

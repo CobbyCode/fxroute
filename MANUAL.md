@@ -210,6 +210,18 @@ flatpak list --app | grep easyeffects
 pgrep -af easyeffects
 ```
 
+## 12. Updating
+
+To update FXRoute, re-run the installer on the host:
+
+```bash
+cd ~/fxroute
+./install.sh
+```
+
+The installer overwrites application files and restarts the service.
+Your configuration (`.env`) and data are preserved.
+
 ## 13. What FXRoute expects
 
 FXRoute is designed for:
