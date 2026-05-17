@@ -12,7 +12,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=0.4.458">
     <link rel="manifest" href="/static/site.webmanifest?v=0.4.458">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/static/style.css?v=0.6.4-measure-mobile-compact-20260517-0750">
+    <link rel="stylesheet" href="/static/style.css?v=0.6.4-library-placeholder-20260517-2258">
 </head>
 <body>
     <!-- Offline indicator -->
@@ -227,24 +227,30 @@
                             type="search"
                             id="library-search"
                             class="url-input library-search-input"
-                            placeholder="Search folders, artists, albums, tracks…"
+                            placeholder="Search artists, albums, tracks…"
+                            data-placeholder-full="Search artists, albums, tracks…"
+                            data-placeholder-compact="Search…"
                             autocomplete="off"
                         >
+                        <button id="library-search-clear" class="library-search-clear" type="button" aria-label="Clear library search" disabled>×</button>
                     </div>
                     <div class="library-selection-toolbar">
                         <button id="select-all-tracks" class="btn-secondary">Select all</button>
                     </div>
                 </div>
                 <div id="playlist-save-row" class="playlist-save-row hidden">
-                    <span class="playlist-save-hint">Save as playlist:</span>
-                    <input
-                        type="text"
-                        id="playlist-name"
-                        class="url-input"
-                        placeholder="Playlist name…"
-                        autocomplete="off"
-                    >
-                    <button id="save-playlist" class="btn-secondary">Save</button>
+                    <div class="playlist-save-controls">
+                        <span class="playlist-save-hint">Save as playlist:</span>
+                        <input
+                            type="text"
+                            id="playlist-name"
+                            class="url-input"
+                            placeholder="Playlist name…"
+                            autocomplete="off"
+                        >
+                        <button id="save-playlist" class="btn-secondary">Save</button>
+                    </div>
+                    <button id="album-detail-back" class="album-detail-back hidden" type="button" aria-label="Back to albums">← Albums</button>
                 </div>
                 <div id="library-import-panel" class="library-import-panel hidden">
                     <div class="import-card">
@@ -279,7 +285,6 @@
                 <div id="tracks-list" class="tracks-list"></div>
                 <div id="albums-grid" class="albums-grid hidden"></div>
                 <div id="album-detail" class="album-detail hidden">
-                    <button id="album-detail-back" class="album-detail-back" type="button" aria-label="Back to albums">← Albums</button>
                     <div id="album-detail-header" class="album-detail-header">
                         <img id="album-detail-cover" class="album-detail-cover" src="" alt="" />
                         <div class="album-detail-meta">
@@ -595,7 +600,7 @@
                     </div>
                     <button id="measurement-close" class="btn-ghost btn-close-manage" type="button">
                         <span class="btn-ghost-icon">✕</span>
-                        <span>Close</span>
+                        <span class="measurement-close-label">Close</span>
                     </button>
                 </div>
                 <div class="measurement-layout">
@@ -892,6 +897,6 @@
     <div id="toast-container" class="toast-container"></div>
 
     <script src="/static/measurement_dsp.js?v=0.6.2"></script>
-    <script src="/static/app.js?v=0.6.4-measure-mobile-compact-20260517-0750"></script>
+    <script src="/static/app.js?v=0.6.4-library-placeholder-20260517-2258"></script>
 </body>
 </html>

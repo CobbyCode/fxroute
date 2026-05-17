@@ -9,6 +9,14 @@
 - Refined playback footer spacing, adjusted the footer visualizer position on desktop/tablet, and constrained iPad Pro-width volume controls without forcing a taller footer.
 - Polished playback control button styling.
 - Refined the Album detail back button and kept the current Library view active after clearing the playback queue.
+- Aligned the Album detail back action with the playlist-save controls and tightened mobile Library spacing.
+- Added a Library search clear button with a compact mobile placeholder.
+- Kept Library search scoped to tracks while an album detail view is open.
+- Hid the playlist-save controls while browsing Albums.
+- Refined Measurement assistant close placement and saved-measurement toolbar layout.
+- Shortened the saved-measurements Close action to an icon on mobile.
+- Switched saved-measurement Delete/Merge actions to compact icon buttons on mobile.
+- Removed `folders` from the Library search placeholder.
 
 ## 0.6.3 (2026-05-16)
 - Added album browsing view with cover art grid, album detail page, and album-level play/add-to-queue actions.

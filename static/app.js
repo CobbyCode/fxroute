@@ -279,6 +279,7 @@ const elements = {
     libraryViewAlbumsBtn: document.getElementById('library-view-albums'),
     libraryFolderPath: document.getElementById('library-folder-path'),
     librarySearchInput: document.getElementById('library-search'),
+    librarySearchClear: document.getElementById('library-search-clear'),
     albumsGrid: document.getElementById('albums-grid'),
     albumDetail: document.getElementById('album-detail'),
     albumDetailBack: document.getElementById('album-detail-back'),
@@ -292,6 +293,7 @@ const elements = {
     playlistName: document.getElementById('playlist-name'),
     savePlaylistBtn: document.getElementById('save-playlist'),
     playlistSaveRow: document.getElementById('playlist-save-row'),
+    playlistSaveControls: document.querySelector('.playlist-save-controls'),
     libraryInfo: document.getElementById('library-info'),
     downloadSelectedTracksBtn: document.getElementById('download-selected-tracks'),
     deleteSelectedTracksBtn: document.getElementById('delete-selected-tracks'),
@@ -2984,6 +2986,7 @@ function renderTracks() {
     // Hide album views when in tracks/folders mode
     if (elements.albumsGrid) elements.albumsGrid.classList.add('hidden');
     if (elements.albumDetail) elements.albumDetail.classList.add('hidden');
+    updatePlaylistSaveRowVisibility();
     elements.tracksList.classList.remove('hidden');
     const allTracks = state.library.tracks || [];
     const filteredTracks = getFilteredTracks();
@@ -3182,6 +3185,7 @@ function renderAlbums() {
     // Hide tracks list, show albums grid
     elements.tracksList.classList.add('hidden');
     elements.albumDetail.classList.add('hidden');
+    updatePlaylistSaveRowVisibility();
     if (elements.libraryFolderPath) elements.libraryFolderPath.classList.add('hidden');
 
     if (!state.library.albumsLoaded) {
@@ -3268,43 +3272,61 @@ async function openAlbumDetail(albumId) {
         elements.albumDetailArtist.textContent = album.artist;
         elements.albumDetailCount.textContent = `${tracks.length} track${tracks.length === 1 ? '' : 's'}`;
 
-        // Render track list
-        elements.albumDetailTracks.innerHTML = tracks.map(track => {
-            const title = escapeHtml(track.title || 'Unknown');
-            const duration = track.duration ? formatTime(track.duration) : '';
-            const meta = [track.artist, track.album].filter(Boolean).join(' · ');
-            return `
-            <div class="track-item" data-track-id="${escapeHtml(track.id)}">
-                <button class="track-play-button" data-track-id="${escapeHtml(track.id)}" data-album-context="${escapeHtml(albumId)}" type="button">
-                    <span class="track-item-icon">▶</span>
-                    <div class="track-title">${title}</div>
-                    ${meta ? `<div class="track-artist">${escapeHtml(meta)}</div>` : ''}
-                </button>
-                ${duration ? `<span class="track-duration">${duration}</span>` : ''}
-            </div>`;
-        }).join('');
-
-        // Wire up play buttons
-        elements.albumDetailTracks.querySelectorAll('.track-play-button').forEach(btn => {
-            btn.addEventListener('click', () => {
-                const trackId = btn.dataset.trackId;
-                const albumContext = btn.dataset.albumContext;
-                playTrackInAlbum(trackId, albumContext);
-            });
-        });
+        renderAlbumDetailTracks();
 
         // Show detail, hide grid
         elements.albumsGrid.classList.add('hidden');
         elements.albumDetail.classList.remove('hidden');
+        updatePlaylistSaveRowVisibility();
     } catch (e) {
         console.warn('Failed to load album tracks', e);
     }
+}
+
+function renderAlbumDetailTracks() {
+    const detail = state.library.albumDetail;
+    if (!detail || !elements.albumDetailTracks) return;
+    const albumId = detail.album.id;
+    const query = (state.library.searchQuery || '').trim().toLowerCase();
+    const tracks = query
+        ? (detail.tracks || []).filter(track => trackMatchesLibraryQuery(track, query))
+        : (detail.tracks || []);
+    const total = (detail.tracks || []).length;
+    elements.albumDetailCount.textContent = query
+        ? `${tracks.length} of ${total} track${total === 1 ? '' : 's'}`
+        : `${total} track${total === 1 ? '' : 's'}`;
+    if (tracks.length === 0) {
+        elements.albumDetailTracks.innerHTML = '<div class="track-item track-item-empty">No matching tracks.</div>';
+        return;
+    }
+    elements.albumDetailTracks.innerHTML = tracks.map(track => {
+        const title = escapeHtml(track.title || 'Unknown');
+        const duration = track.duration ? formatTime(track.duration) : '';
+        const meta = [track.artist, track.album].filter(Boolean).join(' · ');
+        return `
+        <div class="track-item" data-track-id="${escapeHtml(track.id)}">
+            <button class="track-play-button" data-track-id="${escapeHtml(track.id)}" data-album-context="${escapeHtml(albumId)}" type="button">
+                <span class="track-item-icon">▶</span>
+                <div class="track-title">${title}</div>
+                ${meta ? `<div class="track-artist">${escapeHtml(meta)}</div>` : ''}
+            </button>
+            ${duration ? `<span class="track-duration">${duration}</span>` : ''}
+        </div>`;
+    }).join('');
+    elements.albumDetailTracks.querySelectorAll('.track-play-button').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const trackId = btn.dataset.trackId;
+            const albumContext = btn.dataset.albumContext;
+            playTrackInAlbum(trackId, albumContext);
+        });
+    });
 }
 
 function closeAlbumDetail() {
     state.library.albumDetail = null;
     elements.albumDetail.classList.add('hidden');
     elements.albumsGrid.classList.remove('hidden');
+    updatePlaylistSaveRowVisibility();
 }
 
 async function playTrackInAlbum(trackId, albumId) {
@@ -3443,11 +3465,34 @@ function toggleVisibleTrackSelection() {
 }
 function setLibrarySearchQuery(value) {
     state.library.searchQuery = value || '';
-    if (state.library.viewMode === 'albums') {
+    updateLibrarySearchControls();
+    if (state.library.viewMode === 'albums' && state.library.albumDetail) {
+        renderAlbumDetailTracks();
+    } else if (state.library.viewMode === 'albums') {
         renderAlbums();
     } else {
         renderTracks();
     }
+}
+function updateLibrarySearchControls() {
+    if (elements.librarySearchClear) {
+        elements.librarySearchClear.disabled = !(state.library.searchQuery || '').trim();
+    }
+}
+function updateLibrarySearchPlaceholder() {
+    if (!elements.librarySearchInput) return;
+    const compact = window.matchMedia && window.matchMedia('(max-width: 600px)').matches;
+    const fullText = elements.librarySearchInput.dataset.placeholderFull || 'Search artists, albums, tracks…';
+    const compactText = elements.librarySearchInput.dataset.placeholderCompact || 'Search…';
+    elements.librarySearchInput.placeholder = compact ? compactText : fullText;
+}
+function clearLibrarySearch() {
+    if (!elements.librarySearchInput && !state.library.searchQuery) return;
+    if (elements.librarySearchInput) {
+        elements.librarySearchInput.value = '';
+        elements.librarySearchInput.focus();
+    }
+    setLibrarySearchQuery('');
 }
 function syncRenderedTrackSelection() {
     const selectedIds = new Set(state.library.selectedTrackIds);
@@ -3461,7 +3506,16 @@ function syncRenderedTrackSelection() {
 function updatePlaylistSaveRowVisibility() {
     if (!elements.playlistSaveRow) return;
     const count = state.library.selectedTrackIds.length;
-    elements.playlistSaveRow.classList.toggle('hidden', count < 2);
+    const isAlbumsMode = state.library.viewMode === 'albums';
+    const hasPlaylistSelection = count >= 2 && !isAlbumsMode;
+    const hasAlbumDetail = state.library.viewMode === 'albums' && !!state.library.albumDetail;
+    elements.playlistSaveRow.classList.toggle('hidden', !hasPlaylistSelection && !hasAlbumDetail);
+    if (elements.playlistSaveControls) {
+        elements.playlistSaveControls.classList.toggle('hidden', !hasPlaylistSelection);
+    }
+    if (elements.albumDetailBack) {
+        elements.albumDetailBack.classList.toggle('hidden', !hasAlbumDetail);
+    }
 }
 function updateLibrarySelectionUI() {
     const allTracks = state.library.tracks || [];
@@ -3640,6 +3694,7 @@ async function loadPlaylistById(playlistId, options = {}) {
     state.library.selectedTrackIds = validTrackIds;
     state.library.searchQuery = '';
     if (elements.librarySearchInput) elements.librarySearchInput.value = '';
+    updateLibrarySearchControls();
     renderTracks();
     const missingCount = playlist.track_ids.length - validTrackIds.length;
     if (autoplay) {
@@ -6802,10 +6857,10 @@ function renderMeasurementPanel() {
                     <div class="measurement-saved-toolbar">
                         <div class="measurement-saved-toolbar-selection">
                             <label class="measurement-list-meta measurement-select-all-toggle"><input type="checkbox" data-measurement-select-all ${allSavedSelected ? 'checked' : ''} ${measurementState.saveInFlight || measurementState.startInFlight ? 'disabled' : ''}>Select all</label>
-                            <button type="button" class="btn-danger measurement-saved-delete-action ${selectedSavedCount ? '' : 'is-inert'}" data-measurement-delete-selected ${selectedSavedCount ? '' : 'disabled'} ${measurementState.saveInFlight || measurementState.startInFlight ? 'disabled' : ''} aria-hidden="${selectedSavedCount ? 'false' : 'true'}">Delete selected</button>
-                            <button type="button" class="btn-secondary measurement-saved-merge-action ${selectedSavedCount >= 2 ? '' : 'is-inert'}" data-measurement-merge-selected ${selectedSavedCount >= 2 ? '' : 'disabled'} ${measurementState.saveInFlight || measurementState.startInFlight ? 'disabled' : ''} aria-hidden="${selectedSavedCount >= 2 ? 'false' : 'true'}">Merge selected</button>
+                            <button type="button" class="btn-danger measurement-saved-delete-action ${selectedSavedCount ? '' : 'is-inert'}" data-measurement-delete-selected ${selectedSavedCount ? '' : 'disabled'} ${measurementState.saveInFlight || measurementState.startInFlight ? 'disabled' : ''} aria-hidden="${selectedSavedCount ? 'false' : 'true'}" aria-label="Delete selected measurements"><span class="label-full">Delete selected</span><span class="label-compact" aria-hidden="true">🗑</span></button>
+                            <button type="button" class="btn-secondary measurement-saved-merge-action ${selectedSavedCount >= 2 ? '' : 'is-inert'}" data-measurement-merge-selected ${selectedSavedCount >= 2 ? '' : 'disabled'} ${measurementState.saveInFlight || measurementState.startInFlight ? 'disabled' : ''} aria-hidden="${selectedSavedCount >= 2 ? 'false' : 'true'}" aria-label="Merge selected measurements"><span class="label-full">Merge selected</span><span class="label-compact" aria-hidden="true">⇄</span></button>
                         </div>
-                        <button type="button" class="btn-secondary" data-measurement-close-saved>Close</button>
+                        <button type="button" class="btn-secondary measurement-saved-close-action" data-measurement-close-saved aria-label="Close saved measurements"><span class="label-full">Close</span><span class="label-compact">×</span></button>
                     </div>
                     ${savedItemsHtml}
                 </div>
@@ -8442,8 +8497,20 @@ function setupLibraryActions() {
         elements.toggleImportBtn.textContent = '− Close';
     });
     if (elements.librarySearchInput) {
+        updateLibrarySearchPlaceholder();
         elements.librarySearchInput.addEventListener('input', (event) => setLibrarySearchQuery(event.target.value));
         elements.librarySearchInput.addEventListener('search', (event) => setLibrarySearchQuery(event.target.value));
+    }
+    if (elements.librarySearchClear) {
+        elements.librarySearchClear.addEventListener('click', clearLibrarySearch);
+    }
+    if (window.matchMedia) {
+        const searchPlaceholderQuery = window.matchMedia('(max-width: 600px)');
+        if (searchPlaceholderQuery.addEventListener) {
+            searchPlaceholderQuery.addEventListener('change', updateLibrarySearchPlaceholder);
+        } else if (searchPlaceholderQuery.addListener) {
+            searchPlaceholderQuery.addListener(updateLibrarySearchPlaceholder);
+        }
     }
     if (elements.playSelectedTracksBtn) {
         // Legacy button removed from markup, keep null-safe no-op path only.
