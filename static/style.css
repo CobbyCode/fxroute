@@ -1913,10 +1913,13 @@ body {
 @media (max-width: 599px) {
     .measurement-overlay {
         padding: 0.75rem;
+        overflow-x: hidden;
     }
 
     .measurement-dialog {
+        width: min(100%, calc(100vw - 1.5rem));
         max-height: calc(100vh - 1.5rem);
+        overflow-x: hidden;
     }
 
     .measurement-dialog input,
@@ -1942,6 +1945,13 @@ body {
     .measurement-saved-merge-action.is-inert,
     .measurement-saved-delete-action.is-inert {
         display: none;
+    }
+
+    .measurement-saved-group > summary,
+    .measurement-saved-toolbar button,
+    .measurement-select-all-toggle {
+        font-size: 16px;
+        touch-action: manipulation;
     }
 
     .measurement-graph {

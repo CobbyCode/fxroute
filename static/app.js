@@ -6802,8 +6802,8 @@ function renderMeasurementPanel() {
                     <div class="measurement-saved-toolbar">
                         <div class="measurement-saved-toolbar-selection">
                             <label class="measurement-list-meta measurement-select-all-toggle"><input type="checkbox" data-measurement-select-all ${allSavedSelected ? 'checked' : ''} ${measurementState.saveInFlight || measurementState.startInFlight ? 'disabled' : ''}>Select all</label>
-                            <button type="button" class="btn-secondary measurement-saved-merge-action ${selectedSavedCount >= 2 ? '' : 'is-inert'}" data-measurement-merge-selected ${selectedSavedCount >= 2 ? '' : 'disabled'} ${measurementState.saveInFlight || measurementState.startInFlight ? 'disabled' : ''} aria-hidden="${selectedSavedCount >= 2 ? 'false' : 'true'}">Merge selected</button>
                             <button type="button" class="btn-danger measurement-saved-delete-action ${selectedSavedCount ? '' : 'is-inert'}" data-measurement-delete-selected ${selectedSavedCount ? '' : 'disabled'} ${measurementState.saveInFlight || measurementState.startInFlight ? 'disabled' : ''} aria-hidden="${selectedSavedCount ? 'false' : 'true'}">Delete selected</button>
+                            <button type="button" class="btn-secondary measurement-saved-merge-action ${selectedSavedCount >= 2 ? '' : 'is-inert'}" data-measurement-merge-selected ${selectedSavedCount >= 2 ? '' : 'disabled'} ${measurementState.saveInFlight || measurementState.startInFlight ? 'disabled' : ''} aria-hidden="${selectedSavedCount >= 2 ? 'false' : 'true'}">Merge selected</button>
                         </div>
                         <button type="button" class="btn-secondary" data-measurement-close-saved>Close</button>
                     </div>
