@@ -4021,7 +4021,7 @@ input[type="number"]::-webkit-outer-spin-button {
     .playback-bar .track-info {
         display: flex !important;
         align-items: center;
-        transform: translateY(-4px);
+        transform: translateY(-7px);
     }
     .playback-bar .track-info .playback-eq {
         margin-left: 0;
@@ -4030,6 +4030,12 @@ input[type="number"]::-webkit-outer-spin-button {
     }
     .playback-bar .playback-center {
         transform: translateY(-4px);
+    }
+    .playback-bar .playback-center .song-info {
+        transform: translateY(-5px);
+    }
+    .playback-bar .playback-meta-row {
+        transform: translateY(-6px);
     }
 }
 
