@@ -2686,6 +2686,21 @@ def _cached_embedded_cover(track_id: str, track_path: Path) -> tuple[Optional[Pa
     return cached, mime or _cover_media_type(cached)
 
 
+def _track_cover_available(track_id: str) -> bool:
+    tracks_by_id = {track.id: track for track in library_scanner.get_tracks(refresh=False)}
+    track = tracks_by_id.get(track_id)
+    if not track or not track.path:
+        return False
+    track_path = track.path.resolve()
+    if not _path_within_root(track_path, settings.MUSIC_ROOT) or not track_path.is_file():
+        return False
+    folder_cover = _folder_cover_for_track(track_path)
+    if folder_cover and _path_within_root(folder_cover.resolve(), settings.MUSIC_ROOT):
+        return True
+    cached_cover, _media_type = _cached_embedded_cover(track_id, track_path)
+    return bool(cached_cover and cached_cover.is_file())
+
+
 @app.get("/api/stations")
 async def list_stations():
     return [_station_api_payload(station) for station in get_stations()]
@@ -2768,6 +2783,11 @@ async def get_track_cover(track_id: str):
         return FileResponse(cached_cover, media_type=media_type or _cover_media_type(cached_cover))
 
     raise HTTPException(status_code=404, detail="Cover not found")
+
+
+@app.get("/api/tracks/cover-info/{track_id:path}")
+async def get_track_cover_info(track_id: str):
+    return {"available": _track_cover_available(track_id)}
 
 
 @app.get("/api/albums")

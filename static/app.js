@@ -8332,6 +8332,10 @@ function trackCoverUrl(track) {
     if (!track || track.source !== 'local' || !track.id) return '';
     return `/api/tracks/cover/${encodeURIComponent(track.id)}`;
 }
+function trackCoverInfoUrl(track) {
+    if (!track || track.source !== 'local' || !track.id) return '';
+    return `/api/tracks/cover-info/${encodeURIComponent(track.id)}`;
+}
 function scheduleNowPlayingCueRemoval(cue, delayMs = 4200) {
     if (nowPlayingCueTimer) clearTimeout(nowPlayingCueTimer);
     nowPlayingCueTimer = setTimeout(() => {
@@ -8340,13 +8344,19 @@ function scheduleNowPlayingCueRemoval(cue, delayMs = 4200) {
         nowPlayingCueTimer = null;
     }, delayMs);
 }
-async function revealNowPlayingCoverWhenReady(cue, img, coverUrl) {
+async function revealNowPlayingCoverWhenReady(cue, img, coverUrl, coverInfoUrl = '') {
     if (!coverUrl) return;
     const controller = new AbortController();
     nowPlayingCueCoverAbort = controller;
     const timeout = setTimeout(() => controller.abort(), 2500);
     let objectUrl = '';
     try {
+        if (coverInfoUrl) {
+            const infoResp = await fetch(coverInfoUrl, { signal: controller.signal, cache: 'force-cache' });
+            if (!infoResp.ok) return;
+            const info = await infoResp.json();
+            if (!info.available) return;
+        }
         const resp = await fetch(coverUrl, { signal: controller.signal, cache: 'force-cache' });
         if (!resp.ok) return;
         const blob = await resp.blob();
@@ -8392,7 +8402,7 @@ function showNowPlayingCue(track, message = 'Now playing') {
     elements.toastContainer.appendChild(cue);
     scheduleNowPlayingCueRemoval(cue, 4200);
     const img = cue.querySelector('.now-playing-cover');
-    revealNowPlayingCoverWhenReady(cue, img, coverUrl);
+    revealNowPlayingCoverWhenReady(cue, img, coverUrl, trackCoverInfoUrl(track));
 }
 // Library actions
 function setupLibraryActions() {
