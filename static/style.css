@@ -4055,6 +4055,21 @@ input[type="number"]::-webkit-outer-spin-button {
         text-align: center;
     }
 }
+
+@media (min-width: 981px) and (max-width: 1180px) {
+    .playback-bar {
+        height: 110px;
+        padding: 0.66rem 1rem 0.96rem;
+    }
+
+    .playback-center {
+        gap: 0.34rem;
+    }
+
+    .playback-center .seek-row {
+        transform: translateY(-4px);
+    }
+}
 /* Radio mode: hide left column info, center the middle column content */
 .source-radio .playback-bar .playback-center .song-info {
     text-align: center;
