@@ -1913,13 +1913,17 @@ body {
 
 @media (max-width: 599px) {
     .measurement-overlay {
-        padding: 0.75rem;
+        padding: 0.5rem;
         overflow-x: hidden;
+        align-items: center;
     }
 
     .measurement-dialog {
-        width: min(100%, calc(100vw - 1.5rem));
-        max-height: calc(100vh - 1.5rem);
+        width: min(100%, calc(100vw - 1rem));
+        min-height: auto;
+        max-height: calc(100dvh - 1rem);
+        padding: 0.85rem;
+        border-radius: 16px;
         overflow-x: hidden;
     }
 
