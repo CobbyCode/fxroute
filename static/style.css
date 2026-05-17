@@ -73,7 +73,7 @@ body {
    Header
    ============================================================ */
 .header {
-    background: rgba(22, 22, 25, 0.94);
+    background: rgba(22, 22, 25, 0.88);
     padding: 0.95rem 1.25rem;
     display: flex;
     align-items: center;
@@ -3353,7 +3353,7 @@ input[type="number"]::-webkit-outer-spin-button {
     left: 8px;
     right: 8px;
     height: 102px;
-    background: rgba(22, 22, 25, 0.96);
+    background: rgba(22, 22, 25, 0.88);
     backdrop-filter: blur(18px);
     -webkit-backdrop-filter: blur(18px);
     border: 1px solid rgba(255, 255, 255, 0.07);
@@ -3691,7 +3691,7 @@ input[type="number"]::-webkit-outer-spin-button {
     accent-color: var(--accent);
     cursor: pointer;
     min-width: 70px;
-    margin-left: 0.5rem;
+    margin-left: 0.6rem;
 }
 .volume-display {
     display: none;
