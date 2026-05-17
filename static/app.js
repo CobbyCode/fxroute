@@ -3154,7 +3154,9 @@ function setLibraryViewMode(mode) {
     } else {
         renderTracks();
     }
+    updateLibrarySearchPlaceholder();
 }
+    updateLibrarySearchPlaceholder();
 function setLibraryFolder(folder) {
     updateLibrarySearchPlaceholder();
     state.library.viewMode = 'folders';
