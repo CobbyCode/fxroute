@@ -334,6 +334,7 @@ body {
     border-radius: var(--radius-xl);
     box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
     padding: 1.1rem;
+    touch-action: manipulation;
 }
 .manage-dialog::-webkit-scrollbar {
     width: 5px;
