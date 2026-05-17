@@ -4021,11 +4021,15 @@ input[type="number"]::-webkit-outer-spin-button {
     .playback-bar .track-info {
         display: flex !important;
         align-items: center;
+        transform: translateY(-4px);
     }
     .playback-bar .track-info .playback-eq {
         margin-left: 0;
         margin-right: 0;
         transform: none;
+    }
+    .playback-bar .playback-center {
+        transform: translateY(-4px);
     }
 }
 
