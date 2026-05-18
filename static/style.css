@@ -270,10 +270,11 @@ body {
     margin: 0;
 }
 .radio-search-field {
-    flex: 1 1 auto;
-    min-width: 0;
+    flex: 0 1 auto;
+    width: 100%;
     max-width: 420px;
     position: relative;
+    margin: 0 auto;
 }
 .station-search-input {
     width: 100%;
@@ -340,7 +341,6 @@ body {
     align-items: center;
     gap: 0.4rem;
     flex-shrink: 0;
-    margin-left: auto;
 }
 .btn-icon-only {
     padding: 0.5rem;
