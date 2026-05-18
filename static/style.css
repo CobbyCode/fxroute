@@ -2403,7 +2403,7 @@ body {
 .effects-heading-block {
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
+    gap: 0;
 }
 
 .effects-header-actions {
@@ -2419,7 +2419,9 @@ body {
     padding-inline: 0.95rem;
 }
 .effects-title {
-    line-height: 1.25;
+    font-size: 1rem;
+    font-weight: 650;
+    line-height: 1.2;
 }
 .effects-subtitle {
     max-width: 70ch;
