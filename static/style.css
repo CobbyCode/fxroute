@@ -2412,12 +2412,12 @@ body {
     justify-content: flex-end;
     gap: var(--control-gap);
     flex: 0 0 auto;
-    flex-wrap: wrap;
+    margin-right: var(--control-gap);
 }
 
 .effects-header-action {
-    min-height: 44px;
-    padding: 0.5rem 1rem;
+    min-height: 38px;
+    padding-inline: 0.95rem;
 }
 .effects-title {
     line-height: 1.25;
