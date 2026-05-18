@@ -1039,7 +1039,7 @@ body {
     gap: var(--control-gap, 12px);
     flex: 1 1 auto;
     min-width: 0;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
 }
 .library-search-wrap {
     flex: 0 1 auto;
