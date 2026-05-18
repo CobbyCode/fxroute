@@ -45,6 +45,7 @@ let state = {
         selectionDownloadPending: false,
         albums: [],
         albumsLoaded: false,
+        showFavoriteAlbums: false,
         albumDetail: null,
     },
     playlists: [],
@@ -250,6 +251,9 @@ const elements = {
     tabs: document.querySelectorAll('.tab-btn'),
     tabPanels: document.querySelectorAll('.tab-panel'),
     stationsGrid: document.getElementById('stations-grid'),
+    stationSearchInput: document.getElementById('station-search'),
+    stationExportAllBtn: document.getElementById('station-export-all'),
+    stationsEmptySearch: document.getElementById('stations-empty-search'),
     toggleStationManageBtn: document.getElementById('toggle-station-manage'),
     closeStationManageBtn: document.getElementById('close-station-manage'),
     radioManagePanel: document.getElementById('radio-manage-panel'),
@@ -287,8 +291,11 @@ const elements = {
     albumDetailName: document.getElementById('album-detail-name'),
     albumDetailArtist: document.getElementById('album-detail-artist'),
     albumDetailCount: document.getElementById('album-detail-count'),
+    albumFavoriteToggle: document.getElementById('album-favorite-toggle'),
     albumDetailTracks: document.getElementById('album-detail-tracks'),
+    albumDiscover: document.getElementById('album-discover'),
     playSelectedTracksBtn: document.getElementById('play-selected-tracks'),
+    albumFavoritesToggleBtn: document.getElementById('album-favorites-toggle'),
     selectAllTracksBtn: document.getElementById('select-all-tracks'),
     playlistName: document.getElementById('playlist-name'),
     savePlaylistBtn: document.getElementById('save-playlist'),
@@ -2416,6 +2423,14 @@ function setupStationActions() {
         elements.stationExistingImageUrl.addEventListener('input', clearStationFormStatus);
     }
     if (elements.stationUrlDropArea) setupStationUrlDropArea();
+    if (elements.stationSearchInput) {
+        elements.stationSearchInput.addEventListener('input', () => {
+            renderStations();
+        });
+    }
+    if (elements.stationExportAllBtn) {
+        elements.stationExportAllBtn.addEventListener('click', exportAllStations);
+    }
     updateStationNameRequirement();
 }
 function toggleStationManagePanel(forceOpen = null) {
@@ -2439,6 +2454,27 @@ async function fetchStations() {
     } catch (e) {
         showToast('Failed to load stations', 'error');
     }
+}
+function exportAllStations() {
+    if (!state.stations.length) {
+        showToast('No stations to export', 'warning');
+        return;
+    }
+    const exportData = state.stations.map(st => ({
+        name: st.title || st.name || '',
+        url: st.stream_url || '',
+        logo: st.image_url || st.custom_image_url || '',
+        genre: st.artist || '',
+    }));
+    const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'fxroute-radio-stations.json';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
 }
 function stationArtFallbackSvg(station) {
     const title = station.title || station.name || 'Radio';
@@ -2543,16 +2579,41 @@ function stationArtUrl(station) {
     return stationArtCandidates(station)[0] || stationArtFallbackSvg(station);
 }
 
+function getStationSearchQuery() {
+    return (elements.stationSearchInput?.value || '').trim().toLowerCase();
+}
+
+function stationMatchesSearch(station, query) {
+    if (!query) return true;
+    const fields = [
+        station.title || '',
+        station.stream_url || '',
+        station.input_url || '',
+        station.image_url || '',
+        station.custom_image_url || '',
+    ];
+    return fields.some(f => f.toLowerCase().includes(query));
+}
+
 function renderStations() {
     const loadingEl = document.querySelector('#tab-radio .loading');
     if (state.stations.length === 0) {
         if (loadingEl) loadingEl.textContent = 'No stations yet. Open Manage to add one.';
         elements.stationsGrid.innerHTML = '';
+        if (elements.stationsEmptySearch) elements.stationsEmptySearch.classList.add('hidden');
         renderStationDeleteOptions();
         return;
     }
     if (loadingEl) loadingEl.style.display = 'none';
-    elements.stationsGrid.innerHTML = state.stations.map(station => {
+    const query = getStationSearchQuery();
+    const filtered = state.stations.filter(s => stationMatchesSearch(s, query));
+    if (filtered.length === 0 && query) {
+        elements.stationsGrid.innerHTML = '';
+        if (elements.stationsEmptySearch) elements.stationsEmptySearch.classList.remove('hidden');
+        return;
+    }
+    if (elements.stationsEmptySearch) elements.stationsEmptySearch.classList.add('hidden');
+    elements.stationsGrid.innerHTML = filtered.map(station => {
         const artCandidates = stationArtCandidates(station);
         const artSrc = artCandidates[0] || stationArtFallbackSvg(station);
         const isFallbackArt = artSrc.startsWith('data:image/svg+xml');
@@ -2946,6 +3007,7 @@ function renderLibraryViewButtons() {
         elements.libraryViewAlbumsBtn.classList.toggle('active', active);
         elements.libraryViewAlbumsBtn.setAttribute('aria-pressed', active ? 'true' : 'false');
     }
+    updateAlbumFavoritesFilterButton();
 }
 function renderLibraryFolderPath() {
     if (!elements.libraryFolderPath) return;
@@ -3206,10 +3268,15 @@ function renderAlbums() {
     if (query) {
         albums = albums.filter(albumMatchesLibraryQuery);
     }
+    if (state.library.showFavoriteAlbums) {
+        albums = albums.filter(album => !!album.favorite);
+    }
 
     if (albums.length === 0) {
         if (loadingEl) {
-            loadingEl.textContent = query ? 'No matching albums.' : 'No albums found. Import music with album tags.';
+            loadingEl.textContent = state.library.showFavoriteAlbums
+                ? 'No favorite albums.'
+                : query ? 'No matching albums.' : 'No albums found. Import music with album tags.';
             loadingEl.style.display = '';
         }
         elements.albumsGrid.innerHTML = '';
@@ -3246,6 +3313,9 @@ function albumMatchesLibraryQuery(album) {
     const haystack = [
         album.name,
         album.artist,
+        album.release_type,
+        album.country,
+        album.label,
         ...(album.genres || []),
         ...(album.years || []),
         album.year,
@@ -3274,8 +3344,20 @@ async function openAlbumDetail(albumId) {
         elements.albumDetailName.textContent = album.name;
         elements.albumDetailArtist.textContent = album.artist;
         elements.albumDetailCount.textContent = `${tracks.length} track${tracks.length === 1 ? '' : 's'}`;
+        updateAlbumFavoriteButton(album);
+        elements.albumDetail.querySelectorAll('.album-detail-facts, .album-detail-about').forEach(node => node.remove());
+        const factsHtml = albumFactsHtml(album);
+        if (factsHtml) {
+            elements.albumDetailCount.insertAdjacentHTML('afterend', factsHtml);
+        }
+        const aboutHtml = albumAboutHtml(album);
+        if (aboutHtml) {
+            const anchor = elements.albumDetail.querySelector('.album-detail-facts') || elements.albumDetailCount;
+            anchor.insertAdjacentHTML('afterend', aboutHtml);
+        }
 
         renderAlbumDetailTracks();
+        loadAlbumDiscover(albumId);
 
         // Show detail, hide grid
         elements.albumsGrid.classList.add('hidden');
@@ -3284,6 +3366,63 @@ async function openAlbumDetail(albumId) {
     } catch (e) {
         console.warn('Failed to load album tracks', e);
     }
+}
+
+async function loadAlbumDiscover(albumId) {
+    if (!elements.albumDiscover) return;
+    elements.albumDiscover.classList.remove('hidden');
+    elements.albumDiscover.innerHTML = albumDiscoverShellHtml('loading');
+    try {
+        const resp = await fetch(`/api/albums/${encodeURIComponent(albumId)}/discover`);
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || 'Failed to load suggestions');
+        renderAlbumDiscover(data.items || []);
+    } catch (e) {
+        console.warn('Failed to load album discover suggestions', e);
+        elements.albumDiscover.classList.add('hidden');
+        elements.albumDiscover.innerHTML = '';
+    }
+}
+
+function renderAlbumDiscover(items) {
+    if (!elements.albumDiscover) return;
+    if (!Array.isArray(items) || items.length === 0) {
+        elements.albumDiscover.classList.add('hidden');
+        elements.albumDiscover.innerHTML = '';
+        return;
+    }
+    const rows = items.slice(0, 6).map((item) => {
+        const title = escapeHtml(item.title || 'Unknown track');
+        const artist = escapeHtml(item.artist || 'Unknown artist');
+        return `
+            <li class="album-discover-item">
+                <span class="album-discover-title">${title}</span>
+                <span class="album-discover-artist">${artist}</span>
+            </li>
+        `;
+    }).join('');
+    elements.albumDiscover.classList.remove('hidden');
+    elements.albumDiscover.innerHTML = `
+        <details class="album-discover-panel">
+            <summary>
+                <span>Discover similar music</span>
+                <small>Suggestions based on this album artist</small>
+            </summary>
+            <ul class="album-discover-list">${rows}</ul>
+        </details>
+    `;
+}
+
+function albumDiscoverShellHtml(stateName) {
+    const note = stateName === 'loading' ? 'Looking up similar music…' : 'No suggestions yet.';
+    return `
+        <details class="album-discover-panel">
+            <summary>
+                <span>Discover similar music</span>
+                <small>${escapeHtml(note)}</small>
+            </summary>
+        </details>
+    `;
 }
 
 function renderAlbumDetailTracks() {
@@ -3325,10 +3464,92 @@ function renderAlbumDetailTracks() {
     });
 }
 
+function updateAlbumFavoriteButton(album) {
+    if (!elements.albumFavoriteToggle) return;
+    const favorite = !!album?.favorite;
+    elements.albumFavoriteToggle.textContent = favorite ? '★' : '☆';
+    elements.albumFavoriteToggle.classList.toggle('active', favorite);
+    elements.albumFavoriteToggle.setAttribute('aria-pressed', favorite ? 'true' : 'false');
+    elements.albumFavoriteToggle.setAttribute('aria-label', favorite ? 'Remove album from favorites' : 'Add album to favorites');
+    elements.albumFavoriteToggle.title = favorite ? 'Remove from favorites' : 'Add to favorites';
+}
+
+function updateAlbumFavoritesFilterButton() {
+    if (!elements.albumFavoritesToggleBtn) return;
+    const isAlbumsMode = state.library.viewMode === 'albums';
+    const active = !!state.library.showFavoriteAlbums;
+    elements.albumFavoritesToggleBtn.classList.toggle('hidden', !isAlbumsMode);
+    elements.albumFavoritesToggleBtn.classList.toggle('active', active);
+    elements.albumFavoritesToggleBtn.setAttribute('aria-pressed', active ? 'true' : 'false');
+    elements.albumFavoritesToggleBtn.textContent = active ? 'All albums' : 'Favorites';
+}
+
+function toggleAlbumFavoritesFilter() {
+    state.library.showFavoriteAlbums = !state.library.showFavoriteAlbums;
+    state.library.albumDetail = null;
+    updateAlbumFavoritesFilterButton();
+    renderAlbums();
+}
+
+async function toggleCurrentAlbumFavorite() {
+    const detail = state.library.albumDetail;
+    const album = detail?.album;
+    if (!album || !elements.albumFavoriteToggle) return;
+    const nextFavorite = !album.favorite;
+    elements.albumFavoriteToggle.disabled = true;
+    try {
+        const resp = await fetch(`/api/albums/${encodeURIComponent(album.id)}/favorite`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ favorite: nextFavorite }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || 'Failed to update favorite');
+        album.favorite = !!data.favorite;
+        const stored = (state.library.albums || []).find(item => item.id === album.id);
+        if (stored) stored.favorite = album.favorite;
+        updateAlbumFavoriteButton(album);
+        updateAlbumFavoritesFilterButton();
+        showToast(album.favorite ? 'Added to favorites' : 'Removed from favorites', 'success');
+    } catch (e) {
+        showToast(e.message || 'Failed to update favorite', 'error');
+    } finally {
+        elements.albumFavoriteToggle.disabled = false;
+    }
+}
+
+function albumFactsHtml(album) {
+    const headline = [album.release_type, album.year, album.country].filter(Boolean).join(' · ');
+    const label = album.label ? `Label: ${album.label}` : '';
+    const genres = (album.genres || []).slice(0, 3).filter(Boolean);
+    const genreLine = genres.length ? `Genre: ${genres.join(' / ')}` : '';
+    const lines = [headline, label, genreLine].filter(Boolean);
+    if (!lines.length) return '';
+    return `<div class="album-detail-facts">${lines.map(line => `<div>${escapeHtml(line)}</div>`).join('')}</div>`;
+}
+
+function albumAboutHtml(album) {
+    const albumDescription = (album.album_description || '').trim();
+    const artistDescription = (album.artist_description || '').trim();
+    const description = albumDescription || artistDescription;
+    if (!description) return '';
+    const label = albumDescription ? 'About this album' : 'About this artist';
+    return `
+        <details class="album-detail-about">
+            <summary>${escapeHtml(label)}</summary>
+            <p>${escapeHtml(description)}</p>
+        </details>
+    `;
+}
+
 function closeAlbumDetail() {
     state.library.albumDetail = null;
     elements.albumDetail.classList.add('hidden');
     elements.albumsGrid.classList.remove('hidden');
+    if (elements.albumDiscover) {
+        elements.albumDiscover.classList.add('hidden');
+        elements.albumDiscover.innerHTML = '';
+    }
     updatePlaylistSaveRowVisibility();
 }
 
@@ -3548,6 +3769,7 @@ function updateLibrarySelectionUI() {
             elements.selectAllTracksBtn.textContent = hasSearch ? 'Select visible' : 'Select all';
         }
     }
+    updateAlbumFavoritesFilterButton();
 
     // Download: visible in all modes when tracks selected
     if (elements.downloadSelectedTracksBtn) {
@@ -6880,6 +7102,10 @@ function renderMeasurementPanel() {
     elements.measurementList.querySelectorAll('.measurement-saved-group').forEach((details) => {
         details.addEventListener('toggle', () => {
             state.measurement.savedGroupOpen = !!details.open;
+            const summary = details.querySelector('summary');
+            if (summary) {
+                summary.textContent = `${state.measurement.savedGroupOpen ? 'Close saved' : 'Open saved'} (${measurements.length})`;
+            }
         });
     });
     elements.measurementList.querySelectorAll('[data-measurement-toggle]').forEach((input) => {
@@ -8525,6 +8751,12 @@ function setupLibraryActions() {
     }
     if (elements.selectAllTracksBtn) {
         elements.selectAllTracksBtn.addEventListener('click', toggleVisibleTrackSelection);
+    }
+    if (elements.albumFavoritesToggleBtn) {
+        elements.albumFavoritesToggleBtn.addEventListener('click', toggleAlbumFavoritesFilter);
+    }
+    if (elements.albumFavoriteToggle) {
+        elements.albumFavoriteToggle.addEventListener('click', toggleCurrentAlbumFavorite);
     }
     if (elements.downloadSelectedTracksBtn) {
         elements.downloadSelectedTracksBtn.addEventListener('click', downloadSelectedTracks);
