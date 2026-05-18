@@ -253,6 +253,9 @@ body {
     color: var(--text-secondary);
     font-size: 0.92rem;
 }
+.subtitle-compact {
+    display: none;
+}
 .radio-panel {
     background: var(--bg-surface);
     border: 1px solid var(--border);
@@ -4137,7 +4140,7 @@ input[type="number"]::-webkit-outer-spin-button {
         padding-top: 0;
     }
     #tab-effects {
-        padding-top: 1.5rem;
+        padding-top: 0;
     }
     .header {
         padding: 0.72rem 1rem;
@@ -4287,8 +4290,15 @@ input[type="number"]::-webkit-outer-spin-button {
         overflow-x: clip;
     }
     .effects-shell { padding: 0; }
-    .effects-header { flex-direction: column; align-items: stretch; gap: 0.75rem; }
+    .effects-header {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 0.75rem;
+        margin-bottom: 0.75rem;
+    }
     .effects-header-actions { justify-content: flex-start; }
+    .subtitle-full { display: none; }
+    .subtitle-compact { display: inline; }
     .effects-header-action-placeholder { display: none; }
     .field-label-row {
         align-items: flex-start;
