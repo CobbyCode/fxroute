@@ -2419,16 +2419,10 @@ body {
     padding-inline: 0.95rem;
 }
 .effects-title {
-    font-size: 1.05rem;
-    font-weight: 700;
-    line-height: 1.2;
-    letter-spacing: -0.02em;
+    line-height: 1.25;
 }
 .effects-subtitle {
     max-width: 70ch;
-    color: var(--text-secondary);
-    line-height: 1.4;
-    font-size: 0.92rem;
 }
 .effects-import-panel {
     margin-bottom: 1rem;
