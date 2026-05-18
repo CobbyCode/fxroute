@@ -1016,6 +1016,7 @@ body {
    ============================================================ */
 #tab-library {
     --control-gap: 12px;
+    padding-top: 0.55rem;
 }
 .library-header {
     display: flex;
@@ -1531,7 +1532,7 @@ body {
 /* ============================================================
    Effects tab styling
    ============================================================ */
-#tab-effects { padding-top: 1.5rem; }
+#tab-effects { padding-top: 0.75rem; }
 .measurement-overlay {
     z-index: 1200;
     align-items: stretch;
@@ -4137,6 +4138,12 @@ input[type="number"]::-webkit-outer-spin-button {
    ============================================================ */
 @media (max-width: 600px) {
     body { padding-bottom: 150px; }
+    #tab-library {
+        padding-top: 0;
+    }
+    #tab-effects {
+        padding-top: 1.5rem;
+    }
     .header {
         padding: 0.72rem 1rem;
         flex-direction: row;
