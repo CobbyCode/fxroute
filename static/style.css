@@ -1016,43 +1016,39 @@ body {
    ============================================================ */
 .library-header {
     display: flex;
-    align-items: center;
-    justify-content: space-between;
+    flex-direction: column;
     gap: var(--control-gap, 12px);
     margin-bottom: 0.85rem;
-    flex-wrap: wrap;
 }
-.library-view-toggle {
+.library-tabs-row {
     display: flex;
     align-items: center;
     gap: var(--control-gap, 12px);
-    flex: 0 0 auto;
 }
-.library-view-toggle .btn-icon-toggle {
+.library-tabs-row .btn-icon-toggle {
     min-width: 74px;
     padding-inline: 0.7rem;
 }
-.library-toolbar {
+.library-actions-row {
     display: flex;
     align-items: center;
-    justify-content: flex-end;
     gap: var(--control-gap, 12px);
-    flex: 1 1 auto;
-    min-width: 0;
     flex-wrap: nowrap;
 }
 .library-search-wrap {
     flex: 0 1 auto;
-    width: clamp(360px, 38vw, 620px);
-    min-width: 0;
+    width: clamp(360px, 38vw, 760px);
+    max-width: 760px;
+    min-width: 360px;
 }
 .library-search-field {
     position: relative;
 }
-.library-selection-toolbar {
+.library-action-buttons {
     display: flex;
     align-items: center;
     gap: var(--control-gap, 12px);
+    flex-wrap: nowrap;
 }
 .library-search-input {
     width: 100%;
@@ -1103,23 +1099,24 @@ body {
 .playlist-save-row {
     display: flex;
     align-items: center;
-    gap: 0.65rem;
+    gap: var(--control-gap, 12px);
+    margin-top: 16px;
     margin-bottom: 0.75rem;
     flex-wrap: nowrap;
     overflow: hidden;
 }
+.playlist-save-row label {
+    display: none;
+}
 .playlist-save-controls {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
+    gap: var(--control-gap, 12px);
     min-width: 0;
     flex: 0 1 auto;
 }
 .playlist-save-hint {
-    font-size: 0.82rem;
-    color: var(--text-muted);
-    white-space: nowrap;
-    flex-shrink: 0;
+    display: none;
 }
 .playlist-save-row .url-input {
     flex: 0 1 160px;
@@ -4191,16 +4188,12 @@ input[type="number"]::-webkit-outer-spin-button {
         font-size: 0.85rem;
     }
     /* Library tighter */
-    .library-header {
-        flex-direction: column;
-        align-items: stretch;
+    .library-actions-row {
+        flex-wrap: wrap;
     }
     .library-search-wrap {
         max-width: 100%;
         min-width: 0;
-    }
-    .library-toolbar {
-        justify-content: flex-start;
     }
     .library-selection-toolbar .btn-secondary {
         flex: 0 0 auto;
