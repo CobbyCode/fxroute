@@ -210,49 +210,58 @@
             <!-- Library tab -->
             <div id="tab-library" class="tab-panel">
                 <div class="library-header">
-                    <div class="library-tabs-row" role="group" aria-label="Library view">
+                    <div class="library-title-block">
+                        <h2 class="section-title">Library</h2>
+                        <p class="section-subtitle">Play local tracks, import new audio, or select multiple items for later actions.</p>
+                    </div>
+                    <div class="library-toolbar">
+                        <button id="library-shuffle" class="btn-secondary btn-icon-toggle" title="Shuffle queue" aria-label="Shuffle queue" aria-pressed="false">🔀</button>
+                        <button id="library-loop" class="btn-secondary btn-icon-toggle" title="Loop queue" aria-label="Loop queue" aria-pressed="false">🔁</button>
+                        <button id="toggle-import" class="btn-secondary">＋ Import</button>
+                        <button id="refresh-library" class="btn-secondary btn-icon" title="Refresh library" aria-label="Refresh library">⟳</button>
+                        <button id="download-selected-tracks" class="btn-secondary btn-icon hidden" title="Download selected" aria-label="Download selected">⬇</button>
+                        <button id="delete-selected-tracks" class="btn-secondary btn-icon hidden" title="Delete selected" aria-label="Delete selected">🗑</button>
+                    </div>
+                </div>
+                <div class="library-actions-row">
+                    <div class="library-view-toggle" role="group" aria-label="Library view">
                         <button id="library-view-tracks" class="btn-secondary btn-icon-toggle active" type="button" aria-pressed="true">Tracks</button>
                         <button id="library-view-folders" class="btn-secondary btn-icon-toggle" type="button" aria-pressed="false">Folders</button>
                         <button id="library-view-albums" class="btn-secondary btn-icon-toggle" type="button" aria-pressed="false">Albums</button>
                     </div>
-                    <div class="library-actions-row">
-                        <div class="library-search-wrap">
-                            <div class="library-search-field">
-                                <input
-                                    type="search"
-                                    id="library-search"
-                                    class="url-input library-search-input"
-                                    placeholder="Search folder, artist, track…"
-                                    data-placeholder-full="Search folder, artist, track…"
-                                    data-placeholder-compact="Search…"
-                                    data-placeholder-albums-full="Search album, artist, genre, year…"
-                                    data-placeholder-albums-compact="Search albums…"
-                                    autocomplete="off"
-                                >
-                                <button id="library-search-clear" class="library-search-clear" type="button" aria-label="Clear library search" disabled>×</button>
-                            </div>
+                    <div class="library-search-wrap">
+                        <div class="library-search-field">
+                            <input
+                                type="search"
+                                id="library-search"
+                                class="url-input library-search-input"
+                                placeholder="Search folder, artist, track…"
+                                data-placeholder-full="Search folder, artist, track…"
+                                data-placeholder-compact="Search…"
+                                data-placeholder-albums-full="Search album, artist, genre, year…"
+                                data-placeholder-albums-compact="Search albums…"
+                                autocomplete="off"
+                            >
+                            <button id="library-search-clear" class="library-search-clear" type="button" aria-label="Clear library search" disabled>×</button>
                         </div>
-                        <div class="library-action-buttons">
-                            <button id="library-shuffle" class="btn-secondary btn-icon-toggle" title="Shuffle queue" aria-label="Shuffle queue" aria-pressed="false">🔀</button>
-                            <button id="library-loop" class="btn-secondary btn-icon-toggle" title="Loop queue" aria-label="Loop queue" aria-pressed="false">🔁</button>
-                            <button id="toggle-import" class="btn-secondary">＋ Import</button>
-                            <button id="refresh-library" class="btn-secondary btn-icon" title="Refresh library" aria-label="Refresh library">⟳</button>
-                            <button id="download-selected-tracks" class="btn-secondary btn-icon hidden" title="Download selected" aria-label="Download selected">⬇</button>
-                            <button id="delete-selected-tracks" class="btn-secondary btn-icon hidden" title="Delete selected" aria-label="Delete selected">🗑</button>
-                            <button id="album-favorites-toggle" class="btn-secondary hidden" type="button">Favorites</button>
-                            <button id="select-all-tracks" class="btn-secondary">Select all</button>
-                        </div>
+                    </div>
+                    <div class="library-selection-toolbar">
+                        <button id="album-favorites-toggle" class="btn-secondary hidden" type="button">Favorites</button>
+                        <button id="select-all-tracks" class="btn-secondary">Select all</button>
                     </div>
                 </div>
                 <div id="playlist-save-row" class="playlist-save-row hidden">
-                    <input
-                        type="text"
-                        id="playlist-name"
-                        class="url-input"
-                        placeholder="Save as playlist…"
-                        autocomplete="off"
-                    >
-                    <button id="save-playlist" class="btn-secondary">Save</button>
+                    <div class="playlist-save-controls">
+                        <span class="playlist-save-hint">Save as playlist:</span>
+                        <input
+                            type="text"
+                            id="playlist-name"
+                            class="url-input"
+                            placeholder="Playlist name…"
+                            autocomplete="off"
+                        >
+                        <button id="save-playlist" class="btn-secondary">Save</button>
+                    </div>
                     <button id="album-detail-back" class="album-detail-back hidden" type="button" aria-label="Back to albums">← Albums</button>
                 </div>
                 <div id="library-import-panel" class="library-import-panel hidden">
