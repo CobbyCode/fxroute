@@ -1036,14 +1036,15 @@ body {
 .library-actions-row {
     display: flex;
     align-items: center;
-    gap: var(--control-gap, 12px);
+    justify-content: space-between;
+    gap: 0.75rem;
     flex-wrap: wrap;
     margin: 0.15rem 0 0.85rem;
 }
 .library-view-toggle {
     display: flex;
     align-items: center;
-    gap: var(--control-gap, 12px);
+    gap: 0.35rem;
     flex: 0 0 auto;
 }
 .library-view-toggle .btn-icon-toggle {
@@ -1051,18 +1052,16 @@ body {
     padding-inline: 0.7rem;
 }
 .library-search-wrap {
-    flex: 0 1 auto;
-    width: clamp(360px, 38vw, 620px);
-}
-.library-search-field {
-    position: relative;
-}
-.library-selection-toolbar {
     display: flex;
     align-items: center;
-    gap: var(--control-gap, 12px);
-    flex: 0 0 auto;
-    margin-left: auto;
+    gap: 0.5rem;
+    flex: 1 1 320px;
+    min-width: min(100%, 240px);
+}
+.library-search-field {
+    flex: 1 1 auto;
+    min-width: 0;
+    position: relative;
 }
 .library-search-input {
     width: 100%;
@@ -1106,6 +1105,13 @@ body {
 .library-search-clear:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 2px;
+}
+.library-selection-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    flex: 0 0 auto;
 }
 .library-selection-toolbar .btn-secondary {
     min-width: 118px;
