@@ -118,5 +118,9 @@ class DeleteTracksRequest(BaseModel):
     track_ids: list[str]
 
 
+class DeleteFolderRequest(BaseModel):
+    folder: str
+
+
 class DownloadTracksRequest(BaseModel):
     track_ids: list[str]

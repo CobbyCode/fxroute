@@ -488,6 +488,7 @@ def _dedupe_archive_name(name: str, used_names: set[str]) -> str:
     return candidate
 
 from models import (
+    DeleteFolderRequest,
     DeleteTracksRequest,
     DownloadTracksRequest,
     PlaylistSaveRequest,
@@ -498,12 +499,96 @@ from pydantic import BaseModel
 from player import get_player, MPVNotInstalledError, MPVError
 from stations import add_station, delete_station, get_stations, update_station
 from playlists import delete_playlist, get_playlists, save_playlist
-from library import LibraryScanner
+from library import AUDIO_EXTENSIONS, LibraryScanner
 from downloader import Downloader
 from easyeffects import EasyEffectsManager
 from hardware_controller import HardwareController
 from measurement import MeasurementStore
 from peak_monitor import EasyEffectsPeakMonitor
+
+
+REMOVABLE_ARTWORK_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
+REMOVABLE_ARTWORK_STEMS = {"cover", "folder", "front", "albumart"}
+REMOVABLE_EMPTY_SIDECAR_SUFFIXES = {".m3u", ".m3u8", ".cue", ".log", ".nfo", ".txt"}
+
+
+def _is_removable_artwork_file(path: Path) -> bool:
+    if not path.is_file() or path.suffix.lower() not in REMOVABLE_ARTWORK_SUFFIXES:
+        return False
+    name = path.name.lower()
+    stem = path.stem.lower()
+    return stem in REMOVABLE_ARTWORK_STEMS or stem.startswith("albumart") or any(
+        token in name for token in ("cover", "folder", "front", "album", "artwork")
+    )
+
+
+def _is_empty_metadata_sidecar(path: Path) -> bool:
+    if not path.is_file() or path.suffix.lower() not in REMOVABLE_EMPTY_SIDECAR_SUFFIXES:
+        return False
+    try:
+        return path.stat().st_size == 0
+    except OSError:
+        return False
+
+
+def _folder_has_audio_files(folder: Path) -> bool:
+    try:
+        for child in folder.iterdir():
+            if child.is_file() and child.suffix.lower() in AUDIO_EXTENSIONS:
+                return True
+    except OSError:
+        return False
+    return False
+
+
+def _cleanup_track_parent_folder(folder: Path, music_root: Path, protected_folders: Optional[set[Path]] = None) -> dict:
+    cleaned = {"folder": str(folder), "removed_files": [], "removed_folder": False, "kept": []}
+    protected = {item.resolve() for item in (protected_folders or set())}
+    if (
+        not folder.is_dir()
+        or not _path_within_root(folder, music_root)
+        or folder.resolve() == music_root.resolve()
+        or folder.resolve() in protected
+    ):
+        return cleaned
+    if _folder_has_audio_files(folder):
+        return cleaned
+
+    try:
+        children = list(folder.iterdir())
+    except OSError as exc:
+        cleaned["kept"].append({"path": str(folder), "reason": str(exc)})
+        return cleaned
+
+    for child in children:
+        if _is_removable_artwork_file(child) or _is_empty_metadata_sidecar(child):
+            try:
+                child.unlink()
+                cleaned["removed_files"].append(str(child))
+            except OSError as exc:
+                cleaned["kept"].append({"path": str(child), "reason": str(exc)})
+
+    try:
+        if not any(folder.iterdir()):
+            folder.rmdir()
+            cleaned["removed_folder"] = True
+    except OSError as exc:
+        cleaned["kept"].append({"path": str(folder), "reason": str(exc)})
+    return cleaned
+
+
+def _resolve_library_folder(folder: str, music_root: Path) -> Path:
+    requested = Path(str(folder or "").strip().lstrip("/"))
+    if not str(requested):
+        raise HTTPException(status_code=400, detail="folder is required")
+    if requested.is_absolute() or ".." in requested.parts:
+        raise HTTPException(status_code=400, detail="Invalid folder path")
+    folder_path = (music_root / requested).resolve()
+    if folder_path == music_root.resolve() or not _path_within_root(folder_path, music_root):
+        raise HTTPException(status_code=403, detail="Folder path outside music root")
+    if not folder_path.is_dir():
+        raise HTTPException(status_code=404, detail="Folder not found")
+    return folder_path
 from samplerate import (
     SOURCE_MODE_APP_PLAYBACK,
     SOURCE_MODE_BLUETOOTH_INPUT,
@@ -3186,6 +3271,7 @@ async def delete_tracks(req: DeleteTracksRequest):
     tracks_by_id = {track.id: track for track in library_scanner.get_tracks(refresh=True)}
     deleted = []
     errors = []
+    affected_folders = set()
     music_root = settings.MUSIC_ROOT.resolve()
 
     for track_id in req.track_ids:
@@ -3196,19 +3282,63 @@ async def delete_tracks(req: DeleteTracksRequest):
 
         try:
             path = track.path.resolve()
-            if music_root not in path.parents and path != music_root:
+            if not _path_within_root(path, music_root) or not path.is_file():
                 errors.append({"track_id": track_id, "error": "Track path outside music root"})
                 continue
+            parent = path.parent
             path.unlink()
             deleted.append(track_id)
+            affected_folders.add(parent)
         except Exception as e:
             errors.append({"track_id": track_id, "error": str(e)})
 
+    cleanup = [
+        _cleanup_track_parent_folder(folder, music_root, {settings.download_dir.resolve()})
+        for folder in sorted(affected_folders)
+    ]
     tracks = library_scanner.refresh(force=True)
     return {
         "status": "ok",
         "deleted": deleted,
         "errors": errors,
+        "cleanup": cleanup,
+        "track_count": len(tracks),
+    }
+
+
+@app.post("/api/library/folders/delete")
+async def delete_library_folder(req: DeleteFolderRequest):
+    global library_scanner, settings
+    if not library_scanner or not settings:
+        raise HTTPException(status_code=503, detail="Library not available")
+
+    music_root = settings.MUSIC_ROOT.resolve()
+    folder_path = _resolve_library_folder(req.folder, music_root)
+    if folder_path == settings.download_dir.resolve():
+        raise HTTPException(status_code=400, detail="Cannot delete the managed imports container")
+    rel_folder = folder_path.relative_to(music_root).as_posix()
+
+    deleted_track_ids = []
+    for track in library_scanner.get_tracks(refresh=True):
+        if not track.path:
+            continue
+        try:
+            if track.path.resolve().is_relative_to(folder_path):
+                deleted_track_ids.append(track.id)
+        except (OSError, ValueError):
+            continue
+
+    try:
+        shutil.rmtree(folder_path)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to delete folder: {exc}") from exc
+
+    tracks = library_scanner.refresh(force=True)
+    return {
+        "status": "ok",
+        "folder": rel_folder,
+        "deleted": deleted_track_ids,
+        "folder_removed": not folder_path.exists(),
         "track_count": len(tracks),
     }
 

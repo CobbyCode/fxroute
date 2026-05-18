@@ -3666,17 +3666,21 @@ async function deleteLibraryFolder(folder) {
         return;
     }
     try {
-        const resp = await fetch('/api/tracks/delete', {
+        const resp = await fetch('/api/library/folders/delete', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ track_ids: tracks.map(t => t.id) }),
+            body: JSON.stringify({ folder }),
         });
         if (!resp.ok) {
             const data = await resp.json().catch(() => ({}));
             throw new Error(data.detail || 'Delete failed');
         }
+        const parentFolder = folder.split('/').filter(Boolean).slice(0, -1).join('/');
+        state.library.currentFolder = parentFolder;
+        state.library.selectedTrackIds = state.library.selectedTrackIds.filter(id => !tracks.some(track => track.id === id));
+        state.library.albumsLoaded = false;
+        state.library.albumDetail = null;
         showToast(`Deleted ${tracks.length} track${tracks.length === 1 ? '' : 's'}`, 'success');
-        // Refresh library
         await fetchTracks();
     } catch (e) {
         showToast(`Failed to delete folder: ${e.message}`, 'error');
