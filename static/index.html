@@ -117,11 +117,11 @@
             <div id="tab-radio" class="tab-panel active">
                 <section class="radio-panel">
                     <div class="radio-panel-header">
-                        <div class="radio-header-left">
-                            <h2 class="section-title">Stations</h2>
-                            <p class="section-subtitle">Tap a station to play it.</p>
+                        <h2 class="section-title">Stations</h2>
+                        <div class="radio-search-field">
+                            <input type="search" id="station-search" class="station-search-input" placeholder="Search stations..." autocomplete="off" />
+                            <button id="station-search-clear" class="station-search-clear" type="button" aria-label="Clear station search" disabled>×</button>
                         </div>
-                        <input type="search" id="station-search" class="station-search-input" placeholder="Search stations..." autocomplete="off" />
                         <div class="radio-header-right">
                             <button id="station-export-all" class="btn-ghost btn-icon-only" type="button" title="Export all stations">
                                 <span class="btn-ghost-icon">⤓</span>

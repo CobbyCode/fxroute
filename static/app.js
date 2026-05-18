@@ -252,6 +252,7 @@ const elements = {
     tabPanels: document.querySelectorAll('.tab-panel'),
     stationsGrid: document.getElementById('stations-grid'),
     stationSearchInput: document.getElementById('station-search'),
+    stationSearchClear: document.getElementById('station-search-clear'),
     stationExportAllBtn: document.getElementById('station-export-all'),
     stationsEmptySearch: document.getElementById('stations-empty-search'),
     toggleStationManageBtn: document.getElementById('toggle-station-manage'),
@@ -2425,7 +2426,18 @@ function setupStationActions() {
     if (elements.stationUrlDropArea) setupStationUrlDropArea();
     if (elements.stationSearchInput) {
         elements.stationSearchInput.addEventListener('input', () => {
+            if (elements.stationSearchClear) {
+                elements.stationSearchClear.disabled = !elements.stationSearchInput.value;
+            }
             renderStations();
+        });
+    }
+    if (elements.stationSearchClear) {
+        elements.stationSearchClear.addEventListener('click', () => {
+            elements.stationSearchInput.value = '';
+            elements.stationSearchClear.disabled = true;
+            renderStations();
+            elements.stationSearchInput.focus();
         });
     }
     if (elements.stationExportAllBtn) {
