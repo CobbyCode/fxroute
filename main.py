@@ -2740,6 +2740,33 @@ async def remove_station(station_id: str):
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
+class StationImportItem(BaseModel):
+    name: str = ""
+    url: str = ""
+    logo: str = ""
+    genre: str = ""
+
+@app.post("/api/stations/import")
+async def import_stations(items: list[StationImportItem]):
+    results = []
+    for item in items:
+        name = (item.name or "").strip()
+        stream_url = (item.url or "").strip()
+        custom_image_url = (item.logo or "").strip()
+        if not stream_url:
+            results.append({"status": "skipped", "reason": "missing url", "name": name})
+            continue
+        if not name:
+            from urllib.parse import urlparse
+            parsed = urlparse(stream_url)
+            name = parsed.netloc or "Unknown Station"
+        try:
+            station = add_station(name, stream_url, custom_image_url)
+            results.append({"status": "ok", "name": name})
+        except ValueError as e:
+            results.append({"status": "error", "name": name, "reason": str(e)})
+    return {"results": results}
+
 @app.get("/api/tracks")
 async def list_tracks():
     tracks = library_scanner.get_tracks()
@@ -2841,6 +2868,38 @@ async def get_album_tracks(album_id: str):
     return [t.to_dict() for t in tracks]
 
 
+@app.post("/api/albums/{album_id}/favorite")
+async def set_album_favorite(album_id: str, request: Request):
+    """Persist album favorite state in the smart metadata cache."""
+    if not library_scanner:
+        raise HTTPException(status_code=503, detail="Library not available")
+    tracks = library_scanner.get_album_tracks(album_id)
+    if not tracks:
+        raise HTTPException(status_code=404, detail="Album not found")
+    body = await request.json()
+    favorite = bool(body.get("favorite"))
+    metadata = library_scanner.set_album_favorite(album_id, favorite)
+    return {"status": "ok", "album_id": album_id, "favorite": bool(metadata.get("favorite"))}
+
+
+@app.get("/api/albums/{album_id}/discover")
+async def get_album_discover(album_id: str, refresh: bool = False):
+    """Return cached similar-music suggestions for an album."""
+    if not library_scanner:
+        raise HTTPException(status_code=503, detail="Library not available")
+    tracks = library_scanner.get_album_tracks(album_id)
+    if not tracks:
+        raise HTTPException(status_code=404, detail="Album not found")
+    result = library_scanner.get_album_discover(album_id, force=refresh)
+    return {
+        "album_id": album_id,
+        "items": result.get("items") or [],
+        "source": result.get("source"),
+        "cached": bool(result.get("cached")),
+        "error": result.get("error"),
+    }
+
+
 @app.get("/api/albums/{album_id}/cover")
 async def get_album_cover(album_id: str, size: int = 256):
     """Return cover image for an album, resized to thumbnail.
@@ -2867,6 +2926,10 @@ async def get_album_cover(album_id: str, size: int = 256):
         cached_cover, media_type = _cached_embedded_cover(track.id, track.path)
         if cached_cover and cached_cover.is_file():
             return _serve_thumbnail(cached_cover, size)
+
+    external_cover = library_scanner.get_album_external_cover(album_id)
+    if external_cover and external_cover.is_file():
+        return _serve_thumbnail(external_cover, size)
 
     # If no cover found, return a generated placeholder
     import hashlib as _hl

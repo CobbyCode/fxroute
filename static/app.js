@@ -2476,6 +2476,39 @@ function exportAllStations() {
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
 }
+async function importStationFile(data) {
+    const items = data.filter(item => item && (item.url || item.stream_url)).map(item => ({
+        name: (item.name || item.title || '').trim(),
+        url: (item.url || item.stream_url || '').trim(),
+        logo: (item.logo || item.image_url || item.custom_image_url || '').trim(),
+        genre: (item.genre || item.artist || '').trim(),
+    }));
+    if (!items.length) {
+        showToast('No valid stations found in file', 'error');
+        return;
+    }
+    showToast('Importing ' + items.length + ' station' + (items.length > 1 ? 's' : '') + '…', 'info');
+    try {
+        const resp = await fetch('/api/stations/import', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(items),
+        });
+        if (!resp.ok) throw new Error('Import failed');
+        const result = await resp.json();
+        const ok = (result.results || []).filter(r => r.status === 'ok').length;
+        const err = (result.results || []).filter(r => r.status === 'error').length;
+        const skipped = (result.results || []).filter(r => r.status === 'skipped').length;
+        if (ok > 0) {
+            showToast('Imported ' + ok + ' station' + (ok > 1 ? 's' : '') + (err > 0 ? ', ' + err + ' failed' : '') + (skipped > 0 ? ', ' + skipped + ' skipped' : ''), err > 0 ? 'warning' : 'success');
+            await fetchStations();
+        } else {
+            showToast('No stations imported' + (err > 0 ? ', ' + err + ' failed' : ''), 'error');
+        }
+    } catch (e) {
+        showToast('Import failed: ' + (e.message || 'unknown error'), 'error');
+    }
+}
 function stationArtFallbackSvg(station) {
     const title = station.title || station.name || 'Radio';
     const genre = station.artist || 'Radio';
@@ -2755,6 +2788,21 @@ function setupStationUrlDropArea() {
     area.addEventListener('drop', async (e) => {
         e.preventDefault();
         area.classList.remove('drag-over');
+        const file = e.dataTransfer?.files?.[0];
+        if (file && file.type === 'application/json') {
+            try {
+                const text = await file.text();
+                const data = JSON.parse(text);
+                if (!Array.isArray(data)) {
+                    showToast('Invalid format: expected a JSON array', 'error');
+                    return;
+                }
+                await importStationFile(data);
+            } catch (err) {
+                showToast('Failed to read station file: ' + (err.message || 'unknown error'), 'error');
+            }
+            return;
+        }
         const url = extractDroppedUrl(e.dataTransfer);
         if (!url) {
             showToast('No URL found in dropped content', 'error');
