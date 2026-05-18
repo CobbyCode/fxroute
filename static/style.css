@@ -2410,9 +2410,9 @@ body {
     display: flex;
     align-items: center;
     justify-content: flex-end;
-    gap: var(--control-gap);
+    gap: var(--control-gap, 12px);
     flex: 0 0 auto;
-    margin-right: var(--control-gap);
+    margin-right: var(--control-gap, 12px);
 }
 
 .effects-header-action {
