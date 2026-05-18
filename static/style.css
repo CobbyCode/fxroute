@@ -2410,13 +2410,14 @@ body {
     display: flex;
     align-items: center;
     justify-content: flex-end;
-    gap: 0.6rem;
+    gap: var(--control-gap);
     flex: 0 0 auto;
+    flex-wrap: wrap;
 }
 
 .effects-header-action {
-    min-height: 38px;
-    padding-inline: 0.95rem;
+    min-height: 44px;
+    padding: 0.5rem 1rem;
 }
 .effects-title {
     line-height: 1.25;
