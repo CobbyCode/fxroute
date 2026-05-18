@@ -1042,9 +1042,9 @@ body {
     flex-wrap: wrap;
 }
 .library-search-wrap {
-    flex: 1 1 520px;
-    max-width: 680px;
-    min-width: 420px;
+    flex: 0 1 auto;
+    width: clamp(360px, 38vw, 620px);
+    min-width: 0;
 }
 .library-search-field {
     position: relative;
