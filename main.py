@@ -494,6 +494,7 @@ from models import (
     PlayRequest,
     StationUpsertRequest,
 )
+from pydantic import BaseModel
 from player import get_player, MPVNotInstalledError, MPVError
 from stations import add_station, delete_station, get_stations, update_station
 from playlists import delete_playlist, get_playlists, save_playlist
