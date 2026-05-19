@@ -3456,7 +3456,6 @@ function renderAlbumDiscover(items) {
         return `
             <li class="album-discover-item">
                 <span class="album-discover-title">${artist}</span>
-                <span class="album-discover-artist">Similar artist</span>
             </li>
         `;
     }).join('');
@@ -3464,8 +3463,7 @@ function renderAlbumDiscover(items) {
     elements.albumDiscover.innerHTML = `
         <details class="album-discover-panel">
             <summary>
-                <span>Discover similar artists</span>
-                <small>Suggestions based on this album artist</small>
+                <span>Discover similar music</span>
             </summary>
             <ul class="album-discover-list">${rows}</ul>
         </details>
@@ -3477,7 +3475,7 @@ function albumDiscoverShellHtml(stateName) {
     return `
         <details class="album-discover-panel">
             <summary>
-                <span>Discover similar artists</span>
+                <span>Discover similar music</span>
                 <small>${escapeHtml(note)}</small>
             </summary>
         </details>
