@@ -522,13 +522,10 @@ def _is_removable_artwork_file(path: Path) -> bool:
     )
 
 
-def _is_empty_metadata_sidecar(path: Path) -> bool:
+def _is_removable_metadata_sidecar(path: Path) -> bool:
     if not path.is_file() or path.suffix.lower() not in REMOVABLE_EMPTY_SIDECAR_SUFFIXES:
         return False
-    try:
-        return path.stat().st_size == 0
-    except OSError:
-        return False
+    return True
 
 
 def _folder_has_audio_files(folder: Path) -> bool:
@@ -561,7 +558,7 @@ def _cleanup_track_parent_folder(folder: Path, music_root: Path, protected_folde
         return cleaned
 
     for child in children:
-        if _is_removable_artwork_file(child) or _is_empty_metadata_sidecar(child):
+        if _is_removable_artwork_file(child) or _is_removable_metadata_sidecar(child):
             try:
                 child.unlink()
                 cleaned["removed_files"].append(str(child))
