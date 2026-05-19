@@ -1,6 +1,14 @@
 # Changelog
 
 ## Unreleased
+- Fixed compilation album grouping: albums without `album_artist` but with multiple different track artists are now grouped as one album with `Various Artists` as the album artist.
+- Changed Discover section to show artist-based suggestions from ListenBrainz instead of track lists.
+- Moved the Library import panel directly below the header, above the view controls.
+- Fixed playback seek slider not updating during local playback by adding position polling.
+- Polished mobile Library toolbar: compact import button, aligned search and playlist-save rows, consistent button widths.
+- Added subtle green accent to the tab bar navigation.
+- Fixed desktop/tablet spacing between view controls and playlist-save row.
+- Matched DSP header action button widths for consistent appearance.
 
 ## 0.6.4 (2026-05-17)
 - Fixed album grouping for imported ZIP releases without embedded album tags by using valid local M3U/M3U8 playlists in import folders as the fallback album signal.
