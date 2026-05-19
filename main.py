@@ -529,6 +529,12 @@ def _is_removable_metadata_sidecar(path: Path) -> bool:
     return True
 
 
+def _is_cleanup_only_file(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    return path.suffix.lower() in REMOVABLE_ARTWORK_SUFFIXES or _is_removable_metadata_sidecar(path)
+
+
 def _folder_has_audio_files(folder: Path) -> bool:
     try:
         for child in folder.iterdir():
@@ -558,8 +564,11 @@ def _cleanup_track_parent_folder(folder: Path, music_root: Path, protected_folde
         cleaned["kept"].append({"path": str(folder), "reason": str(exc)})
         return cleaned
 
+    files = [child for child in children if child.is_file()]
+    cleanup_only_folder = bool(files) and all(_is_cleanup_only_file(child) for child in files)
+
     for child in children:
-        if _is_removable_artwork_file(child) or _is_removable_metadata_sidecar(child):
+        if cleanup_only_folder or _is_removable_artwork_file(child) or _is_removable_metadata_sidecar(child):
             try:
                 child.unlink()
                 cleaned["removed_files"].append(str(child))
