@@ -214,6 +214,7 @@ let measurementPeqLastTouchCreateAt = 0;
 // Seek - globals
 let seekDragging = false;
 let seekPendingPos = null;
+let playbackPositionPollTimer = null;
 const VOLUME_SEND_DEBOUNCE_MS = 120;
 const VOLUME_SYNC_GRACE_MS = 700;
 const VOLUME_CURVE_GAMMA = 0.6;
@@ -2212,6 +2213,32 @@ function updatePlaybackUI() {
     }
     // Highlight active
     highlightActiveTrack();
+    // Start/stop position polling for local playback
+    if (playing && window.__footerSource !== 'spotify') {
+        startPlaybackPositionPoll();
+    } else {
+        stopPlaybackPositionPoll();
+    }
+}
+function startPlaybackPositionPoll() {
+    if (playbackPositionPollTimer !== null) return;
+    playbackPositionPollTimer = setInterval(async () => {
+        try {
+            const resp = await fetch('/api/status');
+            if (!resp.ok) return;
+            const data = await resp.json();
+            mergePlaybackState(data);
+            updateSeekUI();
+        } catch (_) {
+            // ignore transient errors
+        }
+    }, 1000);
+}
+function stopPlaybackPositionPoll() {
+    if (playbackPositionPollTimer !== null) {
+        clearInterval(playbackPositionPollTimer);
+        playbackPositionPollTimer = null;
+    }
 }
 function updatePlayPauseButton(playbackState) {
     elements.btnPlayPause.textContent = playbackState === 'playing' ? '⏸' : '▶';
