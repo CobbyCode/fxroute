@@ -2424,6 +2424,7 @@ body {
 }
 
 .effects-header-action {
+    min-width: 112px;
     min-height: 38px;
     padding-inline: 0.95rem;
 }
