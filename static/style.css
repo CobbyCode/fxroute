@@ -1143,6 +1143,9 @@ body {
     min-width: 0;
     flex: 0 1 auto;
 }
+.playlist-save-controls #save-playlist {
+    min-width: 74px;
+}
 .playlist-save-hint {
     font-size: 0.82rem;
     color: var(--text-muted);
