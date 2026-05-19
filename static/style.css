@@ -4113,6 +4113,12 @@ input[type="number"]::-webkit-outer-spin-button {
     }
 }
 
+@media (max-width: 1180px) and (min-width: 601px) {
+    .library-actions-row {
+        margin-bottom: var(--action-gap);
+    }
+}
+
 @media (min-width: 641px) and (max-width: 980px) {
     body { padding-bottom: 170px; }
     .measurement-overlay {
