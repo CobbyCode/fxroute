@@ -4151,6 +4151,20 @@ input[type="number"]::-webkit-outer-spin-button {
     .library-toolbar::-webkit-scrollbar {
         display: none;
     }
+    .library-toolbar #toggle-import {
+        height: 44px;
+        min-height: 44px;
+        max-height: 44px;
+        min-width: 96px;
+        padding: 0 0.8rem;
+        font-size: 0.9rem;
+        line-height: 1;
+        align-self: center;
+        white-space: nowrap;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+    }
     #tab-library {
         padding-top: 0;
     }
