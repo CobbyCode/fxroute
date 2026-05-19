@@ -525,7 +525,7 @@ function setEffectsImportPanelOpen(shouldOpen) {
     if (!elements.effectsImportPanel || !elements.effectsToggleImportBtn) return;
     elements.effectsImportPanel.classList.toggle('hidden', !shouldOpen);
     elements.effectsToggleImportBtn.setAttribute('aria-expanded', shouldOpen ? 'true' : 'false');
-    elements.effectsToggleImportBtn.textContent = shouldOpen ? 'Close import' : 'Import…';
+    elements.effectsToggleImportBtn.textContent = shouldOpen ? 'Close import' : 'Import';
 }
 
 function setupWebSocket() {
@@ -1230,7 +1230,7 @@ function closeLibraryImportPanel() {
     if (searchWrap) searchWrap.classList.remove('hidden');
     if (selectionToolbar) selectionToolbar.classList.remove('hidden');
     if (elements.playlistSaveRow) updatePlaylistSaveRowVisibility();
-    if (elements.toggleImportBtn) elements.toggleImportBtn.textContent = '＋ Import';
+    if (elements.toggleImportBtn) elements.toggleImportBtn.textContent = 'Import';
 }
 
 function switchTab(tabId) {
