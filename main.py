@@ -517,9 +517,10 @@ def _is_removable_artwork_file(path: Path) -> bool:
         return False
     name = path.name.lower()
     stem = path.stem.lower()
+    folder_stem = path.parent.name.lower()
     return stem in REMOVABLE_ARTWORK_STEMS or stem.startswith("albumart") or any(
         token in name for token in ("cover", "folder", "front", "album", "artwork")
-    )
+    ) or stem == folder_stem
 
 
 def _is_removable_metadata_sidecar(path: Path) -> bool:
