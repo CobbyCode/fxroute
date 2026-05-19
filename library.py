@@ -15,6 +15,7 @@ from mutagen.id3 import ID3NoHeaderError
 
 from models import Track
 from config import get_settings
+from library_metadata import LibraryMetadataStore
 
 ALBUM_COVER_NAMES = (
     "cover.jpg", "cover.jpeg", "cover.png", "cover.webp",
@@ -221,6 +222,9 @@ class LibraryScanner:
         self._scan_files_seen = 0
         self._scan_audio_seen = 0
         self._scan_tracks_found = 0
+        self._scan_track_cache_hits = 0
+        self._scan_track_cache_misses = 0
+        self.metadata_store = LibraryMetadataStore()
 
     def prepare_scan_status(self):
         """Mark a scan as active before scanner work starts."""
@@ -231,6 +235,8 @@ class LibraryScanner:
         self._scan_files_seen = 0
         self._scan_audio_seen = 0
         self._scan_tracks_found = 0
+        self._scan_track_cache_hits = 0
+        self._scan_track_cache_misses = 0
 
     def refresh(self, force: bool = False) -> List[Track]:
         """
@@ -243,6 +249,7 @@ class LibraryScanner:
 
         self.prepare_scan_status()
         tracks = []
+        active_track_paths: List[str] = []
 
         try:
             if not self.music_root.exists():
@@ -264,7 +271,18 @@ class LibraryScanner:
                     if filepath.suffix.lower() in AUDIO_EXTENSIONS:
                         self._scan_audio_seen += 1
                         try:
-                            track = self._create_track_from_file(filepath)
+                            rel_path = filepath.relative_to(self.music_root).as_posix()
+                            active_track_paths.append(rel_path)
+                            stat = filepath.stat()
+                            cached = self.metadata_store.get_cached_track(rel_path, stat.st_mtime_ns, stat.st_size)
+                            if cached:
+                                track = self._track_from_cached_metadata(filepath, cached)
+                                self._scan_track_cache_hits += 1
+                            else:
+                                track = self._create_track_from_file(filepath)
+                                self._scan_track_cache_misses += 1
+                                if track:
+                                    self.metadata_store.upsert_track_metadata(self._track_cache_payload(track, rel_path, stat))
                             if track:
                                 tracks.append(track)
                                 self._scan_tracks_found = len(tracks)
@@ -276,13 +294,25 @@ class LibraryScanner:
             tracks.sort(key=_track_sort_key)
 
             self._track_cache = tracks
+            try:
+                self._scan_current_dir = "Finalizing metadata"
+                self.metadata_store.sync_tracks_seen(active_track_paths)
+                self.metadata_store.sync_albums(self.get_albums(refresh=False, include_metadata=False))
+            except Exception as e:
+                logger.info("Smart metadata sync skipped: %s", e)
             self._last_scan = datetime.now()
-            logger.info(f"Library scan complete: {len(tracks)} tracks")
+            logger.info(
+                "Library scan complete: %s tracks (metadata cache: %s hits, %s misses)",
+                len(tracks),
+                self._scan_track_cache_hits,
+                self._scan_track_cache_misses,
+            )
 
         except Exception as e:
             logger.error(f"Library scan failed: {e}")
             self._scan_error = str(e)
         finally:
+            self._scan_current_dir = None
             self._scan_in_progress = False
 
         return self._track_cache
@@ -386,6 +416,43 @@ class LibraryScanner:
             logger.warning(f"Failed to create track for {filepath}: {e}")
             return None
 
+    def _track_from_cached_metadata(self, filepath: Path, cached: Dict[str, Any]) -> Track:
+        rel_path = filepath.relative_to(self.music_root)
+        return Track(
+            id=str(cached.get("track_id") or f"local_{rel_path.as_posix()}"),
+            title=str(cached.get("title") or filepath.stem),
+            artist=cached.get("artist"),
+            album=cached.get("album"),
+            album_artist=cached.get("album_artist"),
+            genre=cached.get("genre"),
+            year=int(cached["year"]) if cached.get("year") is not None else None,
+            track_number=int(cached["track_number"]) if cached.get("track_number") is not None else None,
+            disc_number=int(cached["disc_number"]) if cached.get("disc_number") is not None else None,
+            source="local",
+            url=str(filepath.absolute()),
+            duration=float(cached["duration"]) if cached.get("duration") is not None else None,
+            path=filepath,
+            sample_rate_hz=int(cached["sample_rate_hz"]) if cached.get("sample_rate_hz") else None,
+        )
+
+    def _track_cache_payload(self, track: Track, rel_path: str, stat: os.stat_result) -> Dict[str, Any]:
+        return {
+            "rel_path": rel_path,
+            "track_id": track.id,
+            "mtime_ns": stat.st_mtime_ns,
+            "size_bytes": stat.st_size,
+            "title": track.title,
+            "artist": track.artist,
+            "album": track.album,
+            "album_artist": track.album_artist,
+            "genre": track.genre,
+            "year": track.year,
+            "track_number": track.track_number,
+            "disc_number": track.disc_number,
+            "duration": track.duration,
+            "sample_rate_hz": track.sample_rate_hz,
+        }
+
     def _infer_import_album(self, filepath: Path, track_artist: Optional[str]) -> tuple[Optional[str], Optional[str]]:
         """Infer album metadata only for imported archive folders lacking tags."""
         folder = filepath.parent
@@ -418,6 +485,8 @@ class LibraryScanner:
             "files_seen": self._scan_files_seen,
             "audio_seen": self._scan_audio_seen,
             "tracks_found": self._scan_tracks_found,
+            "track_cache_hits": self._scan_track_cache_hits,
+            "track_cache_misses": self._scan_track_cache_misses,
             "current_dir": self._scan_current_dir,
             "last_scan": self._last_scan.isoformat() if self._last_scan else None,
             "started_at": self._scan_started_at.isoformat() if self._scan_started_at else None,
@@ -441,7 +510,7 @@ class LibraryScanner:
 
     # ── Album grouping ──────────────────────────────────────────────
 
-    def get_albums(self, refresh: bool = False) -> List[Dict[str, Any]]:
+    def get_albums(self, refresh: bool = False, include_metadata: bool = True) -> List[Dict[str, Any]]:
         """
         Group cached tracks into albums.
         Returns a list of album dicts sorted by album_artist then album name.
@@ -498,7 +567,7 @@ class LibraryScanner:
                     entry["cover_source"] = "folder"
                 elif entry["cover_source"] != "folder":
                     # Only set embedded if we haven't found a folder cover yet
-                    if entry.get("cover_source") != "embedded":
+                    if entry.get("cover_source") != "embedded" and _has_embedded_cover(track.path):
                         entry["cover_source_track_id"] = track.id
                         entry["cover_source"] = "embedded"
 
@@ -521,6 +590,25 @@ class LibraryScanner:
             entry["year"] = sorted_years[0] if sorted_years else None
             if "cover_source" not in entry:
                 entry["cover_source"] = None
+            if include_metadata:
+                metadata = self.metadata_store.get_album(entry["id"])
+                if metadata:
+                    external_genres = metadata.pop("genres", []) or []
+                    if external_genres:
+                        merged_genres = []
+                        seen = set()
+                        for genre in [*entry["genres"], *external_genres]:
+                            key = str(genre).lower()
+                            if key not in seen:
+                                merged_genres.append(genre)
+                                seen.add(key)
+                        entry["genres"] = merged_genres[:6]
+                    for key, value in metadata.items():
+                        if value in (None, "", []):
+                            continue
+                        if key == "year" and entry.get("year"):
+                            continue
+                        entry[key] = value
 
         return result
 
@@ -539,6 +627,18 @@ class LibraryScanner:
             if _album_id(album_artist, album_name) == album_id:
                 result.append(track)
         return sorted(result, key=_track_sort_key)
+
+    def get_album_metadata(self, album_id: str) -> Dict[str, Any]:
+        return self.metadata_store.get_album(album_id)
+
+    def get_album_external_cover(self, album_id: str) -> Optional[Path]:
+        return self.metadata_store.external_cover_path(album_id)
+
+    def set_album_favorite(self, album_id: str, favorite: bool) -> Dict[str, Any]:
+        return self.metadata_store.set_album_favorite(album_id, favorite)
+
+    def get_album_discover(self, album_id: str, force: bool = False) -> Dict[str, Any]:
+        return self.metadata_store.get_album_discover(album_id, force=force)
 
 
 def _album_id(artist: str, album: str) -> str:
@@ -567,3 +667,24 @@ def _has_folder_cover(track_path: Path) -> bool:
     except OSError:
         pass
     return False
+
+
+def _has_embedded_cover(track_path: Path) -> bool:
+    try:
+        audio = MutagenFile(str(track_path), easy=False)
+    except Exception:
+        return False
+    if not audio:
+        return False
+    if getattr(audio, "pictures", None):
+        return True
+    tags = getattr(audio, "tags", None)
+    if not tags:
+        return False
+    try:
+        if any(str(key).startswith("APIC") for key in tags.keys()):
+            return True
+        covers = tags.get("covr") if hasattr(tags, "get") else None
+        return bool(covers)
+    except Exception:
+        return False
