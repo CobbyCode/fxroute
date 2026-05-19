@@ -226,6 +226,34 @@
                         <button id="delete-selected-tracks" class="btn-secondary btn-icon hidden" title="Delete selected" aria-label="Delete selected">🗑</button>
                     </div>
                 </div>
+                <div id="library-import-panel" class="library-import-panel hidden">
+                    <div class="import-card">
+                        <div class="library-import-grid">
+                            <div class="field-group library-import-option">
+                                <label for="download-url">Import from URL</label>
+                                <div id="download-url-drop-area" class="upload-area upload-area-url upload-area-url-primary" tabindex="0" role="button" aria-label="Drop or paste a media URL">
+                                    <input type="text" id="download-url" class="upload-area-text-input" autocomplete="off" spellcheck="false" inputmode="url" aria-label="Paste media URL">
+                                    <span class="upload-area-icon">🔗</span>
+                                    <span class="upload-area-text">Drop link here or paste a URL</span>
+                                    <span id="download-url-detail" class="upload-area-filename">YouTube or direct media link.</span>
+                                </div>
+                            </div>
+                            <div class="field-group library-import-option">
+                                <label for="upload-track-file">Upload audio file, playlist, or album ZIP</label>
+                                <div id="upload-track-area" class="upload-area upload-area-file-primary">
+                                    <span class="upload-area-icon">🎵</span>
+                                    <span class="upload-area-text">Drop audio file or ZIP, or&nbsp;<u>browse</u></span>
+                                    <span id="upload-track-filename" class="upload-area-filename">Upload MP3, FLAC, WAV, OGG/Opus/WebM, M4A, M3U/M3U8, or ZIP.</span>
+                                    <input type="file" id="upload-track-file" class="upload-area-input" accept=".mp3,.flac,.ogg,.oga,.opus,.m4a,.aac,.wav,.wma,.webm,.weba,.m3u,.m3u8,.zip,audio/*,application/zip,audio/x-mpegurl,application/vnd.apple.mpegurl">
+                                </div>
+                            </div>
+                        </div>
+                        <div class="download-form import-form-row library-import-cancel-row">
+                            <button id="cancel-download" class="btn-danger hidden">Cancel</button>
+                        </div>
+                        <div id="download-status" class="download-status hidden"></div>
+                    </div>
+                </div>
                 <div class="library-actions-row">
                     <div class="library-view-toggle" role="group" aria-label="Library view">
                         <button id="library-view-tracks" class="btn-secondary btn-icon-toggle active" type="button" aria-pressed="true">Tracks</button>
@@ -265,34 +293,6 @@
                         <button id="save-playlist" class="btn-secondary">Save</button>
                     </div>
                     <button id="album-detail-back" class="album-detail-back hidden" type="button" aria-label="Back to albums">← Albums</button>
-                </div>
-                <div id="library-import-panel" class="library-import-panel hidden">
-                    <div class="import-card">
-                        <div class="library-import-grid">
-                            <div class="field-group library-import-option">
-                                <label for="download-url">Import from URL</label>
-                                <div id="download-url-drop-area" class="upload-area upload-area-url upload-area-url-primary" tabindex="0" role="button" aria-label="Drop or paste a media URL">
-                                    <input type="text" id="download-url" class="upload-area-text-input" autocomplete="off" spellcheck="false" inputmode="url" aria-label="Paste media URL">
-                                    <span class="upload-area-icon">🔗</span>
-                                    <span class="upload-area-text">Drop link here or paste a URL</span>
-                                    <span id="download-url-detail" class="upload-area-filename">YouTube or direct media link.</span>
-                                </div>
-                            </div>
-                            <div class="field-group library-import-option">
-                                <label for="upload-track-file">Upload audio file, playlist, or album ZIP</label>
-                                <div id="upload-track-area" class="upload-area upload-area-file-primary">
-                                    <span class="upload-area-icon">🎵</span>
-                                    <span class="upload-area-text">Drop audio file or ZIP, or&nbsp;<u>browse</u></span>
-                                    <span id="upload-track-filename" class="upload-area-filename">Upload MP3, FLAC, WAV, OGG/Opus/WebM, M4A, M3U/M3U8, or ZIP.</span>
-                                    <input type="file" id="upload-track-file" class="upload-area-input" accept=".mp3,.flac,.ogg,.oga,.opus,.m4a,.aac,.wav,.wma,.webm,.weba,.m3u,.m3u8,.zip,audio/*,application/zip,audio/x-mpegurl,application/vnd.apple.mpegurl">
-                                </div>
-                            </div>
-                        </div>
-                        <div class="download-form import-form-row library-import-cancel-row">
-                            <button id="cancel-download" class="btn-danger hidden">Cancel</button>
-                        </div>
-                        <div id="download-status" class="download-status hidden"></div>
-                    </div>
                 </div>
                 <div id="library-folder-path" class="library-folder-path hidden"></div>
                 <div class="loading">Loading library…</div>
