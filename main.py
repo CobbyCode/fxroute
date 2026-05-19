@@ -2511,8 +2511,12 @@ async def lifespan(app: FastAPI):
         measurement_store = MeasurementStore()
         logger.info("Measurement store initialized: %s", measurement_store.measurements_dir)
 
-        hardware_controller = HardwareController(device_path=settings.HARDWARE_CONTROLLER_DEVICE)
-        logger.info("Optional hardware controller initialized")
+        try:
+            hardware_controller = HardwareController(device_path=settings.HARDWARE_CONTROLLER_DEVICE)
+            logger.info("Optional hardware controller initialized")
+        except Exception as exc:
+            logger.warning("Hardware controller not available: %s", exc)
+            hardware_controller = None
 
         peak_monitor = EasyEffectsPeakMonitor(on_change=on_peak_monitor_change)
         peak_monitor_playback_armed = False
