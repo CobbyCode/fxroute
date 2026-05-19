@@ -2213,8 +2213,8 @@ function updatePlaybackUI() {
     }
     // Highlight active
     highlightActiveTrack();
-    // Start/stop position polling for local playback
-    if (playing && window.__footerSource !== 'spotify') {
+    // Start/stop position polling for active playback
+    if (playing) {
         startPlaybackPositionPoll();
     } else {
         stopPlaybackPositionPoll();
