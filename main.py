@@ -1673,9 +1673,10 @@ async def sync_peak_monitor_for_playback_state(state: dict):
     async with peak_monitor_transition_lock:
         is_active_playback = _is_local_playback_active(state)
         source = (current_track_info or {}).get("source") or "unknown"
-        if is_active_playback and not _playback_state_matches_track(state, current_track_info):
+        state_matches_track = _playback_state_matches_track(state, current_track_info)
+        if is_active_playback and not state_matches_track and peak_monitor_playback_armed:
             logger.info(
-                "Skipping peak monitor sync during unsettled player transition: source=%s state_file=%s track_url=%s track_id=%s",
+                "Skipping peak monitor resync during unsettled player transition: source=%s state_file=%s track_url=%s track_id=%s",
                 source,
                 state.get("current_file"),
                 (current_track_info or {}).get("url"),
@@ -2510,8 +2511,12 @@ async def lifespan(app: FastAPI):
         measurement_store = MeasurementStore()
         logger.info("Measurement store initialized: %s", measurement_store.measurements_dir)
 
-        hardware_controller = HardwareController(device_path=settings.HARDWARE_CONTROLLER_DEVICE)
-        logger.info("Optional hardware controller initialized")
+        try:
+            hardware_controller = HardwareController(device_path=settings.HARDWARE_CONTROLLER_DEVICE)
+            logger.info("Optional hardware controller initialized")
+        except Exception as exc:
+            logger.warning("Hardware controller not available: %s", exc)
+            hardware_controller = None
 
         peak_monitor = EasyEffectsPeakMonitor(on_change=on_peak_monitor_change)
         peak_monitor_playback_armed = False
