@@ -3452,12 +3452,11 @@ function renderAlbumDiscover(items) {
         return;
     }
     const rows = items.slice(0, 6).map((item) => {
-        const title = escapeHtml(item.title || 'Unknown track');
         const artist = escapeHtml(item.artist || 'Unknown artist');
         return `
             <li class="album-discover-item">
-                <span class="album-discover-title">${title}</span>
-                <span class="album-discover-artist">${artist}</span>
+                <span class="album-discover-title">${artist}</span>
+                <span class="album-discover-artist">Similar artist</span>
             </li>
         `;
     }).join('');
@@ -3465,7 +3464,7 @@ function renderAlbumDiscover(items) {
     elements.albumDiscover.innerHTML = `
         <details class="album-discover-panel">
             <summary>
-                <span>Discover similar music</span>
+                <span>Discover similar artists</span>
                 <small>Suggestions based on this album artist</small>
             </summary>
             <ul class="album-discover-list">${rows}</ul>
@@ -3474,11 +3473,11 @@ function renderAlbumDiscover(items) {
 }
 
 function albumDiscoverShellHtml(stateName) {
-    const note = stateName === 'loading' ? 'Looking up similar music…' : 'No suggestions yet.';
+    const note = stateName === 'loading' ? 'Looking up similar artists…' : 'No suggestions yet.';
     return `
         <details class="album-discover-panel">
             <summary>
-                <span>Discover similar music</span>
+                <span>Discover similar artists</span>
                 <small>${escapeHtml(note)}</small>
             </summary>
         </details>

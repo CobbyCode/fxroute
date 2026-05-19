@@ -284,8 +284,9 @@ class LibraryMetadataStore:
 
         if cached and not force:
             items = self._discover_items_from_row(cached)
+            cached_has_artist_items = items and all(str(item.get("type") or "") == "artist" for item in items if isinstance(item, dict))
             updated_at = cached["updated_at"] or cached["attempted_at"]
-            if updated_at:
+            if updated_at and cached_has_artist_items:
                 try:
                     age = time.time() - datetime.fromisoformat(str(updated_at).replace("Z", "+00:00")).timestamp()
                     if age < DISCOVER_COOLDOWN_SECONDS:
@@ -355,9 +356,9 @@ class LibraryMetadataStore:
                     attempted_at=excluded.attempted_at,
                     error=excluded.error
                 """,
-                (album_key, seed_type, seed_id, json.dumps(items[:8], ensure_ascii=False), now, now, error),
+                (album_key, seed_type, seed_id, json.dumps(items[:6], ensure_ascii=False), now, now, error),
             )
-        return {"items": items[:8], "source": seed_type, "seed_id": seed_id, "cached": False, "error": error}
+        return {"items": items[:6], "source": seed_type, "seed_id": seed_id, "cached": False, "error": error}
 
     def _fetch_listenbrainz_discover_items(self, seed_type: str | None, seed_id: str, seed_artist_name: str = "") -> list[dict[str, Any]]:
         if seed_type != "artist" or not seed_id:
@@ -380,63 +381,40 @@ class LibraryMetadataStore:
             except Exception as exc:
                 logger.debug("ListenBrainz radio lookup failed for %s mode=%s: %s", seed_id, mode, exc)
                 payload = {}
-        candidates = []
-        seen_recordings = set()
+        results = []
+        seen_artist_ids = {seed_id.lower()}
+        seen_artist_names = set()
+        seed_artist_key = _normalize_text(seed_artist_name)
+        if seed_artist_key:
+            seen_artist_names.add(seed_artist_key)
         for recordings in (payload or {}).values():
             if not isinstance(recordings, list):
                 continue
             for item in recordings:
                 if not isinstance(item, dict):
                     continue
-                recording_id = str(item.get("recording_mbid") or "").strip()
                 artist_id = str(item.get("similar_artist_mbid") or "").strip()
                 artist_name = str(item.get("similar_artist_name") or "").strip()
-                if not recording_id or not artist_name or recording_id in seen_recordings:
+                artist_key = artist_id.lower()
+                name_key = _normalize_text(artist_name)
+                if not artist_name or (artist_key and artist_key in seen_artist_ids) or (not artist_key and name_key in seen_artist_names):
                     continue
-                seen_recordings.add(recording_id)
-                candidates.append(
+                if name_key and name_key in seen_artist_names:
+                    continue
+                if artist_key:
+                    seen_artist_ids.add(artist_key)
+                if name_key:
+                    seen_artist_names.add(name_key)
+                results.append(
                     {
-                        "recording_mbid": recording_id,
-                        "artist_mbid": artist_id,
+                        "type": "artist",
                         "artist": artist_name,
-                        "title": "",
+                        "artist_mbid": artist_id,
                         "listen_count": int(item.get("total_listen_count") or 0),
                     }
                 )
-        if not candidates:
-            return []
-
-        metadata = self._listenbrainz_recording_metadata([item["recording_mbid"] for item in candidates[:20]])
-        results = []
-        seen_tracks = set()
-        seen_artists = {seed_id.lower()}
-        seed_artist_key = _normalize_text(seed_artist_name)
-        if seed_artist_key:
-            seen_artists.add(seed_artist_key)
-        for item in candidates:
-            info = metadata.get(item["recording_mbid"]) or {}
-            title = str(info.get("title") or "").strip()
-            artist = str(item["artist"] or info.get("artist") or "").strip()
-            if not title:
-                continue
-            artist_key = (item["artist_mbid"] or _normalize_text(artist)).lower()
-            track_key = (artist.lower(), title.lower())
-            if artist_key in seen_artists or track_key in seen_tracks:
-                continue
-            seen_artists.add(artist_key)
-            seen_tracks.add(track_key)
-            results.append(
-                {
-                    "type": "track",
-                    "title": title,
-                    "artist": artist,
-                    "artist_mbid": item["artist_mbid"],
-                    "recording_mbid": item["recording_mbid"],
-                    "listen_count": item["listen_count"],
-                }
-            )
-            if len(results) >= 6:
-                break
+                if len(results) >= 6:
+                    return results
         return results
 
     def _listenbrainz_recording_metadata(self, recording_ids: list[str]) -> dict[str, dict[str, str]]:
