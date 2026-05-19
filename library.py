@@ -521,16 +521,35 @@ class LibraryScanner:
         if not tracks:
             return []
 
+        # Pre-scan: detect compilations (same album name, different artists, no album_artist)
+        _album_artists: Dict[str, set] = {}
+        for t in tracks:
+            an = (t.album or "").strip()
+            aa = (t.album_artist or "").strip()
+            if not an or aa:
+                continue
+            _album_artists.setdefault(an.lower(), set())
+            ar = (t.artist or "").strip()
+            if ar:
+                _album_artists[an.lower()].add(ar.lower())
+
+        _compilation_albums = {name for name, artists in _album_artists.items() if len(artists) > 1}
+
         albums = OrderedDict()
 
         for track in tracks:
             album_name = (track.album or "").strip()
-            album_artist = (track.album_artist or "").strip() or (track.artist or "").strip()
+            album_artist = (track.album_artist or "").strip()
 
             if not album_name:
                 # Loose tracks without album tag → 'Various'
                 album_name = "Various"
                 album_artist = "Various"
+            elif not album_artist:
+                if album_name.lower() in _compilation_albums:
+                    album_artist = "Various Artists"
+                else:
+                    album_artist = (track.artist or "").strip() or "Various Artists"
 
             key = f"{album_artist.lower()}::{album_name.lower()}"
 
@@ -615,6 +634,20 @@ class LibraryScanner:
     def get_album_tracks(self, album_id: str) -> List[Track]:
         """Return the track list for a given album id."""
         tracks = self.get_tracks()
+
+        # Same compilation detection as get_albums()
+        _album_artists: Dict[str, set] = {}
+        for t in tracks:
+            an = (t.album or "").strip()
+            aa = (t.album_artist or "").strip()
+            if not an or aa:
+                continue
+            _album_artists.setdefault(an.lower(), set())
+            ar = (t.artist or "").strip()
+            if ar:
+                _album_artists[an.lower()].add(ar.lower())
+        _compilation_albums = {name for name, artists in _album_artists.items() if len(artists) > 1}
+
         result = []
         for track in tracks:
             album_name = (track.album or "").strip()
@@ -622,8 +655,11 @@ class LibraryScanner:
             if not album_name:
                 album_name = "Various"
                 album_artist = "Various"
-            if not album_artist:
-                album_artist = (track.artist or "").strip() or "Various"
+            elif not album_artist:
+                if album_name.lower() in _compilation_albums:
+                    album_artist = "Various Artists"
+                else:
+                    album_artist = (track.artist or "").strip() or "Various Artists"
             if _album_id(album_artist, album_name) == album_id:
                 result.append(track)
         return sorted(result, key=_track_sort_key)
@@ -645,6 +681,21 @@ def _album_id(artist: str, album: str) -> str:
     """Stable album id from artist + album name."""
     raw = f"{artist.lower()}::{album.lower()}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def _is_compilation_by_tracks(album_name: str, tracks: List[Track]) -> bool:
+    """Heuristic: album_artist is missing and tracks have different artists."""
+    if not album_name or album_name == "Various":
+        return False
+    artists = set()
+    for t in tracks:
+        aa = (t.album_artist or "").strip()
+        if aa:
+            return False
+        a = (t.artist or "").strip()
+        if a:
+            artists.add(a.lower())
+    return len(artists) > 1
 
 
 def _has_folder_cover(track_path: Path) -> bool:
