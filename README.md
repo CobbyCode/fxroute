@@ -48,6 +48,8 @@ It is built for mini PCs, desktops, ARM boards, and dedicated stereo boxes that 
 
 - browser UI for desktop and mobile control
 - local music playback with queue, playlists, folder browsing, album browsing, uploads, ZIP album imports, and media URL imports
+- album view with cover art, grouped by album/artist, including compilation detection for albums without album_artist
+- artist-based discover suggestions from ListenBrainz for the current album artist
 - internet radio with built-in and custom stations
 - lightweight Now Playing cover cue for local tracks when folder or embedded cover art is available
 - Spotify desktop control through `playerctl` / MPRIS
@@ -130,7 +132,7 @@ Your `.env` and data are preserved.
 ## Main sections
 
 - **Radio** — built-in and custom internet stations
-- **Library** — local files, folder browsing, playlists, uploads, imports, downloads, and deletion
+- **Library** — local files, folder browsing, album view with covers, playlists, uploads, imports, downloads, deletion, and artist-based discover suggestions
 - **DSP** — EasyEffects stereo presets, PEQ, convolver import/export, helpers, A/B compare, and preset creation
 - **Measure** — practical host-mic measurement, PEQ/FIR tuning, calibration files, and custom house curves
 - **Spotify** — control a local Spotify desktop client

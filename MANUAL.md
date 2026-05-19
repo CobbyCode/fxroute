@@ -88,6 +88,7 @@ You can:
 - upload audio files or album ZIPs
 - import from a media URL when supported by the installed tools
 - download or delete selected tracks
+- discover similar artists for the current album via ListenBrainz
 
 Typical supported formats include MP3, FLAC, WAV, OGG/Opus/WebM, M4A, M3U/M3U8 playlists, and ZIP album imports. Exact support depends on the host tools installed by the installer.
 
