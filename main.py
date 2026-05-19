@@ -1067,7 +1067,7 @@ async def _wait_for_player_current_file(expected_url: str | None, timeout_ms: in
     return False
 
 
-async def _sync_peak_monitor_after_playback_transition(expected_track: dict | None, timeout_ms: int = 5000) -> None:
+async def _sync_peak_monitor_after_playback_transition(expected_track: dict | None, timeout_ms: int = 2500) -> None:
     if not expected_track or expected_track.get("source") not in {"local", "radio"}:
         return
     settled = await _wait_for_player_current_file(expected_track.get("url"), timeout_ms=timeout_ms)
@@ -1675,11 +1675,13 @@ async def sync_peak_monitor_for_playback_state(state: dict):
         source = (current_track_info or {}).get("source") or "unknown"
         if is_active_playback and not _playback_state_matches_track(state, current_track_info):
             logger.info(
-                "Peak monitor sync: player still settling, starting peak monitor without track match: source=%s state_file=%s track_url=%s",
+                "Skipping peak monitor sync during unsettled player transition: source=%s state_file=%s track_url=%s track_id=%s",
                 source,
                 state.get("current_file"),
                 (current_track_info or {}).get("url"),
+                (current_track_info or {}).get("id"),
             )
+            return
         desired_signature = f"player:{source}:{state.get('current_file') or ''}" if is_active_playback else None
 
         if is_active_playback and (not peak_monitor_playback_armed or peak_monitor_context_signature != desired_signature):
