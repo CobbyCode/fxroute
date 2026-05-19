@@ -4275,17 +4275,27 @@ input[type="number"]::-webkit-outer-spin-button {
     }
     .library-search-wrap {
         flex-basis: 100%;
+        width: 100%;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 104px;
+        gap: var(--action-gap-mobile, 8px);
+        align-items: stretch;
     }
     .library-search-field {
         flex: 1 1 auto;
         width: 100%;
+        min-width: 0;
     }
     .library-selection-toolbar {
-        width: auto;
+        width: 100%;
+        min-width: 0;
     }
     .library-selection-toolbar .btn-secondary {
         flex: 0 0 auto;
-        min-width: 104px;
+        width: 100%;
+        min-width: 0;
+        height: 44px;
+        min-height: 44px;
     }
     .track-item { padding: 0.7rem 0.75rem; }
     .track-artist { display: none; }
@@ -4296,9 +4306,13 @@ input[type="number"]::-webkit-outer-spin-button {
         margin-bottom: 0.7rem;
     }
     .playlist-save-controls {
+        width: 100%;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 104px;
+        gap: var(--action-gap-mobile, 8px);
+        align-items: stretch;
         flex: 1 1 auto;
-        gap: 0.38rem;
-        min-width: min(100%, 250px);
+        min-width: 0;
     }
     .playlist-save-hint {
         font-size: 0.78rem;
@@ -4306,9 +4320,17 @@ input[type="number"]::-webkit-outer-spin-button {
         flex: 0 0 auto;
     }
     .playlist-save-row .url-input {
-        flex: 1 1 120px;
+        flex: initial;
+        width: 100%;
+        min-width: 0;
         font-size: 0.84rem;
         padding: 0.28rem 0.5rem;
+    }
+    #save-playlist {
+        width: 100%;
+        min-width: 0;
+        height: 44px;
+        min-height: 44px;
     }
     .download-form { flex-direction: column; }
     .download-form .btn-primary,
