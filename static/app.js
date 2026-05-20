@@ -176,6 +176,7 @@ let ws = null;
 let reconnectAttempts = 0;
 let reconnectTimer = null;
 let wsConnectSerial = 0;
+let wsReconnectSyncGeneration = 0;
 let playbackActionInFlight = false;
 let pendingPlaybackRequestId = 0;
 let nowPlayingCueTimer = null;
@@ -558,6 +559,7 @@ function connectWebSocket() {
         elements.offlineIndicator.classList.add('hidden');
         stopMetadataPolling();
         startPeakStatusPolling();
+        void resyncPlaybackAfterReconnect();
     };
     socket.onclose = (event) => {
         if (ws === socket) ws = null;
@@ -592,6 +594,36 @@ function scheduleReconnect() {
         reconnectTimer = null;
         connectWebSocket();
     }, CONFIG.reconnectInterval);
+}
+async function resyncPlaybackAfterReconnect() {
+    const generation = ++wsReconnectSyncGeneration;
+    try {
+        const [playback, spotify] = await Promise.all([
+            fetch('/api/status')
+                .then(resp => resp.ok ? resp.json() : null)
+                .catch(() => null),
+            fetchSpotifyStatus(),
+        ]);
+        if (generation !== wsReconnectSyncGeneration) return;
+
+        if (playback) {
+            mergePlaybackState(playback);
+            syncFooterOwnershipFromPlayback(playback);
+            syncLibraryStateFromPlaybackContext(true);
+        }
+        if (spotify) {
+            handleIncomingSpotifyState(spotify, { renderTab: true, renderFooter: true });
+        }
+        reconcileFooterSource();
+        updatePlaybackUI();
+        if (shouldPollSpotify()) {
+            startSpotifyPoll();
+        } else {
+            stopSpotifyPoll();
+        }
+    } catch (e) {
+        console.debug('Reconnect state sync failed', e);
+    }
 }
 function handleWebSocketMessage(msg) {
     const { type, data } = msg;
@@ -2213,8 +2245,8 @@ function updatePlaybackUI() {
     }
     // Highlight active
     highlightActiveTrack();
-    // Start/stop position polling for active playback
-    if (playing) {
+    // Start/stop position polling for local playback
+    if (playing && window.__footerSource !== 'spotify') {
         startPlaybackPositionPoll();
     } else {
         stopPlaybackPositionPoll();
