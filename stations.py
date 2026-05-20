@@ -265,7 +265,7 @@ def _cache_station_image_url(station_id: str, image_url: Optional[str], kind: st
         resp = requests.get(
             source_url,
             timeout=8,
-            headers={"User-Agent": "FXRoute/0.6 (+https://github.com/CobbyCode/fxroute)"},
+            headers={"User-Agent": "FXRoute/0.7 (+https://github.com/CobbyCode/fxroute)"},
         )
         if not resp.ok:
             logger.debug("Failed to fetch station art %s: HTTP %s", source_url, resp.status_code)

@@ -1,6 +1,8 @@
 # Changelog
 
 ## Unreleased
+
+## 0.7.0 (2026-05-20)
 - Refreshed README/frontpage imagery with the updated Album discovery view instead of Technical settings.
 - Refreshed desktop/mobile screenshots for the current UI, including updated album/library, DSP, measurement, import, and settings views.
 - Added public screenshots for album artist info and album discovery.

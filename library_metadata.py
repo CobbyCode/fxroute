@@ -25,7 +25,7 @@ WIKIPEDIA_SUMMARY_APIS = {
     "dewiki": "https://de.wikipedia.org/api/rest_v1/page/summary",
 }
 LISTENBRAINZ_API = "https://api.listenbrainz.org/1"
-USER_AGENT = "FXRoute/0.6 (https://github.com/CobbyCode/fxroute)"
+USER_AGENT = "FXRoute/0.7 (https://github.com/CobbyCode/fxroute)"
 FETCH_COOLDOWN_SECONDS = 7 * 24 * 60 * 60
 TRANSIENT_ERROR_RETRY_SECONDS = 60 * 60
 DISCOVER_COOLDOWN_SECONDS = 7 * 24 * 60 * 60
