@@ -23,11 +23,11 @@ It is built for mini PCs, desktops, ARM boards, and dedicated stereo boxes that 
   </tr>
   <tr>
     <td width="50%"><img src="media/screenshots/desktop/12-measurement-editor.png" alt="FXRoute PEQ measurement editor"></td>
-    <td width="50%"><img src="media/screenshots/desktop/14-technical-settings.png" alt="FXRoute technical settings"></td>
+    <td width="50%"><img src="media/screenshots/desktop/album-discover.png" alt="FXRoute album discovery view"></td>
   </tr>
   <tr>
     <td align="center"><strong>Measurement PEQ editor</strong></td>
-    <td align="center"><strong>Technical settings</strong></td>
+    <td align="center"><strong>Album discovery</strong></td>
   </tr>
 </table>
 
@@ -47,7 +47,7 @@ It is built for mini PCs, desktops, ARM boards, and dedicated stereo boxes that 
 ## What it does
 
 - browser UI for desktop and mobile control
-- local music playback with queue, playlists, folder browsing, album browsing, uploads, ZIP album imports, and media URL imports
+- local music playback with queue, playlists, folder browsing, album browsing, artist info, uploads, ZIP album imports, and media URL imports
 - album view with cover art, grouped by album/artist, including compilation detection for albums without album_artist
 - artist-based discover suggestions from ListenBrainz for the current album artist
 - internet radio with built-in and custom stations
@@ -132,7 +132,7 @@ Your `.env` and data are preserved.
 ## Main sections
 
 - **Radio** — built-in and custom internet stations
-- **Library** — local files, folder browsing, album view with covers, playlists, uploads, imports, downloads, deletion, and artist-based discover suggestions
+- **Library** — local files, folder browsing, album view with covers, artist info, playlists, uploads, imports, downloads, deletion, and artist-based discover suggestions
 - **DSP** — EasyEffects stereo presets, PEQ, convolver import/export, helpers, A/B compare, and preset creation
 - **Measure** — practical host-mic measurement, PEQ/FIR tuning, calibration files, and custom house curves
 - **Spotify** — control a local Spotify desktop client

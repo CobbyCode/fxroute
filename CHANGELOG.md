@@ -1,6 +1,10 @@
 # Changelog
 
 ## Unreleased
+- Refreshed README/frontpage imagery with the updated Album discovery view instead of Technical settings.
+- Refreshed desktop/mobile screenshots for the current UI, including updated album/library, DSP, measurement, import, and settings views.
+- Added public screenshots for album artist info and album discovery.
+- Fixed Spotify footer reconnect/polling edge cases that could make the seek slider jump or stay hidden after switching sources.
 - Fixed compilation album grouping: albums without `album_artist` but with multiple different track artists are now grouped as one album with `Various Artists` as the album artist.
 - Changed Discover section to show artist-based suggestions from ListenBrainz instead of track lists.
 - Moved the Library import panel directly below the header, above the view controls.
