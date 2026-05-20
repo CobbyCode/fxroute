@@ -33,6 +33,9 @@ manual_backup.zip
 test-inputs/
 node_modules/
 
+# Internal task tracking
+/tickets/
+
 # Local scratch images dropped in the repo root
 /ChatGPT Image*
 /*.png
