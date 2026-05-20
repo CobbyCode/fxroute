@@ -2020,6 +2020,9 @@ function footerDebug(event, details = {}) {
 function setFooterSource(nextSource, reason, details = {}) {
     const prevSource = window.__footerSource;
     window.__footerSource = nextSource;
+    if (nextSource === 'spotify') {
+        stopPlaybackPositionPoll();
+    }
     footerDebug('footer-source', { reason, prevSource, nextSource, ...details });
 }
 
@@ -2183,6 +2186,7 @@ function updatePlaybackUI() {
     // When Spotify owns the footer, local UI must NOT touch footer elements at all.
     // Refresh from Spotify truth and return — the Spotify poll owns the footer exclusively.
     if (window.__footerSource === 'spotify') {
+        stopPlaybackPositionPoll();
         const spData = window.__spotifyLastData;
         if (!freezeActive && spData) updateFooterForSpotify(spData);
         highlightActiveTrack();
@@ -2253,13 +2257,29 @@ function updatePlaybackUI() {
     }
 }
 function startPlaybackPositionPoll() {
+    if (window.__footerSource === 'spotify') return;
     if (playbackPositionPollTimer !== null) return;
     playbackPositionPollTimer = setInterval(async () => {
         try {
+            if (window.__footerSource === 'spotify') {
+                stopPlaybackPositionPoll();
+                return;
+            }
             const resp = await fetch('/api/status');
             if (!resp.ok) return;
             const data = await resp.json();
+            if (window.__footerSource === 'spotify' || getBackendFooterOwner(data) === 'spotify') {
+                if (getBackendFooterOwner(data) === 'spotify') {
+                    setFooterSource('spotify', 'local-poll-backend-owner-spotify');
+                }
+                stopPlaybackPositionPoll();
+                return;
+            }
             mergePlaybackState(data);
+            if (window.__footerSource === 'spotify') {
+                stopPlaybackPositionPoll();
+                return;
+            }
             updateSeekUI();
         } catch (_) {
             // ignore transient errors
