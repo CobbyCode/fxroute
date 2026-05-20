@@ -9437,6 +9437,8 @@ function updateFooterForSpotify(data) {
     if (!data.available || (data.status === 'Stopped' && !data.title)) return;
     document.body.classList.remove('source-local', 'source-radio');
     document.body.classList.add('source-local');
+    const seekRow = document.querySelector('.seek-row');
+    if (seekRow) seekRow.style.display = '';
     if (elements.btnPlayPause) {
         elements.btnPlayPause.disabled = false;
         elements.btnPlayPause.textContent = data.status === 'Playing' ? '⏸' : '▶';
