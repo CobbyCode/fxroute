@@ -164,6 +164,25 @@ Think of it as a tuning assistant for broad room and speaker decisions: bass pro
 
 House curve files use simple REW-compatible frequency/dB pairs, one point per line, with frequency first. Spaces, tabs, or commas are accepted. Frequencies must be strictly increasing, and at least two points are required.
 
+### Typical stereo convolver workflow
+
+For a stereo correction preset, measure the channels separately.
+
+1. Select **Left** and run a sweep.
+2. Press **Save current**. The run appears in **Saved runs**.
+3. Select the saved left-channel run and press **Take L** in the Convolver assistant.
+4. Select **Right** and run a sweep.
+5. Press **Save current**.
+6. Select the saved right-channel run and press **Take R**.
+7. Choose the target curve, correction range, phase mode, sample rate, and tap length.
+8. Press **Create Convolver Preset**.
+
+**Minimum Phase** is the practical default for normal room and speaker correction.
+
+**Minimum Phase aligned** is a stereo variant of **Minimum Phase**. It uses the measured L/R impulse timing from separate saved left/right measurements and delays the earlier FIR channel for better time alignment.
+
+It requires single saved L/R measurements with valid timing data. Merged measurements are not supported for aligned timing correction.
+
 ## 10. Technical settings
 
 Click the FXRoute logo to open **Technical settings**.
