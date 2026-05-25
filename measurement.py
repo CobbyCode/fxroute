@@ -82,10 +82,18 @@ IR_WINDOW_VARIABLE_HIGH_HZ = 1_200.0
 IR_DIRECT_SEARCH_PRE_SECONDS = 0.12
 IR_DIRECT_RELATIVE_THRESHOLD = 0.05
 IR_DIRECT_CANDIDATE_FLOOR_RELATIVE = 0.02
-IR_DIRECT_CANDIDATE_LIMIT = 12
+IR_DIRECT_CANDIDATE_LIMIT = 24
 IR_DIRECT_WEAK_EARLY_RELATIVE = 0.075
 IR_DIRECT_WEAK_EARLY_MIN_GAP_SAMPLES = 20
 IR_DIRECT_WEAK_EARLY_NEXT_RATIO = 1.75
+IR_DIRECT_SUPPORT_WINDOW_SECONDS = 0.00035
+IR_DIRECT_NEARBY_WINDOW_SECONDS = 0.0009
+IR_DIRECT_THRESHOLD_EDGE_SAMPLES = 12
+IR_DIRECT_PROMOTION_WINDOW_SECONDS = 0.004
+IR_DIRECT_PROMOTION_SUPPORT_RATIO = 1.6
+IR_DIRECT_PROMOTION_SCORE_RATIO = 1.25
+IR_DIRECT_PROMOTION_ENERGY_RATIO = 1.45
+IR_DIRECT_PROMINENCE_REFERENCE = 0.15
 HOST_SWEEP_RECORD_PREROLL_SECONDS = 0.75
 HOST_SWEEP_RECORD_POSTROLL_SECONDS = 0.75
 HOST_SWEEP_MAX_ATTEMPTS = 3
@@ -929,13 +937,18 @@ class MeasurementStore:
         reference_ir_peak_db = 20.0 * math.log10(max(reference_ir_peak, 1e-9))
         reference_ir_rms_db = 20.0 * math.log10(max(reference_ir_rms, 1e-9))
         reference_ir_sharpness_db = reference_ir_peak_db - reference_ir_rms_db
-        timing_candidates = direct_timing_meta.get("candidates") or []
-        top_timing_candidates = [
-            f"{item.get('offset_from_peak_samples')}spl/{item.get('relative_db')}dB/{item.get('score')}"
-            for item in timing_candidates[:5]
+        timing_candidates_by_score = direct_timing_meta.get("candidates_by_score") or direct_timing_meta.get("candidates") or []
+        timing_candidates_chronological = direct_timing_meta.get("candidates_chronological") or []
+        top_timing_candidates_by_score = [
+            f"{item.get('offset_from_peak_samples')}spl/{item.get('relative_db')}dB/s={item.get('score')}/e={item.get('local_energy_relative')}/p={item.get('prominence_relative')}/support={item.get('support_score')}"
+            for item in timing_candidates_by_score[:5]
+        ]
+        top_timing_candidates_chronological = [
+            f"{item.get('offset_from_peak_samples')}spl/{item.get('relative_db')}dB/s={item.get('score')}/e={item.get('local_energy_relative')}/p={item.get('prominence_relative')}/support={item.get('support_score')}/edge={item.get('weak_threshold_edge')}"
+            for item in timing_candidates_chronological[:8]
         ]
         logger.info(
-            "Measurement timing detection: channel=%s reference_channel=%s mic_peak_sample=%s direct_sample=%s reference_peak_sample=%s relative_samples=%s relative_ms=%.3f sample_rate=%s alignment_samples=%s selected_score=%.5f selected_db=%.2f selection=%s first_threshold_sample=%s top_candidates=%s",
+            "Measurement timing detection: channel=%s reference_channel=%s mic_peak_sample=%s direct_sample=%s reference_peak_sample=%s relative_samples=%s relative_ms=%.3f sample_rate=%s alignment_samples=%s selected_score=%.5f selected_db=%.2f selection=%s first_threshold_sample=%s candidates_by_score=%s candidates_chronological=%s",
             channel,
             reference_channel_label,
             int(ir_meta["peak_index"]),
@@ -949,7 +962,8 @@ class MeasurementStore:
             float(direct_timing_meta.get("direct_relative_to_peak_db") or -120.0),
             str(direct_timing_meta.get("selection_rule") or ""),
             direct_timing_meta.get("first_threshold_index"),
-            top_timing_candidates,
+            top_timing_candidates_by_score,
+            top_timing_candidates_chronological,
         )
         display_data = self._build_display_points(
             frequencies=response_frequencies,
@@ -1028,11 +1042,14 @@ class MeasurementStore:
                 "direct_threshold_relative": round(float(direct_timing_meta["direct_threshold_relative"]), 4),
                 "direct_selection_rule": direct_timing_meta["selection_rule"],
                 "direct_selected_score": round(float(direct_timing_meta["selected_score"]), 6),
+                "direct_selected_support_score": round(float(direct_timing_meta["selected_support_score"]), 6),
                 "direct_confidence": round(float(direct_timing_meta["confidence"]), 6),
                 "direct_first_threshold_index": direct_timing_meta["first_threshold_index"],
                 "direct_first_threshold_offset_from_peak_samples": direct_timing_meta["first_threshold_offset_from_peak_samples"],
                 "direct_candidate_count": int(direct_timing_meta["candidate_count"]),
-                "direct_candidates": direct_timing_meta["candidates"],
+                "direct_candidates": direct_timing_meta["candidates_by_score"],
+                "direct_candidates_by_score": direct_timing_meta["candidates_by_score"],
+                "direct_candidates_chronological": direct_timing_meta["candidates_chronological"],
                 "reference_peak_index": int(direct_timing_meta["reference_peak_index"]),
                 "reference_peak_seconds": round(float(direct_timing_meta["reference_peak_seconds"]), 6),
                 "arrival_samples": int(direct_timing_meta["relative_samples"]),
@@ -1665,6 +1682,8 @@ class MeasurementStore:
 
         candidate_floor = peak * IR_DIRECT_CANDIDATE_FLOOR_RELATIVE
         candidates: list[dict[str, Any]] = []
+        support_radius = max(4, int(round(sample_rate * IR_DIRECT_SUPPORT_WINDOW_SECONDS)))
+        nearby_radius = max(support_radius + 4, int(round(sample_rate * IR_DIRECT_NEARBY_WINDOW_SECONDS)))
         if peak > 0 and search_values.size:
             for local_index in range(1, max(1, search_values.size - 1)):
                 value = float(search_values[local_index])
@@ -1674,6 +1693,25 @@ class MeasurementStore:
                     continue
                 absolute_index = search_start + local_index
                 relative = value / max(peak, 1e-12)
+                support_start = max(search_start, absolute_index - support_radius)
+                support_end = min(search_end, absolute_index + support_radius + 1)
+                support_values = ir_abs[support_start:support_end]
+                local_energy = float(np.sum(np.square(support_values, dtype=np.float64))) if support_values.size else 0.0
+                earlier_start = max(search_start, absolute_index - nearby_radius)
+                earlier_end = max(earlier_start, absolute_index - support_radius)
+                later_start = min(search_end, absolute_index + support_radius + 1)
+                later_end = min(search_end, absolute_index + nearby_radius + 1)
+                earlier_values = ir_abs[earlier_start:earlier_end]
+                later_values = ir_abs[later_start:later_end]
+                nearby_reference = max(
+                    float(np.max(earlier_values)) if earlier_values.size else 0.0,
+                    float(np.max(later_values)) if later_values.size else 0.0,
+                )
+                prominence_relative = max(0.0, (value - nearby_reference) / max(peak, 1e-12))
+                prominence_ratio = min(value / max(nearby_reference, 1e-12), 999.0)
+                threshold_distance_samples = (
+                    int(absolute_index - first_threshold_index) if first_threshold_index is not None else None
+                )
                 candidates.append(
                     {
                         "sample": int(absolute_index),
@@ -1681,33 +1719,94 @@ class MeasurementStore:
                         "offset_from_peak_samples": int(absolute_index - peak_index),
                         "offset_from_peak_ms": round(float(absolute_index - peak_index) / float(sample_rate) * 1000.0, 6),
                         "score": round(float(relative), 6),
+                        "_score": float(relative),
+                        "_local_energy": local_energy,
+                        "_prominence_relative": float(prominence_relative),
                         "relative_db": round(20.0 * math.log10(max(relative, 1e-12)), 2),
+                        "local_energy": round(local_energy, 8),
+                        "prominence_relative": round(float(prominence_relative), 6),
+                        "prominence_ratio": round(float(prominence_ratio), 3),
+                        "distance_from_first_threshold_samples": threshold_distance_samples,
                     }
                 )
+
+        max_local_energy = max([float(item["_local_energy"]) for item in candidates] + [1e-12])
+        for item in candidates:
+            local_energy_relative = float(item["_local_energy"]) / max_local_energy
+            prominence_score = min(float(item["_prominence_relative"]) / max(IR_DIRECT_PROMINENCE_REFERENCE, 1e-12), 1.0)
+            support_score = (
+                float(item["_score"]) * 0.45
+                + local_energy_relative * 0.35
+                + prominence_score * 0.20
+            )
+            threshold_distance_samples = item.get("distance_from_first_threshold_samples")
+            weak_threshold_edge = (
+                threshold_distance_samples is not None
+                and 0 <= int(threshold_distance_samples) <= IR_DIRECT_THRESHOLD_EDGE_SAMPLES
+                and float(item["_score"]) <= max(IR_DIRECT_WEAK_EARLY_RELATIVE, IR_DIRECT_RELATIVE_THRESHOLD)
+                and local_energy_relative < 0.22
+                and prominence_score < 0.45
+            )
+            stronger_impulse_region = (
+                float(item["_score"]) >= 0.12
+                or local_energy_relative >= 0.35
+                or support_score >= 0.22
+            )
+            item["peak_score"] = round(float(item["_score"]), 6)
+            item["local_energy_relative"] = round(local_energy_relative, 6)
+            item["prominence_score"] = round(prominence_score, 6)
+            item["support_score"] = round(float(support_score), 6)
+            item["weak_threshold_edge"] = bool(weak_threshold_edge)
+            item["stronger_impulse_region"] = bool(stronger_impulse_region)
 
         eligible_candidates = [
             item
             for item in candidates
-            if float(item["score"]) >= IR_DIRECT_RELATIVE_THRESHOLD
+            if float(item["_score"]) >= IR_DIRECT_RELATIVE_THRESHOLD
         ]
         if eligible_candidates:
             selected_candidate = eligible_candidates[0]
             skipped_early_candidate = None
-            if len(eligible_candidates) > 1:
-                next_candidate = eligible_candidates[1]
-                selected_score_candidate = float(selected_candidate["score"])
-                next_score = float(next_candidate["score"])
-                sample_gap = int(next_candidate["sample"]) - int(selected_candidate["sample"])
-                if (
-                    selected_score_candidate <= IR_DIRECT_WEAK_EARLY_RELATIVE
-                    and sample_gap >= IR_DIRECT_WEAK_EARLY_MIN_GAP_SAMPLES
-                    and next_score >= selected_score_candidate * IR_DIRECT_WEAK_EARLY_NEXT_RATIO
-                ):
-                    skipped_early_candidate = selected_candidate
-                    selected_candidate = next_candidate
+            promotion_window_samples = max(
+                IR_DIRECT_WEAK_EARLY_MIN_GAP_SAMPLES,
+                int(round(sample_rate * IR_DIRECT_PROMOTION_WINDOW_SECONDS)),
+            )
+            first_sample = int(selected_candidate["sample"])
+            early_candidate_is_weak = bool(selected_candidate.get("weak_threshold_edge")) or (
+                float(selected_candidate["_score"]) <= IR_DIRECT_WEAK_EARLY_RELATIVE
+                and (
+                    selected_candidate.get("distance_from_first_threshold_samples") is None
+                    or int(selected_candidate.get("distance_from_first_threshold_samples") or 0) <= IR_DIRECT_THRESHOLD_EDGE_SAMPLES
+                )
+            )
+            if early_candidate_is_weak and len(eligible_candidates) > 1:
+                selected_support = float(selected_candidate["support_score"])
+                selected_score_candidate = float(selected_candidate["_score"])
+                selected_energy = float(selected_candidate["local_energy_relative"])
+                selected_prominence = float(selected_candidate["prominence_relative"])
+                for candidate in eligible_candidates[1:]:
+                    sample_gap = int(candidate["sample"]) - first_sample
+                    if sample_gap > promotion_window_samples:
+                        break
+                    if sample_gap < IR_DIRECT_WEAK_EARLY_MIN_GAP_SAMPLES:
+                        continue
+                    candidate_support = float(candidate["support_score"])
+                    candidate_score = float(candidate["_score"])
+                    candidate_energy = float(candidate["local_energy_relative"])
+                    candidate_prominence = float(candidate["prominence_relative"])
+                    clearly_better_support = candidate_support >= selected_support * IR_DIRECT_PROMOTION_SUPPORT_RATIO
+                    stronger_shape = (
+                        candidate_score >= selected_score_candidate * IR_DIRECT_PROMOTION_SCORE_RATIO
+                        or candidate_energy >= selected_energy * IR_DIRECT_PROMOTION_ENERGY_RATIO
+                        or candidate_prominence >= selected_prominence * IR_DIRECT_PROMOTION_SCORE_RATIO
+                    )
+                    if clearly_better_support and stronger_shape and not bool(candidate.get("weak_threshold_edge")):
+                        skipped_early_candidate = selected_candidate
+                        selected_candidate = candidate
+                        break
             direct_arrival_index = int(selected_candidate["sample"])
             selection_rule = (
-                "skipped_weak_isolated_early_peak"
+                "skipped_weak_threshold_edge_for_stronger_impulse_region"
                 if skipped_early_candidate is not None
                 else "first_local_peak_above_threshold"
             )
@@ -1718,10 +1817,22 @@ class MeasurementStore:
             direct_arrival_index = peak_index
             selection_rule = "global_peak_fallback"
         selected_score = float(ir_abs[direct_arrival_index]) / max(peak, 1e-12) if ir_abs.size else 0.0
-        strongest_score = max([float(item["score"]) for item in candidates] + [selected_score, 1e-12])
-        candidate_summary = sorted(
+        strongest_score = max([float(item["_score"]) for item in candidates] + [selected_score, 1e-12])
+        selected_support = next(
+            (float(item["support_score"]) for item in candidates if int(item["sample"]) == int(direct_arrival_index)),
+            selected_score,
+        )
+        for item in candidates:
+            item.pop("_score", None)
+            item.pop("_local_energy", None)
+            item.pop("_prominence_relative", None)
+        candidate_summary_by_score = sorted(
             candidates,
-            key=lambda item: (-float(item["score"]), abs(int(item["offset_from_peak_samples"]))),
+            key=lambda item: (-float(item["score"]), -float(item["prominence_score"]), -float(item["support_score"]), int(item["sample"])),
+        )[:IR_DIRECT_CANDIDATE_LIMIT]
+        candidate_summary_chronological = sorted(
+            candidates,
+            key=lambda item: int(item["sample"]),
         )[:IR_DIRECT_CANDIDATE_LIMIT]
         relative_samples = int(direct_arrival_index - reference_peak_index)
         return {
@@ -1734,6 +1845,7 @@ class MeasurementStore:
             "direct_threshold_relative": float(IR_DIRECT_RELATIVE_THRESHOLD),
             "selection_rule": selection_rule,
             "selected_score": selected_score,
+            "selected_support_score": selected_support,
             "confidence": selected_score / max(strongest_score, 1e-12),
             "first_threshold_index": first_threshold_index,
             "first_threshold_offset_from_peak_samples": (
@@ -1742,8 +1854,12 @@ class MeasurementStore:
             "weak_early_relative": float(IR_DIRECT_WEAK_EARLY_RELATIVE),
             "weak_early_min_gap_samples": int(IR_DIRECT_WEAK_EARLY_MIN_GAP_SAMPLES),
             "weak_early_next_ratio": float(IR_DIRECT_WEAK_EARLY_NEXT_RATIO),
+            "promotion_window_samples": int(max(IR_DIRECT_WEAK_EARLY_MIN_GAP_SAMPLES, int(round(sample_rate * IR_DIRECT_PROMOTION_WINDOW_SECONDS)))),
+            "promotion_support_ratio": float(IR_DIRECT_PROMOTION_SUPPORT_RATIO),
             "candidate_count": len(candidates),
-            "candidates": candidate_summary,
+            "candidates": candidate_summary_by_score,
+            "candidates_by_score": candidate_summary_by_score,
+            "candidates_chronological": candidate_summary_chronological,
             "reference_peak_index": int(reference_peak_index),
             "reference_peak_seconds": float(reference_peak_index) / float(sample_rate),
             "relative_samples": relative_samples,
