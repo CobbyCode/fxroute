@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import math
 import os
 import re
@@ -20,6 +21,8 @@ import numpy as np
 
 from samplerate import get_audio_output_overview, get_samplerate_status
 from system_volume import SystemVolumeError, get_node_volume, get_output_volume, set_node_volume, set_output_volume
+
+logger = logging.getLogger(__name__)
 
 DISPLAY_DEFAULTS = {
     "normalize": True,
@@ -76,6 +79,8 @@ IR_WINDOW_POST_HIGH_SECONDS = 0.18
 IR_WINDOW_FADE_SECONDS = 0.012
 IR_WINDOW_VARIABLE_LOW_HZ = 250.0
 IR_WINDOW_VARIABLE_HIGH_HZ = 1_200.0
+IR_DIRECT_SEARCH_PRE_SECONDS = 0.12
+IR_DIRECT_RELATIVE_THRESHOLD = 0.05
 HOST_SWEEP_RECORD_PREROLL_SECONDS = 0.75
 HOST_SWEEP_RECORD_POSTROLL_SECONDS = 0.75
 HOST_SWEEP_MAX_ATTEMPTS = 3
@@ -117,7 +122,6 @@ class MeasurementStore:
         self.jobs_dir = self.state_root / "fxroute" / "measurements"
         self.captures_dir = self.jobs_dir / "captures"
         self.calibrations_dir = self.jobs_dir / "calibrations"
-        self.house_curves_dir = self.jobs_dir / "house_curves"
         self.settings_path = self.jobs_dir / "settings.json"
         self.job_records_dir = self.jobs_dir / "jobs"
         self.playbacks_dir = self.jobs_dir / "playbacks"
@@ -126,7 +130,6 @@ class MeasurementStore:
             self.jobs_dir,
             self.captures_dir,
             self.calibrations_dir,
-            self.house_curves_dir,
             self.job_records_dir,
             self.playbacks_dir,
         ]:
@@ -153,7 +156,6 @@ class MeasurementStore:
             },
             "calibrations": self._list_calibration_files(),
             "active_calibration_file_id": self.get_active_calibration_file_id(),
-            "house_curves": self._list_house_curve_files(),
             "scope_note": MEASUREMENT_SCOPE_NOTE,
             "measurements": measurements,
         }
@@ -254,94 +256,6 @@ class MeasurementStore:
         path.write_text(json.dumps(normalized, indent=2) + "\n", encoding="utf-8")
         return normalized
 
-    def merge_measurements(self, measurement_ids: list[str], name: str | None = None) -> dict[str, Any]:
-        normalized_ids = [self._slugify(item) for item in measurement_ids if str(item or "").strip()]
-        normalized_ids = list(dict.fromkeys(normalized_ids))
-        if len(normalized_ids) < 2:
-            raise ValueError("Select at least two saved measurements to merge")
-
-        measurements_by_id = {item.get("id"): item for item in self.list_measurements().get("measurements", [])}
-        measurements = []
-        for measurement_id in normalized_ids:
-            measurement = measurements_by_id.get(measurement_id)
-            if not measurement:
-                raise KeyError(measurement_id)
-            traces = measurement.get("traces") or []
-            if not traces or not traces[0].get("points"):
-                raise ValueError(f"Measurement has no mergeable trace: {measurement.get('name') or measurement_id}")
-            measurements.append(measurement)
-
-        source_traces = [measurement["traces"][0] for measurement in measurements]
-        min_hz = max(float(trace["points"][0][0]) for trace in source_traces)
-        max_hz = min(float(trace["points"][-1][0]) for trace in source_traces)
-        if not math.isfinite(min_hz) or not math.isfinite(max_hz) or min_hz >= max_hz:
-            raise ValueError("Selected measurements do not overlap in frequency range")
-
-        point_count = min(
-            DISPLAY_POINT_COUNT,
-            max(24, min(len(trace.get("points") or []) for trace in source_traces)),
-        )
-        target_log_freqs = np.linspace(math.log10(min_hz), math.log10(max_hz), point_count)
-        target_freqs = np.power(10.0, target_log_freqs)
-        interpolated_levels = []
-        for trace in source_traces:
-            points = trace.get("points") or []
-            freqs = np.array([float(point[0]) for point in points], dtype=float)
-            levels = np.array([float(point[1]) for point in points], dtype=float)
-            interpolated_levels.append(np.interp(target_log_freqs, np.log10(freqs), levels))
-
-        averaged_levels = np.mean(np.vstack(interpolated_levels), axis=0)
-        merged_points = [
-            [round(float(freq), 3), round(float(level), 3)]
-            for freq, level in zip(target_freqs, averaged_levels)
-        ]
-
-        now = self._utc_now()
-        base_name = str(name or "").strip() or f"Merged {len(measurements)} measurements"
-        payload = {
-            "id": f"merged-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{uuid4().hex[:6]}",
-            "name": base_name,
-            "created_at": now,
-            "input_device": {"id": "merged", "label": "Merged saved measurements"},
-            "channel": "merged",
-            "calibration": {"filename": "", "applied": False},
-            "display": deepcopy(DISPLAY_DEFAULTS),
-            "traces": [
-                {
-                    "kind": "merged-measurement-average",
-                    "label": f"{base_name} · averaged",
-                    "color": TRACE_COLORS[0],
-                    "role": "merged-average",
-                    "points": merged_points,
-                }
-            ],
-            "review_traces": [
-                {
-                    "kind": str(trace.get("kind") or "measured"),
-                    "label": str(measurement.get("name") or trace.get("label") or measurement.get("id")),
-                    "color": TRACE_COLORS[(index + 1) % len(TRACE_COLORS)],
-                    "role": "merge-source",
-                    "points": trace.get("points") or [],
-                }
-                for index, (measurement, trace) in enumerate(zip(measurements, source_traces))
-            ],
-            "measurement_kind": "merged-measurement-average-v1",
-            "notes": [
-                "Created by averaging the first trusted trace from each selected saved measurement over their shared frequency range.",
-                "Source measurements are kept unchanged; source traces are embedded as review traces for comparison.",
-            ],
-            "analysis": {
-                "method": "log-frequency interpolation and arithmetic dB average of selected saved measurement traces",
-                "source_measurement_ids": normalized_ids,
-                "source_measurement_names": [str(item.get("name") or item.get("id")) for item in measurements],
-                "source_count": len(measurements),
-                "merge_min_hz": round(min_hz, 3),
-                "merge_max_hz": round(max_hz, 3),
-                "display_point_count": len(merged_points),
-            },
-        }
-        return self.save_measurement(payload)
-
     def cancel_job(self, job_id: str) -> dict[str, Any]:
         job = self.get_job(job_id)
         status = str(job.get("status") or "")
@@ -393,28 +307,6 @@ class MeasurementStore:
             "calibrations": files,
             "active_calibration_file_id": active_id,
         }
-
-    def upload_house_curve_file(self, filename: str, data: bytes) -> dict[str, Any]:
-        if not data:
-            raise ValueError("House curve file is empty")
-        points = self._parse_house_curve_bytes(data)
-        safe_name = self._safe_filename(filename or "house-curve.txt")
-        target_path = self.house_curves_dir / f"{uuid4().hex[:10]}-{safe_name}"
-        target_path.write_bytes(data)
-        return {"status": "ok", "house_curves": self._list_house_curve_files(), "uploaded_house_curve_id": target_path.name, "points": points}
-
-    def delete_house_curve_file(self, house_curve_ref: str) -> dict[str, Any]:
-        ref = Path(str(house_curve_ref or "")).name.strip()
-        if not ref:
-            raise ValueError("House curve file id is required")
-        path = self.house_curves_dir / ref
-        if not path.exists() or not path.is_file():
-            raise KeyError(ref)
-        path.unlink()
-        return {"status": "ok", "house_curves": self._list_house_curve_files()}
-
-    def get_house_curve_state(self) -> dict[str, Any]:
-        return {"status": "ok", "house_curves": self._list_house_curve_files()}
 
     def set_active_calibration_file_id(self, calibration_ref: str | None) -> dict[str, Any]:
         ref = Path(str(calibration_ref or "")).name.strip()
@@ -636,6 +528,7 @@ class MeasurementStore:
             "playback": playback_info,
             "analysis": {
                 "method": analysis["method"],
+                "sample_rate": analysis["sample_rate"],
                 "rms_dbfs": analysis["rms_dbfs"],
                 "peak_dbfs": analysis["peak_dbfs"],
                 "normalized_by_db": analysis["normalized_by_db"],
@@ -916,6 +809,7 @@ class MeasurementStore:
             ] + [item["message"] for item in analysis.get("quality_checks", {}).get("items", []) if item.get("level") == "warning"],
             "analysis": {
                 "method": analysis["method"],
+                "sample_rate": analysis["sample_rate"],
                 "rms_dbfs": analysis["rms_dbfs"],
                 "peak_dbfs": analysis["peak_dbfs"],
                 "window_count": analysis["window_count"],
@@ -932,7 +826,9 @@ class MeasurementStore:
                 "quality_checks": analysis["quality_checks"],
                 "capture_audit": analysis["capture_audit"],
                 "clock": analysis["clock"],
+                "reference_path": analysis.get("reference_path"),
                 "impulse_response": analysis["impulse_response"],
+                "variable_window": analysis.get("variable_window"),
             },
         }
         return self._normalize_measurement(payload)
@@ -1014,6 +910,11 @@ class MeasurementStore:
         impulse_response = self._fft_convolve(corrected_segment, inverse_sweep.astype(np.float64))
         reference_impulse_response = self._fft_convolve(corrected_reference_segment, inverse_sweep.astype(np.float64))
         windowed_ir, ir_meta = self._window_impulse_response(impulse_response, sample_rate)
+        direct_timing_meta = self._estimate_impulse_direct_arrival(
+            impulse_response,
+            reference_impulse_response,
+            sample_rate,
+        )
         response_frequencies, response_magnitude, variable_window_meta = self._build_variable_window_response(
             impulse_response,
             sample_rate,
@@ -1023,6 +924,18 @@ class MeasurementStore:
         reference_ir_peak_db = 20.0 * math.log10(max(reference_ir_peak, 1e-9))
         reference_ir_rms_db = 20.0 * math.log10(max(reference_ir_rms, 1e-9))
         reference_ir_sharpness_db = reference_ir_peak_db - reference_ir_rms_db
+        logger.info(
+            "Measurement timing detection: channel=%s reference_channel=%s mic_peak_sample=%s direct_sample=%s reference_peak_sample=%s relative_samples=%s relative_ms=%.3f sample_rate=%s alignment_samples=%s",
+            channel,
+            reference_channel_label,
+            int(ir_meta["peak_index"]),
+            int(direct_timing_meta["direct_arrival_index"]),
+            int(direct_timing_meta["reference_peak_index"]),
+            int(direct_timing_meta["relative_samples"]),
+            float(direct_timing_meta["relative_seconds"]) * 1000.0,
+            sample_rate,
+            aligned_start,
+        )
         display_data = self._build_display_points(
             frequencies=response_frequencies,
             magnitude=response_magnitude,
@@ -1044,6 +957,7 @@ class MeasurementStore:
         )
         analysis = {
             "method": "inverse log-sweep deconvolution with anchor timing compensation and IR windowing",
+            "sample_rate": int(sample_rate),
             "trusted_points": display_data["trusted_points"],
             "review_points": display_data["review_points"],
             "normalized_by_db": round(display_data["normalized_by"], 3),
@@ -1093,6 +1007,16 @@ class MeasurementStore:
             "impulse_response": {
                 "peak_index": int(ir_meta["peak_index"]),
                 "peak_seconds": round(float(ir_meta["peak_seconds"]), 6),
+                "direct_arrival_index": int(direct_timing_meta["direct_arrival_index"]),
+                "direct_seconds": round(float(direct_timing_meta["direct_seconds"]), 6),
+                "direct_relative_to_peak_db": direct_timing_meta["direct_relative_to_peak_db"],
+                "direct_threshold_relative": round(float(direct_timing_meta["direct_threshold_relative"]), 4),
+                "reference_peak_index": int(direct_timing_meta["reference_peak_index"]),
+                "reference_peak_seconds": round(float(direct_timing_meta["reference_peak_seconds"]), 6),
+                "arrival_samples": int(direct_timing_meta["relative_samples"]),
+                "arrival_seconds": round(float(direct_timing_meta["relative_seconds"]), 6),
+                "arrival_ms": round(float(direct_timing_meta["relative_seconds"]) * 1000.0, 6),
+                "timing_source": "direct_arrival_minus_reference_peak",
                 "window_start_index": int(ir_meta["window_start_index"]),
                 "window_end_index": int(ir_meta["window_end_index"]),
                 "window_seconds": round(float(ir_meta["window_seconds"]), 6),
@@ -1695,6 +1619,38 @@ class MeasurementStore:
             "peak_dbfs": 20.0 * math.log10(max(peak, 1e-12)),
         }
 
+    def _estimate_impulse_direct_arrival(
+        self,
+        impulse_response: np.ndarray,
+        reference_impulse_response: np.ndarray,
+        sample_rate: int,
+    ) -> dict[str, Any]:
+        ir_abs = np.abs(impulse_response.astype(np.float64))
+        ref_abs = np.abs(reference_impulse_response.astype(np.float64))
+        peak_index = int(np.argmax(ir_abs)) if ir_abs.size else 0
+        reference_peak_index = int(np.argmax(ref_abs)) if ref_abs.size else 0
+        peak = float(ir_abs[peak_index]) if ir_abs.size else 0.0
+        threshold = peak * IR_DIRECT_RELATIVE_THRESHOLD
+        search_pre_samples = max(1, int(round(sample_rate * IR_DIRECT_SEARCH_PRE_SECONDS)))
+        search_start = max(0, peak_index - search_pre_samples)
+        search_end = min(ir_abs.size, peak_index + 1)
+        candidates = np.flatnonzero(ir_abs[search_start:search_end] >= threshold) if threshold > 0 else np.array([], dtype=int)
+        direct_arrival_index = search_start + int(candidates[0]) if candidates.size else peak_index
+        relative_samples = int(direct_arrival_index - reference_peak_index)
+        return {
+            "direct_arrival_index": int(direct_arrival_index),
+            "direct_seconds": float(direct_arrival_index) / float(sample_rate),
+            "direct_relative_to_peak_db": round(
+                20.0 * math.log10(max(float(ir_abs[direct_arrival_index]) / max(peak, 1e-12), 1e-12)),
+                2,
+            ),
+            "direct_threshold_relative": float(IR_DIRECT_RELATIVE_THRESHOLD),
+            "reference_peak_index": int(reference_peak_index),
+            "reference_peak_seconds": float(reference_peak_index) / float(sample_rate),
+            "relative_samples": relative_samples,
+            "relative_seconds": float(relative_samples) / float(sample_rate),
+        }
+
     def _resample_signal(self, signal: np.ndarray, target_size: int) -> np.ndarray:
         signal64 = signal.astype(np.float64)
         if target_size <= 0:
@@ -2042,69 +1998,10 @@ class MeasurementStore:
             "applied": False,
         }
 
-    def _list_house_curve_files(self) -> list[dict[str, Any]]:
-        entries: list[dict[str, Any]] = []
-        seen_filenames: set[str] = set()
-        for path in sorted(self.house_curves_dir.glob("*"), key=lambda item: item.stat().st_mtime, reverse=True):
-            if not path.is_file():
-                continue
-            display_name = self._display_house_curve_filename(path.name)
-            if display_name in seen_filenames:
-                continue
-            try:
-                points = self._parse_house_curve_bytes(path.read_bytes())
-            except Exception:
-                continue
-            seen_filenames.add(display_name)
-            entries.append(
-                {
-                    "id": path.name,
-                    "filename": display_name,
-                    "path": str(path),
-                    "points": points,
-                    "modified_at": datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).isoformat(),
-                }
-            )
-        return entries
-
     @staticmethod
     def _display_calibration_filename(value: str) -> str:
         name = Path(value or "").name
         return re.sub(r"^[0-9a-f]{10}-", "", name, count=1) or name or "calibration.txt"
-
-    @staticmethod
-    def _display_house_curve_filename(value: str) -> str:
-        name = Path(value or "").name
-        display_name = re.sub(r"^[0-9a-f]{10}-", "", name, count=1) or name or "house-curve.txt"
-        stem = Path(display_name).stem
-        return stem or display_name
-
-    @staticmethod
-    def _parse_house_curve_bytes(data: bytes) -> list[list[float]]:
-        text = data.decode("utf-8", errors="ignore")
-        points: list[list[float]] = []
-        previous_frequency = 0.0
-        for raw_line in text.splitlines():
-            line = raw_line.strip()
-            if not line or not re.match(r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)", line):
-                continue
-            parts = re.split(r"[\s,;]+", line)
-            if len(parts) < 2:
-                continue
-            try:
-                frequency = float(parts[0])
-                offset = float(parts[1])
-            except ValueError:
-                continue
-            if not math.isfinite(frequency) or not math.isfinite(offset) or frequency <= 0:
-                continue
-            if frequency <= previous_frequency:
-                raise ValueError("House curve frequencies must be strictly increasing")
-            previous_frequency = frequency
-            points.append([frequency, offset])
-        if len(points) < 2:
-            raise ValueError("House curve needs at least two frequency / dB pairs")
-        return points
 
     def _parse_calibration_file(self, path: Path) -> tuple[np.ndarray, np.ndarray] | None:
         text = path.read_text(encoding="utf-8", errors="ignore")

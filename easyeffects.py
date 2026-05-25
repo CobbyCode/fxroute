@@ -1357,8 +1357,7 @@ class EasyEffectsManager:
         if clean_preset_name in set(normalized_sources):
             raise ValueError("New preset name must differ from the source presets")
 
-        helper_plugin_names = {"limiter#0", "delay#0", "bass_enhancer#0", "autogain#0", "crystalizer#0", "maximizer#0"}
-        helper_bases = {plugin_name.split("#", 1)[0] for plugin_name in helper_plugin_names}
+        helper_bases = {"limiter", "delay", "bass_enhancer", "autogain", "crystalizer", "maximizer"}
         base_plugins: Dict[str, Any] = {}
         base_order: List[str] = []
         plugin_counters: Dict[str, int] = {}
@@ -1386,9 +1385,9 @@ class EasyEffectsManager:
                 if not isinstance(plugin_payload, dict):
                     continue
                 plugin_base = plugin_name.split("#", 1)[0]
-                if plugin_name in helper_plugin_names:
+                if plugin_base in helper_bases:
                     continue
-                plugin_index = plugin_counters.get(plugin_base, 1 if plugin_base in helper_bases else 0)
+                plugin_index = plugin_counters.get(plugin_base, 0)
                 plugin_counters[plugin_base] = plugin_index + 1
                 combined_name = f"{plugin_base}#{plugin_index}"
                 combined_payload = json.loads(json.dumps(plugin_payload))

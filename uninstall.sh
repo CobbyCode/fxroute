@@ -302,6 +302,40 @@ restore_hostname_if_requested() {
   log "Restored hostname to $hostname_before"
 }
 
+restore_avahi_config_if_requested() {
+  local configured_by_fxroute
+  local config_path="/etc/avahi/avahi-daemon.conf"
+  local backup_path="${config_path}.pre-fxroute-ipv4-mdns"
+  local sudo_cmd=()
+
+  configured_by_fxroute="$(read_install_state_field "lan_comfort.avahi_ipv4_mdns_configured_by_fxroute" 2>/dev/null || true)"
+  [[ "$configured_by_fxroute" == "true" ]] || return 0
+  [[ -e "$backup_path" || -L "$backup_path" ]] || return 0
+
+  if ! confirm "FXRoute adjusted Avahi for IPv4-only .local access. Restore the previous Avahi config?"; then
+    warn "Keeping current Avahi config"
+    return 0
+  fi
+
+  if command -v sudo >/dev/null 2>&1; then
+    sudo_cmd=(sudo)
+  else
+    warn "Cannot restore the previous Avahi config because sudo is unavailable"
+    return 0
+  fi
+
+  if ! "${sudo_cmd[@]}" install -m 644 "$backup_path" "$config_path"; then
+    warn "Failed to restore ${config_path}"
+    return 0
+  fi
+  "${sudo_cmd[@]}" rm -f "$backup_path"
+  if systemctl is-active avahi-daemon >/dev/null 2>&1; then
+    "${sudo_cmd[@]}" systemctl restart avahi-daemon >/dev/null 2>&1 || warn "Restored Avahi config, but failed to restart avahi-daemon"
+  fi
+
+  log "Restored previous Avahi config"
+}
+
 remove_firewalld_service_if_requested() {
   local service="$1"
   local purpose="$2"
@@ -550,6 +584,7 @@ main() {
   systemctl --user reset-failed >/dev/null 2>&1 || true
 
   restore_hostname_if_requested
+  restore_avahi_config_if_requested
   remove_avahi_if_requested
   remove_firewalld_service_if_requested mdns ".local LAN access"
   remove_firewalld_service_if_requested http "port-80 LAN access"

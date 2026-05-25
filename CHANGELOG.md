@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+## 0.7.1 (2026-05-25)
+- Made Minimum phase aligned convolver generation block symmetrically on excessive signed L/R timing offsets, using the absolute offset against a 6 ms safety limit and showing explicit timing interpretation/correction hints.
+- Simplified the Minimum phase aligned timing summary to one human-readable L/R arrival relation.
+- Switched Convolver / Minimum phase aligned timing to reference-relative direct-arrival timing instead of global impulse peak differences, preventing late reflection peaks from driving alignment decisions.
+- Removed the legacy saved-measurement fallback for Convolver timing; new timing now requires direct-arrival fields and missing fields no longer produce an alignment relation.
+- Hardened the optional `.local` installer path by configuring Avahi for IPv4-only mDNS advertisement, preventing public IPv6 AAAA records from making browsers block plain-HTTP `fxroute.local` API calls through Private Network Access checks.
+- Refreshed Spotify metadata from backend MPRIS/playerctl follow events and a lightweight polling fallback so automatic next-track changes update title, artist, cover, duration, and progress state without requiring an explicit control action. Bumped the frontend cache token so clients load the matching track-identity logic.
+- Added Smart Library Metadata V1 with a local SQLite cache for album MusicBrainz IDs, compact album facts, favorite state, and missing-cover enrichment via Cover Art Archive.
+- Added a first optional album-detail About section backed by cached Wikidata/Wikipedia summaries resolved through stored MusicBrainz IDs.
+- Let already enriched albums do one follow-up About lookup without waiting for the normal metadata cooldown.
+- Added a first collapsed Discover similar music panel under album tracks, backed by cached ListenBrainz suggestions from the album artist MusicBrainz ID.
+- Filtered Discover suggestions to one track per suggested artist to avoid repetitive ListenBrainz results.
+- Excluded the current album artist from Discover suggestions so recommendations do not repeat the already selected artist.
+- Fixed Library scan status so the current directory is cleared after completion and the completion timestamp waits for metadata finalization.
+- Added an incremental local track metadata cache keyed by relative path, mtime, and size so unchanged library tracks do not need full audio metadata probing on every scan.
+- Added a Cover Art Archive release-group fallback for albums whose matched release has no direct front cover.
+- Kept local tags and local covers ahead of external metadata while retaining stale external metadata for temporarily missing albums.
+
 ## 0.7.0 (2026-05-20)
 - Refreshed README/frontpage imagery with the updated Album discovery view instead of Technical settings.
 - Refreshed desktop/mobile screenshots for the current UI, including updated album/library, DSP, measurement, import, and settings views.

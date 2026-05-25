@@ -11,7 +11,6 @@ SOURCE_DIR="$SCRIPT_DIR"
 INSTALL_ROOT="$DEFAULT_INSTALL_ROOT"
 LOCAL_PROJECT_MODE=0
 ASSUME_YES=0
-MUSIC_ROOT_OVERRIDE=""
 
 VALIDATION_RESULTS=()
 WARNINGS=()
@@ -36,6 +35,8 @@ AVAHI_WAS_ACTIVE_BEFORE=0
 AVAHI_WAS_ENABLED_BEFORE=0
 AVAHI_INSTALLED_BY_FXROUTE=0
 AVAHI_ENABLED_BY_FXROUTE=0
+AVAHI_IPV4_MDNS_CONFIGURED_BY_FXROUTE=0
+AVAHI_IPV4_MDNS_CONFIG_BACKED_UP=0
 CADDY_WAS_PRESENT_BEFORE=0
 CADDY_SERVICE_WAS_ACTIVE_BEFORE=0
 CADDY_INSTALLED_BY_FXROUTE=0
@@ -59,7 +60,6 @@ Options:
   --target <dir>        Install or refresh into this directory (default: $DEFAULT_INSTALL_ROOT)
   --local-project       Install in-place from the current project directory
   --source <dir>        Use a different local project source directory
-  --music-root <dir>    Set the initial music library folder for new installs
   -y, --yes             Assume yes for package / Flatpak install prompts
   -h, --help            Show this help
 
@@ -87,11 +87,6 @@ while [[ $# -gt 0 ]]; do
       SOURCE_DIR="$2"
       shift 2
       ;;
-    --music-root)
-      [[ $# -ge 2 ]] || die "--music-root requires a directory"
-      MUSIC_ROOT_OVERRIDE="$2"
-      shift 2
-      ;;
     --local-project)
       LOCAL_PROJECT_MODE=1
       shift
@@ -114,24 +109,6 @@ expand_path() {
   python3 - <<'PY' "$1"
 import os, sys
 print(os.path.abspath(os.path.expanduser(sys.argv[1])))
-PY
-}
-
-dotenv_quote() {
-  python3 - <<'PY' "$1"
-import json, sys
-print(json.dumps(sys.argv[1]))
-PY
-}
-
-dotenv_unquote() {
-  python3 - <<'PY' "$1"
-import json, sys
-raw = sys.argv[1]
-try:
-    print(json.loads(raw) if raw.startswith('"') else raw)
-except Exception:
-    print(raw)
 PY
 }
 
@@ -191,16 +168,7 @@ valid_local_hostname() {
 }
 
 primary_lan_ip() {
-  local ip=""
-  ip="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
-  if [[ -z "$ip" ]] && command -v ip >/dev/null 2>&1; then
-    ip="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i=1; i<=NF; i++) if ($i == "src") {print $(i+1); exit}}' || true)"
-  fi
-  if [[ -z "$ip" ]] && command -v ip >/dev/null 2>&1; then
-    ip="$(ip -4 addr show scope global 2>/dev/null | awk '/inet / {sub(/\/.*/, "", $2); print $2; exit}' || true)"
-  fi
-  [[ -n "$ip" ]] && printf '%s\n' "$ip"
-  return 0
+  hostname -I 2>/dev/null | awk '{print $1}'
 }
 
 avahi_is_present() {
@@ -218,6 +186,117 @@ avahi_is_present() {
         || systemctl list-unit-files avahi-daemon.service --no-legend 2>/dev/null | grep -q '^avahi-daemon\.service'
       ;;
   esac
+}
+
+configure_avahi_ipv4_mdns_for_fxroute() {
+  local config_path="/etc/avahi/avahi-daemon.conf"
+  local backup_path="${config_path}.pre-fxroute-ipv4-mdns"
+  local tmp_config=""
+
+  [[ -f "$config_path" ]] || {
+    warn "Optional .local setup could not find ${config_path}; skipping IPv4-only mDNS hardening"
+    return 0
+  }
+
+  tmp_config="$(mktemp)"
+  if ! python3 - "$config_path" "$tmp_config" <<'PY'
+import sys
+from pathlib import Path
+
+source = Path(sys.argv[1])
+target = Path(sys.argv[2])
+lines = source.read_text().splitlines()
+
+desired = {
+    "server": {
+        "use-ipv4": "yes",
+        "use-ipv6": "no",
+    },
+    "publish": {
+        "publish-aaaa-on-ipv4": "no",
+        "publish-a-on-ipv6": "no",
+    },
+}
+
+out = []
+section = None
+seen_sections = set()
+seen_keys = {name: set() for name in desired}
+
+def flush_missing(section_name):
+    if section_name in desired:
+        for key, value in desired[section_name].items():
+            if key not in seen_keys[section_name]:
+                out.append(f"{key}={value}")
+                seen_keys[section_name].add(key)
+
+for raw in lines:
+    stripped = raw.strip()
+    if stripped.startswith("[") and stripped.endswith("]"):
+        flush_missing(section)
+        section = stripped[1:-1].strip().lower()
+        seen_sections.add(section)
+        out.append(raw)
+        continue
+
+    if section in desired:
+        candidate = stripped
+        if candidate.startswith("#"):
+            candidate = candidate[1:].strip()
+        if "=" in candidate:
+            key = candidate.split("=", 1)[0].strip().lower()
+            if key in desired[section]:
+                out.append(f"{key}={desired[section][key]}")
+                seen_keys[section].add(key)
+                continue
+
+    out.append(raw)
+
+flush_missing(section)
+for section_name, values in desired.items():
+    if section_name not in seen_sections:
+        if out and out[-1] != "":
+            out.append("")
+        out.append(f"[{section_name}]")
+    for key, value in values.items():
+        if key not in seen_keys[section_name]:
+            out.append(f"{key}={value}")
+
+target.write_text("\n".join(out) + "\n")
+PY
+  then
+    rm -f "$tmp_config"
+    warn "Optional .local setup could not prepare IPv4-only Avahi config"
+    return 0
+  fi
+
+  if cmp -s "$config_path" "$tmp_config"; then
+    rm -f "$tmp_config"
+    AVAHI_IPV4_MDNS_CONFIGURED_BY_FXROUTE=1
+    pass "Avahi mDNS already configured for IPv4-only FXRoute .local access"
+    return 0
+  fi
+
+  if [[ ! -e "$backup_path" && ! -L "$backup_path" ]]; then
+    log "cp -a $config_path $backup_path"
+    if ! "${SUDO_CMD[@]}" cp -a "$config_path" "$backup_path"; then
+      rm -f "$tmp_config"
+      warn "Optional .local setup could not back up ${config_path}; skipping IPv4-only mDNS hardening"
+      return 0
+    fi
+    AVAHI_IPV4_MDNS_CONFIG_BACKED_UP=1
+  fi
+
+  log "install -m 644 $tmp_config $config_path"
+  if ! "${SUDO_CMD[@]}" install -m 644 "$tmp_config" "$config_path"; then
+    rm -f "$tmp_config"
+    warn "Optional .local setup could not write IPv4-only Avahi config"
+    return 0
+  fi
+  rm -f "$tmp_config"
+
+  AVAHI_IPV4_MDNS_CONFIGURED_BY_FXROUTE=1
+  pass "Avahi mDNS configured for IPv4-only FXRoute .local access"
 }
 
 firewall_cmd_path() {
@@ -384,10 +463,8 @@ confirm_supported_distro() {
     PACKAGE_MANAGER="dnf"
   elif command -v zypper >/dev/null 2>&1; then
     PACKAGE_MANAGER="zypper"
-  elif command -v pacman >/dev/null 2>&1; then
-    PACKAGE_MANAGER="pacman"
   else
-    die "Unsupported distro. Expected apt, dnf, zypper, or pacman."
+    die "Unsupported distro. Expected apt, dnf, or zypper."
   fi
   pass "distro detection: $PACKAGE_MANAGER"
 }
@@ -409,9 +486,6 @@ pkg_install() {
       ;;
     zypper)
       run_cmd "${SUDO_CMD[@]}" zypper --non-interactive install --no-recommends "${packages[@]}"
-      ;;
-    pacman)
-      run_cmd "${SUDO_CMD[@]}" pacman -Syu --needed --noconfirm "${packages[@]}"
       ;;
   esac
 }
@@ -441,10 +515,6 @@ ensure_native_packages() {
     zypper)
       core_packages=(python3 python3-pip mpv ffmpeg playerctl flatpak)
       audio_stack_packages=(bluez wireplumber pipewire-tools pipewire-pulseaudio pulseaudio-utils pipewire-spa-plugins-0_2)
-      ;;
-    pacman)
-      core_packages=(python python-pip mpv ffmpeg playerctl flatpak)
-      audio_stack_packages=(bluez bluez-utils wireplumber pipewire pipewire-pulse libpulse)
       ;;
   esac
 
@@ -507,9 +577,6 @@ ensure_native_packages() {
         ;;
       zypper)
         pkg_install python3-virtualenv
-        ;;
-      pacman)
-        die "python venv support is missing after package install"
         ;;
       *)
         die "python3 venv support is missing after package install"
@@ -601,25 +668,10 @@ env_interval_hours_or_default() {
   fi
 }
 
-choose_music_root() {
-  local default_music_root="$HOME/Music"
-  local chosen="$default_music_root"
-
-  if [[ -n "$MUSIC_ROOT_OVERRIDE" ]]; then
-    chosen="$MUSIC_ROOT_OVERRIDE"
-  elif [[ $ASSUME_YES -eq 0 && -t 0 ]]; then
-    printf '[fxroute] Music library folder [%s]: ' "$default_music_root" >&2
-    read -r chosen || chosen="$default_music_root"
-    chosen="${chosen:-$default_music_root}"
-  fi
-
-  expand_path "$chosen"
-}
-
 create_env_if_missing() {
   local env_file="$INSTALL_ROOT/.env"
   local env_example="$INSTALL_ROOT/.env.example"
-  local music_root
+  local music_root="$HOME/Music"
   local downloads_dir="incoming"
   local log_level="INFO"
   local host="0.0.0.0"
@@ -634,8 +686,6 @@ create_env_if_missing() {
 
   [[ -f "$env_example" ]] || die "Missing .env.example in install root"
 
-  music_root="$(choose_music_root)"
-
   local chosen_port
   chosen_port="$(pick_port "$port")"
   if [[ "$chosen_port" != "$port" ]]; then
@@ -644,7 +694,7 @@ create_env_if_missing() {
   fi
 
   cat > "$env_file" <<EOF
-MUSIC_ROOT=$(dotenv_quote "$music_root")
+MUSIC_ROOT=$music_root
 DOWNLOADS_SUBDIR=$downloads_dir
 LOG_LEVEL=$log_level
 HOST=$host
@@ -658,7 +708,7 @@ SYSTEM_AUTO_UPDATE_INTERVAL_HOURS=24
 EOF
 
   mkdir -p "$music_root/$downloads_dir"
-  pass ".env created (MUSIC_ROOT=$music_root)"
+  pass ".env created"
 }
 
 flatpak_app_installed() {
@@ -988,6 +1038,8 @@ write_install_state() {
     "avahi_was_enabled_before": $( [[ $AVAHI_WAS_ENABLED_BEFORE -eq 1 ]] && echo true || echo false ),
     "avahi_installed_by_fxroute": $( [[ $AVAHI_INSTALLED_BY_FXROUTE -eq 1 ]] && echo true || echo false ),
     "avahi_enabled_by_fxroute": $( [[ $AVAHI_ENABLED_BY_FXROUTE -eq 1 ]] && echo true || echo false ),
+    "avahi_ipv4_mdns_configured_by_fxroute": $( [[ $AVAHI_IPV4_MDNS_CONFIGURED_BY_FXROUTE -eq 1 ]] && echo true || echo false ),
+    "avahi_ipv4_mdns_config_backed_up": $( [[ $AVAHI_IPV4_MDNS_CONFIG_BACKED_UP -eq 1 ]] && echo true || echo false ),
     "caddy_was_present_before": $( [[ $CADDY_WAS_PRESENT_BEFORE -eq 1 ]] && echo true || echo false ),
     "caddy_service_was_active_before": $( [[ $CADDY_SERVICE_WAS_ACTIVE_BEFORE -eq 1 ]] && echo true || echo false ),
     "caddy_installed_by_fxroute": $( [[ $CADDY_INSTALLED_BY_FXROUTE -eq 1 ]] && echo true || echo false ),
@@ -1272,16 +1324,9 @@ validate_tools() {
 print_summary() {
   local env_file="$INSTALL_ROOT/.env"
   local port="8000"
-  local music_root="$HOME/Music"
   local lan_ip=""
   local ee_launch_cmd=""
-  if [[ -f "$env_file" ]]; then
-    port="$(read_env_value PORT "$env_file" | tr -d '[:space:]')"
-    port="${port:-8000}"
-    music_root="$(read_env_value MUSIC_ROOT "$env_file")"
-    music_root="${music_root:-$HOME/Music}"
-    music_root="$(dotenv_unquote "$music_root")"
-  fi
+  [[ -f "$env_file" ]] && port="$(grep '^PORT=' "$env_file" | cut -d= -f2- | tr -d '[:space:]')"
   lan_ip="$(primary_lan_ip)"
 
   case "$EASYEFFECTS_MODE" in
@@ -1301,18 +1346,11 @@ print_summary() {
 
   echo "Install path: $INSTALL_ROOT"
   echo "EasyEffects mode: $EASYEFFECTS_MODE"
-  echo "Music folder: $music_root"
+  echo "Music folder: $HOME/Music"
   echo
   echo "Open FXRoute:"
   echo " - Local: http://localhost:${port}"
   [[ -n "$lan_ip" ]] && echo " - LAN IP: http://${lan_ip}:${port}"
-  if [[ -n "$MDNS_HOSTNAME" ]]; then
-    if [[ $CADDY_PROXY_ENABLED -eq 1 ]]; then
-      echo " - LAN name: http://${MDNS_HOSTNAME}.local"
-    else
-      echo " - LAN name: http://${MDNS_HOSTNAME}.local:${port}"
-    fi
-  fi
   if [[ $CADDY_PROXY_ENABLED -eq 1 ]]; then
     if [[ -n "$lan_ip" ]]; then
       echo " - LAN HTTPS: https://${lan_ip}"
@@ -1408,7 +1446,7 @@ offer_optional_local_lan_name() {
 
   case "$PACKAGE_MANAGER" in
     apt) avahi_pkg="avahi-daemon" ;;
-    dnf|zypper|pacman) avahi_pkg="avahi" ;;
+    dnf|zypper) avahi_pkg="avahi" ;;
     *)
       warn "Skipping optional .local setup on unsupported distro package manager: $PACKAGE_MANAGER"
       return 0
@@ -1422,6 +1460,8 @@ offer_optional_local_lan_name() {
   if [[ $AVAHI_WAS_PRESENT_BEFORE -eq 0 ]] && avahi_is_present; then
     AVAHI_INSTALLED_BY_FXROUTE=1
   fi
+
+  configure_avahi_ipv4_mdns_for_fxroute
 
   log "hostnamectl set-hostname $desired_host"
   if ! "${SUDO_CMD[@]}" hostnamectl set-hostname "$desired_host"; then

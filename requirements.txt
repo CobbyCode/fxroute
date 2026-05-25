@@ -12,5 +12,3 @@ yt-dlp==2026.03.17
 python-dotenv==1.0.0
 python-multipart==0.0.9
 numpy==2.4.4
-pyserial==3.5
-pillow==12.2.0

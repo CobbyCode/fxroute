@@ -3410,8 +3410,9 @@ function renderAlbums() {
     if (state.library.showFavoriteAlbums) {
         albums = albums.filter(album => !!album.favorite);
     }
+    const showSmartFavorites = state.library.showFavoriteAlbums;
 
-    if (albums.length === 0) {
+    if (albums.length === 0 && !showSmartFavorites) {
         if (loadingEl) {
             loadingEl.textContent = state.library.showFavoriteAlbums
                 ? 'No favorite albums.'
@@ -3424,7 +3425,21 @@ function renderAlbums() {
     }
     if (loadingEl) loadingEl.style.display = 'none';
 
-    elements.albumsGrid.innerHTML = albums.map(album => {
+    const smartHtml = showSmartFavorites ? `
+        <div class="album-grid-heading" style="grid-column:1/-1;color:var(--text-secondary);font-size:0.82rem;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;margin:0.15rem 0 -0.35rem;">Smart Favorites</div>
+        <div class="album-card album-card-smart" data-smart-favorite="top40" role="button" tabindex="0">
+            <div class="album-art-wrap">
+                <img class="album-art" src="/static/Top40.png?v=${state.library.albumsCacheToken || ''}"
+                     alt="Top 40"
+                     onload="this.classList.add('loaded')"
+                     onerror="this.onerror=null;this.src='${albumArtFallbackSvg('Top 40')}'" />
+            </div>
+            <div class="album-name">Top 40</div>
+            <div class="album-artist">Most Played Tracks</div>
+        </div>
+        <div class="album-grid-heading album-grid-heading-manual" style="grid-column:1/-1;color:var(--text-secondary);font-size:0.82rem;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;margin:0.5rem 0 -0.35rem;">Favorite Albums</div>
+    ` : '';
+    const manualHtml = albums.length > 0 ? albums.map(album => {
         const coverUrl = `/api/albums/${album.id}/cover?v=${state.library.albumsCacheToken || ''}`;
         const fallbackSvg = albumArtFallbackSvg(album.name || album.artist || 'Album');
         return `
@@ -3438,10 +3453,15 @@ function renderAlbums() {
             <div class="album-name">${escapeHtml(album.name)}</div>
             <div class="album-artist">${escapeHtml(album.artist)}</div>
         </div>`;
-    }).join('');
+    }).join('') : (showSmartFavorites ? '<div class="album-empty-note" style="grid-column:1/-1;color:var(--text-muted);font-size:0.92rem;padding:0.35rem 0 0.8rem;">No favorite albums yet.</div>' : '');
+    elements.albumsGrid.innerHTML = smartHtml + manualHtml;
     elements.albumsGrid.classList.remove('hidden');
 
+    elements.albumsGrid.querySelectorAll('.album-card[data-smart-favorite="top40"]').forEach(card => {
+        card.addEventListener('click', () => openSmartTopTracks());
+    });
     elements.albumsGrid.querySelectorAll('.album-card').forEach(card => {
+        if (card.dataset.smartFavorite) return;
         card.addEventListener('click', () => openAlbumDetail(card.dataset.albumId));
     });
 }
@@ -3504,6 +3524,47 @@ async function openAlbumDetail(albumId) {
         updatePlaylistSaveRowVisibility();
     } catch (e) {
         console.warn('Failed to load album tracks', e);
+    }
+}
+
+async function openSmartTopTracks() {
+    try {
+        const res = await fetch('/api/smart/top-tracks?limit=40');
+        const tracks = await res.json().catch(() => []);
+        if (!res.ok) throw new Error('Failed to load Top 40');
+        const album = {
+            id: 'smart_top40',
+            name: 'Top 40',
+            artist: 'Most Played Tracks',
+            smart: true,
+            coverUrl: '/static/Top40.png',
+        };
+        state.library.albumDetail = { album, tracks: Array.isArray(tracks) ? tracks : [] };
+        const knownIds = new Set(state.library.tracks.map(t => t.id));
+        for (const track of state.library.albumDetail.tracks) {
+            if (track?.id && !knownIds.has(track.id)) {
+                state.library.tracks.push(track);
+                knownIds.add(track.id);
+            }
+        }
+        elements.albumDetailCover.src = `${album.coverUrl}?v=${state.library.albumsCacheToken || ''}`;
+        elements.albumDetailCover.onerror = function() { this.onerror = null; this.src = albumArtFallbackSvg(album.name); };
+        elements.albumDetailName.textContent = album.name;
+        elements.albumDetailArtist.textContent = album.artist;
+        elements.albumDetailCount.textContent = `${state.library.albumDetail.tracks.length} track${state.library.albumDetail.tracks.length === 1 ? '' : 's'}`;
+        updateAlbumFavoriteButton(album);
+        elements.albumDetail.querySelectorAll('.album-detail-facts, .album-detail-about').forEach(node => node.remove());
+        renderAlbumDetailTracks();
+        if (elements.albumDiscover) {
+            elements.albumDiscover.classList.add('hidden');
+            elements.albumDiscover.innerHTML = '';
+        }
+        elements.albumsGrid.classList.add('hidden');
+        elements.albumDetail.classList.remove('hidden');
+        updatePlaylistSaveRowVisibility();
+    } catch (e) {
+        console.warn('Failed to load Top 40', e);
+        showToast('Failed to load Top 40', 'error');
     }
 }
 
@@ -3602,6 +3663,13 @@ function renderAlbumDetailTracks() {
 
 function updateAlbumFavoriteButton(album) {
     if (!elements.albumFavoriteToggle) return;
+    if (album?.smart) {
+        elements.albumFavoriteToggle.classList.add('hidden');
+        elements.albumFavoriteToggle.disabled = true;
+        return;
+    }
+    elements.albumFavoriteToggle.classList.remove('hidden');
+    elements.albumFavoriteToggle.disabled = false;
     const favorite = !!album?.favorite;
     elements.albumFavoriteToggle.textContent = favorite ? '★' : '☆';
     elements.albumFavoriteToggle.classList.toggle('active', favorite);
@@ -4973,6 +5041,7 @@ const measurementComparePalette = ['#60a5fa', '#f59e0b', '#f472b6', '#a78bfa', '
 const measurementCurrentColor = '#22c55e';
 const measurementPeqPalette = ['#60a5fa', '#f59e0b', '#f472b6', '#a78bfa'];
 const measurementPeqTypes = ['bell', 'low_shelf', 'high_shelf', 'low_pass', 'high_pass', 'notch', 'gain'];
+const MEASUREMENT_CONVOLVER_TIMING_SAFETY_LIMIT_MS = 6.0;
 const measurementConvolverCurves = {
     neutral: { label: 'Neutral', shortLabel: 'Neutral', points: [[20, 0], [20000, 0]] },
     bass_shelf: { label: 'Bass Shelf', shortLabel: 'Bass', points: [[20, 4], [30, 4], [50, 3], [80, 2], [120, 1], [200, 0], [1000, 0], [20000, 0]] },
@@ -5083,13 +5152,13 @@ function ensureMeasurementConvolverState() {
     conv.sampleRate = ['44100', '48000', '88200', '96000', '176400', '192000'].includes(String(conv.sampleRate)) ? String(conv.sampleRate) : defaults.sampleRate;
     const qualityAliases = { auto: 'linear_4096', normal: 'linear_4096', high: 'linear_8192' };
     const incomingQuality = qualityAliases[String(conv.quality)] || String(conv.quality || defaults.quality);
-    const hasValidPhaseMode = ['linear', 'minimum'].includes(String(conv.phaseMode));
+    const hasValidPhaseMode = ['linear', 'minimum', 'minimum_aligned'].includes(String(conv.phaseMode));
     const hasValidIrLength = measurementConvolverTapOptions.includes(Number(conv.irLength));
     if ((!hasValidPhaseMode || !hasValidIrLength) && getMeasurementConvolverTypeKeys().includes(incomingQuality)) {
         conv.phaseMode = getMeasurementConvolverPhaseModeForType(incomingQuality);
         conv.irLength = String(getMeasurementConvolverFirLengthForType(incomingQuality));
     }
-    conv.phaseMode = ['linear', 'minimum'].includes(String(conv.phaseMode)) ? String(conv.phaseMode) : defaults.phaseMode;
+    conv.phaseMode = ['linear', 'minimum', 'minimum_aligned'].includes(String(conv.phaseMode)) ? String(conv.phaseMode) : defaults.phaseMode;
     conv.irLength = measurementConvolverTapOptions.includes(Number(conv.irLength)) ? String(conv.irLength) : defaults.irLength;
     conv.quality = `${conv.phaseMode}_${conv.irLength}`;
     if (!conv.draft || typeof conv.draft !== 'object') conv.draft = { left: null, right: null, presetName: '', nameTouched: false };
@@ -5136,7 +5205,7 @@ function updateMeasurementConvolverField(field, value) {
     if (field === 'maxCutDb') conv.maxCutDb = [-3, -6, -9, -12, -18, -24].includes(Number(value)) ? Number(value) : conv.maxCutDb;
     if (field === 'dipGuard') conv.dipGuard = ['off', 'gentle', 'adaptive'].includes(String(value)) ? String(value) : conv.dipGuard;
     if (field === 'sampleRate') conv.sampleRate = String(value || '48000');
-    if (field === 'phaseMode') conv.phaseMode = ['linear', 'minimum'].includes(String(value)) ? String(value) : conv.phaseMode;
+    if (field === 'phaseMode') conv.phaseMode = ['linear', 'minimum', 'minimum_aligned'].includes(String(value)) ? String(value) : conv.phaseMode;
     if (field === 'irLength') conv.irLength = measurementConvolverTapOptions.includes(Number(value)) ? String(value) : conv.irLength;
     if (field === 'quality') {
         const quality = String(value || 'linear_4096');
@@ -5495,6 +5564,12 @@ function buildMeasurementConvolverWarnings(analyses = []) {
     const conv = ensureMeasurementConvolverState();
     const warnings = [];
     if (analyses.some((analysis) => analysis && analysis.lowBassBoost)) warnings.push('Deep bass boost can demand much more amplifier power and speaker excursion.');
+    if (conv.phaseMode === 'minimum_aligned') {
+        const leftTiming = conv.draft?.left?.timing || getMeasurementDirectArrivalTiming(getMeasurementConvolverMeasurementForSide('left'));
+        const rightTiming = conv.draft?.right?.timing || getMeasurementDirectArrivalTiming(getMeasurementConvolverMeasurementForSide('right'));
+        const safetyMessage = getMeasurementConvolverTimingSafetyMessage(getMeasurementConvolverTimingDelta(leftTiming, rightTiming));
+        if (safetyMessage) warnings.push('Filter not created because timing offset exceeds safety limit.');
+    }
     return warnings;
 }
 
@@ -5531,11 +5606,11 @@ function getMeasurementConvolverSampleRate() {
 }
 
 const measurementConvolverTapOptions = [2048, 4096, 8192, 16384, 32768];
-const measurementConvolverTypeOptions = ['linear', 'minimum'].flatMap((phaseMode) => measurementConvolverTapOptions.map((taps) => ({
+const measurementConvolverTypeOptions = ['linear', 'minimum', 'minimum_aligned'].flatMap((phaseMode) => measurementConvolverTapOptions.map((taps) => ({
     key: `${phaseMode}_${taps}`,
     phaseMode,
     taps,
-    label: `${phaseMode === 'minimum' ? 'Min.' : 'Linear'} phase ${taps}`,
+    label: `${phaseMode === 'minimum' ? 'Min.' : phaseMode === 'minimum_aligned' ? 'Min.align' : 'Linear'} phase ${taps}`,
 })));
 
 function getMeasurementConvolverTypeOption(type = 'linear_4096') {
@@ -5552,11 +5627,13 @@ function getMeasurementConvolverPhaseModeForType(type = 'linear_4096') {
 
 function getMeasurementConvolverPhaseLabel(phaseMode = 'linear') {
     if (phaseMode === 'minimum') return 'Minimum phase FIR';
+    if (phaseMode === 'minimum_aligned') return 'Minimum phase aligned FIR';
     return 'Linear FIR';
 }
 
 function getMeasurementConvolverPhaseTag(phaseMode = 'linear') {
     if (phaseMode === 'minimum') return 'Min';
+    if (phaseMode === 'minimum_aligned') return 'Min.align';
     return 'Lin';
 }
 
@@ -5601,6 +5678,147 @@ function buildMeasurementConvolverImpulse(analysis, sampleRate, length, autoGain
     return MeasurementDsp.buildMeasurementConvolverImpulse(analysis, sampleRate, length, autoGainDb, phaseMode);
 }
 
+function getMeasurementConvolverTimingMs(timing = {}) {
+    const arrivalMs = Number(timing?.arrivalMs);
+    return Number.isFinite(arrivalMs) ? arrivalMs : null;
+}
+
+function getMeasurementConvolverTimingDelta(leftTiming, rightTiming) {
+    if (!leftTiming?.available || !rightTiming?.available) return null;
+    const leftMs = getMeasurementConvolverTimingMs(leftTiming);
+    const rightMs = getMeasurementConvolverTimingMs(rightTiming);
+    if (leftMs === null || rightMs === null) return null;
+    const deltaMs = rightMs - leftMs;
+    if (!Number.isFinite(deltaMs)) return null;
+    const result = {
+        deltaMs,
+        absMs: Math.abs(deltaMs),
+        laterSide: deltaMs >= 0 ? 'R' : 'L',
+        correctionSide: deltaMs >= 0 ? 'L' : 'R',
+        leftTiming,
+        rightTiming,
+    };
+    console.info('[measurement-convolver-timing]', {
+        left: {
+            channel: leftTiming.channel || 'left',
+            source: leftTiming.source || '',
+            measurementId: leftTiming.measurementId || '',
+            peakSample: leftTiming.peakSample ?? null,
+            directSample: leftTiming.directSample ?? null,
+            referencePeakSample: leftTiming.referencePeakSample ?? null,
+            referenceAnchorSample: leftTiming.referenceAnchorSample ?? null,
+            arrivalSamples: leftTiming.arrivalSamples ?? null,
+            sampleRate: leftTiming.sampleRate ?? null,
+        },
+        right: {
+            channel: rightTiming.channel || 'right',
+            source: rightTiming.source || '',
+            measurementId: rightTiming.measurementId || '',
+            peakSample: rightTiming.peakSample ?? null,
+            directSample: rightTiming.directSample ?? null,
+            referencePeakSample: rightTiming.referencePeakSample ?? null,
+            referenceAnchorSample: rightTiming.referenceAnchorSample ?? null,
+            arrivalSamples: rightTiming.arrivalSamples ?? null,
+            sampleRate: rightTiming.sampleRate ?? null,
+        },
+        deltaMs,
+        deltaSamples: Number.isFinite(Number(leftTiming.sampleRate)) ? Math.round(deltaMs / 1000 * Number(leftTiming.sampleRate)) : null,
+        sampleRate: leftTiming.sampleRate || rightTiming.sampleRate || null,
+    });
+    return result;
+}
+
+function formatMeasurementConvolverTimingRelation(timingDelta) {
+    if (!timingDelta) return 'Timing unavailable';
+    const earlierSide = timingDelta.laterSide === 'R' ? 'L' : 'R';
+    return `${timingDelta.laterSide} arrives ${timingDelta.absMs.toFixed(2)} ms later than ${earlierSide}`;
+}
+
+function getMeasurementConvolverTimingSafetyMessage(timingDelta, limitMs = MEASUREMENT_CONVOLVER_TIMING_SAFETY_LIMIT_MS) {
+    if (!timingDelta || !(timingDelta.absMs > limitMs)) return '';
+    return `Timing offset too large: ${timingDelta.absMs.toFixed(2)} ms. Filter was not created. Move the microphone closer to the center position or raise the safety limit for test measurements.`;
+}
+
+function alignStereoImpulsesForMinimumAligned(leftImpulse, rightImpulse, sampleRate, leftTiming, rightTiming, maxAlignMs = MEASUREMENT_CONVOLVER_TIMING_SAFETY_LIMIT_MS) {
+    const timingDelta = getMeasurementConvolverTimingDelta(leftTiming, rightTiming);
+    if (!timingDelta) return [leftImpulse, rightImpulse];
+    if (timingDelta.absMs > maxAlignMs) {
+        throw new Error(getMeasurementConvolverTimingSafetyMessage(timingDelta, maxAlignMs) || 'Timing offset exceeds safety limit.');
+    }
+    const deltaMs = timingDelta.deltaMs;
+    if (Math.abs(deltaMs) < 0.005) return [leftImpulse, rightImpulse];
+    const cappedMs = Math.max(-maxAlignMs, Math.min(maxAlignMs, deltaMs));
+    const alignedSamples = Math.round(Math.abs(cappedMs) / 1000 * sampleRate);
+    if (alignedSamples < 1) return [leftImpulse, rightImpulse];
+    const silence = new Float64Array(alignedSamples);
+    if (cappedMs > 0) {
+        const newLeft = new Float64Array(alignedSamples + leftImpulse.length);
+        newLeft.set(silence, 0);
+        newLeft.set(leftImpulse, alignedSamples);
+        return [newLeft, rightImpulse];
+    } else {
+        const newRight = new Float64Array(alignedSamples + rightImpulse.length);
+        newRight.set(silence, 0);
+        newRight.set(rightImpulse, alignedSamples);
+        return [leftImpulse, newRight];
+    }
+}
+
+function getMeasurementAnalysisSampleRate(measurement = {}) {
+    const candidates = [
+        measurement?.analysis?.sample_rate,
+        measurement?.analysis?.sampleRate,
+        measurement?.summary?.sample_rate,
+        measurement?.summary?.sampleRate,
+        measurement?.review_summary?.sample_rate,
+        measurement?.review_summary?.sampleRate,
+        measurement?.sample_rate,
+        measurement?.sampleRate,
+    ];
+    const sampleRate = candidates.map(Number).find((value) => Number.isFinite(value) && value > 0);
+    return sampleRate || null;
+}
+
+function getMeasurementDirectArrivalTiming(measurement = {}) {
+    const impulse = measurement?.analysis?.impulse_response || null;
+    const channel = String(measurement?.channel || '').toLowerCase();
+    if (channel === 'stereo') {
+        return { available: false, reason: 'merged-measurement' };
+    }
+    const sampleRate = getMeasurementAnalysisSampleRate(measurement);
+    if (!impulse || !sampleRate) {
+        return { available: false, reason: 'missing-direct-arrival-timing' };
+    }
+    const arrivalMs = Number(impulse?.arrival_ms);
+    const arrivalSamples = Number(impulse?.arrival_samples);
+    const directSample = Number(impulse?.direct_arrival_index);
+    const referencePeakSample = Number(impulse?.reference_peak_index);
+    const referenceAnchorSample = Number(measurement?.analysis?.alignment_samples);
+    if (
+        !Number.isFinite(arrivalMs)
+        || !Number.isFinite(arrivalSamples)
+        || !Number.isFinite(directSample)
+        || !Number.isFinite(referencePeakSample)
+    ) {
+        return { available: false, reason: 'missing-direct-arrival-timing' };
+    }
+    const peakSample = Number(impulse?.peak_index);
+    return {
+        available: true,
+        arrivalMs,
+        arrivalSamples,
+        peakSample: Number.isFinite(peakSample) ? peakSample : null,
+        directSample,
+        referencePeakSample,
+        referenceAnchorSample: Number.isFinite(referenceAnchorSample) ? referenceAnchorSample : null,
+        sampleRate,
+        channel,
+        measurementId: measurement?.id || '',
+        measurementName: measurement?.name || '',
+        source: impulse?.timing_source || 'direct_arrival_minus_reference_peak',
+    };
+}
+
 function writeMeasurementConvolverWav(channels, sampleRate) {
     return MeasurementDsp.writeMeasurementConvolverWav(channels, sampleRate);
 }
@@ -5625,14 +5843,18 @@ function appendMeasurementConvolverExtras(formData) {
 async function createMeasurementConvolverPreset(mode, analyses, sharedAutoGainDb, itemName, options = {}) {
     const sampleRate = Number(options.sampleRate) || getMeasurementConvolverSampleRate();
     const length = Number(options.irLength) || getMeasurementConvolverFirLength();
-    const phaseMode = ['linear', 'minimum'].includes(options.phaseMode) ? options.phaseMode : ensureMeasurementConvolverState().phaseMode;
+    const phaseMode = ['linear', 'minimum', 'minimum_aligned'].includes(options.phaseMode) ? options.phaseMode : ensureMeasurementConvolverState().phaseMode;
     const filenameBase = itemName.replace(/[^a-z0-9._-]+/gi, '-').replace(/^-+|-+$/g, '') || 'measurement-convolver';
     const bySide = Object.fromEntries(analyses.map((analysis) => [analysis.side, analysis]));
     if (mode === 'both') {
-        const leftImpulse = buildMeasurementConvolverImpulse(bySide.left, sampleRate, length, sharedAutoGainDb, phaseMode);
-        const rightImpulse = buildMeasurementConvolverImpulse(bySide.right, sampleRate, length, sharedAutoGainDb, phaseMode);
-        const leftBlob = writeMeasurementConvolverWav([leftImpulse], sampleRate);
-        const rightBlob = writeMeasurementConvolverWav([rightImpulse], sampleRate);
+        const applyPhaseMode = phaseMode === 'minimum_aligned' ? 'minimum' : phaseMode;
+        const leftImpulse = buildMeasurementConvolverImpulse(bySide.left, sampleRate, length, sharedAutoGainDb, applyPhaseMode);
+        const rightImpulse = buildMeasurementConvolverImpulse(bySide.right, sampleRate, length, sharedAutoGainDb, applyPhaseMode);
+        const [finalLeft, finalRight] = phaseMode === 'minimum_aligned'
+            ? alignStereoImpulsesForMinimumAligned(leftImpulse, rightImpulse, sampleRate, options.leftTiming || null, options.rightTiming || null, Number(options.timingSafetyLimitMs) || MEASUREMENT_CONVOLVER_TIMING_SAFETY_LIMIT_MS)
+            : [leftImpulse, rightImpulse];
+        const leftBlob = writeMeasurementConvolverWav([finalLeft], sampleRate);
+        const rightBlob = writeMeasurementConvolverWav([finalRight], sampleRate);
         const formData = new FormData();
         formData.append('preset_name', itemName);
         appendMeasurementConvolverExtras(formData);
@@ -5644,7 +5866,8 @@ async function createMeasurementConvolverPreset(mode, analyses, sharedAutoGainDb
         return data;
     }
     const side = mode === 'right' ? 'right' : 'left';
-    const impulse = buildMeasurementConvolverImpulse(bySide[side], sampleRate, length, sharedAutoGainDb, phaseMode);
+    const applyPhaseMode = phaseMode === 'minimum_aligned' ? 'minimum' : phaseMode;
+    const impulse = buildMeasurementConvolverImpulse(bySide[side], sampleRate, length, sharedAutoGainDb, applyPhaseMode);
     const blob = writeMeasurementConvolverWav([impulse], sampleRate);
     const formData = new FormData();
     formData.append('preset_name', itemName);
@@ -5670,12 +5893,32 @@ function takeMeasurementConvolverToDraft(mode = 'both') {
         return;
     }
     const conv = ensureMeasurementConvolverState();
+    if (conv.phaseMode === 'minimum_aligned' && sides.length === 2) {
+        const sourceTimings = sides.map((side) => getMeasurementDirectArrivalTiming(getMeasurementConvolverMeasurementForSide(side)));
+        const leftTimingOk = sourceTimings[0]?.available === true;
+        const rightTimingOk = sourceTimings[1]?.available === true;
+        if (!leftTimingOk || !rightTimingOk) {
+            showMeasurementConvolverFeedback('Timing align needs single L/R measurements.');
+            showToast('Timing align needs single L/R measurements.', 'warning');
+            return;
+        }
+        const timingDelta = getMeasurementConvolverTimingDelta(sourceTimings[0], sourceTimings[1]);
+        const safetyMessage = getMeasurementConvolverTimingSafetyMessage(timingDelta);
+        if (safetyMessage) {
+            showMeasurementConvolverFeedback('Filter not created because timing offset exceeds safety limit.');
+            showToast(safetyMessage, 'warning');
+            return;
+        }
+    }
     sides.forEach((side, index) => {
         const analysis = analyses[index];
+        const sourceMeasurement = getMeasurementConvolverMeasurementForSide(side);
+        const timing = getMeasurementDirectArrivalTiming(sourceMeasurement);
         conv.draft[side] = {
             side,
             createdAt: new Date().toISOString(),
             analysis,
+            timing,
             metadata: {
                 targetCurve: conv.targetCurve,
                 rangeStartHz: conv.rangeStartHz,
@@ -5689,6 +5932,10 @@ function takeMeasurementConvolverToDraft(mode = 'both') {
                 quality: conv.quality,
                 phaseMode: conv.phaseMode,
                 irLength: getMeasurementConvolverFirLength(),
+                sourceMeasurementId: sourceMeasurement?.id || '',
+                sourceMeasurementName: sourceMeasurement?.name || '',
+                sourceMeasurementCreatedAt: sourceMeasurement?.created_at || '',
+                sourceChannel: sourceMeasurement?.channel || side,
             },
         };
     });
@@ -5723,6 +5970,23 @@ async function createMeasurementConvolverPresetFromDraft() {
             showToast('Left and Right convolver drafts use different FIR settings. Retake Both for a matched comparison preset.', 'warning');
             return;
         }
+        const draftPhaseMode = leftMeta.phaseMode || rightMeta.phaseMode || conv.phaseMode;
+        if (draftPhaseMode === 'minimum_aligned') {
+            const leftTimingOk = leftDraft?.timing?.available === true;
+            const rightTimingOk = rightDraft?.timing?.available === true;
+            if (!leftTimingOk || !rightTimingOk) {
+                showMeasurementConvolverFeedback('Timing align needs single L/R measurements.');
+                showToast('Timing align needs single L/R measurements.', 'warning');
+                return;
+            }
+            const timingDelta = getMeasurementConvolverTimingDelta(leftDraft?.timing, rightDraft?.timing);
+            const safetyMessage = getMeasurementConvolverTimingSafetyMessage(timingDelta);
+            if (safetyMessage) {
+                showMeasurementConvolverFeedback('Filter not created because timing offset exceeds safety limit.');
+                showToast(safetyMessage, 'warning');
+                return;
+            }
+        }
     }
     const analyses = drafts.map((draft) => draft.analysis);
     const sharedAutoGainDb = Math.min(...analyses.map((analysis) => analysis.autoGainDb));
@@ -5738,6 +6002,9 @@ async function createMeasurementConvolverPresetFromDraft() {
             quality: draftMetadata.quality || conv.quality,
             phaseMode: draftMetadata.phaseMode || conv.phaseMode,
             irLength: draftMetadata.irLength || getMeasurementConvolverFirLength(),
+            leftTiming: leftDraft?.timing || null,
+            rightTiming: rightDraft?.timing || null,
+            timingSafetyLimitMs: MEASUREMENT_CONVOLVER_TIMING_SAFETY_LIMIT_MS,
         };
         const created = await createMeasurementConvolverPreset(mode, analyses, sharedAutoGainDb, itemName, generationOptions);
         const item = {
@@ -6534,6 +6801,25 @@ function sleep(ms) {
     return new Promise(resolve => window.setTimeout(resolve, ms));
 }
 
+function logSaveCurrentMeasurementDebug(stage, details = {}) {
+    const measurementState = state.measurement || {};
+    const current = measurementState.currentMeasurement || null;
+    const visibleIds = Object.entries(measurementState.visibilityById || {})
+        .filter(([, visible]) => !!visible)
+        .map(([id]) => id);
+    console.info('[measurement-save-current]', stage, {
+        currentId: current?.id || '',
+        currentName: current?.name || '',
+        currentTraceCount: Array.isArray(current?.traces) ? current.traces.length : 0,
+        savedCount: Array.isArray(measurementState.measurements) ? measurementState.measurements.length : 0,
+        visibleIds,
+        saveInFlight: !!measurementState.saveInFlight,
+        startInFlight: !!measurementState.startInFlight,
+        activeJobId: measurementState.activeJobId || '',
+        ...details,
+    });
+}
+
 async function startHostMeasurement() {
     if (!state.measurement.hostCaptureAvailable || !state.measurement.selectedInputId) {
         state.measurement.statusText = 'No usable host capture source is available for a real measurement on this host.';
@@ -6653,34 +6939,96 @@ async function saveCurrentMeasurement() {
     const current = state.measurement.currentMeasurement;
     if (!current || state.measurement.saveInFlight || state.measurement.currentMeasurementSaved) return;
 
+    const debugStart = window.performance?.now?.() || Date.now();
+    const debugElapsedMs = () => Math.round((window.performance?.now?.() || Date.now()) - debugStart);
     const payload = JSON.parse(JSON.stringify(current));
     payload.name = (state.measurement.currentMeasurementName || current.name || '').trim() || current.name || 'Measurement';
 
     state.measurement.saveInFlight = true;
     state.measurement.statusText = 'Saving current measurement…';
+    logSaveCurrentMeasurementDebug('start', {
+        payloadId: payload.id || '',
+        payloadName: payload.name || '',
+        payloadTraceCount: Array.isArray(payload.traces) ? payload.traces.length : 0,
+        elapsedMs: debugElapsedMs(),
+    });
+    logSaveCurrentMeasurementDebug('before initial renderMeasurementPanel', { elapsedMs: debugElapsedMs() });
     renderMeasurementPanel();
+    logSaveCurrentMeasurementDebug('after initial renderMeasurementPanel', { elapsedMs: debugElapsedMs() });
     try {
+        logSaveCurrentMeasurementDebug('before POST /api/measurements/save', {
+            payloadId: payload.id || '',
+            payloadName: payload.name || '',
+            elapsedMs: debugElapsedMs(),
+        });
         const resp = await fetch('/api/measurements/save', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload),
         });
+        logSaveCurrentMeasurementDebug('after POST response received', {
+            status: resp.status,
+            ok: resp.ok,
+            elapsedMs: debugElapsedMs(),
+        });
         const data = await resp.json().catch(() => ({}));
+        logSaveCurrentMeasurementDebug('after response JSON parsed', {
+            status: resp.status,
+            ok: resp.ok,
+            responseStatus: data.status || '',
+            responseDetail: data.detail || '',
+            returnedId: data.measurement?.id || '',
+            returnedName: data.measurement?.name || '',
+            elapsedMs: debugElapsedMs(),
+        });
         if (!resp.ok) throw new Error(data.detail || 'Failed to save measurement');
-        state.measurement.currentMeasurementSaved = true;
-        state.measurement.currentMeasurement = normalizeMeasurementEntry(data.measurement || payload, 0);
-        state.measurement.currentMeasurementName = state.measurement.currentMeasurement.name || payload.name;
-        state.measurement.reviewVisibilityById[state.measurement.currentMeasurement.id] = measurementReviewVisible(state.measurement.currentMeasurement.id);
+        const saved = normalizeMeasurementEntry(data.measurement || payload, 0);
+        logSaveCurrentMeasurementDebug('saved measurement normalized', {
+            savedId: saved.id,
+            savedName: saved.name,
+            savedTraceCount: saved.traces.length,
+            elapsedMs: debugElapsedMs(),
+        });
+        state.measurement.visibilityById[saved.id] = true;
+        state.measurement.reviewVisibilityById[saved.id] = false;
+        logSaveCurrentMeasurementDebug('before clearing currentMeasurement', {
+            savedId: saved.id,
+            savedName: saved.name,
+            elapsedMs: debugElapsedMs(),
+        });
+        state.measurement.currentMeasurement = null;
+        state.measurement.currentMeasurementSaved = false;
+        state.measurement.currentMeasurementName = '';
         state.measurement.statusText = 'Measurement saved.';
+        logSaveCurrentMeasurementDebug('after clearing currentMeasurement', {
+            savedId: saved.id,
+            savedName: saved.name,
+            elapsedMs: debugElapsedMs(),
+        });
+        logSaveCurrentMeasurementDebug('before fetchMeasurements', { elapsedMs: debugElapsedMs() });
         await fetchMeasurements();
+        logSaveCurrentMeasurementDebug('after fetchMeasurements', { elapsedMs: debugElapsedMs() });
         showToast('Measurement saved', 'success');
     } catch (error) {
-        console.error('saveCurrentMeasurement failed', error);
+        console.error('saveCurrentMeasurement failed', {
+            message: error?.message || String(error),
+            name: error?.name || '',
+            stack: error?.stack || '',
+            elapsedMs: debugElapsedMs(),
+            error,
+        });
+        logSaveCurrentMeasurementDebug('catch error details', {
+            errorMessage: error?.message || String(error),
+            errorName: error?.name || '',
+            elapsedMs: debugElapsedMs(),
+        });
         state.measurement.statusText = error.message || 'Failed to save measurement';
         showToast(state.measurement.statusText, 'error');
     } finally {
+        logSaveCurrentMeasurementDebug('finally before renderMeasurementPanel', { elapsedMs: debugElapsedMs() });
         state.measurement.saveInFlight = false;
         renderMeasurementPanel();
+        logSaveCurrentMeasurementDebug('finally after renderMeasurementPanel', { elapsedMs: debugElapsedMs() });
     }
 }
 
@@ -7127,11 +7475,42 @@ function renderMeasurementPanel() {
     if (elements.measurementConvolverSummary) {
         const curve = getMeasurementConvolverCurve(conv.targetCurve);
         const hasCreatedConvolver = (state.easyeffects?.assistStack || []).some((item) => item.type === 'convolver');
-        const draftStatus = (leftDraft || rightDraft) ? 'Draft ready' : (hasCreatedConvolver ? 'Convolver preset created' : 'No draft staged');
+        let draftStatus;
+        const draftDetails = [];
+        const currentTimingDelta = left && right
+            ? getMeasurementConvolverTimingDelta(
+                getMeasurementDirectArrivalTiming(getMeasurementConvolverMeasurementForSide('left')),
+                getMeasurementDirectArrivalTiming(getMeasurementConvolverMeasurementForSide('right')),
+            )
+            : null;
+        const summaryTimingDelta = leftDraft && rightDraft
+            ? getMeasurementConvolverTimingDelta(leftDraft.timing, rightDraft.timing)
+            : currentTimingDelta;
+        if (leftDraft && rightDraft) {
+            const timingDelta = summaryTimingDelta;
+            if (timingDelta) {
+                draftStatus = `Draft ready · ${formatMeasurementConvolverTimingRelation(timingDelta)}`;
+            } else {
+                draftStatus = 'Draft ready · Timing unavailable';
+            }
+        } else if (leftDraft || rightDraft) {
+            draftStatus = 'Draft ready · Timing unavailable';
+        } else {
+            draftStatus = hasCreatedConvolver ? 'Convolver preset created' : 'No draft staged';
+            if (currentTimingDelta && conv.phaseMode === 'minimum_aligned') {
+                draftStatus += ` · ${formatMeasurementConvolverTimingRelation(currentTimingDelta)}`;
+            }
+        }
+        if (summaryTimingDelta && (leftDraft && rightDraft || (left && right && conv.phaseMode === 'minimum_aligned'))) {
+            if (summaryTimingDelta.absMs > MEASUREMENT_CONVOLVER_TIMING_SAFETY_LIMIT_MS) {
+                draftDetails.push('Filter not created because timing offset exceeds safety limit.');
+            }
+        }
         elements.measurementConvolverSummary.innerHTML = `
             <div><strong>${escapeHtml(curve.label)}</strong> · ${escapeHtml(getMeasurementConvolverTypeLabel(conv.quality))} · Max Boost +${conv.maxBoostDb} dB · Max Cut ${conv.maxCutDb} dB · Dip Guard ${escapeHtml(conv.dipGuard)}</div>
             <div>Range data — L: ${left ? `${left.points} pts, gain ${formatMeasurementConvolverGain(left.autoGainDb)}` : 'none'} · R: ${right ? `${right.points} pts, gain ${formatMeasurementConvolverGain(right.autoGainDb)}` : 'none'}</div>
             <div>${escapeHtml(draftStatus)}</div>
+            ${draftDetails.map((detail) => `<div>${escapeHtml(detail)}</div>`).join('')}
         `;
     }
     if (elements.measurementConvolverPresetName) {
@@ -7151,43 +7530,6 @@ function renderMeasurementPanel() {
     if (elements.measurementConvolverTakeRightBtn) elements.measurementConvolverTakeRightBtn.disabled = !right;
     if (elements.measurementConvolverTakeBothBtn) elements.measurementConvolverTakeBothBtn.disabled = !left || !right;
     if (elements.measurementConvolverCreateBtn) elements.measurementConvolverCreateBtn.disabled = (!leftDraft && !rightDraft) || !String(conv.draft?.presetName || '').trim() || convolverCreateInFlight;
-
-    const currentHtml = current ? (() => {
-        const pointsLabel = summarizeMeasurementEntry(current);
-        const displayTraces = getMeasurementDisplayTraces(current);
-        const traceColor = measurementCurrentColor;
-        const badge = measurementState.currentMeasurementSaved
-            ? '<span class="measurement-badge measurement-badge-success">Saved</span>'
-            : '<span class="measurement-badge">Current</span>';
-        const calibrationLabel = current.calibration?.filename
-            ? `${current.calibration.filename}${current.calibration?.applied ? ' · applied' : ''}`
-            : 'No calibration';
-        const qualitySummary = getMeasurementQualitySummary(current);
-        const qualityTitle = getMeasurementQualityTitle(current);
-        const currentTitle = (measurementState.currentMeasurementSaved || current.storage_path)
-            ? `<a href="${escapeHtml(measurementFileUrl(current.id))}" title="${escapeHtml(current.name || 'Current sweep')}">${escapeHtml(getCompactDisplayName(current.name || 'Current sweep', 24))}</a>`
-            : escapeHtml(getCompactDisplayName(current.name || 'Current sweep', 24));
-        return `
-            <div class="measurement-list-item measurement-list-item-current">
-                <div class="measurement-list-row">
-                    <span class="measurement-toggle">
-                        <span class="measurement-swatch" style="background:${escapeHtml(traceColor)}"></span>
-                        <span class="measurement-list-title">${currentTitle}</span>
-                        ${badge}
-                    </span>
-                    <span class="measurement-list-meta">${escapeHtml(formatMeasurementDate(current.created_at))}</span>
-                </div>
-                <div class="measurement-list-row">
-                    <span class="measurement-list-meta">${escapeHtml(current.input_device?.label || 'Capture input')} · ${escapeHtml(String(current.channel || 'left'))}</span>
-                    <span class="measurement-list-points">${escapeHtml(pointsLabel)}</span>
-                </div>
-                <div class="measurement-list-row">
-                    <span class="measurement-list-meta" title="${escapeHtml(qualityTitle)}">${escapeHtml(calibrationLabel)} · ${escapeHtml(qualitySummary)}</span>
-                    <span class="measurement-list-meta">Visible trace: full graph data</span>
-                </div>
-            </div>
-        `;
-    })() : '<div class="measurement-list-item"><div class="measurement-list-row"><span class="measurement-list-meta">No current sweep yet.</span></div></div>';
 
     const selectedSavedCount = measurements.filter(measurement => measurementState.visibilityById?.[measurement.id]).length;
     const allSavedSelected = measurements.length > 0 && selectedSavedCount === measurements.length;
@@ -7238,7 +7580,7 @@ function renderMeasurementPanel() {
         `
         : '';
 
-    elements.measurementList.innerHTML = `${currentHtml}${savedHtml}`;
+    elements.measurementList.innerHTML = savedHtml;
     elements.measurementList.querySelectorAll('.measurement-saved-group').forEach((details) => {
         details.addEventListener('toggle', () => {
             state.measurement.savedGroupOpen = !!details.open;
@@ -9058,7 +9400,7 @@ async function fetchSpotifyStatus() {
         if (!resp.ok) throw new Error('request failed');
         return await resp.json();
     } catch {
-        return { available: false, installed: false, source: 'spotify', capabilities: {}, status: 'Stopped', artist: '', title: '', album: '', artUrl: '', shuffle: false, loop: 'none', position: 0, duration: 0 };
+        return { available: false, installed: false, source: 'spotify', capabilities: {}, status: 'Stopped', artist: '', title: '', album: '', trackId: '', artUrl: '', shuffle: false, loop: 'none', position: 0, duration: 0 };
     }
 }
 
@@ -9066,7 +9408,14 @@ async function fetchSpotifyStatus() {
 // Render
 // ---------------------------------------------------------------------------
 function spotifyTrackKey(data) {
-    return [data?.title || '', data?.artist || '', data?.album || '', Math.round(Number(data?.duration || 0))].join('|');
+    return [
+        data?.trackId || data?.trackid || '',
+        data?.title || '',
+        data?.artist || '',
+        data?.album || '',
+        data?.artUrl || '',
+        Math.round(Number(data?.duration || 0) * 1000),
+    ].join('|');
 }
 
 function syncSpotifySourceOwnership(data) {

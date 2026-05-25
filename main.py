@@ -30,6 +30,7 @@ from config import get_settings
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 COVER_CACHE_DIR = BASE_DIR / "media" / "cache" / "covers"
+TOP40_COVER_IMAGE = STATIC_DIR / "Top40.png"
 
 # Cooldown to prevent rapid mpv IPC flooding (ms)
 PLAY_COMMAND_COOLDOWN_MS = 400
@@ -45,6 +46,9 @@ RADIO_SAMPLERATE_PRESET_BOUNCE_DELAY_MS = 350
 SPOTIFY_PREARM_SAMPLE_RATE_HZ = 44100
 RADIO_RECONNECT_DELAY_SECONDS = 2.0
 RADIO_RECONNECT_MAX_ATTEMPTS = 5
+SPOTIFY_STATE_POLL_INTERVAL_SECONDS = 2.0
+SPOTIFY_STATE_IDLE_POLL_INTERVAL_SECONDS = 5.0
+SPOTIFY_STATE_REFRESH_DEBOUNCE_SECONDS = 0.20
 
 # Track last play command time to debounce rapid requests
 _last_play_command_time = 0.0
@@ -654,6 +658,8 @@ bluetooth_monitor_task = None
 bluetooth_agent_process = None
 spotify_playerctl_watch_task = None
 spotify_playerctl_detect_task = None
+spotify_state_refresh_task = None
+spotify_state_poll_task = None
 spotify_playerctl_last_trigger_at = 0.0
 spotify_samplerate_recovery_lock = None
 spotify_samplerate_recovery_active = False
@@ -1458,6 +1464,7 @@ async def _load_queue_track(index: int, *, transition_reason: str = "queue navig
         try:
             player_instance.set_playlist_pos(index)
             player_instance.set_pause(False)
+            _record_local_track_started(synced_track)
             return True
         except Exception:
             queue_transition_target_url = None
@@ -1479,6 +1486,7 @@ async def _load_queue_track(index: int, *, transition_reason: str = "queue navig
         if prearm_rate and prearm_generation:
             asyncio.create_task(_release_local_samplerate_prearm(prearm_rate, prearm_generation, f"{transition_reason}:queue"))
         player_instance.set_pause(False)
+        _record_local_track_started(next_track)
         asyncio.create_task(_maybe_recover_samplerate_mismatch(next_track.copy()))
         return True
     except Exception:
@@ -2014,6 +2022,89 @@ async def broadcast_spotify_state(data=None):
     return data
 
 
+def _spotify_state_signature(data: Optional[dict]) -> tuple:
+    data = data or {}
+    duration = data.get("duration")
+    try:
+        duration_key = round(float(duration or 0), 3)
+    except (TypeError, ValueError):
+        duration_key = 0.0
+    return (
+        data.get("status") or "",
+        data.get("trackId") or data.get("trackid") or "",
+        data.get("title") or "",
+        data.get("artist") or "",
+        data.get("album") or "",
+        data.get("artUrl") or "",
+        duration_key,
+        bool(data.get("available")),
+        bool(data.get("installed")),
+    )
+
+
+def _spotify_identity_signature(data: Optional[dict]) -> tuple:
+    return _spotify_state_signature(data)[1:]
+
+
+def _spotify_refresh_should_broadcast(new_state: dict, old_state: Optional[dict]) -> bool:
+    if old_state is None:
+        return bool(new_state.get("available") and (new_state.get("status") == "Playing" or new_state.get("title")))
+    return _spotify_state_signature(new_state) != _spotify_state_signature(old_state)
+
+
+async def _refresh_spotify_state_from_mpris(reason: str, *, force: bool = False) -> None:
+    global latest_spotify_state
+    try:
+        data = await get_spotify_ui_state()
+        if force or _spotify_refresh_should_broadcast(data, latest_spotify_state):
+            if _spotify_identity_signature(data) != _spotify_identity_signature(latest_spotify_state):
+                logger.info(
+                    "Spotify metadata refresh: reason=%s status=%s title=%s artist=%s trackId=%s",
+                    reason,
+                    data.get("status"),
+                    data.get("title"),
+                    data.get("artist"),
+                    data.get("trackId"),
+                )
+            await broadcast_spotify_state(data)
+        else:
+            latest_spotify_state = data
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.warning("Spotify metadata refresh failed (%s): %s", reason, exc)
+
+
+def _schedule_spotify_state_refresh(reason: str) -> None:
+    global spotify_state_refresh_task
+    if spotify_state_refresh_task and not spotify_state_refresh_task.done():
+        spotify_state_refresh_task.cancel()
+
+    async def _delayed_refresh() -> None:
+        await asyncio.sleep(SPOTIFY_STATE_REFRESH_DEBOUNCE_SECONDS)
+        await _refresh_spotify_state_from_mpris(reason)
+
+    spotify_state_refresh_task = asyncio.create_task(
+        _delayed_refresh(),
+        name="spotify-state-refresh",
+    )
+
+
+async def _spotify_state_poll_loop() -> None:
+    logger.info("Spotify metadata poll fallback entered")
+    while True:
+        try:
+            await _refresh_spotify_state_from_mpris("poll-fallback")
+            state = latest_spotify_state or {}
+            active = bool(state.get("available") and (state.get("status") == "Playing" or current_footer_owner == "spotify"))
+            await asyncio.sleep(SPOTIFY_STATE_POLL_INTERVAL_SECONDS if active else SPOTIFY_STATE_IDLE_POLL_INTERVAL_SECONDS)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("Spotify metadata poll fallback failed: %s", exc)
+            await asyncio.sleep(SPOTIFY_STATE_IDLE_POLL_INTERVAL_SECONDS)
+
+
 async def _spotify_player_present(timeout: float = 0.8) -> bool:
     try:
         import shutil
@@ -2445,6 +2536,7 @@ async def _spotify_playerctl_watch_loop() -> None:
                 status, _, tail = text.partition("|")
                 if status == "Playing":
                     _schedule_spotify_playerctl_event_detect(f"playerctl:{tail or 'playing'}")
+                _schedule_spotify_state_refresh(f"playerctl:{tail or status or 'metadata'}")
             stderr = b""
             if proc.stderr:
                 try:
@@ -2476,7 +2568,7 @@ async def _spotify_playerctl_watch_loop() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan: startup and shutdown."""
-    global settings, player_instance, library_scanner, downloader, easyeffects_manager, measurement_store, peak_monitor, hardware_controller, peak_monitor_playback_armed, peak_monitor_transition_lock, peak_monitor_context_signature, easyeffects_preset_load_lock, source_transition_lock, external_input_loopback_module_id, external_input_loopback_source_name, bluetooth_input_source_name, bluetooth_monitor_task, bluetooth_agent_process, spotify_playerctl_watch_task, spotify_playerctl_detect_task, spotify_playerctl_last_trigger_at, spotify_samplerate_recovery_lock, spotify_samplerate_recovery_active, current_source_mode, latest_spotify_state
+    global settings, player_instance, library_scanner, downloader, easyeffects_manager, measurement_store, peak_monitor, hardware_controller, peak_monitor_playback_armed, peak_monitor_transition_lock, peak_monitor_context_signature, easyeffects_preset_load_lock, source_transition_lock, external_input_loopback_module_id, external_input_loopback_source_name, bluetooth_input_source_name, bluetooth_monitor_task, bluetooth_agent_process, spotify_playerctl_watch_task, spotify_playerctl_detect_task, spotify_state_refresh_task, spotify_state_poll_task, spotify_playerctl_last_trigger_at, spotify_samplerate_recovery_lock, spotify_samplerate_recovery_active, current_source_mode, latest_spotify_state
 
     # Startup
     logger.info("Starting FXRoute...")
@@ -2556,6 +2648,8 @@ async def lifespan(app: FastAPI):
         spotify_playerctl_last_trigger_at = 0.0
         logger.info("Starting Spotify playerctl watch task")
         spotify_playerctl_watch_task = asyncio.create_task(_spotify_playerctl_watch_loop())
+        logger.info("Starting Spotify metadata poll fallback task")
+        spotify_state_poll_task = asyncio.create_task(_spotify_state_poll_loop())
 
         # Register callbacks for state changes
         player_instance.register_callbacks(on_player_state_change)
@@ -2587,6 +2681,18 @@ async def lifespan(app: FastAPI):
         spotify_playerctl_detect_task.cancel()
         try:
             await spotify_playerctl_detect_task
+        except asyncio.CancelledError:
+            pass
+    if spotify_state_refresh_task:
+        spotify_state_refresh_task.cancel()
+        try:
+            await spotify_state_refresh_task
+        except asyncio.CancelledError:
+            pass
+    if spotify_state_poll_task:
+        spotify_state_poll_task.cancel()
+        try:
+            await spotify_state_poll_task
         except asyncio.CancelledError:
             pass
     await _disable_bluetooth_input_monitoring()
@@ -2799,6 +2905,20 @@ def _track_cover_available(track_id: str) -> bool:
     return bool(cached_cover and cached_cover.is_file())
 
 
+def _record_local_track_started(track_info: Optional[dict]) -> None:
+    if not library_scanner or not track_info:
+        return
+    if track_info.get("source") != "local":
+        return
+    track_id = str(track_info.get("id") or "").strip()
+    if not track_id:
+        return
+    try:
+        library_scanner.record_track_play(track_id)
+    except Exception as exc:
+        logger.debug("Failed to update local track play stats for %s: %s", track_id, exc)
+
+
 @app.get("/api/stations")
 async def list_stations():
     return [_station_api_payload(station) for station in get_stations()]
@@ -2913,6 +3033,20 @@ async def get_track_cover(track_id: str):
 @app.get("/api/tracks/cover-info/{track_id:path}")
 async def get_track_cover_info(track_id: str):
     return {"available": _track_cover_available(track_id)}
+
+
+@app.get("/api/smart/top-tracks")
+async def get_smart_top_tracks(limit: int = 40):
+    if not library_scanner:
+        raise HTTPException(status_code=503, detail="Library not available")
+    return library_scanner.get_top_played_tracks(limit=limit)
+
+
+@app.get("/api/smart/top40/cover")
+async def get_smart_top40_cover():
+    if not TOP40_COVER_IMAGE.is_file():
+        raise HTTPException(status_code=404, detail="Top 40 cover not found")
+    return FileResponse(TOP40_COVER_IMAGE, media_type="image/png")
 
 
 @app.get("/api/albums")
@@ -3443,6 +3577,8 @@ async def play_track(req: PlayRequest):
 
             current_track_info = track_info
             last_track_info = track_info
+            if source == "local":
+                _record_local_track_started(track_info)
             _mark_player_state_authoritative(player_instance.state)
 
             if source in {"local", "radio"}:
@@ -4239,12 +4375,31 @@ async def save_measurement(request: Request):
     try:
         body = await request.json()
     except Exception:
+        logger.exception("Measurement save request failed: invalid JSON body")
         raise HTTPException(status_code=400, detail="Invalid JSON body")
 
+    measurement_id = body.get("id") if isinstance(body, dict) else ""
+    measurement_name = body.get("name") if isinstance(body, dict) else ""
+    trace_count = len(body.get("traces") or []) if isinstance(body, dict) and isinstance(body.get("traces"), list) else 0
+    logger.info(
+        "Measurement save request received: id=%s name=%s traces=%s",
+        measurement_id,
+        measurement_name,
+        trace_count,
+    )
     try:
         saved = measurement_store.save_measurement(body)
     except ValueError as exc:
+        logger.warning("Measurement save rejected: id=%s error=%s", measurement_id, exc)
         raise HTTPException(status_code=400, detail=str(exc))
+    except Exception:
+        logger.exception("Measurement save failed: id=%s name=%s", measurement_id, measurement_name)
+        raise
+    logger.info(
+        "Measurement save completed: id=%s name=%s",
+        saved.get("id") if isinstance(saved, dict) else "",
+        saved.get("name") if isinstance(saved, dict) else "",
+    )
     return {"status": "ok", "measurement": saved}
 
 @app.post("/api/measurements/merge")

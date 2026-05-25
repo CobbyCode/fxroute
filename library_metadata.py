@@ -25,7 +25,7 @@ WIKIPEDIA_SUMMARY_APIS = {
     "dewiki": "https://de.wikipedia.org/api/rest_v1/page/summary",
 }
 LISTENBRAINZ_API = "https://api.listenbrainz.org/1"
-USER_AGENT = "FXRoute/0.7 (https://github.com/CobbyCode/fxroute)"
+USER_AGENT = "FXRoute/0.6 (https://github.com/CobbyCode/fxroute)"
 FETCH_COOLDOWN_SECONDS = 7 * 24 * 60 * 60
 TRANSIENT_ERROR_RETRY_SECONDS = 60 * 60
 DISCOVER_COOLDOWN_SECONDS = 7 * 24 * 60 * 60
@@ -146,12 +146,17 @@ class LibraryMetadataStore:
                     disc_number INTEGER,
                     duration REAL,
                     sample_rate_hz INTEGER,
+                    play_count INTEGER NOT NULL DEFAULT 0,
+                    last_played_at TEXT,
                     last_seen_at TEXT,
                     missing_since TEXT
                 )
                 """
             )
+            self._ensure_column(conn, "tracks", "play_count", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(conn, "tracks", "last_played_at", "TEXT")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_tracks_missing_since ON tracks(missing_since)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_tracks_play_count ON tracks(play_count DESC, last_played_at DESC)")
 
     def _ensure_column(self, conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
         existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
@@ -544,6 +549,40 @@ class LibraryMetadataStore:
                     continue
                 if missing_ts <= cutoff:
                     conn.execute("DELETE FROM tracks WHERE rel_path = ?", (row["rel_path"],))
+
+    def increment_track_play_count(self, track_id: str) -> None:
+        track_id = str(track_id or "").strip()
+        if not track_id:
+            return
+        now = _utc_now()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE tracks
+                SET play_count = COALESCE(play_count, 0) + 1,
+                    last_played_at = ?
+                WHERE track_id = ? AND missing_since IS NULL
+                """,
+                (now, track_id),
+            )
+
+    def get_top_tracks(self, limit: int = 20) -> list[dict[str, Any]]:
+        try:
+            safe_limit = max(1, min(int(limit), 100))
+        except (TypeError, ValueError):
+            safe_limit = 20
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT track_id, play_count, last_played_at
+                FROM tracks
+                WHERE missing_since IS NULL AND COALESCE(play_count, 0) > 0
+                ORDER BY play_count DESC, COALESCE(last_played_at, '') DESC, title COLLATE NOCASE
+                LIMIT ?
+                """,
+                (safe_limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def external_cover_path(self, album_key: str) -> Optional[Path]:
         with self._connect() as conn:

@@ -676,6 +676,22 @@ class LibraryScanner:
     def get_album_discover(self, album_id: str, force: bool = False) -> Dict[str, Any]:
         return self.metadata_store.get_album_discover(album_id, force=force)
 
+    def record_track_play(self, track_id: str) -> None:
+        self.metadata_store.increment_track_play_count(track_id)
+
+    def get_top_played_tracks(self, limit: int = 20) -> List[Dict[str, Any]]:
+        tracks_by_id = {track.id: track for track in self.get_tracks(refresh=False)}
+        result: List[Dict[str, Any]] = []
+        for stat in self.metadata_store.get_top_tracks(limit=limit):
+            track = tracks_by_id.get(str(stat.get("track_id") or ""))
+            if not track:
+                continue
+            payload = track.to_dict()
+            payload["play_count"] = int(stat.get("play_count") or 0)
+            payload["last_played_at"] = stat.get("last_played_at")
+            result.append(payload)
+        return result
+
 
 def _album_id(artist: str, album: str) -> str:
     """Stable album id from artist + album name."""

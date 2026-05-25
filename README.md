@@ -5,11 +5,11 @@ FXRoute is a browser-based audio control surface for Linux listening machines.
 It is built for mini PCs, desktops, ARM boards, and dedicated stereo boxes that run local playback, EasyEffects DSP, radio, library playback, measurement tools, and optional Spotify desktop control — all remote-controlled from a phone, tablet, or laptop on the local network.
 
 <p align="center">
-  <img src="media/before-after-r.png" alt="FXRoute measurement graph showing raw and corrected right-channel response" width="780">
+  <img src="media/screenshots/desktop/13-measurement-graph-reset.png" alt="FXRoute measurement graph with PEQ assistant" width="780">
 </p>
 
 <p align="center">
-  <strong>Measure, compare, and turn room-response results into convolver/PEQ corrections directly in the browser.</strong>
+  <strong>Measure, compare, and sketch PEQ corrections directly in the browser.</strong>
 </p>
 
 <table>
@@ -47,20 +47,14 @@ It is built for mini PCs, desktops, ARM boards, and dedicated stereo boxes that 
 ## What it does
 
 - browser UI for desktop and mobile control
-- local music playback with queue, playlists, folder browsing, album browsing, artist info, uploads, ZIP album imports, and media URL imports
-- album view with cover art, grouped by album/artist, including compilation detection for albums without album_artist
-- artist-based discover suggestions from ListenBrainz for the current album artist
+- local music playback with queue, playlists, uploads, ZIP album imports, album browsing, cached album metadata, artist info, similar-artist discovery, and media URL imports
 - internet radio with built-in and custom stations
-- lightweight Now Playing cover cue for local tracks when folder or embedded cover art is available
-- Spotify desktop control through `playerctl` / MPRIS
-- EasyEffects stereo preset switching, PEQ, convolver import/export, output helpers, and A/B compare
-- convolver preset bundles with EasyEffects `.irs`, REW-friendly `.wav` impulse copy, preset JSON, and reimport support
-- bundled 30-second 1 kHz stereo FLAC level tone at `-12 dBFS` for safe level checks
+- Spotify desktop control through `playerctl` / MPRIS, including passive metadata refresh for automatic track changes
+- EasyEffects preset switching, PEQ, convolver import/generation, output helpers, and A/B compare
 - global DSP helpers such as limiter, headroom, autogain, bass enhancement, and tone modes
-- practical room/speaker measurement workflow with host microphone capture, calibration files, smoothing, saved runs, PEQ draft transfer, FIR/convolver preset creation, and custom REW-style house curves
+- practical room/speaker measurement workflow with host microphone capture, calibration files, smoothing, saved runs, PEQ draft transfer, and stereo FIR/convolver preset creation
 - sample-rate-aware playback handling for local files, radio, Spotify, and Bluetooth handoff cases
 - Bluetooth input visibility/control when the host audio stack supports it
-- optional USB serial amplifier-controller integration for RP2040/ESP32-style MCU input selectors
 - optional local HTTPS/Caddy setup with downloadable local certificate for trusted LAN clients
 - installer support for systemd user service, Flatpak EasyEffects, PipeWire/BlueZ dependencies, firewall comfort rules, and `.local` LAN naming
 
@@ -76,7 +70,7 @@ Typical setup:
 - optional Spotify desktop client in the same session
 - control from any browser on the LAN
 
-The user session matters because FXRoute coordinates local audio applications, EasyEffects stereo, MPRIS/playerctl, and PipeWire audio routes. In socket mode, EasyEffects runs as a background service in that session.
+The user session matters because FXRoute coordinates local audio applications, EasyEffects, MPRIS/playerctl, and PipeWire audio routes. In socket mode, EasyEffects runs as a background service in that session.
 
 ## Requirements
 
@@ -87,7 +81,6 @@ EasyEffects is handled separately: fresh installs can use the installer-managed 
 Tested installer targets so far include:
 
 - Ubuntu 24.04 and 26.04 on x86_64
-- Manjaro / Arch-family x86_64 systems
 - openSUSE Tumbleweed on x86_64
 - Fedora-family x86_64 systems
 - Armbian 26.2.1 / Ubuntu 24.04 Noble on ARM64 (`aarch64`, Khadas VIM1S; PipeWire setup may be needed depending on the image)
@@ -118,29 +111,20 @@ Typical URLs:
 - `http://fxroute.local` when mDNS is enabled
 - `https://<host-ip>` or `https://fxroute.local` when the optional local HTTPS proxy is enabled
 
-## Updating
-
-To update an existing installation, re-run the installer:
-
-```bash
-./install.sh
-```
-
-It overwrites application files, refreshes the service unit, and restarts the service.
-Your `.env` and data are preserved.
-
 ## Main sections
 
 - **Radio** — built-in and custom internet stations
-- **Library** — local files, folder browsing, album view with covers, artist info, playlists, uploads, imports, downloads, deletion, and artist-based discover suggestions
-- **DSP** — EasyEffects stereo presets, PEQ, convolver import/export, helpers, A/B compare, and preset creation
-- **Measure** — practical host-mic measurement, PEQ/FIR tuning, calibration files, and custom house curves
+- **Library** — local files, album browsing, cached metadata, artist info, similar-artist discovery, playlists, uploads, imports, downloads, and deletion
+- **DSP** — EasyEffects presets, PEQ, convolver, helpers, A/B compare, and preset creation
+- **Measure** — practical host-mic measurement and tuning workflow
 - **Spotify** — control a local Spotify desktop client
-- **Technical settings** — output selection, source state, Bluetooth status, optional amplifier-controller status/control, and local certificate access
+- **Technical settings** — output selection, source state, Bluetooth status, and local certificate access
 
-## Additional notes
+## Library metadata
 
-- Optional USB hardware controller: [`docs/HARDWARE_CONTROLLER.md`](docs/HARDWARE_CONTROLLER.md)
+FXRoute keeps local tags and local cover files as the source of truth, then enriches albums opportunistically with cached MusicBrainz IDs, Cover Art Archive fallback covers, compact album facts, optional Wikipedia/Wikidata artist summaries, and ListenBrainz similar-artist discovery.
+
+Metadata is cached locally so normal library scans stay fast and unchanged tracks do not need full audio probing on every run.
 
 ## Service commands
 
