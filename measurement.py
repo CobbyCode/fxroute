@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import csv
 import json
 import logging
 import math
@@ -23,6 +24,24 @@ from samplerate import get_audio_output_overview, get_samplerate_status
 from system_volume import SystemVolumeError, get_node_volume, get_output_volume, set_node_volume, set_output_volume
 
 logger = logging.getLogger(__name__)
+
+
+def _env_flag(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() not in {"0", "false", "no", "off", ""}
+
+
+def _env_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, min(maximum, parsed))
 
 DISPLAY_DEFAULTS = {
     "normalize": True,
@@ -94,6 +113,13 @@ IR_DIRECT_PROMOTION_SUPPORT_RATIO = 1.6
 IR_DIRECT_PROMOTION_SCORE_RATIO = 1.25
 IR_DIRECT_PROMOTION_ENERGY_RATIO = 1.45
 IR_DIRECT_PROMINENCE_REFERENCE = 0.15
+IR_DEBUG_SEGMENT_ENABLED = _env_flag("FXROUTE_MEASUREMENT_IR_DEBUG_SEGMENT", True)
+IR_DEBUG_SEGMENT_RADIUS_SAMPLES = _env_int(
+    "FXROUTE_MEASUREMENT_IR_DEBUG_SEGMENT_RADIUS_SAMPLES",
+    250,
+    minimum=64,
+    maximum=5000,
+)
 HOST_SWEEP_RECORD_PREROLL_SECONDS = 0.75
 HOST_SWEEP_RECORD_POSTROLL_SECONDS = 0.75
 HOST_SWEEP_MAX_ATTEMPTS = 3
@@ -138,6 +164,7 @@ class MeasurementStore:
         self.settings_path = self.jobs_dir / "settings.json"
         self.job_records_dir = self.jobs_dir / "jobs"
         self.playbacks_dir = self.jobs_dir / "playbacks"
+        self.diagnostics_dir = self.jobs_dir / "diagnostics"
         for directory in [
             self.measurements_dir,
             self.jobs_dir,
@@ -145,6 +172,7 @@ class MeasurementStore:
             self.calibrations_dir,
             self.job_records_dir,
             self.playbacks_dir,
+            self.diagnostics_dir,
         ]:
             directory.mkdir(parents=True, exist_ok=True)
         self._jobs: dict[str, dict[str, Any]] = {}
@@ -774,6 +802,171 @@ class MeasurementStore:
         items = ((analysis.get("quality_checks") or {}).get("items") or [])
         return any(str(item.get("code") or "").strip() == code and item.get("level") == "warning" for item in items)
 
+    def _build_impulse_response_debug_segment(
+        self,
+        impulse_response: np.ndarray,
+        *,
+        sample_rate: int,
+        channel: str,
+        reference_channel: str,
+        alignment_samples: int,
+        direct_timing_meta: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        if not IR_DEBUG_SEGMENT_ENABLED:
+            return None
+        ir64 = impulse_response.astype(np.float64)
+        if not ir64.size:
+            return None
+        ir_abs = np.abs(ir64)
+        global_peak_sample = int(np.argmax(ir_abs))
+        peak_value = float(ir_abs[global_peak_sample])
+        if peak_value <= 0.0:
+            return None
+
+        first_threshold_sample = direct_timing_meta.get("first_threshold_index")
+        selected_direct_sample = int(direct_timing_meta["direct_arrival_index"])
+        reference_peak_sample = int(direct_timing_meta["reference_peak_index"])
+        marker_samples = [global_peak_sample, selected_direct_sample]
+        if first_threshold_sample is not None:
+            marker_samples.append(int(first_threshold_sample))
+        radius = int(IR_DEBUG_SEGMENT_RADIUS_SAMPLES)
+        start = max(0, min(marker_samples) - radius)
+        end = min(ir64.size, max(marker_samples) + radius + 1)
+
+        candidates = [
+            {
+                "sample": int(item["sample"]),
+                "offset_from_peak_samples": int(item.get("offset_from_peak_samples") or 0),
+                "score": float(item.get("score") or 0.0),
+                "support_score": float(item.get("support_score") or 0.0),
+                "local_energy_relative": float(item.get("local_energy_relative") or 0.0),
+                "prominence_relative": float(item.get("prominence_relative") or 0.0),
+                "weak_threshold_edge": bool(item.get("weak_threshold_edge")),
+                "stronger_impulse_region": bool(item.get("stronger_impulse_region")),
+                "in_window": start <= int(item["sample"]) < end,
+            }
+            for item in (direct_timing_meta.get("candidates_chronological") or [])
+            if isinstance(item, dict) and item.get("sample") is not None
+        ]
+
+        segment = []
+        for sample in range(start, end):
+            value = float(ir64[sample])
+            normalized = value / peak_value
+            segment.append(
+                {
+                    "sample": int(sample),
+                    "offset_from_global_peak_samples": int(sample - global_peak_sample),
+                    "offset_from_selected_direct_samples": int(sample - selected_direct_sample),
+                    "value_normalized": round(float(normalized), 8),
+                    "abs_normalized": round(abs(float(normalized)), 8),
+                }
+            )
+
+        return {
+            "schema": "fxroute.ir-debug-segment.v1",
+            "channel": channel,
+            "reference_channel": reference_channel,
+            "sample_rate": int(sample_rate),
+            "alignment_samples": int(alignment_samples),
+            "window_radius_samples": radius,
+            "window_start_sample": int(start),
+            "window_end_sample": int(end),
+            "window_sample_count": int(end - start),
+            "normalization": {
+                "mode": "signed impulse response divided by global absolute IR peak",
+                "global_peak_abs": peak_value,
+            },
+            "markers": {
+                "first_threshold_sample": int(first_threshold_sample) if first_threshold_sample is not None else None,
+                "selected_direct_sample": selected_direct_sample,
+                "global_peak_sample": global_peak_sample,
+                "reference_peak_sample": reference_peak_sample,
+                "arrival_samples": int(direct_timing_meta["relative_samples"]),
+                "selection_rule": str(direct_timing_meta.get("selection_rule") or ""),
+            },
+            "candidate_markers": candidates,
+            "segment": segment,
+        }
+
+    def _save_impulse_response_debug_segment(
+        self,
+        measurement_id: str,
+        debug_segment: Any,
+    ) -> dict[str, Any] | None:
+        if not isinstance(debug_segment, dict):
+            return None
+        try:
+            output_dir = self.diagnostics_dir / "impulse-ir"
+            output_dir.mkdir(parents=True, exist_ok=True)
+            channel = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(debug_segment.get("channel") or "channel")).strip("-") or "channel"
+            base_name = f"{measurement_id}-{channel}-ir-segment"
+            json_path = output_dir / f"{base_name}.json"
+            csv_path = output_dir / f"{base_name}.csv"
+            payload = deepcopy(debug_segment)
+            payload["measurement_id"] = measurement_id
+            payload["generated_at"] = self._utc_now()
+            json_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+            marker_names_by_sample: dict[int, list[str]] = {}
+            for name, value in (payload.get("markers") or {}).items():
+                if name.endswith("_sample") and value is not None:
+                    marker_names_by_sample.setdefault(int(value), []).append(name)
+            for index, candidate in enumerate(payload.get("candidate_markers") or []):
+                sample = candidate.get("sample")
+                if sample is not None:
+                    marker_names_by_sample.setdefault(int(sample), []).append(f"candidate_{index + 1}")
+
+            with csv_path.open("w", encoding="utf-8", newline="") as csv_file:
+                writer = csv.DictWriter(
+                    csv_file,
+                    fieldnames=[
+                        "measurement_id",
+                        "channel",
+                        "sample_rate",
+                        "sample",
+                        "offset_from_global_peak_samples",
+                        "offset_from_selected_direct_samples",
+                        "value_normalized",
+                        "abs_normalized",
+                        "markers",
+                    ],
+                )
+                writer.writeheader()
+                for item in payload.get("segment") or []:
+                    sample = int(item["sample"])
+                    writer.writerow(
+                        {
+                            "measurement_id": measurement_id,
+                            "channel": payload.get("channel"),
+                            "sample_rate": payload.get("sample_rate"),
+                            "sample": sample,
+                            "offset_from_global_peak_samples": item.get("offset_from_global_peak_samples"),
+                            "offset_from_selected_direct_samples": item.get("offset_from_selected_direct_samples"),
+                            "value_normalized": item.get("value_normalized"),
+                            "abs_normalized": item.get("abs_normalized"),
+                            "markers": "|".join(marker_names_by_sample.get(sample, [])),
+                        }
+                    )
+
+            return {
+                "enabled": True,
+                "schema": payload.get("schema"),
+                "json_path": str(json_path),
+                "csv_path": str(csv_path),
+                "window_radius_samples": payload.get("window_radius_samples"),
+                "window_start_sample": payload.get("window_start_sample"),
+                "window_end_sample": payload.get("window_end_sample"),
+                "window_sample_count": payload.get("window_sample_count"),
+                "normalization": payload.get("normalization"),
+            }
+        except Exception as exc:
+            logger.warning("Unable to save measurement IR debug segment for %s: %s", measurement_id, exc)
+            return {
+                "enabled": True,
+                "error": str(exc),
+            }
+
 
 
 
@@ -789,8 +982,13 @@ class MeasurementStore:
         timestamp = datetime.now(timezone.utc).replace(microsecond=0)
         created_at = timestamp.isoformat().replace("+00:00", "Z")
         label = f"Current sweep {timestamp.strftime('%Y-%m-%d %H:%M:%S UTC')}"
+        measurement_id = f"sweep-{timestamp.strftime('%Y%m%d-%H%M%S')}-{uuid4().hex[:6]}"
+        impulse_response_debug = self._save_impulse_response_debug_segment(
+            measurement_id,
+            analysis.get("_impulse_response_debug_segment"),
+        )
         payload = {
-            "id": f"sweep-{timestamp.strftime('%Y%m%d-%H%M%S')}-{uuid4().hex[:6]}",
+            "id": measurement_id,
             "name": label,
             "created_at": created_at,
             "input_device": input_device,
@@ -844,6 +1042,8 @@ class MeasurementStore:
                 "variable_window": analysis.get("variable_window"),
             },
         }
+        if impulse_response_debug:
+            payload["analysis"]["impulse_response"]["debug_segment"] = impulse_response_debug
         return self._normalize_measurement(payload)
 
     def _analyze_sweep_capture(
@@ -965,6 +1165,14 @@ class MeasurementStore:
             top_timing_candidates_by_score,
             top_timing_candidates_chronological,
         )
+        impulse_response_debug_segment = self._build_impulse_response_debug_segment(
+            impulse_response,
+            sample_rate=sample_rate,
+            channel=channel,
+            reference_channel=reference_channel_label,
+            alignment_samples=aligned_start,
+            direct_timing_meta=direct_timing_meta,
+        )
         display_data = self._build_display_points(
             frequencies=response_frequencies,
             magnitude=response_magnitude,
@@ -1064,6 +1272,7 @@ class MeasurementStore:
                 "peak_dbfs": round(float(ir_meta["peak_dbfs"]), 2),
             },
             "variable_window": variable_window_meta,
+            "_impulse_response_debug_segment": impulse_response_debug_segment,
         }
         hard_failures = [item["message"] for item in quality_checks["items"] if item.get("level") == "error"]
         if hard_failures:
