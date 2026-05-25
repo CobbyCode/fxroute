@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Placed the Top 40 smart favorite card directly into the Album Favorites grid ahead of manually starred albums, removing the separate Smart Favorites row.
 
 ## 0.7.1 (2026-05-25)
 - Made Minimum phase aligned convolver generation block symmetrically on excessive signed L/R timing offsets, using the absolute offset against a 6 ms safety limit and showing explicit timing interpretation/correction hints.

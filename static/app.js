@@ -3426,9 +3426,9 @@ function renderAlbums() {
     if (loadingEl) loadingEl.style.display = 'none';
 
     const smartHtml = showSmartFavorites ? `
-        <div class="album-grid-heading" style="grid-column:1/-1;color:var(--text-secondary);font-size:0.82rem;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;margin:0.15rem 0 -0.35rem;">Smart Favorites</div>
         <div class="album-card album-card-smart" data-smart-favorite="top40" role="button" tabindex="0">
             <div class="album-art-wrap">
+                <div class="album-smart-badge">Smart Mix</div>
                 <img class="album-art" src="/static/Top40.png?v=${state.library.albumsCacheToken || ''}"
                      alt="Top 40"
                      onload="this.classList.add('loaded')"
@@ -3437,7 +3437,6 @@ function renderAlbums() {
             <div class="album-name">Top 40</div>
             <div class="album-artist">Most Played Tracks</div>
         </div>
-        <div class="album-grid-heading album-grid-heading-manual" style="grid-column:1/-1;color:var(--text-secondary);font-size:0.82rem;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;margin:0.5rem 0 -0.35rem;">Favorite Albums</div>
     ` : '';
     const manualHtml = albums.length > 0 ? albums.map(album => {
         const coverUrl = `/api/albums/${album.id}/cover?v=${state.library.albumsCacheToken || ''}`;
@@ -3453,7 +3452,7 @@ function renderAlbums() {
             <div class="album-name">${escapeHtml(album.name)}</div>
             <div class="album-artist">${escapeHtml(album.artist)}</div>
         </div>`;
-    }).join('') : (showSmartFavorites ? '<div class="album-empty-note" style="grid-column:1/-1;color:var(--text-muted);font-size:0.92rem;padding:0.35rem 0 0.8rem;">No favorite albums yet.</div>' : '');
+    }).join('') : '';
     elements.albumsGrid.innerHTML = smartHtml + manualHtml;
     elements.albumsGrid.classList.remove('hidden');
 
