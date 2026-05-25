@@ -90,13 +90,9 @@ IR_DIRECT_SUPPORT_WINDOW_SECONDS = 0.00035
 IR_DIRECT_NEARBY_WINDOW_SECONDS = 0.0009
 IR_DIRECT_THRESHOLD_EDGE_SAMPLES = 12
 IR_DIRECT_PROMOTION_WINDOW_SECONDS = 0.004
-IR_DIRECT_PROMOTION_MIN_GAP_SAMPLES = 6
 IR_DIRECT_PROMOTION_SUPPORT_RATIO = 1.6
 IR_DIRECT_PROMOTION_SCORE_RATIO = 1.25
 IR_DIRECT_PROMOTION_ENERGY_RATIO = 1.45
-IR_DIRECT_WEAK_SUPPORT_SCORE = 0.12
-IR_DIRECT_PROMOTION_MIN_SUPPORT_SCORE = 0.22
-IR_DIRECT_PROMOTION_MIN_ENERGY_RELATIVE = 0.35
 IR_DIRECT_PROMINENCE_REFERENCE = 0.15
 HOST_SWEEP_RECORD_PREROLL_SECONDS = 0.75
 HOST_SWEEP_RECORD_POSTROLL_SECONDS = 0.75
@@ -1772,22 +1768,16 @@ class MeasurementStore:
             selected_candidate = eligible_candidates[0]
             skipped_early_candidate = None
             promotion_window_samples = max(
-                IR_DIRECT_PROMOTION_MIN_GAP_SAMPLES,
+                IR_DIRECT_WEAK_EARLY_MIN_GAP_SAMPLES,
                 int(round(sample_rate * IR_DIRECT_PROMOTION_WINDOW_SECONDS)),
             )
             first_sample = int(selected_candidate["sample"])
-            selected_threshold_distance = selected_candidate.get("distance_from_first_threshold_samples")
-            selected_threshold_edge_distance = (
-                selected_threshold_distance is None
-                or int(selected_threshold_distance or 0) <= IR_DIRECT_THRESHOLD_EDGE_SAMPLES
-            )
             early_candidate_is_weak = bool(selected_candidate.get("weak_threshold_edge")) or (
                 float(selected_candidate["_score"]) <= IR_DIRECT_WEAK_EARLY_RELATIVE
-                and selected_threshold_edge_distance
-            ) or (
-                float(selected_candidate["support_score"]) <= IR_DIRECT_WEAK_SUPPORT_SCORE
-                and float(selected_candidate["prominence_score"]) < 0.45
-                and selected_threshold_edge_distance
+                and (
+                    selected_candidate.get("distance_from_first_threshold_samples") is None
+                    or int(selected_candidate.get("distance_from_first_threshold_samples") or 0) <= IR_DIRECT_THRESHOLD_EDGE_SAMPLES
+                )
             )
             if early_candidate_is_weak and len(eligible_candidates) > 1:
                 selected_support = float(selected_candidate["support_score"])
@@ -1798,29 +1788,16 @@ class MeasurementStore:
                     sample_gap = int(candidate["sample"]) - first_sample
                     if sample_gap > promotion_window_samples:
                         break
-                    if sample_gap < IR_DIRECT_PROMOTION_MIN_GAP_SAMPLES:
+                    if sample_gap < IR_DIRECT_WEAK_EARLY_MIN_GAP_SAMPLES:
                         continue
                     candidate_support = float(candidate["support_score"])
                     candidate_score = float(candidate["_score"])
                     candidate_energy = float(candidate["local_energy_relative"])
                     candidate_prominence = float(candidate["prominence_relative"])
-                    candidate_prominence_score = float(candidate["prominence_score"])
-                    if (
-                        sample_gap < IR_DIRECT_WEAK_EARLY_MIN_GAP_SAMPLES
-                        and candidate_prominence_score < 0.35
-                        and candidate_score < 0.09
-                    ):
-                        continue
-                    clearly_better_support = (
-                        candidate_support >= selected_support * IR_DIRECT_PROMOTION_SUPPORT_RATIO
-                        and candidate_support >= IR_DIRECT_PROMOTION_MIN_SUPPORT_SCORE
-                    )
+                    clearly_better_support = candidate_support >= selected_support * IR_DIRECT_PROMOTION_SUPPORT_RATIO
                     stronger_shape = (
                         candidate_score >= selected_score_candidate * IR_DIRECT_PROMOTION_SCORE_RATIO
-                        or candidate_energy >= max(
-                            IR_DIRECT_PROMOTION_MIN_ENERGY_RELATIVE,
-                            selected_energy * IR_DIRECT_PROMOTION_ENERGY_RATIO,
-                        )
+                        or candidate_energy >= selected_energy * IR_DIRECT_PROMOTION_ENERGY_RATIO
                         or candidate_prominence >= selected_prominence * IR_DIRECT_PROMOTION_SCORE_RATIO
                     )
                     if clearly_better_support and stronger_shape and not bool(candidate.get("weak_threshold_edge")):
@@ -1877,12 +1854,8 @@ class MeasurementStore:
             "weak_early_relative": float(IR_DIRECT_WEAK_EARLY_RELATIVE),
             "weak_early_min_gap_samples": int(IR_DIRECT_WEAK_EARLY_MIN_GAP_SAMPLES),
             "weak_early_next_ratio": float(IR_DIRECT_WEAK_EARLY_NEXT_RATIO),
-            "promotion_window_samples": int(max(IR_DIRECT_PROMOTION_MIN_GAP_SAMPLES, int(round(sample_rate * IR_DIRECT_PROMOTION_WINDOW_SECONDS)))),
-            "promotion_min_gap_samples": int(IR_DIRECT_PROMOTION_MIN_GAP_SAMPLES),
+            "promotion_window_samples": int(max(IR_DIRECT_WEAK_EARLY_MIN_GAP_SAMPLES, int(round(sample_rate * IR_DIRECT_PROMOTION_WINDOW_SECONDS)))),
             "promotion_support_ratio": float(IR_DIRECT_PROMOTION_SUPPORT_RATIO),
-            "weak_support_score": float(IR_DIRECT_WEAK_SUPPORT_SCORE),
-            "promotion_min_support_score": float(IR_DIRECT_PROMOTION_MIN_SUPPORT_SCORE),
-            "promotion_min_energy_relative": float(IR_DIRECT_PROMOTION_MIN_ENERGY_RELATIVE),
             "candidate_count": len(candidates),
             "candidates": candidate_summary_by_score,
             "candidates_by_score": candidate_summary_by_score,
