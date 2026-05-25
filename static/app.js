@@ -5707,6 +5707,13 @@ function getMeasurementConvolverTimingDelta(leftTiming, rightTiming) {
             referencePeakSample: leftTiming.referencePeakSample ?? null,
             referenceAnchorSample: leftTiming.referenceAnchorSample ?? null,
             arrivalSamples: leftTiming.arrivalSamples ?? null,
+            selectedScore: leftTiming.selectedScore ?? null,
+            confidence: leftTiming.confidence ?? null,
+            selectionRule: leftTiming.selectionRule || '',
+            firstThresholdSample: leftTiming.firstThresholdSample ?? null,
+            firstThresholdOffsetFromPeakSamples: leftTiming.firstThresholdOffsetFromPeakSamples ?? null,
+            candidateCount: leftTiming.candidateCount ?? null,
+            topCandidates: leftTiming.topCandidates || [],
             sampleRate: leftTiming.sampleRate ?? null,
         },
         right: {
@@ -5718,6 +5725,13 @@ function getMeasurementConvolverTimingDelta(leftTiming, rightTiming) {
             referencePeakSample: rightTiming.referencePeakSample ?? null,
             referenceAnchorSample: rightTiming.referenceAnchorSample ?? null,
             arrivalSamples: rightTiming.arrivalSamples ?? null,
+            selectedScore: rightTiming.selectedScore ?? null,
+            confidence: rightTiming.confidence ?? null,
+            selectionRule: rightTiming.selectionRule || '',
+            firstThresholdSample: rightTiming.firstThresholdSample ?? null,
+            firstThresholdOffsetFromPeakSamples: rightTiming.firstThresholdOffsetFromPeakSamples ?? null,
+            candidateCount: rightTiming.candidateCount ?? null,
+            topCandidates: rightTiming.topCandidates || [],
             sampleRate: rightTiming.sampleRate ?? null,
         },
         deltaMs,
@@ -5802,6 +5816,15 @@ function getMeasurementDirectArrivalTiming(measurement = {}) {
         return { available: false, reason: 'missing-direct-arrival-timing' };
     }
     const peakSample = Number(impulse?.peak_index);
+    const topCandidates = Array.isArray(impulse?.direct_candidates)
+        ? impulse.direct_candidates.slice(0, 8).map((candidate) => ({
+            sample: Number.isFinite(Number(candidate?.sample)) ? Number(candidate.sample) : null,
+            offsetFromPeakSamples: Number.isFinite(Number(candidate?.offset_from_peak_samples)) ? Number(candidate.offset_from_peak_samples) : null,
+            offsetFromPeakMs: Number.isFinite(Number(candidate?.offset_from_peak_ms)) ? Number(candidate.offset_from_peak_ms) : null,
+            score: Number.isFinite(Number(candidate?.score)) ? Number(candidate.score) : null,
+            relativeDb: Number.isFinite(Number(candidate?.relative_db)) ? Number(candidate.relative_db) : null,
+        }))
+        : [];
     return {
         available: true,
         arrivalMs,
@@ -5810,6 +5833,13 @@ function getMeasurementDirectArrivalTiming(measurement = {}) {
         directSample,
         referencePeakSample,
         referenceAnchorSample: Number.isFinite(referenceAnchorSample) ? referenceAnchorSample : null,
+        selectedScore: Number.isFinite(Number(impulse?.direct_selected_score)) ? Number(impulse.direct_selected_score) : null,
+        confidence: Number.isFinite(Number(impulse?.direct_confidence)) ? Number(impulse.direct_confidence) : null,
+        selectionRule: impulse?.direct_selection_rule || '',
+        firstThresholdSample: Number.isFinite(Number(impulse?.direct_first_threshold_index)) ? Number(impulse.direct_first_threshold_index) : null,
+        firstThresholdOffsetFromPeakSamples: Number.isFinite(Number(impulse?.direct_first_threshold_offset_from_peak_samples)) ? Number(impulse.direct_first_threshold_offset_from_peak_samples) : null,
+        candidateCount: Number.isFinite(Number(impulse?.direct_candidate_count)) ? Number(impulse.direct_candidate_count) : null,
+        topCandidates,
         sampleRate,
         channel,
         measurementId: measurement?.id || '',
