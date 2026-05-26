@@ -10,6 +10,9 @@
 })(typeof globalThis !== 'undefined' ? globalThis : window, function (root) {
     'use strict';
 
+    const HYBRID_MIN_FULL_HZ = 300;
+    const HYBRID_LINEAR_FULL_HZ = 800;
+
     function measurementSmoothingHalfWindowOctaves(mode = '1/6-oct') {
         switch (String(mode || '1/6-oct')) {
             case 'raw': return 0;
@@ -228,6 +231,31 @@
         return { real: spectrumReal, imag: spectrumImag };
     }
 
+    function getMeasurementConvolverHybridLinearWeight(frequencyHz) {
+        if (frequencyHz <= HYBRID_MIN_FULL_HZ) return 0;
+        if (frequencyHz >= HYBRID_LINEAR_FULL_HZ) return 1;
+        const ratio = (Math.log(Math.max(1, frequencyHz)) - Math.log(HYBRID_MIN_FULL_HZ))
+            / Math.max(1e-9, Math.log(HYBRID_LINEAR_FULL_HZ) - Math.log(HYBRID_MIN_FULL_HZ));
+        return 0.5 - (0.5 * Math.cos(Math.PI * Math.min(1, Math.max(0, ratio))));
+    }
+
+    function buildMeasurementConvolverHybridSpectrum(magnitudes, sampleRate, length) {
+        const half = Math.floor(length / 2);
+        const minimumSpectrum = buildMeasurementConvolverMinimumSpectrum(magnitudes, length);
+        const real = new Float64Array(length);
+        const imag = new Float64Array(length);
+        for (let bin = 0; bin < length; bin += 1) {
+            const mirroredBin = bin <= half ? bin : length - bin;
+            const frequency = (mirroredBin * sampleRate) / length;
+            const linearWeight = getMeasurementConvolverHybridLinearWeight(frequency);
+            const minimumWeight = 1 - linearWeight;
+            const linearReal = magnitudes[mirroredBin] || 0;
+            real[bin] = (minimumSpectrum.real[bin] * minimumWeight) + (linearReal * linearWeight);
+            imag[bin] = minimumSpectrum.imag[bin] * minimumWeight;
+        }
+        return { real, imag };
+    }
+
     function buildMeasurementConvolverImpulseFromSpectrum(real, imag) {
         const length = real.length;
         const workReal = new Float64Array(real);
@@ -242,6 +270,10 @@
         const magnitudes = buildMeasurementConvolverMagnitudeBins(analysis, sampleRate, length, autoGainDb);
         if (phaseMode === 'minimum') {
             const spectrum = buildMeasurementConvolverMinimumSpectrum(magnitudes, length);
+            return buildMeasurementConvolverImpulseFromSpectrum(spectrum.real, spectrum.imag);
+        }
+        if (phaseMode === 'hybrid_aligned') {
+            const spectrum = buildMeasurementConvolverHybridSpectrum(magnitudes, sampleRate, length);
             return buildMeasurementConvolverImpulseFromSpectrum(spectrum.real, spectrum.imag);
         }
         return buildMeasurementConvolverLinearImpulseFromMagnitudes(magnitudes, length);
@@ -443,6 +475,7 @@
         buildMeasurementConvolverLinearImpulseFromMagnitudes,
         fftMeasurementConvolverComplex,
         buildMeasurementConvolverMinimumSpectrum,
+        buildMeasurementConvolverHybridSpectrum,
         buildMeasurementConvolverImpulseFromSpectrum,
         buildMeasurementConvolverImpulse,
         writeMeasurementConvolverWav,

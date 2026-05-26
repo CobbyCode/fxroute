@@ -5041,6 +5041,8 @@ const measurementCurrentColor = '#22c55e';
 const measurementPeqPalette = ['#60a5fa', '#f59e0b', '#f472b6', '#a78bfa'];
 const measurementPeqTypes = ['bell', 'low_shelf', 'high_shelf', 'low_pass', 'high_pass', 'notch', 'gain'];
 const MEASUREMENT_CONVOLVER_TIMING_SAFETY_LIMIT_MS = 6.0;
+const measurementConvolverPhaseModes = ['linear', 'minimum', 'minimum_aligned', 'hybrid_aligned'];
+const measurementConvolverAlignedPhaseModes = ['minimum_aligned', 'hybrid_aligned'];
 const measurementConvolverCurves = {
     neutral: { label: 'Neutral', shortLabel: 'Neutral', points: [[20, 0], [20000, 0]] },
     bass_shelf: { label: 'Bass Shelf', shortLabel: 'Bass', points: [[20, 4], [30, 4], [50, 3], [80, 2], [120, 1], [200, 0], [1000, 0], [20000, 0]] },
@@ -5151,13 +5153,13 @@ function ensureMeasurementConvolverState() {
     conv.sampleRate = ['44100', '48000', '88200', '96000', '176400', '192000'].includes(String(conv.sampleRate)) ? String(conv.sampleRate) : defaults.sampleRate;
     const qualityAliases = { auto: 'linear_4096', normal: 'linear_4096', high: 'linear_8192' };
     const incomingQuality = qualityAliases[String(conv.quality)] || String(conv.quality || defaults.quality);
-    const hasValidPhaseMode = ['linear', 'minimum', 'minimum_aligned'].includes(String(conv.phaseMode));
+    const hasValidPhaseMode = measurementConvolverPhaseModes.includes(String(conv.phaseMode));
     const hasValidIrLength = measurementConvolverTapOptions.includes(Number(conv.irLength));
     if ((!hasValidPhaseMode || !hasValidIrLength) && getMeasurementConvolverTypeKeys().includes(incomingQuality)) {
         conv.phaseMode = getMeasurementConvolverPhaseModeForType(incomingQuality);
         conv.irLength = String(getMeasurementConvolverFirLengthForType(incomingQuality));
     }
-    conv.phaseMode = ['linear', 'minimum', 'minimum_aligned'].includes(String(conv.phaseMode)) ? String(conv.phaseMode) : defaults.phaseMode;
+    conv.phaseMode = measurementConvolverPhaseModes.includes(String(conv.phaseMode)) ? String(conv.phaseMode) : defaults.phaseMode;
     conv.irLength = measurementConvolverTapOptions.includes(Number(conv.irLength)) ? String(conv.irLength) : defaults.irLength;
     conv.quality = `${conv.phaseMode}_${conv.irLength}`;
     if (!conv.draft || typeof conv.draft !== 'object') conv.draft = { left: null, right: null, presetName: '', nameTouched: false };
@@ -5204,7 +5206,7 @@ function updateMeasurementConvolverField(field, value) {
     if (field === 'maxCutDb') conv.maxCutDb = [-3, -6, -9, -12, -18, -24].includes(Number(value)) ? Number(value) : conv.maxCutDb;
     if (field === 'dipGuard') conv.dipGuard = ['off', 'gentle', 'adaptive'].includes(String(value)) ? String(value) : conv.dipGuard;
     if (field === 'sampleRate') conv.sampleRate = String(value || '48000');
-    if (field === 'phaseMode') conv.phaseMode = ['linear', 'minimum', 'minimum_aligned'].includes(String(value)) ? String(value) : conv.phaseMode;
+    if (field === 'phaseMode') conv.phaseMode = measurementConvolverPhaseModes.includes(String(value)) ? String(value) : conv.phaseMode;
     if (field === 'irLength') conv.irLength = measurementConvolverTapOptions.includes(Number(value)) ? String(value) : conv.irLength;
     if (field === 'quality') {
         const quality = String(value || 'linear_4096');
@@ -5563,7 +5565,7 @@ function buildMeasurementConvolverWarnings(analyses = []) {
     const conv = ensureMeasurementConvolverState();
     const warnings = [];
     if (analyses.some((analysis) => analysis && analysis.lowBassBoost)) warnings.push('Deep bass boost can demand much more amplifier power and speaker excursion.');
-    if (conv.phaseMode === 'minimum_aligned') {
+    if (measurementConvolverAlignedPhaseModes.includes(conv.phaseMode)) {
         const leftTiming = conv.draft?.left?.timing || getMeasurementDirectArrivalTiming(getMeasurementConvolverMeasurementForSide('left'));
         const rightTiming = conv.draft?.right?.timing || getMeasurementDirectArrivalTiming(getMeasurementConvolverMeasurementForSide('right'));
         const safetyMessage = getMeasurementConvolverTimingSafetyMessage(getMeasurementConvolverTimingDelta(leftTiming, rightTiming));
@@ -5605,11 +5607,11 @@ function getMeasurementConvolverSampleRate() {
 }
 
 const measurementConvolverTapOptions = [2048, 4096, 8192, 16384, 32768];
-const measurementConvolverTypeOptions = ['linear', 'minimum', 'minimum_aligned'].flatMap((phaseMode) => measurementConvolverTapOptions.map((taps) => ({
+const measurementConvolverTypeOptions = measurementConvolverPhaseModes.flatMap((phaseMode) => measurementConvolverTapOptions.map((taps) => ({
     key: `${phaseMode}_${taps}`,
     phaseMode,
     taps,
-    label: `${phaseMode === 'minimum' ? 'Min.' : phaseMode === 'minimum_aligned' ? 'Min.align' : 'Linear'} phase ${taps}`,
+    label: `${phaseMode === 'minimum' ? 'Min.' : phaseMode === 'minimum_aligned' ? 'Min.align' : phaseMode === 'hybrid_aligned' ? 'Hybrid aligned' : 'Linear'} phase ${taps}`,
 })));
 
 function getMeasurementConvolverTypeOption(type = 'linear_4096') {
@@ -5627,12 +5629,14 @@ function getMeasurementConvolverPhaseModeForType(type = 'linear_4096') {
 function getMeasurementConvolverPhaseLabel(phaseMode = 'linear') {
     if (phaseMode === 'minimum') return 'Minimum phase FIR';
     if (phaseMode === 'minimum_aligned') return 'Minimum phase aligned FIR';
+    if (phaseMode === 'hybrid_aligned') return 'Hybrid aligned FIR';
     return 'Linear FIR';
 }
 
 function getMeasurementConvolverPhaseTag(phaseMode = 'linear') {
     if (phaseMode === 'minimum') return 'Min';
     if (phaseMode === 'minimum_aligned') return 'Min.align';
+    if (phaseMode === 'hybrid_aligned') return 'Hyb.align';
     return 'Lin';
 }
 
@@ -5893,14 +5897,14 @@ function appendMeasurementConvolverExtras(formData) {
 async function createMeasurementConvolverPreset(mode, analyses, sharedAutoGainDb, itemName, options = {}) {
     const sampleRate = Number(options.sampleRate) || getMeasurementConvolverSampleRate();
     const length = Number(options.irLength) || getMeasurementConvolverFirLength();
-    const phaseMode = ['linear', 'minimum', 'minimum_aligned'].includes(options.phaseMode) ? options.phaseMode : ensureMeasurementConvolverState().phaseMode;
+    const phaseMode = measurementConvolverPhaseModes.includes(options.phaseMode) ? options.phaseMode : ensureMeasurementConvolverState().phaseMode;
     const filenameBase = itemName.replace(/[^a-z0-9._-]+/gi, '-').replace(/^-+|-+$/g, '') || 'measurement-convolver';
     const bySide = Object.fromEntries(analyses.map((analysis) => [analysis.side, analysis]));
     if (mode === 'both') {
         const applyPhaseMode = phaseMode === 'minimum_aligned' ? 'minimum' : phaseMode;
         const leftImpulse = buildMeasurementConvolverImpulse(bySide.left, sampleRate, length, sharedAutoGainDb, applyPhaseMode);
         const rightImpulse = buildMeasurementConvolverImpulse(bySide.right, sampleRate, length, sharedAutoGainDb, applyPhaseMode);
-        const [finalLeft, finalRight] = phaseMode === 'minimum_aligned'
+        const [finalLeft, finalRight] = measurementConvolverAlignedPhaseModes.includes(phaseMode)
             ? alignStereoImpulsesForMinimumAligned(leftImpulse, rightImpulse, sampleRate, options.leftTiming || null, options.rightTiming || null, Number(options.timingSafetyLimitMs) || MEASUREMENT_CONVOLVER_TIMING_SAFETY_LIMIT_MS)
             : [leftImpulse, rightImpulse];
         const leftBlob = writeMeasurementConvolverWav([finalLeft], sampleRate);
@@ -5943,7 +5947,7 @@ function takeMeasurementConvolverToDraft(mode = 'both') {
         return;
     }
     const conv = ensureMeasurementConvolverState();
-    if (conv.phaseMode === 'minimum_aligned' && sides.length === 2) {
+    if (measurementConvolverAlignedPhaseModes.includes(conv.phaseMode) && sides.length === 2) {
         const sourceTimings = sides.map((side) => getMeasurementDirectArrivalTiming(getMeasurementConvolverMeasurementForSide(side)));
         const leftTimingOk = sourceTimings[0]?.available === true;
         const rightTimingOk = sourceTimings[1]?.available === true;
@@ -6021,7 +6025,7 @@ async function createMeasurementConvolverPresetFromDraft() {
             return;
         }
         const draftPhaseMode = leftMeta.phaseMode || rightMeta.phaseMode || conv.phaseMode;
-        if (draftPhaseMode === 'minimum_aligned') {
+        if (measurementConvolverAlignedPhaseModes.includes(draftPhaseMode)) {
             const leftTimingOk = leftDraft?.timing?.available === true;
             const rightTimingOk = rightDraft?.timing?.available === true;
             if (!leftTimingOk || !rightTimingOk) {
@@ -7621,11 +7625,11 @@ function renderMeasurementPanel() {
             draftStatus = 'Draft ready · Timing unavailable';
         } else {
             draftStatus = hasCreatedConvolver ? 'Convolver preset created' : 'No draft staged';
-            if (currentTimingDelta && conv.phaseMode === 'minimum_aligned') {
+            if (currentTimingDelta && measurementConvolverAlignedPhaseModes.includes(conv.phaseMode)) {
                 draftStatus += ` · ${formatMeasurementConvolverTimingRelation(currentTimingDelta)}`;
             }
         }
-        if (summaryTimingDelta && (leftDraft && rightDraft || (left && right && conv.phaseMode === 'minimum_aligned'))) {
+        if (summaryTimingDelta && (leftDraft && rightDraft || (left && right && measurementConvolverAlignedPhaseModes.includes(conv.phaseMode)))) {
             if (summaryTimingDelta.absMs > MEASUREMENT_CONVOLVER_TIMING_SAFETY_LIMIT_MS) {
                 draftDetails.push('Filter not created because timing offset exceeds safety limit.');
             }
