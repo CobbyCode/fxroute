@@ -1,10 +1,14 @@
 # Changelog
 
 ## Unreleased
+- Default Spotify autostart to enabled for fresh installs so the local Spotify desktop client is relaunched after a desktop/session restart when available.
 - Placed the Top 40 smart favorite card directly into the Album Favorites grid ahead of manually starred albums, removing the separate Smart Favorites row.
 - Added L/R direct-arrival timing diagnostics for measurements and changed direct-arrival selection to prefer the first local impulse peak above the existing threshold instead of a weak threshold-edge sample.
 - Extended L/R direct-arrival diagnostics with score-sorted and chronological candidate lists, local energy/prominence support metrics, and conservative rejection of weak threshold-edge candidates when a nearby stronger impulse region is detected.
 - Added optional measurement IR debug sidecars that save a normalized raw impulse-response segment around the direct-arrival/peak region for offline L/R timing diagnosis.
+- Added measurement routing diagnostics for host-local sweeps, including playback/capture nodes, monitor-reference links, sweep level metadata, PipeWire snapshots, and `pw-play`/`pw-record` warning lines.
+- Aligned measurement diagnostics with the existing `LOG_LEVEL` workflow: normal `INFO` logging now emits short measurement summaries, warnings stay visible at `WARNING`, and detailed routing snapshots, candidate lists, and raw IR sidecars are limited to `DEBUG`/`VERBOSE`.
+- Hardened measurement job finalization in the frontend so completed/ready jobs always leave the active measurement state, clear the job id, restore the start button, and report result-rendering errors without leaving the UI stuck on Cancel Measurement.
 
 ## 0.7.1 (2026-05-25)
 - Made Minimum phase aligned convolver generation block symmetrically on excessive signed L/R timing offsets, using the absolute offset against a 6 ms safety limit and showing explicit timing interpretation/correction hints.

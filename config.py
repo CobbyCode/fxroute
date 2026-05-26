@@ -10,13 +10,24 @@ from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+def _normalize_log_level(level: str | None) -> str:
+    raw_level = str(level or "INFO").strip().upper()
+    aliases = {
+        "WARN": "WARNING",
+        "VERBOSE": "DEBUG",
+    }
+    return aliases.get(raw_level, raw_level)
+
+
 def setup_logging(level: str = "INFO"):
     """Configure stdout logging."""
+    normalized_level = _normalize_log_level(level)
     logging.basicConfig(
-        level=getattr(logging, level.upper()),
+        level=getattr(logging, normalized_level, logging.INFO),
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
         handlers=[logging.StreamHandler(sys.stdout)],
+        force=True,
     )
 
 
@@ -115,9 +126,10 @@ def get_settings() -> Settings:
     """Get or create global settings instance."""
     global settings
     if settings is None:
-        setup_logging()
+        setup_logging(os.environ.get("LOG_LEVEL", "INFO"))
         try:
             settings = Settings()
+            setup_logging(settings.LOG_LEVEL)
         except Exception as e:
             logging.error(f"Failed to load settings: {e}")
             # Show friendly error on stderr and exit

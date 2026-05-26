@@ -5201,7 +5201,8 @@ async def mpv_not_installed_handler(request: Request, exc: MPVNotInstalledError)
     )
 
 def run_server():
-    uvicorn.run("main:app", host=settings.HOST, port=settings.PORT, log_level=settings.LOG_LEVEL.lower(), reload=False)
+    uvicorn_log_level = "debug" if str(settings.LOG_LEVEL).strip().lower() == "verbose" else settings.LOG_LEVEL.lower()
+    uvicorn.run("main:app", host=settings.HOST, port=settings.PORT, log_level=uvicorn_log_level, reload=False)
 
 if __name__ == "__main__":
     settings = get_settings()

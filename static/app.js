@@ -6851,6 +6851,50 @@ function sleep(ms) {
     return new Promise(resolve => window.setTimeout(resolve, ms));
 }
 
+const MEASUREMENT_JOB_SUCCESS_STATES = new Set(['completed', 'complete', 'finished', 'success', 'ready', 'done', 'ok']);
+const MEASUREMENT_JOB_FAILED_STATES = new Set(['failed', 'failure', 'error']);
+const MEASUREMENT_JOB_CANCELLED_STATES = new Set(['cancelled', 'canceled']);
+
+function getMeasurementJobStatus(job = {}) {
+    return String(job?.status || '').trim().toLowerCase();
+}
+
+function getMeasurementJobResultMeasurement(job = {}) {
+    if (job?.result?.measurement && typeof job.result.measurement === 'object') return job.result.measurement;
+    if (job?.measurement && typeof job.measurement === 'object') return job.measurement;
+    if (job?.result && typeof job.result === 'object' && (Array.isArray(job.result.traces) || job.result.summary || job.result.analysis)) return job.result;
+    return null;
+}
+
+function syncMeasurementStartButtonFallback() {
+    if (!elements.measurementStartBtn) return;
+    const measurementState = state.measurement || {};
+    const activeJobRunning = !!measurementState.activeJobId;
+    elements.measurementStartBtn.disabled = measurementState.calibrationUpdating || measurementState.calibrationDeleting
+        ? true
+        : (!activeJobRunning && (measurementState.inputsLoading || !measurementState.hostCaptureAvailable));
+    elements.measurementStartBtn.textContent = activeJobRunning
+        ? 'Cancel measurement'
+        : (measurementState.startInFlight ? 'Starting...' : 'Start host-local sweep');
+}
+
+function renderMeasurementPanelDefensively(context = 'measurement render') {
+    try {
+        renderMeasurementPanel();
+        return true;
+    } catch (error) {
+        console.error(`${context} failed`, error);
+        state.measurement.activeJobId = '';
+        state.measurement.startInFlight = false;
+        state.measurement.statusText = error?.message
+            ? `Measurement finished, but the result could not be rendered: ${error.message}`
+            : 'Measurement finished, but the result could not be rendered.';
+        syncMeasurementStartButtonFallback();
+        showToast(state.measurement.statusText, 'error');
+        return false;
+    }
+}
+
 function logSaveCurrentMeasurementDebug(stage, details = {}) {
     const measurementState = state.measurement || {};
     const current = measurementState.currentMeasurement || null;
@@ -6939,12 +6983,17 @@ async function cancelMeasurement() {
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) throw new Error(data.detail || 'Failed to cancel measurement');
         state.measurement.statusText = String(data.job?.message || 'Measurement cancelled.');
+        if (MEASUREMENT_JOB_CANCELLED_STATES.has(getMeasurementJobStatus(data.job || {}))) {
+            state.measurement.activeJobId = '';
+            state.measurement.startInFlight = false;
+            syncMeasurementStartButtonFallback();
+        }
     } catch (error) {
         console.error('cancelMeasurement failed', error);
         state.measurement.statusText = error.message || 'Failed to cancel measurement';
         showToast(state.measurement.statusText, 'error');
     } finally {
-        renderMeasurementPanel();
+        renderMeasurementPanelDefensively('measurement cancel render');
     }
 }
 
@@ -6955,33 +7004,58 @@ async function pollMeasurementJob(jobId) {
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) throw new Error(data.detail || 'Failed to fetch measurement job');
         const job = data.job || {};
-        state.measurement.activeJobId = String(job.id || jobId);
+        const jobStatus = getMeasurementJobStatus(job);
         state.measurement.statusText = String(job.message || state.measurement.statusText || 'Measurement running…');
-        if (job.status === 'completed' && job.result?.measurement) {
-            state.measurement.currentMeasurement = normalizeMeasurementEntry(job.result.measurement, 0);
-            state.measurement.currentMeasurementName = state.measurement.currentMeasurement.name || '';
-            state.measurement.currentMeasurementSaved = false;
-            state.measurement.reviewVisibilityById[state.measurement.currentMeasurement.id] = !!state.measurement.currentMeasurement.review_traces?.length;
+        if (MEASUREMENT_JOB_SUCCESS_STATES.has(jobStatus)) {
             state.measurement.statusText = String(job.message || 'Measurement finished.');
             state.measurement.activeJobId = '';
-            renderMeasurementPanel();
-            showToast('Measurement finished', 'success');
+            state.measurement.startInFlight = false;
+            syncMeasurementStartButtonFallback();
+            const resultMeasurement = getMeasurementJobResultMeasurement(job);
+            if (resultMeasurement) {
+                try {
+                    state.measurement.currentMeasurement = normalizeMeasurementEntry(resultMeasurement, 0);
+                    state.measurement.currentMeasurementName = state.measurement.currentMeasurement.name || '';
+                    state.measurement.currentMeasurementSaved = false;
+                    state.measurement.reviewVisibilityById[state.measurement.currentMeasurement.id] = !!state.measurement.currentMeasurement.review_traces?.length;
+                } catch (error) {
+                    console.error('measurement result normalization failed', error, job);
+                    state.measurement.statusText = error?.message
+                        ? `Measurement finished, but the result could not be displayed: ${error.message}`
+                        : 'Measurement finished, but the result could not be displayed.';
+                    renderMeasurementPanelDefensively('measurement completion render after normalization failure');
+                    showToast(state.measurement.statusText, 'error');
+                    return;
+                }
+            } else {
+                state.measurement.statusText = String(job.message || 'Measurement finished, but no result data was returned.');
+            }
+            const rendered = renderMeasurementPanelDefensively('measurement completion render');
+            if (resultMeasurement && rendered) showToast('Measurement finished', 'success');
+            if (!resultMeasurement) showToast(state.measurement.statusText, 'warning');
             return;
         }
-        if (job.status === 'failed') {
+        if (MEASUREMENT_JOB_FAILED_STATES.has(jobStatus)) {
             state.measurement.activeJobId = '';
+            state.measurement.startInFlight = false;
+            syncMeasurementStartButtonFallback();
             throw new Error(job.error?.detail || job.message || 'Measurement failed');
         }
-        if (job.status === 'cancelled') {
+        if (MEASUREMENT_JOB_CANCELLED_STATES.has(jobStatus)) {
             state.measurement.activeJobId = '';
+            state.measurement.startInFlight = false;
             state.measurement.statusText = String(job.message || 'Measurement cancelled.');
-            renderMeasurementPanel();
+            renderMeasurementPanelDefensively('measurement cancellation render');
             showToast('Measurement cancelled', 'success');
             return;
         }
-        renderMeasurementPanel();
+        state.measurement.activeJobId = String(job.id || jobId);
+        renderMeasurementPanelDefensively('measurement polling render');
         await sleep(800);
     }
+    state.measurement.activeJobId = '';
+    state.measurement.startInFlight = false;
+    syncMeasurementStartButtonFallback();
     throw new Error('Measurement job timed out while waiting for completion');
 }
 

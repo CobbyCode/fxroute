@@ -141,6 +141,10 @@ MEASUREMENT_SCOPE_NOTE = (
 )
 
 
+def _detailed_measurement_diagnostics_enabled() -> bool:
+    return logger.isEnabledFor(logging.DEBUG)
+
+
 class CaptureQualityError(RuntimeError):
     def __init__(self, capture_label: str, items: list[dict[str, Any]], analysis: dict[str, Any] | None = None):
         self.capture_label = capture_label
@@ -662,17 +666,54 @@ class MeasurementStore:
         play_timed_out = False
         record_stdout = ""
         record_stderr = ""
+        detailed_diagnostics_enabled = _detailed_measurement_diagnostics_enabled()
+        routing_snapshots: list[dict[str, Any]] = []
+        link_diagnostics: dict[str, Any] = {}
+        if detailed_diagnostics_enabled:
+            routing_snapshots.append(
+                self._build_measurement_routing_snapshot(
+                    label="before-record-link",
+                    playback_target=playback_target,
+                    mic_source_node_name=mic_source_node_name,
+                    reference_capture=reference_capture,
+                    record_node_name=record_node_name,
+                    play_node_name=play_node_name,
+                )
+            )
         try:
-            self._link_host_reference_capture(
+            link_diagnostics = self._link_host_reference_capture(
                 reference_source_node_name=str(reference_capture["source_node_name"]),
                 mic_source_node_name=mic_source_node_name,
                 record_node_name=record_node_name,
                 requested_channel=channel,
             )
+            if detailed_diagnostics_enabled:
+                routing_snapshots.append(
+                    self._build_measurement_routing_snapshot(
+                        label="after-record-link",
+                        playback_target=playback_target,
+                        mic_source_node_name=mic_source_node_name,
+                        reference_capture=reference_capture,
+                        record_node_name=record_node_name,
+                        play_node_name=play_node_name,
+                    )
+                )
             time.sleep(record_preroll_seconds)
 
             play_process = subprocess.Popen(play_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             self._job_processes[job_id] = [record_process, play_process]
+            time.sleep(0.2)
+            if detailed_diagnostics_enabled:
+                routing_snapshots.append(
+                    self._build_measurement_routing_snapshot(
+                        label="during-playback",
+                        playback_target=playback_target,
+                        mic_source_node_name=mic_source_node_name,
+                        reference_capture=reference_capture,
+                        record_node_name=record_node_name,
+                        play_node_name=play_node_name,
+                    )
+                )
             try:
                 play_stdout, play_stderr = play_process.communicate(timeout=duration_seconds + 8)
             except subprocess.TimeoutExpired:
@@ -711,6 +752,18 @@ class MeasurementStore:
             except Exception:
                 pass
             raise
+        finally:
+            if detailed_diagnostics_enabled:
+                routing_snapshots.append(
+                    self._build_measurement_routing_snapshot(
+                        label="after-capture",
+                        playback_target=playback_target,
+                        mic_source_node_name=mic_source_node_name,
+                        reference_capture=reference_capture,
+                        record_node_name=record_node_name,
+                        play_node_name=play_node_name,
+                    )
+                )
 
         if job_id in self._cancelled_jobs:
             raise RuntimeError("Measurement cancelled.")
@@ -758,6 +811,94 @@ class MeasurementStore:
             }
         )
         analysis["reference_path"] = reference_path
+        pipewire_warnings = self._extract_pipewire_warning_lines(
+            {
+                "pw-play.stdout": play_stdout,
+                "pw-play.stderr": play_stderr,
+                "pw-record.stdout": record_stdout,
+                "pw-record.stderr": record_stderr,
+            }
+        )
+        playback_node = self._lookup_pipewire_audio_node(playback_target["target_name"])
+        capture_node = self._lookup_pipewire_audio_node(mic_source_node_name)
+        reference_node = self._lookup_pipewire_audio_node(str(reference_capture.get("source_node_name") or ""))
+        uses_monitor_source = str(reference_capture.get("source_node_name") or "").endswith(".monitor")
+        routing_diagnostics = {
+            "schema": "fxroute.measurement-routing-diagnostics.v1",
+            "detail_enabled": detailed_diagnostics_enabled,
+            "playback_sink": {
+                "target_name": playback_target["target_name"],
+                "target_label": playback_target["target_label"],
+                "active_rate": playback_target.get("active_rate"),
+                "node": playback_node,
+            },
+            "capture_source": {
+                "node_name": mic_source_node_name,
+                "node": capture_node,
+            },
+            "reference_capture": {
+                "source_node_name": str(reference_capture.get("source_node_name") or ""),
+                "sink_node_name": str(reference_capture.get("sink_node_name") or ""),
+                "channel": str(reference_capture.get("channel") or ""),
+                "channel_label": str(reference_capture.get("channel_label") or ""),
+                "uses_monitor_source": uses_monitor_source,
+                "node": reference_node,
+            },
+            "record_node": record_node_name,
+            "play_node": play_node_name,
+            "requested_channel": channel,
+            "sample_rate": sample_rate,
+            "sweep": {
+                key: sweep_meta.get(key)
+                for key in (
+                    "sample_rate",
+                    "samples",
+                    "channels",
+                    "peak_linear",
+                    "peak_dbfs",
+                    "rms_dbfs",
+                    "per_channel_peak_dbfs",
+                    "would_clip_before_write",
+                )
+                if key in sweep_meta
+            },
+            "link_diagnostics": link_diagnostics,
+            "snapshots": routing_snapshots,
+            "process": {
+                "pw_play_returncode": play_process.returncode if play_process is not None else None,
+                "pw_record_returncode": record_process.returncode,
+                "pw_play_timed_out": bool(play_timed_out),
+                "pipewire_warning_lines": pipewire_warnings,
+            },
+        }
+        if pipewire_warnings:
+            logger.warning("Measurement PipeWire warnings: %s", pipewire_warnings)
+        if not playback_node.get("id"):
+            logger.warning("Measurement playback sink not found in PipeWire/PulseAudio node list: %s", playback_target["target_name"])
+        if not capture_node.get("id"):
+            logger.warning("Measurement capture source not found in PipeWire/PulseAudio node list: %s", mic_source_node_name)
+        if not reference_node.get("id"):
+            logger.warning("Measurement reference source not found in PipeWire/PulseAudio node list: %s", reference_capture.get("source_node_name"))
+        if not uses_monitor_source:
+            logger.warning("Measurement reference capture is not using a monitor source: %s", reference_capture.get("source_node_name"))
+        if routing_diagnostics["sweep"].get("would_clip_before_write"):
+            logger.warning("Measurement sweep would clip before playback: peak_dbfs=%s", routing_diagnostics["sweep"].get("peak_dbfs"))
+        logger.info(
+            "Measurement summary: playback_target=%s capture_source=%s reference_source=%s monitor=%s sample_rate=%s sweep_peak_dbfs=%s sweep_rms_dbfs=%s pipewire_warnings=%d detail=%s",
+            routing_diagnostics["playback_sink"]["target_name"],
+            routing_diagnostics["capture_source"]["node_name"],
+            routing_diagnostics["reference_capture"]["source_node_name"],
+            routing_diagnostics["reference_capture"]["uses_monitor_source"],
+            sample_rate,
+            routing_diagnostics["sweep"].get("peak_dbfs"),
+            routing_diagnostics["sweep"].get("rms_dbfs"),
+            len(pipewire_warnings),
+            "debug" if detailed_diagnostics_enabled else "off",
+        )
+        logger.debug(
+            "Measurement routing diagnostics: %s",
+            json.dumps(routing_diagnostics, sort_keys=True),
+        )
         return (
             analysis,
             {
@@ -771,6 +912,7 @@ class MeasurementStore:
                 "reference_channel": str(reference_capture.get("channel_label") or "reference"),
                 "reference_path": str(capture_path),
                 "record_node": record_node_name,
+                "routing_diagnostics": routing_diagnostics,
             },
             {
                 "path": str(playback_path),
@@ -782,6 +924,7 @@ class MeasurementStore:
                 "target_name": playback_target["target_name"],
                 "target_label": playback_target["target_label"],
                 "timed_out": bool(play_timed_out),
+                "routing_diagnostics": routing_diagnostics,
             },
         )
 
@@ -812,7 +955,7 @@ class MeasurementStore:
         alignment_samples: int,
         direct_timing_meta: dict[str, Any],
     ) -> dict[str, Any] | None:
-        if not IR_DEBUG_SEGMENT_ENABLED:
+        if not IR_DEBUG_SEGMENT_ENABLED or not _detailed_measurement_diagnostics_enabled():
             return None
         ir64 = impulse_response.astype(np.float64)
         if not ir64.size:
@@ -1148,6 +1291,16 @@ class MeasurementStore:
             for item in timing_candidates_chronological[:8]
         ]
         logger.info(
+            "Measurement timing summary: channel=%s reference_channel=%s relative_samples=%s relative_ms=%.3f sample_rate=%s selected_score=%.5f selection=%s",
+            channel,
+            reference_channel_label,
+            int(direct_timing_meta["relative_samples"]),
+            float(direct_timing_meta["relative_seconds"]) * 1000.0,
+            sample_rate,
+            float(direct_timing_meta.get("selected_score") or 0.0),
+            str(direct_timing_meta.get("selection_rule") or ""),
+        )
+        logger.debug(
             "Measurement timing detection: channel=%s reference_channel=%s mic_peak_sample=%s direct_sample=%s reference_peak_sample=%s relative_samples=%s relative_ms=%.3f sample_rate=%s alignment_samples=%s selected_score=%.5f selected_db=%.2f selection=%s first_threshold_sample=%s candidates_by_score=%s candidates_chronological=%s",
             channel,
             reference_channel_label,
@@ -1503,11 +1656,25 @@ class MeasurementStore:
             playback = np.column_stack([mono_program, np.zeros_like(mono_program)])
 
         self._write_wav(path, playback, sample_rate)
+        playback64 = playback.astype(np.float64)
+        peak = float(np.max(np.abs(playback64))) if playback64.size else 0.0
+        rms = float(np.sqrt(np.mean(np.square(playback64, dtype=np.float64)))) if playback64.size else 0.0
+        per_channel_peak_dbfs = []
+        if playback64.ndim > 1:
+            for channel_index in range(playback64.shape[1]):
+                channel_peak = float(np.max(np.abs(playback64[:, channel_index]))) if playback64.size else 0.0
+                per_channel_peak_dbfs.append(round(20.0 * math.log10(max(channel_peak, 1e-9)), 2))
         return {
             "analysis_sweep": sweep,
             "inverse_sweep": inverse_sweep,
+            "sample_rate": int(sample_rate),
             "samples": int(mono_program.size),
             "channels": 2,
+            "peak_linear": round(peak, 8),
+            "peak_dbfs": round(20.0 * math.log10(max(peak, 1e-9)), 2),
+            "rms_dbfs": round(20.0 * math.log10(max(rms, 1e-9)), 2),
+            "per_channel_peak_dbfs": per_channel_peak_dbfs,
+            "would_clip_before_write": bool(peak > 1.0),
         }
 
 
@@ -2595,7 +2762,7 @@ class MeasurementStore:
         mic_source_node_name: str,
         record_node_name: str,
         requested_channel: str,
-    ) -> None:
+    ) -> dict[str, Any]:
         deadline = time.monotonic() + 4.0
         reference_ports: list[str] = []
         mic_ports: list[str] = []
@@ -2623,6 +2790,18 @@ class MeasurementStore:
         subprocess.run(["pw-link", reference_port, input_left], capture_output=True, text=True, timeout=3, check=True)
         subprocess.run(["pw-link", mic_port, input_right], capture_output=True, text=True, timeout=3, check=True)
         time.sleep(0.15)
+        return {
+            "reference_source_node": reference_source_node_name,
+            "microphone_source_node": mic_source_node_name,
+            "record_node": record_node_name,
+            "links": [
+                {"source_port": reference_port, "target_port": input_left, "role": "reference-monitor-to-record-left"},
+                {"source_port": mic_port, "target_port": input_right, "role": "microphone-to-record-right"},
+            ],
+            "record_inputs": record_inputs,
+            "reference_ports": reference_ports,
+            "microphone_ports": mic_ports,
+        }
 
     def _link_source_to_record_stream(
         self,
@@ -2702,6 +2881,153 @@ class MeasurementStore:
             return []
         prefix = f"{node_name}:"
         return [line.strip() for line in (completed.stdout or "").splitlines() if line.strip().startswith(prefix)]
+
+    def _build_measurement_routing_snapshot(
+        self,
+        *,
+        label: str,
+        playback_target: dict[str, Any],
+        mic_source_node_name: str,
+        reference_capture: dict[str, Any],
+        record_node_name: str,
+        play_node_name: str,
+    ) -> dict[str, Any]:
+        relevant_nodes = [
+            str(playback_target.get("target_name") or ""),
+            mic_source_node_name,
+            str(reference_capture.get("source_node_name") or ""),
+            str(reference_capture.get("sink_node_name") or ""),
+            record_node_name,
+            play_node_name,
+            "easyeffects_sink",
+            "easyeffects_source",
+        ]
+        relevant_nodes = [node for node in relevant_nodes if node]
+        snapshot = {
+            "label": label,
+            "captured_at": self._utc_now(),
+            "default_sink": self._pactl_info_value("Default Sink"),
+            "default_source": self._pactl_info_value("Default Source"),
+            "sinks": self._list_pactl_short_nodes("sinks", relevant_nodes),
+            "sources": self._list_pactl_short_nodes("sources", relevant_nodes),
+            "ports": {node: self._list_pw_ports(node) for node in relevant_nodes},
+            "links": self._list_relevant_pw_links(relevant_nodes),
+        }
+        snapshot["monitor_sources_involved"] = [
+            node
+            for node in relevant_nodes
+            if node.endswith(".monitor") or any(".monitor" in port for port in snapshot["ports"].get(node, []))
+        ]
+        snapshot["easyeffects_sink_inputs"] = [
+            line
+            for line in snapshot["links"]
+            if "easyeffects_sink:playback_" in line and ("|<-" in line or "|->" in line)
+        ]
+        return snapshot
+
+    def _lookup_pipewire_audio_node(self, node_name: str) -> dict[str, Any]:
+        if not node_name:
+            return {}
+        for kind in ("sinks", "sources"):
+            for item in self._list_pactl_short_nodes(kind, [node_name]):
+                if item.get("name") == node_name:
+                    item["kind"] = kind[:-1]
+                    return item
+        return {"name": node_name}
+
+    @staticmethod
+    def _extract_pipewire_warning_lines(outputs: dict[str, str]) -> list[dict[str, str]]:
+        warning_patterns = ("xrun", "underrun", "overrun", "buffer", "warning", "warn", "error", "failed")
+        items: list[dict[str, str]] = []
+        for stream_name, text_value in outputs.items():
+            for raw_line in (text_value or "").splitlines():
+                line = raw_line.strip()
+                if not line:
+                    continue
+                lowered = line.lower()
+                if any(pattern in lowered for pattern in warning_patterns):
+                    items.append({"stream": stream_name, "line": line[:500]})
+        return items[:40]
+
+    @staticmethod
+    def _pactl_info_value(key: str) -> str | None:
+        try:
+            completed = subprocess.run(["pactl", "info"], capture_output=True, text=True, timeout=3)
+        except Exception:
+            return None
+        if completed.returncode != 0:
+            return None
+        prefix = f"{key}:"
+        for raw_line in (completed.stdout or "").splitlines():
+            if raw_line.startswith(prefix):
+                value = raw_line.split(":", 1)[1].strip()
+                return value or None
+        return None
+
+    @staticmethod
+    def _list_pactl_short_nodes(kind: str, relevant_nodes: list[str]) -> list[dict[str, Any]]:
+        if kind not in {"sinks", "sources"}:
+            return []
+        try:
+            completed = subprocess.run(["pactl", "list", "short", kind], capture_output=True, text=True, timeout=3)
+        except Exception:
+            return []
+        if completed.returncode != 0:
+            return []
+        relevant = {node for node in relevant_nodes if node}
+        items: list[dict[str, Any]] = []
+        for line in (completed.stdout or "").splitlines():
+            parts = line.split("\t")
+            if len(parts) < 5:
+                continue
+            name = parts[1].strip()
+            if relevant and name not in relevant:
+                continue
+            sample_spec = parts[3].strip()
+            rate_match = re.search(r"(\d+)Hz", sample_spec)
+            items.append(
+                {
+                    "id": parts[0].strip(),
+                    "name": name,
+                    "driver": parts[2].strip(),
+                    "sample_spec": sample_spec,
+                    "sample_rate": int(rate_match.group(1)) if rate_match else None,
+                    "state": parts[4].strip(),
+                }
+            )
+        return items
+
+    @staticmethod
+    def _list_relevant_pw_links(relevant_nodes: list[str]) -> list[str]:
+        try:
+            completed = subprocess.run(["pw-link", "-l"], capture_output=True, text=True, timeout=3)
+        except Exception:
+            return []
+        if completed.returncode != 0:
+            return []
+        relevant = [node for node in relevant_nodes if node]
+        lines = (completed.stdout or "").splitlines()
+        kept: list[str] = []
+        current_header = ""
+        current_block: list[str] = []
+
+        def flush_block() -> None:
+            if not current_block:
+                return
+            block_text = "\n".join(current_block)
+            if any(node in block_text for node in relevant):
+                kept.extend(line[:500] for line in current_block)
+
+        for raw_line in lines:
+            line = raw_line.rstrip()
+            if not line.startswith((" ", "\t", "|")):
+                flush_block()
+                current_header = line
+                current_block = [current_header]
+            else:
+                current_block.append(line)
+        flush_block()
+        return kept[:240]
 
     @staticmethod
     def _pw_record_supports_option(option: str) -> bool:
