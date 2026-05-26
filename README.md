@@ -5,7 +5,7 @@ FXRoute is a browser-based audio control surface for Linux listening machines.
 It is built for mini PCs, desktops, ARM boards, and dedicated stereo boxes that run local playback, EasyEffects DSP, radio, library playback, measurement tools, and optional Spotify desktop control — all remote-controlled from a phone, tablet, or laptop on the local network.
 
 <p align="center">
-  <img src="media/comparison/fxroute-measurement-comparison.png" alt="FXRoute measurement before and after PEQ correction" width="780">
+  <img src="media/before-after-r.png" alt="FXRoute measurement graph showing raw and corrected right-channel response" width="780">
 </p>
 
 <p align="center">
