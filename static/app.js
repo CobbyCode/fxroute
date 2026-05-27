@@ -5966,6 +5966,17 @@ async function createMeasurementConvolverPreset(mode, analyses, sharedAutoGainDb
     const phaseMode = measurementConvolverPhaseModes.includes(options.phaseMode) ? options.phaseMode : ensureMeasurementConvolverState().phaseMode;
     const filenameBase = itemName.replace(/[^a-z0-9._-]+/gi, '-').replace(/^-+|-+$/g, '') || 'measurement-convolver';
     const bySide = Object.fromEntries(analyses.map((analysis) => [analysis.side, analysis]));
+    const hybridTransition = typeof MeasurementDsp.getMeasurementConvolverHybridTransition === 'function'
+        ? MeasurementDsp.getMeasurementConvolverHybridTransition()
+        : { hybridMinHz: null, hybridLinearHz: null };
+    console.debug('[measurement-convolver-fir-generation]', {
+        phaseMode,
+        hybridMinHz: hybridTransition.hybridMinHz,
+        hybridLinearHz: hybridTransition.hybridLinearHz,
+        taps: length,
+        rangeStart: Number.isFinite(Number(options.rangeStartHz)) ? Number(options.rangeStartHz) : null,
+        rangeEnd: Number.isFinite(Number(options.rangeEndHz)) ? Number(options.rangeEndHz) : null,
+    });
     if (mode === 'both') {
         const applyPhaseMode = phaseMode === 'minimum_aligned' ? 'minimum' : phaseMode;
         const leftImpulse = buildMeasurementConvolverImpulse(bySide.left, sampleRate, length, sharedAutoGainDb, applyPhaseMode);
@@ -6134,6 +6145,8 @@ async function createMeasurementConvolverPresetFromDraft() {
             quality: draftMetadata.quality || conv.quality,
             phaseMode: draftMetadata.phaseMode || conv.phaseMode,
             irLength: draftMetadata.irLength || getMeasurementConvolverFirLength(),
+            rangeStartHz: draftMetadata.rangeStartHz || conv.rangeStartHz,
+            rangeEndHz: draftMetadata.rangeEndHz || conv.rangeEndHz,
             leftTiming: leftDraft?.timing || null,
             rightTiming: rightDraft?.timing || null,
             timingSafetyLimitMs: MEASUREMENT_CONVOLVER_TIMING_SAFETY_LIMIT_MS,

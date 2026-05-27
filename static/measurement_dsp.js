@@ -239,6 +239,13 @@
         return 0.5 - (0.5 * Math.cos(Math.PI * Math.min(1, Math.max(0, ratio))));
     }
 
+    function getMeasurementConvolverHybridTransition() {
+        return {
+            hybridMinHz: HYBRID_MIN_FULL_HZ,
+            hybridLinearHz: HYBRID_LINEAR_FULL_HZ,
+        };
+    }
+
     function buildMeasurementConvolverHybridSpectrum(magnitudes, sampleRate, length) {
         const half = Math.floor(length / 2);
         const minimumSpectrum = buildMeasurementConvolverMinimumSpectrum(magnitudes, length);
@@ -475,6 +482,7 @@
         buildMeasurementConvolverLinearImpulseFromMagnitudes,
         fftMeasurementConvolverComplex,
         buildMeasurementConvolverMinimumSpectrum,
+        getMeasurementConvolverHybridTransition,
         buildMeasurementConvolverHybridSpectrum,
         buildMeasurementConvolverImpulseFromSpectrum,
         buildMeasurementConvolverImpulse,
