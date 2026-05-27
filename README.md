@@ -52,7 +52,7 @@ It is built for mini PCs, desktops, ARM boards, and dedicated stereo boxes that 
 - Spotify desktop control through `playerctl` / MPRIS, including passive metadata refresh for automatic track changes
 - EasyEffects preset switching, PEQ, convolver import/generation, output helpers, and A/B compare
 - global DSP helpers such as limiter, headroom, autogain, bass enhancement, and tone modes
-- practical room/speaker measurement workflow with host microphone capture, calibration files, smoothing, saved runs, PEQ draft transfer, and stereo FIR/convolver preset creation
+- practical room/speaker measurement workflow with host microphone capture, calibration files, smoothing, saved runs, PEQ draft transfer, and stereo FIR/convolver preset creation with linear, minimum-phase, minimum-aligned, and hybrid-aligned modes
 - sample-rate-aware playback handling for local files, radio, Spotify, and Bluetooth handoff cases
 - Bluetooth input visibility/control when the host audio stack supports it
 - optional local HTTPS/Caddy setup with downloadable local certificate for trusted LAN clients
@@ -92,6 +92,8 @@ The installer prefers **Flatpak EasyEffects** when it installs EasyEffects itsel
 
 If EasyEffects is already installed through the system package manager or managed manually by the user, FXRoute can use that installation instead. Older native EasyEffects builds may not expose the control socket; in that case FXRoute falls back to EasyEffects CLI control where possible.
 
+Fresh installs default Spotify autostart to enabled when a local Spotify desktop client is available, so the player can return after a desktop/session restart. Existing `.env` files are preserved on installer reruns.
+
 ## Quick start
 
 ```bash
@@ -126,6 +128,19 @@ Typical URLs:
 FXRoute keeps local tags and local cover files as the source of truth, then enriches albums opportunistically with cached MusicBrainz IDs, Cover Art Archive fallback covers, compact album facts, optional Wikipedia/Wikidata artist summaries, and ListenBrainz similar-artist discovery.
 
 Metadata is cached locally so normal library scans stay fast and unchanged tracks do not need full audio probing on every run.
+
+## Measurement and convolver presets
+
+The Measure workflow can create EasyEffects-ready FIR/convolver presets from saved measurements. For stereo correction, measure and save left and right separately, assign them in the Convolver assistant, then choose the target curve, correction range, phase mode, sample rate, and tap length.
+
+Available phase modes:
+
+- **Linear phase** — symmetric FIR correction.
+- **Minimum phase** — practical default for broad room/speaker correction.
+- **Minimum phase aligned** — minimum-phase correction with measured L/R direct-arrival alignment for separately saved stereo measurements.
+- **Hybrid aligned** — minimum-phase bass correction blended into zero-delay linear-style upper correction, using the same L/R timing safety gate as Minimum phase aligned for stereo drafts.
+
+Generated convolver preset names include stable phase tags such as `Lin`, `MinAlign`, and `HybAlign`, so presets with the same target/range/gain remain distinct in filenames, Manage Presets, and A/B compare.
 
 ## Service commands
 

@@ -76,6 +76,8 @@ FXRoute refreshes Spotify metadata from local desktop events and lightweight pol
 
 FXRoute does not replace Spotify Connect. It controls the local Spotify client through the desktop session, so Spotify must be installed and reachable on the audio PC.
 
+On fresh installs, Spotify autostart is enabled by default when a local Spotify desktop client is available. Installer reruns preserve an existing `.env`, so an already configured system keeps its current setting.
+
 ## 6. Library
 
 Use **Library** for local files and imported music.
@@ -165,13 +167,18 @@ For a stereo correction preset, measure the channels separately.
 7. Choose the target curve, correction range, phase mode, sample rate, and tap length.
 8. Press **Create Convolver Preset**.
 
-**Minimum Phase** is the practical default for normal room and speaker correction.
+Available phase modes:
 
-**Minimum Phase aligned** is a stereo variant of **Minimum Phase**. It uses the measured L/R direct-arrival timing from separate saved left/right measurements and delays the earlier FIR channel for better time alignment.
+- **Linear Phase** creates symmetric FIR correction.
+- **Minimum Phase** is the practical default for normal room and speaker correction.
+- **Minimum Phase aligned** is a stereo variant of **Minimum Phase**. It uses the measured L/R direct-arrival timing from separate saved left/right measurements and delays the earlier FIR channel for better time alignment.
+- **Hybrid aligned** blends minimum-phase bass correction into zero-delay linear-style upper correction. In stereo mode it uses the same L/R direct-arrival timing safety gate as **Minimum Phase aligned**.
 
-It requires single saved L/R measurements with valid direct-arrival timing data. Merged measurements are not supported for aligned timing correction.
+The aligned modes require single saved L/R measurements with valid direct-arrival timing data. Merged measurements are not supported for aligned timing correction.
 
 FXRoute blocks aligned filter creation when the measured signed L/R timing offset exceeds the safety limit in either direction. The timing summary is shown as one arrival relation, for example `L arrives 5.27 ms later than R`.
+
+Default generated preset names include stable phase tags such as `Lin`, `MinAlign`, and `HybAlign`. That keeps Linear, Minimum aligned, and Hybrid aligned presets separate in Manage Presets, A/B compare, filenames, and internal keys even when they share the same measurement, target, range, and gain.
 
 ## 9. Technical settings
 
