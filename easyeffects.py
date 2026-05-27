@@ -123,6 +123,13 @@ class EasyEffectsManager:
         self.global_extras_file = self.runtime.global_extras_file
         self.compare_state_file = self.runtime.compare_state_file
 
+    @staticmethod
+    def _clean_preset_name(value: Any, fallback: str = "") -> str:
+        name = Path(str(value or "").strip()).name.strip()
+        if name.lower().endswith(".json"):
+            name = name[:-5].strip()
+        return name or fallback
+
     def _runtime_dir(self) -> Path:
         runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
         if runtime_dir:
@@ -585,7 +592,7 @@ class EasyEffectsManager:
         return irs
 
     def _read_preset_payload(self, preset_name: str) -> Optional[Dict[str, Any]]:
-        clean_name = Path(preset_name).stem.strip()
+        clean_name = self._clean_preset_name(preset_name)
         if not clean_name:
             return None
 
@@ -623,7 +630,7 @@ class EasyEffectsManager:
         return self._extract_kernel_names_from_payload(self._read_preset_payload(preset_name))
 
     def _get_other_referenced_kernel_names(self, excluded_preset_name: str) -> Set[str]:
-        excluded_clean = Path(excluded_preset_name).stem.strip()
+        excluded_clean = self._clean_preset_name(excluded_preset_name)
         referenced: Set[str] = set()
         for preset in self.list_presets():
             preset_name = preset.get("name")
@@ -1225,7 +1232,7 @@ class EasyEffectsManager:
 
     @staticmethod
     def _normalize_source_presets(source_presets: Optional[List[str]]) -> List[str]:
-        normalized = [Path(str(name)).stem.strip() for name in (source_presets or []) if str(name).strip()]
+        normalized = [EasyEffectsManager._clean_preset_name(name) for name in (source_presets or []) if str(name).strip()]
         return [name for name in normalized if name]
 
     def _extract_source_presets_from_payload(self, payload: Dict[str, Any]) -> List[str]:
@@ -1254,10 +1261,11 @@ class EasyEffectsManager:
         extras: Optional[Dict[str, Any]] = None,
         convolver_sample_rate_hz: Optional[int] = None,
     ) -> bool:
-        if not preset_name or preset_name in self.EXCLUDED_GLOBAL_EXTRAS_PRESETS:
+        clean_name = self._clean_preset_name(preset_name)
+        if not clean_name or clean_name in self.EXCLUDED_GLOBAL_EXTRAS_PRESETS:
             return False
 
-        preset_path = self.output_dir / f"{preset_name}.json"
+        preset_path = self.output_dir / f"{clean_name}.json"
         if not preset_path.exists():
             return False
 
@@ -1300,7 +1308,7 @@ class EasyEffectsManager:
         return {"extras": normalized, "updated": 1, "skipped": []}
 
     def _read_preset_payload(self, preset_name: str) -> Dict[str, Any]:
-        clean_name = Path(preset_name).stem.strip()
+        clean_name = self._clean_preset_name(preset_name)
         if not clean_name:
             raise ValueError("Invalid preset name")
         preset_path = self.output_dir / f"{clean_name}.json"
@@ -1316,7 +1324,7 @@ class EasyEffectsManager:
 
     def import_preset_json(self, preset_filename: str, preset_text: str) -> Dict[str, Any]:
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        clean_preset_name = Path(preset_filename).stem.strip()
+        clean_preset_name = self._clean_preset_name(preset_filename)
         if not clean_preset_name:
             raise ValueError("Invalid preset name")
         try:
@@ -1343,13 +1351,13 @@ class EasyEffectsManager:
     def combine_presets(self, preset_name: str, source_presets: List[str], extras: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-        clean_preset_name = Path(preset_name).stem.strip()
+        clean_preset_name = self._clean_preset_name(preset_name)
         if not clean_preset_name:
             raise ValueError("Invalid preset name")
         if not isinstance(source_presets, list):
             raise ValueError("source_presets must be an array")
 
-        normalized_sources = [Path(str(name)).stem.strip() for name in source_presets if str(name).strip()]
+        normalized_sources = [self._clean_preset_name(name) for name in source_presets if str(name).strip()]
         if len(normalized_sources) < 2:
             raise ValueError("Select at least two presets to combine")
         if len(set(normalized_sources)) != len(normalized_sources):
@@ -1414,7 +1422,7 @@ class EasyEffectsManager:
         if ir_filename not in available_irs:
             raise FileNotFoundError(f"IR file not found: {ir_filename}")
 
-        clean_preset_name = Path(preset_name).stem.strip()
+        clean_preset_name = self._clean_preset_name(preset_name)
         if not clean_preset_name:
             raise ValueError("Invalid preset name")
 
@@ -1578,7 +1586,7 @@ class EasyEffectsManager:
     def create_peq_preset(self, preset_name: str, peq_definition: Dict[str, Any], extras: Optional[Dict[str, Any]] = None) -> dict:
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-        clean_preset_name = Path(preset_name).stem.strip()
+        clean_preset_name = self._clean_preset_name(preset_name)
         if not clean_preset_name:
             raise ValueError("Invalid preset name")
 
@@ -1845,7 +1853,7 @@ class EasyEffectsManager:
         preset_path.write_text(json.dumps(desired_payload, indent=2) + "\n")
 
     def delete_preset(self, preset_name: str) -> None:
-        clean_name = Path(preset_name).stem.strip()
+        clean_name = self._clean_preset_name(preset_name)
         if not clean_name:
             raise ValueError("Invalid preset name")
         if clean_name in self.PROTECTED_PRESETS:
@@ -1879,7 +1887,7 @@ class EasyEffectsManager:
             self.load_preset(fallback_preset)
 
     def create_convolver_preset_with_upload(self, preset_name: str, source_path: Path, filename: str, extras: Optional[Dict[str, Any]] = None) -> dict:
-        stored_ir_name = f"{Path(preset_name).stem or 'convolver'}.irs"
+        stored_ir_name = f"{self._clean_preset_name(preset_name, 'convolver')}.irs"
         uploaded = self.upload_ir(source_path, filename, stored_name=stored_ir_name)
         preset = self.create_convolver_preset(preset_name, uploaded["name"], extras=extras)
         return {"ir": uploaded, "preset": preset}
@@ -1893,7 +1901,7 @@ class EasyEffectsManager:
         right_filename: str,
         extras: Optional[Dict[str, Any]] = None,
     ) -> dict:
-        merged_name = f"{Path(preset_name).stem or 'dual-convolver'}.irs"
+        merged_name = f"{self._clean_preset_name(preset_name, 'dual-convolver')}.irs"
         uploaded = self.upload_ir_pair(left_source_path, left_filename, right_source_path, right_filename, merged_name)
         preset = self.create_convolver_preset(preset_name, uploaded["name"], extras=extras)
         return {"ir": uploaded, "preset": preset}

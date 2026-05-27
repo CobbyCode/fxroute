@@ -5635,8 +5635,8 @@ function getMeasurementConvolverPhaseLabel(phaseMode = 'linear') {
 
 function getMeasurementConvolverPhaseTag(phaseMode = 'linear') {
     if (phaseMode === 'minimum') return 'Min';
-    if (phaseMode === 'minimum_aligned') return 'Min.align';
-    if (phaseMode === 'hybrid_aligned') return 'Hyb.align';
+    if (phaseMode === 'minimum_aligned') return 'MinAlign';
+    if (phaseMode === 'hybrid_aligned') return 'HybAlign';
     return 'Lin';
 }
 
