@@ -2,6 +2,7 @@
 
 ## Unreleased
 - Added a Hybrid aligned FIR Convolver assistant mode that blends minimum-phase bass correction into zero-delay linear-style upper correction and uses the same L/R timing safety gate as Minimum phase aligned for stereo drafts.
+- Adjusted Hybrid aligned FIR blending to keep minimum-phase correction below 200 Hz, transition from 200-600 Hz, and use linear-style correction above 600 Hz.
 - Moved Convolver L/R timing diagnostics to debug-level browser logging so normal use no longer prints timing objects to the console.
 - Fixed generated Convolver preset names so phase tags such as MinAlign and HybAlign remain unique in preset filenames, internal keys, Manage Presets, and A/B compare lists.
 - Clear staged Convolver assistant drafts when the phase type changes, keeping preset names, selected phase labels, and generated FIR data aligned.
