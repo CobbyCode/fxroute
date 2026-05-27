@@ -5701,7 +5701,7 @@ function getMeasurementConvolverTimingDelta(leftTiming, rightTiming) {
         leftTiming,
         rightTiming,
     };
-    console.info('[measurement-convolver-timing]', {
+    console.debug('[measurement-convolver-timing]', {
         left: {
             channel: leftTiming.channel || 'left',
             source: leftTiming.source || '',
