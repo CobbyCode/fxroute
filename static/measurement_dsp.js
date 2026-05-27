@@ -10,8 +10,8 @@
 })(typeof globalThis !== 'undefined' ? globalThis : window, function (root) {
     'use strict';
 
-    const HYBRID_MIN_FULL_HZ = 200;
-    const HYBRID_LINEAR_FULL_HZ = 600;
+    const HYBRID_MIN_FULL_HZ = 150;
+    const HYBRID_LINEAR_FULL_HZ = 500;
 
     function measurementSmoothingHalfWindowOctaves(mode = '1/6-oct') {
         switch (String(mode || '1/6-oct')) {
