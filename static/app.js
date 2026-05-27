@@ -118,7 +118,7 @@ let state = {
             phaseMode: 'minimum',
             irLength: '8192',
             dragMode: null,
-            draft: { left: null, right: null, presetName: '', nameTouched: false },
+            draft: { left: null, right: null, presetName: '', nameTouched: false, notice: '' },
         },
         peqAssistant: {
             enabled: false,
@@ -5128,7 +5128,7 @@ function getDefaultMeasurementConvolverState() {
         phaseMode: 'minimum',
         irLength: '8192',
         dragMode: null,
-        draft: { left: null, right: null, presetName: '', nameTouched: false },
+        draft: { left: null, right: null, presetName: '', nameTouched: false, notice: '' },
     };
 }
 
@@ -5162,11 +5162,12 @@ function ensureMeasurementConvolverState() {
     conv.phaseMode = measurementConvolverPhaseModes.includes(String(conv.phaseMode)) ? String(conv.phaseMode) : defaults.phaseMode;
     conv.irLength = measurementConvolverTapOptions.includes(Number(conv.irLength)) ? String(conv.irLength) : defaults.irLength;
     conv.quality = `${conv.phaseMode}_${conv.irLength}`;
-    if (!conv.draft || typeof conv.draft !== 'object') conv.draft = { left: null, right: null, presetName: '', nameTouched: false };
+    if (!conv.draft || typeof conv.draft !== 'object') conv.draft = { left: null, right: null, presetName: '', nameTouched: false, notice: '' };
     if (!conv.draft.left || typeof conv.draft.left !== 'object') conv.draft.left = null;
     if (!conv.draft.right || typeof conv.draft.right !== 'object') conv.draft.right = null;
     if (typeof conv.draft.presetName !== 'string') conv.draft.presetName = '';
     conv.draft.nameTouched = !!conv.draft.nameTouched;
+    if (typeof conv.draft.notice !== 'string') conv.draft.notice = '';
     return conv;
 }
 
@@ -5197,8 +5198,43 @@ function getMeasurementConvolverCurveDb(curveKey, frequencyHz) {
     return MeasurementDsp.getMeasurementConvolverCurveDbFromPoints(points, frequencyHz);
 }
 
+function getMeasurementConvolverDraftPhaseMode(draft = null) {
+    const phaseMode = String(draft?.phaseMode || draft?.metadata?.phaseMode || '');
+    return measurementConvolverPhaseModes.includes(phaseMode) ? phaseMode : '';
+}
+
+function getMeasurementConvolverDrafts(conv = ensureMeasurementConvolverState()) {
+    return [conv.draft?.left || null, conv.draft?.right || null].filter(Boolean);
+}
+
+function getMeasurementConvolverDraftPhaseMismatch(conv = ensureMeasurementConvolverState()) {
+    const currentPhaseMode = String(conv.phaseMode || '');
+    const mismatched = getMeasurementConvolverDrafts(conv).find((draft) => {
+        const draftPhaseMode = getMeasurementConvolverDraftPhaseMode(draft);
+        return draftPhaseMode && draftPhaseMode !== currentPhaseMode;
+    });
+    return mismatched ? getMeasurementConvolverDraftPhaseMode(mismatched) : '';
+}
+
+function clearMeasurementConvolverDraftForPhaseChange(previousPhaseMode = '') {
+    const conv = ensureMeasurementConvolverState();
+    if (previousPhaseMode === conv.phaseMode) return false;
+    if (!conv.draft?.left && !conv.draft?.right) {
+        conv.draft.notice = '';
+        return false;
+    }
+    conv.draft.left = null;
+    conv.draft.right = null;
+    conv.draft.presetName = '';
+    conv.draft.nameTouched = false;
+    conv.draft.notice = 'Phase type changed — take L/R again.';
+    showMeasurementConvolverFeedback(conv.draft.notice);
+    return true;
+}
+
 function updateMeasurementConvolverField(field, value) {
     const conv = ensureMeasurementConvolverState();
+    const previousPhaseMode = conv.phaseMode;
     if (field === 'targetCurve') conv.targetCurve = getMeasurementConvolverCurveOptions().some((curve) => curve.key === value) ? value : conv.targetCurve;
     if (field === 'rangeStartHz') conv.rangeStartHz = Math.min(Math.round(clampMeasurementConvolverFrequency(value, conv.rangeStartHz)), conv.rangeEndHz - 1);
     if (field === 'rangeEndHz') conv.rangeEndHz = Math.max(Math.round(clampMeasurementConvolverFrequency(value, conv.rangeEndHz)), conv.rangeStartHz + 1);
@@ -5216,6 +5252,9 @@ function updateMeasurementConvolverField(field, value) {
         }
     }
     ensureMeasurementConvolverState();
+    if (field === 'phaseMode' || field === 'quality') {
+        clearMeasurementConvolverDraftForPhaseChange(previousPhaseMode);
+    }
     renderMeasurementPanel();
     scheduleMeasurementGraphRender();
 }
@@ -5588,7 +5627,8 @@ function getMeasurementConvolverItemName(mode = 'both', autoGainDb = 0, options 
     const conv = ensureMeasurementConvolverState();
     const curve = getMeasurementConvolverCurve(conv.targetCurve);
     const prefix = mode === 'both' ? 'Conv LR' : (mode === 'right' ? 'Conv R' : 'Conv L');
-    const phaseTag = getMeasurementConvolverPhaseTag(conv.phaseMode);
+    const phaseMode = measurementConvolverPhaseModes.includes(String(options.phaseMode)) ? String(options.phaseMode) : conv.phaseMode;
+    const phaseTag = getMeasurementConvolverPhaseTag(phaseMode);
     const base = `${prefix} ${phaseTag} ${curve.shortLabel || curve.label} ${Math.round(conv.rangeStartHz)}-${Math.round(conv.rangeEndHz)}Hz ${formatMeasurementConvolverGain(autoGainDb)}`;
     return options.unique ? `${base} ${getMeasurementConvolverNameSuffix()}` : base;
 }
@@ -5970,6 +6010,7 @@ function takeMeasurementConvolverToDraft(mode = 'both') {
         const timing = getMeasurementDirectArrivalTiming(sourceMeasurement);
         conv.draft[side] = {
             side,
+            phaseMode: conv.phaseMode,
             createdAt: new Date().toISOString(),
             analysis,
             timing,
@@ -5993,9 +6034,10 @@ function takeMeasurementConvolverToDraft(mode = 'both') {
             },
         };
     });
+    conv.draft.notice = '';
     const sharedAutoGainDb = Math.min(...analyses.map((analysis) => analysis.autoGainDb));
     const effectiveMode = conv.draft.left && conv.draft.right ? 'both' : mode;
-    if (!conv.draft.nameTouched) conv.draft.presetName = getMeasurementConvolverItemName(effectiveMode, sharedAutoGainDb, { unique: true });
+    if (!conv.draft.nameTouched) conv.draft.presetName = getMeasurementConvolverItemName(effectiveMode, sharedAutoGainDb, { unique: true, phaseMode: conv.phaseMode });
     renderMeasurementPanel();
     const label = mode === 'both' ? 'Left + Right staged' : (mode === 'right' ? 'Right staged' : 'Left staged');
     showMeasurementConvolverFeedback(label);
@@ -6016,6 +6058,14 @@ async function createMeasurementConvolverPresetFromDraft() {
         return;
     }
     const drafts = mode === 'both' ? [leftDraft, rightDraft] : [mode === 'right' ? rightDraft : leftDraft];
+    const phaseMismatch = getMeasurementConvolverDraftPhaseMismatch(conv);
+    if (phaseMismatch) {
+        conv.draft.notice = 'Draft phase does not match selected phase type — take L/R again.';
+        showMeasurementConvolverFeedback(conv.draft.notice);
+        showToast(conv.draft.notice, 'warning');
+        renderMeasurementPanel();
+        return;
+    }
     if (mode === 'both') {
         const [leftMeta, rightMeta] = drafts.map((draft) => draft?.metadata || {});
         const sameGeneration = ['sampleRate', 'quality', 'phaseMode', 'irLength'].every((key) => String(leftMeta[key] || '') === String(rightMeta[key] || ''));
@@ -7600,6 +7650,8 @@ function renderMeasurementPanel() {
     const right = convAnalyses[1];
     const leftDraft = conv.draft?.left || null;
     const rightDraft = conv.draft?.right || null;
+    const hasConvolverDraft = !!leftDraft || !!rightDraft;
+    const draftPhaseMismatch = getMeasurementConvolverDraftPhaseMismatch(conv);
     if (elements.measurementConvolverSummary) {
         const curve = getMeasurementConvolverCurve(conv.targetCurve);
         const hasCreatedConvolver = (state.easyeffects?.assistStack || []).some((item) => item.type === 'convolver');
@@ -7614,7 +7666,9 @@ function renderMeasurementPanel() {
         const summaryTimingDelta = leftDraft && rightDraft
             ? getMeasurementConvolverTimingDelta(leftDraft.timing, rightDraft.timing)
             : currentTimingDelta;
-        if (leftDraft && rightDraft) {
+        if (draftPhaseMismatch) {
+            draftStatus = 'Draft phase does not match selected phase type — take L/R again.';
+        } else if (leftDraft && rightDraft) {
             const timingDelta = summaryTimingDelta;
             if (timingDelta) {
                 draftStatus = `Draft ready · ${formatMeasurementConvolverTimingRelation(timingDelta)}`;
@@ -7634,6 +7688,13 @@ function renderMeasurementPanel() {
                 draftDetails.push('Filter not created because timing offset exceeds safety limit.');
             }
         }
+        if (conv.draft?.notice) draftDetails.push(conv.draft.notice);
+        if (hasConvolverDraft) {
+            const stagedPhaseModes = [...new Set([leftDraft, rightDraft].map(getMeasurementConvolverDraftPhaseMode).filter(Boolean))];
+            if (stagedPhaseModes.length) {
+                draftDetails.push(`Staged phase: ${stagedPhaseModes.map(getMeasurementConvolverPhaseLabel).join(' + ')}`);
+            }
+        }
         elements.measurementConvolverSummary.innerHTML = `
             <div><strong>${escapeHtml(curve.label)}</strong> · ${escapeHtml(getMeasurementConvolverTypeLabel(conv.quality))} · Max Boost +${conv.maxBoostDb} dB · Max Cut ${conv.maxCutDb} dB · Dip Guard ${escapeHtml(conv.dipGuard)}</div>
             <div>Range data — L: ${left ? `${left.points} pts, gain ${formatMeasurementConvolverGain(left.autoGainDb)}` : 'none'} · R: ${right ? `${right.points} pts, gain ${formatMeasurementConvolverGain(right.autoGainDb)}` : 'none'}</div>
@@ -7642,12 +7703,16 @@ function renderMeasurementPanel() {
         `;
     }
     if (elements.measurementConvolverPresetName) {
-        const hasDraft = !!leftDraft || !!rightDraft;
+        const draftMode = leftDraft && rightDraft ? 'both' : (rightDraft ? 'right' : 'both');
+        const draftPhaseMode = getMeasurementConvolverDraftPhaseMode(leftDraft || rightDraft) || conv.phaseMode;
+        const nameValue = hasConvolverDraft
+            ? (conv.draft?.presetName || getMeasurementConvolverItemName(draftMode, 0, { phaseMode: draftPhaseMode }))
+            : getMeasurementConvolverItemName('both', 0, { phaseMode: conv.phaseMode });
         if (document.activeElement !== elements.measurementConvolverPresetName) {
-            elements.measurementConvolverPresetName.value = conv.draft?.presetName || '';
+            elements.measurementConvolverPresetName.value = nameValue;
         }
-        elements.measurementConvolverPresetName.disabled = !hasDraft;
-        elements.measurementConvolverPresetName.placeholder = hasDraft ? 'Preset name' : 'Take L/R/Both to generate a name';
+        elements.measurementConvolverPresetName.disabled = !hasConvolverDraft || !!draftPhaseMismatch;
+        elements.measurementConvolverPresetName.placeholder = hasConvolverDraft ? 'Preset name' : 'Preview — take L/R/Both to stage';
     }
     if (elements.measurementConvolverWarnings) {
         const warnings = buildMeasurementConvolverWarnings(convAnalyses);
@@ -7657,7 +7722,7 @@ function renderMeasurementPanel() {
     if (elements.measurementConvolverTakeLeftBtn) elements.measurementConvolverTakeLeftBtn.disabled = !left;
     if (elements.measurementConvolverTakeRightBtn) elements.measurementConvolverTakeRightBtn.disabled = !right;
     if (elements.measurementConvolverTakeBothBtn) elements.measurementConvolverTakeBothBtn.disabled = !left || !right;
-    if (elements.measurementConvolverCreateBtn) elements.measurementConvolverCreateBtn.disabled = (!leftDraft && !rightDraft) || !String(conv.draft?.presetName || '').trim() || convolverCreateInFlight;
+    if (elements.measurementConvolverCreateBtn) elements.measurementConvolverCreateBtn.disabled = !hasConvolverDraft || !!draftPhaseMismatch || !String(conv.draft?.presetName || '').trim() || convolverCreateInFlight;
 
     const selectedSavedCount = measurements.filter(measurement => measurementState.visibilityById?.[measurement.id]).length;
     const allSavedSelected = measurements.length > 0 && selectedSavedCount === measurements.length;
@@ -7893,7 +7958,7 @@ function setupMeasurementActions() {
             conv.draft.nameTouched = true;
             if (elements.measurementConvolverCreateBtn) {
                 const hasDraft = !!conv.draft.left || !!conv.draft.right;
-                elements.measurementConvolverCreateBtn.disabled = !hasDraft || !conv.draft.presetName.trim() || convolverCreateInFlight;
+                elements.measurementConvolverCreateBtn.disabled = !hasDraft || !!getMeasurementConvolverDraftPhaseMismatch(conv) || !conv.draft.presetName.trim() || convolverCreateInFlight;
             }
         });
     }
