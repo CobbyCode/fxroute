@@ -178,8 +178,6 @@ The aligned modes require single saved L/R measurements with valid direct-arriva
 
 FXRoute blocks aligned filter creation when the measured signed L/R timing offset exceeds the safety limit in either direction. The timing summary is shown as one arrival relation, for example `L arrives 5.27 ms later than R`.
 
-Default generated preset names include stable phase tags such as `Lin`, `MinAlign`, and `HybAlign`. That keeps Linear, Minimum aligned, and Hybrid aligned presets separate in Manage Presets, A/B compare, filenames, and internal keys even when they share the same measurement, target, range, and gain.
-
 ## 9. Technical settings
 
 Click the FXRoute logo to open **Technical settings**.

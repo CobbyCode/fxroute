@@ -9,7 +9,7 @@ It is built for mini PCs, desktops, ARM boards, and dedicated stereo boxes that 
 </p>
 
 <p align="center">
-  <strong>Measure, compare, and sketch PEQ corrections directly in the browser.</strong>
+  <strong>Measure, compare, and sketch PEQ/convolver corrections directly in the browser.</strong>
 </p>
 
 <table>
@@ -139,8 +139,6 @@ Available phase modes:
 - **Minimum phase** — practical default for broad room/speaker correction.
 - **Minimum phase aligned** — minimum-phase correction with measured L/R direct-arrival alignment for separately saved stereo measurements.
 - **Hybrid aligned** — minimum-phase bass correction blended into zero-delay linear-style upper correction, using the same L/R timing safety gate as Minimum phase aligned for stereo drafts.
-
-Generated convolver preset names include stable phase tags such as `Lin`, `MinAlign`, and `HybAlign`, so presets with the same target/range/gain remain distinct in filenames, Manage Presets, and A/B compare.
 
 ## Service commands
 
