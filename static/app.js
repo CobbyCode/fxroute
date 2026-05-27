@@ -5635,6 +5635,26 @@ function getMeasurementConvolverItemName(mode = 'both', autoGainDb = 0, options 
     return options.unique ? `${base} ${getMeasurementConvolverNameSuffix()}` : base;
 }
 
+function getMeasurementConvolverPreviewMode(leftAnalysis, rightAnalysis, leftDraft = null, rightDraft = null) {
+    if (leftDraft && rightDraft) return 'both';
+    if (rightDraft) return 'right';
+    if (leftDraft) return 'left';
+    if (leftAnalysis && rightAnalysis) return 'both';
+    if (rightAnalysis) return 'right';
+    if (leftAnalysis) return 'left';
+    return 'both';
+}
+
+function getMeasurementConvolverPreviewGain(mode = 'both', leftAnalysis = null, rightAnalysis = null, leftDraft = null, rightDraft = null) {
+    const left = leftDraft?.analysis || leftAnalysis || null;
+    const right = rightDraft?.analysis || rightAnalysis || null;
+    const gains = mode === 'both'
+        ? [left?.autoGainDb, right?.autoGainDb]
+        : [mode === 'right' ? right?.autoGainDb : left?.autoGainDb];
+    const numericGains = gains.map(Number).filter(Number.isFinite);
+    return numericGains.length ? Math.min(...numericGains) : 0;
+}
+
 function showMeasurementConvolverFeedback(message) {
     if (!elements.measurementConvolverFeedback) return;
     elements.measurementConvolverFeedback.textContent = message;
@@ -7715,11 +7735,12 @@ function renderMeasurementPanel() {
         `;
     }
     if (elements.measurementConvolverPresetName) {
-        const draftMode = leftDraft && rightDraft ? 'both' : (rightDraft ? 'right' : 'both');
+        const draftMode = getMeasurementConvolverPreviewMode(left, right, leftDraft, rightDraft);
         const draftPhaseMode = getMeasurementConvolverDraftPhaseMode(leftDraft || rightDraft) || conv.phaseMode;
+        const previewGainDb = getMeasurementConvolverPreviewGain(draftMode, left, right, leftDraft, rightDraft);
         const nameValue = hasConvolverDraft
-            ? (conv.draft?.presetName || getMeasurementConvolverItemName(draftMode, 0, { phaseMode: draftPhaseMode }))
-            : getMeasurementConvolverItemName('both', 0, { phaseMode: conv.phaseMode });
+            ? (conv.draft?.presetName || getMeasurementConvolverItemName(draftMode, previewGainDb, { phaseMode: draftPhaseMode }))
+            : getMeasurementConvolverItemName(draftMode, previewGainDb, { phaseMode: conv.phaseMode });
         if (document.activeElement !== elements.measurementConvolverPresetName) {
             elements.measurementConvolverPresetName.value = nameValue;
         }
