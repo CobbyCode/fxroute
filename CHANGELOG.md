@@ -5,6 +5,7 @@
 - Moved Convolver L/R timing diagnostics to debug-level browser logging so normal use no longer prints timing objects to the console.
 - Fixed generated Convolver preset names so phase tags such as MinAlign and HybAlign remain unique in preset filenames, internal keys, Manage Presets, and A/B compare lists.
 - Clear staged Convolver assistant drafts when the phase type changes, keeping preset names, selected phase labels, and generated FIR data aligned.
+- Show an immediate Convolver preset creation busy state and disable duplicate create/take actions while FIR export is running.
 - Default Spotify autostart to enabled for fresh installs so the local Spotify desktop client is relaunched after a desktop/session restart when available.
 - Placed the Top 40 smart favorite card directly into the Album Favorites grid ahead of manually starred albums, removing the separate Smart Favorites row.
 - Added L/R direct-arrival timing diagnostics for measurements and changed direct-arrival selection to prefer the first local impulse peak above the existing threshold instead of a weak threshold-edge sample.

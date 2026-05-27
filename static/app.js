@@ -5128,6 +5128,7 @@ function getDefaultMeasurementConvolverState() {
         phaseMode: 'minimum',
         irLength: '8192',
         dragMode: null,
+        creatingPreset: false,
         draft: { left: null, right: null, presetName: '', nameTouched: false, notice: '' },
     };
 }
@@ -5162,6 +5163,7 @@ function ensureMeasurementConvolverState() {
     conv.phaseMode = measurementConvolverPhaseModes.includes(String(conv.phaseMode)) ? String(conv.phaseMode) : defaults.phaseMode;
     conv.irLength = measurementConvolverTapOptions.includes(Number(conv.irLength)) ? String(conv.irLength) : defaults.irLength;
     conv.quality = `${conv.phaseMode}_${conv.irLength}`;
+    conv.creatingPreset = !!conv.creatingPreset;
     if (!conv.draft || typeof conv.draft !== 'object') conv.draft = { left: null, right: null, presetName: '', nameTouched: false, notice: '' };
     if (!conv.draft.left || typeof conv.draft.left !== 'object') conv.draft.left = null;
     if (!conv.draft.right || typeof conv.draft.right !== 'object') conv.draft.right = null;
@@ -5640,6 +5642,10 @@ function showMeasurementConvolverFeedback(message) {
     setTimeout(() => elements.measurementConvolverFeedback?.classList.remove('is-visible'), 2600);
 }
 
+function waitForNextAnimationFrame() {
+    return new Promise((resolve) => window.requestAnimationFrame(() => resolve()));
+}
+
 function getMeasurementConvolverSampleRate() {
     const conv = ensureMeasurementConvolverState();
     const selected = Number(conv.sampleRate);
@@ -6097,8 +6103,10 @@ async function createMeasurementConvolverPresetFromDraft() {
     const itemName = String(conv.draft?.presetName || '').trim() || getMeasurementConvolverItemName(mode, sharedAutoGainDb, { unique: true });
     conv.draft.presetName = itemName;
     convolverCreateInFlight = true;
-    if (elements.measurementConvolverCreateBtn) elements.measurementConvolverCreateBtn.disabled = true;
-    showMeasurementConvolverFeedback(`Creating ${itemName}…`);
+    conv.creatingPreset = true;
+    showMeasurementConvolverFeedback('Creating convolver preset...');
+    renderMeasurementPanel();
+    await waitForNextAnimationFrame();
     try {
         const draftMetadata = drafts[0]?.metadata || {};
         const generationOptions = {
@@ -6150,6 +6158,7 @@ async function createMeasurementConvolverPresetFromDraft() {
         showToast(e.message || 'Convolver preset creation failed', 'error');
     } finally {
         convolverCreateInFlight = false;
+        conv.creatingPreset = false;
         renderMeasurementPanel();
     }
 }
@@ -7652,6 +7661,7 @@ function renderMeasurementPanel() {
     const rightDraft = conv.draft?.right || null;
     const hasConvolverDraft = !!leftDraft || !!rightDraft;
     const draftPhaseMismatch = getMeasurementConvolverDraftPhaseMismatch(conv);
+    const isCreatingConvolverPreset = !!conv.creatingPreset || convolverCreateInFlight;
     if (elements.measurementConvolverSummary) {
         const curve = getMeasurementConvolverCurve(conv.targetCurve);
         const hasCreatedConvolver = (state.easyeffects?.assistStack || []).some((item) => item.type === 'convolver');
@@ -7666,7 +7676,9 @@ function renderMeasurementPanel() {
         const summaryTimingDelta = leftDraft && rightDraft
             ? getMeasurementConvolverTimingDelta(leftDraft.timing, rightDraft.timing)
             : currentTimingDelta;
-        if (draftPhaseMismatch) {
+        if (isCreatingConvolverPreset) {
+            draftStatus = 'Creating convolver preset...';
+        } else if (draftPhaseMismatch) {
             draftStatus = 'Draft phase does not match selected phase type — take L/R again.';
         } else if (leftDraft && rightDraft) {
             const timingDelta = summaryTimingDelta;
@@ -7719,10 +7731,13 @@ function renderMeasurementPanel() {
         elements.measurementConvolverWarnings.innerHTML = warnings.map((warning) => `<div>${escapeHtml(warning)}</div>`).join('');
         elements.measurementConvolverWarnings.classList.toggle('hidden', !warnings.length);
     }
-    if (elements.measurementConvolverTakeLeftBtn) elements.measurementConvolverTakeLeftBtn.disabled = !left;
-    if (elements.measurementConvolverTakeRightBtn) elements.measurementConvolverTakeRightBtn.disabled = !right;
-    if (elements.measurementConvolverTakeBothBtn) elements.measurementConvolverTakeBothBtn.disabled = !left || !right;
-    if (elements.measurementConvolverCreateBtn) elements.measurementConvolverCreateBtn.disabled = !hasConvolverDraft || !!draftPhaseMismatch || !String(conv.draft?.presetName || '').trim() || convolverCreateInFlight;
+    if (elements.measurementConvolverTakeLeftBtn) elements.measurementConvolverTakeLeftBtn.disabled = !left || isCreatingConvolverPreset;
+    if (elements.measurementConvolverTakeRightBtn) elements.measurementConvolverTakeRightBtn.disabled = !right || isCreatingConvolverPreset;
+    if (elements.measurementConvolverTakeBothBtn) elements.measurementConvolverTakeBothBtn.disabled = !left || !right || isCreatingConvolverPreset;
+    if (elements.measurementConvolverCreateBtn) {
+        elements.measurementConvolverCreateBtn.disabled = !hasConvolverDraft || !!draftPhaseMismatch || !String(conv.draft?.presetName || '').trim() || isCreatingConvolverPreset;
+        elements.measurementConvolverCreateBtn.textContent = isCreatingConvolverPreset ? 'Creating...' : 'Create Convolver Preset';
+    }
 
     const selectedSavedCount = measurements.filter(measurement => measurementState.visibilityById?.[measurement.id]).length;
     const allSavedSelected = measurements.length > 0 && selectedSavedCount === measurements.length;
