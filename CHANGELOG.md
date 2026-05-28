@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.3 (2026-05-28)
 - Fixed Hybrid aligned FIR construction so its minimum-phase and linear-style components share one final delay reference, preventing the linear component's wrapped negative-time tail from becoming a tap-length-dependent delayed arrival.
 
 ## 0.7.2 (2026-05-27)
