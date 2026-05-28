@@ -251,14 +251,20 @@
         const minimumSpectrum = buildMeasurementConvolverMinimumSpectrum(magnitudes, length);
         const real = new Float64Array(length);
         const imag = new Float64Array(length);
+        const delaySamples = half;
         for (let bin = 0; bin < length; bin += 1) {
             const mirroredBin = bin <= half ? bin : length - bin;
             const frequency = (mirroredBin * sampleRate) / length;
             const linearWeight = getMeasurementConvolverHybridLinearWeight(frequency);
             const minimumWeight = 1 - linearWeight;
             const linearReal = magnitudes[mirroredBin] || 0;
-            real[bin] = (minimumSpectrum.real[bin] * minimumWeight) + (linearReal * linearWeight);
-            imag[bin] = minimumSpectrum.imag[bin] * minimumWeight;
+            const blendedReal = (minimumSpectrum.real[bin] * minimumWeight) + (linearReal * linearWeight);
+            const blendedImag = minimumSpectrum.imag[bin] * minimumWeight;
+            const phase = (-2 * Math.PI * bin * delaySamples) / length;
+            const delayReal = Math.cos(phase);
+            const delayImag = Math.sin(phase);
+            real[bin] = (blendedReal * delayReal) - (blendedImag * delayImag);
+            imag[bin] = (blendedReal * delayImag) + (blendedImag * delayReal);
         }
         return { real, imag };
     }

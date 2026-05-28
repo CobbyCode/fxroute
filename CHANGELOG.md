@@ -1,5 +1,8 @@
 # Changelog
 
+## Unreleased
+- Fixed Hybrid aligned FIR construction so its minimum-phase and linear-style components share one final delay reference, preventing the linear component's wrapped negative-time tail from becoming a tap-length-dependent delayed arrival.
+
 ## 0.7.2 (2026-05-27)
 - Added a Hybrid aligned FIR Convolver assistant mode that blends minimum-phase bass correction into zero-delay linear-style upper correction and uses the same L/R timing safety gate as Minimum phase aligned for stereo drafts.
 - Adjusted Hybrid aligned FIR blending to keep minimum-phase correction below 150 Hz, transition from 150-500 Hz, and use linear-style correction above 500 Hz.
