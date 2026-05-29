@@ -5059,8 +5059,15 @@ const measurementPeqTypeLabels = {
     gain: 'Gain',
 };
 
-function getSavedMeasurementColor(index = 0) {
-    return measurementComparePalette[index % measurementComparePalette.length] || '#60a5fa';
+function getVisibleMeasurementColorById() {
+    const colorById = {};
+    let colorIndex = 0;
+    getVisibleMeasurementEntries().forEach((measurement) => {
+        if (!getMeasurementDisplayTraces(measurement).length) return;
+        colorById[measurement.id] = measurementComparePalette[colorIndex % measurementComparePalette.length] || '#60a5fa';
+        colorIndex += 1;
+    });
+    return colorById;
 }
 
 function getDefaultMeasurementPeqFilter(index = 0) {
@@ -6433,7 +6440,7 @@ function handleMeasurementGraphPointerUp(event) {
     delete conv.dragEndHz;
 }
 
-function buildMeasurementGraphEntry(measurement = {}, { current = false, compareIndex = 0 } = {}) {
+function buildMeasurementGraphEntry(measurement = {}, { current = false, graphColor = '' } = {}) {
     const traces = getMeasurementDisplayTraces(measurement);
     if (!traces.length) return null;
     const smoothing = state.measurement.displaySmoothing || '1/6-oct';
@@ -6444,7 +6451,7 @@ function buildMeasurementGraphEntry(measurement = {}, { current = false, compare
             points: smoothMeasurementTracePoints(trace.points || [], smoothing),
         })),
         current,
-        graphColor: current ? measurementCurrentColor : getSavedMeasurementColor(compareIndex),
+        graphColor: current ? measurementCurrentColor : graphColor,
     };
 }
 
@@ -6453,8 +6460,9 @@ function getGraphMeasurementEntries() {
     const current = getCurrentMeasurementEntry();
     const currentEntry = current ? buildMeasurementGraphEntry(current, { current: true }) : null;
     if (currentEntry) entries.push(currentEntry);
-    getVisibleMeasurementEntries().forEach((measurement, index) => {
-        const entry = buildMeasurementGraphEntry(measurement, { current: false, compareIndex: index });
+    const visibleColorById = getVisibleMeasurementColorById();
+    getVisibleMeasurementEntries().forEach((measurement) => {
+        const entry = buildMeasurementGraphEntry(measurement, { current: false, graphColor: visibleColorById[measurement.id] });
         if (entry) entries.push(entry);
     });
     return entries;
@@ -7775,19 +7783,21 @@ function renderMeasurementPanel() {
 
     const selectedSavedCount = measurements.filter(measurement => measurementState.visibilityById?.[measurement.id]).length;
     const allSavedSelected = measurements.length > 0 && selectedSavedCount === measurements.length;
+    const visibleMeasurementColorById = getVisibleMeasurementColorById();
 
-    const savedItemsHtml = measurements.map((measurement, index) => {
+    const savedItemsHtml = measurements.map((measurement) => {
         const pointsLabel = summarizeMeasurementEntry(measurement);
-        const traceColor = getSavedMeasurementColor(index);
+        const traceColor = visibleMeasurementColorById[measurement.id] || '';
         const isSelected = !!measurementState.visibilityById?.[measurement.id];
+        const isVisibleInGraph = !!traceColor;
         const qualitySummary = getMeasurementQualitySummary(measurement);
         const qualityTitle = getMeasurementQualityTitle(measurement);
         return `
-            <div class="measurement-list-item" style="${isSelected ? `border-color:${traceColor}; box-shadow: inset 0 0 0 1px ${traceColor}33; background: linear-gradient(180deg, rgba(255,255,255,0.03), ${traceColor}12);` : ''}">
+            <div class="measurement-list-item" style="${isVisibleInGraph ? `border-color:${traceColor}; box-shadow: inset 0 0 0 1px ${traceColor}33; background: linear-gradient(180deg, rgba(255,255,255,0.03), ${traceColor}12);` : ''}">
                 <div class="measurement-list-row">
                     <span class="measurement-toggle">
                         <input type="checkbox" data-measurement-toggle="${escapeHtml(measurement.id)}" ${isSelected ? 'checked' : ''}>
-                        <span class="measurement-swatch" style="background:${escapeHtml(traceColor)}"></span>
+                        <span class="measurement-swatch ${isVisibleInGraph ? '' : 'measurement-swatch-inactive'}" ${isVisibleInGraph ? `style="background:${escapeHtml(traceColor)}"` : ''}></span>
                         <span class="measurement-list-title"><a href="${escapeHtml(measurementFileUrl(measurement.id))}" title="${escapeHtml(measurement.name)}">${escapeHtml(getCompactDisplayName(measurement.name, 24))}</a></span>
                     </span>
                     <span class="measurement-list-meta">${escapeHtml(formatMeasurementDate(measurement.created_at))}</span>
@@ -7797,7 +7807,7 @@ function renderMeasurementPanel() {
                     <span class="measurement-list-points">${escapeHtml(pointsLabel)}</span>
                 </div>
                 <div class="measurement-list-row">
-                    <span class="measurement-list-meta" title="${escapeHtml(qualityTitle)}">${escapeHtml(qualitySummary)} · ${isSelected ? 'visible, dashed compare trace' : 'hidden compare trace'}</span>
+                    <span class="measurement-list-meta" title="${escapeHtml(qualityTitle)}">${escapeHtml(qualitySummary)} · ${isVisibleInGraph ? 'visible, dashed compare trace' : 'hidden compare trace'}</span>
                 </div>
             </div>
         `;

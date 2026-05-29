@@ -2067,6 +2067,11 @@ body {
     flex: 0 0 auto;
 }
 
+.measurement-swatch-inactive {
+    background: rgba(148, 163, 184, 0.18);
+    box-shadow: 0 0 0 1px rgba(148, 163, 184, 0.22);
+}
+
 .measurement-list-title {
     font-weight: 600;
 }
