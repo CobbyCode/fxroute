@@ -10,6 +10,7 @@ import math
 import os
 import re
 import subprocess
+import threading
 import time
 import wave
 from copy import deepcopy
@@ -132,6 +133,8 @@ HOST_ALIGNMENT_SCORE_FAIL_THRESHOLD = 0.84
 HOST_ALIGNMENT_SCORE_WARN_THRESHOLD = 0.90
 CAPTURE_CLIP_FAIL_DBFS = -0.2
 CAPTURE_CLIP_WARN_DBFS = -1.0
+CAPTURE_LEVEL_STATUS_INTERVAL_SECONDS = 0.35
+CAPTURE_LEVEL_STATUS_MIN_DBFS = -90.0
 CLOCK_DRIFT_WARN_PPM = 3_000.0
 CHANNEL_CORRELATION_WARN_THRESHOLD = 0.985
 
@@ -660,6 +663,13 @@ class MeasurementStore:
 
         record_process = subprocess.Popen(record_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         self._job_processes[job_id] = [record_process]
+        level_monitor_stop = threading.Event()
+        level_monitor_thread = threading.Thread(
+            target=self._monitor_capture_input_level,
+            args=(job_id, capture_path, capture_channels, 1, level_monitor_stop),
+            daemon=True,
+        )
+        level_monitor_thread.start()
         play_process: subprocess.Popen[str] | None = None
         play_stdout = ""
         play_stderr = ""
@@ -753,6 +763,9 @@ class MeasurementStore:
                 pass
             raise
         finally:
+            level_monitor_stop.set()
+            if level_monitor_thread.is_alive():
+                level_monitor_thread.join(timeout=1.0)
             if detailed_diagnostics_enabled:
                 routing_snapshots.append(
                     self._build_measurement_routing_snapshot(
@@ -938,6 +951,66 @@ class MeasurementStore:
     def _should_retry_host_capture(self, exc: Exception) -> bool:
         error_codes = self._capture_quality_error_codes(exc)
         return bool(error_codes) and error_codes.issubset({"weak-start-alignment", "weak-end-alignment"})
+
+    def _format_capture_input_level_message(self, peak_dbfs: float, clipped: bool) -> str:
+        if clipped:
+            return "Running sweep… CLIP"
+        if peak_dbfs <= CAPTURE_LEVEL_STATUS_MIN_DBFS:
+            return "Running sweep… Peak < -90 dBFS"
+        return f"Running sweep… Peak {round(peak_dbfs):.0f} dBFS"
+
+    def _update_capture_input_level_status(self, job_id: str, peak_dbfs: float, clipped: bool) -> None:
+        job = self._jobs.get(job_id)
+        if not job or str(job.get("status") or "") != "running":
+            return
+        message = self._format_capture_input_level_message(peak_dbfs, clipped)
+        now = self._utc_now()
+        job["message"] = message
+        job["updated_at"] = now
+        job["input_level"] = {
+            "peak_dbfs": round(max(CAPTURE_LEVEL_STATUS_MIN_DBFS, peak_dbfs), 1),
+            "clipped": bool(clipped),
+            "updated_at": now,
+        }
+        try:
+            self._persist_job(job)
+        except Exception:
+            logger.debug("Failed to persist measurement input level status for %s", job_id, exc_info=True)
+
+    def _monitor_capture_input_level(
+        self,
+        job_id: str,
+        capture_path: Path,
+        capture_channels: int,
+        input_channel_index: int,
+        stop_event: threading.Event,
+    ) -> None:
+        frame_bytes = max(1, int(capture_channels)) * 2
+        read_offset = 44
+        clipped = False
+        while not stop_event.is_set():
+            try:
+                if capture_path.exists():
+                    size = capture_path.stat().st_size
+                    available = max(0, size - read_offset)
+                    usable = (available // frame_bytes) * frame_bytes
+                    if usable > 0:
+                        with capture_path.open("rb") as handle:
+                            handle.seek(read_offset)
+                            chunk = handle.read(usable)
+                        read_offset += len(chunk)
+                        samples = np.frombuffer(chunk, dtype="<i2")
+                        if samples.size >= capture_channels:
+                            frames = samples.reshape(-1, int(capture_channels))
+                            channel_index = max(0, min(int(input_channel_index), frames.shape[1] - 1))
+                            channel_samples = frames[:, channel_index].astype(np.int32)
+                            peak_sample = int(np.max(np.abs(channel_samples))) if channel_samples.size else 0
+                            peak_dbfs = 20.0 * math.log10(max(peak_sample / 32768.0, 1e-9))
+                            clipped = clipped or peak_sample >= 32760 or peak_dbfs >= CAPTURE_CLIP_FAIL_DBFS
+                            self._update_capture_input_level_status(job_id, peak_dbfs, clipped)
+            except Exception:
+                logger.debug("Measurement input level monitor failed for %s", job_id, exc_info=True)
+            stop_event.wait(CAPTURE_LEVEL_STATUS_INTERVAL_SECONDS)
 
     def _analysis_has_warning_code(self, analysis: dict[str, Any] | None, code: str) -> bool:
         if not isinstance(analysis, dict):
