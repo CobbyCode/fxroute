@@ -681,7 +681,8 @@ class MeasurementStore:
             capture_info["mic_auto_boosted"] = True
             capture_info["mic_auto_boost_target_percent"] = HOST_SWEEP_AUTO_GAIN_TARGET_PERCENT
 
-        completion_message = "Measurement finished. Trusted trace is ready."
+        timing_summary = self._format_measurement_timing_summary(analysis)
+        completion_message = f"Measurement finished. {timing_summary}" if timing_summary else "Measurement finished. Trusted trace is ready."
         if final_capture_level_low:
             completion_message += " Volume was low."
 
@@ -966,6 +967,9 @@ class MeasurementStore:
             impulse_meta = analysis.get("impulse_response") if isinstance(analysis.get("impulse_response"), dict) else {}
             reference_path.update(
                 {
+                    "timing_status": "electrical-reference-candidate",
+                    "timing_label": "Electrical reference candidate",
+                    "electrical_reference_used": False,
                     "electrical_reference_delay_samples": impulse_meta.get("reference_peak_index"),
                     "electrical_reference_delay_seconds": impulse_meta.get("reference_peak_seconds"),
                     "electrical_reference_delay_ms": round(float(impulse_meta.get("reference_peak_seconds") or 0.0) * 1000.0, 6),
@@ -977,6 +981,23 @@ class MeasurementStore:
                     "acoustic_arrival_corrected_ms": impulse_meta.get("arrival_ms"),
                     "confidence": impulse_meta.get("direct_confidence"),
                     "stability": "candidate",
+                }
+            )
+        else:
+            impulse_meta = analysis.get("impulse_response") if isinstance(analysis.get("impulse_response"), dict) else {}
+            reference_path.update(
+                {
+                    "timing_status": "acoustic-only",
+                    "timing_label": "Acoustic-only timing",
+                    "electrical_reference_used": False,
+                    "acoustic_arrival_delay_samples": impulse_meta.get("direct_arrival_index"),
+                    "acoustic_arrival_delay_seconds": impulse_meta.get("direct_seconds"),
+                    "acoustic_arrival_delay_ms": round(float(impulse_meta.get("direct_seconds") or 0.0) * 1000.0, 6),
+                    "acoustic_arrival_corrected_samples": impulse_meta.get("arrival_samples"),
+                    "acoustic_arrival_corrected_seconds": impulse_meta.get("arrival_seconds"),
+                    "acoustic_arrival_corrected_ms": impulse_meta.get("arrival_ms"),
+                    "confidence": impulse_meta.get("direct_confidence"),
+                    "stability": "host-reference",
                 }
             )
         analysis["reference_path"] = reference_path
@@ -1126,8 +1147,11 @@ class MeasurementStore:
         if sharpness_db < ELECTRICAL_REFERENCE_MIN_IR_SHARPNESS_DB:
             return {"usable": False, "warning": "Electrical reference impulse was not sharp enough; used host monitor timing fallback."}
         reference_path["usable"] = True
+        reference_path["electrical_reference_used"] = True
+        reference_path["timing_status"] = "electrical-reference"
+        reference_path["timing_label"] = "Electrical reference active"
         reference_path["confidence"] = round(min(alignment_score, max(0.0, sharpness_db / 60.0)), 6)
-        reference_path["stability"] = "usable"
+        reference_path["stability"] = "stable"
         analysis["reference_path"] = reference_path
         return {"usable": True, "warning": ""}
 
@@ -1141,7 +1165,17 @@ class MeasurementStore:
         if quality_checks.get("status") == "pass":
             quality_checks["status"] = "warn"
         reference_path = analysis.get("reference_path") if isinstance(analysis.get("reference_path"), dict) else {}
-        reference_path.update({"electrical_reference_fallback": True, "warning": warning, "usable": False})
+        reference_path.update(
+            {
+                "electrical_reference_fallback": True,
+                "electrical_reference_used": False,
+                "timing_status": "electrical-reference-fallback",
+                "timing_label": "Electrical reference fallback",
+                "warning": warning,
+                "usable": False,
+                "stability": "fallback",
+            }
+        )
         analysis["reference_path"] = reference_path
 
     def _format_capture_input_level_message(self, peak_dbfs: float, clipped: bool) -> str:
@@ -1150,6 +1184,32 @@ class MeasurementStore:
         if peak_dbfs <= CAPTURE_LEVEL_STATUS_MIN_DBFS:
             return "Running sweep… Peak < -90 dBFS"
         return f"Running sweep… Peak {round(peak_dbfs):.0f} dBFS"
+
+    @staticmethod
+    def _format_measurement_timing_summary(analysis: dict[str, Any]) -> str:
+        reference_path = analysis.get("reference_path") if isinstance(analysis.get("reference_path"), dict) else {}
+        impulse = analysis.get("impulse_response") if isinstance(analysis.get("impulse_response"), dict) else {}
+        timing_status = str(reference_path.get("timing_status") or "").strip()
+        corrected_ms = reference_path.get("acoustic_arrival_corrected_ms", impulse.get("arrival_ms"))
+        try:
+            delay_ms = float(corrected_ms)
+        except (TypeError, ValueError):
+            delay_ms = math.nan
+        delay_text = f"delay {delay_ms:.2f} ms" if math.isfinite(delay_ms) else "delay unavailable"
+        stability = str(reference_path.get("stability") or "").strip().lower()
+        confidence = reference_path.get("confidence", impulse.get("direct_confidence"))
+        try:
+            confidence_value = float(confidence)
+        except (TypeError, ValueError):
+            confidence_value = math.nan
+
+        if timing_status == "electrical-reference":
+            stability_text = "timing stable" if stability in {"stable", "usable"} else "timing active"
+            return f"Electrical reference active · {delay_text} · {stability_text}"
+        if timing_status == "electrical-reference-fallback":
+            return f"Electrical reference fallback · {delay_text} · acoustic-only timing"
+        confidence_text = "lower confidence" if not math.isfinite(confidence_value) or confidence_value < 0.75 else "timing stable"
+        return f"Acoustic-only timing · {delay_text} · {confidence_text}"
 
     def _update_capture_input_level_status(self, job_id: str, peak_dbfs: float, clipped: bool) -> None:
         job = self._jobs.get(job_id)

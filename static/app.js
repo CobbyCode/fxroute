@@ -5881,6 +5881,7 @@ function getMeasurementAnalysisSampleRate(measurement = {}) {
 
 function getMeasurementDirectArrivalTiming(measurement = {}) {
     const impulse = measurement?.analysis?.impulse_response || null;
+    const timingInfo = getMeasurementTimingInfo(measurement);
     const channel = String(measurement?.channel || '').toLowerCase();
     if (channel === 'stereo') {
         return { available: false, reason: 'merged-measurement' };
@@ -5889,8 +5890,8 @@ function getMeasurementDirectArrivalTiming(measurement = {}) {
     if (!impulse || !sampleRate) {
         return { available: false, reason: 'missing-direct-arrival-timing' };
     }
-    const arrivalMs = Number(impulse?.arrival_ms);
-    const arrivalSamples = Number(impulse?.arrival_samples);
+    const arrivalMs = Number.isFinite(Number(timingInfo.delayMs)) ? Number(timingInfo.delayMs) : Number(impulse?.arrival_ms);
+    const arrivalSamples = Number.isFinite(Number(timingInfo.arrivalSamples)) ? Number(timingInfo.arrivalSamples) : Number(impulse?.arrival_samples);
     const directSample = Number(impulse?.direct_arrival_index);
     const referencePeakSample = Number(impulse?.reference_peak_index);
     const referenceAnchorSample = Number(measurement?.analysis?.alignment_samples);
@@ -5948,7 +5949,9 @@ function getMeasurementDirectArrivalTiming(measurement = {}) {
         channel,
         measurementId: measurement?.id || '',
         measurementName: measurement?.name || '',
-        source: impulse?.timing_source || 'direct_arrival_minus_reference_peak',
+        source: timingInfo.source || impulse?.timing_source || 'direct_arrival_minus_reference_peak',
+        timingStatus: timingInfo.status || '',
+        timingLabel: timingInfo.label || '',
     };
 }
 
@@ -6990,6 +6993,62 @@ function getMeasurementQualityTitle(measurement = {}) {
     return items.map(item => item?.message).filter(Boolean).join(' · ');
 }
 
+function getMeasurementTimingInfo(measurement = {}) {
+    const referencePath = measurement?.analysis?.reference_path || {};
+    const impulse = measurement?.analysis?.impulse_response || {};
+    const rawStatus = String(referencePath?.timing_status || '').trim();
+    const hasElectricalReference = !!measurement?.input_channels?.electrical_reference || referencePath?.capture_mode === 'electrical-input';
+    let status = rawStatus || (hasElectricalReference ? 'electrical-reference-candidate' : 'acoustic-only');
+    if (referencePath?.electrical_reference_fallback) status = 'electrical-reference-fallback';
+    if (referencePath?.electrical_reference_used || referencePath?.usable === true && referencePath?.capture_mode === 'electrical-input') status = 'electrical-reference';
+
+    const correctedMs = Number(referencePath?.acoustic_arrival_corrected_ms);
+    const impulseArrivalMs = Number(impulse?.arrival_ms);
+    const delayMs = Number.isFinite(correctedMs) ? correctedMs : (Number.isFinite(impulseArrivalMs) ? impulseArrivalMs : null);
+    const correctedSamples = Number(referencePath?.acoustic_arrival_corrected_samples);
+    const impulseArrivalSamples = Number(impulse?.arrival_samples);
+    const arrivalSamples = Number.isFinite(correctedSamples) ? correctedSamples : (Number.isFinite(impulseArrivalSamples) ? impulseArrivalSamples : null);
+    const referenceDelayMs = Number(referencePath?.electrical_reference_delay_ms);
+    const acousticDelayMs = Number(referencePath?.acoustic_arrival_delay_ms);
+    const confidence = Number(referencePath?.confidence ?? impulse?.direct_confidence);
+    const stable = status === 'electrical-reference'
+        ? String(referencePath?.stability || '').toLowerCase() === 'stable' || confidence >= 0.75
+        : confidence >= 0.75;
+    const delayText = delayMs === null ? 'delay unavailable' : `delay ${delayMs.toFixed(2)} ms`;
+
+    if (status === 'electrical-reference') {
+        return {
+            status,
+            label: 'Electrical reference active',
+            line: `Electrical reference active · ${delayText} · ${stable ? 'timing stable' : 'timing active'}`,
+            detail: `Electrical reference active · corrected ${delayText}${Number.isFinite(referenceDelayMs) ? ` · reference ${referenceDelayMs.toFixed(2)} ms` : ''}${Number.isFinite(acousticDelayMs) ? ` · acoustic ${acousticDelayMs.toFixed(2)} ms` : ''}`,
+            delayMs,
+            arrivalSamples,
+            source: 'electrical_reference_corrected',
+        };
+    }
+    if (status === 'electrical-reference-fallback') {
+        return {
+            status,
+            label: 'Reference fallback',
+            line: `Electrical reference fallback · ${delayText} · acoustic-only timing`,
+            detail: `Electrical reference fallback · ${delayText}${referencePath?.warning ? ` · ${referencePath.warning}` : ''}`,
+            delayMs,
+            arrivalSamples,
+            source: 'acoustic_fallback',
+        };
+    }
+    return {
+        status: 'acoustic-only',
+        label: 'Acoustic-only timing',
+        line: `Acoustic-only timing · ${delayText} · ${stable ? 'timing stable' : 'lower confidence'}`,
+        detail: `Acoustic-only timing · ${delayText}${Number.isFinite(confidence) ? ` · confidence ${confidence.toFixed(2)}` : ''}`,
+        delayMs,
+        arrivalSamples,
+        source: 'acoustic_only',
+    };
+}
+
 function sleep(ms) {
     return new Promise(resolve => window.setTimeout(resolve, ms));
 }
@@ -7165,6 +7224,8 @@ async function pollMeasurementJob(jobId) {
                     state.measurement.currentMeasurementName = state.measurement.currentMeasurement.name || '';
                     state.measurement.currentMeasurementSaved = false;
                     state.measurement.reviewVisibilityById[state.measurement.currentMeasurement.id] = !!state.measurement.currentMeasurement.review_traces?.length;
+                    const timingInfo = getMeasurementTimingInfo(state.measurement.currentMeasurement);
+                    if (timingInfo.line) state.measurement.statusText = timingInfo.line;
                 } catch (error) {
                     console.error('measurement result normalization failed', error, job);
                     state.measurement.statusText = error?.message
@@ -7856,6 +7917,7 @@ function renderMeasurementPanel() {
         const isVisibleInGraph = !!traceColor;
         const qualitySummary = getMeasurementQualitySummary(measurement);
         const qualityTitle = getMeasurementQualityTitle(measurement);
+        const timingInfo = getMeasurementTimingInfo(measurement);
         const micInputChannel = measurement.input_channels?.mic ? ` · Mic In ${measurement.input_channels.mic}` : '';
         const referenceInputChannel = measurement.input_channels?.electrical_reference ? ` · Ref In ${measurement.input_channels.electrical_reference}` : '';
         return `
@@ -7871,6 +7933,9 @@ function renderMeasurementPanel() {
                 <div class="measurement-list-row">
                     <span class="measurement-list-meta">${escapeHtml(measurement.input_device?.label || 'Capture input')} · ${escapeHtml(String(measurement.channel || 'left'))}${escapeHtml(micInputChannel)}${escapeHtml(referenceInputChannel)}</span>
                     <span class="measurement-list-points">${escapeHtml(pointsLabel)}</span>
+                </div>
+                <div class="measurement-list-row">
+                    <span class="measurement-list-meta" title="${escapeHtml(timingInfo.detail)}">${escapeHtml(timingInfo.line)}</span>
                 </div>
                 <div class="measurement-list-row">
                     <span class="measurement-list-meta" title="${escapeHtml(qualityTitle)}">${escapeHtml(qualitySummary)} · ${isVisibleInGraph ? 'visible, dashed compare trace' : 'hidden compare trace'}</span>

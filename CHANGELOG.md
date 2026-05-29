@@ -2,6 +2,7 @@
 
 ## Unreleased
 - Added optional electrical reference input support for host-local measurements, including explicit mic/reference input-channel selection, same-channel guarding, reference timing metadata, and fallback to the existing host-reference path when the electrical reference is unusable.
+- Clarified measurement timing reporting so completed runs and saved runs show whether timing used an electrical reference, acoustic-only timing, or fallback after an invalid electrical reference.
 
 ## 0.7.3 (2026-05-28)
 - Fixed Hybrid aligned FIR construction so its minimum-phase and linear-style components share one final delay reference, preventing the linear component's wrapped negative-time tail from becoming a tap-length-dependent delayed arrival.
