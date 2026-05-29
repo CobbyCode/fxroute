@@ -133,6 +133,9 @@ HOST_ALIGNMENT_SCORE_FAIL_THRESHOLD = 0.84
 HOST_ALIGNMENT_SCORE_WARN_THRESHOLD = 0.90
 CAPTURE_CLIP_FAIL_DBFS = -0.2
 CAPTURE_CLIP_WARN_DBFS = -1.0
+ELECTRICAL_REFERENCE_MIN_PEAK_DBFS = -70.0
+ELECTRICAL_REFERENCE_MIN_ALIGNMENT_SCORE = 0.84
+ELECTRICAL_REFERENCE_MIN_IR_SHARPNESS_DB = 18.0
 CAPTURE_LEVEL_STATUS_INTERVAL_SECONDS = 0.35
 CAPTURE_LEVEL_STATUS_MIN_DBFS = -90.0
 CLOCK_DRIFT_WARN_PPM = 3_000.0
@@ -235,6 +238,8 @@ class MeasurementStore:
         *,
         input_id: str,
         channel: str,
+        mic_input_channel: str | int | None = "1",
+        reference_input_channel: str | int | None = "",
         calibration_filename: str | None = None,
         calibration_bytes: bytes | None = None,
         calibration_ref: str | None = None,
@@ -249,6 +254,22 @@ class MeasurementStore:
         normalized_channel = str(channel or "left").strip().lower()
         if normalized_channel not in {"left", "right", "stereo"}:
             raise ValueError("channel must be left, right, or stereo")
+        input_channel_count = max(1, int(selected_input.get("channels") or 1))
+        mic_input_channel_index = self._parse_input_channel_index(
+            mic_input_channel,
+            channel_count=input_channel_count,
+            default=0,
+            field_name="mic_input_channel",
+        )
+        reference_input_channel_index = self._parse_optional_input_channel_index(
+            reference_input_channel,
+            channel_count=input_channel_count,
+            field_name="reference_input_channel",
+        )
+        reference_disabled_reason = ""
+        if reference_input_channel_index is not None and reference_input_channel_index == mic_input_channel_index:
+            reference_disabled_reason = "Mic input and electrical reference input are the same channel; reference compensation disabled."
+            reference_input_channel_index = None
 
         calibration_meta = self._resolve_calibration_meta(
             calibration_filename=calibration_filename,
@@ -270,6 +291,11 @@ class MeasurementStore:
                 "node_name": selected_input.get("node_name"),
                 "channels": selected_input.get("channels"),
                 "sample_rate": selected_input.get("sample_rate"),
+            },
+            "input_channels": {
+                "mic": mic_input_channel_index + 1,
+                "electrical_reference": reference_input_channel_index + 1 if reference_input_channel_index is not None else None,
+                "reference_disabled_reason": reference_disabled_reason,
             },
             "channel": normalized_channel,
             "calibration": calibration_meta or {"filename": "", "applied": False},
@@ -440,6 +466,7 @@ class MeasurementStore:
     def _execute_capture_job(self, job: dict[str, Any]) -> dict[str, Any]:
         job_id = str(job["id"])
         selected_input = job.get("input") or {}
+        input_channels = job.get("input_channels") if isinstance(job.get("input_channels"), dict) else {}
         channel = str(job.get("channel") or "left")
         calibration_meta = job.get("calibration") if isinstance(job.get("calibration"), dict) else {"filename": "", "applied": False}
 
@@ -451,7 +478,15 @@ class MeasurementStore:
         record_preroll_seconds = HOST_SWEEP_RECORD_PREROLL_SECONDS
         record_postroll_seconds = HOST_SWEEP_RECORD_POSTROLL_SECONDS
         record_duration_seconds = duration_seconds + record_preroll_seconds + record_postroll_seconds
-        capture_channels = 2
+        mic_input_channel_index = max(0, int(input_channels.get("mic") or 1) - 1)
+        electrical_reference_input_channel = input_channels.get("electrical_reference")
+        electrical_reference_channel_index = (
+            max(0, int(electrical_reference_input_channel) - 1)
+            if electrical_reference_input_channel is not None
+            else None
+        )
+        use_electrical_reference = electrical_reference_channel_index is not None and electrical_reference_channel_index != mic_input_channel_index
+        capture_channels = max(2, mic_input_channel_index + 1, (electrical_reference_channel_index + 1) if use_electrical_reference else 2)
         capture_path = self.captures_dir / f"{job_id}.wav"
         playback_path = self.playbacks_dir / f"{job_id}.wav"
         source_node_name = str(selected_input.get("node_name") or "").strip()
@@ -467,6 +502,17 @@ class MeasurementStore:
             mic_source_node_name=source_node_name,
             requested_channel=playback_channel,
         )
+        electrical_reference = None
+        if use_electrical_reference:
+            electrical_reference = {
+                "source_node_name": source_node_name,
+                "sink_node_name": "",
+                "channel": f"input_{electrical_reference_channel_index + 1}",
+                "channel_label": f"input_{electrical_reference_channel_index + 1}_electrical_reference",
+                "mic_channel_label": f"input_{mic_input_channel_index + 1}_mic",
+                "mic_input_channel": mic_input_channel_index + 1,
+                "electrical_reference_input_channel": electrical_reference_channel_index + 1,
+            }
         sweep_meta = self._write_sweep_file(
             playback_path,
             sample_rate=sample_rate,
@@ -493,15 +539,17 @@ class MeasurementStore:
         attempts_used = 0
         final_capture_level_low = False
         mic_auto_boosted = False
+        reference_warning = str(input_channels.get("reference_disabled_reason") or "").strip()
         for attempt_index in range(HOST_SWEEP_MAX_ATTEMPTS):
             attempts_used = attempt_index + 1
             try:
                 if capture_path.exists():
                     capture_path.unlink()
+                attempt_reference = electrical_reference if use_electrical_reference else host_reference
                 analysis, capture_info, playback_info = self._run_host_capture_attempt(
                     job_id=job_id,
                     mic_source_node_name=source_node_name,
-                    reference_capture=host_reference,
+                    reference_capture=attempt_reference,
                     channel=playback_channel,
                     capture_channels=capture_channels,
                     capture_path=capture_path,
@@ -517,7 +565,39 @@ class MeasurementStore:
                     record_postroll_seconds=record_postroll_seconds,
                     record_duration_seconds=record_duration_seconds,
                     calibration_curve=calibration_curve,
+                    mic_input_channel_index=mic_input_channel_index,
+                    electrical_reference_channel_index=electrical_reference_channel_index if use_electrical_reference else None,
                 )
+                if use_electrical_reference:
+                    reference_status = self._evaluate_electrical_reference_status(analysis)
+                    if not reference_status["usable"]:
+                        reference_warning = reference_status["warning"]
+                        logger.warning("Electrical measurement reference rejected for %s: %s", job_id, reference_warning)
+                        if capture_path.exists():
+                            capture_path.unlink()
+                        analysis, capture_info, playback_info = self._run_host_capture_attempt(
+                            job_id=job_id,
+                            mic_source_node_name=source_node_name,
+                            reference_capture=host_reference,
+                            channel=playback_channel,
+                            capture_channels=2,
+                            capture_path=capture_path,
+                            playback_path=playback_path,
+                            playback_target=playback_target,
+                            sweep_meta=sweep_meta,
+                            sample_rate=sample_rate,
+                            duration_seconds=duration_seconds,
+                            sweep_seconds=sweep_seconds,
+                            lead_in_seconds=lead_in_seconds,
+                            tail_seconds=tail_seconds,
+                            record_preroll_seconds=record_preroll_seconds,
+                            record_postroll_seconds=record_postroll_seconds,
+                            record_duration_seconds=record_duration_seconds,
+                            calibration_curve=calibration_curve,
+                            mic_input_channel_index=mic_input_channel_index,
+                            electrical_reference_channel_index=None,
+                        )
+                        self._append_reference_fallback_warning(analysis, reference_warning)
                 capture_level_low = self._analysis_has_warning_code(analysis, "capture-level-low")
                 final_capture_level_low = capture_level_low
                 if (
@@ -542,11 +622,46 @@ class MeasurementStore:
                                 continue
                 break
             except Exception as exc:
+                if use_electrical_reference:
+                    reference_warning = f"Electrical reference unavailable; used host monitor timing fallback ({exc})."
+                    logger.warning("Electrical measurement reference failed for %s; falling back to host monitor timing: %s", job_id, exc)
+                    try:
+                        if capture_path.exists():
+                            capture_path.unlink()
+                        analysis, capture_info, playback_info = self._run_host_capture_attempt(
+                            job_id=job_id,
+                            mic_source_node_name=source_node_name,
+                            reference_capture=host_reference,
+                            channel=playback_channel,
+                            capture_channels=2,
+                            capture_path=capture_path,
+                            playback_path=playback_path,
+                            playback_target=playback_target,
+                            sweep_meta=sweep_meta,
+                            sample_rate=sample_rate,
+                            duration_seconds=duration_seconds,
+                            sweep_seconds=sweep_seconds,
+                            lead_in_seconds=lead_in_seconds,
+                            tail_seconds=tail_seconds,
+                            record_preroll_seconds=record_preroll_seconds,
+                            record_postroll_seconds=record_postroll_seconds,
+                            record_duration_seconds=record_duration_seconds,
+                            calibration_curve=calibration_curve,
+                            mic_input_channel_index=mic_input_channel_index,
+                            electrical_reference_channel_index=None,
+                        )
+                        self._append_reference_fallback_warning(analysis, reference_warning)
+                        final_capture_level_low = self._analysis_has_warning_code(analysis, "capture-level-low")
+                        break
+                    except Exception:
+                        logger.warning("Electrical reference fallback capture also failed for %s", job_id, exc_info=True)
                 if attempt_index >= HOST_SWEEP_MAX_ATTEMPTS - 1 or not self._should_retry_host_capture(exc):
                     raise
                 time.sleep(HOST_SWEEP_RETRY_DELAY_SECONDS)
         if analysis is None or capture_info is None or playback_info is None:
             raise RuntimeError("Host-local capture did not produce an analysis result")
+        if reference_warning and not self._analysis_has_warning_code(analysis, "electrical-reference-fallback"):
+            self._append_reference_fallback_warning(analysis, reference_warning)
 
         measurement = self._build_measurement_from_analysis(
             analysis,
@@ -556,6 +671,11 @@ class MeasurementStore:
             },
             channel=channel,
             calibration=calibration_result,
+            input_channels={
+                "mic": mic_input_channel_index + 1,
+                "electrical_reference": electrical_reference_channel_index + 1 if use_electrical_reference else None,
+                "reference_disabled_reason": str(input_channels.get("reference_disabled_reason") or ""),
+            },
         )
         if mic_auto_boosted and isinstance(capture_info, dict):
             capture_info["mic_auto_boosted"] = True
@@ -628,6 +748,8 @@ class MeasurementStore:
         record_postroll_seconds: float,
         record_duration_seconds: float,
         calibration_curve: tuple[np.ndarray, np.ndarray] | None,
+        mic_input_channel_index: int,
+        electrical_reference_channel_index: int | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
         record_node_name = f"fxroute-measure-record-{job_id}"
         play_node_name = f"fxroute-measure-play-{job_id}"
@@ -663,10 +785,11 @@ class MeasurementStore:
 
         record_process = subprocess.Popen(record_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         self._job_processes[job_id] = [record_process]
+        monitored_channel_index = mic_input_channel_index if electrical_reference_channel_index is not None else 1
         level_monitor_stop = threading.Event()
         level_monitor_thread = threading.Thread(
             target=self._monitor_capture_input_level,
-            args=(job_id, capture_path, capture_channels, 1, level_monitor_stop),
+            args=(job_id, capture_path, capture_channels, monitored_channel_index, level_monitor_stop),
             daemon=True,
         )
         level_monitor_thread.start()
@@ -691,12 +814,20 @@ class MeasurementStore:
                 )
             )
         try:
-            link_diagnostics = self._link_host_reference_capture(
-                reference_source_node_name=str(reference_capture["source_node_name"]),
-                mic_source_node_name=mic_source_node_name,
-                record_node_name=record_node_name,
-                requested_channel=channel,
-            )
+            if electrical_reference_channel_index is not None:
+                link_diagnostics = self._link_capture_channels_to_record_stream(
+                    source_node_name=mic_source_node_name,
+                    record_node_name=record_node_name,
+                    channel_indices=sorted({mic_input_channel_index, electrical_reference_channel_index}),
+                )
+            else:
+                link_diagnostics = self._link_host_reference_capture(
+                    reference_source_node_name=str(reference_capture["source_node_name"]),
+                    mic_source_node_name=mic_source_node_name,
+                    record_node_name=record_node_name,
+                    requested_channel=channel,
+                    mic_input_channel_index=mic_input_channel_index,
+                )
             if detailed_diagnostics_enabled:
                 routing_snapshots.append(
                     self._build_measurement_routing_snapshot(
@@ -794,6 +925,8 @@ class MeasurementStore:
             raise RuntimeError("Capture finished but no usable host-reference WAV data was produced")
 
         reference_channel_label = str(reference_capture.get("channel_label") or "reference")
+        analysis_channel_index = mic_input_channel_index if electrical_reference_channel_index is not None else 1
+        reference_channel_index = electrical_reference_channel_index if electrical_reference_channel_index is not None else 0
         analysis = self._analyze_sweep_capture(
             capture_path,
             expected_sample_rate=sample_rate,
@@ -802,16 +935,20 @@ class MeasurementStore:
             inverse_sweep=sweep_meta["inverse_sweep"],
             calibration_curve=calibration_curve,
             capture_label="Host-local capture",
-            reference_channel_index=0,
-            analysis_channel_index=1,
+            reference_channel_index=reference_channel_index,
+            analysis_channel_index=analysis_channel_index,
             reference_channel_label=reference_channel_label,
         )
-        analysis["method"] = "inverse log-sweep deconvolution with host-reference dual-channel capture"
+        analysis["method"] = (
+            "inverse log-sweep deconvolution with electrical reference input timing"
+            if electrical_reference_channel_index is not None
+            else "inverse log-sweep deconvolution with host-reference dual-channel capture"
+        )
         analysis_clock = analysis.get("clock") if isinstance(analysis.get("clock"), dict) else {}
         analysis_clock.update(
             {
                 "timing_channel": reference_channel_label,
-                "reference_capture_mode": "dual-channel",
+                "reference_capture_mode": "electrical-input" if electrical_reference_channel_index is not None else "dual-channel",
                 "reference_channel": reference_channel_label,
             }
         )
@@ -820,9 +957,28 @@ class MeasurementStore:
         reference_path.update(
             {
                 "timing_applied_to_mic": True,
-                "capture_mode": "dual-channel",
+                "capture_mode": "electrical-input" if electrical_reference_channel_index is not None else "dual-channel",
+                "mic_input_channel": mic_input_channel_index + 1,
+                "electrical_reference_input_channel": electrical_reference_channel_index + 1 if electrical_reference_channel_index is not None else None,
             }
         )
+        if electrical_reference_channel_index is not None:
+            impulse_meta = analysis.get("impulse_response") if isinstance(analysis.get("impulse_response"), dict) else {}
+            reference_path.update(
+                {
+                    "electrical_reference_delay_samples": impulse_meta.get("reference_peak_index"),
+                    "electrical_reference_delay_seconds": impulse_meta.get("reference_peak_seconds"),
+                    "electrical_reference_delay_ms": round(float(impulse_meta.get("reference_peak_seconds") or 0.0) * 1000.0, 6),
+                    "acoustic_arrival_delay_samples": impulse_meta.get("direct_arrival_index"),
+                    "acoustic_arrival_delay_seconds": impulse_meta.get("direct_seconds"),
+                    "acoustic_arrival_delay_ms": round(float(impulse_meta.get("direct_seconds") or 0.0) * 1000.0, 6),
+                    "acoustic_arrival_corrected_samples": impulse_meta.get("arrival_samples"),
+                    "acoustic_arrival_corrected_seconds": impulse_meta.get("arrival_seconds"),
+                    "acoustic_arrival_corrected_ms": impulse_meta.get("arrival_ms"),
+                    "confidence": impulse_meta.get("direct_confidence"),
+                    "stability": "candidate",
+                }
+            )
         analysis["reference_path"] = reference_path
         pipewire_warnings = self._extract_pipewire_warning_lines(
             {
@@ -921,6 +1077,8 @@ class MeasurementStore:
                 "channels": capture_channels,
                 "input_node": mic_source_node_name,
                 "microphone_node": mic_source_node_name,
+                "mic_input_channel": mic_input_channel_index + 1,
+                "electrical_reference_input_channel": electrical_reference_channel_index + 1 if electrical_reference_channel_index is not None else None,
                 "reference_node": str(reference_capture.get("source_node_name") or ""),
                 "reference_channel": str(reference_capture.get("channel_label") or "reference"),
                 "reference_path": str(capture_path),
@@ -951,6 +1109,40 @@ class MeasurementStore:
     def _should_retry_host_capture(self, exc: Exception) -> bool:
         error_codes = self._capture_quality_error_codes(exc)
         return bool(error_codes) and error_codes.issubset({"weak-start-alignment", "weak-end-alignment"})
+
+    def _evaluate_electrical_reference_status(self, analysis: dict[str, Any]) -> dict[str, Any]:
+        reference_path = analysis.get("reference_path") if isinstance(analysis.get("reference_path"), dict) else {}
+        clock = analysis.get("clock") if isinstance(analysis.get("clock"), dict) else {}
+        peak_dbfs = float(reference_path.get("peak_dbfs") or -120.0)
+        clipped = bool(reference_path.get("clipped")) or peak_dbfs >= CAPTURE_CLIP_FAIL_DBFS
+        alignment_score = min(float(clock.get("start_score") or 0.0), float(clock.get("end_score") or 0.0))
+        sharpness_db = float(reference_path.get("ir_sharpness_db") or 0.0)
+        if clipped:
+            return {"usable": False, "warning": "Electrical reference clipped; used host monitor timing fallback."}
+        if peak_dbfs < ELECTRICAL_REFERENCE_MIN_PEAK_DBFS:
+            return {"usable": False, "warning": "Electrical reference level was too low; used host monitor timing fallback."}
+        if alignment_score < ELECTRICAL_REFERENCE_MIN_ALIGNMENT_SCORE:
+            return {"usable": False, "warning": "Electrical reference timing was not confidently detected; used host monitor timing fallback."}
+        if sharpness_db < ELECTRICAL_REFERENCE_MIN_IR_SHARPNESS_DB:
+            return {"usable": False, "warning": "Electrical reference impulse was not sharp enough; used host monitor timing fallback."}
+        reference_path["usable"] = True
+        reference_path["confidence"] = round(min(alignment_score, max(0.0, sharpness_db / 60.0)), 6)
+        reference_path["stability"] = "usable"
+        analysis["reference_path"] = reference_path
+        return {"usable": True, "warning": ""}
+
+    @staticmethod
+    def _append_reference_fallback_warning(analysis: dict[str, Any] | None, warning: str) -> None:
+        if not isinstance(analysis, dict) or not warning:
+            return
+        quality_checks = analysis.setdefault("quality_checks", {"status": "pass", "items": []})
+        items = quality_checks.setdefault("items", [])
+        items.append({"level": "warning", "code": "electrical-reference-fallback", "message": warning})
+        if quality_checks.get("status") == "pass":
+            quality_checks["status"] = "warn"
+        reference_path = analysis.get("reference_path") if isinstance(analysis.get("reference_path"), dict) else {}
+        reference_path.update({"electrical_reference_fallback": True, "warning": warning, "usable": False})
+        analysis["reference_path"] = reference_path
 
     def _format_capture_input_level_message(self, peak_dbfs: float, clipped: bool) -> str:
         if clipped:
@@ -1194,6 +1386,7 @@ class MeasurementStore:
         input_device: dict[str, str],
         channel: str,
         calibration: dict[str, Any],
+        input_channels: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         timestamp = datetime.now(timezone.utc).replace(microsecond=0)
         created_at = timestamp.isoformat().replace("+00:00", "Z")
@@ -1208,6 +1401,7 @@ class MeasurementStore:
             "name": label,
             "created_at": created_at,
             "input_device": input_device,
+            "input_channels": deepcopy(input_channels or {}),
             "channel": channel,
             "calibration": calibration,
             "display": deepcopy(DISPLAY_DEFAULTS),
@@ -2455,6 +2649,36 @@ class MeasurementStore:
         sample_rate, raw_signal = self._load_wav_array(capture_path)
         return sample_rate, self._select_analysis_channel(raw_signal, channel=channel)
 
+    @staticmethod
+    def _parse_input_channel_index(
+        value: str | int | None,
+        *,
+        channel_count: int,
+        default: int,
+        field_name: str,
+    ) -> int:
+        raw_value = str(value if value is not None else "").strip()
+        if not raw_value:
+            return max(0, min(default, max(0, channel_count - 1)))
+        try:
+            parsed = int(raw_value)
+        except (TypeError, ValueError):
+            raise ValueError(f"{field_name} must be between 1 and {channel_count}")
+        if parsed < 1 or parsed > channel_count:
+            raise ValueError(f"{field_name} must be between 1 and {channel_count}")
+        return parsed - 1
+
+    def _parse_optional_input_channel_index(
+        self,
+        value: str | int | None,
+        *,
+        channel_count: int,
+        field_name: str,
+    ) -> int | None:
+        raw_value = str(value if value is not None else "").strip()
+        if not raw_value:
+            return None
+        return self._parse_input_channel_index(raw_value, channel_count=channel_count, default=0, field_name=field_name)
 
     def _select_analysis_channel(self, raw_signal: np.ndarray, *, channel: str, channel_index: int | None = None) -> np.ndarray:
         if raw_signal.ndim == 1 or raw_signal.shape[1] == 1:
@@ -2835,6 +3059,7 @@ class MeasurementStore:
         mic_source_node_name: str,
         record_node_name: str,
         requested_channel: str,
+        mic_input_channel_index: int = 0,
     ) -> dict[str, Any]:
         deadline = time.monotonic() + 4.0
         reference_ports: list[str] = []
@@ -2852,7 +3077,7 @@ class MeasurementStore:
             raise RuntimeError(f"Unable to discover PipeWire ports for host-reference capture into {record_node_name}")
 
         reference_suffixes = [":monitor_FR", ":output_FR", ":capture_FR", ":capture_MONO", ":output_MONO", ":monitor_FL", ":output_FL", ":capture_FL"] if requested_channel == "right" else [":monitor_FL", ":output_FL", ":capture_FL", ":capture_MONO", ":output_MONO", ":monitor_FR", ":output_FR", ":capture_FR"]
-        mic_suffixes = [":capture_MONO", ":output_MONO", ":capture_FL", ":output_FL", ":capture_FR", ":output_FR", ":monitor_FL", ":monitor_FR"]
+        mic_suffixes = self._port_suffixes_for_channel_index(mic_input_channel_index) + [":capture_MONO", ":output_MONO"]
         reference_port = self._pick_port(reference_ports, reference_suffixes)
         mic_port = self._pick_port(mic_ports, mic_suffixes)
         input_left = self._pick_port(record_inputs, [":input_FL", ":input_MONO"])
@@ -2933,6 +3158,57 @@ class MeasurementStore:
             subprocess.run(["pw-link", source_port, input_port], capture_output=True, text=True, timeout=3, check=True)
 
         time.sleep(0.15)
+
+    def _link_capture_channels_to_record_stream(
+        self,
+        *,
+        source_node_name: str,
+        record_node_name: str,
+        channel_indices: list[int],
+    ) -> dict[str, Any]:
+        deadline = time.monotonic() + 4.0
+        source_ports: list[str] = []
+        record_ports: list[str] = []
+        while time.monotonic() < deadline:
+            source_ports = self._list_source_output_ports(source_node_name)
+            record_ports = self._list_pw_ports(record_node_name)
+            record_inputs = [port for port in record_ports if ":input_" in port]
+            if source_ports and record_inputs:
+                break
+            time.sleep(0.1)
+        else:
+            raise RuntimeError(f"Unable to discover PipeWire ports for selected input channels on {source_node_name}")
+
+        record_inputs = [port for port in record_ports if ":input_" in port]
+        links: list[dict[str, str | int]] = []
+        used_pairs: set[tuple[str, str]] = set()
+        for channel_index in channel_indices:
+            source_port = self._pick_preferred_port(source_ports, self._port_suffixes_for_channel_index(channel_index))
+            input_port = self._pick_preferred_port(record_inputs, self._record_input_suffixes_for_channel_index(channel_index))
+            if not source_port or not input_port:
+                raise RuntimeError(f"Could not resolve PipeWire ports for Input {channel_index + 1}")
+            pair = (source_port, input_port)
+            if pair in used_pairs:
+                continue
+            subprocess.run(["pw-link", source_port, input_port], capture_output=True, text=True, timeout=3, check=True)
+            used_pairs.add(pair)
+            links.append(
+                {
+                    "source_port": source_port,
+                    "target_port": input_port,
+                    "input_channel": channel_index + 1,
+                    "role": "selected-capture-channel-to-record",
+                }
+            )
+
+        time.sleep(0.15)
+        return {
+            "source_node": source_node_name,
+            "record_node": record_node_name,
+            "links": links,
+            "source_ports": source_ports,
+            "record_inputs": record_inputs,
+        }
 
     def _list_source_output_ports(self, source_node_name: str) -> list[str]:
         candidate_source_names = [source_node_name]
@@ -3119,6 +3395,67 @@ class MeasurementStore:
                     return port
         return ports[0] if ports else None
 
+    @staticmethod
+    def _pick_preferred_port(ports: list[str], preferred_suffixes: list[str]) -> str | None:
+        for suffix in preferred_suffixes:
+            for port in ports:
+                if port.endswith(suffix):
+                    return port
+        return None
+
+    @staticmethod
+    def _port_suffixes_for_channel_index(channel_index: int) -> list[str]:
+        surround_names = [
+            "FL",
+            "FR",
+            "RL",
+            "RR",
+            "FC",
+            "LFE",
+            "SL",
+            "SR",
+            "AUX0",
+            "AUX1",
+            "AUX2",
+            "AUX3",
+            "AUX4",
+            "AUX5",
+        ]
+        aux_name = f"AUX{channel_index}"
+        names = []
+        if 0 <= channel_index < len(surround_names):
+            names.append(surround_names[channel_index])
+        names.append(aux_name)
+        suffixes = []
+        for name in dict.fromkeys(names):
+            suffixes.extend([f":capture_{name}", f":output_{name}", f":monitor_{name}"])
+        return suffixes
+
+    @staticmethod
+    def _record_input_suffixes_for_channel_index(channel_index: int) -> list[str]:
+        surround_names = [
+            "FL",
+            "FR",
+            "RL",
+            "RR",
+            "FC",
+            "LFE",
+            "SL",
+            "SR",
+            "AUX0",
+            "AUX1",
+            "AUX2",
+            "AUX3",
+            "AUX4",
+            "AUX5",
+        ]
+        aux_name = f"AUX{channel_index}"
+        names = []
+        if 0 <= channel_index < len(surround_names):
+            names.append(surround_names[channel_index])
+        names.append(aux_name)
+        return [f":input_{name}" for name in dict.fromkeys(names)]
+
     def _normalize_measurement(self, payload: dict[str, Any], source_path: Path | None = None) -> dict[str, Any]:
         if not isinstance(payload, dict):
             raise ValueError("Measurement payload must be an object")
@@ -3133,10 +3470,19 @@ class MeasurementStore:
         name = str(payload.get("name") or measurement_id).strip() or measurement_id
         created_at = str(payload.get("created_at") or now).strip() or now
         input_device = payload.get("input_device") if isinstance(payload.get("input_device"), dict) else {}
+        input_channels = payload.get("input_channels") if isinstance(payload.get("input_channels"), dict) else {}
         calibration = payload.get("calibration") if isinstance(payload.get("calibration"), dict) else {}
         display = deepcopy(DISPLAY_DEFAULTS)
         if isinstance(payload.get("display"), dict):
             display.update(payload["display"])
+        try:
+            normalized_mic_input_channel = max(1, int(input_channels.get("mic") or 1))
+        except (TypeError, ValueError):
+            normalized_mic_input_channel = 1
+        try:
+            normalized_reference_input_channel = int(input_channels["electrical_reference"]) if input_channels.get("electrical_reference") else None
+        except (TypeError, ValueError):
+            normalized_reference_input_channel = None
 
         result = {
             "id": measurement_id,
@@ -3145,6 +3491,11 @@ class MeasurementStore:
             "input_device": {
                 "id": str(input_device.get("id") or "capture-input"),
                 "label": str(input_device.get("label") or "Capture input"),
+            },
+            "input_channels": {
+                "mic": normalized_mic_input_channel,
+                "electrical_reference": normalized_reference_input_channel,
+                "reference_disabled_reason": str(input_channels.get("reference_disabled_reason") or ""),
             },
             "channel": str(payload.get("channel") or "left").lower(),
             "calibration": {

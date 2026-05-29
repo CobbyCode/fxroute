@@ -12,7 +12,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=0.4.458">
     <link rel="manifest" href="/static/site.webmanifest?v=0.4.458">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/static/style.css?v=0.7.3">
+    <link rel="stylesheet" href="/static/style.css?v=0.7.3-ref-input">
 </head>
 <body>
     <!-- Offline indicator -->
@@ -660,6 +660,21 @@
                                     </select>
                                     <button id="measurement-input-refresh" class="btn-secondary hidden" type="button">Detect / refresh host microphones</button>
                                 </div>
+                                <div class="measurement-input-channel-grid">
+                                    <div class="field-group">
+                                        <label for="measurement-mic-input-channel-select">Mic input channel</label>
+                                        <select id="measurement-mic-input-channel-select" class="url-input">
+                                            <option value="1">Input 1</option>
+                                        </select>
+                                    </div>
+                                    <div class="field-group">
+                                        <label for="measurement-reference-input-channel-select">Electrical reference input</label>
+                                        <select id="measurement-reference-input-channel-select" class="url-input">
+                                            <option value="">None</option>
+                                        </select>
+                                    </div>
+                                </div>
+                                <p id="measurement-reference-warning" class="measurement-inline-note hidden"></p>
                                 <div class="field-group">
                                     <label for="measurement-calibration-select">Calibration file (optional)</label>
                                     <div class="measurement-calibration-select-row">
@@ -916,6 +931,6 @@
     <div id="toast-container" class="toast-container"></div>
 
     <script src="/static/measurement_dsp.js?v=0.7.3"></script>
-    <script src="/static/app.js?v=0.7.3"></script>
+    <script src="/static/app.js?v=0.7.3-ref-input"></script>
 </body>
 </html>

@@ -4317,6 +4317,8 @@ async def download_local_root_certificate():
 async def start_measurement(
     input_id: str = Form(...),
     channel: str = Form("left"),
+    mic_input_channel: str = Form("1"),
+    reference_input_channel: str = Form(""),
     calibration_ref: str = Form(""),
     calibration_file: Optional[UploadFile] = File(None),
 ):
@@ -4334,6 +4336,8 @@ async def start_measurement(
         job = await measurement_store.start_measurement(
             input_id=input_id,
             channel=channel,
+            mic_input_channel=mic_input_channel,
+            reference_input_channel=reference_input_channel,
             calibration_filename=calibration_filename,
             calibration_bytes=calibration_bytes,
             calibration_ref=calibration_ref,

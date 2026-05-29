@@ -1643,6 +1643,12 @@ body {
     font-size: 0.88rem;
 }
 
+.measurement-input-channel-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+}
+
 .measurement-list-title a,
 .effects-compare-active a,
 .effects-compare-chain a {
@@ -2378,6 +2384,10 @@ body {
     .measurement-card-setup .measurement-stack,
     .measurement-card-setup .field-group {
         min-width: 0;
+    }
+
+    .measurement-input-channel-grid {
+        grid-template-columns: 1fr;
     }
 
     .measurement-card-setup .url-input,
