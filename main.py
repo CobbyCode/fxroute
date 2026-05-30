@@ -4348,6 +4348,43 @@ async def start_measurement(
         raise HTTPException(status_code=500, detail=str(exc))
     return {"status": "ok", "job": job}
 
+@app.post("/api/measurements/lr-repeat/start")
+async def start_lr_repeat_measurement(
+    input_id: str = Form(...),
+    repeat_count: int = Form(2),
+    base_name: str = Form(""),
+    mic_input_channel: str = Form("1"),
+    reference_input_channel: str = Form(""),
+    calibration_ref: str = Form(""),
+    calibration_file: Optional[UploadFile] = File(None),
+):
+    global measurement_store
+    if not measurement_store:
+        raise HTTPException(status_code=503, detail="Measurement store not available")
+
+    calibration_bytes = None
+    calibration_filename = None
+    if calibration_file is not None:
+        calibration_filename = calibration_file.filename or "calibration.txt"
+        calibration_bytes = await calibration_file.read()
+
+    try:
+        job = await measurement_store.start_lr_repeat_measurement(
+            input_id=input_id,
+            repeat_count=repeat_count,
+            base_name=base_name,
+            mic_input_channel=mic_input_channel,
+            reference_input_channel=reference_input_channel,
+            calibration_filename=calibration_filename,
+            calibration_bytes=calibration_bytes,
+            calibration_ref=calibration_ref,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    return {"status": "ok", "job": job}
+
 @app.get("/api/measurements/jobs/{job_id}")
 async def get_measurement_job(job_id: str):
     global measurement_store

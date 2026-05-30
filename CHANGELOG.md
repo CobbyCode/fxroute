@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.7.6 (2026-05-30)
+- Added an automated same-position L/R Repeat measurement mode with selectable repeat count, shorter sub-sweeps, internal L/R capture processing, timing-cluster outlier rejection, and same-position magnitude averaging.
+- Save only the final summarized `<name> · L` and `<name> · R` runs from L/R Repeat workflows, including repeat count, accepted/rejected runs, timing spread, timing method, electrical-reference usage, and an explicit unstable-timing state when no reliable cluster exists.
+
 ## 0.7.5 (2026-05-30)
 - Fixed saved-measurement merging by implementing the missing backend averaging path with trusted-trace selection, shared-range interpolation, optional review-trace averaging, and safe merged metadata.
 - Return clear JSON errors for invalid merge requests and show backend merge error details in the frontend.

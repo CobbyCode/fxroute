@@ -63,6 +63,13 @@ TRACE_COLORS = [
 SWEEP_V2_SECONDS = 11.0
 SWEEP_V2_LEAD_IN_SECONDS = 0.5
 SWEEP_V2_TAIL_SECONDS = 1.25
+LR_REPEAT_SWEEP_SECONDS = 6.0
+LR_REPEAT_LEAD_IN_SECONDS = 0.2
+LR_REPEAT_TAIL_SECONDS = 0.75
+LR_REPEAT_RECORD_PREROLL_SECONDS = 0.3
+LR_REPEAT_RECORD_POSTROLL_SECONDS = 0.35
+LR_REPEAT_ELECTRICAL_TIMING_CLUSTER_MS = 0.35
+LR_REPEAT_ACOUSTIC_TIMING_CLUSTER_MS = 0.75
 SWEEP_START_HZ = 10.0
 SWEEP_END_HZ = 22_000.0
 HOST_SWEEP_PEAK_SCALE = 0.8
@@ -300,6 +307,87 @@ class MeasurementStore:
             "channel": normalized_channel,
             "calibration": calibration_meta or {"filename": "", "applied": False},
             "message": "Sweep queued.",
+            "scope_note": MEASUREMENT_SCOPE_NOTE,
+            "result": None,
+            "error": None,
+        }
+        self._jobs[job_id] = job
+        self._persist_job(job)
+        task = asyncio.create_task(self._run_measurement_job(job_id))
+        self._job_tasks[job_id] = task
+        return self.get_job(job_id)
+
+    async def start_lr_repeat_measurement(
+        self,
+        *,
+        input_id: str,
+        repeat_count: int | str = 2,
+        base_name: str = "",
+        mic_input_channel: str | int | None = "1",
+        reference_input_channel: str | int | None = "",
+        calibration_filename: str | None = None,
+        calibration_bytes: bytes | None = None,
+        calibration_ref: str | None = None,
+    ) -> dict[str, Any]:
+        try:
+            normalized_repeat_count = int(repeat_count)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("repeat_count must be 1, 2, or 3") from exc
+        if normalized_repeat_count not in {1, 2, 3}:
+            raise ValueError("repeat_count must be 1, 2, or 3")
+        inputs = self._discover_capture_inputs()
+        selected_input = next((item for item in inputs if item["id"] == input_id), None)
+        if not selected_input:
+            raise ValueError("Selected capture input is no longer available")
+        if not selected_input.get("available"):
+            raise ValueError("Selected capture input is not available")
+        input_channel_count = max(1, int(selected_input.get("channels") or 1))
+        mic_input_channel_index = self._parse_input_channel_index(
+            mic_input_channel,
+            channel_count=input_channel_count,
+            default=0,
+            field_name="mic_input_channel",
+        )
+        reference_input_channel_index = self._parse_optional_input_channel_index(
+            reference_input_channel,
+            channel_count=input_channel_count,
+            field_name="reference_input_channel",
+        )
+        reference_disabled_reason = ""
+        if reference_input_channel_index is not None and reference_input_channel_index == mic_input_channel_index:
+            reference_disabled_reason = "Mic input and electrical reference input are the same channel; reference compensation disabled."
+            reference_input_channel_index = None
+        calibration_meta = self._resolve_calibration_meta(
+            calibration_filename=calibration_filename,
+            calibration_bytes=calibration_bytes,
+            calibration_ref=calibration_ref,
+        )
+        job_id = f"measurement-repeat-job-{uuid4().hex[:12]}"
+        now = self._utc_now()
+        job = {
+            "id": job_id,
+            "status": "queued",
+            "created_at": now,
+            "updated_at": now,
+            "job_kind": "lr-repeat",
+            "repeat_count": normalized_repeat_count,
+            "base_name": str(base_name or "").strip() or f"L/R Repeat {now[:19].replace('T', ' ')}",
+            "input": {
+                "id": selected_input["id"],
+                "label": selected_input["label"],
+                "node_serial": selected_input.get("node_serial"),
+                "node_name": selected_input.get("node_name"),
+                "channels": selected_input.get("channels"),
+                "sample_rate": selected_input.get("sample_rate"),
+            },
+            "input_channels": {
+                "mic": mic_input_channel_index + 1,
+                "electrical_reference": reference_input_channel_index + 1 if reference_input_channel_index is not None else None,
+                "reference_disabled_reason": reference_disabled_reason,
+            },
+            "channel": "stereo",
+            "calibration": calibration_meta or {"filename": "", "applied": False},
+            "message": "L/R repeat queued.",
             "scope_note": MEASUREMENT_SCOPE_NOTE,
             "result": None,
             "error": None,
@@ -570,10 +658,11 @@ class MeasurementStore:
         job = self._jobs[job_id]
         job["status"] = "running"
         job["updated_at"] = self._utc_now()
-        job["message"] = "Running sweep…"
+        job["message"] = "Running L/R repeat…" if job.get("job_kind") == "lr-repeat" else "Running sweep…"
         self._persist_job(job)
         try:
-            result = await asyncio.to_thread(self._execute_capture_job, deepcopy(job))
+            executor = self._execute_lr_repeat_job if job.get("job_kind") == "lr-repeat" else self._execute_capture_job
+            result = await asyncio.to_thread(executor, deepcopy(job))
             if job_id in self._cancelled_jobs:
                 job["status"] = "cancelled"
                 job["updated_at"] = self._utc_now()
@@ -611,6 +700,203 @@ class MeasurementStore:
             self._job_processes.pop(job_id, None)
             self._persist_job(job)
 
+    def _execute_lr_repeat_job(self, job: dict[str, Any]) -> dict[str, Any]:
+        job_id = str(job["id"])
+        repeat_count = int(job.get("repeat_count") or 1)
+        captures: dict[str, list[dict[str, Any]]] = {"left": [], "right": []}
+        total_sweeps = repeat_count * 2
+        sweep_number = 0
+        for repeat_index in range(repeat_count):
+            for channel in ("left", "right"):
+                if job_id in self._cancelled_jobs:
+                    raise RuntimeError("Measurement cancelled.")
+                sweep_number += 1
+                live_job = self._jobs.get(job_id)
+                if live_job is not None:
+                    live_job["message"] = f"L/R repeat {sweep_number}/{total_sweeps}: {channel.upper()}{repeat_index + 1}…"
+                    live_job["updated_at"] = self._utc_now()
+                    self._persist_job(live_job)
+                capture_job = deepcopy(job)
+                capture_job["id"] = job_id
+                capture_job["channel"] = channel
+                capture_job["capture_profile"] = "lr-repeat"
+                captures[channel].append(self._execute_capture_job(capture_job)["measurement"])
+
+        saved = []
+        for channel in ("left", "right"):
+            summary = self.summarize_repeat_measurements(
+                captures[channel],
+                base_name=str(job.get("base_name") or "L/R Repeat"),
+                channel=channel,
+                repeat_count=repeat_count,
+            )
+            saved.append(self.save_measurement(summary))
+        return {
+            "measurements": saved,
+            "message": f"L/R repeat finished. Saved {saved[0]['name']} and {saved[1]['name']}.",
+            "scope_note": MEASUREMENT_SCOPE_NOTE,
+        }
+
+    def summarize_repeat_measurements(
+        self,
+        measurements: list[dict[str, Any]],
+        *,
+        base_name: str,
+        channel: str,
+        repeat_count: int,
+    ) -> dict[str, Any]:
+        if not measurements:
+            raise ValueError("L/R repeat summary needs at least one measurement")
+        normalized = [self._normalize_measurement(item) for item in measurements]
+        timings = []
+        for index, measurement in enumerate(normalized):
+            analysis = measurement.get("analysis") if isinstance(measurement.get("analysis"), dict) else {}
+            reference_path = analysis.get("reference_path") if isinstance(analysis.get("reference_path"), dict) else {}
+            impulse = analysis.get("impulse_response") if isinstance(analysis.get("impulse_response"), dict) else {}
+            timing_ms = reference_path.get("acoustic_arrival_corrected_ms", impulse.get("arrival_ms"))
+            try:
+                timing_ms = float(timing_ms)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(timing_ms):
+                timings.append({
+                    "index": index,
+                    "timing_ms": timing_ms,
+                    "electrical_reference_used": bool(reference_path.get("electrical_reference_used")),
+                })
+        electrical_reference_used = bool(timings) and all(item["electrical_reference_used"] for item in timings)
+        cluster_limit_ms = (
+            LR_REPEAT_ELECTRICAL_TIMING_CLUSTER_MS
+            if electrical_reference_used
+            else LR_REPEAT_ACOUSTIC_TIMING_CLUSTER_MS
+        )
+        accepted_indices, timing_center_ms, timing_spread_ms = self._select_repeat_timing_cluster(
+            timings,
+            repeat_count=repeat_count,
+            cluster_limit_ms=cluster_limit_ms,
+        )
+        stable = bool(accepted_indices)
+        magnitude_indices = accepted_indices or list(range(len(normalized)))
+        accepted_measurements = [normalized[index] for index in magnitude_indices]
+        side_label = "L" if channel == "left" else "R"
+        summary_name = f"{str(base_name or 'L/R Repeat').strip()} · {side_label}"
+        timestamp = datetime.now(timezone.utc).replace(microsecond=0)
+        measurement_id = f"lr-repeat-{channel}-{timestamp.strftime('%Y%m%d-%H%M%S')}-{uuid4().hex[:6]}"
+        payload = deepcopy(normalized[0])
+        payload.update({
+            "id": measurement_id,
+            "name": summary_name,
+            "created_at": timestamp.isoformat().replace("+00:00", "Z"),
+            "channel": channel,
+            "measurement_kind": "lr-repeat-summary",
+            "traces": [
+                self._average_merge_traces(
+                    [self._select_merge_trace(item, "traces", preferred_role="trusted") for item in accepted_measurements],
+                    label=f"{summary_name} · trusted average",
+                    kind="lr-repeat-sweep-response",
+                    role="trusted",
+                    color=TRACE_COLORS[0],
+                )
+            ],
+            "notes": [
+                MEASUREMENT_SCOPE_NOTE,
+                f"Same-position L/R repeat summary from {len(normalized)} {side_label} sweep(s).",
+                "Intermediate repeat sweeps were processed internally and were not saved as normal measurements.",
+            ],
+        })
+        review_traces = [
+            self._select_merge_trace(item, "review_traces", preferred_role="raw-review", required=False)
+            for item in accepted_measurements
+        ]
+        if all(review_traces):
+            payload["review_traces"] = [
+                self._average_merge_traces(
+                    review_traces,
+                    label=f"{summary_name} · raw/full-band review average",
+                    kind="lr-repeat-sweep-response-review",
+                    role="raw-review",
+                    color=TRACE_COLORS[1],
+                )
+            ]
+        else:
+            payload.pop("review_traces", None)
+        analysis = payload.get("analysis") if isinstance(payload.get("analysis"), dict) else {}
+        analysis = deepcopy(analysis)
+        analysis["method"] = "same-position-lr-repeat-average"
+        analysis["lr_repeat"] = {
+            "repeat_count": int(repeat_count),
+            "accepted_runs": len(accepted_indices),
+            "rejected_runs": len(normalized) - len(accepted_indices),
+            "accepted_run_numbers": [index + 1 for index in accepted_indices],
+            "rejected_run_numbers": [index + 1 for index in range(len(normalized)) if index not in accepted_indices],
+            "timing_spread_ms": timing_spread_ms,
+            "timing_method": "electrical-reference-cluster-median" if electrical_reference_used else "acoustic-cluster-median",
+            "electrical_reference_used": electrical_reference_used,
+            "timing_stable": stable,
+        }
+        reference_path = analysis.get("reference_path") if isinstance(analysis.get("reference_path"), dict) else {}
+        reference_path = deepcopy(reference_path)
+        impulse = analysis.get("impulse_response") if isinstance(analysis.get("impulse_response"), dict) else {}
+        impulse = deepcopy(impulse)
+        sample_rate = int(analysis.get("sample_rate") or 0)
+        if stable and timing_center_ms is not None:
+            arrival_samples = int(round(timing_center_ms / 1000.0 * sample_rate)) if sample_rate > 0 else None
+            reference_path.update({
+                "timing_status": "lr-repeat",
+                "timing_label": "L/R repeat timing",
+                "stability": "stable",
+                "acoustic_arrival_corrected_ms": timing_center_ms,
+                "acoustic_arrival_corrected_seconds": round(timing_center_ms / 1000.0, 9),
+                "acoustic_arrival_corrected_samples": arrival_samples,
+            })
+            impulse.update({
+                "arrival_ms": timing_center_ms,
+                "arrival_seconds": round(timing_center_ms / 1000.0, 9),
+                "arrival_samples": arrival_samples,
+            })
+        else:
+            reference_path.update({
+                "timing_status": "lr-repeat-unstable",
+                "timing_label": "L/R repeat timing unstable",
+                "stability": "unstable",
+            })
+            for key in ("acoustic_arrival_corrected_ms", "acoustic_arrival_corrected_seconds", "acoustic_arrival_corrected_samples"):
+                reference_path.pop(key, None)
+            for key in ("arrival_ms", "arrival_seconds", "arrival_samples", "direct_arrival_index"):
+                impulse.pop(key, None)
+            analysis["direct_arrival_timing_available"] = False
+            payload["notes"].append("No stable timing cluster was found; timing-sensitive L/R alignment must not use this summary.")
+        analysis["reference_path"] = reference_path
+        analysis["impulse_response"] = impulse
+        payload["analysis"] = analysis
+        return self._normalize_measurement(payload)
+
+    @staticmethod
+    def _select_repeat_timing_cluster(
+        timings: list[dict[str, Any]],
+        *,
+        repeat_count: int,
+        cluster_limit_ms: float,
+    ) -> tuple[list[int], float | None, float | None]:
+        if not timings:
+            return [], None, None
+        minimum_cluster_size = 1 if repeat_count <= 1 else 2
+        candidates = []
+        for anchor in timings:
+            cluster = [
+                item for item in timings
+                if abs(float(item["timing_ms"]) - float(anchor["timing_ms"])) <= cluster_limit_ms
+            ]
+            spread = max(item["timing_ms"] for item in cluster) - min(item["timing_ms"] for item in cluster)
+            candidates.append((len(cluster), -spread, cluster))
+        _size, _negative_spread, best = max(candidates, key=lambda item: (item[0], item[1]))
+        if len(best) < minimum_cluster_size:
+            return [], None, None
+        values = sorted(float(item["timing_ms"]) for item in best)
+        center = float(np.median(values))
+        spread = max(values) - min(values)
+        return sorted(int(item["index"]) for item in best), round(center, 6), round(spread, 6)
+
     def _execute_capture_job(self, job: dict[str, Any]) -> dict[str, Any]:
         job_id = str(job["id"])
         selected_input = job.get("input") or {}
@@ -619,12 +905,13 @@ class MeasurementStore:
         calibration_meta = job.get("calibration") if isinstance(job.get("calibration"), dict) else {"filename": "", "applied": False}
 
         sample_rate = self._resolve_measurement_sample_rate()
-        sweep_seconds = SWEEP_V2_SECONDS
-        lead_in_seconds = SWEEP_V2_LEAD_IN_SECONDS
-        tail_seconds = SWEEP_V2_TAIL_SECONDS
+        repeat_profile = job.get("capture_profile") == "lr-repeat"
+        sweep_seconds = LR_REPEAT_SWEEP_SECONDS if repeat_profile else SWEEP_V2_SECONDS
+        lead_in_seconds = LR_REPEAT_LEAD_IN_SECONDS if repeat_profile else SWEEP_V2_LEAD_IN_SECONDS
+        tail_seconds = LR_REPEAT_TAIL_SECONDS if repeat_profile else SWEEP_V2_TAIL_SECONDS
         duration_seconds = lead_in_seconds + sweep_seconds + tail_seconds
-        record_preroll_seconds = HOST_SWEEP_RECORD_PREROLL_SECONDS
-        record_postroll_seconds = HOST_SWEEP_RECORD_POSTROLL_SECONDS
+        record_preroll_seconds = LR_REPEAT_RECORD_PREROLL_SECONDS if repeat_profile else HOST_SWEEP_RECORD_PREROLL_SECONDS
+        record_postroll_seconds = LR_REPEAT_RECORD_POSTROLL_SECONDS if repeat_profile else HOST_SWEEP_RECORD_POSTROLL_SECONDS
         record_duration_seconds = duration_seconds + record_preroll_seconds + record_postroll_seconds
         mic_input_channel_index = max(0, int(input_channels.get("mic") or 1) - 1)
         electrical_reference_input_channel = input_channels.get("electrical_reference")

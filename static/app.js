@@ -85,6 +85,9 @@ let state = {
         selectedMicInputChannel: '1',
         selectedReferenceInputChannel: '',
         selectedChannel: 'left',
+        selectedRepeatCount: '2',
+        repeatBaseName: '',
+        repeatJobActive: false,
         displaySmoothing: '1/6-oct',
         hostCaptureAvailable: false,
         modeNote: '',
@@ -350,6 +353,9 @@ const elements = {
     measurementHouseCurveName: document.getElementById('measurement-house-curve-name'),
     measurementNameInput: document.getElementById('measurement-name'),
     measurementStartBtn: document.getElementById('measurement-start'),
+    measurementRepeatStartBtn: document.getElementById('measurement-repeat-start'),
+    measurementRepeatCount: document.getElementById('measurement-repeat-count'),
+    measurementRepeatName: document.getElementById('measurement-repeat-name'),
     measurementSaveBtn: document.getElementById('measurement-save'),
     measurementClearBtn: document.getElementById('measurement-clear'),
     measurementAssistMode: document.getElementById('measurement-assist-mode'),
@@ -6996,6 +7002,7 @@ function getMeasurementQualityTitle(measurement = {}) {
 function getMeasurementTimingInfo(measurement = {}) {
     const referencePath = measurement?.analysis?.reference_path || {};
     const impulse = measurement?.analysis?.impulse_response || {};
+    const repeat = measurement?.analysis?.lr_repeat || null;
     const rawStatus = String(referencePath?.timing_status || '').trim();
     const hasElectricalReference = !!measurement?.input_channels?.electrical_reference || referencePath?.capture_mode === 'electrical-input';
     let status = rawStatus || (hasElectricalReference ? 'electrical-reference-candidate' : 'acoustic-only');
@@ -7015,6 +7022,33 @@ function getMeasurementTimingInfo(measurement = {}) {
         ? String(referencePath?.stability || '').toLowerCase() === 'stable' || confidence >= 0.75
         : confidence >= 0.75;
     const delayText = delayMs === null ? 'delay unavailable' : `delay ${delayMs.toFixed(2)} ms`;
+
+    if (repeat) {
+        const acceptedRuns = Number(repeat.accepted_runs) || 0;
+        const repeatCount = Number(repeat.repeat_count) || 0;
+        const spreadMs = Number(repeat.timing_spread_ms);
+        const spreadText = Number.isFinite(spreadMs) ? ` · spread ${spreadMs.toFixed(2)} ms` : '';
+        if (!repeat.timing_stable) {
+            return {
+                status: 'lr-repeat-unstable',
+                label: 'L/R repeat timing unstable',
+                line: `L/R repeat timing unstable · accepted ${acceptedRuns}/${repeatCount}`,
+                detail: `L/R repeat timing unstable · accepted ${acceptedRuns}/${repeatCount}${spreadText}`,
+                delayMs: null,
+                arrivalSamples: null,
+                source: 'lr_repeat_unstable',
+            };
+        }
+        return {
+            status: 'lr-repeat',
+            label: 'L/R repeat timing',
+            line: `L/R repeat timing · ${delayText} · accepted ${acceptedRuns}/${repeatCount}${spreadText}`,
+            detail: `L/R repeat timing · ${delayText} · accepted ${acceptedRuns}/${repeatCount}${spreadText} · ${repeat.electrical_reference_used ? 'electrical reference' : 'acoustic-only'}`,
+            delayMs,
+            arrivalSamples,
+            source: repeat.electrical_reference_used ? 'lr_repeat_electrical_reference' : 'lr_repeat_acoustic',
+        };
+    }
 
     if (status === 'electrical-reference') {
         return {
@@ -7077,7 +7111,15 @@ function syncMeasurementStartButtonFallback() {
         : (!activeJobRunning && (measurementState.inputsLoading || !measurementState.hostCaptureAvailable));
     elements.measurementStartBtn.textContent = activeJobRunning
         ? 'Cancel measurement'
-        : (measurementState.startInFlight ? 'Starting...' : 'Start host-local sweep');
+        : (measurementState.startInFlight ? 'Starting...' : 'Start Single Sweep');
+    if (elements.measurementRepeatStartBtn) {
+        elements.measurementRepeatStartBtn.disabled = activeJobRunning
+            ? false
+            : (measurementState.startInFlight || measurementState.inputsLoading || !measurementState.hostCaptureAvailable);
+        elements.measurementRepeatStartBtn.textContent = activeJobRunning && measurementState.repeatJobActive
+            ? 'Cancel L/R Repeat'
+            : (activeJobRunning ? 'Cancel measurement' : 'Start L/R Repeat');
+    }
 }
 
 function renderMeasurementPanelDefensively(context = 'measurement render') {
@@ -7153,6 +7195,41 @@ async function startHostMeasurement() {
     await pollMeasurementJob(state.measurement.activeJobId);
 }
 
+async function startLrRepeatMeasurement() {
+    if (!state.measurement.hostCaptureAvailable || !state.measurement.selectedInputId) {
+        state.measurement.statusText = 'No usable host capture source is available for an L/R repeat measurement on this host.';
+        renderMeasurementPanel();
+        showToast(state.measurement.statusText, 'error');
+        return;
+    }
+    const formData = new FormData();
+    formData.append('input_id', state.measurement.selectedInputId);
+    formData.append('repeat_count', state.measurement.selectedRepeatCount || '2');
+    formData.append('base_name', state.measurement.repeatBaseName || '');
+    normalizeMeasurementInputChannelSelections();
+    const referenceWarning = getMeasurementReferenceWarning();
+    formData.append('mic_input_channel', state.measurement.selectedMicInputChannel || '1');
+    formData.append('reference_input_channel', referenceWarning ? '' : (state.measurement.selectedReferenceInputChannel || ''));
+    const calibrationFile = elements.measurementCalibrationFile?.files?.[0];
+    if (calibrationFile) {
+        formData.append('calibration_file', calibrationFile);
+    } else if (state.measurement.selectedCalibrationRef) {
+        formData.append('calibration_ref', state.measurement.selectedCalibrationRef);
+    }
+    state.measurement.activeJobId = '';
+    state.measurement.repeatJobActive = true;
+    state.measurement.statusText = 'Starting L/R repeat…';
+    renderMeasurementPanel();
+    const resp = await fetch('/api/measurements/lr-repeat/start', { method: 'POST', body: formData });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data.detail || 'Failed to start L/R repeat measurement');
+    const job = data.job || {};
+    state.measurement.activeJobId = String(job.id || '');
+    state.measurement.statusText = String(job.message || 'Preparing L/R repeat…');
+    renderMeasurementPanel();
+    await pollMeasurementJob(state.measurement.activeJobId);
+}
+
 async function startMeasurement() {
     if (state.measurement.startInFlight || state.measurement.activeJobId) return;
     if (!measurementModeReady()) {
@@ -7163,6 +7240,7 @@ async function startMeasurement() {
     }
 
     state.measurement.startInFlight = true;
+    state.measurement.repeatJobActive = false;
     state.measurement.activeJobId = '';
     state.measurement.currentMeasurementSaved = false;
     renderMeasurementPanel();
@@ -7175,6 +7253,30 @@ async function startMeasurement() {
         showToast(state.measurement.statusText, 'error');
     } finally {
         state.measurement.startInFlight = false;
+        renderMeasurementPanel();
+    }
+}
+
+async function startLrRepeat() {
+    if (state.measurement.startInFlight || state.measurement.activeJobId) return;
+    if (!measurementModeReady()) {
+        state.measurement.statusText = 'No usable host capture source is available for a real measurement on this host.';
+        renderMeasurementPanel();
+        showToast(state.measurement.statusText, 'error');
+        return;
+    }
+    state.measurement.startInFlight = true;
+    state.measurement.repeatJobActive = true;
+    renderMeasurementPanel();
+    try {
+        await startLrRepeatMeasurement();
+    } catch (error) {
+        console.error('startLrRepeat failed', error);
+        state.measurement.statusText = error.message || 'Failed to start L/R repeat measurement';
+        showToast(state.measurement.statusText, 'error');
+    } finally {
+        state.measurement.startInFlight = false;
+        if (!state.measurement.activeJobId) state.measurement.repeatJobActive = false;
         renderMeasurementPanel();
     }
 }
@@ -7192,6 +7294,7 @@ async function cancelMeasurement() {
         if (MEASUREMENT_JOB_CANCELLED_STATES.has(getMeasurementJobStatus(data.job || {}))) {
             state.measurement.activeJobId = '';
             state.measurement.startInFlight = false;
+            state.measurement.repeatJobActive = false;
             syncMeasurementStartButtonFallback();
         }
     } catch (error) {
@@ -7205,7 +7308,7 @@ async function cancelMeasurement() {
 
 async function pollMeasurementJob(jobId) {
     if (!jobId) return;
-    for (let attempt = 0; attempt < 120; attempt += 1) {
+    for (let attempt = 0; attempt < 360; attempt += 1) {
         const resp = await fetch(`/api/measurements/jobs/${encodeURIComponent(jobId)}`);
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) throw new Error(data.detail || 'Failed to fetch measurement job');
@@ -7216,7 +7319,19 @@ async function pollMeasurementJob(jobId) {
             state.measurement.statusText = String(job.message || 'Measurement finished.');
             state.measurement.activeJobId = '';
             state.measurement.startInFlight = false;
+            const repeatMeasurements = Array.isArray(job?.result?.measurements) ? job.result.measurements : [];
+            state.measurement.repeatJobActive = false;
             syncMeasurementStartButtonFallback();
+            if (repeatMeasurements.length) {
+                state.measurement.currentMeasurement = null;
+                state.measurement.currentMeasurementName = '';
+                state.measurement.currentMeasurementSaved = false;
+                await fetchMeasurements();
+                state.measurement.statusText = String(job.message || 'L/R repeat finished.');
+                renderMeasurementPanelDefensively('L/R repeat completion render');
+                showToast('L/R repeat finished and saved', 'success');
+                return;
+            }
             const resultMeasurement = getMeasurementJobResultMeasurement(job);
             if (resultMeasurement) {
                 try {
@@ -7246,12 +7361,14 @@ async function pollMeasurementJob(jobId) {
         if (MEASUREMENT_JOB_FAILED_STATES.has(jobStatus)) {
             state.measurement.activeJobId = '';
             state.measurement.startInFlight = false;
+            state.measurement.repeatJobActive = false;
             syncMeasurementStartButtonFallback();
             throw new Error(job.error?.detail || job.message || 'Measurement failed');
         }
         if (MEASUREMENT_JOB_CANCELLED_STATES.has(jobStatus)) {
             state.measurement.activeJobId = '';
             state.measurement.startInFlight = false;
+            state.measurement.repeatJobActive = false;
             state.measurement.statusText = String(job.message || 'Measurement cancelled.');
             renderMeasurementPanelDefensively('measurement cancellation render');
             showToast('Measurement cancelled', 'success');
@@ -7263,6 +7380,7 @@ async function pollMeasurementJob(jobId) {
     }
     state.measurement.activeJobId = '';
     state.measurement.startInFlight = false;
+    state.measurement.repeatJobActive = false;
     syncMeasurementStartButtonFallback();
     throw new Error('Measurement job timed out while waiting for completion');
 }
@@ -7601,7 +7719,24 @@ function renderMeasurementPanel() {
             : (!activeJobRunning && (measurementState.inputsLoading || !measurementState.hostCaptureAvailable));
         elements.measurementStartBtn.textContent = activeJobRunning
             ? 'Cancel measurement'
-            : (measurementState.startInFlight ? 'Starting…' : 'Start host-local sweep');
+            : (measurementState.startInFlight ? 'Starting…' : 'Start Single Sweep');
+    }
+    if (elements.measurementRepeatStartBtn) {
+        const activeJobRunning = !!measurementState.activeJobId;
+        elements.measurementRepeatStartBtn.disabled = activeJobRunning
+            ? false
+            : (measurementState.startInFlight || measurementState.inputsLoading || !measurementState.hostCaptureAvailable);
+        elements.measurementRepeatStartBtn.textContent = activeJobRunning && measurementState.repeatJobActive
+            ? 'Cancel L/R Repeat'
+            : (activeJobRunning ? 'Cancel measurement' : 'Start L/R Repeat');
+    }
+    if (elements.measurementRepeatCount) {
+        elements.measurementRepeatCount.value = measurementState.selectedRepeatCount || '2';
+        elements.measurementRepeatCount.disabled = measurementState.startInFlight || !!measurementState.activeJobId;
+    }
+    if (elements.measurementRepeatName) {
+        if (document.activeElement !== elements.measurementRepeatName) elements.measurementRepeatName.value = measurementState.repeatBaseName || '';
+        elements.measurementRepeatName.disabled = measurementState.startInFlight || !!measurementState.activeJobId;
     }
     if (elements.measurementSaveBtn) {
         elements.measurementSaveBtn.disabled = !current || measurementState.saveInFlight || measurementState.startInFlight || measurementState.currentMeasurementSaved;
@@ -8143,6 +8278,25 @@ function setupMeasurementActions() {
                 return;
             }
             void startMeasurement();
+        });
+    }
+    if (elements.measurementRepeatStartBtn) {
+        elements.measurementRepeatStartBtn.addEventListener('click', () => {
+            if (state.measurement.activeJobId) {
+                void cancelMeasurement();
+                return;
+            }
+            void startLrRepeat();
+        });
+    }
+    if (elements.measurementRepeatCount) {
+        elements.measurementRepeatCount.addEventListener('change', (event) => {
+            state.measurement.selectedRepeatCount = event.target.value || '2';
+        });
+    }
+    if (elements.measurementRepeatName) {
+        elements.measurementRepeatName.addEventListener('input', (event) => {
+            state.measurement.repeatBaseName = event.target.value || '';
         });
     }
     if (elements.measurementSaveBtn) {
