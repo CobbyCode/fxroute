@@ -154,6 +154,19 @@ The measurement assistant is meant for practical room-tuning work:
 
 Think of it as a tuning assistant for broad room and speaker decisions: bass problems, channel differences, correction direction, and sanity checks.
 
+### Electrical reference input
+
+For timing-critical measurements, an electrical reference input is recommended. It records a line-level reference from the playback signal alongside the acoustic microphone signal.
+
+Example:
+
+- **Input 1** = measurement microphone
+- **Input 2** = line-level reference from the playback signal
+
+Select the microphone and reference channels from the same capture device in **Setup**. Keep the reference level below clipping.
+
+The electrical reference improves timing stability for L/R alignment and aligned FIR filters. Acoustic-only timing remains available when no electrical reference is connected, but it can occasionally lock onto the wrong impulse-response peak.
+
 ### Typical stereo convolver workflow
 
 For a stereo correction preset, measure the channels separately.
