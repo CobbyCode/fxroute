@@ -412,6 +412,28 @@ class MeasurementStore:
         path.write_text(json.dumps(normalized, indent=2) + "\n", encoding="utf-8")
         return normalized
 
+    def save_measurements(self, payloads: list[Any]) -> list[dict[str, Any]]:
+        if not isinstance(payloads, list) or not payloads:
+            raise ValueError("Measurements must include at least one measurement")
+        normalized = [self._normalize_measurement(payload) for payload in payloads]
+        measurement_ids = [measurement["id"] for measurement in normalized]
+        if len(set(measurement_ids)) != len(measurement_ids):
+            raise ValueError("Measurements must use distinct ids")
+        paths = [self.measurements_dir / f"{measurement_id}.json" for measurement_id in measurement_ids]
+        existing = next((path for path in paths if path.exists()), None)
+        if existing is not None:
+            raise ValueError(f"Measurement already exists: {existing.stem}")
+        written = []
+        try:
+            for path, measurement in zip(paths, normalized):
+                path.write_text(json.dumps(measurement, indent=2) + "\n", encoding="utf-8")
+                written.append(path)
+        except Exception:
+            for path in written:
+                path.unlink(missing_ok=True)
+            raise
+        return normalized
+
     def merge_measurements(self, measurement_ids: list[Any], name: str = "") -> dict[str, Any]:
         normalized_ids = [str(measurement_id or "").strip() for measurement_id in measurement_ids]
         if len(normalized_ids) < 2:
@@ -716,7 +738,7 @@ class MeasurementStore:
                 capture_job["capture_profile"] = "lr-repeat"
                 captures[channel].append(self._execute_capture_job(capture_job)["measurement"])
 
-        saved = []
+        summaries = []
         for channel in ("left", "right"):
             summary = self.summarize_repeat_measurements(
                 captures[channel],
@@ -724,10 +746,11 @@ class MeasurementStore:
                 channel=channel,
                 repeat_count=repeat_count,
             )
-            saved.append(self.save_measurement(summary))
+            summaries.append(summary)
         return {
-            "measurements": saved,
-            "message": f"L/R repeat finished. Saved {saved[0]['name']} and {saved[1]['name']}.",
+            "measurements": summaries,
+            "base_name": str(job.get("base_name") or "L/R Repeat"),
+            "message": "L/R repeat finished. Review the combined L and R results, then save them together.",
             "scope_note": MEASUREMENT_SCOPE_NOTE,
         }
 

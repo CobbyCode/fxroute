@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.7.8 (2026-05-30)
+- Align L/R Repeat with the normal review-before-save workflow: show the combined L/R result after capture, keep one editable base name, and save both summaries together only when Save current is pressed.
+- Save L/R Repeat summary pairs atomically and keep internal repeated sweeps out of Saved Runs.
+
 ## 0.7.7 (2026-05-30)
 - Simplified L/R Repeat to one fixed three-pass workflow, removed its separate name and repeat-count controls, and use the normal measurement name as the saved L/R result base name.
 - Store the resolved L/R Repeat timing reference source alongside its timing reliability metadata.

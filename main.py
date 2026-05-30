@@ -4419,6 +4419,7 @@ async def save_measurement(request: Request):
 
     measurement_id = body.get("id") if isinstance(body, dict) else ""
     measurement_name = body.get("name") if isinstance(body, dict) else ""
+    measurements = body.get("measurements") if isinstance(body, dict) else None
     trace_count = len(body.get("traces") or []) if isinstance(body, dict) and isinstance(body.get("traces"), list) else 0
     logger.info(
         "Measurement save request received: id=%s name=%s traces=%s",
@@ -4427,6 +4428,10 @@ async def save_measurement(request: Request):
         trace_count,
     )
     try:
+        if isinstance(measurements, list):
+            saved_measurements = measurement_store.save_measurements(measurements)
+            logger.info("Measurement set save completed: count=%s", len(saved_measurements))
+            return {"status": "ok", "measurements": saved_measurements}
         saved = measurement_store.save_measurement(body)
     except ValueError as exc:
         logger.warning("Measurement save rejected: id=%s error=%s", measurement_id, exc)

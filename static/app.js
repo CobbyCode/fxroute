@@ -78,6 +78,7 @@ let state = {
         saveInFlight: false,
         measurements: [],
         currentMeasurement: null,
+        pendingRepeatMeasurements: [],
         currentMeasurementSaved: false,
         currentMeasurementName: '',
         inputs: [],
@@ -5013,6 +5014,13 @@ function getCurrentMeasurementEntry() {
     return state.measurement.currentMeasurement ? normalizeMeasurementEntry(state.measurement.currentMeasurement, 0) : null;
 }
 
+function getCurrentMeasurementEntries() {
+    const repeatMeasurements = Array.isArray(state.measurement.pendingRepeatMeasurements)
+        ? state.measurement.pendingRepeatMeasurements.map((measurement, index) => normalizeMeasurementEntry(measurement, index))
+        : [];
+    return repeatMeasurements.length ? repeatMeasurements : [getCurrentMeasurementEntry()].filter(Boolean);
+}
+
 function measurementReviewVisible(measurementId) {
     return !!state.measurement.reviewVisibilityById?.[measurementId];
 }
@@ -5424,6 +5432,7 @@ function resetMeasurementGraph() {
     const peq = ensureMeasurementPeqState();
     const conv = ensureMeasurementConvolverState();
     state.measurement.currentMeasurement = null;
+    state.measurement.pendingRepeatMeasurements = [];
     state.measurement.currentMeasurementSaved = false;
     state.measurement.currentMeasurementName = '';
     peq.enabled = false;
@@ -5567,7 +5576,7 @@ async function createMeasurementPeqPresetFromDraft() {
 }
 
 function getMeasurementConvolverSelectedSourceEntries() {
-    return [getCurrentMeasurementEntry(), ...getVisibleMeasurementEntries()].filter(Boolean);
+    return [...getCurrentMeasurementEntries(), ...getVisibleMeasurementEntries()].filter(Boolean);
 }
 
 function getMeasurementConvolverSourceEntries() {
@@ -6462,15 +6471,19 @@ function buildMeasurementGraphEntry(measurement = {}, { current = false, graphCo
             points: smoothMeasurementTracePoints(trace.points || [], smoothing),
         })),
         current,
-        graphColor: current ? measurementCurrentColor : graphColor,
+        graphColor: graphColor || (current ? measurementCurrentColor : ''),
     };
 }
 
 function getGraphMeasurementEntries() {
     const entries = [];
-    const current = getCurrentMeasurementEntry();
-    const currentEntry = current ? buildMeasurementGraphEntry(current, { current: true }) : null;
-    if (currentEntry) entries.push(currentEntry);
+    getCurrentMeasurementEntries().forEach((measurement, index) => {
+        const currentEntry = buildMeasurementGraphEntry(measurement, {
+            current: true,
+            graphColor: index === 0 ? measurementCurrentColor : measurementComparePalette[index - 1],
+        });
+        if (currentEntry) entries.push(currentEntry);
+    });
     const visibleColorById = getVisibleMeasurementColorById();
     getVisibleMeasurementEntries().forEach((measurement) => {
         const entry = buildMeasurementGraphEntry(measurement, { current: false, graphColor: visibleColorById[measurement.id] });
@@ -7177,6 +7190,7 @@ async function startHostMeasurement() {
     }
 
     state.measurement.activeJobId = '';
+    state.measurement.pendingRepeatMeasurements = [];
     state.measurement.currentMeasurementSaved = false;
     state.measurement.statusText = 'Starting host-local sweep…';
     renderMeasurementPanel();
@@ -7212,6 +7226,7 @@ async function startLrRepeatMeasurement() {
         formData.append('calibration_ref', state.measurement.selectedCalibrationRef);
     }
     state.measurement.activeJobId = '';
+    state.measurement.pendingRepeatMeasurements = [];
     state.measurement.repeatJobActive = true;
     state.measurement.statusText = 'Starting L/R repeat…';
     renderMeasurementPanel();
@@ -7318,13 +7333,16 @@ async function pollMeasurementJob(jobId) {
             state.measurement.repeatJobActive = false;
             syncMeasurementStartButtonFallback();
             if (repeatMeasurements.length) {
-                state.measurement.currentMeasurement = null;
-                state.measurement.currentMeasurementName = '';
+                state.measurement.pendingRepeatMeasurements = repeatMeasurements.map((measurement, index) => normalizeMeasurementEntry(measurement, index));
+                state.measurement.currentMeasurement = state.measurement.pendingRepeatMeasurements[0] || null;
+                state.measurement.currentMeasurementName = String(job?.result?.base_name || '').trim();
                 state.measurement.currentMeasurementSaved = false;
-                await fetchMeasurements();
+                state.measurement.pendingRepeatMeasurements.forEach((measurement) => {
+                    state.measurement.reviewVisibilityById[measurement.id] = !!measurement.review_traces?.length;
+                });
                 state.measurement.statusText = String(job.message || 'L/R repeat finished.');
                 renderMeasurementPanelDefensively('L/R repeat completion render');
-                showToast('L/R repeat finished and saved', 'success');
+                showToast('L/R repeat finished. Review and save when ready.', 'success');
                 return;
             }
             const resultMeasurement = getMeasurementJobResultMeasurement(job);
@@ -7386,15 +7404,29 @@ async function saveCurrentMeasurement() {
 
     const debugStart = window.performance?.now?.() || Date.now();
     const debugElapsedMs = () => Math.round((window.performance?.now?.() || Date.now()) - debugStart);
-    const payload = JSON.parse(JSON.stringify(current));
-    payload.name = (state.measurement.currentMeasurementName || current.name || '').trim() || current.name || 'Measurement';
+    const repeatMeasurements = Array.isArray(state.measurement.pendingRepeatMeasurements)
+        ? state.measurement.pendingRepeatMeasurements
+        : [];
+    const baseName = (state.measurement.currentMeasurementName || '').trim() || 'L/R Repeat';
+    const payload = repeatMeasurements.length
+        ? {
+            measurements: repeatMeasurements.map((measurement) => {
+                const item = JSON.parse(JSON.stringify(measurement));
+                item.name = `${baseName} · ${String(item.channel || '').toLowerCase() === 'right' ? 'R' : 'L'}`;
+                return item;
+            }),
+        }
+        : JSON.parse(JSON.stringify(current));
+    if (!repeatMeasurements.length) {
+        payload.name = (state.measurement.currentMeasurementName || current.name || '').trim() || current.name || 'Measurement';
+    }
 
     state.measurement.saveInFlight = true;
     state.measurement.statusText = 'Saving current measurement…';
     logSaveCurrentMeasurementDebug('start', {
         payloadId: payload.id || '',
-        payloadName: payload.name || '',
-        payloadTraceCount: Array.isArray(payload.traces) ? payload.traces.length : 0,
+        payloadName: payload.name || baseName,
+        payloadTraceCount: Array.isArray(payload.traces) ? payload.traces.length : repeatMeasurements.length,
         elapsedMs: debugElapsedMs(),
     });
     logSaveCurrentMeasurementDebug('before initial renderMeasurementPanel', { elapsedMs: debugElapsedMs() });
@@ -7427,21 +7459,27 @@ async function saveCurrentMeasurement() {
             elapsedMs: debugElapsedMs(),
         });
         if (!resp.ok) throw new Error(data.detail || 'Failed to save measurement');
-        const saved = normalizeMeasurementEntry(data.measurement || payload, 0);
+        const savedMeasurements = Array.isArray(data.measurements)
+            ? data.measurements.map((measurement, index) => normalizeMeasurementEntry(measurement, index))
+            : [normalizeMeasurementEntry(data.measurement || payload, 0)];
+        const saved = savedMeasurements[0];
         logSaveCurrentMeasurementDebug('saved measurement normalized', {
             savedId: saved.id,
             savedName: saved.name,
             savedTraceCount: saved.traces.length,
             elapsedMs: debugElapsedMs(),
         });
-        state.measurement.visibilityById[saved.id] = true;
-        state.measurement.reviewVisibilityById[saved.id] = false;
+        savedMeasurements.forEach((measurement) => {
+            state.measurement.visibilityById[measurement.id] = true;
+            state.measurement.reviewVisibilityById[measurement.id] = false;
+        });
         logSaveCurrentMeasurementDebug('before clearing currentMeasurement', {
             savedId: saved.id,
             savedName: saved.name,
             elapsedMs: debugElapsedMs(),
         });
         state.measurement.currentMeasurement = null;
+        state.measurement.pendingRepeatMeasurements = [];
         state.measurement.currentMeasurementSaved = false;
         state.measurement.currentMeasurementName = '';
         state.measurement.statusText = 'Measurement saved.';

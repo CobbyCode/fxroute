@@ -100,6 +100,37 @@ def main() -> None:
             listed = store.list_measurements()["measurements"]
             assert {item["id"] for item in listed} == {saved_left["id"], saved_right["id"]}
 
+            capture_index = {"left": 0, "right": 0}
+
+            def fake_capture(job: dict) -> dict:
+                channel = job["channel"]
+                capture_index[channel] += 1
+                return {
+                    "measurement": measurement_payload(
+                        f"{channel}-{capture_index[channel]}",
+                        channel,
+                        1.0 + (capture_index[channel] * 0.05),
+                        float(capture_index[channel]),
+                        electrical=True,
+                    ),
+                }
+
+            store._execute_capture_job = fake_capture
+            repeat_result = store._execute_lr_repeat_job({
+                "id": "test-repeat-job",
+                "repeat_count": 3,
+                "base_name": "Sofa center",
+            })
+            assert repeat_result["base_name"] == "Sofa center"
+            assert [measurement["name"] for measurement in repeat_result["measurements"]] == ["Sofa center · L", "Sofa center · R"]
+            assert len(store.list_measurements()["measurements"]) == 2
+
+            for measurement in repeat_result["measurements"]:
+                measurement["name"] = f"Edited name · {'R' if measurement['channel'] == 'right' else 'L'}"
+            saved_repeat = store.save_measurements(repeat_result["measurements"])
+            assert [measurement["name"] for measurement in saved_repeat] == ["Edited name · L", "Edited name · R"]
+            assert len(store.list_measurements()["measurements"]) == 4
+
             async def check_fixed_repeat_start() -> None:
                 store._discover_capture_inputs = lambda: [{
                     "id": "test-input",
