@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.7.5 (2026-05-30)
+- Fixed saved-measurement merging by implementing the missing backend averaging path with trusted-trace selection, shared-range interpolation, optional review-trace averaging, and safe merged metadata.
+- Return clear JSON errors for invalid merge requests and show backend merge error details in the frontend.
+
 ## 0.7.4 (2026-05-30)
 - Added optional electrical reference input support for host-local measurements, including explicit mic/reference input-channel selection, same-channel guarding, reference timing metadata, and fallback to the existing host-reference path when the electrical reference is unusable.
 - Clarified measurement timing reporting so completed runs and saved runs show whether timing used an electrical reference, acoustic-only timing, or fallback after an invalid electrical reference.

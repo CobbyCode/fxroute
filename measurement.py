@@ -330,6 +330,154 @@ class MeasurementStore:
         path.write_text(json.dumps(normalized, indent=2) + "\n", encoding="utf-8")
         return normalized
 
+    def merge_measurements(self, measurement_ids: list[Any], name: str = "") -> dict[str, Any]:
+        normalized_ids = [str(measurement_id or "").strip() for measurement_id in measurement_ids]
+        if len(normalized_ids) < 2:
+            raise ValueError("Select at least two saved measurements to merge")
+        if any(not measurement_id or Path(measurement_id).name != measurement_id for measurement_id in normalized_ids):
+            raise ValueError("Invalid measurement id")
+        if len(set(normalized_ids)) != len(normalized_ids):
+            raise ValueError("Select distinct saved measurements to merge")
+
+        measurements = []
+        for measurement_id in normalized_ids:
+            path = self.measurements_dir / f"{measurement_id}.json"
+            if not path.exists():
+                raise KeyError(measurement_id)
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                measurements.append(self._normalize_measurement(payload, source_path=path))
+            except ValueError:
+                raise
+            except Exception as exc:
+                raise ValueError(f"Saved measurement could not be loaded: {measurement_id}") from exc
+
+        merged_name = str(name or "").strip() or f"Merged {len(measurements)} measurements"
+        trusted_traces = [
+            self._select_merge_trace(measurement, "traces", preferred_role="trusted")
+            for measurement in measurements
+        ]
+        review_traces = [
+            self._select_merge_trace(measurement, "review_traces", preferred_role="raw-review", required=False)
+            for measurement in measurements
+        ]
+        timestamp = datetime.now(timezone.utc).replace(microsecond=0)
+        merged_id = f"merged-{timestamp.strftime('%Y%m%d-%H%M%S')}-{uuid4().hex[:6]}"
+        channels = {str(measurement.get("channel") or "").lower() for measurement in measurements}
+        calibrations = [measurement.get("calibration") or {} for measurement in measurements]
+        input_devices = [measurement.get("input_device") or {} for measurement in measurements]
+        input_channels = [measurement.get("input_channels") or {} for measurement in measurements]
+        payload = {
+            "id": merged_id,
+            "name": merged_name,
+            "created_at": timestamp.isoformat().replace("+00:00", "Z"),
+            "input_device": input_devices[0] if all(item == input_devices[0] for item in input_devices) else {
+                "id": "merged-inputs",
+                "label": "Merged capture inputs",
+            },
+            "input_channels": input_channels[0] if all(item == input_channels[0] for item in input_channels) else {},
+            "channel": next(iter(channels)) if len(channels) == 1 else "stereo",
+            "calibration": calibrations[0] if all(item == calibrations[0] for item in calibrations) else {
+                "filename": "",
+                "applied": False,
+            },
+            "display": deepcopy(measurements[0].get("display") or DISPLAY_DEFAULTS),
+            "traces": [
+                self._average_merge_traces(
+                    trusted_traces,
+                    label=f"{merged_name} · trusted average",
+                    kind="merged-sweep-response",
+                    role="trusted",
+                    color=TRACE_COLORS[0],
+                )
+            ],
+            "measurement_kind": "merged-measurement",
+            "notes": [
+                f"Averaged from {len(measurements)} saved measurements.",
+                "Direct-arrival timing is intentionally not retained for merged measurements.",
+            ],
+            "analysis": {
+                "method": "saved-measurement-average",
+                "source_measurement_ids": normalized_ids,
+                "source_count": len(measurements),
+                "direct_arrival_timing_available": False,
+            },
+        }
+        if all(review_traces):
+            payload["review_traces"] = [
+                self._average_merge_traces(
+                    review_traces,
+                    label=f"{merged_name} · raw/full-band review average",
+                    kind="merged-sweep-response-review",
+                    role="raw-review",
+                    color=TRACE_COLORS[1],
+                )
+            ]
+        elif any(review_traces):
+            payload["notes"].append("Raw/full-band review traces were omitted because they were not available for every source measurement.")
+        return self.save_measurement(payload)
+
+    def _select_merge_trace(
+        self,
+        measurement: dict[str, Any],
+        trace_key: str,
+        *,
+        preferred_role: str,
+        required: bool = True,
+    ) -> dict[str, Any] | None:
+        traces = measurement.get(trace_key) or []
+        preferred = [trace for trace in traces if str(trace.get("role") or "") == preferred_role]
+        if len(preferred) == 1:
+            return preferred[0]
+        if len(preferred) > 1:
+            raise ValueError(f"Saved measurement has multiple {preferred_role} traces: {measurement['id']}")
+        if len(traces) == 1:
+            return traces[0]
+        if not traces and not required:
+            return None
+        label = "trusted" if trace_key == "traces" else "review"
+        raise ValueError(f"Saved measurement does not have one unambiguous {label} trace: {measurement['id']}")
+
+    def _average_merge_traces(
+        self,
+        traces: list[dict[str, Any]],
+        *,
+        label: str,
+        kind: str,
+        role: str,
+        color: str,
+    ) -> dict[str, Any]:
+        point_sets = [trace.get("points") or [] for trace in traces]
+        overlap_min_hz = max(points[0][0] for points in point_sets)
+        overlap_max_hz = min(points[-1][0] for points in point_sets)
+        frequencies = sorted({
+            float(frequency)
+            for points in point_sets
+            for frequency, _level in points
+            if overlap_min_hz <= frequency <= overlap_max_hz
+        })
+        if len(frequencies) < 2:
+            raise ValueError("Selected measurements do not share a usable frequency range")
+
+        merged_points = []
+        for frequency in frequencies:
+            levels = [
+                float(np.interp(
+                    frequency,
+                    [point[0] for point in points],
+                    [point[1] for point in points],
+                ))
+                for points in point_sets
+            ]
+            merged_points.append([round(frequency, 3), round(sum(levels) / len(levels), 3)])
+        return {
+            "kind": kind,
+            "label": label,
+            "color": color,
+            "role": role,
+            "points": merged_points,
+        }
+
     def cancel_job(self, job_id: str) -> dict[str, Any]:
         job = self.get_job(job_id)
         status = str(job.get("status") or "")

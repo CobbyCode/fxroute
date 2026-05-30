@@ -4428,6 +4428,9 @@ async def merge_measurements(request: Request):
         raise HTTPException(status_code=404, detail="Measurement not found")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    except Exception:
+        logger.exception("Measurement merge failed: ids=%s name=%s", measurement_ids, name)
+        raise HTTPException(status_code=500, detail="Failed to merge selected measurements")
     return {"status": "ok", "measurement": merged}
 
 @app.delete("/api/measurements/{measurement_id}")

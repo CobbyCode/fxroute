@@ -7446,8 +7446,14 @@ async function mergeSelectedMeasurements() {
                 measurementIds: measurements.map(measurement => measurement.id),
             }),
         });
-        const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(data.detail || 'Failed to merge selected measurements');
+        const responseText = await resp.text();
+        let data = {};
+        try {
+            data = responseText ? JSON.parse(responseText) : {};
+        } catch (_error) {
+            data = {};
+        }
+        if (!resp.ok) throw new Error(data.detail || responseText.trim() || 'Failed to merge selected measurements');
         const merged = normalizeMeasurementEntry(data.measurement || {}, 0);
         if (merged.id) {
             state.measurement.visibilityById[merged.id] = true;
