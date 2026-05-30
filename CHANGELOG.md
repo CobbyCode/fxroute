@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## 0.7.11 (2026-05-31)
+- Flatten the Measurement Assistant workflow controls, remove the redundant inner workflow boxes, and tighten the mobile action rhythm while keeping Setup secondary.
+
 ## 0.7.10 (2026-05-31)
 - Compact the Measurement Assistant workflow groups on mobile, remove the oversized responsive flex allocation, and keep Setup as a compact secondary action below the measurement workflows on narrow screens.
 

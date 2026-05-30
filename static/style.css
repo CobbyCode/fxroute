@@ -1741,24 +1741,21 @@ body {
 .measurement-actions-top {
     align-items: center;
     justify-content: space-between;
+    gap: 0.65rem;
 }
 
 .measurement-workflow-list {
     display: flex;
     flex: 1 1 680px;
     flex-direction: column;
-    gap: 0.42rem;
+    gap: 0.5rem;
 }
 
 .measurement-workflow-group {
     display: flex;
     align-items: center;
     gap: 0.55rem;
-    min-height: 42px;
-    padding: 0.34rem 0.42rem;
-    border: 1px solid rgba(255,255,255,0.08);
-    border-radius: var(--radius-md);
-    background: rgba(255,255,255,0.025);
+    min-height: 0;
 }
 
 .measurement-repeat-help {
@@ -2396,26 +2393,23 @@ body {
     .measurement-workflow-list {
         flex: 0 0 auto;
         width: 100%;
-        gap: 0.38rem;
+        gap: 0.55rem;
     }
 
     .measurement-workflow-group {
         align-items: stretch;
         flex-direction: column;
-        gap: 0.38rem;
-        min-height: 0;
-        padding: 0.38rem;
+        gap: 0.32rem;
     }
 
     .measurement-repeat-help {
         flex: 0 0 auto;
-        padding: 0 0.08rem;
     }
 
     .measurement-channel-chip-row,
     .measurement-smoothing-chips {
         width: 100%;
-        justify-content: center;
+        justify-content: flex-start;
     }
 
     .measurement-card-setup,
