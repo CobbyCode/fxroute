@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## 0.7.12 (2026-05-31)
+- Polish Measurement Assistant spacing and alignment: align Setup cleanly at the top right on desktop, use consistent workflow button sizing, and center the mobile channel selector with a more even vertical rhythm.
+
 ## 0.7.11 (2026-05-31)
 - Flatten the Measurement Assistant workflow controls, remove the redundant inner workflow boxes, and tighten the mobile action rhythm while keeping Setup secondary.
 
