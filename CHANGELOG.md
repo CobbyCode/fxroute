@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## 0.7.10 (2026-05-31)
+- Compact the Measurement Assistant workflow groups on mobile, remove the oversized responsive flex allocation, and keep Setup as a compact secondary action below the measurement workflows on narrow screens.
+
 ## 0.7.9 (2026-05-31)
 - Group the Single Sweep action with its L/R/Stereo selector, keep L/R Repeat as a separate workflow action with shorter guidance, and visually separate Setup as a secondary configuration action.
 
