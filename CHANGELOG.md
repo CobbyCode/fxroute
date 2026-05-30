@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.7.7 (2026-05-30)
+- Simplified L/R Repeat to one fixed three-pass workflow, removed its separate name and repeat-count controls, and use the normal measurement name as the saved L/R result base name.
+- Store the resolved L/R Repeat timing reference source alongside its timing reliability metadata.
+- Added concise same-position workflow guidance beside the L/R Repeat action and allow entering the normal measurement name before capture.
+
 ## 0.7.6 (2026-05-30)
 - Added an automated same-position L/R Repeat measurement mode with selectable repeat count, shorter sub-sweeps, internal L/R capture processing, timing-cluster outlier rejection, and same-position magnitude averaging.
 - Save only the final summarized `<name> · L` and `<name> · R` runs from L/R Repeat workflows, including repeat count, accepted/rejected runs, timing spread, timing method, electrical-reference usage, and an explicit unstable-timing state when no reliable cluster exists.

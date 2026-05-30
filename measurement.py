@@ -321,7 +321,6 @@ class MeasurementStore:
         self,
         *,
         input_id: str,
-        repeat_count: int | str = 2,
         base_name: str = "",
         mic_input_channel: str | int | None = "1",
         reference_input_channel: str | int | None = "",
@@ -329,12 +328,7 @@ class MeasurementStore:
         calibration_bytes: bytes | None = None,
         calibration_ref: str | None = None,
     ) -> dict[str, Any]:
-        try:
-            normalized_repeat_count = int(repeat_count)
-        except (TypeError, ValueError) as exc:
-            raise ValueError("repeat_count must be 1, 2, or 3") from exc
-        if normalized_repeat_count not in {1, 2, 3}:
-            raise ValueError("repeat_count must be 1, 2, or 3")
+        normalized_repeat_count = 3
         inputs = self._discover_capture_inputs()
         selected_input = next((item for item in inputs if item["id"] == input_id), None)
         if not selected_input:
@@ -823,6 +817,14 @@ class MeasurementStore:
         analysis = payload.get("analysis") if isinstance(payload.get("analysis"), dict) else {}
         analysis = deepcopy(analysis)
         analysis["method"] = "same-position-lr-repeat-average"
+        reference_path = analysis.get("reference_path") if isinstance(analysis.get("reference_path"), dict) else {}
+        reference_path = deepcopy(reference_path)
+        reference_source = ""
+        if electrical_reference_used:
+            reference_channel = reference_path.get("electrical_reference_input_channel")
+            reference_source = f"electrical-input-channel-{reference_channel}" if reference_channel else "electrical-input"
+        elif reference_path.get("capture_mode"):
+            reference_source = str(reference_path["capture_mode"])
         analysis["lr_repeat"] = {
             "repeat_count": int(repeat_count),
             "accepted_runs": len(accepted_indices),
@@ -832,10 +834,9 @@ class MeasurementStore:
             "timing_spread_ms": timing_spread_ms,
             "timing_method": "electrical-reference-cluster-median" if electrical_reference_used else "acoustic-cluster-median",
             "electrical_reference_used": electrical_reference_used,
+            "reference_source": reference_source,
             "timing_stable": stable,
         }
-        reference_path = analysis.get("reference_path") if isinstance(analysis.get("reference_path"), dict) else {}
-        reference_path = deepcopy(reference_path)
         impulse = analysis.get("impulse_response") if isinstance(analysis.get("impulse_response"), dict) else {}
         impulse = deepcopy(impulse)
         sample_rate = int(analysis.get("sample_rate") or 0)

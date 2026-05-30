@@ -85,8 +85,6 @@ let state = {
         selectedMicInputChannel: '1',
         selectedReferenceInputChannel: '',
         selectedChannel: 'left',
-        selectedRepeatCount: '2',
-        repeatBaseName: '',
         repeatJobActive: false,
         displaySmoothing: '1/6-oct',
         hostCaptureAvailable: false,
@@ -354,8 +352,6 @@ const elements = {
     measurementNameInput: document.getElementById('measurement-name'),
     measurementStartBtn: document.getElementById('measurement-start'),
     measurementRepeatStartBtn: document.getElementById('measurement-repeat-start'),
-    measurementRepeatCount: document.getElementById('measurement-repeat-count'),
-    measurementRepeatName: document.getElementById('measurement-repeat-name'),
     measurementSaveBtn: document.getElementById('measurement-save'),
     measurementClearBtn: document.getElementById('measurement-clear'),
     measurementAssistMode: document.getElementById('measurement-assist-mode'),
@@ -7204,8 +7200,7 @@ async function startLrRepeatMeasurement() {
     }
     const formData = new FormData();
     formData.append('input_id', state.measurement.selectedInputId);
-    formData.append('repeat_count', state.measurement.selectedRepeatCount || '2');
-    formData.append('base_name', state.measurement.repeatBaseName || '');
+    formData.append('base_name', state.measurement.currentMeasurementName || '');
     normalizeMeasurementInputChannelSelections();
     const referenceWarning = getMeasurementReferenceWarning();
     formData.append('mic_input_channel', state.measurement.selectedMicInputChannel || '1');
@@ -7709,8 +7704,8 @@ function renderMeasurementPanel() {
     }
     if (elements.measurementNameInput) {
         elements.measurementNameInput.value = measurementState.currentMeasurementName || '';
-        elements.measurementNameInput.disabled = !current || measurementState.startInFlight || measurementState.saveInFlight;
-        elements.measurementNameInput.placeholder = current ? 'Name for save' : 'Available after capture';
+        elements.measurementNameInput.disabled = measurementState.startInFlight || measurementState.saveInFlight || !!measurementState.activeJobId;
+        elements.measurementNameInput.placeholder = 'Measurement name';
     }
     if (elements.measurementStartBtn) {
         const activeJobRunning = !!measurementState.activeJobId;
@@ -7729,14 +7724,6 @@ function renderMeasurementPanel() {
         elements.measurementRepeatStartBtn.textContent = activeJobRunning && measurementState.repeatJobActive
             ? 'Cancel L/R Repeat'
             : (activeJobRunning ? 'Cancel measurement' : 'Start L/R Repeat');
-    }
-    if (elements.measurementRepeatCount) {
-        elements.measurementRepeatCount.value = measurementState.selectedRepeatCount || '2';
-        elements.measurementRepeatCount.disabled = measurementState.startInFlight || !!measurementState.activeJobId;
-    }
-    if (elements.measurementRepeatName) {
-        if (document.activeElement !== elements.measurementRepeatName) elements.measurementRepeatName.value = measurementState.repeatBaseName || '';
-        elements.measurementRepeatName.disabled = measurementState.startInFlight || !!measurementState.activeJobId;
     }
     if (elements.measurementSaveBtn) {
         elements.measurementSaveBtn.disabled = !current || measurementState.saveInFlight || measurementState.startInFlight || measurementState.currentMeasurementSaved;
@@ -8287,16 +8274,6 @@ function setupMeasurementActions() {
                 return;
             }
             void startLrRepeat();
-        });
-    }
-    if (elements.measurementRepeatCount) {
-        elements.measurementRepeatCount.addEventListener('change', (event) => {
-            state.measurement.selectedRepeatCount = event.target.value || '2';
-        });
-    }
-    if (elements.measurementRepeatName) {
-        elements.measurementRepeatName.addEventListener('input', (event) => {
-            state.measurement.repeatBaseName = event.target.value || '';
         });
     }
     if (elements.measurementSaveBtn) {

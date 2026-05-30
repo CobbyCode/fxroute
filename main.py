@@ -4351,7 +4351,6 @@ async def start_measurement(
 @app.post("/api/measurements/lr-repeat/start")
 async def start_lr_repeat_measurement(
     input_id: str = Form(...),
-    repeat_count: int = Form(2),
     base_name: str = Form(""),
     mic_input_channel: str = Form("1"),
     reference_input_channel: str = Form(""),
@@ -4371,7 +4370,6 @@ async def start_lr_repeat_measurement(
     try:
         job = await measurement_store.start_lr_repeat_measurement(
             input_id=input_id,
-            repeat_count=repeat_count,
             base_name=base_name,
             mic_input_channel=mic_input_channel,
             reference_input_channel=reference_input_channel,

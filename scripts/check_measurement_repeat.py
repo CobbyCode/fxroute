@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import tempfile
 import sys
 import os
@@ -38,6 +39,8 @@ def measurement_payload(measurement_id: str, channel: str, timing_ms: float, lev
             "sample_rate": sample_rate,
             "reference_path": {
                 "electrical_reference_used": electrical,
+                "electrical_reference_input_channel": 2 if electrical else None,
+                "capture_mode": "electrical-input" if electrical else "dual-channel",
                 "acoustic_arrival_corrected_ms": timing_ms,
             },
             "impulse_response": {
@@ -74,6 +77,7 @@ def main() -> None:
             assert repeat["rejected_runs"] == 1
             assert repeat["accepted_run_numbers"] == [1, 2]
             assert repeat["timing_method"] == "electrical-reference-cluster-median"
+            assert repeat["reference_source"] == "electrical-input-channel-2"
             assert repeat["timing_spread_ms"] == 0.1
             assert summary["analysis"]["reference_path"]["acoustic_arrival_corrected_ms"] == 1.05
             assert summary["traces"][0]["points"] == [[20.0, 1.0], [1000.0, 2.0], [20000.0, 3.0]]
@@ -95,6 +99,25 @@ def main() -> None:
             saved_right = store.save_measurement(unstable)
             listed = store.list_measurements()["measurements"]
             assert {item["id"] for item in listed} == {saved_left["id"], saved_right["id"]}
+
+            async def check_fixed_repeat_start() -> None:
+                store._discover_capture_inputs = lambda: [{
+                    "id": "test-input",
+                    "label": "Test input",
+                    "available": True,
+                    "channels": 2,
+                }]
+
+                async def no_capture(_job_id: str) -> None:
+                    return None
+
+                store._run_measurement_job = no_capture
+                job = await store.start_lr_repeat_measurement(input_id="test-input", base_name="Sofa center")
+                assert job["repeat_count"] == 3
+                assert job["base_name"] == "Sofa center"
+                await asyncio.sleep(0)
+
+            asyncio.run(check_fixed_repeat_start())
         finally:
             if old_config_home is None:
                 os.environ.pop("XDG_CONFIG_HOME", None)

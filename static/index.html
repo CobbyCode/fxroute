@@ -12,7 +12,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=0.4.458">
     <link rel="manifest" href="/static/site.webmanifest?v=0.4.458">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/static/style.css?v=0.7.6">
+    <link rel="stylesheet" href="/static/style.css?v=0.7.7">
 </head>
 <body>
     <!-- Offline indicator -->
@@ -629,15 +629,7 @@
                                 <div class="measurement-start-cluster">
                                     <button id="measurement-start" class="btn-primary" type="button">Start Single Sweep</button>
                                     <button id="measurement-repeat-start" class="btn-secondary" type="button">Start L/R Repeat</button>
-                                    <label class="measurement-repeat-count" for="measurement-repeat-count">
-                                        <span>Repeat</span>
-                                        <select id="measurement-repeat-count" class="url-input">
-                                            <option value="1">1</option>
-                                            <option value="2" selected>2</option>
-                                            <option value="3">3</option>
-                                        </select>
-                                    </label>
-                                    <input id="measurement-repeat-name" class="url-input measurement-repeat-name" type="text" placeholder="L/R set name (optional)" autocomplete="off" spellcheck="false">
+                                    <span class="measurement-repeat-help">Measures L/R three times at the same mic position and saves one combined L and R result.</span>
                                     <div class="measurement-channel-chip-row" id="measurement-channel-chip-row" aria-label="Speaker selection">
                                         <button type="button" class="measurement-chip is-active" data-measurement-channel="left">L</button>
                                         <button type="button" class="measurement-chip" data-measurement-channel="right">R</button>
@@ -940,7 +932,7 @@
     <!-- Toast notifications -->
     <div id="toast-container" class="toast-container"></div>
 
-    <script src="/static/measurement_dsp.js?v=0.7.6"></script>
-    <script src="/static/app.js?v=0.7.6"></script>
+    <script src="/static/measurement_dsp.js?v=0.7.7"></script>
+    <script src="/static/app.js?v=0.7.7"></script>
 </body>
 </html>

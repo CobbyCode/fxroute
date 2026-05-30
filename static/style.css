@@ -1750,20 +1750,12 @@ body {
     flex-wrap: wrap;
 }
 
-.measurement-repeat-count {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
+.measurement-repeat-help {
+    flex: 1 1 320px;
+    max-width: 620px;
     color: var(--text-secondary);
     font-size: 0.84rem;
-}
-
-.measurement-repeat-count .url-input {
-    min-width: 58px;
-}
-
-.measurement-repeat-name {
-    min-width: 180px;
+    line-height: 1.35;
 }
 
 .measurement-inline-field {
@@ -2426,7 +2418,6 @@ body {
     .measurement-save-row .btn-secondary,
     #measurement-start,
     #measurement-repeat-start,
-    #measurement-repeat-name,
     #measurement-setup-toggle {
         width: 100%;
     }
