@@ -12,7 +12,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=0.4.458">
     <link rel="manifest" href="/static/site.webmanifest?v=0.4.458">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/static/style.css?v=0.7.8">
+    <link rel="stylesheet" href="/static/style.css?v=0.7.9">
 </head>
 <body>
     <!-- Offline indicator -->
@@ -626,22 +626,26 @@
                     <div class="measurement-main">
                         <section class="effects-card measurement-card measurement-card-controls">
                             <div class="measurement-actions measurement-actions-top">
-                                <div class="measurement-start-cluster">
-                                    <button id="measurement-start" class="btn-primary" type="button">Start Single Sweep</button>
-                                    <button id="measurement-repeat-start" class="btn-secondary" type="button">Start L/R Repeat</button>
-                                    <span class="measurement-repeat-help">Measures L/R three times at the same mic position and shows one combined L and R result for review.</span>
-                                    <div class="measurement-channel-chip-row" id="measurement-channel-chip-row" aria-label="Speaker selection">
-                                        <button type="button" class="measurement-chip is-active" data-measurement-channel="left">L</button>
-                                        <button type="button" class="measurement-chip" data-measurement-channel="right">R</button>
-                                        <button type="button" class="measurement-chip" data-measurement-channel="stereo">Stereo</button>
+                                <div class="measurement-workflow-list">
+                                    <div class="measurement-workflow-group measurement-workflow-single">
+                                        <button id="measurement-start" class="btn-primary" type="button">Start Single Sweep</button>
+                                        <div class="measurement-channel-chip-row" id="measurement-channel-chip-row" aria-label="Single sweep speaker selection">
+                                            <button type="button" class="measurement-chip is-active" data-measurement-channel="left">L</button>
+                                            <button type="button" class="measurement-chip" data-measurement-channel="right">R</button>
+                                            <button type="button" class="measurement-chip" data-measurement-channel="stereo">Stereo</button>
+                                        </div>
+                                        <div class="field-group hidden">
+                                            <label for="measurement-channel-select">Speaker</label>
+                                            <select id="measurement-channel-select" class="url-input">
+                                                <option value="left">Left</option>
+                                                <option value="right">Right</option>
+                                                <option value="stereo">Stereo</option>
+                                            </select>
+                                        </div>
                                     </div>
-                                    <div class="field-group hidden">
-                                        <label for="measurement-channel-select">Speaker</label>
-                                        <select id="measurement-channel-select" class="url-input">
-                                            <option value="left">Left</option>
-                                            <option value="right">Right</option>
-                                            <option value="stereo">Stereo</option>
-                                        </select>
+                                    <div class="measurement-workflow-group measurement-workflow-repeat">
+                                        <button id="measurement-repeat-start" class="btn-secondary" type="button">Start L/R Repeat</button>
+                                        <span class="measurement-repeat-help">Measures L/R three times at the same mic position.</span>
                                     </div>
                                 </div>
                                 <button id="measurement-setup-toggle" class="btn-secondary" type="button">Setup</button>
@@ -932,7 +936,7 @@
     <!-- Toast notifications -->
     <div id="toast-container" class="toast-container"></div>
 
-    <script src="/static/measurement_dsp.js?v=0.7.8"></script>
-    <script src="/static/app.js?v=0.7.8"></script>
+    <script src="/static/measurement_dsp.js?v=0.7.9"></script>
+    <script src="/static/app.js?v=0.7.9"></script>
 </body>
 </html>

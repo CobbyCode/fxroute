@@ -1743,15 +1743,26 @@ body {
     justify-content: space-between;
 }
 
-.measurement-start-cluster {
+.measurement-workflow-list {
+    display: flex;
+    flex: 1 1 680px;
+    flex-direction: column;
+    gap: 0.55rem;
+}
+
+.measurement-workflow-group {
     display: flex;
     align-items: center;
     gap: 0.65rem;
-    flex-wrap: wrap;
+    min-height: 48px;
+    padding: 0.48rem 0.55rem;
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: var(--radius-md);
+    background: rgba(255,255,255,0.025);
 }
 
 .measurement-repeat-help {
-    flex: 1 1 320px;
+    flex: 1 1 260px;
     max-width: 620px;
     color: var(--text-secondary);
     font-size: 0.84rem;
@@ -2207,7 +2218,7 @@ body {
         align-items: flex-start;
     }
 
-    .measurement-start-cluster {
+    .measurement-workflow-list {
         width: 100%;
     }
 
@@ -2259,7 +2270,7 @@ body {
         align-items: flex-start;
     }
 
-    .measurement-start-cluster {
+    .measurement-workflow-list {
         width: 100%;
     }
 
@@ -2378,8 +2389,13 @@ body {
     }
 
     .measurement-save-row,
-    .measurement-start-cluster {
+    .measurement-workflow-list {
         align-items: stretch;
+    }
+
+    .measurement-workflow-group {
+        align-items: stretch;
+        flex-direction: column;
     }
 
     .measurement-channel-chip-row,

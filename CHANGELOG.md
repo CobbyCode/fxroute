@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## 0.7.9 (2026-05-31)
+- Group the Single Sweep action with its L/R/Stereo selector, keep L/R Repeat as a separate workflow action with shorter guidance, and visually separate Setup as a secondary configuration action.
+
 ## 0.7.8 (2026-05-30)
 - Align L/R Repeat with the normal review-before-save workflow: show the combined L/R result after capture, keep one editable base name, and save both summaries together only when Save current is pressed.
 - Save L/R Repeat summary pairs atomically and keep internal repeated sweeps out of Saved Runs.
