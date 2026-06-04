@@ -2,6 +2,84 @@
 
 ## Unreleased
 
+## 0.7.33 (2026-06-04)
+- Use the full Single Sweep V2 sweep profile for all default L/R Repeat captures, including Acoustic-only Repeat: 11.0s sweep, 0.5s lead-in, 1.25s tail, and the normal host-record pre/post-roll.
+- Remove the hidden short Acoustic-only Repeat behavior so Acoustic-only Repeat, ER Repeat, and Single Sweep are directly comparable in magnitude, especially in the low-frequency region.
+- Add a regression assertion that the default measurement sweep profile does not fall back to the old shorter `LR_REPEAT_*` sweep constants.
+
+## 0.7.32 (2026-06-04)
+- Treat Electrical Reference same-device sweep drift as diagnostic unless independently confirmed: ER timing now defaults to a central-anchor constant-delay model instead of applying global multi-anchor clock-drift compensation.
+- Add richer sweep-anchor diagnostics with anchor region, approximate sweep frequency/time, sample residuals, score, polarity, accept/reject state, rejection reasons, and raw global ppm for comparison.
+- Reject drift-fit anchors with negative polarity, low correlation, edge proximity, or strong deviation from the central anchor cluster. Displayed magnitude remains on the non-resampled captured segment.
+
+## 0.7.31 (2026-06-04)
+- Keep Electrical Reference drift/timing analysis for delay, L/R delta, alignment metadata, and ppm diagnostics, but no longer apply drift-resampling to the audio path used for displayed magnitude. This avoids the artificial high-frequency roll-off caused by the previous linear `np.interp` resampler.
+- Add drift-fit diagnostics to measurement metadata and logs: estimated ppm, total drift samples over the sweep, fit start/end before and after the drift fit, anchor coarse residuals, and fitted residuals.
+
+## 0.7.28 (2026-06-03)
+- Use identical sweep/lead/tail/record parameters for ER pre-averaged L/R Repeat as for normal single V2 sweeps. This ensures frequency resolution is the same (especially 20–40 Hz), so direct Single vs Repeat magnitude comparison is no longer confounded by different sweep lengths.
+
+## 0.7.27 (2026-06-03)
+- Store ER pre-averaged L/R Repeat summaries with the frequency-response trace from magnitude-domain averaging of the individually analyzed repeat sweeps. ER time-domain pre-averaging remains available for timing/L/R delta, while its curve is kept only as a review/debug trace.
+
+## 0.7.26 (2026-06-02)
+- Add ER pre-average comparison diagnostics to L/R Repeat summaries: future ER pre-averaged summaries include a review trace with the magnitude-domain average of the individual repeat sweeps, making it possible to compare time-domain ER pre-average against post-analysis magnitude averaging in the graph.
+
+## 0.7.25 (2026-06-02)
+- Fix the measurement UI timing badge for ER pre-averaged L/R Repeat summaries so `pre_averaged` / `paired_timing_stable` results render as stable ER pre-averaged timing instead of falling through to `unstable · accepted 0/3`.
+
+## 0.7.24 (2026-06-02)
+- Fix ER pre-average re-analysis to use the averaged electrical reference channel (`ch1`) as timing reference instead of the averaged mic channel.
+- Carry per-capture ER timing into the trimmed preavg WAV as a timing override, adjusted for valid-overlap trimming, so pre-average timing uses the individually verified ER captures rather than re-detecting weak start/end anchors on the synthetic average.
+
+## 0.7.23 (2026-06-02)
+- Average ER pre-aligned repeat captures only over the valid overlap shared by all shifted captures, preventing zero-padding from weakening pre-averaged sweep start/end QC. Pre-average failures now log the overlap range, overlap length, raw shifts, and residual shifts.
+
+## 0.7.22 (2026-06-02)
+- Change ER pre-average validation to gate on post-shift residual ER alignment instead of raw capture-start shift spread, so correctable Electrical Reference capture jitter no longer blocks time-domain averaging by itself.
+- Document the Measurement Assistant L/R Repeat workflow, review-before-save behavior, pair outlier handling, and Electrical vs acoustic reference expectations in the manual.
+- Refresh the desktop settings/audio-output screenshot so the Measurement Assistant controls include the L/R Repeat action.
+
+## 0.7.21 (2026-06-01)
+- Strip private capture helper fields from completed measurement job responses before persistence and API serialization. This keeps internal calibration arrays available during capture processing without exposing non-JSON NumPy values after a calibrated Single Sweep.
+
+## 0.7.20 (2026-06-01)
+- Fix all critical/high bugs found in ER pre-average code review:
+  - Fix typo `_compute_aliance_shift` → `_compute_alignment_shift` (feature was silently dead)
+  - Unique sweep_id per L/R repeat capture (all 6 sweeps overwrote same WAV)
+  - Right playback channel selection (was always reading ch0, right sweep is on ch1)
+  - Alignment sign: use `-shift` to undo delay (was doubling it)
+  - Stereo WAV output preserves ER channel for re-analysis
+  - Traces propagated from averaged analysis to displayed measurement
+  - `_build_pre_averaged_lr_summary` now actually called (was dead code)
+  - ER fallback detection: skip pre-average if any sweep fell back to host timing
+  - Temp file cleanup in finally block
+  - WAV cleanup in `_execute_lr_repeat_job` after analysis
+
+## 0.7.19 (2026-06-01)
+- Make ER pre-average alignment gate sample-rate independent: spread limit is always 3 samples (not ms); at 48 kHz ≈0.063 ms, at 96 kHz ≈0.031 ms; reports both samples and ms in debug/notes.
+
+## 0.7.18 (2026-06-01)
+- Tighten ER pre-average alignment tolerance: from ~0.5 ms (24 samples @ 48 kHz) to ~0.1 ms (max 3-5 samples); deconvolution requires sample-exact alignment, anything beyond a few samples smears the averaged impulse response.
+
+## 0.7.17 (2026-05-31)
+- Add Electrical Reference pre-averaging for L/R Repeat: align 3 repeat captures via ER channel cross-correlation, verify alignment within ~0.5ms tolerance, average aligned time-domain captures before deconvolution (~4.8 dB SNR gain); fall back to per-sweep analysis + paired-delta clustering on any failure.
+- New _build_pre_averaged_lr_summary() for direct L/R summary from pre-averaged results with paired-delta timing and alignment shift reporting.
+
+## 0.7.16 (2026-05-31)
+- Defensive measurement link setup: clean up stale fxroute links before creating new ones and in the post-measurement finally block; tolerate 'already exists' and 'not found' errors; raise user-facing 'Measurement audio path could not be prepared. Please retry.' on critical link failures.
+
+## 0.7.15 (2026-05-31)
+- Switch L/R Repeat timing to paired-delta clustering: compute per-pair deltas (R_i - L_i), cluster the 3 deltas, accept pairs in the best cluster (min 2/3), derive L/R timings from accepted pairs only; mark unstable if no stable delta cluster forms.
+- Show paired-delta method label, delta center, and spread in the L/R repeat timing UI.
+
+## 0.7.14 (2026-05-31)
+- Stabilize Direct-Arrival peak selection for acoustic measurements: raise weak-early threshold 0.075→0.12 so typical acoustic direct-arrival candidates (score 0.08–0.10) are eligible for promotion; widen promotion window 4ms→10ms and relax score/support ratios for more aggressive promotion; add best-score-in-window fallback when first candidate is marginal; add promotion_applied flag and ir_peak_index diagnostics.
+- Show peak-promotion status and confidence value in the electrical-reference timing line UI.
+
+## 0.7.13 (2026-05-31)
+- Add targeted browser-console diagnostics for every displayed Convolver L/R timing relation, including selected measurement IDs, names, channels, corrected arrivals, calculated delta, and available L/R Repeat pair evidence.
+
 ## 0.7.12 (2026-05-31)
 - Polish Measurement Assistant spacing and alignment: align Setup cleanly at the top right on desktop, use consistent workflow button sizing, and center the mobile channel selector with a more even vertical rhythm.
 

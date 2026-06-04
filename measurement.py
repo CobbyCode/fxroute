@@ -70,6 +70,8 @@ LR_REPEAT_RECORD_PREROLL_SECONDS = 0.3
 LR_REPEAT_RECORD_POSTROLL_SECONDS = 0.35
 LR_REPEAT_ELECTRICAL_TIMING_CLUSTER_MS = 0.35
 LR_REPEAT_ACOUSTIC_TIMING_CLUSTER_MS = 0.75
+LR_REPEAT_PAIRED_DELTA_CLUSTER_MS = 0.35
+LR_REPEAT_PAIRED_MIN_CLUSTER_SIZE = 2
 SWEEP_START_HZ = 10.0
 SWEEP_END_HZ = 22_000.0
 HOST_SWEEP_PEAK_SCALE = 0.8
@@ -91,6 +93,10 @@ SWEEP_TIMING_SEARCH_SECONDS = 0.35
 SWEEP_TIMING_MAX_ABS_PPM = 12_000.0
 SWEEP_TIMING_MIN_COMPENSATION_PPM = 75.0
 SWEEP_TIMING_RESIDUAL_TOLERANCE_SECONDS = 0.04
+SWEEP_TIMING_MIN_ANCHOR_SCORE = 0.995
+SWEEP_TIMING_CLUSTER_REJECT_SAMPLES = 24
+SWEEP_TIMING_CENTRAL_ANCHORS = {"mid-low", "mid-high"}
+SWEEP_TIMING_EDGE_ANCHORS = {"start-inner", "end-inner"}
 SWEEP_TIMING_ANCHOR_LAYOUT = (
     ("start-inner", 0.06),
     ("start-body", 0.18),
@@ -110,16 +116,17 @@ IR_DIRECT_SEARCH_PRE_SECONDS = 0.12
 IR_DIRECT_RELATIVE_THRESHOLD = 0.05
 IR_DIRECT_CANDIDATE_FLOOR_RELATIVE = 0.02
 IR_DIRECT_CANDIDATE_LIMIT = 24
-IR_DIRECT_WEAK_EARLY_RELATIVE = 0.075
+IR_DIRECT_WEAK_EARLY_RELATIVE = 0.12
 IR_DIRECT_WEAK_EARLY_MIN_GAP_SAMPLES = 20
 IR_DIRECT_WEAK_EARLY_NEXT_RATIO = 1.75
 IR_DIRECT_SUPPORT_WINDOW_SECONDS = 0.00035
 IR_DIRECT_NEARBY_WINDOW_SECONDS = 0.0009
 IR_DIRECT_THRESHOLD_EDGE_SAMPLES = 12
-IR_DIRECT_PROMOTION_WINDOW_SECONDS = 0.004
-IR_DIRECT_PROMOTION_SUPPORT_RATIO = 1.6
-IR_DIRECT_PROMOTION_SCORE_RATIO = 1.25
-IR_DIRECT_PROMOTION_ENERGY_RATIO = 1.45
+IR_DIRECT_PROMOTION_WINDOW_SECONDS = 0.010
+IR_DIRECT_PROMOTION_SUPPORT_RATIO = 1.4
+IR_DIRECT_PROMOTION_SCORE_RATIO = 1.05
+IR_DIRECT_PROMOTION_ENERGY_RATIO = 1.3
+IR_DIRECT_CONFIDENCE_FALLBACK_THRESHOLD = 0.30
 IR_DIRECT_PROMINENCE_REFERENCE = 0.15
 IR_DEBUG_SEGMENT_ENABLED = _env_flag("FXROUTE_MEASUREMENT_IR_DEBUG_SEGMENT", True)
 IR_DEBUG_SEGMENT_RADIUS_SAMPLES = _env_int(
@@ -689,7 +696,7 @@ class MeasurementStore:
                 job["status"] = "completed"
                 job["updated_at"] = self._utc_now()
                 job["message"] = result.get("message") or "Measurement finished."
-                job["result"] = result
+                job["result"] = self._public_job_result(result)
                 if isinstance(result.get("calibration"), dict):
                     job["calibration"] = deepcopy(result["calibration"])
                 job["error"] = None
@@ -716,10 +723,341 @@ class MeasurementStore:
             self._job_processes.pop(job_id, None)
             self._persist_job(job)
 
+    def _pre_average_er_captures(
+        self,
+        capture_paths: list[str],
+        *,
+        playback_path: str | Path,
+        sample_rate: int,
+        mic_input_channel_index: int,
+        electrical_reference_channel_index: int,
+        calibration_curve: tuple[np.ndarray, np.ndarray] | None,
+        reference_sweep: np.ndarray,
+        inverse_sweep: np.ndarray,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Pre-average ER-aligned captures before deconvolution.
+
+        Returns (averaged_analysis, intermediate_debug) or raises RuntimeError.
+        On failure, caller falls back to per-sweep analysis.
+        """
+        if len(capture_paths) < 2:
+            raise RuntimeError("Pre-average needs at least 2 captures")
+
+        loaded: list[tuple[int, np.ndarray]] = []
+        for path in capture_paths:
+            sr, data = self._load_wav_array(Path(path))
+            if sr != sample_rate:
+                raise RuntimeError(f"Unexpected sample rate in {path}: {sr} vs {sample_rate}")
+            loaded.append((sr, data))
+
+        # Extract reference (ER) channel from each capture
+        er_signals: list[np.ndarray] = []
+        mic_signals: list[np.ndarray] = []
+        for _sr, data in loaded:
+            er_ch = self._select_analysis_channel(data, channel="", channel_index=electrical_reference_channel_index)
+            mic_ch = self._select_analysis_channel(data, channel="", channel_index=mic_input_channel_index)
+            er_signals.append(er_ch)
+            mic_signals.append(mic_ch)
+
+        er_timings: list[dict[str, Any]] = []
+        for er_ch in er_signals:
+            coarse_start = self._find_sweep_start(er_ch, reference_sweep)
+            er_timings.append(
+                self._estimate_sweep_timing(
+                    er_ch,
+                    reference_sweep,
+                    coarse_start,
+                    sample_rate,
+                    allow_drift_compensation=False,
+                )
+            )
+
+        # Align all ER signals to the first one via cross-correlation.
+        # The raw shifts can be large when the recorder starts each repeat
+        # capture at a slightly different sample. That is correctable. What
+        # matters for pre-averaging is the residual alignment after applying
+        # the ER-derived shifts.
+        ref_er = er_signals[0]
+        aligned_mic = [mic_signals[0]]
+        aligned_er = [er_signals[0]]
+        valid_ranges: list[tuple[int, int]] = [(0, mic_signals[0].shape[0])]
+        alignment_shifts: list[int] = [0]
+        applied_shifts: list[int] = [0]
+
+        for i in range(1, len(er_signals)):
+            shift = self._compute_alignment_shift(ref_er, er_signals[i], sample_rate)
+            alignment_shifts.append(shift)
+            applied_shift = -shift
+            applied_shifts.append(applied_shift)
+            aligned_mic.append(self._shift_signal(mic_signals[i], applied_shift))
+            aligned_er.append(self._shift_signal(er_signals[i], applied_shift))
+            if applied_shift > 0:
+                valid_ranges.append((applied_shift, mic_signals[i].shape[0]))
+            elif applied_shift < 0:
+                valid_ranges.append((0, mic_signals[i].shape[0] + applied_shift))
+            else:
+                valid_ranges.append((0, mic_signals[i].shape[0]))
+
+        sample_spread = max(alignment_shifts) - min(alignment_shifts)
+        spread_limit = self._er_pre_average_sample_spread_limit(sample_rate)
+        overlap_start = max(start for start, _end in valid_ranges)
+        overlap_end = min(end for _start, end in valid_ranges)
+        if overlap_end <= overlap_start:
+            raise RuntimeError(
+                f"ER aligned captures have no valid overlap after shifts "
+                f"{alignment_shifts} (ranges: {valid_ranges})"
+            )
+        overlap_len = overlap_end - overlap_start
+        min_required = int(round(sample_rate * (SWEEP_V2_SECONDS + SWEEP_V2_TAIL_SECONDS)))
+        if overlap_len < min_required:
+            raise RuntimeError(
+                f"ER aligned captures valid overlap {overlap_len} samples is too short "
+                f"for pre-average QC (minimum {min_required}; shifts: {alignment_shifts}; "
+                f"ranges: {valid_ranges})"
+            )
+
+        # Verify residual inter-capture alignment after correction on the same
+        # valid overlap that will be averaged. Rejecting only the raw shift
+        # spread would defeat ER-aligned pre-averaging when repeat captures
+        # have harmless capture-start jitter.
+        overlap_er = [s[overlap_start:overlap_end] for s in aligned_er]
+        residual_shifts = [
+            0,
+            *[
+                self._compute_alignment_shift(overlap_er[0], overlap_er[i], sample_rate)
+                for i in range(1, len(overlap_er))
+            ],
+        ]
+        residual_spread = max(residual_shifts) - min(residual_shifts)
+        if residual_spread > spread_limit:
+            raise RuntimeError(
+                f"ER residual alignment spread {residual_spread} samples exceeds limit "
+                f"{spread_limit} after shifts {alignment_shifts} "
+                f"(residual shifts: {residual_shifts}; overlap: "
+                f"{overlap_start}..{overlap_end})"
+            )
+
+        # All aligned — average only samples that are present in every shifted
+        # capture. This keeps zero-padding from contaminating sweep start/end
+        # regions used by the normal QC.
+        averaged_mic = np.mean([s[overlap_start:overlap_end] for s in aligned_mic], axis=0)
+
+        # Average the aligned ER signals over the same valid overlap (for
+        # consistency check and downstream ER timing analysis).
+        averaged_er = np.mean(overlap_er, axis=0)
+
+        adjusted_timing_starts = [
+            int(timing["aligned_start"]) + int(applied_shift) - int(overlap_start)
+            for timing, applied_shift in zip(er_timings, applied_shifts)
+        ]
+        adjusted_timing_ends = [
+            start + int(timing["observed_sweep_samples"])
+            for start, timing in zip(adjusted_timing_starts, er_timings)
+        ]
+        override_start = int(round(float(np.median(adjusted_timing_starts))))
+        override_sweep_samples = int(round(float(np.median([
+            int(reference_sweep.size)
+            for _timing in er_timings
+        ]))))
+        if override_start < 0:
+            raise RuntimeError(
+                f"ER pre-average timing override starts before valid overlap "
+                f"({override_start}; adjusted starts: {adjusted_timing_starts}; "
+                f"overlap: {overlap_start}..{overlap_end})"
+            )
+        if override_start + override_sweep_samples > averaged_mic.shape[0]:
+            raise RuntimeError(
+                f"ER pre-average timing override exceeds valid overlap "
+                f"({override_start}+{override_sweep_samples}>{averaged_mic.shape[0]}; "
+                f"adjusted starts: {adjusted_timing_starts}; adjusted ends: {adjusted_timing_ends})"
+            )
+        per_capture_start_scores = [float(timing.get("start_score") or 0.0) for timing in er_timings]
+        per_capture_end_scores = [float(timing.get("end_score") or 0.0) for timing in er_timings]
+        timing_override = {
+            "alignment_samples": override_start,
+            "observed_sweep_samples": override_sweep_samples,
+            "stretch_ratio": 1.0,
+            "drift_ppm": 0.0,
+            "total_drift_samples": 0,
+            "estimated_ppm": float(np.median([
+                float(timing.get("estimated_ppm", timing.get("drift_ppm") or 0.0))
+                for timing in er_timings
+            ])),
+            "estimated_total_drift_samples": int(round(float(np.median([
+                int(timing.get("estimated_total_drift_samples", timing.get("total_drift_samples") or 0))
+                for timing in er_timings
+            ])))),
+            "raw_global_ppm": float(np.median([
+                float(timing.get("raw_global_ppm", timing.get("estimated_ppm", 0.0)))
+                for timing in er_timings
+            ])),
+            "fit_start_before_samples": override_start,
+            "fit_start_after_samples": override_start,
+            "fit_end_before_samples": override_start + int(reference_sweep.size),
+            "fit_end_after_samples": override_start + override_sweep_samples,
+            "compensated": False,
+            "anchor_seconds": float(np.median([
+                float(timing.get("anchor_seconds") or 0.0)
+                for timing in er_timings
+            ])),
+            "start_score": min(per_capture_start_scores),
+            "end_score": min(per_capture_end_scores),
+            "anchor_strategy": "ER pre-average central constant-delay override",
+            "drift_compensation_policy": "constant-delay-er-reference",
+            "anchor_matches": [],
+        }
+
+        # Write stereo WAV: ch0 = mic, ch1 = ER (so _analyze_sweep_capture
+        # retains access to the ER timing reference)
+        averaged_path = self.captures_dir / f"preavg-{uuid4().hex[:12]}.wav"
+        stereo = np.column_stack([
+            averaged_mic,
+            averaged_er,
+        ])
+        self._write_stereo_wav(averaged_path, sample_rate, stereo)
+
+        # Run standard analysis — mic on ch0, ER on ch1
+        try:
+            analysis = self._analyze_sweep_capture(
+                averaged_path,
+                expected_sample_rate=sample_rate,
+                channel="",
+                reference_sweep=reference_sweep,
+                inverse_sweep=inverse_sweep,
+                calibration_curve=calibration_curve,
+                capture_label="ER pre-averaged",
+                reference_channel_index=1,
+                analysis_channel_index=0,
+                reference_channel_label="reference",
+                timing_override=timing_override,
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"ER pre-averaged QC failed after valid-overlap average "
+                f"(overlap {overlap_start}..{overlap_end}, "
+                f"{overlap_len} samples; shifts: {alignment_shifts}; "
+                f"residual shifts: {residual_shifts}; timing override: "
+                f"{override_start}+{override_sweep_samples}; adjusted starts: "
+                f"{adjusted_timing_starts}): {exc}"
+            ) from exc
+
+        shifts_ms = [round(s / sample_rate * 1000.0, 4) for s in alignment_shifts]
+        sample_spread = max(alignment_shifts) - min(alignment_shifts) if len(alignment_shifts) > 1 else 0
+        clock = analysis.get("clock") if isinstance(analysis.get("clock"), dict) else {}
+        debug = {
+            "alignment_shifts_samples": alignment_shifts,
+            "alignment_shifts_ms": shifts_ms,
+            "alignment_spread_samples": sample_spread,
+            "alignment_spread_ms": round(sample_spread / sample_rate * 1000.0, 4),
+            "residual_alignment_shifts_samples": residual_shifts,
+            "residual_alignment_shifts_ms": [round(s / sample_rate * 1000.0, 4) for s in residual_shifts],
+            "residual_alignment_spread_samples": residual_spread,
+            "residual_alignment_spread_ms": round(residual_spread / sample_rate * 1000.0, 4),
+            "alignment_spread_gate": "post-shift-residual",
+            "valid_ranges_samples": [[int(start), int(end)] for start, end in valid_ranges],
+            "valid_overlap_start_sample": int(overlap_start),
+            "valid_overlap_end_sample": int(overlap_end),
+            "valid_overlap_length_samples": int(overlap_len),
+            "valid_overlap_start_ms": round(overlap_start / sample_rate * 1000.0, 4),
+            "valid_overlap_end_ms": round(overlap_end / sample_rate * 1000.0, 4),
+            "valid_overlap_length_ms": round(overlap_len / sample_rate * 1000.0, 4),
+            "pre_average_timing_override_start_sample": int(override_start),
+            "pre_average_timing_override_sweep_samples": int(override_sweep_samples),
+            "pre_average_adjusted_timing_starts_samples": [int(item) for item in adjusted_timing_starts],
+            "pre_average_adjusted_timing_ends_samples": [int(item) for item in adjusted_timing_ends],
+            "pre_average_per_capture_start_scores": [round(item, 6) for item in per_capture_start_scores],
+            "pre_average_per_capture_end_scores": [round(item, 6) for item in per_capture_end_scores],
+            "pre_average_start_score": round(float(clock.get("start_score") or 0.0), 6),
+            "pre_average_end_score": round(float(clock.get("end_score") or 0.0), 6),
+            "capture_count": len(capture_paths),
+            "pre_average_applied": True,
+        }
+
+        try:
+            return analysis, debug
+        finally:
+            # Always clean up temp file
+            try:
+                averaged_path.unlink()
+            except Exception:
+                pass
+
+    @classmethod
+    def _public_job_result(cls, value: Any) -> Any:
+        """Remove private capture helpers before persisting or returning a job result."""
+        if isinstance(value, dict):
+            return {
+                key: cls._public_job_result(item)
+                for key, item in value.items()
+                if not str(key).startswith("_")
+            }
+        if isinstance(value, list):
+            return [cls._public_job_result(item) for item in value]
+        if isinstance(value, tuple):
+            return [cls._public_job_result(item) for item in value]
+        return value
+
+    @staticmethod
+    def _write_stereo_wav(path: Path, sample_rate: int, data: np.ndarray) -> None:
+        """Write a stereo 16-bit PCM WAV file (ch0=mic, ch1=ER)."""
+        samples = np.clip(data, -1.0, 1.0)
+        int16 = (samples * 32767).astype(np.int16)
+        with wave.open(str(path), 'wb') as wf:
+            wf.setnchannels(2)
+            wf.setsampwidth(2)
+            wf.setframerate(sample_rate)
+            wf.writeframes(int16.tobytes())
+
+    @staticmethod
+    def _er_pre_average_sample_spread_limit(sample_rate: int) -> int:
+        """Maximum allowed ER alignment spread across captures, in samples.
+
+        Sample-rate independent: always 3 samples regardless of rate.
+        At 48 kHz: 3 samples ≈ 0.063 ms
+        At 96 kHz: 3 samples ≈ 0.031 ms
+
+        Deconvolution requires sample-exact alignment; even a few samples
+        of inter-capture drift will smear the averaged impulse response.
+        Spread = max(alignment_shifts) - min(alignment_shifts).
+        """
+        return 3
+
+    @staticmethod
+    def _compute_alignment_shift(reference: np.ndarray, other: np.ndarray, sample_rate: int) -> int:
+        """Compute the integer sample shift to align `other` to `reference` via cross-correlation."""
+        n = reference.shape[0] + other.shape[0] - 1
+        fft_n = 1
+        while fft_n < n:
+            fft_n <<= 1
+        ref_fft = np.fft.rfft(reference, n=fft_n)
+        oth_fft = np.fft.rfft(other, n=fft_n)
+        corr = np.fft.irfft(ref_fft.conj() * oth_fft, n=fft_n)
+        peak = int(np.argmax(np.abs(corr)))
+        if peak > fft_n // 2:
+            peak -= fft_n
+        return peak
+
+    @staticmethod
+    def _shift_signal(signal: np.ndarray, shift: int) -> np.ndarray:
+        """Shift signal by integer samples (positive = delay, negative = advance)."""
+        if shift == 0:
+            return signal
+        result = np.zeros_like(signal)
+        if shift > 0:
+            if shift < signal.shape[0]:
+                result[shift:] = signal[:-shift]
+        else:
+            trim = -shift
+            if trim < signal.shape[0]:
+                result[:signal.shape[0] - trim] = signal[trim:]
+        return result
+
     def _execute_lr_repeat_job(self, job: dict[str, Any]) -> dict[str, Any]:
         job_id = str(job["id"])
         repeat_count = int(job.get("repeat_count") or 1)
         captures: dict[str, list[dict[str, Any]]] = {"left": [], "right": []}
+        # Track raw capture metadata for ER pre-averaging
+        raw_meta: dict[str, list[dict[str, Any]]] = {"left": [], "right": []}
         total_sweeps = repeat_count * 2
         sweep_number = 0
         for repeat_index in range(repeat_count):
@@ -733,22 +1071,177 @@ class MeasurementStore:
                     live_job["updated_at"] = self._utc_now()
                     self._persist_job(live_job)
                 capture_job = deepcopy(job)
-                capture_job["id"] = job_id
+                # Unique ID per sweep so each capture gets its own WAV file
+                sweep_id = f"{job_id}-repeat{repeat_index + 1}-{channel}"
+                capture_job["id"] = sweep_id
                 capture_job["channel"] = channel
                 capture_job["capture_profile"] = "lr-repeat"
-                captures[channel].append(self._execute_capture_job(capture_job)["measurement"])
+                result = self._execute_capture_job(capture_job)
+                captures[channel].append(result["measurement"])
+                raw_meta[channel].append({
+                    "capture_path": result.get("_capture_path"),
+                    "playback_path": result.get("_playback_path"),
+                    "sample_rate": result.get("_sample_rate"),
+                    "mic_input_channel_index": result.get("_mic_input_channel_index"),
+                    "electrical_reference_channel_index": result.get("_electrical_reference_channel_index"),
+                    "use_electrical_reference": result.get("_use_electrical_reference"),
+                    "calibration_curve": result.get("_calibration_curve"),
+                    "sweep_seconds": result.get("_sweep_seconds"),
+                    "lead_in_seconds": result.get("_lead_in_seconds"),
+                    "tail_seconds": result.get("_tail_seconds"),
+                    "record_preroll_seconds": result.get("_record_preroll_seconds"),
+                    "record_postroll_seconds": result.get("_record_postroll_seconds"),
+                    "record_duration_seconds": result.get("_record_duration_seconds"),
+                })
 
-        summaries = []
-        for channel in ("left", "right"):
-            summary = self.summarize_repeat_measurements(
-                captures[channel],
+        # Try ER pre-averaging per side, fall back to standard per-sweep analysis
+        pre_avg_debug: dict[str, Any] = {}
+        for side_channel in ("left", "right"):
+            side_meta = raw_meta[side_channel]
+            # All sweeps must have actually used electrical reference (not just configured it)
+            if not side_meta or not all(
+                m.get("use_electrical_reference") and
+                not (captures[side_channel][i].get("analysis") or {}).get("reference_path", {}).get("electrical_reference_fallback")
+                for i, m in enumerate(side_meta)
+            ):
+                continue
+            if not all(m.get("capture_path") for m in side_meta):
+                continue
+            try:
+                er_idx = side_meta[0]["electrical_reference_channel_index"]
+                mic_idx = side_meta[0]["mic_input_channel_index"]
+                sr = side_meta[0]["sample_rate"]
+                cal = side_meta[0].get("calibration_curve")
+                pb_path = Path(side_meta[0]["playback_path"])
+                _pb_sr, pb_data = self._load_wav_array(pb_path)
+                if _pb_sr != sr:
+                    raise RuntimeError(f"Playback sample rate mismatch: {_pb_sr} vs {sr}")
+                if pb_data.ndim > 1:
+                    # Stereo playback: select the correct sweep channel
+                    pb_ch = 1 if side_channel == "right" else 0
+                    pb_data = pb_data[:, pb_ch]
+                _sweep_sec = float(side_meta[0].get("sweep_seconds") or SWEEP_V2_SECONDS)
+                _lead_in_sec = float(side_meta[0].get("lead_in_seconds") or SWEEP_V2_LEAD_IN_SECONDS)
+                _lead_in_samp = int(round(sr * _lead_in_sec))
+                _sweep_samp = int(round(sr * _sweep_sec))
+                reference_sweep = pb_data[_lead_in_samp:_lead_in_samp + _sweep_samp].astype(np.float64)
+                start_hz = float(side_meta[0].get("start_hz") or SWEEP_START_HZ)
+                end_hz = float(side_meta[0].get("end_hz") or SWEEP_END_HZ)
+                inverse_sweep = self._build_inverse_sweep(
+                    reference_sweep,
+                    sample_rate=sr,
+                    duration_seconds=_sweep_sec,
+                    start_hz=start_hz,
+                    end_hz=end_hz,
+                )
+                avg_analysis, debug = self._pre_average_er_captures(
+                    [m["capture_path"] for m in side_meta],
+                    playback_path=pb_path,
+                    sample_rate=sr,
+                    mic_input_channel_index=mic_idx,
+                    electrical_reference_channel_index=er_idx,
+                    calibration_curve=cal,
+                    reference_sweep=reference_sweep,
+                    inverse_sweep=inverse_sweep,
+                )
+                source_traces = [
+                    self._select_merge_trace(item, "traces", preferred_role="trusted")
+                    for item in captures[side_channel]
+                ]
+                source_trace_average = self._average_merge_traces(
+                    source_traces,
+                    label=f"{side_channel.title()} repeat · magnitude average of individual sweeps",
+                    kind="lr-repeat-er-source-magnitude-average",
+                    role="er-source-magnitude-average",
+                    color=TRACE_COLORS[2],
+                )
+                source_review_traces = [
+                    self._select_merge_trace(item, "review_traces", preferred_role="raw-review", required=False)
+                    for item in captures[side_channel]
+                ]
+                source_review_average = None
+                if all(source_review_traces):
+                    source_review_average = self._average_merge_traces(
+                        source_review_traces,
+                        label=f"{side_channel.title()} repeat · raw magnitude average of individual sweeps",
+                        kind="lr-repeat-er-source-review-magnitude-average",
+                        role="er-source-review-magnitude-average",
+                        color=TRACE_COLORS[3],
+                    )
+                # Build effective measurement from pre-averaged analysis
+                # Use the averaged analysis traces (not the first capture's)
+                effective = deepcopy(captures[side_channel][0])
+                effective_analysis = effective.get("analysis") or {}
+                effective_analysis.update(avg_analysis)
+                effective["analysis"] = effective_analysis
+                # Replace traces with those from the averaged analysis so the
+                # displayed frequency response reflects the pre-averaged result
+                if "traces" in avg_analysis:
+                    effective["traces"] = avg_analysis["traces"]
+                if "review_traces" in avg_analysis:
+                    effective["review_traces"] = avg_analysis["review_traces"]
+                effective["_pre_averaged"] = True
+                effective["_pre_average_debug"] = debug
+                effective["_pre_average_source_trace_average"] = source_trace_average
+                if source_review_average is not None:
+                    effective["_pre_average_source_review_average"] = source_review_average
+                captures[side_channel] = [effective]
+                pre_avg_debug[side_channel] = debug
+            except Exception as exc:
+                logger.warning("ER pre-average failed for %s, using per-sweep: %s", side_channel, exc)
+                pre_avg_debug[side_channel] = {"pre_average_applied": False, "error": str(exc)}
+
+        l_pre = pre_avg_debug.get("left", {}).get("pre_average_applied", False)
+        r_pre = pre_avg_debug.get("right", {}).get("pre_average_applied", False)
+
+        if l_pre and r_pre:
+            # Both sides pre-averaged: build paired summary directly
+            l_eff = captures["left"][0]
+            r_eff = captures["right"][0]
+            l_summary = self._build_pre_averaged_lr_summary(
+                l_eff, r_eff,
+                side="left",
                 base_name=str(job.get("base_name") or "L/R Repeat"),
-                channel=channel,
+                repeat_count=repeat_count,
+                pre_avg_debug=pre_avg_debug,
+            )
+            r_summary = self._build_pre_averaged_lr_summary(
+                r_eff, l_eff,
+                side="right",
+                base_name=str(job.get("base_name") or "L/R Repeat"),
+                repeat_count=repeat_count,
+                pre_avg_debug=pre_avg_debug,
+            )
+        else:
+            l_summary, r_summary = self.summarize_lr_repeat_paired(
+                captures["left"],
+                captures["right"],
+                base_name=str(job.get("base_name") or "L/R Repeat"),
                 repeat_count=repeat_count,
             )
-            summaries.append(summary)
+            for s in (l_summary, r_summary):
+                side = s.get("channel", "")
+                dbg = pre_avg_debug.get(side, {})
+                if dbg.get("pre_average_applied"):
+                    s.setdefault("notes", []).append(
+                        f"ER pre-averaged ({dbg.get('capture_count', '?')} captures, "
+                        f"shifts: {dbg.get('alignment_shifts_samples', [])} samples)"
+                    )
+
+        # Clean up capture WAV files (they are either consumed by pre-average
+        # or no longer needed after standard per-sweep analysis)
+        for side_channel in ("left", "right"):
+            for m in raw_meta[side_channel]:
+                for key in ("capture_path", "playback_path"):
+                    path_str = m.get(key)
+                    if path_str:
+                        try:
+                            Path(path_str).unlink()
+                        except Exception:
+                            pass
+
         return {
-            "measurements": summaries,
+            "measurements": [l_summary, r_summary],
             "base_name": str(job.get("base_name") or "L/R Repeat"),
             "message": "L/R repeat finished. Review the combined L and R results, then save them together.",
             "scope_note": MEASUREMENT_SCOPE_NOTE,
@@ -895,6 +1388,414 @@ class MeasurementStore:
         payload["analysis"] = analysis
         return self._normalize_measurement(payload)
 
+    def _extract_measurement_timing_ms(self, measurement: dict[str, Any]) -> float | None:
+        """Extract corrected arrival timing from a measurement, or None unavailable."""
+        analysis = measurement.get("analysis") if isinstance(measurement.get("analysis"), dict) else {}
+        reference_path = analysis.get("reference_path") if isinstance(analysis.get("reference_path"), dict) else {}
+        impulse = analysis.get("impulse_response") if isinstance(analysis.get("impulse_response"), dict) else {}
+        timing_ms = reference_path.get("acoustic_arrival_corrected_ms", impulse.get("arrival_ms"))
+        try:
+            timing_ms = float(timing_ms)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(timing_ms):
+            return None
+        return timing_ms
+
+    def _select_paired_delta_cluster(
+        self,
+        pair_deltas_ms: list[float],
+        *,
+        cluster_limit_ms: float,
+        min_cluster_size: int,
+    ) -> tuple[list[int], float | None, float | None]:
+        """Cluster paired L/R deltas and return accepted pair indices, center delta, spread."""
+        if not pair_deltas_ms:
+            return [], None, None
+        indexed = list(enumerate(pair_deltas_ms))
+        candidates = []
+        for anchor_idx, anchor_val in indexed:
+            cluster = [
+                (idx, val) for idx, val in indexed
+                if abs(val - anchor_val) <= cluster_limit_ms
+            ]
+            if not cluster:
+                continue
+            values = sorted(val for _, val in cluster)
+            spread = values[-1] - values[0]
+            candidates.append((len(cluster), -spread, cluster))
+        if not candidates:
+            return [], None, None
+        _size, _neg_spread, best = max(candidates, key=lambda item: (item[0], item[1]))
+        if len(best) < min_cluster_size:
+            return [], None, None
+        best_values = sorted(val for _, val in best)
+        center = float(np.median(best_values))
+        spread = best_values[-1] - best_values[0]
+        return sorted(int(idx) for idx, _ in best), round(center, 6), round(spread, 6)
+
+    def summarize_lr_repeat_paired(
+        self,
+        left_measurements: list[dict[str, Any]],
+        right_measurements: list[dict[str, Any]],
+        *,
+        base_name: str,
+        repeat_count: int,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Summarize L/R Repeat using paired-delta clustering.
+
+        For each pair (L_i, R_i), compute delta_i = R_i - L_i.
+        Cluster the deltas, accept pairs in the best cluster,
+        then derive L and R timing from accepted pairs only.
+
+        Returns (left_summary, right_summary) with shared paired-delta metadata.
+        """
+        pair_deltas: list[tuple[int, float]] = []
+        for idx in range(min(len(left_measurements), len(right_measurements), repeat_count)):
+            l_timing = self._extract_measurement_timing_ms(left_measurements[idx])
+            r_timing = self._extract_measurement_timing_ms(right_measurements[idx])
+            if l_timing is not None and r_timing is not None:
+                pair_deltas.append((idx, r_timing - l_timing))
+
+        l_elec_all = all(
+            self._extract_measurement_timing_ms(m) is not None and
+            (m.get("analysis", {}).get("reference_path", {}) or {}).get("electrical_reference_used")
+            for m in left_measurements if self._extract_measurement_timing_ms(m) is not None
+        )
+        r_elec_all = all(
+            self._extract_measurement_timing_ms(m) is not None and
+            (m.get("analysis", {}).get("reference_path", {}) or {}).get("electrical_reference_used")
+            for m in right_measurements if self._extract_measurement_timing_ms(m) is not None
+        )
+        electrical_reference_used = l_elec_all and r_elec_all
+
+        delta_cluster_limit = (
+            LR_REPEAT_PAIRED_DELTA_CLUSTER_MS
+            if electrical_reference_used
+            else LR_REPEAT_ACOUSTIC_TIMING_CLUSTER_MS
+        )
+        min_cluster_size = LR_REPEAT_PAIRED_MIN_CLUSTER_SIZE
+
+        accepted_pair_indices, delta_center, delta_spread = self._select_paired_delta_cluster(
+            [d for _, d in pair_deltas],
+            cluster_limit_ms=delta_cluster_limit,
+            min_cluster_size=min_cluster_size,
+        )
+
+        if not accepted_pair_indices:
+            # Fallback: accept all pairs, mark unstable
+            accepted_pair_indices = [idx for idx, _ in pair_deltas]
+
+        # Derive L and R timings from accepted pairs only
+        if accepted_pair_indices is not None and len(accepted_pair_indices) > 0:
+            l_accepted_timings = []
+            r_accepted_timings = []
+            for idx in accepted_pair_indices:
+                lt = self._extract_measurement_timing_ms(left_measurements[idx])
+                rt = self._extract_measurement_timing_ms(right_measurements[idx])
+                if lt is not None:
+                    l_accepted_timings.append(lt)
+                if rt is not None:
+                    r_accepted_timings.append(rt)
+            l_final_ms = float(np.median(l_accepted_timings)) if l_accepted_timings else None
+            r_final_ms = float(np.median(r_accepted_timings)) if r_accepted_timings else None
+        else:
+            l_final_ms = None
+            r_final_ms = None
+
+        l_summary = self._build_repeat_side_summary(
+            left_measurements,
+            accepted_pair_indices,
+            base_name=base_name,
+            channel="left",
+            repeat_count=repeat_count,
+            final_timing_ms=l_final_ms,
+            electrical_reference_used=electrical_reference_used,
+            paired_delta_center=delta_center,
+            paired_delta_spread=delta_spread,
+            paired_timing_stable=delta_center is not None,
+            pair_count=len(pair_deltas),
+        )
+        r_summary = self._build_repeat_side_summary(
+            right_measurements,
+            accepted_pair_indices,
+            base_name=base_name,
+            channel="right",
+            repeat_count=repeat_count,
+            final_timing_ms=r_final_ms,
+            electrical_reference_used=electrical_reference_used,
+            paired_delta_center=delta_center,
+            paired_delta_spread=delta_spread,
+            paired_timing_stable=delta_center is not None,
+            pair_count=len(pair_deltas),
+        )
+        return l_summary, r_summary
+
+    def _build_pre_averaged_lr_summary(
+        self,
+        own_effective: dict[str, Any],
+        other_effective: dict[str, Any],
+        *,
+        side: str,
+        base_name: str,
+        repeat_count: int,
+        pre_avg_debug: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Build one side of an L/R summary when ER pre-averaging was used."""
+        analysis = own_effective.get("analysis") if isinstance(own_effective.get("analysis"), dict) else {}
+        ref_path = analysis.get("reference_path") if isinstance(analysis.get("reference_path"), dict) else {}
+        impulse = analysis.get("impulse_response") if isinstance(analysis.get("impulse_response"), dict) else {}
+        other_analysis = other_effective.get("analysis") if isinstance(other_effective.get("analysis"), dict) else {}
+        other_ref = other_analysis.get("reference_path") if isinstance(other_analysis.get("reference_path"), dict) else {}
+        other_impulse = other_analysis.get("impulse_response") if isinstance(other_analysis.get("impulse_response"), dict) else {}
+
+        own_timing = ref_path.get("acoustic_arrival_corrected_ms", impulse.get("arrival_ms"))
+        other_timing = other_ref.get("acoustic_arrival_corrected_ms", other_impulse.get("arrival_ms"))
+        try:
+            own_timing = float(own_timing)
+        except (TypeError, ValueError):
+            own_timing = None
+        try:
+            other_timing = float(other_timing)
+        except (TypeError, ValueError):
+            other_timing = None
+        delta = None
+        if own_timing is not None and other_timing is not None:
+            delta = round(other_timing - own_timing, 6)
+
+        side_label = "L" if side == "left" else "R"
+        summary_name = f"{str(base_name or 'L/R Repeat').strip()} · {side_label}"
+        timestamp = datetime.now(timezone.utc).replace(microsecond=0)
+        measurement_id = f"lr-repeat-paired-average-{side}-{timestamp.strftime('%Y%m%d-%H%M%S')}-{uuid4().hex[:6]}"
+
+        # Use the trace data from the first underlying capture, but with pre-averaged analysis
+        trace_source = own_effective
+        payload = deepcopy(trace_source)
+        payload.update({
+            "id": measurement_id,
+            "name": summary_name,
+            "created_at": timestamp.isoformat().replace("+00:00", "Z"),
+            "channel": side,
+            "measurement_kind": "lr-repeat-paired-average-summary",
+            "notes": [
+                MEASUREMENT_SCOPE_NOTE,
+                f"Same-position L/R repeat with ER pre-averaging from {repeat_count} {side_label} sweep(s).",
+                f"Electrical reference captures aligned and averaged before deconvolution.",
+            ],
+        })
+        source_trace_average = trace_source.get("_pre_average_source_trace_average")
+        source_review_average = trace_source.get("_pre_average_source_review_average")
+        preavg_traces = deepcopy(trace_source.get("traces") or [])
+        preavg_review_traces = deepcopy(trace_source.get("review_traces") or [])
+        if isinstance(source_trace_average, dict):
+            payload["traces"] = [deepcopy(source_trace_average)]
+            if isinstance(source_review_average, dict):
+                payload["review_traces"] = [deepcopy(source_review_average)]
+            else:
+                payload["review_traces"] = [deepcopy(source_trace_average)]
+            for trace in preavg_traces:
+                if isinstance(trace, dict):
+                    debug_trace = deepcopy(trace)
+                    debug_trace["role"] = "er-time-domain-preavg"
+                    debug_trace["kind"] = "lr-repeat-er-time-domain-preavg"
+                    debug_trace["label"] = f"{side_label} repeat · time-domain ER preavg"
+                    payload.setdefault("review_traces", []).append(debug_trace)
+            for trace in preavg_review_traces:
+                if isinstance(trace, dict):
+                    debug_trace = deepcopy(trace)
+                    debug_trace["role"] = "er-time-domain-preavg-review"
+                    debug_trace["kind"] = "lr-repeat-er-time-domain-preavg-review"
+                    debug_trace["label"] = f"{side_label} repeat · raw time-domain ER preavg"
+                    payload.setdefault("review_traces", []).append(debug_trace)
+            payload.setdefault("notes", []).append(
+                "Frequency response is stored as a magnitude-domain average of the individual repeat sweeps; ER pre-average is used for timing/L/R delta only."
+            )
+
+        own_dbg = pre_avg_debug.get(side, {})
+        other_dbg = pre_avg_debug.get("right" if side == "left" else "left", {})
+        own_shifts = own_dbg.get("alignment_shifts_samples", [0])
+        sample_rate = int(analysis.get("sample_rate") or 0)
+        sample_spread = max(own_shifts) - min(own_shifts) if len(own_shifts) > 1 else 0
+        residual_shifts = own_dbg.get("residual_alignment_shifts_samples", [0])
+        residual_spread = (
+            max(residual_shifts) - min(residual_shifts)
+            if len(residual_shifts) > 1 else 0
+        )
+        spread_limit = self._er_pre_average_sample_spread_limit(sample_rate)
+        timing_stable = bool(own_dbg.get("pre_average_applied")) and residual_spread <= spread_limit
+
+        if delta is not None:
+            shifts_str = ", ".join(
+                f"{s}s ({s / sample_rate * 1000:.2f}ms)" for s in own_shifts
+            )
+            payload["notes"].append(
+                f"Paired delta: {delta:+.4f} ms "
+                f"(ER pre-averaged, shifts: [{shifts_str}], "
+                f"raw spread: {sample_spread}s/{sample_spread / sample_rate * 1000:.3f}ms, "
+                f"residual spread: {residual_spread}s/{residual_spread / sample_rate * 1000:.3f}ms, "
+                f"timing {'stable' if timing_stable else 'review'})"
+            )
+        else:
+            payload["notes"].append("Paired delta: unavailable")
+
+        analysis_out = deepcopy(analysis)
+        analysis_out["method"] = "er-pre-averaged-lr-repeat"
+        analysis_out["lr_repeat"] = {
+            "repeat_count": repeat_count,
+            "pre_averaged": True,
+            "alignment_shifts_samples": own_shifts,
+            "alignment_spread_samples": sample_spread,
+            "residual_alignment_shifts_samples": residual_shifts,
+            "residual_alignment_spread_samples": residual_spread,
+            "alignment_spread_gate": own_dbg.get("alignment_spread_gate", "post-shift-residual"),
+            "delta_ms": delta,
+            "paired_timing_stable": timing_stable,
+            "electrical_reference_used": True,
+        }
+        ref_path_out = deepcopy(ref_path)
+        if own_timing is not None and timing_stable:
+            arrival_samples = int(round(own_timing / 1000.0 * sample_rate)) if sample_rate > 0 else None
+            ref_path_out.update({
+                "timing_status": "lr-repeat",
+                "timing_label": "L/R repeat timing (ER pre-averaged)",
+                "stability": "stable",
+                "acoustic_arrival_corrected_ms": own_timing,
+                "acoustic_arrival_corrected_seconds": round(own_timing / 1000.0, 9),
+                "acoustic_arrival_corrected_samples": arrival_samples,
+            })
+        analysis_out["reference_path"] = ref_path_out
+        analysis_out["impulse_response"] = impulse
+        payload["analysis"] = analysis_out
+        return self._normalize_measurement(payload)
+
+    def _build_repeat_side_summary(
+        self,
+        measurements: list[dict[str, Any]],
+        accepted_pair_indices: list[int],
+        *,
+        base_name: str,
+        channel: str,
+        repeat_count: int,
+        final_timing_ms: float | None,
+        electrical_reference_used: bool,
+        paired_delta_center: float | None,
+        paired_delta_spread: float | None,
+        paired_timing_stable: bool,
+        pair_count: int,
+    ) -> dict[str, Any]:
+        """Build one side (L or R) of an L/R Repeat summary using pre-clustered pair indices."""
+        if not measurements:
+            raise ValueError("L/R repeat side summary needs at least one measurement")
+        normalized = [self._normalize_measurement(item) for item in measurements]
+        accepted_indices = accepted_pair_indices if accepted_pair_indices is not None else list(range(len(normalized)))
+        accepted_measurements = [normalized[index] for index in accepted_indices]
+        side_label = "L" if channel == "left" else "R"
+        summary_name = f"{str(base_name or 'L/R Repeat').strip()} · {side_label}"
+        timestamp = datetime.now(timezone.utc).replace(microsecond=0)
+        measurement_id = f"lr-repeat-{channel}-{timestamp.strftime('%Y%m%d-%H%M%S')}-{uuid4().hex[:6]}"
+        payload = deepcopy(normalized[0])
+        payload.update({
+            "id": measurement_id,
+            "name": summary_name,
+            "created_at": timestamp.isoformat().replace("+00:00", "Z"),
+            "channel": channel,
+            "measurement_kind": "lr-repeat-summary",
+            "traces": [
+                self._average_merge_traces(
+                    [self._select_merge_trace(item, "traces", preferred_role="trusted") for item in accepted_measurements],
+                    label=f"{summary_name} · trusted average",
+                    kind="lr-repeat-sweep-response",
+                    role="trusted",
+                    color=TRACE_COLORS[0],
+                )
+            ],
+            "notes": [
+                MEASUREMENT_SCOPE_NOTE,
+                f"Same-position L/R repeat summary from {len(normalized)} {side_label} sweep(s).",
+                "Intermediate repeat sweeps were processed internally and were not saved as normal measurements.",
+            ],
+        })
+
+        # Magnitude traces
+        review_traces = [
+            self._select_merge_trace(item, "review_traces", preferred_role="raw-review", required=False)
+            for item in accepted_measurements
+        ]
+        if all(review_traces):
+            payload["review_traces"] = [
+                self._average_merge_traces(
+                    review_traces,
+                    label=f"{summary_name} · raw/full-band review average",
+                    kind="lr-repeat-sweep-response-review",
+                    role="raw-review",
+                    color=TRACE_COLORS[1],
+                )
+            ]
+        else:
+            payload.pop("review_traces", None)
+
+        analysis = payload.get("analysis") if isinstance(payload.get("analysis"), dict) else {}
+        analysis = deepcopy(analysis)
+        analysis["method"] = "same-position-lr-repeat-paired-delta"
+        reference_path = analysis.get("reference_path") if isinstance(analysis.get("reference_path"), dict) else {}
+        reference_path = deepcopy(reference_path)
+        reference_source = ""
+        if electrical_reference_used:
+            reference_channel = reference_path.get("electrical_reference_input_channel")
+            reference_source = f"electrical-input-channel-{reference_channel}" if reference_channel else "electrical-input"
+        elif reference_path.get("capture_mode"):
+            reference_source = str(reference_path["capture_mode"])
+
+        stable = paired_timing_stable and final_timing_ms is not None
+        sample_rate = int(analysis.get("sample_rate") or 0)
+
+        analysis["lr_repeat"] = {
+            "repeat_count": int(repeat_count),
+            "pair_count": pair_count,
+            "accepted_runs": len(accepted_indices),
+            "rejected_runs": len(normalized) - len(accepted_indices),
+            "accepted_run_numbers": [index + 1 for index in accepted_indices],
+            "rejected_run_numbers": [index + 1 for index in range(len(normalized)) if index not in accepted_indices],
+            "delta_center_ms": paired_delta_center,
+            "delta_spread_ms": paired_delta_spread,
+            "timing_method": "paired-delta-cluster" if stable else "paired-delta-unstable",
+            "electrical_reference_used": electrical_reference_used,
+            "reference_source": reference_source,
+            "timing_stable": stable,
+        }
+
+        impulse = analysis.get("impulse_response") if isinstance(analysis.get("impulse_response"), dict) else {}
+        impulse = deepcopy(impulse)
+
+        if stable:
+            arrival_samples = int(round(final_timing_ms / 1000.0 * sample_rate)) if sample_rate > 0 else None
+            reference_path.update({
+                "timing_status": "lr-repeat",
+                "timing_label": "L/R repeat timing (paired)",
+                "stability": "stable",
+                "acoustic_arrival_corrected_ms": final_timing_ms,
+                "acoustic_arrival_corrected_seconds": round(final_timing_ms / 1000.0, 9),
+                "acoustic_arrival_corrected_samples": arrival_samples,
+            })
+            impulse.update({
+                "arrival_ms": final_timing_ms,
+                "arrival_seconds": round(final_timing_ms / 1000.0, 9),
+                "arrival_samples": arrival_samples,
+            })
+        else:
+            reference_path.update({
+                "timing_status": "lr-repeat-unstable",
+                "timing_label": "L/R repeat timing unstable",
+                "stability": "unstable",
+            })
+            analysis["direct_arrival_timing_available"] = False
+            payload["notes"].append("No stable paired-delta cluster found; L/R alignment must not use this summary.")
+
+        analysis["reference_path"] = reference_path
+        analysis["impulse_response"] = impulse
+        payload["analysis"] = analysis
+        return self._normalize_measurement(payload)
+
     @staticmethod
     def _select_repeat_timing_cluster(
         timings: list[dict[str, Any]],
@@ -921,6 +1822,16 @@ class MeasurementStore:
         spread = max(values) - min(values)
         return sorted(int(item["index"]) for item in best), round(center, 6), round(spread, 6)
 
+    @staticmethod
+    def _default_measurement_sweep_profile() -> dict[str, float]:
+        return {
+            "sweep_seconds": SWEEP_V2_SECONDS,
+            "lead_in_seconds": SWEEP_V2_LEAD_IN_SECONDS,
+            "tail_seconds": SWEEP_V2_TAIL_SECONDS,
+            "record_preroll_seconds": HOST_SWEEP_RECORD_PREROLL_SECONDS,
+            "record_postroll_seconds": HOST_SWEEP_RECORD_POSTROLL_SECONDS,
+        }
+
     def _execute_capture_job(self, job: dict[str, Any]) -> dict[str, Any]:
         job_id = str(job["id"])
         selected_input = job.get("input") or {}
@@ -930,13 +1841,29 @@ class MeasurementStore:
 
         sample_rate = self._resolve_measurement_sample_rate()
         repeat_profile = job.get("capture_profile") == "lr-repeat"
-        sweep_seconds = LR_REPEAT_SWEEP_SECONDS if repeat_profile else SWEEP_V2_SECONDS
-        lead_in_seconds = LR_REPEAT_LEAD_IN_SECONDS if repeat_profile else SWEEP_V2_LEAD_IN_SECONDS
-        tail_seconds = LR_REPEAT_TAIL_SECONDS if repeat_profile else SWEEP_V2_TAIL_SECONDS
+        er_preavg_requested = (
+            repeat_profile
+            and input_channels.get("electrical_reference") is not None
+            and input_channels.get("reference_disabled_reason", "") in ("", None)
+        )
+        # Default L/R Repeat intentionally uses the same full sweep profile as
+        # Single Sweep. This keeps Acoustic-only Repeat, ER Repeat, and Single
+        # Sweep directly comparable in low-frequency magnitude. A shorter
+        # repeat should be a future explicit "Fast L/R Repeat" mode.
+        sweep_profile = self._default_measurement_sweep_profile()
+        sweep_seconds = float(sweep_profile["sweep_seconds"])
+        lead_in_seconds = float(sweep_profile["lead_in_seconds"])
+        tail_seconds = float(sweep_profile["tail_seconds"])
+        record_preroll_seconds = float(sweep_profile["record_preroll_seconds"])
+        record_postroll_seconds = float(sweep_profile["record_postroll_seconds"])
         duration_seconds = lead_in_seconds + sweep_seconds + tail_seconds
-        record_preroll_seconds = LR_REPEAT_RECORD_PREROLL_SECONDS if repeat_profile else HOST_SWEEP_RECORD_PREROLL_SECONDS
-        record_postroll_seconds = LR_REPEAT_RECORD_POSTROLL_SECONDS if repeat_profile else HOST_SWEEP_RECORD_POSTROLL_SECONDS
         record_duration_seconds = duration_seconds + record_preroll_seconds + record_postroll_seconds
+        logger.debug(
+            "Capture job %s: er_preavg=%s, sweep=%.2fs, lead=%.2fs, tail=%.2fs, "
+            "preroll=%.2fs, postroll=%.2fs, record_dur=%.2fs",
+            job_id, er_preavg_requested, sweep_seconds, lead_in_seconds,
+            tail_seconds, record_preroll_seconds, record_postroll_seconds, record_duration_seconds,
+        )
         mic_input_channel_index = max(0, int(input_channels.get("mic") or 1) - 1)
         electrical_reference_input_channel = input_channels.get("electrical_reference")
         electrical_reference_channel_index = (
@@ -1185,6 +2112,19 @@ class MeasurementStore:
             ],
             "message": completion_message,
             "scope_note": MEASUREMENT_SCOPE_NOTE,
+            "_capture_path": str(capture_path),
+            "_playback_path": str(playback_path),
+            "_sample_rate": sample_rate,
+            "_mic_input_channel_index": mic_input_channel_index,
+            "_electrical_reference_channel_index": electrical_reference_channel_index,
+            "_use_electrical_reference": use_electrical_reference,
+            "_calibration_curve": calibration_curve,
+            "_sweep_seconds": sweep_seconds,
+            "_lead_in_seconds": lead_in_seconds,
+            "_tail_seconds": tail_seconds,
+            "_record_preroll_seconds": record_preroll_seconds,
+            "_record_postroll_seconds": record_postroll_seconds,
+            "_record_duration_seconds": record_duration_seconds,
         }
 
     def _run_host_capture_attempt(
@@ -1274,6 +2214,10 @@ class MeasurementStore:
                 )
             )
         try:
+            self._cleanup_fxroute_links(
+                source_node_name=mic_source_node_name,
+                record_node_name=record_node_name,
+            )
             if electrical_reference_channel_index is not None:
                 link_diagnostics = self._link_capture_channels_to_record_stream(
                     source_node_name=mic_source_node_name,
@@ -1357,6 +2301,10 @@ class MeasurementStore:
             level_monitor_stop.set()
             if level_monitor_thread.is_alive():
                 level_monitor_thread.join(timeout=1.0)
+            self._cleanup_fxroute_links(
+                source_node_name=mic_source_node_name,
+                record_node_name=record_node_name,
+            )
             if detailed_diagnostics_enabled:
                 routing_snapshots.append(
                     self._build_measurement_routing_snapshot(
@@ -1975,6 +2923,11 @@ class MeasurementStore:
             payload["analysis"]["impulse_response"]["debug_segment"] = impulse_response_debug
         return self._normalize_measurement(payload)
 
+    @staticmethod
+    def _uses_electrical_reference_timing(reference_channel_label: str) -> bool:
+        label = str(reference_channel_label or "").lower()
+        return label == "reference" or "electrical_reference" in label
+
     def _analyze_sweep_capture(
         self,
         capture_path: Path,
@@ -2012,6 +2965,7 @@ class MeasurementStore:
         if reference_peak_dbfs <= -90.0 and reference_rms_dbfs <= -100.0:
             raise RuntimeError(f"{reference_channel_label.capitalize()} channel was effectively silent")
 
+        allow_drift_compensation = not self._uses_electrical_reference_timing(reference_channel_label)
         if timing_override is None:
             coarse_start = self._find_sweep_start(timing_signal, reference_sweep)
             timing = self._estimate_sweep_timing(
@@ -2019,6 +2973,7 @@ class MeasurementStore:
                 reference_sweep,
                 coarse_start,
                 sample_rate,
+                allow_drift_compensation=allow_drift_compensation,
             )
         else:
             timing = {
@@ -2027,12 +2982,32 @@ class MeasurementStore:
                 "observed_sweep_samples": int(timing_override["observed_sweep_samples"]),
                 "stretch_ratio": float(timing_override.get("stretch_ratio") or 1.0),
                 "drift_ppm": float(timing_override.get("drift_ppm") or 0.0),
+                "total_drift_samples": int(timing_override.get("total_drift_samples") or 0),
+                "estimated_ppm": float(timing_override.get("estimated_ppm", timing_override.get("drift_ppm") or 0.0)),
+                "estimated_total_drift_samples": int(
+                    timing_override.get("estimated_total_drift_samples", timing_override.get("total_drift_samples") or 0)
+                ),
+                "raw_global_ppm": float(timing_override.get("raw_global_ppm", timing_override.get("estimated_ppm", 0.0))),
+                "fit_start_before_samples": int(timing_override.get("fit_start_before_samples") or timing_override["alignment_samples"]),
+                "fit_start_after_samples": int(timing_override.get("fit_start_after_samples") or timing_override["alignment_samples"]),
+                "fit_end_before_samples": int(
+                    timing_override.get("fit_end_before_samples")
+                    or (timing_override["alignment_samples"] + timing_override["observed_sweep_samples"])
+                ),
+                "fit_end_after_samples": int(
+                    timing_override.get("fit_end_after_samples")
+                    or (timing_override["alignment_samples"] + timing_override["observed_sweep_samples"])
+                ),
                 "compensated": bool(timing_override.get("compensated")),
                 "anchor_seconds": float(timing_override.get("anchor_seconds") or 0.0),
                 "start_score": float(timing_override.get("start_score") or 0.0),
                 "end_score": float(timing_override.get("end_score") or 0.0),
                 "anchor_strategy": str(timing_override.get("anchor_strategy") or "timing override"),
                 "anchor_matches": deepcopy(timing_override.get("anchor_matches") or []),
+                "drift_compensation_policy": str(
+                    timing_override.get("drift_compensation_policy")
+                    or ("constant-delay-er-reference" if not allow_drift_compensation else "auto")
+                ),
             }
         aligned_start = int(timing["aligned_start"])
         aligned_end = int(timing["aligned_end"])
@@ -2049,18 +3024,21 @@ class MeasurementStore:
         corrected_reference_segment = self._resample_signal(reference_segment, corrected_segment_size)
         captured_tail_samples = max(0, analysis_segment.size - int(timing["observed_sweep_samples"]))
 
-        impulse_response = self._fft_convolve(corrected_segment, inverse_sweep.astype(np.float64))
+        timing_impulse_response = self._fft_convolve(corrected_segment, inverse_sweep.astype(np.float64))
         reference_impulse_response = self._fft_convolve(corrected_reference_segment, inverse_sweep.astype(np.float64))
-        windowed_ir, ir_meta = self._window_impulse_response(impulse_response, sample_rate)
+        magnitude_impulse_response = self._fft_convolve(analysis_segment, inverse_sweep.astype(np.float64))
+        windowed_ir, ir_meta = self._window_impulse_response(timing_impulse_response, sample_rate)
         direct_timing_meta = self._estimate_impulse_direct_arrival(
-            impulse_response,
+            timing_impulse_response,
             reference_impulse_response,
             sample_rate,
         )
         response_frequencies, response_magnitude, variable_window_meta = self._build_variable_window_response(
-            impulse_response,
+            magnitude_impulse_response,
             sample_rate,
         )
+        variable_window_meta["magnitude_resampling_policy"] = "drift-estimate-not-applied"
+        variable_window_meta["magnitude_drift_resampling_applied"] = False
         reference_ir_peak = float(np.max(np.abs(reference_impulse_response))) if reference_impulse_response.size else 0.0
         reference_ir_rms = float(np.sqrt(np.mean(np.square(reference_impulse_response, dtype=np.float64)))) if reference_impulse_response.size else 0.0
         reference_ir_peak_db = 20.0 * math.log10(max(reference_ir_peak, 1e-9))
@@ -2086,6 +3064,25 @@ class MeasurementStore:
             float(direct_timing_meta.get("selected_score") or 0.0),
             str(direct_timing_meta.get("selection_rule") or ""),
         )
+        logger.info(
+            "Measurement drift fit: channel=%s reference_channel=%s estimated_ppm=%.2f estimated_total_drift_samples=%s raw_global_ppm=%.2f "
+            "applied_ppm=%.2f applied_total_drift_samples=%s start_before=%s start_after=%s end_before=%s end_after=%s "
+            "compensated=%s policy=%s magnitude_resampling=%s",
+            channel,
+            reference_channel_label,
+            float(timing.get("estimated_ppm", timing.get("drift_ppm") or 0.0)),
+            int(timing.get("estimated_total_drift_samples", timing.get("total_drift_samples") or 0)),
+            float(timing.get("raw_global_ppm", timing.get("estimated_ppm", 0.0))),
+            float(timing.get("drift_ppm") or 0.0),
+            int(timing.get("total_drift_samples") or 0),
+            int(timing.get("fit_start_before_samples", aligned_start)),
+            int(timing.get("fit_start_after_samples", aligned_start)),
+            int(timing.get("fit_end_before_samples", aligned_end)),
+            int(timing.get("fit_end_after_samples", aligned_end)),
+            bool(timing.get("compensated")),
+            str(timing.get("drift_compensation_policy") or ""),
+            "disabled",
+        )
         logger.debug(
             "Measurement timing detection: channel=%s reference_channel=%s mic_peak_sample=%s direct_sample=%s reference_peak_sample=%s relative_samples=%s relative_ms=%.3f sample_rate=%s alignment_samples=%s selected_score=%.5f selected_db=%.2f selection=%s first_threshold_sample=%s candidates_by_score=%s candidates_chronological=%s",
             channel,
@@ -2105,7 +3102,7 @@ class MeasurementStore:
             top_timing_candidates_chronological,
         )
         impulse_response_debug_segment = self._build_impulse_response_debug_segment(
-            impulse_response,
+            timing_impulse_response,
             sample_rate=sample_rate,
             channel=channel,
             reference_channel=reference_channel_label,
@@ -2156,10 +3153,25 @@ class MeasurementStore:
                 "reference_sweep_samples": int(reference_sweep.size),
                 "analysis_segment_samples": int(analysis_segment.size),
                 "corrected_segment_samples": int(corrected_segment.size),
+                "magnitude_segment_samples": int(analysis_segment.size),
+                "magnitude_drift_resampling_applied": False,
+                "magnitude_resampling_policy": "disabled-linear-resampler-artifact",
                 "captured_tail_samples": int(captured_tail_samples),
                 "captured_tail_seconds": round(float(captured_tail_samples) / sample_rate, 6),
                 "stretch_ratio": round(float(timing["stretch_ratio"]), 8),
                 "drift_ppm": round(float(timing["drift_ppm"]), 2),
+                "estimated_ppm": round(float(timing.get("estimated_ppm", timing["drift_ppm"])), 2),
+                "estimated_total_drift_samples": int(
+                    timing.get("estimated_total_drift_samples", timing.get("total_drift_samples") or 0)
+                ),
+                "raw_global_ppm": round(float(timing.get("raw_global_ppm", timing.get("estimated_ppm", 0.0))), 2),
+                "applied_total_drift_samples": int(timing.get("total_drift_samples") or 0),
+                "drift_compensation_policy": str(timing.get("drift_compensation_policy") or "auto"),
+                "drift_compensation_applied": bool(timing["compensated"]),
+                "fit_start_before_samples": int(timing.get("fit_start_before_samples", aligned_start)),
+                "fit_start_after_samples": int(timing.get("fit_start_after_samples", aligned_start)),
+                "fit_end_before_samples": int(timing.get("fit_end_before_samples", aligned_end)),
+                "fit_end_after_samples": int(timing.get("fit_end_after_samples", aligned_end)),
                 "compensated": bool(timing["compensated"]),
                 "anchor_seconds": round(float(timing["anchor_seconds"]), 4),
                 "anchor_strategy": str(timing.get("anchor_strategy") or "edge anchors"),
@@ -2489,6 +3501,17 @@ class MeasurementStore:
         sweep = (float(peak_scale) * sweep / peak).astype(np.float32)
         return sweep
 
+    @staticmethod
+    def _write_mono_wav(path: Path, sample_rate: int, data: np.ndarray) -> None:
+        """Write a mono 16-bit PCM WAV file."""
+        samples = np.clip(data, -1.0, 1.0)
+        int16 = (samples * 32767).astype(np.int16)
+        with wave.open(str(path), 'wb') as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(sample_rate)
+            wf.writeframes(int16.tobytes())
+
     def _build_inverse_sweep(
         self,
         sweep: np.ndarray,
@@ -2516,6 +3539,8 @@ class MeasurementStore:
         reference_sweep: np.ndarray,
         coarse_start: int,
         sample_rate: int,
+        *,
+        allow_drift_compensation: bool = True,
     ) -> dict[str, Any]:
         edge_anchor_samples = min(
             reference_sweep.size // 2,
@@ -2563,19 +3588,28 @@ class MeasurementStore:
             matches=matches,
             reference_sweep_samples=reference_sweep.size,
             sample_rate=sample_rate,
+            allow_drift_compensation=allow_drift_compensation,
         )
         aligned_start = int(fit["aligned_start"])
         observed_sweep_samples = int(fit["observed_sweep_samples"])
         stretch_ratio = float(fit["stretch_ratio"])
-        drift_ppm = (stretch_ratio - 1.0) * 1_000_000.0
-        compensated = (
-            SWEEP_TIMING_MIN_COMPENSATION_PPM <= abs(drift_ppm) <= SWEEP_TIMING_MAX_ABS_PPM
-            and observed_sweep_samples != reference_sweep.size
+        drift_ppm = float(fit.get("drift_ppm", (stretch_ratio - 1.0) * 1_000_000.0))
+        total_drift_samples = int(fit.get("total_drift_samples", round(observed_sweep_samples - reference_sweep.size)))
+        estimated_ppm = float(fit.get("estimated_ppm", drift_ppm))
+        estimated_total_drift_samples = int(
+            fit.get("estimated_total_drift_samples", round(reference_sweep.size * estimated_ppm / 1_000_000.0))
         )
+        fit_start_before = int(coarse_start)
+        fit_end_before = int(coarse_start + reference_sweep.size)
+        fit_start_after = int(aligned_start)
+        fit_end_after = int(aligned_start + observed_sweep_samples)
+        compensated = bool(fit.get("compensated"))
         if not compensated:
             observed_sweep_samples = int(reference_sweep.size)
             stretch_ratio = 1.0
             drift_ppm = 0.0
+            total_drift_samples = 0
+            fit_end_after = int(aligned_start + observed_sweep_samples)
 
         return {
             "aligned_start": int(aligned_start),
@@ -2583,11 +3617,20 @@ class MeasurementStore:
             "observed_sweep_samples": int(observed_sweep_samples),
             "stretch_ratio": stretch_ratio,
             "drift_ppm": drift_ppm,
+            "total_drift_samples": total_drift_samples,
+            "estimated_ppm": estimated_ppm,
+            "estimated_total_drift_samples": estimated_total_drift_samples,
+            "raw_global_ppm": float(fit.get("raw_global_ppm", estimated_ppm)),
+            "fit_start_before_samples": fit_start_before,
+            "fit_start_after_samples": fit_start_after,
+            "fit_end_before_samples": fit_end_before,
+            "fit_end_after_samples": fit_end_after,
             "compensated": compensated,
             "anchor_seconds": anchor_samples / sample_rate,
             "start_score": float(fit["start_score"]),
             "end_score": float(fit["end_score"]),
-            "anchor_strategy": "multi-anchor weighted fit",
+            "anchor_strategy": str(fit.get("anchor_strategy") or "multi-anchor weighted fit"),
+            "drift_compensation_policy": str(fit.get("drift_compensation_policy") or "auto"),
             "anchor_matches": fit["anchor_matches"],
         }
 
@@ -2622,6 +3665,7 @@ class MeasurementStore:
         matches: list[dict[str, Any]],
         reference_sweep_samples: int,
         sample_rate: int,
+        allow_drift_compensation: bool = True,
     ) -> dict[str, Any]:
         if len(matches) < 2:
             raise RuntimeError("Sweep timing fit did not have enough anchors")
@@ -2629,49 +3673,116 @@ class MeasurementStore:
         offsets = np.array([float(item["offset_samples"]) for item in matches], dtype=np.float64)
         observed = np.array([float(item["observed_start"]) for item in matches], dtype=np.float64)
         scores = np.array([max(float(item.get("score") or 0.0), 1e-6) for item in matches], dtype=np.float64)
-        weights = np.square(scores)
-        design = np.column_stack([np.ones(offsets.size, dtype=np.float64), offsets])
-        sqrt_weights = np.sqrt(weights)
-        weighted_design = design * sqrt_weights[:, None]
-        weighted_observed = observed * sqrt_weights
-        coeffs, *_ = np.linalg.lstsq(weighted_design, weighted_observed, rcond=None)
-        intercept = float(coeffs[0])
-        slope = float(coeffs[1])
-        residuals = observed - (intercept + slope * offsets)
-        residual_limit = max(1.0, sample_rate * SWEEP_TIMING_RESIDUAL_TOLERANCE_SECONDS)
-        inlier_mask = np.abs(residuals) <= residual_limit
 
-        if int(np.count_nonzero(inlier_mask)) >= 3 and not bool(np.all(inlier_mask)):
-            inlier_design = design[inlier_mask]
-            inlier_weights = weights[inlier_mask]
-            inlier_sqrt = np.sqrt(inlier_weights)
-            coeffs, *_ = np.linalg.lstsq(inlier_design * inlier_sqrt[:, None], observed[inlier_mask] * inlier_sqrt, rcond=None)
-            intercept = float(coeffs[0])
-            slope = float(coeffs[1])
-            residuals = observed - (intercept + slope * offsets)
+        raw_intercept, raw_slope, raw_residuals = self._weighted_anchor_line_fit(offsets, observed, scores)
+        raw_slope = min(max(raw_slope, 0.5), 1.5)
+        raw_ppm = (raw_slope - 1.0) * 1_000_000.0
+
+        central_indices = [
+            index
+            for index, item in enumerate(matches)
+            if str(item.get("name")) in SWEEP_TIMING_CENTRAL_ANCHORS
+        ]
+        if central_indices:
+            central_starts = [float(matches[index]["observed_start"]) - float(matches[index]["offset_samples"]) for index in central_indices]
+            central_start = float(np.median(np.array(central_starts, dtype=np.float64)))
+            central_residual = float(np.median(np.array([float(matches[index]["residual_samples"]) for index in central_indices], dtype=np.float64)))
         else:
-            inlier_mask = np.ones(offsets.size, dtype=bool)
+            central_start = float(raw_intercept)
+            central_residual = 0.0
 
-        slope = min(max(slope, 0.5), 1.5)
-        observed_sweep_samples = int(round(reference_sweep_samples * slope))
-        min_sweep = max(int(reference_sweep_samples * 0.5), 1)
-        if observed_sweep_samples < min_sweep:
-            observed_sweep_samples = int(reference_sweep_samples)
+        fit_candidate_mask = np.zeros(offsets.size, dtype=bool)
+        diagnostic_rows: list[dict[str, Any]] = []
+        for index, item in enumerate(matches):
+            name = str(item["name"])
+            score = float(item.get("score") or 0.0)
+            polarity = int(-1 if float(item.get("polarity") or 1.0) < 0 else 1)
+            coarse_residual = float(item.get("residual_samples") or 0.0)
+            reasons: list[str] = []
+            if polarity < 0:
+                reasons.append("negative_polarity")
+            if score < SWEEP_TIMING_MIN_ANCHOR_SCORE:
+                reasons.append("low_correlation")
+            if name in SWEEP_TIMING_EDGE_ANCHORS:
+                reasons.append("edge_proximity")
+            if abs(coarse_residual - central_residual) > SWEEP_TIMING_CLUSTER_REJECT_SAMPLES:
+                reasons.append("central_cluster_deviation")
+            if not allow_drift_compensation and name not in SWEEP_TIMING_CENTRAL_ANCHORS:
+                reasons.append("constant_delay_policy")
+            accepted = not reasons
+            fit_candidate_mask[index] = accepted
+            fraction = float(item["offset_samples"]) / max(1.0, float(reference_sweep_samples))
+            approx_frequency = SWEEP_START_HZ * ((SWEEP_END_HZ / SWEEP_START_HZ) ** max(0.0, min(1.0, fraction)))
+            diagnostic_rows.append(
+                {
+                    "name": name,
+                    "time_fraction": round(fraction, 5),
+                    "time_seconds": round(float(item["offset_samples"]) / sample_rate, 6),
+                    "approx_frequency_hz": round(float(approx_frequency), 2),
+                    "region": self._sweep_timing_anchor_region(name),
+                    "offset_samples": int(item["offset_samples"]),
+                    "score": round(score, 5),
+                    "raw_score": round(float(item["raw_score"]), 5),
+                    "polarity": polarity,
+                    "coarse_expected_start": int(item["expected_start"]),
+                    "coarse_residual_samples": int(item["residual_samples"]),
+                    "observed_start": int(item["observed_start"]),
+                    "accepted": accepted,
+                    "rejected": not accepted,
+                    "reject_reasons": reasons,
+                    "used_for_fit": accepted,
+                }
+            )
+
+        accepted_count = int(np.count_nonzero(fit_candidate_mask))
+        if allow_drift_compensation and accepted_count >= 3:
+            fit_intercept, fit_slope, fit_residuals = self._weighted_anchor_line_fit(
+                offsets[fit_candidate_mask],
+                observed[fit_candidate_mask],
+                scores[fit_candidate_mask],
+            )
+            fit_slope = min(max(fit_slope, 0.5), 1.5)
+            estimated_ppm = (fit_slope - 1.0) * 1_000_000.0
+            compensation_allowed_by_ppm = (
+                SWEEP_TIMING_MIN_COMPENSATION_PPM <= abs(estimated_ppm) <= SWEEP_TIMING_MAX_ABS_PPM
+            )
+            compensated = bool(compensation_allowed_by_ppm)
+            slope = fit_slope if compensated else 1.0
+            intercept = fit_intercept
+            drift_compensation_policy = "robust-accepted-anchor-fit"
+            anchor_strategy = "robust accepted-anchor weighted fit"
+        else:
+            intercept = central_start
             slope = 1.0
+            fit_slope = 1.0
+            fit_residuals = observed[fit_candidate_mask] - (intercept + fit_slope * offsets[fit_candidate_mask])
+            estimated_ppm = 0.0
+            compensated = False
+            drift_compensation_policy = (
+                "constant-delay-er-reference" if not allow_drift_compensation else "constant-delay-insufficient-anchors"
+            )
+            anchor_strategy = "central-anchor constant delay"
 
+        observed_sweep_samples = int(round(reference_sweep_samples * slope))
+        total_drift_samples = int(round(observed_sweep_samples - reference_sweep_samples))
+        estimated_total_drift_samples = int(round(reference_sweep_samples * estimated_ppm / 1_000_000.0))
+        fitted_all_residuals = observed - (intercept + slope * offsets)
+
+        inlier_mask = fit_candidate_mask
         start_score = self._aggregate_anchor_region_score(matches, inlier_mask, region="start")
         end_score = self._aggregate_anchor_region_score(matches, inlier_mask, region="end")
         anchor_matches = []
         for index, item in enumerate(matches):
+            fitted_expected_start = float(intercept + slope * offsets[index])
+            row = diagnostic_rows[index]
             anchor_matches.append(
                 {
-                    "name": str(item["name"]),
-                    "offset_samples": int(item["offset_samples"]),
-                    "score": round(float(item["score"]), 5),
-                    "raw_score": round(float(item["raw_score"]), 5),
-                    "polarity": int(-1 if float(item["polarity"]) < 0 else 1),
-                    "observed_start": int(item["observed_start"]),
-                    "residual_samples": int(round(float(residuals[index]))),
+                    **row,
+                    "fitted_expected_start": int(round(fitted_expected_start)),
+                    "fitted_residual_samples": int(round(float(fitted_all_residuals[index]))),
+                    "residual_samples": int(round(float(fitted_all_residuals[index]))),
+                    "raw_global_fitted_expected_start": int(round(float(raw_intercept + raw_slope * offsets[index]))),
+                    "raw_global_fitted_residual_samples": int(round(float(raw_residuals[index]))),
                     "inlier": bool(inlier_mask[index]),
                 }
             )
@@ -2680,10 +3791,41 @@ class MeasurementStore:
             "aligned_start": int(round(intercept)),
             "observed_sweep_samples": int(observed_sweep_samples),
             "stretch_ratio": float(slope),
+            "drift_ppm": float((slope - 1.0) * 1_000_000.0),
+            "total_drift_samples": int(total_drift_samples),
+            "estimated_ppm": float(estimated_ppm),
+            "estimated_total_drift_samples": int(estimated_total_drift_samples),
+            "raw_global_ppm": float(raw_ppm),
+            "compensated": compensated,
+            "anchor_strategy": anchor_strategy,
+            "drift_compensation_policy": drift_compensation_policy,
             "start_score": float(start_score),
             "end_score": float(end_score),
             "anchor_matches": anchor_matches,
         }
+
+    @staticmethod
+    def _weighted_anchor_line_fit(
+        offsets: np.ndarray,
+        observed: np.ndarray,
+        scores: np.ndarray,
+    ) -> tuple[float, float, np.ndarray]:
+        weights = np.square(np.maximum(scores, 1e-6))
+        design = np.column_stack([np.ones(offsets.size, dtype=np.float64), offsets])
+        sqrt_weights = np.sqrt(weights)
+        coeffs, *_ = np.linalg.lstsq(design * sqrt_weights[:, None], observed * sqrt_weights, rcond=None)
+        intercept = float(coeffs[0])
+        slope = float(coeffs[1])
+        residuals = observed - (intercept + slope * offsets)
+        return intercept, slope, residuals
+
+    @staticmethod
+    def _sweep_timing_anchor_region(name: str) -> str:
+        if name.startswith("start"):
+            return "start-edge" if name.endswith("inner") else "start-body"
+        if name.startswith("end"):
+            return "end-edge" if name.endswith("inner") else "end-body"
+        return "central"
 
     def _aggregate_anchor_region_score(
         self,
@@ -2980,6 +4122,18 @@ class MeasurementStore:
             selection_rule = "global_peak_fallback"
         selected_score = float(ir_abs[direct_arrival_index]) / max(peak, 1e-12) if ir_abs.size else 0.0
         strongest_score = max([float(item["_score"]) for item in candidates] + [selected_score, 1e-12])
+        if selection_rule == "first_local_peak_above_threshold" and len(candidates) > 1:
+            best_by_score = max(candidates, key=lambda c: float(c["score"]))
+            if best_by_score is not None and float(best_by_score["sample"]) != direct_arrival_index:
+                best_score_val = float(ir_abs[int(best_by_score["sample"])]) / max(peak, 1e-12) if ir_abs.size and int(best_by_score["sample"]) < ir_abs.size else 0.0
+                if 0.0 < best_score_val and best_score_val >= selected_score and best_score_val > selected_score * 1.02:
+                    promotion_gap = int(best_by_score["sample"]) - direct_arrival_index
+                    if 0 < promotion_gap <= int(round(sample_rate * 0.012)):
+                        reference_peak_sample_backup = int(reference_peak_index)
+                        direct_arrival_index = int(best_by_score["sample"])
+                        selected_score = best_score_val
+                        selection_rule = "promoted_to_best_score_in_window"
+                        relative_samples = int(direct_arrival_index - reference_peak_sample_backup)
         selected_support = next(
             (float(item["support_score"]) for item in candidates if int(item["sample"]) == int(direct_arrival_index)),
             selected_score,
@@ -3026,6 +4180,9 @@ class MeasurementStore:
             "reference_peak_seconds": float(reference_peak_index) / float(sample_rate),
             "relative_samples": relative_samples,
             "relative_seconds": float(relative_samples) / float(sample_rate),
+            "ir_peak_index": int(peak_index),
+            "ir_peak_relative_to_reference_samples": int(peak_index - reference_peak_index),
+            "promotion_applied": selection_rule == "promoted_to_best_score_in_window" or selection_rule == "skipped_weak_threshold_edge_for_stronger_impulse_region",
         }
 
     def _resample_signal(self, signal: np.ndarray, target_size: int) -> np.ndarray:
@@ -3604,10 +4761,35 @@ class MeasurementStore:
         if not reference_port or not mic_port or not input_left or not input_right:
             raise RuntimeError("Could not resolve PipeWire ports for host-reference capture")
 
-        subprocess.run(["pw-link", reference_port, input_left], capture_output=True, text=True, timeout=3, check=True)
-        subprocess.run(["pw-link", mic_port, input_right], capture_output=True, text=True, timeout=3, check=True)
+        self._cleanup_fxroute_links(
+            source_node_name=mic_source_node_name,
+            record_node_name=record_node_name,
+        )
+        link_errors: list[str] = []
+        for src, dst, label in [
+            (reference_port, input_left, "reference-to-record-left"),
+            (mic_port, input_right, "microphone-to-record-right"),
+        ]:
+            try:
+                subprocess.run(["pw-link", src, dst], capture_output=True, text=True, timeout=3, check=True)
+            except subprocess.CalledProcessError as exc:
+                stderr = (exc.stderr or "").strip()
+                stdout = (exc.stdout or "").strip()
+                if "already exists" in stderr.lower() or "already exists" in stdout.lower():
+                    logger.info("Link already exists for %s (%s -> %s), skipping", label, src, dst)
+                else:
+                    link_errors.append(f"{label}: {stderr or stdout or exc}")
+            except Exception as exc:
+                link_errors.append(f"{label}: {exc}")
+        if link_errors:
+            logger.warning("Host-reference link issues: %s", link_errors)
+            # If mic link failed, abort measurement — audio path would be incomplete
+            if any("microphone-to-record" in err for err in link_errors):
+                raise RuntimeError(
+                    "Measurement audio path could not be prepared. Please retry."
+                )
         time.sleep(0.15)
-        return {
+        result = {
             "reference_source_node": reference_source_node_name,
             "microphone_source_node": mic_source_node_name,
             "record_node": record_node_name,
@@ -3619,6 +4801,9 @@ class MeasurementStore:
             "reference_ports": reference_ports,
             "microphone_ports": mic_ports,
         }
+        if link_errors and not any("microphone-to-record" in err for err in link_errors):
+            result["link_warning"] = " ".join(link_errors)
+        return result
 
     def _link_source_to_record_stream(
         self,
@@ -3674,7 +4859,16 @@ class MeasurementStore:
             raise RuntimeError(f"Could not resolve PipeWire ports for selected source {source_node_name}")
 
         for source_port, input_port in pairs:
-            subprocess.run(["pw-link", source_port, input_port], capture_output=True, text=True, timeout=3, check=True)
+            try:
+                subprocess.run(["pw-link", source_port, input_port], capture_output=True, text=True, timeout=3, check=True)
+            except subprocess.CalledProcessError as exc:
+                stderr = (exc.stderr or "").strip()
+                if "already exists" in stderr.lower():
+                    logger.info("Link already exists (%s -> %s), skipping", source_port, input_port)
+                else:
+                    raise RuntimeError(
+                        f"Could not create measurement audio link ({source_port} -> {input_port}): {stderr or exc}"
+                    ) from exc
 
         time.sleep(0.15)
 
@@ -3709,7 +4903,21 @@ class MeasurementStore:
             pair = (source_port, input_port)
             if pair in used_pairs:
                 continue
-            subprocess.run(["pw-link", source_port, input_port], capture_output=True, text=True, timeout=3, check=True)
+            link_error = None
+            try:
+                subprocess.run(["pw-link", source_port, input_port], capture_output=True, text=True, timeout=3, check=True)
+            except subprocess.CalledProcessError as exc:
+                stderr = (exc.stderr or "").strip()
+                if "already exists" in stderr.lower():
+                    logger.info("Link already exists for channel %d (%s -> %s), skipping", channel_index + 1, source_port, input_port)
+                else:
+                    link_error = stderr or str(exc)
+            except Exception as exc:
+                link_error = str(exc)
+            if link_error is not None:
+                raise RuntimeError(
+                    f"Could not create measurement audio link for input channel {channel_index + 1}: {link_error}"
+                )
             used_pairs.add(pair)
             links.append(
                 {
@@ -3905,6 +5113,90 @@ class MeasurementStore:
             return False
         help_text = f"{completed.stdout or ''}\n{completed.stderr or ''}"
         return option in help_text
+
+    def _disconnect_link(self, source_port: str, target_port: str) -> bool:
+        """Remove a single pw-link. Returns True if removed or already gone."""
+        try:
+            result = subprocess.run(
+                ["pw-link", "-d", source_port, target_port],
+                capture_output=True, text=True, timeout=3,
+            )
+            if result.returncode == 0:
+                return True
+            stderr = (result.stderr or "").strip().lower()
+            stdout = (result.stdout or "").strip().lower()
+            if any(phrase in stderr or phrase in stdout for phrase in (
+                "not found", "no such", "cannot find",
+                "link not found", "does not exist", "no link",
+            )):
+                return True
+            logger.warning(
+                "pw-link -d returned %d for %s -> %s: %s",
+                result.returncode, source_port, target_port,
+                result.stderr or result.stdout,
+            )
+            return False
+        except Exception as exc:
+            logger.warning("pw-link -d failed for %s -> %s: %s", source_port, target_port, exc)
+            return False
+
+    def _cleanup_fxroute_links(
+        self,
+        *,
+        source_node_name: str,
+        record_node_name: str,
+    ) -> list[str]:
+        """Remove any measurement links involving the given source/record nodes.
+        Returns list of removed link descriptions for diagnostics."""
+        removed: list[str] = []
+        try:
+            completed = subprocess.run(["pw-link", "-l"], capture_output=True, text=True, timeout=3)
+        except Exception:
+            return removed
+        if completed.returncode != 0:
+            return removed
+        nodes_of_interest = {source_node_name, record_node_name}
+        for node in list(nodes_of_interest):
+            if node.endswith(".monitor"):
+                nodes_of_interest.add(node[: -len(".monitor")])
+            else:
+                nodes_of_interest.add(f"{node}.monitor")
+        for line in (completed.stdout or "").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split("->")
+            if len(parts) != 2:
+                continue
+            in_port = parts[0].strip()
+            out_port = parts[1].strip()
+            # strip optional (id: ...)
+            link_id = None
+            if "(id:" in out_port:
+                out_port, link_id_part, _ = out_port.partition("(id:")
+                out_port = out_port.strip()
+                link_id = link_id_part.strip().rstrip(")").strip()
+            in_node = in_port.rsplit(":", 1)[0] if ":" in in_port else ""
+            out_node = out_port.rsplit(":", 1)[0] if ":" in out_port else ""
+            if in_node not in nodes_of_interest and out_node not in nodes_of_interest:
+                continue
+            unlinked = False
+            if link_id and link_id.isdigit():
+                try:
+                    subprocess.run(
+                        ["pw-link", "-d", link_id],
+                        capture_output=True, text=True, timeout=3,
+                    )
+                    unlinked = True
+                except Exception:
+                    pass
+            if not unlinked:
+                self._disconnect_link(out_port, in_port)
+            removed.append(f"{out_port} -> {in_port}")
+        if removed:
+            logger.info("Cleaned up %d stale fxroute link(s)", len(removed))
+            time.sleep(0.1)
+        return removed
 
     @staticmethod
     def _pick_port(ports: list[str], preferred_suffixes: list[str]) -> str | None:

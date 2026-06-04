@@ -143,6 +143,7 @@ Open **Measure** from the DSP page.
 The measurement assistant is meant for practical room-tuning work:
 
 - choose left, right, or stereo measurement
+- run a same-position L/R Repeat when you want a more reliable stereo pair
 - select a host microphone
 - optionally load a microphone calibration file
 - run a sweep
@@ -153,6 +154,49 @@ The measurement assistant is meant for practical room-tuning work:
 - transfer draft filters into **Create PEQ preset**
 
 Think of it as a tuning assistant for broad room and speaker decisions: bass problems, channel differences, correction direction, and sanity checks.
+
+### Single Sweep and L/R Repeat
+
+Use **Start Single Sweep** when you want one quick measurement of the selected speaker:
+
+- **L** measures the left speaker.
+- **R** measures the right speaker.
+- **Stereo** measures both playback channels together for a broad overall check.
+
+Use **Start L/R Repeat** when you want a more dependable left/right measurement pair at one microphone position. Put the microphone in place, do not move it, then start the repeat. FXRoute measures left and right three times each, alternating L/R internally.
+
+After the repeat finishes, FXRoute shows one combined result for review:
+
+- `<name> · L`
+- `<name> · R`
+
+The intermediate repeat sweeps are processed internally and are not added to **Saved runs**. Review the combined result, edit the base name if needed, then press **Save current**. Both L and R summaries are saved together.
+
+L/R Repeat is useful when:
+
+- you are comparing speaker balance at the same listening position
+- you want a cleaner input for PEQ or convolver drafting
+- you care about L/R timing for aligned FIR modes
+- a single sweep looks suspicious and you want repeat confirmation
+
+Keep the microphone fixed during the whole repeat. Moving the microphone between the internal sweeps defeats the purpose of the mode.
+
+### Repeat timing and outlier handling
+
+L/R Repeat does not simply average everything blindly. It compares the repeated L/R timing relationships, clusters the pair deltas, and accepts the best stable cluster. If one repeated pair is inconsistent, FXRoute can reject that pair and average only the accepted pairs.
+
+The saved repeat summaries include timing metadata such as:
+
+- repeat count
+- accepted and rejected run count
+- timing method
+- L/R delta center and spread
+- whether Electrical Reference was used
+- whether the timing result is stable
+
+With a good Electrical Reference, Repeat can also align the electrical reference captures before deconvolution and average the captures in the time domain. This usually gives the most stable timing result. If Electrical Reference is not connected or is disabled, Repeat still works with acoustic-only timing, but acoustic timing is normally less precise and may reject more pairs.
+
+If a repeat summary is marked unstable, do not use it for timing-sensitive L/R alignment. Rerun the repeat with the microphone fixed, check that the selected speaker and input channels are correct, and use Electrical Reference if available.
 
 ### Electrical reference input
 
@@ -169,7 +213,7 @@ The electrical reference improves timing stability for L/R alignment and aligned
 
 ### Typical stereo convolver workflow
 
-For a stereo correction preset, measure the channels separately.
+For a stereo correction preset, measure the channels separately. For quick work, use **Single Sweep** for L and R. For a stronger same-position pair, use **Start L/R Repeat** and save the combined L/R summaries before taking them into the Convolver assistant.
 
 1. Select **Left** and run a sweep.
 2. Press **Save current**. The run appears in **Saved runs**.
@@ -179,6 +223,14 @@ For a stereo correction preset, measure the channels separately.
 6. Select the saved right-channel run and press **Take R**.
 7. Choose the target curve, correction range, phase mode, sample rate, and tap length.
 8. Press **Create Convolver Preset**.
+
+When using **L/R Repeat**, the first six steps become simpler:
+
+1. Put the microphone at the listening position.
+2. Press **Start L/R Repeat** and wait for the combined L/R review result.
+3. Press **Save current** to save both summaries.
+4. Select the saved repeat L summary and press **Take L**.
+5. Select the saved repeat R summary and press **Take R**.
 
 Available phase modes:
 

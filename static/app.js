@@ -4966,6 +4966,7 @@ function normalizeMeasurementEntry(measurement = {}, index = 0) {
         name: String(measurement.name || `Measurement ${index + 1}`),
         created_at: String(measurement.created_at || ''),
         channel: String(measurement.channel || 'left'),
+        measurement_kind: String(measurement.measurement_kind || ''),
         input_device: measurement.input_device || {},
         input_channels: measurement.input_channels || {},
         calibration: measurement.calibration || {},
@@ -5796,6 +5797,8 @@ function getMeasurementConvolverTimingDelta(leftTiming, rightTiming) {
             channel: leftTiming.channel || 'left',
             source: leftTiming.source || '',
             measurementId: leftTiming.measurementId || '',
+            measurementName: leftTiming.measurementName || '',
+            correctedArrivalMs: leftMs,
             peakSample: leftTiming.peakSample ?? null,
             directSample: leftTiming.directSample ?? null,
             referencePeakSample: leftTiming.referencePeakSample ?? null,
@@ -5816,6 +5819,8 @@ function getMeasurementConvolverTimingDelta(leftTiming, rightTiming) {
             channel: rightTiming.channel || 'right',
             source: rightTiming.source || '',
             measurementId: rightTiming.measurementId || '',
+            measurementName: rightTiming.measurementName || '',
+            correctedArrivalMs: rightMs,
             peakSample: rightTiming.peakSample ?? null,
             directSample: rightTiming.directSample ?? null,
             referencePeakSample: rightTiming.referencePeakSample ?? null,
@@ -5839,10 +5844,53 @@ function getMeasurementConvolverTimingDelta(leftTiming, rightTiming) {
     return result;
 }
 
+function getMeasurementConvolverTimingPairDebug(timingDelta) {
+    const leftTiming = timingDelta?.leftTiming || {};
+    const rightTiming = timingDelta?.rightTiming || {};
+    const pendingIds = new Set((state.measurement.pendingRepeatMeasurements || []).map((measurement) => String(measurement?.id || '')));
+    const samePendingRepeatResult = !!leftTiming.measurementId
+        && !!rightTiming.measurementId
+        && pendingIds.has(String(leftTiming.measurementId))
+        && pendingIds.has(String(rightTiming.measurementId));
+    const leftRepeatSummary = leftTiming.measurementKind === 'lr-repeat-summary';
+    const rightRepeatSummary = rightTiming.measurementKind === 'lr-repeat-summary';
+    const inferredSameSavedRepeatResult = leftRepeatSummary
+        && rightRepeatSummary
+        && !!leftTiming.repeatPairKey
+        && leftTiming.repeatPairKey === rightTiming.repeatPairKey;
+    const sameLrRepeatResult = samePendingRepeatResult || inferredSameSavedRepeatResult;
+    return {
+        left: {
+            measurementId: leftTiming.measurementId || '',
+            measurementName: leftTiming.measurementName || '',
+            channel: leftTiming.channel || 'left',
+            correctedArrivalMs: getMeasurementConvolverTimingMs(leftTiming),
+        },
+        right: {
+            measurementId: rightTiming.measurementId || '',
+            measurementName: rightTiming.measurementName || '',
+            channel: rightTiming.channel || 'right',
+            correctedArrivalMs: getMeasurementConvolverTimingMs(rightTiming),
+        },
+        calculatedDeltaMs: timingDelta?.deltaMs ?? null,
+        displayedAbsDeltaMs: timingDelta?.absMs ?? null,
+        sameIntendedLrPair: sameLrRepeatResult ? true : 'unknown',
+        sameLrRepeatResult,
+        pairEvidence: samePendingRepeatResult
+            ? 'current-pending-lr-repeat-result'
+            : (inferredSameSavedRepeatResult ? 'saved-lr-repeat-summary-name-and-timestamp' : 'no-explicit-pair-metadata'),
+    };
+}
+
 function formatMeasurementConvolverTimingRelation(timingDelta) {
     if (!timingDelta) return 'Timing unavailable';
     const earlierSide = timingDelta.laterSide === 'R' ? 'L' : 'R';
-    return `${timingDelta.laterSide} arrives ${timingDelta.absMs.toFixed(2)} ms later than ${earlierSide}`;
+    const line = `${timingDelta.laterSide} arrives ${timingDelta.absMs.toFixed(2)} ms later than ${earlierSide}`;
+    console.info('[measurement-convolver-visible-lr-delta]', {
+        line,
+        ...getMeasurementConvolverTimingPairDebug(timingDelta),
+    });
+    return line;
 }
 
 function getMeasurementConvolverTimingSafetyMessage(timingDelta, limitMs = MEASUREMENT_CONVOLVER_TIMING_SAFETY_LIMIT_MS) {
@@ -5960,6 +6008,10 @@ function getMeasurementDirectArrivalTiming(measurement = {}) {
         channel,
         measurementId: measurement?.id || '',
         measurementName: measurement?.name || '',
+        measurementKind: measurement?.measurement_kind || '',
+        repeatPairKey: measurement?.measurement_kind === 'lr-repeat-summary'
+            ? `${String(measurement?.name || '').replace(/\s*·\s*[LR]\s*$/i, '')}|${String(measurement?.created_at || '')}`
+            : '',
         source: timingInfo.source || impulse?.timing_source || 'direct_arrival_minus_reference_peak',
         timingStatus: timingInfo.status || '',
         timingLabel: timingInfo.label || '',
@@ -7031,40 +7083,49 @@ function getMeasurementTimingInfo(measurement = {}) {
         ? String(referencePath?.stability || '').toLowerCase() === 'stable' || confidence >= 0.75
         : confidence >= 0.75;
     const delayText = delayMs === null ? 'delay unavailable' : `delay ${delayMs.toFixed(2)} ms`;
+    const promotionApplied = !!impulse?.promotion_applied;
 
     if (repeat) {
-        const acceptedRuns = Number(repeat.accepted_runs) || 0;
+        const preAveraged = !!repeat.pre_averaged;
+        const acceptedRuns = preAveraged ? Number(repeat.repeat_count) || 0 : Number(repeat.accepted_runs) || 0;
         const repeatCount = Number(repeat.repeat_count) || 0;
-        const spreadMs = Number(repeat.timing_spread_ms);
+        const spreadMs = Number(repeat.delta_spread_ms ?? repeat.timing_spread_ms);
+        const deltaCenterMs = Number(repeat.delta_center_ms ?? repeat.delta_ms);
+        const pairedMethod = repeat.timing_method === 'paired-delta-cluster';
+        const timingStable = repeat.timing_stable ?? repeat.paired_timing_stable ?? String(referencePath?.stability || '').toLowerCase() === 'stable';
         const spreadText = Number.isFinite(spreadMs) ? ` · spread ${spreadMs.toFixed(2)} ms` : '';
-        if (!repeat.timing_stable) {
+        const deltaText = Number.isFinite(deltaCenterMs) && (pairedMethod || preAveraged) ? ` · Δ ${deltaCenterMs >= 0 ? '+' : ''}${deltaCenterMs.toFixed(2)} ms` : '';
+        if (!timingStable) {
             return {
                 status: 'lr-repeat-unstable',
                 label: 'L/R repeat timing unstable',
                 line: `L/R repeat timing unstable · accepted ${acceptedRuns}/${repeatCount}`,
-                detail: `L/R repeat timing unstable · accepted ${acceptedRuns}/${repeatCount}${spreadText}`,
+                detail: `L/R repeat timing unstable · accepted ${acceptedRuns}/${repeatCount}${spreadText}${deltaText}`,
                 delayMs: null,
                 arrivalSamples: null,
                 source: 'lr_repeat_unstable',
             };
         }
+        const methodLabel = preAveraged ? 'ER pre-averaged' : (pairedMethod ? 'paired-delta' : (repeat.electrical_reference_used ? 'electrical reference' : 'acoustic-only'));
+        const label = preAveraged ? 'L/R repeat timing (ER pre-averaged)' : (pairedMethod ? 'L/R repeat timing (paired)' : 'L/R repeat timing');
         return {
             status: 'lr-repeat',
-            label: 'L/R repeat timing',
-            line: `L/R repeat timing · ${delayText} · accepted ${acceptedRuns}/${repeatCount}${spreadText}`,
-            detail: `L/R repeat timing · ${delayText} · accepted ${acceptedRuns}/${repeatCount}${spreadText} · ${repeat.electrical_reference_used ? 'electrical reference' : 'acoustic-only'}`,
+            label,
+            line: `L/R repeat timing · ${delayText} · accepted ${acceptedRuns}/${repeatCount}${spreadText}${deltaText}`,
+            detail: `L/R repeat timing · ${delayText} · accepted ${acceptedRuns}/${repeatCount}${spreadText}${deltaText} · ${methodLabel}`,
             delayMs,
             arrivalSamples,
-            source: repeat.electrical_reference_used ? 'lr_repeat_electrical_reference' : 'lr_repeat_acoustic',
+            source: preAveraged ? 'lr_repeat_er_pre_averaged' : (pairedMethod ? 'lr_repeat_paired_delta' : (repeat.electrical_reference_used ? 'lr_repeat_electrical_reference' : 'lr_repeat_acoustic')),
         };
     }
 
     if (status === 'electrical-reference') {
+        const promoText = promotionApplied ? ' · peak promoted' : '';
         return {
             status,
             label: 'Electrical reference active',
-            line: `Electrical reference active · ${delayText} · ${stable ? 'timing stable' : 'timing active'}`,
-            detail: `Electrical reference active · corrected ${delayText}${Number.isFinite(referenceDelayMs) ? ` · reference ${referenceDelayMs.toFixed(2)} ms` : ''}${Number.isFinite(acousticDelayMs) ? ` · acoustic ${acousticDelayMs.toFixed(2)} ms` : ''}`,
+            line: `Electrical reference active · ${delayText} · ${stable ? 'timing stable' : 'timing active'}${promoText}`,
+            detail: `Electrical reference active · corrected ${delayText}${promoText}${Number.isFinite(referenceDelayMs) ? ` · reference ${referenceDelayMs.toFixed(2)} ms` : ''}${Number.isFinite(acousticDelayMs) ? ` · acoustic ${acousticDelayMs.toFixed(2)} ms` : ''}${!stable && confidence != null ? ` · confidence ${confidence.toFixed(2)}` : ''}`,
             delayMs,
             arrivalSamples,
             source: 'electrical_reference_corrected',

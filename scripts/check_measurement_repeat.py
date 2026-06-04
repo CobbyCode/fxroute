@@ -9,9 +9,21 @@ import sys
 import os
 from pathlib import Path
 
+import numpy as np
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from measurement import MeasurementStore
+from measurement import (
+    HOST_SWEEP_RECORD_POSTROLL_SECONDS,
+    HOST_SWEEP_RECORD_PREROLL_SECONDS,
+    LR_REPEAT_LEAD_IN_SECONDS,
+    LR_REPEAT_SWEEP_SECONDS,
+    LR_REPEAT_TAIL_SECONDS,
+    MeasurementStore,
+    SWEEP_V2_LEAD_IN_SECONDS,
+    SWEEP_V2_SECONDS,
+    SWEEP_V2_TAIL_SECONDS,
+)
 
 
 def measurement_payload(measurement_id: str, channel: str, timing_ms: float, level_db: float, *, electrical: bool) -> dict:
@@ -63,6 +75,50 @@ def main() -> None:
         os.environ["XDG_STATE_HOME"] = str(root / "state")
         try:
             store = MeasurementStore(home=root)
+            sweep_profile = store._default_measurement_sweep_profile()
+            assert sweep_profile["sweep_seconds"] == SWEEP_V2_SECONDS
+            assert sweep_profile["lead_in_seconds"] == SWEEP_V2_LEAD_IN_SECONDS
+            assert sweep_profile["tail_seconds"] == SWEEP_V2_TAIL_SECONDS
+            assert sweep_profile["record_preroll_seconds"] == HOST_SWEEP_RECORD_PREROLL_SECONDS
+            assert sweep_profile["record_postroll_seconds"] == HOST_SWEEP_RECORD_POSTROLL_SECONDS
+            assert sweep_profile["sweep_seconds"] != LR_REPEAT_SWEEP_SECONDS
+            assert sweep_profile["lead_in_seconds"] != LR_REPEAT_LEAD_IN_SECONDS
+            assert sweep_profile["tail_seconds"] != LR_REPEAT_TAIL_SECONDS
+
+            public_result = store._public_job_result({
+                "measurement": {"id": "single"},
+                "_calibration_curve": (np.array([20.0]), np.array([0.0])),
+                "nested": {"_capture_path": "/tmp/capture.wav", "visible": True},
+            })
+            assert public_result == {
+                "measurement": {"id": "single"},
+                "nested": {"visible": True},
+            }
+
+            async def check_public_job_result() -> None:
+                job_id = "test-calibrated-single"
+                store._jobs[job_id] = {
+                    "id": job_id,
+                    "status": "queued",
+                    "message": "queued",
+                    "result": None,
+                    "error": None,
+                }
+                store._execute_capture_job = lambda _job: {
+                    "message": "Measurement finished.",
+                    "measurement": {"id": "single"},
+                    "_calibration_curve": (np.array([20.0]), np.array([0.0])),
+                }
+                await store._run_measurement_job(job_id)
+                job = store.get_job(job_id)
+                assert job["status"] == "completed"
+                assert job["result"] == {
+                    "message": "Measurement finished.",
+                    "measurement": {"id": "single"},
+                }
+
+            asyncio.run(check_public_job_result())
+
             left = [
             measurement_payload("left-1", "left", 1.00, 0.0, electrical=True),
             measurement_payload("left-2", "left", 1.10, 2.0, electrical=True),
