@@ -10,8 +10,8 @@
 })(typeof globalThis !== 'undefined' ? globalThis : window, function (root) {
     'use strict';
 
-    const HYBRID_MIN_FULL_HZ = 150;
-    const HYBRID_LINEAR_FULL_HZ = 500;
+    const HYBRID_MIN_FULL_HZ = 180;
+    const HYBRID_LINEAR_FULL_HZ = 550;
 
     function measurementSmoothingHalfWindowOctaves(mode = '1/6-oct') {
         switch (String(mode || '1/6-oct')) {
@@ -295,33 +295,74 @@
     function writeMeasurementConvolverWav(channels, sampleRate) {
         const channelCount = channels.length;
         const frameCount = channels[0]?.length || 0;
-        const bytesPerSample = 2;
+        const bytesPerSample = 4;
+        const bitsPerSample = 32;
+        const formatTag = 3; // WAVE_FORMAT_IEEE_FLOAT
         const dataBytes = frameCount * channelCount * bytesPerSample;
         const buffer = new ArrayBuffer(44 + dataBytes);
         const view = new DataView(buffer);
         const writeString = (offset, value) => Array.from(value).forEach((char, index) => view.setUint8(offset + index, char.charCodeAt(0)));
+        const peakBeforeExport = getMeasurementConvolverChannelPeak(channels);
         writeString(0, 'RIFF');
         view.setUint32(4, 36 + dataBytes, true);
         writeString(8, 'WAVE');
         writeString(12, 'fmt ');
         view.setUint32(16, 16, true);
-        view.setUint16(20, 1, true);
+        view.setUint16(20, formatTag, true);
         view.setUint16(22, channelCount, true);
         view.setUint32(24, sampleRate, true);
         view.setUint32(28, sampleRate * channelCount * bytesPerSample, true);
         view.setUint16(32, channelCount * bytesPerSample, true);
-        view.setUint16(34, 16, true);
+        view.setUint16(34, bitsPerSample, true);
         writeString(36, 'data');
         view.setUint32(40, dataBytes, true);
         let offset = 44;
         for (let frame = 0; frame < frameCount; frame += 1) {
             for (let channel = 0; channel < channelCount; channel += 1) {
-                const sample = Math.max(-1, Math.min(1, channels[channel][frame] || 0));
-                view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
-                offset += 2;
+                const sample = channels[channel]?.[frame];
+                const exportSample = Number.isFinite(sample) ? sample : 0;
+                view.setFloat32(offset, exportSample, true);
+                offset += 4;
             }
         }
+        const peakAfterExportReadback = getMeasurementConvolverFloat32WavDataPeak(view, 44, frameCount, channelCount);
+        console.debug('[measurement-convolver-wav-export]', {
+            format: 'float32',
+            sampleRate,
+            channels: channelCount,
+            frames: frameCount,
+            peakBeforeExport,
+            peakAfterExportReadback,
+            clippedSampleCount: 0,
+        });
         return new root.Blob([buffer], { type: 'audio/wav' });
+    }
+
+    function getMeasurementConvolverChannelPeak(channels) {
+        let peak = 0;
+        for (let channel = 0; channel < channels.length; channel += 1) {
+            const data = channels[channel] || [];
+            for (let frame = 0; frame < data.length; frame += 1) {
+                const sample = data[frame];
+                const absValue = Math.abs(Number.isFinite(sample) ? sample : 0);
+                if (absValue > peak) peak = absValue;
+            }
+        }
+        return peak;
+    }
+
+    function getMeasurementConvolverFloat32WavDataPeak(view, dataOffset, frameCount, channelCount) {
+        let peak = 0;
+        let offset = dataOffset;
+        for (let frame = 0; frame < frameCount; frame += 1) {
+            for (let channel = 0; channel < channelCount; channel += 1) {
+                const sample = view.getFloat32(offset, true);
+                const absValue = Math.abs(Number.isFinite(sample) ? sample : 0);
+                if (absValue > peak) peak = absValue;
+                offset += 4;
+            }
+        }
+        return peak;
     }
 
     function getSortedNumericValues(values = []) {

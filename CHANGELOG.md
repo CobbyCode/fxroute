@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.7.35 (2026-06-05)
+- Export Measurement Convolver FIR WAV files as IEEE 32-bit float samples instead of 16-bit PCM, preserving FIR coefficients above full-scale without clamping, normalization, or export scaling.
+- Add FIR WAV export diagnostics for peak before export, peak after Float32 readback, output format, and clipped sample count.
+- Shift the Hybrid aligned phase transition constants so it stays fully minimum-phase through 180 Hz, transitions from 180 Hz to 550 Hz, and is fully aligned/linear-style above 550 Hz.
+- Bump frontend asset cache tags so browsers fetch the updated measurement DSP helper.
+
 ## 0.7.33 (2026-06-04)
 - Use the full Single Sweep V2 sweep profile for all default L/R Repeat captures, including Acoustic-only Repeat: 11.0s sweep, 0.5s lead-in, 1.25s tail, and the normal host-record pre/post-roll.
 - Remove the hidden short Acoustic-only Repeat behavior so Acoustic-only Repeat, ER Repeat, and Single Sweep are directly comparable in magnitude, especially in the low-frequency region.

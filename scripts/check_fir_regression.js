@@ -170,18 +170,64 @@ function checkHybridTransitionMagnitudeResponse() {
     return { length, binCount, maxErrorDb, maxErrorFrequency, rmsErrorDb };
 }
 
-const hybridResults = TAP_LENGTHS.map(checkHybridAlignedImpulse);
-const linearResult = checkHybridDistinctFromLinear();
-const routingResult = checkMinimumAlignedRouting();
-const magnitudeResult = checkHybridTransitionMagnitudeResponse();
+async function checkFloat32WavExport() {
+    const samples = new Float32Array([0, 1.25, -1.5, 0.125]);
+    const diagnostics = [];
+    const originalDebug = console.debug;
+    console.debug = (label, payload) => diagnostics.push({ label, payload });
+    let blob;
+    try {
+        blob = dsp.writeMeasurementConvolverWav([samples], SAMPLE_RATE);
+    } finally {
+        console.debug = originalDebug;
+    }
+    const buffer = await blob.arrayBuffer();
+    const view = new DataView(buffer);
+    const readString = (offset, length) => String.fromCharCode(...new Uint8Array(buffer, offset, length));
+    const readSamples = [];
+    for (let offset = 44; offset < buffer.byteLength; offset += 4) {
+        readSamples.push(view.getFloat32(offset, true));
+    }
 
-for (const result of hybridResults) {
+    assert.equal(readString(0, 4), 'RIFF');
+    assert.equal(readString(8, 4), 'WAVE');
+    assert.equal(view.getUint16(20, true), 3, 'FIR WAV export must use IEEE float format');
+    assert.equal(view.getUint16(34, true), 32, 'FIR WAV export must be 32-bit');
+    assert.equal(view.getUint32(40, true), samples.length * 4, 'FIR WAV data size must match float32 samples');
+    assert.deepEqual(readSamples, Array.from(samples), 'Float32 FIR WAV export must not clamp samples above 1.0');
+    assert.equal(diagnostics.length, 1, 'FIR WAV export should emit one diagnostic log');
+    assert.equal(diagnostics[0].label, '[measurement-convolver-wav-export]');
+    assert.equal(diagnostics[0].payload.format, 'float32');
+    assert.equal(diagnostics[0].payload.clippedSampleCount, 0);
+    assert.equal(diagnostics[0].payload.peakBeforeExport, 1.5);
+    assert.equal(diagnostics[0].payload.peakAfterExportReadback, 1.5);
+
+    return { formatTag: view.getUint16(20, true), bitsPerSample: view.getUint16(34, true), peak: diagnostics[0].payload.peakAfterExportReadback };
+}
+
+async function main() {
+    const hybridResults = TAP_LENGTHS.map(checkHybridAlignedImpulse);
+    const linearResult = checkHybridDistinctFromLinear();
+    const routingResult = checkMinimumAlignedRouting();
+    const magnitudeResult = checkHybridTransitionMagnitudeResponse();
+    const wavResult = await checkFloat32WavExport();
+
+    for (const result of hybridResults) {
+        console.log(
+            `ok hybrid_aligned ${result.length}: peak=${result.peakIndex}, tail=${result.tailDb.toFixed(2)} dB, minDiff=${result.minimumDiff.toExponential(3)}`,
+        );
+    }
+    console.log(`ok hybrid_aligned ${linearResult.length}: linearDiff=${linearResult.linearDiff.toExponential(3)}`);
+    console.log(`ok minimum_aligned routing: mappingCount=${routingResult.mappingCount}`);
     console.log(
-        `ok hybrid_aligned ${result.length}: peak=${result.peakIndex}, tail=${result.tailDb.toFixed(2)} dB, minDiff=${result.minimumDiff.toExponential(3)}`,
+        `ok hybrid_aligned ${magnitudeResult.length}: transitionMagnitudeMax=${magnitudeResult.maxErrorDb.toFixed(3)} dB at ${magnitudeResult.maxErrorFrequency.toFixed(1)} Hz, rms=${magnitudeResult.rmsErrorDb.toFixed(3)} dB over ${magnitudeResult.binCount} bins`,
+    );
+    console.log(
+        `ok FIR WAV export: formatTag=${wavResult.formatTag}, bits=${wavResult.bitsPerSample}, peak=${wavResult.peak}`,
     );
 }
-console.log(`ok hybrid_aligned ${linearResult.length}: linearDiff=${linearResult.linearDiff.toExponential(3)}`);
-console.log(`ok minimum_aligned routing: mappingCount=${routingResult.mappingCount}`);
-console.log(
-    `ok hybrid_aligned ${magnitudeResult.length}: transitionMagnitudeMax=${magnitudeResult.maxErrorDb.toFixed(3)} dB at ${magnitudeResult.maxErrorFrequency.toFixed(1)} Hz, rms=${magnitudeResult.rmsErrorDb.toFixed(3)} dB over ${magnitudeResult.binCount} bins`,
-);
+
+main().catch((error) => {
+    console.error(error);
+    process.exit(1);
+});
