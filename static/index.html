@@ -12,7 +12,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=0.4.458">
     <link rel="manifest" href="/static/site.webmanifest?v=0.4.458">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/static/style.css?v=0.7.35">
+    <link rel="stylesheet" href="/static/style.css?v=0.7.36">
 </head>
 <body>
     <!-- Offline indicator -->
@@ -719,10 +719,14 @@
                             <div class="effects-card-header measurement-card-header-split">
                                 <div>
                                     <h3>Measurement graph</h3>
-                                    <p>Frequency view: 20 Hz to 20 kHz.</p>
+                                    <p id="measurement-graph-subtitle">Frequency view: 20 Hz to 20 kHz.</p>
                                 </div>
                                 <div class="measurement-graph-header-actions">
                                     <div id="measurement-summary" class="measurement-summary"></div>
+                                    <div class="measurement-view-toggle" role="group" aria-label="Graph view">
+                                        <button type="button" class="measurement-chip is-active" data-measurement-view="freq" title="Frequency view" aria-pressed="true">Freq</button>
+                                        <button type="button" class="measurement-chip" data-measurement-view="ir" title="Impulse response view" aria-pressed="false">IR</button>
+                                    </div>
                                     <select id="measurement-assist-mode" class="url-input measurement-assist-select" aria-label="Measurement assist mode">
                                         <option value="peq">PEQ</option>
                                         <option value="convolver">Convolver</option>
@@ -737,6 +741,7 @@
                                 </div>
                             </div>
                             <div id="measurement-graph-controls" class="effects-info measurement-inline-status"></div>
+                            <div id="measurement-ir-diagnostics" class="measurement-ir-diagnostics hidden" aria-label="Impulse response diagnostics"></div>
                             <div class="measurement-graph-wrap">
                                 <canvas id="measurement-graph" class="measurement-graph" width="960" height="420"></canvas>
                             </div>
@@ -936,7 +941,7 @@
     <!-- Toast notifications -->
     <div id="toast-container" class="toast-container"></div>
 
-    <script src="/static/measurement_dsp.js?v=0.7.35"></script>
-    <script src="/static/app.js?v=0.7.35"></script>
+    <script src="/static/measurement_dsp.js?v=0.7.36"></script>
+    <script src="/static/app.js?v=0.7.36"></script>
 </body>
 </html>

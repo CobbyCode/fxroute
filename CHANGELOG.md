@@ -1,6 +1,14 @@
 # Changelog
 
-## Unreleased
+## 0.7.36 (2026-06-09)
+- Add a graph-local Frequency / IR toggle to the Measurement assistant. Frequency view keeps the existing 20 Hz to 20 kHz response graph, while IR view shows a lightweight -2 ms to +30 ms impulse-response preview for measurements that include preview data.
+- Store compact impulse-response preview data with newly analyzed measurements for UI diagnostics without persisting the full impulse response in measurement JSON.
+- Refine measurement graph hover labels: frequency view now shows compact frequency and dB values, and IR view shows time in milliseconds with normalized amplitude.
+- Refine Measurement Convolver source selection so visible saved measurements take precedence over the current measurement; exactly one Left enables `Take L`, exactly one Right enables `Take R`, and exactly one Left plus one Right enables `Take Both`.
+- Disable Convolver Take actions for invalid multi-source selections and show `Select one measurement or one L/R selection.` instead of accepting ambiguous measurement sources.
+- Show the existing Single Sweep input-level indicator in the L/R Repeat running status while preserving the repeat progress text. The displayed level uses the same labels as Single Sweep: `Peak ... dBFS`, `Peak < -90 dBFS`, or `CLIP`.
+- Refresh the README measurement comparison image with a current Measurement Assistant screenshot.
+- Add an IR-view screenshot asset for the new Measurement Assistant impulse-response graph view.
 
 ## 0.7.35 (2026-06-05)
 - Export Measurement Convolver FIR WAV files as IEEE 32-bit float samples instead of 16-bit PCM, preserving FIR coefficients above full-scale without clamping, normalization, or export scaling.

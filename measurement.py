@@ -2585,12 +2585,15 @@ class MeasurementStore:
         )
         analysis["reference_path"] = reference_path
 
-    def _format_capture_input_level_message(self, peak_dbfs: float, clipped: bool) -> str:
+    def _format_capture_input_level_label(self, peak_dbfs: float, clipped: bool) -> str:
         if clipped:
-            return "Running sweep… CLIP"
+            return "CLIP"
         if peak_dbfs <= CAPTURE_LEVEL_STATUS_MIN_DBFS:
-            return "Running sweep… Peak < -90 dBFS"
-        return f"Running sweep… Peak {round(peak_dbfs):.0f} dBFS"
+            return "Peak < -90 dBFS"
+        return f"Peak {round(peak_dbfs):.0f} dBFS"
+
+    def _format_capture_input_level_message(self, peak_dbfs: float, clipped: bool) -> str:
+        return f"Running sweep… {self._format_capture_input_level_label(peak_dbfs, clipped)}"
 
     @staticmethod
     def _format_measurement_timing_summary(analysis: dict[str, Any]) -> str:
@@ -2620,11 +2623,16 @@ class MeasurementStore:
 
     def _update_capture_input_level_status(self, job_id: str, peak_dbfs: float, clipped: bool) -> None:
         job = self._jobs.get(job_id)
+        parent_repeat_job = None
+        if not job:
+            match = re.match(r"^(measurement-repeat-job-[0-9a-f]+)-repeat\d+-(left|right)$", str(job_id or ""))
+            parent_repeat_job = self._jobs.get(match.group(1)) if match else None
+            job = parent_repeat_job
         if not job or str(job.get("status") or "") != "running":
             return
-        message = self._format_capture_input_level_message(peak_dbfs, clipped)
         now = self._utc_now()
-        job["message"] = message
+        if parent_repeat_job is None:
+            job["message"] = self._format_capture_input_level_message(peak_dbfs, clipped)
         job["updated_at"] = now
         job["input_level"] = {
             "peak_dbfs": round(max(CAPTURE_LEVEL_STATUS_MIN_DBFS, peak_dbfs), 1),
@@ -2841,6 +2849,67 @@ class MeasurementStore:
                 "enabled": True,
                 "error": str(exc),
             }
+
+
+
+
+
+    def _build_ir_preview(
+        self,
+        impulse_response: np.ndarray,
+        sample_rate: int,
+        direct_timing_meta: dict[str, Any],
+        ir_meta: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """
+        Build a lightweight time-domain preview for diagnostics only.
+        The full impulse response is never stored in measurement JSON.
+        """
+        ir64 = impulse_response.astype(np.float64)
+        if not ir64.size:
+            return None
+        alignment_index = int(direct_timing_meta.get("direct_arrival_index", ir_meta.get("peak_index", 0)))
+        alignment_index = max(0, min(ir64.size - 1, alignment_index))
+
+        pre_samples = max(1, int(round(sample_rate * 0.002)))
+        post_samples = max(1, int(round(sample_rate * 0.030)))
+        start = max(0, alignment_index - pre_samples)
+        end = min(ir64.size, alignment_index + post_samples + 1)
+        if start >= end:
+            return None
+
+        windowed = ir64[start:end].copy()
+        peak_value = float(np.max(np.abs(windowed))) if windowed.size else 0.0
+        if peak_value <= 1e-12:
+            return None
+        windowed = windowed / peak_value
+
+        max_points = 500
+        if len(windowed) > max_points:
+            indices = np.linspace(0, len(windowed) - 1, max_points, dtype=int)
+            windowed = windowed[indices]
+        else:
+            indices = np.arange(len(windowed), dtype=int)
+
+        points = []
+        for relative_index, value in zip(indices, windowed):
+            sample_offset = int(start + int(relative_index) - alignment_index)
+            time_ms = (sample_offset / float(sample_rate)) * 1000.0
+            if -2.0001 <= time_ms <= 30.0001:
+                points.append([round(float(time_ms), 3), round(float(value), 6)])
+        if not points:
+            return None
+
+        return {
+            "schema": "fxroute.ir-preview.v1",
+            "points": points,
+            "sample_rate": int(sample_rate),
+            "alignment_index": int(alignment_index),
+            "pre_samples": pre_samples,
+            "post_samples": post_samples,
+            "window_ms": [-2.0, 30.0],
+            "normalization": "max_abs_in_preview_window",
+        }
 
 
 
@@ -3221,6 +3290,7 @@ class MeasurementStore:
                 "pre_window_seconds": round(float(ir_meta["pre_window_seconds"]), 6),
                 "post_window_seconds": round(float(ir_meta["post_window_seconds"]), 6),
                 "peak_dbfs": round(float(ir_meta["peak_dbfs"]), 2),
+                "preview": self._build_ir_preview(timing_impulse_response, sample_rate, direct_timing_meta, ir_meta),
             },
             "variable_window": variable_window_meta,
             "_impulse_response_debug_segment": impulse_response_debug_segment,

@@ -88,6 +88,7 @@ let state = {
         selectedChannel: 'left',
         repeatJobActive: false,
         displaySmoothing: '1/6-oct',
+        measurementView: 'freq',
         hostCaptureAvailable: false,
         modeNote: '',
         calibrationFilename: '',
@@ -359,8 +360,10 @@ const elements = {
     measurementTargetCurve: document.getElementById('measurement-target-curve'),
     measurementSetupStatus: document.getElementById('measurement-setup-status'),
     measurementSummary: document.getElementById('measurement-summary'),
+    measurementGraphSubtitle: document.getElementById('measurement-graph-subtitle'),
     measurementGraphControls: document.getElementById('measurement-graph-controls'),
     measurementGraph: document.getElementById('measurement-graph'),
+    measurementIrDiagnostics: document.getElementById('measurement-ir-diagnostics'),
     measurementEmpty: document.getElementById('measurement-empty'),
     measurementPeqPanel: document.getElementById('measurement-peq-panel'),
     measurementPeqChips: document.getElementById('measurement-peq-chips'),
@@ -5577,20 +5580,62 @@ async function createMeasurementPeqPresetFromDraft() {
 }
 
 function getMeasurementConvolverSelectedSourceEntries() {
-    return [...getCurrentMeasurementEntries(), ...getVisibleMeasurementEntries()].filter(Boolean);
+    const visibleSavedEntries = getVisibleMeasurementEntries().filter(Boolean);
+    return visibleSavedEntries.length ? visibleSavedEntries : getCurrentMeasurementEntries().filter(Boolean);
 }
 
 function getMeasurementConvolverSourceEntries() {
     return getMeasurementConvolverSelectedSourceEntries();
 }
 
+function getMeasurementConvolverSourceSelectionState() {
+    const entries = getMeasurementConvolverSourceEntries()
+        .filter((measurement) => getMeasurementDisplayTraces(measurement || {}).length > 0);
+    const leftEntries = [];
+    const rightEntries = [];
+    const otherEntries = [];
+    entries.forEach((measurement) => {
+        const channel = String(measurement?.channel || 'left').toLowerCase();
+        if (channel === 'left') {
+            leftEntries.push(measurement);
+        } else if (channel === 'right') {
+            rightEntries.push(measurement);
+        } else {
+            otherEntries.push(measurement);
+        }
+    });
+    const take = { left: false, right: false, both: false };
+    let mode = '';
+    if (entries.length === 1 && leftEntries.length === 1) {
+        take.left = true;
+        mode = 'left';
+    } else if (entries.length === 1 && rightEntries.length === 1) {
+        take.right = true;
+        mode = 'right';
+    } else if (entries.length === 2 && leftEntries.length === 1 && rightEntries.length === 1 && otherEntries.length === 0) {
+        take.both = true;
+        mode = 'both';
+    }
+    const warning = entries.length > 1 && !mode
+        ? 'Select one measurement or one L/R selection.'
+        : '';
+    return {
+        entries,
+        count: entries.length,
+        mode,
+        take,
+        warning,
+        left: leftEntries[0] || null,
+        right: rightEntries[0] || null,
+    };
+}
+
 function getMeasurementConvolverMeasurementForSide(side = 'left') {
     const desired = side === 'right' ? 'right' : 'left';
-    const candidates = getMeasurementConvolverSourceEntries();
-    const hasTrace = (measurement) => getMeasurementDisplayTraces(measurement || {}).length > 0;
-    return candidates.find((measurement) => String(measurement.channel || 'left').toLowerCase() === desired && hasTrace(measurement))
-        || candidates.find((measurement) => String(measurement.channel || '').toLowerCase() === 'stereo' && hasTrace(measurement))
-        || null;
+    const selection = getMeasurementConvolverSourceSelectionState();
+    if (selection.mode === 'both') return desired === 'right' ? selection.right : selection.left;
+    if (selection.mode === desired) return desired === 'right' ? selection.right : selection.left;
+    return null;
 }
 
 function getMeasurementConvolverTracePoints(side = 'left') {
@@ -5620,16 +5665,18 @@ function analyzeMeasurementConvolverSide(side = 'left') {
 }
 
 function getMeasurementConvolverSelectedSourceCount() {
-    return getMeasurementConvolverSelectedSourceEntries().filter((measurement) => getMeasurementDisplayTraces(measurement || {}).length > 0).length;
+    return getMeasurementConvolverSourceSelectionState().count;
 }
 
 function getMeasurementConvolverMultiSourceWarning() {
-    return 'Multiple measurement curves are selected. Convolver uses measurement data as source; hide unrelated saved runs.';
+    return 'Select one measurement or one L/R selection.';
 }
 
 function buildMeasurementConvolverWarnings(analyses = []) {
     const conv = ensureMeasurementConvolverState();
     const warnings = [];
+    const selectionWarning = getMeasurementConvolverSourceSelectionState().warning;
+    if (selectionWarning) warnings.push(selectionWarning);
     if (analyses.some((analysis) => analysis && analysis.lowBassBoost)) warnings.push('Deep bass boost can demand much more amplifier power and speaker excursion.');
     if (measurementConvolverAlignedPhaseModes.includes(conv.phaseMode)) {
         const leftTiming = conv.draft?.left?.timing || getMeasurementDirectArrivalTiming(getMeasurementConvolverMeasurementForSide('left'));
@@ -6090,8 +6137,9 @@ async function createMeasurementConvolverPreset(mode, analyses, sharedAutoGainDb
 }
 
 function takeMeasurementConvolverToDraft(mode = 'both') {
-    if (getMeasurementConvolverSelectedSourceCount() > 1) {
-        const warning = getMeasurementConvolverMultiSourceWarning();
+    const selection = getMeasurementConvolverSourceSelectionState();
+    if (!selection.take[mode]) {
+        const warning = selection.warning || getMeasurementConvolverMultiSourceWarning();
         showMeasurementConvolverFeedback(warning);
         showToast(warning, 'warning');
         return;
@@ -6294,6 +6342,155 @@ function getMeasurementGraphRenderContext() {
     return { canvas, displayWidth, displayHeight, bounds, range };
 }
 
+function getMeasurementGraphView() {
+    return state.measurement?.measurementView === 'ir' ? 'ir' : 'freq';
+}
+
+function getMeasurementIrPreviewPoints(measurement = {}) {
+    const preview = measurement?.analysis?.impulse_response?.preview || {};
+    if (Array.isArray(preview.points)) {
+        return preview.points
+            .filter(point => Array.isArray(point) && point.length === 2 && Number.isFinite(Number(point[0])) && Number.isFinite(Number(point[1])))
+            .map(point => [Number(point[0]), Number(point[1])]);
+    }
+    const times = Array.isArray(preview.times_ms) ? preview.times_ms : [];
+    const amplitudes = Array.isArray(preview.amplitudes) ? preview.amplitudes : [];
+    return times.map((time, index) => [Number(time), Number(amplitudes[index])])
+        .filter(([time, amplitude]) => Number.isFinite(time) && Number.isFinite(amplitude));
+}
+
+function buildMeasurementIrGraphEntry(measurement = {}, { current = false, graphColor = '' } = {}) {
+    const displayTraces = getMeasurementDisplayTraces(measurement)
+        .filter(trace => String(trace.kind || 'measured') !== 'target' && String(trace.kind || '').indexOf('filter') === -1);
+    if (!displayTraces.length) return null;
+    const points = getMeasurementIrPreviewPoints(measurement);
+    if (!points.length) return null;
+    return {
+        ...measurement,
+        traces: [{
+            kind: 'impulse-response-preview',
+            label: displayTraces[0]?.label || measurement.name || 'Impulse response',
+            color: displayTraces[0]?.color || graphColor,
+            role: displayTraces[0]?.role || 'trusted',
+            points,
+        }],
+        current,
+        graphColor: graphColor || (current ? measurementCurrentColor : ''),
+    };
+}
+
+function getMeasurementIrPeakAbs(points = [], minMs = -0.5, maxMs = 0.5) {
+    return points.reduce((peak, [timeMs, amplitude]) => {
+        if (timeMs < minMs || timeMs > maxMs) return peak;
+        return Math.max(peak, Math.abs(Number(amplitude) || 0));
+    }, 0);
+}
+
+function getMeasurementIrWindowRms(points = [], minMs = 5, maxMs = 30) {
+    const values = points
+        .filter(([timeMs]) => timeMs >= minMs && timeMs <= maxMs)
+        .map(([, amplitude]) => Number(amplitude) || 0);
+    if (!values.length) return null;
+    const meanSquare = values.reduce((sum, value) => sum + (value * value), 0) / values.length;
+    return Math.sqrt(meanSquare);
+}
+
+function getMeasurementIrStrongestAbs(points = [], minMs = 0.5, maxMs = 10) {
+    return points.reduce((strongest, [timeMs, amplitude]) => {
+        if (timeMs < minMs || timeMs > maxMs) return strongest;
+        const absAmplitude = Math.abs(Number(amplitude) || 0);
+        if (!strongest || absAmplitude > strongest.absAmplitude) {
+            return { timeMs, absAmplitude };
+        }
+        return strongest;
+    }, null);
+}
+
+function formatMeasurementIrDb(valueDb) {
+    if (!Number.isFinite(valueDb)) return 'n/a';
+    const rounded = Math.round(valueDb);
+    return `${rounded > 0 ? '+' : ''}${rounded} dB`;
+}
+
+function formatMeasurementIrMs(valueMs) {
+    if (!Number.isFinite(valueMs)) return 'n/a';
+    return `${Number(valueMs).toFixed(1)} ms`;
+}
+
+function formatMeasurementIrAmplitude(value) {
+    if (!Number.isFinite(value)) return 'n/a';
+    const rounded = Number(value).toFixed(2);
+    return `${value > 0 ? '+' : ''}${rounded}`;
+}
+
+function getMeasurementIrDiagnostics(entry = {}) {
+    const trace = (entry.traces || [])[0] || {};
+    const points = Array.isArray(trace.points) ? trace.points : [];
+    if (!points.length) return null;
+
+    const directPeakAbs = getMeasurementIrPeakAbs(points, -0.5, 0.5)
+        || getMeasurementIrPeakAbs(points, -2, 2)
+        || points.reduce((peak, [, amplitude]) => Math.max(peak, Math.abs(Number(amplitude) || 0)), 0);
+    if (!(directPeakAbs > 0)) return null;
+
+    const tailRms = getMeasurementIrWindowRms(points, 5, 30);
+    const peakToTailDb = tailRms && tailRms > 0 ? 20 * Math.log10(directPeakAbs / tailRms) : null;
+    const early = getMeasurementIrStrongestAbs(points, 0.5, 10);
+    const earlyDb = early && early.absAmplitude > 0 ? 20 * Math.log10(early.absAmplitude / directPeakAbs) : null;
+    const label = trace.label || entry.name || 'IR';
+    return {
+        label,
+        color: entry.graphColor || trace.color || '',
+        peakToTailDb,
+        earlyDb,
+        earlyTimeMs: early ? early.timeMs : null,
+    };
+}
+
+function buildMeasurementIrDiagnostics(graphEntries = [], frequencyView = true) {
+    return frequencyView
+        ? []
+        : graphEntries.map(getMeasurementIrDiagnostics).filter(Boolean);
+}
+
+function formatMeasurementIrCompactRange(values = [], { digits = 0, suffix = '' } = {}) {
+    const finiteValues = values.map(Number).filter(Number.isFinite);
+    if (!finiteValues.length) return 'n/a';
+    const minValue = Math.min(...finiteValues);
+    const maxValue = Math.max(...finiteValues);
+    const formatValue = value => Number(value).toFixed(digits);
+    if (Math.abs(maxValue - minValue) < (digits ? 0.05 : 0.5)) return `${formatValue(minValue)}${suffix}`;
+    return `${formatValue(minValue)}–${formatValue(maxValue)}${suffix}`;
+}
+
+function buildMeasurementIrSummary(diagnostics = []) {
+    if (!diagnostics.length) return '';
+    const traceText = `${diagnostics.length} ${diagnostics.length === 1 ? 'trace' : 'traces'}`;
+    const peakToTailText = formatMeasurementIrCompactRange(diagnostics.map(item => item.peakToTailDb), { digits: 0, suffix: ' dB' });
+    const earlyTimeText = formatMeasurementIrCompactRange(diagnostics.map(item => item.earlyTimeMs), { digits: 1, suffix: ' ms' });
+    return `IR: ${traceText} · P/T ${peakToTailText} · early refl. ${earlyTimeText} · aligned to 0 ms`;
+}
+
+function buildMeasurementIrDiagnosticsTooltip(diagnostics = []) {
+    if (!diagnostics.length) return '';
+    return diagnostics.map((item) => {
+        const peakToTailText = item.peakToTailDb === null ? 'P/T n/a' : `P/T ${formatMeasurementIrDb(item.peakToTailDb)}`;
+        const earlyText = item.earlyDb === null || item.earlyTimeMs === null
+            ? 'refl. n/a'
+            : `refl. ${formatMeasurementIrDb(item.earlyDb)} at ${formatMeasurementIrMs(item.earlyTimeMs)}`;
+        return `${item.label}: ${peakToTailText} · ${earlyText}`;
+    }).join('\n');
+}
+
+function renderMeasurementIrDiagnostics(graphEntries = [], frequencyView = true) {
+    if (!elements.measurementIrDiagnostics) return;
+    const diagnostics = buildMeasurementIrDiagnostics(graphEntries, frequencyView);
+    const tooltip = buildMeasurementIrDiagnosticsTooltip(diagnostics);
+    elements.measurementIrDiagnostics.classList.add('hidden');
+    elements.measurementIrDiagnostics.textContent = '';
+    elements.measurementIrDiagnostics.title = tooltip;
+}
+
 function getMeasurementGraphPointerPosition(event) {
     const context = getMeasurementGraphRenderContext();
     if (!context) return null;
@@ -6303,6 +6500,67 @@ function getMeasurementGraphPointerPosition(event) {
         x: event.clientX - rect.left,
         y: event.clientY - rect.top,
     };
+}
+
+function formatMeasurementHoverFrequency(frequencyHz) {
+    const frequency = Number(frequencyHz);
+    if (!Number.isFinite(frequency)) return '';
+    if (frequency >= 1000) {
+        const valueKhz = frequency / 1000;
+        const digits = valueKhz >= 10 ? 1 : 1;
+        return `${valueKhz.toFixed(digits).replace(/\.0$/, '')} kHz`;
+    }
+    return `${Math.round(frequency)} Hz`;
+}
+
+function formatMeasurementHoverDb(valueDb) {
+    const value = Number(valueDb);
+    if (!Number.isFinite(value)) return '';
+    return `${value >= 0 ? '+' : ''}${value.toFixed(1)} dB`;
+}
+
+function getMeasurementTraceDisplayedDbAtFrequency(points = [], frequencyHz = 1000) {
+    const frequency = Number(frequencyHz);
+    if (!Number.isFinite(frequency) || frequency <= 0 || !Array.isArray(points) || !points.length) return null;
+    const normalizedPoints = points
+        .map(point => [Number(point?.[0]), Number(point?.[1])])
+        .filter(([pointFrequency, level]) => Number.isFinite(pointFrequency) && pointFrequency > 0 && Number.isFinite(level))
+        .sort((a, b) => a[0] - b[0]);
+    if (!normalizedPoints.length) return null;
+    if (frequency < normalizedPoints[0][0] || frequency > normalizedPoints[normalizedPoints.length - 1][0]) return null;
+    for (let index = 1; index < normalizedPoints.length; index += 1) {
+        const [prevFrequency, prevLevel] = normalizedPoints[index - 1];
+        const [nextFrequency, nextLevel] = normalizedPoints[index];
+        if (frequency > nextFrequency) continue;
+        if (frequency <= prevFrequency || Math.abs(nextFrequency - prevFrequency) < 1e-9) return prevLevel;
+        const prevLog = Math.log10(prevFrequency);
+        const nextLog = Math.log10(nextFrequency);
+        const ratio = (Math.log10(frequency) - prevLog) / Math.max(1e-9, nextLog - prevLog);
+        return prevLevel + ((nextLevel - prevLevel) * Math.max(0, Math.min(1, ratio)));
+    }
+    return normalizedPoints[normalizedPoints.length - 1][1];
+}
+
+function getMeasurementFrequencyHoverTooltip(event) {
+    const pointer = getMeasurementGraphPointerPosition(event);
+    if (!pointer) return '';
+    const { x, y, bounds, range } = pointer;
+    if (x < bounds.left || x > bounds.left + bounds.width || y < bounds.top || y > bounds.top + bounds.height) return '';
+    const frequencyHz = measurementXToFrequency(x, bounds);
+    const graphEntries = getGraphMeasurementEntries();
+    const candidates = [];
+    graphEntries.forEach((entry) => {
+        (entry.traces || []).forEach((trace) => {
+            const levelDb = getMeasurementTraceDisplayedDbAtFrequency(trace.points || [], frequencyHz);
+            if (!Number.isFinite(levelDb)) return;
+            const traceY = Math.max(bounds.top, Math.min(bounds.top + bounds.height, measurementDbToY(levelDb, bounds, range)));
+            candidates.push({ levelDb, distancePx: Math.abs(traceY - y) });
+        });
+    });
+    candidates.sort((a, b) => a.distancePx - b.distancePx);
+    const candidate = candidates[0] || null;
+    if (!candidate) return '';
+    return `${formatMeasurementHoverFrequency(frequencyHz)} · ${formatMeasurementHoverDb(candidate.levelDb)}`;
 }
 
 function getMeasurementPeqHandlePosition(filter, bounds, range) {
@@ -6405,7 +6663,112 @@ function drawMeasurementConvolverRangeOverlay(ctx, bounds) {
     ctx.restore();
 }
 
+function measurementIrTimeToX(timeMs, bounds) {
+    const minMs = -2;
+    const maxMs = 30;
+    const ratio = (Math.max(minMs, Math.min(maxMs, Number(timeMs))) - minMs) / (maxMs - minMs);
+    return bounds.left + (ratio * bounds.width);
+}
+
+function measurementXToIrTime(x, bounds) {
+    const minMs = -2;
+    const maxMs = 30;
+    const ratio = (Number(x) - bounds.left) / Math.max(1, bounds.width);
+    return minMs + (Math.max(0, Math.min(1, ratio)) * (maxMs - minMs));
+}
+
+function measurementIrAmplitudeToY(amplitude, bounds) {
+    const ratio = (Math.max(-1, Math.min(1, Number(amplitude))) + 1) / 2;
+    return bounds.top + ((1 - ratio) * bounds.height);
+}
+
+function getNearestMeasurementIrPoint(points = [], targetTimeMs = 0) {
+    return points.reduce((nearest, point) => {
+        const [timeMs, amplitude] = point;
+        const distance = Math.abs(Number(timeMs) - targetTimeMs);
+        if (!nearest || distance < nearest.distance) {
+            return { timeMs: Number(timeMs), amplitude: Number(amplitude), distance };
+        }
+        return nearest;
+    }, null);
+}
+
+function getMeasurementIrHoverTooltip(event) {
+    const pointer = getMeasurementGraphPointerPosition(event);
+    if (!pointer) return '';
+    const { x, y, bounds } = pointer;
+    if (x < bounds.left || x > bounds.left + bounds.width || y < bounds.top || y > bounds.top + bounds.height) return '';
+    const targetTimeMs = measurementXToIrTime(x, bounds);
+    const graphEntries = getGraphMeasurementEntries();
+    const candidates = graphEntries.map((entry) => {
+        const trace = (entry.traces || [])[0] || {};
+        const nearest = getNearestMeasurementIrPoint(trace.points || [], targetTimeMs);
+        if (!nearest) return null;
+        const pointX = measurementIrTimeToX(nearest.timeMs, bounds);
+        const pointY = measurementIrAmplitudeToY(nearest.amplitude, bounds);
+        return {
+            nearest,
+            distancePx: Math.hypot(pointX - x, pointY - y),
+        };
+    }).filter(Boolean).sort((a, b) => a.distancePx - b.distancePx);
+    const candidate = candidates[0] || null;
+    if (!candidate) return '';
+    const { nearest } = candidate;
+    return `${formatMeasurementIrMs(nearest.timeMs)} · amp ${formatMeasurementIrAmplitude(nearest.amplitude)}`;
+}
+
+function drawMeasurementIrGraph(ctx, bounds, graphEntries) {
+    ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+    ctx.lineWidth = 1;
+    [-1, -0.5, 0, 0.5, 1].forEach((amplitude) => {
+        const y = measurementIrAmplitudeToY(amplitude, bounds);
+        ctx.beginPath();
+        ctx.moveTo(bounds.left, y);
+        ctx.lineTo(bounds.left + bounds.width, y);
+        ctx.stroke();
+        ctx.fillStyle = amplitude === 0 ? '#d1fae5' : 'rgba(236,236,240,0.72)';
+        ctx.font = '12px sans-serif';
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(amplitude === 0 ? '0' : amplitude.toFixed(1), bounds.left - 10, y);
+    });
+
+    [-2, 0, 5, 10, 15, 20, 25, 30].forEach((timeMs) => {
+        const x = measurementIrTimeToX(timeMs, bounds);
+        ctx.strokeStyle = timeMs === 0 ? 'rgba(209,250,229,0.26)' : 'rgba(255,255,255,0.08)';
+        ctx.beginPath();
+        ctx.moveTo(x, bounds.top);
+        ctx.lineTo(x, bounds.top + bounds.height);
+        ctx.stroke();
+        ctx.fillStyle = 'rgba(236,236,240,0.72)';
+        ctx.font = '12px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'top';
+        ctx.fillText(`${timeMs} ms`, x, bounds.top + bounds.height + 10);
+    });
+
+    graphEntries.forEach(entry => {
+        (entry.traces || []).forEach(trace => {
+            if (!trace.points.length) return;
+            const isReviewTrace = trace.role === 'raw-review';
+            ctx.strokeStyle = entry.graphColor || trace.color || '#6ee7b7';
+            ctx.lineWidth = entry.current ? 2.8 : (isReviewTrace ? 1.8 : 2.1);
+            ctx.setLineDash(entry.current ? [] : (isReviewTrace ? [6, 5] : [10, 6]));
+            ctx.beginPath();
+            trace.points.forEach(([timeMs, amplitude], pointIndex) => {
+                const x = measurementIrTimeToX(timeMs, bounds);
+                const y = measurementIrAmplitudeToY(amplitude, bounds);
+                if (pointIndex === 0) ctx.moveTo(x, y);
+                else ctx.lineTo(x, y);
+            });
+            ctx.stroke();
+            ctx.setLineDash([]);
+        });
+    });
+}
+
 function handleMeasurementGraphPointerDown(event) {
+    if (getMeasurementGraphView() === 'ir') return;
     const pointer = getMeasurementGraphPointerPosition(event);
     if (!pointer) return;
     const { x, y, bounds, range } = pointer;
@@ -6452,6 +6815,15 @@ function handleMeasurementGraphPointerDown(event) {
 }
 
 function handleMeasurementGraphPointerMove(event) {
+    if (getMeasurementGraphView() === 'ir') {
+        if (elements.measurementGraph) {
+            elements.measurementGraph.title = getMeasurementIrHoverTooltip(event);
+        }
+        return;
+    }
+    if (elements.measurementGraph) {
+        elements.measurementGraph.title = getMeasurementFrequencyHoverTooltip(event);
+    }
     const conv = ensureMeasurementConvolverState();
     if (conv.dragMode && measurementGraphPointerId === event.pointerId) {
         if (event.pointerType === 'touch') event.preventDefault();
@@ -6495,7 +6867,12 @@ function handleMeasurementGraphPointerMove(event) {
     renderMeasurementPanel();
 }
 
+function handleMeasurementGraphPointerLeave() {
+    if (elements.measurementGraph) elements.measurementGraph.title = '';
+}
+
 function handleMeasurementGraphPointerUp(event) {
+    if (getMeasurementGraphView() === 'ir') return;
     const peq = ensureMeasurementPeqState();
     const conv = ensureMeasurementConvolverState();
     if (measurementGraphPointerId !== null && event.pointerId === measurementGraphPointerId && event.pointerType === 'touch') {
@@ -6529,8 +6906,9 @@ function buildMeasurementGraphEntry(measurement = {}, { current = false, graphCo
 
 function getGraphMeasurementEntries() {
     const entries = [];
+    const builder = getMeasurementGraphView() === 'ir' ? buildMeasurementIrGraphEntry : buildMeasurementGraphEntry;
     getCurrentMeasurementEntries().forEach((measurement, index) => {
-        const currentEntry = buildMeasurementGraphEntry(measurement, {
+        const currentEntry = builder(measurement, {
             current: true,
             graphColor: index === 0 ? measurementCurrentColor : measurementComparePalette[index - 1],
         });
@@ -6538,7 +6916,7 @@ function getGraphMeasurementEntries() {
     });
     const visibleColorById = getVisibleMeasurementColorById();
     getVisibleMeasurementEntries().forEach((measurement) => {
-        const entry = buildMeasurementGraphEntry(measurement, { current: false, graphColor: visibleColorById[measurement.id] });
+        const entry = builder(measurement, { current: false, graphColor: visibleColorById[measurement.id] });
         if (entry) entries.push(entry);
     });
     return entries;
@@ -6949,6 +7327,13 @@ function drawMeasurementGraph() {
     const graphEntries = getGraphMeasurementEntries();
     const range = getMeasurementGraphRange(graphEntries);
     const bounds = getMeasurementGraphBounds(displayWidth, displayHeight);
+    if (getMeasurementGraphView() === 'ir') {
+        drawMeasurementIrGraph(ctx, bounds, graphEntries);
+        ctx.strokeStyle = 'rgba(255,255,255,0.16)';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(bounds.left, bounds.top, bounds.width, bounds.height);
+        return;
+    }
 
     ctx.strokeStyle = 'rgba(255,255,255,0.08)';
     ctx.lineWidth = 1;
@@ -7060,6 +7445,36 @@ function getMeasurementQualityTitle(measurement = {}) {
     return items.map(item => item?.message).filter(Boolean).join(' · ');
 }
 
+function formatSignedMeasurementMs(valueMs, digits = 2) {
+    const numeric = Number(valueMs);
+    if (!Number.isFinite(numeric)) return '';
+    return `${numeric >= 0 ? '+' : ''}${numeric.toFixed(digits)} ms`;
+}
+
+const MEASUREMENT_LR_REPEAT_DELTA_TOOLTIP = 'L/R delta is calculated as Right - Left. Positive means the right channel arrives later.';
+
+function getMeasurementLrRepeatGlobalDeltaMs(measurement = {}, repeat = {}) {
+    const pairedDelta = Number(repeat?.delta_center_ms);
+    if (Number.isFinite(pairedDelta)) return pairedDelta;
+
+    const perSideDelta = Number(repeat?.delta_ms);
+    if (!Number.isFinite(perSideDelta)) return null;
+    if (repeat?.pre_averaged) {
+        const channel = String(measurement?.channel || '').toLowerCase();
+        return channel === 'right' ? -perSideDelta : perSideDelta;
+    }
+    return perSideDelta;
+}
+
+function formatMeasurementLrRepeatDelta(measurement = {}, repeat = {}) {
+    const globalDeltaMs = getMeasurementLrRepeatGlobalDeltaMs(measurement, repeat);
+    if (!Number.isFinite(globalDeltaMs)) return '';
+    const laterText = Math.abs(globalDeltaMs) < 0.005
+        ? 'aligned'
+        : (globalDeltaMs > 0 ? 'R later' : 'L later');
+    return `L/R delta ${formatSignedMeasurementMs(globalDeltaMs)} · ${laterText}`;
+}
+
 function getMeasurementTimingInfo(measurement = {}) {
     const referencePath = measurement?.analysis?.reference_path || {};
     const impulse = measurement?.analysis?.impulse_response || {};
@@ -7090,17 +7505,18 @@ function getMeasurementTimingInfo(measurement = {}) {
         const acceptedRuns = preAveraged ? Number(repeat.repeat_count) || 0 : Number(repeat.accepted_runs) || 0;
         const repeatCount = Number(repeat.repeat_count) || 0;
         const spreadMs = Number(repeat.delta_spread_ms ?? repeat.timing_spread_ms);
-        const deltaCenterMs = Number(repeat.delta_center_ms ?? repeat.delta_ms);
         const pairedMethod = repeat.timing_method === 'paired-delta-cluster';
         const timingStable = repeat.timing_stable ?? repeat.paired_timing_stable ?? String(referencePath?.stability || '').toLowerCase() === 'stable';
         const spreadText = Number.isFinite(spreadMs) ? ` · spread ${spreadMs.toFixed(2)} ms` : '';
-        const deltaText = Number.isFinite(deltaCenterMs) && (pairedMethod || preAveraged) ? ` · Δ ${deltaCenterMs >= 0 ? '+' : ''}${deltaCenterMs.toFixed(2)} ms` : '';
+        const deltaText = (pairedMethod || preAveraged) ? formatMeasurementLrRepeatDelta(measurement, repeat) : '';
+        const deltaLineText = deltaText ? ` · ${deltaText}` : '';
+        const deltaDetailText = deltaText ? ` · ${MEASUREMENT_LR_REPEAT_DELTA_TOOLTIP}` : '';
         if (!timingStable) {
             return {
                 status: 'lr-repeat-unstable',
                 label: 'L/R repeat timing unstable',
                 line: `L/R repeat timing unstable · accepted ${acceptedRuns}/${repeatCount}`,
-                detail: `L/R repeat timing unstable · accepted ${acceptedRuns}/${repeatCount}${spreadText}${deltaText}`,
+                detail: `L/R repeat timing unstable · accepted ${acceptedRuns}/${repeatCount}${spreadText}${deltaLineText}${deltaDetailText}`,
                 delayMs: null,
                 arrivalSamples: null,
                 source: 'lr_repeat_unstable',
@@ -7111,8 +7527,8 @@ function getMeasurementTimingInfo(measurement = {}) {
         return {
             status: 'lr-repeat',
             label,
-            line: `L/R repeat timing · ${delayText} · accepted ${acceptedRuns}/${repeatCount}${spreadText}${deltaText}`,
-            detail: `L/R repeat timing · ${delayText} · accepted ${acceptedRuns}/${repeatCount}${spreadText}${deltaText} · ${methodLabel}`,
+            line: `L/R repeat timing · ${delayText} · accepted ${acceptedRuns}/${repeatCount}${spreadText}${deltaLineText}`,
+            detail: `L/R repeat timing · ${delayText} · accepted ${acceptedRuns}/${repeatCount}${spreadText}${deltaLineText}${deltaDetailText} · ${methodLabel}`,
             delayMs,
             arrivalSamples,
             source: preAveraged ? 'lr_repeat_er_pre_averaged' : (pairedMethod ? 'lr_repeat_paired_delta' : (repeat.electrical_reference_used ? 'lr_repeat_electrical_reference' : 'lr_repeat_acoustic')),
@@ -7170,6 +7586,23 @@ function getMeasurementJobResultMeasurement(job = {}) {
     if (job?.measurement && typeof job.measurement === 'object') return job.measurement;
     if (job?.result && typeof job.result === 'object' && (Array.isArray(job.result.traces) || job.result.summary || job.result.analysis)) return job.result;
     return null;
+}
+
+function formatMeasurementInputLevelText(inputLevel = {}) {
+    if (!inputLevel || typeof inputLevel !== 'object') return '';
+    if (inputLevel.clipped) return 'CLIP';
+    const peakDbfs = Number(inputLevel.peak_dbfs);
+    if (!Number.isFinite(peakDbfs)) return '';
+    if (peakDbfs <= -90) return 'Peak < -90 dBFS';
+    return `Peak ${Math.round(peakDbfs)} dBFS`;
+}
+
+function formatMeasurementJobStatusText(job = {}, fallback = 'Measurement running…') {
+    const message = String(job.message || fallback);
+    const levelText = formatMeasurementInputLevelText(job.input_level);
+    const isLrRepeat = job.job_kind === 'lr-repeat' || !!state.measurement?.repeatJobActive;
+    if (!isLrRepeat || !levelText || /\b(CLIP|dBFS)\b/.test(message)) return message;
+    return `${message} · ${levelText}`;
 }
 
 function syncMeasurementStartButtonFallback() {
@@ -7261,7 +7694,7 @@ async function startHostMeasurement() {
     if (!resp.ok) throw new Error(data.detail || 'Failed to start measurement');
     const job = data.job || {};
     state.measurement.activeJobId = String(job.id || '');
-    state.measurement.statusText = String(job.message || 'Preparing sweep…');
+    state.measurement.statusText = formatMeasurementJobStatusText(job, 'Preparing sweep…');
     renderMeasurementPanel();
     await pollMeasurementJob(state.measurement.activeJobId);
 }
@@ -7296,7 +7729,7 @@ async function startLrRepeatMeasurement() {
     if (!resp.ok) throw new Error(data.detail || 'Failed to start L/R repeat measurement');
     const job = data.job || {};
     state.measurement.activeJobId = String(job.id || '');
-    state.measurement.statusText = String(job.message || 'Preparing L/R repeat…');
+    state.measurement.statusText = formatMeasurementJobStatusText(job, 'Preparing L/R repeat…');
     renderMeasurementPanel();
     await pollMeasurementJob(state.measurement.activeJobId);
 }
@@ -7385,7 +7818,7 @@ async function pollMeasurementJob(jobId) {
         if (!resp.ok) throw new Error(data.detail || 'Failed to fetch measurement job');
         const job = data.job || {};
         const jobStatus = getMeasurementJobStatus(job);
-        state.measurement.statusText = String(job.message || state.measurement.statusText || 'Measurement running…');
+        state.measurement.statusText = formatMeasurementJobStatusText(job, state.measurement.statusText || 'Measurement running…');
         if (MEASUREMENT_JOB_SUCCESS_STATES.has(jobStatus)) {
             state.measurement.statusText = String(job.message || 'Measurement finished.');
             state.measurement.activeJobId = '';
@@ -7694,6 +8127,8 @@ function renderMeasurementPanel() {
     const measurements = (measurementState.measurements || []).filter(measurement => measurement.id !== current?.id);
     const graphEntries = getGraphMeasurementEntries();
     const assistMode = measurementState.assistMode === 'convolver' ? 'convolver' : 'peq';
+    const graphView = getMeasurementGraphView();
+    const frequencyView = graphView === 'freq';
     const peq = ensureMeasurementPeqState();
     const conv = ensureMeasurementConvolverState();
     const activePeqFilter = getMeasurementPeqActiveFilter();
@@ -7716,6 +8151,13 @@ function renderMeasurementPanel() {
     });
     document.querySelectorAll('[data-measurement-smoothing]').forEach((button) => {
         const active = (button.getAttribute('data-measurement-smoothing') || '') === (measurementState.displaySmoothing || '1/6-oct');
+        button.classList.toggle('is-active', active);
+        button.disabled = !frequencyView;
+        button.title = frequencyView ? '' : 'Only available in frequency view.';
+        button.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
+    document.querySelectorAll('[data-measurement-view]').forEach((button) => {
+        const active = (button.getAttribute('data-measurement-view') || 'freq') === graphView;
         button.classList.toggle('is-active', active);
         button.setAttribute('aria-pressed', active ? 'true' : 'false');
     });
@@ -7828,12 +8270,18 @@ function renderMeasurementPanel() {
         elements.measurementSaveBtn.disabled = !current || measurementState.saveInFlight || measurementState.startInFlight || measurementState.currentMeasurementSaved;
         elements.measurementSaveBtn.textContent = measurementState.saveInFlight ? 'Working…' : (measurementState.currentMeasurementSaved ? 'Saved' : 'Save current');
     }
-    if (elements.measurementAssistMode) elements.measurementAssistMode.value = assistMode;
+    if (elements.measurementAssistMode) {
+        elements.measurementAssistMode.value = assistMode;
+        elements.measurementAssistMode.disabled = !frequencyView;
+        elements.measurementAssistMode.title = frequencyView ? '' : 'Only available in frequency view.';
+    }
     if (elements.measurementTargetCurve) {
         elements.measurementTargetCurve.innerHTML = getMeasurementConvolverCurveOptions()
             .map((curve) => `<option value="${escapeHtml(curve.key)}" ${conv.targetCurve === curve.key ? 'selected' : ''}>${escapeHtml(curve.label || curve.shortLabel || curve.key)}</option>`)
             .join('');
         elements.measurementTargetCurve.value = conv.targetCurve;
+        elements.measurementTargetCurve.disabled = !frequencyView;
+        elements.measurementTargetCurve.title = frequencyView ? '' : 'Only available in frequency view.';
         elements.measurementTargetCurve.classList.remove('hidden');
     }
     if (elements.measurementClearBtn) {
@@ -7849,31 +8297,52 @@ function renderMeasurementPanel() {
             || String(conv.quality) !== defaultConv.quality
         );
         const hasResettableGraphState = !!current || !!peq.filters.length || hasConvolverResettableState;
-        elements.measurementClearBtn.disabled = !hasResettableGraphState || measurementState.startInFlight || !!measurementState.activeJobId;
+        elements.measurementClearBtn.disabled = !frequencyView || !hasResettableGraphState || measurementState.startInFlight || !!measurementState.activeJobId;
+        elements.measurementClearBtn.title = frequencyView ? '' : 'Only available in frequency view.';
     }
     if (elements.measurementSetupStatus) {
         elements.measurementSetupStatus.textContent = measurementState.statusText || describeMeasurementScope();
     }
     if (elements.measurementSummary) {
-        if (assistMode === 'convolver') {
+        if (!frequencyView) {
+            elements.measurementSummary.textContent = 'IR -2–30 ms';
+        } else if (assistMode === 'convolver') {
             elements.measurementSummary.textContent = `${Math.round(conv.rangeStartHz)}–${Math.round(conv.rangeEndHz)} Hz`;
         } else {
             elements.measurementSummary.textContent = peq.filters.length ? `${peq.filters.length}/4 assistant filters` : '';
         }
     }
+    if (elements.measurementGraphSubtitle) {
+        elements.measurementGraphSubtitle.textContent = frequencyView
+            ? 'Frequency view: 20 Hz to 20 kHz.'
+            : 'Impulse response view: -2 ms to +30 ms.';
+    }
     if (elements.measurementEmpty) {
+        elements.measurementEmpty.textContent = frequencyView
+            ? 'No current or saved measurements yet.'
+            : 'No IR previews available for the visible measurements.';
         elements.measurementEmpty.classList.toggle('hidden', graphEntries.length > 0);
     }
     if (elements.measurementGraphControls) {
-        elements.measurementGraphControls.textContent = current
+        const irDiagnostics = buildMeasurementIrDiagnostics(graphEntries, frequencyView);
+        const irSummary = buildMeasurementIrSummary(irDiagnostics);
+        const irTooltip = buildMeasurementIrDiagnosticsTooltip(irDiagnostics);
+        elements.measurementGraphControls.textContent = !frequencyView
+            ? (irSummary || (graphEntries.length ? 'IR: previews aligned to 0 ms' : 'Run a new sweep to capture an IR preview.'))
+            : current
             ? (assistMode === 'convolver' ? 'Drag the blue range block or its edges to set the FIR correction range.' : 'Tap/click near 0 dB to add a filter, drag handles for freq/gain.')
             : 'Run a sweep to see the graph.';
+        elements.measurementGraphControls.title = !frequencyView ? irTooltip : '';
     }
+    if (elements.measurementGraph && frequencyView) {
+        elements.measurementGraph.title = '';
+    }
+    renderMeasurementIrDiagnostics(graphEntries, frequencyView);
     if (elements.measurementPeqPanel) {
-        elements.measurementPeqPanel.classList.toggle('hidden', assistMode !== 'peq' || (!peq.enabled && !peq.filters.length));
+        elements.measurementPeqPanel.classList.toggle('hidden', !frequencyView || assistMode !== 'peq' || (!peq.enabled && !peq.filters.length));
     }
     if (elements.measurementConvolverPanel) {
-        elements.measurementConvolverPanel.classList.toggle('hidden', assistMode !== 'convolver');
+        elements.measurementConvolverPanel.classList.toggle('hidden', !frequencyView || assistMode !== 'convolver');
     }
     if (elements.measurementPeqChips) {
         elements.measurementPeqChips.innerHTML = Array.from({ length: 4 }, (_, index) => {
@@ -8047,6 +8516,7 @@ function renderMeasurementPanel() {
         if (elements.measurementConvolverQuality.innerHTML !== optionsHtml) elements.measurementConvolverQuality.innerHTML = optionsHtml;
         elements.measurementConvolverQuality.value = conv.quality;
     }
+    const convolverSourceSelection = getMeasurementConvolverSourceSelectionState();
     const convAnalyses = ['left', 'right'].map((side) => analyzeMeasurementConvolverSide(side));
     const left = convAnalyses[0];
     const right = convAnalyses[1];
@@ -8125,9 +8595,21 @@ function renderMeasurementPanel() {
         elements.measurementConvolverWarnings.innerHTML = warnings.map((warning) => `<div>${escapeHtml(warning)}</div>`).join('');
         elements.measurementConvolverWarnings.classList.toggle('hidden', !warnings.length);
     }
-    if (elements.measurementConvolverTakeLeftBtn) elements.measurementConvolverTakeLeftBtn.disabled = !left || isCreatingConvolverPreset;
-    if (elements.measurementConvolverTakeRightBtn) elements.measurementConvolverTakeRightBtn.disabled = !right || isCreatingConvolverPreset;
-    if (elements.measurementConvolverTakeBothBtn) elements.measurementConvolverTakeBothBtn.disabled = !left || !right || isCreatingConvolverPreset;
+    if (elements.measurementConvolverTakeLeftBtn) {
+        elements.measurementConvolverTakeLeftBtn.disabled = !left || !convolverSourceSelection.take.left || isCreatingConvolverPreset;
+        elements.measurementConvolverTakeLeftBtn.classList.toggle('is-active', !!left && convolverSourceSelection.take.left && !isCreatingConvolverPreset);
+        elements.measurementConvolverTakeLeftBtn.setAttribute('aria-pressed', !!left && convolverSourceSelection.take.left && !isCreatingConvolverPreset ? 'true' : 'false');
+    }
+    if (elements.measurementConvolverTakeRightBtn) {
+        elements.measurementConvolverTakeRightBtn.disabled = !right || !convolverSourceSelection.take.right || isCreatingConvolverPreset;
+        elements.measurementConvolverTakeRightBtn.classList.toggle('is-active', !!right && convolverSourceSelection.take.right && !isCreatingConvolverPreset);
+        elements.measurementConvolverTakeRightBtn.setAttribute('aria-pressed', !!right && convolverSourceSelection.take.right && !isCreatingConvolverPreset ? 'true' : 'false');
+    }
+    if (elements.measurementConvolverTakeBothBtn) {
+        elements.measurementConvolverTakeBothBtn.disabled = !left || !right || !convolverSourceSelection.take.both || isCreatingConvolverPreset;
+        elements.measurementConvolverTakeBothBtn.classList.toggle('is-active', !!left && !!right && convolverSourceSelection.take.both && !isCreatingConvolverPreset);
+        elements.measurementConvolverTakeBothBtn.setAttribute('aria-pressed', !!left && !!right && convolverSourceSelection.take.both && !isCreatingConvolverPreset ? 'true' : 'false');
+    }
     if (elements.measurementConvolverCreateBtn) {
         elements.measurementConvolverCreateBtn.disabled = !hasConvolverDraft || !!draftPhaseMismatch || !String(conv.draft?.presetName || '').trim() || isCreatingConvolverPreset;
         elements.measurementConvolverCreateBtn.textContent = isCreatingConvolverPreset ? 'Creating...' : 'Create Convolver Preset';
@@ -8300,7 +8782,18 @@ function setupMeasurementActions() {
     });
     document.querySelectorAll('[data-measurement-smoothing]').forEach((button) => {
         button.addEventListener('click', () => {
+            if (getMeasurementGraphView() === 'ir') return;
             state.measurement.displaySmoothing = button.getAttribute('data-measurement-smoothing') || '1/6-oct';
+            renderMeasurementPanel();
+            scheduleMeasurementGraphRender();
+        });
+    });
+    document.querySelectorAll('[data-measurement-view]').forEach((button) => {
+        button.addEventListener('click', () => {
+            state.measurement.measurementView = button.getAttribute('data-measurement-view') || 'freq';
+            ensureMeasurementPeqState().dragFilterId = null;
+            ensureMeasurementConvolverState().dragMode = null;
+            measurementGraphPointerId = null;
             renderMeasurementPanel();
             scheduleMeasurementGraphRender();
         });
@@ -8444,6 +8937,7 @@ function setupMeasurementActions() {
         elements.measurementGraph.addEventListener('pointermove', handleMeasurementGraphPointerMove);
         elements.measurementGraph.addEventListener('pointerup', handleMeasurementGraphPointerUp);
         elements.measurementGraph.addEventListener('pointercancel', handleMeasurementGraphPointerUp);
+        elements.measurementGraph.addEventListener('pointerleave', handleMeasurementGraphPointerLeave);
         elements.measurementGraph.addEventListener('wheel', handleMeasurementPeqGraphWheel, { passive: false });
     }
     window.addEventListener('resize', () => {

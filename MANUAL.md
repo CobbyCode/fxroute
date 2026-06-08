@@ -148,6 +148,7 @@ The measurement assistant is meant for practical room-tuning work:
 - optionally load a microphone calibration file
 - run a sweep
 - view the frequency response from 20 Hz to 20 kHz
+- switch between frequency response and impulse-response preview when preview data is available
 - switch graph smoothing: raw, 1/6 octave, 1/3 octave, or 1 octave
 - save useful runs
 - use the PEQ assistant to sketch a few correction filters
@@ -163,7 +164,11 @@ Use **Start Single Sweep** when you want one quick measurement of the selected s
 - **R** measures the right speaker.
 - **Stereo** measures both playback channels together for a broad overall check.
 
+While a sweep is running, the status line shows the simple input-level indicator, for example `Peak -42 dBFS`, `Peak < -90 dBFS`, or `CLIP`.
+
 Use **Start L/R Repeat** when you want a more dependable left/right measurement pair at one microphone position. Put the microphone in place, do not move it, then start the repeat. FXRoute measures left and right three times each, alternating L/R internally.
+
+While L/R Repeat is running, the status keeps the current repeat step and total progress, and adds the same simple input-level indicator used by Single Sweep.
 
 After the repeat finishes, FXRoute shows one combined result for review:
 
@@ -180,6 +185,15 @@ L/R Repeat is useful when:
 - a single sweep looks suspicious and you want repeat confirmation
 
 Keep the microphone fixed during the whole repeat. Moving the microphone between the internal sweeps defeats the purpose of the mode.
+
+### Frequency and IR graph views
+
+The Measurement graph has two local views:
+
+- **Freq** shows the normal frequency response from 20 Hz to 20 kHz. Smoothing, PEQ drafting, and Convolver range editing are available in this view.
+- **IR** shows a compact impulse-response preview from -2 ms to +30 ms for visible measurements that include preview data. The preview is normalized for inspection and is intended as a timing/reflection sanity check, not as a full impulse-response export.
+
+New measurements include the compact IR preview when analysis can produce it. Older saved runs may not have preview data and will stay hidden in **IR** view.
 
 ### Repeat timing and outlier handling
 
@@ -229,8 +243,17 @@ When using **L/R Repeat**, the first six steps become simpler:
 1. Put the microphone at the listening position.
 2. Press **Start L/R Repeat** and wait for the combined L/R review result.
 3. Press **Save current** to save both summaries.
-4. Select the saved repeat L summary and press **Take L**.
-5. Select the saved repeat R summary and press **Take R**.
+4. Select the saved repeat L and R summaries together and press **Take Both**.
+
+The Convolver assistant uses the visible saved measurement selection when saved runs are selected. If no saved run is selected, it can use the current measurement. The Take buttons are intentionally narrow:
+
+- one visible Left measurement enables **Take L**
+- one visible Right measurement enables **Take R**
+- one visible Left plus one visible Right enables **Take Both**
+
+If you want to take L and R separately, keep only the left run visible before pressing **Take L**, then keep only the right run visible before pressing **Take R**. If exactly one L and one R are visible, use **Take Both**.
+
+Ambiguous multi-selections disable the Take buttons and show `Select one measurement or one L/R selection.` Hide or deselect unrelated saved runs before taking measurements into the Convolver draft.
 
 Available phase modes:
 
