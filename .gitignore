@@ -30,6 +30,7 @@ manual_backup.zip
 # Optional local test/media clutter
 test-inputs/
 node_modules/
+media/reference/
 
 # Local scratch images dropped in the repo root
 /ChatGPT Image*

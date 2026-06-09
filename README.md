@@ -94,6 +94,12 @@ If EasyEffects is already installed through the system package manager or manage
 
 Fresh installs default Spotify autostart to enabled when a local Spotify desktop client is available, so the player can return after a desktop/session restart. Existing `.env` files are preserved on installer reruns.
 
+## Maintenance updates
+
+Installed git checkouts can be updated from **Technical settings → Maintenance** or from the `fxroute-update` helper. The update path uses the same install root, service name, virtualenv, and systemd user service assumptions as `install.sh`.
+
+The updater is intentionally conservative: it refuses to run with local uncommitted changes, fetches GitHub first, pulls only by fast-forward, refreshes Python dependencies only when `requirements.txt` changed, runs the production validation/build step, and restarts the configured FXRoute user service. User data under `~/.config/fxroute`, measurements, presets, filters, music files, and `.env` are not migrated or reset by this updater.
+
 ## Quick start
 
 ```bash
@@ -121,7 +127,7 @@ Typical URLs:
 - **DSP** — EasyEffects presets, PEQ, convolver, helpers, A/B compare, and preset creation
 - **Measure** — practical host-mic measurement and tuning workflow
 - **Spotify** — control a local Spotify desktop client
-- **Technical settings** — output selection, source state, Bluetooth status, and local certificate access
+- **Technical settings** — output selection, source state, Bluetooth status, Maintenance updates, and local certificate access
 
 ## Library metadata
 

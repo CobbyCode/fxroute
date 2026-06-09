@@ -173,6 +173,20 @@ let state = {
             notes: [],
             pending: false,
         },
+        maintenance: {
+            installedVersion: '',
+            latestSummary: 'Version status not checked yet.',
+            detail: 'Use the existing installer path for safe GitHub updates.',
+            currentVersion: '',
+            latestVersion: '',
+            updateAvailable: null,
+            log: '',
+            pending: false,
+            restartPending: false,
+            operation: '',
+            detailsExpanded: false,
+            hasError: false,
+        },
     },
     wsConnected: false,
 };
@@ -255,6 +269,17 @@ const elements = {
     settingsHardwareAutoOnBtn: document.getElementById('settings-hardware-auto-on'),
     settingsHardwareAutoOffBtn: document.getElementById('settings-hardware-auto-off'),
     settingsCertificateLink: document.getElementById('settings-certificate-link'),
+    settingsMaintenanceSummary: document.getElementById('settings-maintenance-summary'),
+    settingsMaintenanceStatus: document.getElementById('settings-maintenance-status'),
+    settingsMaintenanceCurrent: document.getElementById('settings-maintenance-current'),
+    settingsMaintenanceLatestRow: document.getElementById('settings-maintenance-latest-row'),
+    settingsMaintenanceLatest: document.getElementById('settings-maintenance-latest'),
+    settingsMaintenanceDetail: document.getElementById('settings-maintenance-detail'),
+    settingsUpdateCheckBtn: document.getElementById('settings-update-check'),
+    settingsUpdateRunBtn: document.getElementById('settings-update-run'),
+    settingsUpdateDetailsToggle: document.getElementById('settings-update-details-toggle'),
+    settingsUpdateDetails: document.getElementById('settings-update-details'),
+    settingsUpdateLog: document.getElementById('settings-update-log'),
     tabs: document.querySelectorAll('.tab-btn'),
     tabPanels: document.querySelectorAll('.tab-panel'),
     stationsGrid: document.getElementById('stations-grid'),
@@ -824,6 +849,12 @@ function setupSettingsActions() {
     elements.settingsHardwarePressBtn?.addEventListener('click', () => runHardwareCommand('/api/hardware/input/press', 'Input button pressed'));
     elements.settingsHardwareAutoOnBtn?.addEventListener('click', () => runHardwareCommand('/api/hardware/auto/on', 'Auto mode enabled'));
     elements.settingsHardwareAutoOffBtn?.addEventListener('click', () => runHardwareCommand('/api/hardware/auto/off', 'Auto mode disabled'));
+    elements.settingsUpdateCheckBtn?.addEventListener('click', () => checkFxrouteUpdate());
+    elements.settingsUpdateRunBtn?.addEventListener('click', () => runFxrouteUpdate());
+    elements.settingsUpdateDetailsToggle?.addEventListener('click', () => {
+        state.settings.maintenance.detailsExpanded = !state.settings.maintenance.detailsExpanded;
+        renderMaintenancePanel();
+    });
     const backdrop = elements.settingsPanel.querySelector('.manage-overlay-backdrop');
     if (backdrop) backdrop.addEventListener('click', () => toggleSettingsPanel(false));
     document.addEventListener('keydown', (event) => {
@@ -864,7 +895,7 @@ function toggleSettingsPanel(forceOpen = null) {
     if (shouldOpen) {
         settingsOutputScanOnFocusDone = false;
         renderSettingsPanel();
-        void Promise.all([fetchAudioOutputOverview(), fetchAudioSourceOverview(), fetchHardwareStatus()]);
+        void Promise.all([fetchAudioOutputOverview(), fetchAudioSourceOverview(), fetchHardwareStatus(), checkFxrouteUpdate({ silent: true })]);
         startSettingsStatusPolling();
         elements.settingsCloseBtn?.focus();
     } else {
@@ -949,6 +980,211 @@ function renderHardwareController() {
     });
 }
 
+function updateLogFromResult(data = {}) {
+    const parts = [];
+    if (data.stdout) parts.push(String(data.stdout).trim());
+    if (data.stderr) parts.push(String(data.stderr).trim());
+    return parts.filter(Boolean).join('\n\n');
+}
+
+function parseUpdateSummary(logText = '') {
+    const currentMatch = logText.match(/Current:\s*([^\n]+)/);
+    const remoteMatch = logText.match(/Remote:\s*([^\n]+)/);
+    const current = currentMatch ? currentMatch[1].trim() : '';
+    const remote = remoteMatch ? remoteMatch[1].trim() : '';
+    if (current && remote) return `Current ${current} · Latest ${remote}`;
+    return current ? `Current ${current}` : 'Version status checked.';
+}
+
+function parseUpdateVersion(value = '') {
+    return String(value || '').replace(/\s*\([^)]*\).*$/, '').trim();
+}
+
+function parseUpdateInfo(logText = '') {
+    const currentMatch = logText.match(/Current:\s*([^\n]+)/);
+    const remoteMatch = logText.match(/Remote:\s*([^\n]+)/);
+    const completedMatch = logText.match(/Update completed:\s*([^\n]+)/);
+    const completedVersion = parseUpdateVersion(completedMatch ? completedMatch[1] : '');
+    const currentVersion = completedVersion || parseUpdateVersion(currentMatch ? currentMatch[1] : '');
+    const latestVersion = parseUpdateVersion(remoteMatch ? remoteMatch[1] : '');
+    const updateAvailable = logText.includes('Update available.')
+        ? true
+        : logText.includes('FXRoute is already up to date.')
+            || logText.includes('Update completed:')
+            ? false
+            : null;
+    return { currentVersion, latestVersion, updateAvailable };
+}
+
+function maintenanceStatusText(maintenance = {}) {
+    if (maintenance.hasError) return 'Update check failed';
+    if (maintenance.restartPending) return 'Restarting FXRoute';
+    if (maintenance.pending) return maintenance.updateAvailable === true ? 'Updating FXRoute' : 'Checking for updates';
+    if (maintenance.updateAvailable === true) return 'Update available';
+    if (maintenance.updateAvailable === false) return 'FXRoute is up to date';
+    return maintenance.latestSummary || 'Version status not checked yet.';
+}
+
+function renderMaintenancePanel() {
+    const maintenance = state.settings?.maintenance || {};
+    const currentVersion = maintenance.currentVersion || maintenance.installedVersion || '';
+    const latestVersion = maintenance.latestVersion || '';
+    const showLatest = !!latestVersion && latestVersion !== currentVersion;
+    const showDetails = !!maintenance.detailsExpanded
+        || (!!maintenance.pending && maintenance.operation === 'update')
+        || !!maintenance.restartPending
+        || !!maintenance.hasError;
+    if (elements.settingsMaintenanceSummary) {
+        elements.settingsMaintenanceSummary.textContent = maintenanceStatusText(maintenance);
+    }
+    if (elements.settingsMaintenanceStatus) {
+        elements.settingsMaintenanceStatus.textContent = maintenanceStatusText(maintenance);
+    }
+    if (elements.settingsMaintenanceCurrent) {
+        elements.settingsMaintenanceCurrent.textContent = currentVersion || 'Unknown';
+    }
+    if (elements.settingsMaintenanceLatestRow) {
+        elements.settingsMaintenanceLatestRow.classList.toggle('hidden', !showLatest);
+    }
+    if (elements.settingsMaintenanceLatest) {
+        elements.settingsMaintenanceLatest.textContent = latestVersion || 'Unknown';
+    }
+    if (elements.settingsMaintenanceDetail) {
+        elements.settingsMaintenanceDetail.textContent = maintenance.detail || '';
+    }
+    if (elements.settingsUpdateLog) {
+        elements.settingsUpdateLog.textContent = maintenance.log || 'No update log available yet.';
+    }
+    if (elements.settingsUpdateDetailsToggle) {
+        elements.settingsUpdateDetailsToggle.textContent = showDetails ? 'Hide update details' : 'Show update details';
+        elements.settingsUpdateDetailsToggle.setAttribute('aria-expanded', showDetails ? 'true' : 'false');
+    }
+    if (elements.settingsUpdateDetails) {
+        elements.settingsUpdateDetails.classList.toggle('hidden', !showDetails);
+    }
+    if (elements.settingsUpdateCheckBtn) {
+        elements.settingsUpdateCheckBtn.disabled = !!maintenance.pending || !!maintenance.restartPending;
+    }
+    if (elements.settingsUpdateRunBtn) {
+        const updateDisabled = !!maintenance.pending || !!maintenance.restartPending || maintenance.updateAvailable !== true;
+        elements.settingsUpdateRunBtn.disabled = updateDisabled;
+        elements.settingsUpdateRunBtn.classList.toggle('btn-primary', maintenance.updateAvailable === true && !updateDisabled);
+        elements.settingsUpdateRunBtn.classList.toggle('btn-secondary', maintenance.updateAvailable !== true || updateDisabled);
+    }
+}
+
+async function checkFxrouteUpdate(options = {}) {
+    const silent = !!options.silent;
+    if (!silent) {
+        state.settings.maintenance.pending = true;
+        state.settings.maintenance.operation = 'check';
+        state.settings.maintenance.detail = 'Checking GitHub for updates…';
+        state.settings.maintenance.hasError = false;
+        renderSettingsPanel();
+    }
+    try {
+        const resp = await fetch('/api/system/update');
+        const data = await resp.json().catch(() => ({}));
+        const logText = updateLogFromResult(data);
+        if (!resp.ok || data.ok === false) throw new Error(data.detail || data.stderr || 'Update check failed');
+        const updateInfo = parseUpdateInfo(logText);
+        state.settings.maintenance = {
+            ...state.settings.maintenance,
+            installedVersion: data.installed_version || '',
+            latestSummary: parseUpdateSummary(logText),
+            detail: updateInfo.updateAvailable ? 'Update available.' : 'FXRoute is up to date.',
+            ...updateInfo,
+            log: logText,
+            pending: false,
+            restartPending: false,
+            operation: '',
+            hasError: false,
+        };
+    } catch (error) {
+        state.settings.maintenance = {
+            ...state.settings.maintenance,
+            latestSummary: 'Update check failed.',
+            detail: error.message || 'Update check failed.',
+            log: error.message || '',
+            pending: false,
+            restartPending: false,
+            operation: '',
+            hasError: true,
+        };
+    }
+    renderSettingsPanel();
+}
+
+async function waitForFxrouteRestart() {
+    const deadline = Date.now() + 30000;
+    await new Promise(resolve => setTimeout(resolve, 1200));
+    while (Date.now() < deadline) {
+        try {
+            const resp = await fetch('/api/status', { cache: 'no-store' });
+            if (resp.ok) {
+                state.settings.maintenance.restartPending = false;
+                state.settings.maintenance.operation = '';
+                state.settings.maintenance.detail = 'Reload/restart completed. Refresh the page if the interface still shows old assets.';
+                renderSettingsPanel();
+                showToast('FXRoute restart completed', 'success');
+                return;
+            }
+        } catch (e) {
+            // The service is expected to disappear briefly during restart.
+        }
+        await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+    state.settings.maintenance.restartPending = false;
+    state.settings.maintenance.operation = '';
+    state.settings.maintenance.detail = 'Update finished, but restart confirmation timed out. Check fxroute-status on the host.';
+    renderSettingsPanel();
+}
+
+async function runFxrouteUpdate() {
+    state.settings.maintenance.pending = true;
+    state.settings.maintenance.operation = 'update';
+    state.settings.maintenance.detail = 'Updating FXRoute…';
+    state.settings.maintenance.hasError = false;
+    renderSettingsPanel();
+    try {
+        const resp = await fetch('/api/system/update', { method: 'POST' });
+        const data = await resp.json().catch(() => ({}));
+        const logText = updateLogFromResult(data);
+        if (!resp.ok || data.ok === false) throw new Error(data.detail || data.stderr || 'Update failed');
+        const updateInfo = parseUpdateInfo(logText);
+        state.settings.maintenance = {
+            ...state.settings.maintenance,
+            installedVersion: data.installed_version || state.settings.maintenance.installedVersion,
+            latestSummary: 'Update completed.',
+            detail: data.restart_scheduled ? 'Restarting FXRoute service…' : 'Update completed.',
+            currentVersion: updateInfo.currentVersion || data.installed_version || state.settings.maintenance.currentVersion,
+            latestVersion: updateInfo.latestVersion || state.settings.maintenance.latestVersion,
+            updateAvailable: false,
+            log: logText,
+            pending: false,
+            restartPending: !!data.restart_scheduled,
+            operation: data.restart_scheduled ? 'update' : '',
+            hasError: false,
+        };
+        renderSettingsPanel();
+        if (data.restart_scheduled) {
+            void waitForFxrouteRestart();
+        } else {
+            showToast('FXRoute update completed', 'success');
+        }
+    } catch (error) {
+        state.settings.maintenance.pending = false;
+        state.settings.maintenance.restartPending = false;
+        state.settings.maintenance.operation = '';
+        state.settings.maintenance.latestSummary = 'Update failed.';
+        state.settings.maintenance.detail = error.message || 'Update failed.';
+        state.settings.maintenance.log = error.message || '';
+        state.settings.maintenance.hasError = true;
+        renderSettingsPanel();
+        showToast(error.message || 'Update failed', 'error');
+    }
+}
+
 function renderSettingsPanel() {
     if (elements.settingsCertificateLink) {
         const certUrl = settingsCertificateUrl();
@@ -1021,6 +1257,7 @@ function renderSettingsPanel() {
         elements.settingsBluetoothStatus.textContent = `Bluetooth: ${formatBluetoothModeStatus(bluetooth)}${bluetoothNote}`;
     }
     renderHardwareController();
+    renderMaintenancePanel();
     applySourceModeUiState();
 }
 

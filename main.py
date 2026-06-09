@@ -31,6 +31,8 @@ BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 COVER_CACHE_DIR = BASE_DIR / "media" / "cache" / "covers"
 TOP40_COVER_IMAGE = STATIC_DIR / "Top40.png"
+INSTALL_CONFIG_FILE = Path.home() / ".config" / "fxroute" / "install-config.env"
+UPDATE_SCRIPT = BASE_DIR / "scripts" / "update_fxroute.sh"
 
 # Cooldown to prevent rapid mpv IPC flooding (ms)
 PLAY_COMMAND_COOLDOWN_MS = 400
@@ -75,6 +77,65 @@ def _can_send_play_command():
 
 def _cleanup_temp_file(path: Path):
     path.unlink(missing_ok=True)
+
+
+def _read_version_file() -> str:
+    try:
+        return (BASE_DIR / "VERSION").read_text(encoding="utf-8").strip()
+    except Exception:
+        return ""
+
+
+def _read_install_config() -> dict:
+    data: dict[str, str] = {}
+    try:
+        for raw_line in INSTALL_CONFIG_FILE.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            data[key.strip()] = value.strip()
+    except Exception:
+        pass
+    return data
+
+
+def _configured_service_name() -> str:
+    return _read_install_config().get("FXROUTE_SERVICE_NAME") or "fxroute"
+
+
+async def _run_update_script(*args: str) -> dict:
+    if not UPDATE_SCRIPT.exists():
+        raise HTTPException(status_code=500, detail=f"Update script missing: {UPDATE_SCRIPT}")
+    proc = await asyncio.create_subprocess_exec(
+        str(UPDATE_SCRIPT),
+        *args,
+        cwd=str(BASE_DIR),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await proc.communicate()
+    return {
+        "returncode": proc.returncode,
+        "stdout": stdout.decode(errors="replace"),
+        "stderr": stderr.decode(errors="replace"),
+    }
+
+
+async def _restart_fxroute_service_after_response(service_name: str) -> None:
+    await asyncio.sleep(0.8)
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "systemctl",
+            "--user",
+            "restart",
+            f"{service_name}.service",
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await proc.wait()
+    except Exception as exc:
+        logger.warning("Deferred FXRoute service restart failed: %s", exc)
 
 
 def _list_sink_inputs() -> list[dict]:
@@ -506,7 +567,10 @@ from playlists import delete_playlist, get_playlists, save_playlist
 from library import AUDIO_EXTENSIONS, LibraryScanner
 from downloader import Downloader
 from easyeffects import EasyEffectsManager
-from hardware_controller import HardwareController
+try:
+    from hardware_controller import HardwareController
+except ImportError:
+    HardwareController = None
 from measurement import MeasurementStore
 from peak_monitor import EasyEffectsPeakMonitor
 
@@ -2603,12 +2667,16 @@ async def lifespan(app: FastAPI):
         measurement_store = MeasurementStore()
         logger.info("Measurement store initialized: %s", measurement_store.measurements_dir)
 
-        try:
-            hardware_controller = HardwareController(device_path=settings.HARDWARE_CONTROLLER_DEVICE)
-            logger.info("Optional hardware controller initialized")
-        except Exception as exc:
-            logger.warning("Hardware controller not available: %s", exc)
+        if HardwareController is None:
+            logger.info("Optional hardware controller module not installed")
             hardware_controller = None
+        else:
+            try:
+                hardware_controller = HardwareController(device_path=settings.HARDWARE_CONTROLLER_DEVICE)
+                logger.info("Optional hardware controller initialized")
+            except Exception as exc:
+                logger.warning("Hardware controller not available: %s", exc)
+                hardware_controller = None
 
         peak_monitor = EasyEffectsPeakMonitor(on_change=on_peak_monitor_change)
         peak_monitor_playback_armed = False
@@ -3830,8 +3898,36 @@ async def get_status():
     if player_instance:
         state = build_playback_payload(player_instance.state)
         state["metadata"] = player_instance.get_metadata() if state.get("current_file") else {}
+        state["system"] = {"version": _read_version_file()}
         return state
-    return {"running": False}
+    return {"running": False, "system": {"version": _read_version_file()}}
+
+
+@app.get("/api/system/update")
+async def system_update_status():
+    result = await _run_update_script("--check")
+    return {
+        "ok": result["returncode"] == 0,
+        "installed_version": _read_version_file(),
+        **result,
+    }
+
+
+@app.post("/api/system/update")
+async def system_update():
+    service_name = _configured_service_name()
+    result = await _run_update_script("--defer-restart")
+    ok = result["returncode"] == 0
+    update_applied = ok and "Pulling updates with fast-forward only." in result.get("stdout", "")
+    if update_applied:
+        asyncio.create_task(_restart_fxroute_service_after_response(service_name))
+    return {
+        "ok": ok,
+        "installed_version": _read_version_file(),
+        "restart_scheduled": update_applied,
+        "service_name": service_name,
+        **result,
+    }
 
 async def _maybe_repair_active_app_samplerate_drift(status: dict) -> None:
     global last_app_samplerate_drift_repair_at

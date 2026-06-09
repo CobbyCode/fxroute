@@ -1036,6 +1036,68 @@ body {
 .settings-certificate-note a:hover {
     color: var(--accent);
 }
+.settings-maintenance-status {
+    display: grid;
+    gap: 0.45rem;
+    margin: 0 0 0.75rem;
+}
+.settings-maintenance-status div {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.42rem 0;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+}
+.settings-maintenance-status dt {
+    color: var(--text-secondary);
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+.settings-maintenance-status dd {
+    min-width: 0;
+    margin: 0;
+    color: var(--text-primary);
+    font-size: 0.86rem;
+    font-weight: 700;
+    text-align: right;
+    overflow-wrap: anywhere;
+}
+.settings-details-toggle {
+    appearance: none;
+    margin-top: 0.68rem;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--text-secondary);
+    font: inherit;
+    font-size: 0.78rem;
+    font-weight: 700;
+    text-decoration: underline;
+    text-underline-offset: 0.2em;
+    cursor: pointer;
+}
+.settings-details-toggle:hover {
+    color: var(--accent);
+}
+.settings-update-details {
+    margin-top: 0.65rem;
+}
+.settings-update-log {
+    max-height: 220px;
+    overflow: auto;
+    margin: 0;
+    padding: 10px 12px;
+    border: 1px solid rgba(148, 163, 184, 0.24);
+    border-radius: 6px;
+    background: rgba(15, 23, 42, 0.56);
+    color: #d1d5db;
+    font-size: 0.78rem;
+    line-height: 1.45;
+    white-space: pre-wrap;
+}
 /* ============================================================
    Library tab
    ============================================================ */

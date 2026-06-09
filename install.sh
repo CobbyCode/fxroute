@@ -20,6 +20,7 @@ PACKAGE_MANAGER=""
 PACKAGE_INSTALL_CMD=()
 SUDO_CMD=()
 INSTALL_STATE_FILE="$HOME/.config/fxroute/install-state.json"
+INSTALL_CONFIG_FILE="$HOME/.config/fxroute/install-config.env"
 FXROUTE_BACKUP_DIR="$HOME/.config/fxroute/backups"
 EASYEFFECTS_INSTALLED_BY_FXROUTE=0
 EASYEFFECTS_INSTALL_METHOD=""
@@ -603,7 +604,6 @@ sync_project_tree() {
 
   log "Syncing project into $INSTALL_ROOT"
   tar \
-    --exclude='.git' \
     --exclude='.venv' \
     --exclude='.env' \
     --exclude='__pycache__' \
@@ -797,9 +797,11 @@ ensure_easyeffects() {
 
 setup_python_env() {
   local venv_dir="$INSTALL_ROOT/.venv"
+  local marker="$venv_dir/.fxroute-requirements.sha256"
   run_cmd python3 -m venv "$venv_dir"
   run_cmd "$venv_dir/bin/python3" -m pip install --upgrade pip setuptools wheel
   run_cmd "$venv_dir/bin/pip" install -r "$INSTALL_ROOT/requirements.txt"
+  sha256sum "$INSTALL_ROOT/requirements.txt" | awk '{print $1}' > "$marker"
   pass "Python venv created"
   pass "pip install -r requirements.txt"
 }
@@ -1060,6 +1062,17 @@ EOF
   pass "install state recorded"
 }
 
+write_install_config() {
+  mkdir -p "$(dirname "$INSTALL_CONFIG_FILE")"
+  cat > "$INSTALL_CONFIG_FILE" <<EOF
+FXROUTE_INSTALL_ROOT=$INSTALL_ROOT
+FXROUTE_SERVICE_NAME=$SERVICE_NAME
+FXROUTE_INSTALL_STATE=$INSTALL_STATE_FILE
+EOF
+  chmod 600 "$INSTALL_CONFIG_FILE"
+  pass "install config recorded"
+}
+
 install_helpers() {
   local bin_dir="$HOME/.local/bin"
   mkdir -p "$bin_dir"
@@ -1082,7 +1095,7 @@ EOF
   cat > "$bin_dir/fxroute-update" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
-exec "$INSTALL_ROOT/install.sh" --local-project
+exec "$INSTALL_ROOT/scripts/update_fxroute.sh" "\$@"
 EOF
 
   cat > "$bin_dir/fxroute-update-ytdlp" <<EOF
@@ -1840,6 +1853,7 @@ main() {
   install_watchdog_if_needed
   setup_easyeffects_autostart
   setup_spotify_autostart
+  chmod +x "$INSTALL_ROOT/scripts/update_fxroute.sh"
   install_helpers
   configure_optional_maintenance_helpers
   validate_http
@@ -1848,6 +1862,7 @@ main() {
   install_mdns_guard
   offer_optional_caddy_proxy
   print_summary
+  write_install_config
   write_install_state
 }
 

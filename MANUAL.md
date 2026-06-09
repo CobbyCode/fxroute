@@ -136,6 +136,12 @@ For the most reproducible setup, use the Flatpak package:
 flatpak install --user flathub com.github.wwmm.easyeffects
 ```
 
+### Maintenance updates
+
+Open **Technical settings → Maintenance** to check the installed version against GitHub, run a safe update, and see the update log. Updates are handled by the backend through the installer-owned update script, not by frontend shell commands.
+
+FXRoute blocks updates when the local git checkout has uncommitted changes. A successful update uses fast-forward-only git logic, refreshes dependencies only when needed, validates/builds the app, restarts the configured FXRoute user service, and then reports when reload/restart is complete.
+
 ## 8. Measurement assistant
 
 Open **Measure** from the DSP page.
@@ -227,23 +233,35 @@ The electrical reference improves timing stability for L/R alignment and aligned
 
 ### Typical stereo convolver workflow
 
-For a stereo correction preset, measure the channels separately. For quick work, use **Single Sweep** for L and R. For a stronger same-position pair, use **Start L/R Repeat** and save the combined L/R summaries before taking them into the Convolver assistant.
+For a stereo correction preset, first create or choose saved measurements for the left and right channel. The measurements can come from normal **Single Sweep** runs or from an **L/R Repeat** run.
 
-1. Select **Left** and run a sweep.
-2. Press **Save current**. The run appears in **Saved runs**.
-3. Select the saved left-channel run and press **Take L** in the Convolver assistant.
-4. Select **Right** and run a sweep.
-5. Press **Save current**.
-6. Select the saved right-channel run and press **Take R**.
-7. Choose the target curve, correction range, phase mode, sample rate, and tap length.
-8. Press **Create Convolver Preset**.
+Measurements are independent from the Convolver settings. The Convolver settings are only applied when a saved run is imported with **Take L**, **Take R**, or **Take Both**.
 
-When using **L/R Repeat**, the first six steps become simpler:
+#### Using separate left and right measurements
+
+1. Measure the left channel and press **Save current**.
+2. Measure the right channel and press **Save current**.
+3. In **Saved runs**, select the saved left-channel run.
+4. In the Convolver assistant, choose the target curve, correction range, phase mode, sample rate, and tap length.
+5. Press **Take L**.
+6. Select the saved right-channel run.
+7. Check or adjust the Convolver settings.
+8. Press **Take R**.
+9. Press **Create Convolver Preset**.
+
+#### Using the same settings for both channels
+
+If both channels should use the same Convolver settings, select the saved left and right runs together, choose the Convolver settings, and press **Take Both**.
+
+Then press **Create Convolver Preset**.
+
+#### Using L/R Repeat
 
 1. Put the microphone at the listening position.
 2. Press **Start L/R Repeat** and wait for the combined L/R review result.
 3. Press **Save current** to save both summaries.
-4. Select the saved repeat L and R summaries together and press **Take Both**.
+
+After saving, use the saved **L/R Repeat** summaries like any other saved left/right measurements in the Convolver assistant.
 
 The Convolver assistant uses the visible saved measurement selection when saved runs are selected. If no saved run is selected, it can use the current measurement. The Take buttons are intentionally narrow:
 

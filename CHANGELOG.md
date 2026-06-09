@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+- Add a safe in-app Maintenance update path that reuses the installer layout: Settings can check GitHub status, run the backend update endpoint, show the update log, and confirm service restart/reload completion.
+- Add `scripts/update_fxroute.sh` for guarded self-updates from a git checkout. It blocks dirty working trees, fetches GitHub, reports local/remote version and commit, pulls with fast-forward-only logic, refreshes dependencies only when needed, runs the production validation/build step, and restarts the configured user service.
+- Record installer path and service name in `~/.config/fxroute/install-config.env`, and point the `fxroute-update` helper at the same update script used by the in-app Maintenance flow.
+
 ## 0.7.36 (2026-06-09)
 - Add a graph-local Frequency / IR toggle to the Measurement assistant. Frequency view keeps the existing 20 Hz to 20 kHz response graph, while IR view shows a lightweight -2 ms to +30 ms impulse-response preview for measurements that include preview data.
 - Store compact impulse-response preview data with newly analyzed measurements for UI diagnostics without persisting the full impulse response in measurement JSON.
