@@ -51,6 +51,7 @@ RADIO_RECONNECT_MAX_ATTEMPTS = 5
 SPOTIFY_STATE_POLL_INTERVAL_SECONDS = 2.0
 SPOTIFY_STATE_IDLE_POLL_INTERVAL_SECONDS = 5.0
 SPOTIFY_STATE_REFRESH_DEBOUNCE_SECONDS = 0.20
+MEASUREMENT_WINDOW_TTL_SECONDS = 30.0
 
 # Track last play command time to debounce rapid requests
 _last_play_command_time = 0.0
@@ -492,6 +493,31 @@ def _is_spotify_playback_active(state: dict | None) -> bool:
     return bool(state.get("available") and state.get("status") == "Playing")
 
 
+def _is_measurement_window_open() -> bool:
+    if last_measurement_window_seen_at <= 0:
+        return False
+    return (time.monotonic() - last_measurement_window_seen_at) <= MEASUREMENT_WINDOW_TTL_SECONDS
+
+
+def _build_power_state_payload() -> dict:
+    local_state = player_instance.state if player_instance else {}
+    spotify_state = latest_spotify_state or {}
+    playback_active = _is_local_playback_active(local_state) or _is_spotify_playback_active(spotify_state)
+    measurement_window_open = _is_measurement_window_open()
+    if measurement_window_open:
+        reason = "measurement_window"
+    elif playback_active:
+        reason = "playback"
+    else:
+        reason = "idle"
+    return {
+        "amp_should_be_on": bool(playback_active or measurement_window_open),
+        "reason": reason,
+        "playback_active": bool(playback_active),
+        "measurement_window_open": bool(measurement_window_open),
+    }
+
+
 def _has_local_footer_context(state: dict | None) -> bool:
     state = state or {}
     track = current_track_info or state.get("current_track") or {}
@@ -732,6 +758,7 @@ radio_samplerate_force_rate = None
 current_source_mode = SOURCE_MODE_APP_PLAYBACK
 latest_spotify_state = None
 current_footer_owner = "local"
+last_measurement_window_seen_at = 0.0
 last_spotify_samplerate_recovery_at = 0.0
 last_app_samplerate_drift_repair_at = 0.0
 latest_player_state_seq_seen = 0
@@ -3901,6 +3928,28 @@ async def get_status():
         state["system"] = {"version": _read_version_file()}
         return state
     return {"running": False, "system": {"version": _read_version_file()}}
+
+
+@app.get("/api/power/state")
+async def get_power_state():
+    return _build_power_state_payload()
+
+
+@app.post("/api/power/measurement-heartbeat")
+async def measurement_window_heartbeat(request: Request):
+    global last_measurement_window_seen_at
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if body.get("open") is False:
+        last_measurement_window_seen_at = 0.0
+    else:
+        last_measurement_window_seen_at = time.monotonic()
+    return {
+        "status": "ok",
+        "measurement_window_open": _is_measurement_window_open(),
+    }
 
 
 @app.get("/api/system/update")

@@ -100,6 +100,47 @@ Installed git checkouts can be updated from **Technical settings → Maintenance
 
 The updater is intentionally conservative: it refuses to run with local uncommitted changes, fetches GitHub first, pulls only by fast-forward, refreshes Python dependencies only when `requirements.txt` changed, runs the production validation/build step, and restarts the configured FXRoute user service. User data under `~/.config/fxroute`, measurements, presets, filters, music files, and `.env` are not migrated or reset by this updater.
 
+## Home Assistant / external automation
+
+FXRoute exposes `GET /api/power/state` as a read-only power hint for external automation. It returns `amp_should_be_on: true` when local or Spotify playback is active, or when the Measurement Assistant is open. Home Assistant or another automation system can use this hint to control an amplifier smart plug or power socket. FXRoute does not require an MQTT broker and does not control the smart plug directly.
+
+Minimal Home Assistant example:
+
+```yaml
+rest:
+  - resource: "http://fxroute.local:8000/api/power/state"  # Adapt host/port if needed.
+    scan_interval: 5
+    binary_sensor:
+      - name: "FXRoute Amp Should Be On"
+        value_template: "{{ value_json.amp_should_be_on }}"
+    sensor:
+      - name: "FXRoute Amp Reason"
+        value_template: "{{ value_json.reason }}"
+
+automation:
+  - alias: "FXRoute amp on"
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.fxroute_amp_should_be_on
+        to: "on"
+    action:
+      - service: switch.turn_on
+        target:
+          entity_id: switch.verstaerker_steckdose  # Adapt to your smart plug entity.
+
+  - alias: "FXRoute amp off after idle"
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.fxroute_amp_should_be_on
+        to: "off"
+        for:
+          minutes: 20
+    action:
+      - service: switch.turn_off
+        target:
+          entity_id: switch.verstaerker_steckdose  # Adapt to your smart plug entity.
+```
+
 ## Quick start
 
 ```bash

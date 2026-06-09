@@ -142,6 +142,47 @@ Open **Technical settings → Maintenance** to check the installed version again
 
 FXRoute blocks updates when the local git checkout has uncommitted changes. A successful update uses fast-forward-only git logic, refreshes dependencies only when needed, validates/builds the app, restarts the configured FXRoute user service, and then reports when reload/restart is complete.
 
+### Home Assistant / external automation
+
+FXRoute exposes `GET /api/power/state` as a read-only hint for amplifier power automation. `amp_should_be_on` is true when playback is active or when the Measurement Assistant is open. External automation systems can use that value to control an amplifier smart plug or power socket. No MQTT broker is required, and FXRoute does not control the plug directly.
+
+Minimal Home Assistant example:
+
+```yaml
+rest:
+  - resource: "http://fxroute.local:8000/api/power/state"  # Adapt host/port if needed.
+    scan_interval: 5
+    binary_sensor:
+      - name: "FXRoute Amp Should Be On"
+        value_template: "{{ value_json.amp_should_be_on }}"
+    sensor:
+      - name: "FXRoute Amp Reason"
+        value_template: "{{ value_json.reason }}"
+
+automation:
+  - alias: "FXRoute amp on"
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.fxroute_amp_should_be_on
+        to: "on"
+    action:
+      - service: switch.turn_on
+        target:
+          entity_id: switch.verstaerker_steckdose  # Adapt to your smart plug entity.
+
+  - alias: "FXRoute amp off after idle"
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.fxroute_amp_should_be_on
+        to: "off"
+        for:
+          minutes: 20
+    action:
+      - service: switch.turn_off
+        target:
+          entity_id: switch.verstaerker_steckdose  # Adapt to your smart plug entity.
+```
+
 ## 8. Measurement assistant
 
 Open **Measure** from the DSP page.

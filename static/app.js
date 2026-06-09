@@ -231,6 +231,7 @@ let measurementResizeScheduled = false;
 let measurementGraphPointerId = null;
 let measurementPeqTakeFeedbackTimer = null;
 let measurementPeqLastTouchCreateAt = 0;
+let measurementWindowHeartbeatTimer = null;
 // Seek - globals
 let seekDragging = false;
 let seekPendingPos = null;
@@ -250,6 +251,7 @@ const DOWNLOAD_STATUS_POLL_INTERVAL_MS = 1500;
 const PEAK_STATUS_POLL_INTERVAL_MS = 1200;
 const EFFECTS_EXTRAS_TOGGLE_DEBOUNCE_MS = 800;
 const EFFECTS_EXTRAS_VALUE_DEBOUNCE_MS = 2000;
+const MEASUREMENT_WINDOW_HEARTBEAT_INTERVAL_MS = 10000;
 // DOM elements
 const elements = {
     offlineIndicator: document.getElementById('offline-indicator'),
@@ -7402,6 +7404,42 @@ async function fetchMeasurementInputs() {
     }
 }
 
+function isMeasurementPanelOpen() {
+    return !!elements.measurementPanel && !elements.measurementPanel.classList.contains('hidden');
+}
+
+function sendMeasurementWindowHeartbeat(open, keepalive = false) {
+    const options = {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ open: !!open }),
+    };
+    if (keepalive) options.keepalive = true;
+    return fetch('/api/power/measurement-heartbeat', options).catch((error) => {
+        if (!keepalive) console.warn('measurement heartbeat failed', error);
+    });
+}
+
+function startMeasurementWindowHeartbeat() {
+    void sendMeasurementWindowHeartbeat(true);
+    if (measurementWindowHeartbeatTimer) return;
+    measurementWindowHeartbeatTimer = setInterval(() => {
+        if (!isMeasurementPanelOpen()) {
+            stopMeasurementWindowHeartbeat();
+            return;
+        }
+        void sendMeasurementWindowHeartbeat(true);
+    }, MEASUREMENT_WINDOW_HEARTBEAT_INTERVAL_MS);
+}
+
+function stopMeasurementWindowHeartbeat(keepalive = false) {
+    if (measurementWindowHeartbeatTimer) {
+        clearInterval(measurementWindowHeartbeatTimer);
+        measurementWindowHeartbeatTimer = null;
+    }
+    void sendMeasurementWindowHeartbeat(false, keepalive);
+}
+
 function toggleMeasurementPanel(forceOpen = null) {
     if (!elements.measurementPanel) return;
     state.measurement.modeNote = measurementModeNoteText();
@@ -7412,11 +7450,14 @@ function toggleMeasurementPanel(forceOpen = null) {
         elements.effectsMeasureOpenBtn.setAttribute('aria-expanded', shouldOpen ? 'true' : 'false');
     }
     if (shouldOpen) {
+        startMeasurementWindowHeartbeat();
         measurementInputScanOnFocusDone = false;
         renderMeasurementPanel();
         void fetchMeasurementInputs();
         scheduleMeasurementGraphRender();
         elements.measurementCloseBtn?.focus();
+    } else {
+        stopMeasurementWindowHeartbeat();
     }
 }
 
@@ -8964,6 +9005,9 @@ function setupMeasurementActions() {
         if (event.key === 'Escape' && !elements.measurementPanel.classList.contains('hidden')) {
             toggleMeasurementPanel(false);
         }
+    });
+    window.addEventListener('pagehide', () => {
+        if (isMeasurementPanelOpen()) stopMeasurementWindowHeartbeat(true);
     });
     if (elements.measurementSetupToggleBtn) {
         elements.measurementSetupToggleBtn.addEventListener('click', () => {
