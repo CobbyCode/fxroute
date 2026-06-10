@@ -27,6 +27,8 @@ Open FXRoute from a browser on the same network:
 - `http://<host-ip>:8000`
 - `http://localhost:8000` on the audio PC itself
 
+For unattended installs, configure the `.local` name explicitly with `./install.sh --mdns-hostname fxroute`. Otherwise the installer keeps an existing Avahi hostname or warns that `.local` setup was skipped.
+
 If the optional local HTTPS proxy is enabled, use:
 
 - `https://fxroute.local`

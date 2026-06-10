@@ -5,6 +5,7 @@
 - Add `scripts/update_fxroute.sh` for guarded self-updates from a git checkout. It blocks dirty working trees, fetches GitHub, reports local/remote version and commit, pulls with fast-forward-only logic, refreshes dependencies only when needed, runs the production validation/build step, and restarts the configured user service.
 - Record installer path and service name in `~/.config/fxroute/install-config.env`, and point the `fxroute-update` helper at the same update script used by the in-app Maintenance flow.
 - Add a read-only `/api/power/state` amplifier power hint for Home Assistant or external automation, with Measurement Assistant heartbeat state for measurement-window activity.
+- Add `install.sh --mdns-hostname <name>` so non-interactive installs can explicitly configure the Avahi `.local` hostname; non-interactive runs now warn when `.local` setup is skipped or left on the existing system hostname.
 
 ## 0.7.36 (2026-06-09)
 - Add a graph-local Frequency / IR toggle to the Measurement assistant. Frequency view keeps the existing 20 Hz to 20 kHz response graph, while IR view shows a lightweight -2 ms to +30 ms impulse-response preview for measurements that include preview data.
