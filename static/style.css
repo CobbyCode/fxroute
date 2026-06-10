@@ -1065,6 +1065,18 @@ body {
     text-align: right;
     overflow-wrap: anywhere;
 }
+.settings-maintenance-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.6rem;
+    width: min(100%, 420px);
+    margin-left: auto;
+}
+.settings-maintenance-actions .btn-primary,
+.settings-maintenance-actions .btn-secondary {
+    width: 100%;
+    min-width: 0;
+}
 .settings-details-toggle {
     appearance: none;
     margin-top: 0.68rem;
@@ -4436,6 +4448,11 @@ input[type="number"]::-webkit-outer-spin-button {
     .radio-manage-submit-row-danger .btn-danger,
     .manage-dialog-header .btn-secondary {
         width: 100%;
+    }
+    .settings-maintenance-actions {
+        grid-template-columns: 1fr;
+        width: 100%;
+        margin-left: 0;
     }
     /* Station cards — still prominent on phone */
     .stations-grid {
