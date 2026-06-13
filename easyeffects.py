@@ -314,6 +314,25 @@ class EasyEffectsManager:
             start_new_session=True,
         )
 
+    def _stop_service_process(self) -> None:
+        if self.runtime.mode == "flatpak" and shutil.which("flatpak"):
+            subprocess.run(
+                ["flatpak", "kill", "com.github.wwmm.easyeffects"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+            return
+
+        subprocess.run(
+            ["pkill", "-u", str(os.getuid()), "-f", "easyeffects --gapplication-service"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+
     def _wait_for_socket(self, timeout: float = 8.0) -> Optional[Path]:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -387,6 +406,108 @@ class EasyEffectsManager:
             "EasyEffects control socket not found in any candidate path: "
             + ", ".join(str(path) for path in self._socket_candidates())
         )
+
+    @staticmethod
+    def _link_target_has_source(link_output: str, target_port: str, source_prefix: str) -> bool:
+        in_target = False
+        for line in link_output.splitlines():
+            if line == target_port:
+                in_target = True
+                continue
+            if in_target and not line.startswith(" "):
+                return False
+            if in_target and "|<-" in line:
+                source = line.split("|<-", 1)[1].strip()
+                if source.startswith(source_prefix):
+                    return True
+        return False
+
+    @staticmethod
+    def _link_source_has_target_prefix(link_output: str, source_port: str, target_prefix: str) -> bool:
+        in_source = False
+        for line in link_output.splitlines():
+            if line == source_port:
+                in_source = True
+                continue
+            if in_source and not line.startswith(" "):
+                return False
+            if in_source and "|->" in line:
+                target = line.split("|->", 1)[1].strip()
+                if target.startswith(target_prefix):
+                    return True
+        return False
+
+    def _read_pipewire_links(self) -> str:
+        result = subprocess.run(["pw-link", "-l"], capture_output=True, text=True, timeout=3)
+        if result.returncode != 0:
+            raise RuntimeError((result.stderr or result.stdout or "pw-link -l failed").strip())
+        return result.stdout
+
+    def _has_stereo_output_graph(self, output_device: str, link_output: Optional[str] = None) -> bool:
+        output_device = (output_device or "").strip()
+        if not output_device or output_device == "easyeffects_sink":
+            return True
+
+        links = link_output if link_output is not None else self._read_pipewire_links()
+        for channel in ("FL", "FR"):
+            hardware_target = f"{output_device}:playback_{channel}"
+            if not self._link_target_has_source(links, hardware_target, "ee_soe_"):
+                return False
+            ee_input_source = f"easyeffects_sink:monitor_{channel}"
+            if not self._link_source_has_target_prefix(links, ee_input_source, "ee_soe_"):
+                return False
+        return True
+
+    def wait_for_stereo_output_graph(self, output_device: str, timeout: float = 8.0) -> bool:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                if self._has_stereo_output_graph(output_device):
+                    return True
+            except Exception as exc:
+                logger.debug("Stereo EasyEffects graph check failed while waiting: %s", exc)
+            time.sleep(0.4)
+        return self._has_stereo_output_graph(output_device)
+
+    def ensure_stereo_output_graph(self, output_device: str) -> Dict[str, Any]:
+        output_device = (output_device or "").strip()
+        result: Dict[str, Any] = {
+            "checked": False,
+            "ok": False,
+            "recovered": False,
+            "recovery": None,
+            "output_device": output_device,
+        }
+        if not output_device or output_device == "easyeffects_sink":
+            result.update({"checked": True, "ok": True, "recovery": "skipped"})
+            return result
+
+        result["checked"] = True
+        if self._has_stereo_output_graph(output_device):
+            result["ok"] = True
+            return result
+
+        logger.warning("Stereo EasyEffects output graph missing for %s; attempting preset reload", output_device)
+        active_preset = self.get_active_preset()
+        if active_preset:
+            try:
+                self.load_preset(active_preset)
+                if self.wait_for_stereo_output_graph(output_device, timeout=4.0):
+                    result.update({"ok": True, "recovered": True, "recovery": "preset_reload"})
+                    return result
+            except Exception as exc:
+                logger.warning("Stereo EasyEffects preset reload recovery failed: %s", exc)
+
+        logger.warning("Stereo EasyEffects output graph still missing for %s; restarting EasyEffects", output_device)
+        self._stop_service_process()
+        time.sleep(1.5)
+        self._discard_unreachable_socket_candidates()
+        self._start_service_process()
+        if self.wait_for_stereo_output_graph(output_device, timeout=10.0):
+            result.update({"ok": True, "recovered": True, "recovery": "service_restart"})
+            return result
+
+        raise RuntimeError(f"Stereo EasyEffects output graph recovery failed for {output_device}")
 
     def list_presets(self) -> List[dict]:
         if not self.output_dir.exists():

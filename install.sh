@@ -11,7 +11,6 @@ SOURCE_DIR="$SCRIPT_DIR"
 INSTALL_ROOT="$DEFAULT_INSTALL_ROOT"
 LOCAL_PROJECT_MODE=0
 ASSUME_YES=0
-REQUESTED_MDNS_HOSTNAME=""
 
 VALIDATION_RESULTS=()
 WARNINGS=()
@@ -62,7 +61,6 @@ Options:
   --target <dir>        Install or refresh into this directory (default: $DEFAULT_INSTALL_ROOT)
   --local-project       Install in-place from the current project directory
   --source <dir>        Use a different local project source directory
-  --mdns-hostname <n>   Configure Avahi .local access with this hostname
   -y, --yes             Assume yes for package / Flatpak install prompts
   -h, --help            Show this help
 
@@ -88,12 +86,6 @@ while [[ $# -gt 0 ]]; do
     --source)
       [[ $# -ge 2 ]] || die "--source requires a directory"
       SOURCE_DIR="$2"
-      shift 2
-      ;;
-    --mdns-hostname)
-      [[ $# -ge 2 ]] || die "--mdns-hostname requires a hostname"
-      REQUESTED_MDNS_HOSTNAME="${2,,}"
-      [[ "$REQUESTED_MDNS_HOSTNAME" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]] || die "--mdns-hostname must use lowercase letters, digits, and hyphens, without leading or trailing hyphens"
       shift 2
       ;;
     --local-project)
@@ -1417,7 +1409,7 @@ offer_optional_local_lan_name() {
   local port="8000"
   local current_host=""
   local reply=""
-  local desired_host="$REQUESTED_MDNS_HOSTNAME"
+  local desired_host=""
   local avahi_pkg=""
   local avahi_active=0
 
@@ -1429,50 +1421,41 @@ offer_optional_local_lan_name() {
     MDNS_HOSTNAME="$current_host"
   fi
 
-  if [[ -z "$desired_host" && ! ( -t 0 && -t 1 ) ]]; then
-    if [[ $avahi_active -eq 1 ]]; then
-      warn "Optional .local setup kept the current hostname (${MDNS_HOSTNAME}.local:${port}); run ./install.sh --mdns-hostname <name> to set a dedicated FXRoute LAN name."
-    else
-      warn "Optional .local setup skipped because the installer is non-interactive; run ./install.sh --mdns-hostname <name> to configure Avahi .local access."
-    fi
-    return 0
+  [[ -t 0 && -t 1 ]] || return 0
+
+  echo
+  echo "Optional LAN setup:"
+  if [[ $avahi_active -eq 1 ]]; then
+    echo "Current .local LAN name: http://${MDNS_HOSTNAME}.local:${port}"
+    echo "You can keep it or switch to a dedicated FXRoute hostname such as fxroute.local or fxroute-test.local."
+    printf "Change or reconfigure the .local LAN name? [y/N] "
+  else
+    echo "Enable Avahi mDNS so FXRoute can also be reached as http://<name>.local:${port} ?"
+    echo "This changes the system hostname and may require one more sudo step."
+    printf "Enable .local LAN name? [y/N] "
   fi
-
-  if [[ -z "$desired_host" ]]; then
-    echo
-    echo "Optional LAN setup:"
-    if [[ $avahi_active -eq 1 ]]; then
-      echo "Current .local LAN name: http://${MDNS_HOSTNAME}.local:${port}"
-      echo "You can keep it or switch to a dedicated FXRoute hostname such as fxroute.local or fxroute-test.local."
-      printf "Change or reconfigure the .local LAN name? [y/N] "
-    else
-      echo "Enable Avahi mDNS so FXRoute can also be reached as http://<name>.local:${port} ?"
-      echo "This changes the system hostname and may require one more sudo step."
-      printf "Enable .local LAN name? [y/N] "
-    fi
-    read -r reply || return 0
-    case "${reply,,}" in
-      y|yes) ;;
-      *)
-        if [[ $avahi_active -eq 1 ]]; then
-          echo "Keeping current .local LAN name: http://${MDNS_HOSTNAME}.local:${port}"
-        fi
-        return 0
-        ;;
-    esac
-
-    desired_host="fxroute"
-    while true; do
-      printf "Hostname [${desired_host}]: "
-      read -r reply || return 0
-      desired_host="${reply:-$desired_host}"
-      desired_host="${desired_host,,}"
-      if valid_local_hostname "$desired_host"; then
-        break
+  read -r reply || return 0
+  case "${reply,,}" in
+    y|yes) ;;
+    *)
+      if [[ $avahi_active -eq 1 ]]; then
+        echo "Keeping current .local LAN name: http://${MDNS_HOSTNAME}.local:${port}"
       fi
-      echo "Please use only lowercase letters, digits, and hyphens, without leading or trailing hyphens."
-    done
-  fi
+      return 0
+      ;;
+  esac
+
+  desired_host="fxroute"
+  while true; do
+    printf "Hostname [${desired_host}]: "
+    read -r reply || return 0
+    desired_host="${reply:-$desired_host}"
+    desired_host="${desired_host,,}"
+    if valid_local_hostname "$desired_host"; then
+      break
+    fi
+    echo "Please use only lowercase letters, digits, and hyphens, without leading or trailing hyphens."
+  done
 
   case "$PACKAGE_MANAGER" in
     apt) avahi_pkg="avahi-daemon" ;;
@@ -1501,34 +1484,6 @@ offer_optional_local_lan_name() {
   if [[ "$LAN_HOSTNAME_BEFORE" != "$desired_host" ]]; then
     LAN_HOSTNAME_CHANGED_BY_FXROUTE=1
     LAN_HOSTNAME_AFTER="$desired_host"
-  fi
-
-  log "updating /etc/hosts local hostname alias"
-  if ! "${SUDO_CMD[@]}" python3 - "$desired_host" <<'PY'
-import re
-import sys
-from pathlib import Path
-
-hostname = sys.argv[1]
-path = Path("/etc/hosts")
-lines = path.read_text().splitlines()
-out = []
-done = False
-
-for line in lines:
-    if re.match(r"^\s*127\.0\.1\.1\s+", line):
-        out.append(f"127.0.1.1 {hostname}")
-        done = True
-    else:
-        out.append(line)
-
-if not done:
-    out.append(f"127.0.1.1 {hostname}")
-
-path.write_text("\n".join(out) + "\n")
-PY
-  then
-    warn "Optional .local setup changed the system hostname, but could not update /etc/hosts"
   fi
 
   log "systemctl enable --now avahi-daemon"

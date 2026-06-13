@@ -141,6 +141,7 @@ let state = {
     },
     settings: {
         audioOutputs: {
+            loaded: false,
             available: false,
             default_output: null,
             selected_output: null,
@@ -148,6 +149,25 @@ let state = {
             outputs: [],
             notes: [],
             pendingSelectionKey: null,
+            output_mode: {
+                mode: 'stereo',
+                available: false,
+                required_channels: 4,
+                effective_output_channels: null,
+                routing: {
+                    main_pair: [1, 2],
+                    sub_pair: [3, 4],
+                    status: 'Out 1/2 Main · Out 3/4 Sub',
+                },
+                subwoofer: {
+                    crossover_frequency_hz: 80,
+                    slope: 'LR24',
+                    main_highpass_enabled: true,
+                    sub_level_db: 0,
+                    sub_alignment_ms: 0,
+                    sub_polarity: 'normal',
+                },
+            },
         },
         sourceMode: {
             mode: 'app-playback',
@@ -185,6 +205,7 @@ let state = {
             restartPending: false,
             operation: '',
             detailsExpanded: false,
+            userCollapsedDetails: false,
             hasError: false,
         },
     },
@@ -260,6 +281,8 @@ const elements = {
     settingsCloseBtn: document.getElementById('close-settings'),
     settingsOutputSummary: document.getElementById('settings-output-summary'),
     settingsOutputSelect: document.getElementById('settings-output-select'),
+    settingsOutputModeSelect: document.getElementById('settings-output-mode-select'),
+    settingsOutputModeHint: document.getElementById('settings-output-mode-hint'),
     settingsSourceSelect: document.getElementById('settings-source-select'),
     settingsSourceModeHint: document.getElementById('settings-source-mode-hint'),
     settingsBluetoothStatus: document.getElementById('settings-bluetooth-status'),
@@ -447,6 +470,17 @@ const elements = {
     effectsToneEffectWrap: document.getElementById('effects-tone-effect-wrap'),
     effectsToneEffectMode: document.getElementById('effects-tone-effect-mode'),
     effectsExtrasFeedback: document.getElementById('effects-extras-feedback'),
+    effectsSubwooferCard: document.querySelector('.effects-card-subwoofer'),
+    effectsSubwooferRouting: document.getElementById('effects-subwoofer-routing'),
+    effectsSubwooferModeBadge: document.getElementById('effects-subwoofer-mode-badge'),
+    effectsSubwooferPreview: document.getElementById('effects-subwoofer-preview'),
+    effectsSubwooferFrequency: document.getElementById('effects-subwoofer-frequency'),
+    effectsSubwooferFrequencyNumber: document.getElementById('effects-subwoofer-frequency-number'),
+    effectsSubwooferMainHighpass: document.getElementById('effects-subwoofer-main-highpass'),
+    effectsSubwooferLevel: document.getElementById('effects-subwoofer-level'),
+    effectsSubwooferDelay: document.getElementById('effects-subwoofer-delay'),
+    effectsSubwooferPolarity: document.getElementById('effects-subwoofer-polarity'),
+    effectsSubwooferFeedback: document.getElementById('effects-subwoofer-feedback'),
     effectsRewDualPresetName: document.getElementById('effects-rew-dual-preset-name'),
     effectsCombinePreset1: document.getElementById('effects-combine-preset-1'),
     effectsCombinePreset2: document.getElementById('effects-combine-preset-2'),
@@ -834,6 +868,11 @@ function setupSettingsActions() {
             if (outputKey) void saveAudioOutputSelection(outputKey);
         });
     }
+    if (elements.settingsOutputModeSelect) {
+        elements.settingsOutputModeSelect.addEventListener('change', (event) => {
+            void saveAudioOutputMode(event.target.value || 'stereo');
+        });
+    }
     if (elements.settingsSourceSelect) {
         elements.settingsSourceSelect.addEventListener('change', (event) => {
             const value = event.target.value || 'app-playback';
@@ -854,7 +893,13 @@ function setupSettingsActions() {
     elements.settingsUpdateCheckBtn?.addEventListener('click', () => checkFxrouteUpdate());
     elements.settingsUpdateRunBtn?.addEventListener('click', () => runFxrouteUpdate());
     elements.settingsUpdateDetailsToggle?.addEventListener('click', () => {
-        state.settings.maintenance.detailsExpanded = !state.settings.maintenance.detailsExpanded;
+        const maintenance = state.settings.maintenance;
+        const isOpen = !!maintenance.detailsExpanded
+            || (!!maintenance.pending && maintenance.operation === 'update')
+            || !!maintenance.restartPending
+            || (!!maintenance.hasError && !maintenance.userCollapsedDetails);
+        maintenance.detailsExpanded = !isOpen;
+        maintenance.userCollapsedDetails = isOpen;
         renderMaintenancePanel();
     });
     const backdrop = elements.settingsPanel.querySelector('.manage-overlay-backdrop');
@@ -865,6 +910,141 @@ function setupSettingsActions() {
         }
     });
     renderSettingsPanel();
+}
+
+function normalizeSubwooferSettings(input = {}) {
+    const frequency = Math.max(40, Math.min(200, Math.round(Number(input.crossover_frequency_hz ?? input.crossoverFrequencyHz ?? 80) || 80)));
+    const level = Math.max(-24, Math.min(12, Number(input.sub_level_db ?? input.subLevelDb ?? 0) || 0));
+    const alignment = Math.max(-40, Math.min(40, Number(input.sub_alignment_ms ?? input.subAlignmentMs ?? 0) || 0));
+    const polarity = String(input.sub_polarity ?? input.subPolarity ?? 'normal').toLowerCase() === 'invert' ? 'invert' : 'normal';
+    const roundedAlignment = Math.round(alignment * 10) / 10;
+    return {
+        crossover_frequency_hz: frequency,
+        slope: 'LR24',
+        main_highpass_enabled: input.main_highpass_enabled ?? input.mainHighpassEnabled ?? true ? true : false,
+        sub_level_db: Math.round(level * 10) / 10,
+        sub_alignment_ms: roundedAlignment,
+        sub_polarity: polarity,
+    };
+}
+
+function collectSubwooferSettings() {
+    return normalizeSubwooferSettings({
+        crossover_frequency_hz: elements.effectsSubwooferFrequencyNumber?.value || elements.effectsSubwooferFrequency?.value || 80,
+        main_highpass_enabled: (elements.effectsSubwooferMainHighpass?.value || 'on') !== 'off',
+        sub_level_db: elements.effectsSubwooferLevel?.value || 0,
+        sub_alignment_ms: elements.effectsSubwooferDelay?.value || 0,
+        sub_polarity: elements.effectsSubwooferPolarity?.value || 'normal',
+    });
+}
+
+let _audioOutputModeRequestId = 0;
+function getAudioOutputModeSignature(mode, subwoofer) {
+    return JSON.stringify({
+        mode: mode === 'subwoofer-2.1' ? 'subwoofer-2.1' : 'stereo',
+        subwoofer: normalizeSubwooferSettings(subwoofer || {}),
+    });
+}
+
+async function saveAudioOutputMode(mode, subwoofer = null) {
+    const nextMode = mode === 'subwoofer-2.1' ? 'subwoofer-2.1' : 'stereo';
+    const previousMode = state.settings.audioOutputs.output_mode?.mode || 'stereo';
+    const nextSubwoofer = normalizeSubwooferSettings(subwoofer || state.settings.audioOutputs.output_mode?.subwoofer);
+    const requestSignature = getAudioOutputModeSignature(nextMode, nextSubwoofer);
+    const requestId = ++_audioOutputModeRequestId;
+    state.settings.audioOutputs.output_mode = {
+        ...(state.settings.audioOutputs.output_mode || {}),
+        mode: nextMode,
+        subwoofer: nextSubwoofer,
+    };
+    renderSettingsPanel();
+    try {
+        const resp = await fetch('/api/audio/output-mode', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                mode: nextMode,
+                subwoofer: nextSubwoofer,
+            }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || 'Failed to save output mode');
+        if (
+            requestId !== _audioOutputModeRequestId
+            || requestSignature !== getAudioOutputModeSignature(
+                state.settings.audioOutputs.output_mode?.mode,
+                state.settings.audioOutputs.output_mode?.subwoofer,
+            )
+        ) {
+            return;
+        }
+        state.settings.audioOutputs = {
+            loaded: true,
+            available: !!data.available,
+            default_output: data.default_output || null,
+            selected_output: data.selected_output || null,
+            current_output: data.current_output || null,
+            outputs: Array.isArray(data.outputs) ? data.outputs : [],
+            notes: Array.isArray(data.notes) ? data.notes : [],
+            pendingSelectionKey: null,
+            output_mode: data.output_mode || state.settings.audioOutputs.output_mode,
+        };
+        renderSettingsPanel();
+        setSubwooferFeedback('Saved', 'success');
+        void postRuntimeDebugSnapshot(`ui-output-mode-saved-${nextMode}`, { requestedMode: nextMode });
+    } catch (error) {
+        if (requestId !== _audioOutputModeRequestId) return;
+        if (requestSignature !== getAudioOutputModeSignature(
+            state.settings.audioOutputs.output_mode?.mode,
+            state.settings.audioOutputs.output_mode?.subwoofer,
+        )) {
+            return;
+        }
+        _subwooferLastRequestedSignature = '';
+        state.settings.audioOutputs.output_mode = {
+            ...(state.settings.audioOutputs.output_mode || {}),
+            mode: previousMode,
+        };
+        renderSettingsPanel();
+        setSubwooferFeedback('Failed', 'error');
+        showToast(error.message || 'Failed to save output mode', 'error');
+    }
+}
+
+function collectRuntimeDebugUiState(extra = {}) {
+    return {
+        visibleTab: window.__visibleTab || '',
+        outputMode: state.settings.audioOutputs.output_mode?.mode || '',
+        sourceMode: state.settings.audioSources.mode || '',
+        measurement: {
+            activeJobId: state.measurement.activeJobId || '',
+            repeatJobActive: !!state.measurement.repeatJobActive,
+            startInFlight: !!state.measurement.startInFlight,
+            statusText: state.measurement.statusText || '',
+        },
+        playback: {
+            playing: !!state.playback.playing,
+            paused: !!state.playback.paused,
+            currentTitle: state.playback.current_track?.title || '',
+            currentSource: state.playback.current_track?.source || '',
+        },
+        ...extra,
+    };
+}
+
+async function postRuntimeDebugSnapshot(label, extra = {}) {
+    try {
+        await fetch('/api/debug/21-runtime-state', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                label,
+                ui_state: collectRuntimeDebugUiState(extra),
+            }),
+        });
+    } catch (error) {
+        console.debug('2.1 runtime debug snapshot failed', label, error);
+    }
 }
 
 function stopSettingsStatusPolling() {
@@ -1035,7 +1215,7 @@ function renderMaintenancePanel() {
     const showDetails = !!maintenance.detailsExpanded
         || (!!maintenance.pending && maintenance.operation === 'update')
         || !!maintenance.restartPending
-        || !!maintenance.hasError;
+        || (!!maintenance.hasError && !maintenance.userCollapsedDetails);
     if (elements.settingsMaintenanceSummary) {
         elements.settingsMaintenanceSummary.textContent = maintenanceStatusText(maintenance);
     }
@@ -1082,6 +1262,7 @@ async function checkFxrouteUpdate(options = {}) {
         state.settings.maintenance.operation = 'check';
         state.settings.maintenance.detail = 'Checking GitHub for updates…';
         state.settings.maintenance.hasError = false;
+        state.settings.maintenance.userCollapsedDetails = false;
         renderSettingsPanel();
     }
     try {
@@ -1100,6 +1281,7 @@ async function checkFxrouteUpdate(options = {}) {
             pending: false,
             restartPending: false,
             operation: '',
+            userCollapsedDetails: false,
             hasError: false,
         };
     } catch (error) {
@@ -1111,6 +1293,7 @@ async function checkFxrouteUpdate(options = {}) {
             pending: false,
             restartPending: false,
             operation: '',
+            userCollapsedDetails: false,
             hasError: true,
         };
     }
@@ -1147,6 +1330,7 @@ async function runFxrouteUpdate() {
     state.settings.maintenance.operation = 'update';
     state.settings.maintenance.detail = 'Updating FXRoute…';
     state.settings.maintenance.hasError = false;
+    state.settings.maintenance.userCollapsedDetails = false;
     renderSettingsPanel();
     try {
         const resp = await fetch('/api/system/update', { method: 'POST' });
@@ -1166,6 +1350,7 @@ async function runFxrouteUpdate() {
             pending: false,
             restartPending: !!data.restart_scheduled,
             operation: data.restart_scheduled ? 'update' : '',
+            userCollapsedDetails: false,
             hasError: false,
         };
         renderSettingsPanel();
@@ -1182,6 +1367,7 @@ async function runFxrouteUpdate() {
         state.settings.maintenance.detail = error.message || 'Update failed.';
         state.settings.maintenance.log = error.message || '';
         state.settings.maintenance.hasError = true;
+        state.settings.maintenance.userCollapsedDetails = false;
         renderSettingsPanel();
         showToast(error.message || 'Update failed', 'error');
     }
@@ -1202,6 +1388,8 @@ function renderSettingsPanel() {
     const pendingSelectionKey = overview.pendingSelectionKey || null;
     const selectableOutputs = outputs.filter((output) => !!output.selectable);
     const effectiveSelectedKey = selectedOutput?.key || currentOutput?.key || defaultOutput?.target_name || '';
+    const outputMode = overview.output_mode || {};
+    const mode = outputMode.mode || 'stereo';
 
     if (elements.settingsOutputSummary) {
         if (!overview.available) {
@@ -1219,6 +1407,23 @@ function renderSettingsPanel() {
         elements.settingsOutputSelect.innerHTML = options.join('') || '<option value="">No outputs available</option>';
         if (effectiveSelectedKey) elements.settingsOutputSelect.value = effectiveSelectedKey;
         elements.settingsOutputSelect.disabled = !overview.available || !!pendingSelectionKey || !selectableOutputs.length;
+    }
+
+    if (elements.settingsOutputModeSelect && !isSelectFocused(elements.settingsOutputModeSelect)) {
+        elements.settingsOutputModeSelect.value = mode;
+        elements.settingsOutputModeSelect.disabled = !overview.available;
+    }
+    if (elements.settingsOutputModeHint) {
+        const channels = outputMode.effective_output_channels;
+        if (mode === 'subwoofer-2.1') {
+            elements.settingsOutputModeHint.textContent = outputMode.available
+                ? `2.1 fixed routing active: ${outputMode.routing?.status || 'Out 1/2 Main · Out 3/4 Sub'}.`
+                : '2.1 requires a selected output device with at least 4 channels.';
+        } else {
+            elements.settingsOutputModeHint.textContent = channels
+                ? `Stereo mode active. Selected output reports ${channels} channels.`
+                : 'Stereo output mode active.';
+        }
     }
 
     const sourceOverview = state.settings?.sourceMode || {};
@@ -1260,6 +1465,7 @@ function renderSettingsPanel() {
     }
     renderHardwareController();
     renderMaintenancePanel();
+    renderSubwooferPanel();
     applySourceModeUiState();
 }
 
@@ -1300,6 +1506,7 @@ async function saveAudioOutputSelection(key) {
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) throw new Error(data.detail || 'Failed to save audio output');
         state.settings.audioOutputs = {
+            loaded: true,
             available: !!data.available,
             default_output: data.default_output || null,
             selected_output: data.selected_output || null,
@@ -1307,6 +1514,7 @@ async function saveAudioOutputSelection(key) {
             outputs: Array.isArray(data.outputs) ? data.outputs : [],
             notes: Array.isArray(data.notes) ? data.notes : [],
             pendingSelectionKey: null,
+            output_mode: data.output_mode || state.settings.audioOutputs.output_mode,
         };
         renderSettingsPanel();
         showToast('Audio output updated', 'success');
@@ -1323,6 +1531,7 @@ async function fetchAudioOutputOverview() {
         if (!resp.ok) throw new Error('Failed to fetch audio outputs');
         const data = await resp.json();
         state.settings.audioOutputs = {
+            loaded: true,
             available: !!data.available,
             default_output: data.default_output || null,
             selected_output: data.selected_output || null,
@@ -1330,10 +1539,13 @@ async function fetchAudioOutputOverview() {
             outputs: Array.isArray(data.outputs) ? data.outputs : [],
             notes: Array.isArray(data.notes) ? data.notes : [],
             pendingSelectionKey: null,
+            output_mode: data.output_mode || state.settings.audioOutputs.output_mode,
         };
         renderSettingsPanel();
+        renderSubwooferPanel();
     } catch (e) {
         state.settings.audioOutputs = {
+            loaded: true,
             available: false,
             default_output: null,
             selected_output: null,
@@ -1341,8 +1553,10 @@ async function fetchAudioOutputOverview() {
             outputs: [],
             notes: [e.message || 'Failed to fetch audio outputs'],
             pendingSelectionKey: null,
+            output_mode: state.settings.audioOutputs.output_mode,
         };
         renderSettingsPanel();
+        renderSubwooferPanel();
     }
 }
 
@@ -1521,6 +1735,9 @@ function switchTab(tabId) {
     elements.tabs.forEach(t => t.classList.toggle('active', t.dataset.tab === tabId));
     elements.tabPanels.forEach(p => p.classList.toggle('active', p.id === `tab-${tabId}`));
     window.__visibleTab = tabId;
+    if (tabId !== 'measurement') {
+        void postRuntimeDebugSnapshot('ui-after-click-playback', { clickedTab: tabId });
+    }
     highlightActiveTrack();
     if (tabId === 'spotify') {
         const d = window.__spotifyLastData;
@@ -4977,6 +5194,68 @@ function setupEffectsActions() {
     });
     if (elements.effectsPeqAddBandBtn) elements.effectsPeqAddBandBtn.addEventListener('click', addPeqBandPair);
     if (elements.effectsPeqCreatePresetBtn) elements.effectsPeqCreatePresetBtn.addEventListener('click', createPeqPreset);
+    [
+        elements.effectsSubwooferFrequency,
+        elements.effectsSubwooferFrequencyNumber,
+        elements.effectsSubwooferLevel,
+        elements.effectsSubwooferDelay,
+        elements.effectsSubwooferPolarity,
+        elements.effectsSubwooferMainHighpass,
+    ].forEach(el => {
+        if (!el) return;
+        el.addEventListener('focus', () => _activeEditing.add(el));
+        el.addEventListener('input', () => {
+            if (el === elements.effectsSubwooferFrequency && elements.effectsSubwooferFrequencyNumber) {
+                elements.effectsSubwooferFrequencyNumber.value = elements.effectsSubwooferFrequency.value;
+            } else if (el === elements.effectsSubwooferFrequencyNumber && elements.effectsSubwooferFrequency) {
+                elements.effectsSubwooferFrequency.value = elements.effectsSubwooferFrequencyNumber.value;
+            }
+            updateSubwooferDraftFromControls();
+        });
+        el.addEventListener('change', () => saveSubwooferDebounced(0));
+        el.addEventListener('blur', () => {
+            _activeEditing.delete(el);
+            saveSubwooferDebounced(0);
+        });
+    });
+    if (elements.effectsSubwooferPreview) {
+        let draggingCrossover = false;
+        const updateFromPointer = (event, commit = false) => {
+            const rect = elements.effectsSubwooferPreview.getBoundingClientRect();
+            const layout = getSubwooferPreviewLayout(rect.width || 560, rect.height || 132);
+            const plotW = Math.max(1, layout.plotW);
+            const t = Math.max(0, Math.min(1, (event.clientX - rect.left - layout.pad.left) / plotW));
+            const minHz = 40;
+            const maxHz = 200;
+            const hz = Math.round(Math.pow(10, Math.log10(minHz) + t * (Math.log10(maxHz) - Math.log10(minHz))));
+            if (elements.effectsSubwooferFrequency) elements.effectsSubwooferFrequency.value = String(hz);
+            if (elements.effectsSubwooferFrequencyNumber) elements.effectsSubwooferFrequencyNumber.value = String(hz);
+            if (commit) saveSubwooferDebounced(0);
+            else updateSubwooferDraftFromControls();
+        };
+        elements.effectsSubwooferPreview.addEventListener('pointerdown', (event) => {
+            draggingCrossover = true;
+            if (elements.effectsSubwooferFrequency) _activeEditing.add(elements.effectsSubwooferFrequency);
+            if (elements.effectsSubwooferFrequencyNumber) _activeEditing.add(elements.effectsSubwooferFrequencyNumber);
+            elements.effectsSubwooferPreview.setPointerCapture?.(event.pointerId);
+            updateFromPointer(event, false);
+        });
+        elements.effectsSubwooferPreview.addEventListener('pointermove', (event) => {
+            if (draggingCrossover) updateFromPointer(event, false);
+        });
+        elements.effectsSubwooferPreview.addEventListener('pointerup', (event) => {
+            if (!draggingCrossover) return;
+            draggingCrossover = false;
+            updateFromPointer(event, true);
+            if (elements.effectsSubwooferFrequency) _activeEditing.delete(elements.effectsSubwooferFrequency);
+            if (elements.effectsSubwooferFrequencyNumber) _activeEditing.delete(elements.effectsSubwooferFrequencyNumber);
+        });
+        elements.effectsSubwooferPreview.addEventListener('pointercancel', () => {
+            draggingCrossover = false;
+            if (elements.effectsSubwooferFrequency) _activeEditing.delete(elements.effectsSubwooferFrequency);
+            if (elements.effectsSubwooferFrequencyNumber) _activeEditing.delete(elements.effectsSubwooferFrequencyNumber);
+        });
+    }
     // Track focus to avoid resetting input values while user is typing
     [
         elements.effectsHeadroomGainDb,
@@ -7966,6 +8245,7 @@ async function startHostMeasurement() {
     state.measurement.currentMeasurementSaved = false;
     state.measurement.statusText = 'Starting host-local sweep…';
     renderMeasurementPanel();
+    await postRuntimeDebugSnapshot('ui-before-measurement-start', { measurementKind: 'single' });
 
     const resp = await fetch('/api/measurements/start', { method: 'POST', body: formData });
     const data = await resp.json().catch(() => ({}));
@@ -8002,6 +8282,7 @@ async function startLrRepeatMeasurement() {
     state.measurement.repeatJobActive = true;
     state.measurement.statusText = 'Starting L/R repeat…';
     renderMeasurementPanel();
+    await postRuntimeDebugSnapshot('ui-before-measurement-start', { measurementKind: 'lr-repeat' });
     const resp = await fetch('/api/measurements/lr-repeat/start', { method: 'POST', body: formData });
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok) throw new Error(data.detail || 'Failed to start L/R repeat measurement');
@@ -8104,6 +8385,11 @@ async function pollMeasurementJob(jobId) {
             const repeatMeasurements = Array.isArray(job?.result?.measurements) ? job.result.measurements : [];
             state.measurement.repeatJobActive = false;
             syncMeasurementStartButtonFallback();
+            await postRuntimeDebugSnapshot('ui-directly-after-measurement-end', {
+                jobId,
+                jobStatus,
+                measurementKind: repeatMeasurements.length ? 'lr-repeat' : 'single',
+            });
             if (repeatMeasurements.length) {
                 state.measurement.pendingRepeatMeasurements = repeatMeasurements.map((measurement, index) => normalizeMeasurementEntry(measurement, index));
                 state.measurement.currentMeasurement = state.measurement.pendingRepeatMeasurements[0] || null;
@@ -8148,6 +8434,11 @@ async function pollMeasurementJob(jobId) {
             state.measurement.startInFlight = false;
             state.measurement.repeatJobActive = false;
             syncMeasurementStartButtonFallback();
+            await postRuntimeDebugSnapshot('ui-directly-after-measurement-end', {
+                jobId,
+                jobStatus,
+                failed: true,
+            });
             throw new Error(job.error?.detail || job.message || 'Measurement failed');
         }
         if (MEASUREMENT_JOB_CANCELLED_STATES.has(jobStatus)) {
@@ -8155,6 +8446,11 @@ async function pollMeasurementJob(jobId) {
             state.measurement.startInFlight = false;
             state.measurement.repeatJobActive = false;
             state.measurement.statusText = String(job.message || 'Measurement cancelled.');
+            await postRuntimeDebugSnapshot('ui-directly-after-measurement-end', {
+                jobId,
+                jobStatus,
+                cancelled: true,
+            });
             renderMeasurementPanelDefensively('measurement cancellation render');
             showToast('Measurement cancelled', 'success');
             return;
@@ -10141,6 +10437,224 @@ function updateEffectsExtrasUi() {
     if (elements.effectsToneEffectWrap) {
         elements.effectsToneEffectWrap.classList.toggle('hidden', !elements.effectsToneEffectEnabled?.checked);
     }
+}
+
+let _subwooferPreviewDrawFrame = null;
+function scheduleSubwooferPreviewDraw(subwoofer) {
+    if (!elements.effectsSubwooferPreview) return;
+    const normalized = normalizeSubwooferSettings(subwoofer || {});
+    if (_subwooferPreviewDrawFrame) window.cancelAnimationFrame(_subwooferPreviewDrawFrame);
+    _subwooferPreviewDrawFrame = window.requestAnimationFrame(() => {
+        _subwooferPreviewDrawFrame = null;
+        drawSubwooferPreview(normalized);
+    });
+}
+
+function renderSubwooferPanel() {
+    const outputMode = state.settings.audioOutputs?.output_mode || {};
+    if (!state.settings.audioOutputs?.loaded) {
+        elements.effectsSubwooferCard?.classList.add('hidden');
+        return;
+    }
+    const mode = outputMode.mode || 'stereo';
+    const isSubwooferMode = mode === 'subwoofer-2.1';
+    elements.effectsSubwooferCard?.classList.toggle('hidden', !isSubwooferMode);
+    if (!isSubwooferMode) {
+        setSubwooferFeedback('');
+        return;
+    }
+    const subwoofer = normalizeSubwooferSettings(outputMode.subwoofer || {});
+    if (elements.effectsSubwooferRouting) {
+        const routingStatus = outputMode.routing?.status || 'Out 1/2 Main · Out 3/4 Sub';
+        const slope = subwoofer.slope || 'LR24';
+        elements.effectsSubwooferRouting.textContent = `${routingStatus} · ${slope}`;
+    }
+    if (elements.effectsSubwooferModeBadge) {
+        elements.effectsSubwooferModeBadge.textContent = mode === 'subwoofer-2.1' ? '2.1 active' : 'Stereo';
+        elements.effectsSubwooferModeBadge.classList.toggle('is-active', mode === 'subwoofer-2.1');
+    }
+    if (elements.effectsSubwooferFrequency && !_activeEditing.has(elements.effectsSubwooferFrequency)) {
+        elements.effectsSubwooferFrequency.value = String(subwoofer.crossover_frequency_hz);
+    }
+    if (elements.effectsSubwooferFrequencyNumber && !_activeEditing.has(elements.effectsSubwooferFrequencyNumber)) {
+        elements.effectsSubwooferFrequencyNumber.value = String(subwoofer.crossover_frequency_hz);
+    }
+    if (elements.effectsSubwooferMainHighpass) {
+        elements.effectsSubwooferMainHighpass.value = subwoofer.main_highpass_enabled ? 'on' : 'off';
+    }
+    if (elements.effectsSubwooferLevel && !_activeEditing.has(elements.effectsSubwooferLevel)) {
+        elements.effectsSubwooferLevel.value = String(subwoofer.sub_level_db);
+    }
+    if (elements.effectsSubwooferDelay && !_activeEditing.has(elements.effectsSubwooferDelay)) {
+        elements.effectsSubwooferDelay.value = String(subwoofer.sub_alignment_ms);
+    }
+    if (elements.effectsSubwooferPolarity && !_activeEditing.has(elements.effectsSubwooferPolarity)) {
+        elements.effectsSubwooferPolarity.value = subwoofer.sub_polarity;
+    }
+    scheduleSubwooferPreviewDraw(subwoofer);
+}
+
+function getSubwooferPreviewLayout(width, height) {
+    const pad = { left: 56, right: 24, top: 18, bottom: 24 };
+    return {
+        pad,
+        plotW: Math.max(1, width - pad.left - pad.right),
+        plotH: Math.max(1, height - pad.top - pad.bottom),
+    };
+}
+
+function drawSubwooferPreview(subwoofer) {
+    const canvas = elements.effectsSubwooferPreview;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const settings = normalizeSubwooferSettings(subwoofer || {});
+    const displayWidth = Math.max(320, Math.round(canvas.clientWidth || canvas.width || 560));
+    const displayHeight = Math.max(112, Math.round(canvas.clientHeight || canvas.height || 132));
+    const dpr = window.devicePixelRatio || 1;
+    const targetWidth = Math.round(displayWidth * dpr);
+    const targetHeight = Math.round(displayHeight * dpr);
+    if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
+        canvas.width = targetWidth;
+        canvas.height = targetHeight;
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const width = displayWidth;
+    const height = displayHeight;
+    const { pad, plotW, plotH } = getSubwooferPreviewLayout(width, height);
+    const minHz = 20;
+    const maxHz = 300;
+    const minDb = -18;
+    const maxDb = 0;
+    const crossover = settings.crossover_frequency_hz;
+    const xForHz = (hz) => pad.left + ((Math.log10(hz) - Math.log10(minHz)) / (Math.log10(maxHz) - Math.log10(minHz))) * plotW;
+    const yForDb = (db) => pad.top + ((maxDb - db) / (maxDb - minDb)) * plotH;
+    const responseDb = (hz, highpass) => {
+        const ratio = highpass ? hz / crossover : crossover / hz;
+        const magnitude = 1 / Math.sqrt(1 + Math.pow(ratio, -8));
+        return 20 * Math.log10(Math.max(0.001, magnitude));
+    };
+    ctx.clearRect(0, 0, width, height);
+    ctx.fillStyle = 'rgba(255,255,255,0.025)';
+    ctx.fillRect(pad.left, pad.top, plotW, plotH);
+    ctx.strokeStyle = 'rgba(255,255,255,0.10)';
+    ctx.lineWidth = 1;
+    const frequencyLabels = [40, 80, 120, 200];
+    const dbLabels = [0, -6, -12, -18];
+    frequencyLabels.forEach((hz) => {
+        const x = xForHz(hz);
+        ctx.beginPath();
+        ctx.moveTo(x, pad.top);
+        ctx.lineTo(x, pad.top + plotH);
+        ctx.stroke();
+    });
+    dbLabels.forEach((db) => {
+        const y = yForDb(db);
+        ctx.beginPath();
+        ctx.moveTo(pad.left, y);
+        ctx.lineTo(pad.left + plotW, y);
+        ctx.stroke();
+    });
+    ctx.fillStyle = 'rgba(229,231,235,0.54)';
+    ctx.font = '500 10px system-ui, sans-serif';
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    dbLabels.forEach((db) => {
+        const y = yForDb(db);
+        ctx.fillText(`${db} dB`, pad.left - 8, y);
+    });
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
+    frequencyLabels.forEach((hz) => {
+        ctx.fillText(`${hz} Hz`, xForHz(hz), height - 8);
+    });
+    ctx.textAlign = 'start';
+    const drawCurve = (highpass, color) => {
+        ctx.beginPath();
+        for (let i = 0; i <= 160; i += 1) {
+            const t = i / 160;
+            const hz = Math.pow(10, Math.log10(minHz) + t * (Math.log10(maxHz) - Math.log10(minHz)));
+            const db = responseDb(hz, highpass) + (highpass ? 0 : settings.sub_level_db || 0);
+            const x = xForHz(hz);
+            const y = yForDb(Math.max(minDb, Math.min(maxDb, db)));
+            if (i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+        }
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 3;
+        ctx.stroke();
+    };
+    drawCurve(false, '#6ee7b7');
+    if (settings.main_highpass_enabled) drawCurve(true, '#93c5fd');
+    const markerX = xForHz(crossover);
+    ctx.strokeStyle = 'rgba(255,255,255,0.72)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(markerX, pad.top);
+    ctx.lineTo(markerX, pad.top + plotH);
+    ctx.stroke();
+    ctx.fillStyle = '#e5e7eb';
+    ctx.font = '600 11px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const markerLabel = `${crossover} Hz`;
+    const markerLabelWidth = ctx.measureText(markerLabel).width + 12;
+    const markerLabelX = Math.max(pad.left + markerLabelWidth / 2 + 2, Math.min(pad.left + plotW - markerLabelWidth / 2 - 2, markerX));
+    const markerLabelY = pad.top + plotH * 0.72;
+    ctx.fillStyle = 'rgba(12,18,28,0.82)';
+    ctx.fillRect(markerLabelX - markerLabelWidth / 2, markerLabelY - 9, markerLabelWidth, 18);
+    ctx.strokeStyle = 'rgba(255,255,255,0.16)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(markerLabelX - markerLabelWidth / 2, markerLabelY - 9, markerLabelWidth, 18);
+    ctx.fillStyle = '#e5e7eb';
+    ctx.fillText(markerLabel, markerLabelX, markerLabelY);
+    ctx.textAlign = 'start';
+}
+
+let _subwooferFeedbackTimer = null;
+function setSubwooferFeedback(message, cls = '') {
+    if (!elements.effectsSubwooferFeedback) return;
+    window.clearTimeout(_subwooferFeedbackTimer);
+    elements.effectsSubwooferFeedback.textContent = message;
+    elements.effectsSubwooferFeedback.className = 'effects-extras-feedback' + (cls ? ' ' + cls : '');
+    if (cls === 'success') {
+        _subwooferFeedbackTimer = window.setTimeout(() => {
+            if (!elements.effectsSubwooferFeedback) return;
+            elements.effectsSubwooferFeedback.textContent = '';
+            elements.effectsSubwooferFeedback.className = 'effects-extras-feedback';
+        }, 1400);
+    }
+}
+
+let _subwooferSaveTimer = null;
+let _subwooferLastRequestedSignature = '';
+const SUBWOOFER_COMMIT_DEBOUNCE_MS = 600;
+
+function updateSubwooferDraftFromControls() {
+    const settings = collectSubwooferSettings();
+    state.settings.audioOutputs.output_mode = {
+        ...(state.settings.audioOutputs.output_mode || {}),
+        subwoofer: settings,
+    };
+    renderSubwooferPanel();
+    return settings;
+}
+
+function saveSubwooferDebounced(delayMs = SUBWOOFER_COMMIT_DEBOUNCE_MS) {
+    window.clearTimeout(_subwooferSaveTimer);
+    const settings = updateSubwooferDraftFromControls();
+    const mode = state.settings.audioOutputs.output_mode?.mode || 'stereo';
+    const signature = getAudioOutputModeSignature(mode, settings);
+    if (signature === _subwooferLastRequestedSignature) return;
+    state.settings.audioOutputs.output_mode = {
+        ...(state.settings.audioOutputs.output_mode || {}),
+        subwoofer: settings,
+    };
+    _subwooferSaveTimer = window.setTimeout(() => {
+        _subwooferLastRequestedSignature = signature;
+        setSubwooferFeedback('Applying…');
+        void saveAudioOutputMode(mode, settings);
+    }, delayMs);
 }
 
 function loadSavedEffectsExtras() {

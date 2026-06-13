@@ -65,6 +65,14 @@
                                 <option value="">Loading…</option>
                             </select>
                         </div>
+                        <div class="field-group settings-field-group">
+                            <label for="settings-output-mode-select">Output Mode</label>
+                            <select id="settings-output-mode-select" class="url-input">
+                                <option value="stereo">Stereo</option>
+                                <option value="subwoofer-2.1">2.1 Subwoofer</option>
+                            </select>
+                            <p id="settings-output-mode-hint" class="settings-inline-note">Stereo output mode active.</p>
+                        </div>
                     </section>
 
                     <section class="radio-manage-section settings-section">
@@ -417,6 +425,61 @@
                     </section>
 
                     <div class="effects-grid">
+                        <section class="effects-card effects-card-create effects-card-subwoofer hidden">
+                            <div class="effects-card-header effects-card-subwoofer-header">
+                                <div>
+                                    <h3>Crossover / Subwoofer</h3>
+                                    <p id="effects-subwoofer-routing">Out 1/2 Main · Out 3/4 Sub</p>
+                                </div>
+                                <span id="effects-subwoofer-mode-badge" class="effects-subwoofer-mode-badge">Stereo</span>
+                            </div>
+                            <div class="effects-stack effects-subwoofer-stack">
+                                <div class="effects-subwoofer-preview-wrap">
+                                    <canvas id="effects-subwoofer-preview" class="effects-subwoofer-preview" width="560" height="160" aria-label="Crossover preview"></canvas>
+                                </div>
+                                <div class="effects-subwoofer-controls">
+                                    <div class="field-group">
+                                        <label for="effects-subwoofer-frequency-number">Crossover frequency</label>
+                                        <div class="effects-subwoofer-frequency-row">
+                                            <div class="delay-input-wrap">
+                                                <input type="number" id="effects-subwoofer-frequency-number" class="url-input delay-number-input" min="40" max="200" step="1" value="80">
+                                                <span class="delay-unit">Hz</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="field-group">
+                                        <label for="effects-subwoofer-level">Sub level</label>
+                                        <div class="delay-input-wrap">
+                                            <input type="number" id="effects-subwoofer-level" class="url-input delay-number-input" min="-24" max="12" step="0.5" value="0">
+                                            <span class="delay-unit">dB</span>
+                                        </div>
+                                    </div>
+                                    <div class="field-group">
+                                        <label for="effects-subwoofer-delay">Sub alignment</label>
+                                        <div class="delay-input-wrap">
+                                            <input type="number" id="effects-subwoofer-delay" class="url-input delay-number-input" min="-40" max="40" step="0.1" value="0">
+                                            <span class="delay-unit">ms</span>
+                                        </div>
+                                    </div>
+                                    <div class="field-group effects-subwoofer-polarity-field">
+                                        <label for="effects-subwoofer-polarity">Sub polarity</label>
+                                        <select id="effects-subwoofer-polarity" class="url-input effects-headroom-select effects-subwoofer-polarity-select">
+                                            <option value="normal">Normal</option>
+                                            <option value="invert">Invert</option>
+                                        </select>
+                                    </div>
+                                    <div class="field-group effects-subwoofer-highpass-field">
+                                        <label for="effects-subwoofer-main-highpass">Main highpass</label>
+                                        <select id="effects-subwoofer-main-highpass" class="url-input effects-headroom-select effects-subwoofer-compact-select">
+                                            <option value="on" selected>On</option>
+                                            <option value="off">Off</option>
+                                        </select>
+                                    </div>
+                                </div>
+                                <div id="effects-subwoofer-feedback" class="effects-extras-feedback" aria-live="polite"></div>
+                            </div>
+                        </section>
+
                         <section class="effects-card effects-card-manage effects-card-manage-order">
                             <div class="effects-card-header">
                                 <h3>A/B compare</h3>
@@ -973,6 +1036,6 @@
     <div id="toast-container" class="toast-container"></div>
 
     <script src="/static/measurement_dsp.js?v=0.7.36"></script>
-    <script src="/static/app.js?v=0.7.36"></script>
+    <script src="/static/app.js?v=0.7.36-21-runtime-debug"></script>
 </body>
 </html>

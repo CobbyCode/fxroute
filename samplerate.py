@@ -15,6 +15,8 @@ NON_SELECTABLE_INPUT_KEYS = {"easyeffects_source"}
 SOURCE_MODE_APP_PLAYBACK = "app-playback"
 SOURCE_MODE_EXTERNAL_INPUT = "external-input"
 SOURCE_MODE_BLUETOOTH_INPUT = "bluetooth-input"
+OUTPUT_MODE_STEREO = "stereo"
+OUTPUT_MODE_SUBWOOFER_21 = "subwoofer-2.1"
 
 
 def _run_command(args: list[str]) -> str:
@@ -321,10 +323,21 @@ def _parse_pactl_sinks_short(output: str) -> list[dict[str, Any]]:
             "name": parts[1].strip(),
             "driver": parts[2].strip(),
             "sample_spec": sample_spec,
+            "channels": _parse_sample_spec_channels(sample_spec),
             "active_rate": int(rate_match.group(1)) if rate_match else None,
             "state": parts[4].strip().upper(),
         })
     return sinks
+
+
+def _parse_sample_spec_channels(sample_spec: str | None) -> int | None:
+    match = re.search(r"\b(\d+)ch\b", sample_spec or "", re.IGNORECASE)
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
 
 
 def _parse_pactl_sources_short(output: str) -> list[dict[str, Any]]:
@@ -660,6 +673,11 @@ def _audio_output_selection_path() -> Path:
     return config_root / "fxroute" / "audio-output-selection.json"
 
 
+def _audio_output_mode_path() -> Path:
+    config_root = Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config"))
+    return config_root / "fxroute" / "audio-output-mode.json"
+
+
 
 def _audio_source_selection_path() -> Path:
     config_root = Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config"))
@@ -677,6 +695,54 @@ def _load_audio_output_selection() -> dict[str, Any]:
     selected_key = payload.get("selected_key")
     return {
         "selected_key": selected_key if isinstance(selected_key, str) and selected_key else None,
+    }
+
+
+def _normalize_subwoofer_config(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload = payload or {}
+    raw_frequency = payload.get("crossover_frequency_hz", payload.get("crossoverFrequencyHz", 80))
+    raw_level = payload.get("sub_level_db", payload.get("subLevelDb", 0.0))
+    raw_alignment = payload.get("sub_alignment_ms", payload.get("subAlignmentMs", 0.0))
+    try:
+        frequency = int(round(float(raw_frequency)))
+    except (TypeError, ValueError):
+        frequency = 80
+    try:
+        level = round(float(raw_level), 1)
+    except (TypeError, ValueError):
+        level = 0.0
+    try:
+        alignment = round(float(raw_alignment), 1)
+    except (TypeError, ValueError):
+        alignment = 0.0
+    polarity = str(payload.get("sub_polarity", payload.get("subPolarity", "normal")) or "normal").strip().lower()
+    alignment = max(-40.0, min(40.0, alignment))
+    return {
+        "crossover_frequency_hz": max(40, min(200, frequency)),
+        "slope": "LR24",
+        "main_highpass_enabled": bool(payload.get("main_highpass_enabled", payload.get("mainHighpassEnabled", True))),
+        "sub_level_db": max(-24.0, min(12.0, level)),
+        "sub_alignment_ms": alignment,
+        "sub_polarity": "invert" if polarity in {"invert", "inverted", "180"} else "normal",
+    }
+
+
+def _load_audio_output_mode() -> dict[str, Any]:
+    path = _audio_output_mode_path()
+    default_payload = {
+        "mode": OUTPUT_MODE_STEREO,
+        "subwoofer": _normalize_subwoofer_config(None),
+    }
+    if not path.exists():
+        return default_payload
+    try:
+        payload = json.loads(path.read_text())
+    except Exception:
+        return default_payload
+    mode = payload.get("mode")
+    return {
+        "mode": mode if mode in {OUTPUT_MODE_STEREO, OUTPUT_MODE_SUBWOOFER_21} else OUTPUT_MODE_STEREO,
+        "subwoofer": _normalize_subwoofer_config(payload.get("subwoofer") if isinstance(payload.get("subwoofer"), dict) else {}),
     }
 
 
@@ -702,6 +768,18 @@ def _save_audio_output_selection(selected_key: str) -> None:
     path.write_text(json.dumps({
         "selected_key": selected_key,
     }, indent=2) + "\n")
+
+
+def _save_audio_output_mode(mode: str, subwoofer: dict[str, Any] | None = None) -> dict[str, Any]:
+    normalized_mode = mode if mode in {OUTPUT_MODE_STEREO, OUTPUT_MODE_SUBWOOFER_21} else OUTPUT_MODE_STEREO
+    payload = {
+        "mode": normalized_mode,
+        "subwoofer": _normalize_subwoofer_config(subwoofer),
+    }
+    path = _audio_output_mode_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2) + "\n")
+    return payload
 
 
 def _save_audio_source_selection(mode: str, selected_input_key: str | None) -> None:
@@ -807,6 +885,9 @@ def _build_selected_output_payload(selected_key: str | None, current_name: str |
             "target_name": selected_output.get("name"),
             "target_label": selected_output.get("label") or selected_output.get("name") or "Unknown output",
             "is_default": selected_output.get("is_default", False),
+            "sample_spec": selected_output.get("sample_spec"),
+            "channels": selected_output.get("channels"),
+            "active_rate": selected_output.get("active_rate"),
         }
     return None
 
@@ -1103,6 +1184,7 @@ def get_audio_output_overview() -> dict[str, Any]:
     default_sink = status.get("sink") or {"id": None, "name": None, "description": None}
     relevant_sink = status.get("relevant_sink") or {}
     selection_state = _load_audio_output_selection()
+    output_mode = _load_audio_output_mode()
 
     sinks: list[dict[str, Any]] = []
     sink_details: dict[str, dict[str, Any]] = {}
@@ -1135,6 +1217,7 @@ def get_audio_output_overview() -> dict[str, Any]:
             "name": name,
             "label": label,
             "sample_spec": details.get("sample_spec") or sink.get("sample_spec"),
+            "channels": _parse_sample_spec_channels(details.get("sample_spec")) or sink.get("channels"),
             "active_rate": sink.get("active_rate"),
             "state": details.get("state") or sink.get("state"),
             "is_default": name == default_name,
@@ -1158,6 +1241,10 @@ def get_audio_output_overview() -> dict[str, Any]:
 
     current_output = next((item for item in explicit_outputs if item.get("is_current")), None)
     selected_output = _build_selected_output_payload(selected_key, current_name, explicit_outputs)
+    effective_output = next((item for item in explicit_outputs if item.get("key") == (selected_output or {}).get("key")), None) or current_output
+    output_mode_available = bool((effective_output or {}).get("channels") and (effective_output or {}).get("channels") >= 4)
+    if output_mode.get("mode") == OUTPUT_MODE_SUBWOOFER_21 and not output_mode_available:
+        notes.append("2.1 Subwoofer mode requires a selected multichannel output with at least 4 channels.")
 
     return {
         "available": bool(status.get("available")),
@@ -1167,10 +1254,24 @@ def get_audio_output_overview() -> dict[str, Any]:
             "target_name": default_name,
             "target_label": default_label,
             "is_selected": bool(default_name and selected_key == default_name),
+            "channels": next((item.get("channels") for item in explicit_outputs if item.get("key") == default_name), None),
         },
         "selected_output": selected_output,
         "current_output": current_output,
         "outputs": explicit_outputs,
+        "output_mode": {
+            **output_mode,
+            "routing": {
+                "main_pair": [1, 2],
+                "sub_pair": [3, 4],
+                "status": "Out 1/2 Main · Out 3/4 Sub",
+            },
+            "available": output_mode_available,
+            "required_channels": 4,
+            "effective_output_key": (effective_output or {}).get("key"),
+            "effective_output_channels": (effective_output or {}).get("channels"),
+            "effective_output_rate": (effective_output or {}).get("active_rate"),
+        },
         "bluetooth": {
             "available": bluetooth_overview.get("available", False),
             "device_count": len(bluetooth_overview.get("devices") or []),
@@ -1319,10 +1420,32 @@ def set_audio_output_selection(key: str) -> dict[str, Any]:
         raise ValueError(f"Unknown output: {normalized_key}")
     if not selected_output.get("selectable", True):
         raise ValueError(f"Output is not selectable: {normalized_key}")
+    output_mode = _load_audio_output_mode()
+    if output_mode.get("mode") == OUTPUT_MODE_SUBWOOFER_21 and (selected_output.get("channels") or 0) < 4:
+        raise ValueError("2.1 Subwoofer requires a selected multichannel output with at least 4 channels")
 
     _set_default_sink(selected_output["name"])
     _save_audio_output_selection(selected_output["key"])
     return get_audio_output_overview()
+
+
+def set_audio_output_mode(mode: str, subwoofer: dict[str, Any] | None = None) -> dict[str, Any]:
+    normalized_mode = (mode or OUTPUT_MODE_STEREO).strip()
+    if normalized_mode not in {OUTPUT_MODE_STEREO, OUTPUT_MODE_SUBWOOFER_21}:
+        raise ValueError(f"Unknown output mode: {mode}")
+    if normalized_mode == OUTPUT_MODE_SUBWOOFER_21:
+        overview = get_audio_output_overview()
+        output_mode = overview.get("output_mode") or {}
+        if not output_mode.get("available"):
+            raise ValueError("2.1 Subwoofer requires a selected multichannel output with at least 4 channels")
+    previous = _load_audio_output_mode()
+    saved = _save_audio_output_mode(normalized_mode, subwoofer if subwoofer is not None else previous.get("subwoofer"))
+    overview = get_audio_output_overview()
+    overview["output_mode"] = {
+        **(overview.get("output_mode") or {}),
+        **saved,
+    }
+    return overview
 
 
 def set_audio_source_selection(mode: str, input_key: str | None = None) -> dict[str, Any]:

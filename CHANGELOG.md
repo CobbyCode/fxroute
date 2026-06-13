@@ -6,6 +6,9 @@
 - Record installer path and service name in `~/.config/fxroute/install-config.env`, and point the `fxroute-update` helper at the same update script used by the in-app Maintenance flow.
 - Add a read-only `/api/power/state` amplifier power hint for Home Assistant or external automation, with Measurement Assistant heartbeat state for measurement-window activity.
 - Add `install.sh --mdns-hostname <name>` so non-interactive installs can explicitly configure the Avahi `.local` hostname; non-interactive runs now warn when `.local` setup is skipped or left on the existing system hostname.
+- Add first-pass 2.1 subwoofer output-mode controls with fixed Out 1/2 Main and Out 3/4 Sub routing status, 4-channel output validation, and Crossover / Subwoofer control persistence.
+- Add the initial 2.1 Subwoofer runtime path that records the post-EasyEffects stereo stream, processes LR24 crossover/sub controls as float32, and emits fixed 4-channel output to the selected multichannel hardware device.
+- Link the 2.1 runtime's four PipeWire output ports directly to the selected hardware sink playback ports to avoid incorrect automatic routing.
 
 ## 0.7.36 (2026-06-09)
 - Add a graph-local Frequency / IR toggle to the Measurement assistant. Frequency view keeps the existing 20 Hz to 20 kHz response graph, while IR view shows a lightweight -2 ms to +30 ms impulse-response preview for measurements that include preview data.

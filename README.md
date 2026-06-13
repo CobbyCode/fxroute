@@ -150,14 +150,6 @@ chmod +x install.sh
 
 The installer creates `.env` automatically and preserves it on reruns. For manual setup, copy `.env.example` to `.env` and adjust at least `MUSIC_ROOT` when needed. A NAS library can be used by mounting its SMB/Samba share locally, for example under `/mnt/music`, and setting `MUSIC_ROOT=/mnt/music`.
 
-To configure a dedicated `.local` LAN name during non-interactive installs, pass an explicit mDNS hostname:
-
-```bash
-./install.sh --mdns-hostname fxroute
-```
-
-Without `--mdns-hostname`, non-interactive installs keep the current system hostname if Avahi is already active, or warn that `.local` setup was skipped.
-
 Default user service:
 
 - `fxroute.service`

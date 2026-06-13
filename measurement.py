@@ -9,6 +9,7 @@ import logging
 import math
 import os
 import re
+import shutil
 import subprocess
 import threading
 import time
@@ -141,6 +142,7 @@ HOST_SWEEP_MAX_ATTEMPTS = 3
 HOST_SWEEP_RETRY_DELAY_SECONDS = 0.4
 HOST_SWEEP_AUTO_GAIN_RETRY_ATTEMPT = 1
 HOST_SWEEP_AUTO_GAIN_TARGET_PERCENT = 100
+PRIME_TIMEOUT_MARGIN_SECONDS = 10.0
 ALIGNMENT_SCORE_FAIL_THRESHOLD = 0.90
 ALIGNMENT_SCORE_WARN_THRESHOLD = 0.94
 HOST_ALIGNMENT_SCORE_FAIL_THRESHOLD = 0.84
@@ -203,6 +205,7 @@ class MeasurementStore:
         self._job_tasks: dict[str, asyncio.Task[Any]] = {}
         self._job_processes: dict[str, list[subprocess.Popen[str]]] = {}
         self._cancelled_jobs: set[str] = set()
+        self._last_successful_lag: int | None = None
 
     def list_measurements(self) -> dict[str, Any]:
         measurements = []
@@ -1928,6 +1931,11 @@ class MeasurementStore:
         reference_warning = str(input_channels.get("reference_disabled_reason") or "").strip()
         for attempt_index in range(HOST_SWEEP_MAX_ATTEMPTS):
             attempts_used = attempt_index + 1
+            logger.info(
+                "Measurement attempt %d/%d starting: job_id=%s reference=%s",
+                attempts_used, HOST_SWEEP_MAX_ATTEMPTS, job_id,
+                "electrical" if use_electrical_reference else "acoustic",
+            )
             try:
                 if capture_path.exists():
                     capture_path.unlink()
@@ -1959,6 +1967,10 @@ class MeasurementStore:
                     if not reference_status["usable"]:
                         reference_warning = reference_status["warning"]
                         logger.warning("Electrical measurement reference rejected for %s: %s", job_id, reference_warning)
+                        logger.info(
+                            "ER fallback capture within attempt %d/%d: reference quality rejected, retrying with host timing",
+                            attempts_used, HOST_SWEEP_MAX_ATTEMPTS,
+                        )
                         if capture_path.exists():
                             capture_path.unlink()
                         analysis, capture_info, playback_info = self._run_host_capture_attempt(
@@ -2011,6 +2023,10 @@ class MeasurementStore:
                 if use_electrical_reference:
                     reference_warning = f"Electrical reference unavailable; used host monitor timing fallback ({exc})."
                     logger.warning("Electrical measurement reference failed for %s; falling back to host monitor timing: %s", job_id, exc)
+                    logger.info(
+                        "ER fallback capture within attempt %d/%d: capture exception, retrying with host timing",
+                        attempts_used, HOST_SWEEP_MAX_ATTEMPTS,
+                    )
                     try:
                         if capture_path.exists():
                             capture_path.unlink()
@@ -2042,7 +2058,9 @@ class MeasurementStore:
                     except Exception:
                         logger.warning("Electrical reference fallback capture also failed for %s", job_id, exc_info=True)
                 if attempt_index >= HOST_SWEEP_MAX_ATTEMPTS - 1 or not self._should_retry_host_capture(exc):
-                    raise
+                    raise RuntimeError(
+                        f"Measurement failed after {attempts_used}/{HOST_SWEEP_MAX_ATTEMPTS} attempts: {exc}"
+                    ) from exc
                 time.sleep(HOST_SWEEP_RETRY_DELAY_SECONDS)
         if analysis is None or capture_info is None or playback_info is None:
             raise RuntimeError("Host-local capture did not produce an analysis result")
@@ -2199,6 +2217,7 @@ class MeasurementStore:
         play_timed_out = False
         record_stdout = ""
         record_stderr = ""
+        helper_process_snapshots: list[dict[str, Any]] = []
         detailed_diagnostics_enabled = _detailed_measurement_diagnostics_enabled()
         routing_snapshots: list[dict[str, Any]] = []
         link_diagnostics: dict[str, Any] = {}
@@ -2242,9 +2261,16 @@ class MeasurementStore:
                         record_node_name=record_node_name,
                         play_node_name=play_node_name,
                     )
-                )
+            )
             time.sleep(record_preroll_seconds)
 
+            helper_process_snapshots.append(self._snapshot_fxroute_21_helper_processes("before-capture-start"))
+            logger.info(
+                "Measurement 2.1 helper pgrep before capture start: job_id=%s sample_rate=%s helper_processes=%s",
+                job_id,
+                sample_rate,
+                helper_process_snapshots[-1].get("processes"),
+            )
             play_process = subprocess.Popen(play_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             self._job_processes[job_id] = [record_process, play_process]
             time.sleep(0.2)
@@ -2335,18 +2361,32 @@ class MeasurementStore:
         reference_channel_label = str(reference_capture.get("channel_label") or "reference")
         analysis_channel_index = mic_input_channel_index if electrical_reference_channel_index is not None else 1
         reference_channel_index = electrical_reference_channel_index if electrical_reference_channel_index is not None else 0
-        analysis = self._analyze_sweep_capture(
-            capture_path,
-            expected_sample_rate=sample_rate,
-            channel=channel,
-            reference_sweep=sweep_meta["analysis_sweep"],
-            inverse_sweep=sweep_meta["inverse_sweep"],
-            calibration_curve=calibration_curve,
-            capture_label="Host-local capture",
-            reference_channel_index=reference_channel_index,
-            analysis_channel_index=analysis_channel_index,
-            reference_channel_label=reference_channel_label,
-        )
+        try:
+            is_21_active = any(
+                bool(snap.get("processes")) for snap in helper_process_snapshots
+            )
+            analysis = self._analyze_sweep_capture(
+                capture_path,
+                expected_sample_rate=sample_rate,
+                channel=channel,
+                reference_sweep=sweep_meta["analysis_sweep"],
+                inverse_sweep=sweep_meta["inverse_sweep"],
+                calibration_curve=calibration_curve,
+                capture_label="Host-local capture",
+                reference_channel_index=reference_channel_index,
+                analysis_channel_index=analysis_channel_index,
+                reference_channel_label=reference_channel_label,
+                is_21_dsp_active=is_21_active,
+            )
+        except Exception:
+            helper_process_snapshots.append(self._snapshot_fxroute_21_helper_processes("after-capture-analysis-failure"))
+            logger.exception(
+                "Measurement 2.1 helper pgrep after capture analysis failure: job_id=%s sample_rate=%s helper_processes=%s",
+                job_id,
+                sample_rate,
+                helper_process_snapshots[-1].get("processes"),
+            )
+            raise
         analysis["method"] = (
             "inverse log-sweep deconvolution with electrical reference input timing"
             if electrical_reference_channel_index is not None
@@ -2467,6 +2507,7 @@ class MeasurementStore:
                 "pw_play_timed_out": bool(play_timed_out),
                 "pipewire_warning_lines": pipewire_warnings,
             },
+            "fxroute_21_helper_processes": helper_process_snapshots,
         }
         if pipewire_warnings:
             logger.warning("Measurement PipeWire warnings: %s", pipewire_warnings)
@@ -2533,6 +2574,117 @@ class MeasurementStore:
         error_codes = {str(item.get("code") or "").strip() for item in exc.items if item.get("level") == "error"}
         error_codes.discard("")
         return error_codes
+
+    def _run_measurement_prime(
+        self,
+        *,
+        prime_id: str,
+        mic_source_node_name: str,
+        channel: str,
+        capture_channels: int,
+        playback_path: Path,
+        playback_target: dict[str, Any],
+        sample_rate: int,
+        sweep_seconds: float,
+        lead_in_seconds: float,
+        tail_seconds: float,
+        record_preroll_seconds: float,
+        record_postroll_seconds: float,
+        record_duration_seconds: float,
+    ) -> None:
+        """Run a throwaway prime sweep after 2.1 DSP reconfig.
+
+        Exercises the full play-through-helper → output → mic-capture
+        pipeline so the first real capture starts with settled PipeWire
+        buffer state and helper DSP history.
+        """
+        prime_capture = self.captures_dir / f"{prime_id}-prime.wav"
+        record_node = f"fxroute-measure-record-{prime_id}"
+        play_node = f"fxroute-measure-play-{prime_id}"
+        sample_count = int(round(sample_rate * record_duration_seconds))
+
+        record_cmd = [
+            "pw-record",
+            "-P", "node.autoconnect=false",
+            "-P", f"node.name={record_node}",
+            "--target", "0",
+            "--rate", str(sample_rate),
+            "--channels", str(capture_channels),
+            "--format", "s16",
+        ]
+        if self._pw_record_supports_option("--container"):
+            record_cmd.extend(["--container", "wav"])
+        if self._pw_record_supports_option("--sample-count"):
+            record_cmd.extend(["--sample-count", str(sample_count)])
+        record_cmd.append(str(prime_capture))
+
+        play_cmd = [
+            "pw-play",
+            "-P", f"node.name={play_node}",
+            "--target", playback_target["target_name"],
+            str(playback_path),
+        ]
+
+        logger.info(
+            "Measurement prime sweep starting: prime_id=%s mic=%s channels=%d sample_rate=%d",
+            prime_id, mic_source_node_name, capture_channels, sample_rate,
+        )
+
+        record_proc = subprocess.Popen(record_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            self._cleanup_fxroute_links(
+                source_node_name=mic_source_node_name,
+                record_node_name=record_node,
+            )
+            self._link_host_reference_capture(
+                reference_source_node_name=mic_source_node_name,
+                mic_source_node_name=mic_source_node_name,
+                record_node_name=record_node,
+                requested_channel=channel,
+                mic_input_channel_index=0,
+            )
+            time.sleep(record_preroll_seconds)
+            play_proc = subprocess.Popen(play_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            try:
+                play_stdout, play_stderr = play_proc.communicate(
+                    timeout=record_duration_seconds + PRIME_TIMEOUT_MARGIN_SECONDS
+                )
+            except subprocess.TimeoutExpired:
+                logger.warning("Prime sweep pw-play timed out for %s, killing", prime_id)
+                try:
+                    play_proc.kill()
+                except Exception:
+                    pass
+                play_proc.wait(timeout=5)
+            record_proc.terminate()
+            try:
+                record_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                logger.warning("Prime sweep pw-record did not exit for %s, killing", prime_id)
+                record_proc.kill()
+                record_proc.wait(timeout=5)
+        finally:
+            try:
+                record_proc.kill()
+            except Exception:
+                pass
+            try:
+                record_proc.wait(timeout=3)
+            except Exception:
+                pass
+            try:
+                prime_capture.unlink(missing_ok=True)
+            except OSError:
+                pass
+            self._cleanup_fxroute_links(
+                source_node_name=mic_source_node_name,
+                record_node_name=record_node,
+            )
+
+        logger.info(
+            "Measurement prime sweep completed: prime_id=%s",
+            prime_id,
+        )
 
     def _should_retry_host_capture(self, exc: Exception) -> bool:
         error_codes = self._capture_quality_error_codes(exc)
@@ -3011,6 +3163,7 @@ class MeasurementStore:
         analysis_channel_index: int | None = None,
         reference_channel_label: str = "reference",
         timing_override: dict[str, Any] | None = None,
+        is_21_dsp_active: bool = False,
     ) -> dict[str, Any]:
         sample_rate, raw_signal = self._load_wav_array(capture_path)
         signal = self._select_analysis_channel(raw_signal, channel=channel, channel_index=analysis_channel_index)
@@ -3196,6 +3349,7 @@ class MeasurementStore:
             response_outliers=display_data.get("response_outliers") or [],
             capture_label=capture_label,
             expect_dual_mono_channels=reference_channel_index is None,
+            is_21_dsp_active=is_21_dsp_active,
         )
         analysis = {
             "method": "inverse log-sweep deconvolution with anchor timing compensation and IR windowing",
@@ -3247,6 +3401,7 @@ class MeasurementStore:
                 "anchor_matches": timing.get("anchor_matches") or [],
                 "start_score": round(float(timing["start_score"]), 5),
                 "end_score": round(float(timing["end_score"]), 5),
+                "selected_lag": timing.get("selected_lag"),
                 "timing_channel": reference_channel_label,
             },
             "reference_path": {
@@ -3296,8 +3451,13 @@ class MeasurementStore:
             "_impulse_response_debug_segment": impulse_response_debug_segment,
         }
         hard_failures = [item["message"] for item in quality_checks["items"] if item.get("level") == "error"]
+
         if hard_failures:
             raise CaptureQualityError(capture_label, quality_checks["items"], analysis=analysis)
+        # Track last successful lag for multi-peak continuity bonus
+        clock = (analysis.get("clock") or {})
+        if clock.get("selected_lag") is not None:
+            self._last_successful_lag = int(clock["selected_lag"])
         return analysis
 
 
@@ -3631,26 +3791,62 @@ class MeasurementStore:
             anchor_samples=anchor_samples,
             edge_inset=edge_inset,
         )
-        matches = []
+        # ── Multi-peak global lag selection ──
+        # Find top-5 correlation peaks per anchor region, then pick a single
+        # globally-consistent lag instead of letting each anchor lock onto
+        # independent (possibly wrong) peaks.  This prevents oscillation between
+        # sub-path and main-path lags in 2.1 DSP measurements.
+        TOP_N_PEAKS = 5
+        LAG_CLUSTER_SAMPLES = max(SWEEP_TIMING_CLUSTER_REJECT_SAMPLES * 20, 480)
+        anchor_peaks: list[dict[str, Any]] = []
         for anchor in anchors:
             expected_start = coarse_start + int(anchor["offset_samples"])
-            local_search_margin = search_margin
-            search_start = max(0, expected_start - local_search_margin)
-            search_end = min(signal.size, expected_start + anchor_samples + local_search_margin)
-            match = self._find_best_alignment_in_region(
+            search_start = max(0, expected_start - search_margin)
+            search_end = min(signal.size, expected_start + anchor_samples + search_margin)
+            top = self._find_top_n_alignments_in_region(
                 signal[search_start:search_end],
                 anchor["template"],
+                top_n=TOP_N_PEAKS,
             )
-            observed_start = search_start + int(match["index"])
+            anchor_peaks.append(
+                {
+                    "name": anchor["name"],
+                    "offset_samples": anchor["offset_samples"],
+                    "expected_start": int(expected_start),
+                    "search_start": search_start,
+                    "top_peaks": top,
+                }
+            )
+
+        selected_lag, per_anchor_pick, lag_debug = self._select_global_lag_from_peaks(
+            anchor_peaks,
+            cluster_threshold=LAG_CLUSTER_SAMPLES,
+            previous_successful_lag=self._last_successful_lag,
+        )
+        logger.info(
+            "LAG_SELECT: lag=%d prev=%s anchors=%d score=%.3f",
+            lag_debug.get("selected_lag"),
+            lag_debug.get("previous_successful_lag"),
+            lag_debug.get("candidate_scores")[0].get("anchors", 0) if lag_debug.get("candidate_scores") else 0,
+            lag_debug.get("candidate_scores")[0].get("total", 0) if lag_debug.get("candidate_scores") else 0,
+        )
+
+        matches = []
+        for ap in anchor_peaks:
+            pick_idx = per_anchor_pick.get(ap["name"], 0)
+            peak = ap["top_peaks"][pick_idx]
+            observed_start = ap["search_start"] + int(peak["index"])
             matches.append(
                 {
-                    **anchor,
-                    "expected_start": int(expected_start),
+                    "name": ap["name"],
+                    "offset_samples": ap["offset_samples"],
+                    "template": None,  # filled by _build_sweep_timing_anchors but not needed downstream
+                    "expected_start": int(ap["expected_start"]),
                     "observed_start": int(observed_start),
-                    "residual_samples": int(observed_start - expected_start),
-                    "score": float(match["score"]),
-                    "raw_score": float(match["raw_score"]),
-                    "polarity": float(match["polarity"]),
+                    "residual_samples": int(observed_start - ap["expected_start"]),
+                    "score": float(peak["score"]),
+                    "raw_score": float(peak["raw_score"]),
+                    "polarity": float(peak["polarity"]),
                 }
             )
 
@@ -3688,6 +3884,7 @@ class MeasurementStore:
             "stretch_ratio": stretch_ratio,
             "drift_ppm": drift_ppm,
             "total_drift_samples": total_drift_samples,
+            "selected_lag": selected_lag,  # injected for continuity tracking
             "estimated_ppm": estimated_ppm,
             "estimated_total_drift_samples": estimated_total_drift_samples,
             "raw_global_ppm": float(fit.get("raw_global_ppm", estimated_ppm)),
@@ -3947,6 +4144,190 @@ class MeasurementStore:
             "raw_score": raw_score,
             "polarity": -1.0 if raw_score < 0 else 1.0,
         }
+
+    def _find_top_n_alignments_in_region(
+        self,
+        region: np.ndarray,
+        template: np.ndarray,
+        *,
+        top_n: int = 5,
+    ) -> list[dict[str, float]]:
+        """Return top-N correlation peaks from a search region.
+
+        Each result dict contains ``index``, ``score``, ``raw_score`` and
+        ``polarity``, matching ``_find_best_alignment_in_region``.
+        """
+        region64 = region.astype(np.float64)
+        template64 = template.astype(np.float64)
+        if region64.size < template64.size:
+            raise RuntimeError("Timing search region was too short for sweep alignment")
+        corr = self._fft_correlate(region64, template64[::-1])
+        valid = corr[template64.size - 1 : region64.size]
+        if valid.size == 0:
+            raise RuntimeError("Unable to refine sweep timing")
+        abs_valid = np.abs(valid)
+
+        # Find local maxima in the correlation envelope
+        peak_mask = np.zeros(abs_valid.size, dtype=bool)
+        for i in range(1, abs_valid.size - 1):
+            if abs_valid[i] > abs_valid[i - 1] and abs_valid[i] >= abs_valid[i + 1]:
+                peak_mask[i] = True
+        # Always include the endpoints
+        if abs_valid.size >= 2:
+            if abs_valid[0] >= abs_valid[1]:
+                peak_mask[0] = True
+            if abs_valid[-1] >= abs_valid[-2]:
+                peak_mask[-1] = True
+        elif abs_valid.size == 1:
+            peak_mask[0] = True
+
+        peak_indices = np.where(peak_mask)[0]
+        if peak_indices.size == 0:
+            peak_indices = np.array([int(np.argmax(abs_valid))])
+
+        # Sort by absolute correlation, descending
+        peak_values = abs_valid[peak_indices]
+        sort_order = np.argsort(peak_values)[::-1]
+        top_k = min(top_n, peak_indices.size)
+        top_indices = peak_indices[sort_order[:top_k]]
+
+        results: list[dict[str, float]] = []
+        for index in top_indices:
+            idx = int(index)
+            snippet = region64[idx : idx + template64.size]
+            denom = float(np.linalg.norm(snippet) * np.linalg.norm(template64))
+            raw_score = 0.0 if denom <= 1e-12 else float(np.dot(snippet, template64) / denom)
+            results.append(
+                {
+                    "index": float(idx),
+                    "score": abs(raw_score),
+                    "raw_score": raw_score,
+                    "polarity": -1.0 if raw_score < 0 else 1.0,
+                }
+            )
+        return results
+
+    def _select_global_lag_from_peaks(
+        self,
+        anchor_peaks: list[dict[str, Any]],
+        *,
+        cluster_threshold: int,
+        previous_successful_lag: int | None = None,
+    ) -> tuple[int, dict[str, int], dict[str, Any]]:
+        """Pick a single globally-consistent lag from multi-anchor peak candidates.
+
+        Returns ``(selected_lag, per_anchor_pick, debug_info)``.
+
+        Strategy:
+        1.  Collect all peaks from all anchors, normalised to their aligned start.
+        2.  Cluster peaks within *cluster_threshold* samples.
+        3.  Score clusters by anchor diversity, correlation quality and tightness.
+        4.  Bonus for proximity to *previous_successful_lag* (continuity).
+        5.  Select the highest-scoring cluster's median lag.
+        6.  For each anchor, pick the peak closest to the selected lag.
+        """
+        # ── Build flat candidate list ──
+        candidates: list[dict[str, Any]] = []
+        for ap in anchor_peaks:
+            for pi, peak in enumerate(ap["top_peaks"]):
+                obs_start = ap["search_start"] + int(peak["index"])
+                lag = obs_start - ap["offset_samples"]
+                candidates.append(
+                    {
+                        "lag": lag,
+                        "anchor": ap["name"],
+                        "peak_index": pi,
+                        "score": peak["score"],
+                        "observed_start": obs_start,
+                    }
+                )
+
+        if not candidates:
+            return 0, {}, {"selected_lag": 0, "previous_successful_lag": previous_successful_lag, "candidate_scores": [], "rejected": "no candidates"}
+
+        # ── Cluster by lag proximity ──
+        clusters: list[list[dict[str, Any]]] = []
+        used: set[int] = set()
+        for ci, cand in enumerate(candidates):
+            if ci in used:
+                continue
+            cluster = [cand]
+            used.add(ci)
+            for cj, other in enumerate(candidates):
+                if cj in used:
+                    continue
+                if abs(other["lag"] - cand["lag"]) <= cluster_threshold:
+                    cluster.append(other)
+                    used.add(cj)
+            clusters.append(cluster)
+
+        # ── Score each cluster ──
+        scored: list[dict[str, Any]] = []
+        for cluster in clusters:
+            lags = [c["lag"] for c in cluster]
+            median_lag = float(np.median(np.array(lags, dtype=np.float64)))
+            unique_anchors = len({c["anchor"] for c in cluster})
+            mean_score = float(np.mean([c["score"] for c in cluster]))
+            lag_spread = float(np.std(np.array(lags, dtype=np.float64))) if len(lags) > 1 else 0.0
+
+            prev_bonus = 0.0
+            if previous_successful_lag is not None:
+                dist = abs(median_lag - previous_successful_lag)
+                prev_bonus = max(0.0, 1.0 - dist / max(cluster_threshold * 4.0, 1.0))
+
+            total = (
+                unique_anchors * 0.4
+                + mean_score * 0.3
+                + (1.0 - min(lag_spread / max(cluster_threshold, 1.0), 1.0)) * 0.2
+                + prev_bonus * 0.1
+            )
+            scored.append(
+                {
+                    "median_lag": median_lag,
+                    "unique_anchors": unique_anchors,
+                    "mean_score": mean_score,
+                    "lag_spread": lag_spread,
+                    "prev_bonus": prev_bonus,
+                    "score": total,
+                    "members": cluster,
+                }
+            )
+
+        scored.sort(key=lambda c: c["score"], reverse=True)
+        best = scored[0]
+        selected_lag = int(round(best["median_lag"]))
+
+        # ── Pick each anchor's closest peak to selected lag ──
+        per_anchor_pick: dict[str, int] = {}
+        for ap in anchor_peaks:
+            best_idx = 0
+            best_dist = float("inf")
+            for pi, peak in enumerate(ap["top_peaks"]):
+                obs_start = ap["search_start"] + int(peak["index"])
+                lag = obs_start - ap["offset_samples"]
+                dist = abs(lag - selected_lag)
+                if dist < best_dist:
+                    best_dist = dist
+                    best_idx = pi
+            per_anchor_pick[ap["name"]] = best_idx
+
+        debug = {
+            "selected_lag": selected_lag,
+            "previous_successful_lag": previous_successful_lag,
+            "candidate_scores": [
+                {
+                    "lag": int(round(c["median_lag"])),
+                    "anchors": c["unique_anchors"],
+                    "mean_score": round(c["mean_score"], 5),
+                    "spread": round(c["lag_spread"], 1),
+                    "prev_bonus": round(c["prev_bonus"], 3),
+                    "total": round(c["score"], 3),
+                }
+                for c in scored[:5]
+            ],
+            "rejected": f"{len(scored) - 1} lower-scoring clusters" if len(scored) > 1 else "only one cluster",
+        }
+        return selected_lag, per_anchor_pick, debug
 
     def _build_variable_window_response(self, impulse_response: np.ndarray, sample_rate: int) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
         low_windowed, low_meta = self._window_impulse_response(
@@ -4495,6 +4876,7 @@ class MeasurementStore:
         response_outliers: list[dict[str, float | str]] | None = None,
         capture_label: str = "Capture",
         expect_dual_mono_channels: bool = True,
+        is_21_dsp_active: bool = False,
     ) -> dict[str, Any]:
         items: list[dict[str, str]] = []
 
@@ -4523,7 +4905,31 @@ class MeasurementStore:
         elif start_score < alignment_warn_threshold:
             add("warning", "soft-start-alignment", f"Sweep start alignment score was softer than expected ({start_score:.3f}).")
         if end_score < alignment_fail_threshold:
-            add("error", "weak-end-alignment", f"Sweep end alignment score was too weak ({end_score:.3f}).")
+            if (
+                is_21_dsp_active
+                and start_score >= alignment_fail_threshold
+                and (timing.get("selected_lag") or 0) > 0
+                and not any(
+                    item["code"] in {"weak-start-alignment", "capture-clipped"}
+                    for item in items
+                )
+            ):
+                logger.info(
+                    "end_anchor_weak=true end_score=%.3f start_score=%.3f selected_lag=%s",
+                    end_score,
+                    start_score,
+                    timing.get("selected_lag"),
+                )
+                add(
+                    "warning",
+                    "soft-end-alignment-21",
+                    (
+                        f"Sweep end alignment was weak ({end_score:.3f}) under active 2.1 DSP, "
+                        + "tolerated because lag selection and start/mid anchors are stable."
+                    ),
+                )
+            else:
+                add("error", "weak-end-alignment", f"Sweep end alignment score was too weak ({end_score:.3f}).")
         elif end_score < alignment_warn_threshold:
             add("warning", "soft-end-alignment", f"Sweep end alignment score was softer than expected ({end_score:.3f}).")
         if drift_ppm > CLOCK_DRIFT_WARN_PPM:
@@ -5078,8 +5484,30 @@ class MeasurementStore:
             for item in self._list_pactl_short_nodes(kind, [node_name]):
                 if item.get("name") == node_name:
                     item["kind"] = kind[:-1]
-                    return item
+                return item
         return {"name": node_name}
+
+    @staticmethod
+    def _snapshot_fxroute_21_helper_processes(label: str) -> dict[str, Any]:
+        try:
+            completed = subprocess.run(
+                ["pgrep", "-af", "fxroute_21_passthrough"],
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+        except Exception as exc:
+            return {"label": label, "error": str(exc), "processes": []}
+        processes = [
+            line.strip()
+            for line in (completed.stdout or "").splitlines()
+            if line.strip()
+        ]
+        return {
+            "label": label,
+            "returncode": completed.returncode,
+            "processes": processes[:12],
+        }
 
     @staticmethod
     def _extract_pipewire_warning_lines(outputs: dict[str, str]) -> list[dict[str, str]]:

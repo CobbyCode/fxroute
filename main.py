@@ -87,6 +87,28 @@ def _read_version_file() -> str:
         return ""
 
 
+def _read_build_id() -> str:
+    version = _read_version_file() or "unknown-version"
+    try:
+        deployed_build = (BASE_DIR / "BUILD_ID").read_text(encoding="utf-8").strip()
+        if deployed_build:
+            return f"{version} {deployed_build}"
+    except Exception:
+        pass
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(BASE_DIR), "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=1.5,
+        )
+        commit = completed.stdout.strip() if completed.returncode == 0 else ""
+    except Exception:
+        commit = ""
+    return f"{version} commit={commit or 'unknown'}"
+
+
 def _read_install_config() -> dict:
     data: dict[str, str] = {}
     try:
@@ -599,6 +621,7 @@ except ImportError:
     HardwareController = None
 from measurement import MeasurementStore
 from peak_monitor import EasyEffectsPeakMonitor
+from subwoofer_runtime import Subwoofer21Runtime, SubwooferRuntimeConfig, DEFAULT_SAMPLE_RATE
 
 
 REMOVABLE_ARTWORK_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
@@ -691,6 +714,8 @@ def _resolve_library_folder(folder: str, music_root: Path) -> Path:
         raise HTTPException(status_code=404, detail="Folder not found")
     return folder_path
 from samplerate import (
+    OUTPUT_MODE_STEREO,
+    OUTPUT_MODE_SUBWOOFER_21,
     SOURCE_MODE_APP_PLAYBACK,
     SOURCE_MODE_BLUETOOTH_INPUT,
     SOURCE_MODE_EXTERNAL_INPUT,
@@ -700,6 +725,7 @@ from samplerate import (
     get_audio_source_overview,
     get_bluetooth_audio_overview,
     get_samplerate_status,
+    set_audio_output_mode,
     set_audio_output_selection,
     set_audio_source_selection,
     set_bluetooth_receiver_enabled,
@@ -735,6 +761,8 @@ downloader = None
 easyeffects_manager = None
 measurement_store = None
 peak_monitor = None
+subwoofer_runtime = None
+subwoofer_runtime_link_watch_task = None
 hardware_controller = None
 peak_monitor_playback_armed = False
 peak_monitor_transition_lock = None
@@ -1180,6 +1208,518 @@ async def _sync_peak_monitor_after_playback_transition(expected_track: dict | No
         await sync_peak_monitor_for_playback_state(player_instance.state)
 
 
+async def _sync_subwoofer_runtime_after_playback_transition(expected_track: dict | None, timeout_ms: int = 3200) -> None:
+    if not expected_track or expected_track.get("source") not in {"local", "radio"}:
+        return
+    if subwoofer_runtime is None:
+        return
+    settled = await _wait_for_player_current_file(expected_track.get("url"), timeout_ms=timeout_ms)
+    if not settled or not _current_track_matches(expected_track):
+        return
+    await asyncio.sleep(0.35)
+    if not _current_track_matches(expected_track):
+        return
+    try:
+        overview = get_audio_output_overview()
+        output_mode = overview.get("output_mode") or {}
+        if output_mode.get("mode") != OUTPUT_MODE_SUBWOOFER_21:
+            return
+        before = subwoofer_runtime.snapshot()
+        await _sync_subwoofer_runtime(overview)
+        after = subwoofer_runtime.snapshot()
+        before_config = before.get("config") or {}
+        after_config = after.get("config") or {}
+        logger.info(
+            "2.1 runtime playback transition resync: source=%s sample_rate_before=%s sample_rate_after=%s "
+            "active=%s last_error=%s",
+            expected_track.get("source"),
+            before_config.get("sample_rate"),
+            after_config.get("sample_rate"),
+            after.get("active"),
+            after.get("last_error"),
+        )
+    except Exception as exc:
+        logger.warning("2.1 runtime playback transition resync failed: %s", exc)
+
+
+def _resolve_measurement_start_sample_rate() -> int:
+    if measurement_store is not None and hasattr(measurement_store, "_resolve_measurement_sample_rate"):
+        try:
+            sample_rate = int(measurement_store._resolve_measurement_sample_rate())
+            if sample_rate > 0:
+                return sample_rate
+        except Exception as exc:
+            logger.warning("Measurement sample-rate resolution failed, using 48000 Hz fallback: %s", exc)
+    return 48_000
+
+
+async def _wait_for_selected_output_effective_rate(expected_rate: int, timeout_ms: int = 3000) -> tuple[bool, dict]:
+    last_overview: dict = {}
+    deadline = time.monotonic() + max(timeout_ms, 0) / 1000
+    while time.monotonic() <= deadline:
+        last_overview = get_audio_output_overview()
+        output_mode = last_overview.get("output_mode") or {}
+        effective_rate = output_mode.get("effective_output_rate")
+        if isinstance(effective_rate, int) and effective_rate == expected_rate:
+            return True, last_overview
+        await asyncio.sleep(PIPEWIRE_HANDOFF_POLL_INTERVAL_MS / 1000)
+    if not last_overview:
+        last_overview = get_audio_output_overview()
+    return False, last_overview
+
+
+def _audio_output_overview_with_effective_rate(overview: dict, effective_rate: int) -> dict:
+    output_mode = dict(overview.get("output_mode") or {})
+    selected_output = dict(overview.get("selected_output") or {})
+    current_output = dict(overview.get("current_output") or {})
+    output_mode["effective_output_rate"] = effective_rate
+    if selected_output:
+        selected_output["active_rate"] = effective_rate
+    if current_output and current_output.get("key") == selected_output.get("key"):
+        current_output["active_rate"] = effective_rate
+    return {
+        **overview,
+        "output_mode": output_mode,
+        "selected_output": selected_output or overview.get("selected_output"),
+        "current_output": current_output or overview.get("current_output"),
+    }
+
+
+def _pulse_suspend_sink_for_samplerate(output_key: str, reason: str) -> None:
+    if not output_key:
+        return
+    for suspend in ("1", "0"):
+        completed = subprocess.run(
+            ["pactl", "suspend-sink", output_key, suspend],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=1.5,
+        )
+        if completed.returncode != 0:
+            stderr = (completed.stderr or "").strip()
+            raise RuntimeError(stderr or f"pactl suspend-sink {output_key} {suspend} failed")
+        if suspend == "1":
+            time.sleep(0.3)
+    logger.info("2.1 measurement samplerate sink pulse completed: output=%s reason=%s", output_key, reason)
+
+
+def _measurement_helper_snapshot_summary(snapshot: dict | None) -> dict:
+    snapshot = snapshot or {}
+    config = snapshot.get("config") or {}
+    return {
+        "active": bool(snapshot.get("active")),
+        "helper_pid": snapshot.get("helper_pid"),
+        "sample_rate": config.get("sample_rate"),
+        "sub_alignment_ms": config.get("sub_alignment_ms"),
+        "main_delay_ms": config.get("derived_main_delay_ms"),
+        "sub_delay_ms": config.get("derived_sub_delay_ms"),
+        "stage": snapshot.get("stage"),
+        "last_error": snapshot.get("last_error"),
+    }
+
+
+def _run_debug_command(args: list[str], timeout: float = 2.0) -> dict:
+    try:
+        completed = subprocess.run(
+            args,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout,
+        )
+        return {
+            "returncode": completed.returncode,
+            "stdout": completed.stdout or "",
+            "stderr": completed.stderr or "",
+        }
+    except Exception as exc:
+        return {"returncode": -1, "stdout": "", "stderr": str(exc)}
+
+
+def _contains_link(text: str, source: str, target: str) -> bool:
+    if source not in text or target not in text:
+        return False
+    direct = f"{source} -> {target}"
+    reverse_pw_link_io = f"{target}\n  |<- {source}"
+    forward_pw_link_io = f"{source}\n  |-> {target}"
+    return direct in text or reverse_pw_link_io in text or forward_pw_link_io in text
+
+
+async def _dump_21_runtime_state(label: str, ui_state: dict | None = None) -> dict:
+    overview = get_audio_output_overview()
+    output_mode = overview.get("output_mode") or {}
+    output_key = str(output_mode.get("effective_output_key") or "").strip()
+    samplerate_status = get_samplerate_status()
+    snapshot = subwoofer_runtime.snapshot() if subwoofer_runtime is not None else {}
+    helper_pid = snapshot.get("helper_pid")
+    helper_alive = False
+    helper_cmdline = ""
+    if helper_pid:
+        ps_result = await asyncio.to_thread(_run_debug_command, ["ps", "-p", str(helper_pid), "-o", "pid=,args="], 1.5)
+        helper_alive = ps_result.get("returncode") == 0 and bool(ps_result.get("stdout", "").strip())
+        helper_cmdline = ps_result.get("stdout", "").strip()
+    else:
+        pgrep_result = await asyncio.to_thread(_run_debug_command, ["pgrep", "-af", "fxroute_21_passthrough"], 1.5)
+        helper_cmdline = pgrep_result.get("stdout", "").strip()
+
+    pw_links = await asyncio.to_thread(_run_debug_command, ["pw-link", "-l"], 2.0)
+    link_text = pw_links.get("stdout", "")
+    ee_left = "ee_soe_output_level:output_FL"
+    ee_right = "ee_soe_output_level:output_FR"
+    helper_in_left = "fxroute_21_stage1:input_L"
+    helper_in_right = "fxroute_21_stage1:input_R"
+    helper_out_1 = "fxroute_21_stage1:output_1"
+    helper_out_2 = "fxroute_21_stage1:output_2"
+    helper_out_3 = "fxroute_21_stage1:output_3"
+    helper_out_4 = "fxroute_21_stage1:output_4"
+    hw_fl = f"{output_key}:playback_FL" if output_key else ""
+    hw_fr = f"{output_key}:playback_FR" if output_key else ""
+    hw_rl = f"{output_key}:playback_RL" if output_key else ""
+    hw_rr = f"{output_key}:playback_RR" if output_key else ""
+    links = {
+        "ee_to_helper_left": _contains_link(link_text, ee_left, helper_in_left),
+        "ee_to_helper_right": _contains_link(link_text, ee_right, helper_in_right),
+        "helper_main_left_to_hw": bool(hw_fl) and _contains_link(link_text, helper_out_1, hw_fl),
+        "helper_main_right_to_hw": bool(hw_fr) and _contains_link(link_text, helper_out_2, hw_fr),
+        "helper_sub_left_to_hw": bool(hw_rl) and _contains_link(link_text, helper_out_3, hw_rl),
+        "helper_sub_right_to_hw": bool(hw_rr) and _contains_link(link_text, helper_out_4, hw_rr),
+        "direct_ee_left_to_hw": bool(hw_fl) and _contains_link(link_text, ee_left, hw_fl),
+        "direct_ee_right_to_hw": bool(hw_fr) and _contains_link(link_text, ee_right, hw_fr),
+    }
+    links["sub_output_channel_linked"] = links["helper_sub_left_to_hw"] or links["helper_sub_right_to_hw"]
+    links["ee_to_helper_present"] = links["ee_to_helper_left"] and links["ee_to_helper_right"]
+    links["helper_main_to_hw_present"] = links["helper_main_left_to_hw"] and links["helper_main_right_to_hw"]
+    links["helper_sub_to_hw_present"] = links["helper_sub_left_to_hw"] and links["helper_sub_right_to_hw"]
+    links["direct_ee_to_hw_present"] = links["direct_ee_left_to_hw"] or links["direct_ee_right_to_hw"]
+
+    config = snapshot.get("config") or {}
+    state = {
+        "label": label,
+        "build_id": _read_build_id(),
+        "api_mode": output_mode.get("mode"),
+        "ui_state": ui_state or {},
+        "helper_pid": helper_pid,
+        "helper_alive": helper_alive,
+        "helper_sample_rate": config.get("sample_rate"),
+        "helper_cmdline": helper_cmdline,
+        "hardware_output": output_key,
+        "hardware_playback_sample_rate": output_mode.get("effective_output_rate") or samplerate_status.get("active_rate"),
+        "samplerate": {
+            "active_rate": samplerate_status.get("active_rate"),
+            "force_rate": samplerate_status.get("force_rate"),
+        },
+        "links": links,
+        "runtime": _measurement_helper_snapshot_summary(snapshot),
+    }
+    logger.info("2.1 UI path state dump [%s]: %s", label, json.dumps(state, sort_keys=True))
+    return state
+
+
+async def _prepare_subwoofer_runtime_for_measurement_start(measurement_rate: int) -> Optional[int]:
+    if subwoofer_runtime is None:
+        return None
+    overview = get_audio_output_overview()
+    output_mode = overview.get("output_mode") or {}
+    if output_mode.get("mode") != OUTPUT_MODE_SUBWOOFER_21:
+        return None
+    output_key = str(output_mode.get("effective_output_key") or "").strip()
+
+    samplerate_status = get_samplerate_status()
+    previous_force_rate = samplerate_status.get("force_rate")
+    previous_active_rate = samplerate_status.get("active_rate")
+    before = subwoofer_runtime.snapshot()
+    logger.info(
+        "2.1 measurement pre-arm starting: measurement_rate=%s samplerate_before=%s helper_before=%s",
+        measurement_rate,
+        json.dumps(
+            {
+                "active_rate": previous_active_rate,
+                "force_rate": previous_force_rate,
+            },
+            sort_keys=True,
+        ),
+        json.dumps(_measurement_helper_snapshot_summary(before), sort_keys=True),
+    )
+    restore_force_rate: Optional[int] = None
+    if previous_force_rate != measurement_rate:
+        restore_force_rate = int(previous_force_rate or 0)
+        _set_pipewire_force_rate(measurement_rate)
+        logger.info(
+            "2.1 measurement samplerate pre-arm applied: target_rate=%s previous_active_rate=%s previous_force_rate=%s",
+            measurement_rate,
+            previous_active_rate,
+            previous_force_rate,
+        )
+    else:
+        logger.info(
+            "2.1 measurement samplerate pre-arm already active: target_rate=%s active_rate=%s force_rate=%s",
+            measurement_rate,
+            previous_active_rate,
+            previous_force_rate,
+        )
+    if previous_active_rate != measurement_rate:
+        _pulse_suspend_sink_for_samplerate(output_key, "measurement-pre-arm")
+
+    overview = _audio_output_overview_with_effective_rate(get_audio_output_overview(), measurement_rate)
+    await _sync_subwoofer_runtime(overview)
+
+    aligned, overview = await _wait_for_selected_output_effective_rate(measurement_rate, timeout_ms=3500)
+    if not aligned:
+        output_mode = overview.get("output_mode") or {}
+        if restore_force_rate is not None:
+            _set_pipewire_force_rate(restore_force_rate)
+        raise RuntimeError(
+            "2.1 measurement pre-arm failed: selected output did not reach "
+            f"{measurement_rate} Hz before sweep start (effective_rate={output_mode.get('effective_output_rate')})"
+        )
+
+    await _sync_subwoofer_runtime(overview)
+    after = subwoofer_runtime.snapshot()
+    samplerate_after = get_samplerate_status()
+    after_config = after.get("config") or {}
+    helper_rate = after_config.get("sample_rate")
+    if not after.get("active") or helper_rate != measurement_rate:
+        if restore_force_rate is not None:
+            _set_pipewire_force_rate(restore_force_rate)
+        raise RuntimeError(
+            "2.1 measurement pre-arm failed: helper did not settle at "
+            f"{measurement_rate} Hz before sweep start (active={after.get('active')} sample_rate={helper_rate})"
+        )
+
+    logger.info(
+        "2.1 measurement helper pre-armed before sweep: target_rate=%s helper_rate_before=%s helper_rate_after=%s "
+        "helper_pid=%s force_rate_restore=%s samplerate_after=%s helper_after=%s",
+        measurement_rate,
+        (before.get("config") or {}).get("sample_rate"),
+        helper_rate,
+        after.get("helper_pid"),
+        restore_force_rate,
+        json.dumps(
+            {
+                "active_rate": samplerate_after.get("active_rate"),
+                "force_rate": samplerate_after.get("force_rate"),
+            },
+            sort_keys=True,
+        ),
+        json.dumps(_measurement_helper_snapshot_summary(after), sort_keys=True),
+    )
+    return restore_force_rate
+
+
+async def _release_measurement_samplerate_force_after_job(job_id: str, expected_rate: int, restore_force_rate: int) -> None:
+    global subwoofer_runtime
+    logger.info(
+        "2.1 measurement samplerate release watcher started: job_id=%s expected_rate=%s restore_force_rate=%s",
+        job_id,
+        expected_rate,
+        restore_force_rate,
+    )
+    for _ in range(1200):
+        await asyncio.sleep(0.5)
+        if measurement_store is None:
+            logger.info("2.1 measurement samplerate release watcher stopped: job_id=%s measurement_store_missing=true", job_id)
+            return
+        try:
+            job = measurement_store.get_job(job_id)
+        except Exception as exc:
+            logger.info("2.1 measurement samplerate release watcher stopped: job_id=%s job_lookup_failed=%s", job_id, exc)
+            return
+        status = str(job.get("status") or "")
+        if status in {"completed", "failed", "cancelled"}:
+            try:
+                await _dump_21_runtime_state(f"backend-before-release-{status}", {"job_id": job_id, "job_status": status})
+                current_force_rate = _get_current_pipewire_force_rate()
+                if current_force_rate == expected_rate:
+                    restore_value = restore_force_rate if restore_force_rate > 0 else 0
+                    _set_pipewire_force_rate(restore_value)
+                    logger.info(
+                        "2.1 measurement samplerate pre-arm released: job_id=%s previous_force_rate=%s status=%s",
+                        job_id,
+                        restore_force_rate,
+                        status,
+                    )
+                    # Re-sync subwoofer runtime at the restored playback rate
+                    # so the 2.1 helper is rebuilt at the correct rate.
+                    if subwoofer_runtime is not None:
+                        logger.info(
+                            "2.1 measurement samplerate release invoking _sync_subwoofer_runtime_at_rate: job_id=%s target_rate=%s",
+                            job_id,
+                            restore_force_rate,
+                        )
+                        await _sync_subwoofer_runtime_at_rate(restore_force_rate)
+                        await _dump_21_runtime_state(f"backend-after-release-resync-{status}", {"job_id": job_id, "job_status": status})
+                    else:
+                        logger.info(
+                            "2.1 measurement samplerate release cannot re-sync: job_id=%s subwoofer_runtime_missing=true",
+                            job_id,
+                        )
+                else:
+                    logger.info(
+                        "2.1 measurement samplerate pre-arm release skipped: job_id=%s current_force_rate=%s expected_rate=%s status=%s",
+                        job_id,
+                        current_force_rate,
+                        expected_rate,
+                        status,
+                    )
+            except Exception as exc:
+                logger.warning("2.1 measurement samplerate pre-arm release failed: job_id=%s error=%s", job_id, exc)
+            return
+
+
+async def _sync_subwoofer_runtime_at_rate(target_rate: int) -> None:
+    """Re-sync the 2.1 subwoofer runtime at a specific playback sample rate.
+
+    Called after measurement completes to restore the helper at normal playback
+    rate instead of leaving it at the measurement rate.
+
+    When target_rate is 0 (no force-rate override), discovers the actual
+    effective output rate and syncs at that rate.
+    """
+    global subwoofer_runtime
+    if subwoofer_runtime is None:
+        logger.info("2.1 runtime measurement release re-sync skipped: subwoofer_runtime_missing=true target_rate=%s", target_rate)
+        return
+    logger.info("2.1 runtime measurement release re-sync requested: raw_target_rate=%s", target_rate)
+    if target_rate <= 0:
+        # No force rate — discover the actual effective rate from the output
+        overview = get_audio_output_overview()
+        output_mode = overview.get("output_mode") or {}
+        effective_rate = output_mode.get("effective_output_rate")
+        if isinstance(effective_rate, int) and effective_rate > 0:
+            target_rate = effective_rate
+        else:
+            selected = overview.get("selected_output") or {}
+            sr = selected.get("active_rate")
+            if isinstance(sr, int) and sr > 0:
+                target_rate = sr
+            else:
+                target_rate = DEFAULT_SAMPLE_RATE
+    overview = get_audio_output_overview()
+    output_mode = overview.get("output_mode") or {}
+    if output_mode.get("mode") != OUTPUT_MODE_SUBWOOFER_21:
+        logger.info(
+            "2.1 runtime measurement release re-sync skipped: api_mode=%s target_rate=%s",
+            output_mode.get("mode"),
+            target_rate,
+        )
+        return
+    overview = _audio_output_overview_with_effective_rate(overview, target_rate)
+    await _sync_subwoofer_runtime(overview)
+    # Wait briefly and sync again to ensure stable state
+    await asyncio.sleep(0.5)
+    overview = get_audio_output_overview()
+    overview = _audio_output_overview_with_effective_rate(overview, target_rate)
+    await _sync_subwoofer_runtime(overview)
+    runtime_snapshot = subwoofer_runtime.snapshot()
+    logger.info(
+        "2.1 runtime measurement release re-sync: target_rate=%s active=%s helper_pid=%s",
+        target_rate,
+        runtime_snapshot.get("active"),
+        runtime_snapshot.get("helper_pid"),
+    )
+    asyncio.create_task(_repair_subwoofer_runtime_inputs_after_measurement_release(target_rate))
+
+
+async def _repair_subwoofer_runtime_inputs_after_measurement_release(target_rate: int) -> None:
+    """Repair delayed EasyEffects -> helper input loss after measurement release.
+
+    The UI path can briefly restore the helper graph successfully and then lose
+    only the EasyEffects output_FL/FR -> helper input_L/R links a few seconds
+    later. This repair is intentionally narrow: it does not change mode,
+    sample-rate policy, helper output links, QC, or measurement analysis.
+    """
+    if subwoofer_runtime is None:
+        return
+    for delay in (2.0, 5.0, 9.0):
+        await asyncio.sleep(delay)
+        overview = get_audio_output_overview()
+        output_mode = overview.get("output_mode") or {}
+        if output_mode.get("mode") != OUTPUT_MODE_SUBWOOFER_21:
+            logger.info(
+                "2.1 measurement release input repair skipped: api_mode=%s target_rate=%s",
+                output_mode.get("mode"),
+                target_rate,
+            )
+            return
+        state = await _dump_21_runtime_state(
+            "backend-release-input-repair-check",
+            {"target_rate": target_rate, "delay_s": delay},
+        )
+        links = state.get("links") or {}
+        if links.get("ee_to_helper_present"):
+            continue
+        logger.info(
+            "2.1 measurement release input repair applying: target_rate=%s delay_s=%.1f links=%s",
+            target_rate,
+            delay,
+            json.dumps(links, sort_keys=True),
+        )
+        try:
+            await subwoofer_runtime.reclean_direct_easyeffects_links()
+        except Exception as exc:
+            logger.warning("2.1 measurement release input repair failed: target_rate=%s error=%s", target_rate, exc)
+            return
+        await _dump_21_runtime_state(
+            "backend-release-input-repair-after",
+            {"target_rate": target_rate, "delay_s": delay},
+        )
+
+
+def _subwoofer_helper_input_links_present() -> bool:
+    result = _run_debug_command(["pw-link", "-l"], 2.0)
+    if result.get("returncode") != 0:
+        return True
+    text = result.get("stdout", "")
+    return (
+        _contains_link(text, "ee_soe_output_level:output_FL", "fxroute_21_stage1:input_L")
+        and _contains_link(text, "ee_soe_output_level:output_FR", "fxroute_21_stage1:input_R")
+    )
+
+
+async def _subwoofer_runtime_link_watch_loop() -> None:
+    while True:
+        await asyncio.sleep(2.0)
+        if subwoofer_runtime is None:
+            continue
+        try:
+            overview = get_audio_output_overview()
+            output_mode = overview.get("output_mode") or {}
+            if output_mode.get("mode") != OUTPUT_MODE_SUBWOOFER_21:
+                continue
+            if getattr(subwoofer_runtime, "sync_in_progress", False):
+                continue
+            snapshot = subwoofer_runtime.snapshot()
+            input_links_present = _subwoofer_helper_input_links_present()
+            if snapshot.get("active") and input_links_present:
+                continue
+            if not snapshot.get("active") or not snapshot.get("helper_pid"):
+                logger.info(
+                    "2.1 link watch full resync applying: api_mode=2.1 runtime_active=%s helper_pid=%s input_links_present=%s",
+                    snapshot.get("active"),
+                    snapshot.get("helper_pid"),
+                    input_links_present,
+                )
+                await _sync_subwoofer_runtime(overview)
+                await _dump_21_runtime_state(
+                    "backend-link-watch-full-resync-after",
+                    {
+                        "reason": "runtime-inactive-or-helper-missing",
+                        "active_before": snapshot.get("active"),
+                        "helper_pid_before": snapshot.get("helper_pid"),
+                        "input_links_present_before": input_links_present,
+                    },
+                )
+                continue
+            logger.info("2.1 link watch repair applying: EE helper input links missing while API mode is 2.1")
+            await subwoofer_runtime.reclean_direct_easyeffects_links()
+            await _dump_21_runtime_state("backend-link-watch-repair-after", {"reason": "ee-helper-input-missing"})
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("2.1 link watch repair failed: %s", exc)
+
+
 def _get_player_audio_samplerate() -> Optional[int]:
     global player_instance
     if not player_instance or not player_instance._running:
@@ -1576,6 +2116,9 @@ async def _load_queue_track(index: int, *, transition_reason: str = "queue navig
         player_instance.loadfile(next_url, mode="replace")
         if prearm_rate and prearm_generation:
             asyncio.create_task(_release_local_samplerate_prearm(prearm_rate, prearm_generation, f"{transition_reason}:queue"))
+        # Sync 2.1 helper at pre-armed rate before audio becomes audible
+        if subwoofer_runtime is not None and prearm_rate is not None:
+            await _sync_subwoofer_runtime(get_audio_output_overview())
         player_instance.set_pause(False)
         _record_local_track_started(next_track)
         asyncio.create_task(_maybe_recover_samplerate_mismatch(next_track.copy()))
@@ -1807,6 +2350,7 @@ async def sync_peak_monitor_for_playback_state(state: dict):
                     )
                 except Exception as exc:
                     logger.warning("EasyEffects playback samplerate preset sync failed before peak monitor restart: %s", exc)
+            await _ensure_stereo_easyeffects_output_graph()
             logger.info(
                 "Restarting peak monitor on playback context change to refresh PipeWire links: %s (expected_rate=%s aligned=%s)",
                 desired_signature,
@@ -2083,6 +2627,9 @@ async def on_player_state_change(state: dict):
                 player_instance.loadfile(current_track_info["url"], mode="replace")
                 if prearm_rate and prearm_generation:
                     asyncio.create_task(_release_local_samplerate_prearm(prearm_rate, prearm_generation, "single-track-loop"))
+                # Sync 2.1 helper at pre-armed rate before audio becomes audible
+                if subwoofer_runtime is not None and prearm_rate is not None:
+                    await _sync_subwoofer_runtime(get_audio_output_overview())
                 return
         finally:
             queue_advancing = False
@@ -2486,6 +3033,62 @@ async def _sync_bluetooth_input_monitoring(source_overview: dict | None = None) 
     return get_audio_source_overview()
 
 
+async def _sync_subwoofer_runtime(audio_overview: dict | None = None) -> dict:
+    global subwoofer_runtime
+    overview = audio_overview or get_audio_output_overview()
+    if subwoofer_runtime is None:
+        return overview
+    config = SubwooferRuntimeConfig.from_overview(overview)
+    await subwoofer_runtime.sync(config)
+    if config.output_mode == OUTPUT_MODE_SUBWOOFER_21:
+        runtime_snapshot = subwoofer_runtime.snapshot()
+        logger.info(
+            "2.1 runtime sync: output_mode=%s runtime_active=%s stage=%s engine=%s "
+            "hardware_output=%s device_channel_count=%s fixed_routing='Out 1=L, Out 2=R, Out 3/4=(L+R)*0.5' "
+            "crossover_hz=%s main_highpass=%s sub_level_db=%.1f sub_alignment_ms=%.1f "
+            "derived_main_delay_ms=%.1f derived_sub_delay_ms=%.1f sub_polarity=%s",
+            config.output_mode,
+            runtime_snapshot.get("active"),
+            runtime_snapshot.get("stage"),
+            runtime_snapshot.get("engine"),
+            config.output_key,
+            config.output_channels,
+            config.crossover_frequency_hz,
+            config.main_highpass_enabled,
+            config.sub_level_db,
+            config.sub_alignment_ms,
+            config.derived_main_delay_ms,
+            config.derived_sub_delay_ms,
+            config.sub_polarity,
+        )
+    else:
+        logger.info("2.1 runtime sync: output_mode=%s; stereo path unchanged", OUTPUT_MODE_STEREO)
+        await _ensure_stereo_easyeffects_output_graph(overview)
+    return overview
+
+
+async def _ensure_stereo_easyeffects_output_graph(audio_overview: dict | None = None) -> None:
+    if easyeffects_manager is None:
+        return
+    overview = audio_overview or get_audio_output_overview()
+    output_mode = overview.get("output_mode") or {}
+    if output_mode.get("mode") != OUTPUT_MODE_STEREO:
+        return
+    output_key = str(output_mode.get("effective_output_key") or "").strip()
+    if not output_key or output_key == "easyeffects_sink":
+        return
+    try:
+        result = await asyncio.to_thread(easyeffects_manager.ensure_stereo_output_graph, output_key)
+        if result.get("recovered"):
+            logger.warning(
+                "Recovered Stereo EasyEffects output graph for %s via %s",
+                output_key,
+                result.get("recovery"),
+            )
+    except Exception as exc:
+        logger.warning("Stereo EasyEffects output graph guard failed for %s: %s", output_key, exc)
+
+
 async def _bluetooth_input_monitor_loop() -> None:
     while True:
         try:
@@ -2659,10 +3262,10 @@ async def _spotify_playerctl_watch_loop() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan: startup and shutdown."""
-    global settings, player_instance, library_scanner, downloader, easyeffects_manager, measurement_store, peak_monitor, hardware_controller, peak_monitor_playback_armed, peak_monitor_transition_lock, peak_monitor_context_signature, easyeffects_preset_load_lock, source_transition_lock, external_input_loopback_module_id, external_input_loopback_source_name, bluetooth_input_source_name, bluetooth_monitor_task, bluetooth_agent_process, spotify_playerctl_watch_task, spotify_playerctl_detect_task, spotify_state_refresh_task, spotify_state_poll_task, spotify_playerctl_last_trigger_at, spotify_samplerate_recovery_lock, spotify_samplerate_recovery_active, current_source_mode, latest_spotify_state
+    global settings, player_instance, library_scanner, downloader, easyeffects_manager, measurement_store, peak_monitor, subwoofer_runtime, subwoofer_runtime_link_watch_task, hardware_controller, peak_monitor_playback_armed, peak_monitor_transition_lock, peak_monitor_context_signature, easyeffects_preset_load_lock, source_transition_lock, external_input_loopback_module_id, external_input_loopback_source_name, bluetooth_input_source_name, bluetooth_monitor_task, bluetooth_agent_process, spotify_playerctl_watch_task, spotify_playerctl_detect_task, spotify_state_refresh_task, spotify_state_poll_task, spotify_playerctl_last_trigger_at, spotify_samplerate_recovery_lock, spotify_samplerate_recovery_active, current_source_mode, latest_spotify_state
 
     # Startup
-    logger.info("Starting FXRoute...")
+    logger.info("Starting FXRoute... build_id=%s", _read_build_id())
     try:
         settings = get_settings()
         logger.info(f"Configuration loaded. MUSIC_ROOT: {settings.MUSIC_ROOT}")
@@ -2706,6 +3309,12 @@ async def lifespan(app: FastAPI):
                 hardware_controller = None
 
         peak_monitor = EasyEffectsPeakMonitor(on_change=on_peak_monitor_change)
+        subwoofer_runtime = Subwoofer21Runtime()
+        # Clean any orphan 2.1 helpers from a previous run before syncing state
+        try:
+            await subwoofer_runtime._stop_orphan_helpers()
+        except Exception:
+            pass
         peak_monitor_playback_armed = False
         peak_monitor_transition_lock = asyncio.Lock()
         peak_monitor_context_signature = None
@@ -2721,6 +3330,8 @@ async def lifespan(app: FastAPI):
             applied_output = apply_persisted_audio_output_selection()
             if applied_output and applied_output.get("selected_output"):
                 logger.info("Re-applied persisted audio output selection: %s", applied_output["selected_output"].get("target_label"))
+            await _sync_subwoofer_runtime(applied_output or get_audio_output_overview())
+            subwoofer_runtime_link_watch_task = asyncio.create_task(_subwoofer_runtime_link_watch_loop())
         except Exception as exc:
             logger.warning("Failed to re-apply persisted audio output selection: %s", exc)
 
@@ -2750,16 +3361,25 @@ async def lifespan(app: FastAPI):
         player_instance.register_callbacks(on_player_state_change)
         downloader.register_callback(on_download_progress, asyncio.get_running_loop())
 
-        logger.info("Application startup complete")
+        logger.info("Application startup complete build_id=%s", _read_build_id())
     except Exception as e:
         logger.error(f"Startup failed: {e}")
 
     yield
 
     # Shutdown
+    if subwoofer_runtime_link_watch_task:
+        subwoofer_runtime_link_watch_task.cancel()
+        try:
+            await subwoofer_runtime_link_watch_task
+        except asyncio.CancelledError:
+            pass
     if player_instance:
         player_instance.stop()
         logger.info("MPV player stopped")
+    if subwoofer_runtime:
+        await subwoofer_runtime.stop()
+        logger.info("2.1 Subwoofer runtime stopped")
     if bluetooth_monitor_task:
         bluetooth_monitor_task.cancel()
         try:
@@ -3658,6 +4278,9 @@ async def play_track(req: PlayRequest):
                     await _apply_hard_playback_handoff(previous_file, play_url, handoff_reason, "play")
                 if playback_queue_mode == "mpv_native" and len(playback_queue) > 1:
                     prearm_rate, prearm_generation = await _prearm_known_local_samplerate(track_info, "play:mpv-native-queue")
+                    # Sync 2.1 helper at pre-armed rate before audio starts
+                    if subwoofer_runtime is not None and prearm_rate is not None:
+                        await _sync_subwoofer_runtime(get_audio_output_overview())
                     if not _prime_mpv_native_queue(playback_queue_index):
                         raise HTTPException(status_code=500, detail="Failed to initialize native mpv playlist")
                     if prearm_rate and prearm_generation:
@@ -3667,6 +4290,9 @@ async def play_track(req: PlayRequest):
                     player_instance.loadfile(play_url, mode="replace")
                     if prearm_rate and prearm_generation:
                         asyncio.create_task(_release_local_samplerate_prearm(prearm_rate, prearm_generation, "play"))
+                    # Sync 2.1 helper at pre-armed rate before audio becomes audible
+                    if subwoofer_runtime is not None and prearm_rate is not None:
+                        await _sync_subwoofer_runtime(get_audio_output_overview())
                     # Ensure MPV is unpaused after loadfile (it may stay paused if previously paused by Spotify)
                     player_instance.set_pause(False)
 
@@ -3679,6 +4305,7 @@ async def play_track(req: PlayRequest):
             if source in {"local", "radio"}:
                 asyncio.create_task(_sync_peak_monitor_after_playback_transition(track_info.copy()))
                 asyncio.create_task(_maybe_recover_samplerate_mismatch(track_info.copy()))
+                asyncio.create_task(_sync_subwoofer_runtime_after_playback_transition(track_info.copy()))
 
             return {
                 "status": "playing",
@@ -4060,7 +4687,13 @@ async def hardware_auto_off():
 
 @app.get("/api/audio/outputs")
 async def audio_output_overview():
-    return get_audio_output_overview()
+    overview = get_audio_output_overview()
+    if subwoofer_runtime is not None:
+        overview["output_mode"] = {
+            **(overview.get("output_mode") or {}),
+            "runtime": subwoofer_runtime.snapshot(),
+        }
+    return overview
 
 
 @app.post("/api/audio/outputs")
@@ -4073,12 +4706,54 @@ async def save_audio_output_selection_route(request: Request):
 
     try:
         result = set_audio_output_selection(output_key)
+        await _sync_subwoofer_runtime(result)
+        if subwoofer_runtime is not None:
+            result["output_mode"] = {
+                **(result.get("output_mode") or {}),
+                "runtime": subwoofer_runtime.snapshot(),
+            }
         await refresh_peak_monitor_after_effects_change("audio-output-switch")
         return result
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=f"Failed to switch audio output: {exc}")
+
+
+@app.post("/api/audio/output-mode")
+async def save_audio_output_mode_route(request: Request):
+    try:
+        body = await request.json()
+        mode = str(body.get("mode", "")).strip()
+        subwoofer = body.get("subwoofer") if isinstance(body.get("subwoofer"), dict) else None
+    except Exception:
+        raise HTTPException(status_code=400, detail='Invalid JSON body, expected {"mode": <string>, "subwoofer": <object?>}')
+
+    try:
+        result = set_audio_output_mode(mode, subwoofer)
+        await _sync_subwoofer_runtime(result)
+        if subwoofer_runtime is not None:
+            result["output_mode"] = {
+                **(result.get("output_mode") or {}),
+                "runtime": subwoofer_runtime.snapshot(),
+            }
+        await refresh_peak_monitor_after_effects_change("audio-output-mode-switch")
+        return result
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to save audio output mode: {exc}")
+
+
+@app.post("/api/debug/21-runtime-state")
+async def debug_21_runtime_state_route(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    label = str(body.get("label") or "manual").strip() if isinstance(body, dict) else "manual"
+    ui_state = body.get("ui_state") if isinstance(body, dict) and isinstance(body.get("ui_state"), dict) else {}
+    return await _dump_21_runtime_state(label, ui_state)
 
 
 @app.get("/api/audio/source-mode")
@@ -4477,7 +5152,10 @@ async def start_measurement(
         calibration_filename = calibration_file.filename or "calibration.txt"
         calibration_bytes = await calibration_file.read()
 
+    restore_force_rate = None
+    measurement_rate = _resolve_measurement_start_sample_rate()
     try:
+        restore_force_rate = await _prepare_subwoofer_runtime_for_measurement_start(measurement_rate)
         job = await measurement_store.start_measurement(
             input_id=input_id,
             channel=channel,
@@ -4487,9 +5165,15 @@ async def start_measurement(
             calibration_bytes=calibration_bytes,
             calibration_ref=calibration_ref,
         )
+        if restore_force_rate is not None:
+            asyncio.create_task(_release_measurement_samplerate_force_after_job(job["id"], measurement_rate, restore_force_rate))
     except ValueError as exc:
+        if restore_force_rate is not None:
+            _set_pipewire_force_rate(restore_force_rate)
         raise HTTPException(status_code=400, detail=str(exc))
     except RuntimeError as exc:
+        if restore_force_rate is not None:
+            _set_pipewire_force_rate(restore_force_rate)
         raise HTTPException(status_code=500, detail=str(exc))
     return {"status": "ok", "job": job}
 
@@ -4512,7 +5196,10 @@ async def start_lr_repeat_measurement(
         calibration_filename = calibration_file.filename or "calibration.txt"
         calibration_bytes = await calibration_file.read()
 
+    restore_force_rate = None
+    measurement_rate = _resolve_measurement_start_sample_rate()
     try:
+        restore_force_rate = await _prepare_subwoofer_runtime_for_measurement_start(measurement_rate)
         job = await measurement_store.start_lr_repeat_measurement(
             input_id=input_id,
             base_name=base_name,
@@ -4522,9 +5209,15 @@ async def start_lr_repeat_measurement(
             calibration_bytes=calibration_bytes,
             calibration_ref=calibration_ref,
         )
+        if restore_force_rate is not None:
+            asyncio.create_task(_release_measurement_samplerate_force_after_job(job["id"], measurement_rate, restore_force_rate))
     except ValueError as exc:
+        if restore_force_rate is not None:
+            _set_pipewire_force_rate(restore_force_rate)
         raise HTTPException(status_code=400, detail=str(exc))
     except RuntimeError as exc:
+        if restore_force_rate is not None:
+            _set_pipewire_force_rate(restore_force_rate)
         raise HTTPException(status_code=500, detail=str(exc))
     return {"status": "ok", "job": job}
 
@@ -4717,6 +5410,8 @@ async def load_easyeffects_preset(request: Request):
                 compare["activeSide"] = "B"
                 ee_manager.save_compare_state(compare)
             status = ee_manager.get_status()
+        if subwoofer_runtime is not None and subwoofer_runtime.snapshot().get("active"):
+            await subwoofer_runtime.reclean_direct_easyeffects_links()
         await manager.broadcast({"type": "easyeffects", "data": status})
         schedule_peak_monitor_refresh_after_effects_change("preset-load")
         return {"status": "ok", "active_preset": preset_name, "compare": status.get("compare")}
