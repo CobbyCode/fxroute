@@ -128,12 +128,15 @@
                             <div class="radio-manage-submit-row settings-maintenance-actions">
                                 <button id="settings-update-check" class="btn-secondary" type="button">Check for updates</button>
                                 <button id="settings-update-run" class="btn-primary" type="button">Update FXRoute</button>
-                                <button id="settings-restore-run" class="btn-danger" type="button">Restore to Public Release</button>
                             </div>
                             <button id="settings-update-details-toggle" class="settings-details-toggle" type="button" aria-expanded="false">Show update details</button>
                             <div id="settings-update-details" class="settings-update-details hidden">
                                 <p id="settings-maintenance-detail" class="settings-inline-note">Use the existing installer path for safe GitHub updates.</p>
                                 <pre id="settings-update-log" class="settings-update-log" aria-live="polite"></pre>
+                                <div id="settings-restore-section" class="hidden">
+                                    <p class="settings-inline-note settings-restore-note">Local source changes are blocking the normal update path. Restore will save your changes as a patch and reset this checkout to the clean public release.</p>
+                                    <button id="settings-restore-run" class="btn-danger" type="button">Restore to Public Release</button>
+                                </div>
                             </div>
                         </div>
                     </section>

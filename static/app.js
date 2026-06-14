@@ -302,6 +302,7 @@ const elements = {
     settingsMaintenanceDetail: document.getElementById('settings-maintenance-detail'),
     settingsUpdateCheckBtn: document.getElementById('settings-update-check'),
     settingsUpdateRunBtn: document.getElementById('settings-update-run'),
+    settingsRestoreSection: document.getElementById('settings-restore-section'),
     settingsRestoreRunBtn: document.getElementById('settings-restore-run'),
     settingsUpdateDetailsToggle: document.getElementById('settings-update-details-toggle'),
     settingsUpdateDetails: document.getElementById('settings-update-details'),
@@ -1218,7 +1219,8 @@ function renderMaintenancePanel() {
     const showDetails = !!maintenance.detailsExpanded
         || (!!maintenance.pending && maintenance.operation === 'update')
         || !!maintenance.restartPending
-        || (!!maintenance.hasError && !maintenance.userCollapsedDetails);
+        || (!!maintenance.hasError && !maintenance.userCollapsedDetails)
+        || !!maintenance.dirtyBlock;
     if (elements.settingsMaintenanceSummary) {
         elements.settingsMaintenanceSummary.textContent = maintenanceStatusText(maintenance);
     }
@@ -1259,6 +1261,9 @@ function renderMaintenancePanel() {
     if (elements.settingsRestoreRunBtn) {
         const restoreDisabled = !!maintenance.pending || !!maintenance.restartPending;
         elements.settingsRestoreRunBtn.disabled = restoreDisabled;
+    }
+    if (elements.settingsRestoreSection) {
+        elements.settingsRestoreSection.classList.toggle('hidden', !maintenance.dirtyBlock);
     }
 }
 

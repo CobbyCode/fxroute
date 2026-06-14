@@ -972,7 +972,7 @@ body {
 }
 .radio-manage-submit-row {
     display: flex;
-    justify-content: flex-end;
+    justify-content: center;
     margin-top: 0.1rem;
 }
 .radio-manage-submit-row .btn-primary,
@@ -1070,19 +1070,24 @@ body {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 0.6rem;
     width: min(100%, 420px);
-    margin-left: auto;
+    margin: 0 auto;
 }
 .settings-maintenance-actions .btn-primary,
-.settings-maintenance-actions .btn-secondary,
-.settings-maintenance-actions .btn-danger {
+.settings-maintenance-actions .btn-secondary {
     width: 100%;
     min-width: 0;
 }
-.settings-maintenance-actions .btn-danger {
-    grid-column: 1 / -1;
+.settings-restore-note {
+    margin-top: 0.6rem;
+    margin-bottom: 0.5rem;
+}
+#settings-restore-section .btn-danger {
+    width: min(100%, 420px);
+    display: block;
 }
 .settings-details-toggle {
     appearance: none;
+    align-self: center;
     margin-top: 0.68rem;
     padding: 0;
     border: 0;
