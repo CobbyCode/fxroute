@@ -1,6 +1,12 @@
 # Changelog
 
 ## Unreleased
+
+## 0.7.37 (2026-06-14)
+- Maintenance update check: improve dirty-check categorization so generated runtime cache files (`media/cache/`) no longer block updates; keep the current installed version visible in the UI even when the check is blocked. Maintenance check behavior validated on a test install.
+- Library metadata: fix SQLite file-descriptor leak in album metadata operations.
+- Album covers: handle embedded and folder covers with a safe Pillow-optional thumbnail path and fall back gracefully instead of showing a broken image.
+- 2.1/Subwoofer runtime: consolidate current runtime and UI fixes from the test bench.
 - Add a safe in-app Maintenance update path that reuses the installer layout: Settings can check GitHub status, run the backend update endpoint, show the update log, and confirm service restart/reload completion.
 - Add `scripts/update_fxroute.sh` for guarded self-updates from a git checkout. It blocks dirty working trees, fetches GitHub, reports local/remote version and commit, pulls with fast-forward-only logic, refreshes dependencies only when needed, runs the production validation/build step, and restarts the configured user service.
 - Record installer path and service name in `~/.config/fxroute/install-config.env`, and point the `fxroute-update` helper at the same update script used by the in-app Maintenance flow.

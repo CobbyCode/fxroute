@@ -1,3 +1,8 @@
+> **INTERNAL DEVELOPMENT NOTE**
+> This document is a test plan for a specific development machine and
+> hardware setup. It is not part of the public FXRoute documentation and
+> should not be included in release exports.
+
 # FXRoute 2.1 Stage-1 Graph Link Plan
 
 This is a review plan for the first controlled linked-audio test of the

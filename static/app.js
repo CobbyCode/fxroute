@@ -1199,6 +1199,7 @@ function parseUpdateInfo(logText = '') {
 }
 
 function maintenanceStatusText(maintenance = {}) {
+    if (maintenance.dirtyBlock) return 'Local source changes — update disabled';
     if (maintenance.hasError) return 'Update check failed';
     if (maintenance.restartPending) return 'Restarting FXRoute';
     if (maintenance.pending) return maintenance.updateAvailable === true ? 'Updating FXRoute' : 'Checking for updates';
@@ -1265,9 +1266,10 @@ async function checkFxrouteUpdate(options = {}) {
         state.settings.maintenance.userCollapsedDetails = false;
         renderSettingsPanel();
     }
+    let data = {};
     try {
         const resp = await fetch('/api/system/update');
-        const data = await resp.json().catch(() => ({}));
+        data = await resp.json().catch(() => ({}));
         const logText = updateLogFromResult(data);
         if (!resp.ok || data.ok === false) throw new Error(data.detail || data.stderr || 'Update check failed');
         const updateInfo = parseUpdateInfo(logText);
@@ -1285,16 +1287,22 @@ async function checkFxrouteUpdate(options = {}) {
             hasError: false,
         };
     } catch (error) {
+        const errorMsg = error.message || 'Update check failed';
+        const isDirtyBlock = errorMsg.includes('Local changes detected');
         state.settings.maintenance = {
             ...state.settings.maintenance,
-            latestSummary: 'Update check failed.',
-            detail: error.message || 'Update check failed.',
-            log: error.message || '',
+            installedVersion: data.installed_version || state.settings.maintenance.installedVersion || '',
+            latestSummary: isDirtyBlock
+                ? 'Local source changes detected — update disabled to protect this checkout.'
+                : 'Update check failed.',
+            detail: errorMsg,
+            log: errorMsg,
             pending: false,
             restartPending: false,
             operation: '',
             userCollapsedDetails: false,
             hasError: true,
+            dirtyBlock: isDirtyBlock,
         };
     }
     renderSettingsPanel();
@@ -1332,9 +1340,10 @@ async function runFxrouteUpdate() {
     state.settings.maintenance.hasError = false;
     state.settings.maintenance.userCollapsedDetails = false;
     renderSettingsPanel();
+    let data = {};
     try {
         const resp = await fetch('/api/system/update', { method: 'POST' });
-        const data = await resp.json().catch(() => ({}));
+        data = await resp.json().catch(() => ({}));
         const logText = updateLogFromResult(data);
         if (!resp.ok || data.ok === false) throw new Error(data.detail || data.stderr || 'Update failed');
         const updateInfo = parseUpdateInfo(logText);
@@ -1352,6 +1361,7 @@ async function runFxrouteUpdate() {
             operation: data.restart_scheduled ? 'update' : '',
             userCollapsedDetails: false,
             hasError: false,
+            dirtyBlock: false,
         };
         renderSettingsPanel();
         if (data.restart_scheduled) {
@@ -1360,16 +1370,22 @@ async function runFxrouteUpdate() {
             showToast('FXRoute update completed', 'success');
         }
     } catch (error) {
+        const errorMsg = error.message || 'Update failed';
+        const isDirtyBlock = errorMsg.includes('Local changes detected');
         state.settings.maintenance.pending = false;
         state.settings.maintenance.restartPending = false;
         state.settings.maintenance.operation = '';
-        state.settings.maintenance.latestSummary = 'Update failed.';
-        state.settings.maintenance.detail = error.message || 'Update failed.';
-        state.settings.maintenance.log = error.message || '';
+        state.settings.maintenance.installedVersion = data.installed_version || state.settings.maintenance.installedVersion || '';
+        state.settings.maintenance.latestSummary = isDirtyBlock
+            ? 'Local source changes detected — update disabled to protect this checkout.'
+            : 'Update failed.';
+        state.settings.maintenance.detail = errorMsg;
+        state.settings.maintenance.log = errorMsg;
         state.settings.maintenance.hasError = true;
         state.settings.maintenance.userCollapsedDetails = false;
+        state.settings.maintenance.dirtyBlock = isDirtyBlock;
         renderSettingsPanel();
-        showToast(error.message || 'Update failed', 'error');
+        showToast(errorMsg, 'error');
     }
 }
 
@@ -3951,6 +3967,16 @@ function albumMatchesLibraryQuery(album) {
     return haystack.includes(query);
 }
 
+function setAlbumCoverImage(img, coverUrl, fallbackText) {
+    if (!img) return;
+    const fallbackSvg = albumArtFallbackSvg(fallbackText || 'Album');
+    img.onerror = function() {
+        this.onerror = null;
+        this.src = fallbackSvg;
+    };
+    img.src = coverUrl || fallbackSvg;
+}
+
 async function openAlbumDetail(albumId) {
     const album = (state.library.albums || []).find(a => a.id === albumId);
     if (!album) return;
@@ -3963,9 +3989,7 @@ async function openAlbumDetail(albumId) {
 
         // Update detail header
         const coverUrl = `/api/albums/${albumId}/cover?v=${state.library.albumsCacheToken || ''}`;
-        const fallbackSvg = albumArtFallbackSvg(album.name || album.artist || 'Album');
-        elements.albumDetailCover.src = coverUrl;
-        elements.albumDetailCover.onerror = function() { this.onerror = null; this.src = fallbackSvg; };
+        setAlbumCoverImage(elements.albumDetailCover, coverUrl, album.name || album.artist || 'Album');
         elements.albumDetailName.textContent = album.name;
         elements.albumDetailArtist.textContent = album.artist;
         elements.albumDetailCount.textContent = `${tracks.length} track${tracks.length === 1 ? '' : 's'}`;
@@ -4013,8 +4037,11 @@ async function openSmartTopTracks() {
                 knownIds.add(track.id);
             }
         }
-        elements.albumDetailCover.src = `${album.coverUrl}?v=${state.library.albumsCacheToken || ''}`;
-        elements.albumDetailCover.onerror = function() { this.onerror = null; this.src = albumArtFallbackSvg(album.name); };
+        setAlbumCoverImage(
+            elements.albumDetailCover,
+            `${album.coverUrl}?v=${state.library.albumsCacheToken || ''}`,
+            album.name
+        );
         elements.albumDetailName.textContent = album.name;
         elements.albumDetailArtist.textContent = album.artist;
         elements.albumDetailCount.textContent = `${state.library.albumDetail.tracks.length} track${state.library.albumDetail.tracks.length === 1 ? '' : 's'}`;

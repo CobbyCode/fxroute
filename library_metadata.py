@@ -8,9 +8,10 @@ import os
 import re
 import sqlite3
 import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Iterator, Optional
 from urllib.parse import quote
 
 import requests
@@ -74,10 +75,18 @@ class LibraryMetadataStore:
         self._last_request_at = 0.0
         self._init_schema()
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
-        return conn
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def _init_schema(self) -> None:
         with self._connect() as conn:

@@ -238,6 +238,31 @@ class LibraryScanner:
         self._scan_track_cache_hits = 0
         self._scan_track_cache_misses = 0
 
+    def _metadata_fd_counts(self) -> tuple[int, int]:
+        fd_dir = Path("/proc/self/fd")
+        if not fd_dir.exists():
+            return -1, -1
+        total = 0
+        sqlite_count = 0
+        db_path = str(self.metadata_store.db_path)
+        for entry in fd_dir.iterdir():
+            total += 1
+            try:
+                if os.readlink(entry) == db_path:
+                    sqlite_count += 1
+            except OSError:
+                pass
+        return total, sqlite_count
+
+    def _log_metadata_fd_counts(self, label: str) -> None:
+        total, sqlite_count = self._metadata_fd_counts()
+        logger.info(
+            "Library metadata FD check %s: total_fds=%s library_metadata_sqlite_fds=%s",
+            label,
+            total,
+            sqlite_count,
+        )
+
     def refresh(self, force: bool = False) -> List[Track]:
         """
         Scan the music directory and build track list.
@@ -250,6 +275,7 @@ class LibraryScanner:
         self.prepare_scan_status()
         tracks = []
         active_track_paths: List[str] = []
+        self._log_metadata_fd_counts("before-scan")
 
         try:
             if not self.music_root.exists():
@@ -289,6 +315,8 @@ class LibraryScanner:
                         except Exception as e:
                             logger.warning(f"Failed to read metadata for {filepath}: {e}")
 
+            self._log_metadata_fd_counts("after-track-cache-pass")
+
             # Keep large-library browsing predictable by grouping paths/folders first,
             # while honoring tag track numbers inside the same folder/album when present.
             tracks.sort(key=_track_sort_key)
@@ -307,6 +335,7 @@ class LibraryScanner:
                 self._scan_track_cache_hits,
                 self._scan_track_cache_misses,
             )
+            self._log_metadata_fd_counts("after-scan-complete")
 
         except Exception as e:
             logger.error(f"Library scan failed: {e}")

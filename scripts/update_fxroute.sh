@@ -196,21 +196,33 @@ main() {
   [[ -f main.py && -f requirements.txt ]] || die "Path does not look like FXRoute: $REPO_PATH"
   git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "FXRoute is not running from a git checkout: $REPO_PATH"
 
-  local dirty=""
-  dirty="$(git status --porcelain=v1 --untracked-files=all)"
-  if [[ -n "$dirty" ]]; then
-    printf '[fxroute-update][error] Local changes detected. Update blocked to protect this checkout.\n' >&2
-    printf '%s\n' "$dirty" >&2
-    printf '[fxroute-update][error] Commit, remove, or intentionally handle these files before updating.\n' >&2
-    exit 1
-  fi
-
   local current_version current_commit remote_ref remote_version remote_commit
   current_version="$(version_at HEAD)"
   current_commit="$(git_short HEAD)"
 
   log "Repo path: $REPO_PATH"
   log "Service name: $SERVICE_NAME"
+  log "Current: ${current_version:-unknown} (${current_commit})"
+
+  local dirty=""
+  dirty="$(git status --porcelain=v1 --untracked-files=all)"
+  if [[ -n "$dirty" ]]; then
+    local tracked_changes="" untracked_only=""
+    tracked_changes="$(printf '%s\n' "$dirty" | grep -vE '^\?\? ' || true)"
+    untracked_only="$(printf '%s\n' "$dirty" | grep -E '^\?\? ' || true)"
+    printf '[fxroute-update][error] Local changes detected. Update blocked to protect this checkout.\n' >&2
+    if [[ -n "$tracked_changes" ]]; then
+      printf '[fxroute-update][error] Modified source files (must be resolved before update):\n' >&2
+      printf '%s\n' "$tracked_changes" >&2
+    fi
+    if [[ -n "$untracked_only" ]]; then
+      printf '[fxroute-update][error] Untracked files present (may be runtime artifacts; add to .gitignore or remove):\n' >&2
+      printf '%s\n' "$untracked_only" >&2
+    fi
+    printf '[fxroute-update][error] Commit, remove, or intentionally handle these files before updating.\n' >&2
+    exit 1
+  fi
+
   log "Fetching GitHub updates."
   git fetch --prune --no-tags
 

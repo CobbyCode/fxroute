@@ -3495,11 +3495,19 @@ def _cover_media_type(path: Path) -> str:
 ALBUM_COVER_CACHE_DIR = BASE_DIR / "media" / "cache" / "album-covers"
 
 
-def _serve_thumbnail(image_path: Path, size: int = 256) -> FileResponse:
-    """Serve an image resized to a square thumbnail, with caching."""
-    from PIL import Image
-
+def _serve_cover_image(image_path: Path, size: int = 256) -> FileResponse:
+    """Serve an album cover, using cached thumbnails when Pillow is available."""
     image_path = image_path.resolve()
+    if not image_path.is_file():
+        raise FileNotFoundError(str(image_path))
+
+    media_type = _cover_media_type(image_path)
+    try:
+        from PIL import Image
+    except ModuleNotFoundError:
+        logger.debug("Pillow is not installed; serving original cover image for %s", image_path)
+        return FileResponse(str(image_path), media_type=media_type)
+
     cache_key = hashlib.sha256(
         f"{image_path}:{image_path.stat().st_mtime_ns}:{size}".encode()
     ).hexdigest()[:16]
@@ -3511,11 +3519,13 @@ def _serve_thumbnail(image_path: Path, size: int = 256) -> FileResponse:
         return FileResponse(str(cached), media_type=_cover_media_type(cached))
 
     ALBUM_COVER_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    img = Image.open(str(image_path))
-    img = img.convert("RGB")
-    img.thumbnail((size, size), Image.LANCZOS)
-    save_kwargs = {"quality": 85} if suffix in (".jpg", ".jpeg") else {}
-    img.save(str(cached), **save_kwargs)
+    with Image.open(str(image_path)) as img:
+        img = img.convert("RGB")
+        img.thumbnail((size, size), Image.LANCZOS)
+        save_kwargs = {"quality": 85} if suffix in (".jpg", ".jpeg") else {}
+        tmp = cached.with_suffix(cached.suffix + ".tmp")
+        img.save(str(tmp), **save_kwargs)
+        tmp.replace(cached)
     return FileResponse(str(cached), media_type=_cover_media_type(cached))
 
 
@@ -3850,7 +3860,7 @@ async def get_album_discover(album_id: str, refresh: bool = False):
 @app.get("/api/albums/{album_id}/cover")
 async def get_album_cover(album_id: str, size: int = 256):
     """Return cover image for an album, resized to thumbnail.
-    Priority: folder cover > embedded cover > 404.
+    Priority: folder cover > embedded cover > external cover > 404.
     """
     if not library_scanner:
         raise HTTPException(status_code=503, detail="Library not available")
@@ -3864,7 +3874,10 @@ async def get_album_cover(album_id: str, size: int = 256):
             continue
         folder_cover = _folder_cover_for_track(track.path)
         if folder_cover:
-            return _serve_thumbnail(folder_cover, size)
+            try:
+                return _serve_cover_image(folder_cover, size)
+            except Exception as exc:
+                logger.warning("Failed to serve folder album cover %s for album %s: %s", folder_cover, album_id, exc)
 
     # Try embedded cover from first track that has one
     for track in tracks:
@@ -3872,25 +3885,19 @@ async def get_album_cover(album_id: str, size: int = 256):
             continue
         cached_cover, media_type = _cached_embedded_cover(track.id, track.path)
         if cached_cover and cached_cover.is_file():
-            return _serve_thumbnail(cached_cover, size)
+            try:
+                return _serve_cover_image(cached_cover, size)
+            except Exception as exc:
+                logger.warning("Failed to serve embedded album cover %s for album %s: %s", cached_cover, album_id, exc)
 
     external_cover = library_scanner.get_album_external_cover(album_id)
     if external_cover and external_cover.is_file():
-        return _serve_thumbnail(external_cover, size)
+        try:
+            return _serve_cover_image(external_cover, size)
+        except Exception as exc:
+            logger.warning("Failed to serve external album cover %s for album %s: %s", external_cover, album_id, exc)
 
-    # If no cover found, return a generated placeholder
-    import hashlib as _hl
-    _name = album_id[:16]
-    _h = int(_hl.md5(_name.encode()).hexdigest()[:6], 16)
-    _r, _g, _b = (_h >> 16) & 0xFF, (_h >> 8) & 0xFF, _h & 0xFF
-    _svg = (
-        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">'
-        f'<rect width="200" height="200" rx="16" fill="#{_r:02x}{_g:02x}{_b:02x}"/>'
-        f'<text x="100" y="108" text-anchor="middle" fill="white" font-size="48" '
-        f'font-weight="bold" font-family="system-ui,sans-serif">♪</text>'
-        f'</svg>'
-    )
-    return Response(content=_svg.encode(), media_type="image/svg+xml")
+    raise HTTPException(status_code=404, detail="Cover not found")
 
 
 @app.post("/api/tracks/download")
