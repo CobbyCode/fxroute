@@ -302,6 +302,7 @@ const elements = {
     settingsMaintenanceDetail: document.getElementById('settings-maintenance-detail'),
     settingsUpdateCheckBtn: document.getElementById('settings-update-check'),
     settingsUpdateRunBtn: document.getElementById('settings-update-run'),
+    settingsRestoreRunBtn: document.getElementById('settings-restore-run'),
     settingsUpdateDetailsToggle: document.getElementById('settings-update-details-toggle'),
     settingsUpdateDetails: document.getElementById('settings-update-details'),
     settingsUpdateLog: document.getElementById('settings-update-log'),
@@ -892,6 +893,7 @@ function setupSettingsActions() {
     elements.settingsHardwareAutoOffBtn?.addEventListener('click', () => runHardwareCommand('/api/hardware/auto/off', 'Auto mode disabled'));
     elements.settingsUpdateCheckBtn?.addEventListener('click', () => checkFxrouteUpdate());
     elements.settingsUpdateRunBtn?.addEventListener('click', () => runFxrouteUpdate());
+    elements.settingsRestoreRunBtn?.addEventListener('click', () => restoreFxrouteToPublic());
     elements.settingsUpdateDetailsToggle?.addEventListener('click', () => {
         const maintenance = state.settings.maintenance;
         const isOpen = !!maintenance.detailsExpanded
@@ -1254,6 +1256,10 @@ function renderMaintenancePanel() {
         elements.settingsUpdateRunBtn.classList.toggle('btn-primary', maintenance.updateAvailable === true && !updateDisabled);
         elements.settingsUpdateRunBtn.classList.toggle('btn-secondary', maintenance.updateAvailable !== true || updateDisabled);
     }
+    if (elements.settingsRestoreRunBtn) {
+        const restoreDisabled = !!maintenance.pending || !!maintenance.restartPending;
+        elements.settingsRestoreRunBtn.disabled = restoreDisabled;
+    }
 }
 
 async function checkFxrouteUpdate(options = {}) {
@@ -1384,6 +1390,62 @@ async function runFxrouteUpdate() {
         state.settings.maintenance.hasError = true;
         state.settings.maintenance.userCollapsedDetails = false;
         state.settings.maintenance.dirtyBlock = isDirtyBlock;
+        renderSettingsPanel();
+        showToast(errorMsg, 'error');
+    }
+}
+
+async function restoreFxrouteToPublic() {
+    const confirmMsg = [
+        'This will reset the FXRoute checkout to the current public release on GitHub. ',
+        'Local source changes will be saved as a patch file in backups/. ',
+        'User data, music, config, and runtime cache are not affected. ',
+        'The service will restart after restore.\n\nContinue?'
+    ].join('');
+    if (!confirm(confirmMsg)) return;
+
+    state.settings.maintenance.pending = true;
+    state.settings.maintenance.operation = 'restore';
+    state.settings.maintenance.detail = 'Restoring to public release…';
+    state.settings.maintenance.hasError = false;
+    state.settings.maintenance.userCollapsedDetails = false;
+    renderSettingsPanel();
+    let data = {};
+    try {
+        const resp = await fetch('/api/system/restore', { method: 'POST' });
+        data = await resp.json().catch(() => ({}));
+        const logText = updateLogFromResult(data);
+        if (!resp.ok || data.ok === false) throw new Error(data.detail || data.stderr || 'Restore failed');
+        state.settings.maintenance = {
+            ...state.settings.maintenance,
+            installedVersion: data.installed_version || state.settings.maintenance.installedVersion,
+            latestSummary: 'Restore completed.',
+            detail: 'Restarting FXRoute service…',
+            currentVersion: data.installed_version || state.settings.maintenance.currentVersion,
+            latestVersion: '',
+            updateAvailable: null,
+            log: logText,
+            pending: false,
+            restartPending: true,
+            operation: 'restore',
+            userCollapsedDetails: false,
+            hasError: false,
+            dirtyBlock: false,
+        };
+        renderSettingsPanel();
+        void waitForFxrouteRestart();
+    } catch (error) {
+        const errorMsg = error.message || 'Restore failed';
+        state.settings.maintenance.pending = false;
+        state.settings.maintenance.restartPending = false;
+        state.settings.maintenance.operation = '';
+        state.settings.maintenance.installedVersion = data.installed_version || state.settings.maintenance.installedVersion || '';
+        state.settings.maintenance.latestSummary = 'Restore failed.';
+        state.settings.maintenance.detail = errorMsg;
+        state.settings.maintenance.log = errorMsg;
+        state.settings.maintenance.hasError = true;
+        state.settings.maintenance.userCollapsedDetails = false;
+        state.settings.maintenance.dirtyBlock = false;
         renderSettingsPanel();
         showToast(errorMsg, 'error');
     }

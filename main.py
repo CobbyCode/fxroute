@@ -4612,6 +4612,30 @@ async def system_update():
         **result,
     }
 
+
+@app.post("/api/system/restore")
+async def system_restore():
+    """Restore the checkout to origin/main and return to a clean public release.
+
+    This is an explicit repair action, not a normal update. It saves local
+    source changes as a patch file in backups/, then resets the working tree
+    to origin/main and restarts the service.
+
+    User data, music, config, and runtime cache files are not affected.
+    """
+    service_name = _configured_service_name()
+    result = await _run_update_script("--restore", "--defer-restart")
+    ok = result["returncode"] == 0
+    if ok:
+        asyncio.create_task(_restart_fxroute_service_after_response(service_name))
+    return {
+        "ok": ok,
+        "installed_version": _read_version_file(),
+        "restart_scheduled": ok,
+        "service_name": service_name,
+        **result,
+    }
+
 async def _maybe_repair_active_app_samplerate_drift(status: dict) -> None:
     global last_app_samplerate_drift_repair_at
     now = time.monotonic()

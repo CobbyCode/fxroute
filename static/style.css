@@ -1073,9 +1073,13 @@ body {
     margin-left: auto;
 }
 .settings-maintenance-actions .btn-primary,
-.settings-maintenance-actions .btn-secondary {
+.settings-maintenance-actions .btn-secondary,
+.settings-maintenance-actions .btn-danger {
     width: 100%;
     min-width: 0;
+}
+.settings-maintenance-actions .btn-danger {
+    grid-column: 1 / -1;
 }
 .settings-details-toggle {
     appearance: none;

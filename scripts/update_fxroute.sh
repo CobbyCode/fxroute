@@ -14,6 +14,7 @@ Usage: scripts/update_fxroute.sh [options]
 
 Options:
   --check             Fetch and report local/remote status without changing files
+  --restore           Reset the checkout to origin/main and return to a clean public release
   --repo <path>       Override the FXRoute git checkout path
   --no-restart        Do not restart the FXRoute service
   --defer-restart     Leave restart to the caller after this script exits
@@ -28,6 +29,10 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --check)
       MODE="check"
+      shift
+      ;;
+    --restore)
+      MODE="restore"
       shift
       ;;
     --repo)
@@ -185,7 +190,7 @@ restart_service_if_needed() {
   fi
 }
 
-main() {
+setup_repo() {
   command -v git >/dev/null 2>&1 || die "git is required"
   command -v python3 >/dev/null 2>&1 || die "python3 is required"
 
@@ -196,13 +201,21 @@ main() {
   [[ -f main.py && -f requirements.txt ]] || die "Path does not look like FXRoute: $REPO_PATH"
   git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "FXRoute is not running from a git checkout: $REPO_PATH"
 
-  local current_version current_commit remote_ref remote_version remote_commit
+  local current_version current_commit
   current_version="$(version_at HEAD)"
   current_commit="$(git_short HEAD)"
 
   log "Repo path: $REPO_PATH"
   log "Service name: $SERVICE_NAME"
   log "Current: ${current_version:-unknown} (${current_commit})"
+}
+
+main() {
+  setup_repo
+
+  local current_version current_commit remote_ref remote_version remote_commit
+  current_version="$(version_at HEAD)"
+  current_commit="$(git_short HEAD)"
 
   local dirty=""
   dirty="$(git status --porcelain=v1 --untracked-files=all)"
@@ -265,4 +278,58 @@ main() {
   log "Update completed: ${current_version:-unknown} (${current_commit})"
 }
 
-main "$@"
+restore_main() {
+  setup_repo
+
+  local remote_ref remote_version remote_commit
+  log "Restore: fetching GitHub updates."
+  git fetch --prune --no-tags
+
+  remote_ref="$(git_remote_ref)"
+  remote_version="$(version_at "$remote_ref")"
+  remote_commit="$(git_short "$remote_ref")"
+
+  log "Restore: target: ${remote_version:-unknown} (${remote_commit}) from ${remote_ref}"
+
+  local dirty=""
+  dirty="$(git status --porcelain=v1 --untracked-files=all)"
+  if [[ -n "$dirty" ]]; then
+    backup_dir="$REPO_PATH/backups"
+    mkdir -p "$backup_dir"
+    patch_file="$backup_dir/local-changes-$(date -u +%Y%m%d-%H%M%S).patch"
+    log "Restore: saving local changes to $patch_file"
+    git diff HEAD -- > "$patch_file" 2>/dev/null || true
+    if [[ -s "$patch_file" ]]; then
+      log "Restore: tracked source changes saved as patch."
+    else
+      rm -f "$patch_file"
+      log "Restore: no tracked source changes to save."
+    fi
+    log "Restore: discarding local changes and resetting to ${remote_ref}."
+    git reset --hard "$remote_ref"
+    log "Restore: cleaning untracked files (excluding runtime cache and config)."
+    git clean -fd -e media/cache -e .env -e .env.local -e .venv -e backups -e BUILD_ID
+  else
+    log "Restore: working tree is already clean; resetting to ${remote_ref}."
+    git reset --hard "$remote_ref"
+  fi
+
+  install_dependencies_if_needed
+  run_production_build
+  restart_service_if_needed
+
+  local restored_version restored_commit
+  restored_version="$(version_at HEAD)"
+  restored_commit="$(git_short HEAD)"
+  log "Restore completed: ${restored_version:-unknown} (${restored_commit})"
+  return 0
+}
+
+case "$MODE" in
+  restore)
+    restore_main
+    ;;
+  *)
+    main "$@"
+    ;;
+esac
