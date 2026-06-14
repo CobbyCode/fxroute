@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.7.38 (2026-06-14)
+- Add Restore to Public Release maintenance action: an explicit repair path that saves local source changes as a patch, resets the checkout to origin/main, and restarts the service. Only shown when local changes are detected.
+- Center maintenance and amplifier button groups in their cards.
+
 ## 0.7.37 (2026-06-14)
 - Maintenance update check: improve dirty-check categorization so generated runtime cache files (`media/cache/`) no longer block updates; keep the current installed version visible in the UI even when the check is blocked. Maintenance check behavior validated on a test install.
 - Library metadata: fix SQLite file-descriptor leak in album metadata operations.
