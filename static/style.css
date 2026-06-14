@@ -1084,6 +1084,7 @@ body {
 #settings-restore-section .btn-danger {
     width: min(100%, 420px);
     display: block;
+    margin: 0 auto;
 }
 .settings-details-toggle {
     appearance: none;
