@@ -1108,6 +1108,35 @@ EOF
   pass "helper commands installed in $bin_dir"
 }
 
+build_pipewire_stage1_helper() {
+  local build_script="$INSTALL_ROOT/pipewire_stage1/build.sh"
+  [[ -f "$build_script" ]] || return 0
+
+  log "Installing PipeWire 2.1 native helper build dependencies"
+  local stage1_packages=()
+  case "$PACKAGE_MANAGER" in
+    apt)
+      stage1_packages=(gcc pkg-config libpipewire-0.3-dev libspa-0.2-dev)
+      ;;
+    dnf)
+      stage1_packages=(gcc pkgconf-pkg-config pipewire-devel)
+      ;;
+    zypper)
+      stage1_packages=(gcc pkgconf-pkg-config pipewire-devel)
+      ;;
+  esac
+  if [[ ${#stage1_packages[@]} -gt 0 ]]; then
+    pkg_install "${stage1_packages[@]}"
+  fi
+
+  log "Building PipeWire 2.1 native helper"
+  if ! bash "$build_script"; then
+    warn "PipeWire 2.1 native helper build failed — 2.1 output mode will not be available"
+    return 0
+  fi
+  pass "PipeWire 2.1 native helper built"
+}
+
 configure_spotify_cache_cleanup_helper() {
   local env_file="$INSTALL_ROOT/.env"
   local user_systemd_dir="$HOME/.config/systemd/user"
@@ -1855,6 +1884,7 @@ main() {
   setup_spotify_autostart
   chmod +x "$INSTALL_ROOT/scripts/update_fxroute.sh"
   install_helpers
+  build_pipewire_stage1_helper
   configure_optional_maintenance_helpers
   validate_http
   validate_tools

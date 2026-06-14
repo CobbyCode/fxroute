@@ -163,6 +163,30 @@ run_production_build() {
   "$REPO_PATH/.venv/bin/python3" -m py_compile main.py config.py measurement.py
 }
 
+build_pipewire_stage1_if_needed() {
+  local build_script="$REPO_PATH/pipewire_stage1/build.sh"
+  local binary="$REPO_PATH/pipewire_stage1/build/fxroute_21_passthrough"
+
+  [[ -f "$build_script" ]] || return 0
+
+  if [[ -f "$binary" ]]; then
+    if [[ "$build_script" -nt "$binary" ]]; then
+      log "PipeWire 2.1 helper source changed; rebuilding."
+    else
+      log "PipeWire 2.1 helper binary is up to date."
+      return 0
+    fi
+  else
+    log "PipeWire 2.1 helper binary missing; building."
+  fi
+
+  if ! bash "$build_script"; then
+    log "PipeWire 2.1 helper build failed — 2.1 output mode will not be available until this is resolved."
+  else
+    log "PipeWire 2.1 helper built successfully."
+  fi
+}
+
 restart_service_if_needed() {
   case "$RESTART_MODE" in
     none)
@@ -271,6 +295,7 @@ main() {
 
   install_dependencies_if_needed
   run_production_build
+  build_pipewire_stage1_if_needed
   restart_service_if_needed
 
   current_version="$(version_at HEAD)"
@@ -316,6 +341,7 @@ restore_main() {
 
   install_dependencies_if_needed
   run_production_build
+  build_pipewire_stage1_if_needed
   restart_service_if_needed
 
   local restored_version restored_commit
