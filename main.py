@@ -3524,7 +3524,7 @@ def _serve_cover_image(image_path: Path, size: int = 256) -> FileResponse:
         img.thumbnail((size, size), Image.LANCZOS)
         save_kwargs = {"quality": 85} if suffix in (".jpg", ".jpeg") else {}
         tmp = cached.with_suffix(cached.suffix + ".tmp")
-        img.save(str(tmp), **save_kwargs)
+        img.save(str(tmp), format="JPEG" if suffix in (".jpg", ".jpeg") else "PNG" if suffix == ".png" else "WEBP" if suffix == ".webp" else "JPEG", **save_kwargs)
         tmp.replace(cached)
     return FileResponse(str(cached), media_type=_cover_media_type(cached))
 

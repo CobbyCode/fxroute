@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.7.39 (2026-06-16)
+- Fix album cover thumbnail generation when Pillow writes temporary .tmp files.
+
 ## Unreleased
 
 ## 0.7.38 (2026-06-14)
