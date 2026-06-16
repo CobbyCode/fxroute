@@ -3294,6 +3294,18 @@ async def lifespan(app: FastAPI):
         easyeffects_manager = EasyEffectsManager()
         logger.info("EasyEffects manager initialized")
 
+        # On fresh EE installations (active_preset is None), load Neutral so DSP
+        # helpers have a working preset from the start.
+        try:
+            _active = easyeffects_manager.get_active_preset()
+            if not _active:
+                _presets = easyeffects_manager.list_presets()
+                if any(p["name"] == "Neutral" for p in _presets):
+                    easyeffects_manager.load_preset("Neutral")
+                    logger.info("EasyEffects: loaded Neutral preset (active_preset was None)")
+        except Exception as exc:
+            logger.warning("EasyEffects: failed to ensure Neutral preset on startup: %s", exc)
+
         measurement_store = MeasurementStore()
         logger.info("Measurement store initialized: %s", measurement_store.measurements_dir)
 
