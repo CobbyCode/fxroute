@@ -1416,6 +1416,39 @@ async def _dump_21_runtime_state(label: str, ui_state: dict | None = None) -> di
     return state
 
 
+def _build_measurement_audio_output_context() -> dict:
+    """Build audio_output_context metadata for measurement saves."""
+    context: dict = {}
+    try:
+        overview = get_audio_output_overview()
+        output_mode = overview.get("output_mode") or {}
+        mode = str(output_mode.get("mode", "stereo") or "stereo")
+        if mode == OUTPUT_MODE_SUBWOOFER_21:
+            config = SubwooferRuntimeConfig.from_overview(overview)
+            snapshot = subwoofer_runtime.snapshot() if subwoofer_runtime is not None else {}
+            context["output_mode"] = mode
+            context["output_key"] = config.output_key
+            context["output_label"] = config.output_label
+            context["output_channels"] = config.output_channels
+            context["sample_rate_hz"] = config.sample_rate
+            context["crossover_frequency_hz"] = config.crossover_frequency_hz
+            context["crossover_type"] = "LR24"
+            context["main_highpass_enabled"] = config.main_highpass_enabled
+            context["sub_level_db"] = config.sub_level_db
+            context["sub_alignment_ms"] = config.sub_alignment_ms
+            context["derived_main_delay_ms"] = config.derived_main_delay_ms
+            context["derived_sub_delay_ms"] = config.derived_sub_delay_ms
+            context["sub_polarity"] = config.sub_polarity
+            context["runtime_active"] = snapshot.get("active")
+            context["helper_pid"] = snapshot.get("helper_pid")
+        else:
+            context["output_mode"] = "stereo"
+    except Exception:
+        logger.warning("Failed to build audio output measurement context", exc_info=True)
+        context["output_mode"] = "unknown"
+    return context
+
+
 async def _prepare_subwoofer_runtime_for_measurement_start(measurement_rate: int) -> Optional[int]:
     if subwoofer_runtime is None:
         return None
@@ -5302,14 +5335,22 @@ async def save_measurement(request: Request):
     measurement_name = body.get("name") if isinstance(body, dict) else ""
     measurements = body.get("measurements") if isinstance(body, dict) else None
     trace_count = len(body.get("traces") or []) if isinstance(body, dict) and isinstance(body.get("traces"), list) else 0
+    audio_output_context = _build_measurement_audio_output_context()
+    if isinstance(body, dict) and not body.get("audio_output_context"):
+        body["audio_output_context"] = audio_output_context
+
     logger.info(
-        "Measurement save request received: id=%s name=%s traces=%s",
+        "Measurement save request received: id=%s name=%s traces=%s audio_output_mode=%s",
         measurement_id,
         measurement_name,
         trace_count,
+        audio_output_context.get("output_mode", "unknown"),
     )
     try:
         if isinstance(measurements, list):
+            for item in measurements:
+                if isinstance(item, dict) and not item.get("audio_output_context"):
+                    item["audio_output_context"] = audio_output_context
             saved_measurements = measurement_store.save_measurements(measurements)
             logger.info("Measurement set save completed: count=%s", len(saved_measurements))
             return {"status": "ok", "measurements": saved_measurements}

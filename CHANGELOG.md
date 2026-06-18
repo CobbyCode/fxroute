@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.41 (2026-06-18)
+- Route 2.1 measurement and prime playback through the `fxroute_21_stage1` helper inputs instead of directly targeting the hardware sink, preventing the measured Main path from bypassing the active 2.1 DSP chain.
+- Persist `audio_output_context` with saved measurements so 2.1 captures keep their output-mode, crossover, alignment, polarity, and helper metadata.
+- Use the fixed 4 ms IR pre-window for 2.1 windowing, matching stereo behavior after the routing fix.
+- Remove the 2.1 electrical-reference split-arrival special pass so ER usability is decided by the normal QC checks and can fall back to acoustic timing when weak.
+
 ## 0.7.40 (2026-06-16)
 - Fix fresh EasyEffects installations starting with no active preset by loading Neutral automatically.
 

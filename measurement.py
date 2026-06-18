@@ -2192,14 +2192,13 @@ class MeasurementStore:
         if self._pw_record_supports_option("--sample-count"):
             record_command.extend(["--sample-count", str(sample_count)])
         record_command.append(str(capture_path))
-        play_command = [
-            "pw-play",
-            "-P",
-            f"node.name={play_node_name}",
-            "--target",
-            playback_target["target_name"],
-            str(playback_path),
-        ]
+        playback_route = self._build_measurement_playback_route(play_node_name, playback_target)
+        play_command = self._build_measurement_play_command(
+            play_node_name=play_node_name,
+            playback_path=playback_path,
+            playback_target=playback_target,
+            playback_route=playback_route,
+        )
 
         record_process = subprocess.Popen(record_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         self._job_processes[job_id] = [record_process]
@@ -2221,6 +2220,7 @@ class MeasurementStore:
         detailed_diagnostics_enabled = _detailed_measurement_diagnostics_enabled()
         routing_snapshots: list[dict[str, Any]] = []
         link_diagnostics: dict[str, Any] = {}
+        playback_route_diagnostics = self._new_measurement_playback_route_diagnostics(playback_route)
         if detailed_diagnostics_enabled:
             routing_snapshots.append(
                 self._build_measurement_routing_snapshot(
@@ -2273,6 +2273,12 @@ class MeasurementStore:
             )
             play_process = subprocess.Popen(play_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             self._job_processes[job_id] = [record_process, play_process]
+            if playback_route["route"] == "subwoofer-2.1-helper-input":
+                playback_route_diagnostics = self._link_measurement_playback_to_21_helper(
+                    play_node_name=play_node_name,
+                    playback_target=playback_target,
+                    playback_route=playback_route,
+                )
             time.sleep(0.2)
             if detailed_diagnostics_enabled:
                 routing_snapshots.append(
@@ -2327,6 +2333,10 @@ class MeasurementStore:
             level_monitor_stop.set()
             if level_monitor_thread.is_alive():
                 level_monitor_thread.join(timeout=1.0)
+            self._cleanup_measurement_playback_links(
+                play_node_name=play_node_name,
+                temporary_links=playback_route_diagnostics.get("temporary_playback_links", []),
+            )
             self._cleanup_fxroute_links(
                 source_node_name=mic_source_node_name,
                 record_node_name=record_node_name,
@@ -2483,6 +2493,12 @@ class MeasurementStore:
             },
             "record_node": record_node_name,
             "play_node": play_node_name,
+            "measurement_playback_route": playback_route_diagnostics.get("measurement_playback_route"),
+            "temporary_playback_links": playback_route_diagnostics.get("temporary_playback_links", []),
+            "play_node_helper_links": playback_route_diagnostics.get("play_node_helper_links", []),
+            "direct_hardware_links_removed": playback_route_diagnostics.get("direct_hardware_links_removed", []),
+            "direct_hardware_links_remaining": playback_route_diagnostics.get("direct_hardware_links_remaining", []),
+            "play_node_links_after_manual_link": playback_route_diagnostics.get("play_node_links_after_manual_link", []),
             "requested_channel": channel,
             "sample_rate": sample_rate,
             "sweep": {
@@ -2522,8 +2538,10 @@ class MeasurementStore:
         if routing_diagnostics["sweep"].get("would_clip_before_write"):
             logger.warning("Measurement sweep would clip before playback: peak_dbfs=%s", routing_diagnostics["sweep"].get("peak_dbfs"))
         logger.info(
-            "Measurement summary: playback_target=%s capture_source=%s reference_source=%s monitor=%s sample_rate=%s sweep_peak_dbfs=%s sweep_rms_dbfs=%s pipewire_warnings=%d detail=%s",
+            "Measurement summary: playback_route=%s playback_target=%s play_node=%s capture_source=%s reference_source=%s monitor=%s sample_rate=%s sweep_peak_dbfs=%s sweep_rms_dbfs=%s pipewire_warnings=%d detail=%s",
+            routing_diagnostics["measurement_playback_route"],
             routing_diagnostics["playback_sink"]["target_name"],
+            routing_diagnostics["play_node"],
             routing_diagnostics["capture_source"]["node_name"],
             routing_diagnostics["reference_capture"]["source_node_name"],
             routing_diagnostics["reference_capture"]["uses_monitor_source"],
@@ -2618,12 +2636,14 @@ class MeasurementStore:
             record_cmd.extend(["--sample-count", str(sample_count)])
         record_cmd.append(str(prime_capture))
 
-        play_cmd = [
-            "pw-play",
-            "-P", f"node.name={play_node}",
-            "--target", playback_target["target_name"],
-            str(playback_path),
-        ]
+        playback_route = self._build_measurement_playback_route(play_node, playback_target)
+        play_cmd = self._build_measurement_play_command(
+            play_node_name=play_node,
+            playback_path=playback_path,
+            playback_target=playback_target,
+            playback_route=playback_route,
+        )
+        playback_route_diagnostics = self._new_measurement_playback_route_diagnostics(playback_route)
 
         logger.info(
             "Measurement prime sweep starting: prime_id=%s mic=%s channels=%d sample_rate=%d",
@@ -2645,6 +2665,12 @@ class MeasurementStore:
             )
             time.sleep(record_preroll_seconds)
             play_proc = subprocess.Popen(play_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            if playback_route["route"] == "subwoofer-2.1-helper-input":
+                playback_route_diagnostics = self._link_measurement_playback_to_21_helper(
+                    play_node_name=play_node,
+                    playback_target=playback_target,
+                    playback_route=playback_route,
+                )
             try:
                 play_stdout, play_stderr = play_proc.communicate(
                     timeout=record_duration_seconds + PRIME_TIMEOUT_MARGIN_SECONDS
@@ -2676,6 +2702,10 @@ class MeasurementStore:
                 prime_capture.unlink(missing_ok=True)
             except OSError:
                 pass
+            self._cleanup_measurement_playback_links(
+                play_node_name=play_node,
+                temporary_links=playback_route_diagnostics.get("temporary_playback_links", []),
+            )
             self._cleanup_fxroute_links(
                 source_node_name=mic_source_node_name,
                 record_node_name=record_node,
@@ -5434,6 +5464,256 @@ class MeasurementStore:
         prefix = f"{node_name}:"
         return [line.strip() for line in (completed.stdout or "").splitlines() if line.strip().startswith(prefix)]
 
+    def _build_measurement_playback_route(
+        self,
+        play_node_name: str,
+        playback_target: dict[str, Any],
+    ) -> dict[str, Any]:
+        overview = get_audio_output_overview()
+        output_mode = overview.get("output_mode") if isinstance(overview.get("output_mode"), dict) else {}
+        if output_mode.get("mode") != "subwoofer-2.1":
+            return {
+                "route": "direct-sink",
+                "play_node_name": play_node_name,
+                "playback_target_name": str(playback_target.get("target_name") or ""),
+                "helper_node_name": "",
+                "helper_input_ports": {},
+            }
+
+        helper_node_name = "fxroute_21_stage1"
+        helper_input_ports = self._wait_for_21_helper_input_ports(helper_node_name)
+        return {
+            "route": "subwoofer-2.1-helper-input",
+            "play_node_name": play_node_name,
+            "playback_target_name": str(playback_target.get("target_name") or ""),
+            "helper_node_name": helper_node_name,
+            "helper_input_ports": helper_input_ports,
+        }
+
+    @staticmethod
+    def _build_measurement_play_command(
+        *,
+        play_node_name: str,
+        playback_path: Path,
+        playback_target: dict[str, Any],
+        playback_route: dict[str, Any],
+    ) -> list[str]:
+        if playback_route.get("route") == "subwoofer-2.1-helper-input":
+            return [
+                "pw-play",
+                "-P",
+                "node.autoconnect=false",
+                "-P",
+                f"node.name={play_node_name}",
+                "--target",
+                "0",
+                str(playback_path),
+            ]
+        return [
+            "pw-play",
+            "-P",
+            f"node.name={play_node_name}",
+            "--target",
+            playback_target["target_name"],
+            str(playback_path),
+        ]
+
+    @staticmethod
+    def _new_measurement_playback_route_diagnostics(playback_route: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "measurement_playback_route": playback_route.get("route") or "direct-sink",
+            "temporary_playback_links": [],
+            "play_node_helper_links": [],
+            "direct_hardware_links_removed": [],
+            "direct_hardware_links_remaining": [],
+            "play_node_links_after_manual_link": [],
+        }
+
+    def _wait_for_21_helper_input_ports(self, helper_node_name: str) -> dict[str, str]:
+        deadline = time.monotonic() + 3.0
+        helper_ports: list[str] = []
+        while time.monotonic() < deadline:
+            helper_ports = self._list_pw_ports(helper_node_name)
+            input_l = f"{helper_node_name}:input_L"
+            input_r = f"{helper_node_name}:input_R"
+            if input_l in helper_ports and input_r in helper_ports:
+                return {"left": input_l, "right": input_r}
+            time.sleep(0.1)
+        raise RuntimeError(
+            "2.1 measurement playback route unavailable: helper inputs missing "
+            f"for {helper_node_name} (ports={helper_ports})"
+        )
+
+    def _wait_for_measurement_play_ports(self, play_node_name: str) -> dict[str, str]:
+        deadline = time.monotonic() + 4.0
+        play_ports: list[str] = []
+        while time.monotonic() < deadline:
+            play_ports = self._list_pw_ports(play_node_name)
+            output_l = f"{play_node_name}:output_FL"
+            output_r = f"{play_node_name}:output_FR"
+            if output_l in play_ports and output_r in play_ports:
+                return {"left": output_l, "right": output_r}
+            time.sleep(0.05)
+        raise RuntimeError(
+            "2.1 measurement playback route unavailable: measurement play FL/FR outputs missing "
+            f"for {play_node_name} (ports={play_ports})"
+        )
+
+    def _link_measurement_playback_to_21_helper(
+        self,
+        *,
+        play_node_name: str,
+        playback_target: dict[str, Any],
+        playback_route: dict[str, Any],
+    ) -> dict[str, Any]:
+        diagnostics = self._new_measurement_playback_route_diagnostics(playback_route)
+        play_ports = self._wait_for_measurement_play_ports(play_node_name)
+        helper_ports = playback_route.get("helper_input_ports")
+        if not isinstance(helper_ports, dict) or not helper_ports.get("left") or not helper_ports.get("right"):
+            helper_ports = self._wait_for_21_helper_input_ports(str(playback_route.get("helper_node_name") or "fxroute_21_stage1"))
+
+        diagnostics["direct_hardware_links_removed"] = self._remove_measurement_direct_hardware_links(
+            play_ports=play_ports,
+            playback_target=playback_target,
+        )
+        temporary_links = [
+            {"source_port": play_ports["left"], "target_port": str(helper_ports["left"]), "role": "measurement-play-left-to-helper-input"},
+            {"source_port": play_ports["right"], "target_port": str(helper_ports["right"]), "role": "measurement-play-right-to-helper-input"},
+        ]
+        created_links: list[dict[str, str]] = []
+        try:
+            for link in temporary_links:
+                self._create_pipewire_link(str(link["source_port"]), str(link["target_port"]))
+                created_links.append(link)
+        except Exception:
+            self._cleanup_measurement_playback_links(
+                play_node_name=play_node_name,
+                temporary_links=created_links,
+            )
+            raise
+
+        diagnostics["temporary_playback_links"] = temporary_links
+        diagnostics["play_node_helper_links"] = list(temporary_links)
+        diagnostics["play_node_links_after_manual_link"] = self._list_relevant_pw_links(
+            [play_node_name, str(playback_route.get("helper_node_name") or "fxroute_21_stage1")]
+        )
+        diagnostics["direct_hardware_links_remaining"] = self._find_measurement_direct_hardware_links(
+            play_ports=play_ports,
+            playback_target=playback_target,
+        )
+        if diagnostics["direct_hardware_links_remaining"]:
+            raise RuntimeError(
+                "2.1 measurement playback route still has direct hardware links after cleanup: "
+                f"{diagnostics['direct_hardware_links_remaining']}"
+            )
+        logger.info(
+            "2.1 measurement playback manually linked: play_node=%s helper_links=%s removed_direct=%s",
+            play_node_name,
+            diagnostics["play_node_helper_links"],
+            diagnostics["direct_hardware_links_removed"],
+        )
+        return diagnostics
+
+    @staticmethod
+    def _pipewire_link_exists(source_port: str, target_port: str) -> bool:
+        try:
+            completed = subprocess.run(["pw-link", "-l"], capture_output=True, text=True, timeout=3)
+        except Exception:
+            return False
+        if completed.returncode != 0:
+            return False
+        text = completed.stdout or ""
+        direct = f"{source_port} -> {target_port}"
+        reverse_pw_link_io = f"{target_port}\n  |<- {source_port}"
+        forward_pw_link_io = f"{source_port}\n  |-> {target_port}"
+        return direct in text or reverse_pw_link_io in text or forward_pw_link_io in text
+
+    @staticmethod
+    def _create_pipewire_link(source_port: str, target_port: str) -> None:
+        try:
+            subprocess.run(["pw-link", source_port, target_port], capture_output=True, text=True, timeout=3, check=True)
+        except subprocess.CalledProcessError as exc:
+            stderr = (exc.stderr or "").strip()
+            stdout = (exc.stdout or "").strip()
+            message = stderr or stdout
+            if "already exists" in message.lower() or "file exists" in message.lower():
+                logger.info("Measurement playback link already exists (%s -> %s), skipping", source_port, target_port)
+                return
+            raise RuntimeError(f"Could not create measurement playback link ({source_port} -> {target_port}): {message or exc}") from exc
+
+    def _find_measurement_direct_hardware_links(
+        self,
+        *,
+        play_ports: dict[str, str],
+        playback_target: dict[str, Any],
+    ) -> list[dict[str, str]]:
+        target_name = str(playback_target.get("target_name") or "").strip()
+        if not target_name:
+            return []
+        candidates = [
+            (play_ports["left"], f"{target_name}:playback_FL"),
+            (play_ports["right"], f"{target_name}:playback_FR"),
+        ]
+        return [
+            {"source_port": source_port, "target_port": target_port, "role": "measurement-play-direct-hardware"}
+            for source_port, target_port in candidates
+            if self._pipewire_link_exists(source_port, target_port)
+        ]
+
+    def _remove_measurement_direct_hardware_links(
+        self,
+        *,
+        play_ports: dict[str, str],
+        playback_target: dict[str, Any],
+    ) -> list[dict[str, str]]:
+        removed: list[dict[str, str]] = []
+        direct_links = self._find_measurement_direct_hardware_links(play_ports=play_ports, playback_target=playback_target)
+        for link in direct_links:
+            source_port = link["source_port"]
+            target_port = link["target_port"]
+            if self._disconnect_link(source_port, target_port):
+                removed.append(link)
+        return removed
+
+    def _cleanup_measurement_playback_links(
+        self,
+        *,
+        play_node_name: str,
+        temporary_links: list[Any] | None = None,
+    ) -> list[str]:
+        removed: list[str] = []
+        for link in temporary_links or []:
+            if not isinstance(link, dict):
+                continue
+            source_port = str(link.get("source_port") or "")
+            target_port = str(link.get("target_port") or "")
+            if source_port and target_port and self._disconnect_link(source_port, target_port):
+                removed.append(f"{source_port} -> {target_port}")
+
+        try:
+            completed = subprocess.run(["pw-link", "-l"], capture_output=True, text=True, timeout=3)
+        except Exception:
+            return removed
+        if completed.returncode != 0:
+            return removed
+        for line in (completed.stdout or "").splitlines():
+            line = line.strip()
+            if "->" not in line or play_node_name not in line:
+                continue
+            left, right = line.split("->", 1)
+            source_port = left.strip()
+            target_port = right.strip()
+            if "(id:" in target_port:
+                target_port = target_port.partition("(id:")[0].strip()
+            if not source_port or not target_port:
+                continue
+            if self._disconnect_link(source_port, target_port):
+                removed.append(f"{source_port} -> {target_port}")
+        if removed:
+            logger.info("Cleaned up %d measurement playback link(s) for %s", len(removed), play_node_name)
+            time.sleep(0.1)
+        return removed
+
     def _build_measurement_routing_snapshot(
         self,
         *,
@@ -5451,6 +5731,7 @@ class MeasurementStore:
             str(reference_capture.get("sink_node_name") or ""),
             record_node_name,
             play_node_name,
+            "fxroute_21_stage1",
             "easyeffects_sink",
             "easyeffects_source",
         ]
@@ -5824,6 +6105,8 @@ class MeasurementStore:
             result["notes"] = [str(item) for item in payload.get("notes") if str(item).strip()]
         if payload.get("analysis") and isinstance(payload.get("analysis"), dict):
             result["analysis"] = payload["analysis"]
+        if payload.get("audio_output_context") and isinstance(payload.get("audio_output_context"), dict):
+            result["audio_output_context"] = payload["audio_output_context"]
         if source_path is not None:
             result["storage_path"] = str(source_path)
         return result
