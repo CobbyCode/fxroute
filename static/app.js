@@ -107,6 +107,9 @@ let state = {
         storage: null,
         captureAvailable: false,
         activeJobId: '',
+        autoSubJobId: '',
+        autoSubInFlight: false,
+        autoSubResult: null,
         statusText: 'Sweep ready. Calibration file is optional.',
         assistMode: 'peq',
         convolverAssistant: {
@@ -406,6 +409,8 @@ const elements = {
     measurementNameInput: document.getElementById('measurement-name'),
     measurementStartBtn: document.getElementById('measurement-start'),
     measurementRepeatStartBtn: document.getElementById('measurement-repeat-start'),
+    measurementAutoSubStartBtn: document.getElementById('measurement-auto-sub-start'),
+    measurementAutoSubGroup: document.getElementById('measurement-auto-sub-group'),
     measurementSaveBtn: document.getElementById('measurement-save'),
     measurementClearBtn: document.getElementById('measurement-clear'),
     measurementAssistMode: document.getElementById('measurement-assist-mode'),
@@ -920,7 +925,7 @@ function normalizeSubwooferSettings(input = {}) {
     const level = Math.max(-24, Math.min(12, Number(input.sub_level_db ?? input.subLevelDb ?? 0) || 0));
     const alignment = Math.max(-40, Math.min(40, Number(input.sub_alignment_ms ?? input.subAlignmentMs ?? 0) || 0));
     const polarity = String(input.sub_polarity ?? input.subPolarity ?? 'normal').toLowerCase() === 'invert' ? 'invert' : 'normal';
-    const roundedAlignment = Math.round(alignment * 10) / 10;
+    const roundedAlignment = Math.round(alignment * 100) / 100;
     return {
         crossover_frequency_hz: frequency,
         slope: 'LR24',
@@ -995,6 +1000,7 @@ async function saveAudioOutputMode(mode, subwoofer = null) {
         renderSettingsPanel();
         setSubwooferFeedback('Saved', 'success');
         void postRuntimeDebugSnapshot(`ui-output-mode-saved-${nextMode}`, { requestedMode: nextMode });
+        syncAutoSubButton();
     } catch (error) {
         if (requestId !== _audioOutputModeRequestId) return;
         if (requestSignature !== getAudioOutputModeSignature(
@@ -1626,6 +1632,7 @@ async function fetchAudioOutputOverview() {
         };
         renderSettingsPanel();
         renderSubwooferPanel();
+        syncAutoSubButton();
     } catch (e) {
         state.settings.audioOutputs = {
             loaded: true,
@@ -1640,6 +1647,7 @@ async function fetchAudioOutputOverview() {
         };
         renderSettingsPanel();
         renderSubwooferPanel();
+        syncAutoSubButton();
     }
 }
 
@@ -8260,20 +8268,186 @@ function syncMeasurementStartButtonFallback() {
     if (!elements.measurementStartBtn) return;
     const measurementState = state.measurement || {};
     const activeJobRunning = !!measurementState.activeJobId;
-    elements.measurementStartBtn.disabled = measurementState.calibrationUpdating || measurementState.calibrationDeleting
+    const autoSubActive = !!measurementState.autoSubInFlight;
+    const locked = autoSubActive || measurementState.calibrationUpdating || measurementState.calibrationDeleting;
+
+    elements.measurementStartBtn.disabled = locked
         ? true
         : (!activeJobRunning && (measurementState.inputsLoading || !measurementState.hostCaptureAvailable));
-    elements.measurementStartBtn.textContent = activeJobRunning
-        ? 'Cancel measurement'
-        : (measurementState.startInFlight ? 'Starting...' : 'Start Single Sweep');
+    elements.measurementStartBtn.textContent = autoSubActive
+        ? 'Auto Sub running…'
+        : (activeJobRunning ? 'Cancel measurement' : (measurementState.startInFlight ? 'Starting...' : 'Start Single Sweep'));
     if (elements.measurementRepeatStartBtn) {
-        elements.measurementRepeatStartBtn.disabled = activeJobRunning
-            ? false
-            : (measurementState.startInFlight || measurementState.inputsLoading || !measurementState.hostCaptureAvailable);
-        elements.measurementRepeatStartBtn.textContent = activeJobRunning && measurementState.repeatJobActive
-            ? 'Cancel L/R Repeat'
-            : (activeJobRunning ? 'Cancel measurement' : 'Start L/R Repeat');
+        elements.measurementRepeatStartBtn.disabled = autoSubActive
+            ? true
+            : (activeJobRunning ? false : (measurementState.startInFlight || measurementState.inputsLoading || !measurementState.hostCaptureAvailable));
+        elements.measurementRepeatStartBtn.textContent = autoSubActive
+            ? 'Auto Sub running…'
+            : (activeJobRunning && measurementState.repeatJobActive
+                ? 'Cancel L/R Repeat'
+                : (activeJobRunning ? 'Cancel measurement' : 'Start L/R Repeat'));
     }
+    syncAutoSubButton();
+}
+
+function syncSubwooferControlsDuringAutoSub() {
+    const autoSubActive = !!(state.measurement?.autoSubInFlight);
+    if (elements.effectsSubwooferDelay) elements.effectsSubwooferDelay.disabled = autoSubActive;
+    if (elements.effectsSubwooferFrequency) elements.effectsSubwooferFrequency.disabled = autoSubActive;
+    if (elements.effectsSubwooferFrequencyNumber) elements.effectsSubwooferFrequencyNumber.disabled = autoSubActive;
+    if (elements.effectsSubwooferLevel) elements.effectsSubwooferLevel.disabled = autoSubActive;
+    if (elements.effectsSubwooferPolarity) elements.effectsSubwooferPolarity.disabled = autoSubActive;
+    if (elements.effectsSubwooferMainHighpass) elements.effectsSubwooferMainHighpass.disabled = autoSubActive;
+}
+
+function syncAutoSubButton() {
+    if (!elements.measurementAutoSubStartBtn || !elements.measurementAutoSubGroup) return;
+    const measurementState = state.measurement || {};
+    const outputMode = state.settings?.audioOutputs?.output_mode;
+    const isSubwooferMode = (outputMode?.mode || '') === 'subwoofer-2.1';
+    const busy = measurementState.startInFlight || !!measurementState.activeJobId || measurementState.autoSubInFlight;
+
+    if (!isSubwooferMode) {
+        elements.measurementAutoSubGroup.classList.add('hidden');
+        return;
+    }
+    elements.measurementAutoSubGroup.classList.remove('hidden');
+    elements.measurementAutoSubStartBtn.disabled = busy;
+    elements.measurementAutoSubStartBtn.textContent = measurementState.autoSubInFlight ? 'Auto Sub Optimize running…' : 'Auto Sub Optimize';
+
+    // Sync subwoofer controls lock
+    syncSubwooferControlsDuringAutoSub();
+}
+
+async function startAutoSubOptimize() {
+    const measurementState = state.measurement || {};
+    if (measurementState.autoSubInFlight || measurementState.startInFlight || measurementState.activeJobId) return;
+
+    const inputId = measurementState.selectedInputId;
+    if (!inputId) {
+        showToast('No capture input selected', 'error');
+        return;
+    }
+    if (!measurementModeReady()) {
+        showToast('No usable host capture source is available', 'error');
+        return;
+    }
+
+    measurementState.autoSubInFlight = true;
+    measurementState.autoSubJobId = '';
+    measurementState.autoSubResult = null;
+    syncSubwooferControlsDuringAutoSub();
+    renderMeasurementPanel();
+
+    try {
+        const formData = new FormData();
+        formData.append('input_id', inputId);
+        formData.append('channel', measurementState.selectedChannel || 'left');
+        normalizeMeasurementInputChannelSelections();
+        formData.append('mic_input_channel', measurementState.selectedMicInputChannel || '1');
+        formData.append('reference_input_channel', measurementState.selectedReferenceInputChannel || '');
+        formData.append('calibration_ref', measurementState.selectedCalibrationRef || '');
+        const calibrationFile = elements.measurementCalibrationFile?.files?.[0];
+        if (calibrationFile) {
+            formData.append('calibration_file', calibrationFile);
+        }
+
+        measurementState.statusText = 'Auto Sub Optimize: starting…';
+        renderMeasurementPanel();
+        await postRuntimeDebugSnapshot('ui-before-auto-sub-start', {});
+
+        const resp = await fetch('/api/measurements/auto-sub-optimize/start', {
+            method: 'POST',
+            body: formData,
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || 'Failed to start Auto Sub Optimize');
+        const job = data.job || {};
+        measurementState.autoSubJobId = String(job.id || '');
+        measurementState.statusText = job.message || 'Auto Sub Optimize: queued';
+        renderMeasurementPanel();
+        await pollAutoSubJob(measurementState.autoSubJobId);
+    } catch (error) {
+        console.error('startAutoSubOptimize failed', error);
+        measurementState.statusText = error.message || 'Auto Sub Optimize failed';
+        showToast(measurementState.statusText, 'error');
+    } finally {
+        measurementState.autoSubInFlight = false;
+        measurementState.autoSubJobId = '';
+        // Refresh audio outputs to pick up new sub_alignment_ms
+        fetchAudioOutputOverview().catch(() => {});
+        renderMeasurementPanel();
+    }
+}
+
+async function pollAutoSubJob(jobId) {
+    const measurementState = state.measurement || {};
+    const maxTries = 300;
+    for (let i = 0; i < maxTries; i++) {
+        await sleep(500);
+        try {
+            const resp = await fetch(`/api/measurements/auto-sub-optimize/jobs/${encodeURIComponent(jobId)}`);
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) throw new Error(data.detail || 'Failed to poll Auto Sub job');
+            const job = data.job || {};
+            const status = job.status || 'unknown';
+            measurementState.statusText = job.message || 'Auto Sub Optimize: running';
+            if (job.progress) {
+                measurementState.statusText += ` (${job.progress.current}/${job.progress.total})`;
+            }
+            if (status === 'completed' || status === 'failed') {
+                await handleAutoSubResult(job);
+                return;
+            }
+        } catch (error) {
+            console.warn('pollAutoSubJob error', error);
+        }
+        renderMeasurementPanel();
+    }
+    measurementState.statusText = 'Auto Sub Optimize timed out';
+    showToast(measurementState.statusText, 'error');
+    renderMeasurementPanel();
+}
+
+async function handleAutoSubResult(job) {
+    const measurementState = state.measurement || {};
+    const result = job.result;
+    if (job.status === 'failed') {
+        measurementState.statusText = job.message || 'Auto Sub Optimize failed';
+        measurementState.autoSubResult = null;
+        syncSubwooferControlsDuringAutoSub();
+        showToast(measurementState.statusText, 'error');
+        return;
+    }
+    if (!result) {
+        measurementState.statusText = 'Auto Sub Optimize completed with no result';
+        syncSubwooferControlsDuringAutoSub();
+        return;
+    }
+
+    measurementState.autoSubResult = result;
+    const winner = result.winner || {};
+    const original = Number.isFinite(result.original_alignment_ms) ? result.original_alignment_ms : null;
+    const applied = Number.isFinite(result.applied_alignment_ms) ? result.applied_alignment_ms : null;
+    const scorePct = Number.isFinite(winner.score_pct) ? winner.score_pct : '?';
+    const conf = result.confidence || 'unknown';
+    const validCount = Number.isFinite(result.valid_count) ? result.valid_count : '?';
+    const sweepCount = Number.isFinite(result.sweep_count) ? result.sweep_count : '?';
+
+    const originalText = original !== null ? original.toFixed(2) : '?';
+    const appliedText = applied !== null ? applied.toFixed(2) : '?';
+    measurementState.statusText = `Auto Sub Optimize done: ${originalText} ms → ${appliedText} ms (${scorePct} %)`;
+
+    const toastLines = [];
+    toastLines.push(`Winner: ${appliedText} ms delay (${scorePct} % score, ${conf})`);
+    if (result.runner_up) {
+        const runnerDelay = Number.isFinite(result.runner_up.delay_ms) ? result.runner_up.delay_ms.toFixed(2) : '?';
+        const runnerScore = Number.isFinite(result.runner_up.score_pct) ? result.runner_up.score_pct : '?';
+        toastLines.push(`Runner-up: ${runnerDelay} ms (${runnerScore} % score)`);
+    }
+    toastLines.push(`${validCount} / ${sweepCount} sweeps valid`);
+    syncSubwooferControlsDuringAutoSub();
+    showToast(toastLines.join(' · '), conf === 'clear' ? 'success' : 'warning');
 }
 
 function renderMeasurementPanelDefensively(context = 'measurement render') {
@@ -9537,6 +9711,11 @@ function setupMeasurementActions() {
                 return;
             }
             void startLrRepeat();
+        });
+    }
+    if (elements.measurementAutoSubStartBtn) {
+        elements.measurementAutoSubStartBtn.addEventListener('click', () => {
+            void startAutoSubOptimize();
         });
     }
     if (elements.measurementSaveBtn) {

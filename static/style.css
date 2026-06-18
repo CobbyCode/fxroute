@@ -1843,7 +1843,8 @@ body {
 }
 
 #measurement-start,
-#measurement-repeat-start {
+#measurement-repeat-start,
+#measurement-auto-sub-start {
     min-width: 176px;
 }
 

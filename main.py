@@ -14,9 +14,11 @@ import subprocess
 import tempfile
 import zipfile
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 from urllib.parse import unquote
+from uuid import uuid4
 
 import uvicorn
 from fastapi import FastAPI, Request, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File, Form
@@ -619,7 +621,7 @@ try:
     from hardware_controller import HardwareController
 except ImportError:
     HardwareController = None
-from measurement import MeasurementStore
+from measurement import MeasurementStore, score_sub_alignment_candidates
 from peak_monitor import EasyEffectsPeakMonitor
 from subwoofer_runtime import Subwoofer21Runtime, SubwooferRuntimeConfig, DEFAULT_SAMPLE_RATE
 
@@ -3327,18 +3329,6 @@ async def lifespan(app: FastAPI):
         easyeffects_manager = EasyEffectsManager()
         logger.info("EasyEffects manager initialized")
 
-        # On fresh EE installations (active_preset is None), load Neutral so DSP
-        # helpers have a working preset from the start.
-        try:
-            _active = easyeffects_manager.get_active_preset()
-            if not _active:
-                _presets = easyeffects_manager.list_presets()
-                if any(p["name"] == "Neutral" for p in _presets):
-                    easyeffects_manager.load_preset("Neutral")
-                    logger.info("EasyEffects: loaded Neutral preset (active_preset was None)")
-        except Exception as exc:
-            logger.warning("EasyEffects: failed to ensure Neutral preset on startup: %s", exc)
-
         measurement_store = MeasurementStore()
         logger.info("Measurement store initialized: %s", measurement_store.measurements_dir)
 
@@ -3569,7 +3559,7 @@ def _serve_cover_image(image_path: Path, size: int = 256) -> FileResponse:
         img.thumbnail((size, size), Image.LANCZOS)
         save_kwargs = {"quality": 85} if suffix in (".jpg", ".jpeg") else {}
         tmp = cached.with_suffix(cached.suffix + ".tmp")
-        img.save(str(tmp), format="JPEG" if suffix in (".jpg", ".jpeg") else "PNG" if suffix == ".png" else "WEBP" if suffix == ".webp" else "JPEG", **save_kwargs)
+        img.save(str(tmp), **save_kwargs)
         tmp.replace(cached)
     return FileResponse(str(cached), media_type=_cover_media_type(cached))
 
@@ -5218,9 +5208,11 @@ async def start_measurement(
     calibration_ref: str = Form(""),
     calibration_file: Optional[UploadFile] = File(None),
 ):
-    global measurement_store
+    global measurement_store, _auto_sub_lock
     if not measurement_store:
         raise HTTPException(status_code=503, detail="Measurement store not available")
+    if _auto_sub_lock and _auto_sub_lock.locked():
+        raise HTTPException(status_code=423, detail="Auto Sub Optimize is in progress")
 
     calibration_bytes = None
     calibration_filename = None
@@ -5262,9 +5254,11 @@ async def start_lr_repeat_measurement(
     calibration_ref: str = Form(""),
     calibration_file: Optional[UploadFile] = File(None),
 ):
-    global measurement_store
+    global measurement_store, _auto_sub_lock
     if not measurement_store:
         raise HTTPException(status_code=503, detail="Measurement store not available")
+    if _auto_sub_lock and _auto_sub_lock.locked():
+        raise HTTPException(status_code=423, detail="Auto Sub Optimize is in progress")
 
     calibration_bytes = None
     calibration_filename = None
@@ -5408,6 +5402,422 @@ async def delete_measurement(measurement_id: str):
     except KeyError:
         raise HTTPException(status_code=404, detail="Measurement not found")
     return {"status": "ok", "deleted": measurement_id}
+
+
+# ---------------------------------------------------------------------------
+# Auto Sub Optimize
+# ---------------------------------------------------------------------------
+
+_AUTO_SUB_JOBS: dict[str, dict[str, Any]] = {}
+_auto_sub_lock: asyncio.Lock = asyncio.Lock()
+_AUTO_SUB_MAX_CALIBRATION_BYTES: int = 2 * 1024 * 1024  # 2 MiB
+
+
+@app.post("/api/measurements/auto-sub-optimize/start")
+async def start_auto_sub_optimize(
+    input_id: str = Form(...),
+    channel: str = Form("left"),
+    mic_input_channel: str = Form("1"),
+    reference_input_channel: str = Form(""),
+    calibration_ref: str = Form(""),
+    calibration_file: UploadFile | None = File(None),
+):
+    global measurement_store, subwoofer_runtime, _auto_sub_lock
+    if not measurement_store:
+        raise HTTPException(status_code=503, detail="Measurement store not available")
+    if not _auto_sub_lock:
+        _auto_sub_lock = asyncio.Lock()
+
+    from samplerate import _load_audio_output_mode, _save_audio_output_mode, set_audio_output_mode
+
+    # Reject if any measurement is already running
+    if measurement_store.has_active_measurement_job():
+        raise HTTPException(status_code=409, detail="Another measurement is already running")
+
+    # Acquire lock before modifying AutoSub state
+    try:
+        await asyncio.wait_for(_auto_sub_lock.acquire(), timeout=0.5)
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=423, detail="Auto Sub Optimize is already in progress")
+
+    try:
+        mode_state = _load_audio_output_mode()
+        if mode_state.get("mode") != OUTPUT_MODE_SUBWOOFER_21:
+            raise HTTPException(status_code=400, detail="Auto Sub Optimize requires 2.1 Subwoofer output mode")
+
+        sub = mode_state.get("subwoofer") or {}
+        fc = int(sub.get("crossover_frequency_hz", 80))
+        current_alignment = float(sub.get("sub_alignment_ms", 0.0))
+        original_polarity = str(sub.get("sub_polarity", "normal"))
+        original_level = float(sub.get("sub_level_db", 0.0))
+        original_highpass = bool(sub.get("main_highpass_enabled", True))
+
+        # Compute scan range
+        period_ms = 1000.0 / float(fc)
+        step_ms = period_ms / 16.0
+        coarse_steps = 4
+        scan_delays: list[float] = []
+        for s in range(-coarse_steps, coarse_steps + 1):
+            delay = round(current_alignment + s * step_ms, 2)
+            delay = max(-40.0, min(40.0, delay))
+            if not scan_delays or abs(delay - scan_delays[-1]) > 0.05:
+                scan_delays.append(delay)
+
+        # Snapshot original config for rollback
+        original_config_snapshot = dict(mode_state)
+
+        job_id = f"auto-sub-{uuid4().hex[:12]}"
+        job: dict[str, Any] = {
+            "id": job_id,
+            "status": "preparing",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "message": f"Auto Sub Optimize: {len(scan_delays)} candidates @ {fc} Hz",
+            "result": None,
+            "error": None,
+            "crossover_hz": fc,
+            "scan_delays": scan_delays,
+            "original_alignment_ms": current_alignment,
+        }
+        _AUTO_SUB_JOBS[job_id] = job
+
+        calibration_bytes = None
+        calibration_filename = None
+        if calibration_file is not None:
+            calibration_filename = calibration_file.filename or "calibration.txt"
+            content_type = str(calibration_file.content_type or "").lower()
+            if "text" not in content_type and "plain" not in content_type and content_type not in ("", "application/octet-stream"):
+                raise HTTPException(status_code=400, detail="Calibration file must be a text file")
+            raw_bytes = await calibration_file.read()
+            if len(raw_bytes) > _AUTO_SUB_MAX_CALIBRATION_BYTES:
+                raise HTTPException(status_code=400, detail=f"Calibration file too large (max {_AUTO_SUB_MAX_CALIBRATION_BYTES // (1024*1024)} MiB)")
+            calibration_bytes = raw_bytes
+
+        asyncio.create_task(
+            _run_auto_sub_optimize(
+                job_id=job_id,
+                input_id=input_id,
+                channel=channel,
+                mic_input_channel=mic_input_channel,
+                reference_input_channel=reference_input_channel,
+                calibration_ref=calibration_ref,
+                calibration_filename=calibration_filename,
+                calibration_bytes=calibration_bytes,
+                scan_delays=scan_delays,
+                fc=fc,
+                current_alignment=current_alignment,
+                original_polarity=original_polarity,
+                original_level=original_level,
+                original_highpass=original_highpass,
+                original_config_snapshot=original_config_snapshot,
+            )
+        )
+        return {"status": "ok", "job": job}
+    except HTTPException:
+        _auto_sub_lock.release()
+        raise
+    except Exception:
+        _auto_sub_lock.release()
+        raise
+
+
+@app.get("/api/measurements/auto-sub-optimize/jobs/{job_id}")
+async def get_auto_sub_optimize_job(job_id: str):
+    job = _AUTO_SUB_JOBS.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Auto Sub Optimize job not found")
+    return {"status": "ok", "job": job}
+
+
+async def _run_auto_sub_optimize(
+    job_id: str,
+    input_id: str,
+    channel: str,
+    mic_input_channel: str,
+    reference_input_channel: str,
+    calibration_ref: str,
+    calibration_filename: str | None,
+    calibration_bytes: bytes | None,
+    scan_delays: list[float],
+    fc: int,
+    current_alignment: float,
+    original_polarity: str,
+    original_level: float,
+    original_highpass: bool,
+    original_config_snapshot: dict[str, Any],
+) -> None:
+    global measurement_store, subwoofer_runtime, _auto_sub_lock
+    from samplerate import _load_audio_output_mode, _save_audio_output_mode, set_audio_output_mode
+
+    job = _AUTO_SUB_JOBS.get(job_id)
+    if not job:
+        _auto_sub_lock.release()
+        return
+
+    async def _restore_original_config():
+        """Restore subwoofer config from snapshot."""
+        try:
+            set_audio_output_mode(
+                original_config_snapshot.get("mode", "stereo") or "stereo",
+                original_config_snapshot.get("subwoofer") or {},
+            )
+            if subwoofer_runtime is not None:
+                config = SubwooferRuntimeConfig.from_overview(get_audio_output_overview())
+                await subwoofer_runtime.sync(config)
+        except Exception:
+            logger.exception("Auto-sub: failed to restore original config from snapshot")
+
+    try:
+        sweep_results: list[dict[str, Any]] = []
+        total = len(scan_delays)
+
+        # AutoSub bass-focused sweep settings
+        auto_sub_sweep_low_hz = 20.0
+        auto_sub_sweep_high_hz = max(600.0, min(float(fc) * 8.0, 2000.0))
+        if fc <= 60:
+            auto_sub_sweep_sec, auto_sub_tail_sec = 3.5, 1.2
+        elif fc <= 120:
+            auto_sub_sweep_sec, auto_sub_tail_sec = 3.0, 1.0
+        else:
+            auto_sub_sweep_sec, auto_sub_tail_sec = 2.5, 0.8
+        auto_sub_sweep_profile = {
+            "sweep_start_hz": auto_sub_sweep_low_hz,
+            "sweep_end_hz": auto_sub_sweep_high_hz,
+            "sweep_seconds": auto_sub_sweep_sec,
+            "tail_seconds": auto_sub_tail_sec,
+        }
+
+        # Resolve sample rate once for all sweeps
+        auto_sub_rate = _resolve_measurement_start_sample_rate()
+
+        for idx, delay_ms in enumerate(scan_delays):
+            job["status"] = "running"
+            job["message"] = f"Sweep {idx + 1}/{total}: sub_alignment_ms={delay_ms:.2f}"
+            job["progress"] = {"current": idx + 1, "total": total, "delay_ms": delay_ms}
+
+            # Step 1: Update subwoofer config and sync
+            sub_config = {
+                "crossover_frequency_hz": fc,
+                "sub_alignment_ms": delay_ms,
+                "sub_level_db": original_level,
+                "sub_polarity": original_polarity,
+                "main_highpass_enabled": original_highpass,
+            }
+            config_success = False
+            try:
+                set_audio_output_mode(OUTPUT_MODE_SUBWOOFER_21, sub_config)
+                if subwoofer_runtime is not None:
+                    config = SubwooferRuntimeConfig.from_overview(get_audio_output_overview())
+                    await subwoofer_runtime.sync(config)
+                await asyncio.sleep(0.8)
+                # Verify sync
+                verify = _load_audio_output_mode()
+                if float(verify.get("subwoofer", {}).get("sub_alignment_ms", -999)) == delay_ms:
+                    config_success = True
+            except Exception as exc:
+                logger.warning("Auto-sub: failed to configure delay %.2f ms: %s", delay_ms, exc)
+
+            if not config_success:
+                logger.warning("Auto-sub: skipping candidate %.2f ms — config sync failed", delay_ms)
+                sweep_results.append({
+                    "delay_ms": delay_ms,
+                    "name": str(delay_ms),
+                    "points": [],
+                    "sweep_id": "",
+                    "status": "config_failed",
+                    "error": "Subwoofer config sync failed",
+                })
+                continue
+
+            # Step 2: Pre-arm 2.1 helpers before sweep (same as normal measurement)
+            restore_force_rate = None
+            pre_arm_failed = False
+            try:
+                restore_force_rate = await _prepare_subwoofer_runtime_for_measurement_start(auto_sub_rate)
+            except Exception as exc:
+                logger.exception("Auto-sub: pre-arm failed for delay %.2f ms", delay_ms)
+                pre_arm_failed = True
+                if restore_force_rate is not None:
+                    _set_pipewire_force_rate(restore_force_rate)
+                sweep_results.append({
+                    "delay_ms": delay_ms,
+                    "name": str(delay_ms),
+                    "points": [],
+                    "sweep_id": "",
+                    "status": "pre_arm_failed",
+                    "error": str(exc),
+                })
+                continue
+            if pre_arm_failed:
+                continue
+
+            # Step 3: Run measurement sweep
+            try:
+                sweep_job = await measurement_store.start_measurement(
+                    input_id=input_id,
+                    channel=channel,
+                    mic_input_channel=mic_input_channel,
+                    reference_input_channel=reference_input_channel,
+                    calibration_ref=calibration_ref,
+                    calibration_filename=calibration_filename,
+                    calibration_bytes=calibration_bytes,
+                    sweep_profile=auto_sub_sweep_profile,
+                )
+                sweep_id = sweep_job["id"]
+
+                # Release samplerate force after sweep starts
+                if restore_force_rate is not None:
+                    asyncio.create_task(_release_measurement_samplerate_force_after_job(sweep_id, auto_sub_rate, restore_force_rate))
+
+                # Poll until complete or timeout
+                sweep_ok = False
+                for _poll in range(120):
+                    await asyncio.sleep(0.5)
+                    try:
+                        current = measurement_store.get_job(sweep_id)
+                    except KeyError:
+                        break
+                    if current.get("status") in ("completed", "failed", "cancelled"):
+                        sweep_ok = True
+                        break
+
+                if not sweep_ok:
+                    # Timeout — cancel the sweep
+                    logger.warning("Auto-sub: sweep %s timed out (delay %.2f ms), cancelling", sweep_id, delay_ms)
+                    try:
+                        measurement_store.cancel_job(sweep_id)
+                    except Exception:
+                        pass
+                    await asyncio.sleep(0.5)
+
+                final = measurement_store.get_job(sweep_id)
+                if final.get("status") == "completed" and final.get("result"):
+                    result = final["result"]
+                    measurement = result.get("measurement") or {}
+                    points = []
+                    for t in (measurement.get("traces") or []):
+                        if t.get("kind") == "sweep-response":
+                            points = t.get("points") or []
+                            break
+                    if not points:
+                        for t in (measurement.get("review_traces") or []):
+                            points = t.get("points") or []
+                            if points:
+                                break
+                    if not points:
+                        logger.warning("Auto-sub: no points in sweep result for delay %.2f ms", delay_ms)
+                    sweep_results.append({
+                        "delay_ms": delay_ms,
+                        "name": str(delay_ms),
+                        "points": points,
+                        "sweep_id": sweep_id,
+                        "status": "completed",
+                    })
+                else:
+                    error_msg = final.get("error", {}).get("detail") if isinstance(final.get("error"), dict) else str(final.get("error") or "timeout")
+                    logger.warning("Auto-sub: sweep failed for delay %.2f ms: %s", delay_ms, error_msg)
+                    sweep_results.append({
+                        "delay_ms": delay_ms,
+                        "name": str(delay_ms),
+                        "points": [],
+                        "sweep_id": sweep_id,
+                        "status": "failed",
+                        "error": error_msg,
+                    })
+            except Exception as exc:
+                logger.exception("Auto-sub: sweep error for delay %.2f ms", delay_ms)
+                sweep_results.append({
+                    "delay_ms": delay_ms,
+                    "name": str(delay_ms),
+                    "points": [],
+                    "sweep_id": "",
+                    "status": "error",
+                    "error": str(exc),
+                })
+                if restore_force_rate is not None:
+                    try:
+                        _set_pipewire_force_rate(restore_force_rate)
+                    except Exception:
+                        pass
+
+        # Score candidates
+        valid = [r for r in sweep_results if r.get("points") and len(r["points"]) >= 3]
+        if not valid:
+            job["status"] = "failed"
+            job["message"] = "No valid sweep results to score"
+            job["error"] = {"detail": "All sweeps failed or produced insufficient data"}
+            await _restore_original_config()
+            return
+
+        scoring = score_sub_alignment_candidates(valid, crossover_hz=fc)
+        winner = scoring["winner"]
+        best_delay = winner["delay_ms"]
+
+        # Apply winner
+        apply_ok = False
+        try:
+            sub_config = {
+                "crossover_frequency_hz": fc,
+                "sub_alignment_ms": best_delay,
+                "sub_level_db": original_level,
+                "sub_polarity": original_polarity,
+                "main_highpass_enabled": original_highpass,
+            }
+            set_audio_output_mode(OUTPUT_MODE_SUBWOOFER_21, sub_config)
+            if subwoofer_runtime is not None:
+                config = SubwooferRuntimeConfig.from_overview(get_audio_output_overview())
+                await subwoofer_runtime.sync(config)
+            await asyncio.sleep(0.3)
+            verify = _load_audio_output_mode()
+            if float(verify.get("subwoofer", {}).get("sub_alignment_ms", -999)) == best_delay:
+                apply_ok = True
+        except Exception as exc:
+            logger.exception("Auto-sub: failed to apply winner delay %.2f ms", best_delay)
+
+        if not apply_ok:
+            job["status"] = "failed"
+            job["message"] = f"Scoring succeeded but failed to apply winner delay {best_delay} ms"
+            job["error"] = {"detail": "Winner apply failed — original config restored"}
+            await _restore_original_config()
+            return
+
+        job["status"] = "completed"
+        job["message"] = f"Winner: {best_delay} ms (score {winner['score_pct']:.0f} %)"
+        job["result"] = {
+            "original_alignment_ms": current_alignment,
+            "applied_alignment_ms": best_delay,
+            "crossover_hz": fc,
+            "confidence": scoring["confidence"],
+            "winner": winner,
+            "runner_up": scoring.get("runner_up"),
+            "ranking": scoring["results"],
+            "sweep_count": total,
+            "valid_count": len(valid),
+        }
+
+        logger.info(
+            "Auto-sub optimize completed: fc=%sHz best=%.2fms score=%.0f%% confidence=%s",
+            fc, best_delay, winner["score_pct"], scoring["confidence"],
+        )
+
+    except Exception as exc:
+        logger.exception("Auto-sub optimize failed")
+        job["status"] = "failed"
+        job["message"] = f"Auto Sub Optimize failed: {exc}"
+        job["error"] = {"detail": str(exc)}
+        await _restore_original_config()
+
+    finally:
+        try:
+            _auto_sub_lock.release()
+        except RuntimeError:
+            pass  # Lock was not held
+        # Schedule job cleanup after 10 minutes
+        cleanup_job_id = job_id
+        async def _cleanup_autosub_job():
+            await asyncio.sleep(600)
+            _AUTO_SUB_JOBS.pop(cleanup_job_id, None)
+        asyncio.create_task(_cleanup_autosub_job())
+
 
 @app.post("/api/easyeffects/compare")
 async def save_easyeffects_compare(request: Request):

@@ -260,6 +260,7 @@ class MeasurementStore:
         calibration_filename: str | None = None,
         calibration_bytes: bytes | None = None,
         calibration_ref: str | None = None,
+        sweep_profile: dict[str, float] | None = None,
     ) -> dict[str, Any]:
         inputs = self._discover_capture_inputs()
         selected_input = next((item for item in inputs if item["id"] == input_id), None)
@@ -320,6 +321,7 @@ class MeasurementStore:
             "scope_note": MEASUREMENT_SCOPE_NOTE,
             "result": None,
             "error": None,
+            "sweep_profile": sweep_profile if isinstance(sweep_profile, dict) and sweep_profile else None,
         }
         self._jobs[job_id] = job
         self._persist_job(job)
@@ -1828,6 +1830,8 @@ class MeasurementStore:
     @staticmethod
     def _default_measurement_sweep_profile() -> dict[str, float]:
         return {
+            "sweep_start_hz": SWEEP_START_HZ,
+            "sweep_end_hz": SWEEP_END_HZ,
             "sweep_seconds": SWEEP_V2_SECONDS,
             "lead_in_seconds": SWEEP_V2_LEAD_IN_SECONDS,
             "tail_seconds": SWEEP_V2_TAIL_SECONDS,
@@ -1854,6 +1858,15 @@ class MeasurementStore:
         # Sweep directly comparable in low-frequency magnitude. A shorter
         # repeat should be a future explicit "Fast L/R Repeat" mode.
         sweep_profile = self._default_measurement_sweep_profile()
+        custom = job.get("sweep_profile")
+        if isinstance(custom, dict) and custom:
+            for key in ("sweep_start_hz", "sweep_end_hz", "sweep_seconds", "lead_in_seconds",
+                         "tail_seconds", "record_preroll_seconds", "record_postroll_seconds"):
+                val = custom.get(key)
+                if isinstance(val, (int, float)) and float(val) > 0:
+                    sweep_profile[key] = float(val)
+        sweep_start_hz = float(sweep_profile.get("sweep_start_hz", SWEEP_START_HZ))
+        sweep_end_hz = float(sweep_profile.get("sweep_end_hz", SWEEP_END_HZ))
         sweep_seconds = float(sweep_profile["sweep_seconds"])
         lead_in_seconds = float(sweep_profile["lead_in_seconds"])
         tail_seconds = float(sweep_profile["tail_seconds"])
@@ -1909,6 +1922,8 @@ class MeasurementStore:
             lead_in_seconds=lead_in_seconds,
             tail_seconds=tail_seconds,
             channel=playback_channel,
+            start_hz=sweep_start_hz,
+            end_hz=sweep_end_hz,
         )
 
         calibration_curve = None
@@ -6192,3 +6207,157 @@ class MeasurementStore:
 
     def _utc_now(self) -> str:
         return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+# ---------------------------------------------------------------------------
+# Auto Sub Optimize — scoring helper
+# ---------------------------------------------------------------------------
+
+def score_sub_alignment_candidates(
+    candidates: list[dict[str, Any]],
+    crossover_hz: int,
+) -> dict[str, Any]:
+    """Score a list of measured delay candidates around a crossover frequency.
+
+    Each candidate dict must contain:
+        delay_ms: float
+        points: list of [freq_hz, db_spl]
+        name (optional): str
+
+    Returns dict with keys:
+        winner: dict — best candidate
+        runner_up: dict — second-best candidate
+        results: list[dict] — all scored candidates (delay_ms asc)
+        confidence: str — "clear" | "close" | "uncertain"
+        crossover_hz: int
+    """
+    if not candidates:
+        raise ValueError("No candidates to score")
+    if len(candidates) < 2:
+        return {
+            "winner": candidates[0],
+            "runner_up": None,
+            "results": candidates,
+            "confidence": "uncertain",
+            "crossover_hz": crossover_hz,
+        }
+
+    fc = float(crossover_hz)
+
+    def _band_metrics(points, fmin, fmax):
+        band = [(f, db) for f, db in points if fmin <= f < fmax]
+        if not band:
+            return {"mean": 0.0, "min": 0.0, "max": 0.0, "swing": 0.0, "roughness": 0.0}
+        dbs = [p[1] for p in band]
+        mean = sum(dbs) / len(dbs)
+        mn = min(dbs)
+        mx = max(dbs)
+        swing = mx - mn
+        if len(dbs) > 1:
+            diffs = [abs(dbs[i + 1] - dbs[i]) for i in range(len(dbs) - 1)]
+            rough = sum(diffs) / len(diffs)
+        else:
+            rough = 0.0
+        return {"mean": mean, "min": mn, "max": mx, "swing": swing, "roughness": rough}
+
+    primary = []
+    secondary = []
+    for c in candidates:
+        pts = c.get("points") or []
+        pri = _band_metrics(pts, fc * 0.5, fc * 2.0)
+        sec = _band_metrics(pts, fc * 0.75, fc * 1.5)
+        primary.append(pri)
+        secondary.append(sec)
+
+    def _norm(vals, higher_better):
+        vals = list(vals)
+        mn = min(vals)
+        mx = max(vals)
+        if mx == mn:
+            return [0.5] * len(vals)
+        if higher_better:
+            return [(v - mn) / (mx - mn) for v in vals]
+        return [(mx - v) / (mx - mn) for v in vals]
+
+    # Weights: primary band 60 %, secondary 40 %
+    # Within each band: mean 40 %, dip severity 25 %, swing 20 %, roughness 15 %
+    n_pri_mean = _norm([p["mean"] for p in primary], True)
+    n_pri_dip = _norm([p["mean"] - p["min"] for p in primary], False)
+    n_pri_swing = _norm([p["swing"] for p in primary], False)
+    n_pri_rough = _norm([p["roughness"] for p in primary], False)
+
+    n_sec_mean = _norm([p["mean"] for p in secondary], True)
+    n_sec_dip = _norm([p["mean"] - p["min"] for p in secondary], False)
+    n_sec_swing = _norm([p["swing"] for p in secondary], False)
+    n_sec_rough = _norm([p["roughness"] for p in secondary], False)
+
+    results: list[dict[str, Any]] = []
+    for i, c in enumerate(candidates):
+        pri = primary[i]
+        sec = secondary[i]
+
+        # --- hard penalty for deep notches ---
+        dip_severity = pri["mean"] - pri["min"]
+        deep_notch_penalty = 0.0
+        if dip_severity > 15.0:
+            deep_notch_penalty = 0.5
+        elif dip_severity > 10.0:
+            deep_notch_penalty = 0.3
+        elif dip_severity > 7.0:
+            deep_notch_penalty = 0.15
+
+        score_pri = (
+            n_pri_mean[i] * 0.40
+            + n_pri_dip[i] * 0.25
+            + n_pri_swing[i] * 0.20
+            + n_pri_rough[i] * 0.15
+        )
+        score_sec = (
+            n_sec_mean[i] * 0.40
+            + n_sec_dip[i] * 0.25
+            + n_sec_swing[i] * 0.20
+            + n_sec_rough[i] * 0.15
+        )
+        score = (score_pri * 0.60 + score_sec * 0.40) * (1.0 - deep_notch_penalty)
+
+        results.append({
+            "delay_ms": c["delay_ms"],
+            "name": c.get("name", str(c["delay_ms"])),
+            "score": round(score, 4),
+            "score_pct": round(score * 100, 1),
+            "mean_primary_db": round(pri["mean"], 1),
+            "min_primary_db": round(pri["min"], 1),
+            "swing_primary_db": round(pri["swing"], 1),
+            "dip_severity_db": round(pri["mean"] - pri["min"], 1),
+            "roughness_primary": round(pri["roughness"], 3),
+            "mean_secondary_db": round(sec["mean"], 1),
+            "min_secondary_db": round(sec["min"], 1),
+            "swing_secondary_db": round(sec["swing"], 1),
+            "deep_notch_penalty": deep_notch_penalty,
+        })
+
+    # Sort by score descending
+    results.sort(key=lambda r: r["score"], reverse=True)
+    winner = results[0]
+    runner_up = results[1] if len(results) > 1 else None
+
+    # Confidence
+    if runner_up and winner["score"] > 0:
+        margin = (winner["score"] - runner_up["score"]) / winner["score"]
+    else:
+        margin = 1.0
+
+    if margin > 0.15:
+        confidence = "clear"
+    elif margin > 0.05:
+        confidence = "close"
+    else:
+        confidence = "uncertain"
+
+    return {
+        "winner": winner,
+        "runner_up": runner_up,
+        "results": results,
+        "confidence": confidence,
+        "crossover_hz": crossover_hz,
+    }

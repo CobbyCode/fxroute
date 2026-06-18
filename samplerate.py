@@ -712,7 +712,7 @@ def _normalize_subwoofer_config(payload: dict[str, Any] | None = None) -> dict[s
     except (TypeError, ValueError):
         level = 0.0
     try:
-        alignment = round(float(raw_alignment), 1)
+        alignment = round(float(raw_alignment), 2)
     except (TypeError, ValueError):
         alignment = 0.0
     polarity = str(payload.get("sub_polarity", payload.get("subPolarity", "normal")) or "normal").strip().lower()
