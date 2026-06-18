@@ -108,6 +108,7 @@ let state = {
         captureAvailable: false,
         activeJobId: '',
         autoSubJobId: '',
+        autoSubProgress: null,
         autoSubInFlight: false,
         autoSubResult: null,
         statusText: 'Sweep ready. Calibration file is optional.',
@@ -411,6 +412,7 @@ const elements = {
     measurementRepeatStartBtn: document.getElementById('measurement-repeat-start'),
     measurementAutoSubStartBtn: document.getElementById('measurement-auto-sub-start'),
     measurementAutoSubGroup: document.getElementById('measurement-auto-sub-group'),
+    measurementAutoSubStatus: document.getElementById('measurement-auto-sub-status'),
     measurementSaveBtn: document.getElementById('measurement-save'),
     measurementClearBtn: document.getElementById('measurement-clear'),
     measurementAssistMode: document.getElementById('measurement-assist-mode'),
@@ -8382,6 +8384,7 @@ async function startAutoSubOptimize() {
 
 async function pollAutoSubJob(jobId) {
     const measurementState = state.measurement || {};
+    const statusEl = elements.measurementAutoSubStatus;
     const maxTries = 300;
     for (let i = 0; i < maxTries; i++) {
         await sleep(500);
@@ -8391,11 +8394,43 @@ async function pollAutoSubJob(jobId) {
             if (!resp.ok) throw new Error(data.detail || 'Failed to poll Auto Sub job');
             const job = data.job || {};
             const status = job.status || 'unknown';
+            const fineScan = job.fine_scan || {};
+
             measurementState.statusText = job.message || 'Auto Sub Optimize: running';
             if (job.progress) {
                 measurementState.statusText += ` (${job.progress.current}/${job.progress.total})`;
             }
+
+            // Update inline status element
+            if (statusEl) {
+                if (status === 'fine_scan' && fineScan.triggered) {
+                    const fineCur = job.progress?.current || '?';
+                    const fineTot = job.progress?.total || '?';
+                    statusEl.textContent = `Fine-Scan: ${fineCur}/${fineTot} (${fineScan.candidates?.length || '?'} points around winner)`;
+                } else if (job.progress) {
+                    statusEl.textContent = `${job.progress.current}/${job.progress.total} sweeps`;
+                }
+            }
+
             if (status === 'completed' || status === 'failed') {
+                if (statusEl) {
+                    const result = job.result;
+                    if (status === 'completed' && result) {
+                        const applied = Number.isFinite(result.applied_alignment_ms) ? result.applied_alignment_ms.toFixed(2) : '?';
+                        const fs = result.fine_scan || {};
+                        if (fs.triggered) {
+                            const cw = result.coarse_winner || {};
+                            const fw = result.fine_winner;
+                            const cDelay = Number.isFinite(cw.delay_ms) ? cw.delay_ms.toFixed(2) : '?';
+                            const fDelay = fw ? (Number.isFinite(fw.delay_ms) ? fw.delay_ms.toFixed(2) : '?') : 'N/A';
+                            statusEl.textContent = `Applied: ${applied} ms (coarse ${cDelay} ms → fine ${fDelay} ms)`;
+                        } else {
+                            statusEl.textContent = `Applied: ${applied} ms`;
+                        }
+                    } else {
+                        statusEl.textContent = '';
+                    }
+                }
                 await handleAutoSubResult(job);
                 return;
             }
@@ -8433,14 +8468,36 @@ async function handleAutoSubResult(job) {
     const conf = result.confidence || 'unknown';
     const validCount = Number.isFinite(result.valid_count) ? result.valid_count : '?';
     const sweepCount = Number.isFinite(result.sweep_count) ? result.sweep_count : '?';
+    const fineScan = result.fine_scan || {};
 
+    // Build stage info for status element
+    const coarseW = result.coarse_winner || {};
+    const fineW = result.fine_winner;
     const originalText = original !== null ? original.toFixed(2) : '?';
     const appliedText = applied !== null ? applied.toFixed(2) : '?';
-    measurementState.statusText = `Auto Sub Optimize done: ${originalText} ms → ${appliedText} ms (${scorePct} %)`;
 
+    const statusParts = [`AutoSub: ${originalText} → ${appliedText} ms`];
+    if (fineScan.triggered && fineScan.status === 'completed') {
+        const coarseDelay = Number.isFinite(coarseW.delay_ms) ? coarseW.delay_ms.toFixed(2) : '?';
+        const fineDelay = fineW ? (Number.isFinite(fineW.delay_ms) ? fineW.delay_ms.toFixed(2) : '?') : 'N/A';
+        statusParts.push(`Coarse ${coarseDelay} ms (${Number.isFinite(coarseW.score_pct) ? coarseW.score_pct : '?'} %)`);
+        statusParts.push(`Fine ${fineDelay} ms`);
+    }
+    measurementState.statusText = statusParts.join(' · ');
+
+    // Toast with full details
     const toastLines = [];
     toastLines.push(`Winner: ${appliedText} ms delay (${scorePct} % score, ${conf})`);
-    if (result.runner_up) {
+    if (fineScan.triggered && fineScan.status === 'completed') {
+        const coarseScore = Number.isFinite(coarseW.score_pct) ? coarseW.score_pct : '?';
+        toastLines.push(`Coarse: ${Number.isFinite(coarseW.delay_ms) ? coarseW.delay_ms.toFixed(2) : '?'} ms (${coarseScore} %)`);
+        if (fineW) {
+            const fineScore = Number.isFinite(fineW.score_pct) ? fineW.score_pct : '?';
+            toastLines.push(`Fine: ${Number.isFinite(fineW.delay_ms) ? fineW.delay_ms.toFixed(2) : '?'} ms (${fineScore} %)`);
+        }
+        const reasons = Array.isArray(fineScan.reasons) ? fineScan.reasons : [];
+        if (reasons.length) toastLines.push(`Trigger: ${reasons.join(', ')}`);
+    } else if (result.runner_up) {
         const runnerDelay = Number.isFinite(result.runner_up.delay_ms) ? result.runner_up.delay_ms.toFixed(2) : '?';
         const runnerScore = Number.isFinite(result.runner_up.score_pct) ? result.runner_up.score_pct : '?';
         toastLines.push(`Runner-up: ${runnerDelay} ms (${runnerScore} % score)`);
