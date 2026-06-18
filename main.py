@@ -5421,16 +5421,22 @@ def _auto_sub_clamped_delay(delay_ms: float) -> float:
     return round(max(-40.0, min(40.0, float(delay_ms))), 2)
 
 
-def _auto_sub_direct_neighbors(delay_a: float, delay_b: float, step_ms: float) -> bool:
-    delta = abs(float(delay_a) - float(delay_b))
-    tolerance = max(0.05, step_ms * 0.25)
-    return abs(delta - step_ms) <= tolerance
+def _auto_sub_direct_neighbors(delay_a: float, delay_b: float, scan_delays: list[float]) -> bool:
+    sorted_delays = sorted(float(delay) for delay in scan_delays)
+    tolerance = 0.05
+    for left, right in zip(sorted_delays, sorted_delays[1:]):
+        if abs(left - float(delay_a)) <= tolerance and abs(right - float(delay_b)) <= tolerance:
+            return True
+        if abs(right - float(delay_a)) <= tolerance and abs(left - float(delay_b)) <= tolerance:
+            return True
+    return False
 
 
 def _auto_sub_fine_delay_candidates(
     winner: dict[str, Any],
     runner_up: dict[str, Any] | None,
     step_ms: float,
+    existing_delays: set[float],
 ) -> list[float]:
     """Generate 4-6 fine delays around the coarse winner / runner-up area."""
     winner_delay = float(winner.get("delay_ms", 0.0))
@@ -5455,10 +5461,14 @@ def _auto_sub_fine_delay_candidates(
             ])
 
     candidates: list[float] = []
+    existing = {round(float(delay), 2) for delay in existing_delays}
     for offset in sorted(offsets, key=lambda value: (abs(value), value)):
         delay = _auto_sub_clamped_delay(winner_delay + offset)
-        if all(abs(delay - existing) > 0.05 for existing in candidates):
+        if any(abs(delay - existing_delay) <= 0.05 for existing_delay in existing):
+            continue
+        if all(abs(delay - candidate) > 0.05 for candidate in candidates):
             candidates.append(delay)
+            existing.add(round(delay, 2))
         if len(candidates) >= 6:
             break
 
@@ -5467,7 +5477,7 @@ def _auto_sub_fine_delay_candidates(
 
 def _auto_sub_fine_trigger_reasons(
     scoring: dict[str, Any],
-    step_ms: float,
+    scan_delays: list[float],
 ) -> list[str]:
     reasons: list[str] = []
     winner = scoring.get("winner") or {}
@@ -5484,7 +5494,7 @@ def _auto_sub_fine_trigger_reasons(
         if _auto_sub_direct_neighbors(
             float(winner.get("delay_ms", 0.0)),
             float(runner_up.get("delay_ms", 0.0)),
-            step_ms,
+            scan_delays,
         ):
             reasons.append("winner and runner-up are direct coarse neighbours")
 
@@ -5700,16 +5710,6 @@ async def _measure_auto_sub_candidate(
             "error": str(exc),
             "scan": stage,
         }
-    if pre_arm_failed:
-        return {
-            "delay_ms": delay_ms,
-            "name": str(delay_ms),
-            "points": [],
-            "sweep_id": "",
-            "status": "pre_arm_failed",
-            "scan": stage,
-        }
-
     sweep_id = ""
     try:
         sweep_job = await measurement_store.start_measurement(
@@ -5724,15 +5724,13 @@ async def _measure_auto_sub_candidate(
         )
         sweep_id = sweep_job["id"]
 
-        if restore_force_rate is not None:
-            asyncio.create_task(_release_measurement_samplerate_force_after_job(sweep_id, auto_sub_rate, restore_force_rate))
-
         sweep_ok = False
         for _poll in range(120):
             await asyncio.sleep(0.5)
             try:
                 current = measurement_store.get_job(sweep_id)
             except KeyError:
+                sweep_ok = True
                 break
             if current.get("status") in ("completed", "failed", "cancelled"):
                 sweep_ok = True
@@ -5746,7 +5744,25 @@ async def _measure_auto_sub_candidate(
                 pass
             await asyncio.sleep(0.5)
 
-        final = measurement_store.get_job(sweep_id)
+        if restore_force_rate is not None:
+            try:
+                await _release_measurement_samplerate_force_after_job(sweep_id, auto_sub_rate, restore_force_rate)
+            except Exception as exc:
+                logger.warning("Auto-sub: samplerate release failed for sweep %s: %s", sweep_id, exc)
+
+        try:
+            final = measurement_store.get_job(sweep_id)
+        except KeyError:
+            logger.warning("Auto-sub: sweep job disappeared after completion polling: %s", sweep_id)
+            return {
+                "delay_ms": delay_ms,
+                "name": str(delay_ms),
+                "points": [],
+                "sweep_id": sweep_id,
+                "status": "cancelled",
+                "error": "Sweep job disappeared",
+                "scan": stage,
+            }
         if final.get("status") == "completed" and final.get("result"):
             result = final["result"]
             measurement = result.get("measurement") or {}
@@ -5901,7 +5917,7 @@ async def _run_auto_sub_optimize(
         _auto_sub_rank_results(coarse_scoring["results"])
         coarse_winner = coarse_scoring["winner"]
         coarse_runner_up = coarse_scoring.get("runner_up")
-        fine_trigger_reasons = _auto_sub_fine_trigger_reasons(coarse_scoring, step_ms)
+        fine_trigger_reasons = _auto_sub_fine_trigger_reasons(coarse_scoring, scan_delays)
         fine_delays: list[float] = []
         fine_results: list[dict[str, Any]] = []
         fine_valid: list[dict[str, Any]] = []
@@ -5923,7 +5939,7 @@ async def _run_auto_sub_optimize(
         }
 
         if fine_trigger_reasons:
-            fine_delays = _auto_sub_fine_delay_candidates(coarse_winner, coarse_runner_up, step_ms)
+            fine_delays = _auto_sub_fine_delay_candidates(coarse_winner, coarse_runner_up, step_ms, {round(float(delay), 2) for delay in scan_delays})
             fine_scan.update({
                 "triggered": True,
                 "candidates": fine_delays,
@@ -5933,7 +5949,7 @@ async def _run_auto_sub_optimize(
             if fine_delays:
                 total = coarse_total + len(fine_delays)
                 reason_text = ", ".join(fine_trigger_reasons)
-                job["status"] = "fine_scan"
+                job["stage"] = "fine_scan"
                 job["message"] = f"Fine-Scan triggered ({reason_text}); {len(fine_delays)} candidates"
                 job["progress"] = {
                     "current": coarse_total,
@@ -6004,14 +6020,23 @@ async def _run_auto_sub_optimize(
 
         job["fine_scan"] = fine_scan
         _auto_sub_rank_results(final_scoring["results"])
-        fine_delay_set = {round(float(delay), 2) for delay in fine_delays}
+
+        # Re-attach scan stage from original measured candidates (scoring creates fresh dicts)
+        scan_by_delay: dict[float, str] = {}
+        for result in valid:
+            delay_key = round(float(result.get("delay_ms", 0.0)), 2)
+            scan_by_delay[delay_key] = result.get("scan", "coarse")
+        for result in fine_valid:
+            delay_key = round(float(result.get("delay_ms", 0.0)), 2)
+            scan_by_delay[delay_key] = result.get("scan", "fine")
+
         coarse_score_by_delay = {
             round(float(result.get("delay_ms", 0.0)), 2): result
             for result in coarse_scoring["results"]
         }
         for result in final_scoring["results"]:
             delay_key = round(float(result.get("delay_ms", 0.0)), 2)
-            result["scan"] = "fine" if delay_key in fine_delay_set else "coarse"
+            result["scan"] = scan_by_delay.get(delay_key, "coarse")
             if result["scan"] == "coarse":
                 coarse_score = coarse_score_by_delay.get(delay_key)
                 if coarse_score:

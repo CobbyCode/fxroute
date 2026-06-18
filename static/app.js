@@ -8403,7 +8403,7 @@ async function pollAutoSubJob(jobId) {
 
             // Update inline status element
             if (statusEl) {
-                if (status === 'fine_scan' && fineScan.triggered) {
+                if (job.stage === 'fine_scan' && fineScan.triggered) {
                     const fineCur = job.progress?.current || '?';
                     const fineTot = job.progress?.total || '?';
                     statusEl.textContent = `Fine-Scan: ${fineCur}/${fineTot} (${fineScan.candidates?.length || '?'} points around winner)`;
