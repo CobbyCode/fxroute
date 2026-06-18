@@ -12,8 +12,6 @@
 ## 0.7.39 (2026-06-16)
 - Fix album cover thumbnail generation when Pillow writes temporary .tmp files.
 
-## Unreleased
-
 ## 0.7.38 (2026-06-14)
 - Add Restore to Public Release maintenance action: an explicit repair path that saves local source changes as a patch, resets the checkout to origin/main, and restarts the service. Only shown when local changes are detected.
 - Center maintenance and amplifier button groups in their cards.
