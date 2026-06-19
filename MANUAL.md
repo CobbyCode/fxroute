@@ -77,6 +77,14 @@ FXRoute refreshes Spotify metadata from local desktop events and lightweight pol
 FXRoute does not replace Spotify Connect. It controls the local Spotify client through the desktop session, so Spotify must be installed and reachable on the audio PC.
 
 On fresh installs, Spotify autostart is enabled by default when a local Spotify desktop client is available. Installer reruns preserve an existing `.env`, so an already configured system keeps its current setting.
+Spotify may trigger a Linux keyring unlock prompt after login.
+On XFCE, the graphical keyring tool may need to be installed first:
+
+```bash
+sudo apt install seahorse
+seahorse
+
+In Passwords and Keys / Passwörter und Schlüssel, open Passwords / Passwörter → Login. Then change the password of the Login keyring and set a blank password by leaving the new password fields empty.
 
 ## 6. Library
 
@@ -187,99 +195,106 @@ automation:
 
 Open **Measure** from the DSP page.
 
-The measurement assistant is a tuning aid for broad room and speaker decisions: bass problems, channel differences, correction direction, and sanity checks.
+The measurement assistant is meant for practical room-tuning work:
 
-### 1. What Measure is for
+- choose left, right, or stereo measurement
+- run a same-position L/R Repeat when you want a more reliable stereo pair
+- select a host microphone
+- optionally load a microphone calibration file
+- run a sweep
+- view the frequency response from 20 Hz to 20 kHz
+- switch between frequency response and impulse-response preview when preview data is available
+- switch graph smoothing: raw, 1/6 octave, 1/3 octave, or 1 octave
+- save useful runs
+- use the PEQ assistant to sketch a few correction filters
+- transfer draft filters into **Create PEQ preset**
 
-- practical room and speaker measurement
-- **Single Sweep**: quick L, R, or Stereo sweep
-- **L/R Repeat**: same-position repeated sweeps for a cleaner stereo pair
-- **PEQ draft**: sketch a few correction filters, transfer into **Create PEQ preset**
-- **Convolver draft**: draft FIR filters from saved runs
+Think of it as a tuning assistant for broad room and speaker decisions: bass problems, channel differences, correction direction, and sanity checks.
 
-### 2. Sweep modes
+### Single Sweep and L/R Repeat
 
-**Start Single Sweep** — one quick measurement of the selected speaker:
+Use **Start Single Sweep** when you want one quick measurement of the selected speaker:
 
 - **L** measures the left speaker.
 - **R** measures the right speaker.
 - **Stereo** measures both playback channels together for a broad overall check.
 
-While running, the status line shows the input-level indicator, for example `Peak -42 dBFS`, `Peak < -90 dBFS`, or `CLIP`.
+While a sweep is running, the status line shows the simple input-level indicator, for example `Peak -42 dBFS`, `Peak < -90 dBFS`, or `CLIP`.
 
-**Start L/R Repeat** — a more dependable left/right measurement pair at one microphone position. Put the microphone in place, do not move it, then start the repeat. FXRoute measures left and right three times each, alternating L/R internally.
+Use **Start L/R Repeat** when you want a more dependable left/right measurement pair at one microphone position. Put the microphone in place, do not move it, then start the repeat. FXRoute measures left and right three times each, alternating L/R internally.
 
-While the repeat is running the status shows the current repeat step, total progress, and the same dBFS/CLIP indicator. After the repeat finishes, FXRoute presents a combined result for review (`<name> · L` and `<name> · R`). The intermediate sweeps are processed internally and are not added to **Saved runs**. Review the combined result, edit the base name if needed, then press **Save current** — both L and R summaries are saved together.
+While L/R Repeat is running, the status keeps the current repeat step and total progress, and adds the same simple input-level indicator used by Single Sweep.
 
-L/R Repeat is useful for:
+After the repeat finishes, FXRoute shows one combined result for review:
 
-- comparing speaker balance at the same listening position
-- cleaner input for PEQ or convolver drafting
-- L/R timing required for aligned FIR modes
-- confirming a suspicious single sweep
+- `<name> · L`
+- `<name> · R`
 
-Keep the microphone fixed during the whole repeat. Moving it between internal sweeps defeats the purpose.
+The intermediate repeat sweeps are processed internally and are not added to **Saved runs**. Review the combined result, edit the base name if needed, then press **Save current**. Both L and R summaries are saved together.
 
-### 3. Graph views and saved runs
+L/R Repeat is useful when:
 
-The measurement graph has two local views:
+- you are comparing speaker balance at the same listening position
+- you want a cleaner input for PEQ or convolver drafting
+- you care about L/R timing for aligned FIR modes
+- a single sweep looks suspicious and you want repeat confirmation
 
-- **Freq** shows the normal frequency response from 20 Hz to 20 kHz. Smoothing (raw, 1/6, 1/3, 1 octave), PEQ drafting, and Convolver range editing are available here.
-- **IR** shows a compact impulse-response preview from -2 ms to +30 ms for measurements that include preview data. It is a timing/reflection sanity check, not a full impulse-response export.
+Keep the microphone fixed during the whole repeat. Moving the microphone between the internal sweeps defeats the purpose of the mode.
 
-New measurements include the IR preview when analysis can produce it. Older saved runs may not have preview data and will stay hidden in **IR** view.
+#### Auto Sub Optimize (2.1 mode only)
 
-### 4. Timing and Electrical Reference
+Auto Sub Optimize is available in **2.1 Subwoofer** mode. It measures several sub alignment candidates around the selected crossover frequency and automatically applies the best measured `sub_alignment_ms`.
 
-L/R Repeat does not blindly average. It compares repeated L/R timing relationships, clusters the pair deltas, and accepts the best stable cluster. Inconsistent pairs are rejected; only accepted pairs are averaged.
+The scan is centered around the currently configured `sub_alignment_ms`. If you already know or suspect a useful starting delay — for example from a subwoofer manual that lists internal DSP latency — enter that value first (- x ms to delay the mains). Auto Sub Optimize will then scan around that starting point instead of around 0 ms.
 
-Saved repeat summaries include timing metadata: repeat count, accepted/rejected run count, timing method, L/R delta centre and spread, whether Electrical Reference was used, and whether the result is stable.
+The optimizer does not directly measure the subwoofer’s internal latency. It optimizes the practical sub/main integration at the microphone position, including the subwoofer, crossover, room, and listening position.
 
-**Electrical Reference** — for timing-critical measurements, a line-level reference from the playback signal is recorded alongside the acoustic microphone signal.
+If the coarse scan finds a close or uncertain result, FXRoute runs an additional fine scan around the best delay region. The result should be understood as a practical optimum region, not as an absolute millisecond-perfect value.
 
-Example:
+**L/R combined scoring.** Each delay candidate is measured on both the left and right channel. The two measurements are scored independently, then combined into a single score:
 
-- **Input 1** = measurement microphone
-- **Input 2** = line-level reference from the playback signal
+    combined = 0.6 × min(score_L, score_R) + 0.4 × mean(score_L, score_R)
 
-Select microphone and reference channels from the same capture device in **Setup**. Keep the reference level below clipping.
+The weaker side gets more weight (60 %), so the result works well for both channels. The fine scan uses the same combined scoring. The result display shows the combined score together with the individual left and right scores.
 
-With Electrical Reference, Repeat can align the reference captures before deconvolution and average captures in the time domain — usually the most stable timing result.
+Auto Sub Optimize currently adjusts **delay only**. It does not automatically change sub gain, polarity, PEQ, target curve, or room correction filters.
 
-If Electrical Reference is not connected or is disabled, Repeat still works with acoustic-only timing, but acoustic timing is normally less precise and may reject more pairs.
+For best results:
 
-> ⚠️ An unstable repeat summary should not be used for timing-sensitive L/R alignment. Rerun with the microphone fixed, check the selected speaker and input channels, and use Electrical Reference if available.
+- keep the microphone fixed during the scan
+- avoid moving around the room during the measurements
+- set crossover, sub level, polarity, and an initial alignment roughly before starting
+- check the result with a normal 2.1 measurement afterwards
 
-### 5. Convolver handoff
+### Frequency and IR graph views
 
-Measurements are independent from the Convolver settings. The Convolver settings (target curve, correction range, phase mode, sample rate, tap length) are only applied when a saved run is imported.
+The Measurement graph has two local views:
 
-**Take L / Take R / Take Both** — the Convolver assistant uses the visible saved measurement selection:
+- **Freq** shows the normal frequency response from 20 Hz to 20 kHz. Smoothing, PEQ drafting, and Convolver range editing are available in this view.
+- **IR** shows a compact impulse-response preview from -2 ms to +30 ms for visible measurements that include preview data. The preview is normalized for inspection and is intended as a timing/reflection sanity check, not as a full impulse-response export.
 
-- one visible Left measurement enables **Take L**
-- one visible Right measurement enables **Take R**
-- one visible Left plus one visible Right enables **Take Both**
+New measurements include the compact IR preview when analysis can produce it. Older saved runs may not have preview data and will stay hidden in **IR** view.
 
-To take L and R separately, keep only the left run visible before **Take L**, then only the right run visible before **Take R**. If exactly one L and one R are visible, use **Take Both**.
+### Timing and Electrical Reference
 
-Ambiguous multi-selections disable the Take buttons (`Select one measurement or one L/R selection.`). Hide or deselect unrelated saved runs before taking measurements into the Convolver draft.
+L/R Repeat compares repeated L/R timing relationships and rejects unstable pairs. For timing-sensitive work, an Electrical Reference input is recommended: record a line-level reference from the playback signal alongside the acoustic microphone signal. Acoustic-only timing remains available, but it is less precise and may reject more pairs.
 
-For a stereo correction preset:
+### Convolver handoff
 
-- **Separate L/R**: measure L → save → select L → set Convolver settings → Take L → measure R → save → select R → Take R → Create Convolver Preset. Settings are carried forward; check before the second Take.
-- **Same settings for both channels**: select L and R together → set Convolver settings → **Take Both** → Create Convolver Preset.
-- **L/R Repeat result**: save the repeat summary and use it like separate saved L/R measurements.
+Measurements are independent from the Convolver settings. The Convolver assistant uses the visible saved measurement selection when saved runs are selected. If no saved run is selected, it can use the current measurement.
 
-### 6. Phase modes
+**Take L / Take R / Take Both** — one visible Left measurement enables **Take L**, one visible Right measurement enables **Take R**, and one visible Left plus one visible Right enables **Take Both**. Saved L/R Repeat results can be used like any other saved left/right pair. Hide or deselect unrelated saved runs before taking measurements into the Convolver draft.
 
-- **Linear Phase** — symmetric FIR correction.
-- **Minimum Phase** — practical default for normal room and speaker correction.
-- **Minimum Phase aligned** — stereo Minimum Phase that uses measured L/R direct-arrival timing from separate saved left/right measurements and delays the earlier FIR channel for better time alignment.
-- **Hybrid aligned** blends minimum-phase bass correction into zero-delay linear-style upper correction. In stereo it uses the same L/R direct-arrival timing safety gate as Minimum Phase aligned.
+### Phase modes
 
-The aligned modes require single saved L/R measurements with valid direct-arrival timing data. Merged measurements are not supported.
+- **Linear Phase** creates symmetric FIR correction.
+- **Minimum Phase** is the practical default for normal room and speaker correction.
+- **Minimum Phase aligned** is a stereo variant of **Minimum Phase**. It uses the measured L/R direct-arrival timing from separate saved left/right measurements and delays the earlier FIR channel for better time alignment.
+- **Hybrid aligned** blends minimum-phase bass correction into zero-delay linear-style upper correction. In stereo mode it uses the same L/R direct-arrival timing safety gate as **Minimum Phase aligned**.
 
-FXRoute blocks aligned filter creation when the measured signed L/R timing offset exceeds the safety limit. The timing summary is shown as one arrival relation, for example `L arrives 5.27 ms later than R`.
+The aligned modes require single saved L/R measurements with valid direct-arrival timing data. Merged measurements are not supported for aligned timing correction.
+
+FXRoute blocks aligned filter creation when the measured signed L/R timing offset exceeds the safety limit in either direction. The timing summary is shown as one arrival relation, for example `L arrives 5.27 ms later than R`.
 
 ## 9. Technical settings
 

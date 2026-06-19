@@ -1550,7 +1550,7 @@ async def _release_measurement_samplerate_force_after_job(job_id: str, expected_
         expected_rate,
         restore_force_rate,
     )
-    for _ in range(1200):
+    for _ in range(300):
         await asyncio.sleep(0.5)
         if measurement_store is None:
             logger.info("2.1 measurement samplerate release watcher stopped: job_id=%s measurement_store_missing=true", job_id)
@@ -5413,6 +5413,37 @@ _auto_sub_lock: asyncio.Lock = asyncio.Lock()
 _AUTO_SUB_MAX_CALIBRATION_BYTES: int = 2 * 1024 * 1024  # 2 MiB
 
 
+def _auto_sub_cancel_requested(job: dict[str, Any]) -> bool:
+    return bool(job.get("cancel_requested")) or str(job.get("status") or "").lower() == "cancelled"
+
+
+def _auto_sub_cancelled_candidate(delay_ms: float, stage: str) -> dict[str, Any]:
+    return {
+        "delay_ms": delay_ms,
+        "name": str(delay_ms),
+        "points": [],
+        "sweep_id": "",
+        "status": "cancelled",
+        "error": "Auto Sub Optimize cancelled",
+        "scan": stage,
+    }
+
+
+async def _restore_auto_sub_original_config(original_config_snapshot: dict[str, Any]) -> None:
+    """Restore subwoofer config from snapshot."""
+    try:
+        from samplerate import set_audio_output_mode
+        set_audio_output_mode(
+            original_config_snapshot.get("mode", "stereo") or "stereo",
+            original_config_snapshot.get("subwoofer") or {},
+        )
+        if subwoofer_runtime is not None:
+            config = SubwooferRuntimeConfig.from_overview(get_audio_output_overview())
+            await subwoofer_runtime.sync(config)
+    except Exception:
+        logger.exception("Auto-sub: failed to restore original config from snapshot")
+
+
 def _auto_sub_step_ms(fc: int) -> float:
     return (1000.0 / float(fc)) / 16.0
 
@@ -5438,7 +5469,7 @@ def _auto_sub_fine_delay_candidates(
     step_ms: float,
     existing_delays: set[float],
 ) -> list[float]:
-    """Generate 4-6 fine delays around the coarse winner / runner-up area."""
+    """Generate 4-6 fine delays around the coarse winner area."""
     winner_delay = float(winner.get("delay_ms", 0.0))
     fine_step = step_ms / 4.0
     offsets: list[float] = []
@@ -5449,7 +5480,7 @@ def _auto_sub_fine_delay_candidates(
     if runner_up is not None:
         runner_delay = float(runner_up.get("delay_ms", winner_delay))
         delta = runner_delay - winner_delay
-        if abs(delta) > 0.05:
+        if 0.05 < abs(delta) <= (step_ms + 0.05):
             # Cover the interval and the runner-up neighbourhood without
             # exceeding the 4-6 candidate target after de-duplication.
             offsets.extend([
@@ -5504,6 +5535,151 @@ def _auto_sub_fine_trigger_reasons(
 def _auto_sub_rank_results(results: list[dict[str, Any]]) -> None:
     for rank, result in enumerate(results, start=1):
         result["rank"] = rank
+
+
+def _auto_sub_has_points(result: dict[str, Any], key: str = "points") -> bool:
+    points = result.get(key) or []
+    return isinstance(points, list) and len(points) >= 3
+
+
+def _auto_sub_delay_key(result: dict[str, Any]) -> float:
+    return round(float(result.get("delay_ms", 0.0)), 2)
+
+
+def _auto_sub_scoring_confidence(results: list[dict[str, Any]]) -> str:
+    if len(results) < 2:
+        return "uncertain"
+    winner = results[0]
+    runner_up = results[1]
+    winner_score = float(winner.get("score", 0.0) or 0.0)
+    if winner_score <= 0:
+        return "uncertain"
+    margin = (winner_score - float(runner_up.get("score", 0.0) or 0.0)) / winner_score
+    if margin > 0.15:
+        return "clear"
+    if margin > 0.05:
+        return "close"
+    return "uncertain"
+
+
+def _auto_sub_score_single_channel_fallback(
+    candidates: list[dict[str, Any]],
+    *,
+    crossover_hz: int,
+    channel_name: str,
+) -> dict[str, Any]:
+    scoring = score_sub_alignment_candidates(candidates, crossover_hz=crossover_hz)
+    scan_by_delay = {_auto_sub_delay_key(candidate): candidate.get("scan", "coarse") for candidate in candidates}
+    for result in scoring.get("results", []):
+        result["scan"] = scan_by_delay.get(_auto_sub_delay_key(result), result.get("scan", "coarse"))
+        result["score_source"] = channel_name
+        score = round(float(result.get("score", 0.0) or 0.0), 4)
+        score_pct = round(score * 100.0, 1)
+        result.setdefault("score", score)
+        result.setdefault("score_pct", score_pct)
+        if channel_name == "left":
+            result["score_L"] = score
+            result["score_L_pct"] = score_pct
+            result["score_R"] = None
+            result["score_R_pct"] = None
+        else:
+            result["score_L"] = None
+            result["score_L_pct"] = None
+            result["score_R"] = score
+            result["score_R_pct"] = score_pct
+    _auto_sub_rank_results(scoring["results"])
+    scoring["winner"] = scoring["results"][0]
+    scoring["runner_up"] = scoring["results"][1] if len(scoring["results"]) >= 2 else None
+    scoring["confidence"] = _auto_sub_scoring_confidence(scoring["results"])
+    scoring["score_mode"] = f"{channel_name}_fallback"
+    scoring["scored_candidates"] = candidates
+    return scoring
+
+
+def _score_auto_sub_combined_candidates(
+    candidates: list[dict[str, Any]],
+    *,
+    crossover_hz: int,
+) -> dict[str, Any]:
+    """Score AutoSub candidates with L/R data when available, fallback to one side."""
+    both_valid = [
+        result for result in candidates
+        if _auto_sub_has_points(result, "points_left") and _auto_sub_has_points(result, "points_right")
+    ]
+    if len(both_valid) >= 2:
+        valid_left = []
+        valid_right = []
+        scan_by_delay = {}
+        for result in both_valid:
+            delay_key = _auto_sub_delay_key(result)
+            scan_by_delay[delay_key] = result.get("scan", "coarse")
+            left_result = dict(result)
+            left_result["points"] = result["points_left"]
+            valid_left.append(left_result)
+            right_result = dict(result)
+            right_result["points"] = result["points_right"]
+            valid_right.append(right_result)
+
+        left_scoring = score_sub_alignment_candidates(valid_left, crossover_hz=crossover_hz)
+        right_scoring = score_sub_alignment_candidates(valid_right, crossover_hz=crossover_hz)
+        left_by_delay = {_auto_sub_delay_key(result): result for result in left_scoring["results"]}
+        right_by_delay = {_auto_sub_delay_key(result): result for result in right_scoring["results"]}
+
+        combined_results = []
+        for result in both_valid:
+            delay_key = _auto_sub_delay_key(result)
+            left_result = left_by_delay.get(delay_key)
+            right_result = right_by_delay.get(delay_key)
+            if not left_result or not right_result:
+                continue
+            score_left = float(left_result.get("score", 0.0) or 0.0)
+            score_right = float(right_result.get("score", 0.0) or 0.0)
+            combined_score = 0.6 * min(score_left, score_right) + 0.4 * ((score_left + score_right) / 2.0)
+            combined_results.append({
+                "delay_ms": result["delay_ms"],
+                "name": result.get("name", str(result["delay_ms"])),
+                "score": round(combined_score, 4),
+                "score_pct": round(combined_score * 100.0, 1),
+                "score_L": round(score_left, 4),
+                "score_L_pct": round(score_left * 100.0, 1),
+                "score_R": round(score_right, 4),
+                "score_R_pct": round(score_right * 100.0, 1),
+                "scan": scan_by_delay.get(delay_key, "coarse"),
+                "score_source": "lr_combined",
+            })
+
+        if not combined_results:
+            raise ValueError("No matching L/R AutoSub scoring results")
+
+        combined_results.sort(key=lambda r: r["score"], reverse=True)
+        _auto_sub_rank_results(combined_results)
+        return {
+            "winner": combined_results[0],
+            "runner_up": combined_results[1] if len(combined_results) >= 2 else None,
+            "results": combined_results,
+            "confidence": _auto_sub_scoring_confidence(combined_results),
+            "crossover_hz": crossover_hz,
+            "score_mode": "lr_combined",
+            "scored_candidates": both_valid,
+        }
+
+    left_valid = []
+    right_valid = []
+    for result in candidates:
+        if _auto_sub_has_points(result, "points_left"):
+            left_result = dict(result)
+            left_result["points"] = result["points_left"]
+            left_valid.append(left_result)
+        if _auto_sub_has_points(result, "points_right"):
+            right_result = dict(result)
+            right_result["points"] = result["points_right"]
+            right_valid.append(right_result)
+
+    if left_valid and len(left_valid) >= len(right_valid):
+        return _auto_sub_score_single_channel_fallback(left_valid, crossover_hz=crossover_hz, channel_name="left")
+    if right_valid:
+        return _auto_sub_score_single_channel_fallback(right_valid, crossover_hz=crossover_hz, channel_name="right")
+    raise ValueError("No valid AutoSub sweep results to score")
 
 
 @app.post("/api/measurements/auto-sub-optimize/start")
@@ -5569,6 +5745,10 @@ async def start_auto_sub_optimize(
             "scan_delays": scan_delays,
             "step_ms": step_ms,
             "original_alignment_ms": current_alignment,
+            "original_config_snapshot": original_config_snapshot,
+            "current_sweep_id": "",
+            "cancel_requested": False,
+            "cancelled_at": None,
             "fine_scan": {
                 "enabled": False,
                 "triggered": False,
@@ -5626,6 +5806,33 @@ async def get_auto_sub_optimize_job(job_id: str):
     return {"status": "ok", "job": job}
 
 
+@app.post("/api/measurements/auto-sub-optimize/jobs/{job_id}/cancel")
+async def cancel_auto_sub_optimize_job(job_id: str):
+    global measurement_store
+    job = _AUTO_SUB_JOBS.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Auto Sub Optimize job not found")
+    if str(job.get("status") or "").lower() in {"completed", "failed", "cancelled"}:
+        return {"status": "ok", "job": job}
+
+    job["cancel_requested"] = True
+    job["cancelled_at"] = datetime.now(timezone.utc).isoformat()
+    job["status"] = "cancelled"
+    job["message"] = "Auto Sub Optimize cancelled."
+    job["error"] = None
+
+    current_sweep_id = job.get("current_sweep_id")
+    if current_sweep_id and measurement_store:
+        try:
+            measurement_store.cancel_job(str(current_sweep_id))
+        except KeyError:
+            pass
+        except Exception as exc:
+            logger.warning("Auto-sub: failed to cancel current sweep %s: %s", current_sweep_id, exc)
+
+    return {"status": "ok", "job": job}
+
+
 async def _measure_auto_sub_candidate(
     *,
     delay_ms: float,
@@ -5646,19 +5853,33 @@ async def _measure_auto_sub_candidate(
     original_level: float,
     original_polarity: str,
     original_highpass: bool,
+    measurement_label: str | None = None,
+    candidate_current: int | None = None,
+    candidate_total: int | None = None,
+    measure_channel: str | None = None,
 ) -> dict[str, Any]:
     """Measure one AutoSub delay candidate with the standard safety checks."""
     from samplerate import _load_audio_output_mode
 
+    if _auto_sub_cancel_requested(job):
+        return _auto_sub_cancelled_candidate(delay_ms, stage)
+
     label = "Fine-Scan" if stage == "fine" else "Coarse scan"
     job["status"] = "running"
-    job["message"] = f"{label}: sweep {candidate_index}/{total} @ sub_alignment_ms={delay_ms:.2f} ms"
+    job["message"] = measurement_label or f"{label}: sweep {candidate_index}/{total} @ sub_alignment_ms={delay_ms:.2f} ms"
     job["progress"] = {
         "current": candidate_index,
         "total": total,
         "delay_ms": delay_ms,
         "stage": stage,
+        "sweep_current": candidate_index,
+        "sweep_total": total,
     }
+    if candidate_current is not None and candidate_total is not None:
+        job["progress"]["candidate_current"] = candidate_current
+        job["progress"]["candidate_total"] = candidate_total
+    if measure_channel:
+        job["progress"]["channel"] = measure_channel
 
     sub_config = {
         "crossover_frequency_hz": fc,
@@ -5673,10 +5894,19 @@ async def _measure_auto_sub_candidate(
         if subwoofer_runtime is not None:
             config = SubwooferRuntimeConfig.from_overview(get_audio_output_overview())
             await subwoofer_runtime.sync(config)
-        await asyncio.sleep(0.8)
+        await asyncio.sleep(0.3)
+        if _auto_sub_cancel_requested(job):
+            return _auto_sub_cancelled_candidate(delay_ms, stage)
         verify = _load_audio_output_mode()
-        if float(verify.get("subwoofer", {}).get("sub_alignment_ms", -999)) == delay_ms:
-            config_success = True
+        config_success = float(verify.get("subwoofer", {}).get("sub_alignment_ms", -999)) == delay_ms
+        if not config_success:
+            await asyncio.sleep(0.1)
+            verify = _load_audio_output_mode()
+            config_success = float(verify.get("subwoofer", {}).get("sub_alignment_ms", -999)) == delay_ms
+            if not config_success:
+                await asyncio.sleep(0.5)
+                verify = _load_audio_output_mode()
+                config_success = float(verify.get("subwoofer", {}).get("sub_alignment_ms", -999)) == delay_ms
     except Exception as exc:
         logger.warning("Auto-sub: failed to configure delay %.2f ms: %s", delay_ms, exc)
 
@@ -5696,6 +5926,10 @@ async def _measure_auto_sub_candidate(
     pre_arm_failed = False
     try:
         restore_force_rate = await _prepare_subwoofer_runtime_for_measurement_start(auto_sub_rate)
+        if _auto_sub_cancel_requested(job):
+            if restore_force_rate is not None:
+                _set_pipewire_force_rate(restore_force_rate)
+            return _auto_sub_cancelled_candidate(delay_ms, stage)
     except Exception as exc:
         logger.exception("Auto-sub: pre-arm failed for delay %.2f ms", delay_ms)
         pre_arm_failed = True
@@ -5723,9 +5957,26 @@ async def _measure_auto_sub_candidate(
             sweep_profile=auto_sub_sweep_profile,
         )
         sweep_id = sweep_job["id"]
+        job["current_sweep_id"] = sweep_id
+
+        if _auto_sub_cancel_requested(job):
+            try:
+                measurement_store.cancel_job(sweep_id)
+            except Exception:
+                pass
+            job["current_sweep_id"] = ""
+            return _auto_sub_cancelled_candidate(delay_ms, stage)
 
         sweep_ok = False
         for _poll in range(120):
+            if _auto_sub_cancel_requested(job):
+                try:
+                    measurement_store.cancel_job(sweep_id)
+                except Exception:
+                    pass
+                if job.get("current_sweep_id") == sweep_id:
+                    job["current_sweep_id"] = ""
+                return _auto_sub_cancelled_candidate(delay_ms, stage)
             await asyncio.sleep(0.5)
             try:
                 current = measurement_store.get_job(sweep_id)
@@ -5753,6 +6004,8 @@ async def _measure_auto_sub_candidate(
         try:
             final = measurement_store.get_job(sweep_id)
         except KeyError:
+            if job.get("current_sweep_id") == sweep_id:
+                job["current_sweep_id"] = ""
             logger.warning("Auto-sub: sweep job disappeared after completion polling: %s", sweep_id)
             return {
                 "delay_ms": delay_ms,
@@ -5778,6 +6031,8 @@ async def _measure_auto_sub_candidate(
                         break
             if not points:
                 logger.warning("Auto-sub: no points in sweep result for delay %.2f ms", delay_ms)
+            if job.get("current_sweep_id") == sweep_id:
+                job["current_sweep_id"] = ""
             return {
                 "delay_ms": delay_ms,
                 "name": str(delay_ms),
@@ -5789,6 +6044,8 @@ async def _measure_auto_sub_candidate(
 
         error_msg = final.get("error", {}).get("detail") if isinstance(final.get("error"), dict) else str(final.get("error") or "timeout")
         logger.warning("Auto-sub: sweep failed for delay %.2f ms: %s", delay_ms, error_msg)
+        if job.get("current_sweep_id") == sweep_id:
+            job["current_sweep_id"] = ""
         return {
             "delay_ms": delay_ms,
             "name": str(delay_ms),
@@ -5800,6 +6057,8 @@ async def _measure_auto_sub_candidate(
         }
     except Exception as exc:
         logger.exception("Auto-sub: sweep error for delay %.2f ms", delay_ms)
+        if job.get("current_sweep_id") == sweep_id:
+            job["current_sweep_id"] = ""
         if restore_force_rate is not None:
             try:
                 _set_pipewire_force_rate(restore_force_rate)
@@ -5814,6 +6073,109 @@ async def _measure_auto_sub_candidate(
             "error": str(exc),
             "scan": stage,
         }
+
+
+async def _measure_auto_sub_combined_candidate(
+    *,
+    delay_ms: float,
+    job: dict[str, Any],
+    candidate_index: int,
+    total: int,
+    sweep_index_start: int,
+    sweep_total: int,
+    stage: str,
+    fc: int,
+    input_id: str,
+    mic_input_channel: str,
+    reference_input_channel: str,
+    calibration_ref: str,
+    calibration_filename: str | None,
+    calibration_bytes: bytes | None,
+    auto_sub_sweep_profile: dict[str, Any],
+    auto_sub_rate: int,
+    original_level: float,
+    original_polarity: str,
+    original_highpass: bool,
+) -> dict[str, Any]:
+    """Measure both L and R for one AutoSub delay candidate."""
+    if _auto_sub_cancel_requested(job):
+        return _auto_sub_cancelled_candidate(delay_ms, stage)
+
+    label = "Fine-Scan" if stage == "fine" else "Coarse scan"
+    left_result = await _measure_auto_sub_candidate(
+        delay_ms=delay_ms,
+        job=job,
+        candidate_index=sweep_index_start,
+        total=sweep_total,
+        stage=stage,
+        fc=fc,
+        input_id=input_id,
+        channel="left",
+        mic_input_channel=mic_input_channel,
+        reference_input_channel=reference_input_channel,
+        calibration_ref=calibration_ref,
+        calibration_filename=calibration_filename,
+        calibration_bytes=calibration_bytes,
+        auto_sub_sweep_profile=auto_sub_sweep_profile,
+        auto_sub_rate=auto_sub_rate,
+        original_level=original_level,
+        original_polarity=original_polarity,
+        original_highpass=original_highpass,
+        measurement_label=f"{label}: L meas {candidate_index}/{total} @ {delay_ms:.2f} ms",
+        candidate_current=candidate_index,
+        candidate_total=total,
+        measure_channel="left",
+    )
+    if _auto_sub_cancel_requested(job):
+        return _auto_sub_cancelled_candidate(delay_ms, stage)
+
+    right_result = await _measure_auto_sub_candidate(
+        delay_ms=delay_ms,
+        job=job,
+        candidate_index=sweep_index_start + 1,
+        total=sweep_total,
+        stage=stage,
+        fc=fc,
+        input_id=input_id,
+        channel="right",
+        mic_input_channel=mic_input_channel,
+        reference_input_channel=reference_input_channel,
+        calibration_ref=calibration_ref,
+        calibration_filename=calibration_filename,
+        calibration_bytes=calibration_bytes,
+        auto_sub_sweep_profile=auto_sub_sweep_profile,
+        auto_sub_rate=auto_sub_rate,
+        original_level=original_level,
+        original_polarity=original_polarity,
+        original_highpass=original_highpass,
+        measurement_label=f"{label}: R meas {candidate_index}/{total} @ {delay_ms:.2f} ms",
+        candidate_current=candidate_index,
+        candidate_total=total,
+        measure_channel="right",
+    )
+    if _auto_sub_cancel_requested(job):
+        return _auto_sub_cancelled_candidate(delay_ms, stage)
+
+    left_points = left_result.get("points") or []
+    right_points = right_result.get("points") or []
+    points = left_points if len(left_points) >= 3 else right_points
+    status = "completed" if (len(left_points) >= 3 or len(right_points) >= 3) else "failed"
+
+    return {
+        "delay_ms": delay_ms,
+        "name": str(delay_ms),
+        "points": points,
+        "points_left": left_points,
+        "points_right": right_points,
+        "sweep_id": left_result.get("sweep_id", ""),
+        "sweep_id_left": left_result.get("sweep_id", ""),
+        "sweep_id_right": right_result.get("sweep_id", ""),
+        "status": status,
+        "scan": stage,
+        "status_left": left_result.get("status"),
+        "status_right": right_result.get("status"),
+        "combined_candidate": True,
+    }
 
 
 async def _run_auto_sub_optimize(
@@ -5843,20 +6205,16 @@ async def _run_auto_sub_optimize(
 
     async def _restore_original_config():
         """Restore subwoofer config from snapshot."""
-        try:
-            set_audio_output_mode(
-                original_config_snapshot.get("mode", "stereo") or "stereo",
-                original_config_snapshot.get("subwoofer") or {},
-            )
-            if subwoofer_runtime is not None:
-                config = SubwooferRuntimeConfig.from_overview(get_audio_output_overview())
-                await subwoofer_runtime.sync(config)
-        except Exception:
-            logger.exception("Auto-sub: failed to restore original config from snapshot")
+        await _restore_auto_sub_original_config(original_config_snapshot)
+
+    if _auto_sub_cancel_requested(job):
+        job["message"] = "Auto Sub Optimize cancelled."
+        await _restore_original_config()
+        return
 
     try:
         sweep_results: list[dict[str, Any]] = []
-        total = len(scan_delays)
+        total = len(scan_delays) * 2
 
         # AutoSub bass-focused sweep settings
         auto_sub_sweep_low_hz = 20.0
@@ -5878,18 +6236,20 @@ async def _run_auto_sub_optimize(
         auto_sub_rate = _resolve_measurement_start_sample_rate()
 
         coarse_total = len(scan_delays)
-        total = coarse_total
+        coarse_sweep_total = coarse_total * 2
+        total = coarse_sweep_total
         for idx, delay_ms in enumerate(scan_delays):
             sweep_results.append(
-                await _measure_auto_sub_candidate(
+                await _measure_auto_sub_combined_candidate(
                     delay_ms=delay_ms,
                     job=job,
                     candidate_index=idx + 1,
                     total=coarse_total,
+                    sweep_index_start=(idx * 2) + 1,
+                    sweep_total=coarse_sweep_total,
                     stage="coarse",
                     fc=fc,
                     input_id=input_id,
-                    channel=channel,
                     mic_input_channel=mic_input_channel,
                     reference_input_channel=reference_input_channel,
                     calibration_ref=calibration_ref,
@@ -5902,9 +6262,13 @@ async def _run_auto_sub_optimize(
                     original_highpass=original_highpass,
                 )
             )
+            if _auto_sub_cancel_requested(job):
+                job["message"] = "Auto Sub Optimize cancelled."
+                await _restore_original_config()
+                return
 
         # Score candidates
-        valid = [r for r in sweep_results if r.get("points") and len(r["points"]) >= 3]
+        valid = [r for r in sweep_results if _auto_sub_has_points(r, "points_left") or _auto_sub_has_points(r, "points_right")]
         if not valid:
             job["status"] = "failed"
             job["message"] = "No valid sweep results to score"
@@ -5913,8 +6277,8 @@ async def _run_auto_sub_optimize(
             return
 
         step_ms = _auto_sub_step_ms(fc)
-        coarse_scoring = score_sub_alignment_candidates(valid, crossover_hz=fc)
-        _auto_sub_rank_results(coarse_scoring["results"])
+        coarse_scoring = _score_auto_sub_combined_candidates(sweep_results, crossover_hz=fc)
+        valid = list(coarse_scoring.get("scored_candidates") or valid)
         coarse_winner = coarse_scoring["winner"]
         coarse_runner_up = coarse_scoring.get("runner_up")
         fine_trigger_reasons = _auto_sub_fine_trigger_reasons(coarse_scoring, scan_delays)
@@ -5947,27 +6311,38 @@ async def _run_auto_sub_optimize(
             })
             job["fine_scan"] = fine_scan
             if fine_delays:
-                total = coarse_total + len(fine_delays)
+                fine_candidate_total = len(fine_delays)
+                fine_sweep_total = fine_candidate_total * 2
+                total = coarse_sweep_total + fine_sweep_total
                 reason_text = ", ".join(fine_trigger_reasons)
                 job["stage"] = "fine_scan"
                 job["message"] = f"Fine-Scan triggered ({reason_text}); {len(fine_delays)} candidates"
                 job["progress"] = {
-                    "current": coarse_total,
+                    "current": coarse_sweep_total,
                     "total": total,
+                    "sweep_current": coarse_sweep_total,
+                    "sweep_total": total,
+                    "candidate_current": 0,
+                    "candidate_total": fine_candidate_total,
                     "stage": "fine",
                     "reason": reason_text,
                 }
+                if _auto_sub_cancel_requested(job):
+                    job["message"] = "Auto Sub Optimize cancelled."
+                    await _restore_original_config()
+                    return
                 for idx, delay_ms in enumerate(fine_delays):
                     fine_results.append(
-                        await _measure_auto_sub_candidate(
+                        await _measure_auto_sub_combined_candidate(
                             delay_ms=delay_ms,
                             job=job,
-                            candidate_index=coarse_total + idx + 1,
-                            total=total,
+                            candidate_index=idx + 1,
+                            total=fine_candidate_total,
+                            sweep_index_start=coarse_sweep_total + (idx * 2) + 1,
+                            sweep_total=total,
                             stage="fine",
                             fc=fc,
                             input_id=input_id,
-                            channel=channel,
                             mic_input_channel=mic_input_channel,
                             reference_input_channel=reference_input_channel,
                             calibration_ref=calibration_ref,
@@ -5980,26 +6355,33 @@ async def _run_auto_sub_optimize(
                             original_highpass=original_highpass,
                         )
                     )
+                    if _auto_sub_cancel_requested(job):
+                        job["message"] = "Auto Sub Optimize cancelled."
+                        await _restore_original_config()
+                        return
 
-                fine_valid = [r for r in fine_results if r.get("points") and len(r["points"]) >= 3]
+                fine_valid = [r for r in fine_results if _auto_sub_has_points(r, "points_left") or _auto_sub_has_points(r, "points_right")]
                 if fine_valid:
-                    fine_scoring = score_sub_alignment_candidates(fine_valid, crossover_hz=fc)
-                    _auto_sub_rank_results(fine_scoring["results"])
+                    fine_scoring = _score_auto_sub_combined_candidates(fine_results, crossover_hz=fc)
+                    fine_valid = list(fine_scoring.get("scored_candidates") or fine_valid)
                     fine_winner = fine_scoring["winner"]
                     fine_scan.update({
                         "status": "completed",
-                        "sweep_count": len(fine_delays),
+                        "candidate_count": len(fine_delays),
+                        "sweep_count": len(fine_delays) * 2,
                         "valid_count": len(fine_valid),
                         "winner": fine_winner,
                         "runner_up": fine_scoring.get("runner_up"),
                         "results": fine_scoring["results"],
                     })
                     combined_valid = valid + fine_valid
-                    final_scoring = score_sub_alignment_candidates(combined_valid, crossover_hz=fc)
+                    final_scoring = _score_auto_sub_combined_candidates(combined_valid, crossover_hz=fc)
+                    combined_valid = list(final_scoring.get("scored_candidates") or combined_valid)
                 else:
                     fine_scan.update({
                         "status": "no_valid_results",
-                        "sweep_count": len(fine_delays),
+                        "candidate_count": len(fine_delays),
+                        "sweep_count": len(fine_delays) * 2,
                         "valid_count": 0,
                         "winner": None,
                         "runner_up": None,
@@ -6044,29 +6426,85 @@ async def _run_auto_sub_optimize(
                     result["coarse_score_pct"] = coarse_score.get("score_pct")
                     result["coarse_rank"] = coarse_score.get("rank")
 
+        final_fine_winner = next(
+            (result for result in final_scoring["results"] if result.get("scan") == "fine"),
+            fine_winner,
+        )
+        if final_fine_winner is not None and fine_scan.get("status") == "completed":
+            fine_scan["final_winner"] = final_fine_winner
+
+        if _auto_sub_cancel_requested(job):
+            job["message"] = "Auto Sub Optimize cancelled."
+            await _restore_original_config()
+            return
+
         winner = final_scoring["winner"]
         best_delay = winner["delay_ms"]
+        confidence = str(final_scoring.get("confidence") or "uncertain")
+        runner_up = final_scoring.get("runner_up")
+        winner_score_pct = float(winner.get("score_pct", 0.0) or 0.0)
+        runner_score_pct = float(runner_up.get("score_pct", 0.0) or 0.0) if runner_up else 0.0
+        winner_margin_pct = winner_score_pct - runner_score_pct if runner_up else 100.0
+        original_score_pct = None
+        original_delay_key = round(float(current_alignment), 2)
+        for scored_result in final_scoring.get("results", []):
+            if round(float(scored_result.get("delay_ms", 0.0)), 2) == original_delay_key:
+                original_score_pct = float(scored_result.get("score_pct", 0.0) or 0.0)
+                break
+        score_gain_pct = winner_score_pct - original_score_pct if original_score_pct is not None else None
 
-        # Apply winner
+        auto_apply = False
+        apply_decision = "not_applied_uncertain_confidence"
+        if confidence == "clear":
+            auto_apply = True
+            apply_decision = "applied_clear_confidence"
+        elif confidence == "close":
+            if winner_margin_pct < 2.0:
+                apply_decision = "not_applied_close_margin_below_2pp"
+            elif score_gain_pct is not None and score_gain_pct < 3.0:
+                apply_decision = "not_applied_close_gain_below_3pp"
+            else:
+                auto_apply = True
+                apply_decision = "applied_close_confidence"
+        elif (
+            confidence == "uncertain"
+            and score_gain_pct is not None
+            and score_gain_pct >= 10.0
+            and winner_score_pct >= 70.0
+        ):
+            auto_apply = True
+            apply_decision = "applied_uncertain_large_gain"
+
         apply_ok = False
-        try:
-            sub_config = {
-                "crossover_frequency_hz": fc,
-                "sub_alignment_ms": best_delay,
-                "sub_level_db": original_level,
-                "sub_polarity": original_polarity,
-                "main_highpass_enabled": original_highpass,
-            }
-            set_audio_output_mode(OUTPUT_MODE_SUBWOOFER_21, sub_config)
-            if subwoofer_runtime is not None:
-                config = SubwooferRuntimeConfig.from_overview(get_audio_output_overview())
-                await subwoofer_runtime.sync(config)
-            await asyncio.sleep(0.3)
-            verify = _load_audio_output_mode()
-            if float(verify.get("subwoofer", {}).get("sub_alignment_ms", -999)) == best_delay:
-                apply_ok = True
-        except Exception as exc:
-            logger.exception("Auto-sub: failed to apply winner delay %.2f ms", best_delay)
+        applied_delay = current_alignment
+        if auto_apply:
+            try:
+                sub_config = {
+                    "crossover_frequency_hz": fc,
+                    "sub_alignment_ms": best_delay,
+                    "sub_level_db": original_level,
+                    "sub_polarity": original_polarity,
+                    "main_highpass_enabled": original_highpass,
+                }
+                set_audio_output_mode(OUTPUT_MODE_SUBWOOFER_21, sub_config)
+                if subwoofer_runtime is not None:
+                    config = SubwooferRuntimeConfig.from_overview(get_audio_output_overview())
+                    await subwoofer_runtime.sync(config)
+                await asyncio.sleep(0.3)
+                verify = _load_audio_output_mode()
+                if float(verify.get("subwoofer", {}).get("sub_alignment_ms", -999)) == best_delay:
+                    apply_ok = True
+                    applied_delay = best_delay
+            except Exception as exc:
+                logger.exception("Auto-sub: failed to apply winner delay %.2f ms", best_delay)
+        else:
+            await _restore_original_config()
+            apply_ok = True
+
+        if _auto_sub_cancel_requested(job):
+            job["message"] = "Auto Sub Optimize cancelled."
+            await _restore_original_config()
+            return
 
         if not apply_ok:
             job["status"] = "failed"
@@ -6076,22 +6514,36 @@ async def _run_auto_sub_optimize(
             return
 
         job["status"] = "completed"
-        job["message"] = f"Winner: {best_delay} ms (score {winner['score_pct']:.0f} %)"
+        job["message"] = (
+            f"Applied: {best_delay} ms (score {winner['score_pct']:.0f} %)"
+            if auto_apply
+            else f"Suggested: {best_delay} ms (not applied: {confidence})"
+        )
         job["result"] = {
             "original_alignment_ms": current_alignment,
-            "applied_alignment_ms": best_delay,
-            "applied_sub_alignment_ms": best_delay,
+            "suggested_alignment_ms": best_delay,
+            "applied_alignment_ms": applied_delay,
+            "applied_sub_alignment_ms": applied_delay,
+            "applied": auto_apply,
+            "auto_applied": auto_apply,
+            "apply_decision": apply_decision,
+            "winner_margin_pct": round(winner_margin_pct, 1),
+            "score_gain_pct": round(score_gain_pct, 1) if score_gain_pct is not None else None,
+            "original_score_pct": round(original_score_pct, 1) if original_score_pct is not None else None,
             "crossover_hz": fc,
-            "confidence": final_scoring["confidence"],
+            "confidence": confidence,
             "winner": winner,
             "coarse_winner": coarse_winner,
             "coarse_runner_up": coarse_runner_up,
-            "fine_winner": fine_winner,
+            "fine_winner": final_fine_winner,
             "runner_up": final_scoring.get("runner_up"),
             "ranking": final_scoring["results"],
             "sweep_count": total,
-            "coarse_sweep_count": coarse_total,
-            "fine_sweep_count": len(fine_delays),
+            "candidate_count": coarse_total + len(fine_delays),
+            "coarse_candidate_count": coarse_total,
+            "fine_candidate_count": len(fine_delays),
+            "coarse_sweep_count": coarse_sweep_total,
+            "fine_sweep_count": len(fine_delays) * 2,
             "valid_count": len(combined_valid),
             "coarse_valid_count": len(valid),
             "fine_valid_count": len(fine_valid),
@@ -6099,11 +6551,15 @@ async def _run_auto_sub_optimize(
         }
 
         logger.info(
-            "Auto-sub optimize completed: fc=%sHz best=%.2fms score=%.0f%% confidence=%s fine_scan=%s",
-            fc, best_delay, winner["score_pct"], final_scoring["confidence"], fine_scan.get("status"),
+            "Auto-sub optimize completed: fc=%sHz suggested=%.2fms applied=%s applied_delay=%.2fms score=%.0f%% confidence=%s decision=%s fine_scan=%s",
+            fc, best_delay, auto_apply, applied_delay, winner["score_pct"], confidence, apply_decision, fine_scan.get("status"),
         )
 
     except Exception as exc:
+        if _auto_sub_cancel_requested(job):
+            job["message"] = "Auto Sub Optimize cancelled."
+            await _restore_original_config()
+            return
         logger.exception("Auto-sub optimize failed")
         job["status"] = "failed"
         job["message"] = f"Auto Sub Optimize failed: {exc}"

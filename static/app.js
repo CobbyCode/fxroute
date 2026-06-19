@@ -107,6 +107,7 @@ let state = {
         storage: null,
         captureAvailable: false,
         activeJobId: '',
+        activeMeasurementKind: '',
         autoSubJobId: '',
         autoSubProgress: null,
         autoSubInFlight: false,
@@ -8242,6 +8243,28 @@ function getMeasurementJobStatus(job = {}) {
     return String(job?.status || '').trim().toLowerCase();
 }
 
+function normalizeMeasurementKind(kind) {
+    if (kind === 'lr-repeat' || kind === 'lr_repeat') return 'lr_repeat';
+    if (kind === 'auto_sub' || kind === 'auto-sub' || kind === 'autosub') return 'auto_sub';
+    if (kind === 'single') return 'single';
+    return '';
+}
+
+function getActiveMeasurementKind() {
+    const measurementState = state.measurement || {};
+    if (measurementState.autoSubInFlight) return 'auto_sub';
+    const normalized = normalizeMeasurementKind(measurementState.activeMeasurementKind);
+    if (normalized && measurementState.activeJobId) return normalized;
+    if (measurementState.repeatJobActive && measurementState.activeJobId) return 'lr_repeat';
+    if (measurementState.activeJobId) return 'single';
+    return '';
+}
+
+function hasActiveMeasurementJob() {
+    const measurementState = state.measurement || {};
+    return !!(measurementState.activeJobId || measurementState.autoSubInFlight);
+}
+
 function getMeasurementJobResultMeasurement(job = {}) {
     if (job?.result?.measurement && typeof job.result.measurement === 'object') return job.result.measurement;
     if (job?.measurement && typeof job.measurement === 'object') return job.measurement;
@@ -8269,25 +8292,27 @@ function formatMeasurementJobStatusText(job = {}, fallback = 'Measurement runnin
 function syncMeasurementStartButtonFallback() {
     if (!elements.measurementStartBtn) return;
     const measurementState = state.measurement || {};
-    const activeJobRunning = !!measurementState.activeJobId;
-    const autoSubActive = !!measurementState.autoSubInFlight;
-    const locked = autoSubActive || measurementState.calibrationUpdating || measurementState.calibrationDeleting;
+    const activeKind = getActiveMeasurementKind();
+    const activeJobRunning = hasActiveMeasurementJob();
+    const singleActive = activeKind === 'single';
+    const lrActive = activeKind === 'lr_repeat';
+    const autoSubActive = activeKind === 'auto_sub';
+    const calibrationBusy = measurementState.calibrationUpdating || measurementState.calibrationDeleting;
 
-    elements.measurementStartBtn.disabled = locked
+    elements.measurementStartBtn.disabled = calibrationBusy
         ? true
-        : (!activeJobRunning && (measurementState.inputsLoading || !measurementState.hostCaptureAvailable));
-    elements.measurementStartBtn.textContent = autoSubActive
-        ? 'Auto Sub running…'
-        : (activeJobRunning ? 'Cancel measurement' : (measurementState.startInFlight ? 'Starting...' : 'Start Single Sweep'));
+        : (activeJobRunning ? !singleActive : (measurementState.inputsLoading || !measurementState.hostCaptureAvailable));
+    elements.measurementStartBtn.textContent = singleActive
+        ? 'Cancel measurement'
+        : (measurementState.startInFlight ? 'Starting...' : 'Start Single Sweep');
     if (elements.measurementRepeatStartBtn) {
-        elements.measurementRepeatStartBtn.disabled = autoSubActive
+        elements.measurementRepeatStartBtn.disabled = calibrationBusy
             ? true
-            : (activeJobRunning ? false : (measurementState.startInFlight || measurementState.inputsLoading || !measurementState.hostCaptureAvailable));
-        elements.measurementRepeatStartBtn.textContent = autoSubActive
-            ? 'Auto Sub running…'
-            : (activeJobRunning && measurementState.repeatJobActive
-                ? 'Cancel L/R Repeat'
-                : (activeJobRunning ? 'Cancel measurement' : 'Start L/R Repeat'));
+            : (activeJobRunning ? !lrActive
+            : (measurementState.startInFlight || measurementState.inputsLoading || !measurementState.hostCaptureAvailable));
+        elements.measurementRepeatStartBtn.textContent = lrActive
+            ? 'Cancel measurement'
+            : 'Start L/R Repeat';
     }
     syncAutoSubButton();
 }
@@ -8307,15 +8332,17 @@ function syncAutoSubButton() {
     const measurementState = state.measurement || {};
     const outputMode = state.settings?.audioOutputs?.output_mode;
     const isSubwooferMode = (outputMode?.mode || '') === 'subwoofer-2.1';
-    const busy = measurementState.startInFlight || !!measurementState.activeJobId || measurementState.autoSubInFlight;
 
     if (!isSubwooferMode) {
         elements.measurementAutoSubGroup.classList.add('hidden');
         return;
     }
     elements.measurementAutoSubGroup.classList.remove('hidden');
-    elements.measurementAutoSubStartBtn.disabled = busy;
-    elements.measurementAutoSubStartBtn.textContent = measurementState.autoSubInFlight ? 'Auto Sub Optimize running…' : 'Auto Sub Optimize';
+    const activeKind = getActiveMeasurementKind();
+    const autoSubActive = activeKind === 'auto_sub';
+    const autoSubReadyToCancel = autoSubActive && !!measurementState.autoSubJobId;
+    elements.measurementAutoSubStartBtn.disabled = autoSubActive ? !autoSubReadyToCancel : (measurementState.startInFlight || hasActiveMeasurementJob());
+    elements.measurementAutoSubStartBtn.textContent = autoSubActive ? 'Cancel Auto Sub' : 'Auto Sub Optimize';
 
     // Sync subwoofer controls lock
     syncSubwooferControlsDuringAutoSub();
@@ -8336,6 +8363,8 @@ async function startAutoSubOptimize() {
     }
 
     measurementState.autoSubInFlight = true;
+    measurementState.startInFlight = true;
+    measurementState.activeMeasurementKind = 'auto_sub';
     measurementState.autoSubJobId = '';
     measurementState.autoSubResult = null;
     syncSubwooferControlsDuringAutoSub();
@@ -8375,6 +8404,8 @@ async function startAutoSubOptimize() {
         showToast(measurementState.statusText, 'error');
     } finally {
         measurementState.autoSubInFlight = false;
+        measurementState.startInFlight = false;
+        measurementState.activeMeasurementKind = '';
         measurementState.autoSubJobId = '';
         // Refresh audio outputs to pick up new sub_alignment_ms
         fetchAudioOutputOverview().catch(() => {});
@@ -8382,10 +8413,29 @@ async function startAutoSubOptimize() {
     }
 }
 
+async function cancelAutoSubOptimize() {
+    const jobId = String(state.measurement.autoSubJobId || '');
+    if (!jobId) return;
+    state.measurement.statusText = 'Cancelling Auto Sub Optimize…';
+    renderMeasurementPanel();
+    try {
+        const resp = await fetch(`/api/measurements/auto-sub-optimize/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || 'Failed to cancel Auto Sub Optimize');
+        state.measurement.statusText = String(data.job?.message || 'Cancelling Auto Sub Optimize…');
+    } catch (error) {
+        console.error('cancelAutoSubOptimize failed', error);
+        state.measurement.statusText = error.message || 'Failed to cancel Auto Sub Optimize';
+        showToast(state.measurement.statusText, 'error');
+    } finally {
+        renderMeasurementPanel();
+    }
+}
+
 async function pollAutoSubJob(jobId) {
     const measurementState = state.measurement || {};
     const statusEl = elements.measurementAutoSubStatus;
-    const maxTries = 300;
+    const maxTries = 1200;
     for (let i = 0; i < maxTries; i++) {
         await sleep(500);
         try {
@@ -8403,35 +8453,54 @@ async function pollAutoSubJob(jobId) {
 
             // Update inline status element
             if (statusEl) {
-                if (job.stage === 'fine_scan' && fineScan.triggered) {
-                    const fineCur = job.progress?.current || '?';
-                    const fineTot = job.progress?.total || '?';
-                    statusEl.textContent = `Fine-Scan: ${fineCur}/${fineTot} (${fineScan.candidates?.length || '?'} points around winner)`;
-                } else if (job.progress) {
-                    statusEl.textContent = `${job.progress.current}/${job.progress.total} sweeps`;
+                if (job.progress) {
+                    const progress = job.progress || {};
+                    const stageLabel = progress.stage === 'fine' ? 'Fine-Scan' : 'Coarse';
+                    const candidateCur = progress.candidate_current;
+                    const candidateTot = progress.candidate_total;
+                    const sweepCur = progress.sweep_current ?? progress.current;
+                    const sweepTot = progress.sweep_total ?? progress.total;
+                    if (Number.isFinite(candidateCur) && Number.isFinite(candidateTot)) {
+                        statusEl.textContent = `${stageLabel}: ${candidateCur}/${candidateTot} candidates (${sweepCur}/${sweepTot} sweeps)`;
+                    } else {
+                        statusEl.textContent = `${sweepCur}/${sweepTot} sweeps`;
+                    }
                 }
             }
 
-            if (status === 'completed' || status === 'failed') {
+            if (status === 'completed' || status === 'failed' || status === 'cancelled') {
                 if (statusEl) {
-                    const result = job.result;
-                    if (status === 'completed' && result) {
-                        const applied = Number.isFinite(result.applied_alignment_ms) ? result.applied_alignment_ms.toFixed(2) : '?';
-                        const fs = result.fine_scan || {};
-                        if (fs.triggered) {
-                            const cw = result.coarse_winner || {};
-                            const fw = result.fine_winner;
-                            const cDelay = Number.isFinite(cw.delay_ms) ? cw.delay_ms.toFixed(2) : '?';
-                            const fDelay = fw ? (Number.isFinite(fw.delay_ms) ? fw.delay_ms.toFixed(2) : '?') : 'N/A';
-                            statusEl.textContent = `Applied: ${applied} ms (coarse ${cDelay} ms → fine ${fDelay} ms)`;
-                        } else {
-                            statusEl.textContent = `Applied: ${applied} ms`;
-                        }
+                    if (status === 'cancelled') {
+                        statusEl.textContent = job.message || 'Auto Sub Optimize cancelled.';
                     } else {
-                        statusEl.textContent = '';
+                        const result = job.result;
+                        if (status === 'completed' && result) {
+                            const applied = Number.isFinite(result.applied_alignment_ms) ? result.applied_alignment_ms.toFixed(2) : '?';
+                            const suggested = Number.isFinite(result.suggested_alignment_ms) ? result.suggested_alignment_ms.toFixed(2) : applied;
+                            const resultApplied = result.applied !== false;
+                            const fs = result.fine_scan || {};
+                            if (fs.triggered) {
+                                const cw = result.coarse_winner || {};
+                                const fw = result.fine_winner;
+                                const cDelay = Number.isFinite(cw.delay_ms) ? cw.delay_ms.toFixed(2) : '?';
+                                const cScore = Number.isFinite(cw.score_pct) ? cw.score_pct.toFixed(1) : '?';
+                                const fDelay = fw ? (Number.isFinite(fw.delay_ms) ? fw.delay_ms.toFixed(2) : '?') : 'N/A';
+                                const fScore = fw && Number.isFinite(fw.score_pct) ? fw.score_pct.toFixed(1) : '?';
+                                statusEl.textContent = resultApplied
+                                    ? `Applied: ${applied} ms (coarse ${cDelay} ms, ${cScore} % → fine ${fDelay} ms, ${fScore} %)`
+                                    : `Suggested: ${suggested} ms, not applied (coarse ${cDelay} ms, ${cScore} % → fine ${fDelay} ms, ${fScore} %)`;
+                            } else {
+                                statusEl.textContent = resultApplied ? `Applied: ${applied} ms` : `Suggested: ${suggested} ms, not applied`;
+                            }
+                        } else {
+                            statusEl.textContent = '';
+                        }
                     }
                 }
                 await handleAutoSubResult(job);
+                if (statusEl && measurementState.statusText) {
+                    statusEl.textContent = measurementState.statusText;
+                }
                 return;
             }
         } catch (error) {
@@ -8447,6 +8516,13 @@ async function pollAutoSubJob(jobId) {
 async function handleAutoSubResult(job) {
     const measurementState = state.measurement || {};
     const result = job.result;
+    if (job.status === 'cancelled') {
+        measurementState.statusText = job.message || 'Auto Sub Optimize cancelled.';
+        measurementState.autoSubResult = null;
+        syncSubwooferControlsDuringAutoSub();
+        showToast('Auto Sub Optimize cancelled', 'success');
+        return;
+    }
     if (job.status === 'failed') {
         measurementState.statusText = job.message || 'Auto Sub Optimize failed';
         measurementState.autoSubResult = null;
@@ -8464,7 +8540,11 @@ async function handleAutoSubResult(job) {
     const winner = result.winner || {};
     const original = Number.isFinite(result.original_alignment_ms) ? result.original_alignment_ms : null;
     const applied = Number.isFinite(result.applied_alignment_ms) ? result.applied_alignment_ms : null;
+    const suggested = Number.isFinite(result.suggested_alignment_ms) ? result.suggested_alignment_ms : applied;
+    const wasApplied = result.applied !== false;
     const scorePct = Number.isFinite(winner.score_pct) ? winner.score_pct : '?';
+    const scorePctText = Number.isFinite(scorePct) ? scorePct.toFixed(1) : '?';
+    const hasWinnerLRScores = Number.isFinite(winner.score_L_pct) && Number.isFinite(winner.score_R_pct);
     const conf = result.confidence || 'unknown';
     const validCount = Number.isFinite(result.valid_count) ? result.valid_count : '?';
     const sweepCount = Number.isFinite(result.sweep_count) ? result.sweep_count : '?';
@@ -8475,19 +8555,39 @@ async function handleAutoSubResult(job) {
     const fineW = result.fine_winner;
     const originalText = original !== null ? original.toFixed(2) : '?';
     const appliedText = applied !== null ? applied.toFixed(2) : '?';
+    const suggestedText = suggested !== null ? suggested.toFixed(2) : '?';
 
-    const statusParts = [`AutoSub: ${originalText} → ${appliedText} ms`];
+    const statusParts = [wasApplied
+        ? `AutoSub: ${originalText} → ${appliedText} ms`
+        : `AutoSub suggestion: ${originalText} → ${suggestedText} ms (not applied)`];
     if (fineScan.triggered && fineScan.status === 'completed') {
         const coarseDelay = Number.isFinite(coarseW.delay_ms) ? coarseW.delay_ms.toFixed(2) : '?';
         const fineDelay = fineW ? (Number.isFinite(fineW.delay_ms) ? fineW.delay_ms.toFixed(2) : '?') : 'N/A';
-        statusParts.push(`Coarse ${coarseDelay} ms (${Number.isFinite(coarseW.score_pct) ? coarseW.score_pct : '?'} %)`);
-        statusParts.push(`Fine ${fineDelay} ms`);
+        const coarseScore = Number.isFinite(coarseW.score_pct) ? coarseW.score_pct.toFixed(1) : '?';
+        const fineScore = fineW && Number.isFinite(fineW.score_pct) ? fineW.score_pct.toFixed(1) : '?';
+        statusParts.push(`Coarse ${coarseDelay} ms (${coarseScore} %)`);
+        statusParts.push(`Fine ${fineDelay} ms (${fineScore} %)`);
+    }
+    if (hasWinnerLRScores) {
+        statusParts.push(`Combined: ${scorePctText} %`);
+        statusParts.push(`L: ${winner.score_L_pct.toFixed(1)} %`);
+        statusParts.push(`R: ${winner.score_R_pct.toFixed(1)} %`);
+    } else {
+        statusParts.push(`${scorePctText} %`);
     }
     measurementState.statusText = statusParts.join(' · ');
 
     // Toast with full details
     const toastLines = [];
-    toastLines.push(`Winner: ${appliedText} ms delay (${scorePct} % score, ${conf})`);
+    toastLines.push(wasApplied
+        ? `Applied: ${appliedText} ms delay (${scorePctText} % score, ${conf})`
+        : `Suggested: ${suggestedText} ms delay not applied (${scorePctText} % score, ${conf})`);
+    if (hasWinnerLRScores) {
+        toastLines.push(`Combined: ${winner.score_pct.toFixed(1)} % · L: ${winner.score_L_pct.toFixed(1)} % · R: ${winner.score_R_pct.toFixed(1)} %`);
+    }
+    if (!wasApplied && result.apply_decision) {
+        toastLines.push(String(result.apply_decision).replaceAll('_', ' '));
+    }
     if (fineScan.triggered && fineScan.status === 'completed') {
         const coarseScore = Number.isFinite(coarseW.score_pct) ? coarseW.score_pct : '?';
         toastLines.push(`Coarse: ${Number.isFinite(coarseW.delay_ms) ? coarseW.delay_ms.toFixed(2) : '?'} ms (${coarseScore} %)`);
@@ -8504,7 +8604,7 @@ async function handleAutoSubResult(job) {
     }
     toastLines.push(`${validCount} / ${sweepCount} sweeps valid`);
     syncSubwooferControlsDuringAutoSub();
-    showToast(toastLines.join(' · '), conf === 'clear' ? 'success' : 'warning');
+    showToast(toastLines.join(' · '), wasApplied && conf === 'clear' ? 'success' : 'warning');
 }
 
 function renderMeasurementPanelDefensively(context = 'measurement render') {
@@ -8566,6 +8666,7 @@ async function startHostMeasurement() {
     }
 
     state.measurement.activeJobId = '';
+    state.measurement.activeMeasurementKind = 'single';
     state.measurement.pendingRepeatMeasurements = [];
     state.measurement.currentMeasurementSaved = false;
     state.measurement.statusText = 'Starting host-local sweep…';
@@ -8577,6 +8678,7 @@ async function startHostMeasurement() {
     if (!resp.ok) throw new Error(data.detail || 'Failed to start measurement');
     const job = data.job || {};
     state.measurement.activeJobId = String(job.id || '');
+    state.measurement.activeMeasurementKind = normalizeMeasurementKind(job.job_kind || 'single') || 'single';
     state.measurement.statusText = formatMeasurementJobStatusText(job, 'Preparing sweep…');
     renderMeasurementPanel();
     await pollMeasurementJob(state.measurement.activeJobId);
@@ -8603,6 +8705,7 @@ async function startLrRepeatMeasurement() {
         formData.append('calibration_ref', state.measurement.selectedCalibrationRef);
     }
     state.measurement.activeJobId = '';
+    state.measurement.activeMeasurementKind = 'lr_repeat';
     state.measurement.pendingRepeatMeasurements = [];
     state.measurement.repeatJobActive = true;
     state.measurement.statusText = 'Starting L/R repeat…';
@@ -8613,6 +8716,7 @@ async function startLrRepeatMeasurement() {
     if (!resp.ok) throw new Error(data.detail || 'Failed to start L/R repeat measurement');
     const job = data.job || {};
     state.measurement.activeJobId = String(job.id || '');
+    state.measurement.activeMeasurementKind = normalizeMeasurementKind(job.job_kind || 'lr-repeat') || 'lr_repeat';
     state.measurement.statusText = formatMeasurementJobStatusText(job, 'Preparing L/R repeat…');
     renderMeasurementPanel();
     await pollMeasurementJob(state.measurement.activeJobId);
@@ -8629,6 +8733,7 @@ async function startMeasurement() {
 
     state.measurement.startInFlight = true;
     state.measurement.repeatJobActive = false;
+    state.measurement.activeMeasurementKind = '';
     state.measurement.activeJobId = '';
     state.measurement.currentMeasurementSaved = false;
     renderMeasurementPanel();
@@ -8641,6 +8746,10 @@ async function startMeasurement() {
         showToast(state.measurement.statusText, 'error');
     } finally {
         state.measurement.startInFlight = false;
+        if (!state.measurement.activeJobId) {
+            state.measurement.activeMeasurementKind = '';
+            state.measurement.repeatJobActive = false;
+        }
         renderMeasurementPanel();
     }
 }
@@ -8654,6 +8763,7 @@ async function startLrRepeat() {
         return;
     }
     state.measurement.startInFlight = true;
+    state.measurement.activeMeasurementKind = '';
     state.measurement.repeatJobActive = true;
     renderMeasurementPanel();
     try {
@@ -8664,7 +8774,10 @@ async function startLrRepeat() {
         showToast(state.measurement.statusText, 'error');
     } finally {
         state.measurement.startInFlight = false;
-        if (!state.measurement.activeJobId) state.measurement.repeatJobActive = false;
+        if (!state.measurement.activeJobId) {
+            state.measurement.activeMeasurementKind = '';
+            state.measurement.repeatJobActive = false;
+        }
         renderMeasurementPanel();
     }
 }
@@ -8682,6 +8795,7 @@ async function cancelMeasurement() {
         if (MEASUREMENT_JOB_CANCELLED_STATES.has(getMeasurementJobStatus(data.job || {}))) {
             state.measurement.activeJobId = '';
             state.measurement.startInFlight = false;
+            state.measurement.activeMeasurementKind = '';
             state.measurement.repeatJobActive = false;
             syncMeasurementStartButtonFallback();
         }
@@ -8708,6 +8822,7 @@ async function pollMeasurementJob(jobId) {
             state.measurement.activeJobId = '';
             state.measurement.startInFlight = false;
             const repeatMeasurements = Array.isArray(job?.result?.measurements) ? job.result.measurements : [];
+            state.measurement.activeMeasurementKind = '';
             state.measurement.repeatJobActive = false;
             syncMeasurementStartButtonFallback();
             await postRuntimeDebugSnapshot('ui-directly-after-measurement-end', {
@@ -8757,6 +8872,7 @@ async function pollMeasurementJob(jobId) {
         if (MEASUREMENT_JOB_FAILED_STATES.has(jobStatus)) {
             state.measurement.activeJobId = '';
             state.measurement.startInFlight = false;
+            state.measurement.activeMeasurementKind = '';
             state.measurement.repeatJobActive = false;
             syncMeasurementStartButtonFallback();
             await postRuntimeDebugSnapshot('ui-directly-after-measurement-end', {
@@ -8769,6 +8885,7 @@ async function pollMeasurementJob(jobId) {
         if (MEASUREMENT_JOB_CANCELLED_STATES.has(jobStatus)) {
             state.measurement.activeJobId = '';
             state.measurement.startInFlight = false;
+            state.measurement.activeMeasurementKind = '';
             state.measurement.repeatJobActive = false;
             state.measurement.statusText = String(job.message || 'Measurement cancelled.');
             await postRuntimeDebugSnapshot('ui-directly-after-measurement-end', {
@@ -8786,6 +8903,7 @@ async function pollMeasurementJob(jobId) {
     }
     state.measurement.activeJobId = '';
     state.measurement.startInFlight = false;
+    state.measurement.activeMeasurementKind = '';
     state.measurement.repeatJobActive = false;
     syncMeasurementStartButtonFallback();
     throw new Error('Measurement job timed out while waiting for completion');
@@ -9148,22 +9266,25 @@ function renderMeasurementPanel() {
         elements.measurementNameInput.placeholder = 'Measurement name';
     }
     if (elements.measurementStartBtn) {
-        const activeJobRunning = !!measurementState.activeJobId;
+        const activeKind = getActiveMeasurementKind();
+        const activeJobRunning = hasActiveMeasurementJob();
         elements.measurementStartBtn.disabled = measurementState.calibrationUpdating || measurementState.calibrationDeleting
             ? true
-            : (!activeJobRunning && (measurementState.inputsLoading || !measurementState.hostCaptureAvailable));
-        elements.measurementStartBtn.textContent = activeJobRunning
+            : (activeJobRunning ? activeKind !== 'single' : (measurementState.inputsLoading || !measurementState.hostCaptureAvailable));
+        elements.measurementStartBtn.textContent = activeKind === 'single'
             ? 'Cancel measurement'
             : (measurementState.startInFlight ? 'Starting…' : 'Start Single Sweep');
     }
     if (elements.measurementRepeatStartBtn) {
-        const activeJobRunning = !!measurementState.activeJobId;
-        elements.measurementRepeatStartBtn.disabled = activeJobRunning
-            ? false
-            : (measurementState.startInFlight || measurementState.inputsLoading || !measurementState.hostCaptureAvailable);
-        elements.measurementRepeatStartBtn.textContent = activeJobRunning && measurementState.repeatJobActive
-            ? 'Cancel L/R Repeat'
-            : (activeJobRunning ? 'Cancel measurement' : 'Start L/R Repeat');
+        const activeKind = getActiveMeasurementKind();
+        const activeJobRunning = hasActiveMeasurementJob();
+        elements.measurementRepeatStartBtn.disabled = measurementState.calibrationUpdating || measurementState.calibrationDeleting
+            ? true
+            : (activeJobRunning ? activeKind !== 'lr_repeat'
+            : (measurementState.startInFlight || measurementState.inputsLoading || !measurementState.hostCaptureAvailable));
+        elements.measurementRepeatStartBtn.textContent = activeKind === 'lr_repeat'
+            ? 'Cancel measurement'
+            : 'Start L/R Repeat';
     }
     if (elements.measurementSaveBtn) {
         elements.measurementSaveBtn.disabled = !current || measurementState.saveInFlight || measurementState.startInFlight || measurementState.currentMeasurementSaved;
@@ -9613,6 +9734,7 @@ function renderMeasurementPanel() {
             renderMeasurementPanel();
         });
     });
+    syncAutoSubButton();
     scheduleMeasurementGraphRender();
 }
 
@@ -9754,7 +9876,7 @@ function setupMeasurementActions() {
     }
     if (elements.measurementStartBtn) {
         elements.measurementStartBtn.addEventListener('click', () => {
-            if (state.measurement.activeJobId) {
+            if (getActiveMeasurementKind() === 'single') {
                 void cancelMeasurement();
                 return;
             }
@@ -9763,7 +9885,7 @@ function setupMeasurementActions() {
     }
     if (elements.measurementRepeatStartBtn) {
         elements.measurementRepeatStartBtn.addEventListener('click', () => {
-            if (state.measurement.activeJobId) {
+            if (getActiveMeasurementKind() === 'lr_repeat') {
                 void cancelMeasurement();
                 return;
             }
@@ -9772,6 +9894,11 @@ function setupMeasurementActions() {
     }
     if (elements.measurementAutoSubStartBtn) {
         elements.measurementAutoSubStartBtn.addEventListener('click', () => {
+            const measurementState = state.measurement || {};
+            if (measurementState.autoSubInFlight) {
+                void cancelAutoSubOptimize();
+                return;
+            }
             void startAutoSubOptimize();
         });
     }
