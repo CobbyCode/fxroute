@@ -8472,35 +8472,11 @@ async function pollAutoSubJob(jobId) {
                 if (statusEl) {
                     if (status === 'cancelled') {
                         statusEl.textContent = job.message || 'Auto Sub Optimize cancelled.';
-                    } else {
-                        const result = job.result;
-                        if (status === 'completed' && result) {
-                            const applied = Number.isFinite(result.applied_alignment_ms) ? result.applied_alignment_ms.toFixed(2) : '?';
-                            const suggested = Number.isFinite(result.suggested_alignment_ms) ? result.suggested_alignment_ms.toFixed(2) : applied;
-                            const resultApplied = result.applied !== false;
-                            const fs = result.fine_scan || {};
-                            if (fs.triggered) {
-                                const cw = result.coarse_winner || {};
-                                const fw = result.fine_winner;
-                                const cDelay = Number.isFinite(cw.delay_ms) ? cw.delay_ms.toFixed(2) : '?';
-                                const cScore = Number.isFinite(cw.score_pct) ? cw.score_pct.toFixed(1) : '?';
-                                const fDelay = fw ? (Number.isFinite(fw.delay_ms) ? fw.delay_ms.toFixed(2) : '?') : 'N/A';
-                                const fScore = fw && Number.isFinite(fw.score_pct) ? fw.score_pct.toFixed(1) : '?';
-                                statusEl.textContent = resultApplied
-                                    ? `Applied: ${applied} ms (coarse ${cDelay} ms, ${cScore} % → fine ${fDelay} ms, ${fScore} %)`
-                                    : `Suggested: ${suggested} ms, not applied (coarse ${cDelay} ms, ${cScore} % → fine ${fDelay} ms, ${fScore} %)`;
-                            } else {
-                                statusEl.textContent = resultApplied ? `Applied: ${applied} ms` : `Suggested: ${suggested} ms, not applied`;
-                            }
-                        } else {
-                            statusEl.textContent = '';
-                        }
+                    } else if (status === 'failed') {
+                        statusEl.textContent = '';
                     }
                 }
                 await handleAutoSubResult(job);
-                if (statusEl && measurementState.statusText) {
-                    statusEl.textContent = measurementState.statusText;
-                }
                 return;
             }
         } catch (error) {
@@ -8515,6 +8491,7 @@ async function pollAutoSubJob(jobId) {
 
 async function handleAutoSubResult(job) {
     const measurementState = state.measurement || {};
+    const statusEl = elements.measurementAutoSubStatus;
     const result = job.result;
     if (job.status === 'cancelled') {
         measurementState.statusText = job.message || 'Auto Sub Optimize cancelled.';
@@ -8546,65 +8523,71 @@ async function handleAutoSubResult(job) {
     const scorePctText = Number.isFinite(scorePct) ? scorePct.toFixed(1) : '?';
     const hasWinnerLRScores = Number.isFinite(winner.score_L_pct) && Number.isFinite(winner.score_R_pct);
     const conf = result.confidence || 'unknown';
-    const validCount = Number.isFinite(result.valid_count) ? result.valid_count : '?';
-    const sweepCount = Number.isFinite(result.sweep_count) ? result.sweep_count : '?';
     const fineScan = result.fine_scan || {};
 
-    // Build stage info for status element
     const coarseW = result.coarse_winner || {};
     const fineW = result.fine_winner;
     const originalText = original !== null ? original.toFixed(2) : '?';
     const appliedText = applied !== null ? applied.toFixed(2) : '?';
     const suggestedText = suggested !== null ? suggested.toFixed(2) : '?';
+    const isWeak = !wasApplied || (Number.isFinite(scorePct) && scorePct < 50);
 
-    const statusParts = [wasApplied
-        ? `AutoSub: ${originalText} → ${appliedText} ms`
-        : `AutoSub suggestion: ${originalText} → ${suggestedText} ms (not applied)`];
-    if (fineScan.triggered && fineScan.status === 'completed') {
-        const coarseDelay = Number.isFinite(coarseW.delay_ms) ? coarseW.delay_ms.toFixed(2) : '?';
-        const fineDelay = fineW ? (Number.isFinite(fineW.delay_ms) ? fineW.delay_ms.toFixed(2) : '?') : 'N/A';
-        const coarseScore = Number.isFinite(coarseW.score_pct) ? coarseW.score_pct.toFixed(1) : '?';
-        const fineScore = fineW && Number.isFinite(fineW.score_pct) ? fineW.score_pct.toFixed(1) : '?';
-        statusParts.push(`Coarse ${coarseDelay} ms (${coarseScore} %)`);
-        statusParts.push(`Fine ${fineDelay} ms (${fineScore} %)`);
-    }
-    if (hasWinnerLRScores) {
-        statusParts.push(`Combined: ${scorePctText} %`);
-        statusParts.push(`L: ${winner.score_L_pct.toFixed(1)} %`);
-        statusParts.push(`R: ${winner.score_R_pct.toFixed(1)} %`);
+    const mainParts = [];
+    if (wasApplied) {
+        mainParts.push(`AutoSub applied: ${appliedText} ms (was ${originalText} ms)`);
     } else {
-        statusParts.push(`${scorePctText} %`);
+        mainParts.push(`AutoSub suggested: ${suggestedText} ms (was ${originalText} ms, not applied)`);
     }
-    measurementState.statusText = statusParts.join(' · ');
-
-    // Toast with full details
-    const toastLines = [];
-    toastLines.push(wasApplied
-        ? `Applied: ${appliedText} ms delay (${scorePctText} % score, ${conf})`
-        : `Suggested: ${suggestedText} ms delay not applied (${scorePctText} % score, ${conf})`);
     if (hasWinnerLRScores) {
-        toastLines.push(`Combined: ${winner.score_pct.toFixed(1)} % · L: ${winner.score_L_pct.toFixed(1)} % · R: ${winner.score_R_pct.toFixed(1)} %`);
+        mainParts.push(`Score ${scorePctText} % · L ${winner.score_L_pct.toFixed(1)} % / R ${winner.score_R_pct.toFixed(1)} %`);
+    } else {
+        mainParts.push(`Score ${scorePctText} %`);
     }
-    if (!wasApplied && result.apply_decision) {
-        toastLines.push(String(result.apply_decision).replaceAll('_', ' '));
+    if (isWeak) {
+        measurementState.statusText = `AutoSub result weak — check with a normal 2.1 measurement. (${mainParts[0]}, Score ${scorePctText} %)`;
+    } else {
+        measurementState.statusText = mainParts.join(' · ');
     }
-    if (fineScan.triggered && fineScan.status === 'completed') {
-        const coarseScore = Number.isFinite(coarseW.score_pct) ? coarseW.score_pct : '?';
-        toastLines.push(`Coarse: ${Number.isFinite(coarseW.delay_ms) ? coarseW.delay_ms.toFixed(2) : '?'} ms (${coarseScore} %)`);
-        if (fineW) {
-            const fineScore = Number.isFinite(fineW.score_pct) ? fineW.score_pct : '?';
-            toastLines.push(`Fine: ${Number.isFinite(fineW.delay_ms) ? fineW.delay_ms.toFixed(2) : '?'} ms (${fineScore} %)`);
+
+    if (statusEl) {
+        const detailParts = [];
+        if (fineScan.triggered && fineScan.status === 'completed') {
+            const cDelay = Number.isFinite(coarseW.delay_ms) ? coarseW.delay_ms.toFixed(2) : '?';
+            const cScore = Number.isFinite(coarseW.score_pct) ? coarseW.score_pct.toFixed(1) : '?';
+            detailParts.push(`Coarse: ${cDelay} ms (${cScore} %)`);
+            if (fineW) {
+                const fDelay = Number.isFinite(fineW.delay_ms) ? fineW.delay_ms.toFixed(2) : '?';
+                const fScore = Number.isFinite(fineW.score_pct) ? fineW.score_pct.toFixed(1) : '?';
+                detailParts.push(`Fine checked: ${fDelay} ms (${fScore} %)`);
+            }
+        } else if (result.runner_up) {
+            const rDelay = Number.isFinite(result.runner_up.delay_ms) ? result.runner_up.delay_ms.toFixed(2) : '?';
+            const rScore = Number.isFinite(result.runner_up.score_pct) ? result.runner_up.score_pct.toFixed(1) : '?';
+            detailParts.push(`Runner-up: ${rDelay} ms (${rScore} %)`);
         }
-        const reasons = Array.isArray(fineScan.reasons) ? fineScan.reasons : [];
-        if (reasons.length) toastLines.push(`Trigger: ${reasons.join(', ')}`);
-    } else if (result.runner_up) {
-        const runnerDelay = Number.isFinite(result.runner_up.delay_ms) ? result.runner_up.delay_ms.toFixed(2) : '?';
-        const runnerScore = Number.isFinite(result.runner_up.score_pct) ? result.runner_up.score_pct : '?';
-        toastLines.push(`Runner-up: ${runnerDelay} ms (${runnerScore} % score)`);
+        if (detailParts.length > 0) {
+            statusEl.textContent = detailParts.join(' · ');
+        } else {
+            statusEl.textContent = '';
+        }
     }
-    toastLines.push(`${validCount} / ${sweepCount} sweeps valid`);
+
+    let toastText;
+    if (hasWinnerLRScores) {
+        toastText = wasApplied
+            ? `Applied: ${appliedText} ms (was ${originalText} ms) · Combined ${scorePctText} % · L ${winner.score_L_pct.toFixed(1)} % / R ${winner.score_R_pct.toFixed(1)} %`
+            : `Suggested: ${suggestedText} ms (was ${originalText} ms, not applied) · Combined ${scorePctText} % · L ${winner.score_L_pct.toFixed(1)} % / R ${winner.score_R_pct.toFixed(1)} %`;
+    } else {
+        toastText = wasApplied
+            ? `Applied: ${appliedText} ms (was ${originalText} ms) · Score ${scorePctText} %`
+            : `Suggested: ${suggestedText} ms (was ${originalText} ms, not applied) · Score ${scorePctText} %`;
+    }
+    if (isWeak) {
+        toastText += ` · ${conf}`;
+    }
     syncSubwooferControlsDuringAutoSub();
-    showToast(toastLines.join(' · '), wasApplied && conf === 'clear' ? 'success' : 'warning');
+    const toastType = isWeak ? 'error' : (wasApplied ? 'success' : 'warning');
+    showToast(toastText, toastType);
 }
 
 function renderMeasurementPanelDefensively(context = 'measurement render') {

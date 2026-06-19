@@ -251,13 +251,19 @@ The optimizer does not directly measure the subwoofer’s internal latency. It o
 
 If the coarse scan finds a close or uncertain result, FXRoute runs an additional fine scan around the best delay region. The result should be understood as a practical optimum region, not as an absolute millisecond-perfect value.
 
-**L/R combined scoring.** Each delay candidate is measured on both the left and right channel. The two measurements are scored independently, then combined into a single score:
-
-    combined = 0.6 × min(score_L, score_R) + 0.4 × mean(score_L, score_R)
-
-The weaker side gets more weight (60 %), so the result works well for both channels. The fine scan uses the same combined scoring. The result display shows the combined score together with the individual left and right scores.
+**L/R combined scoring.** Each delay candidate is measured on both the left and right channel. FXRoute picks a single sub alignment value that works well for both sides. If one channel scores significantly worse, the combined result accounts for it. The display shows the combined score together with the individual left and right scores.
 
 Auto Sub Optimize currently adjusts **delay only**. It does not automatically change sub gain, polarity, PEQ, target curve, or room correction filters.
+
+**Recommended order with EQ or Convolver:**
+
+1. Set the 2.1 crossover roughly as desired.
+2. Run **Auto Sub Optimize** once to get the sub/main timing into a good starting range.
+3. Create and enable your EQ or Convolver preset.
+4. Run **Auto Sub Optimize** again with the final EQ/Convolver preset active.
+5. Check the result with a normal 2.1 measurement.
+
+This second pass is recommended because EQ and time-aligned convolver filters can slightly change the phase and timing around the crossover region.
 
 For best results:
 
