@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.42 (2026-06-20)
+
+### Fixed
+- Fixed a race condition where changing a 2.1 subwoofer value (e.g. sub alignment delay) in the UI and starting a measurement immediately afterwards could leave the running 2.1 helper on the old value because the UI change was never flushed to the backend. Now the current subwoofer settings are reliably saved before every measurement start.
+
 ## 0.7.41 (2026-06-19)
 
 ### Added
