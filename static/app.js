@@ -1023,6 +1023,26 @@ async function saveAudioOutputMode(mode, subwoofer = null) {
     }
 }
 
+/**
+ * Flush current 2.1 subwoofer settings to the backend before a measurement.
+ * This ensures the running 2.1 helper uses the latest sub_alignment_ms etc.
+ * Skips when not in subwoofer-2.1 mode. Throws on HTTP error.
+ */
+async function flushSubwooferSettingsBeforeMeasurement() {
+    const outputMode = state.settings.audioOutputs?.output_mode || {};
+    if (outputMode.mode !== 'subwoofer-2.1') return;
+    const settings = collectSubwooferSettings();
+    const resp = await fetch('/api/audio/output-mode', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: 'subwoofer-2.1', subwoofer: settings }),
+    });
+    if (!resp.ok) {
+        const data = await resp.json().catch(() => ({}));
+        throw new Error(data.detail || 'Failed to save subwoofer settings before measurement');
+    }
+}
+
 function collectRuntimeDebugUiState(extra = {}) {
     return {
         visibleTab: window.__visibleTab || '',
@@ -8362,6 +8382,8 @@ async function startAutoSubOptimize() {
         return;
     }
 
+    await flushSubwooferSettingsBeforeMeasurement();
+
     measurementState.autoSubInFlight = true;
     measurementState.startInFlight = true;
     measurementState.activeMeasurementKind = 'auto_sub';
@@ -8634,6 +8656,8 @@ async function startHostMeasurement() {
         return;
     }
 
+    await flushSubwooferSettingsBeforeMeasurement();
+
     const formData = new FormData();
     formData.append('input_id', state.measurement.selectedInputId);
     formData.append('channel', state.measurement.selectedChannel || 'left');
@@ -8674,6 +8698,7 @@ async function startLrRepeatMeasurement() {
         showToast(state.measurement.statusText, 'error');
         return;
     }
+    await flushSubwooferSettingsBeforeMeasurement();
     const formData = new FormData();
     formData.append('input_id', state.measurement.selectedInputId);
     formData.append('base_name', state.measurement.currentMeasurementName || '');
