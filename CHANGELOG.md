@@ -13,7 +13,7 @@
 ### Fixed
 - Improved AutoSub cancel handling, result display, and measurement safety during optimization.
 
-## 0.7.40## 0.7.40 (2026-06-16)
+## 0.7.40 (2026-06-16)
 - Fix fresh EasyEffects installations starting with no active preset by loading Neutral automatically.
 
 ## 0.7.39 (2026-06-16)

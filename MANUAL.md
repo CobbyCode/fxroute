@@ -245,7 +245,7 @@ Keep the microphone fixed during the whole repeat. Moving the microphone between
 
 Auto Sub Optimize is available in **2.1 Subwoofer** mode. It measures several sub alignment candidates around the selected crossover frequency and automatically applies the best measured `sub_alignment_ms`.
 
-The scan is centered around the currently configured `sub_alignment_ms`. If you already know or suspect a useful starting delay — for example from a subwoofer manual that lists internal DSP latency — enter that value first (- x ms to delay the mains). Auto Sub Optimize will then scan around that starting point instead of around 0 ms.
+The scan is centered around the currently configured `sub_alignment_ms`. If you already know or suspect a useful starting delay — for example from a subwoofer manual that lists internal DSP latency — enter a suitable initial alignment value first. Auto Sub Optimize will then scan around that starting point instead of around 0 ms.
 
 The optimizer does not directly measure the subwoofer’s internal latency. It optimizes the practical sub/main integration at the microphone position, including the subwoofer, crossover, room, and listening position.
 
