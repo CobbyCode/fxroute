@@ -12,7 +12,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=0.4.458">
     <link rel="manifest" href="/static/site.webmanifest?v=0.4.458">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/static/style.css?v=0.7.36">
+    <link rel="stylesheet" href="/static/style.css?v=0.7.37">
 </head>
 <body>
     <!-- Offline indicator -->
@@ -70,6 +70,7 @@
                             <select id="settings-output-mode-select" class="url-input">
                                 <option value="stereo">Stereo</option>
                                 <option value="subwoofer-2.1">2.1 Subwoofer</option>
+                                <option value="subwoofer-2.2">2.2 Subwoofer</option>
                             </select>
                             <p id="settings-output-mode-hint" class="settings-inline-note">Stereo output mode active.</p>
                         </div>
@@ -442,42 +443,77 @@
                                     <canvas id="effects-subwoofer-preview" class="effects-subwoofer-preview" width="560" height="160" aria-label="Crossover preview"></canvas>
                                 </div>
                                 <div class="effects-subwoofer-controls">
-                                    <div class="field-group">
-                                        <label for="effects-subwoofer-frequency-number">Crossover frequency</label>
-                                        <div class="effects-subwoofer-frequency-row">
-                                            <div class="delay-input-wrap">
-                                                <input type="number" id="effects-subwoofer-frequency-number" class="url-input delay-number-input" min="40" max="200" step="1" value="80">
-                                                <span class="delay-unit">Hz</span>
+                                    <div class="effects-subwoofer-control-group effects-subwoofer-global-group">
+                                        <div class="effects-subwoofer-group-label">Global</div>
+                                        <div class="field-group">
+                                            <label for="effects-subwoofer-frequency-number">Crossover frequency</label>
+                                            <div class="effects-subwoofer-frequency-row">
+                                                <div class="delay-input-wrap">
+                                                    <input type="number" id="effects-subwoofer-frequency-number" class="url-input delay-number-input" min="40" max="200" step="1" value="80">
+                                                    <span class="delay-unit">Hz</span>
+                                                </div>
                                             </div>
                                         </div>
-                                    </div>
-                                    <div class="field-group">
-                                        <label for="effects-subwoofer-level">Sub level</label>
-                                        <div class="delay-input-wrap">
-                                            <input type="number" id="effects-subwoofer-level" class="url-input delay-number-input" min="-24" max="12" step="0.5" value="0">
-                                            <span class="delay-unit">dB</span>
+                                        <div class="field-group effects-subwoofer-highpass-field">
+                                            <label for="effects-subwoofer-main-highpass">Main highpass</label>
+                                            <select id="effects-subwoofer-main-highpass" class="url-input effects-headroom-select effects-subwoofer-compact-select">
+                                                <option value="on" selected>On</option>
+                                                <option value="off">Off</option>
+                                            </select>
                                         </div>
                                     </div>
-                                    <div class="field-group">
-                                        <label for="effects-subwoofer-delay">Sub alignment</label>
-                                        <div class="delay-input-wrap">
-                                            <input type="number" id="effects-subwoofer-delay" class="url-input delay-number-input" min="-40" max="40" step="0.1" value="0">
-                                            <span class="delay-unit">ms</span>
+                                    <div class="effects-subwoofer-control-group effects-subwoofer-channel-group effects-subwoofer-sub1-group">
+                                        <div id="effects-subwoofer-sub1-group-label" class="effects-subwoofer-group-label">Subwoofer</div>
+                                        <div class="field-group">
+                                            <label id="effects-subwoofer-level-label" for="effects-subwoofer-level">Sub level</label>
+                                            <div class="delay-input-wrap">
+                                                <input type="number" id="effects-subwoofer-level" class="url-input delay-number-input" min="-24" max="12" step="0.5" value="0">
+                                                <span class="delay-unit">dB</span>
+                                            </div>
+                                        </div>
+                                        <div class="field-group">
+                                            <label id="effects-subwoofer-delay-label" for="effects-subwoofer-delay">Sub alignment</label>
+                                            <div class="delay-input-wrap">
+                                                <input type="number" id="effects-subwoofer-delay" class="url-input delay-number-input" min="-40" max="40" step="0.1" value="0">
+                                                <span class="delay-unit">ms</span>
+                                            </div>
+                                        </div>
+                                        <div class="field-group effects-subwoofer-polarity-field">
+                                            <label id="effects-subwoofer-polarity-label" for="effects-subwoofer-polarity">Sub polarity</label>
+                                            <select id="effects-subwoofer-polarity" class="url-input effects-headroom-select effects-subwoofer-polarity-select">
+                                                <option value="normal">Normal</option>
+                                                <option value="invert">Invert</option>
+                                            </select>
                                         </div>
                                     </div>
-                                    <div class="field-group effects-subwoofer-polarity-field">
-                                        <label for="effects-subwoofer-polarity">Sub polarity</label>
-                                        <select id="effects-subwoofer-polarity" class="url-input effects-headroom-select effects-subwoofer-polarity-select">
-                                            <option value="normal">Normal</option>
-                                            <option value="invert">Invert</option>
-                                        </select>
+                                    <div class="effects-subwoofer-control-group effects-subwoofer-channel-group effects-subwoofer-sub2-group effects-subwoofer-sub2-field hidden">
+                                        <div class="effects-subwoofer-group-label">Sub 2</div>
+                                        <div class="field-group">
+                                            <label for="effects-subwoofer-sub2-level">Sub 2 level</label>
+                                            <div class="delay-input-wrap">
+                                                <input type="number" id="effects-subwoofer-sub2-level" class="url-input delay-number-input" min="-24" max="12" step="0.5" value="0">
+                                                <span class="delay-unit">dB</span>
+                                            </div>
+                                        </div>
+                                        <div class="field-group">
+                                            <label for="effects-subwoofer-sub2-delay">Sub 2 alignment</label>
+                                            <div class="delay-input-wrap">
+                                                <input type="number" id="effects-subwoofer-sub2-delay" class="url-input delay-number-input" min="-40" max="40" step="0.1" value="0">
+                                                <span class="delay-unit">ms</span>
+                                            </div>
+                                        </div>
+                                        <div class="field-group effects-subwoofer-polarity-field">
+                                            <label for="effects-subwoofer-sub2-polarity">Sub 2 polarity</label>
+                                            <select id="effects-subwoofer-sub2-polarity" class="url-input effects-headroom-select effects-subwoofer-polarity-select">
+                                                <option value="normal">Normal</option>
+                                                <option value="invert">Invert</option>
+                                            </select>
+                                        </div>
                                     </div>
-                                    <div class="field-group effects-subwoofer-highpass-field">
-                                        <label for="effects-subwoofer-main-highpass">Main highpass</label>
-                                        <select id="effects-subwoofer-main-highpass" class="url-input effects-headroom-select effects-subwoofer-compact-select">
-                                            <option value="on" selected>On</option>
-                                            <option value="off">Off</option>
-                                        </select>
+                                    <div id="effects-subwoofer-derived-delays" class="effects-subwoofer-derived-delays hidden">
+                                        Derived: Main <span id="effects-subwoofer-dd-main">0.00</span> ms ·
+                                        Sub 1 <span id="effects-subwoofer-dd-sub1">0.00</span> ms ·
+                                        Sub 2 <span id="effects-subwoofer-dd-sub2">0.00</span> ms
                                     </div>
                                 </div>
                                 <div id="effects-subwoofer-feedback" class="effects-extras-feedback" aria-live="polite"></div>
@@ -1044,6 +1080,6 @@
     <div id="toast-container" class="toast-container"></div>
 
     <script src="/static/measurement_dsp.js?v=0.7.36"></script>
-    <script src="/static/app.js?v=0.7.36-21-runtime-debug"></script>
+    <script src="/static/app.js?v=0.7.36-23-subwoofer-polish"></script>
 </body>
 </html>

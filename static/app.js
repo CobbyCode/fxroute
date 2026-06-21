@@ -172,6 +172,10 @@ let state = {
                     sub_alignment_ms: 0,
                     sub_polarity: 'normal',
                 },
+                subwoofers: {
+                    sub1: { level_db: 0, alignment_ms: 0, polarity: 'normal' },
+                    sub2: { level_db: 0, alignment_ms: 0, polarity: 'normal' },
+                },
             },
         },
         sourceMode: {
@@ -487,9 +491,21 @@ const elements = {
     effectsSubwooferFrequency: document.getElementById('effects-subwoofer-frequency'),
     effectsSubwooferFrequencyNumber: document.getElementById('effects-subwoofer-frequency-number'),
     effectsSubwooferMainHighpass: document.getElementById('effects-subwoofer-main-highpass'),
+    effectsSubwooferLevelLabel: document.getElementById('effects-subwoofer-level-label'),
     effectsSubwooferLevel: document.getElementById('effects-subwoofer-level'),
+    effectsSubwooferDelayLabel: document.getElementById('effects-subwoofer-delay-label'),
     effectsSubwooferDelay: document.getElementById('effects-subwoofer-delay'),
+    effectsSubwooferPolarityLabel: document.getElementById('effects-subwoofer-polarity-label'),
     effectsSubwooferPolarity: document.getElementById('effects-subwoofer-polarity'),
+    effectsSubwooferSub1GroupLabel: document.getElementById('effects-subwoofer-sub1-group-label'),
+    effectsSubwooferSub2Fields: Array.from(document.querySelectorAll('.effects-subwoofer-sub2-field')),
+    effectsSubwooferSub2Level: document.getElementById('effects-subwoofer-sub2-level'),
+    effectsSubwooferSub2Delay: document.getElementById('effects-subwoofer-sub2-delay'),
+    effectsSubwooferSub2Polarity: document.getElementById('effects-subwoofer-sub2-polarity'),
+    effectsSubwooferDerivedDelays: document.getElementById('effects-subwoofer-derived-delays'),
+    effectsSubwooferDdMain: document.getElementById('effects-subwoofer-dd-main'),
+    effectsSubwooferDdSub1: document.getElementById('effects-subwoofer-dd-sub1'),
+    effectsSubwooferDdSub2: document.getElementById('effects-subwoofer-dd-sub2'),
     effectsSubwooferFeedback: document.getElementById('effects-subwoofer-feedback'),
     effectsRewDualPresetName: document.getElementById('effects-rew-dual-preset-name'),
     effectsCombinePreset1: document.getElementById('effects-combine-preset-1'),
@@ -545,6 +561,8 @@ document.addEventListener('DOMContentLoaded', () => {
     try { setupDownloadActions(); } catch(e) { console.error('setupDownloadActions crashed:', e); }
     try { setupEffectsActions(); } catch(e) { console.error('setupEffectsActions crashed:', e); }
     try { setupMeasurementActions(); } catch(e) { console.error('setupMeasurementActions crashed:', e); }
+    try { primeSubwooferPreview(); } catch(e) { console.error('primeSubwooferPreview crashed:', e); }
+    try { window.addEventListener('load', requestSubwooferPreviewRedrawFromState, { once: true }); } catch(e) { console.error('subwoofer preview load hook crashed:', e); }
     try { fetchInitialData(); } catch(e) { console.error('fetchInitialData crashed:', e); }
 });
 // WebSocket
@@ -939,6 +957,46 @@ function normalizeSubwooferSettings(input = {}) {
     };
 }
 
+function normalizeSingleSubwooferSettings(input = {}) {
+    const level = Math.max(-24, Math.min(12, Number(input.level_db ?? input.levelDb ?? 0) || 0));
+    const alignment = Math.max(-40, Math.min(40, Number(input.alignment_ms ?? input.alignmentMs ?? 0) || 0));
+    const polarity = String(input.polarity ?? 'normal').toLowerCase() === 'invert' ? 'invert' : 'normal';
+    return {
+        level_db: Math.round(level * 10) / 10,
+        alignment_ms: Math.round(alignment * 100) / 100,
+        polarity,
+    };
+}
+
+function subwoofer21ToSub22Sub(subwoofer = {}) {
+    const normalized = normalizeSubwooferSettings(subwoofer || {});
+    return normalizeSingleSubwooferSettings({
+        level_db: normalized.sub_level_db,
+        alignment_ms: normalized.sub_alignment_ms,
+        polarity: normalized.sub_polarity,
+    });
+}
+
+function getSubwooferGlobalSettings(outputMode = {}, fallback = {}) {
+    return normalizeSubwooferSettings({
+        ...(fallback || {}),
+        ...(outputMode.subwoofer || {}),
+        crossover_frequency_hz: outputMode.crossover_frequency_hz ?? outputMode.subwoofer?.crossover_frequency_hz ?? fallback?.crossover_frequency_hz,
+        main_highpass_enabled: outputMode.main_highpass_enabled ?? outputMode.subwoofer?.main_highpass_enabled ?? fallback?.main_highpass_enabled,
+        sub_level_db: outputMode.subwoofers?.sub1?.level_db ?? outputMode.subwoofer?.sub_level_db ?? fallback?.sub_level_db,
+        sub_alignment_ms: outputMode.subwoofers?.sub1?.alignment_ms ?? outputMode.subwoofer?.sub_alignment_ms ?? fallback?.sub_alignment_ms,
+        sub_polarity: outputMode.subwoofers?.sub1?.polarity ?? outputMode.subwoofer?.sub_polarity ?? fallback?.sub_polarity,
+    });
+}
+
+function normalizeSubwoofersSettings(subwoofers = {}, fallbackSubwoofer = {}) {
+    const fallbackSub = subwoofer21ToSub22Sub(fallbackSubwoofer);
+    return {
+        sub1: normalizeSingleSubwooferSettings(subwoofers?.sub1 || fallbackSub),
+        sub2: normalizeSingleSubwooferSettings(subwoofers?.sub2 || {}),
+    };
+}
+
 function collectSubwooferSettings() {
     return normalizeSubwooferSettings({
         crossover_frequency_hz: elements.effectsSubwooferFrequencyNumber?.value || elements.effectsSubwooferFrequency?.value || 80,
@@ -949,34 +1007,71 @@ function collectSubwooferSettings() {
     });
 }
 
-let _audioOutputModeRequestId = 0;
-function getAudioOutputModeSignature(mode, subwoofer) {
-    return JSON.stringify({
-        mode: mode === 'subwoofer-2.1' ? 'subwoofer-2.1' : 'stereo',
-        subwoofer: normalizeSubwooferSettings(subwoofer || {}),
-    });
+function collectSubwoofer22Settings() {
+    const subwoofer = collectSubwooferSettings();
+    return {
+        subwoofer,
+        subwoofers: {
+            sub1: subwoofer21ToSub22Sub(subwoofer),
+            sub2: normalizeSingleSubwooferSettings({
+                level_db: elements.effectsSubwooferSub2Level?.value || 0,
+                alignment_ms: elements.effectsSubwooferSub2Delay?.value || 0,
+                polarity: elements.effectsSubwooferSub2Polarity?.value || 'normal',
+            }),
+        },
+    };
 }
 
-async function saveAudioOutputMode(mode, subwoofer = null) {
-    const nextMode = mode === 'subwoofer-2.1' ? 'subwoofer-2.1' : 'stereo';
+function normalizeOutputModeName(mode) {
+    return ['subwoofer-2.1', 'subwoofer-2.2'].includes(mode) ? mode : 'stereo';
+}
+
+function buildAudioOutputModeRequest(mode, settings = null) {
+    const nextMode = normalizeOutputModeName(mode);
+    const outputMode = state.settings.audioOutputs.output_mode || {};
+    const fallbackSubwoofer = getSubwooferGlobalSettings(outputMode, outputMode.subwoofer || {});
+    if (nextMode === 'subwoofer-2.2') {
+        const source = settings && typeof settings === 'object' ? settings : {};
+        const switchingTo22 = outputMode.mode !== 'subwoofer-2.2' && !settings;
+        const sourceHasSettings = Object.keys(source).length > 0;
+        const subwooferSource = source.subwoofer || (sourceHasSettings ? source : getSubwooferGlobalSettings(outputMode, fallbackSubwoofer));
+        const subwoofer = normalizeSubwooferSettings(subwooferSource);
+        const subwoofers = normalizeSubwoofersSettings(source.subwoofers || (switchingTo22 ? {} : outputMode.subwoofers) || {}, subwoofer);
+        return {
+            mode: nextMode,
+            subwoofer,
+            subwoofers,
+        };
+    }
+    return {
+        mode: nextMode,
+        subwoofer: normalizeSubwooferSettings(settings?.subwoofer || settings || fallbackSubwoofer),
+    };
+}
+
+let _audioOutputModeRequestId = 0;
+function getAudioOutputModeSignature(mode, settings = null) {
+    return JSON.stringify(buildAudioOutputModeRequest(mode, settings));
+}
+
+async function saveAudioOutputMode(mode, settings = null) {
+    const requestBody = buildAudioOutputModeRequest(mode, settings);
+    const nextMode = requestBody.mode;
     const previousMode = state.settings.audioOutputs.output_mode?.mode || 'stereo';
-    const nextSubwoofer = normalizeSubwooferSettings(subwoofer || state.settings.audioOutputs.output_mode?.subwoofer);
-    const requestSignature = getAudioOutputModeSignature(nextMode, nextSubwoofer);
+    const requestSignature = JSON.stringify(requestBody);
     const requestId = ++_audioOutputModeRequestId;
     state.settings.audioOutputs.output_mode = {
         ...(state.settings.audioOutputs.output_mode || {}),
         mode: nextMode,
-        subwoofer: nextSubwoofer,
+        subwoofer: requestBody.subwoofer,
+        ...(nextMode === 'subwoofer-2.2' ? { subwoofers: requestBody.subwoofers } : {}),
     };
     renderSettingsPanel();
     try {
         const resp = await fetch('/api/audio/output-mode', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                mode: nextMode,
-                subwoofer: nextSubwoofer,
-            }),
+            body: JSON.stringify(requestBody),
         });
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) throw new Error(data.detail || 'Failed to save output mode');
@@ -984,7 +1079,7 @@ async function saveAudioOutputMode(mode, subwoofer = null) {
             requestId !== _audioOutputModeRequestId
             || requestSignature !== getAudioOutputModeSignature(
                 state.settings.audioOutputs.output_mode?.mode,
-                state.settings.audioOutputs.output_mode?.subwoofer,
+                state.settings.audioOutputs.output_mode,
             )
         ) {
             return;
@@ -1008,7 +1103,7 @@ async function saveAudioOutputMode(mode, subwoofer = null) {
         if (requestId !== _audioOutputModeRequestId) return;
         if (requestSignature !== getAudioOutputModeSignature(
             state.settings.audioOutputs.output_mode?.mode,
-            state.settings.audioOutputs.output_mode?.subwoofer,
+            state.settings.audioOutputs.output_mode,
         )) {
             return;
         }
@@ -1024,18 +1119,20 @@ async function saveAudioOutputMode(mode, subwoofer = null) {
 }
 
 /**
- * Flush current 2.1 subwoofer settings to the backend before a measurement.
- * This ensures the running 2.1 helper uses the latest sub_alignment_ms etc.
- * Skips when not in subwoofer-2.1 mode. Throws on HTTP error.
+ * Flush current subwoofer settings to the backend before a measurement.
+ * This ensures the running helper uses the latest alignment/level/polarity.
+ * Skips when not in a subwoofer mode. Throws on HTTP error.
  */
 async function flushSubwooferSettingsBeforeMeasurement() {
     const outputMode = state.settings.audioOutputs?.output_mode || {};
-    if (outputMode.mode !== 'subwoofer-2.1') return;
-    const settings = collectSubwooferSettings();
+    if (!['subwoofer-2.1', 'subwoofer-2.2'].includes(outputMode.mode)) return;
+    const requestBody = outputMode.mode === 'subwoofer-2.2'
+        ? buildAudioOutputModeRequest('subwoofer-2.2', collectSubwoofer22Settings())
+        : buildAudioOutputModeRequest('subwoofer-2.1', collectSubwooferSettings());
     const resp = await fetch('/api/audio/output-mode', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode: 'subwoofer-2.1', subwoofer: settings }),
+        body: JSON.stringify(requestBody),
     });
     if (!resp.ok) {
         const data = await resp.json().catch(() => ({}));
@@ -1522,6 +1619,14 @@ function renderSettingsPanel() {
     }
 
     if (elements.settingsOutputModeSelect && !isSelectFocused(elements.settingsOutputModeSelect)) {
+        const optionsHtml = [
+            '<option value="stereo">Stereo</option>',
+            '<option value="subwoofer-2.1">2.1 Subwoofer</option>',
+            '<option value="subwoofer-2.2">2.2 Subwoofer</option>',
+        ].join('');
+        if (elements.settingsOutputModeSelect.innerHTML !== optionsHtml) {
+            elements.settingsOutputModeSelect.innerHTML = optionsHtml;
+        }
         elements.settingsOutputModeSelect.value = mode;
         elements.settingsOutputModeSelect.disabled = !overview.available;
     }
@@ -1531,6 +1636,10 @@ function renderSettingsPanel() {
             elements.settingsOutputModeHint.textContent = outputMode.available
                 ? `2.1 fixed routing active: ${outputMode.routing?.status || 'Out 1/2 Main · Out 3/4 Sub'}.`
                 : '2.1 requires a selected output device with at least 4 channels.';
+        } else if (mode === 'subwoofer-2.2') {
+            elements.settingsOutputModeHint.textContent = outputMode.available
+                ? `2.2 fixed routing active: Out 1/2 Main · Out 3 Sub 1 · Out 4 Sub 2.`
+                : '2.2 requires a selected output device with at least 4 channels.';
         } else {
             elements.settingsOutputModeHint.textContent = channels
                 ? `Stereo mode active. Selected output reports ${channels} channels.`
@@ -1849,6 +1958,9 @@ function switchTab(tabId) {
     elements.tabs.forEach(t => t.classList.toggle('active', t.dataset.tab === tabId));
     elements.tabPanels.forEach(p => p.classList.toggle('active', p.id === `tab-${tabId}`));
     window.__visibleTab = tabId;
+    if (tabId === 'effects') {
+        requestSubwooferPreviewRedrawFromState();
+    }
     if (tabId !== 'measurement') {
         void postRuntimeDebugSnapshot('ui-after-click-playback', { clickedTab: tabId });
     }
@@ -2908,6 +3020,7 @@ function highlightActiveTrack() {
 async function fetchInitialData() {
     startSampleratePolling();
     await Promise.all([fetchStations(), fetchTracks(), fetchEffects(), fetchMeasurements(), fetchPlaybackStatus(), fetchSamplerateStatus(), fetchDownloadStatus(), fetchAudioOutputOverview(), fetchAudioSourceOverview()]);
+    requestSubwooferPreviewRedrawFromState();
     await fetchPlaylists();
 }
 async function fetchPlaybackStatus() {
@@ -5325,6 +5438,9 @@ function setupEffectsActions() {
         elements.effectsSubwooferLevel,
         elements.effectsSubwooferDelay,
         elements.effectsSubwooferPolarity,
+        elements.effectsSubwooferSub2Level,
+        elements.effectsSubwooferSub2Delay,
+        elements.effectsSubwooferSub2Polarity,
         elements.effectsSubwooferMainHighpass,
     ].forEach(el => {
         if (!el) return;
@@ -5350,8 +5466,8 @@ function setupEffectsActions() {
             const layout = getSubwooferPreviewLayout(rect.width || 560, rect.height || 132);
             const plotW = Math.max(1, layout.plotW);
             const t = Math.max(0, Math.min(1, (event.clientX - rect.left - layout.pad.left) / plotW));
-            const minHz = 40;
-            const maxHz = 200;
+            const minHz = 20;
+            const maxHz = 300;
             const hz = Math.round(Math.pow(10, Math.log10(minHz) + t * (Math.log10(maxHz) - Math.log10(minHz))));
             if (elements.effectsSubwooferFrequency) elements.effectsSubwooferFrequency.value = String(hz);
             if (elements.effectsSubwooferFrequencyNumber) elements.effectsSubwooferFrequencyNumber.value = String(hz);
@@ -5380,6 +5496,13 @@ function setupEffectsActions() {
             if (elements.effectsSubwooferFrequency) _activeEditing.delete(elements.effectsSubwooferFrequency);
             if (elements.effectsSubwooferFrequencyNumber) _activeEditing.delete(elements.effectsSubwooferFrequencyNumber);
         });
+        if ('ResizeObserver' in window) {
+            const resizeObserver = new ResizeObserver(() => requestSubwooferPreviewRedrawFromState());
+            resizeObserver.observe(elements.effectsSubwooferPreview);
+            elements.effectsSubwooferPreview._fxrouteResizeObserver = resizeObserver;
+        } else {
+            window.addEventListener('resize', requestSubwooferPreviewRedrawFromState);
+        }
     }
     // Track focus to avoid resetting input values while user is typing
     [
@@ -8344,6 +8467,9 @@ function syncSubwooferControlsDuringAutoSub() {
     if (elements.effectsSubwooferFrequencyNumber) elements.effectsSubwooferFrequencyNumber.disabled = autoSubActive;
     if (elements.effectsSubwooferLevel) elements.effectsSubwooferLevel.disabled = autoSubActive;
     if (elements.effectsSubwooferPolarity) elements.effectsSubwooferPolarity.disabled = autoSubActive;
+    if (elements.effectsSubwooferSub2Level) elements.effectsSubwooferSub2Level.disabled = autoSubActive;
+    if (elements.effectsSubwooferSub2Delay) elements.effectsSubwooferSub2Delay.disabled = autoSubActive;
+    if (elements.effectsSubwooferSub2Polarity) elements.effectsSubwooferSub2Polarity.disabled = autoSubActive;
     if (elements.effectsSubwooferMainHighpass) elements.effectsSubwooferMainHighpass.disabled = autoSubActive;
 }
 
@@ -8351,7 +8477,7 @@ function syncAutoSubButton() {
     if (!elements.measurementAutoSubStartBtn || !elements.measurementAutoSubGroup) return;
     const measurementState = state.measurement || {};
     const outputMode = state.settings?.audioOutputs?.output_mode;
-    const isSubwooferMode = (outputMode?.mode || '') === 'subwoofer-2.1';
+    const isSubwooferMode = ['subwoofer-2.1', 'subwoofer-2.2'].includes(outputMode?.mode || '');
 
     if (!isSubwooferMode) {
         elements.measurementAutoSubGroup.classList.add('hidden');
@@ -8477,7 +8603,14 @@ async function pollAutoSubJob(jobId) {
             if (statusEl) {
                 if (job.progress) {
                     const progress = job.progress || {};
-                    const stageLabel = progress.stage === 'fine' ? 'Fine-Scan' : 'Coarse';
+                    const stageLabels = {
+                        fine: 'Fine-Scan',
+                        coarse: 'Coarse',
+                        sub1_coarse: 'Optimizing Sub 1',
+                        sub2_coarse: 'Optimizing Sub 2',
+                        combined_matrix: 'Combined Matrix',
+                    };
+                    const stageLabel = stageLabels[progress.stage] || 'Coarse';
                     const candidateCur = progress.candidate_current;
                     const candidateTot = progress.candidate_total;
                     const sweepCur = progress.sweep_current ?? progress.current;
@@ -8537,6 +8670,47 @@ async function handleAutoSubResult(job) {
 
     measurementState.autoSubResult = result;
     const winner = result.winner || {};
+    if (result.mode === 'subwoofer-2.2' || Number.isFinite(result.applied_sub1_alignment_ms) || Number.isFinite(result.applied_sub2_alignment_ms)) {
+        const originalSub1 = Number.isFinite(result.original_sub1_alignment_ms) ? result.original_sub1_alignment_ms : null;
+        const originalSub2 = Number.isFinite(result.original_sub2_alignment_ms) ? result.original_sub2_alignment_ms : null;
+        const appliedSub1 = Number.isFinite(result.applied_sub1_alignment_ms) ? result.applied_sub1_alignment_ms : null;
+        const appliedSub2 = Number.isFinite(result.applied_sub2_alignment_ms) ? result.applied_sub2_alignment_ms : null;
+        const scorePct = Number.isFinite(winner.score_pct) ? winner.score_pct : null;
+        const hasWinnerLRScores = Number.isFinite(winner.score_L_pct) && Number.isFinite(winner.score_R_pct);
+        const scoreText = scorePct !== null ? scorePct.toFixed(1) : '?';
+        const sub1Text = `${appliedSub1 !== null ? appliedSub1.toFixed(2) : '?'} ms (was ${originalSub1 !== null ? originalSub1.toFixed(2) : '?'} ms)`;
+        const sub2Text = `${appliedSub2 !== null ? appliedSub2.toFixed(2) : '?'} ms (was ${originalSub2 !== null ? originalSub2.toFixed(2) : '?'} ms)`;
+        const scorePart = hasWinnerLRScores
+            ? `Combined ${scoreText} % · L ${winner.score_L_pct.toFixed(1)} % / R ${winner.score_R_pct.toFixed(1)} %`
+            : `Combined ${scoreText} %`;
+        measurementState.statusText = `AutoSub 2.2 applied: Sub 1 ${sub1Text} · Sub 2 ${sub2Text} · ${scorePart}`;
+
+        if (statusEl) {
+            const detailParts = [];
+            const sub1Coarse = result.sub1_coarse_winner || {};
+            const sub2Coarse = result.sub2_coarse_winner || {};
+            if (Number.isFinite(sub1Coarse.delay_ms)) {
+                const sub1Score = Number.isFinite(sub1Coarse.score_pct) ? ` (${sub1Coarse.score_pct.toFixed(1)} %)` : '';
+                detailParts.push(`Sub 1 coarse: ${sub1Coarse.delay_ms.toFixed(2)} ms${sub1Score}`);
+            }
+            if (Number.isFinite(sub2Coarse.delay_ms)) {
+                const sub2Score = Number.isFinite(sub2Coarse.score_pct) ? ` (${sub2Coarse.score_pct.toFixed(1)} %)` : '';
+                detailParts.push(`Sub 2 coarse: ${sub2Coarse.delay_ms.toFixed(2)} ms${sub2Score}`);
+            }
+            if (
+                Number.isFinite(result.derived_main_delay_ms)
+                && Number.isFinite(result.derived_sub1_delay_ms)
+                && Number.isFinite(result.derived_sub2_delay_ms)
+            ) {
+                detailParts.push(`Derived: Main ${result.derived_main_delay_ms.toFixed(2)} ms / Sub 1 ${result.derived_sub1_delay_ms.toFixed(2)} ms / Sub 2 ${result.derived_sub2_delay_ms.toFixed(2)} ms`);
+            }
+            statusEl.textContent = detailParts.join(' · ');
+        }
+
+        syncSubwooferControlsDuringAutoSub();
+        showToast(`Applied 2.2: Sub 1 ${appliedSub1 !== null ? appliedSub1.toFixed(2) : '?'} ms · Sub 2 ${appliedSub2 !== null ? appliedSub2.toFixed(2) : '?'} ms · ${scorePart}`, 'success');
+        return;
+    }
     const original = Number.isFinite(result.original_alignment_ms) ? result.original_alignment_ms : null;
     const applied = Number.isFinite(result.applied_alignment_ms) ? result.applied_alignment_ms : null;
     const suggested = Number.isFinite(result.suggested_alignment_ms) ? result.suggested_alignment_ms : applied;
@@ -10905,6 +11079,24 @@ function updateEffectsExtrasUi() {
 }
 
 let _subwooferPreviewDrawFrame = null;
+
+function getSubwooferPreviewSettingsFromState() {
+    const outputMode = state.settings.audioOutputs?.output_mode || {};
+    return outputMode.mode === 'subwoofer-2.2'
+        ? getSubwooferGlobalSettings(outputMode, outputMode.subwoofer || {})
+        : normalizeSubwooferSettings(outputMode.subwoofer || {});
+}
+
+function primeSubwooferPreview() {
+    if (!elements.effectsSubwooferPreview) return;
+    drawSubwooferPreview(getSubwooferPreviewSettingsFromState());
+}
+
+function requestSubwooferPreviewRedrawFromState() {
+    if (!elements.effectsSubwooferPreview) return;
+    scheduleSubwooferPreviewDraw(getSubwooferPreviewSettingsFromState());
+}
+
 function scheduleSubwooferPreviewDraw(subwoofer) {
     if (!elements.effectsSubwooferPreview) return;
     const normalized = normalizeSubwooferSettings(subwoofer || {});
@@ -10912,7 +11104,13 @@ function scheduleSubwooferPreviewDraw(subwoofer) {
     _subwooferPreviewDrawFrame = window.requestAnimationFrame(() => {
         _subwooferPreviewDrawFrame = null;
         drawSubwooferPreview(normalized);
+        window.requestAnimationFrame(() => drawSubwooferPreview(normalized));
     });
+}
+
+function formatSubwooferDelayMs(value) {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric.toFixed(2) : '0.00';
 }
 
 function renderSubwooferPanel() {
@@ -10922,22 +11120,36 @@ function renderSubwooferPanel() {
         return;
     }
     const mode = outputMode.mode || 'stereo';
-    const isSubwooferMode = mode === 'subwoofer-2.1';
+    const isSubwooferMode = ['subwoofer-2.1', 'subwoofer-2.2'].includes(mode);
+    const is22Mode = mode === 'subwoofer-2.2';
     elements.effectsSubwooferCard?.classList.toggle('hidden', !isSubwooferMode);
+    elements.effectsSubwooferCard?.classList.toggle('is-subwoofer-21', mode === 'subwoofer-2.1');
+    elements.effectsSubwooferCard?.classList.toggle('is-subwoofer-22', is22Mode);
     if (!isSubwooferMode) {
         setSubwooferFeedback('');
         return;
     }
-    const subwoofer = normalizeSubwooferSettings(outputMode.subwoofer || {});
+    const subwoofer = is22Mode
+        ? getSubwooferGlobalSettings(outputMode, outputMode.subwoofer || {})
+        : normalizeSubwooferSettings(outputMode.subwoofer || {});
+    const subwoofers = normalizeSubwoofersSettings(outputMode.subwoofers || {}, subwoofer);
     if (elements.effectsSubwooferRouting) {
-        const routingStatus = outputMode.routing?.status || 'Out 1/2 Main · Out 3/4 Sub';
+        const routingStatus = is22Mode
+            ? 'Out 1/2 Main · Out 3 Sub 1 · Out 4 Sub 2'
+            : (outputMode.routing?.status || 'Out 1/2 Main · Out 3/4 Sub');
         const slope = subwoofer.slope || 'LR24';
         elements.effectsSubwooferRouting.textContent = `${routingStatus} · ${slope}`;
     }
     if (elements.effectsSubwooferModeBadge) {
-        elements.effectsSubwooferModeBadge.textContent = mode === 'subwoofer-2.1' ? '2.1 active' : 'Stereo';
-        elements.effectsSubwooferModeBadge.classList.toggle('is-active', mode === 'subwoofer-2.1');
+        elements.effectsSubwooferModeBadge.textContent = is22Mode ? '2.2 active' : '2.1 active';
+        elements.effectsSubwooferModeBadge.classList.toggle('is-active', true);
     }
+    if (elements.effectsSubwooferLevelLabel) elements.effectsSubwooferLevelLabel.textContent = is22Mode ? 'Sub 1 level' : 'Sub level';
+    if (elements.effectsSubwooferDelayLabel) elements.effectsSubwooferDelayLabel.textContent = is22Mode ? 'Sub 1 alignment' : 'Sub alignment';
+    if (elements.effectsSubwooferPolarityLabel) elements.effectsSubwooferPolarityLabel.textContent = is22Mode ? 'Sub 1 polarity' : 'Sub polarity';
+    if (elements.effectsSubwooferSub1GroupLabel) elements.effectsSubwooferSub1GroupLabel.textContent = is22Mode ? 'Sub 1' : 'Subwoofer';
+    elements.effectsSubwooferSub2Fields?.forEach(field => field.classList.toggle('hidden', !is22Mode));
+    elements.effectsSubwooferDerivedDelays?.classList.toggle('hidden', !is22Mode);
     if (elements.effectsSubwooferFrequency && !_activeEditing.has(elements.effectsSubwooferFrequency)) {
         elements.effectsSubwooferFrequency.value = String(subwoofer.crossover_frequency_hz);
     }
@@ -10955,6 +11167,20 @@ function renderSubwooferPanel() {
     }
     if (elements.effectsSubwooferPolarity && !_activeEditing.has(elements.effectsSubwooferPolarity)) {
         elements.effectsSubwooferPolarity.value = subwoofer.sub_polarity;
+    }
+    if (elements.effectsSubwooferSub2Level && !_activeEditing.has(elements.effectsSubwooferSub2Level)) {
+        elements.effectsSubwooferSub2Level.value = String(subwoofers.sub2.level_db);
+    }
+    if (elements.effectsSubwooferSub2Delay && !_activeEditing.has(elements.effectsSubwooferSub2Delay)) {
+        elements.effectsSubwooferSub2Delay.value = String(subwoofers.sub2.alignment_ms);
+    }
+    if (elements.effectsSubwooferSub2Polarity && !_activeEditing.has(elements.effectsSubwooferSub2Polarity)) {
+        elements.effectsSubwooferSub2Polarity.value = subwoofers.sub2.polarity;
+    }
+    if (is22Mode) {
+        if (elements.effectsSubwooferDdMain) elements.effectsSubwooferDdMain.textContent = formatSubwooferDelayMs(outputMode.derived_main_delay_ms);
+        if (elements.effectsSubwooferDdSub1) elements.effectsSubwooferDdSub1.textContent = formatSubwooferDelayMs(outputMode.derived_sub1_delay_ms);
+        if (elements.effectsSubwooferDdSub2) elements.effectsSubwooferDdSub2.textContent = formatSubwooferDelayMs(outputMode.derived_sub2_delay_ms);
     }
     scheduleSubwooferPreviewDraw(subwoofer);
 }
@@ -11000,7 +11226,9 @@ function drawSubwooferPreview(subwoofer) {
         return 20 * Math.log10(Math.max(0.001, magnitude));
     };
     ctx.clearRect(0, 0, width, height);
-    ctx.fillStyle = 'rgba(255,255,255,0.025)';
+    ctx.fillStyle = '#08111f';
+    ctx.fillRect(0, 0, width, height);
+    ctx.fillStyle = 'rgba(255,255,255,0.035)';
     ctx.fillRect(pad.left, pad.top, plotW, plotH);
     ctx.strokeStyle = 'rgba(255,255,255,0.10)';
     ctx.lineWidth = 1;
@@ -11096,10 +11324,11 @@ let _subwooferLastRequestedSignature = '';
 const SUBWOOFER_COMMIT_DEBOUNCE_MS = 600;
 
 function updateSubwooferDraftFromControls() {
-    const settings = collectSubwooferSettings();
+    const mode = state.settings.audioOutputs.output_mode?.mode || 'stereo';
+    const settings = mode === 'subwoofer-2.2' ? collectSubwoofer22Settings() : collectSubwooferSettings();
     state.settings.audioOutputs.output_mode = {
         ...(state.settings.audioOutputs.output_mode || {}),
-        subwoofer: settings,
+        ...(settings.subwoofers ? settings : { subwoofer: settings }),
     };
     renderSubwooferPanel();
     return settings;
@@ -11113,7 +11342,7 @@ function saveSubwooferDebounced(delayMs = SUBWOOFER_COMMIT_DEBOUNCE_MS) {
     if (signature === _subwooferLastRequestedSignature) return;
     state.settings.audioOutputs.output_mode = {
         ...(state.settings.audioOutputs.output_mode || {}),
-        subwoofer: settings,
+        ...(settings.subwoofers ? settings : { subwoofer: settings }),
     };
     _subwooferSaveTimer = window.setTimeout(() => {
         _subwooferLastRequestedSignature = signature;
