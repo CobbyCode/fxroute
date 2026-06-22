@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.7.43 (2026-06-22)
+
+### Added
+- Added **PipeWire 2.1 native subwoofer passthrough** (pipewire_stage1/) — a C helper for reliable 2.1 mode crossover/subwoofer processing.
+- Added `subwoofer_runtime.py` consolidating 2.1 and 2.2 mode runtime logic including AutoSub measurement, sub alignment preview, and output routing.
+
+### Changed
+- Integrate PipeWire 2.1 native helper build into install and update flow.
+- Samplerate switching improvements for subwoofer/crossover modes.
+- Center Restore to Public Release, maintenance, and amplifier button groups.
+- Updated README and manual for 2.1/2.2 subwoofer workflows.
+- Updated screenshots: measurement-modes.png (AutoSub UI) and crossover.png.
+
+### Fixed
+- Fixed fresh EasyEffects installations starting with no active preset by loading Neutral automatically.
+- Fixed album cover thumbnail generation when Pillow writes temporary .tmp files.
+
 ## 0.7.42 (2026-06-20)
 
 ### Fixed
