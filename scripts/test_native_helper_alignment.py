@@ -11,7 +11,7 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / "pipewire_stage1" / "build" / "fxroute_21_passthrough"
 IMPULSE_RE = re.compile(
-    r"main_delay_samples=(\d+)\s+sub_delay_samples=(\d+)\s+"
+    r"main_delay_samples=(\d+)\s+sub_delay_samples=(\d+)\s+sub2_delay_samples=(\d+)\s+"
     r"output_1_impulse=(-?\d+)\s+output_2_impulse=(-?\d+)\s+"
     r"output_3_impulse=(-?\d+)\s+output_4_impulse=(-?\d+)"
 )
@@ -49,6 +49,7 @@ def run_case(main_delay_ms: float, sub_delay_ms: float) -> dict[str, int]:
     keys = (
         "main_delay_samples",
         "sub_delay_samples",
+        "sub2_delay_samples",
         "output_1_impulse",
         "output_2_impulse",
         "output_3_impulse",
@@ -61,6 +62,7 @@ def assert_impulses(label: str, result: dict[str, int], expected_main: int, expe
     expected = {
         "main_delay_samples": expected_main,
         "sub_delay_samples": expected_sub,
+        "sub2_delay_samples": expected_sub,
         "output_1_impulse": expected_main,
         "output_2_impulse": expected_main,
         "output_3_impulse": expected_sub,

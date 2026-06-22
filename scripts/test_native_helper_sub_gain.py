@@ -34,6 +34,8 @@ def run_case(db: float) -> tuple[float, float]:
             "normal",
             "--sub-level-db",
             str(db),
+            "--sub2-level-db",
+            str(db),
         ],
         check=True,
         text=True,

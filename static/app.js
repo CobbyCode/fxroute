@@ -499,6 +499,10 @@ const elements = {
     effectsSubwooferPolarity: document.getElementById('effects-subwoofer-polarity'),
     effectsSubwooferSub1GroupLabel: document.getElementById('effects-subwoofer-sub1-group-label'),
     effectsSubwooferSub2Fields: Array.from(document.querySelectorAll('.effects-subwoofer-sub2-field')),
+    effectsSubwooferSub2GroupLabel: document.querySelector('.effects-subwoofer-sub2-group .effects-subwoofer-group-label'),
+    effectsSubwooferSub2LevelLabel: document.querySelector('label[for="effects-subwoofer-sub2-level"]'),
+    effectsSubwooferSub2DelayLabel: document.querySelector('label[for="effects-subwoofer-sub2-delay"]'),
+    effectsSubwooferSub2PolarityLabel: document.querySelector('label[for="effects-subwoofer-sub2-polarity"]'),
     effectsSubwooferSub2Level: document.getElementById('effects-subwoofer-sub2-level'),
     effectsSubwooferSub2Delay: document.getElementById('effects-subwoofer-sub2-delay'),
     effectsSubwooferSub2Polarity: document.getElementById('effects-subwoofer-sub2-polarity'),
@@ -1022,17 +1026,25 @@ function collectSubwoofer22Settings() {
     };
 }
 
+function isSubwoofer22Mode(mode) {
+    return ['subwoofer-2.2', 'subwoofer-2.2-stereo'].includes(mode);
+}
+
+function isSubwooferModeName(mode) {
+    return ['subwoofer-2.1', 'subwoofer-2.2', 'subwoofer-2.2-stereo'].includes(mode);
+}
+
 function normalizeOutputModeName(mode) {
-    return ['subwoofer-2.1', 'subwoofer-2.2'].includes(mode) ? mode : 'stereo';
+    return isSubwooferModeName(mode) ? mode : 'stereo';
 }
 
 function buildAudioOutputModeRequest(mode, settings = null) {
     const nextMode = normalizeOutputModeName(mode);
     const outputMode = state.settings.audioOutputs.output_mode || {};
     const fallbackSubwoofer = getSubwooferGlobalSettings(outputMode, outputMode.subwoofer || {});
-    if (nextMode === 'subwoofer-2.2') {
+    if (isSubwoofer22Mode(nextMode)) {
         const source = settings && typeof settings === 'object' ? settings : {};
-        const switchingTo22 = outputMode.mode !== 'subwoofer-2.2' && !settings;
+        const switchingTo22 = !isSubwoofer22Mode(outputMode.mode) && !settings;
         const sourceHasSettings = Object.keys(source).length > 0;
         const subwooferSource = source.subwoofer || (sourceHasSettings ? source : getSubwooferGlobalSettings(outputMode, fallbackSubwoofer));
         const subwoofer = normalizeSubwooferSettings(subwooferSource);
@@ -1064,7 +1076,7 @@ async function saveAudioOutputMode(mode, settings = null) {
         ...(state.settings.audioOutputs.output_mode || {}),
         mode: nextMode,
         subwoofer: requestBody.subwoofer,
-        ...(nextMode === 'subwoofer-2.2' ? { subwoofers: requestBody.subwoofers } : {}),
+        ...(isSubwoofer22Mode(nextMode) ? { subwoofers: requestBody.subwoofers } : {}),
     };
     renderSettingsPanel();
     try {
@@ -1125,9 +1137,9 @@ async function saveAudioOutputMode(mode, settings = null) {
  */
 async function flushSubwooferSettingsBeforeMeasurement() {
     const outputMode = state.settings.audioOutputs?.output_mode || {};
-    if (!['subwoofer-2.1', 'subwoofer-2.2'].includes(outputMode.mode)) return;
-    const requestBody = outputMode.mode === 'subwoofer-2.2'
-        ? buildAudioOutputModeRequest('subwoofer-2.2', collectSubwoofer22Settings())
+    if (!isSubwooferModeName(outputMode.mode)) return;
+    const requestBody = isSubwoofer22Mode(outputMode.mode)
+        ? buildAudioOutputModeRequest(outputMode.mode, collectSubwoofer22Settings())
         : buildAudioOutputModeRequest('subwoofer-2.1', collectSubwooferSettings());
     const resp = await fetch('/api/audio/output-mode', {
         method: 'POST',
@@ -1623,6 +1635,7 @@ function renderSettingsPanel() {
             '<option value="stereo">Stereo</option>',
             '<option value="subwoofer-2.1">2.1 Subwoofer</option>',
             '<option value="subwoofer-2.2">2.2 Subwoofer</option>',
+            '<option value="subwoofer-2.2-stereo">2.2 Stereo Bass</option>',
         ].join('');
         if (elements.settingsOutputModeSelect.innerHTML !== optionsHtml) {
             elements.settingsOutputModeSelect.innerHTML = optionsHtml;
@@ -1640,6 +1653,10 @@ function renderSettingsPanel() {
             elements.settingsOutputModeHint.textContent = outputMode.available
                 ? `2.2 fixed routing active: Out 1/2 Main · Out 3 Sub 1 · Out 4 Sub 2.`
                 : '2.2 requires a selected output device with at least 4 channels.';
+        } else if (mode === 'subwoofer-2.2-stereo') {
+            elements.settingsOutputModeHint.textContent = outputMode.available
+                ? `2.2 Stereo Bass fixed routing active: Out 1/2 Main · Out 3 Left Sub · Out 4 Right Sub.`
+                : '2.2 Stereo Bass requires a selected output device with at least 4 channels.';
         } else {
             elements.settingsOutputModeHint.textContent = channels
                 ? `Stereo mode active. Selected output reports ${channels} channels.`
@@ -8477,7 +8494,7 @@ function syncAutoSubButton() {
     if (!elements.measurementAutoSubStartBtn || !elements.measurementAutoSubGroup) return;
     const measurementState = state.measurement || {};
     const outputMode = state.settings?.audioOutputs?.output_mode;
-    const isSubwooferMode = ['subwoofer-2.1', 'subwoofer-2.2'].includes(outputMode?.mode || '');
+    const isSubwooferMode = isSubwooferModeName(outputMode?.mode || '');
 
     if (!isSubwooferMode) {
         elements.measurementAutoSubGroup.classList.add('hidden');
@@ -8608,6 +8625,8 @@ async function pollAutoSubJob(jobId) {
                         coarse: 'Coarse',
                         sub1_coarse: 'Optimizing Sub 1',
                         sub2_coarse: 'Optimizing Sub 2',
+                        left_sub: 'Optimizing Left Sub',
+                        right_sub: 'Optimizing Right Sub',
                         combined_matrix: 'Combined Matrix',
                     };
                     const stageLabel = stageLabels[progress.stage] || 'Coarse';
@@ -8670,7 +8689,11 @@ async function handleAutoSubResult(job) {
 
     measurementState.autoSubResult = result;
     const winner = result.winner || {};
-    if (result.mode === 'subwoofer-2.2' || Number.isFinite(result.applied_sub1_alignment_ms) || Number.isFinite(result.applied_sub2_alignment_ms)) {
+    if (isSubwoofer22Mode(result.mode) || Number.isFinite(result.applied_sub1_alignment_ms) || Number.isFinite(result.applied_sub2_alignment_ms)) {
+        const isStereoBassResult = result.mode === 'subwoofer-2.2-stereo';
+        const sub1Label = isStereoBassResult ? 'Left Sub' : 'Sub 1';
+        const sub2Label = isStereoBassResult ? 'Right Sub' : 'Sub 2';
+        const modeLabel = isStereoBassResult ? '2.2 Stereo Bass' : '2.2';
         const originalSub1 = Number.isFinite(result.original_sub1_alignment_ms) ? result.original_sub1_alignment_ms : null;
         const originalSub2 = Number.isFinite(result.original_sub2_alignment_ms) ? result.original_sub2_alignment_ms : null;
         const appliedSub1 = Number.isFinite(result.applied_sub1_alignment_ms) ? result.applied_sub1_alignment_ms : null;
@@ -8683,32 +8706,32 @@ async function handleAutoSubResult(job) {
         const scorePart = hasWinnerLRScores
             ? `Combined ${scoreText} % · L ${winner.score_L_pct.toFixed(1)} % / R ${winner.score_R_pct.toFixed(1)} %`
             : `Combined ${scoreText} %`;
-        measurementState.statusText = `AutoSub 2.2 applied: Sub 1 ${sub1Text} · Sub 2 ${sub2Text} · ${scorePart}`;
+        measurementState.statusText = `AutoSub ${modeLabel} applied: ${sub1Label} ${sub1Text} · ${sub2Label} ${sub2Text} · ${scorePart}`;
 
         if (statusEl) {
             const detailParts = [];
-            const sub1Coarse = result.sub1_coarse_winner || {};
-            const sub2Coarse = result.sub2_coarse_winner || {};
+            const sub1Coarse = result.sub1_coarse_winner || result.left_winner || {};
+            const sub2Coarse = result.sub2_coarse_winner || result.right_winner || {};
             if (Number.isFinite(sub1Coarse.delay_ms)) {
                 const sub1Score = Number.isFinite(sub1Coarse.score_pct) ? ` (${sub1Coarse.score_pct.toFixed(1)} %)` : '';
-                detailParts.push(`Sub 1 coarse: ${sub1Coarse.delay_ms.toFixed(2)} ms${sub1Score}`);
+                detailParts.push(`${sub1Label}: ${sub1Coarse.delay_ms.toFixed(2)} ms${sub1Score}`);
             }
             if (Number.isFinite(sub2Coarse.delay_ms)) {
                 const sub2Score = Number.isFinite(sub2Coarse.score_pct) ? ` (${sub2Coarse.score_pct.toFixed(1)} %)` : '';
-                detailParts.push(`Sub 2 coarse: ${sub2Coarse.delay_ms.toFixed(2)} ms${sub2Score}`);
+                detailParts.push(`${sub2Label}: ${sub2Coarse.delay_ms.toFixed(2)} ms${sub2Score}`);
             }
             if (
                 Number.isFinite(result.derived_main_delay_ms)
                 && Number.isFinite(result.derived_sub1_delay_ms)
                 && Number.isFinite(result.derived_sub2_delay_ms)
             ) {
-                detailParts.push(`Derived: Main ${result.derived_main_delay_ms.toFixed(2)} ms / Sub 1 ${result.derived_sub1_delay_ms.toFixed(2)} ms / Sub 2 ${result.derived_sub2_delay_ms.toFixed(2)} ms`);
+                detailParts.push(`Derived: Main ${result.derived_main_delay_ms.toFixed(2)} ms / ${sub1Label} ${result.derived_sub1_delay_ms.toFixed(2)} ms / ${sub2Label} ${result.derived_sub2_delay_ms.toFixed(2)} ms`);
             }
             statusEl.textContent = detailParts.join(' · ');
         }
 
         syncSubwooferControlsDuringAutoSub();
-        showToast(`Applied 2.2: Sub 1 ${appliedSub1 !== null ? appliedSub1.toFixed(2) : '?'} ms · Sub 2 ${appliedSub2 !== null ? appliedSub2.toFixed(2) : '?'} ms · ${scorePart}`, 'success');
+        showToast(`Applied ${modeLabel}: ${sub1Label} ${appliedSub1 !== null ? appliedSub1.toFixed(2) : '?'} ms · ${sub2Label} ${appliedSub2 !== null ? appliedSub2.toFixed(2) : '?'} ms · ${scorePart}`, 'success');
         return;
     }
     const original = Number.isFinite(result.original_alignment_ms) ? result.original_alignment_ms : null;
@@ -11082,7 +11105,7 @@ let _subwooferPreviewDrawFrame = null;
 
 function getSubwooferPreviewSettingsFromState() {
     const outputMode = state.settings.audioOutputs?.output_mode || {};
-    return outputMode.mode === 'subwoofer-2.2'
+    return isSubwoofer22Mode(outputMode.mode)
         ? getSubwooferGlobalSettings(outputMode, outputMode.subwoofer || {})
         : normalizeSubwooferSettings(outputMode.subwoofer || {});
 }
@@ -11120,11 +11143,13 @@ function renderSubwooferPanel() {
         return;
     }
     const mode = outputMode.mode || 'stereo';
-    const isSubwooferMode = ['subwoofer-2.1', 'subwoofer-2.2'].includes(mode);
-    const is22Mode = mode === 'subwoofer-2.2';
+    const isSubwooferMode = isSubwooferModeName(mode);
+    const is22Mode = isSubwoofer22Mode(mode);
+    const is22StereoMode = mode === 'subwoofer-2.2-stereo';
     elements.effectsSubwooferCard?.classList.toggle('hidden', !isSubwooferMode);
     elements.effectsSubwooferCard?.classList.toggle('is-subwoofer-21', mode === 'subwoofer-2.1');
     elements.effectsSubwooferCard?.classList.toggle('is-subwoofer-22', is22Mode);
+    elements.effectsSubwooferCard?.classList.toggle('is-subwoofer-22-stereo', is22StereoMode);
     if (!isSubwooferMode) {
         setSubwooferFeedback('');
         return;
@@ -11135,19 +11160,23 @@ function renderSubwooferPanel() {
     const subwoofers = normalizeSubwoofersSettings(outputMode.subwoofers || {}, subwoofer);
     if (elements.effectsSubwooferRouting) {
         const routingStatus = is22Mode
-            ? 'Out 1/2 Main · Out 3 Sub 1 · Out 4 Sub 2'
+            ? (is22StereoMode ? 'Out 1/2 Main · Out 3 Left Sub · Out 4 Right Sub' : 'Out 1/2 Main · Out 3 Sub 1 · Out 4 Sub 2')
             : (outputMode.routing?.status || 'Out 1/2 Main · Out 3/4 Sub');
         const slope = subwoofer.slope || 'LR24';
         elements.effectsSubwooferRouting.textContent = `${routingStatus} · ${slope}`;
     }
     if (elements.effectsSubwooferModeBadge) {
-        elements.effectsSubwooferModeBadge.textContent = is22Mode ? '2.2 active' : '2.1 active';
+        elements.effectsSubwooferModeBadge.textContent = is22StereoMode ? '2.2 Stereo Bass active' : is22Mode ? '2.2 active' : '2.1 active';
         elements.effectsSubwooferModeBadge.classList.toggle('is-active', true);
     }
-    if (elements.effectsSubwooferLevelLabel) elements.effectsSubwooferLevelLabel.textContent = is22Mode ? 'Sub 1 level' : 'Sub level';
-    if (elements.effectsSubwooferDelayLabel) elements.effectsSubwooferDelayLabel.textContent = is22Mode ? 'Sub 1 alignment' : 'Sub alignment';
-    if (elements.effectsSubwooferPolarityLabel) elements.effectsSubwooferPolarityLabel.textContent = is22Mode ? 'Sub 1 polarity' : 'Sub polarity';
-    if (elements.effectsSubwooferSub1GroupLabel) elements.effectsSubwooferSub1GroupLabel.textContent = is22Mode ? 'Sub 1' : 'Subwoofer';
+    if (elements.effectsSubwooferLevelLabel) elements.effectsSubwooferLevelLabel.textContent = is22StereoMode ? 'Left Sub level' : is22Mode ? 'Sub 1 level' : 'Sub level';
+    if (elements.effectsSubwooferDelayLabel) elements.effectsSubwooferDelayLabel.textContent = is22StereoMode ? 'Left Sub alignment' : is22Mode ? 'Sub 1 alignment' : 'Sub alignment';
+    if (elements.effectsSubwooferPolarityLabel) elements.effectsSubwooferPolarityLabel.textContent = is22StereoMode ? 'Left Sub polarity' : is22Mode ? 'Sub 1 polarity' : 'Sub polarity';
+    if (elements.effectsSubwooferSub1GroupLabel) elements.effectsSubwooferSub1GroupLabel.textContent = is22StereoMode ? 'Left Sub' : is22Mode ? 'Sub 1' : 'Subwoofer';
+    if (elements.effectsSubwooferSub2GroupLabel) elements.effectsSubwooferSub2GroupLabel.textContent = is22StereoMode ? 'Right Sub' : 'Sub 2';
+    if (elements.effectsSubwooferSub2LevelLabel) elements.effectsSubwooferSub2LevelLabel.textContent = is22StereoMode ? 'Right Sub level' : 'Sub 2 level';
+    if (elements.effectsSubwooferSub2DelayLabel) elements.effectsSubwooferSub2DelayLabel.textContent = is22StereoMode ? 'Right Sub alignment' : 'Sub 2 alignment';
+    if (elements.effectsSubwooferSub2PolarityLabel) elements.effectsSubwooferSub2PolarityLabel.textContent = is22StereoMode ? 'Right Sub polarity' : 'Sub 2 polarity';
     elements.effectsSubwooferSub2Fields?.forEach(field => field.classList.toggle('hidden', !is22Mode));
     elements.effectsSubwooferDerivedDelays?.classList.toggle('hidden', !is22Mode);
     if (elements.effectsSubwooferFrequency && !_activeEditing.has(elements.effectsSubwooferFrequency)) {
@@ -11325,7 +11354,7 @@ const SUBWOOFER_COMMIT_DEBOUNCE_MS = 600;
 
 function updateSubwooferDraftFromControls() {
     const mode = state.settings.audioOutputs.output_mode?.mode || 'stereo';
-    const settings = mode === 'subwoofer-2.2' ? collectSubwoofer22Settings() : collectSubwooferSettings();
+    const settings = isSubwoofer22Mode(mode) ? collectSubwoofer22Settings() : collectSubwooferSettings();
     state.settings.audioOutputs.output_mode = {
         ...(state.settings.audioOutputs.output_mode || {}),
         ...(settings.subwoofers ? settings : { subwoofer: settings }),

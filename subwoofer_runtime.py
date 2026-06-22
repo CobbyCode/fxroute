@@ -1,8 +1,8 @@
 """PipeWire-native subwoofer Stage-3 runtime controller.
 
 Supports 2.1 (Out 1/2 = highpassed L/R, Out 3/4 = lowpassed (L+R)*0.5)
-and 2.2 (Out 1/2 = highpassed L/R, Out 3 = Sub 1, Out 4 = Sub 2,
-each with independent level/alignment/polarity).
+and 2.2 mono/stereo bass modes (Out 1/2 = highpassed L/R, Out 3/4 = subs
+with independent level/alignment/polarity).
 
 Stereo mode does not use this module; the existing EasyEffects/stereo path stays
 unchanged. The old subprocess bridge has been removed. This runtime owns
@@ -25,7 +25,9 @@ logger = logging.getLogger(__name__)
 
 OUTPUT_MODE_SUBWOOFER_21 = "subwoofer-2.1"
 OUTPUT_MODE_SUBWOOFER_22 = "subwoofer-2.2"
-SUBWOOFER_MODES = {OUTPUT_MODE_SUBWOOFER_21, OUTPUT_MODE_SUBWOOFER_22}
+OUTPUT_MODE_SUBWOOFER_22_STEREO = "subwoofer-2.2-stereo"
+SUBWOOFER_22_MODES = {OUTPUT_MODE_SUBWOOFER_22, OUTPUT_MODE_SUBWOOFER_22_STEREO}
+SUBWOOFER_MODES = {OUTPUT_MODE_SUBWOOFER_21, *SUBWOOFER_22_MODES}
 DEFAULT_SAMPLE_RATE = 48_000
 NATIVE_HELPER_PENDING_MESSAGE = "PipeWire-native subwoofer helper binary is not available"
 NATIVE_HELPER_NODE_NAME = "fxroute_21_stage1"
@@ -79,7 +81,7 @@ class SubwooferRuntimeConfig:
 
         Example (2.2): Sub1=-2, Sub2=-5 -> Main=5
         """
-        if self.output_mode == OUTPUT_MODE_SUBWOOFER_22:
+        if self.output_mode in SUBWOOFER_22_MODES:
             return max(0.0, -min(self.sub_alignment_ms, self.sub2_alignment_ms))
         return max(0.0, -self.sub_alignment_ms)
 
@@ -90,7 +92,7 @@ class SubwooferRuntimeConfig:
         2.1: max(0, sub_alignment_ms)
         2.2: same as derived_sub1_delay_ms (maps to existing schema).
         """
-        if self.output_mode == OUTPUT_MODE_SUBWOOFER_22:
+        if self.output_mode in SUBWOOFER_22_MODES:
             return self.derived_main_delay_ms + self.sub_alignment_ms
         return max(0.0, self.sub_alignment_ms)
 
@@ -100,7 +102,7 @@ class SubwooferRuntimeConfig:
         2.2: sub1 delay = combined_main_delay + sub1_alignment
         2.1: same as derived_sub_delay_ms (# same formula)
         """
-        if self.output_mode == OUTPUT_MODE_SUBWOOFER_22:
+        if self.output_mode in SUBWOOFER_22_MODES:
             return self.derived_main_delay_ms + self.sub_alignment_ms
         return max(0.0, self.sub_alignment_ms)
 
@@ -110,9 +112,13 @@ class SubwooferRuntimeConfig:
         2.2: sub2 delay = combined_main_delay + sub2_alignment
         2.1: mirrors sub1 so helper output_3 and output_4 stay identical
         """
-        if self.output_mode == OUTPUT_MODE_SUBWOOFER_22:
+        if self.output_mode in SUBWOOFER_22_MODES:
             return self.derived_main_delay_ms + self.sub2_alignment_ms
         return self.derived_sub_delay_ms
+
+    @property
+    def bass_routing(self) -> str:
+        return "stereo" if self.output_mode == OUTPUT_MODE_SUBWOOFER_22_STEREO else "mono"
 
     @classmethod
     def from_overview(cls, overview: dict[str, Any]) -> "SubwooferRuntimeConfig":
@@ -127,7 +133,7 @@ class SubwooferRuntimeConfig:
 
         mode = str(output_mode.get("mode") or "stereo")
 
-        if mode == OUTPUT_MODE_SUBWOOFER_22:
+        if mode in SUBWOOFER_22_MODES:
             # 2.2: global fields at top level, per-sub in subwoofers
             subwoofers = output_mode.get("subwoofers") or {}
             sub1 = subwoofers.get("sub1") or {}
@@ -263,6 +269,7 @@ class Subwoofer21Runtime:
     def _stream_key(self, config: SubwooferRuntimeConfig) -> tuple[Any, ...]:
         return (
             config.output_mode,
+            config.bass_routing,
             config.output_key,
             config.output_channels,
             config.sample_rate,
@@ -314,6 +321,8 @@ class Subwoofer21Runtime:
                 await self._sync_once(next_config)
 
     def _mode_label(self) -> str:
+        if self._config and self._config.output_mode == OUTPUT_MODE_SUBWOOFER_22_STEREO:
+            return "2.2 Stereo Bass"
         return "2.2" if self._config and self._config.output_mode == OUTPUT_MODE_SUBWOOFER_22 else "2.1"
 
     async def _sync_once(self, config: SubwooferRuntimeConfig) -> None:
@@ -335,7 +344,7 @@ class Subwoofer21Runtime:
             self._config = config
             await self.stop()
             await self._stop_orphan_helpers()
-            mode_num = "2.2" if config.output_mode == OUTPUT_MODE_SUBWOOFER_22 else "2.1"
+            mode_num = "2.2 Stereo Bass" if config.output_mode == OUTPUT_MODE_SUBWOOFER_22_STEREO else "2.2" if config.output_mode == OUTPUT_MODE_SUBWOOFER_22 else "2.1"
             self._last_error = f"{mode_num} Subwoofer requires a selected output device with at least 4 channels"
             logger.warning("Subwoofer runtime inactive: %s", self._last_error)
             return
@@ -363,7 +372,7 @@ class Subwoofer21Runtime:
             try:
                 await self._start_helper(config)
             except Exception as exc:
-                mode_num = "2.2" if config.output_mode == OUTPUT_MODE_SUBWOOFER_22 else "2.1"
+                mode_num = "2.2 Stereo Bass" if config.output_mode == OUTPUT_MODE_SUBWOOFER_22_STEREO else "2.2" if config.output_mode == OUTPUT_MODE_SUBWOOFER_22 else "2.1"
                 logger.exception(f"Failed to start {mode_num} native helper")
                 await self._stop_for_21_reconfig()
                 await self._stop_orphan_helpers()
@@ -398,8 +407,11 @@ class Subwoofer21Runtime:
             self._current_stream_key = stream_key
             self._last_error = None
 
-        mode_num = "2.2" if config.output_mode == OUTPUT_MODE_SUBWOOFER_22 else "2.1"
+        mode_num = "2.2 Stereo Bass" if config.output_mode == OUTPUT_MODE_SUBWOOFER_22_STEREO else "2.2" if config.output_mode == OUTPUT_MODE_SUBWOOFER_22 else "2.1"
         routing_note = (
+            "Out 1/2=LR24 highpassed L/R, Out 3=Left Sub lowpassed L, Out 4=Right Sub lowpassed R"
+            if config.output_mode == OUTPUT_MODE_SUBWOOFER_22_STEREO
+            else
             "Out 1/2=LR24 highpassed L/R, Out 3=Sub 1 (L+R)*0.5, Out 4=Sub 2 (L+R)*0.5"
             if config.output_mode == OUTPUT_MODE_SUBWOOFER_22
             else "Out 1/2=optional LR24 highpassed L/R, Out 3/4=LR24 lowpassed (L+R)*0.5"
@@ -501,6 +513,8 @@ class Subwoofer21Runtime:
             str(config.crossover_frequency_hz),
             "--highpass-hz",
             str(config.crossover_frequency_hz if config.main_highpass_enabled else 0),
+            "--bass-routing",
+            config.bass_routing,
             "--sub-level-db",
             str(config.sub_level_db),
             "--sub-polarity",
@@ -516,7 +530,7 @@ class Subwoofer21Runtime:
             "--sub2-delay-ms",
             str(config.derived_sub2_delay_ms),
         ]
-        mode_num = "2.2" if config.output_mode == OUTPUT_MODE_SUBWOOFER_22 else "2.1"
+        mode_num = "2.2 Stereo Bass" if config.output_mode == OUTPUT_MODE_SUBWOOFER_22_STEREO else "2.2" if config.output_mode == OUTPUT_MODE_SUBWOOFER_22 else "2.1"
         logger.info("Starting %s helper: %s", mode_num, shlex.join(args))
         self._last_helper_args = list(args)
         self._process = await self._process_launcher(args)

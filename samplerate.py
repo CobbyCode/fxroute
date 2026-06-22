@@ -18,6 +18,9 @@ SOURCE_MODE_BLUETOOTH_INPUT = "bluetooth-input"
 OUTPUT_MODE_STEREO = "stereo"
 OUTPUT_MODE_SUBWOOFER_21 = "subwoofer-2.1"
 OUTPUT_MODE_SUBWOOFER_22 = "subwoofer-2.2"
+OUTPUT_MODE_SUBWOOFER_22_STEREO = "subwoofer-2.2-stereo"
+OUTPUT_MODE_SUBWOOFER_22_MODES = {OUTPUT_MODE_SUBWOOFER_22, OUTPUT_MODE_SUBWOOFER_22_STEREO}
+OUTPUT_MODE_SUBWOOFER_MODES = {OUTPUT_MODE_SUBWOOFER_21, *OUTPUT_MODE_SUBWOOFER_22_MODES}
 
 
 def _run_command(args: list[str]) -> str:
@@ -811,13 +814,13 @@ def _load_audio_output_mode() -> dict[str, Any]:
         return default_payload
     mode = payload.get("mode")
 
-    if mode == OUTPUT_MODE_SUBWOOFER_22:
+    if mode in OUTPUT_MODE_SUBWOOFER_22_MODES:
         normalized = _normalize_subwoofer_22_config(
             payload.get("subwoofers"),
             payload.get("subwoofer"),
         )
         return {
-            "mode": OUTPUT_MODE_SUBWOOFER_22,
+            "mode": mode,
             "crossover_frequency_hz": normalized["crossover_frequency_hz"],
             "slope": normalized["slope"],
             "main_highpass_enabled": normalized["main_highpass_enabled"],
@@ -862,7 +865,8 @@ def _save_audio_output_mode(
     subwoofer: dict[str, Any] | None = None,
     subwoofers: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    normalized_mode = mode if mode in {OUTPUT_MODE_STEREO, OUTPUT_MODE_SUBWOOFER_21, OUTPUT_MODE_SUBWOOFER_22} else OUTPUT_MODE_STEREO
+    valid_modes = {OUTPUT_MODE_STEREO, *OUTPUT_MODE_SUBWOOFER_MODES}
+    normalized_mode = mode if mode in valid_modes else OUTPUT_MODE_STEREO
 
     # Load existing config to preserve the other mode's block
     existing: dict[str, Any] = {}
@@ -873,10 +877,10 @@ def _save_audio_output_mode(
         except Exception:
             pass
 
-    if normalized_mode == OUTPUT_MODE_SUBWOOFER_22:
+    if normalized_mode in OUTPUT_MODE_SUBWOOFER_22_MODES:
         normalized = _normalize_subwoofer_22_config(subwoofers, subwoofer or existing.get("subwoofer"))
         payload: dict[str, Any] = {
-            "mode": OUTPUT_MODE_SUBWOOFER_22,
+            "mode": normalized_mode,
             "crossover_frequency_hz": normalized["crossover_frequency_hz"],
             "slope": normalized["slope"],
             "main_highpass_enabled": normalized["main_highpass_enabled"],
@@ -1363,9 +1367,20 @@ def get_audio_output_overview() -> dict[str, Any]:
     selected_output = _build_selected_output_payload(selected_key, current_name, explicit_outputs)
     effective_output = next((item for item in explicit_outputs if item.get("key") == (selected_output or {}).get("key")), None) or current_output
     output_mode_available = bool((effective_output or {}).get("channels") and (effective_output or {}).get("channels") >= 4)
-    if output_mode.get("mode") in {OUTPUT_MODE_SUBWOOFER_21, OUTPUT_MODE_SUBWOOFER_22} and not output_mode_available:
-        label = "2.1" if output_mode.get("mode") == OUTPUT_MODE_SUBWOOFER_21 else "2.2"
+    if output_mode.get("mode") in OUTPUT_MODE_SUBWOOFER_MODES and not output_mode_available:
+        label = (
+            "2.1"
+            if output_mode.get("mode") == OUTPUT_MODE_SUBWOOFER_21
+            else "2.2 Stereo Bass"
+            if output_mode.get("mode") == OUTPUT_MODE_SUBWOOFER_22_STEREO
+            else "2.2"
+        )
         notes.append(f"{label} Subwoofer mode requires a selected multichannel output with at least 4 channels.")
+    routing_status = (
+        "Out 1/2 Main · Out 3 Left Sub · Out 4 Right Sub"
+        if output_mode.get("mode") == OUTPUT_MODE_SUBWOOFER_22_STEREO
+        else "Out 1/2 Main · Out 3/4 Sub"
+    )
 
     return {
         "available": bool(status.get("available")),
@@ -1385,7 +1400,7 @@ def get_audio_output_overview() -> dict[str, Any]:
             "routing": {
                 "main_pair": [1, 2],
                 "sub_pair": [3, 4],
-                "status": "Out 1/2 Main · Out 3/4 Sub",
+                "status": routing_status,
             },
             "available": output_mode_available,
             "required_channels": 4,
@@ -1542,9 +1557,14 @@ def set_audio_output_selection(key: str) -> dict[str, Any]:
     if not selected_output.get("selectable", True):
         raise ValueError(f"Output is not selectable: {normalized_key}")
     output_mode = _load_audio_output_mode()
-    sub_modes = {OUTPUT_MODE_SUBWOOFER_21, OUTPUT_MODE_SUBWOOFER_22}
-    if output_mode.get("mode") in sub_modes and (selected_output.get("channels") or 0) < 4:
-        label = "2.1" if output_mode.get("mode") == OUTPUT_MODE_SUBWOOFER_21 else "2.2"
+    if output_mode.get("mode") in OUTPUT_MODE_SUBWOOFER_MODES and (selected_output.get("channels") or 0) < 4:
+        label = (
+            "2.1"
+            if output_mode.get("mode") == OUTPUT_MODE_SUBWOOFER_21
+            else "2.2 Stereo Bass"
+            if output_mode.get("mode") == OUTPUT_MODE_SUBWOOFER_22_STEREO
+            else "2.2"
+        )
         raise ValueError(f"{label} Subwoofer requires a selected multichannel output with at least 4 channels")
 
     _set_default_sink(selected_output["name"])
@@ -1558,18 +1578,24 @@ def set_audio_output_mode(
     subwoofers: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     normalized_mode = (mode or OUTPUT_MODE_STEREO).strip()
-    valid_modes = {OUTPUT_MODE_STEREO, OUTPUT_MODE_SUBWOOFER_21, OUTPUT_MODE_SUBWOOFER_22}
+    valid_modes = {OUTPUT_MODE_STEREO, *OUTPUT_MODE_SUBWOOFER_MODES}
     if normalized_mode not in valid_modes:
         raise ValueError(f"Unknown output mode: {mode}")
-    if normalized_mode in {OUTPUT_MODE_SUBWOOFER_21, OUTPUT_MODE_SUBWOOFER_22}:
+    if normalized_mode in OUTPUT_MODE_SUBWOOFER_MODES:
         overview = get_audio_output_overview()
         output_mode = overview.get("output_mode") or {}
         if not output_mode.get("available"):
-            label = "2.1" if normalized_mode == OUTPUT_MODE_SUBWOOFER_21 else "2.2"
+            label = (
+                "2.1"
+                if normalized_mode == OUTPUT_MODE_SUBWOOFER_21
+                else "2.2 Stereo Bass"
+                if normalized_mode == OUTPUT_MODE_SUBWOOFER_22_STEREO
+                else "2.2"
+            )
             raise ValueError(f"{label} Subwoofer requires a selected multichannel output with at least 4 channels")
     previous = _load_audio_output_mode()
 
-    if normalized_mode == OUTPUT_MODE_SUBWOOFER_22:
+    if normalized_mode in OUTPUT_MODE_SUBWOOFER_22_MODES:
         saved = _save_audio_output_mode(
             normalized_mode,
             subwoofer=subwoofer if subwoofer is not None else previous.get("subwoofer"),

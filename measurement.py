@@ -25,6 +25,8 @@ import numpy as np
 from samplerate import (
     OUTPUT_MODE_SUBWOOFER_21,
     OUTPUT_MODE_SUBWOOFER_22,
+    OUTPUT_MODE_SUBWOOFER_22_STEREO,
+    OUTPUT_MODE_SUBWOOFER_MODES,
     get_audio_output_overview,
     get_samplerate_status,
 )
@@ -5499,7 +5501,7 @@ class MeasurementStore:
         overview = get_audio_output_overview()
         output_mode = overview.get("output_mode") if isinstance(overview.get("output_mode"), dict) else {}
         mode = str(output_mode.get("mode") or "")
-        if mode not in {OUTPUT_MODE_SUBWOOFER_21, OUTPUT_MODE_SUBWOOFER_22}:
+        if mode not in OUTPUT_MODE_SUBWOOFER_MODES:
             return {
                 "route": "direct-sink",
                 "output_mode": mode or "stereo",

@@ -5,7 +5,7 @@
  * - Local reviewable C/libpipewire helper source only.
  * - PipeWire filter/client-style node with explicit mono DSP ports.
  * - Stage-3 routing: Out 1/2 = optional LR24 highpassed L/R, Out 3/4 =
- *   LR24 lowpassed (L + R) * 0.5.
+ *   LR24 lowpassed mono bass by default, or stereo bass with --bass-routing stereo.
  * - Sub level (dB gain), sub polarity (normal/invert), per-branch delay (ms).
  *
  * Timing model:
@@ -46,6 +46,7 @@
 #define DEFAULT_MAIN_DELAY_MS 0.0f
 #define DEFAULT_SUB_DELAY_MS 0.0f
 #define DEFAULT_SUB_POLARITY_INVERT false
+#define DEFAULT_BASS_ROUTING FXROUTE_BASS_ROUTING_MONO
 #define BUTTERWORTH_Q 0.7071067811865476f
 #define PI_F 3.14159265358979323846f
 #define PORT_COUNT 6u
@@ -58,6 +59,11 @@ enum fxroute_port_kind {
     FXROUTE_PORT_OUTPUT_2,
     FXROUTE_PORT_OUTPUT_3,
     FXROUTE_PORT_OUTPUT_4,
+};
+
+enum fxroute_bass_routing {
+    FXROUTE_BASS_ROUTING_MONO = 0,
+    FXROUTE_BASS_ROUTING_STEREO,
 };
 
 struct fxroute_21_app;
@@ -102,12 +108,18 @@ struct fxroute_21_app {
     float sub2_delay_ms;
     bool sub_polarity_invert;
     bool sub2_polarity_invert;
+    enum fxroute_bass_routing bass_routing;
     bool self_test_sub_gain;
     bool self_test_alignment;
+    bool self_test_bass_routing;
     float sub_level_gain;
     float sub2_level_gain;
     struct biquad sub_lowpass_1;
     struct biquad sub_lowpass_2;
+    struct biquad left_sub_lowpass_1;
+    struct biquad left_sub_lowpass_2;
+    struct biquad right_sub_lowpass_1;
+    struct biquad right_sub_lowpass_2;
     struct biquad main_left_highpass_1;
     struct biquad main_left_highpass_2;
     struct biquad main_right_highpass_1;
@@ -138,6 +150,7 @@ static void usage(const char *program)
             "  -l, --lowpass-hz <hz>      Stage-2 sub LR24 lowpass frequency; 0 disables, default: %.1f\n"
             "  -H, --highpass-hz <hz>     Stage-3 main LR24 highpass frequency; 0 disables, default: %.1f\n"
             "  -L, --sub-level-db <db>    Sub level gain in dB, default: %.1f\n"
+            "      --bass-routing <mode>  Bass routing: mono|stereo, default: mono\n"
             "      --sub2-level-db <db>   Sub 2 level gain in dB, default: %.1f\n"
             "  -M, --main-delay-ms <ms>   Main speaker delay in ms, default: %.1f\n"
             "  -S, --sub-delay-ms <ms>    Sub delay in ms, default: %.1f\n"
@@ -146,6 +159,7 @@ static void usage(const char *program)
             "      --sub2-polarity <mode> Sub 2 polarity: normal|invert, default: normal\n"
             "      --self-test-sub-gain    Run offline sub-gain DSP smoke test and exit\n"
             "      --self-test-alignment   Run offline branch-delay impulse smoke test and exit\n"
+            "      --self-test-bass-routing Run offline L/R bass-routing smoke test and exit\n"
             "  -h, --help                 Show this help\n"
             "\n"
             "Graph ports are explicit and must be linked by FXRoute later:\n"
@@ -210,6 +224,8 @@ static int parse_args(int argc, char **argv, struct fxroute_21_app *app)
         OPT_SUB2_LEVEL_DB = 1000,
         OPT_SUB2_DELAY_MS,
         OPT_SUB2_POLARITY,
+        OPT_BASS_ROUTING,
+        OPT_SELF_TEST_BASS_ROUTING,
     };
     static const struct option long_options[] = {
         {"node-name", required_argument, NULL, 'n'},
@@ -218,6 +234,7 @@ static int parse_args(int argc, char **argv, struct fxroute_21_app *app)
         {"lowpass-hz", required_argument, NULL, 'l'},
         {"highpass-hz", required_argument, NULL, 'H'},
         {"sub-level-db", required_argument, NULL, 'L'},
+        {"bass-routing", required_argument, NULL, OPT_BASS_ROUTING},
         {"sub2-level-db", required_argument, NULL, OPT_SUB2_LEVEL_DB},
         {"main-delay-ms", required_argument, NULL, 'M'},
         {"sub-delay-ms", required_argument, NULL, 'S'},
@@ -226,6 +243,7 @@ static int parse_args(int argc, char **argv, struct fxroute_21_app *app)
         {"sub2-polarity", required_argument, NULL, OPT_SUB2_POLARITY},
         {"self-test-sub-gain", no_argument, NULL, 'T'},
         {"self-test-alignment", no_argument, NULL, 'A'},
+        {"self-test-bass-routing", no_argument, NULL, OPT_SELF_TEST_BASS_ROUTING},
         {"help", no_argument, NULL, 'h'},
         {0, 0, 0, 0},
     };
@@ -267,6 +285,16 @@ static int parse_args(int argc, char **argv, struct fxroute_21_app *app)
         case 'L':
             if (parse_float(optarg, &app->sub_level_db) != 0) {
                 fprintf(stderr, "Invalid --sub-level-db: %s\n", optarg);
+                return -1;
+            }
+            break;
+        case OPT_BASS_ROUTING:
+            if (strcmp(optarg, "mono") == 0) {
+                app->bass_routing = FXROUTE_BASS_ROUTING_MONO;
+            } else if (strcmp(optarg, "stereo") == 0) {
+                app->bass_routing = FXROUTE_BASS_ROUTING_STEREO;
+            } else {
+                fprintf(stderr, "Invalid --bass-routing: %s (expected mono|stereo)\n", optarg);
                 return -1;
             }
             break;
@@ -319,6 +347,9 @@ static int parse_args(int argc, char **argv, struct fxroute_21_app *app)
             break;
         case 'A':
             app->self_test_alignment = true;
+            break;
+        case OPT_SELF_TEST_BASS_ROUTING:
+            app->self_test_bass_routing = true;
             break;
         case 'h':
             usage(argv[0]);
@@ -401,6 +432,10 @@ static void configure_sub_lowpass(struct fxroute_21_app *app)
     }
     biquad_configure_lowpass(&app->sub_lowpass_1, (float)app->rate, app->lowpass_hz);
     biquad_configure_lowpass(&app->sub_lowpass_2, (float)app->rate, app->lowpass_hz);
+    biquad_configure_lowpass(&app->left_sub_lowpass_1, (float)app->rate, app->lowpass_hz);
+    biquad_configure_lowpass(&app->left_sub_lowpass_2, (float)app->rate, app->lowpass_hz);
+    biquad_configure_lowpass(&app->right_sub_lowpass_1, (float)app->rate, app->lowpass_hz);
+    biquad_configure_lowpass(&app->right_sub_lowpass_2, (float)app->rate, app->lowpass_hz);
 }
 
 static void configure_main_highpass(struct fxroute_21_app *app)
@@ -503,6 +538,22 @@ static float process_sub_lowpass(struct fxroute_21_app *app, float input)
     return biquad_process(&app->sub_lowpass_2, stage_1);
 }
 
+static float process_stereo_sub_lowpass(struct fxroute_21_app *app, bool right_channel, float input)
+{
+    float stage_1;
+    struct biquad *filter_1;
+    struct biquad *filter_2;
+
+    if (!app->lowpass_enabled) {
+        return input;
+    }
+
+    filter_1 = right_channel ? &app->right_sub_lowpass_1 : &app->left_sub_lowpass_1;
+    filter_2 = right_channel ? &app->right_sub_lowpass_2 : &app->left_sub_lowpass_2;
+    stage_1 = biquad_process(filter_1, input);
+    return biquad_process(filter_2, stage_1);
+}
+
 static float process_main_highpass(struct fxroute_21_app *app, bool right_channel, float input)
 {
     float stage_1;
@@ -535,17 +586,25 @@ static void route_stage3_crossover(struct fxroute_21_app *app,
         output_1[frame] = delay_line_process(&app->main_delay_l, main_l);
         output_2[frame] = delay_line_process(&app->main_delay_r, main_r);
 
-        /* Sub branches: shared mono lowpass, independent delay/polarity/level. */
-        float sub_low = process_sub_lowpass(app, (left + right) * 0.5f);
+        /* Sub branches: mono or stereo lowpass, independent delay/polarity/level. */
+        float sub1_low;
+        float sub2_low;
+        if (app->bass_routing == FXROUTE_BASS_ROUTING_STEREO) {
+            sub1_low = process_stereo_sub_lowpass(app, false, left);
+            sub2_low = process_stereo_sub_lowpass(app, true, right);
+        } else {
+            sub1_low = process_sub_lowpass(app, (left + right) * 0.5f);
+            sub2_low = sub1_low;
+        }
 
-        float sub1 = delay_line_process(&app->sub_delay, sub_low);
+        float sub1 = delay_line_process(&app->sub_delay, sub1_low);
         if (app->sub_polarity_invert) {
             sub1 = -sub1;
         }
         sub1 *= app->sub_level_gain;
         output_3[frame] = sub1;
 
-        float sub2 = delay_line_process(&app->sub2_delay, sub_low);
+        float sub2 = delay_line_process(&app->sub2_delay, sub2_low);
         if (app->sub2_polarity_invert) {
             sub2 = -sub2;
         }
@@ -654,6 +713,51 @@ static int run_alignment_self_test(struct fxroute_21_app *app)
            output_2_impulse,
            output_3_impulse,
            output_4_impulse);
+    return EXIT_SUCCESS;
+}
+
+static int run_bass_routing_self_test(struct fxroute_21_app *app)
+{
+    enum { frames = 4096 };
+    float input_l[frames];
+    float input_r[frames];
+    float output_1[frames];
+    float output_2[frames];
+    float output_3[frames];
+    float output_4[frames];
+
+    memset(input_l, 0, sizeof(input_l));
+    memset(input_r, 0, sizeof(input_r));
+    memset(output_1, 0, sizeof(output_1));
+    memset(output_2, 0, sizeof(output_2));
+    memset(output_3, 0, sizeof(output_3));
+    memset(output_4, 0, sizeof(output_4));
+
+    for (uint32_t frame = 0; frame < frames; ++frame) {
+        input_l[frame] = 0.25f * sinf((2.0f * PI_F * 17.0f * (float)frame) / (float)frames);
+    }
+    route_stage3_crossover(app, input_l, input_r, output_1, output_2, output_3, output_4, frames);
+    printf("case=L-only bass_routing=%s output_3_rms=%.9f output_4_rms=%.9f\n",
+           app->bass_routing == FXROUTE_BASS_ROUTING_STEREO ? "stereo" : "mono",
+           rms_for_buffer(output_3, frames),
+           rms_for_buffer(output_4, frames));
+
+    memset(input_l, 0, sizeof(input_l));
+    memset(input_r, 0, sizeof(input_r));
+    memset(output_1, 0, sizeof(output_1));
+    memset(output_2, 0, sizeof(output_2));
+    memset(output_3, 0, sizeof(output_3));
+    memset(output_4, 0, sizeof(output_4));
+
+    for (uint32_t frame = 0; frame < frames; ++frame) {
+        input_r[frame] = 0.25f * sinf((2.0f * PI_F * 17.0f * (float)frame) / (float)frames);
+    }
+    route_stage3_crossover(app, input_l, input_r, output_1, output_2, output_3, output_4, frames);
+    printf("case=R-only bass_routing=%s output_3_rms=%.9f output_4_rms=%.9f\n",
+           app->bass_routing == FXROUTE_BASS_ROUTING_STEREO ? "stereo" : "mono",
+           rms_for_buffer(output_3, frames),
+           rms_for_buffer(output_4, frames));
+
     return EXIT_SUCCESS;
 }
 
@@ -835,6 +939,7 @@ int main(int argc, char **argv)
     app.sub2_delay_ms = DEFAULT_SUB_DELAY_MS;
     app.sub_polarity_invert = DEFAULT_SUB_POLARITY_INVERT;
     app.sub2_polarity_invert = DEFAULT_SUB_POLARITY_INVERT;
+    app.bass_routing = DEFAULT_BASS_ROUTING;
 
     if (parse_args(argc, argv, &app) != 0) {
         return EXIT_FAILURE;
@@ -854,6 +959,14 @@ int main(int argc, char **argv)
     }
     if (app.self_test_alignment) {
         result = run_alignment_self_test(&app);
+        delay_line_destroy(&app.main_delay_l);
+        delay_line_destroy(&app.main_delay_r);
+        delay_line_destroy(&app.sub_delay);
+        delay_line_destroy(&app.sub2_delay);
+        return result;
+    }
+    if (app.self_test_bass_routing) {
+        result = run_bass_routing_self_test(&app);
         delay_line_destroy(&app.main_delay_l);
         delay_line_destroy(&app.main_delay_r);
         delay_line_destroy(&app.sub_delay);
@@ -884,7 +997,7 @@ int main(int argc, char **argv)
 
     fprintf(stderr,
             "FXRoute 2.1 helper started: node=%s expected_rate=%u requested_quantum=%u "
-            "lowpass_hz=%.1f lowpass_enabled=%s highpass_hz=%.1f highpass_enabled=%s "
+            "lowpass_hz=%.1f lowpass_enabled=%s highpass_hz=%.1f highpass_enabled=%s bass_routing=%s "
             "sub_level_db=%.1f sub_level_gain=%.4f main_delay_ms=%.1f sub_delay_ms=%.1f "
             "sub_polarity=%s sub2_level_db=%.1f sub2_level_gain=%.4f sub2_delay_ms=%.1f "
             "sub2_polarity=%s "
@@ -896,6 +1009,7 @@ int main(int argc, char **argv)
             app.lowpass_enabled ? "true" : "false",
             app.highpass_hz,
             app.highpass_enabled ? "true" : "false",
+            app.bass_routing == FXROUTE_BASS_ROUTING_STEREO ? "stereo" : "mono",
             app.sub_level_db,
             app.sub_level_gain,
             app.main_delay_ms,

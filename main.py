@@ -719,6 +719,9 @@ from samplerate import (
     OUTPUT_MODE_STEREO,
     OUTPUT_MODE_SUBWOOFER_21,
     OUTPUT_MODE_SUBWOOFER_22,
+    OUTPUT_MODE_SUBWOOFER_22_STEREO,
+    OUTPUT_MODE_SUBWOOFER_22_MODES,
+    OUTPUT_MODE_SUBWOOFER_MODES,
     SOURCE_MODE_APP_PLAYBACK,
     SOURCE_MODE_BLUETOOTH_INPUT,
     SOURCE_MODE_EXTERNAL_INPUT,
@@ -1225,7 +1228,7 @@ async def _sync_subwoofer_runtime_after_playback_transition(expected_track: dict
     try:
         overview = get_audio_output_overview()
         output_mode = overview.get("output_mode") or {}
-        if output_mode.get("mode") not in (OUTPUT_MODE_SUBWOOFER_21, OUTPUT_MODE_SUBWOOFER_22):
+        if output_mode.get("mode") not in OUTPUT_MODE_SUBWOOFER_MODES:
             return
         before = subwoofer_runtime.snapshot()
         await _sync_subwoofer_runtime(overview)
@@ -1323,7 +1326,7 @@ def _measurement_helper_snapshot_summary(snapshot: dict | None) -> dict:
 
 
 def _log_22_measurement_sweep_config(config: SubwooferRuntimeConfig, snapshot: dict | None) -> None:
-    if config.output_mode != OUTPUT_MODE_SUBWOOFER_22:
+    if config.output_mode not in OUTPUT_MODE_SUBWOOFER_22_MODES:
         return
     snapshot = snapshot or {}
     logger.info(
@@ -1444,7 +1447,7 @@ def _build_measurement_audio_output_context() -> dict:
         overview = get_audio_output_overview()
         output_mode = overview.get("output_mode") or {}
         mode = str(output_mode.get("mode", "stereo") or "stereo")
-        if mode in (OUTPUT_MODE_SUBWOOFER_21, OUTPUT_MODE_SUBWOOFER_22):
+        if mode in OUTPUT_MODE_SUBWOOFER_MODES:
             config = SubwooferRuntimeConfig.from_overview(overview)
             snapshot = subwoofer_runtime.snapshot() if subwoofer_runtime is not None else {}
             context["output_mode"] = mode
@@ -1480,9 +1483,9 @@ async def _prepare_subwoofer_runtime_for_measurement_start(measurement_rate: int
         return None
     overview = get_audio_output_overview()
     output_mode = overview.get("output_mode") or {}
-    if output_mode.get("mode") not in (OUTPUT_MODE_SUBWOOFER_21, OUTPUT_MODE_SUBWOOFER_22):
+    if output_mode.get("mode") not in OUTPUT_MODE_SUBWOOFER_MODES:
         return None
-    mode_num = "2.2" if output_mode.get("mode") == OUTPUT_MODE_SUBWOOFER_22 else "2.1"
+    mode_num = "2.2 Stereo Bass" if output_mode.get("mode") == OUTPUT_MODE_SUBWOOFER_22_STEREO else "2.2" if output_mode.get("mode") == OUTPUT_MODE_SUBWOOFER_22 else "2.1"
     output_key = str(output_mode.get("effective_output_key") or "").strip()
 
     samplerate_status = get_samplerate_status()
@@ -1664,7 +1667,7 @@ async def _sync_subwoofer_runtime_at_rate(target_rate: int) -> None:
                 target_rate = DEFAULT_SAMPLE_RATE
     overview = get_audio_output_overview()
     output_mode = overview.get("output_mode") or {}
-    if output_mode.get("mode") not in (OUTPUT_MODE_SUBWOOFER_21, OUTPUT_MODE_SUBWOOFER_22):
+    if output_mode.get("mode") not in OUTPUT_MODE_SUBWOOFER_MODES:
         logger.info(
             "Subwoofer runtime measurement release re-sync skipped: api_mode=%s target_rate=%s",
             output_mode.get("mode"),
@@ -1702,7 +1705,7 @@ async def _repair_subwoofer_runtime_inputs_after_measurement_release(target_rate
         await asyncio.sleep(delay)
         overview = get_audio_output_overview()
         output_mode = overview.get("output_mode") or {}
-        if output_mode.get("mode") not in (OUTPUT_MODE_SUBWOOFER_21, OUTPUT_MODE_SUBWOOFER_22):
+        if output_mode.get("mode") not in OUTPUT_MODE_SUBWOOFER_MODES:
             logger.info(
                 "Measurement release input repair skipped: api_mode=%s target_rate=%s",
                 output_mode.get("mode"),
@@ -1752,7 +1755,7 @@ async def _subwoofer_runtime_link_watch_loop() -> None:
         try:
             overview = get_audio_output_overview()
             output_mode = overview.get("output_mode") or {}
-            if output_mode.get("mode") not in (OUTPUT_MODE_SUBWOOFER_21, OUTPUT_MODE_SUBWOOFER_22):
+            if output_mode.get("mode") not in OUTPUT_MODE_SUBWOOFER_MODES:
                 continue
             if getattr(subwoofer_runtime, "sync_in_progress", False):
                 continue
@@ -3111,9 +3114,9 @@ async def _sync_subwoofer_runtime(audio_overview: dict | None = None) -> dict:
 
     await subwoofer_runtime.sync(config)
 
-    if config.output_mode in (OUTPUT_MODE_SUBWOOFER_21, OUTPUT_MODE_SUBWOOFER_22):
+    if config.output_mode in OUTPUT_MODE_SUBWOOFER_MODES:
         runtime_snapshot = subwoofer_runtime.snapshot()
-        mode_num = "2.2" if config.output_mode == OUTPUT_MODE_SUBWOOFER_22 else "2.1"
+        mode_num = "2.2 Stereo Bass" if config.output_mode == OUTPUT_MODE_SUBWOOFER_22_STEREO else "2.2" if config.output_mode == OUTPUT_MODE_SUBWOOFER_22 else "2.1"
         logger.info(
             "%s runtime sync: output_mode=%s runtime_active=%s "
             "hardware_output=%s device_channel_count=%s "
@@ -3146,7 +3149,7 @@ async def _sync_subwoofer_runtime(audio_overview: dict | None = None) -> dict:
 
 def _with_subwoofer_derived_delays(overview: dict) -> dict:
     output_mode = overview.get("output_mode") or {}
-    if output_mode.get("mode") == OUTPUT_MODE_SUBWOOFER_22:
+    if output_mode.get("mode") in OUTPUT_MODE_SUBWOOFER_22_MODES:
         config = SubwooferRuntimeConfig.from_overview(overview)
         overview["output_mode"] = {
             **output_mode,
@@ -4858,7 +4861,7 @@ async def save_audio_output_mode_route(request: Request):
 
         # Enrich 2.2 response with derived delays for API/debug verification
         om = result.get("output_mode") or {}
-        if om.get("mode") == OUTPUT_MODE_SUBWOOFER_22:
+        if om.get("mode") in OUTPUT_MODE_SUBWOOFER_22_MODES:
             cfg = SubwooferRuntimeConfig.from_overview(result)
             om["derived_main_delay_ms"] = cfg.derived_main_delay_ms
             om["derived_sub1_delay_ms"] = cfg.derived_sub1_delay_ms
@@ -5503,7 +5506,7 @@ async def _restore_auto_sub_original_config(original_config_snapshot: dict[str, 
         mode = original_config_snapshot.get("mode", "stereo") or "stereo"
         subwoofer_config = (
             _auto_sub_22_global_config(original_config_snapshot)
-            if mode == OUTPUT_MODE_SUBWOOFER_22
+            if mode in OUTPUT_MODE_SUBWOOFER_22_MODES
             else original_config_snapshot.get("subwoofer") or {}
         )
         set_audio_output_mode(
@@ -5584,6 +5587,10 @@ def _auto_sub_22_verify_alignment(mode_state: dict[str, Any], sub1_alignment_ms:
 
 def _auto_sub_22_name(sub1_alignment_ms: float, sub2_alignment_ms: float) -> str:
     return f"Sub1 {sub1_alignment_ms:.2f} ms / Sub2 {sub2_alignment_ms:.2f} ms"
+
+
+def _auto_sub_22_stereo_name(left_alignment_ms: float, right_alignment_ms: float) -> str:
+    return f"Left {left_alignment_ms:.2f} ms / Right {right_alignment_ms:.2f} ms"
 
 
 def _auto_sub_direct_neighbors(delay_a: float, delay_b: float, scan_delays: list[float]) -> bool:
@@ -5974,10 +5981,10 @@ async def start_auto_sub_optimize(
     try:
         mode_state = _load_audio_output_mode()
         output_mode = mode_state.get("mode")
-        if output_mode not in (OUTPUT_MODE_SUBWOOFER_21, OUTPUT_MODE_SUBWOOFER_22):
+        if output_mode not in OUTPUT_MODE_SUBWOOFER_MODES:
             raise HTTPException(status_code=400, detail="Auto Sub Optimize requires 2.1 or 2.2 Subwoofer output mode")
 
-        if output_mode == OUTPUT_MODE_SUBWOOFER_22:
+        if output_mode in OUTPUT_MODE_SUBWOOFER_22_MODES:
             sub1 = _auto_sub_22_sub(mode_state, "sub1")
             sub2 = _auto_sub_22_sub(mode_state, "sub2")
             fc = int(mode_state.get("crossover_frequency_hz", 80))
@@ -6047,7 +6054,41 @@ async def start_auto_sub_optimize(
                 raise HTTPException(status_code=400, detail=f"Calibration file too large (max {_AUTO_SUB_MAX_CALIBRATION_BYTES // (1024*1024)} MiB)")
             calibration_bytes = raw_bytes
 
-        if output_mode == OUTPUT_MODE_SUBWOOFER_22:
+        if output_mode == OUTPUT_MODE_SUBWOOFER_22_STEREO:
+            fine_step_ms = step_ms / 4.0
+            right_scan_delays: list[float] = []
+            for s in range(-coarse_steps, coarse_steps + 1):
+                delay = _auto_sub_clamped_delay(current_sub2_alignment + s * step_ms)
+                if not right_scan_delays or abs(delay - right_scan_delays[-1]) > 0.05:
+                    right_scan_delays.append(delay)
+            job["message"] = (
+                f"Auto Sub Optimize 2.2 Stereo Bass: Left Sub {len(scan_delays)} coarse, "
+                f"Right Sub {len(right_scan_delays)} coarse @ {fc} Hz"
+            )
+            job["scan_delays"] = {"left_sub": scan_delays, "right_sub": right_scan_delays}
+            job["fine_scan"] = {
+                "enabled": False,
+                "triggered": False,
+                "status": "skipped",
+                "reason": "2.2 Stereo Bass optimizes Left and Right Sub separately",
+                "fine_step_ms": fine_step_ms,
+            }
+            asyncio.create_task(
+                _run_auto_sub_22_stereo_optimize(
+                    job_id=job_id,
+                    input_id=input_id,
+                    mic_input_channel=mic_input_channel,
+                    reference_input_channel=reference_input_channel,
+                    calibration_ref=calibration_ref,
+                    calibration_filename=calibration_filename,
+                    calibration_bytes=calibration_bytes,
+                    left_scan_delays=scan_delays,
+                    right_scan_delays=right_scan_delays,
+                    fc=fc,
+                    original_config_snapshot=original_config_snapshot,
+                )
+            )
+        elif output_mode == OUTPUT_MODE_SUBWOOFER_22:
             fine_step_ms = step_ms / 4.0
             sub2_scan_delays: list[float] = []
             for s in range(-coarse_steps, coarse_steps + 1):
@@ -6300,7 +6341,7 @@ async def _measure_auto_sub_candidate(
 
     config_success = False
     try:
-        if output_mode == OUTPUT_MODE_SUBWOOFER_22:
+        if output_mode in OUTPUT_MODE_SUBWOOFER_22_MODES:
             snapshot = original_config_snapshot or {}
             sub1_delay = _auto_sub_clamped_delay(sub1_alignment_ms if sub1_alignment_ms is not None else delay_ms)
             sub2_delay = _auto_sub_clamped_delay(sub2_alignment_ms if sub2_alignment_ms is not None else _auto_sub_22_sub(snapshot, "sub2").get("alignment_ms", 0.0))
@@ -6311,7 +6352,7 @@ async def _measure_auto_sub_candidate(
                 sub2_alignment_ms=sub2_delay,
                 active_subs=active_subs,
             )
-            set_audio_output_mode(OUTPUT_MODE_SUBWOOFER_22, sub_config, subwoofers_config)
+            set_audio_output_mode(output_mode, sub_config, subwoofers_config)
         else:
             sub_config = {
                 "crossover_frequency_hz": fc,
@@ -6329,7 +6370,7 @@ async def _measure_auto_sub_candidate(
         if _auto_sub_cancel_requested(job):
             return _return_candidate(_auto_sub_cancelled_candidate(delay_ms, stage))
         verify = _load_audio_output_mode()
-        if output_mode == OUTPUT_MODE_SUBWOOFER_22:
+        if output_mode in OUTPUT_MODE_SUBWOOFER_22_MODES:
             config_success = _auto_sub_22_verify_alignment(verify, sub1_delay, sub2_delay)
         else:
             config_success = float(verify.get("subwoofer", {}).get("sub_alignment_ms", -999)) == delay_ms
@@ -6338,7 +6379,7 @@ async def _measure_auto_sub_candidate(
             if _auto_sub_cancel_requested(job):
                 return _return_candidate(_auto_sub_cancelled_candidate(delay_ms, stage))
             verify = _load_audio_output_mode()
-            if output_mode == OUTPUT_MODE_SUBWOOFER_22:
+            if output_mode in OUTPUT_MODE_SUBWOOFER_22_MODES:
                 config_success = _auto_sub_22_verify_alignment(verify, sub1_delay, sub2_delay)
             else:
                 config_success = float(verify.get("subwoofer", {}).get("sub_alignment_ms", -999)) == delay_ms
@@ -6347,7 +6388,7 @@ async def _measure_auto_sub_candidate(
                 if _auto_sub_cancel_requested(job):
                     return _return_candidate(_auto_sub_cancelled_candidate(delay_ms, stage))
                 verify = _load_audio_output_mode()
-                if output_mode == OUTPUT_MODE_SUBWOOFER_22:
+                if output_mode in OUTPUT_MODE_SUBWOOFER_22_MODES:
                     config_success = _auto_sub_22_verify_alignment(verify, sub1_delay, sub2_delay)
                 else:
                     config_success = float(verify.get("subwoofer", {}).get("sub_alignment_ms", -999)) == delay_ms
@@ -6593,7 +6634,7 @@ async def _measure_auto_sub_combined_candidate(
     else:
         label = "Fine-Scan" if stage == "fine" else "Coarse scan"
     pair_suffix = ""
-    if output_mode == OUTPUT_MODE_SUBWOOFER_22:
+    if output_mode in OUTPUT_MODE_SUBWOOFER_22_MODES:
         s1 = _auto_sub_clamped_delay(sub1_alignment_ms if sub1_alignment_ms is not None else delay_ms)
         s2 = _auto_sub_clamped_delay(sub2_alignment_ms if sub2_alignment_ms is not None else 0.0)
         pair_suffix = f" (S1 {s1:.2f} ms / S2 {s2:.2f} ms)"
@@ -6684,7 +6725,7 @@ async def _measure_auto_sub_combined_candidate(
         "status_right": right_result.get("status"),
         "combined_candidate": True,
     }
-    if output_mode == OUTPUT_MODE_SUBWOOFER_22:
+    if output_mode in OUTPUT_MODE_SUBWOOFER_22_MODES:
         sub1_delay = _auto_sub_clamped_delay(sub1_alignment_ms if sub1_alignment_ms is not None else delay_ms)
         sub2_delay = _auto_sub_clamped_delay(sub2_alignment_ms if sub2_alignment_ms is not None else 0.0)
         candidate.update({
@@ -7014,6 +7055,272 @@ async def _run_auto_sub_22_optimize(
         logger.exception("Auto-sub 2.2 optimize failed")
         job["status"] = "failed"
         job["message"] = f"Auto Sub Optimize 2.2 failed: {exc}"
+        job["error"] = {"detail": str(exc)}
+        await _restore_original_config()
+
+    finally:
+        try:
+            _auto_sub_lock.release()
+        except RuntimeError:
+            pass
+        cleanup_job_id = job_id
+
+        async def _cleanup_autosub_job():
+            await asyncio.sleep(600)
+            _AUTO_SUB_JOBS.pop(cleanup_job_id, None)
+
+        asyncio.create_task(_cleanup_autosub_job())
+
+
+async def _run_auto_sub_22_stereo_optimize(
+    job_id: str,
+    input_id: str,
+    mic_input_channel: str,
+    reference_input_channel: str,
+    calibration_ref: str,
+    calibration_filename: str | None,
+    calibration_bytes: bytes | None,
+    left_scan_delays: list[float],
+    right_scan_delays: list[float],
+    fc: int,
+    original_config_snapshot: dict[str, Any],
+) -> None:
+    global measurement_store, subwoofer_runtime, _auto_sub_lock
+    from samplerate import _load_audio_output_mode, set_audio_output_mode
+
+    job = _AUTO_SUB_JOBS.get(job_id)
+    if not job:
+        _auto_sub_lock.release()
+        return
+
+    async def _restore_original_config() -> None:
+        await _restore_auto_sub_original_config(original_config_snapshot)
+
+    original_left = _auto_sub_22_sub(original_config_snapshot, "sub1")
+    original_right = _auto_sub_22_sub(original_config_snapshot, "sub2")
+    original_left_alignment = float(original_left.get("alignment_ms", 0.0) or 0.0)
+    original_right_alignment = float(original_right.get("alignment_ms", 0.0) or 0.0)
+
+    def _valid(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [result for result in results if _auto_sub_has_points(result, "points")]
+
+    try:
+        auto_sub_sweep_low_hz = 20.0
+        auto_sub_sweep_high_hz = max(600.0, min(float(fc) * 8.0, 2000.0))
+        if fc <= 60:
+            auto_sub_sweep_sec, auto_sub_tail_sec = 3.5, 1.5
+        elif fc <= 120:
+            auto_sub_sweep_sec, auto_sub_tail_sec = 3.0, 1.3
+        else:
+            auto_sub_sweep_sec, auto_sub_tail_sec = 2.5, 1.1
+        auto_sub_sweep_profile = {
+            "sweep_start_hz": auto_sub_sweep_low_hz,
+            "sweep_end_hz": auto_sub_sweep_high_hz,
+            "sweep_seconds": auto_sub_sweep_sec,
+            "tail_seconds": auto_sub_tail_sec,
+        }
+        auto_sub_rate = _resolve_measurement_start_sample_rate()
+        sweep_total = len(left_scan_delays) + len(right_scan_delays)
+
+        left_results: list[dict[str, Any]] = []
+        job["stage"] = "left_sub"
+        for idx, delay_ms in enumerate(left_scan_delays):
+            left_results.append(await _measure_auto_sub_candidate(
+                delay_ms=delay_ms,
+                job=job,
+                candidate_index=idx + 1,
+                total=len(left_scan_delays),
+                stage="left_sub",
+                fc=fc,
+                input_id=input_id,
+                channel="left",
+                mic_input_channel=mic_input_channel,
+                reference_input_channel=reference_input_channel,
+                calibration_ref=calibration_ref,
+                calibration_filename=calibration_filename,
+                calibration_bytes=calibration_bytes,
+                auto_sub_sweep_profile=auto_sub_sweep_profile,
+                auto_sub_rate=auto_sub_rate,
+                original_level=0.0,
+                original_polarity="normal",
+                original_highpass=True,
+                measurement_label=f"Optimizing Left Sub: L sweep {idx + 1}/{len(left_scan_delays)} @ {delay_ms:.2f} ms",
+                candidate_current=idx + 1,
+                candidate_total=len(left_scan_delays),
+                measure_channel="left",
+                output_mode=OUTPUT_MODE_SUBWOOFER_22_STEREO,
+                original_config_snapshot=original_config_snapshot,
+                sub1_alignment_ms=delay_ms,
+                sub2_alignment_ms=original_right_alignment,
+                active_subs=("sub1",),
+            ))
+            if isinstance(job.get("progress"), dict):
+                job["progress"]["sweep_current"] = idx + 1
+                job["progress"]["sweep_total"] = sweep_total
+            if _auto_sub_cancel_requested(job):
+                job["message"] = "Auto Sub Optimize cancelled."
+                await _restore_original_config()
+                return
+
+        left_valid = _valid(left_results)
+        if not left_valid:
+            job["status"] = "failed"
+            job["message"] = "No valid Left Sub sweep results to score"
+            job["error"] = {"detail": "Left Sub sweeps failed or produced insufficient data"}
+            await _restore_original_config()
+            return
+        left_scoring = score_sub_alignment_candidates(left_valid, crossover_hz=fc)
+        _auto_sub_rank_results(left_scoring["results"])
+        left_winner = left_scoring["winner"]
+        best_left = _auto_sub_clamped_delay(float(left_winner.get("delay_ms", original_left_alignment) or original_left_alignment))
+
+        right_results: list[dict[str, Any]] = []
+        job["stage"] = "right_sub"
+        for idx, delay_ms in enumerate(right_scan_delays):
+            right_results.append(await _measure_auto_sub_candidate(
+                delay_ms=delay_ms,
+                job=job,
+                candidate_index=idx + 1,
+                total=len(right_scan_delays),
+                stage="right_sub",
+                fc=fc,
+                input_id=input_id,
+                channel="right",
+                mic_input_channel=mic_input_channel,
+                reference_input_channel=reference_input_channel,
+                calibration_ref=calibration_ref,
+                calibration_filename=calibration_filename,
+                calibration_bytes=calibration_bytes,
+                auto_sub_sweep_profile=auto_sub_sweep_profile,
+                auto_sub_rate=auto_sub_rate,
+                original_level=0.0,
+                original_polarity="normal",
+                original_highpass=True,
+                measurement_label=f"Optimizing Right Sub: R sweep {idx + 1}/{len(right_scan_delays)} @ {delay_ms:.2f} ms",
+                candidate_current=idx + 1,
+                candidate_total=len(right_scan_delays),
+                measure_channel="right",
+                output_mode=OUTPUT_MODE_SUBWOOFER_22_STEREO,
+                original_config_snapshot=original_config_snapshot,
+                sub1_alignment_ms=best_left,
+                sub2_alignment_ms=delay_ms,
+                active_subs=("sub2",),
+            ))
+            if isinstance(job.get("progress"), dict):
+                job["progress"]["sweep_current"] = len(left_scan_delays) + idx + 1
+                job["progress"]["sweep_total"] = sweep_total
+            if _auto_sub_cancel_requested(job):
+                job["message"] = "Auto Sub Optimize cancelled."
+                await _restore_original_config()
+                return
+
+        right_valid = _valid(right_results)
+        if not right_valid:
+            job["status"] = "failed"
+            job["message"] = "No valid Right Sub sweep results to score"
+            job["error"] = {"detail": "Right Sub sweeps failed or produced insufficient data"}
+            await _restore_original_config()
+            return
+        right_scoring = score_sub_alignment_candidates(right_valid, crossover_hz=fc)
+        _auto_sub_rank_results(right_scoring["results"])
+        right_winner = right_scoring["winner"]
+        best_right = _auto_sub_clamped_delay(float(right_winner.get("delay_ms", original_right_alignment) or original_right_alignment))
+
+        apply_ok = False
+        try:
+            sub_config = _auto_sub_22_global_config(original_config_snapshot)
+            subwoofers_config = _auto_sub_22_candidate_subwoofers(
+                original_config_snapshot,
+                sub1_alignment_ms=best_left,
+                sub2_alignment_ms=best_right,
+                active_subs=("sub1", "sub2"),
+            )
+            set_audio_output_mode(OUTPUT_MODE_SUBWOOFER_22_STEREO, sub_config, subwoofers_config)
+            if subwoofer_runtime is not None:
+                config = SubwooferRuntimeConfig.from_overview(get_audio_output_overview())
+                await subwoofer_runtime.sync(config)
+            await asyncio.sleep(0.3)
+            apply_ok = _auto_sub_22_verify_alignment(_load_audio_output_mode(), best_left, best_right)
+        except Exception:
+            logger.exception("Auto-sub 2.2 Stereo Bass: failed to apply winner pair %.2f / %.2f ms", best_left, best_right)
+
+        if not apply_ok:
+            job["status"] = "failed"
+            job["message"] = f"Scoring succeeded but failed to apply Left/Right pair {best_left:.2f} / {best_right:.2f} ms"
+            job["error"] = {"detail": "Winner apply failed - original config restored"}
+            await _restore_original_config()
+            return
+
+        derived_delays: dict[str, Any] = {}
+        try:
+            config = SubwooferRuntimeConfig.from_overview(get_audio_output_overview())
+            derived_delays = {
+                "derived_main_delay_ms": round(config.derived_main_delay_ms, 2),
+                "derived_sub1_delay_ms": round(config.derived_sub1_delay_ms, 2),
+                "derived_sub2_delay_ms": round(config.derived_sub2_delay_ms, 2),
+            }
+        except Exception:
+            derived_delays = {}
+
+        left_score_pct = round(float(left_winner.get("score", 0.0) or 0.0) * 100.0, 1)
+        right_score_pct = round(float(right_winner.get("score", 0.0) or 0.0) * 100.0, 1)
+        job["status"] = "completed"
+        job["message"] = (
+            f"Applied 2.2 Stereo Bass: Left Sub {best_left:.2f} ms / "
+            f"Right Sub {best_right:.2f} ms"
+        )
+        _log_auto_sub_timing_summary(job)
+        job["result"] = {
+            "mode": OUTPUT_MODE_SUBWOOFER_22_STEREO,
+            "original_sub1_alignment_ms": original_left_alignment,
+            "original_sub2_alignment_ms": original_right_alignment,
+            "suggested_sub1_alignment_ms": best_left,
+            "suggested_sub2_alignment_ms": best_right,
+            "applied_sub1_alignment_ms": best_left,
+            "applied_sub2_alignment_ms": best_right,
+            "applied": True,
+            "auto_applied": True,
+            "apply_decision": "applied_22_stereo_separate_lr",
+            "crossover_hz": fc,
+            "confidence": "left_right_separate",
+            "winner": {
+                "name": _auto_sub_22_stereo_name(best_left, best_right),
+                "score_L_pct": left_score_pct,
+                "score_R_pct": right_score_pct,
+            },
+            "left_winner": left_winner,
+            "right_winner": right_winner,
+            "left_ranking": left_scoring["results"],
+            "right_ranking": right_scoring["results"],
+            "sweep_count": sweep_total,
+            "candidate_count": len(left_scan_delays) + len(right_scan_delays),
+            "left_candidate_count": len(left_scan_delays),
+            "right_candidate_count": len(right_scan_delays),
+            "valid_count": len(left_valid) + len(right_valid),
+            "left_valid_count": len(left_valid),
+            "right_valid_count": len(right_valid),
+            **derived_delays,
+        }
+        logger.info(
+            "Auto-sub 2.2 Stereo Bass optimize completed: fc=%sHz left %.2f->%.2fms right %.2f->%.2fms "
+            "score_L=%.1f%% score_R=%.1f%%",
+            fc,
+            original_left_alignment,
+            best_left,
+            original_right_alignment,
+            best_right,
+            left_score_pct,
+            right_score_pct,
+        )
+
+    except Exception as exc:
+        if _auto_sub_cancel_requested(job):
+            job["message"] = "Auto Sub Optimize cancelled."
+            await _restore_original_config()
+            return
+        logger.exception("Auto-sub 2.2 Stereo Bass optimize failed")
+        job["status"] = "failed"
+        job["message"] = f"Auto Sub Optimize 2.2 Stereo Bass failed: {exc}"
         job["error"] = {"detail": str(exc)}
         await _restore_original_config()
 

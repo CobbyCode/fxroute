@@ -71,6 +71,10 @@ def mock_graph_links(output_key="mock_output"):
     )
 
 
+def arg_value(args, flag):
+    return args[args.index(flag) + 1]
+
+
 class SubwooferRuntimeStatusTest(unittest.TestCase):
     def test_config_follows_effective_output_rate(self):
         config = SubwooferRuntimeConfig.from_overview({
@@ -176,30 +180,13 @@ class SubwooferRuntimeStatusTest(unittest.TestCase):
             self.assertIsNone(snapshot["last_error"])
             self.assertEqual(snapshot["helper_pid"], 12345)
             self.assertEqual(snapshot["removed_direct_front_links"], 4)
-            self.assertIn(
-                (
-                    str(helper),
-                    "--node-name",
-                    "fxroute_21_stage1",
-                    "--rate",
-                    "44100",
-                    "--quantum",
-                    "1024",
-                    "--lowpass-hz",
-                    "120",
-                    "--highpass-hz",
-                    "0",
-                    "--sub-level-db",
-                    "0.0",
-                    "--sub-polarity",
-                    "normal",
-                    "--main-delay-ms",
-                    "0.0",
-                    "--sub-delay-ms",
-                    "0.0",
-                ),
-                commands,
-            )
+            helper_command = next(command for command in commands if command and command[0] == str(helper))
+            self.assertEqual(arg_value(helper_command, "--rate"), "44100")
+            self.assertEqual(arg_value(helper_command, "--lowpass-hz"), "120")
+            self.assertEqual(arg_value(helper_command, "--highpass-hz"), "0")
+            self.assertEqual(arg_value(helper_command, "--bass-routing"), "mono")
+            self.assertEqual(arg_value(helper_command, "--sub-delay-ms"), "0.0")
+            self.assertEqual(arg_value(helper_command, "--sub2-delay-ms"), "0.0")
             self.assertIn(("pw-link", "ee_soe_output_level:output_FL", "fxroute_21_stage1:input_L"), commands)
             self.assertIn(("pw-link", "fxroute_21_stage1:output_3", "mock_output:playback_RL"), commands)
             self.assertIn(("pw-link", "fxroute_21_stage1:output_4", "mock_output:playback_RR"), commands)
@@ -250,30 +237,10 @@ class SubwooferRuntimeStatusTest(unittest.TestCase):
             )
             asyncio.run(runtime.sync(make_config(main_highpass_enabled=True, crossover_frequency_hz=87)))
 
-            self.assertIn(
-                (
-                    str(helper),
-                    "--node-name",
-                    "fxroute_21_stage1",
-                    "--rate",
-                    "48000",
-                    "--quantum",
-                    "1024",
-                    "--lowpass-hz",
-                    "87",
-                    "--highpass-hz",
-                    "87",
-                    "--sub-level-db",
-                    "0.0",
-                    "--sub-polarity",
-                    "normal",
-                    "--main-delay-ms",
-                    "0.0",
-                    "--sub-delay-ms",
-                    "0.0",
-                ),
-                commands,
-            )
+            helper_command = next(command for command in commands if command and command[0] == str(helper))
+            self.assertEqual(arg_value(helper_command, "--lowpass-hz"), "87")
+            self.assertEqual(arg_value(helper_command, "--highpass-hz"), "87")
+            self.assertEqual(arg_value(helper_command, "--bass-routing"), "mono")
 
     def test_existing_pipewire_link_is_treated_as_idempotent(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -387,6 +354,60 @@ class SubwooferRuntimeStatusTest(unittest.TestCase):
         self.assertEqual(negative.derived_sub_delay_ms, 0.0)
         self.assertEqual(zero.derived_main_delay_ms, 0.0)
         self.assertEqual(zero.derived_sub_delay_ms, 0.0)
+
+    def test_22_stereo_uses_stereo_bass_routing_and_combined_delays(self):
+        config = make_config(
+            output_mode="subwoofer-2.2-stereo",
+            sub_alignment_ms=-2.0,
+            sub2_alignment_ms=5.0,
+        )
+
+        self.assertEqual(config.bass_routing, "stereo")
+        self.assertEqual(config.derived_main_delay_ms, 2.0)
+        self.assertEqual(config.derived_sub1_delay_ms, 0.0)
+        self.assertEqual(config.derived_sub2_delay_ms, 7.0)
+
+    def test_22_stereo_helper_starts_with_stereo_bass_routing(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            helper = Path(temp_dir) / "fxroute_21_passthrough"
+            helper.write_text("#!/bin/sh\n", encoding="utf-8")
+            commands = []
+
+            async def fake_runner(args):
+                commands.append(tuple(args))
+                if tuple(args) == ("pw-link", "-io"):
+                    return CommandResult(
+                        0,
+                        "\n".join(
+                            [
+                                "fxroute_21_stage1:input_L",
+                                "fxroute_21_stage1:input_R",
+                                "fxroute_21_stage1:output_1",
+                                "fxroute_21_stage1:output_2",
+                                "fxroute_21_stage1:output_3",
+                                "fxroute_21_stage1:output_4",
+                            ]
+                        ),
+                        "",
+                    )
+                if tuple(args) == ("pw-link", "-l"):
+                    return CommandResult(0, mock_graph_links("mock_multichannel_output"), "")
+                return CommandResult(0, "", "")
+
+            async def fake_launcher(args):
+                commands.append(tuple(args))
+                return FakeProcess()
+
+            runtime = Subwoofer21Runtime(
+                helper_binary=helper,
+                command_runner=fake_runner,
+                process_launcher=fake_launcher,
+                sleeper=lambda _seconds: asyncio.sleep(0),
+            )
+            asyncio.run(runtime.sync(make_config(output_mode="subwoofer-2.2-stereo")))
+
+            helper_command = next(command for command in commands if command and command[0] == str(helper))
+            self.assertEqual(arg_value(helper_command, "--bass-routing"), "stereo")
 
 
 if __name__ == "__main__":

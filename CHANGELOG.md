@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.44 (2026-06-22)
+
+### Added
+- Added **2.2 Stereo Bass** output mode with Out 1/2 as Left/Right Main, Out 3 as Left Sub, and Out 4 as Right Sub.
+- Added native helper `--bass-routing mono|stereo` support; existing `subwoofer-2.2` remains mono multi-sub routing.
+- Added separated Left Sub / Right Sub AutoSub alignment for 2.2 Stereo Bass and a native helper smoke test for L-only/R-only sub isolation.
+
 ## 0.7.43 (2026-06-22)
 
 ### Added
