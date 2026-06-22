@@ -1,12 +1,28 @@
 # Changelog
 
+## 0.7.42 (2026-06-20)
+
+### Fixed
+- Fixed a race condition where changing a 2.1 subwoofer value (e.g. sub alignment delay) in the UI and starting a measurement immediately afterwards could leave the running 2.1 helper on the old value because the UI change was never flushed to the backend. Now the current subwoofer settings are reliably saved before every measurement start.
+
+## 0.7.41 (2026-06-19)
+
+### Added
+- Added **Auto Sub Optimize** for 2.1 mode to automatically find and apply a better sub alignment delay around the selected crossover frequency.
+- Auto Sub Optimize measures both **Left+Sub** and **Right+Sub** and chooses one shared sub alignment value that works well for both channels.
+
+### Changed
+- Sub alignment now supports two decimal places for finer delay adjustment.
+- Updated the manual with Auto Sub Optimize workflow guidance.
+
+### Fixed
+- Improved AutoSub cancel handling, result display, and measurement safety during optimization.
+
 ## 0.7.40 (2026-06-16)
 - Fix fresh EasyEffects installations starting with no active preset by loading Neutral automatically.
 
 ## 0.7.39 (2026-06-16)
 - Fix album cover thumbnail generation when Pillow writes temporary .tmp files.
-
-## Unreleased
 
 ## 0.7.38 (2026-06-14)
 - Add Restore to Public Release maintenance action: an explicit repair path that saves local source changes as a patch, resets the checkout to origin/main, and restarts the service. Only shown when local changes are detected.
