@@ -1,10 +1,12 @@
-"""PipeWire-native 2.1 Subwoofer Stage-3 runtime controller.
+"""PipeWire-native subwoofer Stage-3 runtime controller.
+
+Supports 2.1 (Out 1/2 = highpassed L/R, Out 3/4 = lowpassed (L+R)*0.5)
+and 2.2 (Out 1/2 = highpassed L/R, Out 3 = Sub 1, Out 4 = Sub 2,
+each with independent level/alignment/polarity).
 
 Stereo mode does not use this module; the existing EasyEffects/stereo path stays
-unchanged. The old 2.1 subprocess bridge has been removed. This runtime owns
-only the native helper lifecycle and graph links for Stage 3 crossover:
-Out 1/2 = optional LR24 highpassed L/R, Out 3/4 = LR24 lowpassed
-(L + R) * 0.5.
+unchanged. The old subprocess bridge has been removed. This runtime owns
+only the native helper lifecycle and graph links.
 """
 
 from __future__ import annotations
@@ -22,8 +24,10 @@ from typing import Any, Awaitable, Callable, Optional, Sequence
 logger = logging.getLogger(__name__)
 
 OUTPUT_MODE_SUBWOOFER_21 = "subwoofer-2.1"
+OUTPUT_MODE_SUBWOOFER_22 = "subwoofer-2.2"
+SUBWOOFER_MODES = {OUTPUT_MODE_SUBWOOFER_21, OUTPUT_MODE_SUBWOOFER_22}
 DEFAULT_SAMPLE_RATE = 48_000
-NATIVE_HELPER_PENDING_MESSAGE = "PipeWire-native 2.1 helper binary is not available"
+NATIVE_HELPER_PENDING_MESSAGE = "PipeWire-native subwoofer helper binary is not available"
 NATIVE_HELPER_NODE_NAME = "fxroute_21_stage1"
 NATIVE_HELPER_PORTS = ("input_L", "input_R", "output_1", "output_2", "output_3", "output_4")
 EASYEFFECTS_SINK_NAME = "easyeffects_sink"
@@ -59,39 +63,110 @@ class SubwooferRuntimeConfig:
     sub_level_db: float
     sub_alignment_ms: float
     sub_polarity: str
+    # 2.2 sub2 fields (default to sub1 values for 2.1 compatibility)
+    sub2_level_db: float = 0.0
+    sub2_alignment_ms: float = 0.0
+    sub2_polarity: str = "normal"
 
     @property
     def derived_main_delay_ms(self) -> float:
-        """Positive alignment delays sub, negative delays main. Returns ms to delay main speakers."""
+        """
+        Combined main delay from both sub alignments.
+
+        2.1: positive delays sub, negative delays main -> max(0, -sub_alignment_ms)
+        2.2: resolves from the most negative alignment across both subs:
+             max(0, -min(sub1_alignment_ms, sub2_alignment_ms))
+
+        Example (2.2): Sub1=-2, Sub2=-5 -> Main=5
+        """
+        if self.output_mode == OUTPUT_MODE_SUBWOOFER_22:
+            return max(0.0, -min(self.sub_alignment_ms, self.sub2_alignment_ms))
         return max(0.0, -self.sub_alignment_ms)
 
     @property
     def derived_sub_delay_ms(self) -> float:
-        """Positive alignment delays sub, negative delays main. Returns ms to delay subwoofer."""
+        """
+        Legacy sub delay for 2.1 backward compatibility.
+        2.1: max(0, sub_alignment_ms)
+        2.2: same as derived_sub1_delay_ms (maps to existing schema).
+        """
+        if self.output_mode == OUTPUT_MODE_SUBWOOFER_22:
+            return self.derived_main_delay_ms + self.sub_alignment_ms
         return max(0.0, self.sub_alignment_ms)
+
+    @property
+    def derived_sub1_delay_ms(self) -> float:
+        """
+        2.2: sub1 delay = combined_main_delay + sub1_alignment
+        2.1: same as derived_sub_delay_ms (# same formula)
+        """
+        if self.output_mode == OUTPUT_MODE_SUBWOOFER_22:
+            return self.derived_main_delay_ms + self.sub_alignment_ms
+        return max(0.0, self.sub_alignment_ms)
+
+    @property
+    def derived_sub2_delay_ms(self) -> float:
+        """
+        2.2: sub2 delay = combined_main_delay + sub2_alignment
+        2.1: mirrors sub1 so helper output_3 and output_4 stay identical
+        """
+        if self.output_mode == OUTPUT_MODE_SUBWOOFER_22:
+            return self.derived_main_delay_ms + self.sub2_alignment_ms
+        return self.derived_sub_delay_ms
 
     @classmethod
     def from_overview(cls, overview: dict[str, Any]) -> "SubwooferRuntimeConfig":
         output_mode = overview.get("output_mode") or {}
         output = overview.get("selected_output") or overview.get("current_output") or {}
-        subwoofer = output_mode.get("subwoofer") or {}
         output_key = str(output_mode.get("effective_output_key") or output.get("key") or output.get("name") or "").strip()
         output_label = str(output.get("label") or output.get("target_label") or output_key or "unknown output").strip()
         channels = _coerce_int(output_mode.get("effective_output_channels") or output.get("channels"), 0)
         sample_rate = _coerce_int(output_mode.get("effective_output_rate") or output.get("active_rate") or overview.get("active_rate"), DEFAULT_SAMPLE_RATE)
         if sample_rate <= 0:
             sample_rate = DEFAULT_SAMPLE_RATE
+
+        mode = str(output_mode.get("mode") or "stereo")
+
+        if mode == OUTPUT_MODE_SUBWOOFER_22:
+            # 2.2: global fields at top level, per-sub in subwoofers
+            subwoofers = output_mode.get("subwoofers") or {}
+            sub1 = subwoofers.get("sub1") or {}
+            sub2 = subwoofers.get("sub2") or {}
+            return cls(
+                output_mode=mode,
+                output_key=output_key,
+                output_label=output_label,
+                output_channels=channels,
+                sample_rate=sample_rate,
+                crossover_frequency_hz=_clamp_int(output_mode.get("crossover_frequency_hz"), 40, 200, 80),
+                main_highpass_enabled=bool(output_mode.get("main_highpass_enabled", True)),
+                sub_level_db=_clamp_float(sub1.get("level_db"), -80.0, 12.0, 0.0),
+                sub_alignment_ms=_clamp_float_alignment(sub1, key="alignment_ms"),
+                sub_polarity=_normalize_polarity(sub1.get("polarity")),
+                sub2_level_db=_clamp_float(sub2.get("level_db"), -80.0, 12.0, 0.0),
+                sub2_alignment_ms=_clamp_float_alignment(sub2, key="alignment_ms"),
+                sub2_polarity=_normalize_polarity(sub2.get("polarity")),
+            )
+
+        # 2.1 or stereo: read from subwoofer block
+        subwoofer = output_mode.get("subwoofer") or {}
+        sub_level_db = _clamp_float(subwoofer.get("sub_level_db"), -24.0, 12.0, 0.0)
+        sub_alignment_ms = _clamp_float_alignment(subwoofer)
+        sub_polarity = _normalize_polarity(subwoofer.get("sub_polarity"))
         return cls(
-            output_mode=str(output_mode.get("mode") or "stereo"),
+            output_mode=mode,
             output_key=output_key,
             output_label=output_label,
             output_channels=channels,
             sample_rate=sample_rate,
             crossover_frequency_hz=_clamp_int(subwoofer.get("crossover_frequency_hz"), 40, 200, 80),
             main_highpass_enabled=bool(subwoofer.get("main_highpass_enabled", True)),
-            sub_level_db=_clamp_float(subwoofer.get("sub_level_db"), -24.0, 12.0, 0.0),
-            sub_alignment_ms=_clamp_float_alignment(subwoofer),
-            sub_polarity="invert" if str(subwoofer.get("sub_polarity") or "").lower() in {"invert", "inverted", "180"} else "normal",
+            sub_level_db=sub_level_db,
+            sub_alignment_ms=sub_alignment_ms,
+            sub_polarity=sub_polarity,
+            sub2_level_db=sub_level_db,
+            sub2_alignment_ms=sub_alignment_ms,
+            sub2_polarity=sub_polarity,
         )
 
 
@@ -120,16 +195,20 @@ def _clamp_float(value: Any, low: float, high: float, default: float) -> float:
     return max(low, min(high, parsed))
 
 
-def _clamp_float_alignment(subwoofer: dict[str, Any]) -> float:
-    """Parse signed sub_alignment_ms from payload."""
-    raw_alignment = subwoofer.get("sub_alignment_ms")
+def _normalize_polarity(raw: Any) -> str:
+    return "invert" if str(raw or "").lower() in {"invert", "inverted", "180"} else "normal"
+
+
+def _clamp_float_alignment(subwoofer: dict[str, Any], key: str = "sub_alignment_ms") -> float:
+    """Parse signed alignment_ms from payload."""
+    raw_alignment = subwoofer.get(key)
     try:
         parsed = float(raw_alignment)
     except (TypeError, ValueError):
         parsed = 0.0
     if not math.isfinite(parsed):
         parsed = 0.0
-    return max(-40.0, min(40.0, round(parsed, 1)))
+    return max(-40.0, min(40.0, round(parsed, 2)))
 
 
 def _contains_link(text: str, source: str, target: str) -> bool:
@@ -142,7 +221,11 @@ def _contains_link(text: str, source: str, target: str) -> bool:
 
 
 class Subwoofer21Runtime:
-    """Own the native 2.1 helper process and PipeWire graph links."""
+    """Own the native subwoofer helper process and PipeWire graph links.
+
+    Handles both 2.1 (single sub) and 2.2 (dual sub) configurations.
+    The helper binary receives all sub parameters; for 2.1 mode sub2 mirrors sub1.
+    """
 
     def __init__(
         self,
@@ -168,6 +251,7 @@ class Subwoofer21Runtime:
         self._helper_quantum = helper_quantum
         self._process: Any = None
         self._last_started_at: Optional[float] = None
+        self._last_helper_args: Optional[list[str]] = None
         self._links_configured = False
         self._removed_direct_front_links = 0
         self._current_stream_key: Optional[tuple[Any, ...]] = None
@@ -178,6 +262,7 @@ class Subwoofer21Runtime:
 
     def _stream_key(self, config: SubwooferRuntimeConfig) -> tuple[Any, ...]:
         return (
+            config.output_mode,
             config.output_key,
             config.output_channels,
             config.sample_rate,
@@ -186,6 +271,9 @@ class Subwoofer21Runtime:
             config.sub_level_db,
             config.sub_alignment_ms,
             config.sub_polarity,
+            config.sub2_level_db,
+            config.sub2_alignment_ms,
+            config.sub2_polarity,
         )
 
     def snapshot(self) -> dict[str, Any]:
@@ -202,6 +290,7 @@ class Subwoofer21Runtime:
             "inactive_reason": self._last_error,
             "helper_binary": str(self._helper_binary),
             "helper_node": self._helper_node_name,
+            "helper_args": self._last_helper_args,
             "helper_pid": getattr(self._process, "pid", None) if process_running else None,
             "links_configured": self._links_configured,
             "removed_direct_front_links": self._removed_direct_front_links,
@@ -224,34 +313,38 @@ class Subwoofer21Runtime:
                 self._pending_config = None
                 await self._sync_once(next_config)
 
+    def _mode_label(self) -> str:
+        return "2.2" if self._config and self._config.output_mode == OUTPUT_MODE_SUBWOOFER_22 else "2.1"
+
     async def _sync_once(self, config: SubwooferRuntimeConfig) -> None:
-        if config.output_mode != OUTPUT_MODE_SUBWOOFER_21:
+        if config.output_mode not in SUBWOOFER_MODES:
             self._config = config
             await self.stop()
             await self._stop_orphan_helpers()
             self._last_error = None
-            logger.info("2.1 runtime inactive: selected output mode is stereo")
+            logger.info("Subwoofer runtime inactive: selected output mode is stereo")
             return
         if not config.output_key:
             self._config = config
             await self.stop()
             await self._stop_orphan_helpers()
-            self._last_error = "2.1 Subwoofer requires a selected hardware output device"
-            logger.warning("2.1 runtime inactive: %s", self._last_error)
+            self._last_error = "Subwoofer requires a selected hardware output device"
+            logger.warning("Subwoofer runtime inactive: %s", self._last_error)
             return
         elif config.output_channels < 4:
             self._config = config
             await self.stop()
             await self._stop_orphan_helpers()
-            self._last_error = "2.1 Subwoofer requires a selected output device with at least 4 channels"
-            logger.warning("2.1 runtime inactive: %s", self._last_error)
+            mode_num = "2.2" if config.output_mode == OUTPUT_MODE_SUBWOOFER_22 else "2.1"
+            self._last_error = f"{mode_num} Subwoofer requires a selected output device with at least 4 channels"
+            logger.warning("Subwoofer runtime inactive: %s", self._last_error)
             return
         if not self._helper_binary.exists():
             self._config = config
             await self.stop()
             await self._stop_orphan_helpers()
             self._last_error = f"{NATIVE_HELPER_PENDING_MESSAGE}: {self._helper_binary}"
-            logger.warning("2.1 runtime inactive: %s", self._last_error)
+            logger.warning("Subwoofer runtime inactive: %s", self._last_error)
             return
 
         stream_key = self._stream_key(config)
@@ -259,7 +352,7 @@ class Subwoofer21Runtime:
             is_dsp_reconfig = (
                 self._links_configured
                 and self._config is not None
-                and self._config.output_mode == OUTPUT_MODE_SUBWOOFER_21
+                and self._config.output_mode in SUBWOOFER_MODES
             )
             if is_dsp_reconfig:
                 self._needs_measurement_prime = True
@@ -270,7 +363,8 @@ class Subwoofer21Runtime:
             try:
                 await self._start_helper(config)
             except Exception as exc:
-                logger.exception("Failed to start 2.1 native helper")
+                mode_num = "2.2" if config.output_mode == OUTPUT_MODE_SUBWOOFER_22 else "2.1"
+                logger.exception(f"Failed to start {mode_num} native helper")
                 await self._stop_for_21_reconfig()
                 await self._stop_orphan_helpers()
                 self._config = config
@@ -292,7 +386,7 @@ class Subwoofer21Runtime:
                 self._current_stream_key = stream_key
                 self._last_error = None
             except Exception as exc:
-                logger.exception("Failed to configure 2.1 native helper graph")
+                logger.exception("Failed to configure native helper graph")
                 await self._stop_for_21_reconfig()
                 await self._stop_orphan_helpers()
                 self._config = config
@@ -304,15 +398,23 @@ class Subwoofer21Runtime:
             self._current_stream_key = stream_key
             self._last_error = None
 
+        mode_num = "2.2" if config.output_mode == OUTPUT_MODE_SUBWOOFER_22 else "2.1"
+        routing_note = (
+            "Out 1/2=LR24 highpassed L/R, Out 3=Sub 1 (L+R)*0.5, Out 4=Sub 2 (L+R)*0.5"
+            if config.output_mode == OUTPUT_MODE_SUBWOOFER_22
+            else "Out 1/2=optional LR24 highpassed L/R, Out 3/4=LR24 lowpassed (L+R)*0.5"
+        )
         logger.info(
-            "2.1 runtime active: output_mode=%s hardware_output=%s sample_rate=%s "
+            "%s runtime active: output_mode=%s hardware_output=%s sample_rate=%s "
             "crossover_hz=%s main_highpass_enabled=%s "
-            "fixed_routing='Out 1/2=optional LR24 highpassed L/R, Out 3/4=LR24 lowpassed (L+R)*0.5'",
+            "fixed_routing='%s'",
+            mode_num,
             config.output_mode,
             config.output_key,
             config.sample_rate,
             config.crossover_frequency_hz,
             config.main_highpass_enabled,
+            routing_note,
         )
 
     @property
@@ -407,8 +509,16 @@ class Subwoofer21Runtime:
             str(config.derived_main_delay_ms),
             "--sub-delay-ms",
             str(config.derived_sub_delay_ms),
+            "--sub2-level-db",
+            str(config.sub2_level_db),
+            "--sub2-polarity",
+            config.sub2_polarity,
+            "--sub2-delay-ms",
+            str(config.derived_sub2_delay_ms),
         ]
-        logger.info("Starting 2.1 helper: %s", shlex.join(args))
+        mode_num = "2.2" if config.output_mode == OUTPUT_MODE_SUBWOOFER_22 else "2.1"
+        logger.info("Starting %s helper: %s", mode_num, shlex.join(args))
+        self._last_helper_args = list(args)
         self._process = await self._process_launcher(args)
         self._last_started_at = time.time()
         await self._wait_for_helper_ports()
@@ -507,6 +617,7 @@ class Subwoofer21Runtime:
     async def _stop_helper(self) -> None:
         process = self._process
         self._process = None
+        self._last_helper_args = None
         if process is None or getattr(process, "returncode", None) is not None:
             return
         process.terminate()

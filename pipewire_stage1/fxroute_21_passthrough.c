@@ -96,12 +96,16 @@ struct fxroute_21_app {
     bool lowpass_enabled;
     bool highpass_enabled;
     float sub_level_db;
+    float sub2_level_db;
     float main_delay_ms;
     float sub_delay_ms;
+    float sub2_delay_ms;
     bool sub_polarity_invert;
+    bool sub2_polarity_invert;
     bool self_test_sub_gain;
     bool self_test_alignment;
     float sub_level_gain;
+    float sub2_level_gain;
     struct biquad sub_lowpass_1;
     struct biquad sub_lowpass_2;
     struct biquad main_left_highpass_1;
@@ -111,6 +115,7 @@ struct fxroute_21_app {
     struct delay_line main_delay_l;
     struct delay_line main_delay_r;
     struct delay_line sub_delay;
+    struct delay_line sub2_delay;
 };
 
 static void on_signal(void *userdata, int signo)
@@ -133,9 +138,12 @@ static void usage(const char *program)
             "  -l, --lowpass-hz <hz>      Stage-2 sub LR24 lowpass frequency; 0 disables, default: %.1f\n"
             "  -H, --highpass-hz <hz>     Stage-3 main LR24 highpass frequency; 0 disables, default: %.1f\n"
             "  -L, --sub-level-db <db>    Sub level gain in dB, default: %.1f\n"
+            "      --sub2-level-db <db>   Sub 2 level gain in dB, default: %.1f\n"
             "  -M, --main-delay-ms <ms>   Main speaker delay in ms, default: %.1f\n"
             "  -S, --sub-delay-ms <ms>    Sub delay in ms, default: %.1f\n"
+            "      --sub2-delay-ms <ms>   Sub 2 delay in ms, default: %.1f\n"
             "  -P, --sub-polarity <mode>  Sub polarity: normal|invert, default: normal\n"
+            "      --sub2-polarity <mode> Sub 2 polarity: normal|invert, default: normal\n"
             "      --self-test-sub-gain    Run offline sub-gain DSP smoke test and exit\n"
             "      --self-test-alignment   Run offline branch-delay impulse smoke test and exit\n"
             "  -h, --help                 Show this help\n"
@@ -149,7 +157,9 @@ static void usage(const char *program)
             DEFAULT_LOWPASS_HZ,
             DEFAULT_HIGHPASS_HZ,
             DEFAULT_SUB_LEVEL_DB,
+            DEFAULT_SUB_LEVEL_DB,
             DEFAULT_MAIN_DELAY_MS,
+            DEFAULT_SUB_DELAY_MS,
             DEFAULT_SUB_DELAY_MS);
 }
 
@@ -196,6 +206,11 @@ static int parse_float_nonnegative(const char *text, float *out)
 
 static int parse_args(int argc, char **argv, struct fxroute_21_app *app)
 {
+    enum {
+        OPT_SUB2_LEVEL_DB = 1000,
+        OPT_SUB2_DELAY_MS,
+        OPT_SUB2_POLARITY,
+    };
     static const struct option long_options[] = {
         {"node-name", required_argument, NULL, 'n'},
         {"rate", required_argument, NULL, 'r'},
@@ -203,9 +218,12 @@ static int parse_args(int argc, char **argv, struct fxroute_21_app *app)
         {"lowpass-hz", required_argument, NULL, 'l'},
         {"highpass-hz", required_argument, NULL, 'H'},
         {"sub-level-db", required_argument, NULL, 'L'},
+        {"sub2-level-db", required_argument, NULL, OPT_SUB2_LEVEL_DB},
         {"main-delay-ms", required_argument, NULL, 'M'},
         {"sub-delay-ms", required_argument, NULL, 'S'},
+        {"sub2-delay-ms", required_argument, NULL, OPT_SUB2_DELAY_MS},
         {"sub-polarity", required_argument, NULL, 'P'},
+        {"sub2-polarity", required_argument, NULL, OPT_SUB2_POLARITY},
         {"self-test-sub-gain", no_argument, NULL, 'T'},
         {"self-test-alignment", no_argument, NULL, 'A'},
         {"help", no_argument, NULL, 'h'},
@@ -252,6 +270,12 @@ static int parse_args(int argc, char **argv, struct fxroute_21_app *app)
                 return -1;
             }
             break;
+        case OPT_SUB2_LEVEL_DB:
+            if (parse_float(optarg, &app->sub2_level_db) != 0) {
+                fprintf(stderr, "Invalid --sub2-level-db: %s\n", optarg);
+                return -1;
+            }
+            break;
         case 'M':
             if (parse_float_nonnegative(optarg, &app->main_delay_ms) != 0) {
                 fprintf(stderr, "Invalid --main-delay-ms: %s\n", optarg);
@@ -264,6 +288,12 @@ static int parse_args(int argc, char **argv, struct fxroute_21_app *app)
                 return -1;
             }
             break;
+        case OPT_SUB2_DELAY_MS:
+            if (parse_float_nonnegative(optarg, &app->sub2_delay_ms) != 0) {
+                fprintf(stderr, "Invalid --sub2-delay-ms: %s\n", optarg);
+                return -1;
+            }
+            break;
         case 'P':
             if (strcmp(optarg, "invert") == 0) {
                 app->sub_polarity_invert = true;
@@ -271,6 +301,16 @@ static int parse_args(int argc, char **argv, struct fxroute_21_app *app)
                 app->sub_polarity_invert = false;
             } else {
                 fprintf(stderr, "Invalid --sub-polarity: %s (expected normal|invert)\n", optarg);
+                return -1;
+            }
+            break;
+        case OPT_SUB2_POLARITY:
+            if (strcmp(optarg, "invert") == 0) {
+                app->sub2_polarity_invert = true;
+            } else if (strcmp(optarg, "normal") == 0) {
+                app->sub2_polarity_invert = false;
+            } else {
+                fprintf(stderr, "Invalid --sub2-polarity: %s (expected normal|invert)\n", optarg);
                 return -1;
             }
             break;
@@ -421,10 +461,12 @@ static void configure_delays(struct fxroute_21_app *app)
 {
     uint32_t main_samples = ms_to_samples(app->main_delay_ms, app->rate);
     uint32_t sub_samples = ms_to_samples(app->sub_delay_ms, app->rate);
+    uint32_t sub2_samples = ms_to_samples(app->sub2_delay_ms, app->rate);
 
     delay_line_destroy(&app->main_delay_l);
     delay_line_destroy(&app->main_delay_r);
     delay_line_destroy(&app->sub_delay);
+    delay_line_destroy(&app->sub2_delay);
 
     if (main_samples > 0) {
         if (delay_line_init(&app->main_delay_l, main_samples) != 0 ||
@@ -437,11 +479,17 @@ static void configure_delays(struct fxroute_21_app *app)
             fprintf(stderr, "Failed to allocate sub delay buffer (%u samples)\n", sub_samples);
         }
     }
+    if (sub2_samples > 0) {
+        if (delay_line_init(&app->sub2_delay, sub2_samples) != 0) {
+            fprintf(stderr, "Failed to allocate sub2 delay buffer (%u samples)\n", sub2_samples);
+        }
+    }
 }
 
 static void configure_sub_gain(struct fxroute_21_app *app)
 {
     app->sub_level_gain = powf(10.0f, app->sub_level_db / 20.0f);
+    app->sub2_level_gain = powf(10.0f, app->sub2_level_db / 20.0f);
 }
 
 static float process_sub_lowpass(struct fxroute_21_app *app, float input)
@@ -487,16 +535,22 @@ static void route_stage3_crossover(struct fxroute_21_app *app,
         output_1[frame] = delay_line_process(&app->main_delay_l, main_l);
         output_2[frame] = delay_line_process(&app->main_delay_r, main_r);
 
-        /* Sub branch: mono sum → lowpass → delay → polarity → level */
-        float sub = (left + right) * 0.5f;
-        sub = process_sub_lowpass(app, sub);
-        sub = delay_line_process(&app->sub_delay, sub);
+        /* Sub branches: shared mono lowpass, independent delay/polarity/level. */
+        float sub_low = process_sub_lowpass(app, (left + right) * 0.5f);
+
+        float sub1 = delay_line_process(&app->sub_delay, sub_low);
         if (app->sub_polarity_invert) {
-            sub = -sub;
+            sub1 = -sub1;
         }
-        sub *= app->sub_level_gain;
-        output_3[frame] = sub;
-        output_4[frame] = sub;
+        sub1 *= app->sub_level_gain;
+        output_3[frame] = sub1;
+
+        float sub2 = delay_line_process(&app->sub2_delay, sub_low);
+        if (app->sub2_polarity_invert) {
+            sub2 = -sub2;
+        }
+        sub2 *= app->sub2_level_gain;
+        output_4[frame] = sub2;
     }
 }
 
@@ -533,9 +587,13 @@ static int run_sub_gain_self_test(struct fxroute_21_app *app)
 
     route_stage3_crossover(app, input_l, input_r, output_1, output_2, output_3, output_4, frames);
 
-    printf("sub_level_db=%.1f sub_level_gain=%.6f output_3_rms=%.9f output_4_rms=%.9f\n",
+    printf("sub_level_db=%.1f sub_level_gain=%.6f "
+           "sub2_level_db=%.1f sub2_level_gain=%.6f "
+           "output_3_rms=%.9f output_4_rms=%.9f\n",
            app->sub_level_db,
            app->sub_level_gain,
+           app->sub2_level_db,
+           app->sub2_level_gain,
            rms_for_buffer(output_3, frames),
            rms_for_buffer(output_4, frames));
     return EXIT_SUCCESS;
@@ -582,14 +640,16 @@ static int run_alignment_self_test(struct fxroute_21_app *app)
     output_3_impulse = find_impulse_position(output_3, frames);
     output_4_impulse = find_impulse_position(output_4, frames);
 
-    printf("rate=%u main_delay_ms=%.1f sub_delay_ms=%.1f "
-           "main_delay_samples=%u sub_delay_samples=%u "
+    printf("rate=%u main_delay_ms=%.1f sub_delay_ms=%.1f sub2_delay_ms=%.1f "
+           "main_delay_samples=%u sub_delay_samples=%u sub2_delay_samples=%u "
            "output_1_impulse=%d output_2_impulse=%d output_3_impulse=%d output_4_impulse=%d\n",
            app->rate,
            app->main_delay_ms,
            app->sub_delay_ms,
+           app->sub2_delay_ms,
            ms_to_samples(app->main_delay_ms, app->rate),
            ms_to_samples(app->sub_delay_ms, app->rate),
+           ms_to_samples(app->sub2_delay_ms, app->rate),
            output_1_impulse,
            output_2_impulse,
            output_3_impulse,
@@ -769,9 +829,12 @@ int main(int argc, char **argv)
     app.lowpass_hz = DEFAULT_LOWPASS_HZ;
     app.highpass_hz = DEFAULT_HIGHPASS_HZ;
     app.sub_level_db = DEFAULT_SUB_LEVEL_DB;
+    app.sub2_level_db = DEFAULT_SUB_LEVEL_DB;
     app.main_delay_ms = DEFAULT_MAIN_DELAY_MS;
     app.sub_delay_ms = DEFAULT_SUB_DELAY_MS;
+    app.sub2_delay_ms = DEFAULT_SUB_DELAY_MS;
     app.sub_polarity_invert = DEFAULT_SUB_POLARITY_INVERT;
+    app.sub2_polarity_invert = DEFAULT_SUB_POLARITY_INVERT;
 
     if (parse_args(argc, argv, &app) != 0) {
         return EXIT_FAILURE;
@@ -786,6 +849,7 @@ int main(int argc, char **argv)
         delay_line_destroy(&app.main_delay_l);
         delay_line_destroy(&app.main_delay_r);
         delay_line_destroy(&app.sub_delay);
+        delay_line_destroy(&app.sub2_delay);
         return result;
     }
     if (app.self_test_alignment) {
@@ -793,6 +857,7 @@ int main(int argc, char **argv)
         delay_line_destroy(&app.main_delay_l);
         delay_line_destroy(&app.main_delay_r);
         delay_line_destroy(&app.sub_delay);
+        delay_line_destroy(&app.sub2_delay);
         return result;
     }
 
@@ -821,7 +886,8 @@ int main(int argc, char **argv)
             "FXRoute 2.1 helper started: node=%s expected_rate=%u requested_quantum=%u "
             "lowpass_hz=%.1f lowpass_enabled=%s highpass_hz=%.1f highpass_enabled=%s "
             "sub_level_db=%.1f sub_level_gain=%.4f main_delay_ms=%.1f sub_delay_ms=%.1f "
-            "sub_polarity=%s "
+            "sub_polarity=%s sub2_level_db=%.1f sub2_level_gain=%.4f sub2_delay_ms=%.1f "
+            "sub2_polarity=%s "
             "ports=input_L,input_R,output_1,output_2,output_3,output_4\n",
             app.node_name,
             app.rate,
@@ -834,7 +900,11 @@ int main(int argc, char **argv)
             app.sub_level_gain,
             app.main_delay_ms,
             app.sub_delay_ms,
-            app.sub_polarity_invert ? "invert" : "normal");
+            app.sub_polarity_invert ? "invert" : "normal",
+            app.sub2_level_db,
+            app.sub2_level_gain,
+            app.sub2_delay_ms,
+            app.sub2_polarity_invert ? "invert" : "normal");
 
     pw_main_loop_run(app.loop);
     result = 0;
@@ -844,6 +914,7 @@ out:
     delay_line_destroy(&app.main_delay_l);
     delay_line_destroy(&app.main_delay_r);
     delay_line_destroy(&app.sub_delay);
+    delay_line_destroy(&app.sub2_delay);
     if (app.loop != NULL) {
         pw_main_loop_destroy(app.loop);
         app.loop = NULL;

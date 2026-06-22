@@ -718,6 +718,7 @@ def _resolve_library_folder(folder: str, music_root: Path) -> Path:
 from samplerate import (
     OUTPUT_MODE_STEREO,
     OUTPUT_MODE_SUBWOOFER_21,
+    OUTPUT_MODE_SUBWOOFER_22,
     SOURCE_MODE_APP_PLAYBACK,
     SOURCE_MODE_BLUETOOTH_INPUT,
     SOURCE_MODE_EXTERNAL_INPUT,
@@ -1224,7 +1225,7 @@ async def _sync_subwoofer_runtime_after_playback_transition(expected_track: dict
     try:
         overview = get_audio_output_overview()
         output_mode = overview.get("output_mode") or {}
-        if output_mode.get("mode") != OUTPUT_MODE_SUBWOOFER_21:
+        if output_mode.get("mode") not in (OUTPUT_MODE_SUBWOOFER_21, OUTPUT_MODE_SUBWOOFER_22):
             return
         before = subwoofer_runtime.snapshot()
         await _sync_subwoofer_runtime(overview)
@@ -1232,7 +1233,7 @@ async def _sync_subwoofer_runtime_after_playback_transition(expected_track: dict
         before_config = before.get("config") or {}
         after_config = after.get("config") or {}
         logger.info(
-            "2.1 runtime playback transition resync: source=%s sample_rate_before=%s sample_rate_after=%s "
+            "Subwoofer runtime playback transition resync: source=%s sample_rate_before=%s sample_rate_after=%s "
             "active=%s last_error=%s",
             expected_track.get("source"),
             before_config.get("sample_rate"),
@@ -1241,7 +1242,7 @@ async def _sync_subwoofer_runtime_after_playback_transition(expected_track: dict
             after.get("last_error"),
         )
     except Exception as exc:
-        logger.warning("2.1 runtime playback transition resync failed: %s", exc)
+        logger.warning("Subwoofer runtime playback transition resync failed: %s", exc)
 
 
 def _resolve_measurement_start_sample_rate() -> int:
@@ -1303,7 +1304,7 @@ def _pulse_suspend_sink_for_samplerate(output_key: str, reason: str) -> None:
             raise RuntimeError(stderr or f"pactl suspend-sink {output_key} {suspend} failed")
         if suspend == "1":
             time.sleep(0.3)
-    logger.info("2.1 measurement samplerate sink pulse completed: output=%s reason=%s", output_key, reason)
+    logger.info("Measurement samplerate sink pulse completed: output=%s reason=%s", output_key, reason)
 
 
 def _measurement_helper_snapshot_summary(snapshot: dict | None) -> dict:
@@ -1319,6 +1320,24 @@ def _measurement_helper_snapshot_summary(snapshot: dict | None) -> dict:
         "stage": snapshot.get("stage"),
         "last_error": snapshot.get("last_error"),
     }
+
+
+def _log_22_measurement_sweep_config(config: SubwooferRuntimeConfig, snapshot: dict | None) -> None:
+    if config.output_mode != OUTPUT_MODE_SUBWOOFER_22:
+        return
+    snapshot = snapshot or {}
+    logger.info(
+        "2.2 measurement sweep config: mode=%s sub1_alignment_ms=%.2f sub2_alignment_ms=%.2f "
+        "derived_main=%.2f derived_sub1=%.2f derived_sub2=%.2f helper_pid=%s helper_args=%s",
+        config.output_mode,
+        config.sub_alignment_ms,
+        config.sub2_alignment_ms,
+        config.derived_main_delay_ms,
+        config.derived_sub1_delay_ms,
+        config.derived_sub2_delay_ms,
+        snapshot.get("helper_pid"),
+        snapshot.get("helper_args"),
+    )
 
 
 def _run_debug_command(args: list[str], timeout: float = 2.0) -> dict:
@@ -1414,7 +1433,7 @@ async def _dump_21_runtime_state(label: str, ui_state: dict | None = None) -> di
         "links": links,
         "runtime": _measurement_helper_snapshot_summary(snapshot),
     }
-    logger.info("2.1 UI path state dump [%s]: %s", label, json.dumps(state, sort_keys=True))
+    logger.info("Subwoofer UI path state dump [%s]: %s", label, json.dumps(state, sort_keys=True))
     return state
 
 
@@ -1425,7 +1444,7 @@ def _build_measurement_audio_output_context() -> dict:
         overview = get_audio_output_overview()
         output_mode = overview.get("output_mode") or {}
         mode = str(output_mode.get("mode", "stereo") or "stereo")
-        if mode == OUTPUT_MODE_SUBWOOFER_21:
+        if mode in (OUTPUT_MODE_SUBWOOFER_21, OUTPUT_MODE_SUBWOOFER_22):
             config = SubwooferRuntimeConfig.from_overview(overview)
             snapshot = subwoofer_runtime.snapshot() if subwoofer_runtime is not None else {}
             context["output_mode"] = mode
@@ -1440,7 +1459,12 @@ def _build_measurement_audio_output_context() -> dict:
             context["sub_alignment_ms"] = config.sub_alignment_ms
             context["derived_main_delay_ms"] = config.derived_main_delay_ms
             context["derived_sub_delay_ms"] = config.derived_sub_delay_ms
+            context["derived_sub1_delay_ms"] = config.derived_sub1_delay_ms
+            context["derived_sub2_delay_ms"] = config.derived_sub2_delay_ms
             context["sub_polarity"] = config.sub_polarity
+            context["sub2_level_db"] = config.sub2_level_db
+            context["sub2_alignment_ms"] = config.sub2_alignment_ms
+            context["sub2_polarity"] = config.sub2_polarity
             context["runtime_active"] = snapshot.get("active")
             context["helper_pid"] = snapshot.get("helper_pid")
         else:
@@ -1456,8 +1480,9 @@ async def _prepare_subwoofer_runtime_for_measurement_start(measurement_rate: int
         return None
     overview = get_audio_output_overview()
     output_mode = overview.get("output_mode") or {}
-    if output_mode.get("mode") != OUTPUT_MODE_SUBWOOFER_21:
+    if output_mode.get("mode") not in (OUTPUT_MODE_SUBWOOFER_21, OUTPUT_MODE_SUBWOOFER_22):
         return None
+    mode_num = "2.2" if output_mode.get("mode") == OUTPUT_MODE_SUBWOOFER_22 else "2.1"
     output_key = str(output_mode.get("effective_output_key") or "").strip()
 
     samplerate_status = get_samplerate_status()
@@ -1465,7 +1490,8 @@ async def _prepare_subwoofer_runtime_for_measurement_start(measurement_rate: int
     previous_active_rate = samplerate_status.get("active_rate")
     before = subwoofer_runtime.snapshot()
     logger.info(
-        "2.1 measurement pre-arm starting: measurement_rate=%s samplerate_before=%s helper_before=%s",
+        "%s measurement pre-arm starting: measurement_rate=%s samplerate_before=%s helper_before=%s",
+        mode_num,
         measurement_rate,
         json.dumps(
             {
@@ -1481,14 +1507,16 @@ async def _prepare_subwoofer_runtime_for_measurement_start(measurement_rate: int
         restore_force_rate = int(previous_force_rate or 0)
         _set_pipewire_force_rate(measurement_rate)
         logger.info(
-            "2.1 measurement samplerate pre-arm applied: target_rate=%s previous_active_rate=%s previous_force_rate=%s",
+            "%s measurement samplerate pre-arm applied: target_rate=%s previous_active_rate=%s previous_force_rate=%s",
+            mode_num,
             measurement_rate,
             previous_active_rate,
             previous_force_rate,
         )
     else:
         logger.info(
-            "2.1 measurement samplerate pre-arm already active: target_rate=%s active_rate=%s force_rate=%s",
+            "%s measurement samplerate pre-arm already active: target_rate=%s active_rate=%s force_rate=%s",
+            mode_num,
             measurement_rate,
             previous_active_rate,
             previous_force_rate,
@@ -1502,29 +1530,32 @@ async def _prepare_subwoofer_runtime_for_measurement_start(measurement_rate: int
     aligned, overview = await _wait_for_selected_output_effective_rate(measurement_rate, timeout_ms=3500)
     if not aligned:
         output_mode = overview.get("output_mode") or {}
+        effective_rate = output_mode.get("effective_output_rate")
         if restore_force_rate is not None:
             _set_pipewire_force_rate(restore_force_rate)
         raise RuntimeError(
-            "2.1 measurement pre-arm failed: selected output did not reach "
-            f"{measurement_rate} Hz before sweep start (effective_rate={output_mode.get('effective_output_rate')})"
+            f"{mode_num} measurement pre-arm failed: selected output did not reach "
+            f"{measurement_rate} Hz before sweep start (effective_rate={effective_rate})"
         )
 
     await _sync_subwoofer_runtime(overview)
     after = subwoofer_runtime.snapshot()
     samplerate_after = get_samplerate_status()
     after_config = after.get("config") or {}
+    runtime_config = SubwooferRuntimeConfig.from_overview(overview)
     helper_rate = after_config.get("sample_rate")
     if not after.get("active") or helper_rate != measurement_rate:
         if restore_force_rate is not None:
             _set_pipewire_force_rate(restore_force_rate)
         raise RuntimeError(
-            "2.1 measurement pre-arm failed: helper did not settle at "
+            f"{mode_num} measurement pre-arm failed: helper did not settle at "
             f"{measurement_rate} Hz before sweep start (active={after.get('active')} sample_rate={helper_rate})"
         )
 
     logger.info(
-        "2.1 measurement helper pre-armed before sweep: target_rate=%s helper_rate_before=%s helper_rate_after=%s "
+        "%s measurement helper pre-armed before sweep: target_rate=%s helper_rate_before=%s helper_rate_after=%s "
         "helper_pid=%s force_rate_restore=%s samplerate_after=%s helper_after=%s",
+        mode_num,
         measurement_rate,
         (before.get("config") or {}).get("sample_rate"),
         helper_rate,
@@ -1539,13 +1570,14 @@ async def _prepare_subwoofer_runtime_for_measurement_start(measurement_rate: int
         ),
         json.dumps(_measurement_helper_snapshot_summary(after), sort_keys=True),
     )
+    _log_22_measurement_sweep_config(runtime_config, after)
     return restore_force_rate
 
 
 async def _release_measurement_samplerate_force_after_job(job_id: str, expected_rate: int, restore_force_rate: int) -> None:
     global subwoofer_runtime
     logger.info(
-        "2.1 measurement samplerate release watcher started: job_id=%s expected_rate=%s restore_force_rate=%s",
+        "Measurement samplerate release watcher started: job_id=%s expected_rate=%s restore_force_rate=%s",
         job_id,
         expected_rate,
         restore_force_rate,
@@ -1553,12 +1585,12 @@ async def _release_measurement_samplerate_force_after_job(job_id: str, expected_
     for _ in range(300):
         await asyncio.sleep(0.5)
         if measurement_store is None:
-            logger.info("2.1 measurement samplerate release watcher stopped: job_id=%s measurement_store_missing=true", job_id)
+            logger.info("Measurement samplerate release watcher stopped: job_id=%s measurement_store_missing=true", job_id)
             return
         try:
             job = measurement_store.get_job(job_id)
         except Exception as exc:
-            logger.info("2.1 measurement samplerate release watcher stopped: job_id=%s job_lookup_failed=%s", job_id, exc)
+            logger.info("Measurement samplerate release watcher stopped: job_id=%s job_lookup_failed=%s", job_id, exc)
             return
         status = str(job.get("status") or "")
         if status in {"completed", "failed", "cancelled"}:
@@ -1569,16 +1601,16 @@ async def _release_measurement_samplerate_force_after_job(job_id: str, expected_
                     restore_value = restore_force_rate if restore_force_rate > 0 else 0
                     _set_pipewire_force_rate(restore_value)
                     logger.info(
-                        "2.1 measurement samplerate pre-arm released: job_id=%s previous_force_rate=%s status=%s",
+                        "Measurement samplerate pre-arm released: job_id=%s previous_force_rate=%s status=%s",
                         job_id,
                         restore_force_rate,
                         status,
                     )
                     # Re-sync subwoofer runtime at the restored playback rate
-                    # so the 2.1 helper is rebuilt at the correct rate.
+                    # so the helper is rebuilt at the correct rate.
                     if subwoofer_runtime is not None:
                         logger.info(
-                            "2.1 measurement samplerate release invoking _sync_subwoofer_runtime_at_rate: job_id=%s target_rate=%s",
+                            "Measurement samplerate release invoking _sync_subwoofer_runtime_at_rate: job_id=%s target_rate=%s",
                             job_id,
                             restore_force_rate,
                         )
@@ -1586,24 +1618,24 @@ async def _release_measurement_samplerate_force_after_job(job_id: str, expected_
                         await _dump_21_runtime_state(f"backend-after-release-resync-{status}", {"job_id": job_id, "job_status": status})
                     else:
                         logger.info(
-                            "2.1 measurement samplerate release cannot re-sync: job_id=%s subwoofer_runtime_missing=true",
+                            "Measurement samplerate release cannot re-sync: job_id=%s subwoofer_runtime_missing=true",
                             job_id,
                         )
                 else:
                     logger.info(
-                        "2.1 measurement samplerate pre-arm release skipped: job_id=%s current_force_rate=%s expected_rate=%s status=%s",
+                        "Measurement samplerate pre-arm release skipped: job_id=%s current_force_rate=%s expected_rate=%s status=%s",
                         job_id,
                         current_force_rate,
                         expected_rate,
                         status,
                     )
             except Exception as exc:
-                logger.warning("2.1 measurement samplerate pre-arm release failed: job_id=%s error=%s", job_id, exc)
+                logger.warning("Measurement samplerate pre-arm release failed: job_id=%s error=%s", job_id, exc)
             return
 
 
 async def _sync_subwoofer_runtime_at_rate(target_rate: int) -> None:
-    """Re-sync the 2.1 subwoofer runtime at a specific playback sample rate.
+    """Re-sync the subwoofer runtime at a specific playback sample rate.
 
     Called after measurement completes to restore the helper at normal playback
     rate instead of leaving it at the measurement rate.
@@ -1613,9 +1645,9 @@ async def _sync_subwoofer_runtime_at_rate(target_rate: int) -> None:
     """
     global subwoofer_runtime
     if subwoofer_runtime is None:
-        logger.info("2.1 runtime measurement release re-sync skipped: subwoofer_runtime_missing=true target_rate=%s", target_rate)
+        logger.info("Subwoofer runtime measurement release re-sync skipped: subwoofer_runtime_missing=true target_rate=%s", target_rate)
         return
-    logger.info("2.1 runtime measurement release re-sync requested: raw_target_rate=%s", target_rate)
+    logger.info("Subwoofer runtime measurement release re-sync requested: raw_target_rate=%s", target_rate)
     if target_rate <= 0:
         # No force rate — discover the actual effective rate from the output
         overview = get_audio_output_overview()
@@ -1632,9 +1664,9 @@ async def _sync_subwoofer_runtime_at_rate(target_rate: int) -> None:
                 target_rate = DEFAULT_SAMPLE_RATE
     overview = get_audio_output_overview()
     output_mode = overview.get("output_mode") or {}
-    if output_mode.get("mode") != OUTPUT_MODE_SUBWOOFER_21:
+    if output_mode.get("mode") not in (OUTPUT_MODE_SUBWOOFER_21, OUTPUT_MODE_SUBWOOFER_22):
         logger.info(
-            "2.1 runtime measurement release re-sync skipped: api_mode=%s target_rate=%s",
+            "Subwoofer runtime measurement release re-sync skipped: api_mode=%s target_rate=%s",
             output_mode.get("mode"),
             target_rate,
         )
@@ -1648,7 +1680,7 @@ async def _sync_subwoofer_runtime_at_rate(target_rate: int) -> None:
     await _sync_subwoofer_runtime(overview)
     runtime_snapshot = subwoofer_runtime.snapshot()
     logger.info(
-        "2.1 runtime measurement release re-sync: target_rate=%s active=%s helper_pid=%s",
+        "Subwoofer runtime measurement release re-sync: target_rate=%s active=%s helper_pid=%s",
         target_rate,
         runtime_snapshot.get("active"),
         runtime_snapshot.get("helper_pid"),
@@ -1670,9 +1702,9 @@ async def _repair_subwoofer_runtime_inputs_after_measurement_release(target_rate
         await asyncio.sleep(delay)
         overview = get_audio_output_overview()
         output_mode = overview.get("output_mode") or {}
-        if output_mode.get("mode") != OUTPUT_MODE_SUBWOOFER_21:
+        if output_mode.get("mode") not in (OUTPUT_MODE_SUBWOOFER_21, OUTPUT_MODE_SUBWOOFER_22):
             logger.info(
-                "2.1 measurement release input repair skipped: api_mode=%s target_rate=%s",
+                "Measurement release input repair skipped: api_mode=%s target_rate=%s",
                 output_mode.get("mode"),
                 target_rate,
             )
@@ -1685,7 +1717,7 @@ async def _repair_subwoofer_runtime_inputs_after_measurement_release(target_rate
         if links.get("ee_to_helper_present"):
             continue
         logger.info(
-            "2.1 measurement release input repair applying: target_rate=%s delay_s=%.1f links=%s",
+            "Measurement release input repair applying: target_rate=%s delay_s=%.1f links=%s",
             target_rate,
             delay,
             json.dumps(links, sort_keys=True),
@@ -1693,7 +1725,7 @@ async def _repair_subwoofer_runtime_inputs_after_measurement_release(target_rate
         try:
             await subwoofer_runtime.reclean_direct_easyeffects_links()
         except Exception as exc:
-            logger.warning("2.1 measurement release input repair failed: target_rate=%s error=%s", target_rate, exc)
+            logger.warning("Measurement release input repair failed: target_rate=%s error=%s", target_rate, exc)
             return
         await _dump_21_runtime_state(
             "backend-release-input-repair-after",
@@ -1720,7 +1752,7 @@ async def _subwoofer_runtime_link_watch_loop() -> None:
         try:
             overview = get_audio_output_overview()
             output_mode = overview.get("output_mode") or {}
-            if output_mode.get("mode") != OUTPUT_MODE_SUBWOOFER_21:
+            if output_mode.get("mode") not in (OUTPUT_MODE_SUBWOOFER_21, OUTPUT_MODE_SUBWOOFER_22):
                 continue
             if getattr(subwoofer_runtime, "sync_in_progress", False):
                 continue
@@ -1730,7 +1762,7 @@ async def _subwoofer_runtime_link_watch_loop() -> None:
                 continue
             if not snapshot.get("active") or not snapshot.get("helper_pid"):
                 logger.info(
-                    "2.1 link watch full resync applying: api_mode=2.1 runtime_active=%s helper_pid=%s input_links_present=%s",
+                    "Subwoofer link watch full resync applying: runtime_active=%s helper_pid=%s input_links_present=%s",
                     snapshot.get("active"),
                     snapshot.get("helper_pid"),
                     input_links_present,
@@ -1746,13 +1778,13 @@ async def _subwoofer_runtime_link_watch_loop() -> None:
                     },
                 )
                 continue
-            logger.info("2.1 link watch repair applying: EE helper input links missing while API mode is 2.1")
+            logger.info("Subwoofer link watch repair applying: EE helper input links missing")
             await subwoofer_runtime.reclean_direct_easyeffects_links()
             await _dump_21_runtime_state("backend-link-watch-repair-after", {"reason": "ee-helper-input-missing"})
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            logger.warning("2.1 link watch repair failed: %s", exc)
+            logger.warning("Subwoofer link watch repair failed: %s", exc)
 
 
 def _get_player_audio_samplerate() -> Optional[int]:
@@ -3071,34 +3103,57 @@ async def _sync_bluetooth_input_monitoring(source_overview: dict | None = None) 
 async def _sync_subwoofer_runtime(audio_overview: dict | None = None) -> dict:
     global subwoofer_runtime
     overview = audio_overview or get_audio_output_overview()
+
     if subwoofer_runtime is None:
         return overview
+
     config = SubwooferRuntimeConfig.from_overview(overview)
+
     await subwoofer_runtime.sync(config)
-    if config.output_mode == OUTPUT_MODE_SUBWOOFER_21:
+
+    if config.output_mode in (OUTPUT_MODE_SUBWOOFER_21, OUTPUT_MODE_SUBWOOFER_22):
         runtime_snapshot = subwoofer_runtime.snapshot()
+        mode_num = "2.2" if config.output_mode == OUTPUT_MODE_SUBWOOFER_22 else "2.1"
         logger.info(
-            "2.1 runtime sync: output_mode=%s runtime_active=%s stage=%s engine=%s "
-            "hardware_output=%s device_channel_count=%s fixed_routing='Out 1=L, Out 2=R, Out 3/4=(L+R)*0.5' "
-            "crossover_hz=%s main_highpass=%s sub_level_db=%.1f sub_alignment_ms=%.1f "
-            "derived_main_delay_ms=%.1f derived_sub_delay_ms=%.1f sub_polarity=%s",
+            "%s runtime sync: output_mode=%s runtime_active=%s "
+            "hardware_output=%s device_channel_count=%s "
+            "crossover_hz=%s main_highpass=%s "
+            "sub1_level_db=%.1f sub1_alignment_ms=%.1f sub1_polarity=%s "
+            "sub2_level_db=%.1f sub2_alignment_ms=%.1f sub2_polarity=%s "
+            "derived_main_delay_ms=%.1f derived_sub1_delay_ms=%.1f derived_sub2_delay_ms=%.1f",
+            mode_num,
             config.output_mode,
             runtime_snapshot.get("active"),
-            runtime_snapshot.get("stage"),
-            runtime_snapshot.get("engine"),
             config.output_key,
             config.output_channels,
             config.crossover_frequency_hz,
             config.main_highpass_enabled,
             config.sub_level_db,
             config.sub_alignment_ms,
-            config.derived_main_delay_ms,
-            config.derived_sub_delay_ms,
             config.sub_polarity,
+            config.sub2_level_db,
+            config.sub2_alignment_ms,
+            config.sub2_polarity,
+            config.derived_main_delay_ms,
+            config.derived_sub1_delay_ms,
+            config.derived_sub2_delay_ms,
         )
     else:
-        logger.info("2.1 runtime sync: output_mode=%s; stereo path unchanged", OUTPUT_MODE_STEREO)
+        logger.info("Subwoofer runtime sync: output_mode=%s; stereo path unchanged", OUTPUT_MODE_STEREO)
         await _ensure_stereo_easyeffects_output_graph(overview)
+    return overview
+
+
+def _with_subwoofer_derived_delays(overview: dict) -> dict:
+    output_mode = overview.get("output_mode") or {}
+    if output_mode.get("mode") == OUTPUT_MODE_SUBWOOFER_22:
+        config = SubwooferRuntimeConfig.from_overview(overview)
+        overview["output_mode"] = {
+            **output_mode,
+            "derived_main_delay_ms": config.derived_main_delay_ms,
+            "derived_sub1_delay_ms": config.derived_sub1_delay_ms,
+            "derived_sub2_delay_ms": config.derived_sub2_delay_ms,
+        }
     return overview
 
 
@@ -3414,7 +3469,7 @@ async def lifespan(app: FastAPI):
         logger.info("MPV player stopped")
     if subwoofer_runtime:
         await subwoofer_runtime.stop()
-        logger.info("2.1 Subwoofer runtime stopped")
+        logger.info("Subwoofer runtime stopped")
     if bluetooth_monitor_task:
         bluetooth_monitor_task.cancel()
         try:
@@ -4753,7 +4808,7 @@ async def hardware_auto_off():
 
 @app.get("/api/audio/outputs")
 async def audio_output_overview():
-    overview = get_audio_output_overview()
+    overview = _with_subwoofer_derived_delays(get_audio_output_overview())
     if subwoofer_runtime is not None:
         overview["output_mode"] = {
             **(overview.get("output_mode") or {}),
@@ -4773,6 +4828,7 @@ async def save_audio_output_selection_route(request: Request):
     try:
         result = set_audio_output_selection(output_key)
         await _sync_subwoofer_runtime(result)
+        result = _with_subwoofer_derived_delays(result)
         if subwoofer_runtime is not None:
             result["output_mode"] = {
                 **(result.get("output_mode") or {}),
@@ -4792,12 +4848,23 @@ async def save_audio_output_mode_route(request: Request):
         body = await request.json()
         mode = str(body.get("mode", "")).strip()
         subwoofer = body.get("subwoofer") if isinstance(body.get("subwoofer"), dict) else None
+        subwoofers = body.get("subwoofers") if isinstance(body.get("subwoofers"), dict) else None
     except Exception:
-        raise HTTPException(status_code=400, detail='Invalid JSON body, expected {"mode": <string>, "subwoofer": <object?>}')
+        raise HTTPException(status_code=400, detail='Invalid JSON body, expected {"mode": <string>, "subwoofer": <object?>, "subwoofers": <object?>}')
 
     try:
-        result = set_audio_output_mode(mode, subwoofer)
+        result = set_audio_output_mode(mode, subwoofer, subwoofers)
         await _sync_subwoofer_runtime(result)
+
+        # Enrich 2.2 response with derived delays for API/debug verification
+        om = result.get("output_mode") or {}
+        if om.get("mode") == OUTPUT_MODE_SUBWOOFER_22:
+            cfg = SubwooferRuntimeConfig.from_overview(result)
+            om["derived_main_delay_ms"] = cfg.derived_main_delay_ms
+            om["derived_sub1_delay_ms"] = cfg.derived_sub1_delay_ms
+            om["derived_sub2_delay_ms"] = cfg.derived_sub2_delay_ms
+            result["output_mode"] = om
+
         if subwoofer_runtime is not None:
             result["output_mode"] = {
                 **(result.get("output_mode") or {}),
@@ -5433,9 +5500,16 @@ async def _restore_auto_sub_original_config(original_config_snapshot: dict[str, 
     """Restore subwoofer config from snapshot."""
     try:
         from samplerate import set_audio_output_mode
+        mode = original_config_snapshot.get("mode", "stereo") or "stereo"
+        subwoofer_config = (
+            _auto_sub_22_global_config(original_config_snapshot)
+            if mode == OUTPUT_MODE_SUBWOOFER_22
+            else original_config_snapshot.get("subwoofer") or {}
+        )
         set_audio_output_mode(
-            original_config_snapshot.get("mode", "stereo") or "stereo",
-            original_config_snapshot.get("subwoofer") or {},
+            mode,
+            subwoofer_config,
+            original_config_snapshot.get("subwoofers") or {},
         )
         if subwoofer_runtime is not None:
             config = SubwooferRuntimeConfig.from_overview(get_audio_output_overview())
@@ -5450,6 +5524,66 @@ def _auto_sub_step_ms(fc: int) -> float:
 
 def _auto_sub_clamped_delay(delay_ms: float) -> float:
     return round(max(-40.0, min(40.0, float(delay_ms))), 2)
+
+
+def _auto_sub_snapshot_copy(mode_state: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return json.loads(json.dumps(mode_state))
+    except Exception:
+        return dict(mode_state)
+
+
+def _auto_sub_22_global_config(snapshot: dict[str, Any]) -> dict[str, Any]:
+    subwoofer = snapshot.get("subwoofer") if isinstance(snapshot.get("subwoofer"), dict) else {}
+    return {
+        "crossover_frequency_hz": snapshot.get("crossover_frequency_hz", subwoofer.get("crossover_frequency_hz", 80)),
+        "main_highpass_enabled": snapshot.get("main_highpass_enabled", subwoofer.get("main_highpass_enabled", True)),
+    }
+
+
+def _auto_sub_22_sub(snapshot: dict[str, Any], sub_key: str) -> dict[str, Any]:
+    subwoofers = snapshot.get("subwoofers") if isinstance(snapshot.get("subwoofers"), dict) else {}
+    sub = subwoofers.get(sub_key) if isinstance(subwoofers.get(sub_key), dict) else {}
+    return {
+        "level_db": float(sub.get("level_db", 0.0) or 0.0),
+        "alignment_ms": _auto_sub_clamped_delay(float(sub.get("alignment_ms", 0.0) or 0.0)),
+        "polarity": str(sub.get("polarity", "normal") or "normal"),
+    }
+
+
+def _auto_sub_22_candidate_subwoofers(
+    snapshot: dict[str, Any],
+    *,
+    sub1_alignment_ms: float,
+    sub2_alignment_ms: float,
+    active_subs: tuple[str, ...],
+) -> dict[str, Any]:
+    sub1 = _auto_sub_22_sub(snapshot, "sub1")
+    sub2 = _auto_sub_22_sub(snapshot, "sub2")
+    sub1["alignment_ms"] = _auto_sub_clamped_delay(sub1_alignment_ms)
+    sub2["alignment_ms"] = _auto_sub_clamped_delay(sub2_alignment_ms)
+    if "sub1" not in active_subs:
+        sub1["level_db"] = -80.0
+    if "sub2" not in active_subs:
+        sub2["level_db"] = -80.0
+    return {"sub1": sub1, "sub2": sub2}
+
+
+def _auto_sub_22_verify_alignment(mode_state: dict[str, Any], sub1_alignment_ms: float, sub2_alignment_ms: float) -> bool:
+    subwoofers = mode_state.get("subwoofers") if isinstance(mode_state.get("subwoofers"), dict) else {}
+    sub1 = subwoofers.get("sub1") if isinstance(subwoofers.get("sub1"), dict) else {}
+    sub2 = subwoofers.get("sub2") if isinstance(subwoofers.get("sub2"), dict) else {}
+    try:
+        return (
+            abs(float(sub1.get("alignment_ms", -9999)) - _auto_sub_clamped_delay(sub1_alignment_ms)) <= 0.001
+            and abs(float(sub2.get("alignment_ms", -9999)) - _auto_sub_clamped_delay(sub2_alignment_ms)) <= 0.001
+        )
+    except (TypeError, ValueError):
+        return False
+
+
+def _auto_sub_22_name(sub1_alignment_ms: float, sub2_alignment_ms: float) -> str:
+    return f"Sub1 {sub1_alignment_ms:.2f} ms / Sub2 {sub2_alignment_ms:.2f} ms"
 
 
 def _auto_sub_direct_neighbors(delay_a: float, delay_b: float, scan_delays: list[float]) -> bool:
@@ -5682,6 +5816,134 @@ def _score_auto_sub_combined_candidates(
     raise ValueError("No valid AutoSub sweep results to score")
 
 
+def _score_auto_sub_matrix_candidates(
+    candidates: list[dict[str, Any]],
+    *,
+    crossover_hz: int,
+) -> dict[str, Any]:
+    """Score measured 2.2 matrix candidates by Sub1/Sub2 alignment pair."""
+    indexed = [
+        (idx, result) for idx, result in enumerate(candidates)
+        if _auto_sub_has_points(result, "points_left") or _auto_sub_has_points(result, "points_right")
+    ]
+    if not indexed:
+        raise ValueError("No valid AutoSub 2.2 matrix sweep results to score")
+
+    def _copy_for_score(result: dict[str, Any], idx: int, points_key: str) -> dict[str, Any]:
+        candidate = dict(result)
+        candidate["delay_ms"] = float(idx)
+        candidate["name"] = result.get("name") or _auto_sub_22_name(
+            float(result.get("sub1_alignment_ms", 0.0) or 0.0),
+            float(result.get("sub2_alignment_ms", 0.0) or 0.0),
+        )
+        candidate["points"] = result.get(points_key) or []
+        return candidate
+
+    both_valid = [
+        (idx, result) for idx, result in indexed
+        if _auto_sub_has_points(result, "points_left") and _auto_sub_has_points(result, "points_right")
+    ]
+    if len(both_valid) >= 2:
+        left_scoring = score_sub_alignment_candidates(
+            [_copy_for_score(result, idx, "points_left") for idx, result in both_valid],
+            crossover_hz=crossover_hz,
+        )
+        right_scoring = score_sub_alignment_candidates(
+            [_copy_for_score(result, idx, "points_right") for idx, result in both_valid],
+            crossover_hz=crossover_hz,
+        )
+        left_by_idx = {int(round(float(result.get("delay_ms", 0.0)))): result for result in left_scoring["results"]}
+        right_by_idx = {int(round(float(result.get("delay_ms", 0.0)))): result for result in right_scoring["results"]}
+        combined_results = []
+        for idx, result in both_valid:
+            left_result = left_by_idx.get(idx)
+            right_result = right_by_idx.get(idx)
+            if not left_result or not right_result:
+                continue
+            score_left = float(left_result.get("score", 0.0) or 0.0)
+            score_right = float(right_result.get("score", 0.0) or 0.0)
+            combined_score = 0.6 * min(score_left, score_right) + 0.4 * ((score_left + score_right) / 2.0)
+            sub1_alignment = _auto_sub_clamped_delay(float(result.get("sub1_alignment_ms", 0.0) or 0.0))
+            sub2_alignment = _auto_sub_clamped_delay(float(result.get("sub2_alignment_ms", 0.0) or 0.0))
+            combined_results.append({
+                "delay_ms": sub1_alignment,
+                "sub1_alignment_ms": sub1_alignment,
+                "sub2_alignment_ms": sub2_alignment,
+                "name": result.get("name") or _auto_sub_22_name(sub1_alignment, sub2_alignment),
+                "score": round(combined_score, 4),
+                "score_pct": round(combined_score * 100.0, 1),
+                "score_L": round(score_left, 4),
+                "score_L_pct": round(score_left * 100.0, 1),
+                "score_R": round(score_right, 4),
+                "score_R_pct": round(score_right * 100.0, 1),
+                "scan": result.get("scan", "combined_matrix"),
+                "score_source": "lr_combined",
+            })
+        if not combined_results:
+            raise ValueError("No matching L/R AutoSub 2.2 matrix scoring results")
+        combined_results.sort(key=lambda r: r["score"], reverse=True)
+        _auto_sub_rank_results(combined_results)
+        return {
+            "winner": combined_results[0],
+            "runner_up": combined_results[1] if len(combined_results) >= 2 else None,
+            "results": combined_results,
+            "confidence": _auto_sub_scoring_confidence(combined_results),
+            "crossover_hz": crossover_hz,
+            "score_mode": "lr_combined_matrix",
+            "scored_candidates": [result for _, result in both_valid],
+        }
+
+    fallback_key = "points_left"
+    channel_name = "left"
+    fallback = [(idx, result) for idx, result in indexed if _auto_sub_has_points(result, fallback_key)]
+    right_fallback = [(idx, result) for idx, result in indexed if _auto_sub_has_points(result, "points_right")]
+    if len(right_fallback) > len(fallback):
+        fallback_key = "points_right"
+        channel_name = "right"
+        fallback = right_fallback
+    if not fallback:
+        raise ValueError("No valid AutoSub 2.2 matrix sweep results to score")
+
+    single_scoring = score_sub_alignment_candidates(
+        [_copy_for_score(result, idx, fallback_key) for idx, result in fallback],
+        crossover_hz=crossover_hz,
+    )
+    by_idx = {idx: result for idx, result in fallback}
+    matrix_results = []
+    for scored in single_scoring["results"]:
+        idx = int(round(float(scored.get("delay_ms", 0.0))))
+        measured = by_idx.get(idx) or {}
+        sub1_alignment = _auto_sub_clamped_delay(float(measured.get("sub1_alignment_ms", 0.0) or 0.0))
+        sub2_alignment = _auto_sub_clamped_delay(float(measured.get("sub2_alignment_ms", 0.0) or 0.0))
+        score = round(float(scored.get("score", 0.0) or 0.0), 4)
+        score_pct = round(score * 100.0, 1)
+        matrix_result = {
+            "delay_ms": sub1_alignment,
+            "sub1_alignment_ms": sub1_alignment,
+            "sub2_alignment_ms": sub2_alignment,
+            "name": measured.get("name") or _auto_sub_22_name(sub1_alignment, sub2_alignment),
+            "score": score,
+            "score_pct": score_pct,
+            "scan": measured.get("scan", "combined_matrix"),
+            "score_source": f"{channel_name}_fallback",
+        }
+        if channel_name == "left":
+            matrix_result.update({"score_L": score, "score_L_pct": score_pct, "score_R": None, "score_R_pct": None})
+        else:
+            matrix_result.update({"score_L": None, "score_L_pct": None, "score_R": score, "score_R_pct": score_pct})
+        matrix_results.append(matrix_result)
+    _auto_sub_rank_results(matrix_results)
+    return {
+        "winner": matrix_results[0],
+        "runner_up": matrix_results[1] if len(matrix_results) >= 2 else None,
+        "results": matrix_results,
+        "confidence": _auto_sub_scoring_confidence(matrix_results),
+        "crossover_hz": crossover_hz,
+        "score_mode": f"{channel_name}_fallback_matrix",
+        "scored_candidates": [result for _, result in fallback],
+    }
+
+
 @app.post("/api/measurements/auto-sub-optimize/start")
 async def start_auto_sub_optimize(
     input_id: str = Form(...),
@@ -5711,15 +5973,27 @@ async def start_auto_sub_optimize(
 
     try:
         mode_state = _load_audio_output_mode()
-        if mode_state.get("mode") != OUTPUT_MODE_SUBWOOFER_21:
-            raise HTTPException(status_code=400, detail="Auto Sub Optimize requires 2.1 Subwoofer output mode")
+        output_mode = mode_state.get("mode")
+        if output_mode not in (OUTPUT_MODE_SUBWOOFER_21, OUTPUT_MODE_SUBWOOFER_22):
+            raise HTTPException(status_code=400, detail="Auto Sub Optimize requires 2.1 or 2.2 Subwoofer output mode")
 
-        sub = mode_state.get("subwoofer") or {}
-        fc = int(sub.get("crossover_frequency_hz", 80))
-        current_alignment = float(sub.get("sub_alignment_ms", 0.0))
-        original_polarity = str(sub.get("sub_polarity", "normal"))
-        original_level = float(sub.get("sub_level_db", 0.0))
-        original_highpass = bool(sub.get("main_highpass_enabled", True))
+        if output_mode == OUTPUT_MODE_SUBWOOFER_22:
+            sub1 = _auto_sub_22_sub(mode_state, "sub1")
+            sub2 = _auto_sub_22_sub(mode_state, "sub2")
+            fc = int(mode_state.get("crossover_frequency_hz", 80))
+            current_alignment = float(sub1.get("alignment_ms", 0.0))
+            current_sub2_alignment = float(sub2.get("alignment_ms", 0.0))
+            original_polarity = str(sub1.get("polarity", "normal"))
+            original_level = float(sub1.get("level_db", 0.0))
+            original_highpass = bool(mode_state.get("main_highpass_enabled", True))
+        else:
+            sub = mode_state.get("subwoofer") or {}
+            fc = int(sub.get("crossover_frequency_hz", 80))
+            current_alignment = float(sub.get("sub_alignment_ms", 0.0))
+            current_sub2_alignment = 0.0
+            original_polarity = str(sub.get("sub_polarity", "normal"))
+            original_level = float(sub.get("sub_level_db", 0.0))
+            original_highpass = bool(sub.get("main_highpass_enabled", True))
 
         # Compute scan range
         step_ms = _auto_sub_step_ms(fc)
@@ -5731,7 +6005,7 @@ async def start_auto_sub_optimize(
                 scan_delays.append(delay)
 
         # Snapshot original config for rollback
-        original_config_snapshot = dict(mode_state)
+        original_config_snapshot = _auto_sub_snapshot_copy(mode_state)
 
         job_id = f"auto-sub-{uuid4().hex[:12]}"
         job: dict[str, Any] = {
@@ -5741,10 +6015,13 @@ async def start_auto_sub_optimize(
             "message": f"Auto Sub Optimize: {len(scan_delays)} candidates @ {fc} Hz",
             "result": None,
             "error": None,
+            "mode": output_mode,
             "crossover_hz": fc,
             "scan_delays": scan_delays,
             "step_ms": step_ms,
             "original_alignment_ms": current_alignment,
+            "original_sub1_alignment_ms": current_alignment,
+            "original_sub2_alignment_ms": current_sub2_alignment,
             "original_config_snapshot": original_config_snapshot,
             "current_sweep_id": "",
             "cancel_requested": False,
@@ -5770,25 +6047,55 @@ async def start_auto_sub_optimize(
                 raise HTTPException(status_code=400, detail=f"Calibration file too large (max {_AUTO_SUB_MAX_CALIBRATION_BYTES // (1024*1024)} MiB)")
             calibration_bytes = raw_bytes
 
-        asyncio.create_task(
-            _run_auto_sub_optimize(
-                job_id=job_id,
-                input_id=input_id,
-                channel=channel,
-                mic_input_channel=mic_input_channel,
-                reference_input_channel=reference_input_channel,
-                calibration_ref=calibration_ref,
-                calibration_filename=calibration_filename,
-                calibration_bytes=calibration_bytes,
-                scan_delays=scan_delays,
-                fc=fc,
-                current_alignment=current_alignment,
-                original_polarity=original_polarity,
-                original_level=original_level,
-                original_highpass=original_highpass,
-                original_config_snapshot=original_config_snapshot,
+        if output_mode == OUTPUT_MODE_SUBWOOFER_22:
+            fine_step_ms = step_ms / 4.0
+            sub2_scan_delays: list[float] = []
+            for s in range(-coarse_steps, coarse_steps + 1):
+                delay = _auto_sub_clamped_delay(current_sub2_alignment + s * step_ms)
+                if not sub2_scan_delays or abs(delay - sub2_scan_delays[-1]) > 0.05:
+                    sub2_scan_delays.append(delay)
+            job["message"] = (
+                f"Auto Sub Optimize 2.2: Sub 1 {len(scan_delays)} coarse, "
+                f"Sub 2 {len(sub2_scan_delays)} coarse, 3x3 matrix @ {fc} Hz"
             )
-        )
+            job["scan_delays"] = {"sub1": scan_delays, "sub2": sub2_scan_delays}
+            job["combined_matrix"] = {"status": "pending", "fine_step_ms": fine_step_ms, "candidates": []}
+            asyncio.create_task(
+                _run_auto_sub_22_optimize(
+                    job_id=job_id,
+                    input_id=input_id,
+                    mic_input_channel=mic_input_channel,
+                    reference_input_channel=reference_input_channel,
+                    calibration_ref=calibration_ref,
+                    calibration_filename=calibration_filename,
+                    calibration_bytes=calibration_bytes,
+                    sub1_scan_delays=scan_delays,
+                    sub2_scan_delays=sub2_scan_delays,
+                    fc=fc,
+                    original_config_snapshot=original_config_snapshot,
+                    fine_step_ms=fine_step_ms,
+                )
+            )
+        else:
+            asyncio.create_task(
+                _run_auto_sub_optimize(
+                    job_id=job_id,
+                    input_id=input_id,
+                    channel=channel,
+                    mic_input_channel=mic_input_channel,
+                    reference_input_channel=reference_input_channel,
+                    calibration_ref=calibration_ref,
+                    calibration_filename=calibration_filename,
+                    calibration_bytes=calibration_bytes,
+                    scan_delays=scan_delays,
+                    fc=fc,
+                    current_alignment=current_alignment,
+                    original_polarity=original_polarity,
+                    original_level=original_level,
+                    original_highpass=original_highpass,
+                    original_config_snapshot=original_config_snapshot,
+                )
+            )
         return {"status": "ok", "job": job}
     except HTTPException:
         _auto_sub_lock.release()
@@ -5942,6 +6249,11 @@ async def _measure_auto_sub_candidate(
     candidate_current: int | None = None,
     candidate_total: int | None = None,
     measure_channel: str | None = None,
+    output_mode: str = OUTPUT_MODE_SUBWOOFER_21,
+    original_config_snapshot: dict[str, Any] | None = None,
+    sub1_alignment_ms: float | None = None,
+    sub2_alignment_ms: float | None = None,
+    active_subs: tuple[str, ...] = ("sub1",),
 ) -> dict[str, Any]:
     """Measure one AutoSub delay candidate with the standard safety checks."""
     from samplerate import _load_audio_output_mode
@@ -5986,16 +6298,29 @@ async def _measure_auto_sub_candidate(
     if measure_channel:
         job["progress"]["channel"] = measure_channel
 
-    sub_config = {
-        "crossover_frequency_hz": fc,
-        "sub_alignment_ms": delay_ms,
-        "sub_level_db": original_level,
-        "sub_polarity": original_polarity,
-        "main_highpass_enabled": original_highpass,
-    }
     config_success = False
     try:
-        set_audio_output_mode(OUTPUT_MODE_SUBWOOFER_21, sub_config)
+        if output_mode == OUTPUT_MODE_SUBWOOFER_22:
+            snapshot = original_config_snapshot or {}
+            sub1_delay = _auto_sub_clamped_delay(sub1_alignment_ms if sub1_alignment_ms is not None else delay_ms)
+            sub2_delay = _auto_sub_clamped_delay(sub2_alignment_ms if sub2_alignment_ms is not None else _auto_sub_22_sub(snapshot, "sub2").get("alignment_ms", 0.0))
+            sub_config = _auto_sub_22_global_config(snapshot)
+            subwoofers_config = _auto_sub_22_candidate_subwoofers(
+                snapshot,
+                sub1_alignment_ms=sub1_delay,
+                sub2_alignment_ms=sub2_delay,
+                active_subs=active_subs,
+            )
+            set_audio_output_mode(OUTPUT_MODE_SUBWOOFER_22, sub_config, subwoofers_config)
+        else:
+            sub_config = {
+                "crossover_frequency_hz": fc,
+                "sub_alignment_ms": delay_ms,
+                "sub_level_db": original_level,
+                "sub_polarity": original_polarity,
+                "main_highpass_enabled": original_highpass,
+            }
+            set_audio_output_mode(OUTPUT_MODE_SUBWOOFER_21, sub_config)
         if subwoofer_runtime is not None:
             config = SubwooferRuntimeConfig.from_overview(get_audio_output_overview())
             await subwoofer_runtime.sync(config)
@@ -6004,19 +6329,28 @@ async def _measure_auto_sub_candidate(
         if _auto_sub_cancel_requested(job):
             return _return_candidate(_auto_sub_cancelled_candidate(delay_ms, stage))
         verify = _load_audio_output_mode()
-        config_success = float(verify.get("subwoofer", {}).get("sub_alignment_ms", -999)) == delay_ms
+        if output_mode == OUTPUT_MODE_SUBWOOFER_22:
+            config_success = _auto_sub_22_verify_alignment(verify, sub1_delay, sub2_delay)
+        else:
+            config_success = float(verify.get("subwoofer", {}).get("sub_alignment_ms", -999)) == delay_ms
         if not config_success:
             await asyncio.sleep(0.15)
             if _auto_sub_cancel_requested(job):
                 return _return_candidate(_auto_sub_cancelled_candidate(delay_ms, stage))
             verify = _load_audio_output_mode()
-            config_success = float(verify.get("subwoofer", {}).get("sub_alignment_ms", -999)) == delay_ms
+            if output_mode == OUTPUT_MODE_SUBWOOFER_22:
+                config_success = _auto_sub_22_verify_alignment(verify, sub1_delay, sub2_delay)
+            else:
+                config_success = float(verify.get("subwoofer", {}).get("sub_alignment_ms", -999)) == delay_ms
             if not config_success:
                 await asyncio.sleep(0.5)
                 if _auto_sub_cancel_requested(job):
                     return _return_candidate(_auto_sub_cancelled_candidate(delay_ms, stage))
                 verify = _load_audio_output_mode()
-                config_success = float(verify.get("subwoofer", {}).get("sub_alignment_ms", -999)) == delay_ms
+                if output_mode == OUTPUT_MODE_SUBWOOFER_22:
+                    config_success = _auto_sub_22_verify_alignment(verify, sub1_delay, sub2_delay)
+                else:
+                    config_success = float(verify.get("subwoofer", {}).get("sub_alignment_ms", -999)) == delay_ms
         _marks["config_verify"] = time.monotonic()
     except Exception as exc:
         logger.warning("Auto-sub: failed to configure delay %.2f ms: %s", delay_ms, exc)
@@ -6212,6 +6546,11 @@ async def _measure_auto_sub_combined_candidate(
     original_level: float,
     original_polarity: str,
     original_highpass: bool,
+    output_mode: str = OUTPUT_MODE_SUBWOOFER_21,
+    original_config_snapshot: dict[str, Any] | None = None,
+    sub1_alignment_ms: float | None = None,
+    sub2_alignment_ms: float | None = None,
+    active_subs: tuple[str, ...] = ("sub1",),
 ) -> dict[str, Any]:
     """Measure both L and R for one AutoSub delay candidate."""
     _combined_start = time.monotonic()
@@ -6245,7 +6584,19 @@ async def _measure_auto_sub_combined_candidate(
         _append_combined_timing("cancelled")
         return _auto_sub_cancelled_candidate(delay_ms, stage)
 
-    label = "Fine-Scan" if stage == "fine" else "Coarse scan"
+    if stage == "sub1_coarse":
+        label = "Optimizing Sub 1"
+    elif stage == "sub2_coarse":
+        label = "Optimizing Sub 2"
+    elif stage == "combined_matrix":
+        label = "Combined Matrix"
+    else:
+        label = "Fine-Scan" if stage == "fine" else "Coarse scan"
+    pair_suffix = ""
+    if output_mode == OUTPUT_MODE_SUBWOOFER_22:
+        s1 = _auto_sub_clamped_delay(sub1_alignment_ms if sub1_alignment_ms is not None else delay_ms)
+        s2 = _auto_sub_clamped_delay(sub2_alignment_ms if sub2_alignment_ms is not None else 0.0)
+        pair_suffix = f" (S1 {s1:.2f} ms / S2 {s2:.2f} ms)"
     left_result = await _measure_auto_sub_candidate(
         delay_ms=delay_ms,
         job=job,
@@ -6265,10 +6616,15 @@ async def _measure_auto_sub_combined_candidate(
         original_level=original_level,
         original_polarity=original_polarity,
         original_highpass=original_highpass,
-        measurement_label=f"{label}: L meas {candidate_index}/{total} @ {delay_ms:.2f} ms",
+        measurement_label=f"{label}: L meas {candidate_index}/{total} @ {delay_ms:.2f} ms{pair_suffix}",
         candidate_current=candidate_index,
         candidate_total=total,
         measure_channel="left",
+        output_mode=output_mode,
+        original_config_snapshot=original_config_snapshot,
+        sub1_alignment_ms=sub1_alignment_ms,
+        sub2_alignment_ms=sub2_alignment_ms,
+        active_subs=active_subs,
     )
     if _auto_sub_cancel_requested(job):
         _append_combined_timing("cancelled", left_result=left_result)
@@ -6293,10 +6649,15 @@ async def _measure_auto_sub_combined_candidate(
         original_level=original_level,
         original_polarity=original_polarity,
         original_highpass=original_highpass,
-        measurement_label=f"{label}: R meas {candidate_index}/{total} @ {delay_ms:.2f} ms",
+        measurement_label=f"{label}: R meas {candidate_index}/{total} @ {delay_ms:.2f} ms{pair_suffix}",
         candidate_current=candidate_index,
         candidate_total=total,
         measure_channel="right",
+        output_mode=output_mode,
+        original_config_snapshot=original_config_snapshot,
+        sub1_alignment_ms=sub1_alignment_ms,
+        sub2_alignment_ms=sub2_alignment_ms,
+        active_subs=active_subs,
     )
     if _auto_sub_cancel_requested(job):
         _append_combined_timing("cancelled", left_result=left_result, right_result=right_result)
@@ -6308,7 +6669,7 @@ async def _measure_auto_sub_combined_candidate(
     status = "completed" if (len(left_points) >= 3 or len(right_points) >= 3) else "failed"
     _append_combined_timing(status, left_result=left_result, right_result=right_result)
 
-    return {
+    candidate = {
         "delay_ms": delay_ms,
         "name": str(delay_ms),
         "points": points,
@@ -6323,6 +6684,351 @@ async def _measure_auto_sub_combined_candidate(
         "status_right": right_result.get("status"),
         "combined_candidate": True,
     }
+    if output_mode == OUTPUT_MODE_SUBWOOFER_22:
+        sub1_delay = _auto_sub_clamped_delay(sub1_alignment_ms if sub1_alignment_ms is not None else delay_ms)
+        sub2_delay = _auto_sub_clamped_delay(sub2_alignment_ms if sub2_alignment_ms is not None else 0.0)
+        candidate.update({
+            "sub1_alignment_ms": sub1_delay,
+            "sub2_alignment_ms": sub2_delay,
+            "name": _auto_sub_22_name(sub1_delay, sub2_delay),
+            "active_subs": list(active_subs),
+        })
+    return candidate
+
+
+async def _run_auto_sub_22_optimize(
+    job_id: str,
+    input_id: str,
+    mic_input_channel: str,
+    reference_input_channel: str,
+    calibration_ref: str,
+    calibration_filename: str | None,
+    calibration_bytes: bytes | None,
+    sub1_scan_delays: list[float],
+    sub2_scan_delays: list[float],
+    fc: int,
+    original_config_snapshot: dict[str, Any],
+    fine_step_ms: float,
+) -> None:
+    global measurement_store, subwoofer_runtime, _auto_sub_lock
+    from samplerate import _load_audio_output_mode, set_audio_output_mode
+
+    job = _AUTO_SUB_JOBS.get(job_id)
+    if not job:
+        _auto_sub_lock.release()
+        return
+
+    async def _restore_original_config() -> None:
+        await _restore_auto_sub_original_config(original_config_snapshot)
+
+    original_sub1 = _auto_sub_22_sub(original_config_snapshot, "sub1")
+    original_sub2 = _auto_sub_22_sub(original_config_snapshot, "sub2")
+    original_sub1_alignment = float(original_sub1.get("alignment_ms", 0.0) or 0.0)
+    original_sub2_alignment = float(original_sub2.get("alignment_ms", 0.0) or 0.0)
+
+    def _matrix_delays(center: float) -> list[float]:
+        return [_auto_sub_clamped_delay(center + offset) for offset in (-fine_step_ms, 0.0, fine_step_ms)]
+
+    def _valid_lr(result: dict[str, Any]) -> bool:
+        return _auto_sub_has_points(result, "points_left") or _auto_sub_has_points(result, "points_right")
+
+    try:
+        if _auto_sub_cancel_requested(job):
+            job["message"] = "Auto Sub Optimize cancelled."
+            await _restore_original_config()
+            return
+
+        auto_sub_sweep_low_hz = 20.0
+        auto_sub_sweep_high_hz = max(600.0, min(float(fc) * 8.0, 2000.0))
+        if fc <= 60:
+            auto_sub_sweep_sec, auto_sub_tail_sec = 3.5, 1.5
+        elif fc <= 120:
+            auto_sub_sweep_sec, auto_sub_tail_sec = 3.0, 1.3
+        else:
+            auto_sub_sweep_sec, auto_sub_tail_sec = 2.5, 1.1
+        auto_sub_sweep_profile = {
+            "sweep_start_hz": auto_sub_sweep_low_hz,
+            "sweep_end_hz": auto_sub_sweep_high_hz,
+            "sweep_seconds": auto_sub_sweep_sec,
+            "tail_seconds": auto_sub_tail_sec,
+        }
+        auto_sub_rate = _resolve_measurement_start_sample_rate()
+
+        coarse1_results: list[dict[str, Any]] = []
+        coarse2_results: list[dict[str, Any]] = []
+        matrix_results: list[dict[str, Any]] = []
+        sub1_sweep_total = len(sub1_scan_delays) * 2
+        sub2_sweep_total = len(sub2_scan_delays) * 2
+        matrix_sweep_start = sub1_sweep_total + sub2_sweep_total
+        matrix_sweep_total = matrix_sweep_start + 18
+
+        job["stage"] = "sub1_coarse"
+        for idx, delay_ms in enumerate(sub1_scan_delays):
+            coarse1_results.append(await _measure_auto_sub_combined_candidate(
+                delay_ms=delay_ms,
+                job=job,
+                candidate_index=idx + 1,
+                total=len(sub1_scan_delays),
+                sweep_index_start=(idx * 2) + 1,
+                sweep_total=matrix_sweep_total,
+                stage="sub1_coarse",
+                fc=fc,
+                input_id=input_id,
+                mic_input_channel=mic_input_channel,
+                reference_input_channel=reference_input_channel,
+                calibration_ref=calibration_ref,
+                calibration_filename=calibration_filename,
+                calibration_bytes=calibration_bytes,
+                auto_sub_sweep_profile=auto_sub_sweep_profile,
+                auto_sub_rate=auto_sub_rate,
+                original_level=0.0,
+                original_polarity="normal",
+                original_highpass=True,
+                output_mode=OUTPUT_MODE_SUBWOOFER_22,
+                original_config_snapshot=original_config_snapshot,
+                sub1_alignment_ms=delay_ms,
+                sub2_alignment_ms=original_sub2_alignment,
+                active_subs=("sub1",),
+            ))
+            if _auto_sub_cancel_requested(job):
+                job["message"] = "Auto Sub Optimize cancelled."
+                await _restore_original_config()
+                return
+
+        coarse1_valid = [result for result in coarse1_results if _valid_lr(result)]
+        if not coarse1_valid:
+            job["status"] = "failed"
+            job["message"] = "No valid Sub 1 coarse sweep results to score"
+            job["error"] = {"detail": "Sub 1 coarse sweeps failed or produced insufficient data"}
+            await _restore_original_config()
+            return
+        sub1_scoring = _score_auto_sub_combined_candidates(coarse1_results, crossover_hz=fc)
+        sub1_winner = sub1_scoring["winner"]
+        sub1_winner_delay = _auto_sub_clamped_delay(float(sub1_winner.get("delay_ms", original_sub1_alignment) or original_sub1_alignment))
+
+        job["stage"] = "sub2_coarse"
+        for idx, delay_ms in enumerate(sub2_scan_delays):
+            coarse2_results.append(await _measure_auto_sub_combined_candidate(
+                delay_ms=delay_ms,
+                job=job,
+                candidate_index=idx + 1,
+                total=len(sub2_scan_delays),
+                sweep_index_start=sub1_sweep_total + (idx * 2) + 1,
+                sweep_total=matrix_sweep_total,
+                stage="sub2_coarse",
+                fc=fc,
+                input_id=input_id,
+                mic_input_channel=mic_input_channel,
+                reference_input_channel=reference_input_channel,
+                calibration_ref=calibration_ref,
+                calibration_filename=calibration_filename,
+                calibration_bytes=calibration_bytes,
+                auto_sub_sweep_profile=auto_sub_sweep_profile,
+                auto_sub_rate=auto_sub_rate,
+                original_level=0.0,
+                original_polarity="normal",
+                original_highpass=True,
+                output_mode=OUTPUT_MODE_SUBWOOFER_22,
+                original_config_snapshot=original_config_snapshot,
+                sub1_alignment_ms=original_sub1_alignment,
+                sub2_alignment_ms=delay_ms,
+                active_subs=("sub2",),
+            ))
+            if _auto_sub_cancel_requested(job):
+                job["message"] = "Auto Sub Optimize cancelled."
+                await _restore_original_config()
+                return
+
+        coarse2_valid = [result for result in coarse2_results if _valid_lr(result)]
+        if not coarse2_valid:
+            job["status"] = "failed"
+            job["message"] = "No valid Sub 2 coarse sweep results to score"
+            job["error"] = {"detail": "Sub 2 coarse sweeps failed or produced insufficient data"}
+            await _restore_original_config()
+            return
+        sub2_scoring = _score_auto_sub_combined_candidates(coarse2_results, crossover_hz=fc)
+        sub2_winner = sub2_scoring["winner"]
+        sub2_winner_delay = _auto_sub_clamped_delay(float(sub2_winner.get("delay_ms", original_sub2_alignment) or original_sub2_alignment))
+
+        sub1_matrix = _matrix_delays(sub1_winner_delay)
+        sub2_matrix = _matrix_delays(sub2_winner_delay)
+        matrix_pairs = [(sub1_delay, sub2_delay) for sub1_delay in sub1_matrix for sub2_delay in sub2_matrix]
+        job["combined_matrix"] = {
+            "status": "running",
+            "fine_step_ms": fine_step_ms,
+            "sub1_candidates": sub1_matrix,
+            "sub2_candidates": sub2_matrix,
+            "candidates": [{"sub1_alignment_ms": a, "sub2_alignment_ms": b} for a, b in matrix_pairs],
+        }
+        matrix_sweep_total = matrix_sweep_start + (len(matrix_pairs) * 2)
+
+        job["stage"] = "combined_matrix"
+        for idx, (sub1_delay, sub2_delay) in enumerate(matrix_pairs):
+            matrix_results.append(await _measure_auto_sub_combined_candidate(
+                delay_ms=sub1_delay,
+                job=job,
+                candidate_index=idx + 1,
+                total=len(matrix_pairs),
+                sweep_index_start=matrix_sweep_start + (idx * 2) + 1,
+                sweep_total=matrix_sweep_total,
+                stage="combined_matrix",
+                fc=fc,
+                input_id=input_id,
+                mic_input_channel=mic_input_channel,
+                reference_input_channel=reference_input_channel,
+                calibration_ref=calibration_ref,
+                calibration_filename=calibration_filename,
+                calibration_bytes=calibration_bytes,
+                auto_sub_sweep_profile=auto_sub_sweep_profile,
+                auto_sub_rate=auto_sub_rate,
+                original_level=0.0,
+                original_polarity="normal",
+                original_highpass=True,
+                output_mode=OUTPUT_MODE_SUBWOOFER_22,
+                original_config_snapshot=original_config_snapshot,
+                sub1_alignment_ms=sub1_delay,
+                sub2_alignment_ms=sub2_delay,
+                active_subs=("sub1", "sub2"),
+            ))
+            if _auto_sub_cancel_requested(job):
+                job["message"] = "Auto Sub Optimize cancelled."
+                await _restore_original_config()
+                return
+
+        matrix_valid = [result for result in matrix_results if _valid_lr(result)]
+        if not matrix_valid:
+            job["status"] = "failed"
+            job["message"] = "No valid Combined Matrix sweep results to score"
+            job["error"] = {"detail": "Combined Matrix sweeps failed or produced insufficient data"}
+            await _restore_original_config()
+            return
+
+        matrix_scoring = _score_auto_sub_matrix_candidates(matrix_results, crossover_hz=fc)
+        winner = matrix_scoring["winner"]
+        best_sub1 = _auto_sub_clamped_delay(float(winner.get("sub1_alignment_ms", sub1_winner_delay) or sub1_winner_delay))
+        best_sub2 = _auto_sub_clamped_delay(float(winner.get("sub2_alignment_ms", sub2_winner_delay) or sub2_winner_delay))
+
+        apply_ok = False
+        try:
+            sub_config = _auto_sub_22_global_config(original_config_snapshot)
+            subwoofers_config = _auto_sub_22_candidate_subwoofers(
+                original_config_snapshot,
+                sub1_alignment_ms=best_sub1,
+                sub2_alignment_ms=best_sub2,
+                active_subs=("sub1", "sub2"),
+            )
+            set_audio_output_mode(OUTPUT_MODE_SUBWOOFER_22, sub_config, subwoofers_config)
+            if subwoofer_runtime is not None:
+                config = SubwooferRuntimeConfig.from_overview(get_audio_output_overview())
+                await subwoofer_runtime.sync(config)
+            await asyncio.sleep(0.3)
+            verify = _load_audio_output_mode()
+            apply_ok = _auto_sub_22_verify_alignment(verify, best_sub1, best_sub2)
+        except Exception:
+            logger.exception("Auto-sub 2.2: failed to apply winner pair %.2f / %.2f ms", best_sub1, best_sub2)
+
+        if _auto_sub_cancel_requested(job):
+            job["message"] = "Auto Sub Optimize cancelled."
+            await _restore_original_config()
+            return
+
+        if not apply_ok:
+            job["status"] = "failed"
+            job["message"] = f"Scoring succeeded but failed to apply winner pair {best_sub1:.2f} / {best_sub2:.2f} ms"
+            job["error"] = {"detail": "Winner apply failed - original config restored"}
+            await _restore_original_config()
+            return
+
+        derived_delays: dict[str, Any] = {}
+        try:
+            config = SubwooferRuntimeConfig.from_overview(get_audio_output_overview())
+            derived_delays = {
+                "derived_main_delay_ms": round(config.derived_main_delay_ms, 2),
+                "derived_sub1_delay_ms": round(config.derived_sub1_delay_ms, 2),
+                "derived_sub2_delay_ms": round(config.derived_sub2_delay_ms, 2),
+            }
+        except Exception:
+            derived_delays = {}
+
+        job["combined_matrix"].update({
+            "status": "completed",
+            "winner": winner,
+            "runner_up": matrix_scoring.get("runner_up"),
+            "results": matrix_scoring["results"],
+            "valid_count": len(matrix_valid),
+        })
+        _log_auto_sub_timing_summary(job)
+        job["status"] = "completed"
+        job["message"] = (
+            f"Applied 2.2: Sub 1 {best_sub1:.2f} ms / Sub 2 {best_sub2:.2f} ms "
+            f"(score {winner['score_pct']:.0f} %)"
+        )
+        job["result"] = {
+            "mode": OUTPUT_MODE_SUBWOOFER_22,
+            "original_sub1_alignment_ms": original_sub1_alignment,
+            "original_sub2_alignment_ms": original_sub2_alignment,
+            "suggested_sub1_alignment_ms": best_sub1,
+            "suggested_sub2_alignment_ms": best_sub2,
+            "applied_sub1_alignment_ms": best_sub1,
+            "applied_sub2_alignment_ms": best_sub2,
+            "applied": True,
+            "auto_applied": True,
+            "apply_decision": "applied_22_combined_matrix",
+            "crossover_hz": fc,
+            "confidence": matrix_scoring.get("confidence", "uncertain"),
+            "winner": winner,
+            "sub1_coarse_winner": sub1_winner,
+            "sub2_coarse_winner": sub2_winner,
+            "runner_up": matrix_scoring.get("runner_up"),
+            "ranking": matrix_scoring["results"],
+            "combined_matrix": job["combined_matrix"],
+            "sweep_count": matrix_sweep_total,
+            "candidate_count": len(sub1_scan_delays) + len(sub2_scan_delays) + len(matrix_pairs),
+            "sub1_coarse_candidate_count": len(sub1_scan_delays),
+            "sub2_coarse_candidate_count": len(sub2_scan_delays),
+            "matrix_candidate_count": len(matrix_pairs),
+            "valid_count": len(matrix_valid),
+            "sub1_coarse_valid_count": len(coarse1_valid),
+            "sub2_coarse_valid_count": len(coarse2_valid),
+            **derived_delays,
+        }
+        logger.info(
+            "Auto-sub 2.2 optimize completed: fc=%sHz sub1 %.2f->%.2fms sub2 %.2f->%.2fms "
+            "combined_score=%.0f%% score_L=%.1f%% score_R=%.1f%% confidence=%s",
+            fc,
+            original_sub1_alignment,
+            best_sub1,
+            original_sub2_alignment,
+            best_sub2,
+            winner.get("score_pct", 0),
+            winner.get("score_L_pct", 0) or 0,
+            winner.get("score_R_pct", 0) or 0,
+            matrix_scoring.get("confidence", "uncertain"),
+        )
+
+    except Exception as exc:
+        if _auto_sub_cancel_requested(job):
+            job["message"] = "Auto Sub Optimize cancelled."
+            await _restore_original_config()
+            return
+        logger.exception("Auto-sub 2.2 optimize failed")
+        job["status"] = "failed"
+        job["message"] = f"Auto Sub Optimize 2.2 failed: {exc}"
+        job["error"] = {"detail": str(exc)}
+        await _restore_original_config()
+
+    finally:
+        try:
+            _auto_sub_lock.release()
+        except RuntimeError:
+            pass
+        cleanup_job_id = job_id
+
+        async def _cleanup_autosub_job():
+            await asyncio.sleep(600)
+            _AUTO_SUB_JOBS.pop(cleanup_job_id, None)
+
+        asyncio.create_task(_cleanup_autosub_job())
 
 
 async def _run_auto_sub_optimize(

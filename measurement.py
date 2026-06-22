@@ -22,10 +22,22 @@ from uuid import uuid4
 
 import numpy as np
 
-from samplerate import get_audio_output_overview, get_samplerate_status
+from samplerate import (
+    OUTPUT_MODE_SUBWOOFER_21,
+    OUTPUT_MODE_SUBWOOFER_22,
+    get_audio_output_overview,
+    get_samplerate_status,
+)
 from system_volume import SystemVolumeError, get_node_volume, get_output_volume, set_node_volume, set_output_volume
 
 logger = logging.getLogger(__name__)
+
+MEASUREMENT_SUBWOOFER_HELPER_ROUTE = "subwoofer-helper-input"
+MEASUREMENT_LEGACY_21_HELPER_ROUTE = "subwoofer-2.1-helper-input"
+MEASUREMENT_SUBWOOFER_HELPER_ROUTES = {
+    MEASUREMENT_SUBWOOFER_HELPER_ROUTE,
+    MEASUREMENT_LEGACY_21_HELPER_ROUTE,
+}
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -2288,7 +2300,7 @@ class MeasurementStore:
             )
             play_process = subprocess.Popen(play_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             self._job_processes[job_id] = [record_process, play_process]
-            if playback_route["route"] == "subwoofer-2.1-helper-input":
+            if playback_route["route"] in MEASUREMENT_SUBWOOFER_HELPER_ROUTES:
                 playback_route_diagnostics = self._link_measurement_playback_to_21_helper(
                     play_node_name=play_node_name,
                     playback_target=playback_target,
@@ -2680,7 +2692,7 @@ class MeasurementStore:
             )
             time.sleep(record_preroll_seconds)
             play_proc = subprocess.Popen(play_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            if playback_route["route"] == "subwoofer-2.1-helper-input":
+            if playback_route["route"] in MEASUREMENT_SUBWOOFER_HELPER_ROUTES:
                 playback_route_diagnostics = self._link_measurement_playback_to_21_helper(
                     play_node_name=play_node,
                     playback_target=playback_target,
@@ -5486,9 +5498,11 @@ class MeasurementStore:
     ) -> dict[str, Any]:
         overview = get_audio_output_overview()
         output_mode = overview.get("output_mode") if isinstance(overview.get("output_mode"), dict) else {}
-        if output_mode.get("mode") != "subwoofer-2.1":
+        mode = str(output_mode.get("mode") or "")
+        if mode not in {OUTPUT_MODE_SUBWOOFER_21, OUTPUT_MODE_SUBWOOFER_22}:
             return {
                 "route": "direct-sink",
+                "output_mode": mode or "stereo",
                 "play_node_name": play_node_name,
                 "playback_target_name": str(playback_target.get("target_name") or ""),
                 "helper_node_name": "",
@@ -5498,7 +5512,8 @@ class MeasurementStore:
         helper_node_name = "fxroute_21_stage1"
         helper_input_ports = self._wait_for_21_helper_input_ports(helper_node_name)
         return {
-            "route": "subwoofer-2.1-helper-input",
+            "route": MEASUREMENT_SUBWOOFER_HELPER_ROUTE,
+            "output_mode": mode,
             "play_node_name": play_node_name,
             "playback_target_name": str(playback_target.get("target_name") or ""),
             "helper_node_name": helper_node_name,
@@ -5513,7 +5528,7 @@ class MeasurementStore:
         playback_target: dict[str, Any],
         playback_route: dict[str, Any],
     ) -> list[str]:
-        if playback_route.get("route") == "subwoofer-2.1-helper-input":
+        if playback_route.get("route") in MEASUREMENT_SUBWOOFER_HELPER_ROUTES:
             return [
                 "pw-play",
                 "-P",
@@ -5537,6 +5552,7 @@ class MeasurementStore:
     def _new_measurement_playback_route_diagnostics(playback_route: dict[str, Any]) -> dict[str, Any]:
         return {
             "measurement_playback_route": playback_route.get("route") or "direct-sink",
+            "output_mode": playback_route.get("output_mode") or "",
             "temporary_playback_links": [],
             "play_node_helper_links": [],
             "direct_hardware_links_removed": [],
@@ -5555,7 +5571,7 @@ class MeasurementStore:
                 return {"left": input_l, "right": input_r}
             time.sleep(0.1)
         raise RuntimeError(
-            "2.1 measurement playback route unavailable: helper inputs missing "
+            "Subwoofer measurement playback route unavailable: helper inputs missing "
             f"for {helper_node_name} (ports={helper_ports})"
         )
 
@@ -5570,7 +5586,7 @@ class MeasurementStore:
                 return {"left": output_l, "right": output_r}
             time.sleep(0.05)
         raise RuntimeError(
-            "2.1 measurement playback route unavailable: measurement play FL/FR outputs missing "
+            "Subwoofer measurement playback route unavailable: measurement play FL/FR outputs missing "
             f"for {play_node_name} (ports={play_ports})"
         )
 
@@ -5618,11 +5634,12 @@ class MeasurementStore:
         )
         if diagnostics["direct_hardware_links_remaining"]:
             raise RuntimeError(
-                "2.1 measurement playback route still has direct hardware links after cleanup: "
+                "Subwoofer measurement playback route still has direct hardware links after cleanup: "
                 f"{diagnostics['direct_hardware_links_remaining']}"
             )
         logger.info(
-            "2.1 measurement playback manually linked: play_node=%s helper_links=%s removed_direct=%s",
+            "Subwoofer measurement playback manually linked: output_mode=%s play_node=%s helper_links=%s removed_direct=%s",
+            playback_route.get("output_mode") or "",
             play_node_name,
             diagnostics["play_node_helper_links"],
             diagnostics["direct_hardware_links_removed"],

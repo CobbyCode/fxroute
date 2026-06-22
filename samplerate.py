@@ -17,6 +17,7 @@ SOURCE_MODE_EXTERNAL_INPUT = "external-input"
 SOURCE_MODE_BLUETOOTH_INPUT = "bluetooth-input"
 OUTPUT_MODE_STEREO = "stereo"
 OUTPUT_MODE_SUBWOOFER_21 = "subwoofer-2.1"
+OUTPUT_MODE_SUBWOOFER_22 = "subwoofer-2.2"
 
 
 def _run_command(args: list[str]) -> str:
@@ -698,6 +699,75 @@ def _load_audio_output_selection() -> dict[str, Any]:
     }
 
 
+def _normalize_single_sub_config(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Normalize one sub's {level_db, alignment_ms, polarity} for 2.2."""
+    payload = payload or {}
+    try:
+        level = round(float(payload.get("level_db", 0.0)), 1)
+    except (TypeError, ValueError):
+        level = 0.0
+    try:
+        alignment = round(float(payload.get("alignment_ms", 0.0)), 2)
+    except (TypeError, ValueError):
+        alignment = 0.0
+    polarity = str(payload.get("polarity", "normal") or "normal").strip().lower()
+    level = max(-80.0, min(12.0, level))
+    alignment = max(-40.0, min(40.0, alignment))
+    return {
+        "level_db": level,
+        "alignment_ms": alignment,
+        "polarity": "invert" if polarity in {"invert", "inverted", "180"} else "normal",
+    }
+
+
+def _normalize_subwoofer_22_config(
+    subwoofers: dict[str, Any] | None = None,
+    fallback_21: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Normalize 2.2 subwoofer config.
+
+    sub1 derives from fallback_21 when subwoofers.sub1 is missing.
+    Global fields (crossover, slope, highpass) come from fallback_21 or defaults.
+    """
+    subwoofers = subwoofers or {}
+
+    # Global fields from fallback_21 (existing 2.1 subwoofer block) or defaults
+    if fallback_21:
+        raw_freq = fallback_21.get("crossover_frequency_hz", 80)
+        raw_hp = fallback_21.get("main_highpass_enabled", True)
+    else:
+        raw_freq = 80
+        raw_hp = True
+
+    try:
+        frequency = int(round(float(raw_freq)))
+    except (TypeError, ValueError):
+        frequency = 80
+
+    # Sub 1: from subwoofers.sub1 or derived from 2.1 config
+    sub1_payload = subwoofers.get("sub1") if isinstance(subwoofers.get("sub1"), dict) else None
+    if sub1_payload is None and fallback_21 is not None:
+        sub1_payload = {
+            "level_db": fallback_21.get("sub_level_db", 0.0),
+            "alignment_ms": fallback_21.get("sub_alignment_ms", 0.0),
+            "polarity": fallback_21.get("sub_polarity", "normal"),
+        }
+    sub1 = _normalize_single_sub_config(sub1_payload)
+
+    # Sub 2: from subwoofers.sub2 or defaults
+    sub2 = _normalize_single_sub_config(
+        subwoofers.get("sub2") if isinstance(subwoofers.get("sub2"), dict) else None
+    )
+
+    return {
+        "crossover_frequency_hz": max(40, min(200, frequency)),
+        "slope": "LR24",
+        "main_highpass_enabled": bool(raw_hp),
+        "sub1": sub1,
+        "sub2": sub2,
+    }
+
+
 def _normalize_subwoofer_config(payload: dict[str, Any] | None = None) -> dict[str, Any]:
     payload = payload or {}
     raw_frequency = payload.get("crossover_frequency_hz", payload.get("crossoverFrequencyHz", 80))
@@ -740,6 +810,23 @@ def _load_audio_output_mode() -> dict[str, Any]:
     except Exception:
         return default_payload
     mode = payload.get("mode")
+
+    if mode == OUTPUT_MODE_SUBWOOFER_22:
+        normalized = _normalize_subwoofer_22_config(
+            payload.get("subwoofers"),
+            payload.get("subwoofer"),
+        )
+        return {
+            "mode": OUTPUT_MODE_SUBWOOFER_22,
+            "crossover_frequency_hz": normalized["crossover_frequency_hz"],
+            "slope": normalized["slope"],
+            "main_highpass_enabled": normalized["main_highpass_enabled"],
+            "subwoofers": {
+                "sub1": normalized["sub1"],
+                "sub2": normalized["sub2"],
+            },
+        }
+
     return {
         "mode": mode if mode in {OUTPUT_MODE_STEREO, OUTPUT_MODE_SUBWOOFER_21} else OUTPUT_MODE_STEREO,
         "subwoofer": _normalize_subwoofer_config(payload.get("subwoofer") if isinstance(payload.get("subwoofer"), dict) else {}),
@@ -770,13 +857,46 @@ def _save_audio_output_selection(selected_key: str) -> None:
     }, indent=2) + "\n")
 
 
-def _save_audio_output_mode(mode: str, subwoofer: dict[str, Any] | None = None) -> dict[str, Any]:
-    normalized_mode = mode if mode in {OUTPUT_MODE_STEREO, OUTPUT_MODE_SUBWOOFER_21} else OUTPUT_MODE_STEREO
-    payload = {
-        "mode": normalized_mode,
-        "subwoofer": _normalize_subwoofer_config(subwoofer),
-    }
+def _save_audio_output_mode(
+    mode: str,
+    subwoofer: dict[str, Any] | None = None,
+    subwoofers: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    normalized_mode = mode if mode in {OUTPUT_MODE_STEREO, OUTPUT_MODE_SUBWOOFER_21, OUTPUT_MODE_SUBWOOFER_22} else OUTPUT_MODE_STEREO
+
+    # Load existing config to preserve the other mode's block
+    existing: dict[str, Any] = {}
     path = _audio_output_mode_path()
+    if path.exists():
+        try:
+            existing = json.loads(path.read_text())
+        except Exception:
+            pass
+
+    if normalized_mode == OUTPUT_MODE_SUBWOOFER_22:
+        normalized = _normalize_subwoofer_22_config(subwoofers, subwoofer or existing.get("subwoofer"))
+        payload: dict[str, Any] = {
+            "mode": OUTPUT_MODE_SUBWOOFER_22,
+            "crossover_frequency_hz": normalized["crossover_frequency_hz"],
+            "slope": normalized["slope"],
+            "main_highpass_enabled": normalized["main_highpass_enabled"],
+            "subwoofers": {
+                "sub1": normalized["sub1"],
+                "sub2": normalized["sub2"],
+            },
+        }
+        # Preserve existing 2.1 subwoofer block for BC
+        if "subwoofer" in existing:
+            payload["subwoofer"] = existing["subwoofer"]
+    else:
+        payload = {
+            "mode": normalized_mode,
+            "subwoofer": _normalize_subwoofer_config(subwoofer),
+        }
+        # Preserve existing 2.2 subwoofers block for BC
+        if "subwoofers" in existing:
+            payload["subwoofers"] = existing["subwoofers"]
+
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2) + "\n")
     return payload
@@ -1243,8 +1363,9 @@ def get_audio_output_overview() -> dict[str, Any]:
     selected_output = _build_selected_output_payload(selected_key, current_name, explicit_outputs)
     effective_output = next((item for item in explicit_outputs if item.get("key") == (selected_output or {}).get("key")), None) or current_output
     output_mode_available = bool((effective_output or {}).get("channels") and (effective_output or {}).get("channels") >= 4)
-    if output_mode.get("mode") == OUTPUT_MODE_SUBWOOFER_21 and not output_mode_available:
-        notes.append("2.1 Subwoofer mode requires a selected multichannel output with at least 4 channels.")
+    if output_mode.get("mode") in {OUTPUT_MODE_SUBWOOFER_21, OUTPUT_MODE_SUBWOOFER_22} and not output_mode_available:
+        label = "2.1" if output_mode.get("mode") == OUTPUT_MODE_SUBWOOFER_21 else "2.2"
+        notes.append(f"{label} Subwoofer mode requires a selected multichannel output with at least 4 channels.")
 
     return {
         "available": bool(status.get("available")),
@@ -1421,25 +1542,45 @@ def set_audio_output_selection(key: str) -> dict[str, Any]:
     if not selected_output.get("selectable", True):
         raise ValueError(f"Output is not selectable: {normalized_key}")
     output_mode = _load_audio_output_mode()
-    if output_mode.get("mode") == OUTPUT_MODE_SUBWOOFER_21 and (selected_output.get("channels") or 0) < 4:
-        raise ValueError("2.1 Subwoofer requires a selected multichannel output with at least 4 channels")
+    sub_modes = {OUTPUT_MODE_SUBWOOFER_21, OUTPUT_MODE_SUBWOOFER_22}
+    if output_mode.get("mode") in sub_modes and (selected_output.get("channels") or 0) < 4:
+        label = "2.1" if output_mode.get("mode") == OUTPUT_MODE_SUBWOOFER_21 else "2.2"
+        raise ValueError(f"{label} Subwoofer requires a selected multichannel output with at least 4 channels")
 
     _set_default_sink(selected_output["name"])
     _save_audio_output_selection(selected_output["key"])
     return get_audio_output_overview()
 
 
-def set_audio_output_mode(mode: str, subwoofer: dict[str, Any] | None = None) -> dict[str, Any]:
+def set_audio_output_mode(
+    mode: str,
+    subwoofer: dict[str, Any] | None = None,
+    subwoofers: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     normalized_mode = (mode or OUTPUT_MODE_STEREO).strip()
-    if normalized_mode not in {OUTPUT_MODE_STEREO, OUTPUT_MODE_SUBWOOFER_21}:
+    valid_modes = {OUTPUT_MODE_STEREO, OUTPUT_MODE_SUBWOOFER_21, OUTPUT_MODE_SUBWOOFER_22}
+    if normalized_mode not in valid_modes:
         raise ValueError(f"Unknown output mode: {mode}")
-    if normalized_mode == OUTPUT_MODE_SUBWOOFER_21:
+    if normalized_mode in {OUTPUT_MODE_SUBWOOFER_21, OUTPUT_MODE_SUBWOOFER_22}:
         overview = get_audio_output_overview()
         output_mode = overview.get("output_mode") or {}
         if not output_mode.get("available"):
-            raise ValueError("2.1 Subwoofer requires a selected multichannel output with at least 4 channels")
+            label = "2.1" if normalized_mode == OUTPUT_MODE_SUBWOOFER_21 else "2.2"
+            raise ValueError(f"{label} Subwoofer requires a selected multichannel output with at least 4 channels")
     previous = _load_audio_output_mode()
-    saved = _save_audio_output_mode(normalized_mode, subwoofer if subwoofer is not None else previous.get("subwoofer"))
+
+    if normalized_mode == OUTPUT_MODE_SUBWOOFER_22:
+        saved = _save_audio_output_mode(
+            normalized_mode,
+            subwoofer=subwoofer if subwoofer is not None else previous.get("subwoofer"),
+            subwoofers=subwoofers if subwoofers is not None else previous.get("subwoofers"),
+        )
+    else:
+        saved = _save_audio_output_mode(
+            normalized_mode,
+            subwoofer=subwoofer if subwoofer is not None else previous.get("subwoofer"),
+        )
+
     overview = get_audio_output_overview()
     overview["output_mode"] = {
         **(overview.get("output_mode") or {}),
