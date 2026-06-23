@@ -620,7 +620,7 @@ class LibraryMetadataStore:
             "mb_artist_id": row["mb_artist_id"],
             "mb_release_id": row["mb_release_id"],
             "mb_release_group_id": row["mb_release_group_id"],
-            "has_external_cover": bool(row["external_cover_path"]),
+            "has_external_cover": bool(row["external_cover_path"] and Path(str(row["external_cover_path"])).is_file()),
         }
 
     def _mark_attempt(self, album_key: str, error: str | None = None) -> None:

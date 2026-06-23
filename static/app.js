@@ -4150,12 +4150,13 @@ function renderAlbums() {
         </div>
     ` : '';
     const manualHtml = albums.length > 0 ? albums.map(album => {
-        const coverUrl = `/api/albums/${album.id}/cover?v=${state.library.albumsCacheToken || ''}`;
+        const coverUrl = albumCoverUrl(album);
         const fallbackSvg = albumArtFallbackSvg(album.name || album.artist || 'Album');
+        const imageSrc = coverUrl || fallbackSvg;
         return `
         <div class="album-card" data-album-id="${escapeHtml(album.id)}" role="button" tabindex="0">
             <div class="album-art-wrap">
-                <img class="album-art" src="${escapeHtml(coverUrl)}"
+                <img class="album-art" src="${escapeHtml(imageSrc)}"
                      alt="${escapeHtml(album.name)}"
                      onload="this.classList.add('loaded')"
                      onerror="this.onerror=null;this.src='${fallbackSvg}'" />
@@ -4195,6 +4196,15 @@ function albumMatchesLibraryQuery(album) {
     return haystack.includes(query);
 }
 
+function albumHasCover(album) {
+    return !!(album && (album.cover_source || album.has_external_cover));
+}
+
+function albumCoverUrl(album) {
+    if (!albumHasCover(album) || !album.id) return '';
+    return `/api/albums/${encodeURIComponent(album.id)}/cover?v=${state.library.albumsCacheToken || ''}`;
+}
+
 function setAlbumCoverImage(img, coverUrl, fallbackText) {
     if (!img) return;
     const fallbackSvg = albumArtFallbackSvg(fallbackText || 'Album');
@@ -4210,13 +4220,13 @@ async function openAlbumDetail(albumId) {
     if (!album) return;
 
     try {
-        const res = await fetch(`/api/albums/${albumId}/tracks`);
+        const res = await fetch(`/api/albums/${encodeURIComponent(albumId)}/tracks`);
         if (!res.ok) return;
         const tracks = await res.json();
         state.library.albumDetail = { album, tracks };
 
         // Update detail header
-        const coverUrl = `/api/albums/${albumId}/cover?v=${state.library.albumsCacheToken || ''}`;
+        const coverUrl = albumCoverUrl(album);
         setAlbumCoverImage(elements.albumDetailCover, coverUrl, album.name || album.artist || 'Album');
         elements.albumDetailName.textContent = album.name;
         elements.albumDetailArtist.textContent = album.artist;
