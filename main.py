@@ -5165,12 +5165,98 @@ async def download_easyeffects_preset_file(preset_name: str):
         )
     return FileResponse(preset_path, filename=preset_path.name)
 
+def _normalize_measurement_optional_input_channel(value: Any) -> str:
+    if value is None or value == "":
+        return ""
+    try:
+        channel = int(str(value).strip())
+    except (TypeError, ValueError):
+        return ""
+    return str(channel) if channel >= 1 else ""
+
+
+def _measurement_setup_settings_from_payload(settings: dict[str, Any]) -> dict[str, Any]:
+    measure_settings = settings.get("measure") if isinstance(settings.get("measure"), dict) else {}
+    reference_input_channel = measure_settings.get("selectedReferenceInputChannel")
+    if reference_input_channel is None:
+        reference_input_channel = measure_settings.get("reference_input_channel")
+    return {
+        "selectedReferenceInputChannel": _normalize_measurement_optional_input_channel(reference_input_channel),
+    }
+
+
+def _read_measurement_setup_settings() -> dict[str, Any]:
+    path = getattr(measurement_store, "settings_path", None)
+    if not path:
+        return _measurement_setup_settings_from_payload({})
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+        settings = payload if isinstance(payload, dict) else {}
+    except Exception:
+        settings = {}
+    return _measurement_setup_settings_from_payload(settings)
+
+
+def _update_measurement_setup_settings(patch: dict[str, Any]) -> dict[str, Any]:
+    path = getattr(measurement_store, "settings_path", None)
+    if not path:
+        return _measurement_setup_settings_from_payload({})
+    settings_path = Path(path)
+    try:
+        payload = json.loads(settings_path.read_text(encoding="utf-8")) if settings_path.exists() else {}
+        settings = payload if isinstance(payload, dict) else {}
+    except Exception:
+        settings = {}
+    measure_settings = settings.setdefault("measure", {})
+    if not isinstance(measure_settings, dict):
+        measure_settings = {}
+        settings["measure"] = measure_settings
+
+    if "selectedReferenceInputChannel" in patch or "reference_input_channel" in patch:
+        raw_reference = patch.get("selectedReferenceInputChannel", patch.get("reference_input_channel"))
+        measure_settings["selectedReferenceInputChannel"] = _normalize_measurement_optional_input_channel(raw_reference)
+
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    settings_path.write_text(json.dumps(settings, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return _measurement_setup_settings_from_payload(settings)
+
+
 @app.get("/api/measurements")
 async def list_measurements():
     global measurement_store
     if not measurement_store:
         raise HTTPException(status_code=503, detail="Measurement store not available")
-    return measurement_store.list_measurements()
+    payload = measurement_store.list_measurements()
+    payload["measurement_settings"] = _read_measurement_setup_settings()
+    return payload
+
+
+@app.get("/api/measurements/settings")
+async def get_measurement_settings():
+    global measurement_store
+    if not measurement_store:
+        raise HTTPException(status_code=503, detail="Measurement store not available")
+    return {
+        "status": "ok",
+        "measurement_settings": _read_measurement_setup_settings(),
+    }
+
+
+@app.patch("/api/measurements/settings")
+async def update_measurement_settings(request: Request):
+    global measurement_store
+    if not measurement_store:
+        raise HTTPException(status_code=503, detail="Measurement store not available")
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Measurement settings payload must be an object")
+    return {
+        "status": "ok",
+        "measurement_settings": _update_measurement_setup_settings(body),
+    }
 
 @app.get("/api/measurements/inputs")
 async def list_measurement_inputs():

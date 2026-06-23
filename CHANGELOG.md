@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.7.45 (2026-06-23)
+
+### Added
+- Added **Measurement Setup persistence**: reference input channel selection now survives page reloads via `/api/measurements/settings` endpoint.
+
+### Changed
+- Removed noisy `[measurement-save-current]` console.debug logs from `saveCurrentMeasurement()` for a cleaner browser console.
+- Normalized measurement input channel count detection to handle missing device selections gracefully.
+
+### Fixed
+- Fixed reference input channel potentially being set to the same channel as the mic input channel by clearing it when conflict is detected.
+
 ## 0.7.44 (2026-06-22)
 
 ### Added

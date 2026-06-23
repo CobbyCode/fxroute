@@ -7871,6 +7871,30 @@ async function deleteSelectedMeasurementHouseCurve() {
     }
 }
 
+function applyMeasurementSetupSettings(settings = {}) {
+    if (!settings || typeof settings !== 'object') return;
+    if (Object.prototype.hasOwnProperty.call(settings, 'selectedReferenceInputChannel')) {
+        state.measurement.selectedReferenceInputChannel = String(settings.selectedReferenceInputChannel || '');
+    }
+    normalizeMeasurementInputChannelSelections();
+}
+
+async function saveMeasurementSetupSettings(patch = {}) {
+    try {
+        const resp = await fetch('/api/measurements/settings', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(patch),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || 'Failed to save measurement settings');
+        applyMeasurementSetupSettings(data.measurement_settings || {});
+        renderMeasurementPanel();
+    } catch (error) {
+        console.error('saveMeasurementSetupSettings failed', error);
+    }
+}
+
 async function fetchMeasurements() {
     state.measurement.loading = true;
     renderMeasurementPanel();
@@ -7886,6 +7910,7 @@ async function fetchMeasurements() {
         state.measurement.calibrationOptions = Array.isArray(data.calibrations) ? data.calibrations : [];
         state.measurement.selectedCalibrationRef = String(data.active_calibration_file_id || '');
         state.measurement.houseCurveOptions = Array.isArray(data.house_curves) ? data.house_curves : [];
+        applyMeasurementSetupSettings(data.measurement_settings || {});
         if (state.measurement.selectedCalibrationRef && !state.measurement.calibrationOptions.some(item => item.id === state.measurement.selectedCalibrationRef)) {
             state.measurement.selectedCalibrationRef = '';
         }
@@ -8016,14 +8041,19 @@ function getSelectedMeasurementInputChannelCount() {
 
 function normalizeMeasurementInputChannelSelections() {
     const measurementState = state.measurement || {};
-    const channelCount = getSelectedMeasurementInputChannelCount();
+    const selectedInput = getSelectedMeasurementInput();
+    const channelCountKnown = !!selectedInput;
+    const channelCount = channelCountKnown ? Math.max(1, Number(selectedInput.channels || 1)) : 1;
     const micChannel = Math.max(1, Math.min(channelCount, Number(measurementState.selectedMicInputChannel || 1)));
     measurementState.selectedMicInputChannel = String(micChannel);
     if (measurementState.selectedReferenceInputChannel) {
         const referenceChannel = Number(measurementState.selectedReferenceInputChannel);
-        measurementState.selectedReferenceInputChannel = Number.isFinite(referenceChannel) && referenceChannel >= 1 && referenceChannel <= channelCount
+        measurementState.selectedReferenceInputChannel = Number.isFinite(referenceChannel) && referenceChannel >= 1 && (!channelCountKnown || referenceChannel <= channelCount)
             ? String(referenceChannel)
             : '';
+    }
+    if (measurementState.selectedReferenceInputChannel === measurementState.selectedMicInputChannel) {
+        measurementState.selectedReferenceInputChannel = '';
     }
 }
 
@@ -8826,24 +8856,7 @@ function renderMeasurementPanelDefensively(context = 'measurement render') {
     }
 }
 
-function logSaveCurrentMeasurementDebug(stage, details = {}) {
-    const measurementState = state.measurement || {};
-    const current = measurementState.currentMeasurement || null;
-    const visibleIds = Object.entries(measurementState.visibilityById || {})
-        .filter(([, visible]) => !!visible)
-        .map(([id]) => id);
-    console.info('[measurement-save-current]', stage, {
-        currentId: current?.id || '',
-        currentName: current?.name || '',
-        currentTraceCount: Array.isArray(current?.traces) ? current.traces.length : 0,
-        savedCount: Array.isArray(measurementState.measurements) ? measurementState.measurements.length : 0,
-        visibleIds,
-        saveInFlight: !!measurementState.saveInFlight,
-        startInFlight: !!measurementState.startInFlight,
-        activeJobId: measurementState.activeJobId || '',
-        ...details,
-    });
-}
+
 
 async function startHostMeasurement() {
     if (!state.measurement.hostCaptureAvailable || !state.measurement.selectedInputId) {
@@ -9118,8 +9131,6 @@ async function saveCurrentMeasurement() {
     const current = state.measurement.currentMeasurement;
     if (!current || state.measurement.saveInFlight || state.measurement.currentMeasurementSaved) return;
 
-    const debugStart = window.performance?.now?.() || Date.now();
-    const debugElapsedMs = () => Math.round((window.performance?.now?.() || Date.now()) - debugStart);
     const repeatMeasurements = Array.isArray(state.measurement.pendingRepeatMeasurements)
         ? state.measurement.pendingRepeatMeasurements
         : [];
@@ -9139,95 +9150,41 @@ async function saveCurrentMeasurement() {
 
     state.measurement.saveInFlight = true;
     state.measurement.statusText = 'Saving current measurement…';
-    logSaveCurrentMeasurementDebug('start', {
-        payloadId: payload.id || '',
-        payloadName: payload.name || baseName,
-        payloadTraceCount: Array.isArray(payload.traces) ? payload.traces.length : repeatMeasurements.length,
-        elapsedMs: debugElapsedMs(),
-    });
-    logSaveCurrentMeasurementDebug('before initial renderMeasurementPanel', { elapsedMs: debugElapsedMs() });
     renderMeasurementPanel();
-    logSaveCurrentMeasurementDebug('after initial renderMeasurementPanel', { elapsedMs: debugElapsedMs() });
     try {
-        logSaveCurrentMeasurementDebug('before POST /api/measurements/save', {
-            payloadId: payload.id || '',
-            payloadName: payload.name || '',
-            elapsedMs: debugElapsedMs(),
-        });
         const resp = await fetch('/api/measurements/save', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload),
         });
-        logSaveCurrentMeasurementDebug('after POST response received', {
-            status: resp.status,
-            ok: resp.ok,
-            elapsedMs: debugElapsedMs(),
-        });
         const data = await resp.json().catch(() => ({}));
-        logSaveCurrentMeasurementDebug('after response JSON parsed', {
-            status: resp.status,
-            ok: resp.ok,
-            responseStatus: data.status || '',
-            responseDetail: data.detail || '',
-            returnedId: data.measurement?.id || '',
-            returnedName: data.measurement?.name || '',
-            elapsedMs: debugElapsedMs(),
-        });
         if (!resp.ok) throw new Error(data.detail || 'Failed to save measurement');
         const savedMeasurements = Array.isArray(data.measurements)
             ? data.measurements.map((measurement, index) => normalizeMeasurementEntry(measurement, index))
             : [normalizeMeasurementEntry(data.measurement || payload, 0)];
         const saved = savedMeasurements[0];
-        logSaveCurrentMeasurementDebug('saved measurement normalized', {
-            savedId: saved.id,
-            savedName: saved.name,
-            savedTraceCount: saved.traces.length,
-            elapsedMs: debugElapsedMs(),
-        });
         savedMeasurements.forEach((measurement) => {
             state.measurement.visibilityById[measurement.id] = true;
             state.measurement.reviewVisibilityById[measurement.id] = false;
-        });
-        logSaveCurrentMeasurementDebug('before clearing currentMeasurement', {
-            savedId: saved.id,
-            savedName: saved.name,
-            elapsedMs: debugElapsedMs(),
         });
         state.measurement.currentMeasurement = null;
         state.measurement.pendingRepeatMeasurements = [];
         state.measurement.currentMeasurementSaved = false;
         state.measurement.currentMeasurementName = '';
         state.measurement.statusText = 'Measurement saved.';
-        logSaveCurrentMeasurementDebug('after clearing currentMeasurement', {
-            savedId: saved.id,
-            savedName: saved.name,
-            elapsedMs: debugElapsedMs(),
-        });
-        logSaveCurrentMeasurementDebug('before fetchMeasurements', { elapsedMs: debugElapsedMs() });
         await fetchMeasurements();
-        logSaveCurrentMeasurementDebug('after fetchMeasurements', { elapsedMs: debugElapsedMs() });
         showToast('Measurement saved', 'success');
     } catch (error) {
         console.error('saveCurrentMeasurement failed', {
             message: error?.message || String(error),
             name: error?.name || '',
-            stack: error?.stack || '',
-            elapsedMs: debugElapsedMs(),
             error,
-        });
-        logSaveCurrentMeasurementDebug('catch error details', {
-            errorMessage: error?.message || String(error),
-            errorName: error?.name || '',
-            elapsedMs: debugElapsedMs(),
         });
         state.measurement.statusText = error.message || 'Failed to save measurement';
         showToast(state.measurement.statusText, 'error');
     } finally {
-        logSaveCurrentMeasurementDebug('finally before renderMeasurementPanel', { elapsedMs: debugElapsedMs() });
         state.measurement.saveInFlight = false;
         renderMeasurementPanel();
-        logSaveCurrentMeasurementDebug('finally after renderMeasurementPanel', { elapsedMs: debugElapsedMs() });
     }
 }
 
@@ -9972,9 +9929,13 @@ function setupMeasurementActions() {
         elements.measurementInputSelect.addEventListener('pointerdown', scanMeasurementInputsOnceForSelect);
         elements.measurementInputSelect.addEventListener('focus', scanMeasurementInputsOnceForSelect);
         elements.measurementInputSelect.addEventListener('change', (event) => {
+            const previousReferenceInputChannel = state.measurement.selectedReferenceInputChannel || '';
             state.measurement.selectedInputId = event.target.value || '';
             normalizeMeasurementInputChannelSelections();
             renderMeasurementPanel();
+            if (previousReferenceInputChannel !== (state.measurement.selectedReferenceInputChannel || '')) {
+                void saveMeasurementSetupSettings({ selectedReferenceInputChannel: state.measurement.selectedReferenceInputChannel || '' });
+            }
         });
     }
     if (elements.measurementInputRefreshBtn) {
@@ -9990,9 +9951,13 @@ function setupMeasurementActions() {
     }
     if (elements.measurementMicInputChannelSelect) {
         elements.measurementMicInputChannelSelect.addEventListener('change', (event) => {
+            const previousReferenceInputChannel = state.measurement.selectedReferenceInputChannel || '';
             state.measurement.selectedMicInputChannel = event.target.value || '1';
             normalizeMeasurementInputChannelSelections();
             renderMeasurementPanel();
+            if (previousReferenceInputChannel !== (state.measurement.selectedReferenceInputChannel || '')) {
+                void saveMeasurementSetupSettings({ selectedReferenceInputChannel: state.measurement.selectedReferenceInputChannel || '' });
+            }
         });
     }
     if (elements.measurementReferenceInputChannelSelect) {
@@ -10000,6 +9965,7 @@ function setupMeasurementActions() {
             state.measurement.selectedReferenceInputChannel = event.target.value || '';
             normalizeMeasurementInputChannelSelections();
             renderMeasurementPanel();
+            void saveMeasurementSetupSettings({ selectedReferenceInputChannel: state.measurement.selectedReferenceInputChannel || '' });
         });
     }
     document.querySelectorAll('[data-measurement-channel]').forEach((button) => {
