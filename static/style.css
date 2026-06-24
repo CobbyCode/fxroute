@@ -4082,6 +4082,22 @@ input[type="number"]::-webkit-outer-spin-button {
 .playback-bar .track-info {
     min-width: 0;
     overflow: hidden;
+    display: flex;
+    align-items: center;
+    gap: 0.65rem;
+}
+.playback-cover {
+    width: 48px;
+    height: 48px;
+    border-radius: 0.6rem;
+    object-fit: cover;
+    flex: 0 0 auto;
+    border: 1px solid var(--border);
+    background: var(--bg-elevated);
+    box-shadow: 0 6px 18px var(--shadow);
+}
+.playback-cover.hidden {
+    display: none;
 }
 .playback-center {
     display: flex;
@@ -4393,7 +4409,7 @@ input[type="number"]::-webkit-outer-spin-button {
     height: 6px;
     accent-color: var(--accent);
     cursor: pointer;
-    min-width: 70px;
+    min-width: 90px;
     margin-left: 0.6rem;
 }
 .volume-display {
@@ -4535,7 +4551,7 @@ input[type="number"]::-webkit-outer-spin-button {
     }
     .effects-card { padding: 1.25rem; }
     .effects-actions-right { justify-content: flex-end; }
-    .volume-slider { width: 80px; }
+    .volume-slider { width: 90px; }
 }
 
 @media (max-width: 1180px) {
@@ -4932,8 +4948,8 @@ input[type="number"]::-webkit-outer-spin-button {
         font-size: 1.3rem;
     }
     .volume-slider {
-        flex: 0 1 84px;
-        max-width: 98px;
+        flex: 0 0 90px;
+        max-width: 110px;
     }
     .volume-display {
         min-width: 34px;
@@ -4950,6 +4966,14 @@ input[type="number"]::-webkit-outer-spin-button {
     /* Hide left column title/artist text on mobile - center column has the info */
     .playback-bar .track-info .track-title,
     .playback-bar .track-info .track-artist {
+        display: none !important;
+    }
+    .playback-bar:has(.track-title.placeholder:not([style*="display:none"]):not([style*="display: none"])) .track-info .track-title {
+        display: block !important;
+        width: 100%;
+        text-align: center;
+    }
+    .playback-bar:has(.track-title.placeholder:not([style*="display:none"]):not([style*="display: none"])) .playback-center .song-info {
         display: none !important;
     }
     /* But keep the EQ bars visible in .track-info */
@@ -4974,28 +4998,70 @@ input[type="number"]::-webkit-outer-spin-button {
     }
 }
 
-@media (min-width: 600px) and (max-width: 980px) {
+@media (min-width: 601px) and (max-width: 980px) {
+    body { padding-bottom: 210px; }
+
     .playback-bar {
-        grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) minmax(0, 1fr);
-        grid-template-areas:
-            "track center ."
-            "controls controls controls";
+        display: flex;
+        flex-direction: column;
         height: auto;
-        gap: 0.66rem 0.9rem;
-        padding: 0.6rem 0.95rem 0.76rem;
+        gap: 0.36rem;
+        padding: 0.7rem 0.95rem 0.84rem;
+        align-items: stretch;
     }
 
     .playback-bar .track-info {
-        grid-area: track;
+        width: 100%;
+        max-width: 100%;
+        min-height: 1.5rem;
+        text-align: center;
+        justify-content: center;
+        align-items: center;
+        gap: 0.5rem;
+        overflow: visible;
+    }
+
+    .playback-bar .track-info > div {
+        min-width: 0;
+    }
+
+    .playback-bar .track-info #track-artist:empty {
+        display: none;
+    }
+
+    .playback-bar:has(.track-title.placeholder:not([style*="display:none"]):not([style*="display: none"])) .track-info > div:first-of-type {
+        width: 100%;
+        text-align: center;
+    }
+
+    .playback-bar:has(.track-title.placeholder:not([style*="display:none"]):not([style*="display: none"])) .playback-center .song-info {
+        display: none;
     }
 
     .playback-bar .playback-center {
-        grid-area: center;
-        justify-self: center;
+        width: 100%;
+        max-width: min(620px, 100%);
+        margin: 0 auto;
+        gap: 0.24rem;
+        transform: none;
+    }
+
+    .playback-bar .playback-center .song-info {
+        display: flex;
+        transform: none;
+        padding-top: 0;
+    }
+
+    .playback-bar .playback-meta-row {
+        min-height: 1.25rem;
+        transform: none;
+    }
+
+    .playback-bar .playback-center .seek-row {
+        transform: none;
     }
 
     .playback-bar .controls {
-        grid-area: controls;
         width: fit-content;
         max-width: 100%;
         margin: 0 auto;
@@ -5008,9 +5074,9 @@ input[type="number"]::-webkit-outer-spin-button {
     }
 
     .playback-bar .controls .volume-slider {
-        flex: 0 1 clamp(6.75rem, 14vw, 9.5rem);
-        width: clamp(6.75rem, 14vw, 9.5rem);
-        min-width: 6.75rem;
+        flex: 0 0 clamp(90px, 14vw, 9.5rem);
+        width: clamp(90px, 14vw, 9.5rem);
+        min-width: 90px;
         max-width: 9.5rem;
     }
 
@@ -5022,7 +5088,7 @@ input[type="number"]::-webkit-outer-spin-button {
 
 @media (min-width: 981px) and (max-width: 1180px) {
     .playback-bar {
-        grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.48fr) minmax(258px, 0.95fr);
+        grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.48fr) minmax(300px, 0.95fr);
         height: 102px;
         gap: 0.72rem;
         padding: 0.56rem 0.82rem 0.78rem;
@@ -5043,33 +5109,15 @@ input[type="number"]::-webkit-outer-spin-button {
         margin: 0;
         padding: 0;
         justify-content: flex-end;
-        gap: 0.38rem;
+        gap: 0.5rem;
         flex-wrap: nowrap;
     }
 
-    .playback-bar .control-btn {
-        width: 38px;
-        height: 38px;
-        font-size: 1.05rem;
-    }
-
-    .playback-bar .control-btn-secondary {
-        width: 34px;
-        height: 34px;
-        font-size: 0.86rem;
-    }
-
-    .playback-bar .control-btn-clear {
-        width: 30px;
-        height: 30px;
-        font-size: 0.78rem;
-    }
-
     .playback-bar .controls .volume-slider {
-        flex: 0 1 clamp(4.9rem, 8vw, 5.8rem);
-        width: clamp(4.9rem, 8vw, 5.8rem);
-        min-width: 4.9rem;
-        max-width: 5.8rem;
+        flex: 0 0 90px;
+        width: 90px;
+        min-width: 90px;
+        max-width: 90px;
     }
 }
 /* Radio mode: hide left column info, center the middle column content */

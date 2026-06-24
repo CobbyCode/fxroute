@@ -533,6 +533,7 @@ const elements = {
     effectsPeqCreatePresetBtn: document.getElementById('effects-peq-create-preset'),
     effectsStatus: document.getElementById('effects-status'),
     playbackBar: document.getElementById('playback-bar'),
+    playbackCover: document.getElementById('playback-cover'),
     trackTitle: document.getElementById('track-title'),
     trackArtist: document.getElementById('track-artist'),
     playbackEq: document.getElementById('playback-eq'),
@@ -2896,6 +2897,7 @@ function updatePlaybackUI() {
     // When Spotify owns the footer, local UI must NOT touch footer elements at all.
     // Refresh from Spotify truth and return — the Spotify poll owns the footer exclusively.
     if (window.__footerSource === 'spotify') {
+        updatePlaybackCover(null);
         stopPlaybackPositionPoll();
         const spData = window.__spotifyLastData;
         if (!freezeActive && spData) updateFooterForSpotify(spData);
@@ -2930,6 +2932,7 @@ function updatePlaybackUI() {
             if (elements.trackArtist) elements.trackArtist.style.display = '';
         }
     }
+    updatePlaybackCover(current_track);
     document.body.classList.remove('is-playing', 'is-paused');
     if (playing) {
         document.body.classList.add('is-playing');
@@ -5041,7 +5044,16 @@ async function playRadio(stationId) {
         }
         updatePlaybackUI();
         triggerSamplerateBurstPolling();
-        showToast(`Now playing: ${station.title}`, 'info');
+        const playedTrack = data?.playback?.current_track || {
+            id: `radio_${station.id}`,
+            title: station.title,
+            artist: station.artist || 'Radio',
+            source: 'radio',
+            artwork_available: !!(station.image || station.image_url || station.custom_image_url),
+            artwork_url: station.image || station.image_url || station.custom_image_url || '',
+            artwork_source: (station.image || station.image_url || station.custom_image_url) ? 'radio' : 'none',
+        };
+        showNowPlayingCue(playedTrack, 'Now playing');
     } catch (e) {
         if (requestId !== pendingPlaybackRequestId) return;
         playbackActionInFlight = false;
@@ -5114,14 +5126,16 @@ async function playLocal(trackId) {
         if (!resp.ok) throw new Error(data.detail || 'Play command failed');
         if (requestId !== pendingPlaybackRequestId) return;
         playbackActionInFlight = false;
+        let playedTrack = track;
         if (data.playback) {
             mergePlaybackState(data.playback);
             syncLibraryStateFromPlaybackContext(true);
+            playedTrack = data.playback.current_track || track;
         }
         updatePlaybackUI();
         triggerSamplerateBurstPolling();
         const queueCount = (((data || {}).playback || {}).queue || {}).count || 0;
-        showNowPlayingCue(track, queueCount > 1 ? `Queue started · ${queueCount} tracks` : 'Now playing');
+        showNowPlayingCue(playedTrack, queueCount > 1 ? `Queue started · ${queueCount} tracks` : 'Now playing');
     } catch (e) {
         if (requestId !== pendingPlaybackRequestId) return;
         playbackActionInFlight = false;
@@ -8738,14 +8752,33 @@ async function handleAutoSubResult(job) {
         const originalSub2 = Number.isFinite(result.original_sub2_alignment_ms) ? result.original_sub2_alignment_ms : null;
         const appliedSub1 = Number.isFinite(result.applied_sub1_alignment_ms) ? result.applied_sub1_alignment_ms : null;
         const appliedSub2 = Number.isFinite(result.applied_sub2_alignment_ms) ? result.applied_sub2_alignment_ms : null;
-        const scorePct = Number.isFinite(winner.score_pct) ? winner.score_pct : null;
-        const hasWinnerLRScores = Number.isFinite(winner.score_L_pct) && Number.isFinite(winner.score_R_pct);
-        const scoreText = scorePct !== null ? scorePct.toFixed(1) : '?';
+        const finiteNumber = (value) => {
+            const num = Number(value);
+            return Number.isFinite(num) ? num : null;
+        };
+        const scorePctFromScore = (value) => {
+            const num = finiteNumber(value);
+            return num !== null ? num * 100 : null;
+        };
+        const leftScorePct = finiteNumber(winner.score_L_pct) ?? finiteNumber(result.left_score_pct) ?? scorePctFromScore(result.left_score);
+        const rightScorePct = finiteNumber(winner.score_R_pct) ?? finiteNumber(result.right_score_pct) ?? scorePctFromScore(result.right_score);
+        const overallScorePct = finiteNumber(winner.overall_score_pct)
+            ?? finiteNumber(result.overall_score_pct)
+            ?? scorePctFromScore(winner.overall_score)
+            ?? scorePctFromScore(result.overall_score)
+            ?? (leftScorePct !== null && rightScorePct !== null
+                ? (0.6 * Math.min(leftScorePct, rightScorePct)) + (0.4 * ((leftScorePct + rightScorePct) / 2))
+                : null);
+        const combinedScorePct = finiteNumber(winner.score_pct);
+        const scorePct = isStereoBassResult ? overallScorePct : combinedScorePct;
         const sub1Text = `${appliedSub1 !== null ? appliedSub1.toFixed(2) : '?'} ms (was ${originalSub1 !== null ? originalSub1.toFixed(2) : '?'} ms)`;
         const sub2Text = `${appliedSub2 !== null ? appliedSub2.toFixed(2) : '?'} ms (was ${originalSub2 !== null ? originalSub2.toFixed(2) : '?'} ms)`;
-        const scorePart = hasWinnerLRScores
-            ? `Combined ${scoreText} % · L ${winner.score_L_pct.toFixed(1)} % / R ${winner.score_R_pct.toFixed(1)} %`
-            : `Combined ${scoreText} %`;
+        const lrScoreText = leftScorePct !== null && rightScorePct !== null
+            ? ` · L ${leftScorePct.toFixed(1)} % / R ${rightScorePct.toFixed(1)} %`
+            : '';
+        const scorePart = isStereoBassResult
+            ? `Overall ${scorePct !== null ? `${scorePct.toFixed(1)} %` : 'unavailable'}${lrScoreText}`
+            : `Combined ${scorePct !== null ? `${scorePct.toFixed(1)} %` : 'unavailable'}${lrScoreText}`;
         measurementState.statusText = `AutoSub ${modeLabel} applied: ${sub1Label} ${sub1Text} · ${sub2Label} ${sub2Text} · ${scorePart}`;
 
         if (statusEl) {
@@ -11724,11 +11757,69 @@ function showToast(message, type = 'info') {
 }
 function trackCoverUrl(track) {
     if (!track || track.source !== 'local' || !track.id) return '';
+    if (track.cover_available === false) return '';
+    if (track.cover_url) return track.cover_url;
     return `/api/tracks/cover/${encodeURIComponent(track.id)}`;
 }
 function trackCoverInfoUrl(track) {
     if (!track || track.source !== 'local' || !track.id) return '';
+    if (track.cover_info_url) return track.cover_info_url;
     return `/api/tracks/cover-info/${encodeURIComponent(track.id)}`;
+}
+function trackCoverKnownAvailable(track) {
+    return track && track.source === 'local' && track.cover_available === true;
+}
+function playbackArtworkUrl(item) {
+    if (!item) return '';
+    if (item.artwork_available === false) return '';
+    const explicitUrl = item.artwork_url || item.artUrl || item.image || '';
+    if (explicitUrl) return explicitUrl;
+    return trackCoverUrl(item);
+}
+function playbackArtworkKnownAvailable(item) {
+    if (!item) return false;
+    if (item.artwork_available === true) return true;
+    if (item.artwork_available === false) return false;
+    return trackCoverKnownAvailable(item) || !!(item.artwork_url || item.artUrl || item.image);
+}
+function spotifyArtworkItem(data) {
+    const artworkUrl = data?.artwork_url || data?.artUrl || '';
+    return {
+        source: 'spotify',
+        artwork_available: !!artworkUrl,
+        artwork_url: artworkUrl || '',
+        artwork_source: artworkUrl ? 'spotify' : 'none',
+    };
+}
+function updatePlaybackCover(track) {
+    if (!elements.playbackCover) return;
+    const coverUrl = playbackArtworkKnownAvailable(track) ? playbackArtworkUrl(track) : '';
+    if (!coverUrl) {
+        elements.playbackCover.removeAttribute('src');
+        elements.playbackCover.classList.add('hidden');
+        elements.playbackCover.classList.remove('is-ready');
+        elements.playbackBar?.classList.remove('has-cover');
+        return;
+    }
+    elements.playbackCover.onerror = function() {
+        this.onerror = null;
+        this.removeAttribute('src');
+        this.classList.add('hidden');
+        this.classList.remove('is-ready');
+        elements.playbackBar?.classList.remove('has-cover');
+    };
+    elements.playbackCover.onload = function() {
+        this.classList.remove('hidden');
+        this.classList.add('is-ready');
+        elements.playbackBar?.classList.add('has-cover');
+    };
+    if (elements.playbackCover.getAttribute('src') !== coverUrl) {
+        elements.playbackCover.classList.remove('is-ready');
+        elements.playbackCover.src = coverUrl;
+    } else {
+        elements.playbackCover.classList.remove('hidden');
+        elements.playbackBar?.classList.add('has-cover');
+    }
 }
 function scheduleNowPlayingCueRemoval(cue, delayMs = 4200) {
     if (nowPlayingCueTimer) clearTimeout(nowPlayingCueTimer);
@@ -11746,7 +11837,7 @@ async function revealNowPlayingCoverWhenReady(cue, img, coverUrl, coverInfoUrl =
     let objectUrl = '';
     try {
         if (coverInfoUrl) {
-            const infoResp = await fetch(coverInfoUrl, { signal: controller.signal, cache: 'force-cache' });
+            const infoResp = await fetch(coverInfoUrl, { signal: controller.signal, cache: 'no-store' });
             if (!infoResp.ok) return;
             const info = await infoResp.json();
             if (!info.available) return;
@@ -11784,7 +11875,7 @@ function showNowPlayingCue(track, message = 'Now playing') {
     elements.toastContainer.querySelectorAll('.now-playing-cue').forEach(item => item.remove());
     const cue = document.createElement('div');
     cue.className = 'toast info now-playing-cue no-cover';
-    const coverUrl = trackCoverUrl(track);
+    const coverUrl = playbackArtworkUrl(track);
     cue.innerHTML = `
         <img class="now-playing-cover" alt="">
         <div class="now-playing-text">
@@ -11796,7 +11887,7 @@ function showNowPlayingCue(track, message = 'Now playing') {
     elements.toastContainer.appendChild(cue);
     scheduleNowPlayingCueRemoval(cue, 4200);
     const img = cue.querySelector('.now-playing-cover');
-    revealNowPlayingCoverWhenReady(cue, img, coverUrl, trackCoverInfoUrl(track));
+    revealNowPlayingCoverWhenReady(cue, img, coverUrl, playbackArtworkKnownAvailable(track) ? '' : trackCoverInfoUrl(track));
 }
 // Library actions
 function setupLibraryActions() {
@@ -12402,6 +12493,7 @@ function startSpotifyPoll() {
 function updateFooterForSpotify(data) {
     if (window.__footerSource !== 'spotify') return;
     if (footerContentFreezeActive()) return;
+    updatePlaybackCover(spotifyArtworkItem(data));
     if (typeof data.volume === 'number' && !volumeGestureActive && !spotifyVolumeRequestInFlight && pendingSpotifyVolume === null) {
         state.playback.volume = data.volume;
         renderVolumeControlsFromActualVolume(data.volume);

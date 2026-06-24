@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.7.46 (2026-06-25)
+
+### Added
+- Added **playback bar artwork** for Library, Radio, and Spotify: the footer now shows the current track cover image when available.
+- Added **silent-active playback guard**: detects active playback without measurable audio levels and triggers a single output-mode-aware resync with diagnostic snapshot logging.
+
+### Changed
+- **AutoSub 2.2 Stereo Bass** score display improved: replaced `Combined ? %` with Overall / L / R scores and more homogeneous progress tracking.
+- Responsive playback bar layout stabilized: iPad Mini / small tablet breakpoint uses a clean stacked layout; `Not playing` is centered properly.
+- Volume slider minimum width increased to 90px across all breakpoints for better touch interaction.
+- Track/Progress slider on tablet breakpoint limited to 620px centered zone; not forced to full layout width.
+- Radio station now-playing cue artwork uses station image directly when available.
+- Now-playing cover fetch uses `cache: no-store` to avoid stale metadata.
+
+### Fixed
+- Fixed `_list_sink_inputs()` not parsing `Sink:`, `Corked:`, `Mute:`, and `Volume:` fields from `pactl list sink-inputs`.
+- Fixed Spotify sink-input detection being case-sensitive for `application.name`, `application.id`, and `node.name`.
+
 ## 0.7.45 (2026-06-23)
 
 ### Added

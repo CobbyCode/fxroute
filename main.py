@@ -17,7 +17,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, List, Optional
-from urllib.parse import unquote
+from urllib.parse import quote, unquote
 from uuid import uuid4
 
 import uvicorn
@@ -54,6 +54,9 @@ SPOTIFY_STATE_POLL_INTERVAL_SECONDS = 2.0
 SPOTIFY_STATE_IDLE_POLL_INTERVAL_SECONDS = 5.0
 SPOTIFY_STATE_REFRESH_DEBOUNCE_SECONDS = 0.20
 MEASUREMENT_WINDOW_TTL_SECONDS = 30.0
+SILENT_ACTIVE_SETTLE_SECONDS = 8.0
+SILENT_ACTIVE_FLOOR_DB = -58.0
+SILENT_ACTIVE_RECHECK_SECONDS = 2.5
 
 # Track last play command time to debounce rapid requests
 _last_play_command_time = 0.0
@@ -193,6 +196,23 @@ def _list_sink_inputs() -> list[dict]:
                 except ValueError:
                     pass
             continue
+        if stripped.startswith("Sink:"):
+            current["sink"] = stripped.split(":", 1)[1].strip()
+            continue
+        if stripped.startswith("Corked:"):
+            current["corked"] = stripped.split(":", 1)[1].strip().lower() == "yes"
+            continue
+        if stripped.startswith("Mute:"):
+            current["muted"] = stripped.split(":", 1)[1].strip().lower() == "yes"
+            continue
+        if stripped.startswith("Volume:"):
+            match = re.search(r"/\s*(\d+)%\s*/", stripped)
+            if match:
+                try:
+                    current["volume_percent"] = int(match.group(1))
+                except ValueError:
+                    pass
+            continue
         if stripped == "Properties:":
             in_properties = True
             continue
@@ -224,9 +244,9 @@ def _list_spotify_sink_inputs() -> list[dict]:
     return [
         entry
         for entry in _list_sink_inputs()
-        if (entry.get("properties") or {}).get("application.name") == "spotify"
-        or (entry.get("properties") or {}).get("application.id") == "spotify"
-        or (entry.get("properties") or {}).get("node.name") == "spotify"
+        if str((entry.get("properties") or {}).get("application.name") or "").lower() == "spotify"
+        or str((entry.get("properties") or {}).get("application.id") or "").lower() == "spotify"
+        or str((entry.get("properties") or {}).get("node.name") or "").lower() == "spotify"
         or (entry.get("properties") or {}).get("media.name") == "Spotify"
     ]
 
@@ -795,6 +815,8 @@ current_footer_owner = "local"
 last_measurement_window_seen_at = 0.0
 last_spotify_samplerate_recovery_at = 0.0
 last_app_samplerate_drift_repair_at = 0.0
+silent_active_recovery_attempts: set[str] = set()
+silent_active_watch_tasks: dict[str, asyncio.Task] = {}
 latest_player_state_seq_seen = 0
 current_track_info = None
 last_track_info = None
@@ -1196,6 +1218,303 @@ async def _wait_for_player_current_file(expected_url: str | None, timeout_ms: in
             return True
         await asyncio.sleep(PIPEWIRE_HANDOFF_POLL_INTERVAL_MS / 1000)
     return False
+
+
+def _brief_sink_inputs(entries: list[dict]) -> list[dict]:
+    result = []
+    for entry in entries:
+        props = entry.get("properties") or {}
+        result.append({
+            "id": entry.get("id"),
+            "sink": entry.get("sink"),
+            "node": props.get("node.name"),
+            "app": props.get("application.name") or props.get("application.id"),
+            "media": props.get("media.name"),
+            "rate": entry.get("sample_rate"),
+            "corked": entry.get("corked"),
+            "muted": entry.get("muted"),
+            "volume_percent": entry.get("volume_percent"),
+        })
+    return result
+
+
+def _active_unmuted_sink_inputs(entries: list[dict]) -> list[dict]:
+    return [
+        entry for entry in entries
+        if not entry.get("corked")
+        and not entry.get("muted")
+        and int(entry.get("volume_percent") or 100) > 0
+    ]
+
+
+def _silent_active_source_links_present(source: str, links_text: str, output_mode: dict) -> bool:
+    if source == "spotify":
+        source_link_ok = "spotify:output_FL" in links_text and "easyeffects_sink:playback_FL" in links_text
+    else:
+        source_link_ok = "mpv:output_FL" in links_text and "easyeffects_sink:playback_FL" in links_text
+    if not source_link_ok:
+        return False
+
+    mode = output_mode.get("mode") or OUTPUT_MODE_STEREO
+    if mode != OUTPUT_MODE_STEREO:
+        return True
+    output_key = str(output_mode.get("effective_output_key") or "").strip()
+    if not output_key:
+        return True
+    return output_key in links_text and "ee_soe_output_level:output_FL" in links_text
+
+
+async def _confirm_configured_default_sink(output_mode: dict) -> bool:
+    output_key = str(output_mode.get("effective_output_key") or "").strip()
+    if not output_key or output_key == "easyeffects_sink":
+        return False
+    try:
+        await _run_pactl_command("set-default-sink", output_key)
+        logger.info("Silent-active recovery confirmed default sink: %s", output_key)
+        return True
+    except Exception as exc:
+        logger.warning("Silent-active recovery default sink confirm failed: output=%s error=%s", output_key, exc)
+        return False
+
+
+async def _resync_output_graph_for_current_mode(overview: dict) -> None:
+    output_mode = overview.get("output_mode") or {}
+    mode = output_mode.get("mode") or OUTPUT_MODE_STEREO
+    if mode == OUTPUT_MODE_STEREO:
+        await _ensure_stereo_easyeffects_output_graph(overview)
+        return
+    if subwoofer_runtime is not None:
+        await _sync_subwoofer_runtime(overview)
+
+
+def _silent_active_snapshot(
+    *,
+    source: str,
+    owner: str,
+    track: dict | None,
+    playback_state: dict,
+    spotify_state: dict,
+    source_inputs: list[dict],
+    all_inputs: list[dict],
+    links_text: str,
+    overview: dict,
+    peak_snapshot: dict,
+) -> dict:
+    output_mode = overview.get("output_mode") or {}
+    return {
+        "source": source,
+        "owner": owner,
+        "track": {
+            "id": (track or {}).get("id"),
+            "title": (track or {}).get("title"),
+            "url": (track or {}).get("url"),
+        },
+        "playback": {
+            "playing": playback_state.get("playing"),
+            "paused": playback_state.get("paused"),
+            "current_file": playback_state.get("current_file"),
+            "source_volume": playback_state.get("volume"),
+            "output_volume": get_output_volume_safe(100),
+        },
+        "spotify": {
+            "status": spotify_state.get("status"),
+            "title": spotify_state.get("title"),
+            "source_volume": spotify_state.get("source_volume"),
+            "output_volume": spotify_state.get("volume"),
+        } if spotify_state else {},
+        "output_mode": {
+            "mode": output_mode.get("mode"),
+            "effective_output_key": output_mode.get("effective_output_key"),
+            "effective_output_rate": output_mode.get("effective_output_rate"),
+            "runtime": (output_mode.get("runtime") or {}) if isinstance(output_mode.get("runtime"), dict) else {},
+        },
+        "source_inputs": _brief_sink_inputs(source_inputs),
+        "all_sink_inputs": _brief_sink_inputs(all_inputs),
+        "source_link_present": _silent_active_source_links_present(source, links_text, output_mode),
+        "links_excerpt": "\n".join(
+            line for line in links_text.splitlines()
+            if any(
+                token in line
+                for token in (
+                    "mpv",
+                    "spotify",
+                    "easyeffects_sink",
+                    "ee_soe_output_level",
+                    str(output_mode.get("effective_output_key") or "").strip(),
+                )
+                if token
+            )
+        )[:4000],
+        "levels": {
+            "output_peak": peak_snapshot,
+            "pre_level": None,
+            "post_level": peak_snapshot.get("vu_db"),
+        },
+    }
+
+
+def _schedule_silent_active_watch(
+    *,
+    source: str,
+    signature: str,
+    track: dict | None = None,
+    spotify_state: dict | None = None,
+) -> None:
+    if not signature:
+        return
+    existing = silent_active_watch_tasks.get(signature)
+    if existing and not existing.done():
+        return
+    task = asyncio.create_task(
+        _silent_active_watch_after_settle(source=source, signature=signature, track=track, spotify_state=spotify_state),
+        name=f"silent-active-watch:{source}",
+    )
+    silent_active_watch_tasks[signature] = task
+
+
+async def _silent_active_watch_after_settle(
+    *,
+    source: str,
+    signature: str,
+    track: dict | None = None,
+    spotify_state: dict | None = None,
+) -> None:
+    try:
+        await asyncio.sleep(SILENT_ACTIVE_SETTLE_SECONDS)
+        await _check_and_recover_silent_active(source=source, signature=signature, track=track, spotify_state=spotify_state)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.warning("Silent-active watch failed: source=%s signature=%s error=%s", source, signature, exc)
+    finally:
+        task = silent_active_watch_tasks.get(signature)
+        if task is asyncio.current_task():
+            silent_active_watch_tasks.pop(signature, None)
+
+
+async def _check_and_recover_silent_active(
+    *,
+    source: str,
+    signature: str,
+    track: dict | None = None,
+    spotify_state: dict | None = None,
+) -> None:
+    if signature in silent_active_recovery_attempts:
+        return
+    if not peak_monitor:
+        return
+
+    playback_state = player_instance.state if player_instance and player_instance._running else {}
+    live_track = current_track_info or {}
+    owner = current_footer_owner or source
+    if source in {"local", "radio"}:
+        if not track or not _current_track_matches(track):
+            return
+        if not _is_local_playback_active(playback_state):
+            return
+        source_inputs = _list_mpv_sink_inputs()
+        source_volume = playback_state.get("volume")
+    elif source == "spotify":
+        spotify_state = await get_spotify_ui_state()
+        if not _is_spotify_playback_active(spotify_state):
+            return
+        source_inputs = _list_spotify_sink_inputs()
+        source_volume = spotify_state.get("source_volume")
+        live_track = {
+            "id": spotify_state.get("trackId"),
+            "title": spotify_state.get("title"),
+            "artist": spotify_state.get("artist"),
+            "source": "spotify",
+        }
+    else:
+        return
+
+    if not _active_unmuted_sink_inputs(source_inputs):
+        return
+    try:
+        if int(round(float(source_volume if source_volume is not None else 100))) <= 0:
+            return
+    except (TypeError, ValueError):
+        pass
+    if get_output_volume_safe(100) <= 0:
+        return
+
+    overview = get_audio_output_overview()
+    output_mode = overview.get("output_mode") or {}
+    links_result = _run_debug_command(["pw-link", "-l"], 2.0)
+    links_text = links_result.get("stdout") or ""
+    if not _silent_active_source_links_present(source, links_text, output_mode):
+        return
+
+    peak_snapshot = peak_monitor.snapshot()
+    vu_db = peak_snapshot.get("vu_db")
+    if not isinstance(vu_db, (int, float)) or vu_db > SILENT_ACTIVE_FLOOR_DB:
+        return
+
+    all_inputs = _list_sink_inputs()
+    snapshot = _silent_active_snapshot(
+        source=source,
+        owner=owner,
+        track=live_track,
+        playback_state=playback_state,
+        spotify_state=spotify_state or {},
+        source_inputs=source_inputs,
+        all_inputs=all_inputs,
+        links_text=links_text,
+        overview=overview,
+        peak_snapshot=peak_snapshot,
+    )
+    logger.warning("Silent-active playback detected: %s", json.dumps(snapshot, ensure_ascii=False, sort_keys=True))
+
+    silent_active_recovery_attempts.add(signature)
+    try:
+        await _confirm_configured_default_sink(output_mode)
+        await _resync_output_graph_for_current_mode(overview)
+        if source in {"local", "radio"}:
+            await _recover_silent_active_mpv_source(track or live_track)
+        elif source == "spotify":
+            await _recover_silent_active_spotify(signature)
+        await asyncio.sleep(SILENT_ACTIVE_RECHECK_SECONDS)
+        after_snapshot = peak_monitor.snapshot()
+        after_vu = after_snapshot.get("vu_db")
+        if isinstance(after_vu, (int, float)) and after_vu <= SILENT_ACTIVE_FLOOR_DB:
+            logger.warning(
+                "Silent-active playback persists after one recovery attempt: source=%s signature=%s vu_db=%s hint=%s",
+                source,
+                signature,
+                after_vu,
+                "audio device/graph may be stuck; replug USB audio or restart audio stack may be required",
+            )
+        else:
+            logger.info("Silent-active playback recovery completed: source=%s signature=%s vu_db=%s", source, signature, after_vu)
+    except Exception as exc:
+        logger.warning("Silent-active playback recovery failed: source=%s signature=%s error=%s", source, signature, exc)
+
+
+async def _recover_silent_active_mpv_source(track: dict | None) -> None:
+    if not player_instance or not player_instance._running or not track:
+        return
+    if not _current_track_matches(track):
+        return
+    url = track.get("url")
+    if not url:
+        return
+    logger.warning("Silent-active recovery reloading mpv source once: source=%s url=%s", track.get("source"), url)
+    player_instance.loadfile(url, mode="replace")
+    player_instance.set_pause(False)
+    _mark_player_state_authoritative(player_instance.state)
+    asyncio.create_task(_sync_peak_monitor_after_playback_transition(track.copy()))
+    asyncio.create_task(_maybe_recover_samplerate_mismatch(track.copy()))
+    if subwoofer_runtime is not None:
+        asyncio.create_task(_sync_subwoofer_runtime_after_playback_transition(track.copy()))
+
+
+async def _recover_silent_active_spotify(signature: str) -> None:
+    global latest_spotify_state
+    logger.warning("Silent-active recovery re-running Spotify handoff once: signature=%s", signature)
+    data = await _complete_spotify_entry_handoff()
+    latest_spotify_state = {**(latest_spotify_state or {}), **data}
+    await sync_peak_monitor_for_spotify_state(data)
 
 
 async def _sync_peak_monitor_after_playback_transition(expected_track: dict | None, timeout_ms: int = 2500) -> None:
@@ -2330,7 +2649,59 @@ async def get_spotify_ui_state(data: Optional[dict] = None) -> dict:
     status["source_volume"] = int(round(float(source_volume))) if source_volume is not None else None
     status["volume"] = get_output_volume_safe(status.get("source_volume") or 100)
     status["footer_owner"] = _get_authoritative_footer_owner(spotify_state=status)
+    art_url = str(status.get("artwork_url") or status.get("artUrl") or "").strip()
+    status["artwork_available"] = bool(art_url)
+    status["artwork_url"] = art_url or None
+    status["artwork_source"] = "spotify" if art_url else "none"
     return status
+
+
+def _radio_artwork_url_for_track(track: dict) -> str:
+    station_id = str(track.get("station_id") or track.get("id") or "")
+    if station_id.startswith("radio_"):
+        station_id = station_id[len("radio_"):]
+    if not station_id:
+        return ""
+    try:
+        for station in get_stations():
+            if station.id == station_id:
+                return _station_api_payload(station).get("image") or ""
+    except Exception as exc:
+        logger.debug("Failed to resolve radio artwork for %s: %s", station_id, exc)
+    return ""
+
+
+def _playback_track_with_artwork_fields(track_info: Optional[dict]) -> Optional[dict]:
+    if not track_info:
+        return None
+    track = dict(track_info)
+    track_id = str(track.get("id") or "")
+    source = track.get("source")
+    if source == "radio":
+        artwork_url = _radio_artwork_url_for_track(track)
+        track["artwork_available"] = bool(artwork_url)
+        track["artwork_url"] = artwork_url or None
+        track["artwork_source"] = "radio" if artwork_url else "none"
+        return track
+    if source != "local" or not track_id:
+        track["artwork_available"] = False
+        track["artwork_url"] = None
+        track["artwork_source"] = "none"
+        return track
+    try:
+        cover_available = bool(library_scanner and _track_cover_available(track_id))
+    except Exception as exc:
+        logger.debug("Failed to resolve playback cover availability for %s: %s", track_id, exc)
+        cover_available = False
+    encoded_id = quote(track_id, safe="")
+    track["cover_available"] = cover_available
+    track["cover_info_url"] = f"/api/tracks/cover-info/{encoded_id}"
+    if cover_available:
+        track["cover_url"] = f"/api/tracks/cover/{encoded_id}"
+    track["artwork_available"] = cover_available
+    track["artwork_url"] = track.get("cover_url") if cover_available else None
+    track["artwork_source"] = "library" if cover_available else "none"
+    return track
 
 
 def build_playback_payload(state: Optional[dict] = None) -> dict:
@@ -2342,7 +2713,7 @@ def build_playback_payload(state: Optional[dict] = None) -> dict:
     elif source_volume is not None:
         playback_state["source_volume"] = int(round(float(source_volume)))
     playback_state["volume"] = get_output_volume_safe(int(round(float(source_volume))) if source_volume is not None else 100)
-    playback_state["current_track"] = current_track_info
+    playback_state["current_track"] = _playback_track_with_artwork_fields(current_track_info)
     playback_state["queue"] = _queue_payload()
     playback_state["footer_owner"] = _get_authoritative_footer_owner(playback_state=playback_state)
 
@@ -2726,6 +3097,13 @@ async def broadcast_spotify_state(data=None):
     data = await get_spotify_ui_state(data)
     latest_spotify_state = data
     await sync_peak_monitor_for_spotify_state(data)
+    if _is_spotify_playback_active(data):
+        signature_payload = repr(_spotify_state_signature(data)).encode("utf-8", errors="replace")
+        _schedule_silent_active_watch(
+            source="spotify",
+            signature=f"spotify:{hashlib.sha1(signature_payload).hexdigest()}",
+            spotify_state=data.copy(),
+        )
     await manager.broadcast({"type": "spotify", "data": data})
     return data
 
@@ -4406,6 +4784,12 @@ async def play_track(req: PlayRequest):
                 asyncio.create_task(_sync_peak_monitor_after_playback_transition(track_info.copy()))
                 asyncio.create_task(_maybe_recover_samplerate_mismatch(track_info.copy()))
                 asyncio.create_task(_sync_subwoofer_runtime_after_playback_transition(track_info.copy()))
+                state_seq = player_instance.state.get("_seq") if isinstance(player_instance.state, dict) else None
+                _schedule_silent_active_watch(
+                    source=source,
+                    signature=f"player:{source}:{play_url}:{state_seq or int(time.monotonic() * 1000)}",
+                    track=track_info.copy(),
+                )
 
             return {
                 "status": "playing",
@@ -4467,6 +4851,12 @@ async def toggle_playback():
             asyncio.create_task(_release_local_samplerate_prearm(prearm_rate, prearm_generation, "toggle-resume"))
         if was_paused and current_track_info and (current_track_info.get("source") in {"local", "radio"}):
             asyncio.create_task(_maybe_recover_samplerate_mismatch((current_track_info or {}).copy()))
+            state_seq = new_state.get("_seq") if isinstance(new_state, dict) else None
+            _schedule_silent_active_watch(
+                source=current_track_info.get("source"),
+                signature=f"player:{current_track_info.get('source')}:{current_track_info.get('url')}:{state_seq or int(time.monotonic() * 1000)}",
+                track=(current_track_info or {}).copy(),
+            )
         return {
             "status": "paused" if new_state.get("paused") else "playing",
             "playback": build_playback_payload(new_state),
@@ -4485,6 +4875,13 @@ async def toggle_playback():
     if prearm_rate and prearm_generation:
         asyncio.create_task(_release_local_samplerate_prearm(prearm_rate, prearm_generation, "replay"))
     asyncio.create_task(_maybe_recover_samplerate_mismatch((replay_track or {}).copy()))
+    if replay_track and replay_track.get("source") in {"local", "radio"}:
+        state_seq = player_instance.state.get("_seq") if isinstance(player_instance.state, dict) else None
+        _schedule_silent_active_watch(
+            source=replay_track.get("source"),
+            signature=f"player:{replay_track.get('source')}:{replay_url}:{state_seq or int(time.monotonic() * 1000)}",
+            track=(replay_track or {}).copy(),
+        )
     return {
         "status": "playing",
         "replayed": True,
@@ -7211,11 +7608,12 @@ async def _run_auto_sub_22_stereo_optimize(
         left_results: list[dict[str, Any]] = []
         job["stage"] = "left_sub"
         for idx, delay_ms in enumerate(left_scan_delays):
+            sweep_index = idx + 1
             left_results.append(await _measure_auto_sub_candidate(
                 delay_ms=delay_ms,
                 job=job,
-                candidate_index=idx + 1,
-                total=len(left_scan_delays),
+                candidate_index=sweep_index,
+                total=sweep_total,
                 stage="left_sub",
                 fc=fc,
                 input_id=input_id,
@@ -7241,7 +7639,7 @@ async def _run_auto_sub_22_stereo_optimize(
                 active_subs=("sub1",),
             ))
             if isinstance(job.get("progress"), dict):
-                job["progress"]["sweep_current"] = idx + 1
+                job["progress"]["sweep_current"] = sweep_index
                 job["progress"]["sweep_total"] = sweep_total
             if _auto_sub_cancel_requested(job):
                 job["message"] = "Auto Sub Optimize cancelled."
@@ -7263,11 +7661,12 @@ async def _run_auto_sub_22_stereo_optimize(
         right_results: list[dict[str, Any]] = []
         job["stage"] = "right_sub"
         for idx, delay_ms in enumerate(right_scan_delays):
+            sweep_index = len(left_scan_delays) + idx + 1
             right_results.append(await _measure_auto_sub_candidate(
                 delay_ms=delay_ms,
                 job=job,
-                candidate_index=idx + 1,
-                total=len(right_scan_delays),
+                candidate_index=sweep_index,
+                total=sweep_total,
                 stage="right_sub",
                 fc=fc,
                 input_id=input_id,
@@ -7293,7 +7692,7 @@ async def _run_auto_sub_22_stereo_optimize(
                 active_subs=("sub2",),
             ))
             if isinstance(job.get("progress"), dict):
-                job["progress"]["sweep_current"] = len(left_scan_delays) + idx + 1
+                job["progress"]["sweep_current"] = sweep_index
                 job["progress"]["sweep_total"] = sweep_total
             if _auto_sub_cancel_requested(job):
                 job["message"] = "Auto Sub Optimize cancelled."
@@ -7348,12 +7747,16 @@ async def _run_auto_sub_22_stereo_optimize(
         except Exception:
             derived_delays = {}
 
-        left_score_pct = round(float(left_winner.get("score", 0.0) or 0.0) * 100.0, 1)
-        right_score_pct = round(float(right_winner.get("score", 0.0) or 0.0) * 100.0, 1)
+        left_score = float(left_winner.get("score", 0.0) or 0.0)
+        right_score = float(right_winner.get("score", 0.0) or 0.0)
+        overall_score = (0.6 * min(left_score, right_score)) + (0.4 * ((left_score + right_score) / 2.0))
+        left_score_pct = round(left_score * 100.0, 1)
+        right_score_pct = round(right_score * 100.0, 1)
+        overall_score_pct = round(overall_score * 100.0, 1)
         job["status"] = "completed"
         job["message"] = (
             f"Applied 2.2 Stereo Bass: Left Sub {best_left:.2f} ms / "
-            f"Right Sub {best_right:.2f} ms"
+            f"Right Sub {best_right:.2f} ms (overall {overall_score_pct:.1f} %)"
         )
         _log_auto_sub_timing_summary(job)
         job["result"] = {
@@ -7371,9 +7774,19 @@ async def _run_auto_sub_22_stereo_optimize(
             "confidence": "left_right_separate",
             "winner": {
                 "name": _auto_sub_22_stereo_name(best_left, best_right),
+                "score": round(overall_score, 4),
+                "score_pct": overall_score_pct,
+                "overall_score": round(overall_score, 4),
+                "overall_score_pct": overall_score_pct,
                 "score_L_pct": left_score_pct,
                 "score_R_pct": right_score_pct,
             },
+            "left_score": round(left_score, 4),
+            "right_score": round(right_score, 4),
+            "overall_score": round(overall_score, 4),
+            "left_score_pct": left_score_pct,
+            "right_score_pct": right_score_pct,
+            "overall_score_pct": overall_score_pct,
             "left_winner": left_winner,
             "right_winner": right_winner,
             "left_ranking": left_scoring["results"],
@@ -7389,12 +7802,13 @@ async def _run_auto_sub_22_stereo_optimize(
         }
         logger.info(
             "Auto-sub 2.2 Stereo Bass optimize completed: fc=%sHz left %.2f->%.2fms right %.2f->%.2fms "
-            "score_L=%.1f%% score_R=%.1f%%",
+            "overall_score=%.1f%% score_L=%.1f%% score_R=%.1f%%",
             fc,
             original_left_alignment,
             best_left,
             original_right_alignment,
             best_right,
+            overall_score_pct,
             left_score_pct,
             right_score_pct,
         )
