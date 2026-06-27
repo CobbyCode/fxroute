@@ -6235,6 +6235,8 @@ class MeasurementStore:
 def score_sub_alignment_candidates(
     candidates: list[dict[str, Any]],
     crossover_hz: int,
+    low_guard_reference_points: list[list[float]] | None = None,
+    low_guard_reference_delay_ms: float | None = None,
 ) -> dict[str, Any]:
     """Score a list of measured delay candidates around a crossover frequency.
 
@@ -6266,27 +6268,76 @@ def score_sub_alignment_candidates(
     def _band_metrics(points, fmin, fmax):
         band = [(f, db) for f, db in points if fmin <= f < fmax]
         if not band:
-            return {"mean": 0.0, "min": 0.0, "max": 0.0, "swing": 0.0, "roughness": 0.0}
+            return {"mean": 0.0, "min": 0.0, "max": 0.0, "swing": 0.0, "roughness": 0.0, "p20": 0.0}
         dbs = [p[1] for p in band]
         mean = sum(dbs) / len(dbs)
         mn = min(dbs)
         mx = max(dbs)
+        sorted_dbs = sorted(dbs)
+        p20_index = min(len(sorted_dbs) - 1, max(0, int(round((len(sorted_dbs) - 1) * 0.20))))
+        p20 = sorted_dbs[p20_index]
         swing = mx - mn
         if len(dbs) > 1:
             diffs = [abs(dbs[i + 1] - dbs[i]) for i in range(len(dbs) - 1)]
             rough = sum(diffs) / len(diffs)
         else:
             rough = 0.0
-        return {"mean": mean, "min": mn, "max": mx, "swing": swing, "roughness": rough}
+        return {"mean": mean, "min": mn, "max": mx, "swing": swing, "roughness": rough, "p20": p20}
+
+    def _low_guard_penalty(loss_db: float) -> float:
+        """Softly penalize new low-bass dips below crossover without vetoing a candidate."""
+        if loss_db <= 4.0:
+            return 0.0
+        if loss_db <= 6.0:
+            return (loss_db - 4.0) * 0.03
+        if loss_db <= 8.0:
+            return 0.06 + ((loss_db - 6.0) * 0.06)
+        return min(0.45, 0.18 + ((loss_db - 8.0) * 0.08))
 
     primary = []
     secondary = []
+    low_guard = []
+    low_guard_min_hz = fc * 0.35
+    low_guard_max_hz = fc * 0.75
     for c in candidates:
         pts = c.get("points") or []
         pri = _band_metrics(pts, fc * 0.5, fc * 2.0)
         sec = _band_metrics(pts, fc * 0.75, fc * 1.5)
+        low = _band_metrics(pts, low_guard_min_hz, low_guard_max_hz)
         primary.append(pri)
         secondary.append(sec)
+        low_guard.append(low)
+
+    reference_low_guard = None
+    if low_guard_reference_points:
+        reference_low_guard = _band_metrics(low_guard_reference_points, low_guard_min_hz, low_guard_max_hz)
+    elif low_guard_reference_delay_ms is not None:
+        try:
+            reference_delay = float(low_guard_reference_delay_ms)
+            reference_index = min(
+                range(len(candidates)),
+                key=lambda index: abs(float(candidates[index].get("delay_ms", 0.0) or 0.0) - reference_delay),
+            )
+            reference_low_guard = low_guard[reference_index]
+        except (TypeError, ValueError):
+            reference_low_guard = None
+    else:
+        explicit_reference_index = next(
+            (index for index, candidate in enumerate(candidates) if bool(candidate.get("low_guard_reference"))),
+            None,
+        )
+        if explicit_reference_index is not None:
+            reference_low_guard = low_guard[explicit_reference_index]
+        else:
+            zero_index = min(
+                range(len(candidates)),
+                key=lambda index: abs(float(candidates[index].get("delay_ms", 0.0) or 0.0)),
+            )
+            if abs(float(candidates[zero_index].get("delay_ms", 0.0) or 0.0)) <= 0.05:
+                reference_low_guard = low_guard[zero_index]
+
+    if reference_low_guard is None:
+        reference_low_guard = max(low_guard, key=lambda item: item["p20"])
 
     def _norm(vals, higher_better):
         vals = list(vals)
@@ -6337,13 +6388,25 @@ def score_sub_alignment_candidates(
             + n_sec_swing[i] * 0.20
             + n_sec_rough[i] * 0.15
         )
-        score = (score_pri * 0.60 + score_sec * 0.40) * (1.0 - deep_notch_penalty)
+        timing_band_score = (score_pri * 0.60 + score_sec * 0.40)
+        low_guard_loss_db = max(0.0, float(reference_low_guard["p20"]) - float(low_guard[i]["p20"]))
+        low_guard_penalty = _low_guard_penalty(low_guard_loss_db)
+        score = max(0.0, timing_band_score * (1.0 - deep_notch_penalty) - low_guard_penalty)
 
         results.append({
             "delay_ms": c["delay_ms"],
             "name": c.get("name", str(c["delay_ms"])),
             "score": round(score, 4),
             "score_pct": round(score * 100, 1),
+            "xo_score": round(score_sec, 4),
+            "timing_band_score": round(timing_band_score, 4),
+            "low_guard_loss_db": round(low_guard_loss_db, 2),
+            "low_guard_penalty": round(low_guard_penalty, 4),
+            "final_score": round(score, 4),
+            "low_guard_min_hz": round(low_guard_min_hz, 1),
+            "low_guard_max_hz": round(low_guard_max_hz, 1),
+            "low_guard_p20_db": round(low_guard[i]["p20"], 1),
+            "low_guard_reference_p20_db": round(reference_low_guard["p20"], 1),
             "mean_primary_db": round(pri["mean"], 1),
             "min_primary_db": round(pri["min"], 1),
             "swing_primary_db": round(pri["swing"], 1),

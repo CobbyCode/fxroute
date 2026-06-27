@@ -903,7 +903,11 @@ function setupSettingsActions() {
     }
     if (elements.settingsOutputModeSelect) {
         elements.settingsOutputModeSelect.addEventListener('change', (event) => {
-            void saveAudioOutputMode(event.target.value || 'stereo');
+            if (_audioOutputModeSwitchInProgress) {
+                event.target.value = state.settings.audioOutputs.output_mode?.mode || 'stereo';
+                return;
+            }
+            void switchAudioOutputMode(event.target.value || 'stereo');
         });
     }
     if (elements.settingsSourceSelect) {
@@ -1039,8 +1043,11 @@ function normalizeOutputModeName(mode) {
     return isSubwooferModeName(mode) ? mode : 'stereo';
 }
 
-function buildAudioOutputModeRequest(mode, settings = null) {
+function buildAudioOutputModeRequest(mode, settings = null, options = {}) {
     const nextMode = normalizeOutputModeName(mode);
+    if (options.modeOnly) {
+        return { mode: nextMode };
+    }
     const outputMode = state.settings.audioOutputs.output_mode || {};
     const fallbackSubwoofer = getSubwooferGlobalSettings(outputMode, outputMode.subwoofer || {});
     if (isSubwoofer22Mode(nextMode)) {
@@ -1063,23 +1070,30 @@ function buildAudioOutputModeRequest(mode, settings = null) {
 }
 
 let _audioOutputModeRequestId = 0;
-function getAudioOutputModeSignature(mode, settings = null) {
-    return JSON.stringify(buildAudioOutputModeRequest(mode, settings));
+let _audioOutputModeMutationGeneration = 0;
+let _audioOutputModeSwitchInProgress = false;
+function getAudioOutputModeSignature(mode, settings = null, options = {}) {
+    return JSON.stringify(buildAudioOutputModeRequest(mode, settings, options));
 }
 
-async function saveAudioOutputMode(mode, settings = null) {
-    const requestBody = buildAudioOutputModeRequest(mode, settings);
+async function saveAudioOutputMode(mode, settings = null, options = {}) {
+    const modeOnly = !!options.modeOnly;
+    const suppressApply = !!options.suppressApply;
+    const requestBody = buildAudioOutputModeRequest(mode, settings, options);
     const nextMode = requestBody.mode;
     const previousMode = state.settings.audioOutputs.output_mode?.mode || 'stereo';
     const requestSignature = JSON.stringify(requestBody);
     const requestId = ++_audioOutputModeRequestId;
-    state.settings.audioOutputs.output_mode = {
-        ...(state.settings.audioOutputs.output_mode || {}),
-        mode: nextMode,
-        subwoofer: requestBody.subwoofer,
-        ...(isSubwoofer22Mode(nextMode) ? { subwoofers: requestBody.subwoofers } : {}),
-    };
-    renderSettingsPanel();
+    const mutationGeneration = ++_audioOutputModeMutationGeneration;
+    if (!modeOnly && !suppressApply) {
+        state.settings.audioOutputs.output_mode = {
+            ...(state.settings.audioOutputs.output_mode || {}),
+            mode: nextMode,
+            ...('subwoofer' in requestBody ? { subwoofer: requestBody.subwoofer } : {}),
+            ...('subwoofers' in requestBody ? { subwoofers: requestBody.subwoofers } : {}),
+        };
+        renderSettingsPanel();
+    }
     try {
         const resp = await fetch('/api/audio/output-mode', {
             method: 'POST',
@@ -1090,13 +1104,15 @@ async function saveAudioOutputMode(mode, settings = null) {
         if (!resp.ok) throw new Error(data.detail || 'Failed to save output mode');
         if (
             requestId !== _audioOutputModeRequestId
-            || requestSignature !== getAudioOutputModeSignature(
+            || mutationGeneration !== _audioOutputModeMutationGeneration
+            || (!modeOnly && requestSignature !== getAudioOutputModeSignature(
                 state.settings.audioOutputs.output_mode?.mode,
                 state.settings.audioOutputs.output_mode,
-            )
+            ))
         ) {
-            return;
+            return null;
         }
+        if (suppressApply) return data;
         state.settings.audioOutputs = {
             loaded: true,
             available: !!data.available,
@@ -1112,22 +1128,54 @@ async function saveAudioOutputMode(mode, settings = null) {
         setSubwooferFeedback('Saved', 'success');
         void postRuntimeDebugSnapshot(`ui-output-mode-saved-${nextMode}`, { requestedMode: nextMode });
         syncAutoSubButton();
+        return data;
     } catch (error) {
-        if (requestId !== _audioOutputModeRequestId) return;
-        if (requestSignature !== getAudioOutputModeSignature(
+        if (requestId !== _audioOutputModeRequestId || mutationGeneration !== _audioOutputModeMutationGeneration) return null;
+        if (!modeOnly && requestSignature !== getAudioOutputModeSignature(
             state.settings.audioOutputs.output_mode?.mode,
             state.settings.audioOutputs.output_mode,
         )) {
-            return;
+            return null;
         }
         _subwooferLastRequestedSignature = '';
-        state.settings.audioOutputs.output_mode = {
-            ...(state.settings.audioOutputs.output_mode || {}),
-            mode: previousMode,
-        };
+        if (!suppressApply) {
+            state.settings.audioOutputs.output_mode = {
+                ...(state.settings.audioOutputs.output_mode || {}),
+                mode: previousMode,
+            };
+        }
         renderSettingsPanel();
         setSubwooferFeedback('Failed', 'error');
         showToast(error.message || 'Failed to save output mode', 'error');
+        return null;
+    }
+}
+
+async function switchAudioOutputMode(mode) {
+    const nextMode = normalizeOutputModeName(mode);
+    const currentMode = state.settings.audioOutputs.output_mode?.mode || 'stereo';
+    if (_audioOutputModeSwitchInProgress) {
+        if (elements.settingsOutputModeSelect) elements.settingsOutputModeSelect.value = currentMode;
+        return;
+    }
+    if (nextMode === currentMode) return;
+    _audioOutputModeSwitchInProgress = true;
+    window.clearTimeout(_subwooferSaveTimer);
+    _subwooferLastRequestedSignature = '';
+
+    try {
+        if (isSubwooferModeName(currentMode)) {
+            const currentSettings = isSubwoofer22Mode(currentMode)
+                ? collectSubwoofer22Settings()
+                : collectSubwooferSettings();
+            await saveAudioOutputMode(currentMode, currentSettings, { suppressApply: true });
+        }
+        clearSubwooferActiveEditing();
+        setSubwooferFeedback('Applying…');
+        await saveAudioOutputMode(nextMode, null, { modeOnly: true });
+    } finally {
+        _audioOutputModeSwitchInProgress = false;
+        renderSettingsPanel();
     }
 }
 
@@ -1631,7 +1679,7 @@ function renderSettingsPanel() {
         elements.settingsOutputSelect.disabled = !overview.available || !!pendingSelectionKey || !selectableOutputs.length;
     }
 
-    if (elements.settingsOutputModeSelect && !isSelectFocused(elements.settingsOutputModeSelect)) {
+    if (elements.settingsOutputModeSelect && (_audioOutputModeSwitchInProgress || !isSelectFocused(elements.settingsOutputModeSelect))) {
         const optionsHtml = [
             '<option value="stereo">Stereo</option>',
             '<option value="subwoofer-2.1">2.1 Subwoofer</option>',
@@ -1642,7 +1690,7 @@ function renderSettingsPanel() {
             elements.settingsOutputModeSelect.innerHTML = optionsHtml;
         }
         elements.settingsOutputModeSelect.value = mode;
-        elements.settingsOutputModeSelect.disabled = !overview.available;
+        elements.settingsOutputModeSelect.disabled = !overview.available || _audioOutputModeSwitchInProgress;
     }
     if (elements.settingsOutputModeHint) {
         const channels = outputMode.effective_output_channels;
@@ -1765,10 +1813,12 @@ async function saveAudioOutputSelection(key) {
 }
 
 async function fetchAudioOutputOverview() {
+    const mutationGeneration = _audioOutputModeMutationGeneration;
     try {
         const resp = await fetch('/api/audio/outputs');
         if (!resp.ok) throw new Error('Failed to fetch audio outputs');
         const data = await resp.json();
+        if (mutationGeneration !== _audioOutputModeMutationGeneration || _audioOutputModeSwitchInProgress) return;
         state.settings.audioOutputs = {
             loaded: true,
             available: !!data.available,
@@ -11221,6 +11271,22 @@ function renderSubwooferPanel() {
         if (elements.effectsSubwooferDdSub2) elements.effectsSubwooferDdSub2.textContent = formatSubwooferDelayMs(outputMode.derived_sub2_delay_ms);
     }
     scheduleSubwooferPreviewDraw(subwoofer);
+}
+
+function clearSubwooferActiveEditing() {
+    [
+        elements.effectsSubwooferFrequency,
+        elements.effectsSubwooferFrequencyNumber,
+        elements.effectsSubwooferMainHighpass,
+        elements.effectsSubwooferLevel,
+        elements.effectsSubwooferDelay,
+        elements.effectsSubwooferPolarity,
+        elements.effectsSubwooferSub2Level,
+        elements.effectsSubwooferSub2Delay,
+        elements.effectsSubwooferSub2Polarity,
+    ].forEach((el) => {
+        if (el) _activeEditing.delete(el);
+    });
 }
 
 function getSubwooferPreviewLayout(width, height) {

@@ -800,6 +800,13 @@ def _normalize_subwoofer_config(payload: dict[str, Any] | None = None) -> dict[s
     }
 
 
+def _subwoofer_22_storage_key(mode: str) -> str:
+    """Return the config JSON key for mode-specific 2.2 subwoofer data."""
+    if mode == OUTPUT_MODE_SUBWOOFER_22_STEREO:
+        return "subwoofers_22_stereo"
+    return "subwoofers_22"
+
+
 def _load_audio_output_mode() -> dict[str, Any]:
     path = _audio_output_mode_path()
     default_payload = {
@@ -815,8 +822,13 @@ def _load_audio_output_mode() -> dict[str, Any]:
     mode = payload.get("mode")
 
     if mode in OUTPUT_MODE_SUBWOOFER_22_MODES:
+        # Read from mode-specific key; fall back to shared subwoofers (BC)
+        storage_key = _subwoofer_22_storage_key(mode)
+        source_subwoofers = payload.get(storage_key)
+        if not isinstance(source_subwoofers, dict):
+            source_subwoofers = payload.get("subwoofers")
         normalized = _normalize_subwoofer_22_config(
-            payload.get("subwoofers"),
+            source_subwoofers,
             payload.get("subwoofer"),
         )
         return {
@@ -878,17 +890,31 @@ def _save_audio_output_mode(
             pass
 
     if normalized_mode in OUTPUT_MODE_SUBWOOFER_22_MODES:
+        storage_key = _subwoofer_22_storage_key(normalized_mode)
         normalized = _normalize_subwoofer_22_config(subwoofers, subwoofer or existing.get("subwoofer"))
+        subwoofer_22_payload = {
+            "sub1": normalized["sub1"],
+            "sub2": normalized["sub2"],
+        }
+        # Determine the other 2.2 storage key to preserve when saving
+        other_storage_keys = ["subwoofers_22", "subwoofers_22_stereo"]
+        try:
+            other_storage_keys.remove(storage_key)
+        except ValueError:
+            pass
         payload: dict[str, Any] = {
             "mode": normalized_mode,
             "crossover_frequency_hz": normalized["crossover_frequency_hz"],
             "slope": normalized["slope"],
             "main_highpass_enabled": normalized["main_highpass_enabled"],
-            "subwoofers": {
-                "sub1": normalized["sub1"],
-                "sub2": normalized["sub2"],
-            },
+            storage_key: subwoofer_22_payload,
+            # Keep shared subwoofers for BC (other 2.2 modes can migrate from it)
+            "subwoofers": subwoofer_22_payload,
         }
+        # Preserve existing other 2.2 mode's subwoofers block
+        for other_key in other_storage_keys:
+            if other_key in existing:
+                payload[other_key] = existing[other_key]
         # Preserve existing 2.1 subwoofer block for BC
         if "subwoofer" in existing:
             payload["subwoofer"] = existing["subwoofer"]
@@ -897,9 +923,10 @@ def _save_audio_output_mode(
             "mode": normalized_mode,
             "subwoofer": _normalize_subwoofer_config(subwoofer),
         }
-        # Preserve existing 2.2 subwoofers block for BC
-        if "subwoofers" in existing:
-            payload["subwoofers"] = existing["subwoofers"]
+        # Preserve existing 2.2 subwoofers blocks for BC
+        for bc_key in ("subwoofers", "subwoofers_22", "subwoofers_22_stereo"):
+            if bc_key in existing:
+                payload[bc_key] = existing[bc_key]
 
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2) + "\n")
@@ -1572,6 +1599,17 @@ def set_audio_output_selection(key: str) -> dict[str, Any]:
     return get_audio_output_overview()
 
 
+def _load_raw_audio_output_mode() -> dict[str, Any]:
+    """Load raw config payload without normalization. Returns {} on failure."""
+    path = _audio_output_mode_path()
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text())
+    except Exception:
+        return {}
+
+
 def set_audio_output_mode(
     mode: str,
     subwoofer: dict[str, Any] | None = None,
@@ -1594,14 +1632,26 @@ def set_audio_output_mode(
             )
             raise ValueError(f"{label} Subwoofer requires a selected multichannel output with at least 4 channels")
     previous = _load_audio_output_mode()
+    raw_config = _load_raw_audio_output_mode()
 
     if normalized_mode in OUTPUT_MODE_SUBWOOFER_22_MODES:
+        if subwoofers is None:
+            # Switching modes without explicit subwoofers: load target mode's saved values
+            storage_key = _subwoofer_22_storage_key(normalized_mode)
+            target_subwoofers = raw_config.get(storage_key)
+            if not isinstance(target_subwoofers, dict):
+                target_subwoofers = raw_config.get("subwoofers")
+            subwoofers = target_subwoofers
+        if subwoofer is None and isinstance(raw_config.get("subwoofer"), dict):
+            subwoofer = raw_config.get("subwoofer")
         saved = _save_audio_output_mode(
             normalized_mode,
             subwoofer=subwoofer if subwoofer is not None else previous.get("subwoofer"),
-            subwoofers=subwoofers if subwoofers is not None else previous.get("subwoofers"),
+            subwoofers=subwoofers,
         )
     else:
+        if subwoofer is None and isinstance(raw_config.get("subwoofer"), dict):
+            subwoofer = raw_config.get("subwoofer")
         saved = _save_audio_output_mode(
             normalized_mode,
             subwoofer=subwoofer if subwoofer is not None else previous.get("subwoofer"),

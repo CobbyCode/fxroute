@@ -6170,6 +6170,82 @@ def _auto_sub_delay_key(result: dict[str, Any]) -> float:
     return round(float(result.get("delay_ms", 0.0)), 2)
 
 
+def _auto_sub_score_value(result: dict[str, Any] | None) -> float:
+    if not result:
+        return float("-inf")
+    try:
+        return float(result.get("final_score", result.get("score", 0.0)) or 0.0)
+    except (TypeError, ValueError):
+        return float("-inf")
+
+
+def _auto_sub_best_scan_result(results: list[dict[str, Any]], scan: str) -> dict[str, Any] | None:
+    matches = [result for result in results if str(result.get("scan") or "coarse") == scan]
+    if not matches:
+        return None
+    return max(matches, key=_auto_sub_score_value)
+
+
+def _auto_sub_result_for_delay(results: list[dict[str, Any]], delay_ms: float) -> dict[str, Any] | None:
+    delay_key = round(float(delay_ms), 2)
+    for result in results:
+        if round(float(result.get("delay_ms", 0.0)), 2) == delay_key:
+            return result
+    return None
+
+
+def _auto_sub_select_accepted_winner(
+    *,
+    coarse_winner: dict[str, Any],
+    fine_winner: dict[str, Any] | None,
+    incumbent_winner: dict[str, Any] | None,
+    score_epsilon: float = 0.001,
+) -> dict[str, Any]:
+    protected_winner = coarse_winner
+    if incumbent_winner is not None and (
+        _auto_sub_score_value(incumbent_winner) + score_epsilon >= _auto_sub_score_value(coarse_winner)
+    ):
+        protected_winner = incumbent_winner
+
+    accepted_winner = protected_winner
+    fine_accepted = False
+    reject_reason = None
+
+    if fine_winner is None:
+        reject_reason = "fine_not_better"
+    elif _auto_sub_score_value(fine_winner) <= _auto_sub_score_value(protected_winner) + score_epsilon:
+        reject_reason = "incumbent_better" if protected_winner is incumbent_winner else "fine_not_better"
+    else:
+        fine_xo_loss = max(
+            0.0,
+            float(coarse_winner.get("xo_score", 0.0) or 0.0) - float(fine_winner.get("xo_score", 0.0) or 0.0),
+        )
+        fine_timing_loss = max(
+            0.0,
+            float(coarse_winner.get("timing_band_score", 0.0) or 0.0)
+            - float(fine_winner.get("timing_band_score", 0.0) or 0.0),
+        )
+        low_guard_gain_db = max(
+            0.0,
+            float(coarse_winner.get("low_guard_loss_db", 0.0) or 0.0)
+            - float(fine_winner.get("low_guard_loss_db", 0.0) or 0.0),
+        )
+        if low_guard_gain_db <= 1.0 and (fine_xo_loss >= 0.05 or fine_timing_loss >= 0.05):
+            reject_reason = "xo_loss_vs_coarse"
+        else:
+            accepted_winner = fine_winner
+            fine_accepted = True
+
+    return {
+        "accepted_winner": accepted_winner,
+        "fine_accepted": fine_accepted,
+        "reject_reason": reject_reason,
+        "protected_winner": protected_winner,
+        "incumbent_winner": incumbent_winner,
+        "incumbent_score": round(_auto_sub_score_value(incumbent_winner), 4) if incumbent_winner else None,
+    }
+
+
 def _auto_sub_scoring_confidence(results: list[dict[str, Any]]) -> str:
     if len(results) < 2:
         return "uncertain"
@@ -6191,8 +6267,13 @@ def _auto_sub_score_single_channel_fallback(
     *,
     crossover_hz: int,
     channel_name: str,
+    low_guard_reference_delay_ms: float | None = None,
 ) -> dict[str, Any]:
-    scoring = score_sub_alignment_candidates(candidates, crossover_hz=crossover_hz)
+    scoring = score_sub_alignment_candidates(
+        candidates,
+        crossover_hz=crossover_hz,
+        low_guard_reference_delay_ms=low_guard_reference_delay_ms,
+    )
     scan_by_delay = {_auto_sub_delay_key(candidate): candidate.get("scan", "coarse") for candidate in candidates}
     for result in scoring.get("results", []):
         result["scan"] = scan_by_delay.get(_auto_sub_delay_key(result), result.get("scan", "coarse"))
@@ -6224,6 +6305,7 @@ def _score_auto_sub_combined_candidates(
     candidates: list[dict[str, Any]],
     *,
     crossover_hz: int,
+    low_guard_reference_delay_ms: float | None = None,
 ) -> dict[str, Any]:
     """Score AutoSub candidates with L/R data when available, fallback to one side."""
     both_valid = [
@@ -6244,8 +6326,16 @@ def _score_auto_sub_combined_candidates(
             right_result["points"] = result["points_right"]
             valid_right.append(right_result)
 
-        left_scoring = score_sub_alignment_candidates(valid_left, crossover_hz=crossover_hz)
-        right_scoring = score_sub_alignment_candidates(valid_right, crossover_hz=crossover_hz)
+        left_scoring = score_sub_alignment_candidates(
+            valid_left,
+            crossover_hz=crossover_hz,
+            low_guard_reference_delay_ms=low_guard_reference_delay_ms,
+        )
+        right_scoring = score_sub_alignment_candidates(
+            valid_right,
+            crossover_hz=crossover_hz,
+            low_guard_reference_delay_ms=low_guard_reference_delay_ms,
+        )
         left_by_delay = {_auto_sub_delay_key(result): result for result in left_scoring["results"]}
         right_by_delay = {_auto_sub_delay_key(result): result for result in right_scoring["results"]}
 
@@ -6259,11 +6349,33 @@ def _score_auto_sub_combined_candidates(
             score_left = float(left_result.get("score", 0.0) or 0.0)
             score_right = float(right_result.get("score", 0.0) or 0.0)
             combined_score = 0.6 * min(score_left, score_right) + 0.4 * ((score_left + score_right) / 2.0)
+            low_guard_loss = max(
+                float(left_result.get("low_guard_loss_db", 0.0) or 0.0),
+                float(right_result.get("low_guard_loss_db", 0.0) or 0.0),
+            )
+            low_guard_penalty = 0.6 * max(
+                float(left_result.get("low_guard_penalty", 0.0) or 0.0),
+                float(right_result.get("low_guard_penalty", 0.0) or 0.0),
+            ) + 0.4 * (
+                (
+                    float(left_result.get("low_guard_penalty", 0.0) or 0.0)
+                    + float(right_result.get("low_guard_penalty", 0.0) or 0.0)
+                ) / 2.0
+            )
             combined_results.append({
                 "delay_ms": result["delay_ms"],
                 "name": result.get("name", str(result["delay_ms"])),
                 "score": round(combined_score, 4),
                 "score_pct": round(combined_score * 100.0, 1),
+                "xo_score": round((float(left_result.get("xo_score", 0.0) or 0.0) + float(right_result.get("xo_score", 0.0) or 0.0)) / 2.0, 4),
+                "timing_band_score": round((float(left_result.get("timing_band_score", 0.0) or 0.0) + float(right_result.get("timing_band_score", 0.0) or 0.0)) / 2.0, 4),
+                "low_guard_loss_db": round(low_guard_loss, 2),
+                "low_guard_penalty": round(low_guard_penalty, 4),
+                "final_score": round(combined_score, 4),
+                "low_guard_loss_L_db": left_result.get("low_guard_loss_db"),
+                "low_guard_loss_R_db": right_result.get("low_guard_loss_db"),
+                "low_guard_penalty_L": left_result.get("low_guard_penalty"),
+                "low_guard_penalty_R": right_result.get("low_guard_penalty"),
                 "score_L": round(score_left, 4),
                 "score_L_pct": round(score_left * 100.0, 1),
                 "score_R": round(score_right, 4),
@@ -6300,9 +6412,19 @@ def _score_auto_sub_combined_candidates(
             right_valid.append(right_result)
 
     if left_valid and len(left_valid) >= len(right_valid):
-        return _auto_sub_score_single_channel_fallback(left_valid, crossover_hz=crossover_hz, channel_name="left")
+        return _auto_sub_score_single_channel_fallback(
+            left_valid,
+            crossover_hz=crossover_hz,
+            channel_name="left",
+            low_guard_reference_delay_ms=low_guard_reference_delay_ms,
+        )
     if right_valid:
-        return _auto_sub_score_single_channel_fallback(right_valid, crossover_hz=crossover_hz, channel_name="right")
+        return _auto_sub_score_single_channel_fallback(
+            right_valid,
+            crossover_hz=crossover_hz,
+            channel_name="right",
+            low_guard_reference_delay_ms=low_guard_reference_delay_ms,
+        )
     raise ValueError("No valid AutoSub sweep results to score")
 
 
@@ -6353,6 +6475,19 @@ def _score_auto_sub_matrix_candidates(
             score_left = float(left_result.get("score", 0.0) or 0.0)
             score_right = float(right_result.get("score", 0.0) or 0.0)
             combined_score = 0.6 * min(score_left, score_right) + 0.4 * ((score_left + score_right) / 2.0)
+            low_guard_loss = max(
+                float(left_result.get("low_guard_loss_db", 0.0) or 0.0),
+                float(right_result.get("low_guard_loss_db", 0.0) or 0.0),
+            )
+            low_guard_penalty = 0.6 * max(
+                float(left_result.get("low_guard_penalty", 0.0) or 0.0),
+                float(right_result.get("low_guard_penalty", 0.0) or 0.0),
+            ) + 0.4 * (
+                (
+                    float(left_result.get("low_guard_penalty", 0.0) or 0.0)
+                    + float(right_result.get("low_guard_penalty", 0.0) or 0.0)
+                ) / 2.0
+            )
             sub1_alignment = _auto_sub_clamped_delay(float(result.get("sub1_alignment_ms", 0.0) or 0.0))
             sub2_alignment = _auto_sub_clamped_delay(float(result.get("sub2_alignment_ms", 0.0) or 0.0))
             combined_results.append({
@@ -6362,6 +6497,15 @@ def _score_auto_sub_matrix_candidates(
                 "name": result.get("name") or _auto_sub_22_name(sub1_alignment, sub2_alignment),
                 "score": round(combined_score, 4),
                 "score_pct": round(combined_score * 100.0, 1),
+                "xo_score": round((float(left_result.get("xo_score", 0.0) or 0.0) + float(right_result.get("xo_score", 0.0) or 0.0)) / 2.0, 4),
+                "timing_band_score": round((float(left_result.get("timing_band_score", 0.0) or 0.0) + float(right_result.get("timing_band_score", 0.0) or 0.0)) / 2.0, 4),
+                "low_guard_loss_db": round(low_guard_loss, 2),
+                "low_guard_penalty": round(low_guard_penalty, 4),
+                "final_score": round(combined_score, 4),
+                "low_guard_loss_L_db": left_result.get("low_guard_loss_db"),
+                "low_guard_loss_R_db": right_result.get("low_guard_loss_db"),
+                "low_guard_penalty_L": left_result.get("low_guard_penalty"),
+                "low_guard_penalty_R": right_result.get("low_guard_penalty"),
                 "score_L": round(score_left, 4),
                 "score_L_pct": round(score_left * 100.0, 1),
                 "score_R": round(score_right, 4),
@@ -6414,6 +6558,11 @@ def _score_auto_sub_matrix_candidates(
             "name": measured.get("name") or _auto_sub_22_name(sub1_alignment, sub2_alignment),
             "score": score,
             "score_pct": score_pct,
+            "xo_score": scored.get("xo_score"),
+            "timing_band_score": scored.get("timing_band_score"),
+            "low_guard_loss_db": scored.get("low_guard_loss_db"),
+            "low_guard_penalty": scored.get("low_guard_penalty"),
+            "final_score": scored.get("final_score", score),
             "scan": measured.get("scan", "combined_matrix"),
             "score_source": f"{channel_name}_fallback",
         }
@@ -6546,15 +6695,17 @@ async def start_auto_sub_optimize(
                     right_scan_delays.append(delay)
             job["message"] = (
                 f"Auto Sub Optimize 2.2 Stereo Bass: Left Sub {len(scan_delays)} coarse, "
-                f"Right Sub {len(right_scan_delays)} coarse @ {fc} Hz"
+                f"Left fine up to 6, Right Sub {len(right_scan_delays)} coarse, Right fine up to 6 @ {fc} Hz"
             )
             job["scan_delays"] = {"left_sub": scan_delays, "right_sub": right_scan_delays}
             job["fine_scan"] = {
-                "enabled": False,
+                "enabled": True,
                 "triggered": False,
-                "status": "skipped",
-                "reason": "2.2 Stereo Bass optimizes Left and Right Sub separately",
+                "status": "pending",
+                "reason": "2.2 Stereo Bass optimizes Left and Right Sub separately with per-side fine scans",
                 "fine_step_ms": fine_step_ms,
+                "left": {"status": "pending", "candidates": []},
+                "right": {"status": "pending", "candidates": []},
             }
             asyncio.create_task(
                 _run_auto_sub_22_stereo_optimize(
@@ -7326,7 +7477,11 @@ async def _run_auto_sub_22_optimize(
             job["error"] = {"detail": "Sub 1 coarse sweeps failed or produced insufficient data"}
             await _restore_original_config()
             return
-        sub1_scoring = _score_auto_sub_combined_candidates(coarse1_results, crossover_hz=fc)
+        sub1_scoring = _score_auto_sub_combined_candidates(
+            coarse1_results,
+            crossover_hz=fc,
+            low_guard_reference_delay_ms=original_sub1_alignment,
+        )
         sub1_winner = sub1_scoring["winner"]
         sub1_winner_delay = _auto_sub_clamped_delay(float(sub1_winner.get("delay_ms", original_sub1_alignment) or original_sub1_alignment))
 
@@ -7370,7 +7525,11 @@ async def _run_auto_sub_22_optimize(
             job["error"] = {"detail": "Sub 2 coarse sweeps failed or produced insufficient data"}
             await _restore_original_config()
             return
-        sub2_scoring = _score_auto_sub_combined_candidates(coarse2_results, crossover_hz=fc)
+        sub2_scoring = _score_auto_sub_combined_candidates(
+            coarse2_results,
+            crossover_hz=fc,
+            low_guard_reference_delay_ms=original_sub2_alignment,
+        )
         sub2_winner = sub2_scoring["winner"]
         sub2_winner_delay = _auto_sub_clamped_delay(float(sub2_winner.get("delay_ms", original_sub2_alignment) or original_sub2_alignment))
 
@@ -7587,6 +7746,14 @@ async def _run_auto_sub_22_stereo_optimize(
     def _valid(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
         return [result for result in results if _auto_sub_has_points(result, "points")]
 
+    def _reference_points(results: list[dict[str, Any]], delay_ms: float) -> list[list[float]] | None:
+        valid = _valid(results)
+        if not valid:
+            return None
+        reference = min(valid, key=lambda result: abs(float(result.get("delay_ms", 0.0) or 0.0) - delay_ms))
+        points = reference.get("points") or []
+        return points if isinstance(points, list) and len(points) >= 3 else None
+
     try:
         auto_sub_sweep_low_hz = 20.0
         auto_sub_sweep_high_hz = max(600.0, min(float(fc) * 8.0, 2000.0))
@@ -7603,7 +7770,15 @@ async def _run_auto_sub_22_stereo_optimize(
             "tail_seconds": auto_sub_tail_sec,
         }
         auto_sub_rate = _resolve_measurement_start_sample_rate()
-        sweep_total = len(left_scan_delays) + len(right_scan_delays)
+        step_ms = _auto_sub_step_ms(fc)
+        planned_left_fine_total = 6
+        planned_right_fine_total = 6
+        planned_sweep_total = (
+            len(left_scan_delays)
+            + planned_left_fine_total
+            + len(right_scan_delays)
+            + planned_right_fine_total
+        )
 
         left_results: list[dict[str, Any]] = []
         job["stage"] = "left_sub"
@@ -7613,7 +7788,7 @@ async def _run_auto_sub_22_stereo_optimize(
                 delay_ms=delay_ms,
                 job=job,
                 candidate_index=sweep_index,
-                total=sweep_total,
+                total=planned_sweep_total,
                 stage="left_sub",
                 fc=fc,
                 input_id=input_id,
@@ -7640,7 +7815,7 @@ async def _run_auto_sub_22_stereo_optimize(
             ))
             if isinstance(job.get("progress"), dict):
                 job["progress"]["sweep_current"] = sweep_index
-                job["progress"]["sweep_total"] = sweep_total
+                job["progress"]["sweep_total"] = planned_sweep_total
             if _auto_sub_cancel_requested(job):
                 job["message"] = "Auto Sub Optimize cancelled."
                 await _restore_original_config()
@@ -7653,20 +7828,148 @@ async def _run_auto_sub_22_stereo_optimize(
             job["error"] = {"detail": "Left Sub sweeps failed or produced insufficient data"}
             await _restore_original_config()
             return
-        left_scoring = score_sub_alignment_candidates(left_valid, crossover_hz=fc)
+        left_coarse_scoring = score_sub_alignment_candidates(
+            left_valid,
+            crossover_hz=fc,
+            low_guard_reference_delay_ms=original_left_alignment,
+        )
+        _auto_sub_rank_results(left_coarse_scoring["results"])
+        left_coarse_winner = left_coarse_scoring["winner"]
+        left_coarse_runner_up = left_coarse_scoring.get("runner_up")
+        left_fine_delays = _auto_sub_fine_delay_candidates(
+            left_coarse_winner,
+            left_coarse_runner_up,
+            step_ms,
+            {round(float(delay), 2) for delay in left_scan_delays},
+        )
+        left_fine_results: list[dict[str, Any]] = []
+        left_fine_valid: list[dict[str, Any]] = []
+        left_fine_scoring: dict[str, Any] | None = None
+        left_fine_winner: dict[str, Any] | None = None
+        left_low_guard_reference_points = _reference_points(left_valid, original_left_alignment)
+        job["fine_scan"] = {
+            "enabled": True,
+            "triggered": bool(left_fine_delays),
+            "status": "left_running" if left_fine_delays else "left_skipped",
+            "fine_step_ms": step_ms / 4.0,
+            "left": {
+                "status": "running" if left_fine_delays else "skipped",
+                "coarse_winner": left_coarse_winner,
+                "coarse_runner_up": left_coarse_runner_up,
+                "candidates": left_fine_delays,
+            },
+            "right": {"status": "pending", "candidates": []},
+        }
+        if left_fine_delays:
+            job["stage"] = "left_fine"
+            for idx, delay_ms in enumerate(left_fine_delays):
+                sweep_index = len(left_scan_delays) + idx + 1
+                left_fine_results.append(await _measure_auto_sub_candidate(
+                    delay_ms=delay_ms,
+                    job=job,
+                    candidate_index=sweep_index,
+                    total=planned_sweep_total,
+                    stage="left_fine",
+                    fc=fc,
+                    input_id=input_id,
+                    channel="left",
+                    mic_input_channel=mic_input_channel,
+                    reference_input_channel=reference_input_channel,
+                    calibration_ref=calibration_ref,
+                    calibration_filename=calibration_filename,
+                    calibration_bytes=calibration_bytes,
+                    auto_sub_sweep_profile=auto_sub_sweep_profile,
+                    auto_sub_rate=auto_sub_rate,
+                    original_level=0.0,
+                    original_polarity="normal",
+                    original_highpass=True,
+                    measurement_label=f"Optimizing Left Sub Fine: L sweep {idx + 1}/{len(left_fine_delays)} @ {delay_ms:.2f} ms",
+                    candidate_current=idx + 1,
+                    candidate_total=len(left_fine_delays),
+                    measure_channel="left",
+                    output_mode=OUTPUT_MODE_SUBWOOFER_22_STEREO,
+                    original_config_snapshot=original_config_snapshot,
+                    sub1_alignment_ms=delay_ms,
+                    sub2_alignment_ms=original_right_alignment,
+                    active_subs=("sub1",),
+                ))
+                if isinstance(job.get("progress"), dict):
+                    job["progress"]["sweep_current"] = sweep_index
+                    job["progress"]["sweep_total"] = planned_sweep_total
+                if _auto_sub_cancel_requested(job):
+                    job["message"] = "Auto Sub Optimize cancelled."
+                    await _restore_original_config()
+                    return
+            left_fine_valid = _valid(left_fine_results)
+            if left_fine_valid:
+                left_fine_scoring = score_sub_alignment_candidates(
+                    left_fine_valid,
+                    crossover_hz=fc,
+                    low_guard_reference_points=left_low_guard_reference_points,
+                    low_guard_reference_delay_ms=original_left_alignment,
+                )
+                _auto_sub_rank_results(left_fine_scoring["results"])
+                left_fine_winner = left_fine_scoring["winner"]
+                job["fine_scan"]["left"].update({
+                    "status": "completed",
+                    "winner": left_fine_winner,
+                    "runner_up": left_fine_scoring.get("runner_up"),
+                    "results": left_fine_scoring["results"],
+                    "valid_count": len(left_fine_valid),
+                    "sweep_count": len(left_fine_delays),
+                })
+            else:
+                job["fine_scan"]["left"].update({
+                    "status": "no_valid_results",
+                    "winner": None,
+                    "runner_up": None,
+                    "results": left_fine_results,
+                    "valid_count": 0,
+                    "sweep_count": len(left_fine_delays),
+                })
+
+        left_final_valid = left_valid + left_fine_valid
+        left_scoring = score_sub_alignment_candidates(
+            left_final_valid,
+            crossover_hz=fc,
+            low_guard_reference_delay_ms=original_left_alignment,
+        )
         _auto_sub_rank_results(left_scoring["results"])
-        left_winner = left_scoring["winner"]
+        left_scan_by_delay: dict[float, str] = {}
+        for result in left_valid:
+            left_scan_by_delay[_auto_sub_delay_key(result)] = "coarse"
+        for result in left_fine_valid:
+            left_scan_by_delay[_auto_sub_delay_key(result)] = "fine"
+        for result in left_scoring["results"]:
+            result["scan"] = left_scan_by_delay.get(_auto_sub_delay_key(result), result.get("scan", "coarse"))
+        left_coarse_accepted_candidate = _auto_sub_best_scan_result(left_scoring["results"], "coarse") or left_coarse_winner
+        left_fine_accepted_candidate = _auto_sub_best_scan_result(left_scoring["results"], "fine")
+        left_incumbent_winner = _auto_sub_result_for_delay(left_scoring["results"], original_left_alignment)
+        left_acceptance = _auto_sub_select_accepted_winner(
+            coarse_winner=left_coarse_accepted_candidate,
+            fine_winner=left_fine_accepted_candidate,
+            incumbent_winner=left_incumbent_winner,
+        )
+        left_winner = left_acceptance["accepted_winner"]
         best_left = _auto_sub_clamped_delay(float(left_winner.get("delay_ms", original_left_alignment) or original_left_alignment))
+        job["fine_scan"]["left"]["final_winner"] = left_winner
+        job["fine_scan"]["left"]["final_results"] = left_scoring["results"]
+        job["fine_scan"]["left"]["accepted_winner"] = left_winner
+        job["fine_scan"]["left"]["fine_accepted"] = left_acceptance["fine_accepted"]
+        job["fine_scan"]["left"]["reject_reason"] = left_acceptance["reject_reason"]
+        job["fine_scan"]["left"]["incumbent_winner"] = left_incumbent_winner
+        job["fine_scan"]["left"]["incumbent_score"] = left_acceptance["incumbent_score"]
+        job["fine_scan"]["status"] = "right_pending"
 
         right_results: list[dict[str, Any]] = []
         job["stage"] = "right_sub"
         for idx, delay_ms in enumerate(right_scan_delays):
-            sweep_index = len(left_scan_delays) + idx + 1
+            sweep_index = len(left_scan_delays) + len(left_fine_delays) + idx + 1
             right_results.append(await _measure_auto_sub_candidate(
                 delay_ms=delay_ms,
                 job=job,
                 candidate_index=sweep_index,
-                total=sweep_total,
+                total=planned_sweep_total,
                 stage="right_sub",
                 fc=fc,
                 input_id=input_id,
@@ -7693,7 +7996,7 @@ async def _run_auto_sub_22_stereo_optimize(
             ))
             if isinstance(job.get("progress"), dict):
                 job["progress"]["sweep_current"] = sweep_index
-                job["progress"]["sweep_total"] = sweep_total
+                job["progress"]["sweep_total"] = planned_sweep_total
             if _auto_sub_cancel_requested(job):
                 job["message"] = "Auto Sub Optimize cancelled."
                 await _restore_original_config()
@@ -7706,10 +8009,141 @@ async def _run_auto_sub_22_stereo_optimize(
             job["error"] = {"detail": "Right Sub sweeps failed or produced insufficient data"}
             await _restore_original_config()
             return
-        right_scoring = score_sub_alignment_candidates(right_valid, crossover_hz=fc)
+        right_coarse_scoring = score_sub_alignment_candidates(
+            right_valid,
+            crossover_hz=fc,
+            low_guard_reference_delay_ms=original_right_alignment,
+        )
+        _auto_sub_rank_results(right_coarse_scoring["results"])
+        right_coarse_winner = right_coarse_scoring["winner"]
+        right_coarse_runner_up = right_coarse_scoring.get("runner_up")
+        right_fine_delays = _auto_sub_fine_delay_candidates(
+            right_coarse_winner,
+            right_coarse_runner_up,
+            step_ms,
+            {round(float(delay), 2) for delay in right_scan_delays},
+        )
+        right_fine_results: list[dict[str, Any]] = []
+        right_fine_valid: list[dict[str, Any]] = []
+        right_fine_scoring: dict[str, Any] | None = None
+        right_fine_winner: dict[str, Any] | None = None
+        right_low_guard_reference_points = _reference_points(right_valid, original_right_alignment)
+        actual_sweep_total = (
+            len(left_scan_delays)
+            + len(left_fine_delays)
+            + len(right_scan_delays)
+            + len(right_fine_delays)
+        )
+        job["fine_scan"].update({
+            "triggered": bool(left_fine_delays or right_fine_delays),
+            "status": "right_running" if right_fine_delays else "right_skipped",
+        })
+        job["fine_scan"]["right"] = {
+            "status": "running" if right_fine_delays else "skipped",
+            "coarse_winner": right_coarse_winner,
+            "coarse_runner_up": right_coarse_runner_up,
+            "candidates": right_fine_delays,
+        }
+        if right_fine_delays:
+            job["stage"] = "right_fine"
+            for idx, delay_ms in enumerate(right_fine_delays):
+                sweep_index = len(left_scan_delays) + len(left_fine_delays) + len(right_scan_delays) + idx + 1
+                right_fine_results.append(await _measure_auto_sub_candidate(
+                    delay_ms=delay_ms,
+                    job=job,
+                    candidate_index=sweep_index,
+                    total=actual_sweep_total,
+                    stage="right_fine",
+                    fc=fc,
+                    input_id=input_id,
+                    channel="right",
+                    mic_input_channel=mic_input_channel,
+                    reference_input_channel=reference_input_channel,
+                    calibration_ref=calibration_ref,
+                    calibration_filename=calibration_filename,
+                    calibration_bytes=calibration_bytes,
+                    auto_sub_sweep_profile=auto_sub_sweep_profile,
+                    auto_sub_rate=auto_sub_rate,
+                    original_level=0.0,
+                    original_polarity="normal",
+                    original_highpass=True,
+                    measurement_label=f"Optimizing Right Sub Fine: R sweep {idx + 1}/{len(right_fine_delays)} @ {delay_ms:.2f} ms",
+                    candidate_current=idx + 1,
+                    candidate_total=len(right_fine_delays),
+                    measure_channel="right",
+                    output_mode=OUTPUT_MODE_SUBWOOFER_22_STEREO,
+                    original_config_snapshot=original_config_snapshot,
+                    sub1_alignment_ms=best_left,
+                    sub2_alignment_ms=delay_ms,
+                    active_subs=("sub2",),
+                ))
+                if isinstance(job.get("progress"), dict):
+                    job["progress"]["sweep_current"] = sweep_index
+                    job["progress"]["sweep_total"] = actual_sweep_total
+                if _auto_sub_cancel_requested(job):
+                    job["message"] = "Auto Sub Optimize cancelled."
+                    await _restore_original_config()
+                    return
+            right_fine_valid = _valid(right_fine_results)
+            if right_fine_valid:
+                right_fine_scoring = score_sub_alignment_candidates(
+                    right_fine_valid,
+                    crossover_hz=fc,
+                    low_guard_reference_points=right_low_guard_reference_points,
+                    low_guard_reference_delay_ms=original_right_alignment,
+                )
+                _auto_sub_rank_results(right_fine_scoring["results"])
+                right_fine_winner = right_fine_scoring["winner"]
+                job["fine_scan"]["right"].update({
+                    "status": "completed",
+                    "winner": right_fine_winner,
+                    "runner_up": right_fine_scoring.get("runner_up"),
+                    "results": right_fine_scoring["results"],
+                    "valid_count": len(right_fine_valid),
+                    "sweep_count": len(right_fine_delays),
+                })
+            else:
+                job["fine_scan"]["right"].update({
+                    "status": "no_valid_results",
+                    "winner": None,
+                    "runner_up": None,
+                    "results": right_fine_results,
+                    "valid_count": 0,
+                    "sweep_count": len(right_fine_delays),
+                })
+
+        right_final_valid = right_valid + right_fine_valid
+        right_scoring = score_sub_alignment_candidates(
+            right_final_valid,
+            crossover_hz=fc,
+            low_guard_reference_delay_ms=original_right_alignment,
+        )
         _auto_sub_rank_results(right_scoring["results"])
-        right_winner = right_scoring["winner"]
+        right_scan_by_delay: dict[float, str] = {}
+        for result in right_valid:
+            right_scan_by_delay[_auto_sub_delay_key(result)] = "coarse"
+        for result in right_fine_valid:
+            right_scan_by_delay[_auto_sub_delay_key(result)] = "fine"
+        for result in right_scoring["results"]:
+            result["scan"] = right_scan_by_delay.get(_auto_sub_delay_key(result), result.get("scan", "coarse"))
+        right_coarse_accepted_candidate = _auto_sub_best_scan_result(right_scoring["results"], "coarse") or right_coarse_winner
+        right_fine_accepted_candidate = _auto_sub_best_scan_result(right_scoring["results"], "fine")
+        right_incumbent_winner = _auto_sub_result_for_delay(right_scoring["results"], original_right_alignment)
+        right_acceptance = _auto_sub_select_accepted_winner(
+            coarse_winner=right_coarse_accepted_candidate,
+            fine_winner=right_fine_accepted_candidate,
+            incumbent_winner=right_incumbent_winner,
+        )
+        right_winner = right_acceptance["accepted_winner"]
         best_right = _auto_sub_clamped_delay(float(right_winner.get("delay_ms", original_right_alignment) or original_right_alignment))
+        job["fine_scan"]["right"]["final_winner"] = right_winner
+        job["fine_scan"]["right"]["final_results"] = right_scoring["results"]
+        job["fine_scan"]["right"]["accepted_winner"] = right_winner
+        job["fine_scan"]["right"]["fine_accepted"] = right_acceptance["fine_accepted"]
+        job["fine_scan"]["right"]["reject_reason"] = right_acceptance["reject_reason"]
+        job["fine_scan"]["right"]["incumbent_winner"] = right_incumbent_winner
+        job["fine_scan"]["right"]["incumbent_score"] = right_acceptance["incumbent_score"]
+        job["fine_scan"]["status"] = "completed"
 
         apply_ok = False
         try:
@@ -7750,6 +8184,19 @@ async def _run_auto_sub_22_stereo_optimize(
         left_score = float(left_winner.get("score", 0.0) or 0.0)
         right_score = float(right_winner.get("score", 0.0) or 0.0)
         overall_score = (0.6 * min(left_score, right_score)) + (0.4 * ((left_score + right_score) / 2.0))
+        left_xo_score = float(left_winner.get("xo_score", 0.0) or 0.0)
+        right_xo_score = float(right_winner.get("xo_score", 0.0) or 0.0)
+        left_timing_score = float(left_winner.get("timing_band_score", 0.0) or 0.0)
+        right_timing_score = float(right_winner.get("timing_band_score", 0.0) or 0.0)
+        left_low_guard_loss = float(left_winner.get("low_guard_loss_db", 0.0) or 0.0)
+        right_low_guard_loss = float(right_winner.get("low_guard_loss_db", 0.0) or 0.0)
+        left_low_guard_penalty = float(left_winner.get("low_guard_penalty", 0.0) or 0.0)
+        right_low_guard_penalty = float(right_winner.get("low_guard_penalty", 0.0) or 0.0)
+        overall_low_guard_loss = max(left_low_guard_loss, right_low_guard_loss)
+        overall_low_guard_penalty = (
+            0.6 * max(left_low_guard_penalty, right_low_guard_penalty)
+            + 0.4 * ((left_low_guard_penalty + right_low_guard_penalty) / 2.0)
+        )
         left_score_pct = round(left_score * 100.0, 1)
         right_score_pct = round(right_score * 100.0, 1)
         overall_score_pct = round(overall_score * 100.0, 1)
@@ -7778,26 +8225,83 @@ async def _run_auto_sub_22_stereo_optimize(
                 "score_pct": overall_score_pct,
                 "overall_score": round(overall_score, 4),
                 "overall_score_pct": overall_score_pct,
+                "xo_score": round((left_xo_score + right_xo_score) / 2.0, 4),
+                "timing_band_score": round((left_timing_score + right_timing_score) / 2.0, 4),
+                "low_guard_loss_db": round(overall_low_guard_loss, 2),
+                "low_guard_penalty": round(overall_low_guard_penalty, 4),
+                "final_score": round(overall_score, 4),
+                "low_guard_loss_L_db": round(left_low_guard_loss, 2),
+                "low_guard_loss_R_db": round(right_low_guard_loss, 2),
+                "low_guard_penalty_L": round(left_low_guard_penalty, 4),
+                "low_guard_penalty_R": round(right_low_guard_penalty, 4),
                 "score_L_pct": left_score_pct,
                 "score_R_pct": right_score_pct,
             },
             "left_score": round(left_score, 4),
             "right_score": round(right_score, 4),
             "overall_score": round(overall_score, 4),
+            "xo_score": round((left_xo_score + right_xo_score) / 2.0, 4),
+            "timing_band_score": round((left_timing_score + right_timing_score) / 2.0, 4),
+            "low_guard_loss_db": round(overall_low_guard_loss, 2),
+            "low_guard_penalty": round(overall_low_guard_penalty, 4),
+            "final_score": round(overall_score, 4),
+            "low_guard_loss_L_db": round(left_low_guard_loss, 2),
+            "low_guard_loss_R_db": round(right_low_guard_loss, 2),
+            "low_guard_penalty_L": round(left_low_guard_penalty, 4),
+            "low_guard_penalty_R": round(right_low_guard_penalty, 4),
             "left_score_pct": left_score_pct,
             "right_score_pct": right_score_pct,
             "overall_score_pct": overall_score_pct,
+            "accepted_winner": {
+                "name": _auto_sub_22_stereo_name(best_left, best_right),
+                "left_winner": left_winner,
+                "right_winner": right_winner,
+                "score": round(overall_score, 4),
+                "score_pct": overall_score_pct,
+            },
+            "fine_accepted": bool(left_acceptance["fine_accepted"] or right_acceptance["fine_accepted"]),
+            "reject_reason": {
+                "left": left_acceptance["reject_reason"],
+                "right": right_acceptance["reject_reason"],
+            },
+            "left_coarse_winner": left_coarse_winner,
+            "left_fine_winner": left_fine_winner,
+            "right_coarse_winner": right_coarse_winner,
+            "right_fine_winner": right_fine_winner,
             "left_winner": left_winner,
             "right_winner": right_winner,
+            "left_incumbent_winner": left_incumbent_winner,
+            "right_incumbent_winner": right_incumbent_winner,
+            "left_incumbent_score": left_acceptance["incumbent_score"],
+            "right_incumbent_score": right_acceptance["incumbent_score"],
+            "left_accepted_winner": left_winner,
+            "right_accepted_winner": right_winner,
+            "left_fine_accepted": left_acceptance["fine_accepted"],
+            "right_fine_accepted": right_acceptance["fine_accepted"],
+            "left_reject_reason": left_acceptance["reject_reason"],
+            "right_reject_reason": right_acceptance["reject_reason"],
+            "left_coarse_ranking": left_coarse_scoring["results"],
+            "left_fine_ranking": left_fine_scoring["results"] if left_fine_scoring else [],
+            "right_coarse_ranking": right_coarse_scoring["results"],
+            "right_fine_ranking": right_fine_scoring["results"] if right_fine_scoring else [],
             "left_ranking": left_scoring["results"],
             "right_ranking": right_scoring["results"],
-            "sweep_count": sweep_total,
-            "candidate_count": len(left_scan_delays) + len(right_scan_delays),
-            "left_candidate_count": len(left_scan_delays),
-            "right_candidate_count": len(right_scan_delays),
-            "valid_count": len(left_valid) + len(right_valid),
-            "left_valid_count": len(left_valid),
-            "right_valid_count": len(right_valid),
+            "fine_scan": job["fine_scan"],
+            "sweep_count": actual_sweep_total,
+            "candidate_count": actual_sweep_total,
+            "left_candidate_count": len(left_scan_delays) + len(left_fine_delays),
+            "right_candidate_count": len(right_scan_delays) + len(right_fine_delays),
+            "left_coarse_candidate_count": len(left_scan_delays),
+            "left_fine_candidate_count": len(left_fine_delays),
+            "right_coarse_candidate_count": len(right_scan_delays),
+            "right_fine_candidate_count": len(right_fine_delays),
+            "valid_count": len(left_final_valid) + len(right_final_valid),
+            "left_valid_count": len(left_final_valid),
+            "right_valid_count": len(right_final_valid),
+            "left_coarse_valid_count": len(left_valid),
+            "left_fine_valid_count": len(left_fine_valid),
+            "right_coarse_valid_count": len(right_valid),
+            "right_fine_valid_count": len(right_fine_valid),
             **derived_delays,
         }
         logger.info(
@@ -7937,7 +8441,11 @@ async def _run_auto_sub_optimize(
             return
 
         step_ms = _auto_sub_step_ms(fc)
-        coarse_scoring = _score_auto_sub_combined_candidates(sweep_results, crossover_hz=fc)
+        coarse_scoring = _score_auto_sub_combined_candidates(
+            sweep_results,
+            crossover_hz=fc,
+            low_guard_reference_delay_ms=current_alignment,
+        )
         valid = list(coarse_scoring.get("scored_candidates") or valid)
         coarse_winner = coarse_scoring["winner"]
         coarse_runner_up = coarse_scoring.get("runner_up")
@@ -8022,7 +8530,11 @@ async def _run_auto_sub_optimize(
 
                 fine_valid = [r for r in fine_results if _auto_sub_has_points(r, "points_left") or _auto_sub_has_points(r, "points_right")]
                 if fine_valid:
-                    fine_scoring = _score_auto_sub_combined_candidates(fine_results, crossover_hz=fc)
+                    fine_scoring = _score_auto_sub_combined_candidates(
+                        fine_results,
+                        crossover_hz=fc,
+                        low_guard_reference_delay_ms=current_alignment,
+                    )
                     fine_valid = list(fine_scoring.get("scored_candidates") or fine_valid)
                     fine_winner = fine_scoring["winner"]
                     fine_scan.update({
@@ -8035,7 +8547,11 @@ async def _run_auto_sub_optimize(
                         "results": fine_scoring["results"],
                     })
                     combined_valid = valid + fine_valid
-                    final_scoring = _score_auto_sub_combined_candidates(combined_valid, crossover_hz=fc)
+                    final_scoring = _score_auto_sub_combined_candidates(
+                        combined_valid,
+                        crossover_hz=fc,
+                        low_guard_reference_delay_ms=current_alignment,
+                    )
                     combined_valid = list(final_scoring.get("scored_candidates") or combined_valid)
                 else:
                     fine_scan.update({
@@ -8092,13 +8608,27 @@ async def _run_auto_sub_optimize(
         )
         if final_fine_winner is not None and fine_scan.get("status") == "completed":
             fine_scan["final_winner"] = final_fine_winner
+        final_coarse_winner = _auto_sub_best_scan_result(final_scoring["results"], "coarse") or coarse_winner
+        incumbent_winner = _auto_sub_result_for_delay(final_scoring["results"], current_alignment)
+        acceptance = _auto_sub_select_accepted_winner(
+            coarse_winner=final_coarse_winner,
+            fine_winner=final_fine_winner if fine_scan.get("status") == "completed" else None,
+            incumbent_winner=incumbent_winner,
+        )
+        fine_scan["coarse_winner"] = final_coarse_winner
+        fine_scan["fine_winner"] = final_fine_winner
+        fine_scan["incumbent_winner"] = incumbent_winner
+        fine_scan["incumbent_score"] = acceptance["incumbent_score"]
+        fine_scan["accepted_winner"] = acceptance["accepted_winner"]
+        fine_scan["fine_accepted"] = acceptance["fine_accepted"]
+        fine_scan["reject_reason"] = acceptance["reject_reason"]
 
         if _auto_sub_cancel_requested(job):
             job["message"] = "Auto Sub Optimize cancelled."
             await _restore_original_config()
             return
 
-        winner = final_scoring["winner"]
+        winner = acceptance["accepted_winner"]
         best_delay = winner["delay_ms"]
         confidence = str(final_scoring.get("confidence") or "uncertain")
         runner_up = final_scoring.get("runner_up")
@@ -8115,7 +8645,9 @@ async def _run_auto_sub_optimize(
 
         auto_apply = False
         apply_decision = "not_applied_uncertain_confidence"
-        if confidence == "clear":
+        if incumbent_winner is not None and round(float(best_delay), 2) == round(float(current_alignment), 2):
+            apply_decision = "not_applied_incumbent_better"
+        elif confidence == "clear":
             auto_apply = True
             apply_decision = "applied_clear_confidence"
         elif confidence == "close":
@@ -8173,6 +8705,15 @@ async def _run_auto_sub_optimize(
             await _restore_original_config()
             return
 
+        stored_winner = winner if auto_apply else (incumbent_winner or winner)
+        stored_fine_accepted = bool(acceptance["fine_accepted"] and auto_apply)
+        stored_reject_reason = acceptance["reject_reason"]
+        if not auto_apply and stored_winner is incumbent_winner and round(float(best_delay), 2) != round(float(current_alignment), 2):
+            stored_reject_reason = apply_decision
+        fine_scan["accepted_winner"] = stored_winner
+        fine_scan["fine_accepted"] = stored_fine_accepted
+        fine_scan["reject_reason"] = stored_reject_reason
+
         job["status"] = "completed"
         job["message"] = (
             f"Applied: {best_delay} ms (score {winner['score_pct']:.0f} %)"
@@ -8194,9 +8735,14 @@ async def _run_auto_sub_optimize(
             "crossover_hz": fc,
             "confidence": confidence,
             "winner": winner,
-            "coarse_winner": coarse_winner,
+            "coarse_winner": final_coarse_winner,
             "coarse_runner_up": coarse_runner_up,
             "fine_winner": final_fine_winner,
+            "incumbent_winner": incumbent_winner,
+            "incumbent_score": acceptance["incumbent_score"],
+            "accepted_winner": stored_winner,
+            "fine_accepted": stored_fine_accepted,
+            "reject_reason": stored_reject_reason,
             "runner_up": final_scoring.get("runner_up"),
             "ranking": final_scoring["results"],
             "sweep_count": total,

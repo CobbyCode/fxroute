@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.7.47 (2026-06-27)
+
+### Added
+- Added Low-Bass Guard scoring to Auto Sub Optimize for 2.1, 2.2 Mono, and 2.2 Stereo modes.
+- Added 2.2 Stereo Auto Sub fine scanning with sequential Left coarse, Left fine, Right coarse, and Right fine stages without a stereo matrix phase.
+- Added AutoSub result/debug fields for guard scoring, fine acceptance, accepted winners, and incumbent comparison.
+
+### Changed
+- 2.2 Mono and 2.2 Stereo now keep separate subwoofer alignment values via `subwoofers_22` and `subwoofers_22_stereo`.
+- Fine-scan acceptance now protects the best coarse/incumbent candidate so a weaker fine result cannot replace it.
+
+### Fixed
+- Stabilized switching between 2.2 Mono and 2.2 Stereo modes, including UI race handling and backend mode-specific value loading.
+
 ## 0.7.46 (2026-06-25)
 
 ### Added
