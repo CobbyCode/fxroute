@@ -6432,6 +6432,8 @@ def _score_auto_sub_matrix_candidates(
     candidates: list[dict[str, Any]],
     *,
     crossover_hz: int,
+    original_sub1_alignment_ms: float | None = None,
+    original_sub2_alignment_ms: float | None = None,
 ) -> dict[str, Any]:
     """Score measured 2.2 matrix candidates by Sub1/Sub2 alignment pair."""
     indexed = [
@@ -6441,7 +6443,53 @@ def _score_auto_sub_matrix_candidates(
     if not indexed:
         raise ValueError("No valid AutoSub 2.2 matrix sweep results to score")
 
-    def _copy_for_score(result: dict[str, Any], idx: int, points_key: str) -> dict[str, Any]:
+    def _low_guard_p20(points: list[list[float]]) -> float:
+        low_guard_min_hz = float(crossover_hz) * 0.35
+        low_guard_max_hz = float(crossover_hz) * 0.75
+        band = [float(point[1]) for point in points if low_guard_min_hz <= float(point[0]) < low_guard_max_hz]
+        if not band:
+            return float("-inf")
+        band.sort()
+        p20_index = min(len(band) - 1, max(0, int(round((len(band) - 1) * 0.20))))
+        return band[p20_index]
+
+    def _incumbent_index(rows: list[tuple[int, dict[str, Any]]]) -> int | None:
+        if original_sub1_alignment_ms is None or original_sub2_alignment_ms is None:
+            return None
+        for idx, result in rows:
+            if _is_incumbent_pair(result):
+                return idx
+        return None
+
+    def _is_incumbent_pair(result: dict[str, Any]) -> bool:
+        if original_sub1_alignment_ms is None or original_sub2_alignment_ms is None:
+            return False
+        original_sub1 = _auto_sub_clamped_delay(float(original_sub1_alignment_ms))
+        original_sub2 = _auto_sub_clamped_delay(float(original_sub2_alignment_ms))
+        sub1_alignment = _auto_sub_clamped_delay(float(result.get("sub1_alignment_ms", 0.0) or 0.0))
+        sub2_alignment = _auto_sub_clamped_delay(float(result.get("sub2_alignment_ms", 0.0) or 0.0))
+        return abs(sub1_alignment - original_sub1) <= 0.05 and abs(sub2_alignment - original_sub2) <= 0.05
+
+    def _reference_index(rows: list[tuple[int, dict[str, Any]]], points_key: str) -> tuple[int | None, str]:
+        incumbent_idx = _incumbent_index(rows)
+        if incumbent_idx is not None:
+            return incumbent_idx, "incumbent"
+        valid = [
+            (idx, _low_guard_p20(result.get(points_key) or []))
+            for idx, result in rows
+            if _auto_sub_has_points(result, points_key)
+        ]
+        if not valid:
+            return None, "matrix_best_low_guard"
+        return max(valid, key=lambda item: item[1])[0], "matrix_best_low_guard"
+
+    def _copy_for_score(
+        result: dict[str, Any],
+        idx: int,
+        points_key: str,
+        reference_idx: int | None,
+        reference_label: str,
+    ) -> dict[str, Any]:
         candidate = dict(result)
         candidate["delay_ms"] = float(idx)
         candidate["name"] = result.get("name") or _auto_sub_22_name(
@@ -6449,19 +6497,67 @@ def _score_auto_sub_matrix_candidates(
             float(result.get("sub2_alignment_ms", 0.0) or 0.0),
         )
         candidate["points"] = result.get(points_key) or []
+        if reference_idx is not None and idx == reference_idx:
+            candidate["low_guard_reference"] = True
+            candidate["low_guard_reference_label"] = reference_label
         return candidate
+
+    def _combined_low_guard_reference(left_result: dict[str, Any], right_result: dict[str, Any]) -> str:
+        left_ref = str(left_result.get("low_guard_reference") or "")
+        right_ref = str(right_result.get("low_guard_reference") or "")
+        if left_ref == right_ref:
+            return left_ref
+        if {left_ref, right_ref} <= {"incumbent", "matrix_best_low_guard"}:
+            return "mixed"
+        return f"L:{left_ref} / R:{right_ref}"
+
+    def _finalize_matrix_scoring(results: list[dict[str, Any]], *, score_mode: str, scored_candidates: list[dict[str, Any]]) -> dict[str, Any]:
+        _auto_sub_rank_results(results)
+        incumbent_winner = next((result for result in results if bool(result.get("incumbent_pair"))), None)
+        matrix_winner = next((result for result in results if not bool(result.get("incumbent_pair"))), None)
+        if matrix_winner is None:
+            matrix_winner = results[0]
+
+        accepted_winner = matrix_winner
+        incumbent_accepted = False
+        reject_reason = "matrix_better"
+        if incumbent_winner is not None:
+            incumbent_score = _auto_sub_score_value(incumbent_winner)
+            matrix_score = _auto_sub_score_value(matrix_winner)
+            if matrix_score <= incumbent_score:
+                accepted_winner = incumbent_winner
+                incumbent_accepted = True
+                reject_reason = "incumbent_better"
+
+        return {
+            "winner": accepted_winner,
+            "runner_up": results[1] if len(results) >= 2 else None,
+            "results": results,
+            "confidence": _auto_sub_scoring_confidence(results),
+            "crossover_hz": crossover_hz,
+            "score_mode": score_mode,
+            "scored_candidates": scored_candidates,
+            "matrix_winner": matrix_winner,
+            "incumbent_winner": incumbent_winner,
+            "incumbent_score": round(_auto_sub_score_value(incumbent_winner), 4) if incumbent_winner else None,
+            "accepted_winner": accepted_winner,
+            "incumbent_accepted": incumbent_accepted,
+            "reject_reason": reject_reason,
+        }
 
     both_valid = [
         (idx, result) for idx, result in indexed
         if _auto_sub_has_points(result, "points_left") and _auto_sub_has_points(result, "points_right")
     ]
     if len(both_valid) >= 2:
+        left_reference_idx, left_reference_label = _reference_index(both_valid, "points_left")
+        right_reference_idx, right_reference_label = _reference_index(both_valid, "points_right")
         left_scoring = score_sub_alignment_candidates(
-            [_copy_for_score(result, idx, "points_left") for idx, result in both_valid],
+            [_copy_for_score(result, idx, "points_left", left_reference_idx, left_reference_label) for idx, result in both_valid],
             crossover_hz=crossover_hz,
         )
         right_scoring = score_sub_alignment_candidates(
-            [_copy_for_score(result, idx, "points_right") for idx, result in both_valid],
+            [_copy_for_score(result, idx, "points_right", right_reference_idx, right_reference_label) for idx, result in both_valid],
             crossover_hz=crossover_hz,
         )
         left_by_idx = {int(round(float(result.get("delay_ms", 0.0)))): result for result in left_scoring["results"]}
@@ -6494,6 +6590,7 @@ def _score_auto_sub_matrix_candidates(
                 "delay_ms": sub1_alignment,
                 "sub1_alignment_ms": sub1_alignment,
                 "sub2_alignment_ms": sub2_alignment,
+                "incumbent_pair": _is_incumbent_pair(result),
                 "name": result.get("name") or _auto_sub_22_name(sub1_alignment, sub2_alignment),
                 "score": round(combined_score, 4),
                 "score_pct": round(combined_score * 100.0, 1),
@@ -6506,6 +6603,9 @@ def _score_auto_sub_matrix_candidates(
                 "low_guard_loss_R_db": right_result.get("low_guard_loss_db"),
                 "low_guard_penalty_L": left_result.get("low_guard_penalty"),
                 "low_guard_penalty_R": right_result.get("low_guard_penalty"),
+                "low_guard_reference": _combined_low_guard_reference(left_result, right_result),
+                "low_guard_reference_L": left_result.get("low_guard_reference"),
+                "low_guard_reference_R": right_result.get("low_guard_reference"),
                 "score_L": round(score_left, 4),
                 "score_L_pct": round(score_left * 100.0, 1),
                 "score_R": round(score_right, 4),
@@ -6516,16 +6616,11 @@ def _score_auto_sub_matrix_candidates(
         if not combined_results:
             raise ValueError("No matching L/R AutoSub 2.2 matrix scoring results")
         combined_results.sort(key=lambda r: r["score"], reverse=True)
-        _auto_sub_rank_results(combined_results)
-        return {
-            "winner": combined_results[0],
-            "runner_up": combined_results[1] if len(combined_results) >= 2 else None,
-            "results": combined_results,
-            "confidence": _auto_sub_scoring_confidence(combined_results),
-            "crossover_hz": crossover_hz,
-            "score_mode": "lr_combined_matrix",
-            "scored_candidates": [result for _, result in both_valid],
-        }
+        return _finalize_matrix_scoring(
+            combined_results,
+            score_mode="lr_combined_matrix",
+            scored_candidates=[result for _, result in both_valid],
+        )
 
     fallback_key = "points_left"
     channel_name = "left"
@@ -6538,8 +6633,9 @@ def _score_auto_sub_matrix_candidates(
     if not fallback:
         raise ValueError("No valid AutoSub 2.2 matrix sweep results to score")
 
+    fallback_reference_idx, fallback_reference_label = _reference_index(fallback, fallback_key)
     single_scoring = score_sub_alignment_candidates(
-        [_copy_for_score(result, idx, fallback_key) for idx, result in fallback],
+        [_copy_for_score(result, idx, fallback_key, fallback_reference_idx, fallback_reference_label) for idx, result in fallback],
         crossover_hz=crossover_hz,
     )
     by_idx = {idx: result for idx, result in fallback}
@@ -6555,6 +6651,7 @@ def _score_auto_sub_matrix_candidates(
             "delay_ms": sub1_alignment,
             "sub1_alignment_ms": sub1_alignment,
             "sub2_alignment_ms": sub2_alignment,
+            "incumbent_pair": _is_incumbent_pair(measured),
             "name": measured.get("name") or _auto_sub_22_name(sub1_alignment, sub2_alignment),
             "score": score,
             "score_pct": score_pct,
@@ -6562,6 +6659,7 @@ def _score_auto_sub_matrix_candidates(
             "timing_band_score": scored.get("timing_band_score"),
             "low_guard_loss_db": scored.get("low_guard_loss_db"),
             "low_guard_penalty": scored.get("low_guard_penalty"),
+            "low_guard_reference": scored.get("low_guard_reference"),
             "final_score": scored.get("final_score", score),
             "scan": measured.get("scan", "combined_matrix"),
             "score_source": f"{channel_name}_fallback",
@@ -6571,16 +6669,11 @@ def _score_auto_sub_matrix_candidates(
         else:
             matrix_result.update({"score_L": None, "score_L_pct": None, "score_R": score, "score_R_pct": score_pct})
         matrix_results.append(matrix_result)
-    _auto_sub_rank_results(matrix_results)
-    return {
-        "winner": matrix_results[0],
-        "runner_up": matrix_results[1] if len(matrix_results) >= 2 else None,
-        "results": matrix_results,
-        "confidence": _auto_sub_scoring_confidence(matrix_results),
-        "crossover_hz": crossover_hz,
-        "score_mode": f"{channel_name}_fallback_matrix",
-        "scored_candidates": [result for _, result in fallback],
-    }
+    return _finalize_matrix_scoring(
+        matrix_results,
+        score_mode=f"{channel_name}_fallback_matrix",
+        scored_candidates=[result for _, result in fallback],
+    )
 
 
 @app.post("/api/measurements/auto-sub-optimize/start")
@@ -7407,6 +7500,9 @@ async def _run_auto_sub_22_optimize(
     def _valid_lr(result: dict[str, Any]) -> bool:
         return _auto_sub_has_points(result, "points_left") or _auto_sub_has_points(result, "points_right")
 
+    def _same_pair(pair: tuple[float, float], sub1_alignment: float, sub2_alignment: float) -> bool:
+        return abs(pair[0] - sub1_alignment) <= 0.05 and abs(pair[1] - sub2_alignment) <= 0.05
+
     try:
         if _auto_sub_cancel_requested(job):
             job["message"] = "Auto Sub Optimize cancelled."
@@ -7536,12 +7632,28 @@ async def _run_auto_sub_22_optimize(
         sub1_matrix = _matrix_delays(sub1_winner_delay)
         sub2_matrix = _matrix_delays(sub2_winner_delay)
         matrix_pairs = [(sub1_delay, sub2_delay) for sub1_delay in sub1_matrix for sub2_delay in sub2_matrix]
+        incumbent_pair = (
+            _auto_sub_clamped_delay(original_sub1_alignment),
+            _auto_sub_clamped_delay(original_sub2_alignment),
+        )
+        incumbent_in_matrix = any(_same_pair(pair, incumbent_pair[0], incumbent_pair[1]) for pair in matrix_pairs)
+        if not incumbent_in_matrix:
+            matrix_pairs.append(incumbent_pair)
         job["combined_matrix"] = {
             "status": "running",
             "fine_step_ms": fine_step_ms,
             "sub1_candidates": sub1_matrix,
             "sub2_candidates": sub2_matrix,
-            "candidates": [{"sub1_alignment_ms": a, "sub2_alignment_ms": b} for a, b in matrix_pairs],
+            "incumbent_pair": {"sub1_alignment_ms": incumbent_pair[0], "sub2_alignment_ms": incumbent_pair[1]},
+            "incumbent_in_matrix": incumbent_in_matrix,
+            "candidates": [
+                {
+                    "sub1_alignment_ms": a,
+                    "sub2_alignment_ms": b,
+                    "incumbent_pair": _same_pair((a, b), incumbent_pair[0], incumbent_pair[1]),
+                }
+                for a, b in matrix_pairs
+            ],
         }
         matrix_sweep_total = matrix_sweep_start + (len(matrix_pairs) * 2)
 
@@ -7586,8 +7698,13 @@ async def _run_auto_sub_22_optimize(
             await _restore_original_config()
             return
 
-        matrix_scoring = _score_auto_sub_matrix_candidates(matrix_results, crossover_hz=fc)
-        winner = matrix_scoring["winner"]
+        matrix_scoring = _score_auto_sub_matrix_candidates(
+            matrix_results,
+            crossover_hz=fc,
+            original_sub1_alignment_ms=original_sub1_alignment,
+            original_sub2_alignment_ms=original_sub2_alignment,
+        )
+        winner = matrix_scoring["accepted_winner"]
         best_sub1 = _auto_sub_clamped_delay(float(winner.get("sub1_alignment_ms", sub1_winner_delay) or sub1_winner_delay))
         best_sub2 = _auto_sub_clamped_delay(float(winner.get("sub2_alignment_ms", sub2_winner_delay) or sub2_winner_delay))
 
@@ -7636,15 +7753,22 @@ async def _run_auto_sub_22_optimize(
         job["combined_matrix"].update({
             "status": "completed",
             "winner": winner,
+            "matrix_winner": matrix_scoring.get("matrix_winner"),
+            "incumbent_winner": matrix_scoring.get("incumbent_winner"),
+            "incumbent_score": matrix_scoring.get("incumbent_score"),
+            "accepted_winner": matrix_scoring.get("accepted_winner"),
+            "incumbent_accepted": matrix_scoring.get("incumbent_accepted"),
+            "reject_reason": matrix_scoring.get("reject_reason"),
             "runner_up": matrix_scoring.get("runner_up"),
             "results": matrix_scoring["results"],
             "valid_count": len(matrix_valid),
         })
         _log_auto_sub_timing_summary(job)
         job["status"] = "completed"
+        decision_label = "Kept 2.2 incumbent" if matrix_scoring.get("incumbent_accepted") else "Applied 2.2"
         job["message"] = (
-            f"Applied 2.2: Sub 1 {best_sub1:.2f} ms / Sub 2 {best_sub2:.2f} ms "
-            f"(score {winner['score_pct']:.0f} %)"
+            f"{decision_label}: Sub 1 {best_sub1:.2f} ms / Sub 2 {best_sub2:.2f} ms "
+            f"(score {winner['score_pct']:.0f} %, {matrix_scoring.get('reject_reason')})"
         )
         job["result"] = {
             "mode": OUTPUT_MODE_SUBWOOFER_22,
@@ -7656,10 +7780,20 @@ async def _run_auto_sub_22_optimize(
             "applied_sub2_alignment_ms": best_sub2,
             "applied": True,
             "auto_applied": True,
-            "apply_decision": "applied_22_combined_matrix",
+            "apply_decision": (
+                "kept_22_incumbent"
+                if matrix_scoring.get("incumbent_accepted")
+                else "applied_22_combined_matrix"
+            ),
             "crossover_hz": fc,
             "confidence": matrix_scoring.get("confidence", "uncertain"),
             "winner": winner,
+            "matrix_winner": matrix_scoring.get("matrix_winner"),
+            "incumbent_winner": matrix_scoring.get("incumbent_winner"),
+            "incumbent_score": matrix_scoring.get("incumbent_score"),
+            "accepted_winner": matrix_scoring.get("accepted_winner"),
+            "incumbent_accepted": matrix_scoring.get("incumbent_accepted"),
+            "reject_reason": matrix_scoring.get("reject_reason"),
             "sub1_coarse_winner": sub1_winner,
             "sub2_coarse_winner": sub2_winner,
             "runner_up": matrix_scoring.get("runner_up"),

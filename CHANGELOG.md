@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.48 (2026-06-29)
+
+### Fixed
+- 2.2 Mono AutoSub matrix now includes the current incumbent pair as a protected comparison candidate when needed.
+- Helps avoid replacing a good existing mono alignment from a too-narrow matrix search.
+- No changes to sweep routing, band weights, AutoGain, or stereo-bass behavior.
+
 ## 0.7.47 (2026-06-27)
 
 ### Added

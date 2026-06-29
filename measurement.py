@@ -6309,8 +6309,10 @@ def score_sub_alignment_candidates(
         low_guard.append(low)
 
     reference_low_guard = None
+    low_guard_reference = "best_low_guard"
     if low_guard_reference_points:
         reference_low_guard = _band_metrics(low_guard_reference_points, low_guard_min_hz, low_guard_max_hz)
+        low_guard_reference = "provided_points"
     elif low_guard_reference_delay_ms is not None:
         try:
             reference_delay = float(low_guard_reference_delay_ms)
@@ -6319,6 +6321,8 @@ def score_sub_alignment_candidates(
                 key=lambda index: abs(float(candidates[index].get("delay_ms", 0.0) or 0.0) - reference_delay),
             )
             reference_low_guard = low_guard[reference_index]
+            reference_name = candidates[reference_index].get("low_guard_reference_label") or candidates[reference_index].get("name")
+            low_guard_reference = str(reference_name or f"delay_ms={reference_delay:.2f}")
         except (TypeError, ValueError):
             reference_low_guard = None
     else:
@@ -6328,6 +6332,11 @@ def score_sub_alignment_candidates(
         )
         if explicit_reference_index is not None:
             reference_low_guard = low_guard[explicit_reference_index]
+            reference_name = (
+                candidates[explicit_reference_index].get("low_guard_reference_label")
+                or candidates[explicit_reference_index].get("name")
+            )
+            low_guard_reference = str(reference_name or "explicit_candidate")
         else:
             zero_index = min(
                 range(len(candidates)),
@@ -6335,9 +6344,14 @@ def score_sub_alignment_candidates(
             )
             if abs(float(candidates[zero_index].get("delay_ms", 0.0) or 0.0)) <= 0.05:
                 reference_low_guard = low_guard[zero_index]
+                reference_name = candidates[zero_index].get("low_guard_reference_label") or candidates[zero_index].get("name")
+                low_guard_reference = str(reference_name or "zero_delay")
 
     if reference_low_guard is None:
-        reference_low_guard = max(low_guard, key=lambda item: item["p20"])
+        reference_index = max(range(len(low_guard)), key=lambda index: low_guard[index]["p20"])
+        reference_low_guard = low_guard[reference_index]
+        reference_name = candidates[reference_index].get("low_guard_reference_label") or candidates[reference_index].get("name")
+        low_guard_reference = str(reference_name or "best_low_guard")
 
     def _norm(vals, higher_better):
         vals = list(vals)
@@ -6407,6 +6421,7 @@ def score_sub_alignment_candidates(
             "low_guard_max_hz": round(low_guard_max_hz, 1),
             "low_guard_p20_db": round(low_guard[i]["p20"], 1),
             "low_guard_reference_p20_db": round(reference_low_guard["p20"], 1),
+            "low_guard_reference": low_guard_reference,
             "mean_primary_db": round(pri["mean"], 1),
             "min_primary_db": round(pri["min"], 1),
             "swing_primary_db": round(pri["swing"], 1),
