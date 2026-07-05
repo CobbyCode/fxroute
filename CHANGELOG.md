@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.49 (2026-07-05)
+
+### Fixed
+- Subwoofer measurements no longer use a direct EasyEffects-to-hardware bypass.
+- Normal 2.1 and 2.2 measurements remain filter-aware and stable.
+- Radio resume and footer playback now work after stop or idle.
+
 ## 0.7.48 (2026-06-29)
 
 ### Fixed
