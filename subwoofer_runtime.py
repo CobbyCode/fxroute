@@ -15,6 +15,7 @@ import asyncio
 import logging
 import math
 import os
+import re
 import shlex
 from dataclasses import dataclass
 from pathlib import Path
@@ -574,10 +575,87 @@ class Subwoofer21Runtime:
         self._linked_output_key = None
 
     async def _remove_direct_easyeffects_front_links(self, output_key: str) -> None:
+        direct_link_ids = await self._find_direct_easyeffects_front_link_ids(output_key)
+        for item in direct_link_ids:
+            link_id = str(item.get("link_id") or "").strip()
+            if not link_id:
+                continue
+            result = await self._command_runner(["pw-link", "-d", link_id])
+            if result.returncode == 0:
+                self._removed_direct_front_links += 1
+            else:
+                fallback = await self._unlink(
+                    PipeWireLink(str(item.get("source_port") or ""), str(item.get("target_port") or "")),
+                    ignore_errors=True,
+                )
+                if fallback.returncode == 0:
+                    self._removed_direct_front_links += 1
+                else:
+                    message = (result.stderr or result.stdout or fallback.stderr or fallback.stdout or "").strip()
+                    if "No such file or directory" in message:
+                        continue
+                    logger.warning(
+                        "Failed to remove direct EasyEffects front link by id=%s (%s -> %s): %s",
+                        link_id,
+                        item.get("source_port"),
+                        item.get("target_port"),
+                        message,
+                    )
         for link in self._direct_easyeffects_front_links(output_key):
             result = await self._unlink(link, ignore_errors=True)
             if result.returncode == 0:
                 self._removed_direct_front_links += 1
+
+    @staticmethod
+    def _parse_pw_link_id_links(text: str) -> list[dict[str, str]]:
+        links: list[dict[str, str]] = []
+        current_port = ""
+        port_line = re.compile(r"^\s*(\d+)\s+(\S.*)$")
+        link_line = re.compile(r"^\s*(\d+)\s+\|(<-|->)\s+(\d+)\s+(\S.*)$")
+        for raw_line in (text or "").splitlines():
+            match = link_line.match(raw_line)
+            if match and current_port:
+                link_id, direction, _other_id, other_port = match.groups()
+                other_port = other_port.strip()
+                if direction == "->":
+                    source_port, target_port = current_port, other_port
+                else:
+                    source_port, target_port = other_port, current_port
+                links.append(
+                    {
+                        "link_id": link_id,
+                        "source_port": source_port,
+                        "target_port": target_port,
+                    }
+                )
+                continue
+            match = port_line.match(raw_line)
+            if match and "|" not in raw_line:
+                current_port = match.group(2).strip()
+        return links
+
+    async def _find_direct_easyeffects_front_link_ids(self, output_key: str) -> list[dict[str, str]]:
+        if not output_key:
+            return []
+        expected = {
+            ("ee_soe_output_level:output_FL", f"{output_key}:playback_FL"),
+            ("ee_soe_output_level:output_FR", f"{output_key}:playback_FR"),
+        }
+        result = await self._command_runner(["pw-link", "-lI"])
+        if result.returncode != 0:
+            logger.warning("Failed to list PipeWire link ids: %s", (result.stderr or result.stdout or "").strip())
+            return []
+        matches: list[dict[str, str]] = []
+        for item in self._parse_pw_link_id_links(result.stdout or ""):
+            if (item.get("source_port"), item.get("target_port")) in expected:
+                matches.append({**item, "role": "direct-easyeffects-to-hardware"})
+        return matches
+
+    async def direct_easyeffects_front_links_present(self) -> bool:
+        output_key = self._linked_output_key or (self._config.output_key if self._config else "")
+        if not output_key:
+            return False
+        return bool(await self._find_direct_easyeffects_front_link_ids(output_key))
 
     async def _restore_direct_easyeffects_front_links(self, output_key: str) -> None:
         for link in self._direct_easyeffects_front_links(output_key):

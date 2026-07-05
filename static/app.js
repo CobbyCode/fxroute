@@ -231,6 +231,7 @@ let pendingPlaybackRequestId = 0;
 let nowPlayingCueTimer = null;
 let nowPlayingCueCoverAbort = null;
 let pendingFooterSingleTrackStart = null;
+let lastRadioTrack = null;
 let pauseActionRequestId = 0;
 const FOOTER_SINGLE_TRACK_START_LOCK_MS = 5000;
 let volumeTimer = null;
@@ -2222,9 +2223,15 @@ async function togglePlayback() {
     const previousPlaying = !!state.playback.playing;
     const previousPaused = !!state.playback.paused;
     const previousEnded = !!state.playback.ended;
+    const previousTrack = state.playback.current_track ? { ...state.playback.current_track } : null;
+    const replayRadioTrack = !state.playback.current_track ? getLastRadioTrack() : null;
     const canTogglePause = !!state.playback.current_track && !!state.playback.current_file && !previousEnded;
     if (!canTogglePause) {
-        if (!state.playback.current_track) return;
+        if (replayRadioTrack) {
+            state.playback.current_track = replayRadioTrack;
+        } else if (!state.playback.current_track) {
+            return;
+        }
     }
     const requestId = ++pauseActionRequestId;
     playbackActionInFlight = true;
@@ -2259,6 +2266,7 @@ async function togglePlayback() {
         state.playback.playing = previousPlaying;
         state.playback.paused = previousPaused;
         state.playback.ended = previousEnded;
+        state.playback.current_track = previousTrack;
         playbackActionInFlight = false;
         updatePlaybackUI();
         showToast(e.message || 'Failed to toggle playback', 'error');
@@ -2317,9 +2325,17 @@ function mergePlaybackState(data) {
         delete nextPlayback.volume;
     }
     state.playback = { ...state.playback, ...nextPlayback };
+    rememberLastRadioTrack(state.playback.current_track);
     if (remoteVolume !== null) {
         applyRemoteVolume(remoteVolume);
     }
+}
+function rememberLastRadioTrack(track) {
+    if (!track || track.source !== 'radio' || !track.url) return;
+    lastRadioTrack = { ...track };
+}
+function getLastRadioTrack() {
+    return lastRadioTrack ? { ...lastRadioTrack } : null;
 }
 function buildOptimisticSingleTrackQueue(track) {
     return {
@@ -3057,7 +3073,8 @@ function stopPlaybackPositionPoll() {
 }
 function updatePlayPauseButton(playbackState) {
     elements.btnPlayPause.textContent = playbackState === 'playing' ? '⏸' : '▶';
-    elements.btnPlayPause.disabled = playbackActionInFlight || (!state.playback.current_track && playbackState === 'stopped');
+    const hasPlayableContext = !!(state.playback.current_track || getLastRadioTrack());
+    elements.btnPlayPause.disabled = playbackActionInFlight || (!hasPlayableContext && playbackState === 'stopped');
 }
 function highlightActiveTrack() {
     if (window.__footerSource === 'spotify') {
@@ -5062,13 +5079,15 @@ async function playRadio(stationId) {
     playbackActionInFlight = true;
     armLocalFooterHold();
     armFooterContentFreeze();
-    state.playback.current_track = {
+    const optimisticRadioTrack = {
         id: `radio_${station.id}`,
         title: station.title,
         artist: station.artist || 'SomaFM',
         source: 'radio',
         url: station.stream_url,
     };
+    rememberLastRadioTrack(optimisticRadioTrack);
+    state.playback.current_track = optimisticRadioTrack;
     state.playback.live_title = null;
     state.playback.playing = true;
     state.playback.paused = false;

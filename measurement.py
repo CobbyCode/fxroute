@@ -25,6 +25,7 @@ import numpy as np
 from samplerate import (
     OUTPUT_MODE_SUBWOOFER_21,
     OUTPUT_MODE_SUBWOOFER_22,
+    OUTPUT_MODE_SUBWOOFER_22_MODES,
     OUTPUT_MODE_SUBWOOFER_22_STEREO,
     OUTPUT_MODE_SUBWOOFER_MODES,
     get_audio_output_overview,
@@ -39,6 +40,12 @@ MEASUREMENT_LEGACY_21_HELPER_ROUTE = "subwoofer-2.1-helper-input"
 MEASUREMENT_SUBWOOFER_HELPER_ROUTES = {
     MEASUREMENT_SUBWOOFER_HELPER_ROUTE,
     MEASUREMENT_LEGACY_21_HELPER_ROUTE,
+}
+MEASUREMENT_SCOPE_ACTIVE_CHAIN = "active_chain"
+MEASUREMENT_SCOPE_RAW_HELPER = "raw_helper"
+MEASUREMENT_SCOPES = {
+    MEASUREMENT_SCOPE_ACTIVE_CHAIN,
+    MEASUREMENT_SCOPE_RAW_HELPER,
 }
 
 
@@ -275,6 +282,7 @@ class MeasurementStore:
         calibration_bytes: bytes | None = None,
         calibration_ref: str | None = None,
         sweep_profile: dict[str, float] | None = None,
+        measurement_scope: str = MEASUREMENT_SCOPE_ACTIVE_CHAIN,
     ) -> dict[str, Any]:
         inputs = self._discover_capture_inputs()
         selected_input = next((item for item in inputs if item["id"] == input_id), None)
@@ -308,6 +316,7 @@ class MeasurementStore:
             calibration_bytes=calibration_bytes,
             calibration_ref=calibration_ref,
         )
+        normalized_scope = self._normalize_measurement_scope(measurement_scope)
 
         job_id = f"measurement-job-{uuid4().hex[:12]}"
         now = self._utc_now()
@@ -333,6 +342,7 @@ class MeasurementStore:
             "calibration": calibration_meta or {"filename": "", "applied": False},
             "message": "Sweep queued.",
             "scope_note": MEASUREMENT_SCOPE_NOTE,
+            "measurement_scope": normalized_scope,
             "result": None,
             "error": None,
             "sweep_profile": sweep_profile if isinstance(sweep_profile, dict) and sweep_profile else None,
@@ -353,6 +363,7 @@ class MeasurementStore:
         calibration_filename: str | None = None,
         calibration_bytes: bytes | None = None,
         calibration_ref: str | None = None,
+        measurement_scope: str = MEASUREMENT_SCOPE_ACTIVE_CHAIN,
     ) -> dict[str, Any]:
         normalized_repeat_count = 3
         inputs = self._discover_capture_inputs()
@@ -382,6 +393,7 @@ class MeasurementStore:
             calibration_bytes=calibration_bytes,
             calibration_ref=calibration_ref,
         )
+        normalized_scope = self._normalize_measurement_scope(measurement_scope)
         job_id = f"measurement-repeat-job-{uuid4().hex[:12]}"
         now = self._utc_now()
         job = {
@@ -409,6 +421,7 @@ class MeasurementStore:
             "calibration": calibration_meta or {"filename": "", "applied": False},
             "message": "L/R repeat queued.",
             "scope_note": MEASUREMENT_SCOPE_NOTE,
+            "measurement_scope": normalized_scope,
             "result": None,
             "error": None,
         }
@@ -1858,6 +1871,7 @@ class MeasurementStore:
         selected_input = job.get("input") or {}
         input_channels = job.get("input_channels") if isinstance(job.get("input_channels"), dict) else {}
         channel = str(job.get("channel") or "left")
+        measurement_scope = self._normalize_measurement_scope(job.get("measurement_scope"))
         calibration_meta = job.get("calibration") if isinstance(job.get("calibration"), dict) else {"filename": "", "applied": False}
 
         sample_rate = self._resolve_measurement_sample_rate()
@@ -1912,7 +1926,7 @@ class MeasurementStore:
             raise RuntimeError("Refusing to measure through a non-microphone source; select a real PipeWire input")
 
         playback_channel = channel
-        playback_target = self._resolve_playback_target()
+        playback_target = self._resolve_playback_target(measurement_scope=measurement_scope)
         host_reference = self._resolve_host_reference_capture(
             playback_target=playback_target,
             mic_source_node_name=source_node_name,
@@ -1978,6 +1992,7 @@ class MeasurementStore:
                     capture_path=capture_path,
                     playback_path=playback_path,
                     playback_target=playback_target,
+                    measurement_scope=measurement_scope,
                     sweep_meta=sweep_meta,
                     sample_rate=sample_rate,
                     duration_seconds=duration_seconds,
@@ -1995,36 +2010,52 @@ class MeasurementStore:
                     reference_status = self._evaluate_electrical_reference_status(analysis)
                     if not reference_status["usable"]:
                         reference_warning = reference_status["warning"]
-                        logger.warning("Electrical measurement reference rejected for %s: %s", job_id, reference_warning)
-                        logger.info(
-                            "ER fallback capture within attempt %d/%d: reference quality rejected, retrying with host timing",
-                            attempts_used, HOST_SWEEP_MAX_ATTEMPTS,
-                        )
-                        if capture_path.exists():
-                            capture_path.unlink()
-                        analysis, capture_info, playback_info = self._run_host_capture_attempt(
-                            job_id=job_id,
-                            mic_source_node_name=source_node_name,
-                            reference_capture=host_reference,
-                            channel=playback_channel,
-                            capture_channels=2,
-                            capture_path=capture_path,
-                            playback_path=playback_path,
-                            playback_target=playback_target,
-                            sweep_meta=sweep_meta,
-                            sample_rate=sample_rate,
-                            duration_seconds=duration_seconds,
-                            sweep_seconds=sweep_seconds,
-                            lead_in_seconds=lead_in_seconds,
-                            tail_seconds=tail_seconds,
-                            record_preroll_seconds=record_preroll_seconds,
-                            record_postroll_seconds=record_postroll_seconds,
-                            record_duration_seconds=record_duration_seconds,
-                            calibration_curve=calibration_curve,
-                            mic_input_channel_index=mic_input_channel_index,
-                            electrical_reference_channel_index=None,
-                        )
-                        self._append_reference_fallback_warning(analysis, reference_warning)
+                        if self._should_keep_active_22_dsp_electrical_reference(
+                            analysis,
+                            measurement_scope=measurement_scope,
+                        ):
+                            self._mark_dsp_tolerated_electrical_reference_usable(
+                                analysis,
+                                warning=reference_warning,
+                            )
+                            logger.warning(
+                                "Electrical measurement reference marginal for %s but kept for active 2.2 DSP path: %s",
+                                job_id,
+                                reference_warning,
+                            )
+                            reference_warning = ""
+                        else:
+                            logger.warning("Electrical measurement reference rejected for %s: %s", job_id, reference_warning)
+                            logger.info(
+                                "ER fallback capture within attempt %d/%d: reference quality rejected, retrying with host timing",
+                                attempts_used, HOST_SWEEP_MAX_ATTEMPTS,
+                            )
+                            if capture_path.exists():
+                                capture_path.unlink()
+                            analysis, capture_info, playback_info = self._run_host_capture_attempt(
+                                job_id=job_id,
+                                mic_source_node_name=source_node_name,
+                                reference_capture=host_reference,
+                                channel=playback_channel,
+                                capture_channels=2,
+                                capture_path=capture_path,
+                                playback_path=playback_path,
+                                playback_target=playback_target,
+                                measurement_scope=measurement_scope,
+                                sweep_meta=sweep_meta,
+                                sample_rate=sample_rate,
+                                duration_seconds=duration_seconds,
+                                sweep_seconds=sweep_seconds,
+                                lead_in_seconds=lead_in_seconds,
+                                tail_seconds=tail_seconds,
+                                record_preroll_seconds=record_preroll_seconds,
+                                record_postroll_seconds=record_postroll_seconds,
+                                record_duration_seconds=record_duration_seconds,
+                                calibration_curve=calibration_curve,
+                                mic_input_channel_index=mic_input_channel_index,
+                                electrical_reference_channel_index=None,
+                            )
+                            self._append_reference_fallback_warning(analysis, reference_warning)
                 capture_level_low = self._analysis_has_warning_code(analysis, "capture-level-low")
                 final_capture_level_low = capture_level_low
                 if (
@@ -2068,6 +2099,7 @@ class MeasurementStore:
                             capture_path=capture_path,
                             playback_path=playback_path,
                             playback_target=playback_target,
+                            measurement_scope=measurement_scope,
                             sweep_meta=sweep_meta,
                             sample_rate=sample_rate,
                             duration_seconds=duration_seconds,
@@ -2159,6 +2191,7 @@ class MeasurementStore:
             ],
             "message": completion_message,
             "scope_note": MEASUREMENT_SCOPE_NOTE,
+            "measurement_scope": measurement_scope,
             "_capture_path": str(capture_path),
             "_playback_path": str(playback_path),
             "_sample_rate": sample_rate,
@@ -2185,6 +2218,7 @@ class MeasurementStore:
         capture_path: Path,
         playback_path: Path,
         playback_target: dict[str, Any],
+        measurement_scope: str,
         sweep_meta: dict[str, Any],
         sample_rate: int,
         duration_seconds: float,
@@ -2221,7 +2255,11 @@ class MeasurementStore:
         if self._pw_record_supports_option("--sample-count"):
             record_command.extend(["--sample-count", str(sample_count)])
         record_command.append(str(capture_path))
-        playback_route = self._build_measurement_playback_route(play_node_name, playback_target)
+        playback_route = self._build_measurement_playback_route(
+            play_node_name,
+            playback_target,
+            measurement_scope=measurement_scope,
+        )
         play_command = self._build_measurement_play_command(
             play_node_name=play_node_name,
             playback_path=playback_path,
@@ -2245,6 +2283,9 @@ class MeasurementStore:
         play_timed_out = False
         record_stdout = ""
         record_stderr = ""
+        direct_bypass_monitor_stop = threading.Event()
+        direct_bypass_monitor_violations: list[dict[str, Any]] = []
+        direct_bypass_monitor_thread: threading.Thread | None = None
         helper_process_snapshots: list[dict[str, Any]] = []
         detailed_diagnostics_enabled = _detailed_measurement_diagnostics_enabled()
         routing_snapshots: list[dict[str, Any]] = []
@@ -2308,6 +2349,18 @@ class MeasurementStore:
                     playback_target=playback_target,
                     playback_route=playback_route,
                 )
+            elif playback_route["route"] == "subwoofer-active-chain":
+                playback_route_diagnostics = self._link_measurement_playback_to_active_chain(
+                    play_node_name=play_node_name,
+                    playback_target=playback_target,
+                    playback_route=playback_route,
+                )
+                direct_bypass_monitor_thread = threading.Thread(
+                    target=self._monitor_subwoofer_active_chain_direct_bypass,
+                    args=(playback_target, direct_bypass_monitor_stop, direct_bypass_monitor_violations),
+                    daemon=True,
+                )
+                direct_bypass_monitor_thread.start()
             time.sleep(0.2)
             if detailed_diagnostics_enabled:
                 routing_snapshots.append(
@@ -2359,6 +2412,9 @@ class MeasurementStore:
                 pass
             raise
         finally:
+            direct_bypass_monitor_stop.set()
+            if direct_bypass_monitor_thread is not None and direct_bypass_monitor_thread.is_alive():
+                direct_bypass_monitor_thread.join(timeout=1.0)
             level_monitor_stop.set()
             if level_monitor_thread.is_alive():
                 level_monitor_thread.join(timeout=1.0)
@@ -2381,6 +2437,12 @@ class MeasurementStore:
                         play_node_name=play_node_name,
                     )
                 )
+
+        if direct_bypass_monitor_violations:
+            raise RuntimeError(
+                "Subwoofer active-chain measurement aborted: direct EasyEffects hardware bypass remained during playback: "
+                f"{direct_bypass_monitor_violations[:4]}"
+            )
 
         if job_id in self._cancelled_jobs:
             raise RuntimeError("Measurement cancelled.")
@@ -2502,6 +2564,7 @@ class MeasurementStore:
         routing_diagnostics = {
             "schema": "fxroute.measurement-routing-diagnostics.v1",
             "detail_enabled": detailed_diagnostics_enabled,
+            "measurement_scope": measurement_scope,
             "playback_sink": {
                 "target_name": playback_target["target_name"],
                 "target_label": playback_target["target_label"],
@@ -2772,6 +2835,48 @@ class MeasurementStore:
         reference_path["stability"] = "stable"
         analysis["reference_path"] = reference_path
         return {"usable": True, "warning": ""}
+
+    def _should_keep_active_22_dsp_electrical_reference(
+        self,
+        analysis: dict[str, Any],
+        *,
+        measurement_scope: str,
+    ) -> bool:
+        if self._normalize_measurement_scope(measurement_scope) != MEASUREMENT_SCOPE_ACTIVE_CHAIN:
+            return False
+        try:
+            output_mode = get_audio_output_overview().get("output_mode") or {}
+        except Exception:
+            return False
+        if str(output_mode.get("mode") or "") not in OUTPUT_MODE_SUBWOOFER_22_MODES:
+            return False
+
+        reference_path = analysis.get("reference_path") if isinstance(analysis.get("reference_path"), dict) else {}
+        peak_dbfs = float(reference_path.get("peak_dbfs") or -120.0)
+        clipped = bool(reference_path.get("clipped")) or peak_dbfs >= CAPTURE_CLIP_FAIL_DBFS
+        if clipped or peak_dbfs < ELECTRICAL_REFERENCE_MIN_PEAK_DBFS:
+            return False
+
+        items = ((analysis.get("quality_checks") or {}).get("items") or [])
+        if any(str(item.get("level") or "") == "error" for item in items):
+            return False
+        return self._analysis_has_warning_code(analysis, "soft-end-alignment-21")
+
+    @staticmethod
+    def _mark_dsp_tolerated_electrical_reference_usable(analysis: dict[str, Any], *, warning: str) -> None:
+        reference_path = analysis.get("reference_path") if isinstance(analysis.get("reference_path"), dict) else {}
+        clock = analysis.get("clock") if isinstance(analysis.get("clock"), dict) else {}
+        alignment_score = min(float(clock.get("start_score") or 0.0), float(clock.get("end_score") or 0.0))
+        sharpness_db = float(reference_path.get("ir_sharpness_db") or 0.0)
+        reference_path["usable"] = True
+        reference_path["electrical_reference_used"] = True
+        reference_path["timing_status"] = "electrical-reference"
+        reference_path["timing_label"] = "Electrical reference active"
+        reference_path["confidence"] = round(min(alignment_score, max(0.0, sharpness_db / 60.0)), 6)
+        reference_path["stability"] = "dsp-end-anchor-tolerated"
+        if warning:
+            reference_path["warning"] = warning.replace("; used host monitor timing fallback.", "")
+        analysis["reference_path"] = reference_path
 
     @staticmethod
     def _append_reference_fallback_warning(analysis: dict[str, Any] | None, warning: str) -> None:
@@ -4731,11 +4836,24 @@ class MeasurementStore:
         convolved = np.fft.irfft(signal_fft * kernel_fft, n=fft_size)
         return convolved[: signal.size + kernel.size - 1]
 
-    def _resolve_playback_target(self) -> dict[str, Any]:
+    @staticmethod
+    def _normalize_measurement_scope(scope: Any) -> str:
+        normalized = str(scope or MEASUREMENT_SCOPE_ACTIVE_CHAIN).strip().lower().replace("-", "_")
+        if normalized not in MEASUREMENT_SCOPES:
+            raise ValueError(f"measurement_scope must be one of: {', '.join(sorted(MEASUREMENT_SCOPES))}")
+        return normalized
+
+    def _resolve_playback_target(self, *, measurement_scope: str = MEASUREMENT_SCOPE_ACTIVE_CHAIN) -> dict[str, Any]:
         overview = get_audio_output_overview()
         current_output = overview.get("current_output") or {}
         selected_output = overview.get("selected_output") or {}
         default_output = overview.get("default_output") or {}
+        output_mode = overview.get("output_mode") if isinstance(overview.get("output_mode"), dict) else {}
+        if (
+            self._normalize_measurement_scope(measurement_scope) == MEASUREMENT_SCOPE_ACTIVE_CHAIN
+            and str(output_mode.get("mode") or "") in OUTPUT_MODE_SUBWOOFER_MODES
+        ):
+            return self._resolve_active_chain_playback_target(overview)
         target_name = str(
             current_output.get("name")
             or current_output.get("target_name")
@@ -4756,6 +4874,23 @@ class MeasurementStore:
                 or default_output.get("target_label")
                 or target_name
             ),
+            "active_rate": current_output.get("active_rate") or selected_output.get("active_rate") or default_output.get("active_rate"),
+        }
+
+    def _resolve_active_chain_playback_target(self, overview: dict[str, Any]) -> dict[str, Any]:
+        target_name = "easyeffects_sink"
+        ports = self._list_pw_ports(target_name)
+        if f"{target_name}:playback_FL" not in ports or f"{target_name}:playback_FR" not in ports:
+            raise RuntimeError(
+                "Subwoofer active-chain measurement route unavailable: EasyEffects input sink ports are missing "
+                f"for {target_name} (ports={ports})"
+            )
+        current_output = overview.get("current_output") or {}
+        selected_output = overview.get("selected_output") or {}
+        default_output = overview.get("default_output") or {}
+        return {
+            "target_name": target_name,
+            "target_label": f"Active listening chain ({target_name})",
             "active_rate": current_output.get("active_rate") or selected_output.get("active_rate") or default_output.get("active_rate"),
         }
 
@@ -5497,13 +5632,17 @@ class MeasurementStore:
         self,
         play_node_name: str,
         playback_target: dict[str, Any],
+        *,
+        measurement_scope: str = MEASUREMENT_SCOPE_ACTIVE_CHAIN,
     ) -> dict[str, Any]:
+        measurement_scope = self._normalize_measurement_scope(measurement_scope)
         overview = get_audio_output_overview()
         output_mode = overview.get("output_mode") if isinstance(overview.get("output_mode"), dict) else {}
         mode = str(output_mode.get("mode") or "")
         if mode not in OUTPUT_MODE_SUBWOOFER_MODES:
             return {
                 "route": "direct-sink",
+                "measurement_scope": measurement_scope,
                 "output_mode": mode or "stereo",
                 "play_node_name": play_node_name,
                 "playback_target_name": str(playback_target.get("target_name") or ""),
@@ -5512,9 +5651,21 @@ class MeasurementStore:
             }
 
         helper_node_name = "fxroute_21_stage1"
+        if measurement_scope == MEASUREMENT_SCOPE_ACTIVE_CHAIN:
+            return {
+                "route": "subwoofer-active-chain",
+                "measurement_scope": measurement_scope,
+                "output_mode": mode,
+                "play_node_name": play_node_name,
+                "playback_target_name": str(playback_target.get("target_name") or ""),
+                "helper_node_name": helper_node_name,
+                "helper_input_ports": {},
+            }
+
         helper_input_ports = self._wait_for_21_helper_input_ports(helper_node_name)
         return {
             "route": MEASUREMENT_SUBWOOFER_HELPER_ROUTE,
+            "measurement_scope": measurement_scope,
             "output_mode": mode,
             "play_node_name": play_node_name,
             "playback_target_name": str(playback_target.get("target_name") or ""),
@@ -5530,7 +5681,7 @@ class MeasurementStore:
         playback_target: dict[str, Any],
         playback_route: dict[str, Any],
     ) -> list[str]:
-        if playback_route.get("route") in MEASUREMENT_SUBWOOFER_HELPER_ROUTES:
+        if playback_route.get("route") in MEASUREMENT_SUBWOOFER_HELPER_ROUTES or playback_route.get("route") == "subwoofer-active-chain":
             return [
                 "pw-play",
                 "-P",
@@ -5554,9 +5705,11 @@ class MeasurementStore:
     def _new_measurement_playback_route_diagnostics(playback_route: dict[str, Any]) -> dict[str, Any]:
         return {
             "measurement_playback_route": playback_route.get("route") or "direct-sink",
+            "measurement_scope": playback_route.get("measurement_scope") or MEASUREMENT_SCOPE_ACTIVE_CHAIN,
             "output_mode": playback_route.get("output_mode") or "",
             "temporary_playback_links": [],
             "play_node_helper_links": [],
+            "active_chain_input_links": [],
             "direct_hardware_links_removed": [],
             "direct_hardware_links_remaining": [],
             "play_node_links_after_manual_link": [],
@@ -5647,6 +5800,209 @@ class MeasurementStore:
             diagnostics["direct_hardware_links_removed"],
         )
         return diagnostics
+
+    def _link_measurement_playback_to_active_chain(
+        self,
+        *,
+        play_node_name: str,
+        playback_target: dict[str, Any],
+        playback_route: dict[str, Any],
+    ) -> dict[str, Any]:
+        diagnostics = self._new_measurement_playback_route_diagnostics(playback_route)
+        play_ports = self._wait_for_measurement_play_ports(play_node_name)
+        input_sink_name = str(playback_route.get("playback_target_name") or playback_target.get("target_name") or "").strip()
+        input_ports = self._list_pw_ports(input_sink_name)
+        input_left = f"{input_sink_name}:playback_FL"
+        input_right = f"{input_sink_name}:playback_FR"
+        if input_left not in input_ports or input_right not in input_ports:
+            raise RuntimeError(
+                "Subwoofer active-chain measurement playback route unavailable: input sink ports missing "
+                f"for {input_sink_name} (ports={input_ports})"
+            )
+
+        temporary_links = [
+            {"source_port": play_ports["left"], "target_port": input_left, "role": "measurement-play-left-to-active-chain"},
+            {"source_port": play_ports["right"], "target_port": input_right, "role": "measurement-play-right-to-active-chain"},
+        ]
+        created_links: list[dict[str, str]] = []
+        try:
+            for link in temporary_links:
+                self._create_pipewire_link(str(link["source_port"]), str(link["target_port"]))
+                created_links.append(link)
+        except Exception:
+            self._cleanup_measurement_playback_links(
+                play_node_name=play_node_name,
+                temporary_links=created_links,
+            )
+            raise
+
+        helper_node_name = str(playback_route.get("helper_node_name") or "fxroute_21_stage1")
+        diagnostics["direct_hardware_links_removed"] = self._remove_subwoofer_direct_easyeffects_hardware_links(playback_target)
+        diagnostics["direct_hardware_links_remaining"] = self._find_subwoofer_direct_easyeffects_hardware_links(playback_target)
+        if diagnostics["direct_hardware_links_remaining"]:
+            self._cleanup_measurement_playback_links(
+                play_node_name=play_node_name,
+                temporary_links=created_links,
+            )
+            raise RuntimeError(
+                "Subwoofer active-chain measurement still has direct EasyEffects hardware links after cleanup: "
+                f"{diagnostics['direct_hardware_links_remaining']}"
+            )
+        helper_links = [
+            {"source_port": source_port, "target_port": target_port, "role": "measurement-play-direct-helper"}
+            for source_port, target_port in (
+                (play_ports["left"], f"{helper_node_name}:input_L"),
+                (play_ports["right"], f"{helper_node_name}:input_R"),
+            )
+            if self._pipewire_link_exists(source_port, target_port)
+        ]
+        if helper_links:
+            self._cleanup_measurement_playback_links(
+                play_node_name=play_node_name,
+                temporary_links=created_links,
+            )
+            raise RuntimeError(
+                "Subwoofer active-chain measurement playback has forbidden direct helper links: "
+                f"{helper_links}"
+            )
+
+        diagnostics["temporary_playback_links"] = temporary_links
+        diagnostics["active_chain_input_links"] = list(temporary_links)
+        diagnostics["play_node_links_after_manual_link"] = self._list_relevant_pw_links(
+            [play_node_name, input_sink_name, helper_node_name]
+        )
+        diagnostics["direct_hardware_links_remaining"] = self._find_subwoofer_direct_easyeffects_hardware_links(playback_target)
+        if diagnostics["direct_hardware_links_remaining"]:
+            self._cleanup_measurement_playback_links(
+                play_node_name=play_node_name,
+                temporary_links=created_links,
+            )
+            raise RuntimeError(
+                "Subwoofer active-chain measurement has direct EasyEffects hardware links after manual playback link: "
+                f"{diagnostics['direct_hardware_links_remaining']}"
+            )
+        logger.info(
+            "Subwoofer active-chain measurement playback manually linked: output_mode=%s play_node=%s input_links=%s",
+            playback_route.get("output_mode") or "",
+            play_node_name,
+            diagnostics["active_chain_input_links"],
+        )
+        return diagnostics
+
+    @staticmethod
+    def _parse_pw_link_id_links(text: str) -> list[dict[str, str]]:
+        links: list[dict[str, str]] = []
+        current_port = ""
+        port_line = re.compile(r"^\s*(\d+)\s+(\S.*)$")
+        link_line = re.compile(r"^\s*(\d+)\s+\|(<-|->)\s+(\d+)\s+(\S.*)$")
+        for raw_line in (text or "").splitlines():
+            match = link_line.match(raw_line)
+            if match and current_port:
+                link_id, direction, _other_id, other_port = match.groups()
+                other_port = other_port.strip()
+                if direction == "->":
+                    source_port, target_port = current_port, other_port
+                else:
+                    source_port, target_port = other_port, current_port
+                links.append(
+                    {
+                        "link_id": link_id,
+                        "source_port": source_port,
+                        "target_port": target_port,
+                    }
+                )
+                continue
+            match = port_line.match(raw_line)
+            if match and "|" not in raw_line:
+                current_port = match.group(2).strip()
+        return links
+
+    def _find_subwoofer_direct_easyeffects_hardware_links(self, playback_target: dict[str, Any]) -> list[dict[str, str]]:
+        target_name = self._resolve_subwoofer_hardware_output_key(playback_target)
+        if not target_name:
+            return []
+        expected = {
+            ("ee_soe_output_level:output_FL", f"{target_name}:playback_FL"),
+            ("ee_soe_output_level:output_FR", f"{target_name}:playback_FR"),
+        }
+        try:
+            completed = subprocess.run(["pw-link", "-lI"], capture_output=True, text=True, timeout=3)
+        except Exception as exc:
+            logger.warning("Could not list PipeWire link ids for subwoofer direct-bypass check: %s", exc)
+            return []
+        if completed.returncode != 0:
+            logger.warning(
+                "Could not list PipeWire link ids for subwoofer direct-bypass check: %s",
+                (completed.stderr or completed.stdout or "").strip(),
+            )
+            return []
+        matches: list[dict[str, str]] = []
+        for item in self._parse_pw_link_id_links(completed.stdout or ""):
+            if (item.get("source_port"), item.get("target_port")) in expected:
+                matches.append({**item, "role": "direct-easyeffects-to-hardware"})
+        return matches
+
+    @staticmethod
+    def _resolve_subwoofer_hardware_output_key(playback_target: dict[str, Any]) -> str:
+        try:
+            overview = get_audio_output_overview()
+            output_mode = overview.get("output_mode") if isinstance(overview.get("output_mode"), dict) else {}
+            output_key = str(output_mode.get("effective_output_key") or "").strip()
+            if output_key:
+                return output_key
+        except Exception:
+            pass
+        return str(playback_target.get("target_name") or "").strip()
+
+    def _remove_subwoofer_direct_easyeffects_hardware_links(self, playback_target: dict[str, Any]) -> list[dict[str, str]]:
+        removed: list[dict[str, str]] = []
+        for link in self._find_subwoofer_direct_easyeffects_hardware_links(playback_target):
+            link_id = str(link.get("link_id") or "").strip()
+            if not link_id:
+                continue
+            try:
+                completed = subprocess.run(["pw-link", "-d", link_id], capture_output=True, text=True, timeout=3)
+            except Exception as exc:
+                logger.warning("Could not remove subwoofer direct-bypass link id=%s: %s", link_id, exc)
+                continue
+            if completed.returncode == 0:
+                removed.append(link)
+            elif self._disconnect_link(str(link.get("source_port") or ""), str(link.get("target_port") or "")):
+                removed.append(link)
+            else:
+                message = (completed.stderr or completed.stdout or "").strip()
+                if "No such file or directory" in message:
+                    continue
+                logger.warning(
+                    "Could not remove subwoofer direct-bypass link id=%s (%s -> %s): %s",
+                    link_id,
+                    link.get("source_port"),
+                    link.get("target_port"),
+                    message,
+                )
+        return removed
+
+    def _monitor_subwoofer_active_chain_direct_bypass(
+        self,
+        playback_target: dict[str, Any],
+        stop_event: threading.Event,
+        violations: list[dict[str, Any]],
+    ) -> None:
+        while not stop_event.is_set():
+            removed = self._remove_subwoofer_direct_easyeffects_hardware_links(playback_target)
+            remaining = self._find_subwoofer_direct_easyeffects_hardware_links(playback_target)
+            if removed:
+                logger.info("Subwoofer active-chain direct-bypass links removed during playback: %s", removed)
+            if remaining:
+                violations.append(
+                    {
+                        "removed": removed,
+                        "remaining": remaining,
+                        "checked_at": self._utc_now(),
+                    }
+                )
+                return
+            stop_event.wait(0.05)
 
     @staticmethod
     def _pipewire_link_exists(source_port: str, target_port: str) -> bool:

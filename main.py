@@ -820,6 +820,7 @@ silent_active_watch_tasks: dict[str, asyncio.Task] = {}
 latest_player_state_seq_seen = 0
 current_track_info = None
 last_track_info = None
+last_radio_track_info = None
 radio_reconnect_task = None
 radio_reconnect_attempts = 0
 radio_reconnect_url = None
@@ -2036,7 +2037,7 @@ async def _repair_subwoofer_runtime_inputs_after_measurement_release(target_rate
             {"target_rate": target_rate, "delay_s": delay},
         )
         links = state.get("links") or {}
-        if links.get("ee_to_helper_present"):
+        if links.get("ee_to_helper_present") and not links.get("direct_ee_to_hw_present"):
             continue
         logger.info(
             "Measurement release input repair applying: target_rate=%s delay_s=%.1f links=%s",
@@ -2080,14 +2081,16 @@ async def _subwoofer_runtime_link_watch_loop() -> None:
                 continue
             snapshot = subwoofer_runtime.snapshot()
             input_links_present = _subwoofer_helper_input_links_present()
-            if snapshot.get("active") and input_links_present:
+            direct_links_present = await subwoofer_runtime.direct_easyeffects_front_links_present()
+            if snapshot.get("active") and input_links_present and not direct_links_present:
                 continue
             if not snapshot.get("active") or not snapshot.get("helper_pid"):
                 logger.info(
-                    "Subwoofer link watch full resync applying: runtime_active=%s helper_pid=%s input_links_present=%s",
+                    "Subwoofer link watch full resync applying: runtime_active=%s helper_pid=%s input_links_present=%s direct_links_present=%s",
                     snapshot.get("active"),
                     snapshot.get("helper_pid"),
                     input_links_present,
+                    direct_links_present,
                 )
                 await _sync_subwoofer_runtime(overview)
                 await _dump_21_runtime_state(
@@ -2097,12 +2100,24 @@ async def _subwoofer_runtime_link_watch_loop() -> None:
                         "active_before": snapshot.get("active"),
                         "helper_pid_before": snapshot.get("helper_pid"),
                         "input_links_present_before": input_links_present,
+                        "direct_links_present_before": direct_links_present,
                     },
                 )
                 continue
-            logger.info("Subwoofer link watch repair applying: EE helper input links missing")
+            logger.info(
+                "Subwoofer link watch repair applying: input_links_present=%s direct_links_present=%s",
+                input_links_present,
+                direct_links_present,
+            )
             await subwoofer_runtime.reclean_direct_easyeffects_links()
-            await _dump_21_runtime_state("backend-link-watch-repair-after", {"reason": "ee-helper-input-missing"})
+            await _dump_21_runtime_state(
+                "backend-link-watch-repair-after",
+                {
+                    "reason": "direct-ee-to-hardware-present" if direct_links_present else "ee-helper-input-missing",
+                    "input_links_present_before": input_links_present,
+                    "direct_links_present_before": direct_links_present,
+                },
+            )
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -4687,7 +4702,7 @@ async def play_track(req: PlayRequest):
     track_id = req.track_id
     url = req.url
     queue_track_ids = req.queue_track_ids or []
-    global player_instance, current_track_info, last_track_info, source_transition_lock, current_footer_owner, radio_reconnect_attempts, radio_reconnect_url, radio_reconnect_active_since
+    global player_instance, current_track_info, last_track_info, last_radio_track_info, source_transition_lock, current_footer_owner, radio_reconnect_attempts, radio_reconnect_url, radio_reconnect_active_since
     if not player_instance or not player_instance._running:
         raise HTTPException(status_code=503, detail="Player not available")
     if not _can_send_play_command():
@@ -4776,6 +4791,8 @@ async def play_track(req: PlayRequest):
 
             current_track_info = track_info
             last_track_info = track_info
+            if source == "radio":
+                last_radio_track_info = dict(track_info)
             if source == "local":
                 _record_local_track_started(track_info)
             _mark_player_state_authoritative(player_instance.state)
@@ -4824,7 +4841,7 @@ async def pause_playback():
 
 @app.post("/api/playback/toggle")
 async def toggle_playback():
-    global player_instance, current_track_info
+    global player_instance, current_track_info, last_track_info, last_radio_track_info, radio_reconnect_attempts, radio_reconnect_url, radio_reconnect_active_since
     if not player_instance or not player_instance._running:
         raise HTTPException(status_code=503, detail="Player not available")
     if not _can_send_play_command():
@@ -4862,7 +4879,7 @@ async def toggle_playback():
             "playback": build_playback_payload(new_state),
         }
 
-    replay_track = current_track_info
+    replay_track = current_track_info or last_radio_track_info
     replay_url = (replay_track or {}).get("url")
     if not replay_url:
         raise HTTPException(status_code=409, detail="Nothing is available to replay")
@@ -4870,7 +4887,17 @@ async def toggle_playback():
     await pause_spotify_for_local_playback_broadcast()
     await _wait_for_pipewire_mpv_release()
     prearm_rate, prearm_generation = await _prearm_known_local_samplerate(replay_track, "replay")
+    if replay_track.get("source") == "radio":
+        radio_reconnect_attempts = 0
+        radio_reconnect_url = None
+        radio_reconnect_active_since = 0.0
+        _clear_playback_queue()
+        _reset_mpv_loop_state()
     player_instance.loadfile(replay_url, mode="replace")
+    current_track_info = dict(replay_track)
+    last_track_info = dict(replay_track)
+    if current_track_info.get("source") == "radio":
+        last_radio_track_info = dict(current_track_info)
     _mark_player_state_authoritative(player_instance.state)
     if prearm_rate and prearm_generation:
         asyncio.create_task(_release_local_samplerate_prearm(prearm_rate, prearm_generation, "replay"))
@@ -4890,9 +4917,11 @@ async def toggle_playback():
 
 @app.post("/api/stop")
 async def stop_playback():
-    global player_instance, current_track_info, radio_reconnect_attempts, radio_reconnect_url, radio_reconnect_active_since
+    global player_instance, current_track_info, last_radio_track_info, radio_reconnect_attempts, radio_reconnect_url, radio_reconnect_active_since
     if not player_instance or not player_instance._running:
         raise HTTPException(status_code=503, detail="Player not available")
+    if current_track_info and current_track_info.get("source") == "radio":
+        last_radio_track_info = dict(current_track_info)
     current_track_info = None
     radio_reconnect_attempts = 0
     radio_reconnect_url = None
@@ -7169,6 +7198,7 @@ async def _measure_auto_sub_candidate(
             calibration_filename=calibration_filename,
             calibration_bytes=calibration_bytes,
             sweep_profile=auto_sub_sweep_profile,
+            measurement_scope="raw_helper",
         )
         sweep_id = sweep_job["id"]
         job["current_sweep_id"] = sweep_id
