@@ -5284,6 +5284,11 @@ async def toggle_playback():
                             # All steps succeeded: clear stale flag
                             playback_stream_stale_after_measurement = False
                             _playback_state_before_measurement = None
+                            # Sync subwoofer helper at the restored playback rate.
+                            # The measurement release watcher may have already synced at
+                            # 48000 before this controlled restart changed the clock.
+                            if subwoofer_runtime is not None:
+                                await _sync_subwoofer_runtime_at_rate(local_expected_rate)
                             logger.info(
                                 "PLAYBACK-RESUME-DIAG result=controlled_restart_after_measurement "
                                 "source=local url=%s expected_rate=%s active_rate_before=%s active_rate_after=%s "
@@ -5355,6 +5360,9 @@ async def toggle_playback():
                         _radio_state_before_measurement = None
                         playback_stream_stale_after_measurement = False
                         _playback_state_before_measurement = None
+                        # Sync subwoofer helper at the restored playback rate
+                        if subwoofer_runtime is not None:
+                            await _sync_subwoofer_runtime_at_rate(expected_rate)
                         # Schedule recovery tasks
                         asyncio.create_task(_maybe_recover_samplerate_mismatch((current_track_info or {}).copy()))
                         state_seq = new_state.get("_seq") if isinstance(new_state, dict) else None
