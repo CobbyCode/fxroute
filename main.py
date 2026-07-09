@@ -354,6 +354,51 @@ async def _wait_for_samplerate_alignment(expected_rate: Optional[int], timeout_m
     return False
 
 
+
+# ── Centralized Sink Suspend/Resume ──
+_last_sink_suspend_at: float = 0.0
+_last_sink_suspend_reason: str = ""
+_SINK_SUSPEND_COOLDOWN_SECONDS: float = 3.0
+
+async def _suspend_resume_playback_sink(*, reason: str = "", output_key: str | None = None, force: bool = False) -> bool:
+    """Central sink suspend/resume to force PipeWire rate re-negotiation.
+
+    Args:
+        reason: diagnostic label for logging
+        output_key: pactl sink name; resolved from overview if None
+        force: bypass cooldown
+
+    Returns True if suspend/resume completed.
+    """
+    global _last_sink_suspend_at, _last_sink_suspend_reason
+    now = time.monotonic()
+    elapsed = now - _last_sink_suspend_at
+    if not force and _last_sink_suspend_at > 0 and elapsed < _SINK_SUSPEND_COOLDOWN_SECONDS:
+        logger.warning(
+            "Sink suspend/resume SKIPPED (cooldown %.1fs): reason=%s last_reason=%s",
+            elapsed, reason, _last_sink_suspend_reason,
+        )
+        return False
+    if output_key is None:
+        overview = get_audio_output_overview()
+        output_mode = overview.get("output_mode") or {}
+        output_key = str(output_mode.get("effective_output_key") or "").strip()
+    if not output_key:
+        logger.warning("Sink suspend/resume SKIPPED: no output_key (reason=%s)", reason)
+        return False
+    logger.info("Sink suspend/resume START: reason=%s output_key=%s", reason, output_key)
+    try:
+        _pulse_suspend_sink_for_samplerate(output_key, reason)
+    except Exception as exc:
+        logger.error("Sink suspend/resume FAILED: reason=%s output_key=%s error=%s", reason, output_key, exc)
+        return False
+    _last_sink_suspend_at = time.monotonic()
+    _last_sink_suspend_reason = reason
+    logger.info("Sink suspend/resume DONE: reason=%s output_key=%s", reason, output_key)
+    return True
+
+
+
 def _set_pipewire_force_rate(rate: int) -> None:
     completed = subprocess.run(
         ["pw-metadata", "-n", "settings", "0", "clock.force-rate", str(rate)],
@@ -487,7 +532,28 @@ async def _ensure_radio_samplerate_force(expected_rate: Optional[int], reason: s
             active_rate,
             force_rate,
         )
-    return await _wait_for_samplerate_alignment(expected_rate, timeout_ms=1200)
+    aligned = await _wait_for_samplerate_alignment(expected_rate, timeout_ms=400)
+    if not aligned and isinstance(active_rate, int) and active_rate != expected_rate:
+        if reason not in {"radio-start-before-loadfile", "radio-restart-after-measurement"}:
+            logger.info(
+                "Radio samplerate sink suspend/resume SKIPPED: reason=%s (only for radio-start/restart paths)",
+                reason,
+            )
+        else:
+            suspended = await _suspend_resume_playback_sink(reason=reason, force=True)
+            if suspended:
+                aligned = await _wait_for_samplerate_alignment(expected_rate, timeout_ms=1200)
+            if aligned:
+                logger.info(
+                    "Radio samplerate sink suspend/resume succeeded: reason=%s expected_rate=%s",
+                    reason, expected_rate,
+                )
+            else:
+                logger.warning(
+                    "Radio samplerate sink suspend/resume did not change rate: reason=%s expected_rate=%s",
+                    reason, expected_rate,
+                )
+    return aligned
 
 
 def _clear_radio_samplerate_force_if_active(reason: str) -> None:
@@ -825,6 +891,10 @@ radio_reconnect_task = None
 radio_reconnect_attempts = 0
 radio_reconnect_url = None
 radio_reconnect_active_since = 0.0
+radio_stream_stale_after_measurement = False
+_radio_state_before_measurement: dict[str, Any] | None = None
+playback_stream_stale_after_measurement = False
+_playback_state_before_measurement: dict[str, Any] | None = None
 playback_queue = []
 playback_queue_original = []
 playback_queue_index = -1
@@ -1452,6 +1522,34 @@ async def _check_and_recover_silent_active(
     if not isinstance(vu_db, (int, float)) or vu_db > SILENT_ACTIVE_FLOOR_DB:
         return
 
+    # PATCH silent-active-neutralize (2026-07-07):
+    # Skip detection when the EE output peak meter has not yet observed a
+    # sample. During EE preset / convolver reload, output_peak.detected
+    # stays False and vu_db falls back to its default (-60). Treating that
+    # as "silent audio" caused a loadfile() recovery loop on every library
+    # start. Testing confirmed real audio on UMC even with the EE Output
+    # Meter reporting -60.
+    output_peak = peak_snapshot.get("output_peak") or {}
+    if not output_peak.get("detected"):
+        logger.info(
+            "SILENT-ACTIVE-DIAG skip: peak_not_detected vu_db=%s source=%s signature=%s",
+            vu_db, source, signature,
+        )
+        return
+
+    # Skip during measurement window or while EE preset is actively loading.
+    # The audio path is in transition; not a real silent-active condition.
+    if _is_measurement_window_open() or (
+        easyeffects_preset_load_lock is not None and easyeffects_preset_load_lock.locked()
+    ):
+        logger.info(
+            "SILENT-ACTIVE-DIAG skip: transition_window measurement_open=%s ee_preset_loading=%s source=%s signature=%s",
+            _is_measurement_window_open(),
+            easyeffects_preset_load_lock.locked() if easyeffects_preset_load_lock is not None else False,
+            source, signature,
+        )
+        return
+
     all_inputs = _list_sink_inputs()
     snapshot = _silent_active_snapshot(
         source=source,
@@ -1465,31 +1563,24 @@ async def _check_and_recover_silent_active(
         overview=overview,
         peak_snapshot=peak_snapshot,
     )
-    logger.warning("Silent-active playback detected: %s", json.dumps(snapshot, ensure_ascii=False, sort_keys=True))
-
+    logger.warning(
+        "Silent-active playback detected (log-only, recovery disabled): %s",
+        json.dumps(snapshot, ensure_ascii=False, sort_keys=True),
+    )
+    # PATCH silent-active-neutralize (2026-07-07):
+    # Automatic loadfile() / spotify-handoff recovery is disabled. It was
+    # breaking normal library starts by reloading mid-playback, which then
+    # triggered "Stopping peak monitor" via the buffering pause state.
+    # Existing peak-monitor / link-watch / owner logic remains the source
+    # of truth for state corrections. silent_active_recovery_attempts is
+    # still recorded so duplicate triggers for the same source/url are
+    # naturally suppressed by the existing dedupe path.
     silent_active_recovery_attempts.add(signature)
-    try:
-        await _confirm_configured_default_sink(output_mode)
-        await _resync_output_graph_for_current_mode(overview)
-        if source in {"local", "radio"}:
-            await _recover_silent_active_mpv_source(track or live_track)
-        elif source == "spotify":
-            await _recover_silent_active_spotify(signature)
-        await asyncio.sleep(SILENT_ACTIVE_RECHECK_SECONDS)
-        after_snapshot = peak_monitor.snapshot()
-        after_vu = after_snapshot.get("vu_db")
-        if isinstance(after_vu, (int, float)) and after_vu <= SILENT_ACTIVE_FLOOR_DB:
-            logger.warning(
-                "Silent-active playback persists after one recovery attempt: source=%s signature=%s vu_db=%s hint=%s",
-                source,
-                signature,
-                after_vu,
-                "audio device/graph may be stuck; replug USB audio or restart audio stack may be required",
-            )
-        else:
-            logger.info("Silent-active playback recovery completed: source=%s signature=%s vu_db=%s", source, signature, after_vu)
-    except Exception as exc:
-        logger.warning("Silent-active playback recovery failed: source=%s signature=%s error=%s", source, signature, exc)
+    logger.warning(
+        "SILENT-ACTIVE-DIAG recovery_suppressed: would_have_recovered source=%s signature=%s vu_db=%s action=log_only",
+        source, signature, vu_db,
+    )
+    return
 
 
 async def _recover_silent_active_mpv_source(track: dict | None) -> None:
@@ -1566,6 +1657,87 @@ async def _sync_subwoofer_runtime_after_playback_transition(expected_track: dict
         )
     except Exception as exc:
         logger.warning("Subwoofer runtime playback transition resync failed: %s", exc)
+
+
+
+def _capture_playback_state_before_measurement():
+    """Save playback state before measurement starts (radio + library/local).
+
+    After measurement at 48 kHz, the active playback stream (paused/playing) is
+    stale at the wrong sample rate. This capture enables a controlled restart
+    on resume instead of a simple unpause.
+
+    Stores source, url/path, id, title, expected_rate, position, and paused
+    flag so the controlled restart can restore the user's exact spot.
+
+    Side-effect: also fills _radio_state_before_measurement / radio_stream_stale
+    so the existing radio-specific path in toggle_playback keeps working.
+    """
+    global _playback_state_before_measurement, _radio_state_before_measurement
+    _playback_state_before_measurement = None
+    _radio_state_before_measurement = None
+    if not current_track_info:
+        return
+    source = current_track_info.get("source")
+    if source not in {"radio", "local"}:
+        return
+    if not player_instance or not player_instance._running:
+        return
+    state = player_instance.state
+    current_file = state.get("current_file") or ""
+    if not current_file or state.get("ended"):
+        return
+
+    # Resolve expected rate
+    expected_rate = None
+    if source == "radio":
+        # Read the radio stream's actual decoded sample rate from mpv
+        try:
+            expected_rate = _get_player_audio_samplerate()
+        except Exception as exc:
+            logger.warning("PLAYBACK-CAPTURE-DIAG could not read player audio samplerate: %s", exc)
+        if not isinstance(expected_rate, int) or expected_rate <= 0:
+            expected_rate = None
+    elif source == "local":
+        # For local tracks, use the track metadata sample rate
+        expected_rate = current_track_info.get("sample_rate_hz")
+    if not isinstance(expected_rate, int) or expected_rate <= 0:
+        logger.warning(
+            "PLAYBACK-CAPTURE-DIAG no expected_rate available, skipping capture: source=%s url=%s",
+            source, current_track_info.get("url", ""),
+        )
+        return
+
+    saved_state = {
+        "source": source,
+        "track_info": dict(current_track_info),
+        "url": current_track_info.get("url", ""),
+        "path": current_track_info.get("path", ""),
+        "current_file": current_file,
+        "id": current_track_info.get("id", ""),
+        "title": current_track_info.get("title", ""),
+        "expected_rate": expected_rate,
+        "position": float(state.get("position", 0) or 0),
+        "was_paused": bool(state.get("paused")),
+        "was_playing": not state.get("paused") and not state.get("ended"),
+    }
+    _playback_state_before_measurement = saved_state
+    # Mirror to radio-specific state for backwards compat with radio branch
+    if source == "radio":
+        _radio_state_before_measurement = {
+            "track_info": dict(current_track_info),
+            "url": saved_state["url"],
+            "id": saved_state["id"],
+            "title": saved_state["title"],
+            "expected_rate": expected_rate,
+            "position": saved_state["position"],
+        }
+    logger.info(
+        "PLAYBACK-CAPTURE-DIAG state captured before measurement: source=%s url=%s id=%s "
+        "expected_rate=%s position=%.2f was_paused=%s was_playing=%s",
+        source, saved_state["url"], saved_state["id"],
+        expected_rate, saved_state["position"], saved_state["was_paused"], saved_state["was_playing"],
+    )
 
 
 def _resolve_measurement_start_sample_rate() -> int:
@@ -1898,7 +2070,7 @@ async def _prepare_subwoofer_runtime_for_measurement_start(measurement_rate: int
 
 
 async def _release_measurement_samplerate_force_after_job(job_id: str, expected_rate: int, restore_force_rate: int) -> None:
-    global subwoofer_runtime
+    global subwoofer_runtime, radio_stream_stale_after_measurement, playback_stream_stale_after_measurement
     logger.info(
         "Measurement samplerate release watcher started: job_id=%s expected_rate=%s restore_force_rate=%s",
         job_id,
@@ -1954,6 +2126,29 @@ async def _release_measurement_samplerate_force_after_job(job_id: str, expected_
                     )
             except Exception as exc:
                 logger.warning("Measurement samplerate pre-arm release failed: job_id=%s error=%s", job_id, exc)
+            # Mark playback stream as stale after measurement at 48 kHz.
+            # This is generic (radio + library/local). If a playback stream was
+            # active before measurement at a different rate, it is now stale.
+            if _playback_state_before_measurement is not None:
+                saved = _playback_state_before_measurement
+                saved_rate = saved.get("expected_rate")
+                if isinstance(saved_rate, int) and saved_rate > 0 and saved_rate != expected_rate:
+                    playback_stream_stale_after_measurement = True
+                    # Also set the radio-specific flag for the radio branch in toggle_playback
+                    if saved.get("source") == "radio":
+                        radio_stream_stale_after_measurement = True
+                    logger.info(
+                        "PLAYBACK-RESUME-DIAG measurement complete, marking playback stream stale: "
+                        "source=%s url=%s expected_rate=%s measurement_rate=%s position=%.2f was_paused=%s",
+                        saved.get("source"), saved.get("url"), saved_rate, expected_rate,
+                        saved.get("position", 0), saved.get("was_paused", False),
+                    )
+                else:
+                    logger.info(
+                        "PLAYBACK-RESUME-DIAG saved playback rate matches measurement rate, no stale flag: "
+                        "source=%s expected_rate=%s measurement_rate=%s",
+                        saved.get("source"), saved_rate, expected_rate,
+                    )
             return
 
 
@@ -2728,7 +2923,15 @@ def build_playback_payload(state: Optional[dict] = None) -> dict:
     elif source_volume is not None:
         playback_state["source_volume"] = int(round(float(source_volume)))
     playback_state["volume"] = get_output_volume_safe(int(round(float(source_volume))) if source_volume is not None else 100)
-    playback_state["current_track"] = _playback_track_with_artwork_fields(current_track_info)
+    # Radio: hide stale track from UI when mpv has no active stream.
+    # Prevents UI showing a resumable station when the stream connection
+    # is dead and mpv is idle (current_file=None, ended=True).
+    _effective_track = current_track_info
+    if _effective_track and _effective_track.get("source") == "radio":
+        cur_file = playback_state.get("current_file")
+        if not cur_file or playback_state.get("ended"):
+            _effective_track = None
+    playback_state["current_track"] = _playback_track_with_artwork_fields(_effective_track)
     playback_state["queue"] = _queue_payload()
     playback_state["footer_owner"] = _get_authoritative_footer_owner(playback_state=playback_state)
 
@@ -4702,7 +4905,7 @@ async def play_track(req: PlayRequest):
     track_id = req.track_id
     url = req.url
     queue_track_ids = req.queue_track_ids or []
-    global player_instance, current_track_info, last_track_info, last_radio_track_info, source_transition_lock, current_footer_owner, radio_reconnect_attempts, radio_reconnect_url, radio_reconnect_active_since
+    global player_instance, current_track_info, last_track_info, last_radio_track_info, source_transition_lock, current_footer_owner, radio_reconnect_attempts, radio_reconnect_url, radio_reconnect_active_since, playback_stream_stale_after_measurement, _playback_state_before_measurement, radio_stream_stale_after_measurement, _radio_state_before_measurement
     if not player_instance or not player_instance._running:
         raise HTTPException(status_code=503, detail="Player not available")
     if not _can_send_play_command():
@@ -4715,6 +4918,26 @@ async def play_track(req: PlayRequest):
         }
     if source_transition_lock is None:
         source_transition_lock = asyncio.Lock()
+    # PATCH 1: explicit user-play invalidates any stale-after-measurement
+    # snapshot. The user has chosen a new track/station; the old snapshot
+    # is from a different track and would otherwise cause toggle_playback
+    # to reload the wrong file on the next pause/play.
+    if playback_stream_stale_after_measurement or _playback_state_before_measurement is not None:
+        logger.info(
+            "PLAYBACK-RESUME-DIAG stale_snapshot_invalidated_due_to_explicit_play "
+            "reason=user_explicit_play source=%s track_id=%s",
+            source, track_id,
+        )
+        playback_stream_stale_after_measurement = False
+        _playback_state_before_measurement = None
+    if radio_stream_stale_after_measurement or _radio_state_before_measurement is not None:
+        logger.info(
+            "RADIO-RESUME-DIAG stale_snapshot_invalidated_due_to_explicit_play "
+            "reason=user_explicit_play track_id=%s",
+            track_id,
+        )
+        radio_stream_stale_after_measurement = False
+        _radio_state_before_measurement = None
     try:
         async with source_transition_lock:
             # Source exclusivity: pause Spotify and broadcast the new Spotify state
@@ -4780,6 +5003,16 @@ async def play_track(req: PlayRequest):
                         asyncio.create_task(_release_local_samplerate_prearm(prearm_rate, prearm_generation, "play:mpv-native-queue"))
                 else:
                     prearm_rate, prearm_generation = await _prearm_known_local_samplerate(track_info, "play")
+                    # Radio: ensure sample rate before loadfile
+                    if source == "radio":
+                        try:
+                            radio_rate = await _resolve_expected_playback_samplerate("radio")
+                            if radio_rate:
+                                await _ensure_radio_samplerate_force(radio_rate, "radio-start-before-loadfile")
+                        except Exception as exc:
+                            logger.warning(
+                                "Pre-loadfile radio sample-rate apply failed: %s", exc,
+                            )
                     player_instance.loadfile(play_url, mode="replace")
                     if prearm_rate and prearm_generation:
                         asyncio.create_task(_release_local_samplerate_prearm(prearm_rate, prearm_generation, "play"))
@@ -4804,7 +5037,7 @@ async def play_track(req: PlayRequest):
                 state_seq = player_instance.state.get("_seq") if isinstance(player_instance.state, dict) else None
                 _schedule_silent_active_watch(
                     source=source,
-                    signature=f"player:{source}:{play_url}:{state_seq or int(time.monotonic() * 1000)}",
+                    signature=f"player:{source}:{play_url}",
                     track=track_info.copy(),
                 )
 
@@ -4841,7 +5074,7 @@ async def pause_playback():
 
 @app.post("/api/playback/toggle")
 async def toggle_playback():
-    global player_instance, current_track_info, last_track_info, last_radio_track_info, radio_reconnect_attempts, radio_reconnect_url, radio_reconnect_active_since
+    global player_instance, current_track_info, last_track_info, last_radio_track_info, radio_reconnect_attempts, radio_reconnect_url, radio_reconnect_active_since, radio_stream_stale_after_measurement, _radio_state_before_measurement, playback_stream_stale_after_measurement, _playback_state_before_measurement
     if not player_instance or not player_instance._running:
         raise HTTPException(status_code=503, detail="Player not available")
     if not _can_send_play_command():
@@ -4853,10 +5086,317 @@ async def toggle_playback():
         was_paused = bool(state.get("paused"))
         prearm_rate = None
         prearm_generation = None
+        # PATCH 2: stale-snapshot/current-track mismatch guard.
+        # If a stale snapshot exists for a DIFFERENT track than the current
+        # current_track_info, the user has switched tracks since the snapshot
+        # was taken. The snapshot is from a previous measurement and must not
+        # be used to reload an old file on the next pause/play. Invalidate it
+        # here so the normal pause/resume path takes over (which works
+        # correctly when state.current_file == current_track_info.url).
+        if (current_track_info or {}).get("source") == "local" and playback_stream_stale_after_measurement:
+            snap = _playback_state_before_measurement or {}
+            snap_url = snap.get("url") or snap.get("path")
+            current_url = (current_track_info or {}).get("url") or (current_track_info or {}).get("path")
+            if snap_url and current_url and snap_url != current_url:
+                logger.warning(
+                    "PLAYBACK-RESUME-DIAG stale_snapshot_invalidated_due_to_current_track_mismatch "
+                    "snapshot_url=%s current_track_url=%s source=local reason=user_switched_track",
+                    snap_url, current_url,
+                )
+                playback_stream_stale_after_measurement = False
+                _playback_state_before_measurement = None
+        if (current_track_info or {}).get("source") == "radio" and radio_stream_stale_after_measurement:
+            snap = _radio_state_before_measurement or {}
+            snap_url = snap.get("url")
+            current_url = (current_track_info or {}).get("url")
+            if snap_url and current_url and snap_url != current_url:
+                logger.warning(
+                    "RADIO-RESUME-DIAG stale_snapshot_invalidated_due_to_current_track_mismatch "
+                    "snapshot_url=%s current_track_url=%s source=radio reason=user_switched_station",
+                    snap_url, current_url,
+                )
+                radio_stream_stale_after_measurement = False
+                _radio_state_before_measurement = None
         if was_paused and _playback_state_matches_track(state, current_track_info):
             source = (current_track_info or {}).get("source")
             if source in {"local", "radio"}:
                 await pause_spotify_for_local_playback_broadcast()
+
+                # Local (library) playback stream is stale after measurement at 48 kHz.
+                # Instead of unpausing the old stream, do a controlled restart
+                # at the track's native sample rate, then seek back to saved position.
+                if source == "local" and playback_stream_stale_after_measurement:
+                    saved = _playback_state_before_measurement or {}
+                    # Use ONLY the saved snapshot for restart inputs (do NOT touch
+                    # current_track_info after stop_playback - it may be cleared).
+                    saved_url = saved.get("url") or saved.get("path")
+                    saved_expected_rate = saved.get("expected_rate")
+                    saved_position = float(saved.get("position", 0) or 0)
+                    if not saved_url:
+                        # Missing data: clear stale flag to avoid blocking
+                        playback_stream_stale_after_measurement = False
+                        _playback_state_before_measurement = None
+                        logger.warning(
+                            "PLAYBACK-RESUME-DIAG controlled_restart_failed missing_local_url source=local",
+                        )
+                    elif not isinstance(saved_expected_rate, int) or saved_expected_rate <= 0:
+                        # Missing rate: clear stale flag, allow normal resume
+                        playback_stream_stale_after_measurement = False
+                        _playback_state_before_measurement = None
+                        logger.warning(
+                            "PLAYBACK-RESUME-DIAG controlled_restart_failed missing_expected_rate source=local url=%s",
+                            saved_url,
+                        )
+                    else:
+                        local_url = saved_url
+                        local_expected_rate = saved_expected_rate
+                        # Build a minimal track_info dict for _prearm_known_local_samplerate
+                        # (avoid using current_track_info which may be cleared after stop)
+                        saved_track_info = {
+                            "source": "local",
+                            "url": local_url,
+                            "path": saved.get("path") or local_url,
+                            "id": saved.get("id", ""),
+                            "title": saved.get("title", ""),
+                            "sample_rate_hz": local_expected_rate,
+                        }
+                        old_state = player_instance.state
+                        old_file = old_state.get("current_file", "")
+                        old_paused = bool(old_state.get("paused"))
+                        old_ended = bool(old_state.get("ended"))
+                        samplerate_before = get_samplerate_status().get("active_rate")
+                        logger.info(
+                            "PLAYBACK-RESUME-DIAG controlled restart START: source=local url=%s "
+                            "saved_expected_rate=%s saved_position=%.2f stale=%s old_file=%s "
+                            "old_paused=%s old_ended=%s active_rate_before=%s",
+                            local_url, local_expected_rate, saved_position,
+                            playback_stream_stale_after_measurement,
+                            old_file, old_paused, old_ended, samplerate_before,
+                        )
+                        release_done = False
+                        rate_prearm_done = False
+                        loadfile_done = False
+                        seek_done = False
+                        sink_suspended = False
+                        try:
+                            _clear_playback_queue()
+                            _reset_mpv_loop_state()
+                            player_instance.stop_playback()
+                            released = await _wait_for_pipewire_mpv_release()
+                            release_done = True
+                            logger.info(
+                                "PLAYBACK-RESUME-DIAG release_done=%s", released,
+                            )
+                            # Force the correct rate before loadfile - use saved snapshot
+                            prearm_rate, prearm_generation = await _prearm_known_local_samplerate(
+                                saved_track_info,
+                                "playback-restart-after-measurement",
+                            )
+                            rate_prearm_done = True
+                            active_rate_after_prearm = get_samplerate_status().get("active_rate")
+                            logger.info(
+                                "PLAYBACK-RESUME-DIAG rate_prearm_done=True active_rate_after_prearm=%s",
+                                active_rate_after_prearm,
+                            )
+                            # If prearm did not actually move the clock to expected_rate,
+                            # do a sink suspend/resume to force the PipeWire clock.
+                            # _prearm_known_local_samplerate only sets force_rate;
+                            # it does not do the actual clock change.
+                            if (
+                                isinstance(active_rate_after_prearm, int)
+                                and active_rate_after_prearm != local_expected_rate
+                            ):
+                                sink_suspended = await _suspend_resume_playback_sink(
+                                    reason="playback-restart-after-measurement",
+                                    force=True,
+                                )
+                                active_rate_after_sink = get_samplerate_status().get("active_rate")
+                                logger.info(
+                                    "PLAYBACK-RESUME-DIAG sink_suspend_resume suspended=%s active_rate_after_sink=%s",
+                                    sink_suspended, active_rate_after_sink,
+                                )
+                                # Verify: sink suspend/resume must have actually moved the
+                                # PipeWire clock to local_expected_rate. If not, calling
+                                # loadfile would still play at 48 kHz and the result log
+                                # would falsely look like a success. Keep the stale flag
+                                # (do NOT clear it), surface a clear failure, and do NOT
+                                # call loadfile.
+                                if (
+                                    not isinstance(active_rate_after_sink, int)
+                                    or active_rate_after_sink != local_expected_rate
+                                ):
+                                    logger.error(
+                                        "PLAYBACK-RESUME-DIAG controlled_restart_failed "
+                                        "rate_still_mismatched_after_sink_suspend "
+                                        "expected=%s active=%s source=local url=%s "
+                                        "keeping_stale_flag=True",
+                                        local_expected_rate, active_rate_after_sink, local_url,
+                                    )
+                                    # Stale flag intentionally NOT cleared here.
+                                    raise HTTPException(
+                                        status_code=500,
+                                        detail=(
+                                            f"Playback restart after measurement failed: "
+                                            f"PipeWire clock did not move to expected "
+                                            f"{local_expected_rate} Hz after sink suspend/resume "
+                                            f"(active={active_rate_after_sink}). Stale stream "
+                                            f"flag kept; playback not resumed."
+                                        ),
+                                    )
+                            # loadfile
+                            player_instance.loadfile(local_url, mode="replace")
+                            loadfile_done = True
+                            logger.info(
+                                "PLAYBACK-RESUME-DIAG loadfile_done=True url=%s", local_url,
+                            )
+                            # Wait for the new file to actually be loaded before seeking
+                            file_settled = await _wait_for_player_current_file(local_url, timeout_ms=1600)
+                            if not file_settled:
+                                logger.warning(
+                                    "PLAYBACK-RESUME-DIAG file_settle_timeout url=%s proceeding_anyway",
+                                    local_url,
+                                )
+                            # Seek back to saved position (best-effort, non-fatal)
+                            if saved_position > 0.5:
+                                try:
+                                    player_instance.seek(saved_position)
+                                    seek_done = True
+                                    logger.info(
+                                        "PLAYBACK-RESUME-DIAG seek_done=True seek_position=%.2f",
+                                        saved_position,
+                                    )
+                                except Exception as seek_exc:
+                                    logger.warning(
+                                        "PLAYBACK-RESUME-DIAG seek_failed seek_position=%.2f error=%s",
+                                        saved_position, seek_exc,
+                                    )
+                            player_instance.set_pause(False)
+                            _mark_player_state_authoritative(player_instance.state)
+                            if prearm_rate and prearm_generation:
+                                asyncio.create_task(_release_local_samplerate_prearm(
+                                    prearm_rate, prearm_generation, "playback-restart-after-measurement",
+                                ))
+                            new_state = player_instance.state
+                            new_file = new_state.get("current_file", "")
+                            samplerate_after = get_samplerate_status().get("active_rate")
+                            # All steps succeeded: clear stale flag
+                            playback_stream_stale_after_measurement = False
+                            _playback_state_before_measurement = None
+                            logger.info(
+                                "PLAYBACK-RESUME-DIAG result=controlled_restart_after_measurement "
+                                "source=local url=%s expected_rate=%s active_rate_before=%s active_rate_after=%s "
+                                "new_file=%s seek_position=%.2f release_done=%s rate_prearm_done=%s "
+                                "sink_suspended=%s loadfile_done=%s seek_done=%s loadfile_mode=replace",
+                                local_url, local_expected_rate, samplerate_before, samplerate_after,
+                                new_file, saved_position, release_done, rate_prearm_done,
+                                sink_suspended, loadfile_done, seek_done,
+                            )
+                            return {
+                                "status": "playing",
+                                "playback": build_playback_payload(new_state),
+                            }
+                        except HTTPException:
+                            # Re-raise our own 5xx (e.g. rate_still_mismatched_after_sink_suspend)
+                            # so the detail is not wrapped in a generic message.
+                            raise
+                        except Exception as exc:
+                            logger.error(
+                                "PLAYBACK-RESUME-DIAG controlled_restart_failed keeping_stale_flag=True "
+                                "source=local url=%s expected_rate=%s release_done=%s rate_prearm_done=%s "
+                                "sink_suspended=%s loadfile_done=%s seek_done=%s error=%s",
+                                local_url, local_expected_rate, release_done, rate_prearm_done,
+                                sink_suspended, loadfile_done, seek_done, exc,
+                            )
+                            raise HTTPException(
+                                status_code=500,
+                                detail=f"Playback restart after measurement failed: {exc}",
+                            )
+                # Radio stream is stale after measurement at 48 kHz.
+                # Instead of unpausing the old stream, do a controlled restart
+                # at the radio stream's native sample rate.
+                if source == "radio" and radio_stream_stale_after_measurement:
+                    radio_url = (_radio_state_before_measurement or {}).get("url") or (current_track_info or {}).get("url")
+                    expected_rate = (_radio_state_before_measurement or {}).get("expected_rate") or 44100
+                    if radio_url:
+                        # Snapshot old state for diagnostics
+                        old_state = player_instance.state
+                        old_file = old_state.get("current_file", "")
+                        old_paused = bool(old_state.get("paused"))
+                        old_ended = bool(old_state.get("ended"))
+                        samplerate_before = get_samplerate_status().get("active_rate")
+                        logger.info(
+                            "RADIO-RESUME-DIAG controlled restart START: url=%s expected_rate=%s "
+                            "stale=%s old_file=%s old_paused=%s old_ended=%s active_rate_before=%s",
+                            radio_url, expected_rate, radio_stream_stale_after_measurement,
+                            old_file, old_paused, old_ended, samplerate_before,
+                        )
+                        # Stop old stream first, then wait for PipeWire release
+                        _clear_playback_queue()
+                        _reset_mpv_loop_state()
+                        player_instance.stop_playback()
+                        released = await _wait_for_pipewire_mpv_release()
+                        logger.info(
+                            "RADIO-RESUME-DIAG old stream release: released=%s",
+                            released,
+                        )
+                        # Now set the correct rate and load fresh
+                        await _ensure_radio_samplerate_force(expected_rate, "radio-restart-after-measurement")
+                        player_instance.loadfile(radio_url, mode="replace")
+                        player_instance.set_pause(False)
+                        _mark_player_state_authoritative(player_instance.state)
+                        # Verify the new stream
+                        new_state = player_instance.state
+                        new_file = new_state.get("current_file", "")
+                        samplerate_after = get_samplerate_status().get("active_rate")
+                        # Success: clear stale flag (both radio-specific and generic)
+                        radio_stream_stale_after_measurement = False
+                        _radio_state_before_measurement = None
+                        playback_stream_stale_after_measurement = False
+                        _playback_state_before_measurement = None
+                        # Schedule recovery tasks
+                        asyncio.create_task(_maybe_recover_samplerate_mismatch((current_track_info or {}).copy()))
+                        state_seq = new_state.get("_seq") if isinstance(new_state, dict) else None
+                        _schedule_silent_active_watch(
+                            source="radio",
+                            signature=f"player:radio:{radio_url}",
+                            track=(current_track_info or {}).copy(),
+                        )
+                        logger.info(
+                            "RADIO-RESUME-DIAG result=controlled_restart_after_measurement "
+                            "url=%s expected_rate=%s active_rate_before=%s active_rate_after=%s new_file=%s loadfile=replace",
+                            radio_url, expected_rate, samplerate_before, samplerate_after, new_file,
+                        )
+                        return {
+                            "status": "playing",
+                            "playback": build_playback_payload(new_state),
+                        }
+                    # No URL: clear stale flag to avoid blocking
+                    radio_stream_stale_after_measurement = False
+                    _radio_state_before_measurement = None
+                    logger.warning(
+                        "RADIO-RESUME-DIAG stale flag cleared without restart (no URL found)",
+                    )
+                # PATCH 3: safety rule - if was_paused and state.current_file
+                # does NOT match current_track_info.url, do NOT blindly
+                # set_pause(False) on the wrong file. Refuse with a clear 409
+                # so the UI knows it must reload the track.
+                if was_paused and state.get("current_file") and current_track_info:
+                    state_file = state.get("current_file")
+                    cur_url = (current_track_info or {}).get("url") or (current_track_info or {}).get("path")
+                    if state_file and cur_url and state_file != cur_url:
+                        logger.error(
+                            "PLAYBACK-RESUME-DIAG refusing_resume_due_to_state_track_mismatch "
+                            "state_file=%s current_track_info_url=%s source=%s reason=state_drift",
+                            state_file, cur_url, (current_track_info or {}).get("source"),
+                        )
+                        raise HTTPException(
+                            status_code=409,
+                            detail=(
+                                f"Refusing to resume: mpv current_file does not match "
+                                f"current_track_info (state='{state_file}', track='{cur_url}'). "
+                                f"Reload the track from the UI."
+                            ),
+                        )
                 prearm_rate, prearm_generation = await _prearm_known_local_samplerate(
                     current_track_info,
                     "toggle-resume",
@@ -4871,7 +5411,7 @@ async def toggle_playback():
             state_seq = new_state.get("_seq") if isinstance(new_state, dict) else None
             _schedule_silent_active_watch(
                 source=current_track_info.get("source"),
-                signature=f"player:{current_track_info.get('source')}:{current_track_info.get('url')}:{state_seq or int(time.monotonic() * 1000)}",
+                signature=f"player:{current_track_info.get('source')}:{current_track_info.get('url')}",
                 track=(current_track_info or {}).copy(),
             )
         return {
@@ -4882,6 +5422,24 @@ async def toggle_playback():
     replay_track = current_track_info or last_radio_track_info
     replay_url = (replay_track or {}).get("url")
     if not replay_url:
+        # No URL available: clear stale state and broadcast so UI is clean.
+        current_track_info = None
+        last_radio_track_info = None
+        radio_reconnect_attempts = 0
+        radio_reconnect_url = None
+        radio_reconnect_active_since = 0.0
+        _clear_playback_queue()
+        if player_instance and player_instance._running:
+            try:
+                _reset_mpv_loop_state()
+            except Exception:
+                pass
+            try:
+                player_instance.stop_playback()
+            except Exception:
+                pass
+            _mark_player_state_authoritative(player_instance.state)
+        await manager.broadcast({"type": "playback", "data": build_playback_payload(player_instance.state if player_instance else {})})
         raise HTTPException(status_code=409, detail="Nothing is available to replay")
 
     await pause_spotify_for_local_playback_broadcast()
@@ -4906,7 +5464,7 @@ async def toggle_playback():
         state_seq = player_instance.state.get("_seq") if isinstance(player_instance.state, dict) else None
         _schedule_silent_active_watch(
             source=replay_track.get("source"),
-            signature=f"player:{replay_track.get('source')}:{replay_url}:{state_seq or int(time.monotonic() * 1000)}",
+            signature=f"player:{replay_track.get('source')}:{replay_url}",
             track=(replay_track or {}).copy(),
         )
     return {
@@ -5283,7 +5841,52 @@ async def save_audio_output_mode_route(request: Request):
 
     try:
         result = set_audio_output_mode(mode, subwoofer, subwoofers)
+
+        # Log pre-switch convolver state for diagnostics
+        if easyeffects_manager is not None:
+            compare_pre = easyeffects_manager.load_compare_state()
+            ee_pre = easyeffects_manager.get_active_preset()
+            logger.info(
+                "CONVOLVER-SLOT pre-switch: new_mode=%s compare_pre=%s ee_active_pre=%s",
+                mode,
+                json.dumps(compare_pre, sort_keys=True, default=str) if compare_pre else '{}',
+                ee_pre,
+            )
+
         await _sync_subwoofer_runtime(result)
+
+        # ── Convolver Slot Consistency After Mode Switch ──
+        # When switching modes (especially 2.x → Stereo), the EE graph is
+        # rebuilt but the loaded preset may drift from the compare state's
+        # active slot. Re-apply the user's selected slot to keep UI ↔ EE in sync.
+        if easyeffects_manager is not None:
+            compare = easyeffects_manager.load_compare_state()
+            active_side = compare.get("activeSide") if compare.get("activeSide") in {"A", "B"} else None
+            if active_side == "A":
+                side_preset = compare.get("presetA", "")
+            elif active_side == "B":
+                side_preset = compare.get("presetB", "")
+            else:
+                side_preset = ""
+            ee_active = easyeffects_manager.get_active_preset()
+            logger.info(
+                "CONVOLVER-SLOT mode switch: new_mode=%s compare_activeSide=%s "
+                "compare_presetA=%s compare_presetB=%s ee_active_preset=%s",
+                mode, active_side, compare.get("presetA"), compare.get("presetB"), ee_active,
+            )
+            if side_preset and ee_active and ee_active != side_preset:
+                logger.warning(
+                    "CONVOLVER-SLOT MISMATCH: compare says %s=%s but EE has %s loaded. Re-applying %s.",
+                    active_side, side_preset, ee_active, side_preset,
+                )
+                try:
+                    easyeffects_manager.load_preset(side_preset)
+                except Exception as exc:
+                    logger.warning("CONVOLVER-SLOT re-apply failed: %s", exc)
+            elif not side_preset:
+                logger.info("CONVOLVER-SLOT no active compare slot, skipping re-apply (ee_active=%s)", ee_active)
+            else:
+                logger.info("CONVOLVER-SLOT consistent: compare=%s EE=%s", side_preset, ee_active)
 
         # Enrich 2.2 response with derived delays for API/debug verification
         om = result.get("output_mode") or {}
@@ -5805,6 +6408,7 @@ async def start_measurement(
     restore_force_rate = None
     measurement_rate = _resolve_measurement_start_sample_rate()
     try:
+        _capture_playback_state_before_measurement()
         restore_force_rate = await _prepare_subwoofer_runtime_for_measurement_start(measurement_rate)
         job = await measurement_store.start_measurement(
             input_id=input_id,
@@ -5851,6 +6455,7 @@ async def start_lr_repeat_measurement(
     restore_force_rate = None
     measurement_rate = _resolve_measurement_start_sample_rate()
     try:
+        _capture_playback_state_before_measurement()
         restore_force_rate = await _prepare_subwoofer_runtime_for_measurement_start(measurement_rate)
         job = await measurement_store.start_lr_repeat_measurement(
             input_id=input_id,

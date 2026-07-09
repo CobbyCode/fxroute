@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.7.50 (2026-07-10)
+
+### Added
+- PipeWire default sample rate selector in Settings panel.
+- Measurement concurrency guard prevents overlapping measurement jobs.
+
+### Changed
+- Playback stream stale-after-measurement detection now works for both radio and local library tracks.
+  After measurement at 48 kHz, a controlled restart restores the original sample rate and seek position
+  instead of unpausing the old stream at the wrong rate.
+- Silent-active detection is now log-only; automatic loadfile recovery is disabled to avoid
+  interrupting normal library starts and EE preset reloads.
+- Radio UI hides stale track info when the stream connection is dead (no active mpv file).
+
+### Fixed
+- Convolver slot consistency after output mode switches: the user-selected compare slot
+  is re-applied to keep UI and EasyEffects in sync.
+- Measurement cancel reliability: subprocesses are terminated, cancelling state transitions
+  are tracked, and stale force-rate release is prevented.
+- Playback resume safety: 409 error on state/track mismatch instead of blind resume on wrong file.
+- Radio sample-rate force now applied before loadfile, not after.
+
 ## 0.7.49 (2026-07-05)
 
 ### Fixed

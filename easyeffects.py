@@ -1060,23 +1060,31 @@ class EasyEffectsManager:
         if not preset_a and active_preset in available:
             preset_a = active_preset
 
-        inferred_active_side = None
-        if active_preset and preset_a == active_preset:
-            inferred_active_side = "A"
-        elif active_preset and preset_b == active_preset:
-            inferred_active_side = "B"
-
-        if inferred_active_side is not None:
-            active_side = inferred_active_side
-        elif active_preset:
-            active_side = None
+        # Compare state file is the source of truth for which slot is active.
+        # EE's loaded preset may drift (e.g. after graph reconfiguration during
+        # mode switches); detect mismatches but do NOT overwrite persisted activeSide.
+        if active_side is not None and active_preset:
+            side_preset = preset_a if active_side == "A" else preset_b
+            if side_preset and active_preset != side_preset:
+                logger.warning(
+                    "CONVOLVER-SLOT compare/EE mismatch: persisted activeSide=%s preset=%s "
+                    "but EE has '%s' loaded. Compare state kept as-is; caller should re-apply.",
+                    active_side, side_preset, active_preset,
+                )
+        elif active_side is None and active_preset:
+            # No active side yet: infer from currently loaded EE preset
+            if active_preset and preset_a == active_preset:
+                active_side = "A"
+            elif active_preset and preset_b == active_preset:
+                active_side = "B"
+            else:
+                active_side = None
 
         return {
             "presetA": preset_a,
             "presetB": preset_b,
             "activeSide": active_side,
         }
-
     def load_compare_state(self) -> Dict[str, Any]:
         if not self.compare_state_file.exists():
             return self.normalize_compare_state(None)

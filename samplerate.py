@@ -21,6 +21,8 @@ OUTPUT_MODE_SUBWOOFER_22 = "subwoofer-2.2"
 OUTPUT_MODE_SUBWOOFER_22_STEREO = "subwoofer-2.2-stereo"
 OUTPUT_MODE_SUBWOOFER_22_MODES = {OUTPUT_MODE_SUBWOOFER_22, OUTPUT_MODE_SUBWOOFER_22_STEREO}
 OUTPUT_MODE_SUBWOOFER_MODES = {OUTPUT_MODE_SUBWOOFER_21, *OUTPUT_MODE_SUBWOOFER_22_MODES}
+PIPEWIRE_DEFAULT_RATE_OPTIONS = [44100, 48000, 88200, 96000, 176400, 192000]
+PIPEWIRE_ALLOWED_RATES = PIPEWIRE_DEFAULT_RATE_OPTIONS
 
 
 def _run_command(args: list[str]) -> str:
@@ -682,6 +684,11 @@ def _audio_output_mode_path() -> Path:
     return config_root / "fxroute" / "audio-output-mode.json"
 
 
+def _pipewire_clock_rate_dropin_path() -> Path:
+    config_root = Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config"))
+    return config_root / "pipewire" / "pipewire.conf.d" / "90-fxroute-clock-rate.conf"
+
+
 
 def _audio_source_selection_path() -> Path:
     config_root = Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config"))
@@ -862,6 +869,75 @@ def _load_audio_source_selection() -> dict[str, Any]:
         "mode": mode if mode in {SOURCE_MODE_APP_PLAYBACK, SOURCE_MODE_EXTERNAL_INPUT, SOURCE_MODE_BLUETOOTH_INPUT} else SOURCE_MODE_APP_PLAYBACK,
         "selected_input_key": selected_input_key if isinstance(selected_input_key, str) and selected_input_key else None,
     }
+
+
+def _normalize_pipewire_default_rate(value: Any) -> int:
+    try:
+        rate = int(value)
+    except (TypeError, ValueError):
+        raise ValueError("Invalid PipeWire default sample rate")
+    if rate not in PIPEWIRE_DEFAULT_RATE_OPTIONS:
+        raise ValueError("Unsupported PipeWire default sample rate")
+    return rate
+
+
+def _render_pipewire_clock_rate_dropin(default_rate: int) -> str:
+    normalized = _normalize_pipewire_default_rate(default_rate)
+    allowed_rates = " ".join(str(rate) for rate in PIPEWIRE_ALLOWED_RATES)
+    return (
+        "# Managed by FXRoute. Changes take effect after restarting PipeWire/session or rebooting.\n"
+        "context.properties = {\n"
+        f"    default.clock.rate = {normalized}\n"
+        f"    default.clock.allowed-rates = [ {allowed_rates} ]\n"
+        "}\n"
+    )
+
+
+def _parse_pipewire_clock_rate_dropin(text: str) -> dict[str, Any]:
+    rate_match = re.search(r"default\.clock\.rate\s*=\s*(\d+)", text)
+    allowed_match = re.search(r"default\.clock\.allowed-rates\s*=\s*\[([^\]]*)\]", text)
+    configured_rate = None
+    if rate_match:
+        try:
+            configured_rate = _normalize_pipewire_default_rate(rate_match.group(1))
+        except ValueError:
+            configured_rate = None
+    allowed_rates = [int(item) for item in re.findall(r"\d+", allowed_match.group(1))] if allowed_match else []
+    return {
+        "configured_default_rate": configured_rate,
+        "configured_allowed_rates": allowed_rates,
+    }
+
+
+def _load_pipewire_clock_rate_config() -> dict[str, Any]:
+    path = _pipewire_clock_rate_dropin_path()
+    if not path.exists():
+        return {
+            "configured_default_rate": None,
+            "configured_allowed_rates": [],
+            "config_path": str(path),
+            "config_exists": False,
+        }
+    try:
+        parsed = _parse_pipewire_clock_rate_dropin(path.read_text())
+    except Exception:
+        parsed = {
+            "configured_default_rate": None,
+            "configured_allowed_rates": [],
+        }
+    parsed.update({
+        "config_path": str(path),
+        "config_exists": True,
+    })
+    return parsed
+
+
+def set_pipewire_default_rate_selection(default_rate: Any) -> dict[str, Any]:
+    normalized = _normalize_pipewire_default_rate(default_rate)
+    path = _pipewire_clock_rate_dropin_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_render_pipewire_clock_rate_dropin(normalized))
+    return get_samplerate_status()
 
 
 def _save_audio_output_selection(selected_key: str) -> None:
@@ -1767,6 +1843,7 @@ def _safe_int(value: str | None) -> int | None:
 
 def get_samplerate_status() -> dict[str, Any]:
     notes: list[str] = []
+    clock_rate_config = _load_pipewire_clock_rate_config()
 
     try:
         metadata_output = _run_command(["pw-metadata", "-n", "settings", "0"])
@@ -1778,9 +1855,15 @@ def get_samplerate_status() -> dict[str, Any]:
             "detail": str(exc),
             "mode": None,
             "force_rate": None,
+            "configured_default_rate": clock_rate_config.get("configured_default_rate"),
+            "configured_allowed_rates": clock_rate_config.get("configured_allowed_rates") or [],
             "active_rate": None,
             "clock_rate": None,
             "allowed_rates": [],
+            "default_rate_options": PIPEWIRE_DEFAULT_RATE_OPTIONS,
+            "pipewire_clock_config_path": clock_rate_config.get("config_path"),
+            "pipewire_clock_config_exists": bool(clock_rate_config.get("config_exists")),
+            "restart_required": False,
             "default_rate": None,
             "sink": {"id": None, "name": None, "description": None},
             "notes": ["pw-metadata unavailable"],
@@ -1829,15 +1912,27 @@ def get_samplerate_status() -> dict[str, Any]:
     except Exception as exc:
         notes.append(f"Default rate unavailable: {exc}")
 
+    configured_default_rate = clock_rate_config.get("configured_default_rate")
     force_rate = metadata.get("force_rate") or 0
+    restart_required = bool(
+        configured_default_rate
+        and default_rate
+        and configured_default_rate != default_rate
+    )
     return {
         "status": "ok",
         "available": True,
         "mode": "auto" if force_rate == 0 else "fixed",
         "force_rate": force_rate,
+        "configured_default_rate": configured_default_rate,
+        "configured_allowed_rates": clock_rate_config.get("configured_allowed_rates") or [],
         "active_rate": active_rate,
         "clock_rate": metadata.get("clock_rate"),
         "allowed_rates": metadata.get("allowed_rates") or [],
+        "default_rate_options": PIPEWIRE_DEFAULT_RATE_OPTIONS,
+        "pipewire_clock_config_path": clock_rate_config.get("config_path"),
+        "pipewire_clock_config_exists": bool(clock_rate_config.get("config_exists")),
+        "restart_required": restart_required,
         "default_rate": default_rate,
         "sink": sink,
         "relevant_sink": relevant_sink,

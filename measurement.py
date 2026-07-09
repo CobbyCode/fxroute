@@ -9,6 +9,7 @@ import logging
 import math
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import threading
@@ -47,6 +48,7 @@ MEASUREMENT_SCOPES = {
     MEASUREMENT_SCOPE_ACTIVE_CHAIN,
     MEASUREMENT_SCOPE_RAW_HELPER,
 }
+MEASUREMENT_DEFAULT_SAMPLE_RATE = 48_000
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -250,7 +252,7 @@ class MeasurementStore:
         }
 
     def list_inputs(self) -> dict[str, Any]:
-        inputs = self._discover_capture_inputs()
+        inputs = self._measurement_inputs_with_sample_rate(self._discover_capture_inputs())
         return {
             "status": "ok",
             "scope_note": MEASUREMENT_SCOPE_NOTE,
@@ -271,6 +273,19 @@ class MeasurementStore:
             },
         }
 
+    def _measurement_inputs_with_sample_rate(self, inputs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        measurement_rate = self._resolve_measurement_sample_rate()
+        annotated: list[dict[str, Any]] = []
+        for item in inputs:
+            source_sample_rate = item.get("sample_rate")
+            annotated.append({
+                **item,
+                "source_sample_rate": source_sample_rate,
+                "sample_rate": measurement_rate,
+                "measurement_sample_rate": measurement_rate,
+            })
+        return annotated
+
     async def start_measurement(
         self,
         *,
@@ -284,7 +299,21 @@ class MeasurementStore:
         sweep_profile: dict[str, float] | None = None,
         measurement_scope: str = MEASUREMENT_SCOPE_ACTIVE_CHAIN,
     ) -> dict[str, Any]:
-        inputs = self._discover_capture_inputs()
+        # Guard against concurrent measurement jobs
+        active_job = self._find_active_or_cancelling_job()
+        if active_job is not None:
+            active_id = active_job["id"]
+            active_status = active_job.get("status", "unknown")
+            logger.warning(
+                "MEASUREMENT-CANCEL-DIAG new job blocked: existing_job=%s status=%s",
+                active_id, active_status,
+            )
+            raise RuntimeError(
+                f"Another measurement is still active ({active_id}, status={active_status}). "
+                "Wait for it to finish or cancel it first."
+            )
+        self._cleanup_expired_cancelling_jobs()
+        inputs = self._measurement_inputs_with_sample_rate(self._discover_capture_inputs())
         selected_input = next((item for item in inputs if item["id"] == input_id), None)
         if not selected_input:
             raise ValueError("Selected capture input is no longer available")
@@ -366,7 +395,21 @@ class MeasurementStore:
         measurement_scope: str = MEASUREMENT_SCOPE_ACTIVE_CHAIN,
     ) -> dict[str, Any]:
         normalized_repeat_count = 3
-        inputs = self._discover_capture_inputs()
+        # Guard against concurrent measurement jobs
+        active_job = self._find_active_or_cancelling_job()
+        if active_job is not None:
+            active_id = active_job["id"]
+            active_status = active_job.get("status", "unknown")
+            logger.warning(
+                "MEASUREMENT-CANCEL-DIAG new job blocked: existing_job=%s status=%s",
+                active_id, active_status,
+            )
+            raise RuntimeError(
+                f"Another measurement is still active ({active_id}, status={active_status}). "
+                "Wait for it to finish or cancel it first."
+            )
+        self._cleanup_expired_cancelling_jobs()
+        inputs = self._measurement_inputs_with_sample_rate(self._discover_capture_inputs())
         selected_input = next((item for item in inputs if item["id"] == input_id), None)
         if not selected_input:
             raise ValueError("Selected capture input is no longer available")
@@ -627,7 +670,13 @@ class MeasurementStore:
         if status in {"completed", "failed", "cancelled"}:
             return job
         self._cancelled_jobs.add(job_id)
-        for process in self._job_processes.get(job_id, []):
+        proc_list = self._job_processes.get(job_id, [])
+        if proc_list:
+            logger.warning(
+                "MEASUREMENT-CANCEL-DIAG subprocesses terminated: job_id=%s process_count=%d",
+                job_id, len(proc_list),
+            )
+        for process in proc_list:
             try:
                 if process.poll() is None:
                     process.terminate()
@@ -636,13 +685,22 @@ class MeasurementStore:
         task = self._job_tasks.get(job_id)
         if task is not None and not task.done():
             task.cancel()
+            logger.warning(
+                "MEASUREMENT-CANCEL-DIAG asyncio task cancel requested: job_id=%s",
+                job_id,
+            )
         live_job = self._jobs.get(job_id)
         if live_job is not None:
-            live_job["status"] = "cancelled"
+            # Use "cancelling" so release watcher does NOT fire prematurely
+            live_job["status"] = "cancelling"
             live_job["updated_at"] = self._utc_now()
             live_job["message"] = "Measurement cancelled."
             live_job["error"] = None
             self._persist_job(live_job)
+            logger.warning(
+                "MEASUREMENT-CANCEL-DIAG cancel requested: job_id=%s status=cancelling",
+                job_id,
+            )
         return self.get_job(job_id)
 
     def delete_measurement(self, measurement_id: str) -> None:
@@ -710,6 +768,13 @@ class MeasurementStore:
         return self.get_calibration_state()
 
     async def _run_measurement_job(self, job_id: str) -> None:
+        """Run measurement job and transition to terminal state.
+
+        The "cancelling" status set by cancel_job() is promoted to "cancelled"
+        here when the worker thread finishes, so the release watcher and
+        new-job guard see the final state.
+        """
+        was_cancelling_before = job_id in self._cancelled_jobs
         job = self._jobs[job_id]
         job["status"] = "running"
         job["updated_at"] = self._utc_now()
@@ -718,6 +783,14 @@ class MeasurementStore:
         try:
             executor = self._execute_lr_repeat_job if job.get("job_kind") == "lr-repeat" else self._execute_capture_job
             result = await asyncio.to_thread(executor, deepcopy(job))
+
+            was_cancelled_during = job_id in self._cancelled_jobs
+            if was_cancelled_during:
+                logger.warning(
+                    "MEASUREMENT-CANCEL-DIAG job terminal cleanup (was cancelling): job_id=%s cancelling_before=%s",
+                    job_id, was_cancelling_before,
+                )
+
             if job_id in self._cancelled_jobs:
                 job["status"] = "cancelled"
                 job["updated_at"] = self._utc_now()
@@ -733,6 +806,11 @@ class MeasurementStore:
                     job["calibration"] = deepcopy(result["calibration"])
                 job["error"] = None
         except asyncio.CancelledError:
+            self._cancelled_jobs.add(job_id)
+            logger.warning(
+                "MEASUREMENT-CANCEL-DIAG job terminal cleanup (CancelledError): job_id=%s",
+                job_id,
+            )
             job["status"] = "cancelled"
             job["updated_at"] = self._utc_now()
             job["message"] = "Measurement cancelled."
@@ -740,6 +818,10 @@ class MeasurementStore:
             job["error"] = None
         except Exception as exc:
             if job_id in self._cancelled_jobs:
+                logger.warning(
+                    "MEASUREMENT-CANCEL-DIAG job terminal cleanup (exception+cancelled): job_id=%s exc=%s",
+                    job_id, exc,
+                )
                 job["status"] = "cancelled"
                 job["updated_at"] = self._utc_now()
                 job["message"] = "Measurement cancelled."
@@ -754,6 +836,10 @@ class MeasurementStore:
         finally:
             self._job_processes.pop(job_id, None)
             self._persist_job(job)
+            logger.warning(
+                "MEASUREMENT-CANCEL-DIAG job terminal cleanup complete: job_id=%s final_status=%s",
+                job_id, job.get("status"),
+            )
 
     def _pre_average_er_captures(
         self,
@@ -1972,6 +2058,14 @@ class MeasurementStore:
         final_capture_level_low = False
         mic_auto_boosted = False
         reference_warning = str(input_channels.get("reference_disabled_reason") or "").strip()
+
+        # Cancel guard: check before any attempt
+        if job_id in self._cancelled_jobs:
+            logger.warning(
+                "MEASUREMENT-CANCEL-DIAG retry aborted before first attempt: job_id=%s",
+                job_id,
+            )
+            raise RuntimeError("Measurement cancelled.")
         for attempt_index in range(HOST_SWEEP_MAX_ATTEMPTS):
             attempts_used = attempt_index + 1
             logger.info(
@@ -1980,6 +2074,14 @@ class MeasurementStore:
                 "electrical" if use_electrical_reference else "acoustic",
             )
             try:
+                # Cancel guard: check before each capture attempt
+                if job_id in self._cancelled_jobs:
+                    logger.warning(
+                        "MEASUREMENT-CANCEL-DIAG retry aborted before capture attempt %d/%d: job_id=%s",
+                        attempts_used, HOST_SWEEP_MAX_ATTEMPTS, job_id,
+                    )
+                    raise RuntimeError("Measurement cancelled.")
+
                 if capture_path.exists():
                     capture_path.unlink()
                 attempt_reference = electrical_reference if use_electrical_reference else host_reference
@@ -2008,6 +2110,15 @@ class MeasurementStore:
                 )
                 if use_electrical_reference:
                     reference_status = self._evaluate_electrical_reference_status(analysis)
+
+                    # Cancel guard: check before QC-based ER fallback
+                    if job_id in self._cancelled_jobs:
+                        logger.warning(
+                            "MEASUREMENT-CANCEL-DIAG retry aborted before ER fallback: job_id=%s",
+                            job_id,
+                        )
+                        raise RuntimeError("Measurement cancelled.")
+
                     if not reference_status["usable"]:
                         reference_warning = reference_status["warning"]
                         if self._should_keep_active_22_dsp_electrical_reference(
@@ -2080,6 +2191,14 @@ class MeasurementStore:
                                 continue
                 break
             except Exception as exc:
+                # Cancel safety: cancellation is ALWAYS terminal
+                if self._is_measurement_cancelled(job_id, exc):
+                    logger.warning(
+                        "MEASUREMENT-CANCEL-DIAG retry aborted because job cancelled: job_id=%s attempt=%d/%d exc=%s",
+                        job_id, attempts_used, HOST_SWEEP_MAX_ATTEMPTS, exc,
+                    )
+                    raise RuntimeError("Measurement cancelled.") from exc
+
                 if use_electrical_reference:
                     reference_warning = f"Electrical reference unavailable; used host monitor timing fallback ({exc})."
                     logger.warning("Electrical measurement reference failed for %s; falling back to host monitor timing: %s", job_id, exc)
@@ -2087,6 +2206,15 @@ class MeasurementStore:
                         "ER fallback capture within attempt %d/%d: capture exception, retrying with host timing",
                         attempts_used, HOST_SWEEP_MAX_ATTEMPTS,
                     )
+
+                    # Cancel guard: check before ER exception fallback
+                    if job_id in self._cancelled_jobs:
+                        logger.warning(
+                            "MEASUREMENT-CANCEL-DIAG retry aborted before ER exception fallback: job_id=%s",
+                            job_id,
+                        )
+                        raise RuntimeError("Measurement cancelled.")
+
                     try:
                         if capture_path.exists():
                             capture_path.unlink()
@@ -2118,11 +2246,41 @@ class MeasurementStore:
                         break
                     except Exception:
                         logger.warning("Electrical reference fallback capture also failed for %s", job_id, exc_info=True)
+
+                        # Cancel check after ER fallback also failed
+                        if job_id in self._cancelled_jobs:
+                            logger.warning(
+                                "MEASUREMENT-CANCEL-DIAG retry aborted after ER fallback failed (job cancelled): job_id=%s",
+                                job_id,
+                            )
+                            raise RuntimeError("Measurement cancelled.")
+
+                # Cancel guard before retry decision
+                if job_id in self._cancelled_jobs:
+                    logger.warning(
+                        "MEASUREMENT-CANCEL-DIAG retry aborted: job_id=%s",
+                        job_id,
+                    )
+                    raise RuntimeError("Measurement cancelled.")
+
                 if attempt_index >= HOST_SWEEP_MAX_ATTEMPTS - 1 or not self._should_retry_host_capture(exc):
                     raise RuntimeError(
                         f"Measurement failed after {attempts_used}/{HOST_SWEEP_MAX_ATTEMPTS} attempts: {exc}"
                     ) from exc
-                time.sleep(HOST_SWEEP_RETRY_DELAY_SECONDS)
+
+                # Cancel-aware sleep
+                logger.info(
+                    "MEASUREMENT-CANCEL-DIAG retry sleep: job_id=%s attempt=%d/%d delay=%.2f",
+                    job_id, attempts_used, HOST_SWEEP_MAX_ATTEMPTS, HOST_SWEEP_RETRY_DELAY_SECONDS,
+                )
+                self._cancel_aware_sleep(job_id, HOST_SWEEP_RETRY_DELAY_SECONDS)
+                # Re-check after sleep before next loop iteration
+                if job_id in self._cancelled_jobs:
+                    logger.warning(
+                        "MEASUREMENT-CANCEL-DIAG retry aborted after sleep (job cancelled): job_id=%s",
+                        job_id,
+                    )
+                    raise RuntimeError("Measurement cancelled.")
         if analysis is None or capture_info is None or playback_info is None:
             raise RuntimeError("Host-local capture did not produce an analysis result")
         if reference_warning and not self._analysis_has_warning_code(analysis, "electrical-reference-fallback"):
@@ -2341,6 +2499,24 @@ class MeasurementStore:
                 sample_rate,
                 helper_process_snapshots[-1].get("processes"),
             )
+
+            # Pre-Sweep State Validation
+            pre_sweep_state = self._build_pre_sweep_state_snapshot(
+                job_id=job_id,
+                sample_rate=sample_rate,
+                playback_route=playback_route,
+            )
+            logger.warning(
+                "MEASUREMENT-STATE-CHECK pre-sweep state: %s",
+                json.dumps(pre_sweep_state, sort_keys=True, default=str),
+            )
+            pre_sweep_failure = pre_sweep_state.get("validation_failure")
+            if pre_sweep_failure:
+                raise RuntimeError(
+                    f"Measurement pre-sweep state check failed: {pre_sweep_failure}. "
+                    "Helper/config not in consistent state - sweep refused."
+                )
+
             play_process = subprocess.Popen(play_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             self._job_processes[job_id] = [record_process, play_process]
             if playback_route["route"] in MEASUREMENT_SUBWOOFER_HELPER_ROUTES:
@@ -2807,6 +2983,61 @@ class MeasurementStore:
             "Measurement prime sweep completed: prime_id=%s",
             prime_id,
         )
+
+    def _is_measurement_cancelled(self, job_id: str, exc = None):
+        """Return True if the job is cancelled or the exception is a cancellation signal."""
+        if job_id in self._cancelled_jobs:
+            return True
+        if exc is None:
+            return False
+        if isinstance(exc, asyncio.CancelledError):
+            return True
+        msg = str(exc)
+        if "Measurement cancelled" in msg or "Measurement canceled" in msg:
+            return True
+        return False
+
+    def _cancel_aware_sleep(self, job_id: str, delay_seconds: float) -> None:
+        """Sleep in short increments, aborting immediately if the job is cancelled."""
+        check_interval = 0.05
+        deadline = time.monotonic() + delay_seconds
+        while time.monotonic() < deadline:
+            if job_id in self._cancelled_jobs:
+                return
+            remaining = deadline - time.monotonic()
+            time.sleep(min(check_interval, max(0.0, remaining)))
+
+    def _find_active_or_cancelling_job(self):
+        """Return any job that is still active (running/queued/cancelling)."""
+        terminal_statuses = {"completed", "failed", "cancelled"}
+        for _job_id, job in list(self._jobs.items()):
+            status = str(job.get("status") or "")
+            if status not in terminal_statuses:
+                return job
+        return None
+
+    def _cleanup_expired_cancelling_jobs(self) -> None:
+        """Promote stale cancelling jobs to cancelled when the worker thread is gone."""
+        for _job_id in list(self._jobs.keys()):
+            job = self._jobs.get(_job_id)
+            if job is None:
+                continue
+            status = str(job.get("status") or "")
+            if status != "cancelling":
+                continue
+            task = self._job_tasks.get(_job_id)
+            if task is None or task.done():
+                self._cancelled_jobs.add(_job_id)
+                job["status"] = "cancelled"
+                job["updated_at"] = self._utc_now()
+                job["message"] = "Measurement cancelled."
+                job["result"] = None
+                job["error"] = None
+                self._persist_job(job)
+                logger.warning(
+                    "MEASUREMENT-CANCEL-DIAG expired cancelling job promoted to cancelled: job_id=%s",
+                    _job_id,
+                )
 
     def _should_retry_host_capture(self, exc: Exception) -> bool:
         error_codes = self._capture_quality_error_codes(exc)
@@ -4895,35 +5126,7 @@ class MeasurementStore:
         }
 
     def _resolve_measurement_sample_rate(self) -> int:
-        status = get_samplerate_status()
-        clock_rate = status.get("clock_rate")
-        if clock_rate:
-            try:
-                resolved = int(clock_rate)
-                if resolved > 0:
-                    return resolved
-            except (TypeError, ValueError):
-                pass
-
-        overview = get_audio_output_overview()
-        current_output = overview.get("current_output") or {}
-        selected_output = overview.get("selected_output") or {}
-        default_output = overview.get("default_output") or {}
-        for candidate in (
-            current_output.get("active_rate"),
-            selected_output.get("active_rate"),
-            default_output.get("active_rate"),
-            status.get("active_rate"),
-            status.get("default_rate"),
-            48_000,
-        ):
-            try:
-                resolved = int(candidate)
-            except (TypeError, ValueError):
-                continue
-            if resolved > 0:
-                return resolved
-        return 48_000
+        return MEASUREMENT_DEFAULT_SAMPLE_RATE
 
     def _resolve_host_reference_capture(
         self,
@@ -6158,6 +6361,189 @@ class MeasurementStore:
                 return item
         return {"name": node_name}
 
+    @staticmethod
+    def _build_pre_sweep_state_snapshot(
+        *,
+        job_id: str,
+        sample_rate: int,
+        playback_route: dict,
+    ):
+        """Capture comprehensive helper/config state before sweep.
+
+        Returns a dict with validation_failure key set when the state is
+        inconsistent and the sweep must be refused.
+
+        Mode-aware: stereo/direct-sink routes do not require a 2.x helper.
+        """
+        route_name = str(playback_route.get("route") or "")
+        output_mode = str(playback_route.get("output_mode") or "unknown")
+        route_needs_helper = (
+            route_name in MEASUREMENT_SUBWOOFER_HELPER_ROUTES
+            or route_name == "subwoofer-active-chain"
+        )
+
+        now = time.monotonic()
+        snapshot = {
+            "job_id": job_id,
+            "measurement_rate": sample_rate,
+            "playback_route": route_name,
+            "output_mode": output_mode,
+            "helper_required": route_needs_helper,
+            "timestamp": now,
+            "validation_failure": None,
+        }
+
+        # Helper process check
+        try:
+            pgrep = subprocess.run(
+                ["pgrep", "-af", "fxroute_21_passthrough"],
+                capture_output=True, text=True, timeout=2,
+            )
+            processes = [l.strip() for l in (pgrep.stdout or "").splitlines() if l.strip()]
+            snapshot["helper_process_count"] = len(processes)
+            snapshot["helper_processes"] = processes[:4]
+        except Exception as exc:
+            snapshot["helper_process_error"] = str(exc)
+            snapshot["helper_process_count"] = 0
+            snapshot["helper_processes"] = []
+            if route_needs_helper:
+                snapshot["validation_failure"] = f"helper pgrep failed: {exc}"
+                return snapshot
+
+        # Parse argv from first helper process
+        helper_argv = []
+        helper_pid = None
+        if processes:
+            first = processes[0]
+            parts = first.split(None, 1)
+            if len(parts) >= 1:
+                try:
+                    helper_pid = int(parts[0].strip())
+                except (ValueError, TypeError):
+                    pass
+            if len(parts) >= 2:
+                helper_argv = shlex.split(parts[1])
+            snapshot["helper_pid"] = helper_pid
+            snapshot["helper_argv"] = helper_argv
+
+            # Extract key parameters from argv
+            argv_parsed = {}
+            i = 0
+            while i < len(helper_argv) - 1:
+                key = helper_argv[i]
+                val = helper_argv[i + 1]
+                if key.startswith("--"):
+                    argv_parsed[key[2:]] = val
+                    i += 2
+                else:
+                    i += 1
+
+            snapshot["parsed"] = {
+                "rate": int(argv_parsed.get("rate", 0)),
+                "lowpass_hz": int(argv_parsed.get("lowpass-hz", 0)),
+                "highpass_hz": int(argv_parsed.get("highpass-hz", 0)),
+                "bass_routing": argv_parsed.get("bass-routing", ""),
+                "sub_level_db": float(argv_parsed.get("sub-level-db", 0)),
+                "sub_polarity": argv_parsed.get("sub-polarity", "normal"),
+                "main_delay_ms": float(argv_parsed.get("main-delay-ms", 0)),
+                "sub_delay_ms": float(argv_parsed.get("sub-delay-ms", 0)),
+                "sub2_level_db": float(argv_parsed.get("sub2-level-db", 0)),
+                "sub2_polarity": argv_parsed.get("sub2-polarity", "normal"),
+                "sub2_delay_ms": float(argv_parsed.get("sub2-delay-ms", 0)),
+                "node_name": argv_parsed.get("node-name", ""),
+                "quantum": int(argv_parsed.get("quantum", 0)),
+            }
+
+            # Critical consistency checks - only when helper is required
+            if route_needs_helper:
+                failures = []
+                if len(processes) != 1:
+                    failures.append(f"expected 1 helper process, found {len(processes)}")
+
+                helper_rate = int(argv_parsed.get("rate", 0))
+                if helper_rate <= 0:
+                    failures.append(f"helper rate not parseable: '{argv_parsed.get('rate', '')}'")
+                elif helper_rate != sample_rate:
+                    failures.append(f"helper rate {helper_rate} != measurement rate {sample_rate}")
+
+                highpass = int(argv_parsed.get("highpass-hz", 0))
+                lowpass = int(argv_parsed.get("lowpass-hz", 0))
+                if highpass > 0 and lowpass > 0 and highpass != lowpass:
+                    failures.append(f"highpass {highpass}Hz != lowpass {lowpass}Hz (crossover mismatch)")
+
+                if failures:
+                    snapshot["validation_failure"] = "; ".join(failures)
+        else:
+            snapshot["helper_pid"] = None
+            snapshot["helper_argv"] = []
+            if route_needs_helper:
+                snapshot["validation_failure"] = "no helper process found"
+
+        # Sink suspend/resume history
+        try:
+            last_suspend = subprocess.run(
+                ["journalctl", "--user", "-u", "fxroute.service", "--no-pager",
+                 "--since", "60 seconds ago", "-o", "cat"],
+                capture_output=True, text=True, timeout=3,
+            )
+            suspend_lines = [l for l in (last_suspend.stdout or "").splitlines()
+                           if "suspend" in l.lower() or "Suspend" in l]
+            snapshot["recent_suspend_count"] = len(suspend_lines)
+            if suspend_lines:
+                snapshot["last_suspend_line"] = suspend_lines[-1][:300]
+            else:
+                snapshot["last_suspend_line"] = None
+        except Exception as exc:
+            snapshot["suspend_log_error"] = str(exc)
+
+        # PipeWire rate check
+        try:
+            pw_rate = subprocess.run(
+                ["pw-metadata", "-n", "settings", "0", "clock.force-rate"],
+                capture_output=True, text=True, timeout=2,
+            )
+            pw_rate_val = (pw_rate.stdout or "").strip()
+            snapshot["pipewire_force_rate"] = pw_rate_val
+        except Exception as exc:
+            snapshot["pipewire_force_rate"] = f"error: {exc}"
+
+        # Pactl sink info
+        try:
+            pactl = subprocess.run(
+                ["pactl", "list", "sinks", "short"],
+                capture_output=True, text=True, timeout=3,
+            )
+            sink_lines = [l for l in (pactl.stdout or "").splitlines() if l.strip()]
+            for line in sink_lines:
+                if "RUNNING" in line or "IDLE" in line:
+                    parts_line = line.split()
+                    if len(parts_line) >= 2:
+                        snapshot["pactl_sink_name"] = parts_line[1]
+                        if len(parts_line) >= 5:
+                            snapshot["pactl_sink_sample_rate"] = parts_line[4]
+                    break
+        except Exception as exc:
+            snapshot["pactl_error"] = str(exc)
+
+        # Bassgain-relevant: master volume / mute via pactl
+        try:
+            volume = subprocess.run(
+                ["pactl", "get-sink-volume", "@DEFAULT_SINK@"],
+                capture_output=True, text=True, timeout=2,
+            )
+            vol_line = (volume.stdout or "").strip()
+            snapshot["pactl_master_volume"] = vol_line[:200] if vol_line else None
+
+            mute = subprocess.run(
+                ["pactl", "get-sink-mute", "@DEFAULT_SINK@"],
+                capture_output=True, text=True, timeout=2,
+            )
+            mute_line = (mute.stdout or "").strip()
+            snapshot["pactl_master_mute"] = mute_line[:200] if mute_line else None
+        except Exception as exc:
+            snapshot["pactl_volume_error"] = str(exc)
+
+        return snapshot
     @staticmethod
     def _snapshot_fxroute_21_helper_processes(label: str) -> dict[str, Any]:
         try:
