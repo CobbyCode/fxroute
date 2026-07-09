@@ -2092,8 +2092,8 @@ async def _release_measurement_samplerate_force_after_job(job_id: str, expected_
             try:
                 await _dump_21_runtime_state(f"backend-before-release-{status}", {"job_id": job_id, "job_status": status})
                 current_force_rate = _get_current_pipewire_force_rate()
+                restore_value = restore_force_rate if restore_force_rate > 0 else 0
                 if current_force_rate == expected_rate:
-                    restore_value = restore_force_rate if restore_force_rate > 0 else 0
                     _set_pipewire_force_rate(restore_value)
                     logger.info(
                         "Measurement samplerate pre-arm released: job_id=%s previous_force_rate=%s status=%s",
@@ -2101,28 +2101,30 @@ async def _release_measurement_samplerate_force_after_job(job_id: str, expected_
                         restore_force_rate,
                         status,
                     )
-                    # Re-sync subwoofer runtime at the restored playback rate
-                    # so the helper is rebuilt at the correct rate.
-                    if subwoofer_runtime is not None:
-                        logger.info(
-                            "Measurement samplerate release invoking _sync_subwoofer_runtime_at_rate: job_id=%s target_rate=%s",
-                            job_id,
-                            restore_force_rate,
-                        )
-                        await _sync_subwoofer_runtime_at_rate(restore_force_rate)
-                        await _dump_21_runtime_state(f"backend-after-release-resync-{status}", {"job_id": job_id, "job_status": status})
-                    else:
-                        logger.info(
-                            "Measurement samplerate release cannot re-sync: job_id=%s subwoofer_runtime_missing=true",
-                            job_id,
-                        )
                 else:
                     logger.info(
-                        "Measurement samplerate pre-arm release skipped: job_id=%s current_force_rate=%s expected_rate=%s status=%s",
+                        "Measurement samplerate pre-arm force release skipped: job_id=%s current_force_rate=%s expected_rate=%s status=%s",
                         job_id,
                         current_force_rate,
                         expected_rate,
                         status,
+                    )
+                # Re-sync subwoofer runtime at the restored playback rate even
+                # if another playback repair already changed force-rate. The
+                # helper may still be running at the measurement rate.
+                if subwoofer_runtime is not None:
+                    logger.info(
+                        "Measurement samplerate release invoking _sync_subwoofer_runtime_at_rate: job_id=%s target_rate=%s current_force_rate=%s",
+                        job_id,
+                        restore_value,
+                        current_force_rate,
+                    )
+                    await _sync_subwoofer_runtime_at_rate(restore_value)
+                    await _dump_21_runtime_state(f"backend-after-release-resync-{status}", {"job_id": job_id, "job_status": status})
+                else:
+                    logger.info(
+                        "Measurement samplerate release cannot re-sync: job_id=%s subwoofer_runtime_missing=true",
+                        job_id,
                     )
             except Exception as exc:
                 logger.warning("Measurement samplerate pre-arm release failed: job_id=%s error=%s", job_id, exc)
