@@ -74,6 +74,32 @@ class EasyEffectsPeakMonitor:
         await self.start()
         logger.info("Peak monitor restart fully armed in %.3fs", time.monotonic() - restart_started_at)
 
+    async def relink(self) -> bool:
+        relink_started_at = time.monotonic()
+        if not self._running or not self._proc or self._proc.returncode is not None:
+            logger.info("Peak monitor relink skipped: process not running (running=%s proc_alive=%s)",
+                        self._running,
+                        bool(self._proc and self._proc.returncode is None))
+            return False
+        target = self._target
+        capture_name = self._capture_node_name
+        if not target or not capture_name:
+            logger.info("Peak monitor relink skipped: no target/capture (target=%s capture=%s)",
+                        target is not None, capture_name)
+            return False
+        try:
+            logger.info("Peak monitor relink: repairing links for %s -> %s",
+                        capture_name, target.source_name)
+            await self._link_capture_stream(target, capture_name)
+            logger.info("Peak monitor relink completed in %.3fs",
+                        time.monotonic() - relink_started_at)
+            return True
+        except Exception as exc:
+            logger.warning("Peak monitor relink failed: %s", exc)
+            self._last_error = str(exc)
+            await self._emit_if_changed(force=True)
+            return False
+
     async def stop(self):
         stop_started_at = time.monotonic()
         had_task = bool(self._task and not self._task.done())

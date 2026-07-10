@@ -2998,38 +2998,62 @@ async def sync_peak_monitor_for_playback_state(state: dict):
             return
         desired_signature = f"player:{source}:{state.get('current_file') or ''}" if is_active_playback else None
 
-        if is_active_playback and (not peak_monitor_playback_armed or peak_monitor_context_signature != desired_signature):
-            peak_monitor_playback_armed = True
-            peak_monitor_context_signature = desired_signature
-            expected_rate = await _resolve_expected_playback_samplerate(source) if source in {"local", "radio"} else None
-            aligned = await _wait_for_samplerate_alignment(expected_rate) if expected_rate else False
-            if source in {"local", "radio"} and expected_rate and not aligned:
-                try:
-                    aligned = await _ensure_radio_samplerate_force(expected_rate, f"peak-monitor-playback-transition:{source}")
-                except Exception as exc:
-                    logger.warning("Playback samplerate force-rate failed during playback transition: %s", exc)
-            elif source not in {"local", "radio"}:
-                _clear_radio_samplerate_force_if_active(f"playback-transition:{source}")
-            if not aligned:
-                await asyncio.sleep(PEAK_MONITOR_RESTART_SETTLE_MS / 1000)
-            if expected_rate:
-                try:
-                    await _sync_easyeffects_preset_for_playback_samplerate(
-                        sample_rate_hz=expected_rate,
-                        reason="peak-monitor-playback-transition",
-                        detail=f"signature={desired_signature} aligned={aligned}",
+        if is_active_playback:
+            # Resume from pause/inactive with same source:
+            # only restart the peak monitor — do NOT reload the EasyEffects
+            # preset or repair the output graph, which causes an audible crack.
+            if (
+                not peak_monitor_playback_armed
+                and peak_monitor_context_signature == desired_signature
+            ):
+                peak_monitor_playback_armed = True
+                logger.info(
+                    "Repairing peak monitor links after pause (same source, relink only): %s",
+                    desired_signature,
+                )
+                # Peak monitor process was kept running but PipeWire links are
+                # dropped during pause. Repair links without restarting the
+                # pw-record process to avoid audible cracks.
+                relinked = await peak_monitor.relink()
+                if not relinked:
+                    logger.warning(
+                        "Peak monitor relink failed; falling back to full restart: %s",
+                        desired_signature,
                     )
-                except Exception as exc:
-                    logger.warning("EasyEffects playback samplerate preset sync failed before peak monitor restart: %s", exc)
-            await _ensure_stereo_easyeffects_output_graph()
-            logger.info(
-                "Restarting peak monitor on playback context change to refresh PipeWire links: %s (expected_rate=%s aligned=%s)",
-                desired_signature,
-                expected_rate,
-                aligned,
-            )
-            await peak_monitor.restart()
-            await manager.broadcast({"type": "playback_peak_warning", "data": peak_monitor.snapshot()})
+                    await peak_monitor.restart()
+                await manager.broadcast({"type": "playback_peak_warning", "data": peak_monitor.snapshot()})
+            elif peak_monitor_context_signature != desired_signature:
+                peak_monitor_playback_armed = True
+                peak_monitor_context_signature = desired_signature
+                expected_rate = await _resolve_expected_playback_samplerate(source) if source in {"local", "radio"} else None
+                aligned = await _wait_for_samplerate_alignment(expected_rate) if expected_rate else False
+                if source in {"local", "radio"} and expected_rate and not aligned:
+                    try:
+                        aligned = await _ensure_radio_samplerate_force(expected_rate, f"peak-monitor-playback-transition:{source}")
+                    except Exception as exc:
+                        logger.warning("Playback samplerate force-rate failed during playback transition: %s", exc)
+                elif source not in {"local", "radio"}:
+                    _clear_radio_samplerate_force_if_active(f"playback-transition:{source}")
+                if not aligned:
+                    await asyncio.sleep(PEAK_MONITOR_RESTART_SETTLE_MS / 1000)
+                if expected_rate:
+                    try:
+                        await _sync_easyeffects_preset_for_playback_samplerate(
+                            sample_rate_hz=expected_rate,
+                            reason="peak-monitor-playback-transition",
+                            detail=f"signature={desired_signature} aligned={aligned}",
+                        )
+                    except Exception as exc:
+                        logger.warning("EasyEffects playback samplerate preset sync failed before peak monitor restart: %s", exc)
+                await _ensure_stereo_easyeffects_output_graph()
+                logger.info(
+                    "Restarting peak monitor on playback context change to refresh PipeWire links: %s (expected_rate=%s aligned=%s)",
+                    desired_signature,
+                    expected_rate,
+                    aligned,
+                )
+                await peak_monitor.restart()
+                await manager.broadcast({"type": "playback_peak_warning", "data": peak_monitor.snapshot()})
         elif (
             not is_active_playback
             and peak_monitor_playback_armed
@@ -3042,12 +3066,13 @@ async def sync_peak_monitor_for_playback_state(state: dict):
             spotify_state = await get_spotify_ui_state()
             if spotify_state.get("available") and spotify_state.get("status") == "Playing":
                 return
-            logger.info("Stopping peak monitor while playback is inactive")
+            # Keep the peak monitor process running through pauses to avoid
+            # pw-record restart + PipeWire link glitches on resume.
+            # Mark as not armed so the resume path will trigger relink().
+            logger.info("Peak monitor pausing (process stays alive, armed=False): signature=%s", peak_monitor_context_signature)
             _clear_radio_samplerate_force_if_active("playback-inactive")
-            await peak_monitor.stop()
             peak_monitor_playback_armed = False
-            peak_monitor_context_signature = None
-            await manager.broadcast({"type": "playback_peak_warning", "data": peak_monitor.snapshot()})
+            # peak_monitor_context_signature is preserved for same-source resume detection.
 
 
 async def sync_peak_monitor_for_spotify_state(data: dict):

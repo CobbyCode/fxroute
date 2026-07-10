@@ -673,10 +673,11 @@ class Subwoofer21Runtime:
         if not self._links_configured or not self._linked_output_key:
             return
         await self._remove_direct_easyeffects_front_links(self._linked_output_key)
-        # Re-verify helper input links; EasyEffects preset reload may disconnect them
+        # Re-verify helper input links (link-only; no unlink to avoid
+        # tearing down active audio path). pw-link on existing link is a no-op;
+        # missing links (e.g. after preset reload) are re-created.
         for channel, helper_input in [("FL", "input_L"), ("FR", "input_R")]:
             link = PipeWireLink(f"ee_soe_output_level:output_{channel}", f"{self._helper_node_name}:{helper_input}")
-            await self._unlink(link, ignore_errors=True)
             await self._link(link)
 
     async def _wait_for_helper_ports(self) -> None:
