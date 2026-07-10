@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.51 (2026-07-10)
+
+### Fixed
+- Subwoofer helper rate desync after measurement at 44.1 kHz:
+  the PipeWire stage-1 helper stayed at 48 kHz while playback resumed at 44.1 kHz,
+  causing channel loss (left speaker only). The measurement release watcher now
+  re-syncs the helper, and both local and radio controlled restart paths
+  explicitly sync the helper at the restored playback rate to prevent a race
+  where the release watcher runs before the clock change.
+
 ## 0.7.50 (2026-07-10)
 
 ### Added
