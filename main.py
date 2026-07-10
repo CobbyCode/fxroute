@@ -1622,7 +1622,17 @@ async def _sync_peak_monitor_after_playback_transition(expected_track: dict | No
         )
         return
     if _current_track_matches(expected_track):
-        await sync_peak_monitor_for_playback_state(player_instance.state)
+        # Skip redundant peak-monitor restart when on_player_state_change
+        # has already armed it. A duplicate restart ~2.5 s into playback
+        # reloads the EasyEffects preset while audio is running, causing
+        # an audible crack.
+        if not peak_monitor_playback_armed:
+            await sync_peak_monitor_for_playback_state(player_instance.state)
+        else:
+            logger.debug(
+                "Peak monitor already armed; skipping redundant playback transition sync: source=%s url=%s",
+                expected_track.get("source"), expected_track.get("url"),
+            )
 
 
 async def _sync_subwoofer_runtime_after_playback_transition(expected_track: dict | None, timeout_ms: int = 3200) -> None:
