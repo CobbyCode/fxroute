@@ -6645,8 +6645,35 @@ _auto_sub_lock: asyncio.Lock = asyncio.Lock()
 _AUTO_SUB_MAX_CALIBRATION_BYTES: int = 2 * 1024 * 1024  # 2 MiB
 
 
+def _cleanup_stale_autosub_cancelling_jobs() -> None:
+    """Promote stale cancelling AutoSub jobs when the lock is not held.
+
+    If the lock can be acquired immediately, no worker is actively running,
+    so any cancelling job is stale and can be marked cancelled.
+    """
+    try:
+        acquired = _auto_sub_lock and _auto_sub_lock.locked()
+    except RuntimeError:
+        acquired = False
+    if acquired:
+        return  # Lock held, worker still active
+
+    for job_id, job in list(_AUTO_SUB_JOBS.items()):
+        if str(job.get("status") or "").lower() != "cancelling":
+            continue
+        logger.warning(
+            "AUTOSUB stale running state recovered: job_id=%s status=cancelling->cancelled",
+            job_id,
+        )
+        job["status"] = "cancelled"
+        job["message"] = "Auto Sub Optimize cancelled."
+        job["cancel_requested"] = True
+        job["cancelled_at"] = job.get("cancelled_at") or datetime.now(timezone.utc).isoformat()
+
+
 def _auto_sub_cancel_requested(job: dict[str, Any]) -> bool:
-    return bool(job.get("cancel_requested")) or str(job.get("status") or "").lower() == "cancelled"
+    status = str(job.get("status") or "").lower()
+    return bool(job.get("cancel_requested")) or status in ("cancelled", "cancelling")
 
 
 def _auto_sub_cancelled_candidate(delay_ms: float, stage: str) -> dict[str, Any]:
@@ -7376,6 +7403,9 @@ async def start_auto_sub_optimize(
     if measurement_store.has_active_measurement_job():
         raise HTTPException(status_code=409, detail="Another measurement is already running")
 
+    # Clean up stale cancelling jobs before lock acquisition
+    _cleanup_stale_autosub_cancelling_jobs()
+
     # Acquire lock before modifying AutoSub state
     try:
         await asyncio.wait_for(_auto_sub_lock.acquire(), timeout=0.5)
@@ -7445,6 +7475,7 @@ async def start_auto_sub_optimize(
             },
         }
         _AUTO_SUB_JOBS[job_id] = job
+        logger.info("AUTOSUB job=%s start mode=%s fc=%sHz candidates=%s", job_id, output_mode, fc, len(scan_delays))
 
         calibration_bytes = None
         calibration_filename = None
@@ -7571,9 +7602,10 @@ async def cancel_auto_sub_optimize_job(job_id: str):
 
     job["cancel_requested"] = True
     job["cancelled_at"] = datetime.now(timezone.utc).isoformat()
-    job["status"] = "cancelled"
-    job["message"] = "Auto Sub Optimize cancelled."
+    job["status"] = "cancelling"
+    job["message"] = "Auto Sub Optimize cancelling..."
     job["error"] = None
+    logger.info("AUTOSUB job=%s cancel requested", job_id)
 
     current_sweep_id = job.get("current_sweep_id")
     if current_sweep_id and measurement_store:
@@ -8144,6 +8176,22 @@ async def _measure_auto_sub_combined_candidate(
     return candidate
 
 
+
+def _finalize_autosub_job(job: dict[str, Any] | None, job_id: str) -> None:
+    """Transition an AutoSub job from cancelling to cancelled and log cleanup."""
+    if job is None:
+        logger.warning("AUTOSUB job=%s worker finished (job missing)", job_id)
+        return
+    was_cancelling = str(job.get("status") or "").lower() == "cancelling"
+    was_cancel_requested = bool(job.get("cancel_requested"))
+    if was_cancelling or was_cancel_requested:
+        job["status"] = "cancelled"
+        job["message"] = "Auto Sub Optimize cancelled."
+        job["cancel_requested"] = True
+        logger.info("AUTOSUB job=%s worker finished (was cancelling=%s)", job_id, was_cancelling)
+    logger.info("AUTOSUB job=%s cleanup complete state=%s", job_id, job.get("status") or "idle")
+
+
 async def _run_auto_sub_22_optimize(
     job_id: str,
     input_id: str,
@@ -8185,6 +8233,7 @@ async def _run_auto_sub_22_optimize(
 
     try:
         if _auto_sub_cancel_requested(job):
+            logger.info("AUTOSUB job=%s cancel observed (before sweeps)", job_id)
             job["message"] = "Auto Sub Optimize cancelled."
             await _restore_original_config()
             return
@@ -8515,6 +8564,7 @@ async def _run_auto_sub_22_optimize(
         await _restore_original_config()
 
     finally:
+        _finalize_autosub_job(job, job_id)
         try:
             _auto_sub_lock.release()
         except RuntimeError:
@@ -8567,6 +8617,12 @@ async def _run_auto_sub_22_stereo_optimize(
         reference = min(valid, key=lambda result: abs(float(result.get("delay_ms", 0.0) or 0.0) - delay_ms))
         points = reference.get("points") or []
         return points if isinstance(points, list) and len(points) >= 3 else None
+
+    if _auto_sub_cancel_requested(job):
+        logger.info("AUTOSUB job=%s cancel observed (before sweeps)", job_id)
+        job["message"] = "Auto Sub Optimize cancelled."
+        await _restore_original_config()
+        return
 
     try:
         auto_sub_sweep_low_hz = 20.0
@@ -9143,6 +9199,7 @@ async def _run_auto_sub_22_stereo_optimize(
         await _restore_original_config()
 
     finally:
+        _finalize_autosub_job(job, job_id)
         try:
             _auto_sub_lock.release()
         except RuntimeError:
@@ -9186,6 +9243,7 @@ async def _run_auto_sub_optimize(
         await _restore_auto_sub_original_config(original_config_snapshot)
 
     if _auto_sub_cancel_requested(job):
+        logger.info("AUTOSUB job=%s cancel observed (before sweeps)", job_id)
         job["message"] = "Auto Sub Optimize cancelled."
         await _restore_original_config()
         return
@@ -9598,6 +9656,7 @@ async def _run_auto_sub_optimize(
         await _restore_original_config()
 
     finally:
+        _finalize_autosub_job(job, job_id)
         try:
             _auto_sub_lock.release()
         except RuntimeError:

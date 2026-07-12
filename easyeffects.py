@@ -618,6 +618,40 @@ class EasyEffectsManager:
         socket_command = f"load_preset:output:{preset_name}"
 
         def try_socket_load(context: str) -> bool:
+            # Fast path: fire-and-verify. EasyEffects does not send a response
+            # to load_preset, so avoid the 2s recv() timeout and verify
+            # the active preset with short polling instead.
+            for socket_path in self._socket_candidates():
+                if not socket_path.exists():
+                    continue
+                try:
+                    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                        client.settimeout(0.3)
+                        client.connect(str(socket_path))
+                        client.sendall((socket_command + "\n").encode())
+                except Exception:
+                    continue
+                # Poll for confirmation up to 500ms
+                deadline = time.monotonic() + 0.5
+                while time.monotonic() < deadline:
+                    if self.get_active_preset() == preset_name:
+                        logger.info(
+                            "Loaded EasyEffects preset via control socket (fire-and-verify, %s): %s",
+                            context,
+                            preset_name,
+                        )
+                        return True
+                    time.sleep(0.05)
+                # Fire-and-verify did not confirm; let the caller fall through
+                # to the safe _send_socket_command path below
+                logger.debug(
+                    "Fire-and-verify did not confirm preset '%s' within 500ms (%s), falling back",
+                    preset_name,
+                    context,
+                )
+                return False
+
+            # Safe fallback: full _send_socket_command with response wait
             response = self._send_socket_command(socket_command, timeout=2.0)
             active_after_load = self.get_active_preset()
             if active_after_load == preset_name:

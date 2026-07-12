@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.7.53 (2026-07-13)
+
+### Changed
+- AutoSub cancel flow now uses a `cancelling` intermediate state so the UI
+  reflects cancellation immediately while the running sweep finishes.
+- Stale cancelling AutoSub jobs are cleaned up before new optimization starts.
+
+### Fixed
+- EasyEffects preset loading: added fire-and-verify fast path via control
+  socket to avoid the 2 s recv timeout on `load_preset` (which sends no response).
+
+## 0.7.52 (2026-07-11)
+
+### Fixed
+- Peak monitor stays alive through pause and relinks on same-source resume.
+- Skip redundant peak-monitor restart when already armed during playback transition.
+
 ## 0.7.51 (2026-07-10)
 
 ### Fixed
