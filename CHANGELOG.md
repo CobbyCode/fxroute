@@ -3,8 +3,9 @@
 ## Unreleased
 
 ### Fixed
-- Subwoofer link repair: preset-load and periodic watch-loop repairs no longer run
-  in parallel, preventing doubled `pw-link` sequences and latency spikes up to 800 ms.
+- Subwoofer link repair: preset-load and periodic watch-loop repairs are now
+  serialized through a shared lock helper (`_reclean_guarded`), preventing
+  parallel `pw-link` sequences and latency spikes.
 
 ## 0.7.53 (2026-07-13)
 

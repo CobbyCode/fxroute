@@ -2319,9 +2319,11 @@ async def _subwoofer_runtime_link_watch_loop() -> None:
                 input_links_present,
                 direct_links_present,
             )
-            await subwoofer_runtime.reclean_direct_easyeffects_links()
-            await _dump_21_runtime_state(
-                "backend-link-watch-repair-after",
+            if not await subwoofer_runtime._reclean_guarded(skip_if_locked=True):
+                logger.info("SUBLINK watch skipped reason=repair_in_progress")
+            else:
+                await _dump_21_runtime_state(
+                    "backend-link-watch-repair-after",
                 {
                     "reason": "direct-ee-to-hardware-present" if direct_links_present else "ee-helper-input-missing",
                     "input_links_present_before": input_links_present,
@@ -9758,11 +9760,7 @@ async def load_easyeffects_preset(request: Request):
                 ee_manager.save_compare_state(compare)
             status = ee_manager.get_status()
         if subwoofer_runtime is not None and subwoofer_runtime.snapshot().get("active"):
-            await subwoofer_runtime._reclean_lock.acquire()
-            try:
-                await subwoofer_runtime.reclean_direct_easyeffects_links()
-            finally:
-                subwoofer_runtime._reclean_lock.release()
+            await subwoofer_runtime._reclean_guarded(skip_if_locked=False)
         await manager.broadcast({"type": "easyeffects", "data": status})
         schedule_peak_monitor_refresh_after_effects_change("preset-load")
         return {"status": "ok", "active_preset": preset_name, "compare": status.get("compare")}

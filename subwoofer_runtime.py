@@ -266,6 +266,8 @@ class Subwoofer21Runtime:
         self._needs_measurement_prime = False
         self._sync_lock = asyncio.Lock()
         self._reclean_lock = asyncio.Lock()
+        self._repair_counter = 0
+        self._active_repairs = 0
         self._pending_config: Optional[SubwooferRuntimeConfig] = None
 
     def _stream_key(self, config: SubwooferRuntimeConfig) -> tuple[Any, ...]:
@@ -695,6 +697,44 @@ class Subwoofer21Runtime:
         for link in self._direct_easyeffects_front_links(output_key):
             await self._unlink(link, ignore_errors=True)
             await self._link(link)
+
+    async def _reclean_guarded(self, skip_if_locked: bool = False) -> bool:
+        """Run reclean_direct_easyeffects_links under _reclean_lock.
+
+        When skip_if_locked=True (watch-loop), returns False immediately if
+        the lock is held by another repair. Otherwise blocks until available.
+
+        Both caller paths use this same helper so they share one serialization
+        point.
+        """
+        if skip_if_locked and self._reclean_lock.locked():
+            return False
+
+        async with self._reclean_lock:
+            repair_id = self._repair_counter
+            self._repair_counter += 1
+            self._active_repairs += 1
+            if self._active_repairs > 1:
+                logger.warning(
+                    "SUBLINK active_repairs=%d repair_id=%d",
+                    self._active_repairs,
+                    repair_id,
+                )
+            logger.info(
+                "SUBLINK repair start repair_id=%d active_repairs=%d",
+                repair_id,
+                self._active_repairs,
+            )
+            try:
+                await self.reclean_direct_easyeffects_links()
+            finally:
+                self._active_repairs -= 1
+                logger.info(
+                    "SUBLINK repair done repair_id=%d active_repairs=%d",
+                    repair_id,
+                    self._active_repairs,
+                )
+        return True
 
     async def reclean_direct_easyeffects_links(self) -> None:
         """Remove any direct EE front links that EasyEffects may have re-created
