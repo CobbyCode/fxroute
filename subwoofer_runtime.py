@@ -265,6 +265,7 @@ class Subwoofer21Runtime:
         self._linked_output_key: Optional[str] = None
         self._needs_measurement_prime = False
         self._sync_lock = asyncio.Lock()
+        self._reclean_lock = asyncio.Lock()
         self._pending_config: Optional[SubwooferRuntimeConfig] = None
 
     def _stream_key(self, config: SubwooferRuntimeConfig) -> tuple[Any, ...]:
@@ -575,36 +576,69 @@ class Subwoofer21Runtime:
         self._linked_output_key = None
 
     async def _remove_direct_easyeffects_front_links(self, output_key: str) -> None:
+        t_start = time.monotonic()
         direct_link_ids = await self._find_direct_easyeffects_front_link_ids(output_key)
+        removed_links: list[str] = []
+        noop_links: list[str] = []
         for item in direct_link_ids:
             link_id = str(item.get("link_id") or "").strip()
             if not link_id:
                 continue
+            source = str(item.get("source_port") or "")
+            target = str(item.get("target_port") or "")
             result = await self._command_runner(["pw-link", "-d", link_id])
             if result.returncode == 0:
                 self._removed_direct_front_links += 1
+                removed_links.append(f"{source} -> {target} (id={link_id})")
             else:
                 fallback = await self._unlink(
-                    PipeWireLink(str(item.get("source_port") or ""), str(item.get("target_port") or "")),
+                    PipeWireLink(source, target),
                     ignore_errors=True,
                 )
                 if fallback.returncode == 0:
                     self._removed_direct_front_links += 1
+                    removed_links.append(f"{source} -> {target} (fallback)")
                 else:
                     message = (result.stderr or result.stdout or fallback.stderr or fallback.stdout or "").strip()
                     if "No such file or directory" in message:
+                        noop_links.append(f"{source} -> {target}")
                         continue
                     logger.warning(
                         "Failed to remove direct EasyEffects front link by id=%s (%s -> %s): %s",
                         link_id,
-                        item.get("source_port"),
-                        item.get("target_port"),
+                        source,
+                        target,
                         message,
                     )
         for link in self._direct_easyeffects_front_links(output_key):
+            source, target = link.source, link.target
             result = await self._unlink(link, ignore_errors=True)
             if result.returncode == 0:
                 self._removed_direct_front_links += 1
+                desc = f"{source} -> {target}"
+                if desc not in removed_links:
+                    removed_links.append(desc)
+            elif "No such file or directory" in (result.stderr or result.stdout or ""):
+                desc = f"{source} -> {target}"
+                if desc not in noop_links:
+                    noop_links.append(desc)
+        t_ms = (time.monotonic() - t_start) * 1000
+        if removed_links or noop_links:
+            logger.info(
+                "Subwoofer link repair _remove_direct: output_key=%s found=%d removed=%s noop=%s (%.1fms)",
+                output_key,
+                len(direct_link_ids),
+                removed_links,
+                noop_links,
+                t_ms,
+            )
+        else:
+            logger.debug(
+                "Subwoofer link repair _remove_direct: output_key=%s found=%d no links to remove (%.1fms)",
+                output_key,
+                len(direct_link_ids),
+                t_ms,
+            )
 
     @staticmethod
     def _parse_pw_link_id_links(text: str) -> list[dict[str, str]]:
@@ -670,15 +704,76 @@ class Subwoofer21Runtime:
         re-verifies the helper input links from ee_soe_output_level ports.
         Does not touch helper output links or the helper process.
         """
+        t_start = time.monotonic()
         if not self._links_configured or not self._linked_output_key:
+            logger.debug(
+                "Subwoofer link repair skipped: links_configured=%s linked_output_key=%s (%.1fms)",
+                self._links_configured,
+                self._linked_output_key,
+                (time.monotonic() - t_start) * 1000,
+            )
             return
+
+        # --- check phase: snapshot PipeWire links before repair ---
+        t_check_start = time.monotonic()
+        direct_before = await self._find_direct_easyeffects_front_link_ids(self._linked_output_key)
+        helper_input_left_before = await self._link_present(
+            PipeWireLink(f"ee_soe_output_level:output_FL", f"{self._helper_node_name}:input_L")
+        )
+        helper_input_right_before = await self._link_present(
+            PipeWireLink(f"ee_soe_output_level:output_FR", f"{self._helper_node_name}:input_R")
+        )
+        t_check_ms = (time.monotonic() - t_check_start) * 1000
+
+        # --- repair phase ---
+        t_repair_start = time.monotonic()
+        removed_before = self._removed_direct_front_links
         await self._remove_direct_easyeffects_front_links(self._linked_output_key)
+        removed_count = self._removed_direct_front_links - removed_before
+
+        created_count = 0
+        already_linked_count = 0
         # Re-verify helper input links (link-only; no unlink to avoid
         # tearing down active audio path). pw-link on existing link is a no-op;
         # missing links (e.g. after preset reload) are re-created.
         for channel, helper_input in [("FL", "input_L"), ("FR", "input_R")]:
+            before = await self._link_present(
+                PipeWireLink(f"ee_soe_output_level:output_{channel}", f"{self._helper_node_name}:{helper_input}")
+            )
             link = PipeWireLink(f"ee_soe_output_level:output_{channel}", f"{self._helper_node_name}:{helper_input}")
             await self._link(link)
+            after = await self._link_present(
+                PipeWireLink(f"ee_soe_output_level:output_{channel}", f"{self._helper_node_name}:{helper_input}")
+            )
+            if not before and after:
+                created_count += 1
+            elif before and after:
+                already_linked_count += 1
+        t_repair_ms = (time.monotonic() - t_repair_start) * 1000
+
+        # --- verify phase: snapshot PipeWire links after repair ---
+        t_verify_start = time.monotonic()
+        direct_after = await self._find_direct_easyeffects_front_link_ids(self._linked_output_key)
+        t_verify_ms = (time.monotonic() - t_verify_start) * 1000
+
+        t_total_ms = (time.monotonic() - t_start) * 1000
+        logger.info(
+            "Subwoofer link repair complete: output=%s direct_before=%d direct_after=%d removed=%d "
+            "helper_left_before=%s helper_right_before=%s created=%d already_linked=%d "
+            "check=%.1fms repair=%.1fms verify=%.1fms total=%.1fms",
+            self._linked_output_key,
+            len(direct_before),
+            len(direct_after),
+            removed_count,
+            helper_input_left_before,
+            helper_input_right_before,
+            created_count,
+            already_linked_count,
+            t_check_ms,
+            t_repair_ms,
+            t_verify_ms,
+            t_total_ms,
+        )
 
     async def _wait_for_helper_ports(self) -> None:
         expected = [f"{self._helper_node_name}:{port}" for port in NATIVE_HELPER_PORTS]
@@ -691,14 +786,21 @@ class Subwoofer21Runtime:
             await self._sleep(0.1)
         raise RuntimeError(f"2.1 helper did not expose expected ports: {', '.join(expected)}")
 
+    async def _link_present(self, link: PipeWireLink) -> bool:
+        result = await self._command_runner(["pw-link", "-l"])
+        if result.returncode != 0:
+            return False
+        return _contains_link(result.stdout or "", link.source, link.target)
+
     async def _link(self, link: PipeWireLink) -> CommandResult:
         result = await self._command_runner(["pw-link", link.source, link.target])
         if result.returncode != 0:
             message = f"{result.stderr or result.stdout}".strip()
             if "File exists" in message:
-                logger.info("2.1 runtime link already exists: %s -> %s", link.source, link.target)
+                logger.debug("Subwoofer link repair link already exists: %s -> %s", link.source, link.target)
                 return result
             raise RuntimeError(f"pw-link failed: {link.source} -> {link.target}: {result.stderr or result.stdout}".strip())
+        logger.info("Subwoofer link repair created new link: %s -> %s", link.source, link.target)
         return result
 
     async def _unlink(self, link: PipeWireLink, *, ignore_errors: bool = False) -> CommandResult:

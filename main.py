@@ -2286,6 +2286,9 @@ async def _subwoofer_runtime_link_watch_loop() -> None:
                 continue
             if getattr(subwoofer_runtime, "sync_in_progress", False):
                 continue
+            if hasattr(subwoofer_runtime, "_reclean_lock") and subwoofer_runtime._reclean_lock.locked():
+                logger.info("SUBLINK watch skipped reason=repair_in_progress")
+                continue
             snapshot = subwoofer_runtime.snapshot()
             input_links_present = _subwoofer_helper_input_links_present()
             direct_links_present = await subwoofer_runtime.direct_easyeffects_front_links_present()
@@ -9755,7 +9758,11 @@ async def load_easyeffects_preset(request: Request):
                 ee_manager.save_compare_state(compare)
             status = ee_manager.get_status()
         if subwoofer_runtime is not None and subwoofer_runtime.snapshot().get("active"):
-            await subwoofer_runtime.reclean_direct_easyeffects_links()
+            await subwoofer_runtime._reclean_lock.acquire()
+            try:
+                await subwoofer_runtime.reclean_direct_easyeffects_links()
+            finally:
+                subwoofer_runtime._reclean_lock.release()
         await manager.broadcast({"type": "easyeffects", "data": status})
         schedule_peak_monitor_refresh_after_effects_change("preset-load")
         return {"status": "ok", "active_preset": preset_name, "compare": status.get("compare")}

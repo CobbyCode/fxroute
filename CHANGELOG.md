@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- Subwoofer link repair: preset-load and periodic watch-loop repairs no longer run
+  in parallel, preventing doubled `pw-link` sequences and latency spikes up to 800 ms.
+
 ## 0.7.53 (2026-07-13)
 
 ### Changed
