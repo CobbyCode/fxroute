@@ -6927,32 +6927,78 @@ def _auto_sub_result_for_delay(results: list[dict[str, Any]], delay_ms: float) -
     return None
 
 
-def _auto_sub_measurement_from_sweep(sweep_result: dict[str, Any], label: str, name: str) -> dict[str, Any]:
-    """Convert an AutoSub sweep result into a frontend-compatible measurement dict."""
+def _auto_sub_shared_bass_offset(
+    *point_sets: list,
+    low_hz: float = 20.0,
+    high_hz: float = 200.0,
+) -> float:
+    """Compute a single median dB offset from combined bass-region points.
+
+    Used so that all traces within one AutoSub run share the same vertical
+    reference, preserving Before/After and L/R relative level differences.
+    """
+    bass_dbs: list[float] = []
+    for pts in point_sets:
+        if not isinstance(pts, list):
+            continue
+        for p in pts:
+            if not (isinstance(p, (list, tuple)) and len(p) >= 2):
+                continue
+            try:
+                hz, db = float(p[0]), float(p[1])
+                if low_hz <= hz <= high_hz:
+                    bass_dbs.append(db)
+            except (ValueError, TypeError):
+                continue
+    if not bass_dbs:
+        return 0.0
+    sorted_dbs = sorted(bass_dbs)
+    mid = len(sorted_dbs) // 2
+    return sorted_dbs[mid] if len(sorted_dbs) % 2 == 1 else (sorted_dbs[mid - 1] + sorted_dbs[mid]) / 2.0
+
+
+def _auto_sub_measurement_from_sweep(
+    sweep_result: dict[str, Any],
+    label: str,
+    name: str,
+    offset_db: float | None = None,
+) -> dict[str, Any]:
+    """Convert an AutoSub sweep result into a frontend-compatible measurement dict.
+
+    When *offset_db* is provided it is used as the shared vertical reference
+    for all traces.  When omitted, the shared offset is computed from the
+    combined bass-region (20‑200 Hz) dB values of the L + R points inside
+    *sweep_result*, which is the correct default for a single-sweep call
+    (2.1 / 2.2 Mono).  Callers that need a cross-sweep shared offset
+    (2.2 Stereo) can pre-compute it and pass it explicitly.
+    """
     traces: list[dict[str, Any]] = []
     base_id = uuid4().hex[:12]
 
     left_points = sweep_result.get("points_left") or []
     right_points = sweep_result.get("points_right") or []
 
+    if offset_db is None:
+        offset_db = _auto_sub_shared_bass_offset(left_points, right_points)
+
     if isinstance(left_points, list) and len(left_points) >= 3:
-        normalized = [[float(p[0]), float(p[1])] for p in left_points]
+        points = [[float(p[0]), float(p[1]) - offset_db] for p in left_points]
         traces.append({
             "kind": "measured",
             "label": f"{label} L",
             "color": "#6ee7b7",
             "role": "left",
-            "points": normalized,
+            "points": points,
         })
 
     if isinstance(right_points, list) and len(right_points) >= 3:
-        normalized = [[float(p[0]), float(p[1])] for p in right_points]
+        points = [[float(p[0]), float(p[1]) - offset_db] for p in right_points]
         traces.append({
             "kind": "measured",
             "label": f"{label} R",
             "color": "#a78bfa",
             "role": "right",
-            "points": normalized,
+            "points": points,
         })
 
     return {
@@ -8574,13 +8620,19 @@ async def _run_auto_sub_22_optimize(
         )
         baseline_measurement = None
         confirmation_measurement = None
+        _offset_db = _auto_sub_shared_bass_offset(
+            baseline_22_sweep.get("points_left") if baseline_22_sweep else [],
+            baseline_22_sweep.get("points_right") if baseline_22_sweep else [],
+        )
         if baseline_22_sweep:
             baseline_measurement = _auto_sub_measurement_from_sweep(
-                baseline_22_sweep, "Before", f"AutoSub 2.2 Baseline (S1 {original_sub1_alignment:.1f} / S2 {original_sub2_alignment:.1f} ms)"
+                baseline_22_sweep, "Before", f"AutoSub 2.2 Baseline (S1 {original_sub1_alignment:.1f} / S2 {original_sub2_alignment:.1f} ms)",
+                offset_db=_offset_db,
             )
         if confirm_22_sweep:
             confirmation_measurement = _auto_sub_measurement_from_sweep(
-                confirm_22_sweep, "After", f"AutoSub 2.2 Optimized (S1 {best_sub1:.1f} / S2 {best_sub2:.1f} ms)"
+                confirm_22_sweep, "After", f"AutoSub 2.2 Optimized (S1 {best_sub1:.1f} / S2 {best_sub2:.1f} ms)",
+                offset_db=_offset_db,
             )
 
         job["status"] = "completed"
@@ -9177,28 +9229,37 @@ async def _run_auto_sub_22_stereo_optimize(
         left_confirm = _auto_sub_result_for_delay(all_left_sweeps, best_left)
         right_confirm = _auto_sub_result_for_delay(all_right_sweeps, best_right)
 
-        def _stereo_measurement_from_lr(left_sweep, right_sweep, label, name):
+        # One shared vertical offset from baseline L+R bass region so that
+        # Before/After and L/R relative level differences are preserved.
+        _stereo_offset_db = _auto_sub_shared_bass_offset(
+            left_baseline.get("points") if left_baseline else [],
+            right_baseline.get("points") if right_baseline else [],
+        )
+
+        def _stereo_measurement_from_lr(left_sweep, right_sweep, label, name, offset_db):
             traces = []
             base_id = uuid4().hex[:12]
             if left_sweep:
                 pts = left_sweep.get("points") or []
                 if isinstance(pts, list) and len(pts) >= 3:
-                    normalized = [[float(p[0]), float(p[1])] for p in pts]
-                    traces.append({"kind": "measured", "label": f"{label} L", "color": "#6ee7b7", "role": "left", "points": normalized})
+                    points = [[float(p[0]), float(p[1]) - offset_db] for p in pts]
+                    traces.append({"kind": "measured", "label": f"{label} L", "color": "#6ee7b7", "role": "left", "points": points})
             if right_sweep:
                 pts = right_sweep.get("points") or []
                 if isinstance(pts, list) and len(pts) >= 3:
-                    normalized = [[float(p[0]), float(p[1])] for p in pts]
-                    traces.append({"kind": "measured", "label": f"{label} R", "color": "#a78bfa", "role": "right", "points": normalized})
+                    points = [[float(p[0]), float(p[1]) - offset_db] for p in pts]
+                    traces.append({"kind": "measured", "label": f"{label} R", "color": "#a78bfa", "role": "right", "points": points})
             return {"id": f"autosub-{base_id}", "name": name, "traces": traces} if traces else None
 
         baseline_measurement = _stereo_measurement_from_lr(
             left_baseline, right_baseline, "Before",
-            f"AutoSub 2.2S Baseline (L {original_left_alignment:.1f} / R {original_right_alignment:.1f} ms)"
+            f"AutoSub 2.2S Baseline (L {original_left_alignment:.1f} / R {original_right_alignment:.1f} ms)",
+            _stereo_offset_db,
         )
         confirmation_measurement = _stereo_measurement_from_lr(
             left_confirm, right_confirm, "After",
-            f"AutoSub 2.2S Optimized (L {best_left:.1f} / R {best_right:.1f} ms)"
+            f"AutoSub 2.2S Optimized (L {best_left:.1f} / R {best_right:.1f} ms)",
+            _stereo_offset_db,
         )
 
         job["result"] = {
@@ -9734,16 +9795,22 @@ async def _run_auto_sub_optimize(
         confirmation_measurement = None
         all_sweep_results = list(sweep_results) + list(fine_results)
         baseline_sweep = _auto_sub_result_for_delay(all_sweep_results, current_alignment)
+        _offset_db = _auto_sub_shared_bass_offset(
+            baseline_sweep.get("points_left") if baseline_sweep else [],
+            baseline_sweep.get("points_right") if baseline_sweep else [],
+        )
         if baseline_sweep and (_auto_sub_has_points(baseline_sweep, "points_left") or _auto_sub_has_points(baseline_sweep, "points_right")):
             baseline_measurement = _auto_sub_measurement_from_sweep(
-                baseline_sweep, "Before", f"AutoSub Baseline ({current_alignment:.1f} ms)"
+                baseline_sweep, "Before", f"AutoSub Baseline ({current_alignment:.1f} ms)",
+                offset_db=_offset_db,
             )
         confirm_delay = best_delay if auto_apply else current_alignment
         confirmation_sweep = _auto_sub_result_for_delay(all_sweep_results, confirm_delay)
         if confirmation_sweep and (_auto_sub_has_points(confirmation_sweep, "points_left") or _auto_sub_has_points(confirmation_sweep, "points_right")):
             confirm_label = "After" if auto_apply else "Current"
             confirmation_measurement = _auto_sub_measurement_from_sweep(
-                confirmation_sweep, confirm_label, f"AutoSub {confirm_label} ({confirm_delay:.1f} ms)"
+                confirmation_sweep, confirm_label, f"AutoSub {confirm_label} ({confirm_delay:.1f} ms)",
+                offset_db=_offset_db,
             )
 
         job["result"] = {
