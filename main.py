@@ -6986,7 +6986,6 @@ def _auto_sub_measurement_from_sweep(
         traces.append({
             "kind": "measured",
             "label": f"{label} L",
-            "color": "#6ee7b7",
             "role": "left",
             "points": points,
         })
@@ -6996,7 +6995,6 @@ def _auto_sub_measurement_from_sweep(
         traces.append({
             "kind": "measured",
             "label": f"{label} R",
-            "color": "#a78bfa",
             "role": "right",
             "points": points,
         })
@@ -9243,12 +9241,12 @@ async def _run_auto_sub_22_stereo_optimize(
                 pts = left_sweep.get("points") or []
                 if isinstance(pts, list) and len(pts) >= 3:
                     points = [[float(p[0]), float(p[1]) - offset_db] for p in pts]
-                    traces.append({"kind": "measured", "label": f"{label} L", "color": "#6ee7b7", "role": "left", "points": points})
+                    traces.append({"kind": "measured", "label": f"{label} L", "role": "left", "points": points})
             if right_sweep:
                 pts = right_sweep.get("points") or []
                 if isinstance(pts, list) and len(pts) >= 3:
                     points = [[float(p[0]), float(p[1]) - offset_db] for p in pts]
-                    traces.append({"kind": "measured", "label": f"{label} R", "color": "#a78bfa", "role": "right", "points": points})
+                    traces.append({"kind": "measured", "label": f"{label} R", "role": "right", "points": points})
             return {"id": f"autosub-{base_id}", "name": name, "traces": traces} if traces else None
 
         baseline_measurement = _stereo_measurement_from_lr(
