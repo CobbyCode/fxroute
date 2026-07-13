@@ -5892,7 +5892,14 @@ async def save_audio_output_mode_route(request: Request):
     try:
         result = set_audio_output_mode(mode, subwoofer, subwoofers)
 
-        # Log pre-switch convolver state for diagnostics
+        # ── Convolver Slot Pre-Sync ──
+        # Load the compare-active preset BEFORE _sync_subwoofer_runtime so
+        # ensure_stereo_output_graph reloads the correct preset and the
+        # post-sync consistency check becomes a no-op.
+        # This avoids the double-preset-load cascade:
+        #   old: sync loads preset-A → graph builds → slot check loads preset-B → graph rebuilds
+        #   new: pre-load preset-B → sync reloads preset-B → graph builds once → slot check no-op
+        target_preset_before_sync: str | None = None
         if easyeffects_manager is not None:
             compare_pre = easyeffects_manager.load_compare_state()
             ee_pre = easyeffects_manager.get_active_preset()
@@ -5902,13 +5909,28 @@ async def save_audio_output_mode_route(request: Request):
                 json.dumps(compare_pre, sort_keys=True, default=str) if compare_pre else '{}',
                 ee_pre,
             )
+            active_side_pre = compare_pre.get("activeSide") if compare_pre.get("activeSide") in {"A", "B"} else None
+            if active_side_pre == "A":
+                target_preset_before_sync = compare_pre.get("presetA", "") or None
+            elif active_side_pre == "B":
+                target_preset_before_sync = compare_pre.get("presetB", "") or None
+
+            if target_preset_before_sync and ee_pre and ee_pre != target_preset_before_sync:
+                try:
+                    easyeffects_manager.load_preset(target_preset_before_sync)
+                    logger.info(
+                        "CONVOLVER-SLOT pre-loaded target preset before sync: %s (was %s)",
+                        target_preset_before_sync, ee_pre,
+                    )
+                except Exception as exc:
+                    logger.warning("CONVOLVER-SLOT pre-load failed: %s", exc)
+                    target_preset_before_sync = None
 
         await _sync_subwoofer_runtime(result)
 
         # ── Convolver Slot Consistency After Mode Switch ──
-        # When switching modes (especially 2.x → Stereo), the EE graph is
-        # rebuilt but the loaded preset may drift from the compare state's
-        # active slot. Re-apply the user's selected slot to keep UI ↔ EE in sync.
+        # Should be a no-op when pre-load was successful; only fires as
+        # safety net for edge cases (preset changed externally during sync).
         if easyeffects_manager is not None:
             compare = easyeffects_manager.load_compare_state()
             active_side = compare.get("activeSide") if compare.get("activeSide") in {"A", "B"} else None
@@ -5920,7 +5942,7 @@ async def save_audio_output_mode_route(request: Request):
                 side_preset = ""
             ee_active = easyeffects_manager.get_active_preset()
             logger.info(
-                "CONVOLVER-SLOT mode switch: new_mode=%s compare_activeSide=%s "
+                "CONVOLVER-SLOT post-sync: new_mode=%s compare_activeSide=%s "
                 "compare_presetA=%s compare_presetB=%s ee_active_preset=%s",
                 mode, active_side, compare.get("presetA"), compare.get("presetB"), ee_active,
             )
@@ -5934,7 +5956,7 @@ async def save_audio_output_mode_route(request: Request):
                 except Exception as exc:
                     logger.warning("CONVOLVER-SLOT re-apply failed: %s", exc)
             elif not side_preset:
-                logger.info("CONVOLVER-SLOT no active compare slot, skipping re-apply (ee_active=%s)", ee_active)
+                logger.info("CONVOLVER-SLOT no active compare slot (ee_active=%s)", ee_active)
             else:
                 logger.info("CONVOLVER-SLOT consistent: compare=%s EE=%s", side_preset, ee_active)
 
@@ -6903,6 +6925,54 @@ def _auto_sub_result_for_delay(results: list[dict[str, Any]], delay_ms: float) -
         if round(float(result.get("delay_ms", 0.0)), 2) == delay_key:
             return result
     return None
+
+
+def _auto_sub_normalize_points(raw_points: list[list[float]], bass_low_hz: float = 20.0, bass_high_hz: float = 200.0) -> list[list[float]]:
+    """Center dB values around the bass-region median so curves fit the ±24 dB graph window."""
+    if not raw_points or len(raw_points) < 3:
+        return [[float(p[0]), float(p[1])] for p in raw_points]
+    bass_dbs = [float(p[1]) for p in raw_points if bass_low_hz <= float(p[0]) <= bass_high_hz]
+    if not bass_dbs:
+        return [[float(p[0]), float(p[1])] for p in raw_points]
+    sorted_dbs = sorted(bass_dbs)
+    mid = len(sorted_dbs) // 2
+    median_db = sorted_dbs[mid] if len(sorted_dbs) % 2 == 1 else (sorted_dbs[mid - 1] + sorted_dbs[mid]) / 2.0
+    return [[float(p[0]), float(p[1]) - median_db] for p in raw_points]
+
+
+def _auto_sub_measurement_from_sweep(sweep_result: dict[str, Any], label: str, name: str) -> dict[str, Any]:
+    """Convert an AutoSub sweep result into a frontend-compatible measurement dict."""
+    traces: list[dict[str, Any]] = []
+    base_id = uuid4().hex[:12]
+
+    left_points = sweep_result.get("points_left") or []
+    right_points = sweep_result.get("points_right") or []
+
+    if isinstance(left_points, list) and len(left_points) >= 3:
+        normalized = _auto_sub_normalize_points(left_points)
+        traces.append({
+            "kind": "measured",
+            "label": f"{label} L",
+            "color": "#6ee7b7",
+            "role": "left",
+            "points": normalized,
+        })
+
+    if isinstance(right_points, list) and len(right_points) >= 3:
+        normalized = _auto_sub_normalize_points(right_points)
+        traces.append({
+            "kind": "measured",
+            "label": f"{label} R",
+            "color": "#a78bfa",
+            "role": "right",
+            "points": normalized,
+        })
+
+    return {
+        "id": f"autosub-{base_id}",
+        "name": name,
+        "traces": traces,
+    }
 
 
 def _auto_sub_select_accepted_winner(
@@ -8498,6 +8568,34 @@ async def _run_auto_sub_22_optimize(
             "valid_count": len(matrix_valid),
         })
         _log_auto_sub_timing_summary(job)
+
+        # Build baseline and confirmation measurements for before/after graph display
+        all_22_sweeps = list(coarse1_results) + list(coarse2_results) + list(matrix_results)
+        baseline_22_sweep = next(
+            (r for r in all_22_sweeps
+             if round(float(r.get("sub1_alignment_ms", r.get("delay_ms", 0.0))), 2) == round(float(original_sub1_alignment), 2)
+             and round(float(r.get("sub2_alignment_ms", 0.0)), 2) == round(float(original_sub2_alignment), 2)
+             and (_auto_sub_has_points(r, "points_left") or _auto_sub_has_points(r, "points_right"))),
+            None,
+        )
+        confirm_22_sweep = next(
+            (r for r in all_22_sweeps
+             if round(float(r.get("sub1_alignment_ms", r.get("delay_ms", 0.0))), 2) == round(float(best_sub1), 2)
+             and round(float(r.get("sub2_alignment_ms", 0.0)), 2) == round(float(best_sub2), 2)
+             and (_auto_sub_has_points(r, "points_left") or _auto_sub_has_points(r, "points_right"))),
+            None,
+        )
+        baseline_measurement = None
+        confirmation_measurement = None
+        if baseline_22_sweep:
+            baseline_measurement = _auto_sub_measurement_from_sweep(
+                baseline_22_sweep, "Before", f"AutoSub 2.2 Baseline (S1 {original_sub1_alignment:.1f} / S2 {original_sub2_alignment:.1f} ms)"
+            )
+        if confirm_22_sweep:
+            confirmation_measurement = _auto_sub_measurement_from_sweep(
+                confirm_22_sweep, "After", f"AutoSub 2.2 Optimized (S1 {best_sub1:.1f} / S2 {best_sub2:.1f} ms)"
+            )
+
         job["status"] = "completed"
         decision_label = "Kept 2.2 incumbent" if matrix_scoring.get("incumbent_accepted") else "Applied 2.2"
         job["message"] = (
@@ -8541,6 +8639,8 @@ async def _run_auto_sub_22_optimize(
             "valid_count": len(matrix_valid),
             "sub1_coarse_valid_count": len(coarse1_valid),
             "sub2_coarse_valid_count": len(coarse2_valid),
+            "baseline_measurement": baseline_measurement,
+            "confirmation_measurement": confirmation_measurement,
             **derived_delays,
         }
         logger.info(
@@ -9081,6 +9181,39 @@ async def _run_auto_sub_22_stereo_optimize(
             f"Right Sub {best_right:.2f} ms (overall {overall_score_pct:.1f} %)"
         )
         _log_auto_sub_timing_summary(job)
+
+        # Build baseline and confirmation measurements for before/after graph display
+        all_left_sweeps = list(left_results) + list(left_fine_results)
+        all_right_sweeps = list(right_results) + list(right_fine_results)
+        left_baseline = _auto_sub_result_for_delay(all_left_sweeps, original_left_alignment)
+        right_baseline = _auto_sub_result_for_delay(all_right_sweeps, original_right_alignment)
+        left_confirm = _auto_sub_result_for_delay(all_left_sweeps, best_left)
+        right_confirm = _auto_sub_result_for_delay(all_right_sweeps, best_right)
+
+        def _stereo_measurement_from_lr(left_sweep, right_sweep, label, name):
+            traces = []
+            base_id = uuid4().hex[:12]
+            if left_sweep:
+                pts = left_sweep.get("points") or []
+                if isinstance(pts, list) and len(pts) >= 3:
+                    normalized = _auto_sub_normalize_points(pts)
+                    traces.append({"kind": "measured", "label": f"{label} L", "color": "#6ee7b7", "role": "left", "points": normalized})
+            if right_sweep:
+                pts = right_sweep.get("points") or []
+                if isinstance(pts, list) and len(pts) >= 3:
+                    normalized = _auto_sub_normalize_points(pts)
+                    traces.append({"kind": "measured", "label": f"{label} R", "color": "#a78bfa", "role": "right", "points": normalized})
+            return {"id": f"autosub-{base_id}", "name": name, "traces": traces} if traces else None
+
+        baseline_measurement = _stereo_measurement_from_lr(
+            left_baseline, right_baseline, "Before",
+            f"AutoSub 2.2S Baseline (L {original_left_alignment:.1f} / R {original_right_alignment:.1f} ms)"
+        )
+        confirmation_measurement = _stereo_measurement_from_lr(
+            left_confirm, right_confirm, "After",
+            f"AutoSub 2.2S Optimized (L {best_left:.1f} / R {best_right:.1f} ms)"
+        )
+
         job["result"] = {
             "mode": OUTPUT_MODE_SUBWOOFER_22_STEREO,
             "original_sub1_alignment_ms": original_left_alignment,
@@ -9177,6 +9310,8 @@ async def _run_auto_sub_22_stereo_optimize(
             "left_fine_valid_count": len(left_fine_valid),
             "right_coarse_valid_count": len(right_valid),
             "right_fine_valid_count": len(right_fine_valid),
+            "baseline_measurement": baseline_measurement,
+            "confirmation_measurement": confirmation_measurement,
             **derived_delays,
         }
         logger.info(
@@ -9307,6 +9442,14 @@ async def _run_auto_sub_optimize(
                 job["message"] = "Auto Sub Optimize cancelled."
                 await _restore_original_config()
                 return
+
+            # Live: push baseline measurement to job for frontend polling display
+            if round(float(delay_ms), 2) == round(float(current_alignment), 2):
+                last_result = sweep_results[-1]
+                if _auto_sub_has_points(last_result, "points_left") or _auto_sub_has_points(last_result, "points_right"):
+                    job["baseline_measurement"] = _auto_sub_measurement_from_sweep(
+                        last_result, "Before", f"AutoSub Baseline ({current_alignment:.1f} ms)"
+                    )
 
         # Score candidates
         valid = [r for r in sweep_results if _auto_sub_has_points(r, "points_left") or _auto_sub_has_points(r, "points_right")]
@@ -9598,6 +9741,24 @@ async def _run_auto_sub_optimize(
             else f"Suggested: {best_delay} ms (not applied: {confidence})"
         )
         _log_auto_sub_timing_summary(job)
+
+        # Build baseline and confirmation measurements for before/after graph display
+        baseline_measurement = None
+        confirmation_measurement = None
+        all_sweep_results = list(sweep_results) + list(fine_results)
+        baseline_sweep = _auto_sub_result_for_delay(all_sweep_results, current_alignment)
+        if baseline_sweep and (_auto_sub_has_points(baseline_sweep, "points_left") or _auto_sub_has_points(baseline_sweep, "points_right")):
+            baseline_measurement = _auto_sub_measurement_from_sweep(
+                baseline_sweep, "Before", f"AutoSub Baseline ({current_alignment:.1f} ms)"
+            )
+        confirm_delay = best_delay if auto_apply else current_alignment
+        confirmation_sweep = _auto_sub_result_for_delay(all_sweep_results, confirm_delay)
+        if confirmation_sweep and (_auto_sub_has_points(confirmation_sweep, "points_left") or _auto_sub_has_points(confirmation_sweep, "points_right")):
+            confirm_label = "After" if auto_apply else "Current"
+            confirmation_measurement = _auto_sub_measurement_from_sweep(
+                confirmation_sweep, confirm_label, f"AutoSub {confirm_label} ({confirm_delay:.1f} ms)"
+            )
+
         job["result"] = {
             "original_alignment_ms": current_alignment,
             "suggested_alignment_ms": best_delay,
@@ -9632,6 +9793,8 @@ async def _run_auto_sub_optimize(
             "coarse_valid_count": len(valid),
             "fine_valid_count": len(fine_valid),
             "fine_scan": fine_scan,
+            "baseline_measurement": baseline_measurement,
+            "confirmation_measurement": confirmation_measurement,
         }
 
         logger.info(
