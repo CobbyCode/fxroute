@@ -6927,19 +6927,6 @@ def _auto_sub_result_for_delay(results: list[dict[str, Any]], delay_ms: float) -
     return None
 
 
-def _auto_sub_normalize_points(raw_points: list[list[float]], bass_low_hz: float = 20.0, bass_high_hz: float = 200.0) -> list[list[float]]:
-    """Center dB values around the bass-region median so curves fit the ±24 dB graph window."""
-    if not raw_points or len(raw_points) < 3:
-        return [[float(p[0]), float(p[1])] for p in raw_points]
-    bass_dbs = [float(p[1]) for p in raw_points if bass_low_hz <= float(p[0]) <= bass_high_hz]
-    if not bass_dbs:
-        return [[float(p[0]), float(p[1])] for p in raw_points]
-    sorted_dbs = sorted(bass_dbs)
-    mid = len(sorted_dbs) // 2
-    median_db = sorted_dbs[mid] if len(sorted_dbs) % 2 == 1 else (sorted_dbs[mid - 1] + sorted_dbs[mid]) / 2.0
-    return [[float(p[0]), float(p[1]) - median_db] for p in raw_points]
-
-
 def _auto_sub_measurement_from_sweep(sweep_result: dict[str, Any], label: str, name: str) -> dict[str, Any]:
     """Convert an AutoSub sweep result into a frontend-compatible measurement dict."""
     traces: list[dict[str, Any]] = []
@@ -6949,7 +6936,7 @@ def _auto_sub_measurement_from_sweep(sweep_result: dict[str, Any], label: str, n
     right_points = sweep_result.get("points_right") or []
 
     if isinstance(left_points, list) and len(left_points) >= 3:
-        normalized = _auto_sub_normalize_points(left_points)
+        normalized = [[float(p[0]), float(p[1])] for p in left_points]
         traces.append({
             "kind": "measured",
             "label": f"{label} L",
@@ -6959,7 +6946,7 @@ def _auto_sub_measurement_from_sweep(sweep_result: dict[str, Any], label: str, n
         })
 
     if isinstance(right_points, list) and len(right_points) >= 3:
-        normalized = _auto_sub_normalize_points(right_points)
+        normalized = [[float(p[0]), float(p[1])] for p in right_points]
         traces.append({
             "kind": "measured",
             "label": f"{label} R",
@@ -9196,12 +9183,12 @@ async def _run_auto_sub_22_stereo_optimize(
             if left_sweep:
                 pts = left_sweep.get("points") or []
                 if isinstance(pts, list) and len(pts) >= 3:
-                    normalized = _auto_sub_normalize_points(pts)
+                    normalized = [[float(p[0]), float(p[1])] for p in pts]
                     traces.append({"kind": "measured", "label": f"{label} L", "color": "#6ee7b7", "role": "left", "points": normalized})
             if right_sweep:
                 pts = right_sweep.get("points") or []
                 if isinstance(pts, list) and len(pts) >= 3:
-                    normalized = _auto_sub_normalize_points(pts)
+                    normalized = [[float(p[0]), float(p[1])] for p in pts]
                     traces.append({"kind": "measured", "label": f"{label} R", "color": "#a78bfa", "role": "right", "points": normalized})
             return {"id": f"autosub-{base_id}", "name": name, "traces": traces} if traces else None
 
