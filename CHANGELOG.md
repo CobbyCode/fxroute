@@ -2,10 +2,33 @@
 
 ## Unreleased
 
+## 0.7.54 (2026-07-14)
+
+### Added
+- Auto Sub Optimize results can be displayed and saved as separate Before/After
+  L/R measurements for direct comparison and PEQ or Convolver handoff.
+- Added timing diagnostics for EasyEffects graph recovery and subwoofer runtime
+  shutdown paths.
+
+### Changed
+- AutoSub display and saved traces now use one shared 20–200 Hz baseline offset,
+  preserving the real Before/After and L/R level relationships while keeping the
+  curves inside the measurement graph range.
+- AutoSub measurements now follow the normal current/saved measurement color
+  behavior instead of assigning fixed L/R trace colors.
+- Output-mode switching now shows a short switching state while controls are
+  temporarily locked.
+- Updated the measurement, AutoSub, Convolver, maintenance, and Spotify Lossless
+  documentation.
+
 ### Fixed
 - Subwoofer link repair: preset-load and periodic watch-loop repairs are now
   serialized through a shared lock helper (`_reclean_guarded`), preventing
   parallel `pw-link` sequences and latency spikes.
+- AutoSub multi-save now derives channel identity from each trace role, avoiding
+  duplicate IDs and preserving all four saved measurements.
+- Removed per-trace AutoSub double-normalization and fixed saved card/curve color
+  consistency.
 
 ## 0.7.53 (2026-07-13)
 
