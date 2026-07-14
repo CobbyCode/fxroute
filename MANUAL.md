@@ -42,7 +42,7 @@ A normal listening session looks like this:
 2. Use the bottom playback bar for play/pause, volume, seek, and queue control.
 3. Open **DSP** to choose or compare the sound profile.
 4. If you want to tune the room, open **Measure** from the DSP page.
-5. Save useful measurements or transfer rough PEQ ideas into a new preset.
+5. Save useful measurements, transfer correction ideas into a new PEQ preset, or use the visible measurements to create a Convolver preset.
 
 EasyEffects does the live audio processing. FXRoute makes it easier to control, organize, compare, and edit presets.
 
@@ -75,6 +75,8 @@ You can:
 FXRoute refreshes Spotify metadata from local desktop events and lightweight polling, so automatic next-track changes should update title, artist, cover, duration, and position without needing a manual browser action.
 
 FXRoute does not replace Spotify Connect. It controls the local Spotify client through the desktop session, so Spotify must be installed and reachable on the audio PC.
+
+The regular Spotify desktop client also supports Spotify Lossless for eligible Premium accounts. Enable **Lossless** in a current Spotify desktop client (version 1.2.67 or newer) to stream available music at up to 24-bit/44.1 kHz FLAC while FXRoute continues to provide remote playback control. FXRoute controls the client; it does not provide the Spotify stream itself.
 
 On fresh installs, Spotify autostart is enabled by default when a local Spotify desktop client is available. Installer reruns preserve an existing `.env`, so an already configured system keeps its current setting.
 Spotify may trigger a Linux keyring unlock prompt after login.
@@ -146,9 +148,7 @@ flatpak install --user flathub com.github.wwmm.easyeffects
 
 ### Maintenance updates
 
-Open **Technical settings → Maintenance** to check the installed version against GitHub, run a safe update, and see the update log. Updates are handled by the backend through the installer-owned update script, not by frontend shell commands.
-
-FXRoute blocks updates when the local git checkout has uncommitted changes. A successful update uses fast-forward-only git logic, refreshes dependencies only when needed, validates/builds the app, restarts the configured FXRoute user service, and then reports when reload/restart is complete.
+Open **Technical settings → Maintenance** to see the installed version, check for and run an update, and view the update log. For safety, FXRoute blocks an update when the local installation contains uncommitted changes. After a successful update, the page reports completion and whether a reload is needed.
 
 ### Home Assistant / external automation
 
@@ -206,10 +206,11 @@ The measurement assistant is meant for practical room-tuning work:
 - switch between frequency response and impulse-response preview when preview data is available
 - switch graph smoothing: raw, 1/6 octave, 1/3 octave, or 1 octave
 - save useful runs
-- use the PEQ assistant to sketch a few correction filters
-- transfer draft filters into **Create PEQ preset**
+- inspect a measurement curve and create a PEQ correction draft from it
+- transfer visible L/R measurements into the Convolver assistant
+- turn the result into a PEQ or FIR/Convolver preset
 
-Think of it as a tuning assistant for broad room and speaker decisions: bass problems, channel differences, correction direction, and sanity checks.
+Use it as a practical measurement and correction workspace: inspect room and speaker response, compare channels, identify correction needs, and turn visible measurements directly into PEQ or Convolver drafts. Review the result before applying it; measurement conditions and correction choices still matter.
 
 ### Single Sweep and L/R Repeat
 
@@ -241,36 +242,39 @@ L/R Repeat is useful when:
 
 Keep the microphone fixed during the whole repeat. Moving the microphone between the internal sweeps defeats the purpose of the mode.
 
-#### Auto Sub Optimize (2.1 mode only)
+#### Auto Sub Optimize
 
-Auto Sub Optimize is available in **2.1 Subwoofer** mode. It measures several sub alignment candidates around the selected crossover frequency and automatically applies the best measured `sub_alignment_ms`.
+Auto Sub Optimize measures alignment candidates around the selected crossover frequency and applies the best measured delay configuration for the active subwoofer mode:
 
-The scan is centered around the currently configured `sub_alignment_ms`. If you already know or suspect a useful starting delay — for example from a subwoofer manual that lists internal DSP latency — enter that value first (- x ms to delay the mains). Auto Sub Optimize will then scan around that starting point instead of around 0 ms.
+- **2.1** — optimizes one mono subwoofer. One shared alignment is evaluated against both main channels.
+- **2.2 Mono** — optimizes two mono subwoofers as one dual-sub system. A matrix scan evaluates the Sub 1/Sub 2 alignment combinations against both main channels.
+- **2.2 Stereo** — optimizes the left sub/main branch and right sub/main branch separately.
+
+The scan is centered around the alignment values currently configured for the active mode. If you already know or suspect useful starting delays — for example from a subwoofer manual that lists internal DSP latency — enter them first. Auto Sub Optimize then scans around those starting values instead of assuming 0 ms.
 
 The optimizer does not directly measure the subwoofer’s internal latency. It optimizes the practical sub/main integration at the microphone position, including the subwoofer, crossover, room, and listening position.
 
-If the coarse scan finds a close or uncertain result, FXRoute runs an additional fine scan around the best delay region. The result should be understood as a practical optimum region, not as an absolute millisecond-perfect value.
+Where the active mode uses a fine scan, FXRoute checks additional candidates around the best coarse delay region. In 2.2 Mono, the matrix scan evaluates the combined dual-sub result. Treat the selected values as a practical optimum for the measured crossover, room, and microphone position rather than as universally exact latency figures.
 
-**L/R combined scoring.** Each delay candidate is measured on both the left and right channel. FXRoute picks a single sub alignment value that works well for both sides. If one channel scores significantly worse, the combined result accounts for it. The display shows the combined score together with the individual left and right scores.
+In **2.1** and **2.2 Mono**, candidates are evaluated against both left and right main channels so a weak result on one side affects the combined choice. In **2.2 Stereo**, the left and right sub/main branches are evaluated and optimized separately.
 
 Auto Sub Optimize currently adjusts **delay only**. It does not automatically change sub gain, polarity, PEQ, target curve, or room correction filters.
 
 **Recommended order with EQ or Convolver:**
 
-1. Set the 2.1 crossover roughly as desired.
-2. Run **Auto Sub Optimize** once to get the sub/main timing into a good starting range.
-3. Create and enable your EQ or Convolver preset.
-4. Run **Auto Sub Optimize** again with the final EQ/Convolver preset active.
-5. Check the result with a normal 2.1 measurement.
+1. Set the crossover, sub levels, polarity, and initial alignment values roughly as desired for the active mode.
+2. Create and enable the EQ or Convolver preset you intend to use.
+3. Run **Auto Sub Optimize** once with that preset active.
+4. Check the result with a normal measurement in the same output mode.
 
-This second pass is recommended because EQ and time-aligned convolver filters can slightly change the phase and timing around the crossover region.
+There is no routine need to run Auto Sub Optimize both before and after creating the correction preset. Run it again only after a relevant change to the crossover, routing, polarity, or active correction setup—not as part of an adjustment loop.
 
 For best results:
 
 - keep the microphone fixed during the scan
 - avoid moving around the room during the measurements
 - set crossover, sub level, polarity, and an initial alignment roughly before starting
-- check the result with a normal 2.1 measurement afterwards
+- check the result with a normal measurement in the same output mode afterwards
 
 ### Frequency and IR graph views
 

@@ -50,6 +50,7 @@ It is built for mini PCs, desktops, ARM boards, and dedicated stereo boxes that 
 - local music playback with queue, playlists, uploads, ZIP album imports, album browsing, cached album metadata, artist info, similar-artist discovery, and media URL imports
 - internet radio with built-in and custom stations
 - Spotify desktop control through `playerctl` / MPRIS, including passive metadata refresh for automatic track changes
+- Spotify Lossless playback through a current local Spotify desktop client for eligible Premium accounts, when Lossless is enabled in Spotify (up to 24-bit/44.1 kHz FLAC); FXRoute provides remote client control, not the Spotify stream
 - EasyEffects preset switching, PEQ, convolver import/generation, output helpers, and A/B compare
 - global DSP helpers such as limiter, headroom, autogain, bass enhancement, and tone modes
 - practical room/speaker measurement workflow with host microphone capture, calibration files, smoothing, saved runs, PEQ draft transfer, and stereo FIR/convolver preset creation with linear, minimum-phase, minimum-aligned, and hybrid-aligned modes
