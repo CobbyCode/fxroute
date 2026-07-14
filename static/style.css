@@ -1024,6 +1024,14 @@ body {
     font-size: 0.78rem;
     line-height: 1.4;
 }
+.settings-inline-note.switching {
+    color: var(--accent);
+    animation: switching-pulse 1.2s ease-in-out infinite;
+}
+@keyframes switching-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+}
 .settings-certificate-note {
     margin: 0.1rem 0 0;
     text-align: right;

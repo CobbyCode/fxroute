@@ -112,6 +112,7 @@ let state = {
         autoSubProgress: null,
         autoSubInFlight: false,
         autoSubResult: null,
+        autoSubMeasurements: [],
         statusText: 'Sweep ready. Calibration file is optional.',
         assistMode: 'peq',
         convolverAssistant: {
@@ -1185,6 +1186,15 @@ async function switchAudioOutputMode(mode) {
     window.clearTimeout(_subwooferSaveTimer);
     _subwooferLastRequestedSignature = '';
 
+    // Lock UI immediately — disable select and show "Switching…" label
+    if (elements.settingsOutputModeSelect) {
+        elements.settingsOutputModeSelect.disabled = true;
+    }
+    if (elements.settingsOutputModeHint) {
+        elements.settingsOutputModeHint.textContent = 'Switching…';
+        elements.settingsOutputModeHint.classList.add('switching');
+    }
+
     try {
         if (isSubwooferModeName(currentMode)) {
             const currentSettings = isSubwoofer22Mode(currentMode)
@@ -1197,6 +1207,13 @@ async function switchAudioOutputMode(mode) {
         await saveAudioOutputMode(nextMode, null, { modeOnly: true });
     } finally {
         _audioOutputModeSwitchInProgress = false;
+        if (elements.settingsOutputModeSelect) {
+            elements.settingsOutputModeSelect.disabled = false;
+        }
+        if (elements.settingsOutputModeHint) {
+            elements.settingsOutputModeHint.textContent = '';
+            elements.settingsOutputModeHint.classList.remove('switching');
+        }
         renderSettingsPanel();
     }
 }
@@ -5960,9 +5977,13 @@ function getCurrentMeasurementEntry() {
 }
 
 function getCurrentMeasurementEntries() {
+    const autoSubMeasurements = Array.isArray(state.measurement.autoSubMeasurements)
+        ? state.measurement.autoSubMeasurements.map((measurement, index) => normalizeMeasurementEntry(measurement, index))
+        : [];
     const repeatMeasurements = Array.isArray(state.measurement.pendingRepeatMeasurements)
         ? state.measurement.pendingRepeatMeasurements.map((measurement, index) => normalizeMeasurementEntry(measurement, index))
         : [];
+    if (autoSubMeasurements.length) return autoSubMeasurements;
     return repeatMeasurements.length ? repeatMeasurements : [getCurrentMeasurementEntry()].filter(Boolean);
 }
 
@@ -6378,6 +6399,7 @@ function resetMeasurementGraph() {
     const conv = ensureMeasurementConvolverState();
     state.measurement.currentMeasurement = null;
     state.measurement.pendingRepeatMeasurements = [];
+    state.measurement.autoSubMeasurements = [];
     state.measurement.currentMeasurementSaved = false;
     state.measurement.currentMeasurementName = '';
     peq.enabled = false;
@@ -8720,6 +8742,7 @@ async function startAutoSubOptimize() {
     measurementState.activeMeasurementKind = 'auto_sub';
     measurementState.autoSubJobId = '';
     measurementState.autoSubResult = null;
+    measurementState.autoSubMeasurements = [];
     syncSubwooferControlsDuringAutoSub();
     renderMeasurementPanel();
 
@@ -8830,6 +8853,12 @@ async function pollAutoSubJob(jobId) {
                 }
             }
 
+            // Live: push baseline measurement data to graph as soon as available
+            if (job.baseline_measurement && !measurementState.autoSubMeasurements.length) {
+                measurementState.autoSubMeasurements = [job.baseline_measurement];
+                measurementState.currentMeasurementSaved = false;
+            }
+
             if (status === 'completed' || status === 'failed' || status === 'cancelled') {
                 if (statusEl) {
                     if (status === 'cancelled') {
@@ -8858,6 +8887,7 @@ async function handleAutoSubResult(job) {
     if (job.status === 'cancelled') {
         measurementState.statusText = job.message || 'Auto Sub Optimize cancelled.';
         measurementState.autoSubResult = null;
+        measurementState.autoSubMeasurements = [];
         syncSubwooferControlsDuringAutoSub();
         showToast('Auto Sub Optimize cancelled', 'success');
         return;
@@ -8865,17 +8895,38 @@ async function handleAutoSubResult(job) {
     if (job.status === 'failed') {
         measurementState.statusText = job.message || 'Auto Sub Optimize failed';
         measurementState.autoSubResult = null;
+        measurementState.autoSubMeasurements = [];
         syncSubwooferControlsDuringAutoSub();
         showToast(measurementState.statusText, 'error');
         return;
     }
     if (!result) {
         measurementState.statusText = 'Auto Sub Optimize completed with no result';
+        measurementState.autoSubMeasurements = [];
         syncSubwooferControlsDuringAutoSub();
         return;
     }
 
     measurementState.autoSubResult = result;
+
+    // Extract baseline and confirmation measurement curves for graph display
+    const autoSubMeasurements = [];
+    const baselineMeas = result.baseline_measurement;
+    const confirmMeas = result.confirmation_measurement;
+    if (baselineMeas && Array.isArray(baselineMeas.traces) && baselineMeas.traces.length) {
+        autoSubMeasurements.push(baselineMeas);
+    }
+    if (confirmMeas && Array.isArray(confirmMeas.traces) && confirmMeas.traces.length) {
+        autoSubMeasurements.push(confirmMeas);
+    }
+    // Preserve live-pushed measurements if result didn't provide any (defensive fallback)
+    if (!autoSubMeasurements.length && Array.isArray(measurementState.autoSubMeasurements) && measurementState.autoSubMeasurements.length) {
+        // Keep existing live-pushed measurements
+    } else {
+        measurementState.autoSubMeasurements = autoSubMeasurements;
+    }
+    measurementState.currentMeasurementSaved = false;
+    measurementState.currentMeasurementName = 'AutoSub';
     const winner = result.winner || {};
     if (isSubwoofer22Mode(result.mode) || Number.isFinite(result.applied_sub1_alignment_ms) || Number.isFinite(result.applied_sub2_alignment_ms)) {
         const isStereoBassResult = result.mode === 'subwoofer-2.2-stereo';
@@ -9014,6 +9065,7 @@ async function handleAutoSubResult(job) {
     syncSubwooferControlsDuringAutoSub();
     const toastType = isWeak ? 'error' : (wasApplied ? 'success' : 'warning');
     showToast(toastText, toastType);
+    renderMeasurementPanel();
 }
 
 function renderMeasurementPanelDefensively(context = 'measurement render') {
@@ -9306,22 +9358,50 @@ async function pollMeasurementJob(jobId) {
 
 async function saveCurrentMeasurement() {
     const current = state.measurement.currentMeasurement;
-    if (!current || state.measurement.saveInFlight || state.measurement.currentMeasurementSaved) return;
+    const autoSubMeasurements = Array.isArray(state.measurement.autoSubMeasurements)
+        ? state.measurement.autoSubMeasurements
+        : [];
+    const hasAutoSub = autoSubMeasurements.length > 0;
+    const hasPending = !hasAutoSub && current && !state.measurement.currentMeasurementSaved;
+    if (!hasAutoSub && !hasPending) return;
+    if (state.measurement.saveInFlight) return;
 
     const repeatMeasurements = Array.isArray(state.measurement.pendingRepeatMeasurements)
         ? state.measurement.pendingRepeatMeasurements
         : [];
-    const baseName = (state.measurement.currentMeasurementName || '').trim() || 'L/R Repeat';
-    const payload = repeatMeasurements.length
-        ? {
+    const baseName = hasAutoSub
+        ? ((state.measurement.currentMeasurementName || '').trim() || 'AutoSub')
+        : ((state.measurement.currentMeasurementName || '').trim() || 'L/R Repeat');
+    let payload;
+    if (hasAutoSub) {
+        // Save AutoSub measurements: split each entry by its channel traces
+        const measurements = [];
+        autoSubMeasurements.forEach((measurement) => {
+            const traces = Array.isArray(measurement.traces) ? measurement.traces : [];
+            traces.forEach((trace) => {
+                const ch = String(trace.role || trace.channel || '').toLowerCase() === 'right' ? 'right' : 'left';
+                const traceLabel = String(trace.label || measurement.name || 'AutoSub');
+                const suffix = traceLabel.replace(/^AutoSub\s+/, '');
+                const name = suffix ? `${baseName} ${suffix}` : baseName;
+                measurements.push({
+                    id: `${measurement.id}-${ch}`,
+                    name,
+                    channel: ch,
+                    traces: [{...trace, channel: ch}],
+                });
+            });
+        });
+        payload = { measurements };
+    } else if (repeatMeasurements.length) {
+        payload = {
             measurements: repeatMeasurements.map((measurement) => {
                 const item = JSON.parse(JSON.stringify(measurement));
                 item.name = `${baseName} · ${String(item.channel || '').toLowerCase() === 'right' ? 'R' : 'L'}`;
                 return item;
             }),
-        }
-        : JSON.parse(JSON.stringify(current));
-    if (!repeatMeasurements.length) {
+        };
+    } else {
+        payload = JSON.parse(JSON.stringify(current));
         payload.name = (state.measurement.currentMeasurementName || current.name || '').trim() || current.name || 'Measurement';
     }
 
@@ -9346,6 +9426,7 @@ async function saveCurrentMeasurement() {
         });
         state.measurement.currentMeasurement = null;
         state.measurement.pendingRepeatMeasurements = [];
+        state.measurement.autoSubMeasurements = [];
         state.measurement.currentMeasurementSaved = false;
         state.measurement.currentMeasurementName = '';
         state.measurement.statusText = 'Measurement saved.';
@@ -9626,8 +9707,10 @@ function renderMeasurementPanel() {
             : 'Start L/R Repeat';
     }
     if (elements.measurementSaveBtn) {
-        elements.measurementSaveBtn.disabled = !current || measurementState.saveInFlight || measurementState.startInFlight || measurementState.currentMeasurementSaved;
-        elements.measurementSaveBtn.textContent = measurementState.saveInFlight ? 'Working…' : (measurementState.currentMeasurementSaved ? 'Saved' : 'Save current');
+        const hasAutoSubMeas = Array.isArray(measurementState.autoSubMeasurements) && measurementState.autoSubMeasurements.length > 0;
+        const hasUnsavedContent = hasAutoSubMeas || (current && !measurementState.currentMeasurementSaved);
+        elements.measurementSaveBtn.disabled = !hasUnsavedContent || measurementState.saveInFlight || measurementState.startInFlight;
+        elements.measurementSaveBtn.textContent = measurementState.saveInFlight ? 'Working…' : (measurementState.currentMeasurementSaved && !hasAutoSubMeas ? 'Saved' : 'Save current');
     }
     if (elements.measurementAssistMode) {
         elements.measurementAssistMode.value = assistMode;
