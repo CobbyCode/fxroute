@@ -475,18 +475,29 @@ class Subwoofer21Runtime:
         direct EasyEffects -> hardware front links so stereo
         playback works through the normal signal chain.
         """
+        t0 = time.monotonic()
         output_key = self._linked_output_key or (self._config.output_key if self._config else "")
+        logger.info("SUB-STOP begin: output_key=%s has_linked=%s", output_key, bool(self._linked_output_key))
+        t1 = time.monotonic()
         await self._remove_graph_links()
+        t2 = time.monotonic()
+        logger.info("SUB-STOP _remove_graph_links: %.0f ms", (t2 - t1) * 1000)
         await self._stop_helper()
+        t3 = time.monotonic()
+        logger.info("SUB-STOP _stop_helper: %.0f ms", (t3 - t2) * 1000)
         if output_key:
             try:
                 await self._restore_direct_easyeffects_front_links(output_key)
+                t4 = time.monotonic()
+                logger.info("SUB-STOP _restore_direct_ee_links: %.0f ms", (t4 - t3) * 1000)
             except Exception as exc:
                 logger.warning("Failed to restore Stereo EasyEffects front links during 2.1 stop (output_key=%s): %s", output_key, exc)
         self._last_error = None
         self._links_configured = False
         self._current_stream_key = None
         self._removed_direct_front_links = 0
+        t_end = time.monotonic()
+        logger.info("SUB-STOP total: %.0f ms", (t_end - t0) * 1000)
 
     def _stage1_links(self, output_key: str) -> list[PipeWireLink]:
         return [

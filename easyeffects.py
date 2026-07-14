@@ -470,6 +470,7 @@ class EasyEffectsManager:
         return self._has_stereo_output_graph(output_device)
 
     def ensure_stereo_output_graph(self, output_device: str) -> Dict[str, Any]:
+        t0 = time.monotonic()
         output_device = (output_device or "").strip()
         result: Dict[str, Any] = {
             "checked": False,
@@ -483,27 +484,50 @@ class EasyEffectsManager:
             return result
 
         result["checked"] = True
+        t_check = time.monotonic()
         if self._has_stereo_output_graph(output_device):
+            dt = (time.monotonic() - t0) * 1000
+            logger.info("EE-GRAPH stereo ok: %.0f ms (warm path)", dt)
             result["ok"] = True
             return result
+        dt_first = (time.monotonic() - t_check) * 1000
+        logger.info(
+            "EE-GRAPH stereo missing after stop (first check: %.0f ms); attempting preset reload (preset=%s)",
+            dt_first, self.get_active_preset(),
+        )
 
-        logger.warning("Stereo EasyEffects output graph missing for %s; attempting preset reload", output_device)
+        t_reload = time.monotonic()
         active_preset = self.get_active_preset()
         if active_preset:
             try:
                 self.load_preset(active_preset)
+                dt_reload = (time.monotonic() - t_reload) * 1000
+                logger.info("EE-GRAPH preset reload took: %.0f ms (preset=%s)", dt_reload, active_preset)
+                t_wait = time.monotonic()
                 if self.wait_for_stereo_output_graph(output_device, timeout=4.0):
+                    dt = (time.monotonic() - t0) * 1000
+                    dt_wait = (time.monotonic() - t_wait) * 1000
+                    logger.info("EE-GRAPH stereo recovered via preset reload: total=%.0f ms wait=%.0f ms", dt, dt_wait)
                     result.update({"ok": True, "recovered": True, "recovery": "preset_reload"})
                     return result
+                logger.warning(
+                    "EE-GRAPH still missing %.0f ms after preset reload (preset=%s)",
+                    (time.monotonic() - t_reload) * 1000, active_preset,
+                )
             except Exception as exc:
-                logger.warning("Stereo EasyEffects preset reload recovery failed: %s", exc)
+                logger.warning("EE-GRAPH preset reload recovery failed: %s", exc)
 
-        logger.warning("Stereo EasyEffects output graph still missing for %s; restarting EasyEffects", output_device)
+        logger.warning("EE-GRAPH restarting EasyEffects for %s", output_device)
+        t_restart = time.monotonic()
         self._stop_service_process()
         time.sleep(1.5)
         self._discard_unreachable_socket_candidates()
         self._start_service_process()
+        dt_restart = (time.monotonic() - t_restart) * 1000
+        logger.info("EE-GRAPH service restart took: %.0f ms", dt_restart)
         if self.wait_for_stereo_output_graph(output_device, timeout=10.0):
+            dt = (time.monotonic() - t0) * 1000
+            logger.info("EE-GRAPH stereo recovered via service restart: total=%.0f ms", dt)
             result.update({"ok": True, "recovered": True, "recovery": "service_restart"})
             return result
 
