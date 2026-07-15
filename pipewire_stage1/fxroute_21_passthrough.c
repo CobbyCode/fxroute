@@ -25,11 +25,15 @@
 #include <inttypes.h>
 #include <math.h>
 #include <signal.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <unistd.h>
 
 #include <pipewire/filter.h>
 #include <pipewire/pipewire.h>
@@ -112,6 +116,11 @@ struct fxroute_21_app {
     bool self_test_sub_gain;
     bool self_test_alignment;
     bool self_test_bass_routing;
+    bool self_test_exact_sub_mute;
+    atomic_bool exact_sub_mute;
+    int exact_sub_mute_ack_socket;
+    const char *exact_sub_mute_ack_path;
+    int exact_sub_mute_last_ack;
     float sub_level_gain;
     float sub2_level_gain;
     struct biquad sub_lowpass_1;
@@ -140,6 +149,20 @@ static void on_signal(void *userdata, int signo)
     }
 }
 
+static void on_exact_sub_mute_signal(void *userdata, int signo)
+{
+    struct fxroute_21_app *app = userdata;
+
+    if (app == NULL) {
+        return;
+    }
+    if (signo == SIGUSR1) {
+        atomic_store_explicit(&app->exact_sub_mute, true, memory_order_release);
+    } else if (signo == SIGUSR2) {
+        atomic_store_explicit(&app->exact_sub_mute, false, memory_order_release);
+    }
+}
+
 static void usage(const char *program)
 {
     fprintf(stderr,
@@ -160,6 +183,8 @@ static void usage(const char *program)
             "      --self-test-sub-gain    Run offline sub-gain DSP smoke test and exit\n"
             "      --self-test-alignment   Run offline branch-delay impulse smoke test and exit\n"
             "      --self-test-bass-routing Run offline L/R bass-routing smoke test and exit\n"
+            "      --self-test-exact-sub-mute Run offline exact measurement-mute test and exit\n"
+            "      --exact-sub-mute-ack <path> Runtime acknowledgement socket path\n"
             "  -h, --help                 Show this help\n"
             "\n"
             "Graph ports are explicit and must be linked by FXRoute later:\n"
@@ -224,6 +249,8 @@ static int parse_args(int argc, char **argv, struct fxroute_21_app *app)
         OPT_SUB2_LEVEL_DB = 1000,
         OPT_SUB2_DELAY_MS,
         OPT_SUB2_POLARITY,
+        OPT_SELF_TEST_EXACT_SUB_MUTE,
+        OPT_EXACT_SUB_MUTE_ACK,
         OPT_BASS_ROUTING,
         OPT_SELF_TEST_BASS_ROUTING,
     };
@@ -241,6 +268,8 @@ static int parse_args(int argc, char **argv, struct fxroute_21_app *app)
         {"sub2-delay-ms", required_argument, NULL, OPT_SUB2_DELAY_MS},
         {"sub-polarity", required_argument, NULL, 'P'},
         {"sub2-polarity", required_argument, NULL, OPT_SUB2_POLARITY},
+        {"self-test-exact-sub-mute", no_argument, NULL, OPT_SELF_TEST_EXACT_SUB_MUTE},
+        {"exact-sub-mute-ack", required_argument, NULL, OPT_EXACT_SUB_MUTE_ACK},
         {"self-test-sub-gain", no_argument, NULL, 'T'},
         {"self-test-alignment", no_argument, NULL, 'A'},
         {"self-test-bass-routing", no_argument, NULL, OPT_SELF_TEST_BASS_ROUTING},
@@ -341,6 +370,12 @@ static int parse_args(int argc, char **argv, struct fxroute_21_app *app)
                 fprintf(stderr, "Invalid --sub2-polarity: %s (expected normal|invert)\n", optarg);
                 return -1;
             }
+            break;
+        case OPT_SELF_TEST_EXACT_SUB_MUTE:
+            app->self_test_exact_sub_mute = true;
+            break;
+        case OPT_EXACT_SUB_MUTE_ACK:
+            app->exact_sub_mute_ack_path = optarg;
             break;
         case 'T':
             app->self_test_sub_gain = true;
@@ -570,12 +605,15 @@ static float process_main_highpass(struct fxroute_21_app *app, bool right_channe
     return biquad_process(filter_2, stage_1);
 }
 
-static void route_stage3_crossover(struct fxroute_21_app *app,
+static float rms_for_buffer(const float *buffer, uint32_t frames);
+
+static bool route_stage3_crossover(struct fxroute_21_app *app,
                                    const float *input_l, const float *input_r,
                                    float *output_1, float *output_2,
                                    float *output_3, float *output_4,
                                    uint32_t frames)
 {
+    const bool exact_sub_mute = atomic_load_explicit(&app->exact_sub_mute, memory_order_acquire);
     for (uint32_t frame = 0; frame < frames; ++frame) {
         float left = input_l[frame];
         float right = input_r[frame];
@@ -602,15 +640,74 @@ static void route_stage3_crossover(struct fxroute_21_app *app,
             sub1 = -sub1;
         }
         sub1 *= app->sub_level_gain;
-        output_3[frame] = sub1;
+        output_3[frame] = exact_sub_mute ? 0.0f : sub1;
 
         float sub2 = delay_line_process(&app->sub2_delay, sub2_low);
         if (app->sub2_polarity_invert) {
             sub2 = -sub2;
         }
         sub2 *= app->sub2_level_gain;
-        output_4[frame] = sub2;
+        output_4[frame] = exact_sub_mute ? 0.0f : sub2;
     }
+    return exact_sub_mute;
+}
+
+static void acknowledge_exact_sub_mute(struct fxroute_21_app *app, bool applied)
+{
+    struct sockaddr_un address;
+    char value;
+
+    if (app->exact_sub_mute_ack_socket < 0 || app->exact_sub_mute_ack_path == NULL ||
+        app->exact_sub_mute_last_ack == (applied ? 1 : 0)) {
+        return;
+    }
+    memset(&address, 0, sizeof(address));
+    address.sun_family = AF_UNIX;
+    if (strlen(app->exact_sub_mute_ack_path) >= sizeof(address.sun_path)) {
+        return;
+    }
+    strcpy(address.sun_path, app->exact_sub_mute_ack_path);
+    value = applied ? '1' : '0';
+    if (sendto(app->exact_sub_mute_ack_socket, &value, 1, MSG_DONTWAIT,
+               (const struct sockaddr *)&address, sizeof(address)) == 1) {
+        app->exact_sub_mute_last_ack = applied ? 1 : 0;
+    }
+}
+
+static int run_exact_sub_mute_self_test(struct fxroute_21_app *app)
+{
+    enum { frames = 4096 };
+    float input_l[frames];
+    float input_r[frames];
+    float main_l_before[frames];
+    float main_r_before[frames];
+    float sub1_before[frames];
+    float sub2_before[frames];
+    float main_l_muted[frames];
+    float main_r_muted[frames];
+    float sub1_muted[frames];
+    float sub2_muted[frames];
+
+    for (uint32_t frame = 0; frame < frames; ++frame) {
+        input_l[frame] = 0.2f * sinf((2.0f * PI_F * 31.0f * (float)frame) / (float)frames);
+        input_r[frame] = 0.15f * cosf((2.0f * PI_F * 47.0f * (float)frame) / (float)frames);
+    }
+    atomic_store_explicit(&app->exact_sub_mute, false, memory_order_release);
+    route_stage3_crossover(app, input_l, input_r, main_l_before, main_r_before, sub1_before, sub2_before, frames);
+    configure_sub_lowpass(app);
+    configure_main_highpass(app);
+    configure_delays(app);
+    atomic_store_explicit(&app->exact_sub_mute, true, memory_order_release);
+    route_stage3_crossover(app, input_l, input_r, main_l_muted, main_r_muted, sub1_muted, sub2_muted, frames);
+
+    const bool sub1_zero = rms_for_buffer(sub1_muted, frames) == 0.0f;
+    const bool sub2_zero = rms_for_buffer(sub2_muted, frames) == 0.0f;
+    const bool main_l_same = memcmp(main_l_before, main_l_muted, sizeof(main_l_before)) == 0;
+    const bool main_r_same = memcmp(main_r_before, main_r_muted, sizeof(main_r_before)) == 0;
+    printf("exact_sub_mute=true output_3_exact_zero=%s output_4_exact_zero=%s main_1_unchanged=%s main_2_unchanged=%s\n",
+           sub1_zero ? "true" : "false", sub2_zero ? "true" : "false",
+           main_l_same ? "true" : "false", main_r_same ? "true" : "false");
+    return sub1_zero && sub2_zero && main_l_same && main_r_same ? EXIT_SUCCESS : EXIT_FAILURE;
 }
 
 static float rms_for_buffer(const float *buffer, uint32_t frames)
@@ -804,7 +901,9 @@ static void on_process(void *userdata, struct spa_io_position *position)
         return;
     }
 
-    route_stage3_crossover(app, input_l, input_r, output_1, output_2, output_3, output_4, n_samples);
+    bool applied_exact_sub_mute = route_stage3_crossover(
+        app, input_l, input_r, output_1, output_2, output_3, output_4, n_samples);
+    acknowledge_exact_sub_mute(app, applied_exact_sub_mute);
 }
 
 static const struct pw_filter_events filter_events = {
@@ -940,6 +1039,9 @@ int main(int argc, char **argv)
     app.sub_polarity_invert = DEFAULT_SUB_POLARITY_INVERT;
     app.sub2_polarity_invert = DEFAULT_SUB_POLARITY_INVERT;
     app.bass_routing = DEFAULT_BASS_ROUTING;
+    app.exact_sub_mute_ack_socket = -1;
+    app.exact_sub_mute_last_ack = 0;
+    atomic_init(&app.exact_sub_mute, false);
 
     if (parse_args(argc, argv, &app) != 0) {
         return EXIT_FAILURE;
@@ -973,8 +1075,25 @@ int main(int argc, char **argv)
         delay_line_destroy(&app.sub2_delay);
         return result;
     }
+    if (app.self_test_exact_sub_mute) {
+        result = run_exact_sub_mute_self_test(&app);
+        delay_line_destroy(&app.main_delay_l);
+        delay_line_destroy(&app.main_delay_r);
+        delay_line_destroy(&app.sub_delay);
+        delay_line_destroy(&app.sub2_delay);
+        return result;
+    }
 
     pw_init(&argc, &argv);
+
+    if (app.exact_sub_mute_ack_path != NULL) {
+        app.exact_sub_mute_ack_socket = socket(AF_UNIX, SOCK_DGRAM | SOCK_NONBLOCK, 0);
+        if (app.exact_sub_mute_ack_socket < 0) {
+            fprintf(stderr, "Failed to create exact-sub-mute acknowledgement socket: %s\n", strerror(errno));
+            pw_deinit();
+            return EXIT_FAILURE;
+        }
+    }
 
     app.loop = pw_main_loop_new(NULL);
     if (app.loop == NULL) {
@@ -984,7 +1103,9 @@ int main(int argc, char **argv)
     }
 
     if (pw_loop_add_signal(pw_main_loop_get_loop(app.loop), SIGINT, on_signal, &app) == NULL ||
-        pw_loop_add_signal(pw_main_loop_get_loop(app.loop), SIGTERM, on_signal, &app) == NULL) {
+        pw_loop_add_signal(pw_main_loop_get_loop(app.loop), SIGTERM, on_signal, &app) == NULL ||
+        pw_loop_add_signal(pw_main_loop_get_loop(app.loop), SIGUSR1, on_exact_sub_mute_signal, &app) == NULL ||
+        pw_loop_add_signal(pw_main_loop_get_loop(app.loop), SIGUSR2, on_exact_sub_mute_signal, &app) == NULL) {
         fprintf(stderr, "Failed to install PipeWire signal handlers\n");
         result = -1;
         goto out;
@@ -1024,6 +1145,10 @@ int main(int argc, char **argv)
     result = 0;
 
 out:
+    if (app.exact_sub_mute_ack_socket >= 0) {
+        close(app.exact_sub_mute_ack_socket);
+        app.exact_sub_mute_ack_socket = -1;
+    }
     destroy_filter(&app);
     delay_line_destroy(&app.main_delay_l);
     delay_line_destroy(&app.main_delay_r);

@@ -6183,6 +6183,19 @@ function getMeasurementConvolverCurve(curveKey) {
     return getMeasurementConvolverCurveOptions().find((curve) => curve.key === curveKey) || measurementConvolverCurves.neutral;
 }
 
+function getAutoSubTargetCurveSnapshot() {
+    const conv = ensureMeasurementConvolverState();
+    const key = String(conv.targetCurve || '');
+    const curve = getMeasurementConvolverCurveOptions().find((option) => option.key === key);
+    if (!curve) return null;
+    return {
+        key,
+        label: String(curve.label || curve.shortLabel || key),
+        provenance: key.startsWith('house:') ? 'uploaded' : 'built_in',
+        points: (curve.points || []).map((point) => [Number(point[0]), Number(point[1])]),
+    };
+}
+
 function getMeasurementConvolverCurveDb(curveKey, frequencyHz) {
     const curve = getMeasurementConvolverCurve(curveKey);
     const points = curve.points || measurementConvolverCurves.neutral.points;
@@ -8754,6 +8767,8 @@ async function startAutoSubOptimize() {
         formData.append('mic_input_channel', measurementState.selectedMicInputChannel || '1');
         formData.append('reference_input_channel', measurementState.selectedReferenceInputChannel || '');
         formData.append('calibration_ref', measurementState.selectedCalibrationRef || '');
+        const targetCurveSnapshot = getAutoSubTargetCurveSnapshot();
+        formData.append('target_curve_snapshot', targetCurveSnapshot ? JSON.stringify(targetCurveSnapshot) : '');
         const calibrationFile = elements.measurementCalibrationFile?.files?.[0];
         if (calibrationFile) {
             formData.append('calibration_file', calibrationFile);
@@ -8821,6 +8836,7 @@ async function pollAutoSubJob(jobId) {
             const job = data.job || {};
             const status = job.status || 'unknown';
             const fineScan = job.fine_scan || {};
+            const targetLabel = String(job.target_curve?.label || '');
 
             measurementState.statusText = job.message || 'Auto Sub Optimize: running';
             if (job.progress) {
@@ -8846,9 +8862,9 @@ async function pollAutoSubJob(jobId) {
                     const sweepCur = progress.sweep_current ?? progress.current;
                     const sweepTot = progress.sweep_total ?? progress.total;
                     if (Number.isFinite(candidateCur) && Number.isFinite(candidateTot)) {
-                        statusEl.textContent = `${stageLabel}: ${candidateCur}/${candidateTot} candidates (${sweepCur}/${sweepTot} sweeps)`;
+                        statusEl.textContent = `${stageLabel}: ${candidateCur}/${candidateTot} candidates (${sweepCur}/${sweepTot} sweeps)${targetLabel ? ` · Target: ${targetLabel}` : ''}`;
                     } else {
-                        statusEl.textContent = `${sweepCur}/${sweepTot} sweeps`;
+                        statusEl.textContent = `${sweepCur}/${sweepTot} sweeps${targetLabel ? ` · Target: ${targetLabel}` : ''}`;
                     }
                 }
             }

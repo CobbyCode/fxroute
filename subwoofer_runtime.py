@@ -16,7 +16,10 @@ import logging
 import math
 import os
 import re
+import signal
 import shlex
+import socket
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 import time
@@ -269,6 +272,13 @@ class Subwoofer21Runtime:
         self._repair_counter = 0
         self._active_repairs = 0
         self._pending_config: Optional[SubwooferRuntimeConfig] = None
+        self._exact_sub_mute = False
+        self._exact_sub_mute_ack_socket: socket.socket | None = None
+        self._exact_sub_mute_ack_path: str | None = None
+        self._exact_sub_mute_ack_dir: str | None = None
+
+    def __del__(self) -> None:
+        self._close_exact_sub_mute_ack_socket()
 
     def _stream_key(self, config: SubwooferRuntimeConfig) -> tuple[Any, ...]:
         return (
@@ -305,7 +315,86 @@ class Subwoofer21Runtime:
             "helper_pid": getattr(self._process, "pid", None) if process_running else None,
             "links_configured": self._links_configured,
             "removed_direct_front_links": self._removed_direct_front_links,
+            "exact_sub_mute": self._exact_sub_mute,
         }
+
+    async def set_exact_sub_mute(self, enabled: bool) -> bool:
+        """Set measurement-only digital zero on both sub outputs without graph churn.
+
+        Returns the preceding state so callers can restore it transactionally.
+        SIGUSR1/SIGUSR2 are handled by the running helper and only update the
+        atomic DSP mute flag; the helper process and PipeWire graph stay intact.
+        """
+        process = self._process
+        if process is None or getattr(process, "returncode", None) is not None:
+            raise RuntimeError("Subwoofer helper is not running; exact sub mute unavailable")
+        previous = self._exact_sub_mute
+        requested = bool(enabled)
+        if requested == previous:
+            return previous
+        pid = int(getattr(process, "pid", 0) or 0)
+        if pid <= 0:
+            raise RuntimeError("Subwoofer helper PID unavailable; exact sub mute unavailable")
+        try:
+            await self._signal_exact_sub_mute_and_wait_ack(process, requested)
+        except Exception as exc:
+            # A lost enable acknowledgement can mean that the helper applied the
+            # mute but Python did not observe it. Actively restore the preceding
+            # state; if that cannot be acknowledged, stop the helper so a hidden
+            # partial mute can never survive into candidate scanning.
+            try:
+                await self._signal_exact_sub_mute_and_wait_ack(process, previous)
+                self._exact_sub_mute = previous
+            except Exception:
+                await self._stop_helper()
+            raise RuntimeError(f"Exact sub mute was not acknowledged by helper RT path: {exc}") from exc
+        self._exact_sub_mute = requested
+        logger.info("Subwoofer helper exact measurement mute=%s pid=%s", requested, pid)
+        return previous
+
+    async def _signal_exact_sub_mute_and_wait_ack(self, process: Any, requested: bool) -> None:
+        ack_socket = self._exact_sub_mute_ack_socket
+        if ack_socket is None:
+            raise RuntimeError("exact-sub-mute acknowledgement socket unavailable")
+        while True:
+            try:
+                ack_socket.recv(32)
+            except BlockingIOError:
+                break
+        os.kill(int(process.pid), signal.SIGUSR1 if requested else signal.SIGUSR2)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + 1.0
+        expected = b"1" if requested else b"0"
+        while loop.time() < deadline:
+            if getattr(process, "returncode", None) is not None or self._process is not process:
+                raise RuntimeError("helper process changed before acknowledgement")
+            try:
+                value = await asyncio.wait_for(loop.sock_recv(ack_socket, 1), timeout=max(0.001, deadline - loop.time()))
+            except asyncio.TimeoutError:
+                break
+            if value == expected:
+                return
+        raise RuntimeError(f"timeout waiting for helper acknowledgement={expected.decode()}")
+
+    def _close_exact_sub_mute_ack_socket(self) -> None:
+        ack_socket = self._exact_sub_mute_ack_socket
+        path = self._exact_sub_mute_ack_path
+        directory = self._exact_sub_mute_ack_dir
+        self._exact_sub_mute_ack_socket = None
+        self._exact_sub_mute_ack_path = None
+        self._exact_sub_mute_ack_dir = None
+        if ack_socket is not None:
+            ack_socket.close()
+        if path:
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                pass
+        if directory:
+            try:
+                os.rmdir(directory)
+            except FileNotFoundError:
+                pass
 
     async def sync(self, config: SubwooferRuntimeConfig) -> None:
         self._pending_config = config
@@ -516,6 +605,15 @@ class Subwoofer21Runtime:
         ]
 
     async def _start_helper(self, config: SubwooferRuntimeConfig) -> None:
+        self._close_exact_sub_mute_ack_socket()
+        ack_socket = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        ack_socket.setblocking(False)
+        ack_dir = tempfile.mkdtemp(prefix="fxroute-exact-mute-")
+        ack_path = str(Path(ack_dir) / "ack.sock")
+        ack_socket.bind(ack_path)
+        self._exact_sub_mute_ack_socket = ack_socket
+        self._exact_sub_mute_ack_path = ack_path
+        self._exact_sub_mute_ack_dir = ack_dir
         args = [
             str(self._helper_binary),
             "--node-name",
@@ -544,10 +642,13 @@ class Subwoofer21Runtime:
             config.sub2_polarity,
             "--sub2-delay-ms",
             str(config.derived_sub2_delay_ms),
+            "--exact-sub-mute-ack",
+            ack_path,
         ]
         mode_num = "2.2 Stereo Bass" if config.output_mode == OUTPUT_MODE_SUBWOOFER_22_STEREO else "2.2" if config.output_mode == OUTPUT_MODE_SUBWOOFER_22 else "2.1"
         logger.info("Starting %s helper: %s", mode_num, shlex.join(args))
         self._last_helper_args = list(args)
+        self._exact_sub_mute = False
         self._process = await self._process_launcher(args)
         self._last_started_at = time.time()
         await self._wait_for_helper_ports()
@@ -863,6 +964,8 @@ class Subwoofer21Runtime:
     async def _stop_helper(self) -> None:
         process = self._process
         self._process = None
+        self._exact_sub_mute = False
+        self._close_exact_sub_mute_ack_socket()
         self._last_helper_args = None
         if process is None or getattr(process, "returncode", None) is not None:
             return
