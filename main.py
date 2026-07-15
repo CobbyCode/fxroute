@@ -7488,6 +7488,106 @@ def _score_auto_sub_matrix_candidates(
     )
 
 
+def _auto_sub_candidate_ledger(
+    candidates: list[dict[str, Any]],
+    scoring: dict[str, Any],
+    *,
+    mode: str,
+    phase: str,
+    channel: str | None = None,
+    roles: dict[str, dict[str, Any] | None] | None = None,
+    decision_pool: list[dict[str, Any]] | None = None,
+    requested_incumbent: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Describe scorer decisions without participating in them.
+
+    This deliberately runs only after a scorer has returned.  It reconstructs
+    inclusion from the scorer output and never supplies data back to scoring.
+    """
+    score_mode = str(scoring.get("score_mode") or "")
+    matrix = phase == "matrix"
+
+    def key(result: dict[str, Any]) -> tuple[float, ...]:
+        if matrix:
+            return (
+                round(float(result.get("sub1_alignment_ms", 0.0) or 0.0), 2),
+                round(float(result.get("sub2_alignment_ms", 0.0) or 0.0), 2),
+            )
+        return (round(float(result.get("delay_ms", 0.0) or 0.0), 2),)
+
+    scored_by_key = {key(result): result for result in scoring.get("results", [])}
+    complete_available = sum(
+        1 for result in (decision_pool if decision_pool is not None else candidates)
+        if _auto_sub_has_points(result, "points_left") and _auto_sub_has_points(result, "points_right")
+    ) >= 2
+    majority_channel = "left" if score_mode.startswith("left_") else "right" if score_mode.startswith("right_") else None
+    role_keys = {
+        name: key(result) for name, result in (roles or {}).items() if isinstance(result, dict)
+    }
+    if requested_incumbent is not None:
+        role_keys["incumbent"] = key(requested_incumbent)
+    ledger: list[dict[str, Any]] = []
+    for candidate in candidates:
+        candidate_key = key(candidate)
+        left_count = len(candidate.get("points_left") or (candidate.get("points") if channel == "left" else []) or [])
+        right_count = len(candidate.get("points_right") or (candidate.get("points") if channel == "right" else []) or [])
+        if channel == "left":
+            eligible = left_count >= 3
+        elif channel == "right":
+            eligible = right_count >= 3
+        else:
+            eligible = left_count >= 3 or right_count >= 3
+        scored = scored_by_key.get(candidate_key)
+        included = scored is not None
+        reason = None
+        if not eligible:
+            if channel == "left":
+                reason = "left_insufficient_points"
+            elif channel == "right":
+                reason = "right_insufficient_points"
+            elif left_count < 3 and right_count < 3:
+                reason = "both_insufficient_points"
+            elif left_count < 3:
+                reason = "left_insufficient_points"
+            else:
+                reason = "right_insufficient_points"
+        elif not included:
+            left_ok = left_count >= 3
+            right_ok = right_count >= 3
+            if complete_available and not (left_ok and right_ok):
+                reason = "single_side_excluded_because_complete_candidates_available"
+            elif majority_channel and not ((majority_channel == "left" and left_ok) or (majority_channel == "right" and right_ok)):
+                reason = "excluded_by_majority_side_fallback"
+            else:
+                reason = "delay_key_merge_failed"
+        row: dict[str, Any] = {
+            "mode": mode,
+            "phase": phase,
+            "requested_delay_ms": candidate.get("delay_ms"),
+            "requested_sub1_alignment_ms": candidate.get("sub1_alignment_ms"),
+            "requested_sub2_alignment_ms": candidate.get("sub2_alignment_ms"),
+            "delay_ms": candidate.get("delay_ms"),
+            "sub1_alignment_ms": candidate.get("sub1_alignment_ms"),
+            "sub2_alignment_ms": candidate.get("sub2_alignment_ms"),
+            "status_left": candidate.get("status") if channel == "left" else candidate.get("status_left"),
+            "status_right": candidate.get("status") if channel == "right" else candidate.get("status_right"),
+            "points_left": left_count,
+            "points_right": right_count,
+            "eligible_for_scoring": eligible,
+            "included_in_scoring": included,
+            "exclusion_reason": reason,
+            "score": scored.get("score") if scored else None,
+            "final_score": scored.get("final_score", scored.get("score")) if scored else None,
+            "score_pct": scored.get("score_pct") if scored else None,
+            "score_left": scored.get("score_L") if scored else None,
+            "score_right": scored.get("score_R") if scored else None,
+            "roles": sorted(name for name, role_key in role_keys.items() if role_key == candidate_key),
+        }
+        ledger.append(row)
+        logger.info("AUTOSUB_CANDIDATE %s", json.dumps(row, sort_keys=True, separators=(",", ":")))
+    return ledger
+
+
 @app.post("/api/measurements/auto-sub-optimize/start")
 async def start_auto_sub_optimize(
     input_id: str = Form(...),
@@ -8542,6 +8642,27 @@ async def _run_auto_sub_22_optimize(
         winner = matrix_scoring["accepted_winner"]
         best_sub1 = _auto_sub_clamped_delay(float(winner.get("sub1_alignment_ms", sub1_winner_delay) or sub1_winner_delay))
         best_sub2 = _auto_sub_clamped_delay(float(winner.get("sub2_alignment_ms", sub2_winner_delay) or sub2_winner_delay))
+        candidate_ledger = (
+            _auto_sub_candidate_ledger(
+                coarse1_results, sub1_scoring, mode="2.2_mono", phase="sub1_coarse",
+                roles={"coarse_winner": sub1_winner},
+            )
+            + _auto_sub_candidate_ledger(
+                coarse2_results, sub2_scoring, mode="2.2_mono", phase="sub2_coarse",
+                roles={"coarse_winner": sub2_winner},
+            )
+            + _auto_sub_candidate_ledger(
+                matrix_results, matrix_scoring, mode="2.2_mono", phase="matrix",
+                roles={
+                    "matrix_winner": matrix_scoring.get("matrix_winner"),
+                    "final_accepted_winner": winner,
+                },
+                requested_incumbent={
+                    "sub1_alignment_ms": original_sub1_alignment,
+                    "sub2_alignment_ms": original_sub2_alignment,
+                },
+            )
+        )
 
         apply_ok = False
         try:
@@ -8668,6 +8789,7 @@ async def _run_auto_sub_22_optimize(
             "runner_up": matrix_scoring.get("runner_up"),
             "ranking": matrix_scoring["results"],
             "combined_matrix": job["combined_matrix"],
+            "candidate_ledger": candidate_ledger,
             "sweep_count": matrix_sweep_total,
             "candidate_count": len(sub1_scan_delays) + len(sub2_scan_delays) + len(matrix_pairs),
             "sub1_coarse_candidate_count": len(sub1_scan_delays),
@@ -9157,6 +9279,33 @@ async def _run_auto_sub_22_stereo_optimize(
         job["fine_scan"]["right"]["incumbent_score"] = right_acceptance["incumbent_score"]
         job["fine_scan"]["status"] = "completed"
 
+        candidate_ledger = (
+            _auto_sub_candidate_ledger(
+                left_results, left_scoring, mode="2.2_stereo", phase="left_coarse", channel="left",
+                roles={
+                    "coarse_winner": left_coarse_accepted_candidate,
+                    "final_accepted_winner": left_winner,
+                },
+                requested_incumbent={"delay_ms": original_left_alignment},
+            )
+            + _auto_sub_candidate_ledger(
+                left_fine_results, left_scoring, mode="2.2_stereo", phase="left_fine", channel="left",
+                roles={"fine_winner": left_fine_accepted_candidate, "final_accepted_winner": left_winner},
+            )
+            + _auto_sub_candidate_ledger(
+                right_results, right_scoring, mode="2.2_stereo", phase="right_coarse", channel="right",
+                roles={
+                    "coarse_winner": right_coarse_accepted_candidate,
+                    "final_accepted_winner": right_winner,
+                },
+                requested_incumbent={"delay_ms": original_right_alignment},
+            )
+            + _auto_sub_candidate_ledger(
+                right_fine_results, right_scoring, mode="2.2_stereo", phase="right_fine", channel="right",
+                roles={"fine_winner": right_fine_accepted_candidate, "final_accepted_winner": right_winner},
+            )
+        )
+
         apply_ok = False
         try:
             sub_config = _auto_sub_22_global_config(original_config_snapshot)
@@ -9271,6 +9420,7 @@ async def _run_auto_sub_22_stereo_optimize(
             "applied": True,
             "auto_applied": True,
             "apply_decision": "applied_22_stereo_separate_lr",
+            "candidate_ledger": candidate_ledger,
             "crossover_hz": fc,
             "confidence": "left_right_separate",
             "winner": {
@@ -9535,6 +9685,7 @@ async def _run_auto_sub_optimize(
             "coarse_winner": coarse_winner,
             "coarse_runner_up": coarse_runner_up,
         }
+        final_decision_pool = list(sweep_results)
 
         if fine_trigger_reasons:
             fine_delays = _auto_sub_fine_delay_candidates(coarse_winner, coarse_runner_up, step_ms, {round(float(delay), 2) for delay in scan_delays})
@@ -9613,6 +9764,7 @@ async def _run_auto_sub_optimize(
                         "results": fine_scoring["results"],
                     })
                     combined_valid = valid + fine_valid
+                    final_decision_pool = list(combined_valid)
                     final_scoring = _score_auto_sub_combined_candidates(
                         combined_valid,
                         crossover_hz=fc,
@@ -9779,6 +9931,23 @@ async def _run_auto_sub_optimize(
         fine_scan["accepted_winner"] = stored_winner
         fine_scan["fine_accepted"] = stored_fine_accepted
         fine_scan["reject_reason"] = stored_reject_reason
+        candidate_ledger = (
+            _auto_sub_candidate_ledger(
+                sweep_results, final_scoring, mode="2.1", phase="coarse",
+                roles={
+                    "coarse_winner": final_coarse_winner,
+                    "final_accepted_winner": stored_winner,
+                },
+                decision_pool=final_decision_pool,
+                requested_incumbent={"delay_ms": current_alignment},
+            )
+            + _auto_sub_candidate_ledger(
+                fine_results, final_scoring, mode="2.1", phase="fine",
+                roles={"fine_winner": final_fine_winner, "final_accepted_winner": stored_winner},
+                decision_pool=final_decision_pool,
+                requested_incumbent={"delay_ms": current_alignment},
+            )
+        )
 
         job["status"] = "completed"
         job["message"] = (
@@ -9835,6 +10004,7 @@ async def _run_auto_sub_optimize(
             "reject_reason": stored_reject_reason,
             "runner_up": final_scoring.get("runner_up"),
             "ranking": final_scoring["results"],
+            "candidate_ledger": candidate_ledger,
             "sweep_count": total,
             "candidate_count": coarse_total + len(fine_delays),
             "coarse_candidate_count": coarse_total,
