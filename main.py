@@ -6778,11 +6778,17 @@ def _auto_sub_22_candidate_subwoofers(
     sub1_alignment_ms: float,
     sub2_alignment_ms: float,
     active_subs: tuple[str, ...],
+    sub1_polarity: str | None = None,
+    sub2_polarity: str | None = None,
 ) -> dict[str, Any]:
     sub1 = _auto_sub_22_sub(snapshot, "sub1")
     sub2 = _auto_sub_22_sub(snapshot, "sub2")
     sub1["alignment_ms"] = _auto_sub_clamped_delay(sub1_alignment_ms)
     sub2["alignment_ms"] = _auto_sub_clamped_delay(sub2_alignment_ms)
+    if sub1_polarity is not None:
+        sub1["polarity"] = "invert" if sub1_polarity == "invert" else "normal"
+    if sub2_polarity is not None:
+        sub2["polarity"] = "invert" if sub2_polarity == "invert" else "normal"
     if "sub1" not in active_subs:
         sub1["level_db"] = -80.0
     if "sub2" not in active_subs:
@@ -6801,6 +6807,26 @@ def _auto_sub_22_verify_alignment(mode_state: dict[str, Any], sub1_alignment_ms:
         )
     except (TypeError, ValueError):
         return False
+
+
+def _auto_sub_opposite_polarity(polarity: str) -> str:
+    return "normal" if str(polarity).lower() == "invert" else "invert"
+
+
+def _auto_sub_polarity_decision(
+    incumbent: dict[str, Any], alternative: dict[str, Any], *, min_score_gain: float = 0.03,
+) -> dict[str, Any]:
+    """Protect the active polarity unless a measured alternative is clearly better."""
+    incumbent_score = _auto_sub_score_value(incumbent)
+    alternative_score = _auto_sub_score_value(alternative)
+    gain = alternative_score - incumbent_score
+    accepted = gain >= min_score_gain
+    return {
+        "accepted": accepted,
+        "score_gain": round(gain, 4),
+        "min_score_gain": min_score_gain,
+        "reason": "alternative_clearly_better" if accepted else "incumbent_protected_unclear_advantage",
+    }
 
 
 def _auto_sub_22_name(sub1_alignment_ms: float, sub2_alignment_ms: float) -> str:
@@ -7993,6 +8019,8 @@ async def _measure_auto_sub_candidate(
     sub1_alignment_ms: float | None = None,
     sub2_alignment_ms: float | None = None,
     active_subs: tuple[str, ...] = ("sub1",),
+    sub1_polarity: str | None = None,
+    sub2_polarity: str | None = None,
     exact_sub_mute: bool = False,
 ) -> dict[str, Any]:
     """Measure one AutoSub delay candidate with the standard safety checks."""
@@ -8050,6 +8078,8 @@ async def _measure_auto_sub_candidate(
                 sub1_alignment_ms=sub1_delay,
                 sub2_alignment_ms=sub2_delay,
                 active_subs=active_subs,
+                sub1_polarity=sub1_polarity,
+                sub2_polarity=sub2_polarity,
             )
             set_audio_output_mode(output_mode, sub_config, subwoofers_config)
         else:
@@ -8886,6 +8916,8 @@ async def _measure_auto_sub_combined_candidate(
     sub1_alignment_ms: float | None = None,
     sub2_alignment_ms: float | None = None,
     active_subs: tuple[str, ...] = ("sub1",),
+    sub1_polarity: str | None = None,
+    sub2_polarity: str | None = None,
 ) -> dict[str, Any]:
     """Measure both L and R for one AutoSub delay candidate."""
     _combined_start = time.monotonic()
@@ -8960,6 +8992,8 @@ async def _measure_auto_sub_combined_candidate(
         sub1_alignment_ms=sub1_alignment_ms,
         sub2_alignment_ms=sub2_alignment_ms,
         active_subs=active_subs,
+        sub1_polarity=sub1_polarity,
+        sub2_polarity=sub2_polarity,
     )
     if _auto_sub_cancel_requested(job):
         _append_combined_timing("cancelled", left_result=left_result)
@@ -8993,6 +9027,8 @@ async def _measure_auto_sub_combined_candidate(
         sub1_alignment_ms=sub1_alignment_ms,
         sub2_alignment_ms=sub2_alignment_ms,
         active_subs=active_subs,
+        sub1_polarity=sub1_polarity,
+        sub2_polarity=sub2_polarity,
     )
     if _auto_sub_cancel_requested(job):
         _append_combined_timing("cancelled", left_result=left_result, right_result=right_result)
@@ -9031,6 +9067,8 @@ async def _measure_auto_sub_combined_candidate(
             "sub2_alignment_ms": sub2_delay,
             "name": _auto_sub_22_name(sub1_delay, sub2_delay),
             "active_subs": list(active_subs),
+            "sub1_polarity": sub1_polarity,
+            "sub2_polarity": sub2_polarity,
         })
     return candidate
 
@@ -9053,6 +9091,7 @@ def _finalize_autosub_job(job: dict[str, Any] | None, job_id: str) -> None:
         job["result"]["auto_gain"] = json.loads(json.dumps(job.get("auto_gain")))
         job["result"]["main_references"] = json.loads(json.dumps(job.get("main_references"))) if job.get("main_references") else None
         job["result"]["main_target_anchor"] = json.loads(json.dumps(job.get("main_target_anchor"))) if job.get("main_target_anchor") else None
+        job["result"]["polarity_check"] = json.loads(json.dumps(job.get("polarity_check"))) if job.get("polarity_check") else None
     logger.info("AUTOSUB job=%s cleanup complete state=%s", job_id, job.get("status") or "idle")
 
 
@@ -9316,6 +9355,68 @@ async def _run_auto_sub_22_optimize(
              and round(float(candidate.get("sub2_alignment_ms", 0.0)), 2) == round(float(winner.get("sub2_alignment_ms", 0.0)), 2)),
             {},
         )
+        best_sub1 = _auto_sub_clamped_delay(float(winner.get("sub1_alignment_ms", sub1_winner_delay) or sub1_winner_delay))
+        best_sub2 = _auto_sub_clamped_delay(float(winner.get("sub2_alignment_ms", sub2_winner_delay) or sub2_winner_delay))
+        incumbent_polarities = (str(original_sub1.get("polarity", "normal")), str(original_sub2.get("polarity", "normal")))
+        selected_polarities = incumbent_polarities
+        polarity_candidates: list[dict[str, Any]] = [dict(gain_winner, delay_ms=0.0)]
+        alternative_polarities = [
+            (_auto_sub_opposite_polarity(incumbent_polarities[0]), incumbent_polarities[1]),
+            (incumbent_polarities[0], _auto_sub_opposite_polarity(incumbent_polarities[1])),
+            (_auto_sub_opposite_polarity(incumbent_polarities[0]), _auto_sub_opposite_polarity(incumbent_polarities[1])),
+        ]
+        for idx, polarities in enumerate(alternative_polarities, 1):
+            measured = await _measure_auto_sub_combined_candidate(
+                delay_ms=best_sub1, job=job, candidate_index=idx, total=3,
+                sweep_index_start=matrix_sweep_total + (idx - 1) * 2 + 1,
+                sweep_total=matrix_sweep_total + 6, stage="polarity_check", fc=fc,
+                input_id=input_id, mic_input_channel=mic_input_channel,
+                reference_input_channel=reference_input_channel, calibration_ref=calibration_ref,
+                calibration_filename=calibration_filename, calibration_bytes=calibration_bytes,
+                auto_sub_sweep_profile=auto_sub_sweep_profile, auto_sub_rate=auto_sub_rate,
+                original_level=0.0, original_polarity="normal", original_highpass=True,
+                output_mode=OUTPUT_MODE_SUBWOOFER_22, original_config_snapshot=original_config_snapshot,
+                sub1_alignment_ms=best_sub1, sub2_alignment_ms=best_sub2,
+                active_subs=("sub1", "sub2"), sub1_polarity=polarities[0], sub2_polarity=polarities[1],
+            )
+            polarity_candidates.append(dict(measured, delay_ms=float(idx), tested_polarities=polarities))
+        polarity_scoring = _score_auto_sub_combined_candidates(polarity_candidates, crossover_hz=fc, low_guard_reference_delay_ms=0.0)
+        polarity_winner = polarity_scoring["winner"]
+        incumbent_scored = _auto_sub_result_for_delay(polarity_scoring["results"], 0.0) or {}
+        alternative_scored = polarity_winner if float(polarity_winner.get("delay_ms", 0.0)) != 0.0 else {}
+        polarity_decision = _auto_sub_polarity_decision(incumbent_scored, alternative_scored) if alternative_scored else {
+            "accepted": False, "reason": "incumbent_best", "score_gain": 0.0, "min_score_gain": 0.03,
+        }
+        if polarity_decision["accepted"]:
+            selected_idx = int(round(float(alternative_scored["delay_ms"])))
+            selected_polarities = alternative_polarities[selected_idx - 1]
+            selected_measurement = polarity_candidates[selected_idx]
+            refinement: list[dict[str, Any]] = []
+            refinements = [(a, b) for a in _matrix_delays(best_sub1) for b in _matrix_delays(best_sub2)]
+            for idx, (delay1, delay2) in enumerate(refinements):
+                refinement.append(await _measure_auto_sub_combined_candidate(
+                    delay_ms=delay1, job=job, candidate_index=idx + 1, total=9,
+                    sweep_index_start=matrix_sweep_total + 7 + idx * 2,
+                    sweep_total=matrix_sweep_total + 24, stage="polarity_refine", fc=fc,
+                    input_id=input_id, mic_input_channel=mic_input_channel,
+                    reference_input_channel=reference_input_channel, calibration_ref=calibration_ref,
+                    calibration_filename=calibration_filename, calibration_bytes=calibration_bytes,
+                    auto_sub_sweep_profile=auto_sub_sweep_profile, auto_sub_rate=auto_sub_rate,
+                    original_level=0.0, original_polarity="normal", original_highpass=True,
+                    output_mode=OUTPUT_MODE_SUBWOOFER_22, original_config_snapshot=original_config_snapshot,
+                    sub1_alignment_ms=delay1, sub2_alignment_ms=delay2, active_subs=("sub1", "sub2"),
+                    sub1_polarity=selected_polarities[0], sub2_polarity=selected_polarities[1],
+                ))
+            refined_scoring = _score_auto_sub_matrix_candidates(refinement, crossover_hz=fc)
+            refined_winner = refined_scoring["winner"]
+            best_sub1 = float(refined_winner["sub1_alignment_ms"])
+            best_sub2 = float(refined_winner["sub2_alignment_ms"])
+            gain_winner = next((row for row in refinement if abs(float(row.get("sub1_alignment_ms", 0))-best_sub1)<0.01 and abs(float(row.get("sub2_alignment_ms", 0))-best_sub2)<0.01), selected_measurement)
+            polarity_decision["refinement"] = {"winner": refined_winner, "candidate_count": 9}
+        polarity_snapshot = _auto_sub_snapshot_copy(original_config_snapshot)
+        polarity_snapshot.setdefault("subwoofers", {}).setdefault("sub1", {})["polarity"] = selected_polarities[0]
+        polarity_snapshot.setdefault("subwoofers", {}).setdefault("sub2", {})["polarity"] = selected_polarities[1]
+        job["polarity_check"] = {**polarity_decision, "incumbent": incumbent_polarities, "selected": selected_polarities, "alternatives_tested": alternative_polarities}
         job["auto_gain"] = _calculate_auto_sub_gain(
             mode=OUTPUT_MODE_SUBWOOFER_22,
             target_curve=job.get("target_curve"), anchor=job.get("main_target_anchor"),
@@ -9338,11 +9439,9 @@ async def _run_auto_sub_22_optimize(
             "first_step_db": gain_deltas.get("left"),
         })
         gain_snapshot = _auto_sub_22_snapshot_with_gain(
-            original_config_snapshot,
+            polarity_snapshot,
             left_delta_db=gain_deltas.get("left", 0.0), right_delta_db=gain_deltas.get("right", 0.0),
         )
-        best_sub1 = _auto_sub_clamped_delay(float(winner.get("sub1_alignment_ms", sub1_winner_delay) or sub1_winner_delay))
-        best_sub2 = _auto_sub_clamped_delay(float(winner.get("sub2_alignment_ms", sub2_winner_delay) or sub2_winner_delay))
         candidate_ledger = (
             _auto_sub_candidate_ledger(
                 coarse1_results, sub1_scoring, mode="2.2_mono", phase="sub1_coarse",
@@ -9417,7 +9516,7 @@ async def _run_auto_sub_22_optimize(
         )
         gain_verdict = _auto_sub_gain_verdict(job["auto_gain"], gain_after, OUTPUT_MODE_SUBWOOFER_22)
         final_gain_deltas = gain_deltas if gain_verdict["accepted"] else {"left": 0.0, "right": 0.0}
-        final_gain_snapshot = gain_snapshot if gain_verdict["accepted"] else original_config_snapshot
+        final_gain_snapshot = gain_snapshot if gain_verdict["accepted"] else polarity_snapshot
         final_gain_sweep = gain_after_sweep if gain_verdict["accepted"] else gain_winner
         correction_deltas: dict[str, float] = {}
         correction_plan = None
@@ -9425,10 +9524,10 @@ async def _run_auto_sub_22_optimize(
         correction_verdict = None
         if not gain_verdict["accepted"]:
             rollback_subs = _auto_sub_22_candidate_subwoofers(
-                original_config_snapshot, sub1_alignment_ms=best_sub1, sub2_alignment_ms=best_sub2,
+                polarity_snapshot, sub1_alignment_ms=best_sub1, sub2_alignment_ms=best_sub2,
                 active_subs=("sub1", "sub2"),
             )
-            set_audio_output_mode(OUTPUT_MODE_SUBWOOFER_22, _auto_sub_22_global_config(original_config_snapshot), rollback_subs)
+            set_audio_output_mode(OUTPUT_MODE_SUBWOOFER_22, _auto_sub_22_global_config(polarity_snapshot), rollback_subs)
             if subwoofer_runtime is not None:
                 await subwoofer_runtime.sync(SubwooferRuntimeConfig.from_overview(get_audio_output_overview()))
         else:
@@ -9440,13 +9539,13 @@ async def _run_auto_sub_22_optimize(
             if not correction_plan.get("available"):
                 gain_verdict = {"accepted": False, "reason": correction_plan.get("reason"), "channels": {}}
                 final_gain_deltas = {"left": 0.0, "right": 0.0}
-                final_gain_snapshot = original_config_snapshot
+                final_gain_snapshot = polarity_snapshot
                 final_gain_sweep = gain_winner
                 rollback_subs = _auto_sub_22_candidate_subwoofers(
-                    original_config_snapshot, sub1_alignment_ms=best_sub1, sub2_alignment_ms=best_sub2,
+                    polarity_snapshot, sub1_alignment_ms=best_sub1, sub2_alignment_ms=best_sub2,
                     active_subs=("sub1", "sub2"),
                 )
-                set_audio_output_mode(OUTPUT_MODE_SUBWOOFER_22, _auto_sub_22_global_config(original_config_snapshot), rollback_subs)
+                set_audio_output_mode(OUTPUT_MODE_SUBWOOFER_22, _auto_sub_22_global_config(polarity_snapshot), rollback_subs)
                 if subwoofer_runtime is not None:
                     await subwoofer_runtime.sync(SubwooferRuntimeConfig.from_overview(get_audio_output_overview()))
             elif abs(correction_delta) > 0.0005:
@@ -10206,6 +10305,75 @@ async def _run_auto_sub_22_stereo_optimize(
         right_score = float(right_winner.get("score", 0.0) or 0.0)
         gain_left_winner = _auto_sub_result_for_delay(list(left_results) + list(left_fine_results), best_left) or {}
         gain_right_winner = _auto_sub_result_for_delay(list(right_results) + list(right_fine_results), best_right) or {}
+        selected_left_polarity = str(original_left.get("polarity", "normal"))
+        selected_right_polarity = str(original_right.get("polarity", "normal"))
+        stereo_polarity: dict[str, Any] = {}
+
+        async def _check_stereo_polarity(
+            side: str, incumbent: dict[str, Any], delay: float, incumbent_polarity: str,
+        ) -> tuple[dict[str, Any], float, str, dict[str, Any]]:
+            opposite = _auto_sub_opposite_polarity(incumbent_polarity)
+            is_left = side == "left"
+            alt = await _measure_auto_sub_candidate(
+                delay_ms=delay, job=job, candidate_index=1, total=1, stage=f"{side}_polarity_check", fc=fc,
+                input_id=input_id, channel=side, mic_input_channel=mic_input_channel,
+                reference_input_channel=reference_input_channel, calibration_ref=calibration_ref,
+                calibration_filename=calibration_filename, calibration_bytes=calibration_bytes,
+                auto_sub_sweep_profile=auto_sub_sweep_profile, auto_sub_rate=auto_sub_rate,
+                original_level=0.0, original_polarity="normal", original_highpass=True,
+                measure_channel=side, output_mode=OUTPUT_MODE_SUBWOOFER_22_STEREO,
+                original_config_snapshot=original_config_snapshot,
+                sub1_alignment_ms=delay if is_left else best_left,
+                sub2_alignment_ms=best_right if is_left else delay,
+                active_subs=("sub1",) if is_left else ("sub2",),
+                sub1_polarity=opposite if is_left else selected_left_polarity,
+                sub2_polarity=selected_right_polarity if is_left else opposite,
+            )
+            rows = [dict(incumbent, delay_ms=0.0, points=incumbent.get("points") or []), dict(alt, delay_ms=1.0)]
+            scoring = score_sub_alignment_candidates(rows, crossover_hz=fc, low_guard_reference_delay_ms=0.0)
+            scored_incumbent = _auto_sub_result_for_delay(scoring["results"], 0.0) or {}
+            scored_alt = _auto_sub_result_for_delay(scoring["results"], 1.0) or {}
+            decision = _auto_sub_polarity_decision(scored_incumbent, scored_alt)
+            decision.update({"incumbent": incumbent_polarity, "alternative": opposite, "selected": incumbent_polarity})
+            if not decision["accepted"]:
+                return incumbent, delay, incumbent_polarity, decision
+            local_step = _auto_sub_step_ms(fc) / 4.0
+            local_rows = [alt]
+            for idx, candidate_delay in enumerate([
+                _auto_sub_clamped_delay(delay - 2 * local_step), _auto_sub_clamped_delay(delay - local_step),
+                _auto_sub_clamped_delay(delay + local_step), _auto_sub_clamped_delay(delay + 2 * local_step),
+            ]):
+                local_rows.append(await _measure_auto_sub_candidate(
+                    delay_ms=candidate_delay, job=job, candidate_index=idx + 1, total=4,
+                    stage=f"{side}_polarity_fine", fc=fc, input_id=input_id, channel=side,
+                    mic_input_channel=mic_input_channel, reference_input_channel=reference_input_channel,
+                    calibration_ref=calibration_ref, calibration_filename=calibration_filename,
+                    calibration_bytes=calibration_bytes, auto_sub_sweep_profile=auto_sub_sweep_profile,
+                    auto_sub_rate=auto_sub_rate, original_level=0.0, original_polarity="normal",
+                    original_highpass=True, measure_channel=side,
+                    output_mode=OUTPUT_MODE_SUBWOOFER_22_STEREO, original_config_snapshot=original_config_snapshot,
+                    sub1_alignment_ms=candidate_delay if is_left else best_left,
+                    sub2_alignment_ms=best_right if is_left else candidate_delay,
+                    active_subs=("sub1",) if is_left else ("sub2",),
+                    sub1_polarity=opposite if is_left else selected_left_polarity,
+                    sub2_polarity=selected_right_polarity if is_left else opposite,
+                ))
+            fine_scoring = score_sub_alignment_candidates(local_rows, crossover_hz=fc)
+            fine_winner = fine_scoring["winner"]
+            selected = _auto_sub_result_for_delay(local_rows, float(fine_winner["delay_ms"])) or alt
+            decision.update({"selected": opposite, "fine_scan": {"candidate_count": 4, "winner": fine_winner}})
+            return selected, float(fine_winner["delay_ms"]), opposite, decision
+
+        gain_left_winner, best_left, selected_left_polarity, stereo_polarity["left"] = await _check_stereo_polarity(
+            "left", gain_left_winner, best_left, selected_left_polarity,
+        )
+        gain_right_winner, best_right, selected_right_polarity, stereo_polarity["right"] = await _check_stereo_polarity(
+            "right", gain_right_winner, best_right, selected_right_polarity,
+        )
+        polarity_snapshot = _auto_sub_snapshot_copy(original_config_snapshot)
+        polarity_snapshot.setdefault("subwoofers", {}).setdefault("sub1", {})["polarity"] = selected_left_polarity
+        polarity_snapshot.setdefault("subwoofers", {}).setdefault("sub2", {})["polarity"] = selected_right_polarity
+        job["polarity_check"] = stereo_polarity
         job["auto_gain"] = _calculate_auto_sub_gain(
             mode=OUTPUT_MODE_SUBWOOFER_22_STEREO,
             target_curve=job.get("target_curve"), anchor=job.get("main_target_anchor"),
@@ -10227,7 +10395,7 @@ async def _run_auto_sub_22_stereo_optimize(
             "combined_delta_db": None, "first_step_db": gain_deltas,
         })
         gain_snapshot = _auto_sub_22_snapshot_with_gain(
-            original_config_snapshot,
+            polarity_snapshot,
             left_delta_db=gain_deltas.get("left", 0.0), right_delta_db=gain_deltas.get("right", 0.0),
         )
         if gain_deltas:
@@ -10271,7 +10439,7 @@ async def _run_auto_sub_22_stereo_optimize(
         )
         gain_verdict = _auto_sub_gain_verdict(job["auto_gain"], gain_after, OUTPUT_MODE_SUBWOOFER_22_STEREO)
         final_gain_deltas = gain_deltas if gain_verdict["accepted"] else {"left": 0.0, "right": 0.0}
-        final_gain_snapshot = gain_snapshot if gain_verdict["accepted"] else original_config_snapshot
+        final_gain_snapshot = gain_snapshot if gain_verdict["accepted"] else polarity_snapshot
         final_gain_left = gain_after_left if gain_verdict["accepted"] else gain_left_winner
         final_gain_right = gain_after_right if gain_verdict["accepted"] else gain_right_winner
         correction_deltas: dict[str, float] = {}
@@ -10296,7 +10464,7 @@ async def _run_auto_sub_22_stereo_optimize(
             if not correction_plan.get("available"):
                 gain_verdict = {"accepted": False, "reason": correction_plan.get("reason"), "channels": {}}
                 final_gain_deltas = {"left": 0.0, "right": 0.0}
-                final_gain_snapshot = original_config_snapshot
+                final_gain_snapshot = polarity_snapshot
                 final_gain_left, final_gain_right = gain_left_winner, gain_right_winner
                 set_audio_output_mode(
                     OUTPUT_MODE_SUBWOOFER_22_STEREO, _auto_sub_22_global_config(original_config_snapshot),
@@ -11008,6 +11176,73 @@ async def _run_auto_sub_optimize(
 
         stored_winner = winner if auto_apply else (incumbent_winner or winner)
         gain_winner = _auto_sub_result_for_delay(list(sweep_results) + list(fine_results), stored_winner.get("delay_ms", current_alignment)) or {}
+        final_polarity = original_polarity
+        polarity_check: dict[str, Any] = {
+            "incumbent": original_polarity, "selected": original_polarity,
+            "accepted": False, "reason": "incumbent_protected",
+        }
+        if gain_winner and auto_apply:
+            opposite = _auto_sub_opposite_polarity(original_polarity)
+            alt = await _measure_auto_sub_combined_candidate(
+                delay_ms=applied_delay, job=job, candidate_index=1, total=1,
+                sweep_index_start=total + 1, sweep_total=total + 2, stage="polarity_check", fc=fc,
+                input_id=input_id, mic_input_channel=mic_input_channel,
+                reference_input_channel=reference_input_channel, calibration_ref=calibration_ref,
+                calibration_filename=calibration_filename, calibration_bytes=calibration_bytes,
+                auto_sub_sweep_profile=auto_sub_sweep_profile, auto_sub_rate=auto_sub_rate,
+                original_level=original_level, original_polarity=opposite,
+                original_highpass=original_highpass,
+            )
+            try:
+                polarity_scoring = _score_auto_sub_combined_candidates(
+                    [dict(gain_winner, delay_ms=0.0), dict(alt, delay_ms=1.0)], crossover_hz=fc,
+                    low_guard_reference_delay_ms=0.0,
+                )
+                scored_incumbent = _auto_sub_result_for_delay(polarity_scoring["results"], 0.0) or {}
+                scored_alt = _auto_sub_result_for_delay(polarity_scoring["results"], 1.0) or {}
+                polarity_check.update(_auto_sub_polarity_decision(scored_incumbent, scored_alt))
+                polarity_check.update({"alternative": opposite, "incumbent_score": scored_incumbent.get("score"), "alternative_score": scored_alt.get("score")})
+                if polarity_check["accepted"]:
+                    final_polarity = opposite
+                    gain_winner = alt
+                    polarity_check["selected"] = opposite
+                    local_delays = [
+                        _auto_sub_clamped_delay(applied_delay + offset)
+                        for offset in (-_auto_sub_step_ms(fc) / 2.0, -_auto_sub_step_ms(fc) / 4.0,
+                                       _auto_sub_step_ms(fc) / 4.0, _auto_sub_step_ms(fc) / 2.0)
+                    ]
+                    polarity_fine: list[dict[str, Any]] = [alt]
+                    for idx, delay in enumerate(local_delays):
+                        polarity_fine.append(await _measure_auto_sub_combined_candidate(
+                            delay_ms=delay, job=job, candidate_index=idx + 1, total=len(local_delays),
+                            sweep_index_start=total + 3 + idx * 2, sweep_total=total + 2 + len(local_delays) * 2,
+                            stage="polarity_fine", fc=fc, input_id=input_id,
+                            mic_input_channel=mic_input_channel, reference_input_channel=reference_input_channel,
+                            calibration_ref=calibration_ref, calibration_filename=calibration_filename,
+                            calibration_bytes=calibration_bytes, auto_sub_sweep_profile=auto_sub_sweep_profile,
+                            auto_sub_rate=auto_sub_rate, original_level=original_level,
+                            original_polarity=opposite, original_highpass=original_highpass,
+                        ))
+                    fine_scored = _score_auto_sub_combined_candidates(polarity_fine, crossover_hz=fc)
+                    fine_best = fine_scored["winner"]
+                    fine_measured = _auto_sub_result_for_delay(polarity_fine, float(fine_best.get("delay_ms", applied_delay)))
+                    if fine_measured:
+                        applied_delay = float(fine_best["delay_ms"])
+                        gain_winner = fine_measured
+                    polarity_check["fine_scan"] = {"candidates": local_delays, "winner": fine_best}
+            except Exception as exc:
+                logger.warning("Auto-sub polarity check unavailable; restoring incumbent: %s", exc)
+                final_polarity = original_polarity
+                polarity_check.update({"accepted": False, "selected": original_polarity, "reason": "measurement_or_scoring_failed"})
+
+            set_audio_output_mode(OUTPUT_MODE_SUBWOOFER_21, {
+                "crossover_frequency_hz": fc, "sub_alignment_ms": applied_delay,
+                "sub_level_db": original_level, "sub_polarity": final_polarity,
+                "main_highpass_enabled": original_highpass,
+            })
+            if subwoofer_runtime is not None:
+                await subwoofer_runtime.sync(SubwooferRuntimeConfig.from_overview(get_audio_output_overview()))
+        job["polarity_check"] = polarity_check
         job["auto_gain"] = _calculate_auto_sub_gain(
             mode=OUTPUT_MODE_SUBWOOFER_21,
             target_curve=job.get("target_curve"), anchor=job.get("main_target_anchor"),
@@ -11034,7 +11269,7 @@ async def _run_auto_sub_optimize(
         if gain_deltas:
             set_audio_output_mode(OUTPUT_MODE_SUBWOOFER_21, {
                 "crossover_frequency_hz": fc, "sub_alignment_ms": applied_delay,
-                "sub_level_db": gained_level, "sub_polarity": original_polarity,
+                "sub_level_db": gained_level, "sub_polarity": final_polarity,
                 "main_highpass_enabled": original_highpass,
             })
             if subwoofer_runtime is not None:
@@ -11046,7 +11281,7 @@ async def _run_auto_sub_optimize(
             reference_input_channel=reference_input_channel, calibration_ref=calibration_ref,
             calibration_filename=calibration_filename, calibration_bytes=calibration_bytes,
             auto_sub_sweep_profile=auto_sub_sweep_profile, auto_sub_rate=auto_sub_rate,
-            original_level=gained_level, original_polarity=original_polarity,
+            original_level=gained_level, original_polarity=final_polarity,
             original_highpass=original_highpass, output_mode=OUTPUT_MODE_SUBWOOFER_21,
             original_config_snapshot=original_config_snapshot,
         )
@@ -11068,7 +11303,7 @@ async def _run_auto_sub_optimize(
         if not gain_verdict["accepted"]:
             set_audio_output_mode(OUTPUT_MODE_SUBWOOFER_21, {
                 "crossover_frequency_hz": fc, "sub_alignment_ms": applied_delay,
-                "sub_level_db": original_level, "sub_polarity": original_polarity,
+                "sub_level_db": original_level, "sub_polarity": final_polarity,
                 "main_highpass_enabled": original_highpass,
             })
             if subwoofer_runtime is not None:
@@ -11087,7 +11322,7 @@ async def _run_auto_sub_optimize(
                 final_gain_sweep = gain_winner
                 set_audio_output_mode(OUTPUT_MODE_SUBWOOFER_21, {
                     "crossover_frequency_hz": fc, "sub_alignment_ms": applied_delay,
-                    "sub_level_db": original_level, "sub_polarity": original_polarity,
+                    "sub_level_db": original_level, "sub_polarity": final_polarity,
                     "main_highpass_enabled": original_highpass,
                 })
                 if subwoofer_runtime is not None:
@@ -11095,7 +11330,7 @@ async def _run_auto_sub_optimize(
             elif abs(correction_delta) > 0.0005:
                 set_audio_output_mode(OUTPUT_MODE_SUBWOOFER_21, {
                     "crossover_frequency_hz": fc, "sub_alignment_ms": applied_delay,
-                    "sub_level_db": corrected_level, "sub_polarity": original_polarity,
+                    "sub_level_db": corrected_level, "sub_polarity": final_polarity,
                     "main_highpass_enabled": original_highpass,
                 })
                 if subwoofer_runtime is not None:
@@ -11107,7 +11342,7 @@ async def _run_auto_sub_optimize(
                     reference_input_channel=reference_input_channel, calibration_ref=calibration_ref,
                     calibration_filename=calibration_filename, calibration_bytes=calibration_bytes,
                     auto_sub_sweep_profile=auto_sub_sweep_profile, auto_sub_rate=auto_sub_rate,
-                    original_level=corrected_level, original_polarity=original_polarity,
+                    original_level=corrected_level, original_polarity=final_polarity,
                     original_highpass=original_highpass, output_mode=OUTPUT_MODE_SUBWOOFER_21,
                     original_config_snapshot=original_config_snapshot,
                 )
@@ -11129,7 +11364,7 @@ async def _run_auto_sub_optimize(
                 else:
                     set_audio_output_mode(OUTPUT_MODE_SUBWOOFER_21, {
                         "crossover_frequency_hz": fc, "sub_alignment_ms": applied_delay,
-                        "sub_level_db": gained_level, "sub_polarity": original_polarity,
+                        "sub_level_db": gained_level, "sub_polarity": final_polarity,
                         "main_highpass_enabled": original_highpass,
                     })
                     if subwoofer_runtime is not None:
