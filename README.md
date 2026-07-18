@@ -54,6 +54,7 @@ It is built for mini PCs, desktops, ARM boards, and dedicated stereo boxes that 
 - EasyEffects preset switching, PEQ, convolver import/generation, output helpers, and A/B compare
 - global DSP helpers such as limiter, headroom, autogain, bass enhancement, and tone modes
 - practical room/speaker measurement workflow with host microphone capture, calibration files, smoothing, saved runs, PEQ draft transfer, and stereo FIR/convolver preset creation with linear, minimum-phase, minimum-aligned, and hybrid-aligned modes
+- Auto Sub Optimize with measured delay, polarity, and target-aware subwoofer gain verification for 2.1 and 2.2 output modes
 - sample-rate-aware playback handling for local files, radio, Spotify, and Bluetooth handoff cases
 - Bluetooth input visibility/control when the host audio stack supports it
 - optional local HTTPS/Caddy setup with downloadable local certificate for trusted LAN clients

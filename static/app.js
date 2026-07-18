@@ -8826,8 +8826,9 @@ async function cancelAutoSubOptimize() {
 async function pollAutoSubJob(jobId) {
     const measurementState = state.measurement || {};
     const statusEl = elements.measurementAutoSubStatus;
-    const maxTries = 1200;
-    for (let i = 0; i < maxTries; i++) {
+    const startedAt = Date.now();
+    const longRunningAfterMs = 10 * 60 * 1000;
+    while (true) {
         await sleep(500);
         try {
             const resp = await fetch(`/api/measurements/auto-sub-optimize/jobs/${encodeURIComponent(jobId)}`);
@@ -8841,6 +8842,10 @@ async function pollAutoSubJob(jobId) {
             measurementState.statusText = job.message || 'Auto Sub Optimize: running';
             if (job.progress) {
                 measurementState.statusText += ` (${job.progress.current}/${job.progress.total})`;
+            }
+            if (Date.now() - startedAt >= longRunningAfterMs
+                    && (status === 'queued' || status === 'preparing' || status === 'running' || status === 'cancelling')) {
+                measurementState.statusText = `AutoSub läuft weiterhin … ${measurementState.statusText}`;
             }
 
             // Update inline status element
@@ -8891,9 +8896,6 @@ async function pollAutoSubJob(jobId) {
         }
         renderMeasurementPanel();
     }
-    measurementState.statusText = 'Auto Sub Optimize timed out';
-    showToast(measurementState.statusText, 'error');
-    renderMeasurementPanel();
 }
 
 async function handleAutoSubResult(job) {

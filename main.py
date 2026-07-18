@@ -2,6 +2,7 @@
 
 """Main FastAPI application for FXRoute."""
 
+import copy
 import json
 import logging
 import re
@@ -8586,6 +8587,122 @@ def _auto_sub_one_octave_smooth(points: list[list[float]]) -> list[list[float]]:
     ]
 
 
+def _auto_sub_third_octave_smooth(points: list[list[float]]) -> list[list[float]]:
+    """Robust fixed 1/3-octave smoothing for Stereo corridor checks only."""
+    parsed = [[float(point[0]), float(point[1])] for point in points]
+    if len(parsed) < 3 or any(
+        not math.isfinite(frequency) or frequency <= 0 or not math.isfinite(db)
+        for frequency, db in parsed
+    ):
+        raise ValueError("Corridor curve requires at least three finite points")
+    if any(parsed[index][0] >= parsed[index + 1][0] for index in range(len(parsed) - 1)):
+        raise ValueError("Corridor frequencies must be strictly increasing")
+    half_window = 2.0 ** (1.0 / 6.0)
+    return [
+        [frequency, round(statistics.median(
+            value for neighbour_frequency, value in parsed
+            if frequency / half_window <= neighbour_frequency <= frequency * half_window
+        ), 6)]
+        for frequency, _value in parsed
+    ]
+
+
+def _auto_sub_stereo_corridor_violation(
+    *, points: list[list[float]], target_curve: dict[str, Any] | None,
+    anchor: dict[str, Any] | None, crossover_hz: int, direction: float,
+) -> dict[str, Any]:
+    """Measure broad 1/3-octave Target -6/+9 dB violations in one Gain direction."""
+    result: dict[str, Any] = {
+        "available": False, "relevant": False, "smoothing_octaves": 1.0 / 3.0,
+        "corridor_db": [-6.0, 9.0], "direction": "lower" if direction < 0 else "raise",
+        "severity_db": 0.0, "reason": None,
+    }
+    try:
+        if not isinstance(anchor, dict) or anchor.get("status") != "ready":
+            raise ValueError("Main/Target anchor is unavailable")
+        offset = float(anchor.get("target_vertical_offset_db"))
+        target_points = (target_curve or {}).get("points")
+        if not math.isfinite(offset) or not isinstance(target_points, list) or len(target_points) < 2:
+            raise ValueError("Anchored Target is unavailable")
+        low, high = max(20.0, 0.5 * float(crossover_hz)), 2.0 * float(crossover_hz)
+        smoothed = [point for point in _auto_sub_third_octave_smooth(points) if low <= point[0] <= high]
+        target = _auto_sub_log_interpolate_points(target_points, [point[0] for point in smoothed])
+        if len(smoothed) < 8 or len(target) != len(smoothed):
+            raise ValueError("Stereo corridor has fewer than 8 common points")
+        target = _auto_sub_third_octave_smooth(target)
+        rows = []
+        for measured, target_point in zip(smoothed, target):
+            delta = measured[1] - (target_point[1] + offset)
+            excess = max(0.0, delta - 9.0) if direction < 0 else max(0.0, -6.0 - delta)
+            rows.append((measured[0], excess))
+        groups: list[list[tuple[float, float]]] = []
+        previous_index = -2
+        for index, row in enumerate(rows):
+            if row[1] > 0.0:
+                if index != previous_index + 1:
+                    groups.append([])
+                groups[-1].append(row)
+                previous_index = index
+        relevant_groups = [
+            group for group in groups
+            if len(group) >= 3 and math.log2(group[-1][0] / group[0][0]) >= (1.0 / 6.0)
+        ]
+        severity = max((statistics.median(value for _frequency, value in group) for group in relevant_groups), default=0.0)
+        result.update({
+            "available": True, "relevant": bool(relevant_groups), "severity_db": round(severity, 3),
+            "point_count": len(smoothed), "frequency_range_hz": [round(smoothed[0][0], 3), round(smoothed[-1][0], 3)],
+            "broad_group_count": len(relevant_groups),
+            "reason": "Broad 1/3-octave corridor violation" if relevant_groups else "No broad 1/3-octave corridor violation",
+        })
+    except (KeyError, TypeError, ValueError, IndexError) as exc:
+        result["reason"] = str(exc)
+    return result
+
+
+def _auto_sub_stereo_probe_plan(
+    *, correction_plan: dict[str, Any], gain_after: dict[str, Any],
+    gain_deltas: dict[str, float], accepted_step1_sides: dict[str, bool],
+    after_points: dict[str, list[list[float]]], target_curve: dict[str, Any] | None,
+    anchor: dict[str, Any] | None, crossover_hz: int,
+) -> dict[str, Any]:
+    """Plan one bounded Stereo-only probe when only the >6 dB correction limit failed."""
+    result: dict[str, Any] = {"available": False, "deltas_db": {}, "channels": {}, "reason": None}
+    if correction_plan.get("reason") != "Measured final Gain correction is implausible":
+        result["reason"] = "Stereo probe requires only the >6 dB correction limit to have failed"
+        return result
+    for side in ("left", "right"):
+        channel = ((correction_plan.get("channels") or {}).get(side) or {})
+        try:
+            response = float(channel.get("response_change_per_db"))
+            remaining = float(((gain_after.get("channels") or {}).get(side) or {}).get("target_delta_db"))
+            first_step = float(gain_deltas.get(side, 0.0))
+            raw_correction = remaining / response
+            direction_clear = (
+                accepted_step1_sides.get(side) is True
+                and 0.2 <= response <= 2.0
+                and abs(raw_correction) > 6.0
+                and raw_correction * first_step > 0.0
+                and remaining * first_step > 0.0
+            )
+            corridor = _auto_sub_stereo_corridor_violation(
+                points=after_points.get(side) or [], target_curve=target_curve, anchor=anchor,
+                crossover_hz=crossover_hz, direction=raw_correction,
+            )
+            eligible = bool(direction_clear and corridor.get("available") and corridor.get("relevant"))
+            result["channels"][side] = {
+                "eligible": eligible, "response_change_per_db": round(response, 4),
+                "remaining_error_db": round(remaining, 3), "raw_correction_db": round(raw_correction, 3),
+                "direction_clear": direction_clear, "corridor_before": corridor,
+            }
+            if eligible:
+                result["deltas_db"][side] = -1.0 if raw_correction < 0.0 else 1.0
+        except (TypeError, ValueError, ZeroDivisionError):
+            result["channels"][side] = {"eligible": False, "reason": "Incomplete Stereo probe inputs"}
+    result["available"] = bool(result["deltas_db"])
+    result["reason"] = "Bounded Stereo corridor probe planned" if result["available"] else "No Stereo side qualified for a bounded corridor probe"
+    return result
+
+
 def _calculate_auto_sub_gain(
     *, mode: str, target_curve: dict[str, Any] | None, anchor: dict[str, Any] | None,
     winner_curves: dict[str, list[list[float]]], crossover_hz: int,
@@ -8710,7 +8827,10 @@ def _auto_sub_gain_response_correction(
     before: dict[str, Any], after: dict[str, Any], applied_step: dict[str, float], mode: str,
 ) -> dict[str, Any]:
     """Estimate one final correction from the measured broad-band response per applied dB."""
-    result: dict[str, Any] = {"available": False, "deltas_db": {}, "channels": {}, "reason": None}
+    result: dict[str, Any] = {
+        "available": False, "deltas_db": {}, "raw_deltas_db": {}, "applied_deltas_db": {},
+        "channels": {}, "reason": None,
+    }
     if not before.get("gain_calculated") or not after.get("gain_calculated"):
         result["reason"] = "Gain response inputs unavailable"
         return result
@@ -8749,9 +8869,12 @@ def _auto_sub_gain_response_correction(
                 / float(result["channels"][side]["response_change_per_db"])
                 for side in ("left", "right")
             }
+        result["raw_deltas_db"] = {side: round(value, 3) for side, value in deltas.items()}
         if any(not math.isfinite(value) or abs(value) > 6.0 for value in deltas.values()):
             raise ValueError("Measured final Gain correction is implausible")
-        result["deltas_db"] = {side: round(value, 3) for side, value in deltas.items()}
+        applied_deltas = {side: max(-2.0, min(2.0, value)) for side, value in deltas.items()}
+        result["applied_deltas_db"] = {side: round(value, 3) for side, value in applied_deltas.items()}
+        result["deltas_db"] = dict(result["applied_deltas_db"])
         result["available"] = True
         result["reason"] = "Final correction derived from measured Before/After response"
     except (KeyError, TypeError, ValueError, ZeroDivisionError) as exc:
@@ -9537,17 +9660,12 @@ async def _run_auto_sub_22_optimize(
             correction_deltas = correction_plan.get("deltas_db") or {}
             correction_delta = correction_deltas.get("left", 0.0)
             if not correction_plan.get("available"):
-                gain_verdict = {"accepted": False, "reason": correction_plan.get("reason"), "channels": {}}
-                final_gain_deltas = {"left": 0.0, "right": 0.0}
-                final_gain_snapshot = polarity_snapshot
-                final_gain_sweep = gain_winner
-                rollback_subs = _auto_sub_22_candidate_subwoofers(
-                    polarity_snapshot, sub1_alignment_ms=best_sub1, sub2_alignment_ms=best_sub2,
-                    active_subs=("sub1", "sub2"),
-                )
-                set_audio_output_mode(OUTPUT_MODE_SUBWOOFER_22, _auto_sub_22_global_config(polarity_snapshot), rollback_subs)
-                if subwoofer_runtime is not None:
-                    await subwoofer_runtime.sync(SubwooferRuntimeConfig.from_overview(get_audio_output_overview()))
+                correction_verdict = {
+                    "accepted": False,
+                    "reason": correction_plan.get("reason"),
+                    "channels": {},
+                    "step1_retained": True,
+                }
             elif abs(correction_delta) > 0.0005:
                 correction_snapshot = _auto_sub_22_snapshot_with_gain(
                     gain_snapshot, left_delta_db=correction_delta, right_delta_db=correction_delta,
@@ -9609,6 +9727,8 @@ async def _run_auto_sub_22_optimize(
             "response_per_db_right": (((correction_plan or {}).get("channels") or {}).get("right") or {}).get("response_change_per_db"),
             "remaining_error_left": (gain_after.get("channels", {}).get("left") or {}).get("target_delta_db"),
             "remaining_error_right": (gain_after.get("channels", {}).get("right") or {}).get("target_delta_db"),
+            "raw_correction_db": ((correction_plan or {}).get("raw_deltas_db") or {}).get("left"),
+            "applied_correction_db": ((correction_plan or {}).get("applied_deltas_db") or {}).get("left"),
             "correction_step_db": correction_deltas.get("left") if correction_deltas else None,
         })
         decision = "accepted_step2" if correction_verdict and correction_verdict.get("accepted") else (
@@ -10438,15 +10558,29 @@ async def _run_auto_sub_22_stereo_optimize(
             }, crossover_hz=fc,
         )
         gain_verdict = _auto_sub_gain_verdict(job["auto_gain"], gain_after, OUTPUT_MODE_SUBWOOFER_22_STEREO)
-        final_gain_deltas = gain_deltas if gain_verdict["accepted"] else {"left": 0.0, "right": 0.0}
-        final_gain_snapshot = gain_snapshot if gain_verdict["accepted"] else polarity_snapshot
-        final_gain_left = gain_after_left if gain_verdict["accepted"] else gain_left_winner
-        final_gain_right = gain_after_right if gain_verdict["accepted"] else gain_right_winner
+        accepted_step1_sides = {
+            side: bool((gain_verdict.get("channels", {}).get(side) or {}).get("accepted"))
+            for side in ("left", "right")
+        }
+        retained_step1_deltas = {
+            side: gain_deltas.get(side, 0.0) if accepted_step1_sides[side] else 0.0
+            for side in ("left", "right")
+        }
+        step1_retained = any(accepted_step1_sides.values())
+        final_gain_deltas = retained_step1_deltas
+        final_gain_snapshot = _auto_sub_22_snapshot_with_gain(
+            polarity_snapshot,
+            left_delta_db=retained_step1_deltas["left"],
+            right_delta_db=retained_step1_deltas["right"],
+        )
+        final_gain_left = gain_after_left if accepted_step1_sides["left"] else gain_left_winner
+        final_gain_right = gain_after_right if accepted_step1_sides["right"] else gain_right_winner
         correction_deltas: dict[str, float] = {}
         correction_plan = None
         correction_after = None
         correction_verdict = None
-        if not gain_verdict["accepted"]:
+        stereo_probe_plan = None
+        if not step1_retained:
             set_audio_output_mode(
                 OUTPUT_MODE_SUBWOOFER_22_STEREO, _auto_sub_22_global_config(original_config_snapshot),
                 _auto_sub_22_candidate_subwoofers(
@@ -10456,26 +10590,49 @@ async def _run_auto_sub_22_stereo_optimize(
             )
             if subwoofer_runtime is not None:
                 await subwoofer_runtime.sync(SubwooferRuntimeConfig.from_overview(get_audio_output_overview()))
+        elif not all(accepted_step1_sides.values()):
+            # Stereo channels have independent Gain controls.  A regression on
+            # one side must not discard a measured improvement on the other.
+            set_audio_output_mode(
+                OUTPUT_MODE_SUBWOOFER_22_STEREO, _auto_sub_22_global_config(final_gain_snapshot),
+                _auto_sub_22_candidate_subwoofers(
+                    final_gain_snapshot, sub1_alignment_ms=best_left, sub2_alignment_ms=best_right,
+                    active_subs=("sub1", "sub2"),
+                ),
+            )
+            if subwoofer_runtime is not None:
+                await subwoofer_runtime.sync(SubwooferRuntimeConfig.from_overview(get_audio_output_overview()))
+            correction_verdict = {
+                "accepted": False,
+                "reason": "Retained improved Stereo side; restored regressed side",
+                "channels": gain_verdict.get("channels", {}),
+                "step1_retained": True,
+            }
         else:
             correction_plan = _auto_sub_gain_response_correction(
                 job["auto_gain"], gain_after, gain_deltas, OUTPUT_MODE_SUBWOOFER_22_STEREO,
             )
             correction_deltas = correction_plan.get("deltas_db") or {}
             if not correction_plan.get("available"):
-                gain_verdict = {"accepted": False, "reason": correction_plan.get("reason"), "channels": {}}
-                final_gain_deltas = {"left": 0.0, "right": 0.0}
-                final_gain_snapshot = polarity_snapshot
-                final_gain_left, final_gain_right = gain_left_winner, gain_right_winner
-                set_audio_output_mode(
-                    OUTPUT_MODE_SUBWOOFER_22_STEREO, _auto_sub_22_global_config(original_config_snapshot),
-                    _auto_sub_22_candidate_subwoofers(
-                        original_config_snapshot, sub1_alignment_ms=best_left, sub2_alignment_ms=best_right,
-                        active_subs=("sub1", "sub2"),
-                    ),
+                stereo_probe_plan = _auto_sub_stereo_probe_plan(
+                    correction_plan=correction_plan, gain_after=gain_after, gain_deltas=gain_deltas,
+                    accepted_step1_sides=accepted_step1_sides,
+                    after_points={
+                        "left": gain_after_left.get("calibrated_points") or [],
+                        "right": gain_after_right.get("calibrated_points") or [],
+                    },
+                    target_curve=job.get("target_curve"), anchor=job.get("main_target_anchor"),
+                    crossover_hz=fc,
                 )
-                if subwoofer_runtime is not None:
-                    await subwoofer_runtime.sync(SubwooferRuntimeConfig.from_overview(get_audio_output_overview()))
-            elif any(abs(value) > 0.0005 for value in correction_deltas.values()):
+                correction_deltas = stereo_probe_plan.get("deltas_db") or {}
+                if not stereo_probe_plan.get("available"):
+                    correction_verdict = {
+                        "accepted": False,
+                        "reason": correction_plan.get("reason"),
+                        "channels": {},
+                        "step1_retained": True,
+                    }
+            if any(abs(value) > 0.0005 for value in correction_deltas.values()):
                 correction_snapshot = _auto_sub_22_snapshot_with_gain(
                     gain_snapshot, left_delta_db=correction_deltas.get("left", 0.0),
                     right_delta_db=correction_deltas.get("right", 0.0),
@@ -10520,26 +10677,83 @@ async def _run_auto_sub_22_stereo_optimize(
                         "right": correction_right.get("calibrated_points") or [],
                     }, crossover_hz=fc,
                 )
-                correction_verdict = _auto_sub_gain_verdict(
-                    gain_after, correction_after, OUTPUT_MODE_SUBWOOFER_22_STEREO,
-                )
-                if correction_verdict["accepted"]:
-                    final_gain_deltas = {
-                        side: gain_deltas.get(side, 0.0) + correction_deltas.get(side, 0.0)
-                        for side in ("left", "right")
+                if stereo_probe_plan and stereo_probe_plan.get("available"):
+                    probe_channels: dict[str, Any] = {}
+                    accepted_probe_sides: dict[str, bool] = {}
+                    correction_points = {
+                        "left": correction_left.get("calibrated_points") or [],
+                        "right": correction_right.get("calibrated_points") or [],
                     }
-                    final_gain_snapshot = correction_snapshot
-                    final_gain_left, final_gain_right = correction_left, correction_right
-                else:
-                    set_audio_output_mode(
-                        OUTPUT_MODE_SUBWOOFER_22_STEREO, _auto_sub_22_global_config(gain_snapshot),
-                        _auto_sub_22_candidate_subwoofers(
-                            gain_snapshot, sub1_alignment_ms=best_left, sub2_alignment_ms=best_right,
-                            active_subs=("sub1", "sub2"),
-                        ),
+                    for side in ("left", "right"):
+                        planned = side in correction_deltas
+                        before_corridor = (((stereo_probe_plan.get("channels") or {}).get(side) or {}).get("corridor_before") or {})
+                        after_corridor = _auto_sub_stereo_corridor_violation(
+                            points=correction_points[side], target_curve=job.get("target_curve"),
+                            anchor=job.get("main_target_anchor"), crossover_hz=fc,
+                            direction=correction_deltas.get(side, 0.0),
+                        ) if planned else before_corridor
+                        before_score = abs(float(gain_after["channels"][side]["target_delta_db"]))
+                        after_score = abs(float(correction_after["channels"][side]["target_delta_db"]))
+                        score_better = after_score < before_score
+                        corridor_better = (
+                            after_corridor.get("available") is True
+                            and float(after_corridor.get("severity_db", 0.0)) < float(before_corridor.get("severity_db", 0.0))
+                        )
+                        accepted_probe_sides[side] = bool(planned and score_better and corridor_better)
+                        probe_channels[side] = {
+                            "planned": planned, "accepted": accepted_probe_sides[side],
+                            "score_before": round(before_score, 3), "score_after": round(after_score, 3),
+                            "score_better": score_better, "corridor_before": before_corridor,
+                            "corridor_after": after_corridor, "corridor_better": corridor_better,
+                        }
+                    accepted_any_probe = any(accepted_probe_sides.values())
+                    final_gain_deltas = {
+                        side: gain_deltas.get(side, 0.0) + (
+                            correction_deltas.get(side, 0.0) if accepted_probe_sides[side] else 0.0
+                        ) for side in ("left", "right")
+                    }
+                    final_gain_snapshot = _auto_sub_22_snapshot_with_gain(
+                        polarity_snapshot, left_delta_db=final_gain_deltas["left"],
+                        right_delta_db=final_gain_deltas["right"],
                     )
-                    if subwoofer_runtime is not None:
-                        await subwoofer_runtime.sync(SubwooferRuntimeConfig.from_overview(get_audio_output_overview()))
+                    final_gain_left = correction_left if accepted_probe_sides["left"] else gain_after_left
+                    final_gain_right = correction_right if accepted_probe_sides["right"] else gain_after_right
+                    correction_verdict = {
+                        "accepted": accepted_any_probe,
+                        "reason": "Stereo corridor probe improved score and 1/3-octave violation" if accepted_any_probe else "Stereo corridor probe rejected; Step 1 retained",
+                        "channels": probe_channels, "step1_retained": True, "stereo_probe": True,
+                    }
+                    if not all(accepted_probe_sides.get(side, False) for side in correction_deltas):
+                        set_audio_output_mode(
+                            OUTPUT_MODE_SUBWOOFER_22_STEREO, _auto_sub_22_global_config(final_gain_snapshot),
+                            _auto_sub_22_candidate_subwoofers(
+                                final_gain_snapshot, sub1_alignment_ms=best_left, sub2_alignment_ms=best_right,
+                                active_subs=("sub1", "sub2"),
+                            ),
+                        )
+                        if subwoofer_runtime is not None:
+                            await subwoofer_runtime.sync(SubwooferRuntimeConfig.from_overview(get_audio_output_overview()))
+                else:
+                    correction_verdict = _auto_sub_gain_verdict(
+                        gain_after, correction_after, OUTPUT_MODE_SUBWOOFER_22_STEREO,
+                    )
+                    if correction_verdict["accepted"]:
+                        final_gain_deltas = {
+                            side: gain_deltas.get(side, 0.0) + correction_deltas.get(side, 0.0)
+                            for side in ("left", "right")
+                        }
+                        final_gain_snapshot = correction_snapshot
+                        final_gain_left, final_gain_right = correction_left, correction_right
+                    else:
+                        set_audio_output_mode(
+                            OUTPUT_MODE_SUBWOOFER_22_STEREO, _auto_sub_22_global_config(gain_snapshot),
+                            _auto_sub_22_candidate_subwoofers(
+                                gain_snapshot, sub1_alignment_ms=best_left, sub2_alignment_ms=best_right,
+                                active_subs=("sub1", "sub2"),
+                            ),
+                        )
+                        if subwoofer_runtime is not None:
+                            await subwoofer_runtime.sync(SubwooferRuntimeConfig.from_overview(get_audio_output_overview()))
         _auto_sub_gain_log_line("AUTOGAIN_FEEDBACK", {
             "gain_after_step1": {
                 "left": float(_auto_sub_22_sub(gain_snapshot, "sub1").get("level_db", 0.0)),
@@ -10551,12 +10765,28 @@ async def _run_auto_sub_22_stereo_optimize(
             "response_per_db_right": (((correction_plan or {}).get("channels") or {}).get("right") or {}).get("response_change_per_db"),
             "remaining_error_left": (gain_after.get("channels", {}).get("left") or {}).get("target_delta_db"),
             "remaining_error_right": (gain_after.get("channels", {}).get("right") or {}).get("target_delta_db"),
+            "raw_correction_db": (correction_plan or {}).get("raw_deltas_db") or None,
+            "applied_correction_db": (correction_plan or {}).get("applied_deltas_db") or None,
             "correction_step_db": correction_deltas or None,
         })
         decision = "accepted_step2" if correction_verdict and correction_verdict.get("accepted") else (
-            "accepted_step1" if gain_verdict.get("accepted") else "restored"
+            "accepted_step1" if step1_retained else "restored"
         )
-        score_final_source = correction_after if decision == "accepted_step2" else (gain_after if decision == "accepted_step1" else job["auto_gain"])
+        if decision == "accepted_step2":
+            if correction_verdict.get("stereo_probe"):
+                score_final_source = copy.deepcopy(gain_after)
+                for side in ("left", "right"):
+                    if ((correction_verdict.get("channels") or {}).get(side) or {}).get("accepted"):
+                        score_final_source["channels"][side] = copy.deepcopy(correction_after["channels"][side])
+            else:
+                score_final_source = correction_after
+        elif decision == "accepted_step1":
+            score_final_source = copy.deepcopy(job["auto_gain"])
+            for side in ("left", "right"):
+                if accepted_step1_sides[side]:
+                    score_final_source["channels"][side] = copy.deepcopy(gain_after["channels"][side])
+        else:
+            score_final_source = job["auto_gain"]
         _auto_sub_gain_log_line("AUTOGAIN_RESULT", {
             "gain_final": {
                 "left": float(_auto_sub_22_sub(final_gain_snapshot, "sub1").get("level_db", 0.0)),
@@ -10567,10 +10797,12 @@ async def _run_auto_sub_22_stereo_optimize(
             "delay_final": {"left_ms": best_left, "right_ms": best_right},
         })
         job["auto_gain"].update({
-            "applied": bool(gain_verdict["accepted"] and gain_deltas),
-            "reverted": bool(gain_deltas and not gain_verdict["accepted"]),
+            "applied": bool(step1_retained and gain_deltas),
+            "reverted": bool(gain_deltas and not step1_retained),
+            "accepted_step1_sides": accepted_step1_sides,
             "verification": gain_after, "verification_verdict": gain_verdict,
             "response_correction": correction_plan,
+            "stereo_corridor_probe": stereo_probe_plan,
             "correction_deltas_db": correction_deltas,
             "correction_verification": correction_after,
             "correction_verdict": correction_verdict,
@@ -10612,8 +10844,8 @@ async def _run_auto_sub_22_stereo_optimize(
         all_right_sweeps = list(right_results) + list(right_fine_results)
         left_baseline = _auto_sub_result_for_delay(all_left_sweeps, original_left_alignment)
         right_baseline = _auto_sub_result_for_delay(all_right_sweeps, original_right_alignment)
-        left_confirm = final_gain_left if gain_verdict["accepted"] else _auto_sub_result_for_delay(all_left_sweeps, best_left)
-        right_confirm = final_gain_right if gain_verdict["accepted"] else _auto_sub_result_for_delay(all_right_sweeps, best_right)
+        left_confirm = final_gain_left if accepted_step1_sides["left"] else _auto_sub_result_for_delay(all_left_sweeps, best_left)
+        right_confirm = final_gain_right if accepted_step1_sides["right"] else _auto_sub_result_for_delay(all_right_sweeps, best_right)
 
         # One shared vertical offset from baseline L+R bass region so that
         # Before/After and L/R relative level differences are preserved.
@@ -11316,17 +11548,12 @@ async def _run_auto_sub_optimize(
             correction_delta = correction_deltas.get("left", 0.0)
             corrected_level = max(-24.0, min(12.0, gained_level + correction_delta))
             if not correction_plan.get("available"):
-                gain_verdict = {"accepted": False, "reason": correction_plan.get("reason"), "channels": {}}
-                final_gain_deltas = {"left": 0.0, "right": 0.0}
-                final_gain_level = original_level
-                final_gain_sweep = gain_winner
-                set_audio_output_mode(OUTPUT_MODE_SUBWOOFER_21, {
-                    "crossover_frequency_hz": fc, "sub_alignment_ms": applied_delay,
-                    "sub_level_db": original_level, "sub_polarity": final_polarity,
-                    "main_highpass_enabled": original_highpass,
-                })
-                if subwoofer_runtime is not None:
-                    await subwoofer_runtime.sync(SubwooferRuntimeConfig.from_overview(get_audio_output_overview()))
+                correction_verdict = {
+                    "accepted": False,
+                    "reason": correction_plan.get("reason"),
+                    "channels": {},
+                    "step1_retained": True,
+                }
             elif abs(correction_delta) > 0.0005:
                 set_audio_output_mode(OUTPUT_MODE_SUBWOOFER_21, {
                     "crossover_frequency_hz": fc, "sub_alignment_ms": applied_delay,
@@ -11377,6 +11604,8 @@ async def _run_auto_sub_optimize(
             "response_per_db_right": (((correction_plan or {}).get("channels") or {}).get("right") or {}).get("response_change_per_db"),
             "remaining_error_left": (gain_after.get("channels", {}).get("left") or {}).get("target_delta_db"),
             "remaining_error_right": (gain_after.get("channels", {}).get("right") or {}).get("target_delta_db"),
+            "raw_correction_db": ((correction_plan or {}).get("raw_deltas_db") or {}).get("left"),
+            "applied_correction_db": ((correction_plan or {}).get("applied_deltas_db") or {}).get("left"),
             "correction_step_db": correction_deltas.get("left") if correction_deltas else None,
         })
         decision = "accepted_step2" if correction_verdict and correction_verdict.get("accepted") else (

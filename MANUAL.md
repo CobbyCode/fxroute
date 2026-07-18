@@ -244,7 +244,7 @@ Keep the microphone fixed during the whole repeat. Moving the microphone between
 
 #### Auto Sub Optimize
 
-Auto Sub Optimize measures alignment candidates around the selected crossover frequency and applies the best measured delay configuration for the active subwoofer mode:
+Auto Sub Optimize measures candidates around the selected crossover frequency and applies the best verified delay, polarity, and subwoofer gain configuration for the active mode:
 
 - **2.1** — optimizes one mono subwoofer. One shared alignment is evaluated against both main channels.
 - **2.2 Mono** — optimizes two mono subwoofers as one dual-sub system. A matrix scan evaluates the Sub 1/Sub 2 alignment combinations against both main channels.
@@ -256,9 +256,7 @@ The optimizer does not directly measure the subwoofer’s internal latency. It o
 
 Where the active mode uses a fine scan, FXRoute checks additional candidates around the best coarse delay region. In 2.2 Mono, the matrix scan evaluates the combined dual-sub result. Treat the selected values as a practical optimum for the measured crossover, room, and microphone position rather than as universally exact latency figures.
 
-In **2.1** and **2.2 Mono**, candidates are evaluated against both left and right main channels so a weak result on one side affects the combined choice. In **2.2 Stereo**, the left and right sub/main branches are evaluated and optimized separately.
-
-Auto Sub Optimize currently adjusts **delay only**. It does not automatically change sub gain, polarity, PEQ, target curve, or room correction filters.
+In **2.1** and **2.2 Mono**, candidates are evaluated against both left and right main channels so a weak result on one side affects the combined choice. In **2.2 Stereo**, the left and right sub/main branches are evaluated and optimized separately. The active polarity is protected unless another measured setting is clearly better. AutoGain then makes bounded gain steps against the selected target curve, verifies them with fresh sweeps, and restores gain changes that do not improve the result. PEQ, target curves, and room-correction filters are not changed.
 
 **Recommended order with EQ or Convolver:**
 

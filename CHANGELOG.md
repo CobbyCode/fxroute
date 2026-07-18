@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 0.7.55 (2026-07-18)
+
+### Added
+- Auto Sub Optimize now measures and verifies subwoofer gain against the selected
+  target curve after delay and polarity selection in 2.1, 2.2 Mono, and 2.2 Stereo modes.
+- AutoSub polarity selection protects the active setting unless the measured
+  alternative is clearly better.
+
+### Changed
+- AutoGain corrections use bounded measured feedback, retain independently
+  improved stereo channels, and restore only gain steps that fail verification.
+- Long AutoSub jobs continue polling without a fixed browser timeout.
+
 ## 0.7.54 (2026-07-14)
 
 ### Added
