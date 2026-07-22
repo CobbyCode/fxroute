@@ -30,6 +30,8 @@ VU_FLOOR_DB = -60.0
 VU_ATTACK_SECONDS = 0.18
 VU_RELEASE_SECONDS = 0.85
 VU_EMIT_INTERVAL = 0.25
+CAPTURE_HEALTH_INTERVAL = 1.0
+CAPTURE_NO_DATA_TIMEOUT = 3.0
 
 
 @dataclass
@@ -208,8 +210,6 @@ class EasyEffectsPeakMonitor:
         self._capture_node_name = capture_node_name
         cmd = [
             "pw-record",
-            "--target",
-            str(target.source_id),
             "-P",
             "node.autoconnect=false",
             "-P",
@@ -231,14 +231,11 @@ class EasyEffectsPeakMonitor:
         logger.info("Peak monitor pw-record spawned in %.3fs for capture node %s", time.monotonic() - capture_started_at, capture_node_name)
         assert self._proc.stdout is not None
         try:
-            try:
-                link_started_at = time.monotonic()
-                await self._link_capture_stream(target, capture_node_name)
-                logger.info("Peak monitor link setup completed in %.3fs for capture node %s", time.monotonic() - link_started_at, capture_node_name)
-            except Exception as exc:
-                logger.warning("Peak monitor link setup failed, continuing without capture links yet: %s", exc)
-                self._last_error = str(exc)
-                await self._emit_if_changed(force=True)
+            link_started_at = time.monotonic()
+            target = await self._link_capture_stream(target, capture_node_name)
+            logger.info("Peak monitor link setup completed in %.3fs for capture node %s", time.monotonic() - link_started_at, capture_node_name)
+            last_data_at = time.monotonic()
+            last_health_check_at = 0.0
             while self._running:
                 try:
                     chunk = await asyncio.wait_for(self._proc.stdout.read(READ_SIZE), timeout=0.25)
@@ -246,6 +243,7 @@ class EasyEffectsPeakMonitor:
                     chunk = b""
                 now = time.monotonic()
                 if chunk:
+                    last_data_at = now
                     peak = self._chunk_peak(chunk)
                     rms = self._chunk_rms(chunk)
                     self._update_vu_db(self._linear_to_db(rms), now)
@@ -261,6 +259,11 @@ class EasyEffectsPeakMonitor:
                     break
                 else:
                     self._update_vu_db(VU_FLOOR_DB, now)
+                    if now - last_data_at >= CAPTURE_NO_DATA_TIMEOUT:
+                        raise RuntimeError("Peak monitor received no audio data while pw-record remained running")
+                if now - last_health_check_at >= CAPTURE_HEALTH_INTERVAL:
+                    await self._check_capture_health(target, capture_node_name)
+                    last_health_check_at = now
                 if self._hold_until and now >= self._hold_until:
                     self._hold_until = 0.0
                     await self._emit_if_changed(force=True)
@@ -291,13 +294,13 @@ class EasyEffectsPeakMonitor:
             self._proc = None
             self._capture_node_name = None
 
-    async def _link_capture_stream(self, target: MonitorTarget, capture_node_name: str):
+    async def _link_capture_stream(self, target: MonitorTarget, capture_node_name: str) -> MonitorTarget:
         discovery_started_at = time.monotonic()
         port_scan_attempts = 0
         capture_fl = None
         capture_fr = None
-        target_fl = f"{target.source_name}:output_FL"
-        target_fr = f"{target.source_name}:output_FR"
+        target_fl = None
+        target_fr = None
         deadline = time.monotonic() + LINK_DISCOVERY_TIMEOUT
         while time.monotonic() < deadline and self._running:
             port_scan_attempts += 1
@@ -309,6 +312,14 @@ class EasyEffectsPeakMonitor:
                     except Exception:
                         stderr = b""
                 raise RuntimeError(stderr.decode(errors="ignore").strip() or f"pw-record exited with {self._proc.returncode}")
+            resolved_target = await self._discover_target()
+            if resolved_target is None or resolved_target.source_name != target.source_name:
+                raise RuntimeError(f"Peak monitor target disappeared: {target.source_name}")
+            target = resolved_target
+            capture_fl = None
+            capture_fr = None
+            target_fl = None
+            target_fr = None
             proc = await asyncio.create_subprocess_exec(
                 "pw-cli",
                 "ls",
@@ -332,9 +343,9 @@ class EasyEffectsPeakMonitor:
 
                 if node_id == target.source_id:
                     if port_name == "output_FL":
-                        target_fl = f"{target.source_name}:output_FL"
+                        target_fl = alias
                     elif port_name == "output_FR":
-                        target_fr = f"{target.source_name}:output_FR"
+                        target_fr = alias
 
             if capture_fl and capture_fr and target_fl and target_fr:
                 logger.info(
@@ -371,7 +382,8 @@ class EasyEffectsPeakMonitor:
                 await self._run_link(target_fl, capture_fl)
                 await self._run_link(target_fr, capture_fr)
                 logger.info("Peak monitor pw-link completed in %.3fs after %d attempts for %s", time.monotonic() - link_attempt_started_at, attempt, capture_node_name)
-                return
+                await self._check_capture_health(target, capture_node_name)
+                return target
             except Exception as exc:
                 last_error = exc
                 if attempt == 1 or attempt == LINK_RETRY_ATTEMPTS:
@@ -379,6 +391,35 @@ class EasyEffectsPeakMonitor:
                 await asyncio.sleep(LINK_RETRY_INTERVAL)
 
         raise RuntimeError(str(last_error) if last_error else "Peak capture link failed")
+
+    async def _check_capture_health(self, target: MonitorTarget, capture_node_name: str):
+        if not self._proc or self._proc.returncode is not None:
+            raise RuntimeError("Peak monitor pw-record process exited")
+
+        resolved_target = await self._discover_target()
+        if resolved_target is None or resolved_target.source_name != target.source_name:
+            raise RuntimeError(f"Peak monitor target disappeared: {target.source_name}")
+        if resolved_target.source_id != target.source_id:
+            raise RuntimeError(
+                f"Peak monitor target instance changed: {target.source_name} "
+                f"({target.source_id} -> {resolved_target.source_id})"
+            )
+
+        proc = await asyncio.create_subprocess_exec(
+            "pw-link",
+            "-l",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            raise RuntimeError(stderr.decode(errors="ignore").strip() or "pw-link -l failed")
+        linked_capture_lines = [
+            line for line in stdout.decode(errors="ignore").splitlines()
+            if capture_node_name in line and ("|->" in line or "|<-" in line)
+        ]
+        if not linked_capture_lines:
+            raise RuntimeError(f"Peak monitor capture node has no links: {capture_node_name}")
 
     @staticmethod
     def _iter_ports(text: str):

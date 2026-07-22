@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.7.56 (2026-07-22)
+
+### Fixed
+- Peak monitor now starts pw-record without --target and links capture ports explicitly via pw-link, resolving silent failure when the target node has no monitor ports.
+- Peak monitor port resolver uses fully-qualified node.name:port_name instead of shared port alias, preventing misconnection to ee_sie_output_level (input chain) when targeting ee_soe_output_level (output chain).
+- Peak monitor runtime health checks detect target node disappearance, stale capture links, and zero-data conditions, triggering automatic rediscovery and reconnection.
+
+
 ## 0.7.55 (2026-07-18)
 
 ### Added
