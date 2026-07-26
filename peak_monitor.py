@@ -231,11 +231,15 @@ class EasyEffectsPeakMonitor:
         logger.info("Peak monitor pw-record spawned in %.3fs for capture node %s", time.monotonic() - capture_started_at, capture_node_name)
         assert self._proc.stdout is not None
         try:
-            link_started_at = time.monotonic()
-            target = await self._link_capture_stream(target, capture_node_name)
-            logger.info("Peak monitor link setup completed in %.3fs for capture node %s", time.monotonic() - link_started_at, capture_node_name)
-            last_data_at = time.monotonic()
-            last_health_check_at = 0.0
+            try:
+                link_started_at = time.monotonic()
+                await self._link_capture_stream(target, capture_node_name)
+                logger.info("Peak monitor link setup completed in %.3fs for capture node %s", time.monotonic() - link_started_at, capture_node_name)
+                last_data_at = time.monotonic()
+            except Exception as exc:
+                logger.warning("Peak monitor link setup failed, continuing without capture links yet: %s", exc)
+                self._last_error = str(exc)
+                await self._emit_if_changed(force=True)
             while self._running:
                 try:
                     chunk = await asyncio.wait_for(self._proc.stdout.read(READ_SIZE), timeout=0.25)
@@ -258,6 +262,8 @@ class EasyEffectsPeakMonitor:
                 elif self._proc.returncode is not None:
                     break
                 else:
+                    if now - last_data_at >= CAPTURE_NO_DATA_TIMEOUT:
+                        raise RuntimeError("Peak monitor received no audio data while pw-record remained running")
                     self._update_vu_db(VU_FLOOR_DB, now)
                     if now - last_data_at >= CAPTURE_NO_DATA_TIMEOUT:
                         raise RuntimeError("Peak monitor received no audio data while pw-record remained running")
