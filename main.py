@@ -848,6 +848,163 @@ PLAYLIST_FILE_EXTENSIONS = {".m3u", ".m3u8"}
 ZIP_IGNORED_PARTS = {"__MACOSX"}
 ZIP_IGNORED_FILENAMES = {".ds_store", "thumbs.db"}
 
+
+class MeasurementSampleRateSession:
+    """Own the PipeWire force-rate for one measurement-window session."""
+
+    def __init__(self) -> None:
+        self.active = False
+        self.measurement_rate = 48_000
+        self.original_force_rate = 0
+        self.active_manual_job_ids: set[str] = set()
+        self.active_auto_sub_job_id: str | None = None
+        self.close_requested = False
+        self.deferred_release_pending = False
+        self.generation = 0
+        self.lock = asyncio.Lock()
+        self._playback_captured = False
+
+    async def _start_locked(self, measurement_rate: int) -> int:
+        if self.active:
+            return self.generation
+        self.measurement_rate = int(measurement_rate)
+        try:
+            status = get_samplerate_status()
+            self.original_force_rate = int(status.get("force_rate") or 0)
+        except Exception as exc:
+            logger.warning("Measurement sample-rate session could not read force-rate: %s", exc)
+            self.original_force_rate = 0
+        if self.original_force_rate != self.measurement_rate:
+            try:
+                _set_pipewire_force_rate(self.measurement_rate)
+            except Exception as exc:
+                logger.error(
+                    "Measurement sample-rate session could not set force-rate to %s Hz: %s",
+                    self.measurement_rate,
+                    exc,
+                )
+        self.active = True
+        self.close_requested = False
+        self.deferred_release_pending = False
+        self._playback_captured = False
+        logger.info(
+            "Measurement sample-rate session started: generation=%s measurement_rate=%s original_force_rate=%s",
+            self.generation,
+            self.measurement_rate,
+            self.original_force_rate,
+        )
+        return self.generation
+
+    async def start(self, measurement_rate: int) -> int:
+        async with self.lock:
+            return await self._start_locked(measurement_rate)
+
+    async def register_manual_job(self, job_id: str) -> int:
+        async with self.lock:
+            if not self.active:
+                await self._start_locked(_resolve_measurement_start_sample_rate())
+            self.active_manual_job_ids.add(job_id)
+            return self.generation
+
+    async def replace_manual_job(self, old_job_id: str, job_id: str) -> None:
+        async with self.lock:
+            self.active_manual_job_ids.discard(old_job_id)
+            self.active_manual_job_ids.add(job_id)
+
+    async def unregister_manual_job(self, job_id: str) -> None:
+        async with self.lock:
+            self.active_manual_job_ids.discard(job_id)
+            await self._check_release()
+
+    async def register_auto_sub(self, job_id: str) -> int:
+        async with self.lock:
+            if not self.active:
+                await self._start_locked(_resolve_measurement_start_sample_rate())
+            self.active_auto_sub_job_id = job_id
+            return self.generation
+
+    async def unregister_auto_sub(self, job_id: str) -> None:
+        async with self.lock:
+            if self.active_auto_sub_job_id == job_id:
+                self.active_auto_sub_job_id = None
+            await self._check_release()
+
+    async def request_close(self) -> None:
+        async with self.lock:
+            self.close_requested = True
+            released = await self._check_release()
+            if not released:
+                self.deferred_release_pending = True
+
+    async def _check_release(self) -> bool:
+        if not self.active or not self.close_requested:
+            return False
+        if self.active_auto_sub_job_id is not None or self.active_manual_job_ids:
+            return False
+        await self._release()
+        return True
+
+    async def _release(self) -> None:
+        global playback_stream_stale_after_measurement, radio_stream_stale_after_measurement
+
+        restore_value = self.original_force_rate if self.original_force_rate > 0 else 0
+        try:
+            current_force_rate = _get_current_pipewire_force_rate()
+            if current_force_rate == self.measurement_rate:
+                try:
+                    _set_pipewire_force_rate(restore_value)
+                except Exception as exc:
+                    logger.warning("Measurement sample-rate session force-rate restore failed: %s", exc)
+            else:
+                logger.warning(
+                    "Measurement sample-rate session restore skipped after external force-rate change: "
+                    "current_force_rate=%s measurement_rate=%s restore_value=%s",
+                    current_force_rate,
+                    self.measurement_rate,
+                    restore_value,
+                )
+
+            if _playback_state_before_measurement is not None:
+                saved_rate = _playback_state_before_measurement.get("expected_rate")
+                if isinstance(saved_rate, int) and saved_rate > 0 and saved_rate != self.measurement_rate:
+                    playback_stream_stale_after_measurement = True
+                    if _playback_state_before_measurement.get("source") == "radio":
+                        radio_stream_stale_after_measurement = True
+
+            try:
+                await _sync_subwoofer_runtime_at_rate(restore_value)
+            except Exception as exc:
+                logger.warning("Measurement sample-rate session runtime restore failed: %s", exc)
+        finally:
+            completed_generation = self.generation
+            self.active = False
+            self.active_manual_job_ids.clear()
+            self.active_auto_sub_job_id = None
+            self.close_requested = False
+            self.deferred_release_pending = False
+            self._playback_captured = False
+            self.original_force_rate = 0
+            self.generation += 1
+            logger.info(
+                "Measurement sample-rate session released: generation=%s next_generation=%s restore_rate=%s",
+                completed_generation,
+                self.generation,
+                restore_value,
+            )
+
+    async def run_watchdog(self) -> None:
+        while True:
+            try:
+                if self.active and not _is_measurement_window_open():
+                    await self.request_close()
+                await asyncio.sleep(5.0)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("Measurement sample-rate session watchdog failed: %s", exc)
+                await asyncio.sleep(5.0)
+
+
 # Global instances (initialized on startup)
 settings = None
 player_instance = None
@@ -855,6 +1012,7 @@ library_scanner = None
 downloader = None
 easyeffects_manager = None
 measurement_store = None
+measurement_sr_session = None
 peak_monitor = None
 subwoofer_runtime = None
 subwoofer_runtime_link_watch_task = None
@@ -1687,6 +1845,8 @@ def _capture_playback_state_before_measurement():
     so the existing radio-specific path in toggle_playback keeps working.
     """
     global _playback_state_before_measurement, _radio_state_before_measurement
+    if measurement_sr_session is not None and measurement_sr_session._playback_captured:
+        return
     _playback_state_before_measurement = None
     _radio_state_before_measurement = None
     if not current_track_info:
@@ -1751,6 +1911,8 @@ def _capture_playback_state_before_measurement():
         source, saved_state["url"], saved_state["id"],
         expected_rate, saved_state["position"], saved_state["was_paused"], saved_state["was_playing"],
     )
+    if measurement_sr_session is not None:
+        measurement_sr_session._playback_captured = True
 
 
 def _resolve_measurement_start_sample_rate() -> int:
@@ -1983,7 +2145,7 @@ def _build_measurement_audio_output_context() -> dict:
     return context
 
 
-async def _prepare_subwoofer_runtime_for_measurement_start(measurement_rate: int) -> Optional[int]:
+async def _sync_subwoofer_runtime_for_measurement_sweep(measurement_rate: int) -> None:
     if subwoofer_runtime is None:
         return None
     overview = get_audio_output_overview()
@@ -2010,25 +2172,13 @@ async def _prepare_subwoofer_runtime_for_measurement_start(measurement_rate: int
         ),
         json.dumps(_measurement_helper_snapshot_summary(before), sort_keys=True),
     )
-    restore_force_rate: Optional[int] = None
-    if previous_force_rate != measurement_rate:
-        restore_force_rate = int(previous_force_rate or 0)
-        _set_pipewire_force_rate(measurement_rate)
-        logger.info(
-            "%s measurement samplerate pre-arm applied: target_rate=%s previous_active_rate=%s previous_force_rate=%s",
-            mode_num,
-            measurement_rate,
-            previous_active_rate,
-            previous_force_rate,
-        )
-    else:
-        logger.info(
-            "%s measurement samplerate pre-arm already active: target_rate=%s active_rate=%s force_rate=%s",
-            mode_num,
-            measurement_rate,
-            previous_active_rate,
-            previous_force_rate,
-        )
+    logger.info(
+        "%s measurement samplerate session pre-arm: target_rate=%s active_rate=%s force_rate=%s",
+        mode_num,
+        measurement_rate,
+        previous_active_rate,
+        previous_force_rate,
+    )
     if previous_active_rate != measurement_rate:
         _pulse_suspend_sink_for_samplerate(output_key, "measurement-pre-arm")
 
@@ -2039,8 +2189,6 @@ async def _prepare_subwoofer_runtime_for_measurement_start(measurement_rate: int
     if not aligned:
         output_mode = overview.get("output_mode") or {}
         effective_rate = output_mode.get("effective_output_rate")
-        if restore_force_rate is not None:
-            _set_pipewire_force_rate(restore_force_rate)
         raise RuntimeError(
             f"{mode_num} measurement pre-arm failed: selected output did not reach "
             f"{measurement_rate} Hz before sweep start (effective_rate={effective_rate})"
@@ -2053,8 +2201,6 @@ async def _prepare_subwoofer_runtime_for_measurement_start(measurement_rate: int
     runtime_config = SubwooferRuntimeConfig.from_overview(overview)
     helper_rate = after_config.get("sample_rate")
     if not after.get("active") or helper_rate != measurement_rate:
-        if restore_force_rate is not None:
-            _set_pipewire_force_rate(restore_force_rate)
         raise RuntimeError(
             f"{mode_num} measurement pre-arm failed: helper did not settle at "
             f"{measurement_rate} Hz before sweep start (active={after.get('active')} sample_rate={helper_rate})"
@@ -2062,13 +2208,12 @@ async def _prepare_subwoofer_runtime_for_measurement_start(measurement_rate: int
 
     logger.info(
         "%s measurement helper pre-armed before sweep: target_rate=%s helper_rate_before=%s helper_rate_after=%s "
-        "helper_pid=%s force_rate_restore=%s samplerate_after=%s helper_after=%s",
+        "helper_pid=%s samplerate_after=%s helper_after=%s",
         mode_num,
         measurement_rate,
         (before.get("config") or {}).get("sample_rate"),
         helper_rate,
         after.get("helper_pid"),
-        restore_force_rate,
         json.dumps(
             {
                 "active_rate": samplerate_after.get("active_rate"),
@@ -2079,92 +2224,32 @@ async def _prepare_subwoofer_runtime_for_measurement_start(measurement_rate: int
         json.dumps(_measurement_helper_snapshot_summary(after), sort_keys=True),
     )
     _log_22_measurement_sweep_config(runtime_config, after)
-    return restore_force_rate
+    return None
 
 
-async def _release_measurement_samplerate_force_after_job(job_id: str, expected_rate: int, restore_force_rate: int) -> None:
-    global subwoofer_runtime, radio_stream_stale_after_measurement, playback_stream_stale_after_measurement
-    logger.info(
-        "Measurement samplerate release watcher started: job_id=%s expected_rate=%s restore_force_rate=%s",
-        job_id,
-        expected_rate,
-        restore_force_rate,
-    )
+async def _unregister_measurement_job_after_completion(job_id: str, generation: int) -> None:
+    logger.info("Measurement session job watcher started: job_id=%s generation=%s", job_id, generation)
     for _ in range(300):
         await asyncio.sleep(0.5)
         if measurement_store is None:
-            logger.info("Measurement samplerate release watcher stopped: job_id=%s measurement_store_missing=true", job_id)
-            return
+            break
         try:
             job = measurement_store.get_job(job_id)
         except Exception as exc:
-            logger.info("Measurement samplerate release watcher stopped: job_id=%s job_lookup_failed=%s", job_id, exc)
-            return
+            logger.info("Measurement session job watcher stopped: job_id=%s job_lookup_failed=%s", job_id, exc)
+            break
         status = str(job.get("status") or "")
         if status in {"completed", "failed", "cancelled"}:
-            try:
-                await _dump_21_runtime_state(f"backend-before-release-{status}", {"job_id": job_id, "job_status": status})
-                current_force_rate = _get_current_pipewire_force_rate()
-                restore_value = restore_force_rate if restore_force_rate > 0 else 0
-                if current_force_rate == expected_rate:
-                    _set_pipewire_force_rate(restore_value)
-                    logger.info(
-                        "Measurement samplerate pre-arm released: job_id=%s previous_force_rate=%s status=%s",
-                        job_id,
-                        restore_force_rate,
-                        status,
-                    )
-                else:
-                    logger.info(
-                        "Measurement samplerate pre-arm force release skipped: job_id=%s current_force_rate=%s expected_rate=%s status=%s",
-                        job_id,
-                        current_force_rate,
-                        expected_rate,
-                        status,
-                    )
-                # Re-sync subwoofer runtime at the restored playback rate even
-                # if another playback repair already changed force-rate. The
-                # helper may still be running at the measurement rate.
-                if subwoofer_runtime is not None:
-                    logger.info(
-                        "Measurement samplerate release invoking _sync_subwoofer_runtime_at_rate: job_id=%s target_rate=%s current_force_rate=%s",
-                        job_id,
-                        restore_value,
-                        current_force_rate,
-                    )
-                    await _sync_subwoofer_runtime_at_rate(restore_value)
-                    await _dump_21_runtime_state(f"backend-after-release-resync-{status}", {"job_id": job_id, "job_status": status})
-                else:
-                    logger.info(
-                        "Measurement samplerate release cannot re-sync: job_id=%s subwoofer_runtime_missing=true",
-                        job_id,
-                    )
-            except Exception as exc:
-                logger.warning("Measurement samplerate pre-arm release failed: job_id=%s error=%s", job_id, exc)
-            # Mark playback stream as stale after measurement at 48 kHz.
-            # This is generic (radio + library/local). If a playback stream was
-            # active before measurement at a different rate, it is now stale.
-            if _playback_state_before_measurement is not None:
-                saved = _playback_state_before_measurement
-                saved_rate = saved.get("expected_rate")
-                if isinstance(saved_rate, int) and saved_rate > 0 and saved_rate != expected_rate:
-                    playback_stream_stale_after_measurement = True
-                    # Also set the radio-specific flag for the radio branch in toggle_playback
-                    if saved.get("source") == "radio":
-                        radio_stream_stale_after_measurement = True
-                    logger.info(
-                        "PLAYBACK-RESUME-DIAG measurement complete, marking playback stream stale: "
-                        "source=%s url=%s expected_rate=%s measurement_rate=%s position=%.2f was_paused=%s",
-                        saved.get("source"), saved.get("url"), saved_rate, expected_rate,
-                        saved.get("position", 0), saved.get("was_paused", False),
-                    )
-                else:
-                    logger.info(
-                        "PLAYBACK-RESUME-DIAG saved playback rate matches measurement rate, no stale flag: "
-                        "source=%s expected_rate=%s measurement_rate=%s",
-                        saved.get("source"), saved_rate, expected_rate,
-                    )
-            return
+            break
+    if measurement_sr_session is not None and measurement_sr_session.generation == generation:
+        await measurement_sr_session.unregister_manual_job(job_id)
+    elif measurement_sr_session is not None:
+        logger.info(
+            "Measurement session stale job watcher ignored: job_id=%s watcher_generation=%s current_generation=%s",
+            job_id,
+            generation,
+            measurement_sr_session.generation,
+        )
 
 
 async def _sync_subwoofer_runtime_at_rate(target_rate: int) -> None:
@@ -3996,7 +4081,7 @@ async def _spotify_playerctl_watch_loop() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan: startup and shutdown."""
-    global settings, player_instance, library_scanner, downloader, easyeffects_manager, measurement_store, peak_monitor, subwoofer_runtime, subwoofer_runtime_link_watch_task, hardware_controller, peak_monitor_playback_armed, peak_monitor_transition_lock, peak_monitor_context_signature, easyeffects_preset_load_lock, source_transition_lock, external_input_loopback_module_id, external_input_loopback_source_name, bluetooth_input_source_name, bluetooth_monitor_task, bluetooth_agent_process, spotify_playerctl_watch_task, spotify_playerctl_detect_task, spotify_state_refresh_task, spotify_state_poll_task, spotify_playerctl_last_trigger_at, spotify_samplerate_recovery_lock, spotify_samplerate_recovery_active, current_source_mode, latest_spotify_state
+    global settings, player_instance, library_scanner, downloader, easyeffects_manager, measurement_store, measurement_sr_session, peak_monitor, subwoofer_runtime, subwoofer_runtime_link_watch_task, hardware_controller, peak_monitor_playback_armed, peak_monitor_transition_lock, peak_monitor_context_signature, easyeffects_preset_load_lock, source_transition_lock, external_input_loopback_module_id, external_input_loopback_source_name, bluetooth_input_source_name, bluetooth_monitor_task, bluetooth_agent_process, spotify_playerctl_watch_task, spotify_playerctl_detect_task, spotify_state_refresh_task, spotify_state_poll_task, spotify_playerctl_last_trigger_at, spotify_samplerate_recovery_lock, spotify_samplerate_recovery_active, current_source_mode, latest_spotify_state
 
     # Startup
     logger.info("Starting FXRoute... build_id=%s", _read_build_id())
@@ -4030,6 +4115,9 @@ async def lifespan(app: FastAPI):
 
         measurement_store = MeasurementStore()
         logger.info("Measurement store initialized: %s", measurement_store.measurements_dir)
+        measurement_sr_session = MeasurementSampleRateSession()
+        asyncio.create_task(measurement_sr_session.run_watchdog())
+        logger.info("Measurement sample-rate session initialized")
 
         if HardwareController is None:
             logger.info("Optional hardware controller module not installed")
@@ -5708,6 +5796,8 @@ async def measurement_window_heartbeat(request: Request):
         body = {}
     if body.get("open") is False:
         last_measurement_window_seen_at = 0.0
+        if measurement_sr_session is not None:
+            asyncio.create_task(measurement_sr_session.request_close())
     else:
         last_measurement_window_seen_at = time.monotonic()
     return {
@@ -6480,11 +6570,14 @@ async def start_measurement(
         calibration_filename = calibration_file.filename or "calibration.txt"
         calibration_bytes = await calibration_file.read()
 
-    restore_force_rate = None
     measurement_rate = _resolve_measurement_start_sample_rate()
+    pending_job_id = f"pending:{uuid4()}"
+    sweep_gen = measurement_sr_session.generation if measurement_sr_session is not None else 0
     try:
+        if measurement_sr_session is not None:
+            sweep_gen = await measurement_sr_session.register_manual_job(pending_job_id)
         _capture_playback_state_before_measurement()
-        restore_force_rate = await _prepare_subwoofer_runtime_for_measurement_start(measurement_rate)
+        await _sync_subwoofer_runtime_for_measurement_sweep(measurement_rate)
         job = await measurement_store.start_measurement(
             input_id=input_id,
             channel=channel,
@@ -6494,15 +6587,16 @@ async def start_measurement(
             calibration_bytes=calibration_bytes,
             calibration_ref=calibration_ref,
         )
-        if restore_force_rate is not None:
-            asyncio.create_task(_release_measurement_samplerate_force_after_job(job["id"], measurement_rate, restore_force_rate))
+        if measurement_sr_session is not None:
+            await measurement_sr_session.replace_manual_job(pending_job_id, job["id"])
+            asyncio.create_task(_unregister_measurement_job_after_completion(job["id"], sweep_gen))
     except ValueError as exc:
-        if restore_force_rate is not None:
-            _set_pipewire_force_rate(restore_force_rate)
+        if measurement_sr_session is not None:
+            await measurement_sr_session.unregister_manual_job(pending_job_id)
         raise HTTPException(status_code=400, detail=str(exc))
     except RuntimeError as exc:
-        if restore_force_rate is not None:
-            _set_pipewire_force_rate(restore_force_rate)
+        if measurement_sr_session is not None:
+            await measurement_sr_session.unregister_manual_job(pending_job_id)
         raise HTTPException(status_code=500, detail=str(exc))
     return {"status": "ok", "job": job}
 
@@ -6527,11 +6621,14 @@ async def start_lr_repeat_measurement(
         calibration_filename = calibration_file.filename or "calibration.txt"
         calibration_bytes = await calibration_file.read()
 
-    restore_force_rate = None
     measurement_rate = _resolve_measurement_start_sample_rate()
+    pending_job_id = f"pending:{uuid4()}"
+    sweep_gen = measurement_sr_session.generation if measurement_sr_session is not None else 0
     try:
+        if measurement_sr_session is not None:
+            sweep_gen = await measurement_sr_session.register_manual_job(pending_job_id)
         _capture_playback_state_before_measurement()
-        restore_force_rate = await _prepare_subwoofer_runtime_for_measurement_start(measurement_rate)
+        await _sync_subwoofer_runtime_for_measurement_sweep(measurement_rate)
         job = await measurement_store.start_lr_repeat_measurement(
             input_id=input_id,
             base_name=base_name,
@@ -6541,15 +6638,16 @@ async def start_lr_repeat_measurement(
             calibration_bytes=calibration_bytes,
             calibration_ref=calibration_ref,
         )
-        if restore_force_rate is not None:
-            asyncio.create_task(_release_measurement_samplerate_force_after_job(job["id"], measurement_rate, restore_force_rate))
+        if measurement_sr_session is not None:
+            await measurement_sr_session.replace_manual_job(pending_job_id, job["id"])
+            asyncio.create_task(_unregister_measurement_job_after_completion(job["id"], sweep_gen))
     except ValueError as exc:
-        if restore_force_rate is not None:
-            _set_pipewire_force_rate(restore_force_rate)
+        if measurement_sr_session is not None:
+            await measurement_sr_session.unregister_manual_job(pending_job_id)
         raise HTTPException(status_code=400, detail=str(exc))
     except RuntimeError as exc:
-        if restore_force_rate is not None:
-            _set_pipewire_force_rate(restore_force_rate)
+        if measurement_sr_session is not None:
+            await measurement_sr_session.unregister_manual_job(pending_job_id)
         raise HTTPException(status_code=500, detail=str(exc))
     return {"status": "ok", "job": job}
 
@@ -8138,20 +8236,13 @@ async def _measure_auto_sub_candidate(
             "scan": stage,
         })
 
-    restore_force_rate = None
-    pre_arm_failed = False
     try:
-        restore_force_rate = await _prepare_subwoofer_runtime_for_measurement_start(auto_sub_rate)
+        await _sync_subwoofer_runtime_for_measurement_sweep(auto_sub_rate)
         _marks["pre_arm"] = time.monotonic()
         if _auto_sub_cancel_requested(job):
-            if restore_force_rate is not None:
-                _set_pipewire_force_rate(restore_force_rate)
             return _return_candidate(_auto_sub_cancelled_candidate(delay_ms, stage))
     except Exception as exc:
         logger.exception("Auto-sub: pre-arm failed for delay %.2f ms", delay_ms)
-        pre_arm_failed = True
-        if restore_force_rate is not None:
-            _set_pipewire_force_rate(restore_force_rate)
         return _return_candidate({
             "delay_ms": delay_ms,
             "name": str(delay_ms),
@@ -8225,11 +8316,6 @@ async def _measure_auto_sub_candidate(
 
         _marks["sweep_poll_done"] = time.monotonic()
         _marks["release_start"] = time.monotonic()
-        if restore_force_rate is not None:
-            try:
-                await _release_measurement_samplerate_force_after_job(sweep_id, auto_sub_rate, restore_force_rate)
-            except Exception as exc:
-                logger.warning("Auto-sub: samplerate release failed for sweep %s: %s", sweep_id, exc)
         _marks["release_done"] = time.monotonic()
 
         try:
@@ -8300,11 +8386,6 @@ async def _measure_auto_sub_candidate(
         logger.exception("Auto-sub: sweep error for delay %.2f ms", delay_ms)
         if job.get("current_sweep_id") == sweep_id:
             job["current_sweep_id"] = ""
-        if restore_force_rate is not None:
-            try:
-                _set_pipewire_force_rate(restore_force_rate)
-            except Exception:
-                pass
         return _return_candidate({
             "delay_ms": delay_ms,
             "name": str(delay_ms),
@@ -9257,6 +9338,8 @@ async def _run_auto_sub_22_optimize(
     def _same_pair(pair: tuple[float, float], sub1_alignment: float, sub2_alignment: float) -> bool:
         return abs(pair[0] - sub1_alignment) <= 0.05 and abs(pair[1] - sub2_alignment) <= 0.05
 
+    if measurement_sr_session is not None:
+        await measurement_sr_session.register_auto_sub(job_id)
     try:
         if _auto_sub_cancel_requested(job):
             logger.info("AUTOSUB job=%s cancel observed (before sweeps)", job_id)
@@ -9895,6 +9978,8 @@ async def _run_auto_sub_22_optimize(
         await _restore_original_config()
 
     finally:
+        if measurement_sr_session is not None:
+            await measurement_sr_session.unregister_auto_sub(job_id)
         _finalize_autosub_job(job, job_id)
         try:
             _auto_sub_lock.release()
@@ -9949,13 +10034,15 @@ async def _run_auto_sub_22_stereo_optimize(
         points = reference.get("points") or []
         return points if isinstance(points, list) and len(points) >= 3 else None
 
-    if _auto_sub_cancel_requested(job):
-        logger.info("AUTOSUB job=%s cancel observed (before sweeps)", job_id)
-        job["message"] = "Auto Sub Optimize cancelled."
-        await _restore_original_config()
-        return
-
+    if measurement_sr_session is not None:
+        await measurement_sr_session.register_auto_sub(job_id)
     try:
+        if _auto_sub_cancel_requested(job):
+            logger.info("AUTOSUB job=%s cancel observed (before sweeps)", job_id)
+            job["message"] = "Auto Sub Optimize cancelled."
+            await _restore_original_config()
+            return
+
         auto_sub_sweep_low_hz = 20.0
         auto_sub_sweep_high_hz = max(600.0, min(float(fc) * 8.0, 2000.0))
         if fc <= 60:
@@ -11006,6 +11093,8 @@ async def _run_auto_sub_22_stereo_optimize(
         await _restore_original_config()
 
     finally:
+        if measurement_sr_session is not None:
+            await measurement_sr_session.unregister_auto_sub(job_id)
         _finalize_autosub_job(job, job_id)
         try:
             _auto_sub_lock.release()
@@ -11049,13 +11138,15 @@ async def _run_auto_sub_optimize(
         """Restore subwoofer config from snapshot."""
         await _restore_auto_sub_original_config(original_config_snapshot)
 
-    if _auto_sub_cancel_requested(job):
-        logger.info("AUTOSUB job=%s cancel observed (before sweeps)", job_id)
-        job["message"] = "Auto Sub Optimize cancelled."
-        await _restore_original_config()
-        return
-
+    if measurement_sr_session is not None:
+        await measurement_sr_session.register_auto_sub(job_id)
     try:
+        if _auto_sub_cancel_requested(job):
+            logger.info("AUTOSUB job=%s cancel observed (before sweeps)", job_id)
+            job["message"] = "Auto Sub Optimize cancelled."
+            await _restore_original_config()
+            return
+
         sweep_results: list[dict[str, Any]] = []
         total = len(scan_delays) * 2
 
@@ -11751,6 +11842,8 @@ async def _run_auto_sub_optimize(
         await _restore_original_config()
 
     finally:
+        if measurement_sr_session is not None:
+            await measurement_sr_session.unregister_auto_sub(job_id)
         _finalize_autosub_job(job, job_id)
         try:
             _auto_sub_lock.release()
