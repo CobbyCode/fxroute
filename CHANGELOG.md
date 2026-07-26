@@ -2,13 +2,21 @@
 
 ## Unreleased
 
-## 0.7.56 (2026-07-22)
+## 0.7.57 (2026-07-26)
+
+### Changed
+- Centralized measurement sample-rate session: `clock.force-rate` is now set once
+  at session start and restored once on session close, instead of per-sweep
+  switching. Manual sweep jobs register individually; Auto Sub registers once
+  per optimization run. Includes watchdog-based heartbeat TTL monitoring,
+  deferred release during active jobs, and external force-rate change protection.
 
 ### Fixed
-- Peak monitor now starts pw-record without --target and links capture ports explicitly via pw-link, resolving silent failure when the target node has no monitor ports.
-- Peak monitor port resolver uses fully-qualified node.name:port_name instead of shared port alias, preventing misconnection to ee_sie_output_level (input chain) when targeting ee_soe_output_level (output chain).
-- Peak monitor runtime health checks detect target node disappearance, stale capture links, and zero-data conditions, triggering automatic rediscovery and reconnection.
-
+- Peak monitor now raises `RuntimeError` after 3 seconds without audio data
+  instead of silently staying at noise floor.
+- Peak monitor port resolver uses fully-qualified `node.name:port_name` instead
+  of shared port alias, preventing misconnection to `ee_sie_output_level` (input
+  chain) when targeting `ee_soe_output_level` (output chain).
 
 ## 0.7.55 (2026-07-18)
 
