@@ -867,7 +867,15 @@ class MeasurementSampleRateSession:
     async def _start_locked(self, measurement_rate: int) -> int:
         if self.active:
             return self.generation
+        # Reset old snapshots so a new session always starts fresh.
+        global _playback_state_before_measurement, _radio_state_before_measurement
+        _playback_state_before_measurement = None
+        _radio_state_before_measurement = None
         self.measurement_rate = int(measurement_rate)
+        self._playback_captured = False
+        # Capture playback state centrally BEFORE switching force-rate
+        # so manual sweeps, L/R-repeat and Auto Sub all use the same path.
+        _capture_playback_state_before_measurement()
         try:
             status = get_samplerate_status()
             self.original_force_rate = int(status.get("force_rate") or 0)
@@ -886,7 +894,6 @@ class MeasurementSampleRateSession:
         self.active = True
         self.close_requested = False
         self.deferred_release_pending = False
-        self._playback_captured = False
         logger.info(
             "Measurement sample-rate session started: generation=%s measurement_rate=%s original_force_rate=%s",
             self.generation,
@@ -928,6 +935,14 @@ class MeasurementSampleRateSession:
             if self.active_auto_sub_job_id == job_id:
                 self.active_auto_sub_job_id = None
             await self._check_release()
+
+    async def request_open(self) -> None:
+        """Cancel a pending close/deferred-release when the heartbeat returns."""
+        async with self.lock:
+            if not self.active:
+                return
+            self.close_requested = False
+            self.deferred_release_pending = False
 
     async def request_close(self) -> None:
         async with self.lock:
@@ -5797,9 +5812,11 @@ async def measurement_window_heartbeat(request: Request):
     if body.get("open") is False:
         last_measurement_window_seen_at = 0.0
         if measurement_sr_session is not None:
-            asyncio.create_task(measurement_sr_session.request_close())
+            await measurement_sr_session.request_close()
     else:
         last_measurement_window_seen_at = time.monotonic()
+        if measurement_sr_session is not None:
+            await measurement_sr_session.request_open()
     return {
         "status": "ok",
         "measurement_window_open": _is_measurement_window_open(),
@@ -6576,7 +6593,6 @@ async def start_measurement(
     try:
         if measurement_sr_session is not None:
             sweep_gen = await measurement_sr_session.register_manual_job(pending_job_id)
-        _capture_playback_state_before_measurement()
         await _sync_subwoofer_runtime_for_measurement_sweep(measurement_rate)
         job = await measurement_store.start_measurement(
             input_id=input_id,
@@ -6627,7 +6643,6 @@ async def start_lr_repeat_measurement(
     try:
         if measurement_sr_session is not None:
             sweep_gen = await measurement_sr_session.register_manual_job(pending_job_id)
-        _capture_playback_state_before_measurement()
         await _sync_subwoofer_runtime_for_measurement_sweep(measurement_rate)
         job = await measurement_store.start_lr_repeat_measurement(
             input_id=input_id,
