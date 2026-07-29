@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import json
+import math
 import sys
 import tempfile
 from pathlib import Path
@@ -8,6 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from easyeffects import EasyEffectsManager
+from system_volume import volume_db_to_percent, volume_percent_to_db
 
 
 def manager() -> EasyEffectsManager:
@@ -89,6 +91,20 @@ def test_persistence_and_volume_mapping() -> None:
     assert loaded == saved
     assert ee.loudness_percent_from_db(loaded["loudness"]["params"]["volumeDb"]) == 62
     assert ee.loudness_db_from_percent(100) == 0.0
+    expected = {
+        100: 0.0,
+        75: 60.0 * math.log10(0.75),
+        46: 60.0 * math.log10(0.46),
+        25: 60.0 * math.log10(0.25),
+        10: -60.0,
+        0: -80.0,
+    }
+    for percent, expected_db in expected.items():
+        actual_db = volume_percent_to_db(percent)
+        assert math.isclose(actual_db, expected_db, abs_tol=1e-9), (percent, actual_db, expected_db)
+        assert ee.loudness_db_from_percent(percent) == actual_db
+        assert volume_db_to_percent(actual_db) == percent
+    assert math.isclose(volume_percent_to_db(46), -20.23453, abs_tol=0.00001)
 
 
 def main() -> None:

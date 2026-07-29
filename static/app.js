@@ -11869,7 +11869,14 @@ async function _doSaveEffectsExtras(phase) {
             limiter: { enabled: !!extras.limiterEnabled, params: { thresholdDb: -1.0, attackMs: 5.0, releaseMs: 50.0, lookaheadMs: 5.0, stereoLinkPercent: 100.0 } },
             headroom: { enabled: !!extras.headroomEnabled, params: { gainDb: extras.headroomGainDb } },
             autogain: { enabled: !!extras.autogainEnabled, params: { targetDb: extras.autogainTargetDb } },
-            loudness: { enabled: !!extras.loudnessEnabled, params: { fftSize: extras.loudnessFftSize, volumeDb: extras.loudnessVolumeDb, calibrationTrimDb: 0, calibration: {} } },
+            loudness: {
+                enabled: !!extras.loudnessEnabled,
+                params: {
+                    ...(state.easyeffects?.global_extras?.loudness?.params || {}),
+                    fftSize: extras.loudnessFftSize,
+                    volumeDb: extras.loudnessVolumeDb,
+                },
+            },
             delay: { enabled: !!extras.delayEnabled, params: { leftMs: extras.delayLeftMs, rightMs: extras.delayRightMs } },
             bass_enhancer: { enabled: !!extras.bassEnabled, params: { amount: extras.bassAmount, harmonics: 8.5, scope: 100.0, blend: 0.0 } },
             tone_effect: { enabled: !!extras.toneEffectEnabled, mode: extras.toneEffectMode },

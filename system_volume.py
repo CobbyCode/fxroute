@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 import subprocess
 
@@ -11,6 +12,27 @@ class SystemVolumeError(RuntimeError):
 
 
 TARGET_SINK = "@DEFAULT_AUDIO_SINK@"
+
+
+def volume_percent_to_linear_gain(percent: int | float) -> float:
+    """Return PipeWire's effective gain for the cubic FXRoute slider."""
+    normalized = max(0.0, min(100.0, float(percent))) / 100.0
+    return normalized ** 3
+
+
+def volume_percent_to_db(percent: int | float, floor_db: float = -80.0) -> float:
+    gain = volume_percent_to_linear_gain(percent)
+    if gain <= 0.0:
+        return float(floor_db)
+    return max(float(floor_db), 20.0 * math.log10(gain))
+
+
+def volume_db_to_percent(volume_db: int | float) -> int:
+    db_value = float(volume_db)
+    if db_value <= -80.0:
+        return 0
+    gain = 10.0 ** (db_value / 20.0)
+    return max(0, min(100, round(100.0 * (gain ** (1.0 / 3.0)))))
 
 
 def _get_target_volume(target: str) -> int:

@@ -6244,6 +6244,58 @@ def _parse_effects_extras_from_json(body: dict) -> dict:
     }
 
 
+def _merge_effects_extras_from_json(previous: dict, body: dict) -> dict:
+    """Apply only explicitly supplied JSON fields to persisted extras."""
+    merged = copy.deepcopy(previous)
+
+    def supplied(*names: str) -> tuple[bool, Any]:
+        for name in names:
+            if name in body:
+                return True, body[name]
+        return False, None
+
+    scalar_fields = (
+        ("limiter", "enabled", ("limiterEnabled", "limiter_enabled"), bool),
+        ("headroom", "enabled", ("headroomEnabled", "headroom_enabled"), bool),
+        ("autogain", "enabled", ("autogainEnabled", "autogain_enabled"), bool),
+        ("loudness", "enabled", ("loudnessEnabled", "loudness_enabled"), bool),
+        ("delay", "enabled", ("delayEnabled", "delay_enabled"), bool),
+        ("bass_enhancer", "enabled", ("bassEnabled", "bass_enabled"), bool),
+        ("tone_effect", "enabled", ("toneEffectEnabled", "tone_effect_enabled"), bool),
+        ("tone_effect", "mode", ("toneEffectMode", "tone_effect_mode"), str),
+    )
+    for section, field, names, converter in scalar_fields:
+        present, value = supplied(*names)
+        if present:
+            merged.setdefault(section, {})[field] = converter(value)
+
+    param_fields = (
+        ("headroom", "gainDb", ("headroomGainDb", "headroom_gain_db"), float),
+        ("autogain", "targetDb", ("autogainTargetDb", "autogain_target_db"), float),
+        ("loudness", "fftSize", ("loudnessFftSize", "loudness_fft_size"), int),
+        ("loudness", "volumeDb", ("loudnessVolumeDb", "loudness_volume_db"), float),
+        ("loudness", "calibrationTrimDb", ("calibrationTrimDb",), float),
+        ("delay", "leftMs", ("delayLeftMs", "delay_left_ms"), float),
+        ("delay", "rightMs", ("delayRightMs", "delay_right_ms"), float),
+        ("bass_enhancer", "amount", ("bassAmount", "bass_amount"), float),
+    )
+    for section, field, names, converter in param_fields:
+        present, value = supplied(*names)
+        if present:
+            merged.setdefault(section, {}).setdefault("params", {})[field] = converter(value)
+
+    for field, body_name in (
+        ("calibration", "calibration"),
+        ("calibrationProfiles", "calibrationProfiles"),
+    ):
+        if body_name in body:
+            value = body[body_name]
+            if not isinstance(value, dict):
+                raise ValueError(f"{body_name} must be an object")
+            merged.setdefault("loudness", {}).setdefault("params", {})[field] = copy.deepcopy(value)
+    return merged
+
+
 def _resolve_effects_extras(extras: dict | None = None) -> dict:
     global easyeffects_manager
     if not easyeffects_manager:
@@ -6340,24 +6392,24 @@ async def save_easyeffects_extras(request: Request):
         raise HTTPException(status_code=400, detail="Invalid JSON body")
 
     previous = ee_manager.load_global_extras()
-    parsed = _parse_effects_extras_from_json(body)
+    parsed = _merge_effects_extras_from_json(previous, body)
     was_loudness = bool(previous.get("loudness", {}).get("enabled"))
     enabling_loudness = bool(parsed.get("loudness", {}).get("enabled")) and not was_loudness
     disabling_loudness = was_loudness and not bool(parsed.get("loudness", {}).get("enabled"))
     if enabling_loudness:
         raw_volume = get_output_volume()
         parsed["loudness"]["params"]["volumeDb"] = ee_manager.loudness_db_from_percent(raw_volume)
-        set_output_volume(100)
-    elif was_loudness:
-        parsed["loudness"]["params"]["volumeDb"] = previous["loudness"]["params"]["volumeDb"]
-        parsed["loudness"]["params"]["calibrationTrimDb"] = previous["loudness"]["params"]["calibrationTrimDb"]
-        parsed["loudness"]["params"]["calibration"] = previous["loudness"]["params"]["calibration"]
-        parsed["loudness"]["params"]["calibrationProfiles"] = previous["loudness"]["params"]["calibrationProfiles"]
-    extras = _resolve_effects_extras(parsed)
-    result = ee_manager.apply_global_extras_to_all_presets(extras)
+    try:
+        extras = _resolve_effects_extras(parsed)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "invalid_effects_extras", "message": str(exc)},
+        ) from exc
     if disabling_loudness:
         volume_db = float(previous["loudness"]["params"]["volumeDb"])
         set_output_volume(ee_manager.loudness_percent_from_db(volume_db))
+    result = ee_manager.apply_global_extras_to_all_presets(extras)
 
     active_preset = ee_manager.get_active_preset()
     if active_preset and active_preset not in ee_manager.EXCLUDED_GLOBAL_EXTRAS_PRESETS:
@@ -6365,6 +6417,8 @@ async def save_easyeffects_extras(request: Request):
             ee_manager.load_preset(active_preset)
         except Exception as e:
             logger.warning("Failed to reload active preset after extras update: %s", e)
+    if enabling_loudness:
+        set_output_volume(100)
 
     status = ee_manager.get_status()
     await manager.broadcast({"type": "easyeffects", "data": status})

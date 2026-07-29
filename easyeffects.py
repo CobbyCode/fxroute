@@ -127,12 +127,13 @@ class EasyEffectsManager:
 
     @staticmethod
     def loudness_db_from_percent(percent: int | float) -> float:
-        value = max(0.0, min(100.0, float(percent)))
-        return -80.0 if value <= 0.0 else max(-80.0, 20.0 * math.log10(value / 100.0))
+        from system_volume import volume_percent_to_db
+        return volume_percent_to_db(percent)
 
     @staticmethod
     def loudness_percent_from_db(volume_db: int | float) -> int:
-        return max(0, min(100, round(100.0 * (10.0 ** (float(volume_db) / 20.0)))))
+        from system_volume import volume_db_to_percent
+        return volume_db_to_percent(volume_db)
 
     def __init__(self, home: Optional[Path] = None):
         self.home = Path(home or Path.home())
