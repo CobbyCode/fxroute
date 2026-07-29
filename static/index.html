@@ -600,6 +600,21 @@
                                                 </select>
                                             </label>
                                         </div>
+                                        <div class="effects-extras-row effects-extras-row-helpers">
+                                            <label class="checkbox-row"><input type="checkbox" id="effects-loudness-enabled"> Loudness</label>
+                                            <label for="effects-loudness-fft-size" id="effects-loudness-fft-wrap" class="effects-headroom-gain-wrap hidden">
+                                                <span class="effects-status-subtle">FFT Size</span>
+                                                <select id="effects-loudness-fft-size" class="url-input effects-headroom-select">
+                                                    <option value="256">256</option>
+                                                    <option value="512">512</option>
+                                                    <option value="1024">1024</option>
+                                                    <option value="2048">2048</option>
+                                                    <option value="4096" selected>4096</option>
+                                                    <option value="8192">8192</option>
+                                                    <option value="16384">16384</option>
+                                                </select>
+                                            </label>
+                                        </div>
                                     </section>
                                     <section class="effects-extras-group">
                                         <div class="effects-extras-group-header">
@@ -795,6 +810,7 @@
                                     </div>
                                     <div class="measurement-workflow-group measurement-workflow-auto-sub hidden" id="measurement-auto-sub-group">
                                         <button id="measurement-auto-sub-start" class="btn-primary" type="button">Auto Sub Optimize</button>
+                                        <button id="measurement-spl-calibration-open" class="btn-secondary" type="button">SPL Calibration</button>
                                         <span id="measurement-auto-sub-status" class="measurement-repeat-help">Scans sub delay around crossover, picks best alignment.</span>
                                     </div>
                                 </div>
@@ -1032,6 +1048,36 @@
                 </div>
             </section>
         </div>
+
+        <div id="spl-calibration-panel" class="manage-overlay measurement-overlay hidden">
+            <div class="manage-overlay-backdrop"></div>
+            <section class="manage-dialog measurement-dialog" role="dialog" aria-modal="true" aria-labelledby="spl-calibration-title">
+                <div class="manage-dialog-header">
+                    <div>
+                        <h2 id="spl-calibration-title" class="section-title">SPL Calibration</h2>
+                        <p class="section-subtitle">Pink Noise −23 LUFS · target 83 dB SPL · external meter: C-weighted / Slow.</p>
+                    </div>
+                    <button id="spl-calibration-close" class="btn-ghost btn-close-manage" type="button">✕</button>
+                </div>
+                <div class="effects-stack">
+                    <div class="effects-actions-row">
+                        <button id="spl-calibration-noise" class="btn-primary" type="button">Start noise</button>
+                    </div>
+                    <div class="field-group">
+                        <label for="spl-calibration-measured">Measured SPL</label>
+                        <div class="delay-input-wrap">
+                            <input id="spl-calibration-measured" class="url-input delay-number-input" type="number" min="40" max="130" step="0.1" placeholder="83.0">
+                            <span class="delay-unit">dB SPL</span>
+                        </div>
+                    </div>
+                    <p id="spl-calibration-auto-status" class="measurement-inline-note">Checking microphone calibration…</p>
+                    <div class="effects-actions-row effects-actions-right">
+                        <button id="spl-calibration-save" class="btn-primary" type="button">Save / Apply</button>
+                    </div>
+                    <div id="spl-calibration-status" class="effects-info"></div>
+                </div>
+            </section>
+        </div>
     </main>
 
     <!-- Playback bar (fixed bottom) -->
@@ -1093,6 +1139,6 @@
     <div id="toast-container" class="toast-container"></div>
 
     <script src="/static/measurement_dsp.js?v=0.7.36"></script>
-    <script src="/static/app.js?v=0.7.55"></script>
+    <script src="/static/app.js?v=0.7.55-loudness1"></script>
 </body>
 </html>

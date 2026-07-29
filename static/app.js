@@ -480,6 +480,9 @@ const elements = {
     effectsAutogainEnabled: document.getElementById('effects-autogain-enabled'),
     effectsAutogainTargetDb: document.getElementById('effects-autogain-target-db'),
     effectsAutogainTargetWrap: document.getElementById('effects-autogain-target-wrap'),
+    effectsLoudnessEnabled: document.getElementById('effects-loudness-enabled'),
+    effectsLoudnessFftSize: document.getElementById('effects-loudness-fft-size'),
+    effectsLoudnessFftWrap: document.getElementById('effects-loudness-fft-wrap'),
     effectsDelayEnabled: document.getElementById('effects-delay-enabled'),
     effectsDelayInputsWrap: document.getElementById('effects-delay-inputs-wrap'),
     effectsDelayLeftMs: document.getElementById('effects-delay-left-ms'),
@@ -559,6 +562,14 @@ const elements = {
     seekDuration: document.getElementById('seek-duration'),
     volumeSlider: document.getElementById('volume-slider'),
     volumeDisplay: document.getElementById('volume-display'),
+    splCalibrationOpen: document.getElementById('measurement-spl-calibration-open'),
+    splCalibrationPanel: document.getElementById('spl-calibration-panel'),
+    splCalibrationClose: document.getElementById('spl-calibration-close'),
+    splCalibrationNoise: document.getElementById('spl-calibration-noise'),
+    splCalibrationMeasured: document.getElementById('spl-calibration-measured'),
+    splCalibrationAutoStatus: document.getElementById('spl-calibration-auto-status'),
+    splCalibrationSave: document.getElementById('spl-calibration-save'),
+    splCalibrationStatus: document.getElementById('spl-calibration-status'),
     toastContainer: document.getElementById('toast-container'),
 };
 // Initialization
@@ -769,6 +780,9 @@ function handleWebSocketMessage(msg) {
                         headroomGainDb: Number(state.easyeffects.global_extras?.headroom?.params?.gainDb ?? -3),
                         autogainEnabled: !!state.easyeffects.global_extras?.autogain?.enabled,
                         autogainTargetDb: Number(state.easyeffects.global_extras?.autogain?.params?.targetDb ?? -12),
+                        loudnessEnabled: !!state.easyeffects.global_extras?.loudness?.enabled,
+                        loudnessFftSize: Number(state.easyeffects.global_extras?.loudness?.params?.fftSize ?? 4096),
+                        loudnessVolumeDb: Number(state.easyeffects.global_extras?.loudness?.params?.volumeDb ?? 0),
                         delayEnabled: !!state.easyeffects.global_extras?.delay?.enabled,
                         delayLeftMs: Number(state.easyeffects.global_extras?.delay?.params?.leftMs || 0),
                         delayRightMs: Number(state.easyeffects.global_extras?.delay?.params?.rightMs || 0),
@@ -5571,6 +5585,13 @@ function clearEffectsPeqStatusOnCollapse() {
 
 function setupEffectsActions() {
     if (elements.refreshEffectsBtn) elements.refreshEffectsBtn.addEventListener('click', fetchEffects);
+    if (elements.splCalibrationOpen) elements.splCalibrationOpen.addEventListener('click', openSplCalibration);
+    if (elements.splCalibrationClose) elements.splCalibrationClose.addEventListener('click', closeSplCalibration);
+    if (elements.splCalibrationPanel?.querySelector('.manage-overlay-backdrop')) {
+        elements.splCalibrationPanel.querySelector('.manage-overlay-backdrop').addEventListener('click', closeSplCalibration);
+    }
+    if (elements.splCalibrationNoise) elements.splCalibrationNoise.addEventListener('click', toggleSplCalibrationNoise);
+    if (elements.splCalibrationSave) elements.splCalibrationSave.addEventListener('click', saveSplCalibration);
     if (elements.effectsDeleteBtn) elements.effectsDeleteBtn.addEventListener('click', deleteEffectsPreset);
     if (elements.effectsToggleImportBtn) {
         elements.effectsToggleImportBtn.addEventListener('click', () => {
@@ -5700,6 +5721,7 @@ function setupEffectsActions() {
     [
         elements.effectsHeadroomGainDb,
         elements.effectsAutogainTargetDb,
+        elements.effectsLoudnessFftSize,
         elements.effectsDelayLeftMs,
         elements.effectsDelayRightMs,
         elements.effectsBassAmount,
@@ -5721,6 +5743,12 @@ function setupEffectsActions() {
         saveEffectsExtrasDebounced(EFFECTS_EXTRAS_TOGGLE_DEBOUNCE_MS);
     });
     if (elements.effectsAutogainEnabled) elements.effectsAutogainEnabled.addEventListener('change', () => {
+        if (elements.effectsAutogainEnabled.checked && elements.effectsLoudnessEnabled) elements.effectsLoudnessEnabled.checked = false;
+        updateEffectsExtrasUi();
+        saveEffectsExtrasDebounced(EFFECTS_EXTRAS_TOGGLE_DEBOUNCE_MS);
+    });
+    if (elements.effectsLoudnessEnabled) elements.effectsLoudnessEnabled.addEventListener('change', () => {
+        if (elements.effectsLoudnessEnabled.checked && elements.effectsAutogainEnabled) elements.effectsAutogainEnabled.checked = false;
         updateEffectsExtrasUi();
         saveEffectsExtrasDebounced(EFFECTS_EXTRAS_TOGGLE_DEBOUNCE_MS);
     });
@@ -5759,6 +5787,86 @@ function setupEffectsActions() {
     setEffectsImportPanelOpen(false);
     resetPeqDraft();
     renderEffectsCombine();
+}
+
+let splCalibrationNoiseActive = false;
+
+async function openSplCalibration() {
+    elements.splCalibrationPanel?.classList.remove('hidden');
+    try {
+        const response = await fetch('/api/measurements/spl-calibration');
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || 'Failed to load SPL calibration');
+        splCalibrationNoiseActive = !!data.noise_active;
+        if (elements.splCalibrationNoise) elements.splCalibrationNoise.textContent = splCalibrationNoiseActive ? 'Stop noise' : 'Start noise';
+        if (elements.splCalibrationAutoStatus) {
+            elements.splCalibrationAutoStatus.textContent = data.automatic?.available
+                ? `Automatic absolute SPL available: ${data.automatic.microphone_model}`
+                : `${data.automatic?.reason || 'Manual C/Slow meter entry is required.'}`;
+        }
+    } catch (error) {
+        if (elements.splCalibrationStatus) elements.splCalibrationStatus.textContent = error.message;
+    }
+}
+
+async function closeSplCalibration() {
+    if (splCalibrationNoiseActive) {
+        await fetch('/api/measurements/spl-calibration/noise', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enabled: false }),
+        }).catch(() => null);
+    }
+    splCalibrationNoiseActive = false;
+    elements.splCalibrationPanel?.classList.add('hidden');
+}
+
+async function toggleSplCalibrationNoise() {
+    const next = !splCalibrationNoiseActive;
+    if (elements.splCalibrationNoise) elements.splCalibrationNoise.disabled = true;
+    try {
+        const response = await fetch('/api/measurements/spl-calibration/noise', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enabled: next }),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || 'Calibration noise failed');
+        splCalibrationNoiseActive = next;
+        if (elements.splCalibrationNoise) elements.splCalibrationNoise.textContent = next ? 'Stop noise' : 'Start noise';
+        if (elements.splCalibrationStatus) {
+            elements.splCalibrationStatus.textContent = next
+                ? 'Settling… read the C/Slow meter after about 1 second and average for about 3 seconds.'
+                : 'Noise stopped; previous volume state restored.';
+        }
+    } catch (error) {
+        if (elements.splCalibrationStatus) elements.splCalibrationStatus.textContent = error.message;
+    } finally {
+        if (elements.splCalibrationNoise) elements.splCalibrationNoise.disabled = false;
+    }
+}
+
+async function saveSplCalibration() {
+    const measured = Number(elements.splCalibrationMeasured?.value);
+    if (!Number.isFinite(measured)) {
+        if (elements.splCalibrationStatus) elements.splCalibrationStatus.textContent = 'Enter the measured C/Slow SPL value.';
+        return;
+    }
+    try {
+        const response = await fetch('/api/measurements/spl-calibration/apply', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ measured_spl_db: measured }),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || 'Failed to apply SPL calibration');
+        splCalibrationNoiseActive = false;
+        if (elements.splCalibrationNoise) elements.splCalibrationNoise.textContent = 'Start noise';
+        if (elements.splCalibrationStatus) elements.splCalibrationStatus.textContent = `Applied ${Number(data.calibration_trim_db).toFixed(1)} dB trim for this output profile.`;
+        await fetchEffects();
+    } catch (error) {
+        if (elements.splCalibrationStatus) elements.splCalibrationStatus.textContent = error.message;
+    }
 }
 async function startDownload(urlOverride = null) {
     const url = (urlOverride || elements.downloadUrl.value || '').trim();
@@ -10462,6 +10570,9 @@ async function fetchEffects() {
                 headroomGainDb: Number(data.global_extras?.headroom?.params?.gainDb ?? -3),
                 autogainEnabled: !!data.global_extras?.autogain?.enabled,
                 autogainTargetDb: Number(data.global_extras?.autogain?.params?.targetDb ?? -12),
+                loudnessEnabled: !!data.global_extras?.loudness?.enabled,
+                loudnessFftSize: Number(data.global_extras?.loudness?.params?.fftSize ?? 4096),
+                loudnessVolumeDb: Number(data.global_extras?.loudness?.params?.volumeDb ?? 0),
                 delayEnabled: !!data.global_extras?.delay?.enabled,
                 delayLeftMs: Number(data.global_extras?.delay?.params?.leftMs || 0),
                 delayRightMs: Number(data.global_extras?.delay?.params?.rightMs || 0),
@@ -11281,6 +11392,7 @@ async function switchEffectsPreset() {
 const _activeEditing = new Set();
 const EFFECTS_HEADROOM_ALLOWED_GAIN_DB = new Set([-2, -3, -4, -5, -6]);
 const EFFECTS_AUTOGAIN_ALLOWED_TARGET_DB = new Set([-9, -12, -15, -18]);
+const EFFECTS_LOUDNESS_ALLOWED_FFT_SIZE = new Set([256, 512, 1024, 2048, 4096, 8192, 16384]);
 const EFFECTS_TONE_EFFECT_MODES = new Set(['crystalizer', 'maximizer']);
 
 function normalizeEffectsHeadroomGainDb(value, fallback = -3) {
@@ -11297,6 +11409,11 @@ function normalizeEffectsAutogainTargetDb(value, fallback = -12) {
     return EFFECTS_AUTOGAIN_ALLOWED_TARGET_DB.has(rounded) ? rounded : fallback;
 }
 
+function normalizeEffectsLoudnessFftSize(value, fallback = 4096) {
+    const numeric = Math.round(Number(value));
+    return EFFECTS_LOUDNESS_ALLOWED_FFT_SIZE.has(numeric) ? numeric : fallback;
+}
+
 function normalizeEffectsToneEffectMode(value, fallback = 'crystalizer') {
     const normalized = String(value || fallback).trim().toLowerCase();
     return EFFECTS_TONE_EFFECT_MODES.has(normalized) ? normalized : fallback;
@@ -11311,6 +11428,10 @@ function applyEffectsExtras(extras = {}) {
     if (elements.effectsAutogainEnabled) elements.effectsAutogainEnabled.checked = !!extras.autogainEnabled;
     if (elements.effectsAutogainTargetDb && !_activeEditing.has(elements.effectsAutogainTargetDb)) {
         elements.effectsAutogainTargetDb.value = String(normalizeEffectsAutogainTargetDb(extras.autogainTargetDb, -12));
+    }
+    if (elements.effectsLoudnessEnabled) elements.effectsLoudnessEnabled.checked = !!extras.loudnessEnabled;
+    if (elements.effectsLoudnessFftSize && !_activeEditing.has(elements.effectsLoudnessFftSize)) {
+        elements.effectsLoudnessFftSize.value = String(normalizeEffectsLoudnessFftSize(extras.loudnessFftSize, 4096));
     }
     if (elements.effectsDelayEnabled) elements.effectsDelayEnabled.checked = !!extras.delayEnabled;
     if (elements.effectsDelayLeftMs && !_activeEditing.has(elements.effectsDelayLeftMs)) elements.effectsDelayLeftMs.value = String(Number(extras.delayLeftMs || 0));
@@ -11334,6 +11455,11 @@ function updateEffectsExtrasUi() {
     if (elements.effectsAutogainTargetWrap) {
         elements.effectsAutogainTargetWrap.classList.toggle('hidden', !elements.effectsAutogainEnabled?.checked);
     }
+    if (elements.effectsLoudnessFftWrap) {
+        elements.effectsLoudnessFftWrap.classList.toggle('hidden', !elements.effectsLoudnessEnabled?.checked);
+    }
+    if (elements.effectsAutogainEnabled) elements.effectsAutogainEnabled.disabled = !!elements.effectsLoudnessEnabled?.checked;
+    if (elements.effectsLoudnessEnabled) elements.effectsLoudnessEnabled.disabled = !!elements.effectsAutogainEnabled?.checked;
     if (elements.effectsDelayInputsWrap) {
         elements.effectsDelayInputsWrap.classList.toggle('hidden', !elements.effectsDelayEnabled?.checked);
     }
@@ -11649,6 +11775,9 @@ function loadSavedEffectsExtras() {
         headroomGainDb: Number(fx.global_extras?.headroom?.params?.gainDb ?? -3),
         autogainEnabled: !!fx.global_extras?.autogain?.enabled,
         autogainTargetDb: Number(fx.global_extras?.autogain?.params?.targetDb ?? -12),
+        loudnessEnabled: !!fx.global_extras?.loudness?.enabled,
+        loudnessFftSize: Number(fx.global_extras?.loudness?.params?.fftSize ?? 4096),
+        loudnessVolumeDb: Number(fx.global_extras?.loudness?.params?.volumeDb ?? 0),
         delayEnabled: !!fx.global_extras?.delay?.enabled,
         delayLeftMs: Number(fx.global_extras?.delay?.params?.leftMs || 0),
         delayRightMs: Number(fx.global_extras?.delay?.params?.rightMs || 0),
@@ -11664,6 +11793,7 @@ function describeEffectsExtras(extras) {
     parts.push(extras.limiterEnabled ? 'Limiter ON (-1.0 dB)' : 'Limiter OFF');
     parts.push(extras.headroomEnabled ? `Headroom ON (${Number(extras.headroomGainDb || 0).toFixed(0)} dB)` : 'Headroom OFF');
     parts.push(extras.autogainEnabled ? `Autogain ON (${extras.autogainTargetDb} dB)` : 'Autogain OFF');
+    parts.push(extras.loudnessEnabled ? `Loudness ON (FFT ${extras.loudnessFftSize})` : 'Loudness OFF');
     parts.push(extras.toneEffectEnabled ? `Tone ON (${normalizeEffectsToneEffectMode(extras.toneEffectMode, 'crystalizer')})` : 'Tone OFF');
     return parts.join(' • ');
 }
@@ -11702,6 +11832,9 @@ function collectEffectsExtras() {
         headroomGainDb: normalizeEffectsHeadroomGainDb(elements.effectsHeadroomGainDb?.value, -3),
         autogainEnabled: elements.effectsAutogainEnabled?.checked || false,
         autogainTargetDb: normalizeEffectsAutogainTargetDb(elements.effectsAutogainTargetDb?.value, -12),
+        loudnessEnabled: elements.effectsLoudnessEnabled?.checked || false,
+        loudnessFftSize: normalizeEffectsLoudnessFftSize(elements.effectsLoudnessFftSize?.value, 4096),
+        loudnessVolumeDb: Number(state.easyeffects?.global_extras?.loudness?.params?.volumeDb ?? 0),
         delayEnabled: elements.effectsDelayEnabled?.checked || false,
         delayLeftMs: parseFloat(elements.effectsDelayLeftMs?.value || '0'),
         delayRightMs: parseFloat(elements.effectsDelayRightMs?.value || '0'),
@@ -11736,6 +11869,7 @@ async function _doSaveEffectsExtras(phase) {
             limiter: { enabled: !!extras.limiterEnabled, params: { thresholdDb: -1.0, attackMs: 5.0, releaseMs: 50.0, lookaheadMs: 5.0, stereoLinkPercent: 100.0 } },
             headroom: { enabled: !!extras.headroomEnabled, params: { gainDb: extras.headroomGainDb } },
             autogain: { enabled: !!extras.autogainEnabled, params: { targetDb: extras.autogainTargetDb } },
+            loudness: { enabled: !!extras.loudnessEnabled, params: { fftSize: extras.loudnessFftSize, volumeDb: extras.loudnessVolumeDb, calibrationTrimDb: 0, calibration: {} } },
             delay: { enabled: !!extras.delayEnabled, params: { leftMs: extras.delayLeftMs, rightMs: extras.delayRightMs } },
             bass_enhancer: { enabled: !!extras.bassEnabled, params: { amount: extras.bassAmount, harmonics: 8.5, scope: 100.0, blend: 0.0 } },
             tone_effect: { enabled: !!extras.toneEffectEnabled, mode: extras.toneEffectMode },

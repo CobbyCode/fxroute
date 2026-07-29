@@ -108,10 +108,31 @@ class EasyEffectsManager:
         },
     }
 
+    LOUDNESS_FFT_SIZES = {256, 512, 1024, 2048, 4096, 8192, 16384}
+    LOUDNESS_DEFAULTS = {
+        "enabled": False,
+        "params": {
+            "fftSize": 4096,
+            "volumeDb": 0.0,
+            "calibrationTrimDb": 0.0,
+            "calibration": {},
+            "calibrationProfiles": {},
+        },
+    }
+
     TONE_EFFECT_DEFAULTS = {
         "enabled": False,
         "mode": "crystalizer",
     }
+
+    @staticmethod
+    def loudness_db_from_percent(percent: int | float) -> float:
+        value = max(0.0, min(100.0, float(percent)))
+        return -80.0 if value <= 0.0 else max(-80.0, 20.0 * math.log10(value / 100.0))
+
+    @staticmethod
+    def loudness_percent_from_db(volume_db: int | float) -> int:
+        return max(0, min(100, round(100.0 * (10.0 ** (float(volume_db) / 20.0)))))
 
     def __init__(self, home: Optional[Path] = None):
         self.home = Path(home or Path.home())
@@ -1047,6 +1068,31 @@ class EasyEffectsManager:
             },
         }
 
+    def _normalize_loudness_v1(self, definition: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        definition = definition if isinstance(definition, dict) else self.LOUDNESS_DEFAULTS
+        params = definition.get("params") if isinstance(definition.get("params"), dict) else {}
+        fft_size = int(params.get("fftSize", self.LOUDNESS_DEFAULTS["params"]["fftSize"]))
+        if fft_size not in self.LOUDNESS_FFT_SIZES:
+            raise ValueError("loudness.params.fftSize is not supported")
+        volume_db = float(params.get("volumeDb", 0.0))
+        if not -80.0 <= volume_db <= 0.0:
+            raise ValueError("loudness.params.volumeDb must be between -80 and 0")
+        trim_db = float(params.get("calibrationTrimDb", 0.0))
+        if not -30.0 <= trim_db <= 30.0:
+            raise ValueError("loudness.params.calibrationTrimDb must be between -30 and 30")
+        calibration = params.get("calibration") if isinstance(params.get("calibration"), dict) else {}
+        calibration_profiles = params.get("calibrationProfiles") if isinstance(params.get("calibrationProfiles"), dict) else {}
+        return {
+            "enabled": bool(definition.get("enabled", False)),
+            "params": {
+                "fftSize": fft_size,
+                "volumeDb": volume_db,
+                "calibrationTrimDb": trim_db,
+                "calibration": dict(calibration),
+                "calibrationProfiles": dict(calibration_profiles),
+            },
+        }
+
     def _normalize_tone_effect_v1(self, tone_definition: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         if tone_definition is None:
             tone_definition = self.TONE_EFFECT_DEFAULTS
@@ -1070,6 +1116,10 @@ class EasyEffectsManager:
 
     def normalize_effects_extras(self, extras: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         extras = extras or {}
+        autogain = self._normalize_autogain_v1(extras.get("autogain")) if extras.get("autogain") else self._normalize_autogain_v1(None)
+        loudness = self._normalize_loudness_v1(extras.get("loudness")) if extras.get("loudness") else self._normalize_loudness_v1(None)
+        if autogain["enabled"] and loudness["enabled"]:
+            raise ValueError("Auto Gain and Loudness cannot be enabled at the same time")
         return {
             "limiter": self._normalize_limiter_v1(extras.get("limiter")) if extras.get("limiter", {}).get("enabled") else {
                 "enabled": False,
@@ -1078,7 +1128,8 @@ class EasyEffectsManager:
             "headroom": self._normalize_headroom_v1(extras.get("headroom")) if extras.get("headroom") else self._normalize_headroom_v1(None),
             "delay": self._normalize_delay_v1(extras.get("delay")) if extras.get("delay") else self._normalize_delay_v1(None),
             "bass_enhancer": self._normalize_bass_enhancer_v1(extras.get("bass_enhancer")) if extras.get("bass_enhancer") else self._normalize_bass_enhancer_v1(None),
-            "autogain": self._normalize_autogain_v1(extras.get("autogain")) if extras.get("autogain") else self._normalize_autogain_v1(None),
+            "autogain": autogain,
+            "loudness": loudness,
             "tone_effect": self._normalize_tone_effect_v1(extras.get("tone_effect")) if extras.get("tone_effect") is not None else self._normalize_tone_effect_v1(None),
         }
 
@@ -1238,6 +1289,20 @@ class EasyEffectsManager:
             "target": autogain["params"]["targetDb"],
         }
 
+    def _loudness_plugin_payload(self, loudness: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "bypass": not loudness.get("enabled", False),
+            "clipping": False,
+            "clipping-range": 6.0,
+            "fft": str(loudness["params"]["fftSize"]),
+            "iir-approximation": "Normal",
+            "input-gain": 0.0,
+            "mode": "FFT",
+            "output-gain": 0.0,
+            "std": "ISO226-2023",
+            "volume": loudness["params"]["volumeDb"],
+        }
+
     def _crystalizer_plugin_payload(self, tone_effect: Dict[str, Any]) -> Dict[str, Any]:
         payload = {
             "adaptive-intensity": True,
@@ -1360,7 +1425,7 @@ class EasyEffectsManager:
     ) -> Dict[str, Any]:
         normalized = self.normalize_effects_extras(extras)
         result = dict(output or {})
-        helper_plugin_names = ["crystalizer#0", "maximizer#0", "bass_enhancer#0", "autogain#0", "limiter#0"]
+        helper_plugin_names = ["crystalizer#0", "maximizer#0", "bass_enhancer#0", "autogain#0", "loudness#0", "limiter#0"]
         helper_plugin_set = set(helper_plugin_names + ["delay#0"])
         plugins_order = list(result.get("plugins_order", []))
 
@@ -1370,6 +1435,8 @@ class EasyEffectsManager:
         result.pop("delay#0", None)
         result["autogain#0"] = self._autogain_plugin_payload(normalized["autogain"])
         result["limiter#0"] = self._limiter_plugin_payload(normalized["limiter"])
+        result["limiter#0"]["input-gain"] = normalized["loudness"]["params"]["calibrationTrimDb"]
+        result["loudness#0"] = self._loudness_plugin_payload(normalized["loudness"])
 
         plugins_order = [entry for entry in plugins_order if entry not in helper_plugin_set]
         plugins_order.extend(helper_plugin_names)
@@ -1494,6 +1561,12 @@ class EasyEffectsManager:
             return {"extras": normalized, "updated": 0, "skipped": [active_preset]}
         return {"extras": normalized, "updated": 1, "skipped": []}
 
+    def set_loudness_volume_db(self, volume_db: float) -> Dict[str, Any]:
+        extras = self.load_global_extras()
+        loudness = extras["loudness"]
+        loudness["params"]["volumeDb"] = max(-80.0, min(0.0, float(volume_db)))
+        return self.apply_global_extras_to_active_preset(extras)
+
     def _read_preset_payload(self, preset_name: str) -> Dict[str, Any]:
         clean_name = self._clean_preset_name(preset_name)
         if not clean_name:
@@ -1552,7 +1625,7 @@ class EasyEffectsManager:
         if clean_preset_name in set(normalized_sources):
             raise ValueError("New preset name must differ from the source presets")
 
-        helper_bases = {"limiter", "delay", "bass_enhancer", "autogain", "crystalizer", "maximizer"}
+        helper_bases = {"limiter", "delay", "bass_enhancer", "autogain", "loudness", "crystalizer", "maximizer"}
         base_plugins: Dict[str, Any] = {}
         base_order: List[str] = []
         plugin_counters: Dict[str, int] = {}
