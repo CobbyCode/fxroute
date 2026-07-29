@@ -29,9 +29,8 @@ class FakeEasyEffects:
                 "enabled": True,
                 "params": {
                     "volumeDb": -12.0,
-                    "calibrationTrimDb": 27.9,
-                    "calibration": {"trimDb": 27.9},
-                    "calibrationProfiles": {"usb-a": {"trimDb": 27.9}},
+                    "calibration": {"requiredAdjustmentDb": 27.9},
+                    "calibrationProfiles": {"usb-a": {"requiredAdjustmentDb": 27.9}},
                 },
             },
         })
@@ -88,7 +87,6 @@ async def test_save_applies_only_coupled_loudness_offset() -> None:
 
         assert round(result["required_adjustment_db"], 1) == 27.9
         assert result["calibrated"] is False
-        assert params["calibrationTrimDb"] == 0.0
         assert calibration["measuredSplDb"] == 55.1
         assert round(calibration["requiredAdjustmentDb"], 1) == 27.9
         assert calibration["calibrated"] is False
@@ -114,7 +112,7 @@ async def test_save_applies_only_coupled_loudness_offset() -> None:
         main.spl_calibration_restore_state = None
 
 
-def test_legacy_trim_migration() -> None:
+def test_legacy_trim_is_not_migrated_or_rewritten() -> None:
     with tempfile.TemporaryDirectory(prefix="fxroute-spl-migration-") as directory:
         manager = EasyEffectsManager(home=Path(directory))
         manager.global_extras_file.parent.mkdir(parents=True, exist_ok=True)
@@ -133,26 +131,18 @@ def test_legacy_trim_migration() -> None:
 """,
             encoding="utf-8",
         )
+        original_text = manager.global_extras_file.read_text()
         loaded = manager.load_global_extras()
-        params = loaded["loudness"]["params"]
-        assert params["calibrationTrimDb"] == 0.0
-        assert params["calibration"]["requiredAdjustmentDb"] == 27.9
-        assert "trimDb" not in params["calibration"]
-        assert params["calibrationProfiles"]["usb-a"]["requiredAdjustmentDb"] == 27.9
-        assert '"calibrationTrimDb": 0.0' in manager.global_extras_file.read_text()
-        for enabled in (False, True):
-            migrated = copy.deepcopy(loaded)
-            migrated["loudness"]["enabled"] = enabled
-            output = manager._apply_extras_to_output({"plugins_order": []}, migrated)
-            assert output["limiter#0"]["input-gain"] == 0.0
-            assert output["loudness#0"]["output-gain"] == (27.9 if enabled else 0.0)
+        assert "calibrationTrimDb" not in loaded["loudness"]["params"]
+        assert "requiredAdjustmentDb" not in loaded["loudness"]["params"]["calibration"]
+        assert manager.global_extras_file.read_text() == original_text
 
 
 async def main_test() -> None:
     assert round(main._calculate_spl_required_adjustment(55.1), 1) == 27.9
     assert main._calculate_spl_required_adjustment(83.0) == 0.0
     await test_save_applies_only_coupled_loudness_offset()
-    test_legacy_trim_migration()
+    test_legacy_trim_is_not_migrated_or_rewritten()
     print("SPL offset is coupled to Loudness only; global gain remains zero: ok")
 
 

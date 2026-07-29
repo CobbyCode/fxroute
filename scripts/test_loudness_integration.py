@@ -31,7 +31,6 @@ def test_chain_and_schema() -> None:
                 "params": {
                     "fftSize": 8192,
                     "volumeDb": -20.23453,
-                    "calibrationTrimDb": 1.5,
                     "calibration": {"requiredAdjustmentDb": 22.9},
                     "calibrationProfiles": {},
                 },
@@ -98,17 +97,14 @@ def test_persistence_and_volume_mapping() -> None:
             "params": {
                 "fftSize": 4096,
                 "volumeDb": ee.loudness_db_from_percent(62),
-                "calibrationTrimDb": -2.5,
-                "calibration": {"outputProfileId": "usb-a"},
-                "calibrationProfiles": {"usb-a": {"trimDb": -2.5}},
+                "calibration": {"outputProfileId": "usb-a", "requiredAdjustmentDb": -2.5},
+                "calibrationProfiles": {"usb-a": {"requiredAdjustmentDb": -2.5}},
             },
         },
     })
     loaded = ee.load_global_extras()
     assert loaded == saved
-    assert loaded["loudness"]["params"]["calibrationTrimDb"] == 0.0
     assert loaded["loudness"]["params"]["calibrationProfiles"]["usb-a"]["requiredAdjustmentDb"] == -2.5
-    assert "trimDb" not in loaded["loudness"]["params"]["calibrationProfiles"]["usb-a"]
     assert ee.loudness_percent_from_db(loaded["loudness"]["params"]["volumeDb"]) == 62
     assert ee.loudness_db_from_percent(100) == 0.0
     expected = {

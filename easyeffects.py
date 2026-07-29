@@ -114,7 +114,6 @@ class EasyEffectsManager:
         "params": {
             "fftSize": 4096,
             "volumeDb": 0.0,
-            "calibrationTrimDb": 0.0,
             "calibration": {},
             "calibrationProfiles": {},
         },
@@ -1081,9 +1080,6 @@ class EasyEffectsManager:
 
         def normalize_calibration(value: Any) -> Dict[str, Any]:
             calibration = dict(value) if isinstance(value, dict) else {}
-            legacy_trim = calibration.pop("trimDb", None)
-            if "requiredAdjustmentDb" not in calibration and isinstance(legacy_trim, (int, float)):
-                calibration["requiredAdjustmentDb"] = float(legacy_trim)
             adjustment = calibration.get("requiredAdjustmentDb")
             if isinstance(adjustment, (int, float)):
                 calibration["requiredAdjustmentDb"] = float(adjustment)
@@ -1102,9 +1098,6 @@ class EasyEffectsManager:
             "params": {
                 "fftSize": fft_size,
                 "volumeDb": volume_db,
-                # Legacy field retained as a zero-only compatibility marker.
-                # SPL calibration is metadata, never a digital gain stage.
-                "calibrationTrimDb": 0.0,
                 "calibration": dict(calibration),
                 "calibrationProfiles": dict(calibration_profiles),
             },
@@ -1158,11 +1151,7 @@ class EasyEffectsManager:
         except Exception as e:
             logger.warning("Failed to read global extras config, using defaults: %s", e)
             return self.normalize_effects_extras(None)
-        normalized = self.normalize_effects_extras(payload)
-        if payload != normalized:
-            self.global_extras_file.parent.mkdir(parents=True, exist_ok=True)
-            self.global_extras_file.write_text(json.dumps(normalized, indent=2) + "\n")
-        return normalized
+        return self.normalize_effects_extras(payload)
 
     def save_global_extras(self, extras: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         normalized = self.normalize_effects_extras(extras)

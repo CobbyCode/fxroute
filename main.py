@@ -6217,7 +6217,6 @@ def _parse_effects_extras_from_json(body: dict) -> dict:
             "params": {
                 "fftSize": loudness_fft_size,
                 "volumeDb": loudness_volume_db,
-                "calibrationTrimDb": float(body.get("calibrationTrimDb", 0.0) or 0.0),
                 "calibration": body.get("calibration") if isinstance(body.get("calibration"), dict) else {},
                 "calibrationProfiles": body.get("calibrationProfiles") if isinstance(body.get("calibrationProfiles"), dict) else {},
             },
@@ -6275,7 +6274,6 @@ def _merge_effects_extras_from_json(previous: dict, body: dict) -> dict:
         ("autogain", "targetDb", ("autogainTargetDb", "autogain_target_db"), float),
         ("loudness", "fftSize", ("loudnessFftSize", "loudness_fft_size"), int),
         ("loudness", "volumeDb", ("loudnessVolumeDb", "loudness_volume_db"), float),
-        ("loudness", "calibrationTrimDb", ("calibrationTrimDb",), float),
         ("delay", "leftMs", ("delayLeftMs", "delay_left_ms"), float),
         ("delay", "rightMs", ("delayRightMs", "delay_right_ms"), float),
         ("bass_enhancer", "amount", ("bassAmount", "bass_amount"), float),
@@ -6606,7 +6604,9 @@ def _c_weighted_spl_from_capture(
     weighted_time = spl_np.fft.irfft(weighted, n=signal.size)
     rms = math.sqrt(float(spl_np.mean(spl_np.square(weighted_time))) / max(coherent_power, 1e-12))
     dbfs = 20.0 * math.log10(max(rms, 1e-12))
-    return dbfs + 120.0 - float(sensitivity_factor_db)
+    # miniDSP/REW Sens Factor is referenced to 100 dB SPL with the UMIK
+    # capture level at 100% (24 dB digital reference gain), hence +124 dB.
+    return dbfs + 124.0 - float(sensitivity_factor_db)
 
 
 def _calculate_spl_required_adjustment(measured_spl_db: float) -> float:
@@ -6679,7 +6679,6 @@ def _start_spl_calibration_noise() -> dict[str, Any]:
         "system_volume_percent": get_output_volume(),
     }
     extras["loudness"]["params"]["volumeDb"] = 0.0
-    extras["loudness"]["params"]["calibrationTrimDb"] = 0.0
     # Recalibration always measures from the neutral Loudness reference point.
     extras["loudness"]["params"]["calibration"] = {}
     ee_manager.apply_global_extras_to_active_preset(extras)
@@ -6826,7 +6825,6 @@ async def apply_spl_calibration(request: Request):
     extras = ee_manager.load_global_extras()
     profile = _spl_output_profile()
     automatic = _spl_auto_capability()
-    extras["loudness"]["params"]["calibrationTrimDb"] = 0.0
     extras["loudness"]["params"]["calibration"] = {
         "outputProfileId": profile["id"],
         "outputProfileLabel": profile["label"],

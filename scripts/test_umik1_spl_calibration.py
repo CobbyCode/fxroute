@@ -110,7 +110,7 @@ def main_test():
             measured = main._c_weighted_spl_from_capture(
                 sine, sample_rate, 0.371, missing_sensitivity
             )
-            assert abs(measured - (20.0 * np.log10(0.05) + 120.0 - 0.371)) < 0.1
+            assert abs(measured - (20.0 * np.log10(0.05) + 124.0 - 0.371)) < 0.1
 
             assert main._calculate_spl_required_adjustment(82.5) == 0.5
     finally:
