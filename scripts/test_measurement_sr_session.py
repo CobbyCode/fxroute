@@ -323,15 +323,18 @@ class TestCentralCapture:
 class TestHeartbeatReopen:
     """Heartbeat reopen cancels deferred release."""
 
-    def test_open_true_without_active_session_does_nothing(self) -> None:
-        """open:true without active session must not start a session."""
+    def test_open_true_starts_measurement_rate_session(self) -> None:
+        """Opening the measurement window owns 48 kHz before the first sweep."""
         ts = _TestSession()
         try:
             assert ts._session.active is False
             asyncio.get_event_loop().run_until_complete(
                 ts._session.request_open()
             )
-            assert ts._session.active is False
+            assert ts._session.active is True
+            assert ts._force_rate == 48000
+            assert ts._main._measurement_session_blocks_playback_rate(44100) is True
+            assert ts._main._measurement_session_blocks_playback_rate(48000) is False
         finally:
             ts.cleanup()
 

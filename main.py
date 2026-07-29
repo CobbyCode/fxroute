@@ -513,9 +513,27 @@ def _get_current_pipewire_force_rate() -> Optional[int]:
     return force_rate if isinstance(force_rate, int) and force_rate > 0 else 0
 
 
+def _measurement_session_blocks_playback_rate(expected_rate: Optional[int]) -> bool:
+    return bool(
+        measurement_sr_session is not None
+        and measurement_sr_session.active
+        and isinstance(expected_rate, int)
+        and expected_rate != measurement_sr_session.measurement_rate
+    )
+
+
 async def _ensure_radio_samplerate_force(expected_rate: Optional[int], reason: str) -> bool:
     global radio_samplerate_force_rate
     if not isinstance(expected_rate, int) or expected_rate <= 0:
+        return False
+    if _measurement_session_blocks_playback_rate(expected_rate):
+        logger.info(
+            "Playback samplerate repair deferred to active measurement session: "
+            "reason=%s playback_rate=%s measurement_rate=%s",
+            reason,
+            expected_rate,
+            measurement_sr_session.measurement_rate,
+        )
         return False
     try:
         samplerate_status = get_samplerate_status()
@@ -938,9 +956,10 @@ class MeasurementSampleRateSession:
             await self._check_release()
 
     async def request_open(self) -> None:
-        """Cancel a pending close/deferred-release when the heartbeat returns."""
+        """Start the 48 kHz window session or cancel a pending close."""
         async with self.lock:
             if not self.active:
+                await self._start_locked(_resolve_measurement_start_sample_rate())
                 return
             self.close_requested = False
             self.deferred_release_pending = False
@@ -988,7 +1007,15 @@ class MeasurementSampleRateSession:
                         radio_stream_stale_after_measurement = True
 
             try:
-                await _sync_subwoofer_runtime_at_rate(restore_value)
+                runtime_restore_rate = restore_value
+                if runtime_restore_rate <= 0:
+                    status = get_samplerate_status()
+                    runtime_restore_rate = int(
+                        status.get("configured_default_rate")
+                        or status.get("clock_rate")
+                        or DEFAULT_SAMPLE_RATE
+                    )
+                await _sync_subwoofer_runtime_at_rate(runtime_restore_rate)
             except Exception as exc:
                 logger.warning("Measurement sample-rate session runtime restore failed: %s", exc)
         finally:

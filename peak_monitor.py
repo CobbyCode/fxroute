@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from itertools import count
 from typing import Awaitable, Callable, Optional
 
+from samplerate import get_samplerate_status
+
 logger = logging.getLogger(__name__)
 
 PEAK_THRESHOLD = 1.0
@@ -31,6 +33,25 @@ VU_ATTACK_SECONDS = 0.18
 VU_RELEASE_SECONDS = 0.85
 VU_EMIT_INTERVAL = 0.25
 CAPTURE_NO_DATA_TIMEOUT = 3.0
+FALLBACK_CAPTURE_RATE = 48_000
+
+
+def _resolve_capture_rate() -> int:
+    """Keep the monitor from becoming an unintended 48 kHz graph driver."""
+    try:
+        status = get_samplerate_status()
+    except Exception:
+        return FALLBACK_CAPTURE_RATE
+    force_rate = status.get("force_rate")
+    if isinstance(force_rate, int) and force_rate > 0:
+        return force_rate
+    configured_rate = status.get("configured_default_rate")
+    if isinstance(configured_rate, int) and configured_rate > 0:
+        return configured_rate
+    clock_rate = status.get("clock_rate")
+    if isinstance(clock_rate, int) and clock_rate > 0:
+        return clock_rate
+    return FALLBACK_CAPTURE_RATE
 
 
 @dataclass
@@ -206,6 +227,7 @@ class EasyEffectsPeakMonitor:
     async def _capture_target(self, target: MonitorTarget):
         capture_started_at = time.monotonic()
         capture_node_name = f"{CAPTURE_NODE_NAME}_{next(CAPTURE_NODE_SEQUENCE)}"
+        capture_rate = _resolve_capture_rate()
         self._capture_node_name = capture_node_name
         cmd = [
             "pw-record",
@@ -219,9 +241,16 @@ class EasyEffectsPeakMonitor:
             "f32",
             "--channels",
             "2",
+            "--rate",
+            str(capture_rate),
             "-",
         ]
-        logger.info("Starting EasyEffects peak monitor on node %s (%s)", target.source_name, target.description)
+        logger.info(
+            "Starting EasyEffects peak monitor on node %s (%s) at %s Hz",
+            target.source_name,
+            target.description,
+            capture_rate,
+        )
         self._last_error = None
         await self._emit_if_changed(force=True)
         self._proc = await asyncio.create_subprocess_exec(
