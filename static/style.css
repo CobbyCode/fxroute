@@ -3819,6 +3819,17 @@ input[type="number"]::-webkit-outer-spin-button {
     gap: 1rem;
 }
 
+.effects-loudness-row,
+.effects-loudness-controls {
+    flex-wrap: nowrap;
+}
+
+.effects-loudness-controls {
+    display: inline-flex;
+    align-items: center;
+    gap: 1rem;
+}
+
 .effects-headroom-controls {
     display: inline-flex;
     align-items: center;
@@ -3887,6 +3898,23 @@ input[type="number"]::-webkit-outer-spin-button {
 }
 
 @media (max-width: 760px) {
+    .effects-loudness-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        align-items: center;
+    }
+
+    .effects-loudness-controls {
+        display: inline-flex;
+        width: max-content;
+        max-width: 100%;
+        gap: 0.65rem;
+    }
+
+    .effects-loudness-controls .effects-inline-control {
+        flex-wrap: nowrap;
+    }
+
     .effects-delay-settings,
     .effects-bass-row,
     .delay-inputs-compact,

@@ -128,8 +128,8 @@ async def test_safe_toggle_order_and_partial_persistence():
     assert fake.extras["loudness"]["params"]["strength"] == "light"
     assert fake.extras["loudness"]["params"]["calibration"]["outputProfileId"] == "usb-a"
     output = fake._normalizer._apply_extras_to_output({"plugins_order": []}, fake.extras)
-    assert math.isclose(output["loudness#0"]["volume"], -10.73453, abs_tol=0.00001)
-    assert output["loudness#0"]["output-gain"] == -9.5
+    assert math.isclose(output["loudness#0"]["volume"], -8.73453, abs_tol=0.00001)
+    assert output["loudness#0"]["output-gain"] == -11.5
     assert math.isclose(
         output["loudness#0"]["volume"] + output["loudness#0"]["output-gain"],
         -20.23453,
