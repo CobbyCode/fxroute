@@ -6630,6 +6630,9 @@ def _stop_spl_calibration_noise() -> None:
     if restore and easyeffects_manager:
         extras = easyeffects_manager.load_global_extras()
         extras["loudness"]["params"]["volumeDb"] = restore["loudness_volume_db"]
+        extras["loudness"]["params"]["calibration"] = copy.deepcopy(
+            restore.get("loudness_calibration") or {}
+        )
         easyeffects_manager.apply_global_extras_to_active_preset(extras)
         set_output_volume(restore["system_volume_percent"])
         active = easyeffects_manager.get_active_preset()
@@ -6670,10 +6673,15 @@ def _start_spl_calibration_noise() -> dict[str, Any]:
     extras = ee_manager.load_global_extras()
     spl_calibration_restore_state = {
         "loudness_volume_db": float(extras["loudness"]["params"]["volumeDb"]),
+        "loudness_calibration": copy.deepcopy(
+            extras["loudness"]["params"].get("calibration") or {}
+        ),
         "system_volume_percent": get_output_volume(),
     }
     extras["loudness"]["params"]["volumeDb"] = 0.0
     extras["loudness"]["params"]["calibrationTrimDb"] = 0.0
+    # Recalibration always measures from the neutral Loudness reference point.
+    extras["loudness"]["params"]["calibration"] = {}
     ee_manager.apply_global_extras_to_active_preset(extras)
     set_output_volume(100)
     active = ee_manager.get_active_preset()
@@ -6835,7 +6843,7 @@ async def apply_spl_calibration(request: Request):
     profiles = dict(extras["loudness"]["params"].get("calibrationProfiles") or {})
     profiles[profile["id"]] = dict(extras["loudness"]["params"]["calibration"])
     extras["loudness"]["params"]["calibrationProfiles"] = profiles
-    saved = ee_manager.save_global_extras(extras)
+    saved = ee_manager.apply_global_extras_to_active_preset(extras)["extras"]
     spl_calibration_restore_state = None
     return {
         "status": "ok",

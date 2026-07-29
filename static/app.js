@@ -5841,8 +5841,7 @@ async function toggleSplCalibrationNoise() {
             if (elements.splCalibrationNoise) elements.splCalibrationNoise.textContent = 'Start noise';
             if (elements.splCalibrationStatus) {
                 const adjustment = Number(data.required_adjustment_db);
-                const direction = adjustment >= 0 ? 'Increase' : 'Decrease';
-                elements.splCalibrationStatus.textContent = `UMIK-1 measured ${Number(data.measured_spl_db).toFixed(1)} dB SPL · required adjustment ${adjustment >= 0 ? '+' : ''}${adjustment.toFixed(1)} dB. ${direction} the amplifier/output hardware gain and measure again.`;
+                elements.splCalibrationStatus.textContent = `UMIK-1 measured ${Number(data.measured_spl_db).toFixed(1)} dB SPL · Loudness calibration offset ${adjustment >= 0 ? '+' : ''}${adjustment.toFixed(1)} dB. Save / Apply couples this offset to Loudness only.`;
             }
             return;
         }
@@ -5887,8 +5886,8 @@ async function saveSplCalibration() {
             const adjustment = Number(data.required_adjustment_db);
             const sign = adjustment >= 0 ? '+' : '';
             elements.splCalibrationStatus.textContent = data.calibrated
-                ? `Measured ${measured.toFixed(1)} dB SPL · required adjustment ${sign}${adjustment.toFixed(1)} dB · calibrated. No DSP gain was changed.`
-                : `Measured ${measured.toFixed(1)} dB SPL · required adjustment ${sign}${adjustment.toFixed(1)} dB. ${adjustment >= 0 ? 'Increase' : 'Decrease'} the amplifier/output hardware gain and measure again. No DSP gain was changed.`;
+                ? `Measured ${measured.toFixed(1)} dB SPL · Loudness calibration offset ${sign}${adjustment.toFixed(1)} dB · calibrated.`
+                : `Measured ${measured.toFixed(1)} dB SPL · Loudness calibration offset ${sign}${adjustment.toFixed(1)} dB. The offset is coupled to Loudness only; playback with Loudness off is unchanged.`;
         }
         await fetchEffects();
     } catch (error) {

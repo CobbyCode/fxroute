@@ -58,7 +58,7 @@ class FakeEasyEffects:
         return ""
 
 
-async def test_save_is_metadata_only() -> None:
+async def test_save_applies_only_coupled_loudness_offset() -> None:
     fake = FakeEasyEffects()
     original_manager = main.easyeffects_manager
     original_profile = main._spl_output_profile
@@ -93,7 +93,7 @@ async def test_save_is_metadata_only() -> None:
         assert round(calibration["requiredAdjustmentDb"], 1) == 27.9
         assert calibration["calibrated"] is False
         assert params["volumeDb"] == -12.0
-        assert fake.active_apply_calls == 0
+        assert fake.active_apply_calls == 1
         assert fake.all_apply_calls == 0
         assert system_volume_writes == []
 
@@ -105,7 +105,7 @@ async def test_save_is_metadata_only() -> None:
         assert output["loudness#0"]["volume"] == output_before["loudness#0"]["volume"]
         assert output["limiter#0"]["input-gain"] == 0.0
         assert output["loudness#0"]["input-gain"] == 0.0
-        assert output["loudness#0"]["output-gain"] == 0.0
+        assert output["loudness#0"]["output-gain"] == 27.9
     finally:
         main.easyeffects_manager = original_manager
         main._spl_output_profile = original_profile
@@ -145,14 +145,15 @@ def test_legacy_trim_migration() -> None:
             migrated["loudness"]["enabled"] = enabled
             output = manager._apply_extras_to_output({"plugins_order": []}, migrated)
             assert output["limiter#0"]["input-gain"] == 0.0
+            assert output["loudness#0"]["output-gain"] == (27.9 if enabled else 0.0)
 
 
 async def main_test() -> None:
     assert round(main._calculate_spl_required_adjustment(55.1), 1) == 27.9
     assert main._calculate_spl_required_adjustment(83.0) == 0.0
-    await test_save_is_metadata_only()
+    await test_save_applies_only_coupled_loudness_offset()
     test_legacy_trim_migration()
-    print("SPL assistant metadata-only save, zero DSP gain and legacy migration: ok")
+    print("SPL offset is coupled to Loudness only; global gain remains zero: ok")
 
 
 if __name__ == "__main__":

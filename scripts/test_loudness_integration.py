@@ -30,9 +30,9 @@ def test_chain_and_schema() -> None:
                 "enabled": True,
                 "params": {
                     "fftSize": 8192,
-                    "volumeDb": -6.0,
+                    "volumeDb": -20.23453,
                     "calibrationTrimDb": 1.5,
-                    "calibration": {},
+                    "calibration": {"requiredAdjustmentDb": 22.9},
                     "calibrationProfiles": {},
                 },
             },
@@ -48,11 +48,28 @@ def test_chain_and_schema() -> None:
         "iir-approximation": "Normal",
         "input-gain": 0.0,
         "mode": "FFT",
-        "output-gain": 0.0,
+        "output-gain": 22.9,
         "std": "ISO226-2023",
-        "volume": -6.0,
+        "volume": -43.13453,
     }
     assert output["limiter#0"]["input-gain"] == 0.0
+
+    disabled = ee._apply_extras_to_output(
+        {"plugins_order": []},
+        {
+            "loudness": {
+                "enabled": False,
+                "params": {
+                    "fftSize": 4096,
+                    "volumeDb": -20.23453,
+                    "calibration": {"requiredAdjustmentDb": 22.9},
+                },
+            },
+        },
+    )
+    assert disabled["loudness#0"]["bypass"] is True
+    assert disabled["loudness#0"]["volume"] == -20.23453
+    assert disabled["loudness#0"]["output-gain"] == 0.0
 
 
 def test_mutex_and_fft_validation() -> None:

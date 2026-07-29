@@ -1311,17 +1311,24 @@ class EasyEffectsManager:
         }
 
     def _loudness_plugin_payload(self, loudness: Dict[str, Any]) -> Dict[str, Any]:
+        enabled = bool(loudness.get("enabled", False))
+        calibration = loudness.get("params", {}).get("calibration")
+        adjustment = calibration.get("requiredAdjustmentDb") if isinstance(calibration, dict) else 0.0
+        calibration_offset_db = float(adjustment) if enabled and isinstance(adjustment, (int, float)) else 0.0
+        master_attenuation_db = float(loudness["params"]["volumeDb"])
         return {
-            "bypass": not loudness.get("enabled", False),
+            "bypass": not enabled,
             "clipping": False,
             "clipping-range": 6.0,
             "fft": str(loudness["params"]["fftSize"]),
             "iir-approximation": "Normal",
             "input-gain": 0.0,
             "mode": "FFT",
-            "output-gain": 0.0,
+            # Coupled SPL calibration: this gain only exists inside the active
+            # Loudness block and never feeds the global/limiter gain path.
+            "output-gain": calibration_offset_db,
             "std": "ISO226-2023",
-            "volume": loudness["params"]["volumeDb"],
+            "volume": master_attenuation_db - calibration_offset_db if enabled else master_attenuation_db,
         }
 
     def _crystalizer_plugin_payload(self, tone_effect: Dict[str, Any]) -> Dict[str, Any]:

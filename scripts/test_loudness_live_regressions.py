@@ -119,6 +119,9 @@ async def test_safe_toggle_order_and_partial_persistence():
     assert applied["calibrationTrimDb"] == 0.0
     assert applied["calibration"]["outputProfileId"] == "usb-a"
     assert applied["calibrationProfiles"]["usb-a"]["requiredAdjustmentDb"] == 0.5
+    output = fake._normalizer._apply_extras_to_output({"plugins_order": []}, fake.extras)
+    assert math.isclose(output["loudness#0"]["volume"], -20.73453, abs_tol=0.00001)
+    assert output["loudness#0"]["output-gain"] == 0.5
 
     events.clear()
     await run_route({"loudnessFftSize": 8192}, fake, events, system_volume)
@@ -133,6 +136,9 @@ async def test_safe_toggle_order_and_partial_persistence():
     assert events[2] == ("load", "Test")
     assert fake.extras["loudness"]["params"]["calibrationTrimDb"] == 0.0
     assert fake.extras["loudness"]["params"]["calibrationProfiles"]["usb-a"]["requiredAdjustmentDb"] == 0.5
+    output = fake._normalizer._apply_extras_to_output({"plugins_order": []}, fake.extras)
+    assert output["loudness#0"]["output-gain"] == 0.0
+    assert math.isclose(output["loudness#0"]["volume"], -20.23453, abs_tol=0.00001)
 
 
 async def test_mutex_is_http_400():
