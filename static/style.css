@@ -1844,7 +1844,8 @@ body {
 }
 
 .measurement-workflow-group {
-    display: flex;
+    display: grid;
+    grid-template-columns: 176px minmax(0, 1fr);
     align-items: center;
     gap: 0.55rem;
     min-height: 0;
@@ -1852,8 +1853,25 @@ body {
 
 #measurement-start,
 #measurement-repeat-start,
-#measurement-auto-sub-start {
+#measurement-auto-sub-start,
+#measurement-spl-calibration-open {
+    width: 176px;
     min-width: 176px;
+    min-height: 44px;
+}
+
+.measurement-workflow-auto-sub {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+}
+
+.measurement-workflow-row {
+    display: grid;
+    grid-template-columns: 176px minmax(0, 1fr);
+    align-items: center;
+    gap: 0.55rem;
+    min-width: 0;
 }
 
 #measurement-setup-toggle {
@@ -1862,11 +1880,29 @@ body {
 }
 
 .measurement-repeat-help {
-    flex: 1 1 260px;
     max-width: 620px;
     color: var(--text-secondary);
     font-size: 0.8rem;
     line-height: 1.25;
+}
+
+.spl-calibration-dialog {
+    position: relative;
+    width: min(560px, 100%);
+    max-height: calc(100dvh - 2rem);
+    overflow-y: auto;
+}
+
+#spl-calibration-panel {
+    align-items: center;
+}
+
+.spl-calibration-dialog .effects-stack {
+    gap: 0.85rem;
+}
+
+.spl-calibration-dialog #spl-calibration-status {
+    margin-top: 0.35rem;
 }
 
 .measurement-inline-field {
@@ -2530,6 +2566,14 @@ body {
     }
 
     .measurement-workflow-group {
+        display: flex;
+        align-items: stretch;
+        flex-direction: column;
+        gap: 0.55rem;
+    }
+
+    .measurement-workflow-row {
+        display: flex;
         align-items: stretch;
         flex-direction: column;
         gap: 0.55rem;
@@ -2537,6 +2581,21 @@ body {
 
     .measurement-repeat-help {
         flex: 0 0 auto;
+    }
+
+    #measurement-start,
+    #measurement-repeat-start,
+    #measurement-auto-sub-start,
+    #measurement-spl-calibration-open {
+        width: 100%;
+        min-width: 0;
+    }
+
+    .spl-calibration-dialog {
+        width: min(100%, calc(100vw - 1rem));
+        max-height: calc(100dvh - 1rem);
+        padding: 0.85rem;
+        border-radius: 16px;
     }
 
     .measurement-channel-chip-row,
@@ -3767,15 +3826,29 @@ input[type="number"]::-webkit-outer-spin-button {
     flex-wrap: wrap;
 }
 
-.effects-headroom-gain-wrap {
+.effects-headroom-gain-wrap,
+.effects-inline-control {
     display: inline-flex;
     align-items: center;
+    gap: 0.55rem;
+    flex-wrap: wrap;
 }
 
-.effects-headroom-select {
+.effects-headroom-select,
+.effects-compact-control {
     width: auto;
     min-width: 5.3rem;
+    min-height: 46px;
+    height: 46px;
+    padding: 0.7rem 2rem 0.7rem 0.85rem;
     padding-right: 2rem;
+}
+
+.effects-inline-control-label {
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    line-height: 1.2;
+    white-space: nowrap;
 }
 
 .effects-bass-row {
@@ -3793,11 +3866,12 @@ input[type="number"]::-webkit-outer-spin-button {
     grid-column: 3;
     grid-template-columns: max-content max-content;
     align-items: center;
-    column-gap: 0.6rem;
+    column-gap: 0.55rem;
     justify-self: start;
 }
 
-.effects-bass-controls .effects-status-subtle {
+.effects-bass-controls .effects-status-subtle,
+.effects-bass-controls .effects-inline-control-label {
     white-space: nowrap;
 }
 
@@ -3807,6 +3881,9 @@ input[type="number"]::-webkit-outer-spin-button {
 
 .effects-bass-controls .delay-number-input {
     width: 4.6rem !important;
+    min-width: 4.6rem;
+    min-height: 46px !important;
+    padding: 0.7rem 0.85rem !important;
 }
 
 @media (max-width: 760px) {

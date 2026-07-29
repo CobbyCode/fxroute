@@ -578,8 +578,8 @@
                                             <label class="checkbox-row"><input type="checkbox" id="effects-limiter-enabled"> Protection limiter</label>
                                             <div class="effects-headroom-controls">
                                                 <label class="checkbox-row"><input type="checkbox" id="effects-headroom-enabled"> Headroom</label>
-                                                <label for="effects-headroom-gain-db" id="effects-headroom-gain-wrap" class="effects-headroom-gain-wrap hidden">
-                                                    <select id="effects-headroom-gain-db" class="url-input effects-headroom-select">
+                                                <label for="effects-headroom-gain-db" id="effects-headroom-gain-wrap" class="effects-inline-control hidden">
+                                                    <select id="effects-headroom-gain-db" class="url-input effects-compact-control">
                                                         <option value="-2">-2 dB</option>
                                                         <option value="-3" selected>-3 dB</option>
                                                         <option value="-4">-4 dB</option>
@@ -591,8 +591,8 @@
                                         </div>
                                         <div class="effects-extras-row effects-extras-row-helpers">
                                             <label class="checkbox-row"><input type="checkbox" id="effects-autogain-enabled"> Autogain</label>
-                                            <label for="effects-autogain-target-db" id="effects-autogain-target-wrap" class="effects-headroom-gain-wrap hidden">
-                                                <select id="effects-autogain-target-db" class="url-input effects-headroom-select">
+                                            <label for="effects-autogain-target-db" id="effects-autogain-target-wrap" class="effects-inline-control hidden">
+                                                <select id="effects-autogain-target-db" class="url-input effects-compact-control">
                                                     <option value="-9">-9 dB</option>
                                                     <option value="-12" selected>-12 dB</option>
                                                     <option value="-15">-15 dB</option>
@@ -602,9 +602,9 @@
                                         </div>
                                         <div class="effects-extras-row effects-extras-row-helpers">
                                             <label class="checkbox-row"><input type="checkbox" id="effects-loudness-enabled"> Loudness</label>
-                                            <label for="effects-loudness-fft-size" id="effects-loudness-fft-wrap" class="effects-headroom-gain-wrap hidden">
-                                                <span class="effects-status-subtle">FFT Size</span>
-                                                <select id="effects-loudness-fft-size" class="url-input effects-headroom-select">
+                                            <label for="effects-loudness-fft-size" id="effects-loudness-fft-wrap" class="effects-inline-control hidden">
+                                                <span class="effects-inline-control-label">FFT Size</span>
+                                                <select id="effects-loudness-fft-size" class="url-input effects-compact-control">
                                                     <option value="256">256</option>
                                                     <option value="512">512</option>
                                                     <option value="1024">1024</option>
@@ -623,10 +623,10 @@
                                         <div class="effects-extras-row effects-bass-row">
                                             <label class="checkbox-row"><input type="checkbox" id="effects-bass-enabled"> Bass enhancer</label>
                                             <div id="effects-bass-controls-wrap" class="effects-bass-controls hidden">
-                                                <span class="effects-status-subtle">Amount:</span>
+                                                <span class="effects-inline-control-label">Amount:</span>
                                                 <div class="delay-field delay-field-compact">
                                                     <div class="delay-input-wrap">
-                                                        <input type="number" id="effects-bass-amount" class="url-input delay-number-input" min="-20" max="20" step="0.5" value="0">
+                                                        <input type="number" id="effects-bass-amount" class="url-input delay-number-input effects-compact-control" min="-20" max="20" step="0.5" value="0">
                                                         <span class="delay-unit">dB</span>
                                                     </div>
                                                 </div>
@@ -634,8 +634,8 @@
                                         </div>
                                         <div class="effects-extras-row effects-extras-row-helpers">
                                             <label class="checkbox-row"><input type="checkbox" id="effects-tone-effect-enabled"> Tone effect</label>
-                                            <label for="effects-tone-effect-mode" id="effects-tone-effect-wrap" class="effects-headroom-gain-wrap hidden">
-                                                <select id="effects-tone-effect-mode" class="url-input effects-headroom-select">
+                                            <label for="effects-tone-effect-mode" id="effects-tone-effect-wrap" class="effects-inline-control hidden">
+                                                <select id="effects-tone-effect-mode" class="url-input effects-compact-control">
                                                     <option value="crystalizer" selected>Crystalizer</option>
                                                     <option value="maximizer">Maximizer</option>
                                                 </select>
@@ -809,9 +809,14 @@
                                         <span class="measurement-repeat-help">Measures L/R three times at the same mic position.</span>
                                     </div>
                                     <div class="measurement-workflow-group measurement-workflow-auto-sub hidden" id="measurement-auto-sub-group">
-                                        <button id="measurement-auto-sub-start" class="btn-primary" type="button">Auto Sub Optimize</button>
-                                        <button id="measurement-spl-calibration-open" class="btn-secondary" type="button">SPL Calibration</button>
-                                        <span id="measurement-auto-sub-status" class="measurement-repeat-help">Scans sub delay around crossover, picks best alignment.</span>
+                                        <div class="measurement-workflow-row">
+                                            <button id="measurement-auto-sub-start" class="btn-primary" type="button">Auto Sub Optimize</button>
+                                            <span id="measurement-auto-sub-status" class="measurement-repeat-help">Scans sub delay around crossover, picks best alignment.</span>
+                                        </div>
+                                        <div class="measurement-workflow-row">
+                                            <button id="measurement-spl-calibration-open" class="btn-secondary" type="button">SPL Calibration</button>
+                                            <span class="measurement-repeat-help">Calibrates the playback reference level using pink noise and an SPL meter.</span>
+                                        </div>
                                     </div>
                                 </div>
                                 <button id="measurement-setup-toggle" class="btn-secondary" type="button">Setup</button>
@@ -1051,7 +1056,7 @@
 
         <div id="spl-calibration-panel" class="manage-overlay measurement-overlay hidden">
             <div class="manage-overlay-backdrop"></div>
-            <section class="manage-dialog measurement-dialog" role="dialog" aria-modal="true" aria-labelledby="spl-calibration-title">
+            <section class="manage-dialog spl-calibration-dialog" role="dialog" aria-modal="true" aria-labelledby="spl-calibration-title">
                 <div class="manage-dialog-header">
                     <div>
                         <h2 id="spl-calibration-title" class="section-title">SPL Calibration</h2>
