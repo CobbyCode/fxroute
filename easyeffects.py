@@ -1078,17 +1078,33 @@ class EasyEffectsManager:
         volume_db = float(params.get("volumeDb", 0.0))
         if not -80.0 <= volume_db <= 0.0:
             raise ValueError("loudness.params.volumeDb must be between -80 and 0")
-        trim_db = float(params.get("calibrationTrimDb", 0.0))
-        if not -30.0 <= trim_db <= 30.0:
-            raise ValueError("loudness.params.calibrationTrimDb must be between -30 and 30")
-        calibration = params.get("calibration") if isinstance(params.get("calibration"), dict) else {}
-        calibration_profiles = params.get("calibrationProfiles") if isinstance(params.get("calibrationProfiles"), dict) else {}
+
+        def normalize_calibration(value: Any) -> Dict[str, Any]:
+            calibration = dict(value) if isinstance(value, dict) else {}
+            legacy_trim = calibration.pop("trimDb", None)
+            if "requiredAdjustmentDb" not in calibration and isinstance(legacy_trim, (int, float)):
+                calibration["requiredAdjustmentDb"] = float(legacy_trim)
+            adjustment = calibration.get("requiredAdjustmentDb")
+            if isinstance(adjustment, (int, float)):
+                calibration["requiredAdjustmentDb"] = float(adjustment)
+                calibration["calibrated"] = abs(float(adjustment)) <= 1.0
+            return calibration
+
+        calibration = normalize_calibration(params.get("calibration"))
+        raw_profiles = params.get("calibrationProfiles") if isinstance(params.get("calibrationProfiles"), dict) else {}
+        calibration_profiles = {
+            str(profile_id): normalize_calibration(profile)
+            for profile_id, profile in raw_profiles.items()
+            if isinstance(profile, dict)
+        }
         return {
             "enabled": bool(definition.get("enabled", False)),
             "params": {
                 "fftSize": fft_size,
                 "volumeDb": volume_db,
-                "calibrationTrimDb": trim_db,
+                # Legacy field retained as a zero-only compatibility marker.
+                # SPL calibration is metadata, never a digital gain stage.
+                "calibrationTrimDb": 0.0,
                 "calibration": dict(calibration),
                 "calibrationProfiles": dict(calibration_profiles),
             },
@@ -1142,7 +1158,11 @@ class EasyEffectsManager:
         except Exception as e:
             logger.warning("Failed to read global extras config, using defaults: %s", e)
             return self.normalize_effects_extras(None)
-        return self.normalize_effects_extras(payload)
+        normalized = self.normalize_effects_extras(payload)
+        if payload != normalized:
+            self.global_extras_file.parent.mkdir(parents=True, exist_ok=True)
+            self.global_extras_file.write_text(json.dumps(normalized, indent=2) + "\n")
+        return normalized
 
     def save_global_extras(self, extras: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         normalized = self.normalize_effects_extras(extras)
@@ -1436,7 +1456,6 @@ class EasyEffectsManager:
         result.pop("delay#0", None)
         result["autogain#0"] = self._autogain_plugin_payload(normalized["autogain"])
         result["limiter#0"] = self._limiter_plugin_payload(normalized["limiter"])
-        result["limiter#0"]["input-gain"] = normalized["loudness"]["params"]["calibrationTrimDb"]
         result["loudness#0"] = self._loudness_plugin_payload(normalized["loudness"])
 
         plugins_order = [entry for entry in plugins_order if entry not in helper_plugin_set]

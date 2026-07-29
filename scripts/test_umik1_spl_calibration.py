@@ -112,7 +112,7 @@ def main_test():
             )
             assert abs(measured - (20.0 * np.log10(0.05) + 120.0 - 0.371)) < 0.1
 
-            assert main._calculate_spl_calibration_trim(82.5) == 0.5
+            assert main._calculate_spl_required_adjustment(82.5) == 0.5
     finally:
         main.measurement_store = original_store
         main._read_measurement_setup_settings = original_settings

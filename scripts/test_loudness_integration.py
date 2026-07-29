@@ -52,7 +52,7 @@ def test_chain_and_schema() -> None:
         "std": "ISO226-2023",
         "volume": -6.0,
     }
-    assert output["limiter#0"]["input-gain"] == 1.5
+    assert output["limiter#0"]["input-gain"] == 0.0
 
 
 def test_mutex_and_fft_validation() -> None:
@@ -89,6 +89,9 @@ def test_persistence_and_volume_mapping() -> None:
     })
     loaded = ee.load_global_extras()
     assert loaded == saved
+    assert loaded["loudness"]["params"]["calibrationTrimDb"] == 0.0
+    assert loaded["loudness"]["params"]["calibrationProfiles"]["usb-a"]["requiredAdjustmentDb"] == -2.5
+    assert "trimDb" not in loaded["loudness"]["params"]["calibrationProfiles"]["usb-a"]
     assert ee.loudness_percent_from_db(loaded["loudness"]["params"]["volumeDb"]) == 62
     assert ee.loudness_db_from_percent(100) == 0.0
     expected = {

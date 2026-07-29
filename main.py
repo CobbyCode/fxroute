@@ -6609,17 +6609,14 @@ def _c_weighted_spl_from_capture(
     return dbfs + 120.0 - float(sensitivity_factor_db)
 
 
-def _calculate_spl_calibration_trim(measured_spl_db: float) -> float:
+def _calculate_spl_required_adjustment(measured_spl_db: float) -> float:
     measured = float(measured_spl_db)
     if not 40.0 <= measured <= 130.0:
         raise ValueError("Measured SPL must be between 40 and 130 dB")
-    trim = 83.0 - measured
-    if not -30.0 <= trim <= 30.0:
-        raise ValueError("Calculated calibration trim is outside the safe ±30 dB range")
-    return trim
+    return 83.0 - measured
 
 
-def _stop_spl_calibration_noise(*, restore_trim: bool = True) -> None:
+def _stop_spl_calibration_noise() -> None:
     global spl_calibration_noise_process, spl_calibration_restore_state
     process = spl_calibration_noise_process
     spl_calibration_noise_process = None
@@ -6630,9 +6627,8 @@ def _stop_spl_calibration_noise(*, restore_trim: bool = True) -> None:
         except subprocess.TimeoutExpired:
             process.kill()
     restore = spl_calibration_restore_state
-    if restore_trim and restore and easyeffects_manager:
+    if restore and easyeffects_manager:
         extras = easyeffects_manager.load_global_extras()
-        extras["loudness"]["params"]["calibrationTrimDb"] = restore["calibration_trim_db"]
         extras["loudness"]["params"]["volumeDb"] = restore["loudness_volume_db"]
         easyeffects_manager.apply_global_extras_to_active_preset(extras)
         set_output_volume(restore["system_volume_percent"])
@@ -6673,7 +6669,6 @@ def _start_spl_calibration_noise() -> dict[str, Any]:
     ee_manager = _require_easyeffects_manager()
     extras = ee_manager.load_global_extras()
     spl_calibration_restore_state = {
-        "calibration_trim_db": float(extras["loudness"]["params"]["calibrationTrimDb"]),
         "loudness_volume_db": float(extras["loudness"]["params"]["volumeDb"]),
         "system_volume_percent": get_output_volume(),
     }
@@ -6786,6 +6781,7 @@ async def measure_spl_automatically():
         return {
             "status": "ok",
             "measured_spl_db": round(measured, 2),
+            "required_adjustment_db": round(_calculate_spl_required_adjustment(measured), 2),
             "weighting": "C",
             "averaging_seconds": 3.0,
             "microphone_model": "UMIK-1",
@@ -6814,24 +6810,22 @@ async def apply_spl_calibration(request: Request):
     body = await request.json()
     measured = float(body.get("measured_spl_db"))
     try:
-        trim = _calculate_spl_calibration_trim(measured)
+        adjustment = _calculate_spl_required_adjustment(measured)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    restore = dict(spl_calibration_restore_state or {})
-    _stop_spl_calibration_noise(restore_trim=False)
+    _stop_spl_calibration_noise()
     ee_manager = _require_easyeffects_manager()
     extras = ee_manager.load_global_extras()
     profile = _spl_output_profile()
     automatic = _spl_auto_capability()
-    extras["loudness"]["params"]["calibrationTrimDb"] = trim
-    if restore:
-        extras["loudness"]["params"]["volumeDb"] = restore["loudness_volume_db"]
+    extras["loudness"]["params"]["calibrationTrimDb"] = 0.0
     extras["loudness"]["params"]["calibration"] = {
         "outputProfileId": profile["id"],
         "outputProfileLabel": profile["label"],
         "targetSplDb": 83.0,
         "measuredSplDb": measured,
-        "trimDb": trim,
+        "requiredAdjustmentDb": adjustment,
+        "calibrated": abs(adjustment) <= 1.0,
         "method": "automatic" if automatic["available"] else "manual",
         "microphoneModel": automatic["microphone_model"],
         "calibrationFileId": automatic["calibration_file_id"],
@@ -6841,14 +6835,14 @@ async def apply_spl_calibration(request: Request):
     profiles = dict(extras["loudness"]["params"].get("calibrationProfiles") or {})
     profiles[profile["id"]] = dict(extras["loudness"]["params"]["calibration"])
     extras["loudness"]["params"]["calibrationProfiles"] = profiles
-    result = ee_manager.apply_global_extras_to_all_presets(extras)
-    active = ee_manager.get_active_preset()
-    if active and active not in ee_manager.EXCLUDED_GLOBAL_EXTRAS_PRESETS:
-        ee_manager.load_preset(active)
-    if restore:
-        set_output_volume(restore["system_volume_percent"])
+    saved = ee_manager.save_global_extras(extras)
     spl_calibration_restore_state = None
-    return {"status": "ok", "calibration_trim_db": trim, "calibration": result["extras"]["loudness"]["params"]["calibration"]}
+    return {
+        "status": "ok",
+        "required_adjustment_db": adjustment,
+        "calibrated": abs(adjustment) <= 1.0,
+        "calibration": saved["loudness"]["params"]["calibration"],
+    }
 
 @app.get("/api/easyeffects/presets")
 async def list_easyeffects_presets():

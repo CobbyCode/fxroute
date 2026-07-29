@@ -5840,7 +5840,9 @@ async function toggleSplCalibrationNoise() {
             splCalibrationNoiseActive = false;
             if (elements.splCalibrationNoise) elements.splCalibrationNoise.textContent = 'Start noise';
             if (elements.splCalibrationStatus) {
-                elements.splCalibrationStatus.textContent = `UMIK-1 measured ${Number(data.measured_spl_db).toFixed(1)} dB SPL · C-weighted · 3 s average.`;
+                const adjustment = Number(data.required_adjustment_db);
+                const direction = adjustment >= 0 ? 'Increase' : 'Decrease';
+                elements.splCalibrationStatus.textContent = `UMIK-1 measured ${Number(data.measured_spl_db).toFixed(1)} dB SPL · required adjustment ${adjustment >= 0 ? '+' : ''}${adjustment.toFixed(1)} dB. ${direction} the amplifier/output hardware gain and measure again.`;
             }
             return;
         }
@@ -5881,7 +5883,13 @@ async function saveSplCalibration() {
         if (!response.ok) throw new Error(data.detail || 'Failed to apply SPL calibration');
         splCalibrationNoiseActive = false;
         if (elements.splCalibrationNoise) elements.splCalibrationNoise.textContent = 'Start noise';
-        if (elements.splCalibrationStatus) elements.splCalibrationStatus.textContent = `Applied ${Number(data.calibration_trim_db).toFixed(1)} dB trim for this output profile.`;
+        if (elements.splCalibrationStatus) {
+            const adjustment = Number(data.required_adjustment_db);
+            const sign = adjustment >= 0 ? '+' : '';
+            elements.splCalibrationStatus.textContent = data.calibrated
+                ? `Measured ${measured.toFixed(1)} dB SPL · required adjustment ${sign}${adjustment.toFixed(1)} dB · calibrated. No DSP gain was changed.`
+                : `Measured ${measured.toFixed(1)} dB SPL · required adjustment ${sign}${adjustment.toFixed(1)} dB. ${adjustment >= 0 ? 'Increase' : 'Decrease'} the amplifier/output hardware gain and measure again. No DSP gain was changed.`;
+        }
         await fetchEffects();
     } catch (error) {
         if (elements.splCalibrationStatus) elements.splCalibrationStatus.textContent = error.message;
