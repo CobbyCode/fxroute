@@ -5790,6 +5790,7 @@ function setupEffectsActions() {
 }
 
 let splCalibrationNoiseActive = false;
+let splCalibrationAutomaticAvailable = false;
 
 async function openSplCalibration() {
     elements.splCalibrationPanel?.classList.remove('hidden');
@@ -5798,10 +5799,11 @@ async function openSplCalibration() {
         const data = await response.json();
         if (!response.ok) throw new Error(data.detail || 'Failed to load SPL calibration');
         splCalibrationNoiseActive = !!data.noise_active;
+        splCalibrationAutomaticAvailable = !!data.automatic?.available;
         if (elements.splCalibrationNoise) elements.splCalibrationNoise.textContent = splCalibrationNoiseActive ? 'Stop noise' : 'Start noise';
         if (elements.splCalibrationAutoStatus) {
             elements.splCalibrationAutoStatus.textContent = data.automatic?.available
-                ? `Automatic absolute SPL available: ${data.automatic.microphone_model}`
+                ? 'UMIK-1 detected · calibrated'
                 : `${data.automatic?.reason || 'Manual C/Slow meter entry is required.'}`;
         }
     } catch (error) {
@@ -5825,6 +5827,23 @@ async function toggleSplCalibrationNoise() {
     const next = !splCalibrationNoiseActive;
     if (elements.splCalibrationNoise) elements.splCalibrationNoise.disabled = true;
     try {
+        if (next && splCalibrationAutomaticAvailable) {
+            if (elements.splCalibrationStatus) {
+                elements.splCalibrationStatus.textContent = 'UMIK-1 automatic C-weighted measurement: settling and averaging for 3 seconds…';
+            }
+            const response = await fetch('/api/measurements/spl-calibration/automatic', { method: 'POST' });
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.detail || 'Automatic UMIK-1 SPL measurement failed');
+            if (elements.splCalibrationMeasured) {
+                elements.splCalibrationMeasured.value = Number(data.measured_spl_db).toFixed(1);
+            }
+            splCalibrationNoiseActive = false;
+            if (elements.splCalibrationNoise) elements.splCalibrationNoise.textContent = 'Start noise';
+            if (elements.splCalibrationStatus) {
+                elements.splCalibrationStatus.textContent = `UMIK-1 measured ${Number(data.measured_spl_db).toFixed(1)} dB SPL · C-weighted · 3 s average.`;
+            }
+            return;
+        }
         const response = await fetch('/api/measurements/spl-calibration/noise', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -8174,6 +8193,12 @@ async function deleteSelectedMeasurementHouseCurve() {
 
 function applyMeasurementSetupSettings(settings = {}) {
     if (!settings || typeof settings !== 'object') return;
+    if (Object.prototype.hasOwnProperty.call(settings, 'selectedInputId')) {
+        state.measurement.selectedInputId = String(settings.selectedInputId || '');
+    }
+    if (Object.prototype.hasOwnProperty.call(settings, 'selectedMicInputChannel')) {
+        state.measurement.selectedMicInputChannel = String(settings.selectedMicInputChannel || '1');
+    }
     if (Object.prototype.hasOwnProperty.call(settings, 'selectedReferenceInputChannel')) {
         state.measurement.selectedReferenceInputChannel = String(settings.selectedReferenceInputChannel || '');
     }
@@ -8241,6 +8266,7 @@ async function fetchMeasurementInputs() {
                 label: String(input.label || input.id || `Input ${index + 1}`),
                 note: String(input.note || ''),
                 channels: Math.max(1, Number(input.channels || 1)),
+                nodeName: String(input.node_name || ''),
             }))
             : [];
         state.measurement.inputs = inputs;
@@ -10315,13 +10341,14 @@ function setupMeasurementActions() {
         elements.measurementInputSelect.addEventListener('pointerdown', scanMeasurementInputsOnceForSelect);
         elements.measurementInputSelect.addEventListener('focus', scanMeasurementInputsOnceForSelect);
         elements.measurementInputSelect.addEventListener('change', (event) => {
-            const previousReferenceInputChannel = state.measurement.selectedReferenceInputChannel || '';
             state.measurement.selectedInputId = event.target.value || '';
             normalizeMeasurementInputChannelSelections();
+            void saveMeasurementSetupSettings({
+                selectedInputId: state.measurement.selectedInputId,
+                selectedMicInputChannel: state.measurement.selectedMicInputChannel || '1',
+                selectedReferenceInputChannel: state.measurement.selectedReferenceInputChannel || '',
+            });
             renderMeasurementPanel();
-            if (previousReferenceInputChannel !== (state.measurement.selectedReferenceInputChannel || '')) {
-                void saveMeasurementSetupSettings({ selectedReferenceInputChannel: state.measurement.selectedReferenceInputChannel || '' });
-            }
         });
     }
     if (elements.measurementInputRefreshBtn) {
@@ -10337,13 +10364,13 @@ function setupMeasurementActions() {
     }
     if (elements.measurementMicInputChannelSelect) {
         elements.measurementMicInputChannelSelect.addEventListener('change', (event) => {
-            const previousReferenceInputChannel = state.measurement.selectedReferenceInputChannel || '';
             state.measurement.selectedMicInputChannel = event.target.value || '1';
             normalizeMeasurementInputChannelSelections();
+            void saveMeasurementSetupSettings({
+                selectedMicInputChannel: state.measurement.selectedMicInputChannel,
+                selectedReferenceInputChannel: state.measurement.selectedReferenceInputChannel || '',
+            });
             renderMeasurementPanel();
-            if (previousReferenceInputChannel !== (state.measurement.selectedReferenceInputChannel || '')) {
-                void saveMeasurementSetupSettings({ selectedReferenceInputChannel: state.measurement.selectedReferenceInputChannel || '' });
-            }
         });
     }
     if (elements.measurementReferenceInputChannelSelect) {

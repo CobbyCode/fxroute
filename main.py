@@ -15,6 +15,7 @@ import statistics
 import random
 import subprocess
 import tempfile
+import wave
 import zipfile
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -6440,29 +6441,172 @@ def _spl_output_profile() -> dict[str, str]:
     return {"id": key, "label": label}
 
 
+def _parse_umik_calibration_header(path: Path) -> dict[str, Any]:
+    try:
+        first_lines = "\n".join(path.read_text(encoding="utf-8", errors="ignore").splitlines()[:8])
+    except Exception:
+        return {}
+    sensitivity = re.search(
+        r"Sens\s*Factor\s*=\s*([-+]?(?:\d+(?:\.\d*)?|\.\d+))\s*dB",
+        first_lines,
+        flags=re.IGNORECASE,
+    )
+    serial = re.search(r"SERNO\s*:\s*([0-9][0-9 -]*)", first_lines, flags=re.IGNORECASE)
+    return {
+        "sensitivity_factor_db": float(sensitivity.group(1)) if sensitivity else None,
+        "serial_number": re.sub(r"\D", "", serial.group(1)) if serial else "",
+    }
+
+
+def _is_umik1_input(item: dict[str, Any]) -> bool:
+    vendor = str(item.get("device_vendor_id") or "").lower().replace("0x", "").zfill(4)
+    product = str(item.get("device_product_id") or "").lower().replace("0x", "").zfill(4)
+    metadata = " ".join(
+        str(item.get(key) or "")
+        for key in (
+            "node_name", "node_description", "device_name", "device_description",
+            "alsa_card_name", "alsa_long_card_name",
+        )
+    ).lower()
+    return vendor == "2752" and product == "0007" and "umik-1" in metadata
+
+
 def _spl_auto_capability() -> dict[str, Any]:
     calibration_state = measurement_store.get_calibration_state() if measurement_store else {}
     active_id = str(calibration_state.get("active_calibration_file_id") or "")
     entries = calibration_state.get("calibrations") if isinstance(calibration_state, dict) else []
     active = next((item for item in (entries or []) if str(item.get("id") or "") == active_id), {})
     name = str(active.get("filename") or "")
-    supported_model = next(
-        (model for model in ("UMIK-1", "UMIK-2", "UMM-6") if model.lower() in name.lower()),
-        None,
-    )
-    reason = "No supported calibrated USB microphone was identified."
-    if supported_model:
-        reason = (
-            f"{supported_model} calibration found, but absolute sensitivity and verifiable "
-            "capture gain are not both available; manual C/Slow entry is required."
+    path = Path(str(active.get("path") or "")) if active else Path()
+    header = _parse_umik_calibration_header(path) if active and path.is_file() else {}
+    settings = _read_measurement_setup_settings()
+    selected_id = str(settings.get("selectedInputId") or "")
+    inputs_payload = measurement_store.list_inputs() if measurement_store else {}
+    inputs = inputs_payload.get("inputs") if isinstance(inputs_payload, dict) else []
+    selected = next((item for item in (inputs or []) if str(item.get("id") or "") == selected_id), {})
+    umik_inputs = [item for item in (inputs or []) if _is_umik1_input(item)]
+
+    supported_model = "UMIK-1" if selected and _is_umik1_input(selected) else None
+    sensitivity = header.get("sensitivity_factor_db")
+    cal_serial = str(header.get("serial_number") or "")
+    filename_serial = "".join(re.findall(r"\d", Path(name).stem))
+    serial_matches = bool(cal_serial and filename_serial and cal_serial == filename_serial)
+    internal_gain_match = bool(
+        re.search(
+            r"gain\s*[: ]+\s*18\s*dB",
+            " ".join(
+                str(selected.get(key) or "")
+                for key in ("node_description", "device_description", "alsa_card_name", "alsa_long_card_name")
+            ),
+            flags=re.IGNORECASE,
         )
+    )
+    capture_gain = selected.get("capture_gain_db")
+    capture_volume = selected.get("capture_volume_percent")
+    gain_known = capture_gain is not None and capture_volume is not None
+    unique_umik = len(umik_inputs) == 1 and bool(selected) and str(umik_inputs[0].get("id") or "") == selected_id
+
+    checks = {
+        "selected_input_is_umik1": bool(supported_model),
+        "unique_connected_umik1": unique_umik,
+        "calibration_selected": bool(active_id and active),
+        "sensitivity_factor_parsed": sensitivity is not None,
+        "calibration_serial_matches_filename": serial_matches,
+        "internal_gain_18_db": internal_gain_match,
+        "capture_gain_known": gain_known,
+    }
+    available = all(checks.values())
+    if not selected_id:
+        reason = "Select the UMIK-1 measurement input first; manual C/Slow entry remains available."
+    elif not selected:
+        reason = "The selected measurement input is no longer available."
+    elif not supported_model or not unique_umik:
+        reason = "The selected input is not the uniquely identified UMIK-1 USB capture device."
+    elif not active:
+        reason = "Select the matching UMIK-1 calibration file."
+    elif sensitivity is None or not cal_serial:
+        reason = "The selected calibration file has no valid Sens Factor and SERNO."
+    elif not serial_matches:
+        reason = "The calibration SERNO does not match the selected calibration filename."
+    elif not internal_gain_match:
+        reason = "The UMIK-1 internal 18 dB reference gain cannot be verified."
+    elif not gain_known:
+        reason = "The selected UMIK-1 capture gain cannot be verified."
+    else:
+        reason = ""
     return {
-        "available": False,
+        "available": available,
         "microphone_model": supported_model,
         "calibration_file_id": active_id,
         "calibration_filename": name,
+        "calibration_path": str(path) if active else "",
+        "sensitivity_factor_db": sensitivity,
+        "serial_number": cal_serial,
+        "selected_input_id": selected_id,
+        "selected_input": selected,
+        "capture_gain_db": capture_gain,
+        "capture_volume_percent": capture_volume,
+        "reference_capture_gain_db": 0.0,
+        "reference_capture_volume_percent": 100.0,
+        "checks": checks,
         "reason": reason,
     }
+
+
+def _read_pcm16_channel(path: Path, channel_index: int) -> tuple[int, Any]:
+    import numpy as spl_np
+
+    with wave.open(str(path), "rb") as wav:
+        if wav.getsampwidth() != 2:
+            raise RuntimeError("Automatic SPL capture did not produce 16-bit PCM")
+        channels = wav.getnchannels()
+        sample_rate = wav.getframerate()
+        data = spl_np.frombuffer(wav.readframes(wav.getnframes()), dtype="<i2").astype(spl_np.float64)
+    if channels < 1 or data.size < channels:
+        raise RuntimeError("Automatic SPL capture is empty")
+    selected = max(0, min(channels - 1, int(channel_index)))
+    return sample_rate, data.reshape(-1, channels)[:, selected] / 32768.0
+
+
+def _c_weighted_spl_from_capture(
+    samples: Any,
+    sample_rate: int,
+    sensitivity_factor_db: float,
+    calibration_path: Path,
+) -> float:
+    import numpy as spl_np
+
+    signal = spl_np.asarray(samples, dtype=spl_np.float64)
+    signal = signal - float(spl_np.mean(signal))
+    if signal.size < sample_rate:
+        raise RuntimeError("Automatic SPL capture is too short for stable averaging")
+    window = spl_np.hanning(signal.size)
+    coherent_power = float(spl_np.mean(spl_np.square(window)))
+    spectrum = spl_np.fft.rfft(signal * window)
+    frequencies = spl_np.fft.rfftfreq(signal.size, 1.0 / sample_rate)
+    f2 = spl_np.square(frequencies)
+    c_amplitude = (
+        (12200.0 ** 2) * f2
+        / spl_np.maximum((f2 + 20.6 ** 2) * (f2 + 12200.0 ** 2), 1e-30)
+    ) * (10.0 ** (0.06 / 20.0))
+
+    calibration_curve = measurement_store._parse_calibration_file(calibration_path) if measurement_store else None
+    if calibration_curve is None:
+        raise RuntimeError("The selected UMIK-1 calibration curve could not be parsed")
+    cal_freqs, cal_offsets = calibration_curve
+    interpolated = spl_np.interp(
+        spl_np.log(spl_np.maximum(frequencies, 1e-9)),
+        spl_np.log(cal_freqs),
+        cal_offsets,
+        left=float(cal_offsets[0]),
+        right=float(cal_offsets[-1]),
+    )
+    correction = spl_np.power(10.0, -interpolated / 20.0)
+    weighted = spectrum * c_amplitude * correction
+    weighted_time = spl_np.fft.irfft(weighted, n=signal.size)
+    rms = math.sqrt(float(spl_np.mean(spl_np.square(weighted_time))) / max(coherent_power, 1e-12))
+    dbfs = 20.0 * math.log10(max(rms, 1e-12))
+    return dbfs + 120.0 - float(sensitivity_factor_db)
 
 
 def _calculate_spl_calibration_trim(measured_spl_db: float) -> float:
@@ -6515,12 +6659,16 @@ async def get_spl_calibration():
 
 @app.post("/api/measurements/spl-calibration/noise")
 async def set_spl_calibration_noise(request: Request):
-    global spl_calibration_noise_process, spl_calibration_noise_file, spl_calibration_restore_state
     body = await request.json()
     enabled = bool(body.get("enabled"))
     if not enabled:
         _stop_spl_calibration_noise()
         return {"status": "stopped"}
+    return _start_spl_calibration_noise()
+
+
+def _start_spl_calibration_noise() -> dict[str, Any]:
+    global spl_calibration_noise_process, spl_calibration_noise_file, spl_calibration_restore_state
     _stop_spl_calibration_noise()
     ee_manager = _require_easyeffects_manager()
     extras = ee_manager.load_global_extras()
@@ -6558,6 +6706,106 @@ async def set_spl_calibration_noise(request: Request):
         stderr=subprocess.DEVNULL,
     )
     return {"status": "playing", "settle_seconds": 1.0, "average_seconds": 3.0}
+
+
+@app.post("/api/measurements/spl-calibration/automatic")
+async def measure_spl_automatically():
+    capability = _spl_auto_capability()
+    if not capability["available"]:
+        raise HTTPException(status_code=409, detail=capability["reason"])
+    selected = capability["selected_input"]
+    node_name = str(selected.get("node_name") or "")
+    if not node_name:
+        raise HTTPException(status_code=409, detail="The selected UMIK-1 PipeWire node is unavailable")
+
+    capture_path = Path(tempfile.gettempdir()) / f"fxroute-spl-umik1-{uuid4().hex[:10]}.wav"
+    settings = _read_measurement_setup_settings()
+    channel_index = max(0, int(settings.get("selectedMicInputChannel") or "1") - 1)
+    previous_volume = float(capability["capture_volume_percent"])
+    recorder: subprocess.Popen[Any] | None = None
+    try:
+        if abs(previous_volume - 100.0) > 0.05:
+            subprocess.run(
+                ["pactl", "set-source-volume", node_name, "100%"],
+                capture_output=True,
+                text=True,
+                timeout=3,
+                check=True,
+            )
+        verified = subprocess.run(
+            ["pactl", "get-source-volume", node_name],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=True,
+        )
+        gain = re.search(r"/\s*([0-9.]+)%\s*/\s*([-+0-9.]+)\s*dB", verified.stdout or "")
+        if not gain or abs(float(gain.group(1)) - 100.0) > 0.05 or abs(float(gain.group(2))) > 0.05:
+            raise RuntimeError("The UMIK-1 capture gain could not be set to the 100% / 0 dB reference")
+
+        recorder = subprocess.Popen(
+            [
+                "pw-record", "--target", node_name, "--rate", "48000",
+                "--channels", "2", "--format", "s16", "--sample-count", str(5 * 48000),
+                str(capture_path),
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        await asyncio.sleep(0.2)
+        _start_spl_calibration_noise()
+        try:
+            _stdout, stderr = await asyncio.to_thread(recorder.communicate, timeout=8)
+        except subprocess.TimeoutExpired:
+            recorder.kill()
+            _stdout, stderr = recorder.communicate()
+            raise RuntimeError("UMIK-1 automatic SPL capture timed out")
+        if recorder.returncode != 0 and (not capture_path.exists() or capture_path.stat().st_size < 192044):
+            raise RuntimeError(
+                f"pw-record exited {recorder.returncode}: "
+                f"{(stderr or 'UMIK-1 automatic SPL capture failed').strip()}"
+            )
+
+        try:
+            sample_rate, samples = _read_pcm16_channel(capture_path, channel_index)
+        except Exception as exc:
+            raise RuntimeError(f"Could not read the UMIK-1 capture: {type(exc).__name__}: {exc}") from exc
+        stable = samples[-3 * sample_rate:]
+        try:
+            measured = _c_weighted_spl_from_capture(
+                stable,
+                sample_rate,
+                float(capability["sensitivity_factor_db"]),
+                Path(capability["calibration_path"]),
+            )
+        except Exception as exc:
+            raise RuntimeError(f"Could not calculate UMIK-1 SPL: {type(exc).__name__}: {exc}") from exc
+        if not math.isfinite(measured) or not 40.0 <= measured <= 130.0:
+            raise RuntimeError(f"Automatic UMIK-1 SPL result is outside the valid range ({measured:.1f} dB)")
+        return {
+            "status": "ok",
+            "measured_spl_db": round(measured, 2),
+            "weighting": "C",
+            "averaging_seconds": 3.0,
+            "microphone_model": "UMIK-1",
+            "serial_number": capability["serial_number"],
+        }
+    except (subprocess.CalledProcessError, RuntimeError) as exc:
+        raise HTTPException(status_code=409, detail=f"{type(exc).__name__}: {exc}") from exc
+    finally:
+        if recorder and recorder.poll() is None:
+            recorder.terminate()
+        _stop_spl_calibration_noise()
+        if abs(previous_volume - 100.0) > 0.05:
+            subprocess.run(
+                ["pactl", "set-source-volume", node_name, f"{previous_volume:.4f}%"],
+                capture_output=True,
+                text=True,
+                timeout=3,
+                check=False,
+            )
+        capture_path.unlink(missing_ok=True)
 
 
 @app.post("/api/measurements/spl-calibration/apply")
@@ -6673,6 +6921,10 @@ def _measurement_setup_settings_from_payload(settings: dict[str, Any]) -> dict[s
     if reference_input_channel is None:
         reference_input_channel = measure_settings.get("reference_input_channel")
     return {
+        "selectedInputId": str(measure_settings.get("selectedInputId") or ""),
+        "selectedMicInputChannel": _normalize_measurement_optional_input_channel(
+            measure_settings.get("selectedMicInputChannel")
+        ) or "1",
         "selectedReferenceInputChannel": _normalize_measurement_optional_input_channel(reference_input_channel),
     }
 
@@ -6704,6 +6956,11 @@ def _update_measurement_setup_settings(patch: dict[str, Any]) -> dict[str, Any]:
         measure_settings = {}
         settings["measure"] = measure_settings
 
+    if "selectedInputId" in patch or "input_id" in patch:
+        measure_settings["selectedInputId"] = str(patch.get("selectedInputId", patch.get("input_id")) or "").strip()
+    if "selectedMicInputChannel" in patch or "mic_input_channel" in patch:
+        raw_mic = patch.get("selectedMicInputChannel", patch.get("mic_input_channel"))
+        measure_settings["selectedMicInputChannel"] = _normalize_measurement_optional_input_channel(raw_mic) or "1"
     if "selectedReferenceInputChannel" in patch or "reference_input_channel" in patch:
         raw_reference = patch.get("selectedReferenceInputChannel", patch.get("reference_input_channel"))
         measure_settings["selectedReferenceInputChannel"] = _normalize_measurement_optional_input_channel(raw_reference)

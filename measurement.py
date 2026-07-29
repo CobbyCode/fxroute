@@ -5533,6 +5533,18 @@ class MeasurementStore:
                     "sample_rate": details.get("sample_rate"),
                     "is_default": bool(match.group("star")),
                     "note": "Real PipeWire capture source",
+                    "node_description": details.get("node_description"),
+                    "device_name": details.get("device_name"),
+                    "device_description": details.get("device_description"),
+                    "device_vendor_id": details.get("device_vendor_id"),
+                    "device_product_id": details.get("device_product_id"),
+                    "device_serial": details.get("device_serial"),
+                    "alsa_card": details.get("alsa_card"),
+                    "alsa_device": details.get("alsa_device"),
+                    "alsa_card_name": details.get("alsa_card_name"),
+                    "alsa_long_card_name": details.get("alsa_long_card_name"),
+                    "capture_volume_percent": details.get("capture_volume_percent"),
+                    "capture_gain_db": details.get("capture_gain_db"),
                 }
             )
         return inputs
@@ -5587,18 +5599,49 @@ class MeasurementStore:
             return {}
         details: dict[str, Any] = {}
         for line in (completed.stdout or "").splitlines():
-            if "audio.channels" in line:
-                match = re.search(r'"(\d+)"', line)
-                if match:
-                    details["channels"] = int(match.group(1))
-            elif "audio.rate" in line:
-                match = re.search(r'"(\d+)"', line)
-                if match:
-                    details["sample_rate"] = int(match.group(1))
-            elif "node.name" in line:
-                match = re.search(r'"([^"]+)"', line)
-                if match:
-                    details["node_name"] = match.group(1)
+            match = re.match(r"\s*\*?\s*([A-Za-z0-9_.-]+)\s*=\s*\"([^\"]*)\"", line)
+            if match:
+                details[match.group(1).replace(".", "_")] = match.group(2)
+        if str(details.get("audio_channels") or "").isdigit():
+            details["channels"] = int(details["audio_channels"])
+        if str(details.get("audio_rate") or "").isdigit():
+            details["sample_rate"] = int(details["audio_rate"])
+        details["node_name"] = details.get("node_name")
+
+        device_id = str(details.get("device_id") or "").strip()
+        if device_id:
+            try:
+                device = subprocess.run(
+                    ["wpctl", "inspect", device_id],
+                    capture_output=True,
+                    text=True,
+                    timeout=3,
+                )
+            except Exception:
+                device = None
+            if device and device.returncode == 0:
+                for line in (device.stdout or "").splitlines():
+                    match = re.match(r"\s*\*?\s*([A-Za-z0-9_.-]+)\s*=\s*\"([^\"]*)\"", line)
+                    if match:
+                        key = match.group(1).replace(".", "_")
+                        details.setdefault(key, match.group(2))
+
+        node_name = str(details.get("node_name") or "").strip()
+        if node_name:
+            try:
+                volume = subprocess.run(
+                    ["pactl", "get-source-volume", node_name],
+                    capture_output=True,
+                    text=True,
+                    timeout=3,
+                )
+            except Exception:
+                volume = None
+            if volume and volume.returncode == 0:
+                percent = re.search(r"/\s*([0-9.]+)%\s*/\s*([-+0-9.]+)\s*dB", volume.stdout or "")
+                if percent:
+                    details["capture_volume_percent"] = float(percent.group(1))
+                    details["capture_gain_db"] = float(percent.group(2))
         return details
 
     def _link_host_reference_capture(
