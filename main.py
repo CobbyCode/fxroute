@@ -6217,6 +6217,7 @@ def _parse_effects_extras_from_json(body: dict) -> dict:
     autogain_target_db = float(body.get("autogainTargetDb", body.get("autogain_target_db", -12.0)) or -12.0)
     loudness_enabled = bool(body.get("loudnessEnabled", body.get("loudness_enabled", False)))
     loudness_fft_size = int(body.get("loudnessFftSize", body.get("loudness_fft_size", 4096)) or 4096)
+    loudness_strength = str(body.get("loudnessStrength", body.get("loudness_strength", "full")) or "full")
     loudness_volume_db = float(body.get("loudnessVolumeDb", body.get("loudness_volume_db", 0.0)) or 0.0)
     delay_enabled = bool(body.get("delayEnabled", body.get("delay_enabled", False)))
     delay_left_ms = float(body.get("delayLeftMs", body.get("delay_left_ms", 0.0)) or 0.0)
@@ -6243,6 +6244,7 @@ def _parse_effects_extras_from_json(body: dict) -> dict:
             "enabled": loudness_enabled,
             "params": {
                 "fftSize": loudness_fft_size,
+                "strength": loudness_strength,
                 "volumeDb": loudness_volume_db,
                 "calibration": body.get("calibration") if isinstance(body.get("calibration"), dict) else {},
                 "calibrationProfiles": body.get("calibrationProfiles") if isinstance(body.get("calibrationProfiles"), dict) else {},
@@ -6300,6 +6302,7 @@ def _merge_effects_extras_from_json(previous: dict, body: dict) -> dict:
         ("headroom", "gainDb", ("headroomGainDb", "headroom_gain_db"), float),
         ("autogain", "targetDb", ("autogainTargetDb", "autogain_target_db"), float),
         ("loudness", "fftSize", ("loudnessFftSize", "loudness_fft_size"), int),
+        ("loudness", "strength", ("loudnessStrength", "loudness_strength"), str),
         ("loudness", "volumeDb", ("loudnessVolumeDb", "loudness_volume_db"), float),
         ("delay", "leftMs", ("delayLeftMs", "delay_left_ms"), float),
         ("delay", "rightMs", ("delayRightMs", "delay_right_ms"), float),

@@ -70,6 +70,7 @@ BASE_EXTRAS = {
         "enabled": False,
         "params": {
             "fftSize": 4096,
+            "strength": "full",
             "volumeDb": 0.0,
             "calibration": {"outputProfileId": "usb-a", "requiredAdjustmentDb": 0.5},
             "calibrationProfiles": {"usb-a": {"requiredAdjustmentDb": 0.5}},
@@ -122,9 +123,18 @@ async def test_safe_toggle_order_and_partial_persistence():
     assert output["loudness#0"]["output-gain"] == 0.5
 
     events.clear()
-    await run_route({"loudnessFftSize": 8192}, fake, events, system_volume)
+    await run_route({"loudnessFftSize": 8192, "loudnessStrength": "light"}, fake, events, system_volume)
     assert fake.extras["loudness"]["params"]["fftSize"] == 8192
+    assert fake.extras["loudness"]["params"]["strength"] == "light"
     assert fake.extras["loudness"]["params"]["calibration"]["outputProfileId"] == "usb-a"
+    output = fake._normalizer._apply_extras_to_output({"plugins_order": []}, fake.extras)
+    assert math.isclose(output["loudness#0"]["volume"], -10.73453, abs_tol=0.00001)
+    assert output["loudness#0"]["output-gain"] == -9.5
+    assert math.isclose(
+        output["loudness#0"]["volume"] + output["loudness#0"]["output-gain"],
+        -20.23453,
+        abs_tol=0.00001,
+    )
 
     events.clear()
     await run_route({"loudnessEnabled": False}, fake, events, system_volume)

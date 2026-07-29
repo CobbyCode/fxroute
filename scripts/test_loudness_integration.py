@@ -30,6 +30,7 @@ def test_chain_and_schema() -> None:
                 "enabled": True,
                 "params": {
                     "fftSize": 8192,
+                    "strength": "full",
                     "volumeDb": -20.23453,
                     "calibration": {"requiredAdjustmentDb": 22.9},
                     "calibrationProfiles": {},
@@ -60,6 +61,7 @@ def test_chain_and_schema() -> None:
                 "enabled": False,
                 "params": {
                     "fftSize": 4096,
+                    "strength": "full",
                     "volumeDb": -20.23453,
                     "calibration": {"requiredAdjustmentDb": 22.9},
                 },
@@ -87,6 +89,37 @@ def test_mutex_and_fft_validation() -> None:
             "loudness": {"enabled": True, "params": {"fftSize": fft_size}},
         })
         assert normalized["loudness"]["params"]["fftSize"] == fft_size
+    for strength in ("full", "med", "light", "min"):
+        normalized = ee.normalize_effects_extras({
+            "loudness": {"enabled": True, "params": {"strength": strength}},
+        })
+        assert normalized["loudness"]["params"]["strength"] == strength
+
+
+def test_strength_gain_is_neutral() -> None:
+    ee = manager()
+    expected_offsets = {"full": 0.0, "med": 5.0, "light": 10.0, "min": 15.0}
+    attenuation = -20.23453
+    calibration = 22.9
+    for strength, offset in expected_offsets.items():
+        output = ee._apply_extras_to_output(
+            {"plugins_order": []},
+            {
+                "loudness": {
+                    "enabled": True,
+                    "params": {
+                        "fftSize": 4096,
+                        "strength": strength,
+                        "volumeDb": attenuation,
+                        "calibration": {"requiredAdjustmentDb": calibration},
+                    },
+                },
+            },
+        )
+        plugin = output["loudness#0"]
+        assert math.isclose(plugin["volume"], attenuation - calibration + offset, abs_tol=1e-9)
+        assert math.isclose(plugin["output-gain"], calibration - offset, abs_tol=1e-9)
+        assert math.isclose(plugin["volume"] + plugin["output-gain"], attenuation, abs_tol=1e-9)
 
 
 def test_persistence_and_volume_mapping() -> None:
@@ -96,6 +129,7 @@ def test_persistence_and_volume_mapping() -> None:
             "enabled": True,
             "params": {
                 "fftSize": 4096,
+                "strength": "light",
                 "volumeDb": ee.loudness_db_from_percent(62),
                 "calibration": {"outputProfileId": "usb-a", "requiredAdjustmentDb": -2.5},
                 "calibrationProfiles": {"usb-a": {"requiredAdjustmentDb": -2.5}},
@@ -105,6 +139,7 @@ def test_persistence_and_volume_mapping() -> None:
     loaded = ee.load_global_extras()
     assert loaded == saved
     assert loaded["loudness"]["params"]["calibrationProfiles"]["usb-a"]["requiredAdjustmentDb"] == -2.5
+    assert loaded["loudness"]["params"]["strength"] == "light"
     assert ee.loudness_percent_from_db(loaded["loudness"]["params"]["volumeDb"]) == 62
     assert ee.loudness_db_from_percent(100) == 0.0
     expected = {
@@ -126,8 +161,9 @@ def test_persistence_and_volume_mapping() -> None:
 def main() -> None:
     test_chain_and_schema()
     test_mutex_and_fft_validation()
+    test_strength_gain_is_neutral()
     test_persistence_and_volume_mapping()
-    print(json.dumps({"status": "ok", "tests": 3}))
+    print(json.dumps({"status": "ok", "tests": 4}))
 
 
 if __name__ == "__main__":

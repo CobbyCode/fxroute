@@ -109,10 +109,17 @@ class EasyEffectsManager:
     }
 
     LOUDNESS_FFT_SIZES = {256, 512, 1024, 2048, 4096, 8192, 16384}
+    LOUDNESS_STRENGTH_OFFSETS_DB = {
+        "full": 0.0,
+        "med": 5.0,
+        "light": 10.0,
+        "min": 15.0,
+    }
     LOUDNESS_DEFAULTS = {
         "enabled": False,
         "params": {
             "fftSize": 4096,
+            "strength": "full",
             "volumeDb": 0.0,
             "calibration": {},
             "calibrationProfiles": {},
@@ -1074,6 +1081,9 @@ class EasyEffectsManager:
         fft_size = int(params.get("fftSize", self.LOUDNESS_DEFAULTS["params"]["fftSize"]))
         if fft_size not in self.LOUDNESS_FFT_SIZES:
             raise ValueError("loudness.params.fftSize is not supported")
+        strength = str(params.get("strength", self.LOUDNESS_DEFAULTS["params"]["strength"])).strip().lower()
+        if strength not in self.LOUDNESS_STRENGTH_OFFSETS_DB:
+            raise ValueError("loudness.params.strength is not supported")
         volume_db = float(params.get("volumeDb", 0.0))
         if not -80.0 <= volume_db <= 0.0:
             raise ValueError("loudness.params.volumeDb must be between -80 and 0")
@@ -1097,6 +1107,7 @@ class EasyEffectsManager:
             "enabled": bool(definition.get("enabled", False)),
             "params": {
                 "fftSize": fft_size,
+                "strength": strength,
                 "volumeDb": volume_db,
                 "calibration": dict(calibration),
                 "calibrationProfiles": dict(calibration_profiles),
@@ -1305,6 +1316,7 @@ class EasyEffectsManager:
         adjustment = calibration.get("requiredAdjustmentDb") if isinstance(calibration, dict) else 0.0
         calibration_offset_db = float(adjustment) if enabled and isinstance(adjustment, (int, float)) else 0.0
         master_attenuation_db = float(loudness["params"]["volumeDb"])
+        strength_offset_db = self.LOUDNESS_STRENGTH_OFFSETS_DB[loudness["params"]["strength"]]
         return {
             "bypass": not enabled,
             "clipping": False,
@@ -1315,9 +1327,12 @@ class EasyEffectsManager:
             "mode": "FFT",
             # Coupled SPL calibration: this gain only exists inside the active
             # Loudness block and never feeds the global/limiter gain path.
-            "output-gain": calibration_offset_db,
+            "output-gain": calibration_offset_db - strength_offset_db if enabled else 0.0,
             "std": "ISO226-2023",
-            "volume": master_attenuation_db - calibration_offset_db if enabled else master_attenuation_db,
+            "volume": (
+                master_attenuation_db - calibration_offset_db + strength_offset_db
+                if enabled else master_attenuation_db
+            ),
         }
 
     def _crystalizer_plugin_payload(self, tone_effect: Dict[str, Any]) -> Dict[str, Any]:
