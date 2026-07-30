@@ -111,9 +111,9 @@ class EasyEffectsManager:
     LOUDNESS_FFT_SIZES = {256, 512, 1024, 2048, 4096, 8192, 16384}
     LOUDNESS_STRENGTH_OFFSETS_DB = {
         "full": 0.0,
-        "med": 6.0,
-        "light": 12.0,
-        "min": 18.0,
+        "med": 10.0,
+        "light": 20.0,
+        "min": 30.0,
     }
     LOUDNESS_DEFAULTS = {
         "enabled": False,

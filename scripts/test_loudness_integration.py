@@ -98,7 +98,7 @@ def test_mutex_and_fft_validation() -> None:
 
 def test_strength_gain_is_neutral() -> None:
     ee = manager()
-    expected_offsets = {"full": 0.0, "med": 6.0, "light": 12.0, "min": 18.0}
+    expected_offsets = {"full": 0.0, "med": 10.0, "light": 20.0, "min": 30.0}
     attenuation = -20.23453
     calibration = 22.9
     for strength, offset in expected_offsets.items():
