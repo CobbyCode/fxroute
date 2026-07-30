@@ -30,7 +30,7 @@ Do not change Strength levels, formula, SPL calibration, toggle logic, UI,
 system master, push state, or release state.
 
 ## Status
-done
+failed
 
 ## Result
 Pure Strength changes use a two-phase active-preset transition. Increasing
@@ -49,3 +49,9 @@ order. Every final `volume + output-gain` sum was exactly
 `-25.212984202991393 dB`, Loudness stayed active throughout each transition,
 the system master stayed at 38, FFT stayed 8192, and the initial state
 (Loudness off, Strength Min, playback stopped) was restored.
+
+## Rollback
+Rejected after user validation: no audible improvement was apparent and the
+mains subsequently produced no sound. The `.104` runtime files and the exact
+pre-experiment state were restored from the LDN-011 backup. The experiment is
+not part of the confirmed production state.

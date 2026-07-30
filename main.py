@@ -6334,25 +6334,6 @@ def _resolve_effects_extras(extras: dict | None = None) -> dict:
     return easyeffects_manager.normalize_effects_extras(extras)
 
 
-def _is_pure_loudness_strength_change(previous: dict, current: dict) -> bool:
-    previous_without_strength = copy.deepcopy(previous)
-    current_without_strength = copy.deepcopy(current)
-    previous_strength = (
-        previous_without_strength.get("loudness", {})
-        .get("params", {})
-        .pop("strength", None)
-    )
-    current_strength = (
-        current_without_strength.get("loudness", {})
-        .get("params", {})
-        .pop("strength", None)
-    )
-    return (
-        previous_strength != current_strength
-        and previous_without_strength == current_without_strength
-    )
-
-
 def _require_easyeffects_manager():
     global easyeffects_manager
     if not easyeffects_manager:
@@ -6457,18 +6438,10 @@ async def save_easyeffects_extras(request: Request):
     if disabling_loudness:
         volume_db = float(previous["loudness"]["params"]["volumeDb"])
         set_output_volume(ee_manager.loudness_percent_from_db(volume_db))
-    safe_strength_transition = _is_pure_loudness_strength_change(previous, extras)
-    if safe_strength_transition:
-        result = ee_manager.apply_loudness_strength_transition(previous, extras)
-    else:
-        result = ee_manager.apply_global_extras_to_all_presets(extras)
+    result = ee_manager.apply_global_extras_to_all_presets(extras)
 
     active_preset = ee_manager.get_active_preset()
-    if (
-        not safe_strength_transition
-        and active_preset
-        and active_preset not in ee_manager.EXCLUDED_GLOBAL_EXTRAS_PRESETS
-    ):
+    if active_preset and active_preset not in ee_manager.EXCLUDED_GLOBAL_EXTRAS_PRESETS:
         try:
             ee_manager.load_preset(active_preset)
         except Exception as e:
