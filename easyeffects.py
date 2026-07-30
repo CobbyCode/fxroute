@@ -115,6 +115,11 @@ class EasyEffectsManager:
         "light": 20.0,
         "min": 30.0,
     }
+    LOUDNESS_STRENGTH_GUARD_DB = 18.0
+    LOUDNESS_STRENGTH_GUARD_SETTLE_SECONDS = 0.06
+    LOUDNESS_STRENGTH_VOLUME_SETTLE_SECONDS = 0.10
+    LOUDNESS_STRENGTH_RAMP_STEP_DB = 3.0
+    LOUDNESS_STRENGTH_RAMP_INTERVAL_SECONDS = 0.006
     LOUDNESS_DEFAULTS = {
         "enabled": False,
         "params": {
@@ -1639,7 +1644,7 @@ class EasyEffectsManager:
         previous_extras: Dict[str, Any],
         extras: Dict[str, Any],
     ) -> Dict[str, Any]:
-        """Update active Loudness gains safely, then persist without a preset load."""
+        """Guard the active Loudness output, update Strength, then persist."""
         previous = self.normalize_effects_extras(previous_extras)
         normalized = self.normalize_effects_extras(extras)
         old_loudness = previous["loudness"]
@@ -1649,43 +1654,57 @@ class EasyEffectsManager:
 
         old_strength = old_loudness["params"]["strength"]
         new_strength = new_loudness["params"]["strength"]
-        old_offset = self.LOUDNESS_STRENGTH_OFFSETS_DB[old_strength]
-        new_offset = self.LOUDNESS_STRENGTH_OFFSETS_DB[new_strength]
-        property_order = (
-            (("outputGain", "output-gain"), ("volume", "volume"))
-            if new_offset > old_offset
-            else (("volume", "volume"), ("outputGain", "output-gain"))
+        guard_output_gain = (
+            min(old_plugin["output-gain"], new_plugin["output-gain"])
+            - self.LOUDNESS_STRENGTH_GUARD_DB
         )
 
-        applied: List[tuple[str, str]] = []
+        def wait(seconds: float) -> None:
+            time.sleep(seconds)
+
+        def ramp_output_gain(start_db: float, target_db: float) -> None:
+            distance = target_db - start_db
+            steps = max(1, math.ceil(abs(distance) / self.LOUDNESS_STRENGTH_RAMP_STEP_DB))
+            for step in range(1, steps + 1):
+                value = target_db if step == steps else start_db + (distance * step / steps)
+                self.set_active_plugin_property("loudness", 0, "outputGain", value)
+                if step != steps:
+                    wait(self.LOUDNESS_STRENGTH_RAMP_INTERVAL_SECONDS)
+
+        guarded = False
         try:
-            for runtime_property, payload_key in property_order:
-                self.set_active_plugin_property(
-                    "loudness", 0, runtime_property, new_plugin[payload_key]
-                )
-                applied.append((runtime_property, payload_key))
+            self.set_active_plugin_property(
+                "loudness", 0, "outputGain", guard_output_gain
+            )
+            guarded = True
+            wait(self.LOUDNESS_STRENGTH_GUARD_SETTLE_SECONDS)
+            self.set_active_plugin_property(
+                "loudness", 0, "volume", new_plugin["volume"]
+            )
+            wait(self.LOUDNESS_STRENGTH_VOLUME_SETTLE_SECONDS)
+            ramp_output_gain(guard_output_gain, new_plugin["output-gain"])
         except Exception:
-            # Leave the running graph at its known previous values if the
-            # complete two-property transition cannot be acknowledged.
-            for runtime_property, payload_key in reversed(applied):
+            if guarded:
                 try:
                     self.set_active_plugin_property(
-                        "loudness", 0, runtime_property, old_plugin[payload_key]
+                        "loudness", 0, "outputGain", guard_output_gain
                     )
+                    self.set_active_plugin_property(
+                        "loudness", 0, "volume", old_plugin["volume"]
+                    )
+                    wait(self.LOUDNESS_STRENGTH_VOLUME_SETTLE_SECONDS)
+                    ramp_output_gain(guard_output_gain, old_plugin["output-gain"])
                 except Exception:
-                    logger.exception(
-                        "Failed to roll back Loudness runtime property %s",
-                        runtime_property,
-                    )
+                    logger.exception("Failed to roll back guarded Loudness transition")
             raise
 
         result = self.apply_global_extras_to_all_presets(normalized)
         logger.info(
-            "Applied Loudness strength directly: strength=%s->%s order=%s,%s",
+            "Applied guarded Loudness strength: strength=%s->%s guard=%.3f target=%.3f",
             old_strength,
             new_strength,
-            property_order[0][0],
-            property_order[1][0],
+            guard_output_gain,
+            new_plugin["output-gain"],
         )
         return result
 
