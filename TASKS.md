@@ -26,6 +26,7 @@ vierkanaligen Stage-Ausgangspeaks sicher auf höchstens −1 dBFS begrenzen.
 - [x] LDN-016 — Kanonisches Volume beim Strength-Wechsel erhalten
 - [x] LDN-017 — Auto Gain und Loudness gemeinsam mit gekoppeltem Arbeitspunkt betreiben
 - [x] LDN-018 — Gemeinsame Auto-Gain-/Loudness-Runtime-Übergänge stabilisieren
+- [x] LDN-019 — Reale Strength-Save-Acknowledgement- und Transientenfehler beheben
 
 ## Historical Predictive AutoSub Tasks
 
