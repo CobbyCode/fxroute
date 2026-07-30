@@ -783,7 +783,7 @@ function handleWebSocketMessage(msg) {
                         autogainEnabled: !!state.easyeffects.global_extras?.autogain?.enabled,
                         autogainTargetDb: Number(state.easyeffects.global_extras?.autogain?.params?.targetDb ?? -12),
                         loudnessEnabled: !!state.easyeffects.global_extras?.loudness?.enabled,
-                        loudnessStrength: String(state.easyeffects.global_extras?.loudness?.params?.strength ?? 'full'),
+                        loudnessStrength: state.easyeffects.global_extras?.loudness?.params?.strength ?? 10,
                         loudnessFftSize: Number(state.easyeffects.global_extras?.loudness?.params?.fftSize ?? 4096),
                         loudnessVolumeDb: Number(state.easyeffects.global_extras?.loudness?.params?.volumeDb ?? 0),
                         delayEnabled: !!state.easyeffects.global_extras?.delay?.enabled,
@@ -10615,7 +10615,7 @@ async function fetchEffects() {
                 autogainEnabled: !!data.global_extras?.autogain?.enabled,
                 autogainTargetDb: Number(data.global_extras?.autogain?.params?.targetDb ?? -12),
                 loudnessEnabled: !!data.global_extras?.loudness?.enabled,
-                loudnessStrength: String(data.global_extras?.loudness?.params?.strength ?? 'full'),
+                loudnessStrength: data.global_extras?.loudness?.params?.strength ?? 10,
                 loudnessFftSize: Number(data.global_extras?.loudness?.params?.fftSize ?? 4096),
                 loudnessVolumeDb: Number(data.global_extras?.loudness?.params?.volumeDb ?? 0),
                 delayEnabled: !!data.global_extras?.delay?.enabled,
@@ -11438,7 +11438,12 @@ const _activeEditing = new Set();
 const EFFECTS_HEADROOM_ALLOWED_GAIN_DB = new Set([-2, -3, -4, -5, -6]);
 const EFFECTS_AUTOGAIN_ALLOWED_TARGET_DB = new Set([-12, -15, -18, -23]);
 const EFFECTS_LOUDNESS_ALLOWED_FFT_SIZE = new Set([256, 512, 1024, 2048, 4096, 8192, 16384]);
-const EFFECTS_LOUDNESS_STRENGTHS = new Set(['full', 'med', 'light', 'min']);
+const EFFECTS_LOUDNESS_LEGACY_STRENGTHS = new Map([
+    ['full', 10],
+    ['med', 7],
+    ['light', 4],
+    ['min', 1],
+]);
 const EFFECTS_TONE_EFFECT_MODES = new Set(['crystalizer', 'maximizer']);
 
 function normalizeEffectsHeadroomGainDb(value, fallback = -3) {
@@ -11460,9 +11465,12 @@ function normalizeEffectsLoudnessFftSize(value, fallback = 4096) {
     return EFFECTS_LOUDNESS_ALLOWED_FFT_SIZE.has(numeric) ? numeric : fallback;
 }
 
-function normalizeEffectsLoudnessStrength(value, fallback = 'full') {
-    const normalized = String(value || fallback).trim().toLowerCase();
-    return EFFECTS_LOUDNESS_STRENGTHS.has(normalized) ? normalized : fallback;
+function normalizeEffectsLoudnessStrength(value, fallback = 10) {
+    const legacy = EFFECTS_LOUDNESS_LEGACY_STRENGTHS.get(String(value).trim().toLowerCase());
+    if (legacy !== undefined) return legacy;
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return fallback;
+    return Math.max(1, Math.min(10, Math.round(numeric)));
 }
 
 function normalizeEffectsToneEffectMode(value, fallback = 'crystalizer') {
@@ -11482,7 +11490,7 @@ function applyEffectsExtras(extras = {}) {
     }
     if (elements.effectsLoudnessEnabled) elements.effectsLoudnessEnabled.checked = !!extras.loudnessEnabled;
     if (elements.effectsLoudnessStrength && !_activeEditing.has(elements.effectsLoudnessStrength)) {
-        elements.effectsLoudnessStrength.value = normalizeEffectsLoudnessStrength(extras.loudnessStrength, 'full');
+        elements.effectsLoudnessStrength.value = normalizeEffectsLoudnessStrength(extras.loudnessStrength, 10);
     }
     if (elements.effectsLoudnessFftSize && !_activeEditing.has(elements.effectsLoudnessFftSize)) {
         elements.effectsLoudnessFftSize.value = String(normalizeEffectsLoudnessFftSize(extras.loudnessFftSize, 4096));
@@ -11831,7 +11839,7 @@ function loadSavedEffectsExtras() {
         autogainEnabled: !!fx.global_extras?.autogain?.enabled,
         autogainTargetDb: Number(fx.global_extras?.autogain?.params?.targetDb ?? -12),
         loudnessEnabled: !!fx.global_extras?.loudness?.enabled,
-        loudnessStrength: String(fx.global_extras?.loudness?.params?.strength ?? 'full'),
+        loudnessStrength: fx.global_extras?.loudness?.params?.strength ?? 10,
         loudnessFftSize: Number(fx.global_extras?.loudness?.params?.fftSize ?? 4096),
         loudnessVolumeDb: Number(fx.global_extras?.loudness?.params?.volumeDb ?? 0),
         delayEnabled: !!fx.global_extras?.delay?.enabled,
@@ -11889,7 +11897,7 @@ function collectEffectsExtras() {
         autogainEnabled: elements.effectsAutogainEnabled?.checked || false,
         autogainTargetDb: normalizeEffectsAutogainTargetDb(elements.effectsAutogainTargetDb?.value, -12),
         loudnessEnabled: elements.effectsLoudnessEnabled?.checked || false,
-        loudnessStrength: normalizeEffectsLoudnessStrength(elements.effectsLoudnessStrength?.value, 'full'),
+        loudnessStrength: normalizeEffectsLoudnessStrength(elements.effectsLoudnessStrength?.value, 10),
         loudnessFftSize: normalizeEffectsLoudnessFftSize(elements.effectsLoudnessFftSize?.value, 4096),
         delayEnabled: elements.effectsDelayEnabled?.checked || false,
         delayLeftMs: parseFloat(elements.effectsDelayLeftMs?.value || '0'),

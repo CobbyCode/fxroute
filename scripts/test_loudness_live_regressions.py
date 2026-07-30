@@ -96,7 +96,7 @@ BASE_EXTRAS = {
         "enabled": False,
         "params": {
             "fftSize": 4096,
-            "strength": "full",
+            "strength": 10,
             "volumeDb": 0.0,
             "calibration": {"outputProfileId": "usb-a", "requiredAdjustmentDb": 0.5},
             "calibrationProfiles": {"usb-a": {"requiredAdjustmentDb": 0.5}},
@@ -151,11 +151,11 @@ async def test_safe_toggle_order_and_partial_persistence():
     assert output["loudness#0"]["output-gain"] == 0.5
 
     events.clear()
-    await run_route({"loudnessFftSize": 8192, "loudnessStrength": "light"}, fake, events, system_volume)
+    await run_route({"loudnessFftSize": 8192, "loudnessStrength": 4}, fake, events, system_volume)
     assert events[0][0] == "runtime-pair"
     assert not any(event[0] in {"load", "refresh"} for event in events)
     assert fake.extras["loudness"]["params"]["fftSize"] == 8192
-    assert fake.extras["loudness"]["params"]["strength"] == "light"
+    assert fake.extras["loudness"]["params"]["strength"] == 4
     assert fake.extras["loudness"]["params"]["calibration"]["outputProfileId"] == "usb-a"
     output = fake._normalizer._apply_extras_to_output({"plugins_order": []}, fake.extras)
     assert math.isclose(output["loudness#0"]["volume"], -0.73453, abs_tol=0.00001)
@@ -168,8 +168,8 @@ async def test_safe_toggle_order_and_partial_persistence():
 
     events.clear()
     await run_route({"loudnessEnabled": False}, fake, events, system_volume)
-    assert events[0] == ("runtime-pair", False, -12.0, False, -12.0, True, False)
-    assert events[1] == ("system", 46)
+    assert events[0] == ("system", 46)
+    assert events[1] == ("runtime-pair", False, -12.0, False, -12.0, True, False)
     assert events[2] == ("broadcast", "easyeffects")
     assert fake.extras["loudness"]["params"]["calibrationProfiles"]["usb-a"]["requiredAdjustmentDb"] == 0.5
     output = fake._normalizer._apply_extras_to_output({"plugins_order": []}, fake.extras)
@@ -201,11 +201,11 @@ async def test_pure_strength_uses_runtime_path_once():
     events = []
     enabled = copy.deepcopy(BASE_EXTRAS)
     enabled["loudness"]["enabled"] = True
-    enabled["loudness"]["params"]["strength"] = "min"
+    enabled["loudness"]["params"]["strength"] = 1
     fake = FakeEasyEffects(enabled, events)
-    await run_route({"loudnessStrength": "light"}, fake, events, [100])
+    await run_route({"loudnessStrength": 4}, fake, events, [100])
     assert events == [
-        ("runtime-strength", "min", "light"),
+        ("runtime-strength", 1, 4),
         ("broadcast", "easyeffects"),
     ]
 
@@ -214,13 +214,13 @@ async def test_strength_ignores_stale_volume_from_ui():
     events = []
     enabled = copy.deepcopy(BASE_EXTRAS)
     enabled["loudness"]["enabled"] = True
-    enabled["loudness"]["params"]["strength"] = "min"
+    enabled["loudness"]["params"]["strength"] = 1
     enabled["loudness"]["params"]["volumeDb"] = -42.0
     fake = FakeEasyEffects(enabled, events)
     result = await run_route(
         {
             "loudnessEnabled": True,
-            "loudnessStrength": "full",
+            "loudnessStrength": 10,
             "loudnessFftSize": 4096,
             "loudnessVolumeDb": -12.0,
         },
@@ -229,7 +229,7 @@ async def test_strength_ignores_stale_volume_from_ui():
         [100],
     )
     assert events == [
-        ("runtime-strength", "min", "full"),
+        ("runtime-strength", 1, 10),
         ("broadcast", "easyeffects"),
     ]
     assert result["extras"]["loudness"]["params"]["volumeDb"] == -42.0
@@ -245,9 +245,9 @@ async def test_duplicate_strength_save_is_noop():
     events = []
     enabled = copy.deepcopy(BASE_EXTRAS)
     enabled["loudness"]["enabled"] = True
-    enabled["loudness"]["params"]["strength"] = "light"
+    enabled["loudness"]["params"]["strength"] = 4
     fake = FakeEasyEffects(enabled, events)
-    result = await run_route({"loudnessStrength": "light"}, fake, events, [100])
+    result = await run_route({"loudnessStrength": 4}, fake, events, [100])
     assert events == []
     assert result["extras"] == fake.extras
     assert result["updated_presets"] == 0

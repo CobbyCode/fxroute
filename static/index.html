@@ -609,12 +609,8 @@
                                             <label class="checkbox-row"><input type="checkbox" id="effects-loudness-enabled"> Loudness</label>
                                             <div class="effects-loudness-controls">
                                                 <label for="effects-loudness-strength" id="effects-loudness-strength-wrap" class="effects-inline-control hidden">
-                                                    <select id="effects-loudness-strength" class="url-input effects-compact-control" aria-label="Strength">
-                                                        <option value="full" selected>Full</option>
-                                                        <option value="med">Med</option>
-                                                        <option value="light">Light</option>
-                                                        <option value="min">Min</option>
-                                                    </select>
+                                                    <span class="effects-inline-control-label">Strength</span>
+                                                    <input type="number" id="effects-loudness-strength" class="url-input delay-number-input effects-compact-control" min="1" max="10" step="1" value="10" aria-label="Strength">
                                                 </label>
                                                 <label for="effects-loudness-fft-size" id="effects-loudness-fft-wrap" class="effects-inline-control hidden">
                                                     <span class="effects-inline-control-label">FFT</span>
@@ -1154,6 +1150,6 @@
     <div id="toast-container" class="toast-container"></div>
 
     <script src="/static/measurement_dsp.js?v=0.7.36"></script>
-    <script src="/static/app.js?v=0.7.55-loudness-autogain1"></script>
+    <script src="/static/app.js?v=0.7.55-loudness-strength10"></script>
 </body>
 </html>

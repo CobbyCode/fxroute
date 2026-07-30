@@ -30,7 +30,7 @@ def test_chain_and_schema() -> None:
                 "enabled": True,
                 "params": {
                     "fftSize": 8192,
-                    "strength": "full",
+                    "strength": 10,
                     "volumeDb": -20.23453,
                     "calibration": {"requiredAdjustmentDb": 22.9},
                     "calibrationProfiles": {},
@@ -61,7 +61,7 @@ def test_chain_and_schema() -> None:
                 "enabled": False,
                 "params": {
                     "fftSize": 4096,
-                    "strength": "full",
+                    "strength": 10,
                     "volumeDb": -20.23453,
                     "calibration": {"requiredAdjustmentDb": 22.9},
                 },
@@ -100,7 +100,7 @@ def test_combined_mode_targets_and_fft_validation() -> None:
             "loudness": {"enabled": True, "params": {"fftSize": fft_size}},
         })
         assert normalized["loudness"]["params"]["fftSize"] == fft_size
-    for strength in ("full", "med", "light", "min"):
+    for strength in (10, 7, 4, 1):
         normalized = ee.normalize_effects_extras({
             "loudness": {"enabled": True, "params": {"strength": strength}},
         })
@@ -109,7 +109,7 @@ def test_combined_mode_targets_and_fft_validation() -> None:
 
 def test_strength_gain_is_neutral() -> None:
     ee = manager()
-    expected_offsets = {"full": 0.0, "med": 10.0, "light": 20.0, "min": 30.0}
+    expected_offsets = {10: 0.0, 7: 10.0, 4: 20.0, 1: 30.0}
     attenuation = -20.23453
     calibration = 22.9
     for strength, offset in expected_offsets.items():
@@ -146,7 +146,7 @@ def test_combined_autogain_offsets_are_neutral() -> None:
                 "loudness": {
                     "enabled": True,
                     "params": {
-                        "strength": "med",
+                        "strength": 7,
                         "volumeDb": attenuation,
                         "calibration": {"requiredAdjustmentDb": calibration},
                     },
@@ -184,7 +184,7 @@ def test_persistence_and_volume_mapping() -> None:
             "enabled": True,
             "params": {
                 "fftSize": 4096,
-                "strength": "light",
+                "strength": 4,
                 "volumeDb": ee.loudness_db_from_percent(62),
                 "calibration": {"outputProfileId": "usb-a", "requiredAdjustmentDb": -2.5},
                 "calibrationProfiles": {"usb-a": {"requiredAdjustmentDb": -2.5}},
@@ -197,7 +197,7 @@ def test_persistence_and_volume_mapping() -> None:
     assert loaded["autogain"]["params"]["targetDb"] == -23
     assert loaded["loudness"]["enabled"] is True
     assert loaded["loudness"]["params"]["calibrationProfiles"]["usb-a"]["requiredAdjustmentDb"] == -2.5
-    assert loaded["loudness"]["params"]["strength"] == "light"
+    assert loaded["loudness"]["params"]["strength"] == 4
     assert ee.loudness_percent_from_db(loaded["loudness"]["params"]["volumeDb"]) == 62
     assert ee.loudness_db_from_percent(100) == 0.0
     expected = {

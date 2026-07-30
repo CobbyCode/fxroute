@@ -6219,7 +6219,7 @@ def _parse_effects_extras_from_json(body: dict) -> dict:
     autogain_target_db = float(body.get("autogainTargetDb", body.get("autogain_target_db", -12.0)) or -12.0)
     loudness_enabled = bool(body.get("loudnessEnabled", body.get("loudness_enabled", False)))
     loudness_fft_size = int(body.get("loudnessFftSize", body.get("loudness_fft_size", 4096)) or 4096)
-    loudness_strength = str(body.get("loudnessStrength", body.get("loudness_strength", "full")) or "full")
+    loudness_strength = body.get("loudnessStrength", body.get("loudness_strength", 10))
     loudness_volume_db = float(body.get("loudnessVolumeDb", body.get("loudness_volume_db", 0.0)) or 0.0)
     delay_enabled = bool(body.get("delayEnabled", body.get("delay_enabled", False)))
     delay_left_ms = float(body.get("delayLeftMs", body.get("delay_left_ms", 0.0)) or 0.0)

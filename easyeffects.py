@@ -112,11 +112,13 @@ class EasyEffectsManager:
     AUTOGAIN_TARGETS_DB = {-12.0, -15.0, -18.0, -23.0}
 
     LOUDNESS_FFT_SIZES = {256, 512, 1024, 2048, 4096, 8192, 16384}
-    LOUDNESS_STRENGTH_OFFSETS_DB = {
-        "full": 0.0,
-        "med": 10.0,
-        "light": 20.0,
-        "min": 30.0,
+    LOUDNESS_STRENGTH_MIN = 1
+    LOUDNESS_STRENGTH_MAX = 10
+    LOUDNESS_LEGACY_STRENGTHS = {
+        "full": 10,
+        "med": 7,
+        "light": 4,
+        "min": 1,
     }
     LOUDNESS_STRENGTH_GUARD_DB = 18.0
     LOUDNESS_OUTPUT_GAIN_MIN_DB = -36.0
@@ -131,7 +133,7 @@ class EasyEffectsManager:
         "enabled": False,
         "params": {
             "fftSize": 4096,
-            "strength": "full",
+            "strength": 10,
             "volumeDb": 0.0,
             "calibration": {},
             "calibrationProfiles": {},
@@ -1176,9 +1178,19 @@ class EasyEffectsManager:
         fft_size = int(params.get("fftSize", self.LOUDNESS_DEFAULTS["params"]["fftSize"]))
         if fft_size not in self.LOUDNESS_FFT_SIZES:
             raise ValueError("loudness.params.fftSize is not supported")
-        strength = str(params.get("strength", self.LOUDNESS_DEFAULTS["params"]["strength"])).strip().lower()
-        if strength not in self.LOUDNESS_STRENGTH_OFFSETS_DB:
-            raise ValueError("loudness.params.strength is not supported")
+        raw_strength = params.get("strength", self.LOUDNESS_DEFAULTS["params"]["strength"])
+        legacy_strength = self.LOUDNESS_LEGACY_STRENGTHS.get(
+            str(raw_strength).strip().lower()
+        )
+        if legacy_strength is not None:
+            strength = legacy_strength
+        else:
+            numeric_strength = float(raw_strength)
+            strength = int(numeric_strength)
+            if numeric_strength != strength:
+                raise ValueError("loudness.params.strength must be a whole number")
+        if not self.LOUDNESS_STRENGTH_MIN <= strength <= self.LOUDNESS_STRENGTH_MAX:
+            raise ValueError("loudness.params.strength must be between 1 and 10")
         volume_db = float(params.get("volumeDb", 0.0))
         if not -80.0 <= volume_db <= 0.0:
             raise ValueError("loudness.params.volumeDb must be between -80 and 0")
@@ -1414,7 +1426,10 @@ class EasyEffectsManager:
         adjustment = calibration.get("requiredAdjustmentDb") if isinstance(calibration, dict) else 0.0
         calibration_offset_db = float(adjustment) if enabled and isinstance(adjustment, (int, float)) else 0.0
         master_attenuation_db = float(loudness["params"]["volumeDb"])
-        strength_offset_db = self.LOUDNESS_STRENGTH_OFFSETS_DB[loudness["params"]["strength"]]
+        strength_offset_db = (
+            (self.LOUDNESS_STRENGTH_MAX - loudness["params"]["strength"])
+            * (30.0 / 9.0)
+        )
         autogain_offset_db = (
             float(autogain["params"]["targetDb"]) + 23.0
             if autogain["enabled"] else 0.0

@@ -46,7 +46,7 @@ def extras(strength):
 
 def test_all_adjacent_transitions():
     manager = RecordingManager()
-    levels = ("full", "med", "light", "min")
+    levels = tuple(range(10, 0, -1))
     transitions = list(zip(levels, levels[1:])) + list(
         zip(reversed(levels), reversed(levels[:-1]))
     )
@@ -113,6 +113,33 @@ def test_all_adjacent_transitions():
         assert result["extras"]["loudness"]["params"]["strength"] == new
 
 
+def test_numeric_strength_offsets_and_legacy_mapping():
+    manager = RecordingManager()
+    baseline_db = -25.212984202991393
+    for strength in range(1, 11):
+        normalized = manager.normalize_effects_extras(extras(strength))
+        payload = manager._loudness_plugin_payload(
+            normalized["loudness"], normalized["autogain"]
+        )
+        expected_offset = (10 - strength) * (30.0 / 9.0)
+        assert math.isclose(
+            payload["volume"],
+            baseline_db - 17.6 + expected_offset,
+            abs_tol=1e-9,
+        )
+        assert math.isclose(
+            payload["volume"] + payload["output-gain"],
+            baseline_db,
+            abs_tol=1e-9,
+        )
+
+    for legacy, numeric in {"full": 10, "med": 7, "light": 4, "min": 1}.items():
+        assert (
+            manager.normalize_effects_extras(extras(legacy))["loudness"]["params"]["strength"]
+            == numeric
+        )
+
+
 def test_rounded_numeric_property_acknowledgement():
     manager = RecordingManager()
     mutations = []
@@ -141,7 +168,7 @@ def test_rollback_on_loudness_volume_failure():
 
     manager.set_active_plugin_property = fail_second
     try:
-        manager.apply_loudness_strength_runtime(extras("min"), extras("light"))
+        manager.apply_loudness_strength_runtime(extras(1), extras(4))
     except RuntimeError as exc:
         assert str(exc) == "volume property failed"
     else:
@@ -160,8 +187,8 @@ def test_rollback_on_loudness_volume_failure():
 
 def test_failure_rollback_has_no_positive_envelope():
     manager = RecordingManager()
-    old = extras("min")
-    new = extras("light")
+    old = extras(1)
+    new = extras(4)
     old_payload = manager._loudness_plugin_payload(
         manager.normalize_effects_extras(old)["loudness"],
         manager.normalize_effects_extras(old)["autogain"],
@@ -201,7 +228,7 @@ def test_failure_rollback_has_no_positive_envelope():
 
 def test_volume_and_combined_controls_are_guarded():
     manager = RecordingManager()
-    combined = extras("light")
+    combined = extras(4)
     combined["autogain"] = {"enabled": True, "params": {"targetDb": -15}}
 
     scenarios = []
@@ -225,7 +252,7 @@ def test_volume_and_combined_controls_are_guarded():
     scenarios.append(("loudness-on", loudness_off, combined))
 
     strength = copy.deepcopy(combined)
-    strength["loudness"]["params"]["strength"] = "min"
+    strength["loudness"]["params"]["strength"] = 1
     scenarios.append(("strength", combined, strength))
 
     for label, previous, current in scenarios:
@@ -259,6 +286,7 @@ def test_production_dsp_settle_exceeds_control_ack_window():
 
 def main():
     test_all_adjacent_transitions()
+    test_numeric_strength_offsets_and_legacy_mapping()
     test_rounded_numeric_property_acknowledgement()
     test_rollback_on_loudness_volume_failure()
     test_failure_rollback_has_no_positive_envelope()
