@@ -33,7 +33,7 @@ softly restoring output gain to its exact target.
 Preserve unrelated dirty AutoSub changes and project artifacts.
 
 ## Status
-review
+done
 
 ## Atomic Update Finding
 
@@ -75,3 +75,9 @@ The reviewed `easyeffects.py` was compiled and deployed to `.104`; FXRoute is
 active. Loudness was already disabled with Strength Full and FFT 8192 after
 restart, so no artificial live transition was performed and the user's state
 was not changed. Acoustic review is pending.
+
+## User Acceptance
+
+Paul confirmed on `.104` that the guarded transition removed the audible
+positive Strength transient. LDN-014 is accepted. The confirmed production
+code commit is `911c542c27a5fcb01b0a5e728563874e3312320e`.
