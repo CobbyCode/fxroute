@@ -6482,12 +6482,30 @@ async def save_easyeffects_extras(request: Request):
     runtime_autogain_loudness_change = _is_runtime_autogain_loudness_change(
         previous, extras
     )
-    if runtime_strength_change:
-        result = ee_manager.apply_loudness_strength_runtime(previous, extras)
-    elif runtime_autogain_loudness_change:
-        result = ee_manager.apply_autogain_loudness_runtime(previous, extras)
-    else:
-        result = ee_manager.apply_global_extras_to_all_presets(extras)
+    disabling_master_percent = None
+    if disabling_loudness:
+        volume_db = float(extras["loudness"]["params"]["volumeDb"])
+        disabling_master_percent = ee_manager.loudness_percent_from_db(volume_db)
+        # Move the canonical attenuation back to the system master while the
+        # Loudness block is still active and guarded.  Bypassing first leaves
+        # a short 100%-master window and produces a positive transient.
+        set_output_volume(disabling_master_percent)
+    try:
+        if runtime_strength_change:
+            result = ee_manager.apply_loudness_strength_runtime(previous, extras)
+        elif runtime_autogain_loudness_change:
+            result = ee_manager.apply_autogain_loudness_runtime(previous, extras)
+        else:
+            result = ee_manager.apply_global_extras_to_all_presets(extras)
+    except Exception:
+        if disabling_master_percent is not None:
+            try:
+                set_output_volume(100)
+            except Exception:
+                logger.exception(
+                    "Failed to restore system master after Loudness disable failure"
+                )
+        raise
 
     active_preset = ee_manager.get_active_preset()
     if (
@@ -6501,9 +6519,6 @@ async def save_easyeffects_extras(request: Request):
             logger.warning("Failed to reload active preset after extras update: %s", e)
     if enabling_loudness:
         set_output_volume(100)
-    elif disabling_loudness:
-        volume_db = float(extras["loudness"]["params"]["volumeDb"])
-        set_output_volume(ee_manager.loudness_percent_from_db(volume_db))
 
     status = ee_manager.get_status()
     await manager.broadcast({"type": "easyeffects", "data": status})

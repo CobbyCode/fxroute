@@ -253,12 +253,17 @@ def test_volume_and_combined_controls_are_guarded():
     assert volume_result["extras"]["loudness"]["params"]["volumeDb"] == -28.0
 
 
+def test_production_dsp_settle_exceeds_control_ack_window():
+    assert EasyEffectsManager.LOUDNESS_STRENGTH_VOLUME_SETTLE_SECONDS >= 0.30
+
+
 def main():
     test_all_adjacent_transitions()
     test_rounded_numeric_property_acknowledgement()
     test_rollback_on_loudness_volume_failure()
     test_failure_rollback_has_no_positive_envelope()
     test_volume_and_combined_controls_are_guarded()
+    test_production_dsp_settle_exceeds_control_ack_window()
     print("Loudness direct runtime strength transitions: ok")
 
 

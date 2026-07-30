@@ -121,7 +121,10 @@ class EasyEffectsManager:
     LOUDNESS_STRENGTH_GUARD_DB = 18.0
     LOUDNESS_OUTPUT_GAIN_MIN_DB = -36.0
     LOUDNESS_STRENGTH_GUARD_SETTLE_SECONDS = 0.06
-    LOUDNESS_STRENGTH_VOLUME_SETTLE_SECONDS = 0.10
+    # The Local Server acknowledgement only confirms the control value.  The
+    # LSP volume port is still smoothing in the audio thread at that point.
+    # Keep the output guard in place long enough for that DSP-side transition.
+    LOUDNESS_STRENGTH_VOLUME_SETTLE_SECONDS = 0.35
     LOUDNESS_STRENGTH_RAMP_STEP_DB = 3.0
     LOUDNESS_STRENGTH_RAMP_INTERVAL_SECONDS = 0.006
     LOUDNESS_DEFAULTS = {
