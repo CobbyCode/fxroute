@@ -24,7 +24,7 @@ runtime Loudness values from the currently effective A.
 `/home/pbclaw/ai/projects/fxroute`
 
 ## Status
-review
+done
 
 ## Notes
 Preserve all unrelated dirty AutoSub work and artifacts.
@@ -58,3 +58,13 @@ All passed. The regression sends a deliberately stale `loudnessVolumeDb` with
 a Min→Full request and verifies that the runtime-only Strength path is used,
 canonical A remains `-42 dB`, and no preset load, system-volume write, or peak
 refresh occurs.
+
+## Deployment
+
+Commit `856038cf32fe5b5a7efd52e97c43db0ef47dea6f` was deployed to `.104`;
+deployed `main.py` and `static/app.js` matched the committed files byte for
+byte and FXRoute restarted active. A state-neutral live request resent the
+current Strength `light` with a deliberately stale `volumeDb=-3`. It was
+handled as a no-op (`updated_presets=0`): canonical `volumeDb` remained
+`-19.674128523856954`, visible Volume remained `47`, and Strength remained
+`light`. No push or release.
