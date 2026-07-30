@@ -6694,18 +6694,22 @@ def _stop_spl_calibration_noise() -> None:
         except subprocess.TimeoutExpired:
             process.kill()
     restore = spl_calibration_restore_state
-    if restore and easyeffects_manager:
-        extras = easyeffects_manager.load_global_extras()
-        extras["loudness"]["params"]["volumeDb"] = restore["loudness_volume_db"]
-        extras["loudness"]["params"]["calibration"] = copy.deepcopy(
-            restore.get("loudness_calibration") or {}
-        )
-        easyeffects_manager.apply_global_extras_to_active_preset(extras)
-        set_output_volume(restore["system_volume_percent"])
-        active = easyeffects_manager.get_active_preset()
-        if active and active not in easyeffects_manager.EXCLUDED_GLOBAL_EXTRAS_PRESETS:
-            easyeffects_manager.load_preset(active)
     spl_calibration_restore_state = None
+    if restore and easyeffects_manager:
+        try:
+            easyeffects_manager.set_active_plugin_property(
+                "loudness", 0, "outputGain", restore["loudness_output_gain"]
+            )
+            easyeffects_manager.set_active_plugin_property(
+                "loudness", 0, "volume", restore["loudness_volume"]
+            )
+            if not restore["loudness_bypass"]:
+                time.sleep(0.10)
+            easyeffects_manager.set_active_plugin_property(
+                "loudness", 0, "bypass", restore["loudness_bypass"]
+            )
+        finally:
+            set_output_volume(restore["system_volume_percent"])
 
 
 @app.get("/api/measurements/spl-calibration")
@@ -6737,22 +6741,27 @@ def _start_spl_calibration_noise() -> dict[str, Any]:
     global spl_calibration_noise_process, spl_calibration_noise_file, spl_calibration_restore_state
     _stop_spl_calibration_noise()
     ee_manager = _require_easyeffects_manager()
-    extras = ee_manager.load_global_extras()
     spl_calibration_restore_state = {
-        "loudness_volume_db": float(extras["loudness"]["params"]["volumeDb"]),
-        "loudness_calibration": copy.deepcopy(
-            extras["loudness"]["params"].get("calibration") or {}
+        "loudness_bypass": (
+            ee_manager.get_active_plugin_property("loudness", 0, "bypass").lower()
+            in {"true", "1", "on"}
+        ),
+        "loudness_volume": float(
+            ee_manager.get_active_plugin_property("loudness", 0, "volume")
+        ),
+        "loudness_output_gain": float(
+            ee_manager.get_active_plugin_property("loudness", 0, "outputGain")
         ),
         "system_volume_percent": get_output_volume(),
     }
-    extras["loudness"]["params"]["volumeDb"] = 0.0
-    # Recalibration always measures from the neutral Loudness reference point.
-    extras["loudness"]["params"]["calibration"] = {}
-    ee_manager.apply_global_extras_to_active_preset(extras)
-    set_output_volume(100)
-    active = ee_manager.get_active_preset()
-    if active and active not in ee_manager.EXCLUDED_GLOBAL_EXTRAS_PRESETS:
-        ee_manager.load_preset(active)
+    try:
+        ee_manager.set_active_plugin_property("loudness", 0, "bypass", True)
+        ee_manager.set_active_plugin_property("loudness", 0, "outputGain", 0.0)
+        time.sleep(0.10)
+        set_output_volume(100)
+    except Exception:
+        _stop_spl_calibration_noise()
+        raise
     noise_path = Path(tempfile.gettempdir()) / "fxroute-spl-calibration-pink-noise.wav"
     if not noise_path.exists():
         generated = subprocess.run(
@@ -6769,11 +6778,15 @@ def _start_spl_calibration_noise() -> dict[str, Any]:
             _stop_spl_calibration_noise()
             raise HTTPException(status_code=500, detail=(generated.stderr or "Pink-noise generation failed").strip())
     spl_calibration_noise_file = noise_path
-    spl_calibration_noise_process = subprocess.Popen(
-        ["pw-play", "--volume=1.0", str(noise_path)],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    try:
+        spl_calibration_noise_process = subprocess.Popen(
+            ["pw-play", "--volume=1.0", str(noise_path)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        _stop_spl_calibration_noise()
+        raise
     return {"status": "playing", "settle_seconds": 1.0, "average_seconds": 3.0}
 
 

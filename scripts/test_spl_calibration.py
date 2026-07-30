@@ -36,6 +36,12 @@ class FakeEasyEffects:
         })
         self.active_apply_calls = 0
         self.all_apply_calls = 0
+        self.runtime = {
+            ("loudness", 0, "bypass"): "false",
+            ("loudness", 0, "volume"): "-39.5",
+            ("loudness", 0, "outputGain"): "27.5",
+        }
+        self.runtime_events = []
 
     def load_global_extras(self):
         return copy.deepcopy(self.extras)
@@ -55,6 +61,129 @@ class FakeEasyEffects:
 
     def get_active_preset(self):
         return ""
+
+    def get_active_plugin_property(self, plugin_name, instance_id, property_name):
+        return self.runtime[(plugin_name, instance_id, property_name)]
+
+    def set_active_plugin_property(self, plugin_name, instance_id, property_name, value):
+        self.runtime_events.append((plugin_name, instance_id, property_name, value))
+        if isinstance(value, bool):
+            stored = "true" if value else "false"
+        else:
+            stored = str(float(value))
+        self.runtime[(plugin_name, instance_id, property_name)] = stored
+
+
+class FakeNoiseProcess:
+    def __init__(self, *_args, **_kwargs):
+        self.returncode = None
+        self.terminated = False
+
+    def poll(self):
+        return None if not self.terminated else 0
+
+    def terminate(self):
+        self.terminated = True
+
+    def wait(self, timeout=None):
+        self.returncode = 0
+        return 0
+
+
+def test_spl_noise_uses_and_restores_neutral_loudness_runtime() -> None:
+    fake = FakeEasyEffects()
+    original_manager = main.easyeffects_manager
+    original_get_volume = main.get_output_volume
+    original_set_volume = main.set_output_volume
+    original_popen = main.subprocess.Popen
+    original_gettempdir = main.tempfile.gettempdir
+    original_sleep = main.time.sleep
+    volume_events = []
+    with tempfile.TemporaryDirectory(prefix="fxroute-spl-neutral-") as directory:
+        noise_path = Path(directory) / "fxroute-spl-calibration-pink-noise.wav"
+        noise_path.write_bytes(b"test")
+        try:
+            main.easyeffects_manager = fake
+            main.get_output_volume = lambda: 37
+            main.set_output_volume = volume_events.append
+            main.subprocess.Popen = FakeNoiseProcess
+            main.tempfile.gettempdir = lambda: directory
+            main.time.sleep = lambda _seconds: None
+            main.spl_calibration_noise_process = None
+            main.spl_calibration_restore_state = None
+
+            result = main._start_spl_calibration_noise()
+            assert result["status"] == "playing"
+            assert fake.runtime_events[:2] == [
+                ("loudness", 0, "bypass", True),
+                ("loudness", 0, "outputGain", 0.0),
+            ]
+            assert volume_events == [100]
+            assert fake.active_apply_calls == 0
+            assert fake.all_apply_calls == 0
+
+            main._stop_spl_calibration_noise()
+            assert fake.runtime_events[2:] == [
+                ("loudness", 0, "outputGain", 27.5),
+                ("loudness", 0, "volume", -39.5),
+                ("loudness", 0, "bypass", False),
+            ]
+            assert volume_events == [100, 37]
+            assert main.spl_calibration_restore_state is None
+        finally:
+            main.easyeffects_manager = original_manager
+            main.get_output_volume = original_get_volume
+            main.set_output_volume = original_set_volume
+            main.subprocess.Popen = original_popen
+            main.tempfile.gettempdir = original_gettempdir
+            main.time.sleep = original_sleep
+            main.spl_calibration_noise_process = None
+            main.spl_calibration_restore_state = None
+
+
+def test_spl_neutralization_failure_restores_runtime() -> None:
+    fake = FakeEasyEffects()
+    original_manager = main.easyeffects_manager
+    original_get_volume = main.get_output_volume
+    original_set_volume = main.set_output_volume
+    original_sleep = main.time.sleep
+    volume_events = []
+    original_set_property = fake.set_active_plugin_property
+    failed = False
+
+    def fail_neutral_output_gain(plugin_name, instance_id, property_name, value):
+        nonlocal failed
+        if property_name == "outputGain" and float(value) == 0.0 and not failed:
+            failed = True
+            raise RuntimeError("neutral output gain failed")
+        original_set_property(plugin_name, instance_id, property_name, value)
+
+    try:
+        fake.set_active_plugin_property = fail_neutral_output_gain
+        main.easyeffects_manager = fake
+        main.get_output_volume = lambda: 37
+        main.set_output_volume = volume_events.append
+        main.time.sleep = lambda _seconds: None
+        main.spl_calibration_noise_process = None
+        main.spl_calibration_restore_state = None
+        try:
+            main._start_spl_calibration_noise()
+        except RuntimeError as exc:
+            assert str(exc) == "neutral output gain failed"
+        else:
+            raise AssertionError("neutralization failure was not propagated")
+        assert fake.runtime[("loudness", 0, "bypass")] == "false"
+        assert fake.runtime[("loudness", 0, "volume")] == "-39.5"
+        assert fake.runtime[("loudness", 0, "outputGain")] == "27.5"
+        assert volume_events == [37]
+        assert main.spl_calibration_restore_state is None
+    finally:
+        main.easyeffects_manager = original_manager
+        main.get_output_volume = original_get_volume
+        main.set_output_volume = original_set_volume
+        main.time.sleep = original_sleep
+        main.spl_calibration_noise_process = None
+        main.spl_calibration_restore_state = None
 
 
 async def test_save_applies_only_coupled_loudness_offset() -> None:
@@ -141,6 +270,8 @@ def test_legacy_trim_is_not_migrated_or_rewritten() -> None:
 async def main_test() -> None:
     assert round(main._calculate_spl_required_adjustment(55.1), 1) == 27.9
     assert main._calculate_spl_required_adjustment(83.0) == 0.0
+    test_spl_noise_uses_and_restores_neutral_loudness_runtime()
+    test_spl_neutralization_failure_restores_runtime()
     await test_save_applies_only_coupled_loudness_offset()
     test_legacy_trim_is_not_migrated_or_rewritten()
     print("SPL offset is coupled to Loudness only; global gain remains zero: ok")

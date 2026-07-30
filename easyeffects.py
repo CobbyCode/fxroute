@@ -474,7 +474,7 @@ class EasyEffectsManager:
         self._send_socket_command_without_response(
             f"set_property:output:{plugin_name}:{int(instance_id)}:{property_name}:{serialized}"
         )
-        expected = float(value)
+        expected = bool(value) if isinstance(value, bool) else float(value)
         deadline = time.monotonic() + 0.5
         last_response = ""
         while time.monotonic() < deadline:
@@ -482,16 +482,33 @@ class EasyEffectsManager:
                 f"get_property:output:{plugin_name}:{int(instance_id)}:{property_name}",
                 timeout=0.2,
             )
-            try:
-                if math.isclose(float(last_response), expected, abs_tol=1e-6):
+            if isinstance(expected, bool):
+                parsed = str(last_response).strip().lower()
+                if parsed in ({"true", "1", "on"} if expected else {"false", "0", "off"}):
                     return
-            except (TypeError, ValueError):
-                pass
+            else:
+                try:
+                    if math.isclose(float(last_response), expected, abs_tol=1e-6):
+                        return
+                except (TypeError, ValueError):
+                    pass
             time.sleep(0.01)
         raise RuntimeError(
             f"EasyEffects did not acknowledge {plugin_name}#{instance_id} "
             f"{property_name}={serialized} (last response={last_response!r})"
         )
+
+    def get_active_plugin_property(
+        self,
+        plugin_name: str,
+        instance_id: int,
+        property_name: str,
+    ) -> str:
+        """Read one property from the running output plugin."""
+        return self._send_socket_command(
+            f"get_property:output:{plugin_name}:{int(instance_id)}:{property_name}",
+            timeout=0.5,
+        ).strip()
 
     @staticmethod
     def _link_target_has_source(link_output: str, target_port: str, source_prefix: str) -> bool:
