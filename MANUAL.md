@@ -85,6 +85,7 @@ On XFCE, the graphical keyring tool may need to be installed first:
 ```bash
 sudo apt install seahorse
 seahorse
+```
 
 In Passwords and Keys / Passwörter und Schlüssel, open Passwords / Passwörter → Login. Then change the password of the Login keyring and set a blank password by leaving the new password fields empty.
 
@@ -123,7 +124,7 @@ Main tools:
 - **Combine** — build a new preset from up to three existing presets.
 - **Import filter** — import stereo or separate left/right filters.
 - **Create PEQ preset** — build left/right parametric EQ bands.
-- **Output extras** — add global helpers like protection limiter, headroom, autogain, bass enhancement, or tone effect.
+- **Output extras** — configure the global helpers shared by all presets.
 
 Typical DSP files:
 
@@ -134,16 +135,20 @@ Typical DSP files:
 
 Tip: use A/B compare while real music is playing. It is usually easier to judge a preset by switching quickly than by staring at numbers.
 
-### Loudness and Auto Gain
+### Global helpers
 
-**Loudness** is the first control under **Tone**. Its checkbox enables the
-effect, **Strength** selects a numeric level from 1 (minimum effect) to 10
-(full effect), and **FFT** selects the processing FFT size. Strength 1 is still
-enabled Loudness; use the checkbox to turn Loudness off.
+Global helpers apply consistently across the active DSP setup:
 
-**Auto Gain** and Loudness can be enabled independently and used together.
-Auto Gain offers targets of **−12, −15, −18, and −23 LUFS**. The processing
-order remains Auto Gain, Loudness, then the final Peak Limiter.
+- **Protection Limiter** protects the final output from peaks.
+- **Headroom** adds a controlled safety margin before the output stage.
+- **Auto Gain** adjusts programme level toward the selected loudness target.
+- **Loudness** applies a calibrated contour that follows the playback level. **Strength** controls its intensity; when Auto Gain is active, the contour also accounts for the selected Auto Gain target.
+- **Bass Enhancer** adds adjustable low-frequency enhancement.
+- **Tone Effect** provides broad tonal shaping and contains the Loudness control.
+
+Each helper can be enabled or adjusted from **Output extras**. Auto Gain and
+Loudness can be used independently or together, while the Protection Limiter
+remains the final stage.
 
 ### EasyEffects installation mode
 
@@ -155,51 +160,6 @@ For the most reproducible setup, use the Flatpak package:
 
 ```bash
 flatpak install --user flathub com.github.wwmm.easyeffects
-```
-
-### Maintenance updates
-
-Open **Technical settings → Maintenance** to see the installed version, check for and run an update, and view the update log. For safety, FXRoute blocks an update when the local installation contains uncommitted changes. After a successful update, the page reports completion and whether a reload is needed.
-
-### Home Assistant / external automation
-
-FXRoute exposes `GET /api/power/state` as a read-only hint for amplifier power automation. `amp_should_be_on` is true when playback is active or when the Measurement Assistant is open. External automation systems can use that value to control an amplifier smart plug or power socket. No MQTT broker is required, and FXRoute does not control the plug directly.
-
-Minimal Home Assistant example:
-
-```yaml
-rest:
-  - resource: "http://fxroute.local:8000/api/power/state"  # Adapt host/port if needed.
-    scan_interval: 5
-    binary_sensor:
-      - name: "FXRoute Amp Should Be On"
-        value_template: "{{ value_json.amp_should_be_on }}"
-    sensor:
-      - name: "FXRoute Amp Reason"
-        value_template: "{{ value_json.reason }}"
-
-automation:
-  - alias: "FXRoute amp on"
-    trigger:
-      - platform: state
-        entity_id: binary_sensor.fxroute_amp_should_be_on
-        to: "on"
-    action:
-      - service: switch.turn_on
-        target:
-          entity_id: switch.verstaerker_steckdose  # Adapt to your smart plug entity.
-
-  - alias: "FXRoute amp off after idle"
-    trigger:
-      - platform: state
-        entity_id: binary_sensor.fxroute_amp_should_be_on
-        to: "off"
-        for:
-          minutes: 20
-    action:
-      - service: switch.turn_off
-        target:
-          entity_id: switch.verstaerker_steckdose  # Adapt to your smart plug entity.
 ```
 
 ## 8. Measurement assistant
@@ -217,11 +177,11 @@ The measurement assistant is meant for practical room-tuning work:
 - switch between frequency response and impulse-response preview when preview data is available
 - switch graph smoothing: raw, 1/6 octave, 1/3 octave, or 1 octave
 - save useful runs
-- inspect a measurement curve and create a PEQ correction draft from it
+- inspect a measurement curve and create a PEQ correction from it
 - transfer visible L/R measurements into the Convolver assistant
 - turn the result into a PEQ or FIR/Convolver preset
 
-Use it as a practical measurement and correction workspace: inspect room and speaker response, compare channels, identify correction needs, and turn visible measurements directly into PEQ or Convolver drafts. Review the result before applying it; measurement conditions and correction choices still matter.
+Use it as a practical measurement and correction workspace: inspect room and speaker response, compare channels, identify correction needs, and turn visible measurements directly into PEQ or Convolver filters. Review the result before applying it; measurement conditions and correction choices still matter.
 
 ### SPL Calibration
 
@@ -261,7 +221,7 @@ The intermediate repeat sweeps are processed internally and are not added to **S
 L/R Repeat is useful when:
 
 - you are comparing speaker balance at the same listening position
-- you want a cleaner input for PEQ or convolver drafting
+- you want a cleaner input for PEQ or Convolver filter creation
 - you care about L/R timing for aligned FIR modes
 - a single sweep looks suspicious and you want repeat confirmation
 
@@ -303,7 +263,7 @@ For best results:
 
 The Measurement graph has two local views:
 
-- **Freq** shows the normal frequency response from 20 Hz to 20 kHz. Smoothing, PEQ drafting, and Convolver range editing are available in this view.
+- **Freq** shows the normal frequency response from 20 Hz to 20 kHz. Smoothing, PEQ correction, and Convolver range editing are available in this view.
 - **IR** shows a compact impulse-response preview from -2 ms to +30 ms for visible measurements that include preview data. The preview is normalized for inspection and is intended as a timing/reflection sanity check, not as a full impulse-response export.
 
 New measurements include the compact IR preview when analysis can produce it. Older saved runs may not have preview data and will stay hidden in **IR** view.
@@ -316,7 +276,7 @@ L/R Repeat compares repeated L/R timing relationships and rejects unstable pairs
 
 Measurements are independent from the Convolver settings. The Convolver assistant uses the visible saved measurement selection when saved runs are selected. If no saved run is selected, it can use the current measurement.
 
-**Take L / Take R / Take Both** — one visible Left measurement enables **Take L**, one visible Right measurement enables **Take R**, and one visible Left plus one visible Right enables **Take Both**. Saved L/R Repeat results can be used like any other saved left/right pair. Hide or deselect unrelated saved runs before taking measurements into the Convolver draft.
+**Take L / Take R / Take Both** — one visible Left measurement enables **Take L**, one visible Right measurement enables **Take R**, and one visible Left plus one visible Right enables **Take Both**. Saved L/R Repeat results can be used like any other saved left/right pair. Hide or deselect unrelated saved runs before taking measurements into the Convolver filter.
 
 ### Phase modes
 
@@ -341,6 +301,32 @@ Useful settings:
 - download the local HTTPS certificate when the optional HTTPS proxy is enabled
 
 Use this area when audio comes from the wrong output, the source mode looks wrong, Bluetooth input needs checking, or a client device needs the local HTTPS certificate.
+
+### Maintenance updates
+
+Open **Technical settings → Maintenance** to view the installed version, check
+for updates, run an update, and inspect the update log. FXRoute blocks updates
+when the installation contains uncommitted changes and reports when a
+successful update requires a reload.
+
+### Home Assistant / external automation
+
+FXRoute exposes `GET /api/power/state` as a read-only hint for amplifier power
+automation. `amp_should_be_on` is true while playback is active or the
+Measurement Assistant is open. Home Assistant or another automation system can
+use this value to control a smart plug; FXRoute does not control the plug
+directly and does not require MQTT.
+
+Minimal Home Assistant example:
+
+```yaml
+rest:
+  - resource: "http://fxroute.local:8000/api/power/state"  # Adapt host/port if needed.
+    scan_interval: 5
+    binary_sensor:
+      - name: "FXRoute Amp Should Be On"
+        value_template: "{{ value_json.amp_should_be_on }}"
+```
 
 ## 10. Local HTTPS certificate
 

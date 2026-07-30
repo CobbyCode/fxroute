@@ -52,10 +52,8 @@ It is built for mini PCs, desktops, ARM boards, and dedicated stereo boxes that 
 - Spotify desktop control through `playerctl` / MPRIS, including passive metadata refresh for automatic track changes
 - Spotify Lossless playback through a current local Spotify desktop client for eligible Premium accounts, when Lossless is enabled in Spotify (up to 24-bit/44.1 kHz FLAC); FXRoute provides remote client control, not the Spotify stream
 - EasyEffects preset switching, PEQ, convolver import/generation, output helpers, and A/B compare
-- global DSP helpers such as limiter, headroom, Auto Gain, bass enhancement,
-  and Loudness under Tone; Loudness provides Strength 1–10 and selectable FFT
-  size, and can run together with Auto Gain at −12, −15, −18, or −23 LUFS
-- practical room/speaker measurement workflow with host microphone capture, calibration files, smoothing, saved runs, PEQ draft transfer, and stereo FIR/convolver preset creation with linear, minimum-phase, minimum-aligned, and hybrid-aligned modes
+- global DSP helpers for protection, gain management, loudness contouring, bass enhancement, and tone shaping; Loudness provides a calibrated contour that follows the playback level and also accounts for the Auto Gain target when both are active
+- practical room/speaker measurement workflow with host microphone capture, calibration files, smoothing, saved runs, PEQ filter transfer, and stereo FIR/convolver preset creation with linear, minimum-phase, minimum-aligned, and hybrid-aligned modes
 - SPL Calibration with −23-LUFS pink noise, automatic UMIK-1 SPL measurement,
   and manual meter fallback; Auto Gain and Loudness are neutralized only for
   calibration
@@ -107,8 +105,6 @@ Fresh installs default Spotify autostart to enabled when a local Spotify desktop
 ## Maintenance updates
 
 Installed git checkouts can be updated from **Technical settings → Maintenance** or from the `fxroute-update` helper. The update path uses the same install root, service name, virtualenv, and systemd user service assumptions as `install.sh`.
-
-The updater is intentionally conservative: it refuses to run with local uncommitted changes, fetches GitHub first, pulls only by fast-forward, refreshes Python dependencies only when `requirements.txt` changed, runs the production validation/build step, and restarts the configured FXRoute user service. User data under `~/.config/fxroute`, measurements, presets, filters, music files, and `.env` are not migrated or reset by this updater.
 
 ## Home Assistant / external automation
 
@@ -195,7 +191,7 @@ Available phase modes:
 - **Linear phase** — symmetric FIR correction.
 - **Minimum phase** — practical default for broad room/speaker correction.
 - **Minimum phase aligned** — minimum-phase correction with measured L/R direct-arrival alignment for separately saved stereo measurements.
-- **Hybrid aligned** — minimum-phase bass correction blended into zero-delay linear-style upper correction, using the same L/R timing safety gate as Minimum phase aligned for stereo drafts.
+- **Hybrid aligned** — minimum-phase bass correction blended into zero-delay linear-style upper correction, using the same L/R timing safety gate as Minimum phase aligned for stereo filters.
 
 ## Service commands
 
