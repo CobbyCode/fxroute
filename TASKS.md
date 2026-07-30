@@ -29,7 +29,7 @@ vierkanaligen Stage-Ausgangspeaks sicher auf höchstens −1 dBFS begrenzen.
 - [x] LDN-019 — Reale Strength-Save-Acknowledgement- und Transientenfehler beheben
 - [x] LDN-020 — Verbleibende Loudness-Disable- und Strength-Transienten behoben und akustisch bestätigt
 - [ ] LDN-021 — Numerische Loudness-Strength 1–10 umgesetzt und auf `.104` im Review
-- [ ] LDN-022 — Auto Gain und Loudness nur während SPL Calibration neutralisieren
+- [ ] LDN-022 — Auto Gain und Loudness nur während SPL Calibration neutralisieren; auf `.104` im Review
 
 ## Historical Predictive AutoSub Tasks
 
