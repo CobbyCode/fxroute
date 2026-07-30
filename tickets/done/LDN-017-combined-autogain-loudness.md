@@ -29,7 +29,7 @@ Volume and the existing safe Loudness runtime transitions.
 `/home/pbclaw/ai/projects/fxroute`
 
 ## Status
-review
+done
 
 ## Notes
 Preserve unrelated dirty AutoSub work and project artifacts.
@@ -85,3 +85,28 @@ the target work point and formula are unchanged.
 
 `.104` currently stores Auto Gain disabled at `-15 LUFS`, so the requested
 one-time `-9 → -12` deployment correction is not needed.
+
+## Deployment
+
+Commit `155340a80d787bdc7bce5c19d68e8c20c2367a69` was deployed to `.104`.
+The deployed `main.py`, `easyeffects.py`, `static/app.js`, and
+`static/index.html` match the committed files byte for byte.
+
+With playback stopped, live checks covered:
+
+- Auto Gain alone: active at `-15`, Loudness bypassed.
+- Loudness alone: active with Auto Gain bypassed.
+- Combined targets `-12/-15/-18/-23`: runtime offsets `11/8/5/0 dB`.
+- For every target, runtime `LSP volume + outputGain` equalled
+  `A=-21.392839410828756 dB`.
+- Visible Volume remained `44` throughout target changes; System-Master
+  remained `100` throughout the combined target changes.
+- Both enabled and target `-18` survived a service restart with the exact
+  runtime work point.
+- No preset-load, graph-reconfigure, or peak-refresh event occurred during the
+  runtime changes. The only graph lifecycle events were the two deliberate
+  persistence/restoration service restarts.
+
+The original user state was restored and rechecked after a final restart:
+Auto Gain off, target `-15`, Loudness off, Strength Min, visible Volume and
+System-Master both `44`. FXRoute is active. No push or release.
