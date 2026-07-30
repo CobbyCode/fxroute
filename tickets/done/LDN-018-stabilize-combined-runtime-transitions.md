@@ -114,5 +114,13 @@ Main-/Sub-Links und Nutzerzustand schützen.
   `requiredAdjustmentDb=13.299999999999997`; Peak-Monitor verfügbar und ohne
   Warnung.
 
+## Review
+- Main-Review akzeptiert: Diff ist auf `easyeffects.py` und den fokussierten
+  Runtime-Test begrenzt; bestehende AutoSub-Hunks blieben unverändert.
+- Loudness-, Live-Regression-, Integrations- und SPL-Tests sowie
+  `py_compile` und `git diff --check` erneut bestanden.
+- Deployte SHA-256 stimmt mit dem Review-Nachweis überein; FXRoute-Service
+  auf `.104` ist aktiv.
+
 ## Status
-review
+done
