@@ -73,3 +73,10 @@ The reviewed `main.py` and `easyeffects.py` were compiled and deployed to
 Runtime inspection after deployment matched the existing disabled Loudness
 state (`bypass=true`, `volume=-18.06179973983887`, `outputGain=0`). No pink
 noise was automatically played. No push or release.
+
+## Acceptance
+
+Paul performed the SPL Calibration on `.104` and confirmed on 2026-07-30 that
+the neutral Loudness calibration mode works as intended. The deployed
+production implementation remains
+`64a0c5e0635d056c1d176a245dcf31c01707183e`. No push or release.
