@@ -6334,6 +6334,26 @@ def _resolve_effects_extras(extras: dict | None = None) -> dict:
     return easyeffects_manager.normalize_effects_extras(extras)
 
 
+def _is_pure_loudness_strength_change(previous: dict, current: dict) -> bool:
+    previous_without_strength = copy.deepcopy(previous)
+    current_without_strength = copy.deepcopy(current)
+    previous_strength = (
+        previous_without_strength.get("loudness", {})
+        .get("params", {})
+        .pop("strength", None)
+    )
+    current_strength = (
+        current_without_strength.get("loudness", {})
+        .get("params", {})
+        .pop("strength", None)
+    )
+    return (
+        previous_strength != current_strength
+        and previous_without_strength == current_without_strength
+        and bool(current.get("loudness", {}).get("enabled"))
+    )
+
+
 def _require_easyeffects_manager():
     global easyeffects_manager
     if not easyeffects_manager:
@@ -6438,10 +6458,18 @@ async def save_easyeffects_extras(request: Request):
     if disabling_loudness:
         volume_db = float(previous["loudness"]["params"]["volumeDb"])
         set_output_volume(ee_manager.loudness_percent_from_db(volume_db))
-    result = ee_manager.apply_global_extras_to_all_presets(extras)
+    runtime_strength_change = _is_pure_loudness_strength_change(previous, extras)
+    if runtime_strength_change:
+        result = ee_manager.apply_loudness_strength_runtime(previous, extras)
+    else:
+        result = ee_manager.apply_global_extras_to_all_presets(extras)
 
     active_preset = ee_manager.get_active_preset()
-    if active_preset and active_preset not in ee_manager.EXCLUDED_GLOBAL_EXTRAS_PRESETS:
+    if (
+        not runtime_strength_change
+        and active_preset
+        and active_preset not in ee_manager.EXCLUDED_GLOBAL_EXTRAS_PRESETS
+    ):
         try:
             ee_manager.load_preset(active_preset)
         except Exception as e:
@@ -6451,7 +6479,8 @@ async def save_easyeffects_extras(request: Request):
 
     status = ee_manager.get_status()
     await manager.broadcast({"type": "easyeffects", "data": status})
-    schedule_peak_monitor_refresh_after_effects_change("global-extras-update")
+    if not runtime_strength_change:
+        schedule_peak_monitor_refresh_after_effects_change("global-extras-update")
     return {
         "status": "ok",
         "extras": result["extras"],

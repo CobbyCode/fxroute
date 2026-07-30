@@ -23,7 +23,11 @@ class FakeRequest:
 
 
 class FakeBroadcastManager:
+    def __init__(self, events):
+        self.events = events
+
     async def broadcast(self, _message):
+        self.events.append(("broadcast", _message["type"]))
         return None
 
 
@@ -52,6 +56,15 @@ class FakeEasyEffects:
     def apply_global_extras_to_all_presets(self, extras):
         self.extras = copy.deepcopy(extras)
         self.events.append(("apply", copy.deepcopy(extras)))
+        return {"extras": copy.deepcopy(extras), "updated": 1, "skipped": []}
+
+    def apply_loudness_strength_runtime(self, previous, extras):
+        self.extras = copy.deepcopy(extras)
+        self.events.append((
+            "runtime-strength",
+            previous["loudness"]["params"]["strength"],
+            extras["loudness"]["params"]["strength"],
+        ))
         return {"extras": copy.deepcopy(extras), "updated": 1, "skipped": []}
 
     def get_active_preset(self):
@@ -87,7 +100,7 @@ async def run_route(body, fake, events, system_volume):
     original_refresh = main.schedule_peak_monitor_refresh_after_effects_change
     try:
         main.easyeffects_manager = fake
-        main.manager = FakeBroadcastManager()
+        main.manager = FakeBroadcastManager(events)
         main.get_output_volume = lambda: system_volume[0]
 
         def set_volume(value):
@@ -96,7 +109,9 @@ async def run_route(body, fake, events, system_volume):
             return value
 
         main.set_output_volume = set_volume
-        main.schedule_peak_monitor_refresh_after_effects_change = lambda _reason: None
+        main.schedule_peak_monitor_refresh_after_effects_change = (
+            lambda reason: events.append(("refresh", reason))
+        )
         return await main.save_easyeffects_extras(FakeRequest(body))
     finally:
         main.easyeffects_manager = original_manager
@@ -165,10 +180,24 @@ async def test_mutex_is_http_400():
         raise AssertionError("mutex request did not fail")
 
 
+async def test_pure_strength_uses_runtime_path_once():
+    events = []
+    enabled = copy.deepcopy(BASE_EXTRAS)
+    enabled["loudness"]["enabled"] = True
+    enabled["loudness"]["params"]["strength"] = "min"
+    fake = FakeEasyEffects(enabled, events)
+    await run_route({"loudnessStrength": "light"}, fake, events, [100])
+    assert events == [
+        ("runtime-strength", "min", "light"),
+        ("broadcast", "easyeffects"),
+    ]
+
+
 async def main_test():
     await test_safe_toggle_order_and_partial_persistence()
     await test_mutex_is_http_400()
-    print("Loudness live regressions: volume mapping/order, partial persistence, HTTP 400 mutex: ok")
+    await test_pure_strength_uses_runtime_path_once()
+    print("Loudness live regressions: volume mapping/order, partial persistence, runtime-only strength, HTTP 400 mutex: ok")
 
 
 if __name__ == "__main__":

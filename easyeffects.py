@@ -435,6 +435,59 @@ class EasyEffectsManager:
             + ", ".join(str(path) for path in self._socket_candidates())
         )
 
+    def _send_socket_command_without_response(self, command: str) -> None:
+        """Send a local-server mutation without waiting for a reply."""
+        last_error = None
+        for socket_path in self._socket_candidates():
+            if not socket_path.exists():
+                continue
+            try:
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                    client.settimeout(1.0)
+                    client.connect(str(socket_path))
+                    client.sendall((command + "\n").encode())
+                return
+            except Exception as e:
+                last_error = e
+                logger.warning("EasyEffects socket mutation failed via %s: %s", socket_path, e)
+        if last_error:
+            raise RuntimeError(f"EasyEffects socket mutation failed: {last_error}")
+        raise FileNotFoundError(
+            "EasyEffects control socket not found in any candidate path: "
+            + ", ".join(str(path) for path in self._socket_candidates())
+        )
+
+    def set_active_plugin_property(
+        self,
+        plugin_name: str,
+        instance_id: int,
+        property_name: str,
+        value: int | float | bool,
+    ) -> None:
+        """Set and acknowledge one property on the running output plugin."""
+        serialized = str(value).lower() if isinstance(value, bool) else format(float(value), ".15g")
+        self._send_socket_command_without_response(
+            f"set_property:output:{plugin_name}:{int(instance_id)}:{property_name}:{serialized}"
+        )
+        expected = float(value)
+        deadline = time.monotonic() + 0.5
+        last_response = ""
+        while time.monotonic() < deadline:
+            last_response = self._send_socket_command(
+                f"get_property:output:{plugin_name}:{int(instance_id)}:{property_name}",
+                timeout=0.2,
+            )
+            try:
+                if math.isclose(float(last_response), expected, abs_tol=1e-6):
+                    return
+            except (TypeError, ValueError):
+                pass
+            time.sleep(0.01)
+        raise RuntimeError(
+            f"EasyEffects did not acknowledge {plugin_name}#{instance_id} "
+            f"{property_name}={serialized} (last response={last_response!r})"
+        )
+
     @staticmethod
     def _link_target_has_source(link_output: str, target_port: str, source_prefix: str) -> bool:
         in_target = False
@@ -1580,6 +1633,61 @@ class EasyEffectsManager:
             else:
                 skipped.append(preset_name)
         return {"extras": normalized, "updated": updated, "skipped": sorted(set(skipped))}
+
+    def apply_loudness_strength_runtime(
+        self,
+        previous_extras: Dict[str, Any],
+        extras: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Update active Loudness gains safely, then persist without a preset load."""
+        previous = self.normalize_effects_extras(previous_extras)
+        normalized = self.normalize_effects_extras(extras)
+        old_loudness = previous["loudness"]
+        new_loudness = normalized["loudness"]
+        old_plugin = self._loudness_plugin_payload(old_loudness)
+        new_plugin = self._loudness_plugin_payload(new_loudness)
+
+        old_strength = old_loudness["params"]["strength"]
+        new_strength = new_loudness["params"]["strength"]
+        old_offset = self.LOUDNESS_STRENGTH_OFFSETS_DB[old_strength]
+        new_offset = self.LOUDNESS_STRENGTH_OFFSETS_DB[new_strength]
+        property_order = (
+            (("outputGain", "output-gain"), ("volume", "volume"))
+            if new_offset > old_offset
+            else (("volume", "volume"), ("outputGain", "output-gain"))
+        )
+
+        applied: List[tuple[str, str]] = []
+        try:
+            for runtime_property, payload_key in property_order:
+                self.set_active_plugin_property(
+                    "loudness", 0, runtime_property, new_plugin[payload_key]
+                )
+                applied.append((runtime_property, payload_key))
+        except Exception:
+            # Leave the running graph at its known previous values if the
+            # complete two-property transition cannot be acknowledged.
+            for runtime_property, payload_key in reversed(applied):
+                try:
+                    self.set_active_plugin_property(
+                        "loudness", 0, runtime_property, old_plugin[payload_key]
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to roll back Loudness runtime property %s",
+                        runtime_property,
+                    )
+            raise
+
+        result = self.apply_global_extras_to_all_presets(normalized)
+        logger.info(
+            "Applied Loudness strength directly: strength=%s->%s order=%s,%s",
+            old_strength,
+            new_strength,
+            property_order[0][0],
+            property_order[1][0],
+        )
+        return result
 
     def apply_global_extras_to_active_preset(self, extras: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         normalized = self.save_global_extras(extras)
