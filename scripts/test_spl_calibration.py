@@ -37,6 +37,8 @@ class FakeEasyEffects:
         self.active_apply_calls = 0
         self.all_apply_calls = 0
         self.runtime = {
+            ("autogain", 0, "bypass"): "false",
+            ("autogain", 0, "target"): "-12.0",
             ("loudness", 0, "bypass"): "false",
             ("loudness", 0, "volume"): "-39.5",
             ("loudness", 0, "outputGain"): "27.5",
@@ -96,7 +98,7 @@ class FakeNoiseProcess:
         return 0
 
 
-def test_spl_noise_uses_and_restores_neutral_loudness_runtime() -> None:
+def test_spl_noise_uses_and_restores_neutral_autogain_loudness_runtime() -> None:
     fake = FakeEasyEffects()
     original_manager = main.easyeffects_manager
     original_get_volume = main.get_output_volume
@@ -120,16 +122,20 @@ def test_spl_noise_uses_and_restores_neutral_loudness_runtime() -> None:
 
             result = main._start_spl_calibration_noise()
             assert result["status"] == "playing"
-            assert fake.runtime_events[:2] == [
+            assert fake.runtime_events[:3] == [
+                ("autogain", 0, "bypass", True),
                 ("loudness", 0, "bypass", True),
                 ("loudness", 0, "outputGain", 0.0),
             ]
+            assert fake.runtime[("autogain", 0, "target")] == "-12.0"
             assert volume_events == [100]
             assert fake.active_apply_calls == 0
             assert fake.all_apply_calls == 0
 
             main._stop_spl_calibration_noise()
-            assert fake.runtime_events[2:] == [
+            assert fake.runtime_events[3:] == [
+                ("autogain", 0, "target", -12.0),
+                ("autogain", 0, "bypass", False),
                 ("loudness", 0, "outputGain", 27.5),
                 ("loudness", 0, "volume", -39.5),
                 ("loudness", 0, "bypass", False),
@@ -181,6 +187,8 @@ def test_spl_neutralization_failure_restores_runtime() -> None:
         assert fake.runtime[("loudness", 0, "bypass")] == "false"
         assert fake.runtime[("loudness", 0, "volume")] == "-39.5"
         assert fake.runtime[("loudness", 0, "outputGain")] == "27.5"
+        assert fake.runtime[("autogain", 0, "bypass")] == "false"
+        assert fake.runtime[("autogain", 0, "target")] == "-12.0"
         assert volume_events == [37]
         assert main.spl_calibration_restore_state is None
     finally:
@@ -276,7 +284,7 @@ def test_legacy_trim_is_not_migrated_or_rewritten() -> None:
 async def main_test() -> None:
     assert round(main._calculate_spl_required_adjustment(55.1), 1) == 27.9
     assert main._calculate_spl_required_adjustment(83.0) == 0.0
-    test_spl_noise_uses_and_restores_neutral_loudness_runtime()
+    test_spl_noise_uses_and_restores_neutral_autogain_loudness_runtime()
     test_spl_neutralization_failure_restores_runtime()
     await test_save_applies_only_coupled_loudness_offset()
     test_legacy_trim_is_not_migrated_or_rewritten()

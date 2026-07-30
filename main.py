@@ -6733,6 +6733,12 @@ def _stop_spl_calibration_noise() -> None:
     if restore and easyeffects_manager:
         try:
             easyeffects_manager.set_active_plugin_property(
+                "autogain", 0, "target", restore["autogain_target"]
+            )
+            easyeffects_manager.set_active_plugin_property(
+                "autogain", 0, "bypass", restore["autogain_bypass"]
+            )
+            easyeffects_manager.set_active_plugin_property(
                 "loudness", 0, "outputGain", restore["loudness_output_gain"]
             )
             easyeffects_manager.set_active_plugin_property(
@@ -6777,6 +6783,13 @@ def _start_spl_calibration_noise() -> dict[str, Any]:
     _stop_spl_calibration_noise()
     ee_manager = _require_easyeffects_manager()
     spl_calibration_restore_state = {
+        "autogain_bypass": (
+            ee_manager.get_active_plugin_property("autogain", 0, "bypass").lower()
+            in {"true", "1", "on"}
+        ),
+        "autogain_target": float(
+            ee_manager.get_active_plugin_property("autogain", 0, "target")
+        ),
         "loudness_bypass": (
             ee_manager.get_active_plugin_property("loudness", 0, "bypass").lower()
             in {"true", "1", "on"}
@@ -6790,6 +6803,7 @@ def _start_spl_calibration_noise() -> dict[str, Any]:
         "system_volume_percent": get_output_volume(),
     }
     try:
+        ee_manager.set_active_plugin_property("autogain", 0, "bypass", True)
         ee_manager.set_active_plugin_property("loudness", 0, "bypass", True)
         ee_manager.set_active_plugin_property("loudness", 0, "outputGain", 0.0)
         time.sleep(0.10)
