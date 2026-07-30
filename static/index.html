@@ -593,10 +593,10 @@
                                             <label class="checkbox-row"><input type="checkbox" id="effects-autogain-enabled"> Autogain</label>
                                             <label for="effects-autogain-target-db" id="effects-autogain-target-wrap" class="effects-inline-control hidden">
                                                 <select id="effects-autogain-target-db" class="url-input effects-compact-control">
-                                                    <option value="-9">-9 dB</option>
-                                                    <option value="-12" selected>-12 dB</option>
-                                                    <option value="-15">-15 dB</option>
-                                                    <option value="-18">-18 dB</option>
+                                                    <option value="-12" selected>-12 LUFS</option>
+                                                    <option value="-15">-15 LUFS</option>
+                                                    <option value="-18">-18 LUFS</option>
+                                                    <option value="-23">-23 LUFS</option>
                                                 </select>
                                             </label>
                                         </div>
@@ -1154,6 +1154,6 @@
     <div id="toast-container" class="toast-container"></div>
 
     <script src="/static/measurement_dsp.js?v=0.7.36"></script>
-    <script src="/static/app.js?v=0.7.55-loudness1-umik1"></script>
+    <script src="/static/app.js?v=0.7.55-loudness-autogain1"></script>
 </body>
 </html>

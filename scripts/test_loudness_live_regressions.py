@@ -67,6 +67,19 @@ class FakeEasyEffects:
         ))
         return {"extras": copy.deepcopy(extras), "updated": 1, "skipped": []}
 
+    def apply_autogain_loudness_runtime(self, previous, extras):
+        self.extras = copy.deepcopy(extras)
+        self.events.append((
+            "runtime-pair",
+            previous["autogain"]["enabled"],
+            previous["autogain"]["params"]["targetDb"],
+            extras["autogain"]["enabled"],
+            extras["autogain"]["params"]["targetDb"],
+            previous["loudness"]["enabled"],
+            extras["loudness"]["enabled"],
+        ))
+        return {"extras": copy.deepcopy(extras), "updated": 1, "skipped": []}
+
     def get_active_preset(self):
         return "Test"
 
@@ -126,10 +139,10 @@ async def test_safe_toggle_order_and_partial_persistence():
     fake = FakeEasyEffects(BASE_EXTRAS, events)
     system_volume = [46]
     await run_route({"loudnessEnabled": True}, fake, events, system_volume)
-    applied = events[0][1]["loudness"]["params"]
-    assert events[0][0] == "apply"
-    assert events[1] == ("load", "Test")
-    assert events[2] == ("system", 100)
+    applied = fake.extras["loudness"]["params"]
+    assert events[0] == ("runtime-pair", False, -12.0, False, -12.0, False, True)
+    assert events[1] == ("system", 100)
+    assert events[2] == ("broadcast", "easyeffects")
     assert math.isclose(applied["volumeDb"], -20.23453, abs_tol=0.00001)
     assert applied["calibration"]["outputProfileId"] == "usb-a"
     assert applied["calibrationProfiles"]["usb-a"]["requiredAdjustmentDb"] == 0.5
@@ -139,6 +152,8 @@ async def test_safe_toggle_order_and_partial_persistence():
 
     events.clear()
     await run_route({"loudnessFftSize": 8192, "loudnessStrength": "light"}, fake, events, system_volume)
+    assert events[0][0] == "runtime-pair"
+    assert not any(event[0] in {"load", "refresh"} for event in events)
     assert fake.extras["loudness"]["params"]["fftSize"] == 8192
     assert fake.extras["loudness"]["params"]["strength"] == "light"
     assert fake.extras["loudness"]["params"]["calibration"]["outputProfileId"] == "usb-a"
@@ -153,31 +168,33 @@ async def test_safe_toggle_order_and_partial_persistence():
 
     events.clear()
     await run_route({"loudnessEnabled": False}, fake, events, system_volume)
-    assert events[0] == ("system", 46)
-    assert events[1][0] == "apply"
-    assert events[2] == ("load", "Test")
+    assert events[0] == ("runtime-pair", False, -12.0, False, -12.0, True, False)
+    assert events[1] == ("system", 46)
+    assert events[2] == ("broadcast", "easyeffects")
     assert fake.extras["loudness"]["params"]["calibrationProfiles"]["usb-a"]["requiredAdjustmentDb"] == 0.5
     output = fake._normalizer._apply_extras_to_output({"plugins_order": []}, fake.extras)
     assert output["loudness#0"]["output-gain"] == 0.0
     assert math.isclose(output["loudness#0"]["volume"], -20.23453, abs_tol=0.00001)
 
 
-async def test_mutex_is_http_400():
+async def test_combined_mode_has_no_mutex_or_target_jump():
     events = []
     fake = FakeEasyEffects(BASE_EXTRAS, events)
-    try:
-        await run_route(
-            {"autogainEnabled": True, "loudnessEnabled": True},
-            fake,
-            events,
-            [46],
-        )
-    except HTTPException as exc:
-        assert exc.status_code == 400
-        assert exc.detail["code"] == "invalid_effects_extras"
-        assert "cannot be enabled" in exc.detail["message"]
-    else:
-        raise AssertionError("mutex request did not fail")
+    result = await run_route(
+        {
+            "autogainEnabled": True,
+            "autogainTargetDb": -18,
+            "loudnessEnabled": True,
+        },
+        fake,
+        events,
+        [46],
+    )
+    assert result["extras"]["autogain"]["enabled"] is True
+    assert result["extras"]["autogain"]["params"]["targetDb"] == -18
+    assert result["extras"]["loudness"]["enabled"] is True
+    assert events[0] == ("runtime-pair", False, -12.0, True, -18.0, False, True)
+    assert not any(event[0] in {"load", "refresh"} for event in events)
 
 
 async def test_pure_strength_uses_runtime_path_once():
@@ -239,11 +256,11 @@ async def test_duplicate_strength_save_is_noop():
 
 async def main_test():
     await test_safe_toggle_order_and_partial_persistence()
-    await test_mutex_is_http_400()
+    await test_combined_mode_has_no_mutex_or_target_jump()
     await test_pure_strength_uses_runtime_path_once()
     await test_strength_ignores_stale_volume_from_ui()
     await test_duplicate_strength_save_is_noop()
-    print("Loudness live regressions: canonical volume, runtime-only strength, duplicate-save no-op, HTTP 400 mutex: ok")
+    print("Loudness live regressions: combined mode, canonical volume, runtime-only updates, duplicate-save no-op: ok")
 
 
 if __name__ == "__main__":

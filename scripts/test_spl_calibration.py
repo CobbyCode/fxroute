@@ -59,6 +59,12 @@ class FakeEasyEffects:
         self.all_apply_calls += 1
         raise AssertionError("SPL metadata save must not rewrite DSP presets")
 
+    def apply_autogain_loudness_runtime(
+        self, previous, extras, *, persist_all_presets=True
+    ):
+        assert persist_all_presets is False
+        return self.apply_global_extras_to_active_preset(extras)
+
     def get_active_preset(self):
         return ""
 

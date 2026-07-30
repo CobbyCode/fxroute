@@ -107,6 +107,7 @@ class EasyEffectsManager:
             "maximumHistorySeconds": 15,
         },
     }
+    AUTOGAIN_TARGETS_DB = {-12.0, -15.0, -18.0, -23.0}
 
     LOUDNESS_FFT_SIZES = {256, 512, 1024, 2048, 4096, 8192, 16384}
     LOUDNESS_STRENGTH_OFFSETS_DB = {
@@ -116,6 +117,7 @@ class EasyEffectsManager:
         "min": 30.0,
     }
     LOUDNESS_STRENGTH_GUARD_DB = 18.0
+    LOUDNESS_OUTPUT_GAIN_MIN_DB = -36.0
     LOUDNESS_STRENGTH_GUARD_SETTLE_SECONDS = 0.06
     LOUDNESS_STRENGTH_VOLUME_SETTLE_SECONDS = 0.10
     LOUDNESS_STRENGTH_RAMP_STEP_DB = 3.0
@@ -1135,8 +1137,8 @@ class EasyEffectsManager:
             raise ValueError("autogain must be an object")
         params = autogain_definition.get("params") if isinstance(autogain_definition.get("params"), dict) else {}
         target_db = float(params.get("targetDb", self.AUTOGAIN_DEFAULTS["params"]["targetDb"]))
-        if not -30.0 <= target_db <= 0.0:
-            raise ValueError("autogain.params.targetDb must be between -30 and 0")
+        if target_db not in self.AUTOGAIN_TARGETS_DB:
+            raise ValueError("autogain.params.targetDb must be one of -12, -15, -18, or -23")
         silence_threshold_db = float(params.get("silenceThresholdDb", self.AUTOGAIN_DEFAULTS["params"]["silenceThresholdDb"]))
         maximum_history_seconds = int(params.get("maximumHistorySeconds", self.AUTOGAIN_DEFAULTS["params"]["maximumHistorySeconds"]))
         reference = str(params.get("reference", self.AUTOGAIN_DEFAULTS["params"]["reference"]) or self.AUTOGAIN_DEFAULTS["params"]["reference"]).strip() or self.AUTOGAIN_DEFAULTS["params"]["reference"]
@@ -1214,8 +1216,6 @@ class EasyEffectsManager:
         extras = extras or {}
         autogain = self._normalize_autogain_v1(extras.get("autogain")) if extras.get("autogain") else self._normalize_autogain_v1(None)
         loudness = self._normalize_loudness_v1(extras.get("loudness")) if extras.get("loudness") else self._normalize_loudness_v1(None)
-        if autogain["enabled"] and loudness["enabled"]:
-            raise ValueError("Auto Gain and Loudness cannot be enabled at the same time")
         return {
             "limiter": self._normalize_limiter_v1(extras.get("limiter")) if extras.get("limiter", {}).get("enabled") else {
                 "enabled": False,
@@ -1385,13 +1385,23 @@ class EasyEffectsManager:
             "target": autogain["params"]["targetDb"],
         }
 
-    def _loudness_plugin_payload(self, loudness: Dict[str, Any]) -> Dict[str, Any]:
+    def _loudness_plugin_payload(
+        self,
+        loudness: Dict[str, Any],
+        autogain: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         enabled = bool(loudness.get("enabled", False))
+        autogain = self._normalize_autogain_v1(autogain)
         calibration = loudness.get("params", {}).get("calibration")
         adjustment = calibration.get("requiredAdjustmentDb") if isinstance(calibration, dict) else 0.0
         calibration_offset_db = float(adjustment) if enabled and isinstance(adjustment, (int, float)) else 0.0
         master_attenuation_db = float(loudness["params"]["volumeDb"])
         strength_offset_db = self.LOUDNESS_STRENGTH_OFFSETS_DB[loudness["params"]["strength"]]
+        autogain_offset_db = (
+            float(autogain["params"]["targetDb"]) + 23.0
+            if autogain["enabled"] else 0.0
+        )
+        effective_offset_db = strength_offset_db + autogain_offset_db
         return {
             "bypass": not enabled,
             "clipping": False,
@@ -1402,10 +1412,10 @@ class EasyEffectsManager:
             "mode": "FFT",
             # Coupled SPL calibration: this gain only exists inside the active
             # Loudness block and never feeds the global/limiter gain path.
-            "output-gain": calibration_offset_db - strength_offset_db if enabled else 0.0,
+            "output-gain": calibration_offset_db - effective_offset_db if enabled else 0.0,
             "std": "ISO226-2023",
             "volume": (
-                master_attenuation_db - calibration_offset_db + strength_offset_db
+                master_attenuation_db - calibration_offset_db + effective_offset_db
                 if enabled else master_attenuation_db
             ),
         }
@@ -1542,7 +1552,9 @@ class EasyEffectsManager:
         result.pop("delay#0", None)
         result["autogain#0"] = self._autogain_plugin_payload(normalized["autogain"])
         result["limiter#0"] = self._limiter_plugin_payload(normalized["limiter"])
-        result["loudness#0"] = self._loudness_plugin_payload(normalized["loudness"])
+        result["loudness#0"] = self._loudness_plugin_payload(
+            normalized["loudness"], normalized["autogain"]
+        )
 
         plugins_order = [entry for entry in plugins_order if entry not in helper_plugin_set]
         plugins_order.extend(helper_plugin_names)
@@ -1661,19 +1673,36 @@ class EasyEffectsManager:
         previous_extras: Dict[str, Any],
         extras: Dict[str, Any],
     ) -> Dict[str, Any]:
-        """Guard the active Loudness output, update Strength, then persist."""
+        """Compatibility wrapper for the shared Auto Gain/Loudness runtime path."""
+        return self.apply_autogain_loudness_runtime(previous_extras, extras)
+
+    def apply_autogain_loudness_runtime(
+        self,
+        previous_extras: Dict[str, Any],
+        extras: Dict[str, Any],
+        *,
+        persist_all_presets: bool = True,
+    ) -> Dict[str, Any]:
+        """Update Auto Gain/Loudness live, guarding every Loudness work-point change."""
         previous = self.normalize_effects_extras(previous_extras)
         normalized = self.normalize_effects_extras(extras)
+        old_autogain = previous["autogain"]
+        new_autogain = normalized["autogain"]
         old_loudness = previous["loudness"]
         new_loudness = normalized["loudness"]
-        old_plugin = self._loudness_plugin_payload(old_loudness)
-        new_plugin = self._loudness_plugin_payload(new_loudness)
+        old_autogain_plugin = self._autogain_plugin_payload(old_autogain)
+        new_autogain_plugin = self._autogain_plugin_payload(new_autogain)
+        old_plugin = self._loudness_plugin_payload(old_loudness, old_autogain)
+        new_plugin = self._loudness_plugin_payload(new_loudness, new_autogain)
 
         old_strength = old_loudness["params"]["strength"]
         new_strength = new_loudness["params"]["strength"]
         guard_output_gain = (
-            min(old_plugin["output-gain"], new_plugin["output-gain"])
-            - self.LOUDNESS_STRENGTH_GUARD_DB
+            max(
+                self.LOUDNESS_OUTPUT_GAIN_MIN_DB,
+                min(old_plugin["output-gain"], new_plugin["output-gain"])
+                - self.LOUDNESS_STRENGTH_GUARD_DB,
+            )
         )
 
         def wait(seconds: float) -> None:
@@ -1691,15 +1720,31 @@ class EasyEffectsManager:
         guarded = False
         try:
             self.set_active_plugin_property(
+                "autogain", 0, "target", new_autogain_plugin["target"]
+            )
+            self.set_active_plugin_property(
+                "autogain", 0, "bypass", new_autogain_plugin["bypass"]
+            )
+            if not old_loudness["enabled"]:
+                self.set_active_plugin_property(
+                    "loudness", 0, "bypass", True
+                )
+            self.set_active_plugin_property(
                 "loudness", 0, "outputGain", guard_output_gain
             )
             guarded = True
             wait(self.LOUDNESS_STRENGTH_GUARD_SETTLE_SECONDS)
             self.set_active_plugin_property(
+                "loudness", 0, "fft", new_plugin["fft"]
+            )
+            self.set_active_plugin_property(
                 "loudness", 0, "volume", new_plugin["volume"]
             )
             wait(self.LOUDNESS_STRENGTH_VOLUME_SETTLE_SECONDS)
             ramp_output_gain(guard_output_gain, new_plugin["output-gain"])
+            self.set_active_plugin_property(
+                "loudness", 0, "bypass", new_plugin["bypass"]
+            )
         except Exception:
             if guarded:
                 try:
@@ -1707,17 +1752,40 @@ class EasyEffectsManager:
                         "loudness", 0, "outputGain", guard_output_gain
                     )
                     self.set_active_plugin_property(
+                        "loudness", 0, "fft", old_plugin["fft"]
+                    )
+                    self.set_active_plugin_property(
                         "loudness", 0, "volume", old_plugin["volume"]
                     )
                     wait(self.LOUDNESS_STRENGTH_VOLUME_SETTLE_SECONDS)
                     ramp_output_gain(guard_output_gain, old_plugin["output-gain"])
+                    self.set_active_plugin_property(
+                        "loudness", 0, "bypass", old_plugin["bypass"]
+                    )
+                    self.set_active_plugin_property(
+                        "autogain", 0, "target", old_autogain_plugin["target"]
+                    )
+                    self.set_active_plugin_property(
+                        "autogain", 0, "bypass", old_autogain_plugin["bypass"]
+                    )
                 except Exception:
-                    logger.exception("Failed to roll back guarded Loudness transition")
+                    logger.exception("Failed to roll back Auto Gain/Loudness transition")
             raise
 
-        result = self.apply_global_extras_to_all_presets(normalized)
+        result = (
+            self.apply_global_extras_to_all_presets(normalized)
+            if persist_all_presets
+            else self.apply_global_extras_to_active_preset(normalized)
+        )
         logger.info(
-            "Applied guarded Loudness strength: strength=%s->%s guard=%.3f target=%.3f",
+            "Applied guarded Auto Gain/Loudness runtime: autogain=%s/%s->%s/%s "
+            "loudness=%s->%s strength=%s->%s guard=%.3f target=%.3f",
+            old_autogain["enabled"],
+            old_autogain["params"]["targetDb"],
+            new_autogain["enabled"],
+            new_autogain["params"]["targetDb"],
+            old_loudness["enabled"],
+            new_loudness["enabled"],
             old_strength,
             new_strength,
             guard_output_gain,
@@ -1737,10 +1805,13 @@ class EasyEffectsManager:
         return {"extras": normalized, "updated": 1, "skipped": []}
 
     def set_loudness_volume_db(self, volume_db: float) -> Dict[str, Any]:
-        extras = self.load_global_extras()
+        previous = self.load_global_extras()
+        extras = copy.deepcopy(previous)
         loudness = extras["loudness"]
         loudness["params"]["volumeDb"] = max(-80.0, min(0.0, float(volume_db)))
-        return self.apply_global_extras_to_active_preset(extras)
+        return self.apply_autogain_loudness_runtime(
+            previous, extras, persist_all_presets=False
+        )
 
     def _read_preset_payload(self, preset_name: str) -> Dict[str, Any]:
         clean_name = self._clean_preset_name(preset_name)

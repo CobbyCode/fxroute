@@ -73,17 +73,28 @@ def test_chain_and_schema() -> None:
     assert disabled["loudness#0"]["output-gain"] == 0.0
 
 
-def test_mutex_and_fft_validation() -> None:
+def test_combined_mode_targets_and_fft_validation() -> None:
     ee = manager()
-    try:
-        ee.normalize_effects_extras({
-            "autogain": {"enabled": True},
-            "loudness": {"enabled": True},
+    combined = ee.normalize_effects_extras({
+        "autogain": {"enabled": True, "params": {"targetDb": -12}},
+        "loudness": {"enabled": True},
+    })
+    assert combined["autogain"]["enabled"] is True
+    assert combined["loudness"]["enabled"] is True
+    for target in (-12, -15, -18, -23):
+        normalized = ee.normalize_effects_extras({
+            "autogain": {"enabled": True, "params": {"targetDb": target}},
         })
-    except ValueError as exc:
-        assert "cannot be enabled" in str(exc)
-    else:
-        raise AssertionError("backend mutex was not enforced")
+        assert normalized["autogain"]["params"]["targetDb"] == target
+    for removed in (-9, -14):
+        try:
+            ee.normalize_effects_extras({
+                "autogain": {"enabled": True, "params": {"targetDb": removed}},
+            })
+        except ValueError as exc:
+            assert "must be one of" in str(exc)
+        else:
+            raise AssertionError(f"unsupported Auto Gain target {removed} was accepted")
     for fft_size in (256, 512, 1024, 2048, 4096, 8192, 16384):
         normalized = ee.normalize_effects_extras({
             "loudness": {"enabled": True, "params": {"fftSize": fft_size}},
@@ -122,9 +133,53 @@ def test_strength_gain_is_neutral() -> None:
         assert math.isclose(plugin["volume"] + plugin["output-gain"], attenuation, abs_tol=1e-9)
 
 
+def test_combined_autogain_offsets_are_neutral() -> None:
+    ee = manager()
+    attenuation = -26.5
+    calibration = 4.25
+    strength_offset = 10.0
+    for target, autogain_offset in ((-12, 11.0), (-15, 8.0), (-18, 5.0), (-23, 0.0)):
+        output = ee._apply_extras_to_output(
+            {"plugins_order": []},
+            {
+                "autogain": {"enabled": True, "params": {"targetDb": target}},
+                "loudness": {
+                    "enabled": True,
+                    "params": {
+                        "strength": "med",
+                        "volumeDb": attenuation,
+                        "calibration": {"requiredAdjustmentDb": calibration},
+                    },
+                },
+            },
+        )
+        plugin = output["loudness#0"]
+        effective_offset = strength_offset + autogain_offset
+        assert math.isclose(
+            plugin["volume"],
+            attenuation - calibration + effective_offset,
+            abs_tol=1e-9,
+        )
+        assert math.isclose(
+            plugin["output-gain"],
+            calibration - effective_offset,
+            abs_tol=1e-9,
+        )
+        assert math.isclose(
+            plugin["volume"] + plugin["output-gain"], attenuation, abs_tol=1e-9
+        )
+        assert output["plugins_order"][-3:] == [
+            "autogain#0", "loudness#0", "limiter#0"
+        ]
+
+
 def test_persistence_and_volume_mapping() -> None:
     ee = manager()
     saved = ee.save_global_extras({
+        "autogain": {
+            "enabled": True,
+            "params": {"targetDb": -23},
+        },
         "loudness": {
             "enabled": True,
             "params": {
@@ -138,6 +193,9 @@ def test_persistence_and_volume_mapping() -> None:
     })
     loaded = ee.load_global_extras()
     assert loaded == saved
+    assert loaded["autogain"]["enabled"] is True
+    assert loaded["autogain"]["params"]["targetDb"] == -23
+    assert loaded["loudness"]["enabled"] is True
     assert loaded["loudness"]["params"]["calibrationProfiles"]["usb-a"]["requiredAdjustmentDb"] == -2.5
     assert loaded["loudness"]["params"]["strength"] == "light"
     assert ee.loudness_percent_from_db(loaded["loudness"]["params"]["volumeDb"]) == 62
@@ -160,10 +218,11 @@ def test_persistence_and_volume_mapping() -> None:
 
 def main() -> None:
     test_chain_and_schema()
-    test_mutex_and_fft_validation()
+    test_combined_mode_targets_and_fft_validation()
     test_strength_gain_is_neutral()
+    test_combined_autogain_offsets_are_neutral()
     test_persistence_and_volume_mapping()
-    print(json.dumps({"status": "ok", "tests": 4}))
+    print(json.dumps({"status": "ok", "tests": 5}))
 
 
 if __name__ == "__main__":

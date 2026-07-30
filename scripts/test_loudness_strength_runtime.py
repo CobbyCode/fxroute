@@ -56,27 +56,38 @@ def test_all_adjacent_transitions():
         result = manager.apply_loudness_strength_runtime(extras(old), extras(new))
         updates = manager.runtime_updates
         old_payload = manager._loudness_plugin_payload(
-            manager.normalize_effects_extras(extras(old))["loudness"]
+            manager.normalize_effects_extras(extras(old))["loudness"],
+            manager.normalize_effects_extras(extras(old))["autogain"],
         )
         new_payload = manager._loudness_plugin_payload(
-            manager.normalize_effects_extras(extras(new))["loudness"]
+            manager.normalize_effects_extras(extras(new))["loudness"],
+            manager.normalize_effects_extras(extras(new))["autogain"],
         )
-        assert updates[0][2] == "outputGain"
-        guard = updates[0][3]
+        assert updates[:2] == [
+            ("autogain", 0, "target", -12.0),
+            ("autogain", 0, "bypass", 1.0),
+        ]
+        loudness_updates = [item for item in updates if item[0] == "loudness"]
+        assert loudness_updates[0][2] == "outputGain"
+        guard = loudness_updates[0][3]
         assert math.isclose(
             guard,
-            min(old_payload["output-gain"], new_payload["output-gain"])
-            - manager.LOUDNESS_STRENGTH_GUARD_DB,
+            max(
+                manager.LOUDNESS_OUTPUT_GAIN_MIN_DB,
+                min(old_payload["output-gain"], new_payload["output-gain"])
+                - manager.LOUDNESS_STRENGTH_GUARD_DB,
+            ),
             abs_tol=1e-9,
         )
         assert guard + old_payload["volume"] < (
             old_payload["output-gain"] + old_payload["volume"]
         )
-        assert updates[1][2:] == (
+        assert loudness_updates[1][2:] == ("fft", 8192.0)
+        assert loudness_updates[2][2:] == (
             "volume",
             float(new_payload["volume"]),
         )
-        ramp = updates[2:]
+        ramp = loudness_updates[3:-1]
         assert all(item[2] == "outputGain" for item in ramp)
         assert all(
             ramp[index][3] <= ramp[index + 1][3]
@@ -95,37 +106,43 @@ def test_all_adjacent_transitions():
             old_payload["volume"] + old_payload["output-gain"],
             abs_tol=1e-9,
         )
+        assert loudness_updates[-1][2:] == ("bypass", 0.0)
+        assert all(item[2] != "bypass" for item in loudness_updates[:-1])
         assert manager.persist_calls == 1
         assert result["extras"]["loudness"]["params"]["strength"] == new
 
 
-def test_rollback_on_second_property_failure():
+def test_rollback_on_loudness_volume_failure():
     manager = RecordingManager()
     calls = []
 
     def fail_second(plugin_name, instance_id, property_name, value):
         calls.append((property_name, float(value)))
-        if len(calls) == 2:
-            raise RuntimeError("second property failed")
+        if len(calls) == 5:
+            raise RuntimeError("volume property failed")
 
     manager.set_active_plugin_property = fail_second
     try:
         manager.apply_loudness_strength_runtime(extras("min"), extras("light"))
     except RuntimeError as exc:
-        assert str(exc) == "second property failed"
+        assert str(exc) == "volume property failed"
     else:
         raise AssertionError("runtime failure was not propagated")
-    assert calls[0][0] == "outputGain"
-    assert calls[1][0] == "volume"
-    assert calls[2][0] == "outputGain"
-    assert calls[3][0] == "volume"
-    assert calls[-1][0] == "outputGain"
+    assert calls[:5] == [
+        ("target", -12.0),
+        ("bypass", 1.0),
+        ("outputGain", -30.4),
+        ("fft", 8192.0),
+        ("volume", -22.812984202991395),
+    ]
+    assert ("volume", -12.812984202991395) in calls
+    assert calls[-2:] == [("target", -12.0), ("bypass", 1.0)]
     assert manager.persist_calls == 0
 
 
 def main():
     test_all_adjacent_transitions()
-    test_rollback_on_second_property_failure()
+    test_rollback_on_loudness_volume_failure()
     print("Loudness direct runtime strength transitions: ok")
 
 

@@ -5704,9 +5704,6 @@ async def set_volume(request: Request):
             volume_db = easyeffects_manager.loudness_db_from_percent(vol)
             volume_result = easyeffects_manager.set_loudness_volume_db(volume_db)
             set_output_volume(100)
-            active_preset = easyeffects_manager.get_active_preset()
-            if active_preset and active_preset not in easyeffects_manager.EXCLUDED_GLOBAL_EXTRAS_PRESETS:
-                easyeffects_manager.load_preset(active_preset)
             applied_volume = vol
         else:
             applied_volume = set_output_volume(vol)
@@ -6358,6 +6355,20 @@ def _is_pure_loudness_strength_change(previous: dict, current: dict) -> bool:
     )
 
 
+def _is_runtime_autogain_loudness_change(previous: dict, current: dict) -> bool:
+    previous_other = copy.deepcopy(previous)
+    current_other = copy.deepcopy(current)
+    previous_pair = (
+        previous_other.pop("autogain", None),
+        previous_other.pop("loudness", None),
+    )
+    current_pair = (
+        current_other.pop("autogain", None),
+        current_other.pop("loudness", None),
+    )
+    return previous_pair != current_pair and previous_other == current_other
+
+
 def _require_easyeffects_manager():
     global easyeffects_manager
     if not easyeffects_manager:
@@ -6467,18 +6478,20 @@ async def save_easyeffects_extras(request: Request):
             "updated_presets": 0,
             "skipped_presets": [],
         }
-    if disabling_loudness:
-        volume_db = float(previous["loudness"]["params"]["volumeDb"])
-        set_output_volume(ee_manager.loudness_percent_from_db(volume_db))
     runtime_strength_change = _is_pure_loudness_strength_change(previous, extras)
+    runtime_autogain_loudness_change = _is_runtime_autogain_loudness_change(
+        previous, extras
+    )
     if runtime_strength_change:
         result = ee_manager.apply_loudness_strength_runtime(previous, extras)
+    elif runtime_autogain_loudness_change:
+        result = ee_manager.apply_autogain_loudness_runtime(previous, extras)
     else:
         result = ee_manager.apply_global_extras_to_all_presets(extras)
 
     active_preset = ee_manager.get_active_preset()
     if (
-        not runtime_strength_change
+        not runtime_autogain_loudness_change
         and active_preset
         and active_preset not in ee_manager.EXCLUDED_GLOBAL_EXTRAS_PRESETS
     ):
@@ -6488,10 +6501,13 @@ async def save_easyeffects_extras(request: Request):
             logger.warning("Failed to reload active preset after extras update: %s", e)
     if enabling_loudness:
         set_output_volume(100)
+    elif disabling_loudness:
+        volume_db = float(extras["loudness"]["params"]["volumeDb"])
+        set_output_volume(ee_manager.loudness_percent_from_db(volume_db))
 
     status = ee_manager.get_status()
     await manager.broadcast({"type": "easyeffects", "data": status})
-    if not runtime_strength_change:
+    if not runtime_autogain_loudness_change:
         schedule_peak_monitor_refresh_after_effects_change("global-extras-update")
     return {
         "status": "ok",
@@ -6925,7 +6941,9 @@ async def apply_spl_calibration(request: Request):
     profiles = dict(extras["loudness"]["params"].get("calibrationProfiles") or {})
     profiles[profile["id"]] = dict(extras["loudness"]["params"]["calibration"])
     extras["loudness"]["params"]["calibrationProfiles"] = profiles
-    saved = ee_manager.apply_global_extras_to_active_preset(extras)["extras"]
+    saved = ee_manager.apply_autogain_loudness_runtime(
+        ee_manager.load_global_extras(), extras, persist_all_presets=False
+    )["extras"]
     spl_calibration_restore_state = None
     return {
         "status": "ok",

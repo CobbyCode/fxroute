@@ -5755,12 +5755,10 @@ function setupEffectsActions() {
         saveEffectsExtrasDebounced(EFFECTS_EXTRAS_TOGGLE_DEBOUNCE_MS);
     });
     if (elements.effectsAutogainEnabled) elements.effectsAutogainEnabled.addEventListener('change', () => {
-        if (elements.effectsAutogainEnabled.checked && elements.effectsLoudnessEnabled) elements.effectsLoudnessEnabled.checked = false;
         updateEffectsExtrasUi();
         saveEffectsExtrasDebounced(EFFECTS_EXTRAS_TOGGLE_DEBOUNCE_MS);
     });
     if (elements.effectsLoudnessEnabled) elements.effectsLoudnessEnabled.addEventListener('change', () => {
-        if (elements.effectsLoudnessEnabled.checked && elements.effectsAutogainEnabled) elements.effectsAutogainEnabled.checked = false;
         updateEffectsExtrasUi();
         saveEffectsExtrasDebounced(EFFECTS_EXTRAS_TOGGLE_DEBOUNCE_MS);
     });
@@ -11438,7 +11436,7 @@ async function switchEffectsPreset() {
 // Track which inputs are currently being edited by the user
 const _activeEditing = new Set();
 const EFFECTS_HEADROOM_ALLOWED_GAIN_DB = new Set([-2, -3, -4, -5, -6]);
-const EFFECTS_AUTOGAIN_ALLOWED_TARGET_DB = new Set([-9, -12, -15, -18]);
+const EFFECTS_AUTOGAIN_ALLOWED_TARGET_DB = new Set([-12, -15, -18, -23]);
 const EFFECTS_LOUDNESS_ALLOWED_FFT_SIZE = new Set([256, 512, 1024, 2048, 4096, 8192, 16384]);
 const EFFECTS_LOUDNESS_STRENGTHS = new Set(['full', 'med', 'light', 'min']);
 const EFFECTS_TONE_EFFECT_MODES = new Set(['crystalizer', 'maximizer']);
@@ -11517,8 +11515,6 @@ function updateEffectsExtrasUi() {
     if (elements.effectsLoudnessStrengthWrap) {
         elements.effectsLoudnessStrengthWrap.classList.toggle('hidden', !elements.effectsLoudnessEnabled?.checked);
     }
-    if (elements.effectsAutogainEnabled) elements.effectsAutogainEnabled.disabled = !!elements.effectsLoudnessEnabled?.checked;
-    if (elements.effectsLoudnessEnabled) elements.effectsLoudnessEnabled.disabled = !!elements.effectsAutogainEnabled?.checked;
     if (elements.effectsDelayInputsWrap) {
         elements.effectsDelayInputsWrap.classList.toggle('hidden', !elements.effectsDelayEnabled?.checked);
     }
@@ -11852,7 +11848,7 @@ function describeEffectsExtras(extras) {
     const parts = [];
     parts.push(extras.limiterEnabled ? 'Limiter ON (-1.0 dB)' : 'Limiter OFF');
     parts.push(extras.headroomEnabled ? `Headroom ON (${Number(extras.headroomGainDb || 0).toFixed(0)} dB)` : 'Headroom OFF');
-    parts.push(extras.autogainEnabled ? `Autogain ON (${extras.autogainTargetDb} dB)` : 'Autogain OFF');
+    parts.push(extras.autogainEnabled ? `Autogain ON (${extras.autogainTargetDb} LUFS)` : 'Autogain OFF');
     parts.push(extras.loudnessEnabled ? `Loudness ON (FFT ${extras.loudnessFftSize})` : 'Loudness OFF');
     parts.push(extras.toneEffectEnabled ? `Tone ON (${normalizeEffectsToneEffectMode(extras.toneEffectMode, 'crystalizer')})` : 'Tone OFF');
     return parts.join(' • ');
