@@ -5702,7 +5702,7 @@ async def set_volume(request: Request):
         extras = easyeffects_manager.load_global_extras() if easyeffects_manager else {}
         if extras.get("loudness", {}).get("enabled"):
             volume_db = easyeffects_manager.loudness_db_from_percent(vol)
-            easyeffects_manager.set_loudness_volume_db(volume_db)
+            volume_result = easyeffects_manager.set_loudness_volume_db(volume_db)
             set_output_volume(100)
             active_preset = easyeffects_manager.get_active_preset()
             if active_preset and active_preset not in easyeffects_manager.EXCLUDED_GLOBAL_EXTRAS_PRESETS:
@@ -5717,7 +5717,12 @@ async def set_volume(request: Request):
     # /api/spotify/volume, so this endpoint should not block on multiple
     # playerctl/Spotify status reads on slow boards.
     await manager.broadcast({"type": "playback", "data": build_playback_payload(player_instance.state)})
-    return {"volume": applied_volume}
+    response = {"volume": applied_volume}
+    if extras.get("loudness", {}).get("enabled"):
+        response["loudnessVolumeDb"] = float(
+            volume_result["extras"]["loudness"]["params"]["volumeDb"]
+        )
+    return response
 
 @app.post("/api/playback/next")
 async def next_playback():
@@ -6303,7 +6308,6 @@ def _merge_effects_extras_from_json(previous: dict, body: dict) -> dict:
         ("autogain", "targetDb", ("autogainTargetDb", "autogain_target_db"), float),
         ("loudness", "fftSize", ("loudnessFftSize", "loudness_fft_size"), int),
         ("loudness", "strength", ("loudnessStrength", "loudness_strength"), str),
-        ("loudness", "volumeDb", ("loudnessVolumeDb", "loudness_volume_db"), float),
         ("delay", "leftMs", ("delayLeftMs", "delay_left_ms"), float),
         ("delay", "rightMs", ("delayRightMs", "delay_right_ms"), float),
         ("bass_enhancer", "amount", ("bassAmount", "bass_amount"), float),

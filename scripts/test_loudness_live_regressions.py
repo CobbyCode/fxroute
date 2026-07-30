@@ -193,6 +193,37 @@ async def test_pure_strength_uses_runtime_path_once():
     ]
 
 
+async def test_strength_ignores_stale_volume_from_ui():
+    events = []
+    enabled = copy.deepcopy(BASE_EXTRAS)
+    enabled["loudness"]["enabled"] = True
+    enabled["loudness"]["params"]["strength"] = "min"
+    enabled["loudness"]["params"]["volumeDb"] = -42.0
+    fake = FakeEasyEffects(enabled, events)
+    result = await run_route(
+        {
+            "loudnessEnabled": True,
+            "loudnessStrength": "full",
+            "loudnessFftSize": 4096,
+            "loudnessVolumeDb": -12.0,
+        },
+        fake,
+        events,
+        [100],
+    )
+    assert events == [
+        ("runtime-strength", "min", "full"),
+        ("broadcast", "easyeffects"),
+    ]
+    assert result["extras"]["loudness"]["params"]["volumeDb"] == -42.0
+    payload = fake._normalizer._loudness_plugin_payload(
+        result["extras"]["loudness"]
+    )
+    assert math.isclose(
+        payload["volume"] + payload["output-gain"], -42.0, abs_tol=1e-9
+    )
+
+
 async def test_duplicate_strength_save_is_noop():
     events = []
     enabled = copy.deepcopy(BASE_EXTRAS)
@@ -210,8 +241,9 @@ async def main_test():
     await test_safe_toggle_order_and_partial_persistence()
     await test_mutex_is_http_400()
     await test_pure_strength_uses_runtime_path_once()
+    await test_strength_ignores_stale_volume_from_ui()
     await test_duplicate_strength_save_is_noop()
-    print("Loudness live regressions: volume mapping/order, partial persistence, runtime-only strength, duplicate-save no-op, HTTP 400 mutex: ok")
+    print("Loudness live regressions: canonical volume, runtime-only strength, duplicate-save no-op, HTTP 400 mutex: ok")
 
 
 if __name__ == "__main__":

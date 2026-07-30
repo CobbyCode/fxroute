@@ -2597,6 +2597,14 @@ async function sendVolume() {
             if (!resp.ok) throw new Error(data.detail || 'Volume change failed');
             lastConfirmedVolume = typeof data.volume === 'number' ? data.volume : nextVolume;
             state.playback.volume = lastConfirmedVolume;
+            if (typeof data.loudnessVolumeDb === 'number') {
+                state.easyeffects = state.easyeffects || {};
+                state.easyeffects.global_extras = state.easyeffects.global_extras || {};
+                state.easyeffects.global_extras.loudness = state.easyeffects.global_extras.loudness || {};
+                state.easyeffects.global_extras.loudness.params =
+                    state.easyeffects.global_extras.loudness.params || {};
+                state.easyeffects.global_extras.loudness.params.volumeDb = data.loudnessVolumeDb;
+            }
             volumeSyncGraceUntil = Date.now() + VOLUME_SYNC_GRACE_MS;
             if (!volumeGestureActive && pendingVolume === null) {
                 optimisticVolume = null;
@@ -11887,7 +11895,6 @@ function collectEffectsExtras() {
         loudnessEnabled: elements.effectsLoudnessEnabled?.checked || false,
         loudnessStrength: normalizeEffectsLoudnessStrength(elements.effectsLoudnessStrength?.value, 'full'),
         loudnessFftSize: normalizeEffectsLoudnessFftSize(elements.effectsLoudnessFftSize?.value, 4096),
-        loudnessVolumeDb: Number(state.easyeffects?.global_extras?.loudness?.params?.volumeDb ?? 0),
         delayEnabled: elements.effectsDelayEnabled?.checked || false,
         delayLeftMs: parseFloat(elements.effectsDelayLeftMs?.value || '0'),
         delayRightMs: parseFloat(elements.effectsDelayRightMs?.value || '0'),
@@ -11928,7 +11935,6 @@ async function _doSaveEffectsExtras(phase) {
                     ...(state.easyeffects?.global_extras?.loudness?.params || {}),
                     strength: extras.loudnessStrength,
                     fftSize: extras.loudnessFftSize,
-                    volumeDb: extras.loudnessVolumeDb,
                 },
             },
             delay: { enabled: !!extras.delayEnabled, params: { leftMs: extras.delayLeftMs, rightMs: extras.delayRightMs } },
