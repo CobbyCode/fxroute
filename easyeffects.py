@@ -4,6 +4,7 @@
 
 import configparser
 import copy
+import decimal
 import json
 import logging
 import math
@@ -491,9 +492,22 @@ class EasyEffectsManager:
                     return
             else:
                 try:
-                    if math.isclose(float(last_response), expected, abs_tol=1e-6):
+                    response_text = str(last_response).strip()
+                    response_value = decimal.Decimal(response_text)
+                    response_resolution = decimal.Decimal(1).scaleb(
+                        response_value.as_tuple().exponent
+                    )
+                    acknowledgement_tolerance = max(
+                        1e-6, float(response_resolution) / 2.0
+                    )
+                    if math.isclose(
+                        float(response_value),
+                        expected,
+                        rel_tol=0.0,
+                        abs_tol=acknowledgement_tolerance,
+                    ):
                         return
-                except (TypeError, ValueError):
+                except (decimal.InvalidOperation, TypeError, ValueError):
                     pass
             time.sleep(0.01)
         raise RuntimeError(

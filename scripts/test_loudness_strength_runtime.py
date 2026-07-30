@@ -113,6 +113,23 @@ def test_all_adjacent_transitions():
         assert result["extras"]["loudness"]["params"]["strength"] == new
 
 
+def test_rounded_numeric_property_acknowledgement():
+    manager = RecordingManager()
+    mutations = []
+    responses = iter(("not-ready", "7"))
+    manager._send_socket_command_without_response = mutations.append
+    manager._send_socket_command = lambda command, timeout: next(responses)
+
+    EasyEffectsManager.set_active_plugin_property(
+        manager,
+        "loudness", 0, "volume", 7.03094544423532
+    )
+
+    assert mutations == [
+        "set_property:output:loudness:0:volume:7.03094544423532"
+    ]
+
+
 def test_rollback_on_loudness_volume_failure():
     manager = RecordingManager()
     calls = []
@@ -138,6 +155,47 @@ def test_rollback_on_loudness_volume_failure():
     ]
     assert ("volume", -12.812984202991395) in calls
     assert calls[-2:] == [("target", -12.0), ("bypass", 1.0)]
+    assert manager.persist_calls == 0
+
+
+def test_failure_rollback_has_no_positive_envelope():
+    manager = RecordingManager()
+    old = extras("min")
+    new = extras("light")
+    old_payload = manager._loudness_plugin_payload(
+        manager.normalize_effects_extras(old)["loudness"],
+        manager.normalize_effects_extras(old)["autogain"],
+    )
+    applied = {
+        "volume": float(old_payload["volume"]),
+        "outputGain": float(old_payload["output-gain"]),
+    }
+    envelope = [applied["volume"] + applied["outputGain"]]
+    volume_writes = 0
+
+    def fail_after_applying_new_volume(
+        plugin_name, instance_id, property_name, value
+    ):
+        nonlocal volume_writes
+        if plugin_name == "loudness" and property_name in applied:
+            applied[property_name] = float(value)
+            envelope.append(applied["volume"] + applied["outputGain"])
+        if plugin_name == "loudness" and property_name == "volume":
+            volume_writes += 1
+            if volume_writes == 1:
+                raise RuntimeError("ack failed after mutation")
+
+    manager.set_active_plugin_property = fail_after_applying_new_volume
+    try:
+        manager.apply_loudness_strength_runtime(old, new)
+    except RuntimeError as exc:
+        assert str(exc) == "ack failed after mutation"
+    else:
+        raise AssertionError("runtime failure was not propagated")
+
+    baseline = float(old_payload["volume"]) + float(old_payload["output-gain"])
+    assert max(envelope) <= baseline + 1e-9
+    assert math.isclose(envelope[-1], baseline, abs_tol=1e-9)
     assert manager.persist_calls == 0
 
 
@@ -197,7 +255,9 @@ def test_volume_and_combined_controls_are_guarded():
 
 def main():
     test_all_adjacent_transitions()
+    test_rounded_numeric_property_acknowledgement()
     test_rollback_on_loudness_volume_failure()
+    test_failure_rollback_has_no_positive_envelope()
     test_volume_and_combined_controls_are_guarded()
     print("Loudness direct runtime strength transitions: ok")
 
