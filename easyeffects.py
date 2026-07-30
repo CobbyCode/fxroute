@@ -652,12 +652,18 @@ class EasyEffectsManager:
 
         return self._get_active_preset_from_db()
 
-    def load_preset(self, preset_name: str, convolver_sample_rate_hz: Optional[int] = None) -> None:
+    def load_preset(
+        self,
+        preset_name: str,
+        convolver_sample_rate_hz: Optional[int] = None,
+        *,
+        sync_global_extras: bool = True,
+    ) -> None:
         available = {preset["name"] for preset in self.list_presets()}
         if preset_name not in available:
             raise FileNotFoundError(f"Preset not found: {preset_name}")
 
-        if preset_name not in self.EXCLUDED_GLOBAL_EXTRAS_PRESETS:
+        if sync_global_extras and preset_name not in self.EXCLUDED_GLOBAL_EXTRAS_PRESETS:
             try:
                 self._apply_global_extras_to_preset_name(
                     preset_name,
@@ -1580,6 +1586,100 @@ class EasyEffectsManager:
             else:
                 skipped.append(preset_name)
         return {"extras": normalized, "updated": updated, "skipped": sorted(set(skipped))}
+
+    def apply_loudness_strength_transition(
+        self,
+        previous_extras: Dict[str, Any],
+        extras: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        previous = self.normalize_effects_extras(previous_extras)
+        normalized = self.normalize_effects_extras(extras)
+        old_loudness = previous["loudness"]
+        new_loudness = normalized["loudness"]
+        old_strength = old_loudness["params"]["strength"]
+        new_strength = new_loudness["params"]["strength"]
+        old_offset = self.LOUDNESS_STRENGTH_OFFSETS_DB[old_strength]
+        new_offset = self.LOUDNESS_STRENGTH_OFFSETS_DB[new_strength]
+
+        if (
+            old_strength == new_strength
+            or not old_loudness.get("enabled")
+            or not new_loudness.get("enabled")
+        ):
+            return self.apply_global_extras_to_all_presets(normalized)
+
+        active_preset = self.get_active_preset()
+        active_is_eligible = bool(
+            active_preset
+            and active_preset not in self.EXCLUDED_GLOBAL_EXTRAS_PRESETS
+        )
+        updated = 0
+        skipped = []
+
+        # Persist exactly once. The active preset is then transitioned through
+        # a deliberately attenuated intermediate state; all other presets only
+        # receive the final state and are not loaded.
+        self.save_global_extras(normalized)
+        for preset in self.list_presets():
+            preset_name = preset.get("name")
+            if not preset_name:
+                continue
+            if preset_name in self.EXCLUDED_GLOBAL_EXTRAS_PRESETS:
+                skipped.append(preset_name)
+                continue
+            if active_is_eligible and preset_name == active_preset:
+                continue
+            if self._apply_global_extras_to_preset_name(preset_name, normalized):
+                updated += 1
+            else:
+                skipped.append(preset_name)
+
+        if not active_is_eligible:
+            return {
+                "extras": normalized,
+                "updated": updated,
+                "skipped": sorted(set(skipped)),
+            }
+
+        preset_path = self.output_dir / f"{self._clean_preset_name(active_preset)}.json"
+        payload = json.loads(preset_path.read_text())
+        output = payload.get("output")
+        plugin = output.get("loudness#0") if isinstance(output, dict) else None
+        if not isinstance(plugin, dict):
+            raise RuntimeError(f"Active preset '{active_preset}' has no Loudness plugin")
+
+        old_plugin = self._loudness_plugin_payload(old_loudness)
+        new_plugin = self._loudness_plugin_payload(new_loudness)
+        first_key, second_key = (
+            ("output-gain", "volume")
+            if new_offset > old_offset
+            else ("volume", "output-gain")
+        )
+
+        # Keep bypass untouched in both phases. The first phase can only lower
+        # the summed gain; the second phase restores the unchanged final sum.
+        plugin[first_key] = new_plugin[first_key]
+        preset_path.write_text(json.dumps(payload, indent=2) + "\n")
+        self.load_preset(active_preset, sync_global_extras=False)
+        time.sleep(0.05)
+
+        plugin[second_key] = new_plugin[second_key]
+        preset_path.write_text(json.dumps(payload, indent=2) + "\n")
+        self.load_preset(active_preset, sync_global_extras=False)
+        updated += 1
+        logger.info(
+            "Applied safe Loudness strength transition: preset=%s strength=%s->%s order=%s,%s",
+            active_preset,
+            old_strength,
+            new_strength,
+            first_key,
+            second_key,
+        )
+        return {
+            "extras": normalized,
+            "updated": updated,
+            "skipped": sorted(set(skipped)),
+        }
 
     def apply_global_extras_to_active_preset(self, extras: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         normalized = self.save_global_extras(extras)
