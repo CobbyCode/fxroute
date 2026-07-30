@@ -3,6 +3,7 @@
 """EasyEffects preset support for native and Flatpak installs."""
 
 import configparser
+import copy
 import json
 import logging
 import math
@@ -1719,12 +1720,6 @@ class EasyEffectsManager:
 
         guarded = False
         try:
-            self.set_active_plugin_property(
-                "autogain", 0, "target", new_autogain_plugin["target"]
-            )
-            self.set_active_plugin_property(
-                "autogain", 0, "bypass", new_autogain_plugin["bypass"]
-            )
             if not old_loudness["enabled"]:
                 self.set_active_plugin_property(
                     "loudness", 0, "bypass", True
@@ -1734,6 +1729,12 @@ class EasyEffectsManager:
             )
             guarded = True
             wait(self.LOUDNESS_STRENGTH_GUARD_SETTLE_SECONDS)
+            self.set_active_plugin_property(
+                "autogain", 0, "target", new_autogain_plugin["target"]
+            )
+            self.set_active_plugin_property(
+                "autogain", 0, "bypass", new_autogain_plugin["bypass"]
+            )
             self.set_active_plugin_property(
                 "loudness", 0, "fft", new_plugin["fft"]
             )

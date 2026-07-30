@@ -63,7 +63,8 @@ def test_all_adjacent_transitions():
             manager.normalize_effects_extras(extras(new))["loudness"],
             manager.normalize_effects_extras(extras(new))["autogain"],
         )
-        assert updates[:2] == [
+        assert updates[:3] == [
+            ("loudness", 0, "outputGain", updates[0][3]),
             ("autogain", 0, "target", -12.0),
             ("autogain", 0, "bypass", 1.0),
         ]
@@ -129,9 +130,9 @@ def test_rollback_on_loudness_volume_failure():
     else:
         raise AssertionError("runtime failure was not propagated")
     assert calls[:5] == [
+        ("outputGain", -30.4),
         ("target", -12.0),
         ("bypass", 1.0),
-        ("outputGain", -30.4),
         ("fft", 8192.0),
         ("volume", -22.812984202991395),
     ]
@@ -140,9 +141,64 @@ def test_rollback_on_loudness_volume_failure():
     assert manager.persist_calls == 0
 
 
+def test_volume_and_combined_controls_are_guarded():
+    manager = RecordingManager()
+    combined = extras("light")
+    combined["autogain"] = {"enabled": True, "params": {"targetDb": -15}}
+
+    scenarios = []
+
+    volume = copy.deepcopy(combined)
+    volume["loudness"]["params"]["volumeDb"] = -31.0
+    scenarios.append(("volume", combined, volume))
+
+    target = copy.deepcopy(combined)
+    target["autogain"]["params"]["targetDb"] = -18
+    scenarios.append(("target", combined, target))
+
+    autogain_off = copy.deepcopy(combined)
+    autogain_off["autogain"]["enabled"] = False
+    scenarios.append(("autogain-off", combined, autogain_off))
+    scenarios.append(("autogain-on", autogain_off, combined))
+
+    loudness_off = copy.deepcopy(combined)
+    loudness_off["loudness"]["enabled"] = False
+    scenarios.append(("loudness-off", combined, loudness_off))
+    scenarios.append(("loudness-on", loudness_off, combined))
+
+    strength = copy.deepcopy(combined)
+    strength["loudness"]["params"]["strength"] = "min"
+    scenarios.append(("strength", combined, strength))
+
+    for label, previous, current in scenarios:
+        manager.runtime_updates.clear()
+        manager.apply_autogain_loudness_runtime(previous, current)
+        updates = manager.runtime_updates
+        guard_index = next(
+            index
+            for index, item in enumerate(updates)
+            if item[0] == "loudness" and item[2] == "outputGain"
+        )
+        autogain_index = next(
+            index for index, item in enumerate(updates) if item[0] == "autogain"
+        )
+        volume_index = next(
+            index
+            for index, item in enumerate(updates)
+            if item[0] == "loudness" and item[2] == "volume"
+        )
+        assert guard_index < autogain_index < volume_index, label
+        assert manager.persist_calls >= 1
+
+    manager.save_global_extras(combined)
+    volume_result = manager.set_loudness_volume_db(-28.0)
+    assert volume_result["extras"]["loudness"]["params"]["volumeDb"] == -28.0
+
+
 def main():
     test_all_adjacent_transitions()
     test_rollback_on_loudness_volume_failure()
+    test_volume_and_combined_controls_are_guarded()
     print("Loudness direct runtime strength transitions: ok")
 
 
