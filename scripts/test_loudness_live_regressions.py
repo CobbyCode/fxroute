@@ -193,11 +193,25 @@ async def test_pure_strength_uses_runtime_path_once():
     ]
 
 
+async def test_duplicate_strength_save_is_noop():
+    events = []
+    enabled = copy.deepcopy(BASE_EXTRAS)
+    enabled["loudness"]["enabled"] = True
+    enabled["loudness"]["params"]["strength"] = "light"
+    fake = FakeEasyEffects(enabled, events)
+    result = await run_route({"loudnessStrength": "light"}, fake, events, [100])
+    assert events == []
+    assert result["extras"] == fake.extras
+    assert result["updated_presets"] == 0
+    assert result["skipped_presets"] == []
+
+
 async def main_test():
     await test_safe_toggle_order_and_partial_persistence()
     await test_mutex_is_http_400()
     await test_pure_strength_uses_runtime_path_once()
-    print("Loudness live regressions: volume mapping/order, partial persistence, runtime-only strength, HTTP 400 mutex: ok")
+    await test_duplicate_strength_save_is_noop()
+    print("Loudness live regressions: volume mapping/order, partial persistence, runtime-only strength, duplicate-save no-op, HTTP 400 mutex: ok")
 
 
 if __name__ == "__main__":

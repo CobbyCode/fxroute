@@ -6455,6 +6455,14 @@ async def save_easyeffects_extras(request: Request):
             status_code=400,
             detail={"code": "invalid_effects_extras", "message": str(exc)},
         ) from exc
+    if extras == previous:
+        logger.info("Ignored unchanged EasyEffects extras update")
+        return {
+            "status": "ok",
+            "extras": extras,
+            "updated_presets": 0,
+            "skipped_presets": [],
+        }
     if disabling_loudness:
         volume_db = float(previous["loudness"]["params"]["volumeDb"])
         set_output_volume(ee_manager.loudness_percent_from_db(volume_db))
