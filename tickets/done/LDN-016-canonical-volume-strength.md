@@ -68,3 +68,9 @@ current Strength `light` with a deliberately stale `volumeDb=-3`. It was
 handled as a no-op (`updated_presets=0`): canonical `volumeDb` remained
 `-19.674128523856954`, visible Volume remained `47`, and Strength remained
 `light`. No push or release.
+
+## Acceptance
+
+Paul reproduced the original Min → reduce Volume → Light/Med/Full workflow on
+`.104` and confirmed on 2026-07-30 that the fix works. Accepted production code:
+`856038cf32fe5b5a7efd52e97c43db0ef47dea6f`. No push or release.
