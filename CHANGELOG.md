@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+## 0.8.0 (2026-07-30)
+
+### Added
+- Loudness under Tone with numeric Strength levels 1–10 and selectable FFT
+  size.
+- SPL Calibration with −23-LUFS pink noise, automatic UMIK-1 SPL measurement,
+  and manual meter fallback.
+
+### Changed
+- Auto Gain and Loudness can run together. Auto Gain targets are −12, −15,
+  −18, and −23 LUFS while the Loudness gain balance remains level-neutral.
+- Auto Sub AutoGain can search up to ±6 dB. Known sweep PCM is checked before
+  playback and measured across all four final Stage outputs against a
+  −1-dBFS safety limit.
+
+### Fixed
+- Loudness volume, Strength, target, enable, and disable transitions now use
+  the guarded runtime path without preset or graph reloads, preserving the
+  canonical volume and preventing positive switching peaks.
+- SPL Calibration temporarily neutralizes Auto Gain and Loudness, then
+  restores their exact prior runtime state on stop, save, cancel, completion,
+  or failure.
+- Measurement sessions restore the configured playback sample rate reliably
+  after closing.
+
 ## 0.7.57 (2026-07-26)
 
 ### Changed

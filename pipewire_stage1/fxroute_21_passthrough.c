@@ -121,6 +121,9 @@ struct fxroute_21_app {
     int exact_sub_mute_ack_socket;
     const char *exact_sub_mute_ack_path;
     int exact_sub_mute_last_ack;
+    int peak_control_socket;
+    const char *peak_control_path;
+    float output_peaks[4];
     float sub_level_gain;
     float sub2_level_gain;
     struct biquad sub_lowpass_1;
@@ -185,6 +188,7 @@ static void usage(const char *program)
             "      --self-test-bass-routing Run offline L/R bass-routing smoke test and exit\n"
             "      --self-test-exact-sub-mute Run offline exact measurement-mute test and exit\n"
             "      --exact-sub-mute-ack <path> Runtime acknowledgement socket path\n"
+            "      --peak-control <path>  Runtime Output 1-4 peak reset/read socket\n"
             "  -h, --help                 Show this help\n"
             "\n"
             "Graph ports are explicit and must be linked by FXRoute later:\n"
@@ -253,6 +257,7 @@ static int parse_args(int argc, char **argv, struct fxroute_21_app *app)
         OPT_EXACT_SUB_MUTE_ACK,
         OPT_BASS_ROUTING,
         OPT_SELF_TEST_BASS_ROUTING,
+        OPT_PEAK_CONTROL,
     };
     static const struct option long_options[] = {
         {"node-name", required_argument, NULL, 'n'},
@@ -270,6 +275,7 @@ static int parse_args(int argc, char **argv, struct fxroute_21_app *app)
         {"sub2-polarity", required_argument, NULL, OPT_SUB2_POLARITY},
         {"self-test-exact-sub-mute", no_argument, NULL, OPT_SELF_TEST_EXACT_SUB_MUTE},
         {"exact-sub-mute-ack", required_argument, NULL, OPT_EXACT_SUB_MUTE_ACK},
+        {"peak-control", required_argument, NULL, OPT_PEAK_CONTROL},
         {"self-test-sub-gain", no_argument, NULL, 'T'},
         {"self-test-alignment", no_argument, NULL, 'A'},
         {"self-test-bass-routing", no_argument, NULL, OPT_SELF_TEST_BASS_ROUTING},
@@ -376,6 +382,9 @@ static int parse_args(int argc, char **argv, struct fxroute_21_app *app)
             break;
         case OPT_EXACT_SUB_MUTE_ACK:
             app->exact_sub_mute_ack_path = optarg;
+            break;
+        case OPT_PEAK_CONTROL:
+            app->peak_control_path = optarg;
             break;
         case 'T':
             app->self_test_sub_gain = true;
@@ -674,6 +683,56 @@ static void acknowledge_exact_sub_mute(struct fxroute_21_app *app, bool applied)
     }
 }
 
+static void update_output_peaks(struct fxroute_21_app *app,
+                                const float *output_1, const float *output_2,
+                                const float *output_3, const float *output_4,
+                                uint32_t frames)
+{
+    const float *outputs[4] = {output_1, output_2, output_3, output_4};
+    for (uint32_t output = 0; output < 4; ++output) {
+        float peak = app->output_peaks[output];
+        for (uint32_t frame = 0; frame < frames; ++frame) {
+            float value = fabsf(outputs[output][frame]);
+            if (value > peak) {
+                peak = value;
+            }
+        }
+        app->output_peaks[output] = peak;
+    }
+}
+
+static void handle_peak_control(struct fxroute_21_app *app)
+{
+    struct sockaddr_un peer;
+    socklen_t peer_len = sizeof(peer);
+    char command;
+    ssize_t received;
+
+    if (app->peak_control_socket < 0) {
+        return;
+    }
+    while ((received = recvfrom(app->peak_control_socket, &command, 1, MSG_DONTWAIT,
+                                (struct sockaddr *)&peer, &peer_len)) == 1) {
+        if (command == 'R') {
+            memset(app->output_peaks, 0, sizeof(app->output_peaks));
+            sendto(app->peak_control_socket, "R", 1, MSG_DONTWAIT,
+                   (const struct sockaddr *)&peer, peer_len);
+        } else if (command == 'G') {
+            char response[160];
+            int length = snprintf(response, sizeof(response),
+                                  "{\"output_1\":%.9g,\"output_2\":%.9g,"
+                                  "\"output_3\":%.9g,\"output_4\":%.9g}",
+                                  app->output_peaks[0], app->output_peaks[1],
+                                  app->output_peaks[2], app->output_peaks[3]);
+            if (length > 0) {
+                sendto(app->peak_control_socket, response, (size_t)length, MSG_DONTWAIT,
+                       (const struct sockaddr *)&peer, peer_len);
+            }
+        }
+        peer_len = sizeof(peer);
+    }
+}
+
 static int run_exact_sub_mute_self_test(struct fxroute_21_app *app)
 {
     enum { frames = 4096 };
@@ -901,8 +960,10 @@ static void on_process(void *userdata, struct spa_io_position *position)
         return;
     }
 
+    handle_peak_control(app);
     bool applied_exact_sub_mute = route_stage3_crossover(
         app, input_l, input_r, output_1, output_2, output_3, output_4, n_samples);
+    update_output_peaks(app, output_1, output_2, output_3, output_4, n_samples);
     acknowledge_exact_sub_mute(app, applied_exact_sub_mute);
 }
 
@@ -1040,11 +1101,31 @@ int main(int argc, char **argv)
     app.sub2_polarity_invert = DEFAULT_SUB_POLARITY_INVERT;
     app.bass_routing = DEFAULT_BASS_ROUTING;
     app.exact_sub_mute_ack_socket = -1;
+    app.peak_control_socket = -1;
     app.exact_sub_mute_last_ack = 0;
     atomic_init(&app.exact_sub_mute, false);
 
     if (parse_args(argc, argv, &app) != 0) {
         return EXIT_FAILURE;
+    }
+    if (app.peak_control_path != NULL) {
+        struct sockaddr_un address;
+        app.peak_control_socket = socket(AF_UNIX, SOCK_DGRAM | SOCK_NONBLOCK, 0);
+        memset(&address, 0, sizeof(address));
+        address.sun_family = AF_UNIX;
+        if (app.peak_control_socket < 0 ||
+            strlen(app.peak_control_path) >= sizeof(address.sun_path)) {
+            fprintf(stderr, "Failed to create peak control socket\n");
+            return EXIT_FAILURE;
+        }
+        strcpy(address.sun_path, app.peak_control_path);
+        unlink(app.peak_control_path);
+        if (bind(app.peak_control_socket, (const struct sockaddr *)&address, sizeof(address)) != 0) {
+            fprintf(stderr, "Failed to bind peak control socket %s: %s\n",
+                    app.peak_control_path, strerror(errno));
+            close(app.peak_control_socket);
+            return EXIT_FAILURE;
+        }
     }
     configure_sub_lowpass(&app);
     configure_main_highpass(&app);
@@ -1145,6 +1226,13 @@ int main(int argc, char **argv)
     result = 0;
 
 out:
+    if (app.peak_control_socket >= 0) {
+        close(app.peak_control_socket);
+        app.peak_control_socket = -1;
+    }
+    if (app.peak_control_path != NULL) {
+        unlink(app.peak_control_path);
+    }
     if (app.exact_sub_mute_ack_socket >= 0) {
         close(app.exact_sub_mute_ack_socket);
         app.exact_sub_mute_ack_socket = -1;

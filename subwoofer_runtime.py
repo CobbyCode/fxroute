@@ -12,10 +12,12 @@ only the native helper lifecycle and graph links.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import math
 import os
 import re
+import select
 import signal
 import shlex
 import socket
@@ -276,9 +278,73 @@ class Subwoofer21Runtime:
         self._exact_sub_mute_ack_socket: socket.socket | None = None
         self._exact_sub_mute_ack_path: str | None = None
         self._exact_sub_mute_ack_dir: str | None = None
+        self._peak_control_socket: socket.socket | None = None
+        self._peak_control_path: str | None = None
+        self._peak_control_dir: str | None = None
+        self._peak_client_path: str | None = None
 
     def __del__(self) -> None:
         self._close_exact_sub_mute_ack_socket()
+        self._close_peak_control_socket()
+
+    async def reset_output_peaks(self) -> None:
+        """Reset native Stage1 Output 1-4 peaks for the next sweep."""
+        # The helper's process callback may be dormant until sweep playback
+        # starts. Queue the reset now; the callback applies it before
+        # accounting its first output block.
+        await self._peak_control_request(b"R", expect_reply=False)
+
+    async def read_output_peaks(self) -> dict[str, float]:
+        """Read native Stage1 Output 1-4 linear full-scale peaks."""
+        payload = await self._peak_control_request(b"G", expect_reply=True)
+        decoded = json.loads(payload.decode("utf-8"))
+        return {key: float(decoded[key]) for key in ("output_1", "output_2", "output_3", "output_4")}
+
+    async def _peak_control_request(self, command: bytes, *, expect_reply: bool) -> bytes:
+        control_socket = self._peak_control_socket
+        control_path = self._peak_control_path
+        process = self._process
+        if control_socket is None or not control_path or process is None or getattr(process, "returncode", None) is not None:
+            raise RuntimeError("Subwoofer helper peak control is unavailable")
+        while True:
+            try:
+                control_socket.recv(512)
+            except BlockingIOError:
+                break
+        control_socket.sendto(command, control_path)
+        if not expect_reply:
+            return b""
+        return await asyncio.to_thread(self._recv_peak_control_reply, control_socket)
+
+    @staticmethod
+    def _recv_peak_control_reply(control_socket: socket.socket) -> bytes:
+        readable, _, _ = select.select([control_socket], [], [], 1.0)
+        if not readable:
+            raise RuntimeError("timeout reading native Stage1 output peaks")
+        return control_socket.recv(512)
+
+    def _close_peak_control_socket(self) -> None:
+        control_socket = self._peak_control_socket
+        client_path = self._peak_client_path
+        control_path = self._peak_control_path
+        directory = self._peak_control_dir
+        self._peak_control_socket = None
+        self._peak_client_path = None
+        self._peak_control_path = None
+        self._peak_control_dir = None
+        if control_socket is not None:
+            control_socket.close()
+        for path in (client_path, control_path):
+            if path:
+                try:
+                    os.unlink(path)
+                except FileNotFoundError:
+                    pass
+        if directory:
+            try:
+                os.rmdir(directory)
+            except OSError:
+                pass
 
     def _stream_key(self, config: SubwooferRuntimeConfig) -> tuple[Any, ...]:
         return (
@@ -614,6 +680,17 @@ class Subwoofer21Runtime:
         self._exact_sub_mute_ack_socket = ack_socket
         self._exact_sub_mute_ack_path = ack_path
         self._exact_sub_mute_ack_dir = ack_dir
+        self._close_peak_control_socket()
+        peak_dir = tempfile.mkdtemp(prefix="fxroute-stage-peaks-")
+        peak_path = str(Path(peak_dir) / "control.sock")
+        peak_client_path = str(Path(peak_dir) / "client.sock")
+        peak_socket = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        peak_socket.setblocking(False)
+        peak_socket.bind(peak_client_path)
+        self._peak_control_socket = peak_socket
+        self._peak_control_path = peak_path
+        self._peak_client_path = peak_client_path
+        self._peak_control_dir = peak_dir
         args = [
             str(self._helper_binary),
             "--node-name",
@@ -644,6 +721,8 @@ class Subwoofer21Runtime:
             str(config.derived_sub2_delay_ms),
             "--exact-sub-mute-ack",
             ack_path,
+            "--peak-control",
+            peak_path,
         ]
         mode_num = "2.2 Stereo Bass" if config.output_mode == OUTPUT_MODE_SUBWOOFER_22_STEREO else "2.2" if config.output_mode == OUTPUT_MODE_SUBWOOFER_22 else "2.1"
         logger.info("Starting %s helper: %s", mode_num, shlex.join(args))
@@ -966,6 +1045,7 @@ class Subwoofer21Runtime:
         self._process = None
         self._exact_sub_mute = False
         self._close_exact_sub_mute_ack_socket()
+        self._close_peak_control_socket()
         self._last_helper_args = None
         if process is None or getattr(process, "returncode", None) is not None:
             return

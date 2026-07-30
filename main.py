@@ -17,6 +17,7 @@ import subprocess
 import tempfile
 import wave
 import zipfile
+import numpy as np
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -8698,6 +8699,118 @@ _AUTO_SUB_TIMING_MARKS = [
     "release_done",
 ]
 
+_AUTO_SUB_STAGE_PEAK_LIMIT_DBFS = -1.0
+_AUTO_SUB_STAGE_PEAK_MISMATCH_DB = 1.0
+
+
+class AutoSubPeakSafetyError(RuntimeError):
+    """Abort the complete AutoSub run after a Stage1 peak safety failure."""
+
+
+def _auto_sub_stage_peak_prediction(
+    *, sweep_profile: dict[str, Any], sample_rate: int, channel: str,
+    config: SubwooferRuntimeConfig,
+) -> dict[str, Any]:
+    """Run the known measurement PCM through the native Stage1 DSP topology."""
+    rate = int(sample_rate)
+    duration = float(sweep_profile["sweep_seconds"])
+    count = max(2048, int(round(rate * duration)))
+    t = np.arange(count, dtype=np.float64) / rate
+    start_hz = float(sweep_profile["sweep_start_hz"])
+    end_hz = float(sweep_profile["sweep_end_hz"])
+    log_ratio = math.log(end_hz / start_hz)
+    phase = 2.0 * math.pi * start_hz * duration / log_ratio * (np.exp(t * log_ratio / duration) - 1.0)
+    sweep = np.sin(phase)
+    fade_len = min(count // 8, max(64, int(round(rate * 0.01))))
+    if fade_len > 1:
+        sweep[:fade_len] *= np.linspace(0.0, 1.0, fade_len)
+        sweep[-fade_len:] *= np.linspace(1.0, 0.0, fade_len)
+    sweep *= 0.8 / max(float(np.max(np.abs(sweep))), 1e-12)
+    zeros = np.zeros_like(sweep)
+    left = sweep if channel in ("left", "stereo") else zeros
+    right = sweep if channel in ("right", "stereo") else zeros
+
+    def coefficients(kind: str) -> tuple[list[float], list[float]]:
+        w0 = 2.0 * math.pi * config.crossover_frequency_hz / rate
+        cos_w0, sin_w0 = math.cos(w0), math.sin(w0)
+        alpha = sin_w0 / (2.0 * math.sqrt(0.5))
+        a0 = 1.0 + alpha
+        if kind == "low":
+            b = [(1.0 - cos_w0) * 0.5 / a0, (1.0 - cos_w0) / a0,
+                 (1.0 - cos_w0) * 0.5 / a0]
+        else:
+            b = [(1.0 + cos_w0) * 0.5 / a0, -(1.0 + cos_w0) / a0,
+                 (1.0 + cos_w0) * 0.5 / a0]
+        return b, [1.0, -2.0 * cos_w0 / a0, (1.0 - alpha) / a0]
+
+    def lr24(signal: np.ndarray, kind: str, enabled: bool = True) -> np.ndarray:
+        if not enabled:
+            return signal.copy()
+        b, a = coefficients(kind)
+        def one_stage(values: np.ndarray) -> np.ndarray:
+            output = np.empty_like(values)
+            z1 = 0.0
+            z2 = 0.0
+            for index, value in enumerate(values):
+                filtered = b[0] * value + z1
+                z1 = b[1] * value - a[1] * filtered + z2
+                z2 = b[2] * value - a[2] * filtered
+                output[index] = filtered
+            return output
+        return one_stage(one_stage(signal))
+
+    def delay(signal: np.ndarray, delay_ms: float) -> np.ndarray:
+        samples = int(float(delay_ms) * rate / 1000.0 + 0.5)
+        if samples <= 0:
+            return signal
+        return np.concatenate((np.zeros(samples), signal))[:signal.size]
+
+    main_l = delay(lr24(left, "high", config.main_highpass_enabled), config.derived_main_delay_ms)
+    main_r = delay(lr24(right, "high", config.main_highpass_enabled), config.derived_main_delay_ms)
+    if config.bass_routing == "stereo":
+        sub1_source, sub2_source = left, right
+    else:
+        sub1_source = sub2_source = (left + right) * 0.5
+    sub1 = delay(lr24(sub1_source, "low"), config.derived_sub1_delay_ms)
+    sub2 = delay(lr24(sub2_source, "low"), config.derived_sub2_delay_ms)
+    sub1 *= (-1.0 if config.sub_polarity == "invert" else 1.0) * 10.0 ** (config.sub_level_db / 20.0)
+    sub2 *= (-1.0 if config.sub2_polarity == "invert" else 1.0) * 10.0 ** (config.sub2_level_db / 20.0)
+    peaks = {
+        f"output_{index + 1}": float(np.max(np.abs(signal))) if signal.size else 0.0
+        for index, signal in enumerate((main_l, main_r, sub1, sub2))
+    }
+    peak_dbfs = {key: round(20.0 * math.log10(max(value, 1e-12)), 3) for key, value in peaks.items()}
+    return {
+        "linear": peaks,
+        "dbfs": peak_dbfs,
+        "maximum_dbfs": max(peak_dbfs.values()),
+        "limit_dbfs": _AUTO_SUB_STAGE_PEAK_LIMIT_DBFS,
+        "safe": max(peak_dbfs.values()) <= _AUTO_SUB_STAGE_PEAK_LIMIT_DBFS,
+    }
+
+
+def _auto_sub_stage_peak_comparison(
+    predicted: dict[str, Any], measured_linear: dict[str, float],
+) -> dict[str, Any]:
+    measured_dbfs = {
+        key: round(20.0 * math.log10(max(float(value), 1e-12)), 3)
+        for key, value in measured_linear.items()
+    }
+    differences = {
+        key: round(measured_dbfs[key] - float(predicted["dbfs"][key]), 3)
+        for key in measured_dbfs
+        if max(measured_dbfs[key], float(predicted["dbfs"][key])) > -90.0
+    }
+    relevant = any(abs(value) > _AUTO_SUB_STAGE_PEAK_MISMATCH_DB for value in differences.values())
+    return {
+        "predicted": predicted,
+        "measured": {"linear": measured_linear, "dbfs": measured_dbfs},
+        "difference_db": differences,
+        "tolerance_db": _AUTO_SUB_STAGE_PEAK_MISMATCH_DB,
+        "relevant_mismatch": relevant,
+        "measured_safe": max(measured_dbfs.values()) <= _AUTO_SUB_STAGE_PEAK_LIMIT_DBFS,
+    }
+
 
 def _auto_sub_timing_durations(marks: dict[str, float]) -> dict[str, float]:
     durations: dict[str, float] = {}
@@ -8936,7 +9049,32 @@ async def _measure_auto_sub_candidate(
             "error": str(exc),
             "scan": stage,
         })
+    stage_peak_prediction = _auto_sub_stage_peak_prediction(
+        sweep_profile=auto_sub_sweep_profile,
+        sample_rate=auto_sub_rate,
+        channel=channel,
+        config=SubwooferRuntimeConfig.from_overview(get_audio_output_overview()),
+    )
+    if exact_sub_mute:
+        for key in ("output_3", "output_4"):
+            stage_peak_prediction["linear"][key] = 0.0
+            stage_peak_prediction["dbfs"][key] = -240.0
+        stage_peak_prediction["maximum_dbfs"] = max(stage_peak_prediction["dbfs"].values())
+        stage_peak_prediction["safe"] = stage_peak_prediction["maximum_dbfs"] <= _AUTO_SUB_STAGE_PEAK_LIMIT_DBFS
+    if not stage_peak_prediction["safe"]:
+        logger.error(
+            "Auto-sub: blocked unsafe sweep candidate stage=%s delay=%.2f predicted=%s",
+            stage, delay_ms, stage_peak_prediction["dbfs"],
+        )
+        job["message"] = (
+            f"AutoGain candidate blocked before sweep: predicted Stage peak "
+            f"{stage_peak_prediction['maximum_dbfs']:.2f} dBFS exceeds −1 dBFS"
+        )
+        peak_failure = {"predicted": stage_peak_prediction, "status": "headroom_blocked"}
+        job.setdefault("auto_gain", {})["stage_output_peaks"] = peak_failure
+        raise AutoSubPeakSafetyError(job["message"])
     sweep_id = ""
+    stage_peak_comparison: dict[str, Any] | None = None
     previous_exact_sub_mute = False
     exact_sub_mute_enabled = False
     try:
@@ -8947,6 +9085,9 @@ async def _measure_auto_sub_candidate(
             exact_sub_mute_enabled = True
             if not subwoofer_runtime.snapshot().get("exact_sub_mute"):
                 raise RuntimeError("Subwoofer helper did not retain exact digital mute state")
+        if subwoofer_runtime is None:
+            raise RuntimeError("Native Stage1 output peak capture unavailable")
+        await subwoofer_runtime.reset_output_peaks()
         sweep_job = await measurement_store.start_measurement(
             input_id=input_id,
             channel=channel,
@@ -8999,6 +9140,22 @@ async def _measure_auto_sub_candidate(
             await asyncio.sleep(0.5)
 
         _marks["sweep_poll_done"] = time.monotonic()
+        measured_stage_peaks = await subwoofer_runtime.read_output_peaks()
+        stage_peak_comparison = _auto_sub_stage_peak_comparison(
+            stage_peak_prediction, measured_stage_peaks,
+        )
+        if stage_peak_comparison["relevant_mismatch"] or not stage_peak_comparison["measured_safe"]:
+            reason = (
+                "Native Stage1 peak mismatch"
+                if stage_peak_comparison["relevant_mismatch"]
+                else "Native Stage1 measured peak exceeded −1 dBFS"
+            )
+            logger.error("Auto-sub stopped: %s diagnostics=%s", reason, json.dumps(stage_peak_comparison, sort_keys=True))
+            job["message"] = f"Auto Sub stopped: {reason}"
+            job.setdefault("auto_gain", {})["stage_output_peaks"] = stage_peak_comparison
+            if job.get("current_sweep_id") == sweep_id:
+                job["current_sweep_id"] = ""
+            raise AutoSubPeakSafetyError(reason)
         _marks["release_start"] = time.monotonic()
         _marks["release_done"] = time.monotonic()
 
@@ -9051,6 +9208,7 @@ async def _measure_auto_sub_candidate(
                 "exact_sub_mute": bool(exact_sub_mute),
                 "measurement_channel": str(measurement.get("channel") or channel),
                 "sample_rate": analysis.get("sample_rate"),
+                "stage_output_peaks": stage_peak_comparison,
             })
 
         error_msg = final.get("error", {}).get("detail") if isinstance(final.get("error"), dict) else str(final.get("error") or "timeout")
@@ -9065,7 +9223,10 @@ async def _measure_auto_sub_candidate(
             "status": "failed",
             "error": error_msg,
             "scan": stage,
+            "stage_output_peaks": stage_peak_comparison or {"predicted": stage_peak_prediction},
         })
+    except AutoSubPeakSafetyError:
+        raise
     except Exception as exc:
         logger.exception("Auto-sub: sweep error for delay %.2f ms", delay_ms)
         if job.get("current_sweep_id") == sweep_id:
@@ -9546,7 +9707,7 @@ def _calculate_auto_sub_gain(
 
 
 def _auto_sub_gain_deltas(
-    auto_gain: dict[str, Any], mode: str, *, max_abs_db: float = 2.0,
+    auto_gain: dict[str, Any], mode: str, *, max_abs_db: float = 6.0,
 ) -> dict[str, float]:
     """Use the residual only as direction/magnitude input for one bounded feedback step."""
     if not isinstance(auto_gain, dict) or not auto_gain.get("gain_calculated"):
@@ -9637,7 +9798,10 @@ def _auto_sub_gain_response_correction(
         result["raw_deltas_db"] = {side: round(value, 3) for side, value in deltas.items()}
         if any(not math.isfinite(value) or abs(value) > 6.0 for value in deltas.values()):
             raise ValueError("Measured final Gain correction is implausible")
-        applied_deltas = {side: max(-2.0, min(2.0, value)) for side, value in deltas.items()}
+        applied_deltas = {
+            side: max(-6.0 - float(applied_step[side]), min(6.0 - float(applied_step[side]), value))
+            for side, value in deltas.items()
+        }
         result["applied_deltas_db"] = {side: round(value, 3) for side, value in applied_deltas.items()}
         result["deltas_db"] = dict(result["applied_deltas_db"])
         result["available"] = True
@@ -9945,6 +10109,10 @@ async def _measure_auto_sub_combined_candidate(
         "scan": stage,
         "status_left": left_result.get("status"),
         "status_right": right_result.get("status"),
+        "stage_output_peaks": {
+            "left": left_result.get("stage_output_peaks"),
+            "right": right_result.get("stage_output_peaks"),
+        },
         "combined_candidate": True,
     }
     if output_mode in OUTPUT_MODE_SUBWOOFER_22_MODES:
@@ -10316,7 +10484,7 @@ async def _run_auto_sub_22_optimize(
             }, crossover_hz=fc,
         )
         logger.info("AUTOSUB_GAIN mode=2.2_mono diagnostics=%s", json.dumps(job["auto_gain"], sort_keys=True))
-        gain_deltas = _auto_sub_gain_deltas(job["auto_gain"], OUTPUT_MODE_SUBWOOFER_22, max_abs_db=2.0)
+        gain_deltas = _auto_sub_gain_deltas(job["auto_gain"], OUTPUT_MODE_SUBWOOFER_22, max_abs_db=6.0)
         _auto_sub_gain_log_line("AUTOGAIN_INIT", {
             "mode": OUTPUT_MODE_SUBWOOFER_22, "xo_hz": fc,
             "target": (job.get("target_curve") or {}).get("label"),
@@ -10527,6 +10695,7 @@ async def _run_auto_sub_22_optimize(
                 "sub1": float(_auto_sub_22_sub(final_gain_snapshot, "sub1").get("level_db", 0.0)),
                 "sub2": float(_auto_sub_22_sub(final_gain_snapshot, "sub2").get("level_db", 0.0)),
             },
+            "stage_output_peaks": (final_gain_sweep or {}).get("stage_output_peaks"),
         })
 
         derived_delays: dict[str, Any] = {}
@@ -11274,7 +11443,7 @@ async def _run_auto_sub_22_stereo_optimize(
             }, crossover_hz=fc,
         )
         logger.info("AUTOSUB_GAIN mode=2.2_stereo diagnostics=%s", json.dumps(job["auto_gain"], sort_keys=True))
-        gain_deltas = _auto_sub_gain_deltas(job["auto_gain"], OUTPUT_MODE_SUBWOOFER_22_STEREO, max_abs_db=2.0)
+        gain_deltas = _auto_sub_gain_deltas(job["auto_gain"], OUTPUT_MODE_SUBWOOFER_22_STEREO, max_abs_db=6.0)
         _auto_sub_gain_log_line("AUTOGAIN_INIT", {
             "mode": OUTPUT_MODE_SUBWOOFER_22_STEREO, "xo_hz": fc,
             "target": (job.get("target_curve") or {}).get("label"),
@@ -11585,6 +11754,7 @@ async def _run_auto_sub_22_stereo_optimize(
                 "sub1": float(_auto_sub_22_sub(final_gain_snapshot, "sub1").get("level_db", 0.0)),
                 "sub2": float(_auto_sub_22_sub(final_gain_snapshot, "sub2").get("level_db", 0.0)),
             },
+            "stage_output_peaks": (final_gain_sweep or {}).get("stage_output_peaks"),
         })
         overall_score = (0.6 * min(left_score, right_score)) + (0.4 * ((left_score + right_score) / 2.0))
         left_xo_score = float(left_winner.get("xo_score", 0.0) or 0.0)
@@ -12259,7 +12429,7 @@ async def _run_auto_sub_optimize(
             }, crossover_hz=fc,
         )
         logger.info("AUTOSUB_GAIN mode=2.1 diagnostics=%s", json.dumps(job["auto_gain"], sort_keys=True))
-        gain_deltas = _auto_sub_gain_deltas(job["auto_gain"], OUTPUT_MODE_SUBWOOFER_21, max_abs_db=2.0)
+        gain_deltas = _auto_sub_gain_deltas(job["auto_gain"], OUTPUT_MODE_SUBWOOFER_21, max_abs_db=6.0)
         applied_gain_delta = gain_deltas.get("left", 0.0)
         _auto_sub_gain_log_line("AUTOGAIN_INIT", {
             "mode": OUTPUT_MODE_SUBWOOFER_21, "xo_hz": fc,
@@ -12403,6 +12573,7 @@ async def _run_auto_sub_optimize(
             "final_deltas_db": final_gain_deltas,
             "original_level_db": original_level,
             "final_level_db": final_gain_level,
+            "stage_output_peaks": (final_gain_sweep or {}).get("stage_output_peaks"),
         })
         stored_fine_accepted = bool(acceptance["fine_accepted"] and auto_apply)
         stored_reject_reason = acceptance["reject_reason"]

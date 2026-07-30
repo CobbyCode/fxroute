@@ -29,8 +29,8 @@ class AutoGainApplyRevertTests(unittest.TestCase):
 
     def test_21_and_22_mono_use_same_common_delta(self):
         source = diagnostic(2.0, 4.0)
-        self.assertEqual(main._auto_sub_gain_deltas(source, main.OUTPUT_MODE_SUBWOOFER_21), {"left": 2.0, "right": 2.0})
-        self.assertEqual(main._auto_sub_gain_deltas(source, main.OUTPUT_MODE_SUBWOOFER_22), {"left": 2.0, "right": 2.0})
+        self.assertEqual(main._auto_sub_gain_deltas(source, main.OUTPUT_MODE_SUBWOOFER_21), {"left": 3.0, "right": 3.0})
+        self.assertEqual(main._auto_sub_gain_deltas(source, main.OUTPUT_MODE_SUBWOOFER_22), {"left": 3.0, "right": 3.0})
 
     def test_22_stereo_preserves_separate_deltas(self):
         self.assertEqual(
@@ -88,15 +88,66 @@ class AutoGainApplyRevertTests(unittest.TestCase):
         self.assertEqual(correction["raw_deltas_db"], {"left": -1.704, "right": -1.704})
         self.assertEqual(correction["applied_deltas_db"], {"left": -1.704, "right": -1.704})
 
-    def test_response_correction_limits_plausible_value_to_two_db(self):
+    def test_response_correction_keeps_total_search_within_six_db(self):
         correction = main._auto_sub_gain_response_correction(
             diagnostic(-5.725, -5.725), diagnostic(-3.725, -3.725),
             {"left": -2.0, "right": -2.0}, main.OUTPUT_MODE_SUBWOOFER_22,
         )
         self.assertTrue(correction["available"])
         self.assertEqual(correction["raw_deltas_db"], {"left": -3.725, "right": -3.725})
-        self.assertEqual(correction["applied_deltas_db"], {"left": -2.0, "right": -2.0})
-        self.assertEqual(correction["deltas_db"], {"left": -2.0, "right": -2.0})
+        self.assertEqual(correction["applied_deltas_db"], {"left": -3.725, "right": -3.725})
+        self.assertEqual(correction["deltas_db"], {"left": -3.725, "right": -3.725})
+
+    def test_default_first_step_supports_full_six_db_range(self):
+        self.assertEqual(
+            main._auto_sub_gain_deltas(diagnostic(9.0, 9.0), main.OUTPUT_MODE_SUBWOOFER_21),
+            {"left": 6.0, "right": 6.0},
+        )
+
+    def test_stage_peak_prediction_blocks_unsafe_plus_six_candidate(self):
+        profile = {
+            "sweep_start_hz": 20.0, "sweep_end_hz": 600.0,
+            "sweep_seconds": 0.1, "tail_seconds": 0.1,
+        }
+        safe_config = main.SubwooferRuntimeConfig(
+            output_mode=main.OUTPUT_MODE_SUBWOOFER_21, output_key="test", output_label="test",
+            output_channels=4, sample_rate=48000, crossover_frequency_hz=80,
+            main_highpass_enabled=True, sub_level_db=0.0, sub_alignment_ms=2.0,
+            sub_polarity="normal",
+        )
+        unsafe_config = main.SubwooferRuntimeConfig(
+            **{**safe_config.__dict__, "sub_level_db": 6.0, "sub2_level_db": 6.0},
+        )
+        safe = main._auto_sub_stage_peak_prediction(
+            sweep_profile=profile, sample_rate=48000, channel="stereo", config=safe_config,
+        )
+        unsafe = main._auto_sub_stage_peak_prediction(
+            sweep_profile=profile, sample_rate=48000, channel="stereo", config=unsafe_config,
+        )
+        self.assertTrue(safe["safe"])
+        self.assertFalse(unsafe["safe"])
+        self.assertGreater(unsafe["dbfs"]["output_3"], -1.0)
+
+    def test_four_stage_peak_channels_compare_plausibly(self):
+        predicted = {
+            "dbfs": {"output_1": -3.0, "output_2": -4.0, "output_3": -5.0, "output_4": -6.0},
+        }
+        measured = {
+            key: 10.0 ** (db / 20.0)
+            for key, db in predicted["dbfs"].items()
+        }
+        comparison = main._auto_sub_stage_peak_comparison(predicted, measured)
+        self.assertEqual(set(comparison["measured"]["dbfs"]), {"output_1", "output_2", "output_3", "output_4"})
+        self.assertFalse(comparison["relevant_mismatch"])
+
+    def test_peak_safety_failure_aborts_and_final_result_persists_peaks(self):
+        candidate_source = inspect.getsource(main._measure_auto_sub_candidate)
+        finalize_source = inspect.getsource(main._finalize_autosub_job)
+        self.assertIn("raise AutoSubPeakSafetyError", candidate_source)
+        self.assertIn("except AutoSubPeakSafetyError:", candidate_source)
+        self.assertIn('"stage_output_peaks": (final_gain_sweep or {}).get("stage_output_peaks")',
+                      inspect.getsource(main._run_auto_sub_optimize))
+        self.assertIn('job["result"]["auto_gain"]', finalize_source)
 
     def test_response_correction_still_rejects_values_above_six_db(self):
         correction = main._auto_sub_gain_response_correction(

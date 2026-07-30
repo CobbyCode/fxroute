@@ -52,9 +52,17 @@ It is built for mini PCs, desktops, ARM boards, and dedicated stereo boxes that 
 - Spotify desktop control through `playerctl` / MPRIS, including passive metadata refresh for automatic track changes
 - Spotify Lossless playback through a current local Spotify desktop client for eligible Premium accounts, when Lossless is enabled in Spotify (up to 24-bit/44.1 kHz FLAC); FXRoute provides remote client control, not the Spotify stream
 - EasyEffects preset switching, PEQ, convolver import/generation, output helpers, and A/B compare
-- global DSP helpers such as limiter, headroom, autogain, bass enhancement, and tone modes
+- global DSP helpers such as limiter, headroom, Auto Gain, bass enhancement,
+  and Loudness under Tone; Loudness provides Strength 1–10 and selectable FFT
+  size, and can run together with Auto Gain at −12, −15, −18, or −23 LUFS
 - practical room/speaker measurement workflow with host microphone capture, calibration files, smoothing, saved runs, PEQ draft transfer, and stereo FIR/convolver preset creation with linear, minimum-phase, minimum-aligned, and hybrid-aligned modes
-- Auto Sub Optimize with measured delay, polarity, and target-aware subwoofer gain verification for 2.1 and 2.2 output modes
+- SPL Calibration with −23-LUFS pink noise, automatic UMIK-1 SPL measurement,
+  and manual meter fallback; Auto Gain and Loudness are neutralized only for
+  calibration
+- Auto Sub Optimize with measured delay, polarity, and target-aware subwoofer
+  gain verification for 2.1 and 2.2 output modes; confirmed AutoGain searches
+  can use up to ±6 dB while four final Stage outputs are checked against
+  −1 dBFS
 - sample-rate-aware playback handling for local files, radio, Spotify, and Bluetooth handoff cases
 - Bluetooth input visibility/control when the host audio stack supports it
 - optional local HTTPS/Caddy setup with downloadable local certificate for trusted LAN clients

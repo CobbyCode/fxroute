@@ -134,6 +134,17 @@ Typical DSP files:
 
 Tip: use A/B compare while real music is playing. It is usually easier to judge a preset by switching quickly than by staring at numbers.
 
+### Loudness and Auto Gain
+
+**Loudness** is the first control under **Tone**. Its checkbox enables the
+effect, **Strength** selects a numeric level from 1 (minimum effect) to 10
+(full effect), and **FFT** selects the processing FFT size. Strength 1 is still
+enabled Loudness; use the checkbox to turn Loudness off.
+
+**Auto Gain** and Loudness can be enabled independently and used together.
+Auto Gain offers targets of **−12, −15, −18, and −23 LUFS**. The processing
+order remains Auto Gain, Loudness, then the final Peak Limiter.
+
 ### EasyEffects installation mode
 
 The installer prefers Flatpak EasyEffects when it installs EasyEffects itself. Flatpak is usually the best-supported path because recent EasyEffects versions expose the control socket FXRoute can use for faster preset switching.
@@ -212,6 +223,20 @@ The measurement assistant is meant for practical room-tuning work:
 
 Use it as a practical measurement and correction workspace: inspect room and speaker response, compare channels, identify correction needs, and turn visible measurements directly into PEQ or Convolver drafts. Review the result before applying it; measurement conditions and correction choices still matter.
 
+### SPL Calibration
+
+SPL Calibration plays calibrated **−23-LUFS pink noise** and calculates the
+level adjustment for the current output profile. With a configured UMIK-1,
+FXRoute can capture the microphone signal and determine SPL automatically.
+When automatic UMIK measurement is unavailable, enter the reading from a
+C-weighted, Slow SPL meter manually.
+
+Only during SPL Calibration, Auto Gain and Loudness are temporarily neutral so
+their previous target, Strength, and compensation do not alter the reference
+noise. Their exact prior states are restored when calibration stops, is saved,
+is cancelled, or fails. Normal sweeps and Auto Sub Optimize continue to
+measure the active processing chain.
+
 ### Single Sweep and L/R Repeat
 
 Use **Start Single Sweep** when you want one quick measurement of the selected speaker:
@@ -256,7 +281,7 @@ The optimizer does not directly measure the subwoofer’s internal latency. It o
 
 Where the active mode uses a fine scan, FXRoute checks additional candidates around the best coarse delay region. In 2.2 Mono, the matrix scan evaluates the combined dual-sub result. Treat the selected values as a practical optimum for the measured crossover, room, and microphone position rather than as universally exact latency figures.
 
-In **2.1** and **2.2 Mono**, candidates are evaluated against both left and right main channels so a weak result on one side affects the combined choice. In **2.2 Stereo**, the left and right sub/main branches are evaluated and optimized separately. The active polarity is protected unless another measured setting is clearly better. AutoGain then makes bounded gain steps against the selected target curve, verifies them with fresh sweeps, and restores gain changes that do not improve the result. PEQ, target curves, and room-correction filters are not changed.
+In **2.1** and **2.2 Mono**, candidates are evaluated against both left and right main channels so a weak result on one side affects the combined choice. In **2.2 Stereo**, the left and right sub/main branches are evaluated and optimized separately. The active polarity is protected unless another measured setting is clearly better. AutoGain then makes measured gain steps of up to ±6 dB against the selected target curve, verifies them with fresh sweeps, and restores gain changes that do not improve the result. Before and during those gain sweeps, FXRoute checks all four final Stage outputs and stops an unsafe candidate before it can exceed −1 dBFS. PEQ, target curves, and room-correction filters are not changed.
 
 **Recommended order with EQ or Convolver:**
 
