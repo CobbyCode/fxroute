@@ -1,6 +1,6 @@
 # LDN-020 — Loudness-Disable- und Strength-Transienten beheben
 
-Status: review
+Status: done
 
 ## Ziel
 
@@ -45,3 +45,11 @@ Loudness und beim Wechsel zu höherer Strength gezielt beseitigen.
 - Service aktiv, `/api/easyeffects/extras` HTTP 200 und Main-/Sub-Routing nach
   Neustart vorhanden.
 - Kein Push, kein Release. Akustische Abnahme durch Paul steht aus.
+
+## Review
+
+- Paul hat beide zuvor reproduzierbaren Übergänge auf `.104` akustisch
+  geprüft und bestätigt: Der Strength-Wechsel zu höherer Stärke sowie das
+  Abschalten von Loudness erzeugen keinen positiven Lautstärkesprung mehr.
+- LDN-020 ist damit praktisch abgenommen. Bestätigter Produktionscode:
+  `9555fb6`.
