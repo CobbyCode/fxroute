@@ -6753,11 +6753,11 @@ def _spl_auto_capability() -> dict[str, Any]:
     )
     available = bool(profile) and all(checks[key] for key in required_checks)
     if not selected_id:
-        reason = "Select the UMIK-1 measurement input first; manual C/Slow entry remains available."
+        reason = "Select a supported UMIK measurement input first; manual C/Slow entry remains available."
     elif not selected:
         reason = "The selected measurement input is no longer available."
     elif not supported_model or not unique_umik:
-        reason = "The selected input is not the uniquely identified UMIK-1 USB capture device."
+        reason = "The selected input is not the uniquely identified supported UMIK USB capture device."
     elif not active:
         reason = f"Select the matching {supported_model} calibration file."
     elif sensitivity is None or not cal_serial:
@@ -6771,7 +6771,7 @@ def _spl_auto_capability() -> dict[str, Any]:
     elif not internal_gain_match:
         reason = "The UMIK-1 internal 18 dB reference gain cannot be verified."
     elif not gain_known:
-        reason = "The selected UMIK-1 capture gain cannot be verified."
+        reason = f"The selected {supported_model} capture gain cannot be verified."
     elif profile is _UMIK2_PROFILE and not capture_reference_match:
         reason = "The UMIK-2 capture gain does not match the required 100% / 0 dB reference."
     else:
