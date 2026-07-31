@@ -187,8 +187,9 @@ Use it as a practical measurement and correction workspace: inspect room and spe
 
 SPL Calibration plays calibrated **−23-LUFS pink noise** and calculates the
 level adjustment for the current output profile. With a configured UMIK-1,
-FXRoute can capture the microphone signal and determine SPL automatically.
-When automatic UMIK measurement is unavailable, enter the reading from a
+UMIK-2, or Dayton UMM-6, FXRoute can capture the microphone signal and
+determine SPL automatically.
+When automatic microphone measurement is unavailable, enter the reading from a
 C-weighted, Slow SPL meter manually.
 
 Only during SPL Calibration, Auto Gain and Loudness are temporarily neutral so

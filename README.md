@@ -54,9 +54,9 @@ It is built for mini PCs, desktops, ARM boards, and dedicated stereo boxes that 
 - EasyEffects preset switching, PEQ, convolver import/generation, output helpers, and A/B compare
 - global DSP helpers for protection, gain management, loudness contouring, bass enhancement, and tone shaping; Loudness provides a calibrated contour that follows the playback level and also accounts for the Auto Gain target when both are active
 - practical room/speaker measurement workflow with host microphone capture, calibration files, smoothing, saved runs, PEQ filter transfer, and stereo FIR/convolver preset creation with linear, minimum-phase, minimum-aligned, and hybrid-aligned modes
-- SPL Calibration with −23-LUFS pink noise, automatic UMIK-1 SPL measurement,
-  and manual meter fallback; Auto Gain and Loudness are neutralized only for
-  calibration
+- SPL Calibration with −23-LUFS pink noise, automatic UMIK-1 / UMIK-2 /
+  Dayton UMM-6 SPL measurement, and manual C-weighted/Slow meter fallback;
+  Auto Gain and Loudness are neutralized only for calibration
 - Auto Sub Optimize with measured delay, polarity, and target-aware subwoofer
   gain verification for 2.1 and 2.2 output modes; confirmed AutoGain searches
   can use up to ±6 dB while four final Stage outputs are checked against

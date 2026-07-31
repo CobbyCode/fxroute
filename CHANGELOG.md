@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+## 0.8.1 (2026-07-31)
+
+### Added
+- Dayton UMM-6 SPL calibration profile alongside the existing UMIK-1 and
+  UMIK-2 support. The UMM-6 profile includes USB-/PipeWire-based model
+  detection via vendor/product id (`0d8c:0147`), individual Sens Factor and
+  SERNO parsing, three-column frequency/correction/phase calibration data,
+  a −19 dBFS/Pa reference sensitivity at +30 dB IPGA maximum capture gain,
+  a dedicated capture-reference gate, and a manual C-weighted/Slow SPL meter
+  fallback when no UMM-6 input is connected.
+- UMIK-2 SPL calibration profile: USB-based UMIK-2 detection, AGain validation
+  against the factory 18 dB analog gain, capture-reference gate, and
+  automatic SPL measurement support.
+
+### Changed
+- SPL Calibration now detects UMIK-1, UMIK-2, and Dayton UMM-6 microphones
+  and surfaces the matching model-specific capability checks in the API.
+- Calibration curve parsing accepts the optional three-column UMM-6 format
+  (frequency, correction, phase); two-column miniDSP/REW curves remain
+  compatible for UMIK-1 and UMIK-2.
+
 ## 0.8.0 (2026-07-30)
 
 ### Added
