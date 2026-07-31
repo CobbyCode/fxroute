@@ -5813,7 +5813,7 @@ async function openSplCalibration() {
         if (elements.splCalibrationNoise) elements.splCalibrationNoise.textContent = splCalibrationNoiseActive ? 'Stop noise' : 'Start noise';
         if (elements.splCalibrationAutoStatus) {
             elements.splCalibrationAutoStatus.textContent = data.automatic?.available
-                ? 'UMIK-1 detected · calibrated'
+                ? `${data.automatic.microphone_model} detected · calibrated`
                 : `${data.automatic?.reason || 'Manual C/Slow meter entry is required.'}`;
         }
     } catch (error) {
@@ -5839,11 +5839,11 @@ async function toggleSplCalibrationNoise() {
     try {
         if (next && splCalibrationAutomaticAvailable) {
             if (elements.splCalibrationStatus) {
-                elements.splCalibrationStatus.textContent = 'UMIK-1 automatic C-weighted measurement: settling and averaging for 3 seconds…';
+                elements.splCalibrationStatus.textContent = 'Automatic UMIK C-weighted measurement: settling and averaging for 3 seconds…';
             }
             const response = await fetch('/api/measurements/spl-calibration/automatic', { method: 'POST' });
             const data = await response.json();
-            if (!response.ok) throw new Error(data.detail || 'Automatic UMIK-1 SPL measurement failed');
+            if (!response.ok) throw new Error(data.detail || 'Automatic UMIK SPL measurement failed');
             if (elements.splCalibrationMeasured) {
                 elements.splCalibrationMeasured.value = Number(data.measured_spl_db).toFixed(1);
             }
@@ -5851,7 +5851,7 @@ async function toggleSplCalibrationNoise() {
             if (elements.splCalibrationNoise) elements.splCalibrationNoise.textContent = 'Start noise';
             if (elements.splCalibrationStatus) {
                 const adjustment = Number(data.required_adjustment_db);
-                elements.splCalibrationStatus.textContent = `UMIK-1 measured ${Number(data.measured_spl_db).toFixed(1)} dB SPL · Loudness calibration offset ${adjustment >= 0 ? '+' : ''}${adjustment.toFixed(1)} dB. Save / Apply couples this offset to Loudness only.`;
+                elements.splCalibrationStatus.textContent = `${data.microphone_model} measured ${Number(data.measured_spl_db).toFixed(1)} dB SPL · Loudness calibration offset ${adjustment >= 0 ? '+' : ''}${adjustment.toFixed(1)} dB. Save / Apply couples this offset to Loudness only.`;
             }
             return;
         }

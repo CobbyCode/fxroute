@@ -74,11 +74,24 @@ def main_test():
 
             header = main._parse_umik_calibration_header(cal)
             assert header == {"sensitivity_factor_db": 0.371, "serial_number": "7148364"}
+            assert main._is_umik1_input(umik_input()) is True
+            assert main._is_umik1_input(umik_input(device_vendor_id="0x1234")) is False
+            assert main._is_umik1_input(umik_input(device_product_id="0x0008")) is False
+            assert main._is_umik1_input(
+                umik_input(
+                    node_name="UMIK-2",
+                    node_description="UMIK-2 Gain 18dB",
+                    device_name="UMIK-2",
+                    device_description="UMIK-2 Gain: 18dB",
+                )
+            ) is False
             capability = main._spl_auto_capability()
             assert capability["available"] is True
             assert capability["microphone_model"] == "UMIK-1"
             assert capability["serial_number"] == "7148364"
             assert capability["capture_gain_db"] == 0.0
+            assert capability["reference_capture_gain_db"] == 0.0
+            assert capability["reference_capture_volume_percent"] == 100.0
 
             wrong_cal = Path(directory) / "680d1373e3-9999999.txt"
             wrong_cal.write_text(
@@ -102,6 +115,14 @@ def main_test():
                 [umik_input(capture_gain_db=None, capture_volume_percent=None)],
             )
             assert main._spl_auto_capability()["available"] is False
+
+            main.measurement_store = FakeMeasurementStore(
+                missing_sensitivity,
+                [umik_input(node_description="Umik-1", device_description="Umik-1")],
+            )
+            capability = main._spl_auto_capability()
+            assert capability["available"] is False
+            assert capability["checks"]["internal_gain_18_db"] is False
 
             main.measurement_store = FakeMeasurementStore(missing_sensitivity, [umik_input()])
             sample_rate = 48000
