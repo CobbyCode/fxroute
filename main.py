@@ -6542,34 +6542,82 @@ def _spl_output_profile() -> dict[str, str]:
     return {"id": key, "label": label}
 
 
+class _Umik1Profile:
+    model = "UMIK-1"
+    vendor_id = "2752"
+    product_id = "0007"
+    internal_gain_db = 18
+    reference_capture_gain_db = 0.0
+    reference_capture_volume_percent = 100.0
+
+    @staticmethod
+    def parse_calibration_header(path: Path) -> dict[str, Any]:
+        try:
+            first_lines = "\n".join(path.read_text(encoding="utf-8", errors="ignore").splitlines()[:8])
+        except Exception:
+            return {}
+        sensitivity = re.search(
+            r"Sens\s*Factor\s*=\s*([-+]?(?:\d+(?:\.\d*)?|\.\d+))\s*dB",
+            first_lines,
+            flags=re.IGNORECASE,
+        )
+        serial = re.search(r"SERNO\s*:\s*([0-9][0-9 -]*)", first_lines, flags=re.IGNORECASE)
+        return {
+            "sensitivity_factor_db": float(sensitivity.group(1)) if sensitivity else None,
+            "serial_number": re.sub(r"\D", "", serial.group(1)) if serial else "",
+        }
+
+    @classmethod
+    def calibration_reference(cls, path: Path, filename: str) -> dict[str, Any]:
+        header = cls.parse_calibration_header(path)
+        sensitivity = header.get("sensitivity_factor_db")
+        serial_number = str(header.get("serial_number") or "")
+        filename_serial = "".join(re.findall(r"\d", Path(filename).stem))
+        return {
+            "sensitivity_factor_db": sensitivity,
+            "serial_number": serial_number,
+            "serial_matches_filename": bool(
+                serial_number and filename_serial and serial_number == filename_serial
+            ),
+        }
+
+    @classmethod
+    def matches_input(cls, item: dict[str, Any]) -> bool:
+        vendor = str(item.get("device_vendor_id") or "").lower().replace("0x", "").zfill(4)
+        product = str(item.get("device_product_id") or "").lower().replace("0x", "").zfill(4)
+        metadata = " ".join(
+            str(item.get(key) or "")
+            for key in (
+                "node_name", "node_description", "device_name", "device_description",
+                "alsa_card_name", "alsa_long_card_name",
+            )
+        ).lower()
+        return vendor == cls.vendor_id and product == cls.product_id and "umik-1" in metadata
+
+    @classmethod
+    def has_reference_internal_gain(cls, item: dict[str, Any]) -> bool:
+        metadata = " ".join(
+            str(item.get(key) or "")
+            for key in ("node_description", "device_description", "alsa_card_name", "alsa_long_card_name")
+        )
+        return bool(
+            re.search(
+                rf"gain\s*[: ]+\s*{cls.internal_gain_db}\s*dB",
+                metadata,
+                flags=re.IGNORECASE,
+            )
+        )
+
+
+_UMIK1_PROFILE = _Umik1Profile()
+
+
 def _parse_umik_calibration_header(path: Path) -> dict[str, Any]:
-    try:
-        first_lines = "\n".join(path.read_text(encoding="utf-8", errors="ignore").splitlines()[:8])
-    except Exception:
-        return {}
-    sensitivity = re.search(
-        r"Sens\s*Factor\s*=\s*([-+]?(?:\d+(?:\.\d*)?|\.\d+))\s*dB",
-        first_lines,
-        flags=re.IGNORECASE,
-    )
-    serial = re.search(r"SERNO\s*:\s*([0-9][0-9 -]*)", first_lines, flags=re.IGNORECASE)
-    return {
-        "sensitivity_factor_db": float(sensitivity.group(1)) if sensitivity else None,
-        "serial_number": re.sub(r"\D", "", serial.group(1)) if serial else "",
-    }
+    return _UMIK1_PROFILE.parse_calibration_header(path)
 
 
 def _is_umik1_input(item: dict[str, Any]) -> bool:
-    vendor = str(item.get("device_vendor_id") or "").lower().replace("0x", "").zfill(4)
-    product = str(item.get("device_product_id") or "").lower().replace("0x", "").zfill(4)
-    metadata = " ".join(
-        str(item.get(key) or "")
-        for key in (
-            "node_name", "node_description", "device_name", "device_description",
-            "alsa_card_name", "alsa_long_card_name",
-        )
-    ).lower()
-    return vendor == "2752" and product == "0007" and "umik-1" in metadata
+    return _UMIK1_PROFILE.matches_input(item)
 
 
 def _spl_auto_capability() -> dict[str, Any]:
@@ -6579,7 +6627,11 @@ def _spl_auto_capability() -> dict[str, Any]:
     active = next((item for item in (entries or []) if str(item.get("id") or "") == active_id), {})
     name = str(active.get("filename") or "")
     path = Path(str(active.get("path") or "")) if active else Path()
-    header = _parse_umik_calibration_header(path) if active and path.is_file() else {}
+    calibration = (
+        _UMIK1_PROFILE.calibration_reference(path, name)
+        if active and path.is_file()
+        else {}
+    )
     settings = _read_measurement_setup_settings()
     selected_id = str(settings.get("selectedInputId") or "")
     inputs_payload = measurement_store.list_inputs() if measurement_store else {}
@@ -6587,21 +6639,11 @@ def _spl_auto_capability() -> dict[str, Any]:
     selected = next((item for item in (inputs or []) if str(item.get("id") or "") == selected_id), {})
     umik_inputs = [item for item in (inputs or []) if _is_umik1_input(item)]
 
-    supported_model = "UMIK-1" if selected and _is_umik1_input(selected) else None
-    sensitivity = header.get("sensitivity_factor_db")
-    cal_serial = str(header.get("serial_number") or "")
-    filename_serial = "".join(re.findall(r"\d", Path(name).stem))
-    serial_matches = bool(cal_serial and filename_serial and cal_serial == filename_serial)
-    internal_gain_match = bool(
-        re.search(
-            r"gain\s*[: ]+\s*18\s*dB",
-            " ".join(
-                str(selected.get(key) or "")
-                for key in ("node_description", "device_description", "alsa_card_name", "alsa_long_card_name")
-            ),
-            flags=re.IGNORECASE,
-        )
-    )
+    supported_model = _UMIK1_PROFILE.model if selected and _is_umik1_input(selected) else None
+    sensitivity = calibration.get("sensitivity_factor_db")
+    cal_serial = str(calibration.get("serial_number") or "")
+    serial_matches = bool(calibration.get("serial_matches_filename"))
+    internal_gain_match = _UMIK1_PROFILE.has_reference_internal_gain(selected)
     capture_gain = selected.get("capture_gain_db")
     capture_volume = selected.get("capture_volume_percent")
     gain_known = capture_gain is not None and capture_volume is not None
@@ -6647,8 +6689,8 @@ def _spl_auto_capability() -> dict[str, Any]:
         "selected_input": selected,
         "capture_gain_db": capture_gain,
         "capture_volume_percent": capture_volume,
-        "reference_capture_gain_db": 0.0,
-        "reference_capture_volume_percent": 100.0,
+        "reference_capture_gain_db": _UMIK1_PROFILE.reference_capture_gain_db,
+        "reference_capture_volume_percent": _UMIK1_PROFILE.reference_capture_volume_percent,
         "checks": checks,
         "reason": reason,
     }
