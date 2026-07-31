@@ -47,7 +47,7 @@ Keine Änderungen an UMIK-1-/UMIK-2-Profilen, SPL-Grundformel außerhalb des
 notwendigen UMM-6-Pfads, Loudness, AutoSub oder allgemeinem Messablauf.
 
 ## Status
-implemented locally; fixture-based validation complete, hardware verification pending
+done; deployed to `.104`, service/API check passed, fixture-based validation complete; hardware verification pending
 
 ## Implementation
 
