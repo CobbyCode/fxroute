@@ -1080,6 +1080,8 @@ spotify_samplerate_recovery_lock = None
 spotify_samplerate_recovery_active = False
 local_samplerate_prearm_generation = 0
 radio_samplerate_force_rate = None
+local_playback_handoff_completed_url: str | None = None
+local_playback_handoff_completed_rate: int | None = None
 current_source_mode = SOURCE_MODE_APP_PLAYBACK
 latest_spotify_state = None
 current_footer_owner = "local"
@@ -1843,7 +1845,96 @@ async def _sync_peak_monitor_after_playback_transition(expected_track: dict | No
             )
 
 
+def _helper_argument_sample_rate(snapshot: dict | None) -> int | None:
+    args = (snapshot or {}).get("helper_args") or []
+    try:
+        index = args.index("--rate")
+        value = int(args[index + 1])
+    except (ValueError, TypeError, IndexError):
+        return None
+    return value if value > 0 else None
+
+
+async def _complete_local_playback_handoff(track_info: dict, expected_rate: int) -> None:
+    """Finish a local rate handoff while the newly loaded MPV track is paused."""
+    global local_playback_handoff_completed_url, local_playback_handoff_completed_rate
+
+    aligned = await _wait_for_samplerate_alignment(expected_rate, timeout_ms=900)
+    if not aligned:
+        # A paused, newly loaded mpv stream may not trigger PipeWire clock
+        # renegotiation by itself. Pulse the selected sink while mpv is still
+        # paused, then require the same alignment gate again before playback.
+        logger.info(
+            "Local samplerate handoff sink pulse required: expected_rate=%s status=%s",
+            expected_rate, get_samplerate_status(),
+        )
+        pulsed = await _suspend_resume_playback_sink(
+            reason="local-playback-handoff", force=True,
+        )
+        aligned = pulsed and await _wait_for_samplerate_alignment(
+            expected_rate, timeout_ms=2600,
+        )
+    if not aligned:
+        status = get_samplerate_status()
+        raise RuntimeError(
+            "Local samplerate handoff did not align before playback activation: "
+            f"expected={expected_rate} active={status.get('active_rate')} "
+            f"force={status.get('force_rate')}"
+        )
+
+    overview = get_audio_output_overview()
+    output_mode = overview.get("output_mode") or {}
+    if output_mode.get("mode") in OUTPUT_MODE_SUBWOOFER_MODES and subwoofer_runtime is not None:
+        # Do not pass the pre-load overview as a stale-rate token: it can
+        # still describe the previous track while the sink has just aligned.
+        await _sync_subwoofer_runtime(get_audio_output_overview())
+        status = get_samplerate_status()
+        runtime_snapshot = subwoofer_runtime.snapshot()
+        helper_rate = _helper_argument_sample_rate(runtime_snapshot)
+        if not (
+            status.get("active_rate") == expected_rate
+            and status.get("force_rate") == expected_rate
+            and helper_rate == expected_rate
+            and runtime_snapshot.get("active")
+        ):
+            # Sink renegotiation can briefly invalidate the helper's input
+            # links while the new graph is being created. Retry this local
+            # handoff once after the graph has had a bounded settling window;
+            # the global link watcher remains unchanged.
+            logger.info(
+                "Local samplerate handoff helper graph not ready; retrying once: "
+                "expected_rate=%s helper_rate=%s runtime_active=%s",
+                expected_rate, helper_rate, runtime_snapshot.get("active"),
+            )
+            await asyncio.sleep(0.65)
+            await _sync_subwoofer_runtime(get_audio_output_overview())
+            status = get_samplerate_status()
+            runtime_snapshot = subwoofer_runtime.snapshot()
+            helper_rate = _helper_argument_sample_rate(runtime_snapshot)
+        if not (
+            status.get("active_rate") == expected_rate
+            and status.get("force_rate") == expected_rate
+            and helper_rate == expected_rate
+            and runtime_snapshot.get("active")
+        ):
+            raise RuntimeError(
+                "Local samplerate handoff triple-match missing before playback activation: "
+                f"expected={expected_rate} active={status.get('active_rate')} "
+                f"force={status.get('force_rate')} helper={helper_rate} "
+                f"runtime_active={runtime_snapshot.get('active')}"
+            )
+        logger.info(
+            "Local samplerate handoff verified before playback activation: url=%s "
+            "expected_rate=%s hardware_sink_rate=%s helper_rate=%s helper_pid=%s",
+            track_info.get("url"), expected_rate, status.get("active_rate"),
+            helper_rate, runtime_snapshot.get("helper_pid"),
+        )
+
+    local_playback_handoff_completed_url = track_info.get("url")
+    local_playback_handoff_completed_rate = expected_rate
+
 async def _sync_subwoofer_runtime_after_playback_transition(expected_track: dict | None, timeout_ms: int = 3200) -> None:
+    global local_playback_handoff_completed_url, local_playback_handoff_completed_rate
     if not expected_track or expected_track.get("source") not in {"local", "radio"}:
         return
     if subwoofer_runtime is None:
@@ -1853,6 +1944,18 @@ async def _sync_subwoofer_runtime_after_playback_transition(expected_track: dict
         return
     await asyncio.sleep(0.35)
     if not _current_track_matches(expected_track):
+        return
+    if (
+        expected_track.get("source") == "local"
+        and expected_track.get("url") == local_playback_handoff_completed_url
+        and expected_track.get("sample_rate_hz") == local_playback_handoff_completed_rate
+    ):
+        logger.info(
+            "Subwoofer runtime playback transition sync no-op: local handoff already completed "
+            "before playback activation url=%s sample_rate=%s",
+            expected_track.get("url"),
+            expected_track.get("sample_rate_hz"),
+        )
         return
     try:
         overview = get_audio_output_overview()
@@ -5095,7 +5198,7 @@ async def play_track(req: PlayRequest):
     track_id = req.track_id
     url = req.url
     queue_track_ids = req.queue_track_ids or []
-    global player_instance, current_track_info, last_track_info, last_radio_track_info, source_transition_lock, current_footer_owner, radio_reconnect_attempts, radio_reconnect_url, radio_reconnect_active_since, playback_stream_stale_after_measurement, _playback_state_before_measurement, radio_stream_stale_after_measurement, _radio_state_before_measurement
+    global player_instance, current_track_info, last_track_info, last_radio_track_info, source_transition_lock, current_footer_owner, radio_reconnect_attempts, radio_reconnect_url, radio_reconnect_active_since, playback_stream_stale_after_measurement, _playback_state_before_measurement, radio_stream_stale_after_measurement, _radio_state_before_measurement, local_playback_handoff_completed_url, local_playback_handoff_completed_rate
     if not player_instance or not player_instance._running:
         raise HTTPException(status_code=503, detail="Player not available")
     if not _can_send_play_command():
@@ -5155,6 +5258,8 @@ async def play_track(req: PlayRequest):
             if not play_url:
                 raise HTTPException(status_code=404, detail="Track not found")
 
+            local_playback_handoff_completed_url = None
+            local_playback_handoff_completed_rate = None
             player_state = player_instance.state
             previous_file = player_state.get("current_file")
             previous_source = (current_track_info or {}).get("source")
@@ -5203,13 +5308,17 @@ async def play_track(req: PlayRequest):
                             logger.warning(
                                 "Pre-loadfile radio sample-rate apply failed: %s", exc,
                             )
+                    local_handoff_pending = source == "local" and prearm_rate is not None
+                    if local_handoff_pending:
+                        # Keep mpv paused across loadfile: the sink and the native
+                        # helper must be ready before the new track can be heard.
+                        player_instance.set_pause(True)
                     player_instance.loadfile(play_url, mode="replace")
+                    if local_handoff_pending:
+                        player_instance.set_pause(True)
+                        await _complete_local_playback_handoff(track_info, prearm_rate)
                     if prearm_rate and prearm_generation:
                         asyncio.create_task(_release_local_samplerate_prearm(prearm_rate, prearm_generation, "play"))
-                    # Sync 2.1 helper at pre-armed rate before audio becomes audible
-                    if subwoofer_runtime is not None and prearm_rate is not None:
-                        await _sync_subwoofer_runtime(get_audio_output_overview())
-                    # Ensure MPV is unpaused after loadfile (it may stay paused if previously paused by Spotify)
                     player_instance.set_pause(False)
 
             current_track_info = track_info
