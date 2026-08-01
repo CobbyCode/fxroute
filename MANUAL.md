@@ -123,7 +123,10 @@ Main tools:
 - **A/B compare** — switch between two presets while listening.
 - **Combine** — build a new preset from up to three existing presets.
 - **Import filter** — import stereo or separate left/right filters.
-- **Create PEQ preset** — build left/right parametric EQ bands.
+- **Create PEQ preset** — sketch up to 12 temporary filters, stage them for
+  Left, Right, or both channels, and create a left/right parametric EQ preset.
+- **Custom House Curve** — edit up to 8 frequency/gain points on the graph or
+  numerically, then create a reusable target curve.
 - **Output extras** — configure the global helpers shared by all presets.
 
 Typical DSP files:
@@ -178,10 +181,35 @@ The measurement assistant is meant for practical room-tuning work:
 - switch graph smoothing: raw, 1/6 octave, 1/3 octave, or 1 octave
 - save useful runs
 - inspect a measurement curve and create a PEQ correction from it
+- sketch up to 12 temporary PEQ filters and transfer them to a new preset
+- create a custom House Curve with up to 8 editable frequency/gain points
 - transfer visible L/R measurements into the Convolver assistant
 - turn the result into a PEQ or FIR/Convolver preset
+- export imported or created calibration and House Curve files
 
 Use it as a practical measurement and correction workspace: inspect room and speaker response, compare channels, identify correction needs, and turn visible measurements directly into PEQ or Convolver filters. Review the result before applying it; measurement conditions and correction choices still matter.
+
+### PEQ and Custom House Curve editing
+
+The Measurement graph provides two temporary editing assistants:
+
+- **PEQ** shows slots **F1–F12**. Add or select a filter, edit its frequency,
+  gain, type, and Q, and use **Take L**, **Take R**, or **Take Both** to stage
+  the filters for a new PEQ preset. Empty slots are allowed; a thirteenth
+  temporary filter is rejected.
+- **Custom House Curve** shows slots **P1–P8**. Click an empty graph area to
+  add a point, drag a point to adjust frequency and gain, or edit the selected
+  point numerically. The graph uses logarithmic frequency spacing, matching
+  the target-curve interpolation used by the Convolver assistant.
+
+Choose **Create Custom House Curve…** from the target-curve selector, enter a
+name, and press **Create Target Curve**. The resulting file is immediately
+available as a target curve. Switching back to PEQ or Convolver keeps the
+custom draft available for later editing.
+
+In **Setup**, select an imported calibration or House Curve file and press
+**Export** to download the managed file with its original content. Built-in
+target curves are not exportable files.
 
 ### SPL Calibration
 

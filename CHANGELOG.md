@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+## 0.9.0 (2026-08-01)
+
+### Added
+- Custom House Curve editor in the Measurement assistant with up to eight
+  editable frequency/gain points, logarithmic graph interaction, and direct
+  creation of a reusable target-curve file.
+- Measurement PEQ assistant expanded from four to twelve temporary filters;
+  all twelve filters can be edited, staged to Left/Right, and transferred into
+  a PEQ preset.
+- Export actions for managed microphone calibration files and imported or
+  custom House Curve files.
+
+### Changed
+- Measurement setup and target-curve workflows now keep custom House Curve
+  drafts available while switching between PEQ and Convolver assistance.
+- Local, radio, and related source handoffs use more explicit sample-rate
+  settling and recovery paths.
+
+### Fixed
+- Output-mode switching restores the stereo EasyEffects graph in the correct
+  order, avoiding unnecessary recovery/reload transitions and audible volume
+  jumps during normal switching.
+
 ## 0.8.1 (2026-07-31)
 
 ### Added

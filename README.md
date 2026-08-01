@@ -53,7 +53,11 @@ It is built for mini PCs, desktops, ARM boards, and dedicated stereo boxes that 
 - Spotify Lossless playback through a current local Spotify desktop client for eligible Premium accounts, when Lossless is enabled in Spotify (up to 24-bit/44.1 kHz FLAC); FXRoute provides remote client control, not the Spotify stream
 - EasyEffects preset switching, PEQ, convolver import/generation, output helpers, and A/B compare
 - global DSP helpers for protection, gain management, loudness contouring, bass enhancement, and tone shaping; Loudness provides a calibrated contour that follows the playback level and also accounts for the Auto Gain target when both are active
-- practical room/speaker measurement workflow with host microphone capture, calibration files, smoothing, saved runs, PEQ filter transfer, and stereo FIR/convolver preset creation with linear, minimum-phase, minimum-aligned, and hybrid-aligned modes
+- practical room/speaker measurement workflow with host microphone capture,
+  calibration files, calibration-file export, smoothing, saved runs, a
+  twelve-filter PEQ editor, custom House Curve editing and export, PEQ filter
+  transfer, and stereo FIR/convolver preset creation with linear, minimum-
+  phase, minimum-aligned, and hybrid-aligned modes
 - SPL Calibration with −23-LUFS pink noise, automatic UMIK-1 / UMIK-2 /
   Dayton UMM-6 SPL measurement, and manual C-weighted/Slow meter fallback;
   Auto Gain and Loudness are neutralized only for calibration
@@ -184,7 +188,21 @@ Metadata is cached locally so normal library scans stay fast and unchanged track
 
 ## Measurement and convolver presets
 
-The Measure workflow can create EasyEffects-ready FIR/convolver presets from saved measurements. For stereo correction, measure and save left and right separately, assign them in the Convolver assistant, then choose the target curve, correction range, phase mode, sample rate, and tap length.
+The Measure workflow can create EasyEffects-ready FIR/convolver presets from
+saved measurements. For stereo correction, measure and save left and right
+separately, assign them in the Convolver assistant, then choose the target
+curve, correction range, phase mode, sample rate, and tap length.
+
+The Measurement assistant also includes:
+
+- a temporary PEQ editor with up to 12 filters before creating a preset
+- a Custom House Curve editor with up to 8 frequency/gain points
+- export of managed microphone calibration files and House Curve files
+
+Custom House Curves can be created from the graph or edited numerically, then
+saved in the same target-file format used by the existing House Curve workflow.
+Calibration and House Curve files can be exported again from the Measurement
+setup after they have been imported or created.
 
 Available phase modes:
 

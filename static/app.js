@@ -6569,8 +6569,8 @@ function addMeasurementPeqFilter(defaults = {}) {
     if (getMeasurementActiveEditor() === 'houseCurve') return null;
     setMeasurementActiveEditor('peq');
     const peq = ensureMeasurementPeqState();
-    if (peq.filters.length >= 4) {
-        showToast('Measurement assistant supports up to 4 filters', 'warning');
+    if (peq.filters.length >= 12) {
+        showToast('Measurement assistant supports up to 12 filters', 'warning');
         return null;
     }
     const filter = {
@@ -10314,7 +10314,7 @@ function renderMeasurementPanel() {
         } else if (assistMode === 'convolver') {
             elements.measurementSummary.textContent = `${Math.round(conv.rangeStartHz)}–${Math.round(conv.rangeEndHz)} Hz`;
         } else {
-            elements.measurementSummary.textContent = peq.filters.length ? `${peq.filters.length}/4 assistant filters` : '';
+            elements.measurementSummary.textContent = peq.filters.length ? `${peq.filters.length}/12 assistant filters` : '';
         }
     }
     if (elements.measurementGraphSubtitle) {
@@ -10411,7 +10411,7 @@ function renderMeasurementPanel() {
     }
     if (elements.measurementPeqEditor) {
         if (!activePeqFilter) {
-            elements.measurementPeqEditor.innerHTML = '<div class="measurement-peq-editor-empty">Use F1-F4 or the graph near the fixed 0 dB line to add up to 4 temporary filters.</div>';
+            elements.measurementPeqEditor.innerHTML = '<div class="measurement-peq-editor-empty">Use F1-F12 or the graph near the fixed 0 dB line to add up to 12 temporary filters.</div>';
         } else {
             const hideFreqQ = activePeqFilter.type === 'gain';
             elements.measurementPeqEditor.innerHTML = `
