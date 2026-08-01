@@ -30,7 +30,7 @@ Live `.104` journal at 2026-08-01 08:14:44–08:14:49 showed:
 Peak-monitor restart must remain intact.
 
 ## Status
-review
+done
 
 ## Changes
 - Added a monotonic playback-transition generation in `main.py`. Odd values
@@ -72,3 +72,16 @@ review
   built helper `pipewire_stage1/build/fxroute_21_passthrough` is absent; no
   deployment or remote host was used.
 - `git diff --check` — passed.
+
+## Deployment und Live-Abnahme
+
+- Lokaler Fix-Commit: `393244cfe7e820b4606d58201c804a7bf61caaaf`
+- Deployment nach `paul@192.168.178.104:/home/paul/fxroute` durchgeführt.
+- Remote-Datei-Hash stimmt mit dem lokalen Commit überein:
+  `5d2b3cef0a657b082a35438178b5fdb22be6432d9c90b130ae0ec0138f09dfa3`
+- Vorhandene Remote-Datei gesichert als `main.py.bak-sr002-predeploy-20260801-0852`.
+- User-Service `fxroute.service` nach Neustart `active/running`, MainPID `916549`.
+- API `/api/status` und `/api/audio/samplerate` erfolgreich.
+- Kontrollierte Live-Abnahme erfolgreich: Local 48 kHz → Radio 44,1 kHz → Local 48 kHz.
+- POST `/api/stop` erfolgreich; Wiedergabe anschließend gestoppt.
+- `.104` blieb auf seinem bestehenden Git-HEAD; nur die geprüfte `main.py` wurde deployt.
