@@ -360,6 +360,37 @@ async def _wait_for_samplerate_alignment(expected_rate: Optional[int], timeout_m
     return False
 
 
+async def _wait_for_local_samplerate_stability(
+    expected_rate: int,
+    *,
+    timeout_ms: int,
+    stable_ms: int = 350,
+) -> bool:
+    """Require the local handoff rate to remain valid before activating MPV."""
+    if expected_rate <= 0 or timeout_ms <= 0 or stable_ms < 0:
+        return False
+    deadline = time.monotonic() + timeout_ms / 1000
+    stable_since: Optional[float] = None
+    while time.monotonic() <= deadline:
+        try:
+            samplerate_status = get_samplerate_status()
+        except Exception:
+            samplerate_status = {}
+        aligned = (
+            samplerate_status.get("active_rate") == expected_rate
+            and samplerate_status.get("force_rate") == expected_rate
+        )
+        now = time.monotonic()
+        if aligned:
+            if stable_since is None:
+                stable_since = now
+            if now - stable_since >= stable_ms / 1000:
+                return True
+        else:
+            stable_since = None
+        await asyncio.sleep(PIPEWIRE_HANDOFF_POLL_INTERVAL_MS / 1000)
+    return False
+
 
 # ── Centralized Sink Suspend/Resume ──
 _last_sink_suspend_at: float = 0.0
@@ -1971,19 +2002,24 @@ async def _complete_local_playback_handoff(track_info: dict, expected_rate: int)
     """Finish a local rate handoff while the newly loaded MPV track is paused."""
     global local_playback_handoff_completed_url, local_playback_handoff_completed_rate
 
-    aligned = await _wait_for_samplerate_alignment(expected_rate, timeout_ms=900)
+    aligned = await _wait_for_local_samplerate_stability(
+        expected_rate, timeout_ms=900,
+    )
     if not aligned:
         # A paused, newly loaded mpv stream may not trigger PipeWire clock
         # renegotiation by itself. Pulse the selected sink while mpv is still
-        # paused, then require the same alignment gate again before playback.
+        # paused, then require the rate to remain stable before playback.
         logger.info(
             "Local samplerate handoff sink pulse required: expected_rate=%s status=%s",
             expected_rate, get_samplerate_status(),
         )
+        status = get_samplerate_status()
+        if status.get("force_rate") != expected_rate:
+            _set_pipewire_force_rate(expected_rate)
         pulsed = await _suspend_resume_playback_sink(
             reason="local-playback-handoff", force=True,
         )
-        aligned = pulsed and await _wait_for_samplerate_alignment(
+        aligned = pulsed and await _wait_for_local_samplerate_stability(
             expected_rate, timeout_ms=2600,
         )
     if not aligned:
