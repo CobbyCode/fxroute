@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 0.9.1 (2026-08-01)
+
+### Fixed
+- Measurement assistant no longer shows the "Built-in target curves only"
+  placeholder when custom House Curves exist; the curve dropdown lists the
+  custom curves with the first one selected by default.
+- House Curve export/delete now operate on the curve selected in the dropdown
+  instead of the active target state.
+- House Curve dropdown selection stays in sync with the active target.
+
 ## 0.9.0 (2026-08-01)
 
 ### Added
