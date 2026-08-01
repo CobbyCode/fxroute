@@ -91,3 +91,11 @@ done
 - Im pausierten Zustand fällt der Hardware-Sink erwartungsgemäß auf die konfigurierte Default-Rate von 44,1 kHz zurück; dieser Zustand ist kein Beleg für einen fehlgeschlagenen 48-kHz-Handoff während aktiver Wiedergabe.
 - Der aktuelle Live-Zustand auf `.104` wirkt im praktischen Betrieb wieder unauffällig. Für die Bewertung des Local-Handoffs ist der aktive Übergang während laufender Wiedergabe maßgeblich, nicht der pausierte Sink-Zustand.
 - Lokal wurde keine weitere Runtime-Änderung vorgenommen; der Stand bleibt auf dem Stabilitäts-Gate aus Commit `0131c57`.
+
+## Nachbeobachtung 2026-08-01 10:25
+
+- Der zusätzliche Fix aus Commit `752b704` wurde auf `.104` deployed und von Paul praktisch verifiziert.
+- Mehrere laufende Output-Mode-Wechsel zwischen `subwoofer-2.2`, `stereo`, `subwoofer-2.1`, `subwoofer-2.2-stereo` und zurück wurden ohne hörbaren Lautstärkesprung bestätigt.
+- Das Journal zeigt beim Stereo-Wechsel den geordneten `SUB-STOP` mit Wiederherstellung der direkten EasyEffects→Hardware-Links; anschließend war der Stereo-Graph warm verfügbar (`EE-GRAPH stereo ok`, kein EasyEffects-Service-Neustart im verifizierten Lauf).
+- Der Dienst blieb `active/running`; die laufende Radio-Wiedergabe war nach dem Test weiterhin aktiv.
+- SR-002 ist damit einschließlich des nachgelagerten Output-Mode-/Loudness-Transienten praktisch verifiziert.
