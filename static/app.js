@@ -10213,10 +10213,13 @@ function renderMeasurementPanel() {
     }
     if (elements.measurementHouseCurveSelect) {
         const houseCurveOptions = measurementState.houseCurveOptions || [];
-        const options = houseCurveOptions.length
-            ? houseCurveOptions
-            : [{ id: '', filename: 'Built-in target curves only' }];
         const selectedHouseCurveId = String(conv.targetCurve || '').startsWith('house:') ? String(conv.targetCurve).slice(6) : '';
+        const activeHouseCurveSelected = houseCurveOptions.some(option => option.id === selectedHouseCurveId);
+        const options = houseCurveOptions.length
+            ? (activeHouseCurveSelected
+                ? houseCurveOptions
+                : [{ id: '', filename: 'Built-in target curves only' }, ...houseCurveOptions])
+            : [{ id: '', filename: 'Built-in target curves only' }];
         elements.measurementHouseCurveSelect.innerHTML = options.map(option => `<option value="${escapeHtml(option.id || '')}" ${(option.id || '') === selectedHouseCurveId ? 'selected' : ''}>${escapeHtml(option.filename || 'House curve')}</option>`).join('');
         elements.measurementHouseCurveSelect.disabled = measurementState.houseCurveUpdating || measurementState.houseCurveDeleting;
     }
