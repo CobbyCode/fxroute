@@ -2033,7 +2033,9 @@ body {
     gap: 0.45rem;
 }
 
+.measurement-slot-chip,
 .measurement-peq-chip {
+    min-width: 3.25rem;
     min-height: 32px;
     padding: 0.35rem 0.7rem;
     border-radius: 999px;
@@ -2042,6 +2044,12 @@ body {
     color: var(--text-secondary);
     font-size: 0.8rem;
     font-weight: 700;
+    line-height: 1.2;
+    text-align: center;
+}
+
+.measurement-slot-chip {
+    flex: 0 0 3.25rem;
 }
 
 .measurement-peq-chip.is-active {
@@ -2144,6 +2152,37 @@ body {
 
 .measurement-peq-take-row {
     justify-content: flex-end;
+}
+
+/* Custom house-curve save row: keep the name and action together until the existing mobile breakpoint. */
+#measurement-custom-house-curve-panel > .measurement-peq-panel-header,
+#measurement-custom-house-curve-panel > .measurement-peq-chips,
+#measurement-custom-house-curve-panel > .measurement-peq-editor {
+    grid-column: 1 / -1;
+}
+
+#measurement-custom-house-curve-panel {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: end;
+}
+
+#measurement-custom-house-curve-panel > .field-group {
+    grid-column: 1;
+    min-width: 0;
+    margin: 0;
+}
+
+#measurement-custom-house-curve-panel > .measurement-peq-take-row {
+    grid-column: 2;
+    align-items: center;
+    flex-wrap: nowrap;
+    min-width: max-content;
+    margin: 0;
+}
+
+#measurement-custom-house-curve-panel > .measurement-peq-take-row .btn-primary {
+    flex: 0 0 auto;
+    white-space: nowrap;
 }
 
 .measurement-peq-take-row .btn-secondary.is-active {
@@ -2528,6 +2567,25 @@ body {
         align-items: stretch;
     }
 
+    #measurement-custom-house-curve-panel {
+        grid-template-columns: 1fr;
+    }
+
+    #measurement-custom-house-curve-panel > .field-group,
+    #measurement-custom-house-curve-panel > .measurement-peq-take-row {
+        grid-column: 1 / -1;
+    }
+
+    #measurement-custom-house-curve-panel > .measurement-peq-take-row {
+        flex-direction: column;
+        align-items: stretch;
+        min-width: 0;
+    }
+
+    #measurement-custom-house-curve-panel > .measurement-peq-take-row .btn-primary {
+        width: 100%;
+    }
+
     .measurement-peq-editor-grid {
         grid-template-columns: 1fr 1fr;
     }
@@ -2633,6 +2691,7 @@ body {
         grid-template-columns: 1fr;
     }
 
+    .measurement-calibration-select-row .btn-secondary,
     .measurement-calibration-select-row .btn-danger {
         width: 100%;
         min-width: 0;
@@ -5297,11 +5356,12 @@ input[type="number"]::-webkit-outer-spin-button {
 
 .measurement-calibration-select-row {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr) auto auto;
     gap: 0.5rem;
     align-items: stretch;
 }
 
+.measurement-calibration-select-row .btn-secondary,
 .measurement-calibration-select-row .btn-danger {
     min-width: 92px;
     padding-left: 0.9rem;

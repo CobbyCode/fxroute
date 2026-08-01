@@ -864,6 +864,7 @@
                                         <select id="measurement-calibration-select" class="url-input">
                                             <option value="">No calibration file</option>
                                         </select>
+                                        <button id="measurement-calibration-export" class="btn-secondary" type="button">Export</button>
                                         <button id="measurement-calibration-delete" class="btn-danger" type="button">Delete</button>
                                     </div>
                                     <label for="measurement-calibration-file" id="measurement-calibration-upload" class="upload-area upload-area-file-primary measurement-calibration-upload-area">
@@ -880,6 +881,7 @@
                                         <select id="measurement-house-curve-select" class="url-input">
                                             <option value="">Built-in target curves only</option>
                                         </select>
+                                        <button id="measurement-house-curve-export" class="btn-secondary" type="button">Export</button>
                                         <button id="measurement-house-curve-delete" class="btn-danger" type="button">Delete</button>
                                     </div>
                                     <label for="measurement-house-curve-file" id="measurement-house-curve-upload" class="upload-area upload-area-file-primary measurement-calibration-upload-area">
@@ -954,6 +956,23 @@
                                     <button id="measurement-peq-create" class="btn-primary" type="button">Create PEQ Preset</button>
                                 </div>
                                 <div id="measurement-peq-take-feedback" class="measurement-peq-take-feedback" aria-live="polite"></div>
+                            </section>
+                            <section id="measurement-custom-house-curve-panel" class="measurement-peq-panel hidden" aria-label="Custom House Curve editor">
+                                <div class="measurement-peq-panel-header">
+                                    <div>
+                                        <h4>Custom House Curve</h4>
+                                        <p>Create up to 8 frequency/gain points using the existing house-curve target format.</p>
+                                    </div>
+                                </div>
+                                <div id="measurement-custom-house-curve-chips" class="measurement-peq-chips"></div>
+                                <div id="measurement-custom-house-curve-editor" class="measurement-peq-editor"></div>
+                                <div class="field-group">
+                                    <label for="measurement-custom-house-curve-name">Name</label>
+                                    <input id="measurement-custom-house-curve-name" class="url-input" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+                                </div>
+                                <div class="measurement-peq-take-row">
+                                    <button id="measurement-custom-house-curve-create" class="btn-primary" type="button">Create Target Curve</button>
+                                </div>
                             </section>
                             <section id="measurement-convolver-panel" class="measurement-peq-panel measurement-convolver-panel hidden" aria-label="Measurement Convolver assistant" tabindex="-1">
                                 <div class="measurement-peq-panel-header">

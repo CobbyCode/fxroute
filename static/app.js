@@ -96,10 +96,23 @@ let state = {
         selectedCalibrationRef: '',
         calibrationUpdating: false,
         calibrationDeleting: false,
+        calibrationExporting: false,
         houseCurveFilename: '',
         houseCurveOptions: [],
         houseCurveUpdating: false,
         houseCurveDeleting: false,
+        houseCurveExporting: false,
+        activeEditor: 'none',
+        customHouseCurve: {
+            open: false,
+            displayTarget: 'actual',
+            points: [],
+            activePointId: null,
+            dragPointId: null,
+            name: '',
+            nameTouched: false,
+            saving: false,
+        },
         visibilityById: {},
         reviewVisibilityById: {},
         savedGroupOpen: false,
@@ -411,14 +424,21 @@ const elements = {
     measurementChannelSelect: document.getElementById('measurement-channel-select'),
     measurementCalibrationSelect: document.getElementById('measurement-calibration-select'),
     measurementCalibrationFile: document.getElementById('measurement-calibration-file'),
+    measurementCalibrationExportBtn: document.getElementById('measurement-calibration-export'),
     measurementCalibrationDeleteBtn: document.getElementById('measurement-calibration-delete'),
     measurementCalibrationUploadName: document.getElementById('measurement-calibration-upload-name'),
     measurementCalibrationName: document.getElementById('measurement-calibration-name'),
     measurementHouseCurveSelect: document.getElementById('measurement-house-curve-select'),
     measurementHouseCurveFile: document.getElementById('measurement-house-curve-file'),
+    measurementHouseCurveExportBtn: document.getElementById('measurement-house-curve-export'),
     measurementHouseCurveDeleteBtn: document.getElementById('measurement-house-curve-delete'),
     measurementHouseCurveUploadName: document.getElementById('measurement-house-curve-upload-name'),
     measurementHouseCurveName: document.getElementById('measurement-house-curve-name'),
+    measurementCustomHouseCurvePanel: document.getElementById('measurement-custom-house-curve-panel'),
+    measurementCustomHouseCurveChips: document.getElementById('measurement-custom-house-curve-chips'),
+    measurementCustomHouseCurveEditor: document.getElementById('measurement-custom-house-curve-editor'),
+    measurementCustomHouseCurveName: document.getElementById('measurement-custom-house-curve-name'),
+    measurementCustomHouseCurveCreateBtn: document.getElementById('measurement-custom-house-curve-create'),
     measurementNameInput: document.getElementById('measurement-name'),
     measurementStartBtn: document.getElementById('measurement-start'),
     measurementRepeatStartBtn: document.getElementById('measurement-repeat-start'),
@@ -6306,9 +6326,46 @@ function ensureMeasurementConvolverState() {
     return conv;
 }
 
+function getMeasurementActiveEditor() {
+    const editor = String(state.measurement?.activeEditor || 'none');
+    return ['none', 'peq', 'houseCurve'].includes(editor) ? editor : 'none';
+}
+
+function getMeasurementRestorableTargetCurve() {
+    const conv = ensureMeasurementConvolverState();
+    const targetCurve = String(conv.targetCurve || '');
+    return getMeasurementConvolverCurveOptions().some((curve) => curve.key === targetCurve)
+        ? targetCurve
+        : 'neutral';
+}
+
+function setMeasurementActiveEditor(editor = 'none') {
+    const nextEditor = ['none', 'peq', 'houseCurve'].includes(editor) ? editor : 'none';
+    state.measurement.activeEditor = nextEditor;
+    const custom = ensureCustomHouseCurveState();
+    custom.open = nextEditor === 'houseCurve';
+    custom.displayTarget = nextEditor === 'houseCurve' ? 'editing-custom-house-curve' : 'actual';
+    if (nextEditor !== 'peq') {
+        const peq = ensureMeasurementPeqState();
+        peq.dragFilterId = null;
+    }
+    ensureCustomHouseCurveState().dragPointId = null;
+    if (state.measurement.convolverAssistant && typeof state.measurement.convolverAssistant === 'object') {
+        state.measurement.convolverAssistant.dragMode = null;
+    }
+    return nextEditor;
+}
+
 function setMeasurementAssistMode(mode) {
-    state.measurement.assistMode = mode === 'convolver' ? 'convolver' : 'peq';
-    ensureMeasurementConvolverState();
+    const nextMode = mode === 'convolver' ? 'convolver' : 'peq';
+    const conv = ensureMeasurementConvolverState();
+    // The custom editor is an overlay on the actual target selection. Never
+    // let its sentinel or a deleted house curve become the active target when
+    // returning to PEQ or Convolver.
+    conv.targetCurve = getMeasurementRestorableTargetCurve();
+    state.measurement.assistMode = nextMode;
+    setMeasurementActiveEditor(nextMode === 'peq' ? 'peq' : 'none');
+    if (nextMode === 'peq') ensureMeasurementPeqState().enabled = true;
     renderMeasurementPanel();
     scheduleMeasurementGraphRender();
 }
@@ -6325,6 +6382,16 @@ function getMeasurementConvolverCurveOptions() {
 
 function getMeasurementConvolverCurve(curveKey) {
     return getMeasurementConvolverCurveOptions().find((curve) => curve.key === curveKey) || measurementConvolverCurves.neutral;
+}
+
+function getMeasurementSlotChipStyle(color = '', active = false) {
+    if (!color) return '';
+    return `style="border-color:${escapeHtml(color)}66;background:${escapeHtml(color)}22;${active ? `color:#08110d;background:${escapeHtml(color)};box-shadow:0 0 0 2px ${escapeHtml(color)}66, 0 0 0 4px rgba(248,250,252,0.28);` : ''}"`;
+}
+
+function renderMeasurementSlotChip({ label, index, color = '', active = false, occupied = false, attributes = '' }) {
+    const classes = `measurement-slot-chip measurement-peq-chip${active ? ' is-active' : ''}${occupied ? '' : ' is-empty'}`;
+    return `<button type="button" class="${classes}" ${getMeasurementSlotChipStyle(color, active)} data-measurement-slot-index="${index}" ${attributes}>${escapeHtml(label)}</button>`;
 }
 
 function getAutoSubTargetCurveSnapshot() {
@@ -6344,6 +6411,20 @@ function getMeasurementConvolverCurveDb(curveKey, frequencyHz) {
     const curve = getMeasurementConvolverCurve(curveKey);
     const points = curve.points || measurementConvolverCurves.neutral.points;
     return MeasurementDsp.getMeasurementConvolverCurveDbFromPoints(points, frequencyHz);
+}
+
+function getMeasurementHouseCurvePreviewPoints() {
+    return ensureCustomHouseCurveState().points
+        .map((point) => [Number(point.freqHz), Number(point.gainDb)])
+        .filter(([frequency, gain]) => Number.isFinite(frequency) && frequency > 0 && Number.isFinite(gain))
+        .sort((left, right) => left[0] - right[0]);
+}
+
+function getMeasurementTargetCurvePreview() {
+    if (getMeasurementActiveEditor() === 'houseCurve') {
+        return { label: 'Editing Custom House Curve…', shortLabel: 'Editing Custom House Curve…', points: getMeasurementHouseCurvePreviewPoints() };
+    }
+    return getMeasurementConvolverCurve(ensureMeasurementConvolverState().targetCurve);
 }
 
 function getMeasurementConvolverDraftPhaseMode(draft = null) {
@@ -6485,6 +6566,8 @@ function measurementYToDb(y, bounds, range) {
 }
 
 function addMeasurementPeqFilter(defaults = {}) {
+    if (getMeasurementActiveEditor() === 'houseCurve') return null;
+    setMeasurementActiveEditor('peq');
     const peq = ensureMeasurementPeqState();
     if (peq.filters.length >= 4) {
         showToast('Measurement assistant supports up to 4 filters', 'warning');
@@ -6552,6 +6635,13 @@ function deleteMeasurementPeqFilter(filterId) {
 }
 
 function resetMeasurementGraph() {
+    if (getMeasurementActiveEditor() === 'houseCurve') {
+        resetCustomHouseCurveDraft();
+        renderMeasurementPanel();
+        scheduleMeasurementGraphRender();
+        return;
+    }
+    setMeasurementActiveEditor('none');
     const peq = ensureMeasurementPeqState();
     const conv = ensureMeasurementConvolverState();
     state.measurement.currentMeasurement = null;
@@ -7696,6 +7786,47 @@ function getMeasurementPeqHandleHitRadius(pointerType = '') {
         : MEASUREMENT_PEQ_HANDLE_HIT_RADIUS_PX;
 }
 
+function getCustomHouseCurvePointSlot(pointId) {
+    const custom = ensureCustomHouseCurveState();
+    const index = custom.points.findIndex((point) => point.id === pointId);
+    if (index < 0) return -1;
+    const slot = Number(custom.points[index]?.slot);
+    return Number.isInteger(slot) && slot >= 0 && slot < 8 ? slot : index;
+}
+
+function getCustomHouseCurvePointColor(point, slot = getCustomHouseCurvePointSlot(point?.id)) {
+    const palette = [
+        ...(Array.isArray(measurementPeqPalette) ? measurementPeqPalette : []),
+        '#34d399', '#fb7185', '#22d3ee', '#facc15',
+    ];
+    return palette[Math.max(0, slot) % palette.length] || '#60a5fa';
+}
+
+function getCustomHouseCurveHandlePosition(point, bounds, range) {
+    return {
+        x: measurementFrequencyToX(point.freqHz || 20, bounds),
+        y: Math.max(bounds.top, Math.min(bounds.top + bounds.height, measurementDbToY(point.gainDb || 0, bounds, range))),
+    };
+}
+
+function getCustomHouseCurveHandleHitRadius(pointerType = '') {
+    return pointerType === 'touch'
+        ? MEASUREMENT_PEQ_TOUCH_HANDLE_HIT_RADIUS_PX
+        : MEASUREMENT_PEQ_HANDLE_HIT_RADIUS_PX;
+}
+
+function findCustomHouseCurveHandleAtPosition(x, y, bounds, range, pointerType = '') {
+    if (getMeasurementActiveEditor() !== 'houseCurve') return null;
+    const hitRadius = getCustomHouseCurveHandleHitRadius(pointerType);
+    const points = ensureCustomHouseCurveState().points;
+    for (let index = points.length - 1; index >= 0; index -= 1) {
+        const point = points[index];
+        const handle = getCustomHouseCurveHandlePosition(point, bounds, range);
+        if (Math.hypot(handle.x - x, handle.y - y) <= hitRadius) return point;
+    }
+    return null;
+}
+
 function findMeasurementPeqFilterHandleAtPosition(x, y, bounds, range, pointerType = '') {
     const hitRadius = getMeasurementPeqHandleHitRadius(pointerType);
     const filters = getMeasurementPeqFilters();
@@ -7733,8 +7864,9 @@ function getMeasurementConvolverRangeHandleAtPosition(x, y, bounds) {
 }
 
 function drawMeasurementTargetCurve(ctx, bounds, range) {
-    const conv = ensureMeasurementConvolverState();
-    const curve = getMeasurementConvolverCurve(conv.targetCurve);
+    const curve = getMeasurementTargetCurvePreview();
+    const points = curve.points || measurementConvolverCurves.neutral.points;
+    if (getMeasurementActiveEditor() === 'houseCurve' && !points.length) return;
     const frequencies = [20, 25, 31.5, 40, 50, 63, 80, 100, 125, 160, 200, 250, 315, 400, 500, 630, 800, 1000, 1250, 1600, 2000, 2500, 3150, 4000, 5000, 6300, 8000, 10000, 12500, 16000, 20000];
     ctx.save();
     ctx.strokeStyle = '#6ee7b7';
@@ -7743,7 +7875,8 @@ function drawMeasurementTargetCurve(ctx, bounds, range) {
     ctx.beginPath();
     frequencies.forEach((frequency, index) => {
         const x = measurementFrequencyToX(frequency, bounds);
-        const y = Math.max(bounds.top, Math.min(bounds.top + bounds.height, measurementDbToY(getMeasurementConvolverCurveDb(conv.targetCurve, frequency), bounds, range)));
+        const levelDb = MeasurementDsp.getMeasurementConvolverCurveDbFromPoints(points, frequency);
+        const y = Math.max(bounds.top, Math.min(bounds.top + bounds.height, measurementDbToY(levelDb, bounds, range)));
         if (index === 0) ctx.moveTo(x, y);
         else ctx.lineTo(x, y);
     });
@@ -7758,7 +7891,7 @@ function drawMeasurementTargetCurve(ctx, bounds, range) {
 }
 
 function drawMeasurementConvolverRangeOverlay(ctx, bounds) {
-    if ((state.measurement?.assistMode || 'peq') !== 'convolver') return;
+    if (getMeasurementActiveEditor() === 'houseCurve' || (state.measurement?.assistMode || 'peq') !== 'convolver') return;
     const conv = ensureMeasurementConvolverState();
     const startX = measurementFrequencyToX(conv.rangeStartHz, bounds);
     const endX = measurementFrequencyToX(conv.rangeEndHz, bounds);
@@ -7780,6 +7913,26 @@ function drawMeasurementConvolverRangeOverlay(ctx, bounds) {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
     ctx.fillText(`${Math.round(conv.rangeStartHz)}–${Math.round(conv.rangeEndHz)} Hz`, (startX + endX) / 2, bounds.top + 8);
+    ctx.restore();
+}
+
+function drawCustomHouseCurveHandles(ctx, bounds, range) {
+    if (getMeasurementActiveEditor() !== 'houseCurve') return;
+    const custom = ensureCustomHouseCurveState();
+    if (!custom.points.length) return;
+    ctx.save();
+    custom.points.forEach((point) => {
+        const handle = getCustomHouseCurveHandlePosition(point, bounds, range);
+        const active = point.id === custom.activePointId;
+        const color = getCustomHouseCurvePointColor(point);
+        ctx.fillStyle = color;
+        ctx.strokeStyle = active ? '#f8fafc' : 'rgba(15,23,42,0.9)';
+        ctx.lineWidth = active ? 2.4 : 1.5;
+        ctx.beginPath();
+        ctx.arc(handle.x, handle.y, active ? 7 : 5.5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+    });
     ctx.restore();
 }
 
@@ -7894,6 +8047,21 @@ function handleMeasurementGraphPointerDown(event) {
     const { x, y, bounds, range } = pointer;
     if (x < bounds.left || x > bounds.left + bounds.width || y < bounds.top || y > bounds.top + bounds.height) return;
     const pointerType = String(event.pointerType || '');
+    if (getMeasurementActiveEditor() === 'houseCurve') {
+        const custom = ensureCustomHouseCurveState();
+        const hitPoint = findCustomHouseCurveHandleAtPosition(x, y, bounds, range, pointerType);
+        const point = hitPoint || addCustomHouseCurvePointAtPosition({ x, y, bounds, range });
+        if (!point) return;
+        if (pointerType === 'touch') event.preventDefault();
+        custom.activePointId = point.id;
+        custom.dragPointId = point.id;
+        measurementGraphPointerId = event.pointerId;
+        elements.measurementGraph?.setPointerCapture?.(event.pointerId);
+        renderMeasurementPanel();
+        scheduleMeasurementGraphRender();
+        return;
+    }
+    if (getMeasurementActiveEditor() === 'houseCurve') return;
     if ((state.measurement?.assistMode || 'peq') === 'convolver') {
         const conv = ensureMeasurementConvolverState();
         const dragMode = getMeasurementConvolverRangeHandleAtPosition(x, y, bounds);
@@ -7943,6 +8111,20 @@ function handleMeasurementGraphPointerMove(event) {
     }
     if (elements.measurementGraph) {
         elements.measurementGraph.title = getMeasurementFrequencyHoverTooltip(event);
+    }
+    const custom = ensureCustomHouseCurveState();
+    if (custom.dragPointId && measurementGraphPointerId === event.pointerId && getMeasurementActiveEditor() === 'houseCurve') {
+        if (event.pointerType === 'touch') event.preventDefault();
+        const pointer = getMeasurementGraphPointerPosition(event);
+        if (!pointer) return;
+        const point = custom.points.find((item) => item.id === custom.dragPointId);
+        if (!point) return;
+        const visibleFrequency = measurementXToFrequency(pointer.x, pointer.bounds);
+        const visibleGain = Math.min(pointer.range.maxDb, Math.max(pointer.range.minDb, measurementYToDb(pointer.y, pointer.bounds, pointer.range)));
+        updateCustomHouseCurvePoint(point.id, { freqHz: visibleFrequency, gainDb: visibleGain });
+        scheduleMeasurementGraphRender();
+        renderMeasurementPanel();
+        return;
     }
     const conv = ensureMeasurementConvolverState();
     if (conv.dragMode && measurementGraphPointerId === event.pointerId) {
@@ -7994,6 +8176,7 @@ function handleMeasurementGraphPointerLeave() {
 function handleMeasurementGraphPointerUp(event) {
     if (getMeasurementGraphView() === 'ir') return;
     const peq = ensureMeasurementPeqState();
+    const custom = ensureCustomHouseCurveState();
     const conv = ensureMeasurementConvolverState();
     if (measurementGraphPointerId !== null && event.pointerId === measurementGraphPointerId && event.pointerType === 'touch') {
         event.preventDefault();
@@ -8003,6 +8186,7 @@ function handleMeasurementGraphPointerUp(event) {
         measurementGraphPointerId = null;
     }
     peq.dragFilterId = null;
+    custom.dragPointId = null;
     conv.dragMode = null;
     delete conv.dragAnchorHz;
     delete conv.dragStartHz;
@@ -8117,6 +8301,29 @@ async function uploadMeasurementCalibration(file) {
     }
 }
 
+async function downloadSelectedMeasurementCalibration() {
+    const calibrationId = state.measurement.selectedCalibrationRef || '';
+    const selected = (state.measurement.calibrationOptions || []).find(option => option.id === calibrationId);
+    if (!calibrationId || !selected) return;
+    state.measurement.calibrationExporting = true;
+    renderMeasurementPanel();
+    try {
+        const resp = await fetch(`/api/measurements/calibrations/${encodeURIComponent(calibrationId)}/export`);
+        if (!resp.ok) {
+            const data = await resp.json().catch(() => ({}));
+            throw new Error(data.detail || 'Failed to export calibration file');
+        }
+        triggerBlobDownload(await resp.blob(), getDownloadFilenameFromResponse(resp, selected.filename || 'calibration.txt'));
+    } catch (error) {
+        console.error('downloadSelectedMeasurementCalibration failed', error);
+        state.measurement.statusText = error.message || 'Failed to export calibration file';
+        showToast(state.measurement.statusText, 'error');
+    } finally {
+        state.measurement.calibrationExporting = false;
+        renderMeasurementPanel();
+    }
+}
+
 async function deleteSelectedMeasurementCalibration() {
     const calibrationId = state.measurement.selectedCalibrationRef || '';
     const selected = (state.measurement.calibrationOptions || []).find(option => option.id === calibrationId);
@@ -8175,6 +8382,175 @@ async function uploadMeasurementHouseCurve(file) {
         showToast(state.measurement.statusText, 'error');
     } finally {
         state.measurement.houseCurveUpdating = false;
+        renderMeasurementPanel();
+    }
+}
+
+function ensureCustomHouseCurveState() {
+    const measurement = state.measurement || (state.measurement = {});
+    if (!measurement.customHouseCurve || typeof measurement.customHouseCurve !== 'object') {
+        measurement.customHouseCurve = { open: false, displayTarget: 'actual', points: [], activePointId: null, dragPointId: null, name: '', nameTouched: false, saving: false };
+    }
+    const custom = measurement.customHouseCurve;
+    custom.displayTarget = custom.displayTarget === 'editing-custom-house-curve' ? custom.displayTarget : 'actual';
+    if (!Array.isArray(custom.points)) custom.points = [];
+    const usedSlots = new Set();
+    custom.points = custom.points.slice(0, 8);
+    custom.points.forEach((point) => {
+        let slot = Number(point?.slot);
+        if (!Number.isInteger(slot) || slot < 0 || slot >= 8 || usedSlots.has(slot)) {
+            slot = Array.from({ length: 8 }, (_, candidate) => candidate).find((candidate) => !usedSlots.has(candidate));
+        }
+        usedSlots.add(slot);
+        point.slot = slot;
+    });
+    if (!custom.points.some((point) => point.id === custom.activePointId)) custom.activePointId = custom.points[0]?.id || null;
+    if (!custom.points.some((point) => point.id === custom.dragPointId)) custom.dragPointId = null;
+    return custom;
+}
+
+function getCustomHouseCurveNameSuggestion() {
+    const normalize = (value) => String(value || '').trim().toLowerCase().replace(/[-_.]+/g, ' ').replace(/\s+/g, ' ');
+    const used = new Set((state.measurement?.houseCurveOptions || []).map((curve) => normalize(curve.filename)));
+    let index = 1;
+    while (used.has(normalize('Custom House Curve ' + index))) index += 1;
+    return 'Custom House Curve ' + index;
+}
+
+function openCustomHouseCurveEditor() {
+    const custom = ensureCustomHouseCurveState();
+    setMeasurementActiveEditor('houseCurve');
+    if (!custom.points.length) addCustomHouseCurvePoint({ slot: 0, freqHz: 20, gainDb: 0 });
+    if (!custom.nameTouched || !custom.name.trim()) custom.name = getCustomHouseCurveNameSuggestion();
+    renderMeasurementPanel();
+    scheduleMeasurementGraphRender();
+}
+
+function handleMeasurementTargetCurveSelection(value) {
+    if (value === 'create-custom-house-curve' || value === 'editing-custom-house-curve') {
+        openCustomHouseCurveEditor();
+        return;
+    }
+    setMeasurementActiveEditor('none');
+    updateMeasurementConvolverField('targetCurve', value);
+    renderMeasurementPanel();
+    scheduleMeasurementGraphRender();
+}
+
+function addCustomHouseCurvePoint(defaults = {}) {
+    const custom = ensureCustomHouseCurveState();
+    const fallbackFrequencies = [20, 40, 80, 160, 320, 1000, 5000, 20000];
+    const requestedSlot = Number(defaults.slot);
+    const freeSlots = Array.from({ length: 8 }, (_, slot) => slot).filter((slot) => !custom.points.some((point) => Number(point.slot) === slot));
+    const slot = Number.isInteger(requestedSlot) && requestedSlot >= 0 && requestedSlot < 8 && freeSlots.includes(requestedSlot)
+        ? requestedSlot
+        : freeSlots[0];
+    if (slot === undefined) return null;
+    const point = {
+        id: 'house-point-' + Date.now() + '-' + Math.random().toString(16).slice(2),
+        slot,
+        freqHz: Math.round(Math.min(20000, Math.max(20, Number(defaults.freqHz) || fallbackFrequencies[slot]))),
+        gainDb: Number(Math.min(24, Math.max(-24, Number(defaults.gainDb) || 0)).toFixed(1)),
+    };
+    custom.points.push(point);
+    custom.activePointId = point.id;
+    return point;
+}
+
+function resetCustomHouseCurveDraft() {
+    const custom = ensureCustomHouseCurveState();
+    custom.points = [];
+    custom.activePointId = null;
+    custom.dragPointId = null;
+    addCustomHouseCurvePoint({ slot: 0, freqHz: 20, gainDb: 0 });
+}
+
+function updateCustomHouseCurvePoint(pointId, updates = {}) {
+    const point = ensureCustomHouseCurveState().points.find((item) => item.id === pointId);
+    if (!point) return;
+    if (updates.freqHz !== undefined) point.freqHz = Math.round(Math.min(20000, Math.max(20, Number(updates.freqHz) || 20)));
+    if (updates.gainDb !== undefined) point.gainDb = Number(Math.min(24, Math.max(-24, Number(updates.gainDb) || 0)).toFixed(1));
+}
+
+function addCustomHouseCurvePointAtPosition({ x, y, bounds, range }) {
+    const frequencyHz = measurementXToFrequency(x, bounds);
+    const gainDb = Math.min(range.maxDb, Math.max(range.minDb, measurementYToDb(y, bounds, range)));
+    return addCustomHouseCurvePoint({ freqHz: frequencyHz, gainDb: gainDb });
+}
+
+function deleteCustomHouseCurvePoint(pointId) {
+    const custom = ensureCustomHouseCurveState();
+    custom.points = custom.points.filter((point) => point.id !== pointId);
+    custom.activePointId = custom.points[0]?.id || null;
+}
+
+function serializeCustomHouseCurvePoints(points) {
+    return points
+        .map((point) => [Number(point.freqHz), Number(point.gainDb)])
+        .sort((left, right) => left[0] - right[0])
+        .map(([frequency, gain]) => String(frequency) + '\t' + gain.toFixed(1))
+        .join('\n') + '\n';
+}
+
+async function createCustomHouseCurve() {
+    const custom = ensureCustomHouseCurveState();
+    const name = String(custom.name || '').trim();
+    if (!name || custom.points.length < 2 || custom.saving) return;
+    const sorted = custom.points.map((point) => [Number(point.freqHz), Number(point.gainDb)]).sort((left, right) => left[0] - right[0]);
+    if (sorted.some((point, index) => index && point[0] <= sorted[index - 1][0])) {
+        showToast('House curve frequencies must be unique', 'warning');
+        return;
+    }
+    custom.saving = true;
+    renderMeasurementPanel();
+    const safeFilename = name + '.txt';
+    const file = new File([serializeCustomHouseCurvePoints(custom.points)], safeFilename, { type: 'text/plain' });
+    const formData = new FormData();
+    formData.append('house_curve_file', file);
+    try {
+        const resp = await fetch('/api/measurements/house-curves', { method: 'POST', body: formData });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || 'Failed to create target curve');
+        applyMeasurementHouseCurveState(data);
+        const uploadedKey = data.uploaded_house_curve_id ? 'house:' + data.uploaded_house_curve_id : '';
+        if (uploadedKey) updateMeasurementConvolverField('targetCurve', uploadedKey);
+        setMeasurementActiveEditor('none');
+        custom.points = [];
+        custom.activePointId = null;
+        custom.name = '';
+        custom.nameTouched = false;
+        showToast('Target curve created and selected', 'success');
+    } catch (error) {
+        state.measurement.statusText = error.message || 'Failed to create target curve';
+        showToast(state.measurement.statusText, 'error');
+    } finally {
+        custom.saving = false;
+        renderMeasurementPanel();
+        scheduleMeasurementGraphRender();
+    }
+}
+
+async function downloadSelectedMeasurementHouseCurve() {
+    const conv = ensureMeasurementConvolverState();
+    const selectedKey = String(conv.targetCurve || '');
+    const houseCurveId = selectedKey.startsWith('house:') ? selectedKey.slice(6) : '';
+    const selected = (state.measurement.houseCurveOptions || []).find(option => option.id === houseCurveId);
+    if (!houseCurveId || !selected) return;
+    state.measurement.houseCurveExporting = true;
+    renderMeasurementPanel();
+    try {
+        const resp = await fetch(`/api/measurements/house-curves/${encodeURIComponent(houseCurveId)}/export`);
+        if (!resp.ok) {
+            const data = await resp.json().catch(() => ({}));
+            throw new Error(data.detail || 'Failed to export house curve file');
+        }
+        triggerBlobDownload(await resp.blob(), getDownloadFilenameFromResponse(resp, `${selected.filename || 'house-curve'}.txt`));
+    } catch (error) {
+        console.error('downloadSelectedMeasurementHouseCurve failed', error);
+        state.measurement.statusText = error.message || 'Failed to export house curve file';
+        showToast(state.measurement.statusText, 'error');
+    } finally {
+        state.measurement.houseCurveExporting = false;
         renderMeasurementPanel();
     }
 }
@@ -8444,6 +8820,7 @@ function getMeasurementPeqFilterMagnitude(filter = {}, frequencyHz = 1000, sampl
 }
 
 function drawMeasurementPeqOverlay(ctx, bounds, range) {
+    if (getMeasurementActiveEditor() !== 'peq') return;
     const peq = ensureMeasurementPeqState();
     if (!peq.enabled || !peq.filters.length) return;
     const sampleFrequencies = Array.from({ length: 220 }, (_, index) => 20 * (10 ** ((Math.log10(20000 / 20) * index) / 219)));
@@ -8584,6 +8961,7 @@ function drawMeasurementGraph() {
 
     drawMeasurementConvolverRangeOverlay(ctx, bounds);
     drawMeasurementPeqOverlay(ctx, bounds, range);
+    drawCustomHouseCurveHandles(ctx, bounds, range);
 
     ctx.strokeStyle = 'rgba(255,255,255,0.16)';
     ctx.lineWidth = 1;
@@ -9733,6 +10111,7 @@ function renderMeasurementPanel() {
     const measurements = (measurementState.measurements || []).filter(measurement => measurement.id !== current?.id);
     const graphEntries = getGraphMeasurementEntries();
     const assistMode = measurementState.assistMode === 'convolver' ? 'convolver' : 'peq';
+    const activeEditor = getMeasurementActiveEditor();
     const graphView = getMeasurementGraphView();
     const frequencyView = graphView === 'freq';
     const peq = ensureMeasurementPeqState();
@@ -9811,9 +10190,15 @@ function renderMeasurementPanel() {
         elements.measurementCalibrationSelect.disabled = measurementState.startInFlight || measurementState.calibrationUpdating || measurementState.calibrationDeleting;
     }
     if (elements.measurementCalibrationDeleteBtn) {
-        const canDeleteCalibration = !!measurementState.selectedCalibrationRef && !measurementState.startInFlight && !measurementState.activeJobId && !measurementState.calibrationUpdating && !measurementState.calibrationDeleting;
+        const canDeleteCalibration = !!measurementState.selectedCalibrationRef && !measurementState.startInFlight && !measurementState.activeJobId && !measurementState.calibrationUpdating && !measurementState.calibrationDeleting && !measurementState.calibrationExporting;
         elements.measurementCalibrationDeleteBtn.disabled = !canDeleteCalibration;
         elements.measurementCalibrationDeleteBtn.textContent = measurementState.calibrationDeleting ? 'Deleting…' : 'Delete';
+    }
+    if (elements.measurementCalibrationExportBtn) {
+        const selectedCalibration = (measurementState.calibrationOptions || []).some(option => option.id === measurementState.selectedCalibrationRef);
+        const canExportCalibration = selectedCalibration && !measurementState.startInFlight && !measurementState.calibrationUpdating && !measurementState.calibrationDeleting && !measurementState.calibrationExporting;
+        elements.measurementCalibrationExportBtn.disabled = !canExportCalibration;
+        elements.measurementCalibrationExportBtn.textContent = measurementState.calibrationExporting ? 'Exporting…' : 'Export';
     }
     if (elements.measurementCalibrationUploadName) {
         elements.measurementCalibrationUploadName.textContent = measurementState.calibrationFilename || 'No calibration file selected.';
@@ -9833,9 +10218,16 @@ function renderMeasurementPanel() {
         elements.measurementHouseCurveSelect.disabled = measurementState.houseCurveUpdating || measurementState.houseCurveDeleting;
     }
     if (elements.measurementHouseCurveDeleteBtn) {
-        const canDeleteHouseCurve = String(conv.targetCurve || '').startsWith('house:') && !measurementState.houseCurveUpdating && !measurementState.houseCurveDeleting;
+        const canDeleteHouseCurve = String(conv.targetCurve || '').startsWith('house:') && !measurementState.houseCurveUpdating && !measurementState.houseCurveDeleting && !measurementState.houseCurveExporting;
         elements.measurementHouseCurveDeleteBtn.disabled = !canDeleteHouseCurve;
         elements.measurementHouseCurveDeleteBtn.textContent = measurementState.houseCurveDeleting ? 'Deleting…' : 'Delete';
+    }
+    if (elements.measurementHouseCurveExportBtn) {
+        const selectedHouseCurveId = String(conv.targetCurve || '').startsWith('house:') ? String(conv.targetCurve).slice(6) : '';
+        const selectedHouseCurve = (measurementState.houseCurveOptions || []).some(option => option.id === selectedHouseCurveId);
+        const canExportHouseCurve = selectedHouseCurve && !measurementState.houseCurveUpdating && !measurementState.houseCurveDeleting && !measurementState.houseCurveExporting;
+        elements.measurementHouseCurveExportBtn.disabled = !canExportHouseCurve;
+        elements.measurementHouseCurveExportBtn.textContent = measurementState.houseCurveExporting ? 'Exporting…' : 'Export';
     }
     if (elements.measurementHouseCurveUploadName) {
         elements.measurementHouseCurveUploadName.textContent = measurementState.houseCurveFilename || 'No house curve file selected.';
@@ -9887,10 +10279,12 @@ function renderMeasurementPanel() {
         elements.measurementAssistMode.title = frequencyView ? '' : 'Only available in frequency view.';
     }
     if (elements.measurementTargetCurve) {
-        elements.measurementTargetCurve.innerHTML = getMeasurementConvolverCurveOptions()
-            .map((curve) => `<option value="${escapeHtml(curve.key)}" ${conv.targetCurve === curve.key ? 'selected' : ''}>${escapeHtml(curve.label || curve.shortLabel || curve.key)}</option>`)
-            .join('');
-        elements.measurementTargetCurve.value = conv.targetCurve;
+        const editingCustomHouseCurve = activeEditor === 'houseCurve' && ensureCustomHouseCurveState().displayTarget === 'editing-custom-house-curve';
+        const editingOption = editingCustomHouseCurve ? '<option value="editing-custom-house-curve">Editing Custom House Curve…</option>' : '';
+        elements.measurementTargetCurve.innerHTML = editingOption + getMeasurementConvolverCurveOptions()
+            .map((curve) => `<option value="${escapeHtml(curve.key)}" ${!editingCustomHouseCurve && conv.targetCurve === curve.key ? 'selected' : ''}>${escapeHtml(curve.label || curve.shortLabel || curve.key)}</option>`)
+            .join('') + '<option value="create-custom-house-curve">Create Custom House Curve…</option>';
+        elements.measurementTargetCurve.value = editingCustomHouseCurve ? 'editing-custom-house-curve' : conv.targetCurve;
         elements.measurementTargetCurve.disabled = !frequencyView;
         elements.measurementTargetCurve.title = frequencyView ? '' : 'Only available in frequency view.';
         elements.measurementTargetCurve.classList.remove('hidden');
@@ -9907,7 +10301,7 @@ function renderMeasurementPanel() {
             || String(conv.sampleRate) !== defaultConv.sampleRate
             || String(conv.quality) !== defaultConv.quality
         );
-        const hasResettableGraphState = !!current || !!peq.filters.length || hasConvolverResettableState;
+        const hasResettableGraphState = !!current || !!peq.filters.length || hasConvolverResettableState || activeEditor === 'houseCurve';
         elements.measurementClearBtn.disabled = !frequencyView || !hasResettableGraphState || measurementState.startInFlight || !!measurementState.activeJobId;
         elements.measurementClearBtn.title = frequencyView ? '' : 'Only available in frequency view.';
     }
@@ -9950,18 +10344,69 @@ function renderMeasurementPanel() {
     }
     renderMeasurementIrDiagnostics(graphEntries, frequencyView);
     if (elements.measurementPeqPanel) {
-        elements.measurementPeqPanel.classList.toggle('hidden', !frequencyView || assistMode !== 'peq' || (!peq.enabled && !peq.filters.length));
+        elements.measurementPeqPanel.classList.toggle('hidden', !frequencyView || activeEditor !== 'peq' || (!peq.enabled && !peq.filters.length));
+    }
+    const customHouseCurve = ensureCustomHouseCurveState();
+    const activeCustomPoint = customHouseCurve.points.find((point) => point.id === customHouseCurve.activePointId) || null;
+    if (elements.measurementCustomHouseCurvePanel) {
+        elements.measurementCustomHouseCurvePanel.classList.toggle('hidden', !frequencyView || activeEditor !== 'houseCurve');
+    }
+    if (elements.measurementCustomHouseCurveChips) {
+        elements.measurementCustomHouseCurveChips.innerHTML = Array.from({ length: 8 }, (_, index) => {
+            const point = customHouseCurve.points.find((candidate) => Number(candidate.slot) === index) || null;
+            const active = point && point.id === customHouseCurve.activePointId;
+            const color = point ? getCustomHouseCurvePointColor(point, index) : '';
+            return renderMeasurementSlotChip({
+                label: `P${index + 1}`,
+                index,
+                color,
+                active,
+                occupied: !!point,
+                attributes: `data-custom-house-curve-slot="${index}" data-custom-house-curve-point="${point ? escapeHtml(point.id) : ''}"`,
+            });
+        }).join('');
+    }
+    if (elements.measurementCustomHouseCurveEditor) {
+        const activeCustomSlot = activeCustomPoint ? getCustomHouseCurvePointSlot(activeCustomPoint.id) : -1;
+        const activeCustomColor = activeCustomPoint ? getCustomHouseCurvePointColor(activeCustomPoint, activeCustomSlot) : '';
+        elements.measurementCustomHouseCurveEditor.innerHTML = activeCustomPoint ? `
+            <div class="measurement-peq-editor-grid" data-custom-house-curve-editor-slot="${activeCustomSlot}" style="border-color:${escapeHtml(activeCustomColor)}66;">
+                <div class="measurement-custom-house-curve-slot-label" style="color:${escapeHtml(activeCustomColor)};">P${activeCustomSlot + 1}</div>
+                <div class="field-group measurement-peq-direct-input-field">
+                    <label for="measurement-custom-house-curve-frequency">Frequency (Hz)</label>
+                    <input id="measurement-custom-house-curve-frequency" class="url-input measurement-peq-number-input" type="number" min="20" max="20000" step="1" value="${Math.round(activeCustomPoint.freqHz)}" data-custom-house-curve-field="freqHz">
+                </div>
+                <div class="field-group measurement-peq-direct-input-field">
+                    <label for="measurement-custom-house-curve-gain">Gain (dB)</label>
+                    <input id="measurement-custom-house-curve-gain" class="url-input measurement-peq-number-input" type="number" min="-24" max="24" step="0.1" value="${Number(activeCustomPoint.gainDb).toFixed(1)}" data-custom-house-curve-field="gainDb">
+                </div>
+                <div class="measurement-peq-editor-actions">
+                    <button type="button" class="btn-danger" data-custom-house-curve-delete="${escapeHtml(activeCustomPoint.id)}">Delete</button>
+                </div>
+            </div>` : '<div class="measurement-peq-editor-empty">Use P1-P8 to add up to 8 curve points.</div>';
+    }
+    if (elements.measurementCustomHouseCurveName && document.activeElement !== elements.measurementCustomHouseCurveName) {
+        elements.measurementCustomHouseCurveName.value = customHouseCurve.name || '';
+    }
+    if (elements.measurementCustomHouseCurveCreateBtn) {
+        elements.measurementCustomHouseCurveCreateBtn.disabled = customHouseCurve.points.length < 2 || !String(customHouseCurve.name || '').trim() || customHouseCurve.saving;
+        elements.measurementCustomHouseCurveCreateBtn.textContent = customHouseCurve.saving ? 'Creating…' : 'Create Target Curve';
     }
     if (elements.measurementConvolverPanel) {
         elements.measurementConvolverPanel.classList.toggle('hidden', !frequencyView || assistMode !== 'convolver');
     }
     if (elements.measurementPeqChips) {
-        elements.measurementPeqChips.innerHTML = Array.from({ length: 4 }, (_, index) => {
+        elements.measurementPeqChips.innerHTML = Array.from({ length: 12 }, (_, index) => {
             const filter = peq.filters[index] || null;
             const active = filter && filter.id === peq.activeFilterId;
-            const classes = `measurement-peq-chip${active ? ' is-active' : ''}${filter ? '' : ' is-empty'}`;
-            const style = filter ? `style="border-color:${escapeHtml(filter.color)}66; background:${escapeHtml(filter.color)}22;${active ? ` color:${escapeHtml(filter.color)}; background:${escapeHtml(filter.color)}33;` : ''}"` : '';
-            return `<button type="button" class="${classes}" data-measurement-peq-slot="${index}" data-measurement-peq-chip="${filter ? escapeHtml(filter.id) : ''}" ${style}>F${index + 1}</button>`;
+            return renderMeasurementSlotChip({
+                label: `F${index + 1}`,
+                index,
+                color: filter ? filter.color : '',
+                active,
+                occupied: !!filter,
+                attributes: `data-measurement-peq-slot="${index}" data-measurement-peq-chip="${filter ? escapeHtml(filter.id) : ''}"`,
+            });
         }).join('');
     }
     if (elements.measurementPeqEditor) {
@@ -10041,6 +10486,32 @@ function renderMeasurementPanel() {
             renderMeasurementPanel();
             scheduleMeasurementGraphRender();
             focusMeasurementPeqPanelContext();
+        });
+    });
+    elements.measurementCustomHouseCurveChips?.querySelectorAll('[data-custom-house-curve-slot]').forEach((button) => {
+        button.addEventListener('click', () => {
+            const custom = ensureCustomHouseCurveState();
+            const pointId = button.dataset.customHouseCurvePoint;
+            if (pointId) custom.activePointId = pointId;
+            else if (!addCustomHouseCurvePoint({ slot: Number(button.dataset.customHouseCurveSlot) })) return;
+            renderMeasurementPanel();
+            scheduleMeasurementGraphRender();
+        });
+    });
+    elements.measurementCustomHouseCurveEditor?.querySelectorAll('[data-custom-house-curve-field]').forEach((input) => {
+        const commit = () => {
+            const custom = ensureCustomHouseCurveState();
+            if (!custom.activePointId) return;
+            updateCustomHouseCurvePoint(custom.activePointId, { [input.dataset.customHouseCurveField]: Number(input.value) });
+        };
+        input.addEventListener('input', () => { commit(); scheduleMeasurementGraphRender(); });
+        input.addEventListener('change', () => { commit(); renderMeasurementPanel(); scheduleMeasurementGraphRender(); });
+    });
+    elements.measurementCustomHouseCurveEditor?.querySelectorAll('[data-custom-house-curve-delete]').forEach((button) => {
+        button.addEventListener('click', () => {
+            deleteCustomHouseCurvePoint(button.dataset.customHouseCurveDelete);
+            renderMeasurementPanel();
+            scheduleMeasurementGraphRender();
         });
     });
     elements.measurementPeqEditor?.querySelectorAll('[data-measurement-peq-field]').forEach((input) => {
@@ -10417,6 +10888,7 @@ function setupMeasurementActions() {
         button.addEventListener('click', () => {
             state.measurement.measurementView = button.getAttribute('data-measurement-view') || 'freq';
             ensureMeasurementPeqState().dragFilterId = null;
+            ensureCustomHouseCurveState().dragPointId = null;
             ensureMeasurementConvolverState().dragMode = null;
             measurementGraphPointerId = null;
             renderMeasurementPanel();
@@ -10446,11 +10918,15 @@ function setupMeasurementActions() {
     if (elements.measurementCalibrationDeleteBtn) {
         elements.measurementCalibrationDeleteBtn.addEventListener('click', () => { void deleteSelectedMeasurementCalibration(); });
     }
+    if (elements.measurementCalibrationExportBtn) {
+        elements.measurementCalibrationExportBtn.addEventListener('click', () => { void downloadSelectedMeasurementCalibration(); });
+    }
     if (elements.measurementHouseCurveSelect) {
         elements.measurementHouseCurveSelect.addEventListener('change', (event) => {
             const houseCurveId = event.target.value || '';
             if (elements.measurementHouseCurveFile) elements.measurementHouseCurveFile.value = '';
             state.measurement.houseCurveFilename = '';
+            setMeasurementActiveEditor('none');
             updateMeasurementConvolverField('targetCurve', houseCurveId ? `house:${houseCurveId}` : 'neutral');
             renderMeasurementPanel();
             scheduleMeasurementGraphRender();
@@ -10469,6 +10945,9 @@ function setupMeasurementActions() {
     }
     if (elements.measurementHouseCurveDeleteBtn) {
         elements.measurementHouseCurveDeleteBtn.addEventListener('click', () => { void deleteSelectedMeasurementHouseCurve(); });
+    }
+    if (elements.measurementHouseCurveExportBtn) {
+        elements.measurementHouseCurveExportBtn.addEventListener('click', () => { void downloadSelectedMeasurementHouseCurve(); });
     }
     if (elements.measurementNameInput) {
         elements.measurementNameInput.addEventListener('input', (event) => {
@@ -10511,13 +10990,51 @@ function setupMeasurementActions() {
     }
     if (elements.measurementAssistMode) {
         elements.measurementAssistMode.addEventListener('change', (event) => setMeasurementAssistMode(event.target.value));
+        let assistModeFocusPending = false;
+        const activateSelectedMethod = () => {
+            if (getMeasurementActiveEditor() !== 'houseCurve') return;
+            const selectedMode = elements.measurementAssistMode.value === 'convolver' ? 'convolver' : 'peq';
+            setMeasurementAssistMode(selectedMode);
+        };
+        // `change` is not emitted when the user re-selects the already active
+        // method. Ignore the opening click that focuses the native select;
+        // a click after the popup selection (including same-value PEQ) then
+        // performs the complete activation. A changed value is still handled
+        // by `change`, without prematurely treating Convolver as PEQ.
+        elements.measurementAssistMode.addEventListener('focus', () => { assistModeFocusPending = true; });
+        elements.measurementAssistMode.addEventListener('blur', () => { assistModeFocusPending = false; });
+        elements.measurementAssistMode.addEventListener('click', () => {
+            if (assistModeFocusPending) {
+                assistModeFocusPending = false;
+                return;
+            }
+            window.setTimeout(activateSelectedMethod, 0);
+        });
     }
     if (elements.measurementTargetCurve) {
-        elements.measurementTargetCurve.addEventListener('change', (event) => updateMeasurementConvolverField('targetCurve', event.target.value));
+        elements.measurementTargetCurve.addEventListener('change', (event) => handleMeasurementTargetCurveSelection(event.target.value));
+    }
+    if (elements.measurementCustomHouseCurveName) {
+        elements.measurementCustomHouseCurveName.addEventListener('input', (event) => {
+            const custom = ensureCustomHouseCurveState();
+            custom.name = event.target.value || '';
+            custom.nameTouched = true;
+            if (elements.measurementCustomHouseCurveCreateBtn) {
+                elements.measurementCustomHouseCurveCreateBtn.disabled = custom.points.length < 2 || !custom.name.trim() || custom.saving;
+            }
+        });
+    }
+    if (elements.measurementCustomHouseCurveCreateBtn) {
+        elements.measurementCustomHouseCurveCreateBtn.addEventListener('click', () => { void createCustomHouseCurve(); });
     }
     [elements.measurementConvolverTarget, elements.measurementConvolverRangeStart, elements.measurementConvolverRangeEnd, elements.measurementConvolverMaxBoost, elements.measurementConvolverMaxCut, elements.measurementConvolverDipGuard, elements.measurementConvolverSampleRate, elements.measurementConvolverPhaseMode, elements.measurementConvolverIrLength, elements.measurementConvolverQuality].forEach((input) => {
         if (!input) return;
-        const commit = () => updateMeasurementConvolverField(input.dataset.measurementConvolverField, input.value);
+        const commit = () => {
+            setMeasurementActiveEditor('none');
+            updateMeasurementConvolverField(input.dataset.measurementConvolverField, input.value);
+            renderMeasurementPanel();
+            scheduleMeasurementGraphRender();
+        };
         input.addEventListener('change', commit);
         if (input instanceof HTMLInputElement) input.addEventListener('input', commit);
     });
