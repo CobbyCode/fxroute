@@ -4394,8 +4394,17 @@ async def _sync_subwoofer_runtime(
         current_overview = get_audio_output_overview()
         current_mode = current_overview.get("output_mode") or {}
         if current_mode.get("mode") == OUTPUT_MODE_STEREO:
+            # Leave the subwoofer graph in the same ordered transition path as
+            # every other runtime mode change.  The helper owns removal of its
+            # links, stopping the process, and restoration of the direct
+            # EasyEffects -> hardware front links.  Checking the stereo graph
+            # before this sync mistakes the expected subwoofer graph for a
+            # broken stereo graph and can trigger a needless EE restart while
+            # the system master is intentionally at 100% for Loudness.
+            stereo_config = SubwooferRuntimeConfig.from_overview(current_overview)
+            await subwoofer_runtime.sync(stereo_config)
             await _ensure_stereo_easyeffects_output_graph(current_overview)
-            logger.info("Subwoofer runtime sync: output_mode=%s; stereo path unchanged", OUTPUT_MODE_STEREO)
+            logger.info("Subwoofer runtime sync: output_mode=%s; stereo path restored", OUTPUT_MODE_STEREO)
             return current_overview
         if current_mode.get("mode") not in OUTPUT_MODE_SUBWOOFER_MODES:
             return current_overview
