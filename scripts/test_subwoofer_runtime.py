@@ -281,6 +281,128 @@ class SubwooferRuntimeStatusTest(unittest.TestCase):
             self.assertEqual(runtime.snapshot()["helper_pid"], first_pid)
             self.assertTrue(runtime.snapshot()["active"])
 
+    def test_transient_missing_pipewire_port_is_retried(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            helper = Path(temp_dir) / "fxroute_21_passthrough"
+            helper.write_text("#!/bin/sh\\n", encoding="utf-8")
+            link_attempts = {}
+
+            async def fake_runner(args):
+                command = tuple(args)
+                if command == ("pw-link", "-io"):
+                    return CommandResult(0, "\\n".join(
+                        [
+                            "fxroute_21_stage1:input_L", "fxroute_21_stage1:input_R",
+                            "fxroute_21_stage1:output_1", "fxroute_21_stage1:output_2",
+                            "fxroute_21_stage1:output_3", "fxroute_21_stage1:output_4",
+                        ]
+                    ), "")
+                if command == ("pw-link", "-l"):
+                    return CommandResult(0, mock_graph_links("mock_multichannel_output"), "")
+                if len(args) == 3 and args[0] == "pw-link" and args[1] == "ee_soe_output_level:output_FL":
+                    link_attempts[command] = link_attempts.get(command, 0) + 1
+                    if link_attempts[command] == 1:
+                        return CommandResult(1, "", "failed to link ports: No such file or directory")
+                return CommandResult(0, "", "")
+
+            runtime = Subwoofer21Runtime(
+                helper_binary=helper,
+                command_runner=fake_runner,
+                process_launcher=lambda _args: asyncio.sleep(0, result=FakeProcess()),
+                sleeper=lambda _seconds: asyncio.sleep(0),
+            )
+            asyncio.run(runtime.sync(make_config()))
+
+            self.assertTrue(runtime.snapshot()["active"])
+            self.assertIsNone(runtime.snapshot()["last_error"])
+            self.assertEqual(
+                link_attempts[("pw-link", "ee_soe_output_level:output_FL", "fxroute_21_stage1:input_L")],
+                2,
+            )
+
+    def test_permanent_missing_pipewire_port_exhausts_retry_budget(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            helper = Path(temp_dir) / "fxroute_21_passthrough"
+            helper.write_text("#!/bin/sh\\n", encoding="utf-8")
+            link_attempts = 0
+            sleeps = []
+
+            async def fake_runner(args):
+                nonlocal link_attempts
+                command = tuple(args)
+                if command == ("pw-link", "-io"):
+                    return CommandResult(0, "\\n".join(
+                        [
+                            "fxroute_21_stage1:input_L", "fxroute_21_stage1:input_R",
+                            "fxroute_21_stage1:output_1", "fxroute_21_stage1:output_2",
+                            "fxroute_21_stage1:output_3", "fxroute_21_stage1:output_4",
+                        ]
+                    ), "")
+                if command == ("pw-link", "-l"):
+                    return CommandResult(0, mock_graph_links("mock_multichannel_output"), "")
+                if len(args) == 3 and args[0] == "pw-link" and args[1] == "ee_soe_output_level:output_FL":
+                    link_attempts += 1
+                    return CommandResult(1, "", "failed to link ports: No such file or directory")
+                return CommandResult(0, "", "")
+
+            async def fake_sleep(seconds):
+                sleeps.append(seconds)
+
+            runtime = Subwoofer21Runtime(
+                helper_binary=helper,
+                command_runner=fake_runner,
+                process_launcher=lambda _args: asyncio.sleep(0, result=FakeProcess()),
+                sleeper=fake_sleep,
+            )
+            awaitable = runtime.sync(make_config())
+            asyncio.run(awaitable)
+
+            self.assertFalse(runtime.snapshot()["active"])
+            self.assertIn("No such file or directory", runtime.snapshot()["last_error"])
+            self.assertEqual(link_attempts, 8)
+            self.assertEqual(len(sleeps), 7)
+
+    def test_non_retryable_pipewire_link_error_fails_immediately(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            helper = Path(temp_dir) / "fxroute_21_passthrough"
+            helper.write_text("#!/bin/sh\\n", encoding="utf-8")
+            link_attempts = 0
+            sleeps = []
+
+            async def fake_runner(args):
+                nonlocal link_attempts
+                command = tuple(args)
+                if command == ("pw-link", "-io"):
+                    return CommandResult(0, "\\n".join(
+                        [
+                            "fxroute_21_stage1:input_L", "fxroute_21_stage1:input_R",
+                            "fxroute_21_stage1:output_1", "fxroute_21_stage1:output_2",
+                            "fxroute_21_stage1:output_3", "fxroute_21_stage1:output_4",
+                        ]
+                    ), "")
+                if command == ("pw-link", "-l"):
+                    return CommandResult(0, mock_graph_links("mock_multichannel_output"), "")
+                if len(args) == 3 and args[0] == "pw-link" and args[1] == "ee_soe_output_level:output_FL":
+                    link_attempts += 1
+                    return CommandResult(1, "", "failed to link ports: Permission denied")
+                return CommandResult(0, "", "")
+
+            async def fake_sleep(seconds):
+                sleeps.append(seconds)
+
+            runtime = Subwoofer21Runtime(
+                helper_binary=helper,
+                command_runner=fake_runner,
+                process_launcher=lambda _args: asyncio.sleep(0, result=FakeProcess()),
+                sleeper=fake_sleep,
+            )
+            asyncio.run(runtime.sync(make_config()))
+
+            self.assertFalse(runtime.snapshot()["active"])
+            self.assertIn("Permission denied", runtime.snapshot()["last_error"])
+            self.assertEqual(link_attempts, 1)
+            self.assertEqual(sleeps, [])
+
     def test_existing_pipewire_link_is_treated_as_idempotent(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             helper = Path(temp_dir) / "fxroute_21_passthrough"

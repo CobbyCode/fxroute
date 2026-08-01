@@ -39,6 +39,8 @@ NATIVE_HELPER_PENDING_MESSAGE = "PipeWire-native subwoofer helper binary is not 
 NATIVE_HELPER_NODE_NAME = "fxroute_21_stage1"
 NATIVE_HELPER_PORTS = ("input_L", "input_R", "output_1", "output_2", "output_3", "output_4")
 EASYEFFECTS_SINK_NAME = "easyeffects_sink"
+PIPEWIRE_LINK_RETRY_ATTEMPTS = 8
+PIPEWIRE_LINK_RETRY_DELAY_SECONDS = 0.15
 
 
 @dataclass(frozen=True)
@@ -1032,15 +1034,41 @@ class Subwoofer21Runtime:
         return _contains_link(result.stdout or "", link.source, link.target)
 
     async def _link(self, link: PipeWireLink) -> CommandResult:
-        result = await self._command_runner(["pw-link", link.source, link.target])
-        if result.returncode != 0:
+        last_result: CommandResult | None = None
+        for attempt in range(1, PIPEWIRE_LINK_RETRY_ATTEMPTS + 1):
+            result = await self._command_runner(["pw-link", link.source, link.target])
+            last_result = result
+            if result.returncode == 0:
+                logger.info("Subwoofer link repair created new link: %s -> %s", link.source, link.target)
+                return result
+
             message = f"{result.stderr or result.stdout}".strip()
             if "File exists" in message:
                 logger.debug("Subwoofer link repair link already exists: %s -> %s", link.source, link.target)
                 return result
-            raise RuntimeError(f"pw-link failed: {link.source} -> {link.target}: {result.stderr or result.stdout}".strip())
-        logger.info("Subwoofer link repair created new link: %s -> %s", link.source, link.target)
-        return result
+
+            # During a sample-rate handoff PipeWire can expose the helper
+            # ports before EasyEffects has recreated its output ports.  A
+            # transient ENOENT from pw-link is therefore retryable; other
+            # errors remain fatal and are surfaced immediately.
+            if "No such file or directory" not in message or attempt >= PIPEWIRE_LINK_RETRY_ATTEMPTS:
+                raise RuntimeError(
+                    f"pw-link failed: {link.source} -> {link.target}: {result.stderr or result.stdout}"
+                .strip())
+            logger.info(
+                "Subwoofer link pending PipeWire port recreation; retrying: "
+                "attempt=%s/%s link=%s -> %s error=%s",
+                attempt, PIPEWIRE_LINK_RETRY_ATTEMPTS, link.source, link.target, message,
+            )
+            await self._sleep(PIPEWIRE_LINK_RETRY_DELAY_SECONDS)
+
+        # The loop always returns or raises; retain a defensive failure for
+        # type-checkers and unexpected future changes to the retry policy.
+        assert last_result is not None
+        raise RuntimeError(
+            f"pw-link failed: {link.source} -> {link.target}: "
+            f"{last_result.stderr or last_result.stdout}".strip()
+        )
 
     async def _unlink(self, link: PipeWireLink, *, ignore_errors: bool = False) -> CommandResult:
         result = await self._command_runner(["pw-link", "-d", link.source, link.target])
