@@ -242,6 +242,45 @@ class SubwooferRuntimeStatusTest(unittest.TestCase):
             self.assertEqual(arg_value(helper_command, "--highpass-hz"), "87")
             self.assertEqual(arg_value(helper_command, "--bass-routing"), "mono")
 
+    def test_matching_running_helper_is_a_noop(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            helper = Path(temp_dir) / "fxroute_21_passthrough"
+            helper.write_text("#!/bin/sh\\n", encoding="utf-8")
+            commands = []
+            processes = []
+
+            async def fake_runner(args):
+                commands.append(tuple(args))
+                if tuple(args) == ("pw-link", "-io"):
+                    return CommandResult(0, "\\n".join([
+                        "fxroute_21_stage1:input_L", "fxroute_21_stage1:input_R",
+                        "fxroute_21_stage1:output_1", "fxroute_21_stage1:output_2",
+                        "fxroute_21_stage1:output_3", "fxroute_21_stage1:output_4",
+                    ]), "")
+                if tuple(args) == ("pw-link", "-l"):
+                    return CommandResult(0, mock_graph_links("mock_multichannel_output"), "")
+                return CommandResult(0, "", "")
+
+            async def fake_launcher(args):
+                processes.append(FakeProcess())
+                return processes[-1]
+
+            runtime = Subwoofer21Runtime(
+                helper_binary=helper,
+                command_runner=fake_runner,
+                process_launcher=fake_launcher,
+                sleeper=lambda _seconds: asyncio.sleep(0),
+            )
+            config = make_config(sample_rate=44_100)
+            asyncio.run(runtime.sync(config))
+            first_pid = runtime.snapshot()["helper_pid"]
+            first_start_count = len(processes)
+            asyncio.run(runtime.sync(config))
+
+            self.assertEqual(len(processes), first_start_count)
+            self.assertEqual(runtime.snapshot()["helper_pid"], first_pid)
+            self.assertTrue(runtime.snapshot()["active"])
+
     def test_existing_pipewire_link_is_treated_as_idempotent(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             helper = Path(temp_dir) / "fxroute_21_passthrough"

@@ -52,6 +52,7 @@ PEAK_MONITOR_RESTART_SETTLE_MS = 320
 PEAK_MONITOR_RATE_MATCH_TIMEOUT_MS = 900
 RADIO_SAMPLERATE_RENEGOTIATE_DELAY_MS = 1200
 RADIO_SAMPLERATE_PRESET_BOUNCE_DELAY_MS = 350
+RADIO_EXPECTED_SAMPLE_RATE_HZ = 44100
 SPOTIFY_PREARM_SAMPLE_RATE_HZ = 44100
 RADIO_RECONNECT_DELAY_SECONDS = 2.0
 RADIO_RECONNECT_MAX_ATTEMPTS = 5
@@ -523,11 +524,16 @@ def _measurement_session_blocks_playback_rate(expected_rate: Optional[int]) -> b
     )
 
 
-async def _ensure_radio_samplerate_force(expected_rate: Optional[int], reason: str) -> bool:
+async def _ensure_radio_samplerate_force(
+    expected_rate: Optional[int],
+    reason: str,
+    *,
+    allow_measurement_session: bool = False,
+) -> bool:
     global radio_samplerate_force_rate
     if not isinstance(expected_rate, int) or expected_rate <= 0:
         return False
-    if _measurement_session_blocks_playback_rate(expected_rate):
+    if not allow_measurement_session and _measurement_session_blocks_playback_rate(expected_rate):
         logger.info(
             "Playback samplerate repair deferred to active measurement session: "
             "reason=%s playback_rate=%s measurement_rate=%s",
@@ -557,7 +563,11 @@ async def _ensure_radio_samplerate_force(expected_rate: Optional[int], reason: s
         )
     aligned = await _wait_for_samplerate_alignment(expected_rate, timeout_ms=400)
     if not aligned and isinstance(active_rate, int) and active_rate != expected_rate:
-        if reason not in {"radio-start-before-loadfile", "radio-restart-after-measurement"}:
+        if reason not in {
+            "radio-start-before-loadfile",
+            "radio-restart-after-measurement",
+            "radio-playback-transition",
+        }:
             logger.info(
                 "Radio samplerate sink suspend/resume SKIPPED: reason=%s (only for radio-start/restart paths)",
                 reason,
@@ -878,11 +888,13 @@ class MeasurementSampleRateSession:
         self.original_force_rate = 0
         self.active_manual_job_ids: set[str] = set()
         self.active_auto_sub_job_id: str | None = None
+        self.active_spl_job_ids: set[str] = set()
         self.close_requested = False
         self.deferred_release_pending = False
         self.generation = 0
         self.lock = asyncio.Lock()
         self._playback_captured = False
+        self._rate_changed = False
 
     async def _start_locked(self, measurement_rate: int) -> int:
         if self.active:
@@ -893,6 +905,7 @@ class MeasurementSampleRateSession:
         _radio_state_before_measurement = None
         self.measurement_rate = int(measurement_rate)
         self._playback_captured = False
+        self._rate_changed = False
         # Capture playback state centrally BEFORE switching force-rate
         # so manual sweeps, L/R-repeat and Auto Sub all use the same path.
         _capture_playback_state_before_measurement()
@@ -905,12 +918,23 @@ class MeasurementSampleRateSession:
         if self.original_force_rate != self.measurement_rate:
             try:
                 _set_pipewire_force_rate(self.measurement_rate)
+                self._rate_changed = True
             except Exception as exc:
                 logger.error(
                     "Measurement sample-rate session could not set force-rate to %s Hz: %s",
                     self.measurement_rate,
                     exc,
                 )
+                # Do not expose a measurement session whose required rate was
+                # never established.  In particular, callers must not start a
+                # sweep while the sink is still running at the playback rate.
+                self._playback_captured = False
+                _playback_state_before_measurement = None
+                _radio_state_before_measurement = None
+                self.original_force_rate = 0
+                raise RuntimeError(
+                    f"Could not set measurement force-rate to {self.measurement_rate} Hz"
+                ) from exc
         self.active = True
         self.close_requested = False
         self.deferred_release_pending = False
@@ -929,6 +953,7 @@ class MeasurementSampleRateSession:
     async def register_manual_job(self, job_id: str) -> int:
         async with self.lock:
             if not self.active:
+                logger.info("Measurement sample-rate session start requested: caller=manual-sweep job_id=%s", job_id)
                 await self._start_locked(_resolve_measurement_start_sample_rate())
             self.active_manual_job_ids.add(job_id)
             return self.generation
@@ -946,9 +971,23 @@ class MeasurementSampleRateSession:
     async def register_auto_sub(self, job_id: str) -> int:
         async with self.lock:
             if not self.active:
+                logger.info("Measurement sample-rate session start requested: caller=auto-sub job_id=%s", job_id)
                 await self._start_locked(_resolve_measurement_start_sample_rate())
             self.active_auto_sub_job_id = job_id
             return self.generation
+
+    async def register_spl_job(self, job_id: str) -> int:
+        async with self.lock:
+            if not self.active:
+                logger.info("Measurement sample-rate session start requested: caller=spl-meter job_id=%s", job_id)
+                await self._start_locked(_resolve_measurement_start_sample_rate())
+            self.active_spl_job_ids.add(job_id)
+            return self.generation
+
+    async def unregister_spl_job(self, job_id: str) -> None:
+        async with self.lock:
+            self.active_spl_job_ids.discard(job_id)
+            await self._check_release()
 
     async def unregister_auto_sub(self, job_id: str) -> None:
         async with self.lock:
@@ -957,13 +996,15 @@ class MeasurementSampleRateSession:
             await self._check_release()
 
     async def request_open(self) -> None:
-        """Start the 48 kHz window session or cancel a pending close."""
+        """Record a heartbeat without changing the audio sample rate."""
         async with self.lock:
-            if not self.active:
-                await self._start_locked(_resolve_measurement_start_sample_rate())
-                return
-            self.close_requested = False
-            self.deferred_release_pending = False
+            logger.info(
+                "Measurement sample-rate session heartbeat: caller=measurement-window-open active=%s action=state-only",
+                self.active,
+            )
+            if self.active:
+                self.close_requested = False
+                self.deferred_release_pending = False
 
     async def request_close(self) -> None:
         async with self.lock:
@@ -975,7 +1016,7 @@ class MeasurementSampleRateSession:
     async def _check_release(self) -> bool:
         if not self.active or not self.close_requested:
             return False
-        if self.active_auto_sub_job_id is not None or self.active_manual_job_ids:
+        if self.active_auto_sub_job_id is not None or self.active_manual_job_ids or self.active_spl_job_ids:
             return False
         await self._release()
         return True
@@ -984,23 +1025,37 @@ class MeasurementSampleRateSession:
         global playback_stream_stale_after_measurement, radio_stream_stale_after_measurement
 
         restore_value = self.original_force_rate if self.original_force_rate > 0 else 0
+        playback_snapshot = _playback_state_before_measurement or {}
+        playback_source = playback_snapshot.get("source") or (current_track_info or {}).get("source")
+        playback_target_rate = playback_snapshot.get("expected_rate")
+        if not isinstance(playback_target_rate, int) or playback_target_rate <= 0:
+            playback_target_rate = None
+        target_rate = playback_target_rate or restore_value
+        force_rate_owned = True
         try:
-            current_force_rate = _get_current_pipewire_force_rate()
-            if current_force_rate == self.measurement_rate:
-                try:
-                    _set_pipewire_force_rate(restore_value)
-                except Exception as exc:
-                    logger.warning("Measurement sample-rate session force-rate restore failed: %s", exc)
-            else:
-                logger.warning(
-                    "Measurement sample-rate session restore skipped after external force-rate change: "
-                    "current_force_rate=%s measurement_rate=%s restore_value=%s",
-                    current_force_rate,
-                    self.measurement_rate,
-                    restore_value,
-                )
+            if self._rate_changed:
+                current_force_rate = _get_current_pipewire_force_rate()
+                if current_force_rate == self.measurement_rate:
+                    try:
+                        # Set the rate of the playback context directly. Do not
+                        # briefly restore the idle/default rate first: that would
+                        # create a second transition before the sink is aligned.
+                        _set_pipewire_force_rate(target_rate)
+                    except Exception as exc:
+                        force_rate_owned = False
+                        logger.warning("Measurement sample-rate session force-rate restore failed: %s", exc)
+                else:
+                    force_rate_owned = False
+                    logger.warning(
+                        "Measurement sample-rate session restore skipped after external force-rate change: "
+                        "current_force_rate=%s measurement_rate=%s restore_value=%s target_rate=%s",
+                        current_force_rate,
+                        self.measurement_rate,
+                        restore_value,
+                        target_rate,
+                    )
 
-            if _playback_state_before_measurement is not None:
+            if self._rate_changed and _playback_state_before_measurement is not None:
                 saved_rate = _playback_state_before_measurement.get("expected_rate")
                 if isinstance(saved_rate, int) and saved_rate > 0 and saved_rate != self.measurement_rate:
                     playback_stream_stale_after_measurement = True
@@ -1008,7 +1063,7 @@ class MeasurementSampleRateSession:
                         radio_stream_stale_after_measurement = True
 
             try:
-                runtime_restore_rate = restore_value
+                runtime_restore_rate = playback_target_rate or restore_value
                 if runtime_restore_rate <= 0:
                     status = get_samplerate_status()
                     runtime_restore_rate = int(
@@ -1016,7 +1071,28 @@ class MeasurementSampleRateSession:
                         or status.get("clock_rate")
                         or DEFAULT_SAMPLE_RATE
                     )
-                await _sync_subwoofer_runtime_at_rate(runtime_restore_rate)
+
+                rate_ready = True
+                if playback_target_rate and force_rate_owned:
+                    if playback_source == "radio":
+                        rate_ready = await _ensure_radio_samplerate_force(
+                            playback_target_rate,
+                            "radio-restart-after-measurement",
+                            allow_measurement_session=True,
+                        )
+                    else:
+                        rate_ready = await _wait_for_samplerate_alignment(
+                            playback_target_rate, timeout_ms=3500,
+                        )
+
+                if rate_ready:
+                    await _sync_subwoofer_runtime_at_rate(runtime_restore_rate, _rate_lock_held=True)
+                else:
+                    logger.warning(
+                        "Measurement sample-rate session runtime restore deferred until playback sink aligns: "
+                        "source=%s target_rate=%s",
+                        playback_source, runtime_restore_rate,
+                    )
             except Exception as exc:
                 logger.warning("Measurement sample-rate session runtime restore failed: %s", exc)
         finally:
@@ -1024,9 +1100,11 @@ class MeasurementSampleRateSession:
             self.active = False
             self.active_manual_job_ids.clear()
             self.active_auto_sub_job_id = None
+            self.active_spl_job_ids.clear()
             self.close_requested = False
             self.deferred_release_pending = False
             self._playback_captured = False
+            self._rate_changed = False
             self.original_force_rate = 0
             self.generation += 1
             logger.info(
@@ -1039,8 +1117,9 @@ class MeasurementSampleRateSession:
     async def run_watchdog(self) -> None:
         while True:
             try:
-                if self.active and not _is_measurement_window_open():
-                    await self.request_close()
+                # Heartbeat expiry is not an audio-session close signal. Browser
+                # timer suspension can pause heartbeats while the window remains
+                # open; only the explicit close request may restore the rate.
                 await asyncio.sleep(5.0)
             except asyncio.CancelledError:
                 raise
@@ -1114,6 +1193,7 @@ single_track_loop = False
 spl_calibration_noise_process = None
 spl_calibration_noise_file: Path | None = None
 spl_calibration_restore_state: dict[str, Any] | None = None
+SPL_CALIBRATION_JOB_ID = "spl-calibration"
 
 # WebSocket connection manager
 class ConnectionManager:
@@ -1845,16 +1925,6 @@ async def _sync_peak_monitor_after_playback_transition(expected_track: dict | No
             )
 
 
-def _helper_argument_sample_rate(snapshot: dict | None) -> int | None:
-    args = (snapshot or {}).get("helper_args") or []
-    try:
-        index = args.index("--rate")
-        value = int(args[index + 1])
-    except (ValueError, TypeError, IndexError):
-        return None
-    return value if value > 0 else None
-
-
 async def _complete_local_playback_handoff(track_info: dict, expected_rate: int) -> None:
     """Finish a local rate handoff while the newly loaded MPV track is paused."""
     global local_playback_handoff_completed_url, local_playback_handoff_completed_rate
@@ -1887,7 +1957,7 @@ async def _complete_local_playback_handoff(track_info: dict, expected_rate: int)
     if output_mode.get("mode") in OUTPUT_MODE_SUBWOOFER_MODES and subwoofer_runtime is not None:
         # Do not pass the pre-load overview as a stale-rate token: it can
         # still describe the previous track while the sink has just aligned.
-        await _sync_subwoofer_runtime(get_audio_output_overview())
+        await _sync_subwoofer_runtime(reason="local-playback-handoff")
         status = get_samplerate_status()
         runtime_snapshot = subwoofer_runtime.snapshot()
         helper_rate = _helper_argument_sample_rate(runtime_snapshot)
@@ -1907,7 +1977,7 @@ async def _complete_local_playback_handoff(track_info: dict, expected_rate: int)
                 expected_rate, helper_rate, runtime_snapshot.get("active"),
             )
             await asyncio.sleep(0.65)
-            await _sync_subwoofer_runtime(get_audio_output_overview())
+            await _sync_subwoofer_runtime(reason="local-playback-handoff-retry")
             status = get_samplerate_status()
             runtime_snapshot = subwoofer_runtime.snapshot()
             helper_rate = _helper_argument_sample_rate(runtime_snapshot)
@@ -1932,6 +2002,7 @@ async def _complete_local_playback_handoff(track_info: dict, expected_rate: int)
 
     local_playback_handoff_completed_url = track_info.get("url")
     local_playback_handoff_completed_rate = expected_rate
+
 
 async def _sync_subwoofer_runtime_after_playback_transition(expected_track: dict | None, timeout_ms: int = 3200) -> None:
     global local_playback_handoff_completed_url, local_playback_handoff_completed_rate
@@ -1958,12 +2029,31 @@ async def _sync_subwoofer_runtime_after_playback_transition(expected_track: dict
         )
         return
     try:
+        expected_rate = await _resolve_expected_playback_samplerate(expected_track.get("source") or "")
+        if not isinstance(expected_rate, int) or expected_rate <= 0:
+            logger.info(
+                "Subwoofer runtime playback transition deferred: player samplerate unavailable source=%s",
+                expected_track.get("source"),
+            )
+            return
+        if expected_track.get("source") == "radio":
+            aligned = await _ensure_radio_samplerate_force(
+                expected_rate, "radio-playback-transition",
+            )
+        else:
+            aligned = await _wait_for_samplerate_alignment(expected_rate, timeout_ms=3500)
+        if not aligned or not _current_track_matches(expected_track):
+            logger.info(
+                "Subwoofer runtime playback transition deferred until sink aligns: source=%s expected_rate=%s",
+                expected_track.get("source"), expected_rate,
+            )
+            return
         overview = get_audio_output_overview()
         output_mode = overview.get("output_mode") or {}
         if output_mode.get("mode") not in OUTPUT_MODE_SUBWOOFER_MODES:
             return
         before = subwoofer_runtime.snapshot()
-        await _sync_subwoofer_runtime(overview)
+        await _sync_subwoofer_runtime(overview, reason="playback-transition")
         after = subwoofer_runtime.snapshot()
         before_config = before.get("config") or {}
         after_config = after.get("config") or {}
@@ -2333,7 +2423,7 @@ async def _sync_subwoofer_runtime_for_measurement_sweep(measurement_rate: int) -
         _pulse_suspend_sink_for_samplerate(output_key, "measurement-pre-arm")
 
     overview = _audio_output_overview_with_effective_rate(get_audio_output_overview(), measurement_rate)
-    await _sync_subwoofer_runtime(overview)
+    await _sync_subwoofer_runtime(overview, reason="measurement-pre-arm")
 
     aligned, overview = await _wait_for_selected_output_effective_rate(measurement_rate, timeout_ms=3500)
     if not aligned:
@@ -2344,7 +2434,7 @@ async def _sync_subwoofer_runtime_for_measurement_sweep(measurement_rate: int) -
             f"{measurement_rate} Hz before sweep start (effective_rate={effective_rate})"
         )
 
-    await _sync_subwoofer_runtime(overview)
+    await _sync_subwoofer_runtime(overview, reason="measurement-pre-arm")
     after = subwoofer_runtime.snapshot()
     samplerate_after = get_samplerate_status()
     after_config = after.get("config") or {}
@@ -2402,56 +2492,59 @@ async def _unregister_measurement_job_after_completion(job_id: str, generation: 
         )
 
 
-async def _sync_subwoofer_runtime_at_rate(target_rate: int) -> None:
-    """Re-sync the subwoofer runtime at a specific playback sample rate.
-
-    Called after measurement completes to restore the helper at normal playback
-    rate instead of leaving it at the measurement rate.
-
-    When target_rate is 0 (no force-rate override), discovers the actual
-    effective output rate and syncs at that rate.
-    """
+async def _sync_subwoofer_runtime_at_rate(target_rate: int, *, _rate_lock_held: bool = False) -> None:
+    """Re-sync through the central live-rate helper path after a rate transition."""
     global subwoofer_runtime
     if subwoofer_runtime is None:
-        logger.info("Subwoofer runtime measurement release re-sync skipped: subwoofer_runtime_missing=true target_rate=%s", target_rate)
+        logger.info(
+            "Subwoofer runtime measurement release re-sync skipped: subwoofer_runtime_missing=true target_rate=%s",
+            target_rate,
+        )
         return
     logger.info("Subwoofer runtime measurement release re-sync requested: raw_target_rate=%s", target_rate)
-    if target_rate <= 0:
-        # No force rate — discover the actual effective rate from the output
-        overview = get_audio_output_overview()
-        output_mode = overview.get("output_mode") or {}
-        effective_rate = output_mode.get("effective_output_rate")
-        if isinstance(effective_rate, int) and effective_rate > 0:
-            target_rate = effective_rate
-        else:
-            selected = overview.get("selected_output") or {}
-            sr = selected.get("active_rate")
-            if isinstance(sr, int) and sr > 0:
-                target_rate = sr
-            else:
-                target_rate = DEFAULT_SAMPLE_RATE
     overview = get_audio_output_overview()
     output_mode = overview.get("output_mode") or {}
     if output_mode.get("mode") not in OUTPUT_MODE_SUBWOOFER_MODES:
         logger.info(
             "Subwoofer runtime measurement release re-sync skipped: api_mode=%s target_rate=%s",
-            output_mode.get("mode"),
-            target_rate,
+            output_mode.get("mode"), target_rate,
         )
         return
-    overview = _audio_output_overview_with_effective_rate(overview, target_rate)
-    await _sync_subwoofer_runtime(overview)
-    # Wait briefly and sync again to ensure stable state
+
+    # target_rate is diagnostic/stale-check information only. Do not inject it
+    # into an overview: the central sync reads the authoritative rate again
+    # under the sample-rate lock immediately before deciding to start.
+    if target_rate > 0:
+        selected_aligned, _ = await _wait_for_selected_output_effective_rate(target_rate, timeout_ms=3500)
+        sink_aligned = await _wait_for_samplerate_alignment(target_rate, timeout_ms=3500)
+        if not selected_aligned or not sink_aligned:
+            logger.warning(
+                "Subwoofer runtime measurement release re-sync deferred: target_rate=%s "
+                "selected_output_aligned=%s sink_aligned=%s",
+                target_rate, selected_aligned, sink_aligned,
+            )
+            return
+    await _sync_subwoofer_runtime(
+        reason="measurement-release", _rate_lock_held=_rate_lock_held,
+    )
     await asyncio.sleep(0.5)
-    overview = get_audio_output_overview()
-    overview = _audio_output_overview_with_effective_rate(overview, target_rate)
-    await _sync_subwoofer_runtime(overview)
+    await _sync_subwoofer_runtime(
+        reason="measurement-release-settle", _rate_lock_held=_rate_lock_held,
+    )
     runtime_snapshot = subwoofer_runtime.snapshot()
+    try:
+        samplerate_status = get_samplerate_status()
+    except Exception:
+        samplerate_status = {}
     logger.info(
-        "Subwoofer runtime measurement release re-sync: target_rate=%s active=%s helper_pid=%s",
+        "Subwoofer runtime measurement release re-sync verified: target_rate=%s authoritative_rate=%s "
+        "hardware_sink_rate=%s active=%s helper_pid=%s helper_rate=%s",
         target_rate,
+        _authoritative_sample_rate(samplerate_status),
+        samplerate_status.get("active_rate") if isinstance(samplerate_status, dict) else None,
         runtime_snapshot.get("active"),
         runtime_snapshot.get("helper_pid"),
+        _helper_argument_sample_rate(runtime_snapshot),
     )
     asyncio.create_task(_repair_subwoofer_runtime_inputs_after_measurement_release(target_rate))
 
@@ -2605,11 +2698,39 @@ async def _wait_for_player_audio_samplerate(
 
 
 async def _resolve_expected_playback_samplerate(source: str) -> Optional[int]:
-    rate = await _wait_for_player_audio_samplerate()
-    if rate or source != "radio":
-        return rate
-    await asyncio.sleep(RADIO_SAMPLERATE_RENEGOTIATE_DELAY_MS / 1000)
-    return await _wait_for_player_audio_samplerate(timeout_ms=1200)
+    # MPV still exposes the previous local track's audio-params before a radio
+    # loadfile.  That value is not evidence for the radio stream's rate and
+    # would incorrectly carry a local 48000-Hz context into this handoff.
+    if source == "radio":
+        return RADIO_EXPECTED_SAMPLE_RATE_HZ
+    return await _wait_for_player_audio_samplerate()
+
+
+async def _prepare_radio_handoff_before_loadfile() -> int:
+    """Establish and verify the radio rate before activating the stream."""
+    radio_rate = await _resolve_expected_playback_samplerate("radio")
+    if not isinstance(radio_rate, int) or radio_rate <= 0:
+        raise RuntimeError("Radio samplerate target unavailable before loadfile")
+
+    aligned = await _ensure_radio_samplerate_force(
+        radio_rate, "radio-start-before-loadfile",
+    )
+    if not aligned:
+        try:
+            samplerate_status = get_samplerate_status()
+        except Exception:
+            samplerate_status = {}
+        raise RuntimeError(
+            "Radio samplerate handoff did not align before loadfile: "
+            f"expected={radio_rate} active={samplerate_status.get('active_rate')} "
+            f"force={samplerate_status.get('force_rate')}"
+        )
+
+    logger.info(
+        "Radio samplerate handoff verified before loadfile: expected_rate=%s",
+        radio_rate,
+    )
+    return radio_rate
 
 
 async def _sync_easyeffects_preset_for_playback_samplerate(
@@ -3987,48 +4108,166 @@ async def _sync_bluetooth_input_monitoring(source_overview: dict | None = None) 
     return get_audio_source_overview()
 
 
-async def _sync_subwoofer_runtime(audio_overview: dict | None = None) -> dict:
+def _overview_sample_rate(overview: dict | None) -> int | None:
+    """Return a rate from an already captured overview for stale detection only."""
+    if not isinstance(overview, dict):
+        return None
+    output_mode = overview.get("output_mode") or {}
+    selected_output = overview.get("selected_output") or overview.get("current_output") or {}
+    for value in (
+        output_mode.get("effective_output_rate"),
+        selected_output.get("active_rate"),
+        overview.get("active_rate"),
+    ):
+        if isinstance(value, int) and value > 0:
+            return value
+    return None
+
+
+def _authoritative_sample_rate(status: dict | None) -> int | None:
+    """Read the live rate which owns the helper start decision."""
+    if not isinstance(status, dict):
+        return None
+    for key in ("force_rate", "active_rate"):
+        value = status.get(key)
+        if isinstance(value, int) and value > 0:
+            return value
+    return None
+
+
+def _helper_argument_sample_rate(snapshot: dict | None) -> int | None:
+    args = (snapshot or {}).get("helper_args") or []
+    try:
+        index = args.index("--rate")
+        value = int(args[index + 1])
+    except (ValueError, TypeError, IndexError):
+        return None
+    return value if value > 0 else None
+
+
+async def _sync_subwoofer_runtime(
+    audio_overview: dict | None = None,
+    *,
+    reason: str = "unspecified",
+    _rate_lock_held: bool = False,
+) -> dict:
+    """Synchronize the native helper from one live, lock-protected rate.
+
+    An overview passed by a transition/release caller is only a stale-check
+    token. The actual helper config is rebuilt after the final live PipeWire
+    read, so a delayed caller cannot restart a helper with its old target.
+    """
     global subwoofer_runtime
+    overview_was_supplied = audio_overview is not None
     overview = audio_overview or get_audio_output_overview()
 
     if subwoofer_runtime is None:
         return overview
 
-    config = SubwooferRuntimeConfig.from_overview(overview)
+    requested_rate = _overview_sample_rate(overview) if overview_was_supplied else None
 
-    await subwoofer_runtime.sync(config)
+    async def _sync_locked() -> dict:
+        try:
+            samplerate_status = get_samplerate_status()
+        except Exception as exc:
+            logger.warning(
+                "Subwoofer runtime sync skipped: authoritative samplerate unavailable reason=%s error=%s",
+                reason, exc,
+            )
+            return overview
 
-    if config.output_mode in OUTPUT_MODE_SUBWOOFER_MODES:
-        runtime_snapshot = subwoofer_runtime.snapshot()
-        mode_num = "2.2 Stereo Bass" if config.output_mode == OUTPUT_MODE_SUBWOOFER_22_STEREO else "2.2" if config.output_mode == OUTPUT_MODE_SUBWOOFER_22 else "2.1"
-        logger.info(
-            "%s runtime sync: output_mode=%s runtime_active=%s "
-            "hardware_output=%s device_channel_count=%s "
-            "crossover_hz=%s main_highpass=%s "
-            "sub1_level_db=%.1f sub1_alignment_ms=%.1f sub1_polarity=%s "
-            "sub2_level_db=%.1f sub2_alignment_ms=%.1f sub2_polarity=%s "
-            "derived_main_delay_ms=%.1f derived_sub1_delay_ms=%.1f derived_sub2_delay_ms=%.1f",
-            mode_num,
-            config.output_mode,
-            runtime_snapshot.get("active"),
-            config.output_key,
-            config.output_channels,
-            config.crossover_frequency_hz,
-            config.main_highpass_enabled,
-            config.sub_level_db,
-            config.sub_alignment_ms,
-            config.sub_polarity,
-            config.sub2_level_db,
-            config.sub2_alignment_ms,
-            config.sub2_polarity,
-            config.derived_main_delay_ms,
-            config.derived_sub1_delay_ms,
-            config.derived_sub2_delay_ms,
+        authoritative_rate = _authoritative_sample_rate(samplerate_status)
+        if authoritative_rate is None:
+            logger.warning(
+                "Subwoofer runtime sync skipped: authoritative samplerate missing reason=%s requested_rate=%s",
+                reason, requested_rate,
+            )
+            return overview
+
+        sink_rate = samplerate_status.get("active_rate")
+        if sink_rate != authoritative_rate:
+            logger.info(
+                "Subwoofer runtime sync deferred until sink reaches authoritative rate: "
+                "reason=%s requested_rate=%s authoritative_rate=%s hardware_sink_rate=%s",
+                reason, requested_rate, authoritative_rate, sink_rate,
+            )
+            return overview
+
+        current_overview = get_audio_output_overview()
+        current_mode = current_overview.get("output_mode") or {}
+        if current_mode.get("mode") == OUTPUT_MODE_STEREO:
+            await _ensure_stereo_easyeffects_output_graph(current_overview)
+            logger.info("Subwoofer runtime sync: output_mode=%s; stereo path unchanged", OUTPUT_MODE_STEREO)
+            return current_overview
+        if current_mode.get("mode") not in OUTPUT_MODE_SUBWOOFER_MODES:
+            return current_overview
+        if requested_rate is not None and requested_rate != authoritative_rate:
+            logger.info(
+                "Subwoofer runtime sync stale; helper restart suppressed: reason=%s requested_rate=%s authoritative_rate=%s",
+                reason, requested_rate, authoritative_rate,
+            )
+            return overview
+        current_overview = _audio_output_overview_with_effective_rate(
+            current_overview, authoritative_rate,
         )
-    else:
-        logger.info("Subwoofer runtime sync: output_mode=%s; stereo path unchanged", OUTPUT_MODE_STEREO)
-        await _ensure_stereo_easyeffects_output_graph(overview)
-    return overview
+        pre_start_status = get_samplerate_status()
+        pre_start_rate = _authoritative_sample_rate(pre_start_status)
+        pre_start_sink_rate = pre_start_status.get("active_rate")
+        if pre_start_rate != authoritative_rate or pre_start_sink_rate != authoritative_rate:
+            logger.info(
+                "Subwoofer runtime sync stale immediately before helper start; restart suppressed: "
+                "reason=%s requested_rate=%s authoritative_rate=%s pre_start_rate=%s pre_start_sink_rate=%s",
+                reason, requested_rate, authoritative_rate, pre_start_rate, pre_start_sink_rate,
+            )
+            return current_overview
+        current_overview = _audio_output_overview_with_effective_rate(
+            current_overview, pre_start_rate,
+        )
+        config = SubwooferRuntimeConfig.from_overview(current_overview)
+        # This is the final rate check in the existing sample-rate critical
+        # section, immediately before runtime.sync can launch the helper.
+        final_status = get_samplerate_status()
+        final_rate = _authoritative_sample_rate(final_status)
+        if final_rate != config.sample_rate:
+            logger.info(
+                "Subwoofer runtime sync stale at helper-start gate; restart suppressed: "
+                "reason=%s requested_rate=%s config_rate=%s final_rate=%s",
+                reason, requested_rate, config.sample_rate, final_rate,
+            )
+            return current_overview
+        await subwoofer_runtime.sync(config)
+
+        runtime_snapshot = subwoofer_runtime.snapshot()
+        helper_rate = _helper_argument_sample_rate(runtime_snapshot)
+        try:
+            samplerate_after = get_samplerate_status()
+        except Exception:
+            samplerate_after = {}
+        sink_rate = samplerate_after.get("active_rate") if isinstance(samplerate_after, dict) else None
+        mode_num = "2.2 Stereo Bass" if config.output_mode == OUTPUT_MODE_SUBWOOFER_22_STEREO else "2.2" if config.output_mode == OUTPUT_MODE_SUBWOOFER_22 else "2.1"
+        if sink_rate == authoritative_rate and helper_rate == authoritative_rate and runtime_snapshot.get("active"):
+            logger.info(
+                "%s runtime sync verified: reason=%s requested_rate=%s authoritative_rate=%s "
+                "hardware_sink_rate=%s helper_pid=%s helper_rate=%s runtime_active=%s output_mode=%s",
+                mode_num, reason, requested_rate, authoritative_rate, sink_rate,
+                runtime_snapshot.get("helper_pid"), helper_rate,
+                runtime_snapshot.get("active"), config.output_mode,
+            )
+        else:
+            logger.warning(
+                "%s runtime sync not verified; triple-rate match missing: reason=%s "
+                "requested_rate=%s authoritative_rate=%s hardware_sink_rate=%s helper_pid=%s "
+                "helper_rate=%s runtime_active=%s output_mode=%s",
+                mode_num, reason, requested_rate, authoritative_rate, sink_rate,
+                runtime_snapshot.get("helper_pid"), helper_rate,
+                runtime_snapshot.get("active"), config.output_mode,
+            )
+        return current_overview
+
+    if _rate_lock_held or measurement_sr_session is None:
+        return await _sync_locked()
+    async with measurement_sr_session.lock:
+        return await _sync_locked()
 
 
 def _with_subwoofer_derived_delays(overview: dict) -> dict:
@@ -5298,16 +5537,11 @@ async def play_track(req: PlayRequest):
                         asyncio.create_task(_release_local_samplerate_prearm(prearm_rate, prearm_generation, "play:mpv-native-queue"))
                 else:
                     prearm_rate, prearm_generation = await _prearm_known_local_samplerate(track_info, "play")
-                    # Radio: ensure sample rate before loadfile
+                    # Radio must not become active until its target rate, sink,
+                    # and native helper have been established and verified.
                     if source == "radio":
-                        try:
-                            radio_rate = await _resolve_expected_playback_samplerate("radio")
-                            if radio_rate:
-                                await _ensure_radio_samplerate_force(radio_rate, "radio-start-before-loadfile")
-                        except Exception as exc:
-                            logger.warning(
-                                "Pre-loadfile radio sample-rate apply failed: %s", exc,
-                            )
+                        await _prepare_radio_handoff_before_loadfile()
+
                     local_handoff_pending = source == "local" and prearm_rate is not None
                     if local_handoff_pending:
                         # Keep mpv paused across loadfile: the sink and the native
@@ -5320,6 +5554,8 @@ async def play_track(req: PlayRequest):
                     if prearm_rate and prearm_generation:
                         asyncio.create_task(_release_local_samplerate_prearm(prearm_rate, prearm_generation, "play"))
                     player_instance.set_pause(False)
+                    if subwoofer_runtime is not None and source == "radio":
+                        await _sync_subwoofer_runtime(get_audio_output_overview())
 
             current_track_info = track_info
             last_track_info = track_info
@@ -6060,6 +6296,8 @@ async def _maybe_repair_active_app_samplerate_drift(status: dict) -> None:
         (current_track_info or {}).get("url"),
     )
     await _ensure_radio_samplerate_force(expected_rate, f"status-drift-repair:{source}")
+    if subwoofer_runtime is not None:
+        await _sync_subwoofer_runtime(reason="status-poll-rate-repair")
 
 
 @app.get("/api/audio/samplerate")
@@ -6137,7 +6375,7 @@ async def save_audio_output_selection_route(request: Request):
 
     try:
         result = set_audio_output_selection(output_key)
-        await _sync_subwoofer_runtime(result)
+        await _sync_subwoofer_runtime(result, reason="output-selection")
         result = _with_subwoofer_derived_delays(result)
         if subwoofer_runtime is not None:
             result["output_mode"] = {
@@ -6199,7 +6437,7 @@ async def save_audio_output_mode_route(request: Request):
                     logger.warning("CONVOLVER-SLOT pre-load failed: %s", exc)
                     target_preset_before_sync = None
 
-        await _sync_subwoofer_runtime(result)
+        await _sync_subwoofer_runtime(result, reason="output-mode-switch")
 
         # ── Convolver Slot Consistency After Mode Switch ──
         # Should be a no-op when pre-load was successful; only fires as
@@ -7169,14 +7407,26 @@ async def get_spl_calibration():
     }
 
 
+async def _release_spl_calibration_session() -> None:
+    if measurement_sr_session is not None:
+        await measurement_sr_session.unregister_spl_job(SPL_CALIBRATION_JOB_ID)
+
+
 @app.post("/api/measurements/spl-calibration/noise")
 async def set_spl_calibration_noise(request: Request):
     body = await request.json()
     enabled = bool(body.get("enabled"))
     if not enabled:
         _stop_spl_calibration_noise()
+        await _release_spl_calibration_session()
         return {"status": "stopped"}
-    return _start_spl_calibration_noise()
+    if measurement_sr_session is not None:
+        await measurement_sr_session.register_spl_job(SPL_CALIBRATION_JOB_ID)
+    try:
+        return _start_spl_calibration_noise()
+    except Exception:
+        await _release_spl_calibration_session()
+        raise
 
 
 def _start_spl_calibration_noise() -> dict[str, Any]:
@@ -7256,6 +7506,8 @@ async def measure_spl_automatically():
     channel_index = max(0, int(settings.get("selectedMicInputChannel") or "1") - 1)
     previous_volume = float(capability["capture_volume_percent"])
     recorder: subprocess.Popen[Any] | None = None
+    if measurement_sr_session is not None:
+        await measurement_sr_session.register_spl_job(SPL_CALIBRATION_JOB_ID)
     try:
         if abs(previous_volume - 100.0) > 0.05:
             subprocess.run(
@@ -7336,6 +7588,7 @@ async def measure_spl_automatically():
         if recorder and recorder.poll() is None:
             recorder.terminate()
         _stop_spl_calibration_noise()
+        await _release_spl_calibration_session()
         if abs(previous_volume - 100.0) > 0.05:
             subprocess.run(
                 ["pactl", "set-source-volume", node_name, f"{previous_volume:.4f}%"],
@@ -7357,6 +7610,7 @@ async def apply_spl_calibration(request: Request):
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     _stop_spl_calibration_noise()
+    await _release_spl_calibration_session()
     ee_manager = _require_easyeffects_manager()
     extras = ee_manager.load_global_extras()
     profile = _spl_output_profile()
@@ -7566,6 +7820,20 @@ async def upload_measurement_calibration(calibration_file: UploadFile = File(...
         raise HTTPException(status_code=400, detail=str(exc))
 
 
+@app.get("/api/measurements/calibrations/{calibration_id}/export")
+async def export_measurement_calibration(calibration_id: str):
+    global measurement_store
+    if not measurement_store:
+        raise HTTPException(status_code=503, detail="Measurement store not available")
+    try:
+        path, filename = measurement_store.get_calibration_file_for_export(calibration_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Calibration file not found")
+    return FileResponse(path, filename=filename, media_type="text/plain")
+
+
 @app.patch("/api/measurements/calibrations/active")
 async def set_active_measurement_calibration(request: Request):
     global measurement_store
@@ -7605,6 +7873,20 @@ async def upload_measurement_house_curve(house_curve_file: UploadFile = File(...
         return measurement_store.upload_house_curve_file(filename, data)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/api/measurements/house-curves/{house_curve_id}/export")
+async def export_measurement_house_curve(house_curve_id: str):
+    global measurement_store
+    if not measurement_store:
+        raise HTTPException(status_code=503, detail="Measurement store not available")
+    try:
+        path, filename = measurement_store.get_house_curve_file_for_export(house_curve_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except KeyError:
+        raise HTTPException(status_code=404, detail="House curve file not found")
+    return FileResponse(path, filename=filename, media_type="text/plain")
 
 
 @app.delete("/api/measurements/house-curves/{house_curve_id}")

@@ -565,6 +565,14 @@ class Subwoofer21Runtime:
             self._config = config
             self._current_stream_key = stream_key
             self._last_error = None
+            logger.info(
+                "Subwoofer runtime no-op: matching helper already running output_mode=%s "
+                "hardware_output=%s sample_rate=%s helper_pid=%s",
+                config.output_mode,
+                config.output_key,
+                config.sample_rate,
+                getattr(self._process, "pid", None),
+            )
 
         mode_num = "2.2 Stereo Bass" if config.output_mode == OUTPUT_MODE_SUBWOOFER_22_STEREO else "2.2" if config.output_mode == OUTPUT_MODE_SUBWOOFER_22 else "2.1"
         routing_note = (
