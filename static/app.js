@@ -8531,9 +8531,7 @@ async function createCustomHouseCurve() {
 }
 
 async function downloadSelectedMeasurementHouseCurve() {
-    const conv = ensureMeasurementConvolverState();
-    const selectedKey = String(conv.targetCurve || '');
-    const houseCurveId = selectedKey.startsWith('house:') ? selectedKey.slice(6) : '';
+    const houseCurveId = elements.measurementHouseCurveSelect ? (elements.measurementHouseCurveSelect.value || '') : '';
     const selected = (state.measurement.houseCurveOptions || []).find(option => option.id === houseCurveId);
     if (!houseCurveId || !selected) return;
     state.measurement.houseCurveExporting = true;
@@ -8556,9 +8554,7 @@ async function downloadSelectedMeasurementHouseCurve() {
 }
 
 async function deleteSelectedMeasurementHouseCurve() {
-    const conv = ensureMeasurementConvolverState();
-    const selectedKey = String(conv.targetCurve || '');
-    const houseCurveId = selectedKey.startsWith('house:') ? selectedKey.slice(6) : '';
+    const houseCurveId = elements.measurementHouseCurveSelect ? (elements.measurementHouseCurveSelect.value || '') : '';
     const selected = (state.measurement.houseCurveOptions || []).find(option => option.id === houseCurveId);
     if (!houseCurveId || !selected) {
         showToast('No house curve file selected to delete', 'warning');
@@ -8572,7 +8568,8 @@ async function deleteSelectedMeasurementHouseCurve() {
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) throw new Error(data.detail || 'Failed to delete house curve file');
         applyMeasurementHouseCurveState(data);
-        if (conv.targetCurve === selectedKey) conv.targetCurve = 'neutral';
+        const conv = ensureMeasurementConvolverState();
+        if (conv.targetCurve === `house:${houseCurveId}`) conv.targetCurve = 'neutral';
         showToast('House curve file deleted', 'success');
     } catch (error) {
         console.error('deleteSelectedMeasurementHouseCurve failed', error);
@@ -10214,24 +10211,21 @@ function renderMeasurementPanel() {
     if (elements.measurementHouseCurveSelect) {
         const houseCurveOptions = measurementState.houseCurveOptions || [];
         const selectedHouseCurveId = String(conv.targetCurve || '').startsWith('house:') ? String(conv.targetCurve).slice(6) : '';
-        const activeHouseCurveSelected = houseCurveOptions.some(option => option.id === selectedHouseCurveId);
         const options = houseCurveOptions.length
-            ? (activeHouseCurveSelected
-                ? houseCurveOptions
-                : [{ id: '', filename: 'Built-in target curves only' }, ...houseCurveOptions])
+            ? houseCurveOptions
             : [{ id: '', filename: 'Built-in target curves only' }];
         elements.measurementHouseCurveSelect.innerHTML = options.map(option => `<option value="${escapeHtml(option.id || '')}" ${(option.id || '') === selectedHouseCurveId ? 'selected' : ''}>${escapeHtml(option.filename || 'House curve')}</option>`).join('');
         elements.measurementHouseCurveSelect.disabled = measurementState.houseCurveUpdating || measurementState.houseCurveDeleting;
     }
+    const selectedHouseCurveId = elements.measurementHouseCurveSelect ? (elements.measurementHouseCurveSelect.value || '') : '';
+    const hasSelectedHouseCurve = !!selectedHouseCurveId && (measurementState.houseCurveOptions || []).some(option => option.id === selectedHouseCurveId);
     if (elements.measurementHouseCurveDeleteBtn) {
-        const canDeleteHouseCurve = String(conv.targetCurve || '').startsWith('house:') && !measurementState.houseCurveUpdating && !measurementState.houseCurveDeleting && !measurementState.houseCurveExporting;
+        const canDeleteHouseCurve = hasSelectedHouseCurve && !measurementState.houseCurveUpdating && !measurementState.houseCurveDeleting && !measurementState.houseCurveExporting;
         elements.measurementHouseCurveDeleteBtn.disabled = !canDeleteHouseCurve;
         elements.measurementHouseCurveDeleteBtn.textContent = measurementState.houseCurveDeleting ? 'Deleting…' : 'Delete';
     }
     if (elements.measurementHouseCurveExportBtn) {
-        const selectedHouseCurveId = String(conv.targetCurve || '').startsWith('house:') ? String(conv.targetCurve).slice(6) : '';
-        const selectedHouseCurve = (measurementState.houseCurveOptions || []).some(option => option.id === selectedHouseCurveId);
-        const canExportHouseCurve = selectedHouseCurve && !measurementState.houseCurveUpdating && !measurementState.houseCurveDeleting && !measurementState.houseCurveExporting;
+        const canExportHouseCurve = hasSelectedHouseCurve && !measurementState.houseCurveUpdating && !measurementState.houseCurveDeleting && !measurementState.houseCurveExporting;
         elements.measurementHouseCurveExportBtn.disabled = !canExportHouseCurve;
         elements.measurementHouseCurveExportBtn.textContent = measurementState.houseCurveExporting ? 'Exporting…' : 'Export';
     }
