@@ -85,3 +85,9 @@ done
 - Kontrollierte Live-Abnahme erfolgreich: Local 48 kHz → Radio 44,1 kHz → Local 48 kHz.
 - POST `/api/stop` erfolgreich; Wiedergabe anschließend gestoppt.
 - `.104` blieb auf seinem bestehenden Git-HEAD; nur die geprüfte `main.py` wurde deployt.
+
+## Nachbeobachtung 2026-08-01 10:01
+
+- Im pausierten Zustand fällt der Hardware-Sink erwartungsgemäß auf die konfigurierte Default-Rate von 44,1 kHz zurück; dieser Zustand ist kein Beleg für einen fehlgeschlagenen 48-kHz-Handoff während aktiver Wiedergabe.
+- Der aktuelle Live-Zustand auf `.104` wirkt im praktischen Betrieb wieder unauffällig. Für die Bewertung des Local-Handoffs ist der aktive Übergang während laufender Wiedergabe maßgeblich, nicht der pausierte Sink-Zustand.
+- Lokal wurde keine weitere Runtime-Änderung vorgenommen; der Stand bleibt auf dem Stabilitäts-Gate aus Commit `0131c57`.
