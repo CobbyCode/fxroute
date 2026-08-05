@@ -18,6 +18,7 @@ EASYEFFECTS_MODE="missing"
 EASYEFFECTS_SOCKET=""
 PACKAGE_MANAGER=""
 PACKAGE_INSTALL_CMD=()
+PKG_REFRESH_DONE=0
 SUDO_CMD=()
 INSTALL_STATE_FILE="$HOME/.config/fxroute/install-state.json"
 INSTALL_CONFIG_FILE="$HOME/.config/fxroute/install-config.env"
@@ -169,7 +170,16 @@ valid_local_hostname() {
 }
 
 primary_lan_ip() {
-  hostname -I 2>/dev/null | awk '{print $1}'
+  local ip=""
+  ip="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
+  if [[ -z "$ip" ]] && command -v ip >/dev/null 2>&1; then
+    ip="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i=1; i<=NF; i++) if ($i == "src") {print $(i+1); exit}}' || true)"
+  fi
+  if [[ -z "$ip" ]] && command -v ip >/dev/null 2>&1; then
+    ip="$(ip -4 addr show scope global 2>/dev/null | awk '/inet / {sub(/\/.*/, "", $2); print $2; exit}' || true)"
+  fi
+  [[ -n "$ip" ]] && printf '%s\n' "$ip"
+  return 0
 }
 
 avahi_is_present() {
@@ -179,6 +189,9 @@ avahi_is_present() {
       ;;
     dnf|zypper)
       rpm -q avahi >/dev/null 2>&1
+      ;;
+    pacman)
+      pacman -Q avahi >/dev/null 2>&1
       ;;
     *)
       command -v avahi-daemon >/dev/null 2>&1 \
@@ -464,8 +477,10 @@ confirm_supported_distro() {
     PACKAGE_MANAGER="dnf"
   elif command -v zypper >/dev/null 2>&1; then
     PACKAGE_MANAGER="zypper"
+  elif command -v pacman >/dev/null 2>&1; then
+    PACKAGE_MANAGER="pacman"
   else
-    die "Unsupported distro. Expected apt, dnf, or zypper."
+    die "Unsupported distro. Expected apt, dnf, zypper, or pacman."
   fi
   pass "distro detection: $PACKAGE_MANAGER"
 }
@@ -479,14 +494,35 @@ pkg_install() {
   local packages=("$@")
   case "$PACKAGE_MANAGER" in
     apt)
-      run_cmd "${SUDO_CMD[@]}" apt-get update
+      if [[ $PKG_REFRESH_DONE -eq 0 ]]; then
+        run_cmd "${SUDO_CMD[@]}" apt-get update
+        PKG_REFRESH_DONE=1
+      fi
       run_cmd "${SUDO_CMD[@]}" apt-get install -y "${packages[@]}"
       ;;
     dnf)
-      run_cmd "${SUDO_CMD[@]}" dnf install -y "${packages[@]}"
+      if [[ $PKG_REFRESH_DONE -eq 0 ]]; then
+        run_cmd "${SUDO_CMD[@]}" dnf install -y --refresh "${packages[@]}"
+        PKG_REFRESH_DONE=1
+      else
+        run_cmd "${SUDO_CMD[@]}" dnf install -y "${packages[@]}"
+      fi
       ;;
     zypper)
+      if [[ $PKG_REFRESH_DONE -eq 0 ]]; then
+        run_cmd "${SUDO_CMD[@]}" zypper --non-interactive refresh
+        PKG_REFRESH_DONE=1
+      fi
       run_cmd "${SUDO_CMD[@]}" zypper --non-interactive install --no-recommends "${packages[@]}"
+      ;;
+    pacman)
+      if [[ $PKG_REFRESH_DONE -eq 0 ]]; then
+        log "Arch/Manjaro uses a rolling-release model; running a full system update (pacman -Syu) before the first package installation"
+        run_cmd "${SUDO_CMD[@]}" pacman -Syu --needed --noconfirm "${packages[@]}"
+        PKG_REFRESH_DONE=1
+      else
+        run_cmd "${SUDO_CMD[@]}" pacman -S --needed --noconfirm "${packages[@]}"
+      fi
       ;;
   esac
 }
@@ -516,6 +552,10 @@ ensure_native_packages() {
     zypper)
       core_packages=(python3 python3-pip mpv ffmpeg playerctl flatpak)
       audio_stack_packages=(bluez wireplumber pipewire-tools pipewire-pulseaudio pulseaudio-utils pipewire-spa-plugins-0_2)
+      ;;
+    pacman)
+      core_packages=(python python-pip mpv ffmpeg playerctl flatpak)
+      audio_stack_packages=(bluez bluez-utils wireplumber pipewire pipewire-pulse libpulse)
       ;;
   esac
 
@@ -578,6 +618,9 @@ ensure_native_packages() {
         ;;
       zypper)
         pkg_install python3-virtualenv
+        ;;
+      pacman)
+        # python on Arch/Manjaro ships the venv module; no extra package needed.
         ;;
       *)
         die "python3 venv support is missing after package install"
@@ -1124,6 +1167,9 @@ build_pipewire_stage1_helper() {
     zypper)
       stage1_packages=(gcc pkgconf-pkg-config pipewire-devel)
       ;;
+    pacman)
+      stage1_packages=(gcc pkgconf libpipewire)
+      ;;
   esac
   if [[ ${#stage1_packages[@]} -gt 0 ]]; then
     pkg_install "${stage1_packages[@]}"
@@ -1488,7 +1534,7 @@ offer_optional_local_lan_name() {
 
   case "$PACKAGE_MANAGER" in
     apt) avahi_pkg="avahi-daemon" ;;
-    dnf|zypper) avahi_pkg="avahi" ;;
+    dnf|zypper|pacman) avahi_pkg="avahi" ;;
     *)
       warn "Skipping optional .local setup on unsupported distro package manager: $PACKAGE_MANAGER"
       return 0

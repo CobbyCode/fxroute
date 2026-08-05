@@ -16,6 +16,8 @@ elif command -v dnf >/dev/null 2>&1; then
 elif command -v zypper >/dev/null 2>&1; then
   zypper --non-interactive refresh
   zypper --non-interactive update
+elif command -v pacman >/dev/null 2>&1; then
+  pacman -Syu --noconfirm
 else
   echo "No supported package manager found" >&2
   exit 1

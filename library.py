@@ -728,21 +728,6 @@ def _album_id(artist: str, album: str) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 
-def _is_compilation_by_tracks(album_name: str, tracks: List[Track]) -> bool:
-    """Heuristic: album_artist is missing and tracks have different artists."""
-    if not album_name or album_name == "Various":
-        return False
-    artists = set()
-    for t in tracks:
-        aa = (t.album_artist or "").strip()
-        if aa:
-            return False
-        a = (t.artist or "").strip()
-        if a:
-            artists.add(a.lower())
-    return len(artists) > 1
-
-
 def _has_folder_cover(track_path: Path) -> bool:
     """Check if the track's folder contains a cover image."""
     if not track_path:
@@ -784,3 +769,97 @@ def _has_embedded_cover(track_path: Path) -> bool:
         return bool(covers)
     except Exception:
         return False
+
+
+# ---------------------------------------------------------------------------
+# Track-parent-folder cleanup helpers.
+# Extracted verbatim from main.py (REFACTOR-007). Behavior is identical to the
+# previous inline implementation: path containment, removable artwork/sidecar
+# detection, cleanup-only folder handling, removal order, error handling and
+# return payloads are unchanged. No runtime globals are used.
+# ---------------------------------------------------------------------------
+
+REMOVABLE_ARTWORK_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
+REMOVABLE_ARTWORK_STEMS = {"cover", "folder", "front", "albumart"}
+REMOVABLE_EMPTY_SIDECAR_SUFFIXES = {".m3u", ".m3u8", ".cue", ".log", ".nfo", ".txt"}
+
+
+def path_within_root(path: Path, root: Path) -> bool:
+    try:
+        resolved_path = path.resolve()
+        resolved_root = root.resolve()
+    except Exception:
+        return False
+    return resolved_path == resolved_root or resolved_root in resolved_path.parents
+
+
+def is_removable_artwork_file(path: Path) -> bool:
+    if not path.is_file() or path.suffix.lower() not in REMOVABLE_ARTWORK_SUFFIXES:
+        return False
+    name = path.name.lower()
+    stem = path.stem.lower()
+    folder_stem = path.parent.name.lower()
+    return stem in REMOVABLE_ARTWORK_STEMS or stem.startswith("albumart") or any(
+        token in name for token in ("cover", "folder", "front", "album", "artwork")
+    ) or stem == folder_stem
+
+
+def is_removable_metadata_sidecar(path: Path) -> bool:
+    if not path.is_file() or path.suffix.lower() not in REMOVABLE_EMPTY_SIDECAR_SUFFIXES:
+        return False
+    return True
+
+
+def is_cleanup_only_file(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    return path.suffix.lower() in REMOVABLE_ARTWORK_SUFFIXES or is_removable_metadata_sidecar(path)
+
+
+def folder_has_audio_files(folder: Path) -> bool:
+    try:
+        for child in folder.iterdir():
+            if child.is_file() and child.suffix.lower() in AUDIO_EXTENSIONS:
+                return True
+    except OSError:
+        return False
+    return False
+
+
+def cleanup_track_parent_folder(folder: Path, music_root: Path, protected_folders: Optional[set[Path]] = None) -> dict:
+    cleaned = {"folder": str(folder), "removed_files": [], "removed_folder": False, "kept": []}
+    protected = {item.resolve() for item in (protected_folders or set())}
+    if (
+        not folder.is_dir()
+        or not path_within_root(folder, music_root)
+        or folder.resolve() == music_root.resolve()
+        or folder.resolve() in protected
+    ):
+        return cleaned
+    if folder_has_audio_files(folder):
+        return cleaned
+
+    try:
+        children = list(folder.iterdir())
+    except OSError as exc:
+        cleaned["kept"].append({"path": str(folder), "reason": str(exc)})
+        return cleaned
+
+    files = [child for child in children if child.is_file()]
+    cleanup_only_folder = bool(files) and all(is_cleanup_only_file(child) for child in files)
+
+    for child in children:
+        if cleanup_only_folder or is_removable_artwork_file(child) or is_removable_metadata_sidecar(child):
+            try:
+                child.unlink()
+                cleaned["removed_files"].append(str(child))
+            except OSError as exc:
+                cleaned["kept"].append({"path": str(child), "reason": str(exc)})
+
+    try:
+        if not any(folder.iterdir()):
+            folder.rmdir()
+            cleaned["removed_folder"] = True
+    except OSError as exc:
+        cleaned["kept"].append({"path": str(folder), "reason": str(exc)})
+    return cleaned

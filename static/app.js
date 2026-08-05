@@ -9,6 +9,7 @@ const CONFIG = {
     maxReconnectAttempts: 10,
 };
 const MeasurementDsp = window.FXRouteMeasurementDsp || {};
+let radioModule = null;
 // State
 let state = {
     playback: {
@@ -21,6 +22,7 @@ let state = {
         ended: false,
         error: null,
         live_title: null,
+        radio_metadata: null,
         output_peak_warning: {
             available: false,
             detected: false,
@@ -338,30 +340,6 @@ const elements = {
     settingsUpdateLog: document.getElementById('settings-update-log'),
     tabs: document.querySelectorAll('.tab-btn'),
     tabPanels: document.querySelectorAll('.tab-panel'),
-    stationsGrid: document.getElementById('stations-grid'),
-    stationSearchInput: document.getElementById('station-search'),
-    stationSearchClear: document.getElementById('station-search-clear'),
-    stationExportAllBtn: document.getElementById('station-export-all'),
-    stationsEmptySearch: document.getElementById('stations-empty-search'),
-    toggleStationManageBtn: document.getElementById('toggle-station-manage'),
-    closeStationManageBtn: document.getElementById('close-station-manage'),
-    radioManagePanel: document.getElementById('radio-manage-panel'),
-    stationNameGroup: document.getElementById('station-name-group'),
-    stationName: document.getElementById('station-name'),
-    stationImageGroup: document.getElementById('station-image-group'),
-    stationImageUrl: document.getElementById('station-image-url'),
-    stationUrlDropArea: document.getElementById('station-url-drop-area'),
-    stationUrlHint: document.getElementById('station-url-hint'),
-    stationUrl: document.getElementById('station-url'),
-    stationSaveRow: document.getElementById('station-save-row'),
-    stationSaveBtn: document.getElementById('station-save'),
-    stationDeleteSelect: document.getElementById('station-delete-select'),
-    stationExistingFields: document.getElementById('station-existing-fields'),
-    stationExistingUrl: document.getElementById('station-existing-url'),
-    stationExistingImageUrl: document.getElementById('station-existing-image-url'),
-    stationUpdateBtn: document.getElementById('station-update'),
-    stationDeleteBtn: document.getElementById('station-delete'),
-    stationFormStatus: document.getElementById('station-form-status'),
     toggleImportBtn: document.getElementById('toggle-import'),
     libraryShuffleBtn: document.getElementById('library-shuffle'),
     libraryLoopBtn: document.getElementById('library-loop'),
@@ -566,6 +544,21 @@ const elements = {
     effectsStatus: document.getElementById('effects-status'),
     playbackBar: document.getElementById('playback-bar'),
     playbackCover: document.getElementById('playback-cover'),
+    coverDetailBackdrop: document.getElementById('cover-detail-backdrop'),
+    coverDetailCard: document.getElementById('cover-detail-card'),
+    coverDetailCover: document.getElementById('cover-detail-cover'),
+    coverDetailSource: document.getElementById('cover-detail-source'),
+    coverDetailTitle: document.getElementById('cover-detail-title'),
+    coverDetailArtist: document.getElementById('cover-detail-artist'),
+    coverDetailAlbum: document.getElementById('cover-detail-album'),
+    coverDetailTech: document.getElementById('cover-detail-tech'),
+    coverDetailHistory: document.getElementById('cover-detail-history'),
+    coverDetailHistoryList: document.getElementById('cover-detail-history-list'),
+    coverDetailQueue: document.getElementById('cover-detail-queue'),
+    coverDetailQueueList: document.getElementById('cover-detail-queue-list'),
+    coverDetailExtra: document.getElementById('cover-detail-extra'),
+    coverDetailExtraLine1: document.getElementById('cover-detail-extra-line1'),
+    coverDetailExtraLine2: document.getElementById('cover-detail-extra-line2'),
     trackTitle: document.getElementById('track-title'),
     trackArtist: document.getElementById('track-artist'),
     playbackEq: document.getElementById('playback-eq'),
@@ -601,7 +594,17 @@ document.addEventListener('DOMContentLoaded', () => {
     try { setupPlaybackControls(); } catch(e) { console.error('setupPlaybackControls crashed:', e); }
     try { setupSettingsActions(); } catch(e) { console.error('setupSettingsActions crashed:', e); }
     try { initSeek(); } catch(e) { console.error('initSeek crashed:', e); }
-    try { setupStationActions(); } catch(e) { console.error('setupStationActions crashed:', e); }
+    try {
+        radioModule = window.FXRouteRadio.init({
+            getStations: () => state.stations,
+            setStations: stations => { state.stations = stations; },
+            playStation: stationId => playRadio(stationId),
+            showToast,
+            escapeHtml,
+            highlightActiveTrack,
+            extractDroppedUrl,
+        });
+    } catch(e) { console.error('radio module initialization crashed:', e); }
     try { setupLibraryActions(); } catch(e) { console.error('setupLibraryActions crashed:', e); }
     try { setupDownloadActions(); } catch(e) { console.error('setupDownloadActions crashed:', e); }
     try { setupEffectsActions(); } catch(e) { console.error('setupEffectsActions crashed:', e); }
@@ -786,9 +789,7 @@ function handleWebSocketMessage(msg) {
                 renderTracks();
             }
             if (data.stations) {
-                state.stations = data.stations;
-                renderStations();
-                renderStationDeleteOptions();
+                radioModule.setStations(data.stations);
             }
             if (data.spotify) {
                 handleIncomingSpotifyState(data.spotify, { renderTab: true, renderFooter: true });
@@ -1101,6 +1102,24 @@ function formatSampleRateKhz(rate) {
     const numeric = Number(rate);
     if (!Number.isFinite(numeric) || numeric <= 0) return 'Auto';
     return `${(numeric / 1000).toFixed(1).replace(/\.0$/, '')} kHz`;
+}
+
+function formatRadioStreamLine(streamInfo) {
+    if (!streamInfo || typeof streamInfo !== 'object') return '';
+    const parts = [];
+    if (streamInfo.codec) parts.push(String(streamInfo.codec));
+    if (streamInfo.profile) {
+        parts.push(String(streamInfo.profile));
+    } else if (Number.isFinite(Number(streamInfo.bitrate_kbps)) && Number(streamInfo.bitrate_kbps) > 0) {
+        parts.push(`${Math.round(Number(streamInfo.bitrate_kbps))} kbps`);
+    }
+    if (Number.isFinite(Number(streamInfo.bit_depth)) && Number(streamInfo.bit_depth) > 0) {
+        parts.push(`${Math.round(Number(streamInfo.bit_depth))} bit`);
+    }
+    if (Number.isFinite(Number(streamInfo.samplerate_hz)) && Number(streamInfo.samplerate_hz) > 0) {
+        parts.push(`${(Number(streamInfo.samplerate_hz) / 1000).toFixed(1).replace(/\.0$/, '')} kHz`);
+    }
+    return parts.join(' · ');
 }
 
 function buildAudioOutputModeRequest(mode, settings = null, options = {}) {
@@ -2207,6 +2226,28 @@ function setupPlaybackControls() {
     if (elements.libraryShuffleBtn) elements.libraryShuffleBtn.addEventListener('click', toggleLibraryShuffle);
     if (elements.libraryLoopBtn) elements.libraryLoopBtn.addEventListener('click', toggleLibraryLoop);
     elements.volumeSlider.addEventListener('input', handleVolumeChange);
+    if (elements.playbackCover) elements.playbackCover.addEventListener('click', toggleCoverDetailCard);
+    if (elements.coverDetailBackdrop) elements.coverDetailBackdrop.addEventListener('click', closeCoverDetailCard);
+    if (elements.coverDetailQueueList) {
+        elements.coverDetailQueueList.addEventListener('click', (event) => {
+            const row = event.target.closest('[data-queue-index]');
+            if (!row) return;
+            event.preventDefault();
+            event.stopPropagation();
+            playCoverQueueIndex(Number(row.dataset.queueIndex));
+        });
+        elements.coverDetailQueueList.addEventListener('keydown', (event) => {
+            if (event.key !== 'Enter' && event.key !== ' ') return;
+            const row = event.target.closest('[data-queue-index]');
+            if (!row) return;
+            event.preventDefault();
+            event.stopPropagation();
+            playCoverQueueIndex(Number(row.dataset.queueIndex));
+        });
+    }
+    document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape' && isCoverDetailOpen()) closeCoverDetailCard();
+    });
     elements.volumeSlider.addEventListener('change', (e) => {
         const sliderValue = parseInt(e.target.value, 10);
         const actualVolume = sliderVolumeToActualVolume(sliderValue);
@@ -2354,6 +2395,9 @@ async function togglePlayback() {
             state.playback.paused = data.status === 'paused';
         }
         updatePlaybackUI();
+        if (state.playback.playing && state.playback.current_track?.source === 'radio') {
+            void fetchMetadata();
+        }
     } catch (e) {
         if (requestId !== pauseActionRequestId) return;
         state.playback.playing = previousPlaying;
@@ -2413,6 +2457,14 @@ function mergePlaybackState(data) {
         return;
     }
     const nextPlayback = { ...data };
+    const previousRadioMetadata = state.playback?.radio_metadata;
+    if (nextPlayback.paused && nextPlayback.radio_metadata && previousRadioMetadata
+        && nextPlayback.radio_metadata.track_id === previousRadioMetadata.track_id) {
+        nextPlayback.radio_metadata = {
+            ...nextPlayback.radio_metadata,
+            progress_seconds: previousRadioMetadata.progress_seconds,
+        };
+    }
     const remoteVolume = typeof nextPlayback.volume === 'number' ? nextPlayback.volume : null;
     if (remoteVolume !== null) {
         delete nextPlayback.volume;
@@ -2773,7 +2825,7 @@ async function fetchMetadata() {
             }
         }
         if (data.current_track) {
-            mergePlaybackState({ current_track: data.current_track, playing: data.playing, paused: data.paused, live_title: data.live_title });
+            mergePlaybackState({ current_track: data.current_track, playing: data.playing, paused: data.paused, live_title: data.live_title, radio_metadata: data.radio_metadata, stream_info: data.stream_info });
             syncFooterOwnershipFromPlayback(data);
             needsUiRefresh = true;
         }
@@ -2784,6 +2836,21 @@ async function fetchMetadata() {
 }
 function renderSamplerateUI() {
     if (!elements.samplerateStatus) return;
+    // Radio/library: show live stream facts (codec/bitrate/profile/depth/
+    // samplerate) from the backend stream_info block instead of the sink
+    // samplerate status.
+    const activeSource = state.playback.current_track?.source;
+    if (activeSource === 'radio' || activeSource === 'local') {
+        const streamLine = formatRadioStreamLine(state.playback.stream_info);
+        if (streamLine) {
+            elements.samplerateStatus.textContent = streamLine;
+            elements.samplerateStatus.classList.remove('hidden');
+        } else {
+            elements.samplerateStatus.textContent = '';
+            elements.samplerateStatus.classList.add('hidden');
+        }
+        return;
+    }
     const samplerate = state.samplerate || {};
     if (!samplerate.available || !samplerate.active_rate) {
         elements.samplerateStatus.textContent = 'Auto';
@@ -3075,6 +3142,261 @@ function armFooterContentFreeze(ms = 900) {
     }, ms + 20);
 }
 
+function coverDetailSections(playback) {
+    // Returns { history: [...], queue: null | { tracks, index } } for the
+    // cover detail card. Only uses data already present in the status
+    // payload — never invents entries.
+    const track = playback?.current_track || null;
+    if (!track) return { history: [], queue: null };
+    const isRadio = track.source === 'radio';
+    let history = [];
+    if (isRadio) {
+        const raw = playback?.radio_metadata?.history;
+        if (Array.isArray(raw)) {
+            history = raw.filter(entry => entry && (entry.title || entry.artist));
+        }
+    }
+    let queue = null;
+    if (track.source === 'local') {
+        const q = playback?.queue || {};
+        const tracks = Array.isArray(q.tracks) ? q.tracks : [];
+        const count = Number(q.count) || tracks.length;
+        if (count > 1 && tracks.length > 1) {
+            queue = { tracks, index: typeof q.index === 'number' ? q.index : -1 };
+        }
+    }
+    return { history, queue };
+}
+
+function isCoverDetailOpen() {
+    return !!(elements.coverDetailCard && !elements.coverDetailCard.classList.contains('hidden'));
+}
+
+function coverDetailMeta(playback, playlists) {
+    // Returns { source, title, artist, album, tech } for the cover detail
+    // card. Only uses data already present in the status payload and the
+    // loaded playlist list — never invents entries.
+    const track = playback?.current_track || null;
+    if (!track) return { source: '', title: '', artist: '', album: '', tech: '' };
+    const isRadio = track.source === 'radio';
+    const radioMetadata = isRadio ? playback.radio_metadata : null;
+    const providerFresh = radioMetadata && !radioMetadata.stale && radioMetadata.title;
+    // Radio: station name from the track payload. Library: playlist name only
+    // when the active queue exactly matches a known playlist.
+    let source = '';
+    if (isRadio) {
+        source = track.title || '';
+    } else if (Array.isArray(playlists)) {
+        const q = playback.queue || {};
+        const tracks = Array.isArray(q.tracks) ? q.tracks : [];
+        if (tracks.length >= 2) {
+            const ids = tracks.map(item => item.id);
+            const playlist = playlists.find(p => {
+                const trackIds = (p && Array.isArray(p.track_ids)) ? p.track_ids : [];
+                return trackIds.length === ids.length && trackIds.every(id => ids.includes(id));
+            });
+            if (playlist) source = playlist.name || '';
+        }
+    }
+    const title = providerFresh
+        ? (radioMetadata.title || '')
+        : (isRadio && playback.live_title ? playback.live_title : (track.title || ''));
+    const artist = providerFresh
+        ? (radioMetadata.artist || '')
+        : (isRadio ? '' : (track.artist || ''));
+    const album = providerFresh
+        ? (radioMetadata.album || '')
+        : (track.album || '');
+    const tech = formatRadioStreamLine(playback.stream_info);
+    return { source, title, artist, album, tech };
+}
+
+function coverDetailSpotifyMeta(data) {
+    // Spotify detail card meta: only fields actually delivered by the
+    // Spotify status payload — never invented technical values.
+    if (!data) return { source: '', title: '', artist: '', album: '', tech: '' };
+    return {
+        source: 'SPOTIFY',
+        title: data.title || '',
+        artist: data.artist || '',
+        album: data.album || '',
+        tech: '',
+    };
+}
+
+function setCoverDetailText(el, value) {
+    if (!el) return;
+    const text = (value || '').trim();
+    el.textContent = text;
+    el.classList.toggle('hidden', !text);
+}
+
+function coverDetailExtra(playback) {
+    // Small tag-info block under the cover: two subtle lines using only
+    // fields already present in the status payload (year, genre, track/disc
+    // number). No new API lookups, no composer/label (not in the data path).
+    // Returns { line1, line2 }; empty strings hide the line, both empty hide
+    // the whole block. Example: "2004 · German Hip-Hop" / "Disc 1 · Track 3".
+    const track = playback?.current_track || null;
+    if (!track || track.source !== 'local') return { line1: '', line2: '' };
+    const line1Parts = [];
+    if (Number.isInteger(track.year) && track.year > 0) line1Parts.push(String(track.year));
+    const genre = (track.genre || '').trim();
+    if (genre) line1Parts.push(genre);
+    const line2Parts = [];
+    if (Number.isInteger(track.disc_number) && track.disc_number > 0) line2Parts.push(`Disc ${track.disc_number}`);
+    if (Number.isInteger(track.track_number) && track.track_number > 0) line2Parts.push(`Track ${track.track_number}`);
+    return { line1: line1Parts.join(' · '), line2: line2Parts.join(' · ') };
+}
+
+function coverQueuePlayTarget(playback, index) {
+    // Canonical play payload for jumping to a queue index: the same /api/play
+    // request playLocal uses (track_id + full queue in order). Returns null
+    // when the index is invalid or already the active track.
+    const queue = playback?.queue || {};
+    const tracks = Array.isArray(queue.tracks) ? queue.tracks : [];
+    if (!Number.isInteger(index) || index < 0 || index >= tracks.length) return null;
+    if (index === queue.index) return null;
+    const track = tracks[index];
+    if (!track || !track.id) return null;
+    return {
+        source: 'local',
+        track_id: track.id,
+        queue_track_ids: tracks.map(item => item.id),
+        shuffle: !!queue.shuffle,
+        loop: !!queue.loop,
+    };
+}
+
+async function playCoverQueueIndex(index) {
+    const payload = coverQueuePlayTarget(state.playback, index);
+    if (!payload) return;
+    try {
+        const resp = await fetch('/api/play', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || 'Play command failed');
+        if (data.playback) {
+            mergePlaybackState(data.playback);
+            syncLibraryStateFromPlaybackContext(true);
+        }
+        updatePlaybackUI();
+    } catch (e) {
+        console.warn('Cover queue play failed', e);
+        showToast('Failed to play track', 'error');
+    }
+}
+
+// Signature of the last rendered queue list. Rebuilding the <ol> on every
+// status poll would replace the row under the cursor and drop its :hover
+// state (visible flicker) and keyboard focus, so only rebuild on change.
+let coverDetailQueueSignature = null;
+
+function renderCoverDetailCard() {
+    const playback = state.playback || {};
+    const track = playback.current_track || null;
+    // Spotify owns the footer (and thus the detail card) from the Spotify
+    // poll state; /api/status carries no Spotify track. Mirror the footer
+    // source so the card shows the same data as the footer.
+    const spotifyData = getEffectivePlaybackControlSource() === 'spotify' ? (window.__spotifyLastData || null) : null;
+    // Meta block: source/playlist, current title, artist, album, tech line.
+    const meta = spotifyData ? coverDetailSpotifyMeta(spotifyData) : coverDetailMeta(playback, state.playlists);
+    setCoverDetailText(elements.coverDetailSource, meta.source);
+    setCoverDetailText(elements.coverDetailTitle, meta.title);
+    setCoverDetailText(elements.coverDetailArtist, meta.artist);
+    setCoverDetailText(elements.coverDetailAlbum, meta.album);
+    setCoverDetailText(elements.coverDetailTech, meta.tech);
+    // Tag-info block under the cover: year/genre + disc/track position only
+    // when present; hide the whole block when both lines are empty.
+    const extra = coverDetailExtra(playback);
+    setCoverDetailText(elements.coverDetailExtraLine1, extra.line1);
+    setCoverDetailText(elements.coverDetailExtraLine2, extra.line2);
+    if (elements.coverDetailExtra) {
+        elements.coverDetailExtra.classList.toggle('hidden', !extra.line1 && !extra.line2);
+    }
+    // Cover: same artwork resolution as the footer (provider cover for radio,
+    // track artwork for library).
+    const isRadio = track && track.source === 'radio';
+    const radioMetadata = isRadio ? playback.radio_metadata : null;
+    const providerCover = radioMetadata && !radioMetadata.stale ? radioMetadata.cover_url : '';
+    // Spotify artwork mirrors the footer artwork resolution (spotifyArtworkItem);
+    // the radio/library branches are unchanged.
+    const coverItem = spotifyData
+        ? spotifyArtworkItem(spotifyData)
+        : (providerCover
+            ? { ...track, artwork_available: true, artwork_url: providerCover, artwork_fallback_url: track?.artwork_url || '' }
+            : track);
+    const coverUrl = playbackArtworkKnownAvailable(coverItem) ? playbackArtworkUrl(coverItem) : '';
+    if (coverUrl) {
+        elements.coverDetailCover.src = coverUrl;
+        elements.coverDetailCover.classList.remove('hidden');
+    } else {
+        elements.coverDetailCover.removeAttribute('src');
+        elements.coverDetailCover.classList.add('hidden');
+    }
+    const sections = coverDetailSections(playback);
+    // Radio: provider-delivered history only (no empty headings, no invented entries).
+    if (sections.history.length > 0) {
+        elements.coverDetailHistoryList.innerHTML = sections.history.map((entry, index) => `
+            <li class="cover-detail-row">
+                <span class="cover-detail-row-index">${index + 1}</span>
+                <span class="cover-detail-row-body">
+                    <span class="cover-detail-row-title">${escapeHtml(entry.title || '')}</span>
+                    ${entry.artist ? `<span class="cover-detail-row-artist">${escapeHtml(entry.artist)}</span>` : ''}
+                </span>
+            </li>`).join('');
+        elements.coverDetailHistory.classList.remove('hidden');
+    } else {
+        elements.coverDetailHistoryList.innerHTML = '';
+        elements.coverDetailHistory.classList.add('hidden');
+    }
+    // Library: active queue with current track highlighted (if any). Rows are
+    // keyboard-accessible buttons that jump via the canonical play path.
+    if (sections.queue) {
+        const signature = sections.queue.tracks.map(item => item.id).join('|') + '|' + sections.queue.index;
+        if (signature !== coverDetailQueueSignature) {
+            coverDetailQueueSignature = signature;
+            elements.coverDetailQueueList.innerHTML = sections.queue.tracks.map((item, index) => {
+                const playable = coverQueuePlayTarget(playback, index) !== null;
+                const attrs = playable
+                    ? ` role="button" tabindex="0" data-queue-index="${index}" aria-label="Play ${escapeHtml(item.title || '')}"`
+                    : '';
+                return `<li class="cover-detail-row${index === sections.queue.index ? ' current' : ''}"${attrs}>
+                    <span class="cover-detail-row-index">${index + 1}</span>
+                    ${index === sections.queue.index ? '<span class="cover-detail-row-current-mark">▶</span>' : ''}
+                    <span class="cover-detail-row-body">
+                        <span class="cover-detail-row-title">${escapeHtml(item.title || '')}</span>
+                        ${item.artist ? `<span class="cover-detail-row-artist">${escapeHtml(item.artist)}</span>` : ''}
+                    </span>
+                </li>`;
+            }).join('');
+        }
+        elements.coverDetailQueue.classList.remove('hidden');
+    } else {
+        coverDetailQueueSignature = null;
+        elements.coverDetailQueueList.innerHTML = '';
+        elements.coverDetailQueue.classList.add('hidden');
+    }
+}
+
+function openCoverDetailCard() {
+    renderCoverDetailCard();
+    elements.coverDetailBackdrop.classList.remove('hidden');
+    elements.coverDetailCard.classList.remove('hidden');
+}
+
+function closeCoverDetailCard() {
+    elements.coverDetailBackdrop.classList.add('hidden');
+    elements.coverDetailCard.classList.add('hidden');
+}
+
+function toggleCoverDetailCard() {
+    if (isCoverDetailOpen()) closeCoverDetailCard();
+    else openCoverDetailCard();
+}
 function updatePlaybackUI() {
     const { current_track, volume, playing, paused, live_title } = state.playback;
     const freezeActive = footerContentFreezeActive();
@@ -3100,9 +3422,14 @@ function updatePlaybackUI() {
     if (!freezeActive) {
         document.body.classList.remove('source-local', 'source-radio');
         document.body.classList.add(isRadio ? 'source-radio' : 'source-local');
-        // Hide seek-row on radio, show on local
+        const radioMetadata = isRadio ? state.playback.radio_metadata : null;
+        const validRadioProgress = !!(radioMetadata && !radioMetadata.stale
+            && Number.isFinite(Number(radioMetadata.started_at))
+            && Number(radioMetadata.duration_seconds) > 0);
+        document.body.classList.toggle('radio-has-progress', validRadioProgress);
+        // Hide seek-row on radio unless provider timing is reliable.
         const seekRow = document.querySelector('.seek-row');
-        if (seekRow) seekRow.style.display = isRadio ? 'none' : '';
+        if (seekRow) seekRow.style.display = isRadio ? (validRadioProgress ? 'flex' : 'none') : '';
         // Track info
         if (current_track) {
             elements.trackTitle.textContent = isRadio && live_title ? live_title : current_track.title;
@@ -3111,8 +3438,17 @@ function updatePlaybackUI() {
             elements.trackTitle.classList.add('placeholder');
             const scArtist = document.getElementById('sc-artist');
             const scTitle = document.getElementById('sc-title');
-            if (scArtist) scArtist.textContent = isRadio && live_title ? current_track.title : (current_track.artist || '');
-            if (scTitle) scTitle.textContent = isRadio && live_title ? live_title : current_track.title;
+            const scAlbum = document.getElementById('sc-album');
+            const providerMetadata = isRadio && radioMetadata && !radioMetadata.stale && radioMetadata.title
+                ? radioMetadata : null;
+            if (scArtist) scArtist.textContent = providerMetadata
+                ? (providerMetadata.artist || current_track.title)
+                : (isRadio && live_title ? current_track.title : (current_track.artist || ''));
+            if (scTitle) scTitle.textContent = providerMetadata ? providerMetadata.title : (isRadio && live_title ? live_title : current_track.title);
+            if (scAlbum) {
+                scAlbum.textContent = providerMetadata?.album || '';
+                scAlbum.style.display = providerMetadata?.album ? '' : 'none';
+            }
             elements.trackArtist.textContent = isRadio && live_title ? current_track.title : (current_track.artist || '');
             elements.trackArtist.style.display = 'none';
         } else {
@@ -3123,7 +3459,14 @@ function updatePlaybackUI() {
             if (elements.trackArtist) elements.trackArtist.style.display = '';
         }
     }
-    updatePlaybackCover(current_track);
+    const activeRadioMetadata = isRadio ? state.playback.radio_metadata : null;
+    const providerCover = activeRadioMetadata && !activeRadioMetadata.stale ? activeRadioMetadata.cover_url : '';
+    updatePlaybackCover(providerCover ? {
+        ...current_track,
+        artwork_available: true,
+        artwork_url: providerCover,
+        artwork_fallback_url: current_track?.artwork_url || '',
+    } : current_track);
     document.body.classList.remove('is-playing', 'is-paused');
     if (playing) {
         document.body.classList.add('is-playing');
@@ -3153,6 +3496,8 @@ function updatePlaybackUI() {
     }
     // Highlight active
     highlightActiveTrack();
+    // Keep the cover detail card in sync while it is open
+    if (isCoverDetailOpen()) renderCoverDetailCard();
     // Start/stop position polling for local playback
     if (playing && window.__footerSource !== 'spotify') {
         startPlaybackPositionPoll();
@@ -3231,7 +3576,7 @@ function highlightActiveTrack() {
 // Library
 async function fetchInitialData() {
     startSampleratePolling();
-    await Promise.all([fetchStations(), fetchTracks(), fetchEffects(), fetchMeasurements(), fetchPlaybackStatus(), fetchSamplerateStatus(), fetchDownloadStatus(), fetchAudioOutputOverview(), fetchAudioSourceOverview()]);
+    await Promise.all([radioModule.fetchStations(), fetchTracks(), fetchEffects(), fetchMeasurements(), fetchPlaybackStatus(), fetchSamplerateStatus(), fetchDownloadStatus(), fetchAudioOutputOverview(), fetchAudioSourceOverview()]);
     requestSubwooferPreviewRedrawFromState();
     await fetchPlaylists();
 }
@@ -3323,587 +3668,6 @@ async function clearQueue() {
     } finally {
         playbackActionInFlight = false;
         updatePlaybackUI();
-    }
-}
-function clearStationFormStatus() {
-    if (elements.stationFormStatus) {
-        elements.stationFormStatus.textContent = '';
-    }
-}
-
-function selectedManagedStation() {
-    const stationId = elements.stationDeleteSelect?.value || '';
-    if (!stationId) return null;
-    return state.stations.find(item => item.id === stationId) || null;
-}
-
-function populateManagedStationFields() {
-    const station = selectedManagedStation();
-    const hasStation = !!station;
-    if (elements.stationExistingFields) {
-        elements.stationExistingFields.classList.toggle('hidden', !hasStation);
-    }
-    if (elements.stationExistingUrl) {
-        elements.stationExistingUrl.value = hasStation ? (station.input_url || station.stream_url || '') : '';
-    }
-    if (elements.stationExistingImageUrl) {
-        elements.stationExistingImageUrl.value = hasStation ? (station.custom_image_url || '') : '';
-    }
-}
-
-function resetManagedStationForm() {
-    if (elements.stationDeleteSelect) {
-        elements.stationDeleteSelect.value = '';
-    }
-    populateManagedStationFields();
-    updateStationActionButtons();
-}
-
-function setupStationActions() {
-    elements.stationSaveBtn.addEventListener('click', () => saveStation());
-    if (elements.stationUpdateBtn) {
-        elements.stationUpdateBtn.addEventListener('click', saveManagedStationChanges);
-    }
-    elements.stationDeleteBtn.addEventListener('click', deleteSelectedStation);
-    elements.toggleStationManageBtn.addEventListener('click', () => toggleStationManagePanel(true));
-    elements.closeStationManageBtn.addEventListener('click', () => toggleStationManagePanel(false));
-    elements.radioManagePanel.querySelector('.manage-overlay-backdrop').addEventListener('click', () => toggleStationManagePanel(false));
-    if (elements.stationUrl) {
-        elements.stationUrl.addEventListener('input', () => {
-            clearStationFormStatus();
-            updateStationNameRequirement();
-        });
-        elements.stationUrl.addEventListener('paste', () => {
-            requestAnimationFrame(() => handleStationUrlReady('Pasted station URL'));
-        });
-        elements.stationUrl.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter') {
-                e.preventDefault();
-                handleStationUrlReady('Entered station URL');
-            }
-        });
-    }
-    if (elements.stationName) {
-        elements.stationName.addEventListener('input', () => {
-            clearStationFormStatus();
-            updateStationActionButtons();
-        });
-        elements.stationName.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter' && !elements.stationSaveBtn?.disabled) {
-                e.preventDefault();
-                saveStation();
-            }
-        });
-    }
-    if (elements.stationImageUrl) {
-        elements.stationImageUrl.addEventListener('input', clearStationFormStatus);
-    }
-    if (elements.stationDeleteSelect) {
-        elements.stationDeleteSelect.addEventListener('change', () => {
-            populateManagedStationFields();
-            updateStationActionButtons();
-        });
-    }
-    if (elements.stationExistingUrl) {
-        elements.stationExistingUrl.addEventListener('input', updateStationActionButtons);
-    }
-    if (elements.stationExistingImageUrl) {
-        elements.stationExistingImageUrl.addEventListener('input', clearStationFormStatus);
-    }
-    if (elements.stationUrlDropArea) setupStationUrlDropArea();
-    if (elements.stationSearchInput) {
-        elements.stationSearchInput.addEventListener('input', () => {
-            if (elements.stationSearchClear) {
-                elements.stationSearchClear.disabled = !elements.stationSearchInput.value;
-            }
-            renderStations();
-        });
-    }
-    if (elements.stationSearchClear) {
-        elements.stationSearchClear.addEventListener('click', () => {
-            elements.stationSearchInput.value = '';
-            elements.stationSearchClear.disabled = true;
-            renderStations();
-            elements.stationSearchInput.focus();
-        });
-    }
-    if (elements.stationExportAllBtn) {
-        elements.stationExportAllBtn.addEventListener('click', exportAllStations);
-    }
-    updateStationNameRequirement();
-}
-function toggleStationManagePanel(forceOpen = null) {
-    const shouldOpen = forceOpen === null
-        ? elements.radioManagePanel.classList.contains('hidden')
-        : !!forceOpen;
-    elements.radioManagePanel.classList.toggle('hidden', !shouldOpen);
-    resetStationForm();
-    resetManagedStationForm();
-    if (shouldOpen) {
-        elements.closeStationManageBtn?.focus();
-    }
-}
-async function fetchStations() {
-    try {
-        const resp = await fetch('/api/stations');
-        if (!resp.ok) throw new Error('Failed to fetch stations');
-        state.stations = await resp.json();
-        renderStations();
-        renderStationDeleteOptions();
-    } catch (e) {
-        showToast('Failed to load stations', 'error');
-    }
-}
-function exportAllStations() {
-    if (!state.stations.length) {
-        showToast('No stations to export', 'warning');
-        return;
-    }
-    const exportData = state.stations.map(st => ({
-        name: st.title || st.name || '',
-        url: st.stream_url || '',
-        logo: st.image_url || st.custom_image_url || '',
-        genre: st.artist || '',
-    }));
-    const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'fxroute-radio-stations.json';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-}
-async function importStationFile(data) {
-    const items = data.filter(item => item && (item.url || item.stream_url)).map(item => ({
-        name: (item.name || item.title || '').trim(),
-        url: (item.url || item.stream_url || '').trim(),
-        logo: (item.logo || item.image_url || item.custom_image_url || '').trim(),
-        genre: (item.genre || item.artist || '').trim(),
-    }));
-    if (!items.length) {
-        showToast('No valid stations found in file', 'error');
-        return;
-    }
-    showToast('Importing ' + items.length + ' station' + (items.length > 1 ? 's' : '') + '…', 'info');
-    try {
-        const resp = await fetch('/api/stations/import', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(items),
-        });
-        if (!resp.ok) throw new Error('Import failed');
-        const result = await resp.json();
-        const ok = (result.results || []).filter(r => r.status === 'ok').length;
-        const err = (result.results || []).filter(r => r.status === 'error').length;
-        const skipped = (result.results || []).filter(r => r.status === 'skipped').length;
-        if (ok > 0) {
-            showToast('Imported ' + ok + ' station' + (ok > 1 ? 's' : '') + (err > 0 ? ', ' + err + ' failed' : '') + (skipped > 0 ? ', ' + skipped + ' skipped' : ''), err > 0 ? 'warning' : 'success');
-            await fetchStations();
-        } else {
-            showToast('No stations imported' + (err > 0 ? ', ' + err + ' failed' : ''), 'error');
-        }
-    } catch (e) {
-        showToast('Import failed: ' + (e.message || 'unknown error'), 'error');
-    }
-}
-function stationArtFallbackSvg(station) {
-    const title = station.title || station.name || 'Radio';
-    const genre = station.artist || 'Radio';
-    const seed = `${station.id || ''}-${title}`;
-    let hash = 0;
-    for (let i = 0; i < seed.length; i++) hash = ((hash << 5) - hash) + seed.charCodeAt(i);
-    const palettes = [
-        ['#6ee7b7', '#065f46', '#d1fae5'],
-        ['#93c5fd', '#1e3a8a', '#dbeafe'],
-        ['#c4b5fd', '#4c1d95', '#ede9fe'],
-        ['#f9a8d4', '#9d174d', '#fce7f3'],
-        ['#fcd34d', '#92400e', '#fef3c7'],
-        ['#67e8f9', '#155e75', '#cffafe']
-    ];
-    const [bg, fg, accent] = palettes[Math.abs(hash) % palettes.length];
-    const words = title.split(/\s+/).filter(Boolean);
-    const initials = (words[0]?.[0] || '') + (words[1]?.[0] || words[0]?.[1] || '');
-    const label = (initials || 'R').toUpperCase();
-    const chip = escapeHtml((genre || 'Radio').slice(0, 16));
-    const svg = `
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
-            <defs>
-                <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
-                    <stop offset="0%" stop-color="${bg}"/>
-                    <stop offset="100%" stop-color="${fg}"/>
-                </linearGradient>
-                <radialGradient id="glow" cx="30%" cy="22%" r="75%">
-                    <stop offset="0%" stop-color="rgba(255,255,255,0.28)"/>
-                    <stop offset="100%" stop-color="rgba(255,255,255,0)"/>
-                </radialGradient>
-            </defs>
-            <rect width="128" height="128" rx="24" fill="url(#g)"/>
-            <rect x="1.5" y="1.5" width="125" height="125" rx="22.5" fill="none" stroke="rgba(255,255,255,0.10)"/>
-            <rect width="128" height="128" rx="24" fill="url(#glow)"/>
-            <circle cx="96" cy="28" r="9" fill="rgba(255,255,255,0.16)"/>
-            <circle cx="96" cy="28" r="3.5" fill="${accent}" fill-opacity="0.9"/>
-            <g fill="none" stroke="rgba(255,255,255,0.32)" stroke-width="3" stroke-linecap="round">
-                <path d="M28 97c9-9 25-9 34 0"/>
-                <path d="M22 90c13-13 34-13 47 0"/>
-                <path d="M16 83c17-18 43-18 59 0"/>
-            </g>
-            <text x="64" y="66" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="42" font-weight="800" letter-spacing="1" fill="white">${label}</text>
-            <rect x="30" y="88" width="68" height="18" rx="9" fill="rgba(12,16,24,0.22)" stroke="rgba(255,255,255,0.14)"/>
-            <text x="64" y="100.5" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="10.5" font-weight="700" fill="${accent}">${chip}</text>
-        </svg>`;
-    return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
-}
-
-function inferSomaStationSlug(station) {
-    const knownLocalArtSlugs = new Set(['groovesalad', 'suburbsofgoa', 'thetrip', 'poptron', 'dubstep', 'live', 'gsclassic', '7soul']);
-    const inputUrl = (station?.input_url || station?.url || '').trim();
-    const match = inputUrl.match(/somafm\.com\/([^/?#]+)/i);
-    if (match && match[1]) {
-        const slug = match[1].replace(/(256|130)?\.pls$/i, '').trim().toLowerCase();
-        if (knownLocalArtSlugs.has(slug)) return slug;
-    }
-    const title = (station?.title || station?.name || '').trim().toLowerCase();
-    const knownSlugs = {
-        'groove salad': 'groovesalad',
-        'suburbs of goa': 'suburbsofgoa',
-        'the trip': 'thetrip',
-        'poptron': 'poptron',
-        'dub step beyond': 'dubstep',
-        'dubstep beyond': 'dubstep',
-        'somafm live': 'live',
-        'groove salad classic': 'gsclassic',
-        'seven inch soul': '7soul',
-    };
-    return knownSlugs[title] || '';
-}
-
-function stationArtCandidates(station) {
-    const seen = new Set();
-    const candidates = [];
-    const push = (value) => {
-        const cleaned = (value || '').trim();
-        if (!cleaned || seen.has(cleaned)) return;
-        seen.add(cleaned);
-        candidates.push(cleaned);
-    };
-
-    push(station.custom_image_url);
-    push(station.image_url);
-    push(station.logo_url);
-    push(station.logo);
-    push(station.image);
-
-    const somaSlug = inferSomaStationSlug(station);
-    if (somaSlug) {
-        push(`/static/station-art/${somaSlug}.png`);
-        push(`/static/station-art/${somaSlug}.jpg`);
-        push(`/static/station-art/${somaSlug}.jpeg`);
-        push(`/static/station-art/${somaSlug}.webp`);
-    }
-
-    push(stationArtFallbackSvg(station));
-    return candidates;
-}
-
-function stationArtUrl(station) {
-    return stationArtCandidates(station)[0] || stationArtFallbackSvg(station);
-}
-
-function getStationSearchQuery() {
-    return (elements.stationSearchInput?.value || '').trim().toLowerCase();
-}
-
-function stationMatchesSearch(station, query) {
-    if (!query) return true;
-    const fields = [
-        station.title || '',
-        station.stream_url || '',
-        station.input_url || '',
-        station.image_url || '',
-        station.custom_image_url || '',
-    ];
-    return fields.some(f => f.toLowerCase().includes(query));
-}
-
-function renderStations() {
-    const loadingEl = document.querySelector('#tab-radio .loading');
-    if (state.stations.length === 0) {
-        if (loadingEl) loadingEl.textContent = 'No stations yet. Open Manage to add one.';
-        elements.stationsGrid.innerHTML = '';
-        if (elements.stationsEmptySearch) elements.stationsEmptySearch.classList.add('hidden');
-        renderStationDeleteOptions();
-        return;
-    }
-    if (loadingEl) loadingEl.style.display = 'none';
-    const query = getStationSearchQuery();
-    const filtered = state.stations.filter(s => stationMatchesSearch(s, query));
-    if (filtered.length === 0 && query) {
-        elements.stationsGrid.innerHTML = '';
-        if (elements.stationsEmptySearch) elements.stationsEmptySearch.classList.remove('hidden');
-        return;
-    }
-    if (elements.stationsEmptySearch) elements.stationsEmptySearch.classList.add('hidden');
-    elements.stationsGrid.innerHTML = filtered.map(station => {
-        const artCandidates = stationArtCandidates(station);
-        const artSrc = artCandidates[0] || stationArtFallbackSvg(station);
-        const isFallbackArt = artSrc.startsWith('data:image/svg+xml');
-        const wrapClass = isFallbackArt ? 'station-art-wrap station-art-wrap--fallback' : 'station-art-wrap station-art-wrap--real';
-        const imgClass = isFallbackArt ? 'station-art station-art--fallback' : 'station-art station-art--real';
-        return `
-        <div class="station-card" data-station-id="${escapeHtml(station.id)}" role="button" tabindex="0">
-            <div class="${wrapClass}">
-                <img class="${imgClass}" src="${escapeHtml(artSrc)}" data-art-candidates="${escapeHtml(JSON.stringify(artCandidates))}" data-art-index="0" alt="${escapeHtml(station.title)}" loading="lazy" />
-            </div>
-            <div class="station-name">${escapeHtml(station.title)}</div>
-        </div>`;
-    }).join('');
-    elements.stationsGrid.querySelectorAll('.station-card').forEach(card => {
-        card.addEventListener('click', () => playRadio(card.dataset.stationId));
-    });
-    elements.stationsGrid.querySelectorAll('.station-art').forEach(img => {
-        img.addEventListener('error', () => {
-            let candidates = [];
-            try {
-                candidates = JSON.parse(img.dataset.artCandidates || '[]');
-            } catch {}
-            const currentIndex = Number(img.dataset.artIndex || 0);
-            const nextIndex = Number.isFinite(currentIndex) ? currentIndex + 1 : 1;
-            const nextSrc = candidates[nextIndex];
-            if (nextSrc) {
-                img.dataset.artIndex = String(nextIndex);
-                img.src = nextSrc;
-            }
-        });
-    });
-    highlightActiveTrack();
-}
-function updateStationActionButtons() {
-    const value = (elements.stationUrl?.value || '').trim();
-    const name = (elements.stationName?.value || '').trim();
-    const isSoma = isSomaFmUrl(value);
-    if (elements.stationSaveBtn) {
-        elements.stationSaveBtn.disabled = !value || (!isSoma && !name);
-    }
-    const hasManagedStation = !!selectedManagedStation();
-    const managedUrl = (elements.stationExistingUrl?.value || '').trim();
-    if (elements.stationUpdateBtn) {
-        elements.stationUpdateBtn.disabled = !hasManagedStation || !managedUrl;
-    }
-    if (elements.stationDeleteBtn) {
-        elements.stationDeleteBtn.disabled = !hasManagedStation;
-    }
-}
-
-function renderStationDeleteOptions() {
-    if (!elements.stationDeleteSelect) return;
-    if (state.stations.length === 0) {
-        elements.stationDeleteSelect.innerHTML = '<option value="">No stations saved yet</option>';
-        resetManagedStationForm();
-        return;
-    }
-    elements.stationDeleteSelect.innerHTML = ['<option value="">Select a station…</option>']
-        .concat(state.stations.map(station => `<option value="${escapeHtml(station.id)}">${escapeHtml(station.title)}</option>`))
-        .join('');
-    resetManagedStationForm();
-}
-function isSomaFmUrl(value) {
-    return /https?:\/\/(?:[^/]*\.)?somafm\.com\//i.test((value || '').trim()) || /https?:\/\/[^\s]*somafm\.com\//i.test((value || '').trim());
-}
-
-function updateStationNameRequirement() {
-    const value = (elements.stationUrl?.value || '').trim();
-    const hasUrl = !!value;
-    const isSoma = isSomaFmUrl(value);
-    const needsManualName = hasUrl && !isSoma;
-    if (!needsManualName && elements.stationImageUrl) {
-        elements.stationImageUrl.value = '';
-    }
-    if (elements.stationNameGroup) {
-        elements.stationNameGroup.classList.toggle('hidden', !needsManualName);
-    }
-    if (elements.stationSaveRow) {
-        elements.stationSaveRow.classList.toggle('hidden', !needsManualName);
-    }
-    if (elements.stationImageGroup) {
-        elements.stationImageGroup.classList.toggle('hidden', !needsManualName);
-    }
-    if (elements.stationUrlHint) {
-        elements.stationUrlHint.textContent = !hasUrl
-            ? 'SomaFM adds directly.'
-            : isSoma
-                ? 'SomaFM detected. It will be added directly.'
-                : 'Other stream detected. Enter a name below, cover URL optional.';
-    }
-    updateStationActionButtons();
-}
-
-function setStationUrlValue(url, sourceLabel = '') {
-    const cleaned = (url || '').trim();
-    if (!cleaned || !elements.stationUrl) return;
-    elements.stationUrl.value = cleaned;
-    clearStationFormStatus();
-    if (elements.stationUrlHint) {
-        elements.stationUrlHint.textContent = sourceLabel ? `${sourceLabel}: ${cleaned}` : cleaned;
-    }
-    updateStationNameRequirement();
-    elements.stationUrl.focus();
-}
-
-async function handleStationUrlReady(sourceLabel = '') {
-    const value = (elements.stationUrl?.value || '').trim();
-    const match = value.match(/https?:\/\/\S+/i);
-    if (!match) {
-        return;
-    }
-    setStationUrlValue(match[0], sourceLabel || 'Station URL');
-    if (isSomaFmUrl(match[0])) {
-        await saveStation(match[0]);
-        return;
-    }
-    if (elements.stationNameGroup) elements.stationNameGroup.classList.remove('hidden');
-    if (elements.stationImageGroup) elements.stationImageGroup.classList.remove('hidden');
-    if (elements.stationSaveRow) elements.stationSaveRow.classList.remove('hidden');
-    elements.stationName?.focus();
-}
-
-function setupStationUrlDropArea() {
-    const area = elements.stationUrlDropArea;
-    if (!area) return;
-    const activate = () => elements.stationUrl?.focus();
-    area.addEventListener('click', activate);
-    area.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault();
-            activate();
-        }
-    });
-    area.addEventListener('dragover', (e) => {
-        e.preventDefault();
-        area.classList.add('drag-over');
-    });
-    area.addEventListener('dragleave', () => area.classList.remove('drag-over'));
-    area.addEventListener('drop', async (e) => {
-        e.preventDefault();
-        area.classList.remove('drag-over');
-        const file = e.dataTransfer?.files?.[0];
-        if (file && file.type === 'application/json') {
-            try {
-                const text = await file.text();
-                const data = JSON.parse(text);
-                if (!Array.isArray(data)) {
-                    showToast('Invalid format: expected a JSON array', 'error');
-                    return;
-                }
-                await importStationFile(data);
-            } catch (err) {
-                showToast('Failed to read station file: ' + (err.message || 'unknown error'), 'error');
-            }
-            return;
-        }
-        const url = extractDroppedUrl(e.dataTransfer);
-        if (!url) {
-            showToast('No URL found in dropped content', 'error');
-            return;
-        }
-        setStationUrlValue(url, 'Dropped station URL');
-        await handleStationUrlReady('Dropped station URL');
-    });
-}
-
-function resetStationForm() {
-    elements.stationName.value = '';
-    if (elements.stationImageUrl) elements.stationImageUrl.value = '';
-    elements.stationUrl.value = '';
-    clearStationFormStatus();
-    updateStationNameRequirement();
-    if (elements.stationDeleteSelect) {
-        updateStationActionButtons();
-    }
-}
-async function saveStation(urlOverride = null) {
-    const name = elements.stationName.value.trim();
-    const streamUrl = (urlOverride || elements.stationUrl.value || '').trim();
-    const customImageUrl = (elements.stationImageUrl?.value || '').trim();
-    const soma = isSomaFmUrl(streamUrl);
-    if (!streamUrl) {
-        showToast('Please enter a station URL', 'error');
-        return;
-    }
-    if (!name && !soma) {
-        showToast('Please enter a station name for non-SomaFM streams', 'error');
-        return;
-    }
-    elements.stationSaveBtn.disabled = true;
-    elements.stationFormStatus.textContent = soma ? 'Adding SomaFM station…' : 'Adding station…';
-    try {
-        const resp = await fetch('/api/stations', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name: name || '', stream_url: streamUrl, custom_image_url: customImageUrl || '' }),
-        });
-        const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(data.detail || 'Failed to save station');
-        await fetchStations();
-        resetStationForm();
-        showToast(`Added station: ${data.station?.title || name || 'Station'}`, 'success');
-    } catch (e) {
-        elements.stationFormStatus.textContent = e.message || 'Failed to save station';
-        showToast(e.message || 'Failed to save station', 'error');
-    } finally {
-        elements.stationSaveBtn.disabled = false;
-    }
-}
-async function saveManagedStationChanges() {
-    const station = selectedManagedStation();
-    const streamUrl = (elements.stationExistingUrl?.value || '').trim();
-    const customImageUrl = (elements.stationExistingImageUrl?.value || '').trim();
-    if (!station) {
-        showToast('Please select a station to edit', 'error');
-        return;
-    }
-    if (!streamUrl) {
-        showToast('Please enter a station URL', 'error');
-        return;
-    }
-    const nextName = isSomaFmUrl(streamUrl) ? '' : (station.title || '');
-    if (elements.stationUpdateBtn) elements.stationUpdateBtn.disabled = true;
-    if (elements.stationDeleteBtn) elements.stationDeleteBtn.disabled = true;
-    clearStationFormStatus();
-    try {
-        const resp = await fetch(`/api/stations/${encodeURIComponent(station.id)}`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name: nextName, stream_url: streamUrl, custom_image_url: customImageUrl || '' }),
-        });
-        const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(data.detail || 'Failed to update station');
-        await fetchStations();
-        showToast(`Updated station: ${data.station?.title || station.title}`, 'success');
-    } catch (e) {
-        showToast(e.message || 'Failed to update station', 'error');
-    } finally {
-        updateStationActionButtons();
-    }
-}
-
-async function deleteSelectedStation() {
-    const stationId = elements.stationDeleteSelect.value;
-    const station = state.stations.find(item => item.id === stationId);
-    if (!stationId || !station) {
-        showToast('Please select a station to delete', 'error');
-        return;
-    }
-    if (!confirm(`Delete station "${station.title}"?`)) return;
-    try {
-        const resp = await fetch(`/api/stations/${encodeURIComponent(stationId)}`, { method: 'DELETE' });
-        const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(data.detail || 'Failed to delete station');
-        await fetchStations();
-        showToast(`Deleted station: ${station.title}`, 'success');
-    } catch (e) {
-        showToast(e.message || 'Failed to delete station', 'error');
     }
 }
 async function fetchLibraryStatus() {
@@ -5216,6 +4980,7 @@ async function playRadio(stationId) {
     rememberLastRadioTrack(optimisticRadioTrack);
     state.playback.current_track = optimisticRadioTrack;
     state.playback.live_title = null;
+    state.playback.radio_metadata = null;
     state.playback.playing = true;
     state.playback.paused = false;
     _spotifyTakeoverUntil = 0;
@@ -5239,6 +5004,7 @@ async function playRadio(stationId) {
             mergePlaybackState(data.playback);
         }
         updatePlaybackUI();
+        void fetchMetadata();
         triggerSamplerateBurstPolling();
         const playedTrack = data?.playback?.current_track || {
             id: `radio_${station.id}`,
@@ -12775,6 +12541,11 @@ function updatePlaybackCover(track) {
         return;
     }
     elements.playbackCover.onerror = function() {
+        const fallbackUrl = track?.artwork_fallback_url || '';
+        if (fallbackUrl && this.getAttribute('src') !== fallbackUrl) {
+            this.src = fallbackUrl;
+            return;
+        }
         this.onerror = null;
         this.removeAttribute('src');
         this.classList.add('hidden');
@@ -12808,6 +12579,13 @@ async function revealNowPlayingCoverWhenReady(cue, img, coverUrl, coverInfoUrl =
     nowPlayingCueCoverAbort = controller;
     const timeout = setTimeout(() => controller.abort(), 2500);
     let objectUrl = '';
+    const isExternalCover = (() => {
+        try {
+            return new URL(coverUrl, window.location.href).origin !== window.location.origin;
+        } catch (e) {
+            return false;
+        }
+    })();
     try {
         if (coverInfoUrl) {
             const infoResp = await fetch(coverInfoUrl, { signal: controller.signal, cache: 'no-store' });
@@ -12815,12 +12593,42 @@ async function revealNowPlayingCoverWhenReady(cue, img, coverUrl, coverInfoUrl =
             const info = await infoResp.json();
             if (!info.available) return;
         }
-        const resp = await fetch(coverUrl, { signal: controller.signal, cache: 'force-cache' });
-        if (!resp.ok) return;
-        const blob = await resp.blob();
-        objectUrl = URL.createObjectURL(blob);
-        img.src = objectUrl;
-        if (img.decode) await img.decode();
+        if (isExternalCover) {
+            // External covers load directly via <img>; fetch() would hit CORS.
+            img.src = coverUrl;
+            const abortWait = new Promise((_, reject) => {
+                controller.signal.addEventListener('abort', () => {
+                    reject(controller.signal.reason || new DOMException('Aborted', 'AbortError'));
+                }, { once: true });
+            });
+            const onAbort = () => {
+                // Cancel the pending image request; late load/decode must not win.
+                if (img.getAttribute('src') === coverUrl) img.removeAttribute('src');
+            };
+            controller.signal.addEventListener('abort', onAbort, { once: true });
+            try {
+                if (img.decode) {
+                    await Promise.race([img.decode(), abortWait]);
+                } else {
+                    await Promise.race([
+                        new Promise((resolve, reject) => {
+                            img.addEventListener('load', resolve, { once: true });
+                            img.addEventListener('error', reject, { once: true });
+                        }),
+                        abortWait,
+                    ]);
+                }
+            } finally {
+                controller.signal.removeEventListener('abort', onAbort);
+            }
+        } else {
+            const resp = await fetch(coverUrl, { signal: controller.signal, cache: 'force-cache' });
+            if (!resp.ok) return;
+            const blob = await resp.blob();
+            objectUrl = URL.createObjectURL(blob);
+            img.src = objectUrl;
+            if (img.decode) await img.decode();
+        }
         if (!document.body.contains(cue) || nowPlayingCueCoverAbort !== controller) return;
         img.classList.add('is-ready');
         cue.classList.add('has-cover');
@@ -12948,10 +12756,12 @@ function initSeek() {
     elements.seekSlider.addEventListener('touchend', seekEnd);
 }
 function seekStart() {
+    if (state.playback.current_track?.source === 'radio') return;
     seekDragging = true;
     if (window.__footerSource === 'spotify') window.__spotifySeeking = true;
 }
 function seekEnd() {
+    if (state.playback.current_track?.source === 'radio') return;
     seekDragging = false;
     if (window.__footerSource === 'spotify') {
         window.__spotifySeeking = false;
@@ -12968,6 +12778,7 @@ function seekEnd() {
     }
 }
 function seekChange() {
+    if (state.playback.current_track?.source === 'radio') return;
     const pos = parseInt(elements.seekSlider.value, 10) || 0;
     if (window.__footerSource === 'spotify') {
         const spotifyData = window.__spotifyLastData;
@@ -12999,8 +12810,15 @@ function formatTime(s) {
 }
 function updateSeekUI() {
     if (!elements.seekSlider || !elements.seekCurrent || !elements.seekDuration) return;
-    const duration = state.playback.duration || 0;
-    const position = state.playback.position || 0;
+    const radioMetadata = state.playback.current_track?.source === 'radio' ? state.playback.radio_metadata : null;
+    const radioTimed = radioMetadata && !radioMetadata.stale && Number(radioMetadata.duration_seconds) > 0;
+    const duration = radioTimed ? Number(radioMetadata.duration_seconds) : (state.playback.duration || 0);
+    let position = radioTimed ? Number(radioMetadata.progress_seconds || 0) : (state.playback.position || 0);
+    if (radioTimed && state.playback.playing && !state.playback.paused) {
+        position = Math.min(duration, Math.max(0, Date.now() / 1000 - Number(radioMetadata.started_at)));
+    }
+    elements.seekSlider.disabled = !!radioTimed;
+    elements.seekSlider.setAttribute('aria-disabled', radioTimed ? 'true' : 'false');
     elements.seekDuration.textContent = formatTime(duration);
     if (!seekDragging) {
         elements.seekCurrent.textContent = formatTime(position);

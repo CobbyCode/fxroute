@@ -12,7 +12,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=0.4.458">
     <link rel="manifest" href="/static/site.webmanifest?v=0.4.458">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/static/style.css?v=0.9.0">
+    <link rel="stylesheet" href="/static/style.css?v=0.9.2">
 </head>
 <body>
     <!-- Offline indicator -->
@@ -173,10 +173,15 @@
             <div id="tab-radio" class="tab-panel active">
                 <section class="radio-panel">
                     <div class="radio-panel-header">
-                        <h2 class="section-title">Stations</h2>
+                        <h2 class="section-title">Radio</h2>
                         <div class="radio-search-field">
-                            <input type="search" id="station-search" class="station-search-input" placeholder="Search stations..." autocomplete="off" />
-                            <button id="station-search-clear" class="station-search-clear" type="button" aria-label="Clear station search" disabled>×</button>
+                            <div class="radio-search-main-row">
+                                <div class="radio-search-input-wrap">
+                                    <input type="search" id="station-search" class="station-search-input" placeholder="Station, genre or country…" autocomplete="off" />
+                                    <button id="station-search-clear" class="station-search-clear" type="button" aria-label="Clear station search" disabled>×</button>
+                                </div>
+                                <button id="station-search-online" class="btn-secondary radio-search-online" type="button">Web Search</button>
+                            </div>
                         </div>
                         <div class="radio-header-right">
                             <button id="station-export-all" class="btn-ghost btn-icon-only" type="button" title="Export all stations">
@@ -188,9 +193,40 @@
                             </button>
                         </div>
                     </div>
-                    <div class="loading">Loading stations…</div>
-                    <div id="stations-grid" class="stations-grid"></div>
-                    <div id="stations-empty-search" class="stations-empty-search hidden">No stations found</div>
+                    <section id="station-search-results" class="radio-station-section radio-search-results hidden" aria-labelledby="station-search-results-title">
+                        <div class="radio-station-section-header">
+                            <h3 id="station-search-results-title">Search Results</h3>
+                        </div>
+                        <div id="station-search-status" class="station-browser-status"></div>
+                        <div id="station-search-grid" class="stations-grid"></div>
+                    </section>
+                    <div id="radio-station-sections" class="radio-station-sections">
+                        <section class="radio-station-section" aria-labelledby="my-stations-title">
+                            <div class="radio-station-section-header">
+                                <h3 id="my-stations-title">My Stations</h3>
+                                <p>Your saved, imported, and custom stations.</p>
+                            </div>
+                            <div class="loading">Loading stations…</div>
+                            <div id="stations-grid" class="stations-grid"></div>
+                            <div id="stations-empty-search" class="stations-empty-search hidden">No saved stations found</div>
+                        </section>
+                        <details id="station-catalog-section" class="radio-station-section station-catalog-section">
+                            <summary class="station-catalog-summary">
+                                <span id="station-catalog-title">Station Catalog</span>
+                                <span class="station-catalog-summary-hint">Curated stations not yet in My Stations</span>
+                                <span class="station-catalog-toggle" aria-hidden="true">
+                                    <svg viewBox="0 0 24 24" focusable="false">
+                                        <path d="m6 9 6 6 6-6" />
+                                    </svg>
+                                </span>
+                            </summary>
+                            <div id="station-catalog-content" class="station-catalog-content" aria-labelledby="station-catalog-title">
+                                <div id="station-catalog-loading" class="loading">Loading catalog…</div>
+                                <div id="station-catalog-grid" class="station-catalog-groups"></div>
+                                <div id="station-catalog-empty-search" class="stations-empty-search hidden">All curated stations are already in My Stations</div>
+                            </div>
+                        </details>
+                    </div>
                 </section>
 
                 <div id="radio-manage-panel" class="manage-overlay hidden">
@@ -199,7 +235,7 @@
                         <div class="manage-dialog-header">
                             <div>
                                 <h2 id="manage-stations-title" class="section-title">Manage stations</h2>
-                                <p class="section-subtitle">Add a stream or remove a saved station.</p>
+                                <p class="section-subtitle">Add a stream or remove a station from My Stations.</p>
                             </div>
                             <button id="close-station-manage" class="btn-ghost btn-close-manage" type="button">
                                 <span class="btn-ghost-icon">✕</span>
@@ -235,7 +271,7 @@
                             <section class="radio-manage-section">
                                 <div class="radio-manage-section-header">
                                     <h3>Manage station</h3>
-                                    <p>Update the saved stream or cover, or delete the station.</p>
+                                    <p>Update the saved stream or cover, or remove it from My Stations.</p>
                                 </div>
                                 <div class="field-group">
                                     <label for="station-delete-select">Saved stations</label>
@@ -254,7 +290,7 @@
                                     </div>
                                     <div class="radio-manage-submit-row radio-manage-submit-row-station-manage">
                                         <button id="station-update" class="btn-primary" type="button">Save changes</button>
-                                        <button id="station-delete" class="btn-danger" type="button">Delete station</button>
+                                        <button id="station-delete" class="btn-danger" type="button">Remove from My Stations</button>
                                     </div>
                                 </div>
                             </section>
@@ -1127,6 +1163,7 @@
             <div class="song-info">
                 <span class="sc-artist" id="sc-artist"></span>
                 <span class="sc-title" id="sc-title"></span>
+                <span class="sc-album" id="sc-album"></span>
             </div>
             <div class="playback-meta-row">
                 <div id="samplerate-status" class="samplerate-status hidden">Auto · 44.1 kHz</div>
@@ -1165,10 +1202,38 @@
         </div>
     </footer>
 
+    <!-- Cover detail card (shared radio/library) -->
+    <div id="cover-detail-backdrop" class="cover-detail-backdrop hidden"></div>
+    <div id="cover-detail-card" class="cover-detail-card hidden" role="dialog" aria-modal="true" aria-label="Cover details">
+        <div id="cover-detail-cover-col" class="cover-detail-cover-col">
+            <img id="cover-detail-cover" class="cover-detail-cover" alt="" />
+            <div id="cover-detail-extra" class="cover-detail-extra hidden">
+                <div id="cover-detail-extra-line1" class="cover-detail-extra-line hidden"></div>
+                <div id="cover-detail-extra-line2" class="cover-detail-extra-line hidden"></div>
+            </div>
+        </div>
+        <div class="cover-detail-info">
+            <div id="cover-detail-source" class="cover-detail-source hidden"></div>
+            <div id="cover-detail-title" class="cover-detail-title"></div>
+            <div id="cover-detail-artist" class="cover-detail-artist hidden"></div>
+            <div id="cover-detail-album" class="cover-detail-album hidden"></div>
+            <div id="cover-detail-tech" class="cover-detail-tech hidden"></div>
+        </div>
+        <section id="cover-detail-history" class="cover-detail-section hidden">
+            <h3 class="cover-detail-heading">Recently played</h3>
+            <ol id="cover-detail-history-list" class="cover-detail-list"></ol>
+        </section>
+        <section id="cover-detail-queue" class="cover-detail-section hidden">
+            <h3 class="cover-detail-heading">Queue</h3>
+            <ol id="cover-detail-queue-list" class="cover-detail-list"></ol>
+        </section>
+    </div>
+
     <!-- Toast notifications -->
     <div id="toast-container" class="toast-container"></div>
 
-    <script src="/static/measurement_dsp.js?v=0.9.0"></script>
-    <script src="/static/app.js?v=0.9.1"></script>
+    <script src="/static/measurement_dsp.js?v=0.9.2"></script>
+    <script src="/static/radio.js?v=0.9.2"></script>
+    <script src="/static/app.js?v=0.9.2"></script>
 </body>
 </html>

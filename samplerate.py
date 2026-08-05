@@ -429,75 +429,6 @@ def _parse_pactl_sinks_detailed(output: str) -> dict[str, dict[str, Any]]:
     return sinks
 
 
-def _parse_pactl_cards_detailed(output: str) -> list[dict[str, Any]]:
-    cards: list[dict[str, Any]] = []
-    current: dict[str, Any] | None = None
-    current_port: dict[str, Any] | None = None
-    in_ports = False
-
-    for raw_line in output.splitlines():
-        line = raw_line.rstrip()
-        stripped = line.strip()
-
-        if stripped.startswith('Card #'):
-            if current_port and current is not None:
-                current.setdefault('ports', []).append(current_port)
-                current_port = None
-            if current:
-                cards.append(current)
-            current = {
-                'name': None,
-                'device_description': None,
-                'ports': [],
-            }
-            in_ports = False
-            continue
-
-        if current is None:
-            continue
-
-        if stripped.startswith('Name:'):
-            current['name'] = stripped.split(':', 1)[1].strip()
-            in_ports = False
-        elif stripped.startswith('device.description = '):
-            current['device_description'] = _strip_quoted_value(stripped)
-        elif stripped == 'Ports:':
-            in_ports = True
-            if current_port:
-                current['ports'].append(current_port)
-                current_port = None
-        elif stripped.startswith('Active Profile:') or stripped == 'Profiles:' or stripped == 'Properties:' or stripped == 'Formats:':
-            in_ports = False
-            if current_port:
-                current['ports'].append(current_port)
-                current_port = None
-        elif in_ports and line.startswith('\t\t') and not line.startswith('\t\t\t'):
-            if current_port:
-                current['ports'].append(current_port)
-            port_match = re.match(r'([^:]+):\s+(.+?)\s+\((.*)\)$', stripped)
-            if port_match:
-                port_key, port_label, port_meta = port_match.groups()
-                meta_lower = port_meta.lower()
-                current_port = {
-                    'key': port_key.strip(),
-                    'label': port_label.strip(),
-                    'available': 'not available' not in meta_lower,
-                    'profiles': [],
-                }
-            else:
-                current_port = None
-        elif in_ports and current_port and line.startswith('\t\t\tPart of profile(s):'):
-            profiles_value = stripped.split(':', 1)[1].strip()
-            current_port['profiles'] = [item.strip() for item in profiles_value.split(',') if item.strip()]
-
-    if current_port and current is not None:
-        current.setdefault('ports', []).append(current_port)
-    if current:
-        cards.append(current)
-
-    return cards
-
-
 def _parse_pactl_sources_detailed(output: str) -> dict[str, dict[str, Any]]:
     sources: dict[str, dict[str, Any]] = {}
     current: dict[str, Any] | None = None
@@ -615,45 +546,6 @@ def _build_sink_output_label(name: str | None, details: dict[str, Any], default_
             port_label = port.get('label')
             break
     return _prefer_output_port_label(port_label, fallback_label) or fallback_label
-
-
-def _build_card_port_output_entries(cards: list[dict[str, Any]], existing_outputs: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    existing_labels = {
-        _normalize_output_label(item.get('label') or item.get('name'))
-        for item in existing_outputs
-        if item.get('label') or item.get('name')
-    }
-    inferred_outputs: list[dict[str, Any]] = []
-
-    for card in cards:
-        card_name = card.get('name')
-        card_device_label = card.get('device_description') or 'Audio device'
-        for port in card.get('ports') or []:
-            port_key = port.get('key') or ''
-            profiles = port.get('profiles') or []
-            if 'output' not in port_key and not any(profile.startswith('output:') for profile in profiles):
-                continue
-            label = _prefer_output_port_label(port.get('label'), card_device_label) or card_device_label
-            normalized_label = _normalize_output_label(label)
-            if not normalized_label or normalized_label in existing_labels:
-                continue
-            existing_labels.add(normalized_label)
-            inferred_outputs.append({
-                'id': None,
-                'key': f"card-port::{card_name or 'unknown'}::{port_key}",
-                'name': None,
-                'label': label,
-                'sample_spec': None,
-                'active_rate': None,
-                'state': 'AVAILABLE' if port.get('available', True) else 'UNAVAILABLE',
-                'is_default': False,
-                'is_current': False,
-                'is_selected': False,
-                'selectable': False,
-                'inventory_source': 'card-port',
-            })
-
-    return inferred_outputs
 
 
 def _humanize_source_name(name: str | None) -> str:
@@ -1937,4 +1829,73 @@ def get_samplerate_status() -> dict[str, Any]:
         "sink": sink,
         "relevant_sink": relevant_sink,
         "notes": notes,
+    }
+
+
+def overview_sample_rate(overview: dict | None) -> int | None:
+    """Return a rate from an already captured overview for stale detection only."""
+    if not isinstance(overview, dict):
+        return None
+    output_mode = overview.get("output_mode") or {}
+    selected_output = overview.get("selected_output") or overview.get("current_output") or {}
+    for value in (
+        output_mode.get("effective_output_rate"),
+        selected_output.get("active_rate"),
+        overview.get("active_rate"),
+    ):
+        if isinstance(value, int) and value > 0:
+            return value
+    return None
+
+
+def authoritative_sample_rate(status: dict | None) -> int | None:
+    """Read the live rate which owns the helper start decision."""
+    if not isinstance(status, dict):
+        return None
+    for key in ("force_rate", "active_rate"):
+        value = status.get(key)
+        if isinstance(value, int) and value > 0:
+            return value
+    return None
+
+
+def helper_argument_sample_rate(snapshot: dict | None) -> int | None:
+    args = (snapshot or {}).get("helper_args") or []
+    try:
+        index = args.index("--rate")
+        value = int(args[index + 1])
+    except (ValueError, TypeError, IndexError):
+        return None
+    return value if value > 0 else None
+
+
+def audio_output_overview_with_effective_rate(overview: dict, effective_rate: int) -> dict:
+    output_mode = dict(overview.get("output_mode") or {})
+    selected_output = dict(overview.get("selected_output") or {})
+    current_output = dict(overview.get("current_output") or {})
+    output_mode["effective_output_rate"] = effective_rate
+    if selected_output:
+        selected_output["active_rate"] = effective_rate
+    if current_output and current_output.get("key") == selected_output.get("key"):
+        current_output["active_rate"] = effective_rate
+    return {
+        **overview,
+        "output_mode": output_mode,
+        "selected_output": selected_output or overview.get("selected_output"),
+        "current_output": current_output or overview.get("current_output"),
+    }
+
+
+def measurement_helper_snapshot_summary(snapshot: dict | None) -> dict:
+    snapshot = snapshot or {}
+    config = snapshot.get("config") or {}
+    return {
+        "active": bool(snapshot.get("active")),
+        "helper_pid": snapshot.get("helper_pid"),
+        "sample_rate": config.get("sample_rate"),
+        "sub_alignment_ms": config.get("sub_alignment_ms"),
+        "main_delay_ms": config.get("derived_main_delay_ms"),
+        "sub_delay_ms": config.get("derived_sub_delay_ms"),
+        "stage": snapshot.get("stage"),
+        "last_error": snapshot.get("last_error"),
     }

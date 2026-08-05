@@ -103,12 +103,6 @@ class PlayRequest(BaseModel):
     loop: bool = False
 
 
-class StationUpsertRequest(BaseModel):
-    name: Optional[str] = None
-    stream_url: str
-    custom_image_url: Optional[str] = None
-
-
 class PlaylistSaveRequest(BaseModel):
     name: str
     track_ids: list[str]

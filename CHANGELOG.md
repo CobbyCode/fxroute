@@ -1,6 +1,64 @@
 # Changelog
 
-## Unreleased
+## 0.9.2 (2026-08-05)
+
+### Added
+- Curated radio station catalog with artwork, organized into genre groups and
+  featuring dedicated artwork for stations such as SomaFM, Radio Paradise,
+  FIP, and KEXP.
+- Personal station catalog: add, edit, and delete your own stream URLs with
+  custom artwork alongside the curated catalog.
+- Radio Browser station search with quality filtering, mirror fallback, and
+  retry with backoff; results are unified with the local catalogs.
+- Unified radio metadata providers with live artwork for Radio Paradise, FIP,
+  SomaFM, and KEXP streams, including station-specific artwork variants.
+- Live stream info line (codec/bitrate/sample rate) for radio playback and a
+  matching stream tech line for library playback.
+- Cover detail card for radio and library playback with standalone info
+  layout, tag-info block, selectable library queue rows, and Spotify cover
+  detail metadata.
+- External now-playing covers are loaded via `img` to avoid CORS issues, and
+  the cover wait is cancelled on abort.
+
+### Changed
+- Radio station management refactored into a dedicated frontend module and a
+  dedicated stations API router; radio search layout is centered on desktop
+  and handles scaled desktop layouts.
+- Playback footer layout stabilized; queue list no longer rebuilds on status
+  polls (avoids hover flicker); interactive button removed from station
+  catalog summary.
+- Behavior-neutral module extraction refactoring: playlist/M3U IO, sample-rate
+  payloads, measurement setup payloads, sink-input parsing and summaries,
+  playback state, library filesystem cleanup, ZIP album helpers, install
+  metadata, and EasyEffects extras payload helpers (REFACTOR-001…011) with a
+  shared parity baseline and test runner.
+- Sample-rate orchestration: shared playback rate ownership and explicit
+  rate reconciliation (SR-ORCH baseline); sample-rate drift is repaired after
+  status repair and resume.
+- Safe structural CSS consolidation and removal of dead selectors
+  (CSS-001/002).
+- Installer package-manager preparation is now unified and performed at most
+  once per installer run: `apt-get update` before the first apt install,
+  `dnf install --refresh` on the first dnf call, `zypper refresh` before the
+  first zypper install, and `pacman -Syu --needed --noconfirm` on the first
+  actually required pacman install (rolling-release full system update,
+  logged explicitly) followed by plain `pacman -S --needed --noconfirm` for
+  further groups. No automatic `apt upgrade`, `dist-upgrade`, `dnf upgrade`
+  or `zypper update`.
+
+### Fixed
+- Restored Arch/Manjaro installer support that was dropped in 0.7.1: pacman
+  distro detection, package installation, Manjaro package lists, venv
+  handling, Avahi/`.local` setup, robust LAN IP detection, stage-1 build
+  dependencies (`gcc`, `pkgconf`, `libpipewire`) and the pacman branch in
+  `scripts/system-package-update.sh`.
+- Cover detail card now populates for Spotify playback.
+- Missing SomaFM station artwork variants added.
+- Sample-rate drift closed after status repair and resume.
+- Restored original volume regex (1:1 parity) including spaced-percent case
+  handling.
+- Pre-existing AutoSub main-reference capture test fixed; incomplete multipart
+  fake dropped and JS tests skip cleanly without node.
 
 ## 0.9.1 (2026-08-01)
 

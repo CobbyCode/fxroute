@@ -7360,3 +7360,26 @@ def score_sub_alignment_candidates(
         "confidence": confidence,
         "crossover_hz": crossover_hz,
     }
+
+def normalize_measurement_optional_input_channel(value: Any) -> str:
+    if value is None or value == "":
+        return ""
+    try:
+        channel = int(str(value).strip())
+    except (TypeError, ValueError):
+        return ""
+    return str(channel) if channel >= 1 else ""
+
+
+def measurement_setup_settings_from_payload(settings: dict[str, Any]) -> dict[str, Any]:
+    measure_settings = settings.get("measure") if isinstance(settings.get("measure"), dict) else {}
+    reference_input_channel = measure_settings.get("selectedReferenceInputChannel")
+    if reference_input_channel is None:
+        reference_input_channel = measure_settings.get("reference_input_channel")
+    return {
+        "selectedInputId": str(measure_settings.get("selectedInputId") or ""),
+        "selectedMicInputChannel": normalize_measurement_optional_input_channel(
+            measure_settings.get("selectedMicInputChannel")
+        ) or "1",
+        "selectedReferenceInputChannel": normalize_measurement_optional_input_channel(reference_input_channel),
+    }

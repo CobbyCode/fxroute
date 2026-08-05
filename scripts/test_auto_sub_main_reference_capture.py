@@ -172,6 +172,18 @@ class MainReferenceSnapshotTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("status", job)  # Existing optimization state is not failed here.
 
     async def test_candidate_restores_exact_mute_on_success_error_and_cancel(self):
+        # Realistic sweep profile: the candidate path runs the native Stage1 peak
+        # prediction against it, so it must be a valid profile that predicts a safe sweep.
+        sweep_profile = {"sweep_seconds": 0.1, "sweep_start_hz": 20.0, "sweep_end_hz": 200.0}
+        prediction = main._auto_sub_stage_peak_prediction(
+            sweep_profile=sweep_profile, sample_rate=48_000, channel="left",
+            config=runtime_config(),
+        )
+        # exact_sub_mute zeroes the sub outputs; measured peaks must match that.
+        measured_peaks = dict(prediction["linear"])
+        measured_peaks["output_3"] = 0.0
+        measured_peaks["output_4"] = 0.0
+
         class FakeRuntime:
             def __init__(self, fail_restore=False):
                 self.muted = False
@@ -188,6 +200,12 @@ class MainReferenceSnapshotTests(unittest.IsolatedAsyncioTestCase):
                     raise RuntimeError("restore acknowledgement missing")
                 self.muted = bool(enabled)
                 return previous
+
+            async def reset_output_peaks(self):
+                return None
+
+            async def read_output_peaks(self):
+                return dict(measured_peaks)
 
             def snapshot(self):
                 return {"exact_sub_mute": self.muted}
@@ -230,7 +248,8 @@ class MainReferenceSnapshotTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(main, "set_audio_output_mode"),
                 patch.object(main, "get_audio_output_overview", return_value={}),
                 patch.object(main.SubwooferRuntimeConfig, "from_overview", return_value=runtime_config()),
-                patch.object(main, "_prepare_subwoofer_runtime_for_measurement_start", new_callable=AsyncMock, return_value=None),
+                # Pre-arm responsibility moved to _sync_subwoofer_runtime_for_measurement_sweep.
+                patch.object(main, "_sync_subwoofer_runtime_for_measurement_sweep", new_callable=AsyncMock, return_value=None),
                 patch.object(main.asyncio, "sleep", side_effect=no_sleep),
                 patch("samplerate._load_audio_output_mode", return_value={"subwoofer": {"sub_alignment_ms": 2.0}}),
             ):
@@ -238,7 +257,7 @@ class MainReferenceSnapshotTests(unittest.IsolatedAsyncioTestCase):
                         delay_ms=2.0, job=job, candidate_index=1, total=2,
                         stage="main_reference", fc=80, input_id="mic", channel="left",
                         mic_input_channel="1", reference_input_channel="", calibration_ref="",
-                        calibration_filename=None, calibration_bytes=None, auto_sub_sweep_profile={},
+                        calibration_filename=None, calibration_bytes=None, auto_sub_sweep_profile=sweep_profile,
                         auto_sub_rate=48_000, original_level=-3.0, original_polarity="normal",
                         original_highpass=True, exact_sub_mute=True,
                     )

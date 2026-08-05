@@ -49,6 +49,7 @@ class Station:
     input_url: Optional[str] = None
     image_url: Optional[str] = None
     custom_image_url: Optional[str] = None
+    provider: Optional[str] = None
 
 
 DEFAULT_STATIONS = [
@@ -102,6 +103,189 @@ DEFAULT_STATIONS = [
         "image_url": "https://somafm.com/logos/gsclassic.png",
     },
 ]
+
+# The read-only catalog is deliberately independent from DEFAULT_STATIONS.
+# Personal selection remains stored exclusively in stations.json.
+_SOMAFM_CATALOG_NAMES = {
+    "7soul": "Seven Inch Soul",
+    "beatblender": "Beat Blender",
+    "bootliquor": "Boot Liquor",
+    "brfm": "Black Rock FM",
+    "cliqhop": "cliqhop idm",
+    "covers": "Covers",
+    "deepspaceone": "Deep Space One",
+    "digitalis": "Digitalis",
+    "doomed": "Doomed",
+    "dronezone": "Drone Zone",
+    "dz2": "Drone Zone 2",
+    "dubstep": "Dub Step Beyond",
+    "fluid": "Fluid",
+    "folkfwd": "Folk Forward",
+    "groovesalad": "Groove Salad",
+    "groovesalad2": "Groove Salad 2",
+    "gsclassic": "Groove Salad Classic",
+    "illstreet": "Illinois Street Lounge",
+    "indiepop": "Indie Pop Rocks!",
+    "lush": "Lush",
+    "missioncontrol": "Mission Control",
+    "poptron": "PopTron",
+    "secretagent": "Secret Agent",
+    "seventies": "Left Coast 70s",
+    "sonicuniverse": "Sonic Universe",
+    "spacestation": "Space Station Soma",
+    "suburbsofgoa": "Suburbs of Goa",
+    "thetrip": "The Trip",
+    "thistle": "ThistleRadio",
+    "u80s": "Underground 80s",
+    "metal": "Metal Detector",
+    "reggae": "Heavyweight Reggae",
+    "vaporwaves": "Vaporwaves",
+    "synphaera": "Synphaera Radio",
+    "darkzone": "The Dark Zone",
+    "tikitime": "Tiki Time",
+    "bossa": "Bossa Beyond",
+    "insound": "The In-Sound",
+}
+
+_SOMAFM_CATALOG_IMAGE_URLS = {
+    "brfm": "https://api.somafm.com/logos/512/brfm512.jpg",
+    "fluid": "https://api.somafm.com/logos/512/fluid512.jpg",
+    "gsclassic": "https://api.somafm.com/logos/512/gsclassic512.jpg",
+    "missioncontrol": "https://api.somafm.com/logos/512/missioncontrol512.jpg",
+    "seventies": "https://api.somafm.com/logos/512/seventies512.jpg",
+    "thetrip": "https://api.somafm.com/logos/512/thetrip512.jpg",
+    "thistle": "https://api.somafm.com/logos/512/thistle512.jpg",
+    "synphaera": "https://api.somafm.com/logos/512/synphaera512.jpg",
+    "darkzone": "https://api.somafm.com/logos/512/darkzone512.jpg",
+    "tikitime": "https://api.somafm.com/logos/512/tikitime512.jpg",
+    "bossa": "https://api.somafm.com/logos/512/bossa-512.jpg",
+    "insound": "https://api.somafm.com/logos/512/insound-512.jpg",
+}
+
+_SOMAFM_EXISTING_CATALOG = {
+    item["id"]: dict(item)
+    for item in DEFAULT_STATIONS
+    if item["id"] != "live"
+}
+
+STATION_CATALOG = (
+    {
+        "id": "rp-main",
+        "name": "Radio Paradise Main Mix",
+        "input_url": "https://stream.radioparadise.com/aac-320",
+        "stream_url": "https://stream.radioparadise.com/aac-320",
+        "image_url": "https://img.radioparadise.com/channels/0/0/cover_512x512/0.jpg",
+        "provider": "Radio Paradise",
+    },
+    {
+        "id": "rp-mellow",
+        "name": "Radio Paradise Mellow Mix",
+        "input_url": "https://stream.radioparadise.com/mellow-320",
+        "stream_url": "https://stream.radioparadise.com/mellow-320",
+        "image_url": "https://img.radioparadise.com/channels/0/1/cover_512x512/0.jpg",
+        "provider": "Radio Paradise",
+    },
+    {
+        "id": "rp-rock",
+        "name": "Radio Paradise Rock Mix",
+        "input_url": "https://stream.radioparadise.com/rock-320",
+        "stream_url": "https://stream.radioparadise.com/rock-320",
+        "image_url": "https://img.radioparadise.com/channels/0/2/cover_512x512/0.jpg",
+        "provider": "Radio Paradise",
+    },
+    {
+        "id": "rp-global",
+        "name": "Radio Paradise Global Mix",
+        "input_url": "https://stream.radioparadise.com/global-320",
+        "stream_url": "https://stream.radioparadise.com/global-320",
+        "image_url": "https://img.radioparadise.com/channels/0/3/cover_512x512/0.jpg",
+        "provider": "Radio Paradise",
+    },
+    *(
+        {
+            **{
+                "id": station_id,
+                "name": station_name,
+                "input_url": f"https://api.somafm.com/{station_id}130.pls",
+                "stream_url": f"https://ice5.somafm.com/{station_id}-128-aac",
+            },
+            **_SOMAFM_EXISTING_CATALOG.get(station_id, {}),
+            "image_url": _SOMAFM_CATALOG_IMAGE_URLS.get(
+                station_id,
+                f"https://api.somafm.com/logos/512/{station_id}512.png",
+            ),
+            "provider": "SomaFM",
+        }
+        for station_id, station_name in _SOMAFM_CATALOG_NAMES.items()
+    ),
+    *(
+        {
+            "id": station_id,
+            "name": station_name,
+            "input_url": f"https://icecast.radiofrance.fr/{slug}-midfi.mp3?id=openapi",
+            "stream_url": f"https://icecast.radiofrance.fr/{slug}-midfi.mp3?id=openapi",
+            "image_url": "https://www.radiofrance.fr/pikapi/images/a8903fd7-01e2-45a1-b768-61e3d8e1ff6a/512x512",
+            "provider": "FIP",
+        }
+        for station_id, station_name, slug in (
+            ("fip-main", "FIP", "fip"),
+            ("fip-rock", "FIP Rock", "fiprock"),
+            ("fip-jazz", "FIP Jazz", "fipjazz"),
+            ("fip-groove", "FIP Groove", "fipgroove"),
+            ("fip-world", "FIP Monde", "fipworld"),
+            ("fip-nouveautes", "FIP Nouveautés", "fipnouveautes"),
+            ("fip-reggae", "FIP Reggae", "fipreggae"),
+            ("fip-electro", "FIP Electro", "fipelectro"),
+            ("fip-metal", "FIP Metal", "fipmetal"),
+            ("fip-pop", "FIP Pop", "fippop"),
+            ("fip-hiphop", "FIP Hip-Hop", "fiphiphop"),
+        )
+    ),
+    *(
+        {
+            "id": station_id,
+            "name": station_name,
+            "input_url": stream_url,
+            "stream_url": stream_url,
+            "image_url": image_url,
+            "provider": "Other Stations",
+        }
+        for station_id, station_name, stream_url, image_url in (
+            (
+                "kexp-main", "KEXP Main", "https://kexp.streamguys1.com/kexp160.aac",
+                "https://www.kexp.org/static/assets/img/logo-header.svg",
+            ),
+            (
+                "wfmu-main", "WFMU Main", "http://stream0.wfmu.org/freeform-128k.mp3",
+                "https://wfmu.org/images/wfmu-logo.svg",
+            ),
+            (
+                "radio-calico", "Radio Calico", "https://stream.radio-calico.com/calico.mp3",
+                "https://www.radio-calico.com/wp-content/uploads/2023/03/RadioCalicoLogo-green-300px.png",
+            ),
+            (
+                "jb-radio-2", "JB Radio-2", "https://mediacp.jb-radio.net:8001/aac",
+                "https://jb-radio.net/sites/all/themes/radio4b/favicon.ico",
+            ),
+            (
+                "radio-swiss-jazz", "Radio Swiss Jazz", "https://stream.srg-ssr.ch/srgssr/rsj/aac/96",
+                "https://www.radioswissjazz.ch/social-media/rsj-web.png",
+            ),
+            (
+                "radio-swiss-pop", "Radio Swiss Pop", "https://stream.srg-ssr.ch/srgssr/rsp/aac/96",
+                "https://www.radioswisspop.ch/social-media/rsp-web.png",
+            ),
+            (
+                "radio-swiss-classic", "Radio Swiss Classic", "https://stream.srg-ssr.ch/srgssr/rsc_de/aac/96",
+                "https://www.radioswissclassic.ch/social-media/rsc-web.png",
+            ),
+            (
+                "kcrw-eclectic24", "KCRW Eclectic24", "https://streams.kcrw.com/e24_aac",
+                "https://pressroom.kcrw.com/wp-content/uploads/sites/7/2012/05/KCRW_LOGO-Hero400.jpg",
+            ),
+        )
+    ),
+)
 
 _cached_stations: Optional[List[Station]] = None
 
@@ -270,10 +454,6 @@ def _download_somafm_art(slug: str) -> Optional[Path]:
     return None
 
 
-def _is_somafm_source(input_url: str, stream_url: Optional[str] = None) -> bool:
-    return _extract_somafm_slug("", input_url, stream_url) is not None
-
-
 def _titleize_station_slug(slug: str) -> str:
     if slug in SOMAFM_SLUG_TO_NAME:
         return SOMAFM_SLUG_TO_NAME[slug]
@@ -420,6 +600,48 @@ def get_stations() -> List[Station]:
         _save_raw_stations(raw)
     _cached_stations = stations
     return stations
+
+
+def get_station_catalog() -> List[Station]:
+    return [Station(**dict(item)) for item in STATION_CATALOG]
+
+
+def find_saved_catalog_station(catalog_station: Station, stations: Optional[List[Station]] = None) -> Optional[Station]:
+    saved_stations = get_stations() if stations is None else stations
+    catalog_input_url = (catalog_station.input_url or catalog_station.stream_url or "").strip()
+    catalog_stream_url = (catalog_station.stream_url or "").strip()
+    for station in saved_stations:
+        saved_input_url = (station.input_url or station.stream_url or "").strip()
+        saved_stream_url = (station.stream_url or "").strip()
+        if catalog_input_url and saved_input_url == catalog_input_url:
+            return station
+        if catalog_stream_url and saved_stream_url == catalog_stream_url:
+            return station
+    return None
+
+
+def add_catalog_station(catalog_id: str) -> Station:
+    catalog_station = next((station for station in get_station_catalog() if station.id == catalog_id), None)
+    if catalog_station is None:
+        raise FileNotFoundError(f"Catalog station not found: {catalog_id}")
+
+    saved_station = find_saved_catalog_station(catalog_station)
+    if saved_station is not None:
+        return saved_station
+
+    raw = _load_raw_stations()
+    existing_ids = {str(item.get("id") or "").strip() for item in raw}
+    station = {
+        "id": _make_unique_id(catalog_station.name, existing_ids, preferred_id=catalog_station.id),
+        "name": catalog_station.name,
+        "input_url": catalog_station.input_url or catalog_station.stream_url,
+        "stream_url": catalog_station.stream_url,
+        "image_url": catalog_station.image_url,
+        "custom_image_url": None,
+    }
+    raw.append(station)
+    _save_raw_stations(raw)
+    return Station(**station)
 
 
 def add_station(name: str, input_url: str, custom_image_url: Optional[str] = None) -> Station:

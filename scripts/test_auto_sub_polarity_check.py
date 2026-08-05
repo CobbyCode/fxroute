@@ -6,7 +6,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-sys.modules.setdefault("multipart", types.SimpleNamespace(__version__="0", multipart=types.SimpleNamespace(parse_options_header=lambda value: (value, {}))))
 
 import main
 

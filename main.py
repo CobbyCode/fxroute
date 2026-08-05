@@ -18,6 +18,7 @@ import tempfile
 import wave
 import zipfile
 import numpy as np
+import samplerate_orchestration
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -33,12 +34,12 @@ from mutagen import File as MutagenFile
 from starlette.background import BackgroundTask
 
 from config import get_settings
+from radio_metadata import RadioMetadataService
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 COVER_CACHE_DIR = BASE_DIR / "media" / "cache" / "covers"
 TOP40_COVER_IMAGE = STATIC_DIR / "Top40.png"
-INSTALL_CONFIG_FILE = Path.home() / ".config" / "fxroute" / "install-config.env"
 UPDATE_SCRIPT = BASE_DIR / "scripts" / "update_fxroute.sh"
 
 # Cooldown to prevent rapid mpv IPC flooding (ms)
@@ -69,12 +70,8 @@ _last_play_command_time = 0.0
 
 
 def _path_within_root(path: Path, root: Path) -> bool:
-    try:
-        resolved_path = path.resolve()
-        resolved_root = root.resolve()
-    except Exception:
-        return False
-    return resolved_path == resolved_root or resolved_root in resolved_path.parents
+    """Thin wrapper: path containment check lives in library (REFACTOR-007)."""
+    return path_within_root(path, root)
 
 
 def _can_send_play_command():
@@ -92,50 +89,23 @@ def _cleanup_temp_file(path: Path):
 
 
 def _read_version_file() -> str:
-    try:
-        return (BASE_DIR / "VERSION").read_text(encoding="utf-8").strip()
-    except Exception:
-        return ""
+    """Thin wrapper: VERSION reading lives in install_info (REFACTOR-009)."""
+    return install_info.read_version_file()
 
 
 def _read_build_id() -> str:
-    version = _read_version_file() or "unknown-version"
-    try:
-        deployed_build = (BASE_DIR / "BUILD_ID").read_text(encoding="utf-8").strip()
-        if deployed_build:
-            return f"{version} {deployed_build}"
-    except Exception:
-        pass
-    try:
-        completed = subprocess.run(
-            ["git", "-C", str(BASE_DIR), "rev-parse", "--short", "HEAD"],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=1.5,
-        )
-        commit = completed.stdout.strip() if completed.returncode == 0 else ""
-    except Exception:
-        commit = ""
-    return f"{version} commit={commit or 'unknown'}"
+    """Thin wrapper: build-id resolution lives in install_info (REFACTOR-009)."""
+    return install_info.read_build_id()
 
 
 def _read_install_config() -> dict:
-    data: dict[str, str] = {}
-    try:
-        for raw_line in INSTALL_CONFIG_FILE.read_text(encoding="utf-8").splitlines():
-            line = raw_line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, value = line.split("=", 1)
-            data[key.strip()] = value.strip()
-    except Exception:
-        pass
-    return data
+    """Thin wrapper: install-config parsing lives in install_info (REFACTOR-009)."""
+    return install_info.read_install_config()
 
 
 def _configured_service_name() -> str:
-    return _read_install_config().get("FXROUTE_SERVICE_NAME") or "fxroute"
+    """Thin wrapper: service-name resolution lives in install_info (REFACTOR-009)."""
+    return install_info.configured_service_name()
 
 
 async def _run_update_script(*args: str) -> dict:
@@ -173,67 +143,8 @@ async def _restart_fxroute_service_after_response(service_name: str) -> None:
 
 
 def _list_sink_inputs() -> list[dict]:
-    try:
-        completed = subprocess.run(["pactl", "list", "sink-inputs"], capture_output=True, text=True, check=False, timeout=1.5)
-    except Exception:
-        return []
-    if completed.returncode != 0:
-        return []
-
-    entries: list[dict] = []
-    current: dict | None = None
-    in_properties = False
-    for raw_line in completed.stdout.splitlines():
-        if raw_line.startswith("Sink Input #"):
-            if current:
-                entries.append(current)
-            current = {"id": raw_line.split("#", 1)[1].strip(), "properties": {}}
-            in_properties = False
-            continue
-        if current is None:
-            continue
-
-        stripped = raw_line.strip()
-        if stripped.startswith("Sample Specification:"):
-            match = re.search(r"(\d+)\s*Hz\b", stripped)
-            if match:
-                try:
-                    current["sample_rate"] = int(match.group(1))
-                except ValueError:
-                    pass
-            continue
-        if stripped.startswith("Sink:"):
-            current["sink"] = stripped.split(":", 1)[1].strip()
-            continue
-        if stripped.startswith("Corked:"):
-            current["corked"] = stripped.split(":", 1)[1].strip().lower() == "yes"
-            continue
-        if stripped.startswith("Mute:"):
-            current["muted"] = stripped.split(":", 1)[1].strip().lower() == "yes"
-            continue
-        if stripped.startswith("Volume:"):
-            match = re.search(r"/\s*(\d+)%\s*/", stripped)
-            if match:
-                try:
-                    current["volume_percent"] = int(match.group(1))
-                except ValueError:
-                    pass
-            continue
-        if stripped == "Properties:":
-            in_properties = True
-            continue
-        if not stripped:
-            in_properties = False
-            continue
-        if in_properties:
-            if " = " not in stripped:
-                continue
-            key, value = stripped.split(" = ", 1)
-            current["properties"][key.strip()] = value.strip().strip('"')
-
-    if current:
-        entries.append(current)
-    return entries
+    """Thin wrapper: pactl sink-input parsing lives in sink_inputs (REFACTOR-011)."""
+    return sink_inputs.list_sink_inputs()
 
 
 def _list_mpv_sink_inputs() -> list[dict]:
@@ -450,13 +361,13 @@ def _set_pipewire_force_rate(rate: int) -> None:
 
 
 async def _release_local_samplerate_prearm(expected_rate: int, generation: int, reason: str) -> None:
-    global local_samplerate_prearm_generation, radio_samplerate_force_rate
+    global local_samplerate_prearm_generation, playback_samplerate_force_rate
     try:
         aligned = await _wait_for_samplerate_alignment(expected_rate, timeout_ms=1200)
         if generation != local_samplerate_prearm_generation:
             return
         if current_track_info and current_track_info.get("source") in {"local", "radio"}:
-            radio_samplerate_force_rate = expected_rate
+            playback_samplerate_force_rate = expected_rate
             logger.info(
                 "Local samplerate pre-arm retained for active playback: reason=%s expected_rate=%s aligned=%s source=%s",
                 reason,
@@ -484,7 +395,7 @@ async def _release_local_samplerate_prearm(expected_rate: int, generation: int, 
 
 
 async def _prearm_known_local_samplerate(track_info: dict | None, reason: str) -> tuple[Optional[int], Optional[int]]:
-    global local_samplerate_prearm_generation, radio_samplerate_force_rate
+    global local_samplerate_prearm_generation, playback_samplerate_force_rate
     track_info = track_info or {}
     if track_info.get("source") != "local":
         return None, None
@@ -523,7 +434,7 @@ async def _prearm_known_local_samplerate(track_info: dict | None, reason: str) -
         return None, None
 
     _set_pipewire_force_rate(target_rate)
-    radio_samplerate_force_rate = None
+    playback_samplerate_force_rate = None
     local_samplerate_prearm_generation += 1
     generation = local_samplerate_prearm_generation
     logger.info(
@@ -555,13 +466,14 @@ def _measurement_session_blocks_playback_rate(expected_rate: Optional[int]) -> b
     )
 
 
-async def _ensure_radio_samplerate_force(
+async def _ensure_playback_samplerate_force(
     expected_rate: Optional[int],
     reason: str,
     *,
     allow_measurement_session: bool = False,
+    policy: samplerate_orchestration.PlaybackRateReconcilePolicy = samplerate_orchestration.DEFAULT_POLICY,
 ) -> bool:
-    global radio_samplerate_force_rate
+    global playback_samplerate_force_rate
     if not isinstance(expected_rate, int) or expected_rate <= 0:
         return False
     if not allow_measurement_session and _measurement_session_blocks_playback_rate(expected_rate):
@@ -573,70 +485,116 @@ async def _ensure_radio_samplerate_force(
             measurement_sr_session.measurement_rate,
         )
         return False
-    try:
-        samplerate_status = get_samplerate_status()
-    except Exception:
-        samplerate_status = {}
-    active_rate = samplerate_status.get("active_rate") if isinstance(samplerate_status, dict) else None
-    force_rate = samplerate_status.get("force_rate") if isinstance(samplerate_status, dict) else None
-    if active_rate == expected_rate and force_rate == expected_rate:
-        radio_samplerate_force_rate = expected_rate
-        return True
-    if force_rate != expected_rate:
-        _set_pipewire_force_rate(expected_rate)
-        radio_samplerate_force_rate = expected_rate
+
+    initial_status: dict = {}
+    force_rate_written = False
+    pulse_attempted = False
+    pulse_succeeded = False
+
+    def read_status() -> dict:
+        nonlocal initial_status
+        try:
+            initial_status = get_samplerate_status()
+        except Exception:
+            initial_status = {}
+        return initial_status
+
+    def write_force_rate(rate: int) -> None:
+        nonlocal force_rate_written
+        global playback_samplerate_force_rate
+        _set_pipewire_force_rate(rate)
+        playback_samplerate_force_rate = rate
+        force_rate_written = True
         logger.info(
-            "Radio samplerate force-rate applied: reason=%s expected_rate=%s active_rate=%s previous_force_rate=%s",
+            "Playback samplerate force-rate applied: reason=%s expected_rate=%s active_rate=%s previous_force_rate=%s",
             reason,
             expected_rate,
-            active_rate,
-            force_rate,
+            initial_status.get("active_rate"),
+            initial_status.get("force_rate"),
         )
-    aligned = await _wait_for_samplerate_alignment(expected_rate, timeout_ms=400)
-    if not aligned and isinstance(active_rate, int) and active_rate != expected_rate:
-        if reason not in {
-            "radio-start-before-loadfile",
-            "radio-restart-after-measurement",
-            "radio-playback-transition",
-        }:
+
+    async def wait_for_alignment(rate: int, timeout_ms: int) -> bool:
+        return await _wait_for_samplerate_alignment(rate, timeout_ms=timeout_ms)
+
+    async def pulse_sink(pulse_reason: str) -> bool:
+        nonlocal pulse_attempted, pulse_succeeded
+        pulse_attempted = True
+        pulse_succeeded = await _suspend_resume_playback_sink(
+            reason=pulse_reason, force=True,
+        )
+        return pulse_succeeded
+
+    aligned = await samplerate_orchestration.reconcile_playback_samplerate(
+        expected_rate=expected_rate,
+        reason=reason,
+        policy=policy,
+        read_status=read_status,
+        write_force_rate=write_force_rate,
+        wait_for_alignment=wait_for_alignment,
+        pulse_sink=pulse_sink,
+    )
+
+    initial_active_rate = initial_status.get("active_rate")
+    initial_force_rate = initial_status.get("force_rate")
+    if force_rate_written:
+        playback_samplerate_force_rate = expected_rate
+    elif (
+        initial_active_rate == expected_rate
+        and initial_force_rate == expected_rate
+    ):
+        playback_samplerate_force_rate = expected_rate
+
+    if policy is samplerate_orchestration.DEFAULT_POLICY and not aligned:
+        if isinstance(initial_active_rate, int) and initial_active_rate != expected_rate:
             logger.info(
-                "Radio samplerate sink suspend/resume SKIPPED: reason=%s (only for radio-start/restart paths)",
+                "Radio samplerate sink suspend/resume SKIPPED: reason=%s "
+                "(only for radio-start/restart paths)",
                 reason,
             )
+    elif policy is samplerate_orchestration.RADIO_POLICY and pulse_attempted:
+        if aligned:
+            logger.info(
+                "Radio samplerate sink suspend/resume succeeded: reason=%s expected_rate=%s",
+                reason, expected_rate,
+            )
         else:
-            suspended = await _suspend_resume_playback_sink(reason=reason, force=True)
-            if suspended:
-                aligned = await _wait_for_samplerate_alignment(expected_rate, timeout_ms=1200)
-            if aligned:
-                logger.info(
-                    "Radio samplerate sink suspend/resume succeeded: reason=%s expected_rate=%s",
-                    reason, expected_rate,
-                )
-            else:
-                logger.warning(
-                    "Radio samplerate sink suspend/resume did not change rate: reason=%s expected_rate=%s",
-                    reason, expected_rate,
-                )
+            logger.warning(
+                "Radio samplerate sink suspend/resume did not change rate: reason=%s expected_rate=%s",
+                reason, expected_rate,
+            )
+    elif policy is samplerate_orchestration.STATUS_DRIFT_REPAIR_POLICY and not aligned:
+        try:
+            post_attempt_status = get_samplerate_status()
+        except Exception:
+            post_attempt_status = {}
+        logger.warning(
+            "Playback samplerate drift repair aborted: sink did not align "
+            "source=%s expected_rate=%s active_rate=%s suspended=%s",
+            reason.removeprefix("status-drift-repair:") or "unknown",
+            expected_rate,
+            post_attempt_status.get("active_rate"),
+            pulse_succeeded,
+        )
     return aligned
 
 
-def _clear_radio_samplerate_force_if_active(reason: str) -> None:
-    global radio_samplerate_force_rate
-    if not radio_samplerate_force_rate:
+def _clear_playback_samplerate_force_if_active(reason: str) -> None:
+    global playback_samplerate_force_rate
+    if not playback_samplerate_force_rate:
         return
     current_force_rate = _get_current_pipewire_force_rate()
-    if current_force_rate == radio_samplerate_force_rate:
+    if current_force_rate == playback_samplerate_force_rate:
         try:
             _set_pipewire_force_rate(0)
-            logger.info("Radio samplerate force-rate released: reason=%s previous_force_rate=%s", reason, radio_samplerate_force_rate)
+            logger.info("Playback samplerate force-rate released: reason=%s previous_force_rate=%s", reason, playback_samplerate_force_rate)
         except Exception as exc:
-            logger.warning("Radio samplerate force-rate release failed: reason=%s error=%s", reason, exc)
+            logger.warning("Playback samplerate force-rate release failed: reason=%s error=%s", reason, exc)
             return
-    radio_samplerate_force_rate = None
+    playback_samplerate_force_rate = None
 
 
 async def _prearm_spotify_samplerate(reason: str) -> None:
-    global radio_samplerate_force_rate
+    global playback_samplerate_force_rate
     expected_rate = SPOTIFY_PREARM_SAMPLE_RATE_HZ
     try:
         samplerate_status = get_samplerate_status()
@@ -653,18 +611,16 @@ async def _prearm_spotify_samplerate(reason: str) -> None:
             active_rate,
             force_rate,
         )
-    radio_samplerate_force_rate = expected_rate
+    playback_samplerate_force_rate = expected_rate
     await _wait_for_samplerate_alignment(expected_rate, timeout_ms=700)
 
 
 def _is_local_playback_active(state: dict | None) -> bool:
-    state = state or {}
-    return bool(state.get("current_file") and not state.get("paused") and not state.get("ended"))
+    return playback_state.is_local_playback_active(state)
 
 
 def _is_spotify_playback_active(state: dict | None) -> bool:
-    state = state or {}
-    return bool(state.get("available") and state.get("status") == "Playing")
+    return playback_state.is_spotify_playback_active(state)
 
 
 def _is_measurement_window_open() -> bool:
@@ -742,15 +698,8 @@ async def _apply_hard_playback_handoff(previous_file: Optional[str], next_url: O
 
 
 def _dedupe_archive_name(name: str, used_names: set[str]) -> str:
-    candidate = Path(name or "track").name or "track"
-    stem = Path(candidate).stem or "track"
-    suffix = Path(candidate).suffix
-    index = 2
-    while candidate in used_names:
-        candidate = f"{stem}-{index}{suffix}"
-        index += 1
-    used_names.add(candidate)
-    return candidate
+    """Thin wrapper: archive name deduplication lives in zip_album (REFACTOR-008)."""
+    return zip_album.dedupe_archive_name(name, used_names)
 
 from models import (
     DeleteFolderRequest,
@@ -758,99 +707,64 @@ from models import (
     DownloadTracksRequest,
     PlaylistSaveRequest,
     PlayRequest,
-    StationUpsertRequest,
 )
-from pydantic import BaseModel
-from player import get_player, MPVNotInstalledError, MPVError
-from stations import add_station, delete_station, get_stations, update_station
+from player import get_player, MPVNotInstalledError, MPVError, normalize_stream_info
+from radio_api import _station_api_payload, router as radio_api_router
+from stations import get_stations
 from playlists import delete_playlist, get_playlists, save_playlist
-from library import AUDIO_EXTENSIONS, LibraryScanner
+import playlist_io
+import sink_inputs
+import playback_state
+import samplerate
+from library import (
+    AUDIO_EXTENSIONS,
+    LibraryScanner,
+    cleanup_track_parent_folder,
+    folder_has_audio_files,
+    is_cleanup_only_file,
+    is_removable_artwork_file,
+    is_removable_metadata_sidecar,
+    path_within_root,
+)
 from downloader import Downloader
 from easyeffects import EasyEffectsManager
 try:
     from hardware_controller import HardwareController
 except ImportError:
     HardwareController = None
-from measurement import MeasurementStore, score_sub_alignment_candidates
+from measurement import (
+    MeasurementStore,
+    measurement_setup_settings_from_payload,
+    normalize_measurement_optional_input_channel,
+    score_sub_alignment_candidates,
+)
 from peak_monitor import EasyEffectsPeakMonitor
 from subwoofer_runtime import Subwoofer21Runtime, SubwooferRuntimeConfig, DEFAULT_SAMPLE_RATE
 
 
-REMOVABLE_ARTWORK_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
-REMOVABLE_ARTWORK_STEMS = {"cover", "folder", "front", "albumart"}
-REMOVABLE_EMPTY_SIDECAR_SUFFIXES = {".m3u", ".m3u8", ".cue", ".log", ".nfo", ".txt"}
-
-
 def _is_removable_artwork_file(path: Path) -> bool:
-    if not path.is_file() or path.suffix.lower() not in REMOVABLE_ARTWORK_SUFFIXES:
-        return False
-    name = path.name.lower()
-    stem = path.stem.lower()
-    folder_stem = path.parent.name.lower()
-    return stem in REMOVABLE_ARTWORK_STEMS or stem.startswith("albumart") or any(
-        token in name for token in ("cover", "folder", "front", "album", "artwork")
-    ) or stem == folder_stem
+    """Thin wrapper: artwork detection lives in library (REFACTOR-007)."""
+    return is_removable_artwork_file(path)
 
 
 def _is_removable_metadata_sidecar(path: Path) -> bool:
-    if not path.is_file() or path.suffix.lower() not in REMOVABLE_EMPTY_SIDECAR_SUFFIXES:
-        return False
-    return True
+    """Thin wrapper: sidecar detection lives in library (REFACTOR-007)."""
+    return is_removable_metadata_sidecar(path)
 
 
 def _is_cleanup_only_file(path: Path) -> bool:
-    if not path.is_file():
-        return False
-    return path.suffix.lower() in REMOVABLE_ARTWORK_SUFFIXES or _is_removable_metadata_sidecar(path)
+    """Thin wrapper: cleanup-only classification lives in library (REFACTOR-007)."""
+    return is_cleanup_only_file(path)
 
 
 def _folder_has_audio_files(folder: Path) -> bool:
-    try:
-        for child in folder.iterdir():
-            if child.is_file() and child.suffix.lower() in AUDIO_EXTENSIONS:
-                return True
-    except OSError:
-        return False
-    return False
+    """Thin wrapper: audio presence check lives in library (REFACTOR-007)."""
+    return folder_has_audio_files(folder)
 
 
 def _cleanup_track_parent_folder(folder: Path, music_root: Path, protected_folders: Optional[set[Path]] = None) -> dict:
-    cleaned = {"folder": str(folder), "removed_files": [], "removed_folder": False, "kept": []}
-    protected = {item.resolve() for item in (protected_folders or set())}
-    if (
-        not folder.is_dir()
-        or not _path_within_root(folder, music_root)
-        or folder.resolve() == music_root.resolve()
-        or folder.resolve() in protected
-    ):
-        return cleaned
-    if _folder_has_audio_files(folder):
-        return cleaned
-
-    try:
-        children = list(folder.iterdir())
-    except OSError as exc:
-        cleaned["kept"].append({"path": str(folder), "reason": str(exc)})
-        return cleaned
-
-    files = [child for child in children if child.is_file()]
-    cleanup_only_folder = bool(files) and all(_is_cleanup_only_file(child) for child in files)
-
-    for child in children:
-        if cleanup_only_folder or _is_removable_artwork_file(child) or _is_removable_metadata_sidecar(child):
-            try:
-                child.unlink()
-                cleaned["removed_files"].append(str(child))
-            except OSError as exc:
-                cleaned["kept"].append({"path": str(child), "reason": str(exc)})
-
-    try:
-        if not any(folder.iterdir()):
-            folder.rmdir()
-            cleaned["removed_folder"] = True
-    except OSError as exc:
-        cleaned["kept"].append({"path": str(folder), "reason": str(exc)})
-    return cleaned
+    """Thin wrapper: track-parent cleanup lives in library (REFACTOR-007)."""
+    return cleanup_track_parent_folder(folder, music_root, protected_folders=protected_folders)
 
 
 def _resolve_library_folder(folder: str, music_root: Path) -> Path:
@@ -904,10 +818,10 @@ from system_volume import SystemVolumeError, get_output_volume, set_output_volum
 
 logger = logging.getLogger(__name__)
 
-UPLOAD_AUDIO_EXTENSIONS = {".mp3", ".flac", ".ogg", ".oga", ".opus", ".m4a", ".aac", ".wav", ".wma", ".webm", ".weba"}
-PLAYLIST_FILE_EXTENSIONS = {".m3u", ".m3u8"}
-ZIP_IGNORED_PARTS = {"__MACOSX"}
-ZIP_IGNORED_FILENAMES = {".ds_store", "thumbs.db"}
+import zip_album
+from zip_album import UPLOAD_AUDIO_EXTENSIONS, PLAYLIST_FILE_EXTENSIONS
+import install_info
+import effects_extras
 
 
 class MeasurementSampleRateSession:
@@ -1106,10 +1020,11 @@ class MeasurementSampleRateSession:
                 rate_ready = True
                 if playback_target_rate and force_rate_owned:
                     if playback_source == "radio":
-                        rate_ready = await _ensure_radio_samplerate_force(
+                        rate_ready = await _ensure_playback_samplerate_force(
                             playback_target_rate,
                             "radio-restart-after-measurement",
                             allow_measurement_session=True,
+                            policy=samplerate_orchestration.RADIO_POLICY,
                         )
                     else:
                         rate_ready = await _wait_for_samplerate_alignment(
@@ -1189,7 +1104,7 @@ spotify_playerctl_last_trigger_at = 0.0
 spotify_samplerate_recovery_lock = None
 spotify_samplerate_recovery_active = False
 local_samplerate_prearm_generation = 0
-radio_samplerate_force_rate = None
+playback_samplerate_force_rate = None
 local_playback_handoff_completed_url: str | None = None
 local_playback_handoff_completed_rate: int | None = None
 current_source_mode = SOURCE_MODE_APP_PLAYBACK
@@ -1210,6 +1125,7 @@ radio_reconnect_attempts = 0
 radio_reconnect_url = None
 radio_reconnect_active_since = 0.0
 radio_stream_stale_after_measurement = False
+radio_metadata_service = RadioMetadataService()
 _radio_state_before_measurement: dict[str, Any] | None = None
 playback_stream_stale_after_measurement = False
 _playback_state_before_measurement: dict[str, Any] | None = None
@@ -1263,201 +1179,53 @@ manager = ConnectionManager()
 
 
 def _choose_unique_path(path: Path) -> Path:
-    if not path.exists():
-        return path
-
-    counter = 2
-    while True:
-        candidate = path.with_name(f"{path.stem}-{counter}{path.suffix}")
-        if not candidate.exists():
-            return candidate
-        counter += 1
+    """Thin wrapper: unique path selection lives in zip_album (REFACTOR-008)."""
+    return zip_album.choose_unique_path(path)
 
 
 def _choose_unique_dir(path: Path) -> Path:
-    if not path.exists():
-        return path
-
-    counter = 2
-    while True:
-        candidate = path.with_name(f"{path.name}-{counter}")
-        if not candidate.exists():
-            return candidate
-        counter += 1
+    """Thin wrapper: unique dir selection lives in zip_album (REFACTOR-008)."""
+    return zip_album.choose_unique_dir(path)
 
 
 def _is_safe_relative_zip_path(name: str) -> Optional[Path]:
-    normalized = name.replace("\\", "/").strip("/")
-    if not normalized:
-        return None
-
-    candidate = Path(normalized)
-    if candidate.is_absolute() or any(part in {"", ".", ".."} for part in candidate.parts):
-        return None
-    if any(part in ZIP_IGNORED_PARTS for part in candidate.parts):
-        return None
-    if candidate.name.lower() in ZIP_IGNORED_FILENAMES:
-        return None
-    return candidate
+    """Thin wrapper: ZIP traversal protection lives in zip_album (REFACTOR-008)."""
+    return zip_album.is_safe_relative_zip_path(name)
 
 
 def _extract_zip_album(zip_path: Path, target_root: Path) -> dict:
-    extracted_files = []
-    skipped_entries = []
-
-    try:
-        with zipfile.ZipFile(zip_path) as archive:
-            if archive.testzip() is not None:
-                raise HTTPException(status_code=400, detail="Invalid ZIP archive")
-
-            for member in archive.infolist():
-                safe_relative = _is_safe_relative_zip_path(member.filename)
-                if safe_relative is None:
-                    skipped_entries.append(member.filename)
-                    continue
-
-                if member.is_dir():
-                    (target_root / safe_relative).mkdir(parents=True, exist_ok=True)
-                    continue
-
-                destination = target_root / safe_relative
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                if destination.suffix.lower() in UPLOAD_AUDIO_EXTENSIONS:
-                    destination = _choose_unique_path(destination)
-
-                with archive.open(member) as source, destination.open("wb") as target:
-                    shutil.copyfileobj(source, target)
-
-                extracted_files.append(destination)
-    except zipfile.BadZipFile:
-        raise HTTPException(status_code=400, detail="Invalid ZIP archive")
-
-    audio_files = [path for path in extracted_files if path.suffix.lower() in UPLOAD_AUDIO_EXTENSIONS]
-    playlist_files = [path for path in extracted_files if path.suffix.lower() in PLAYLIST_FILE_EXTENSIONS]
-    return {
-        "audio_files": audio_files,
-        "playlist_files": playlist_files,
-        "extracted_files": extracted_files,
-        "skipped_entries": skipped_entries,
-    }
+    """Thin wrapper: ZIP album extraction lives in zip_album (REFACTOR-008)."""
+    return zip_album.extract_zip_album(zip_path, target_root)
 
 
 def _parse_m3u_entries(content: str) -> List[str]:
-    entries = []
-    for raw_line in (content or "").splitlines():
-        line = raw_line.strip().lstrip("\ufeff")
-        if not line or line.startswith("#"):
-            continue
-        entries.append(line)
-    return entries
+    """Thin wrapper: M3U parsing lives in playlist_io (REFACTOR-002)."""
+    return playlist_io.parse_m3u_entries(content)
 
 
 def _playlist_download_filename(name: str) -> str:
-    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", (name or "playlist").strip()).strip("-._")
-    return f"{slug or 'playlist'}.m3u8"
+    """Thin wrapper: download filename logic lives in playlist_io (REFACTOR-002)."""
+    return playlist_io.playlist_download_filename(name)
 
 
 def _track_relative_m3u_path(track) -> str:
-    if track.path and settings:
-        try:
-            return track.path.resolve().relative_to(settings.MUSIC_ROOT.resolve()).as_posix()
-        except Exception:
-            pass
-    return Path(track.url or track.id).name
+    """Thin wrapper: M3U path rendering lives in playlist_io (REFACTOR-002)."""
+    return playlist_io.track_relative_m3u_path(track)
 
 
 def _build_m3u_for_playlist(playlist) -> str:
-    tracks_by_id = {track.id: track for track in library_scanner.get_tracks(refresh=True)}
-    lines = ["#EXTM3U"]
-    for track_id in playlist.track_ids:
-        track = tracks_by_id.get(track_id)
-        if not track:
-            continue
-        duration = int(track.duration) if track.duration and track.duration > 0 else -1
-        label = track.title or Path(track.path or track_id).stem
-        if track.artist:
-            label = f"{track.artist} - {label}"
-        lines.append(f"#EXTINF:{duration},{label}")
-        lines.append(_track_relative_m3u_path(track))
-    return "\n".join(lines) + "\n"
-
-
-def _build_track_match_index(tracks) -> dict[str, str]:
-    matches = {}
-    ambiguous = set()
-
-    def add(key: str, track_id: str) -> None:
-        key = (key or "").replace("\\", "/").strip().lstrip("./").lower()
-        if not key:
-            return
-        if key in matches and matches[key] != track_id:
-            ambiguous.add(key)
-            matches.pop(key, None)
-            return
-        if key not in ambiguous:
-            matches[key] = track_id
-
-    for track in tracks:
-        if not track.path:
-            continue
-        path = track.path.resolve()
-        try:
-            rel = path.relative_to(settings.MUSIC_ROOT.resolve()).as_posix()
-            add(rel, track.id)
-        except Exception:
-            pass
-        add(path.as_posix(), track.id)
-        add(path.name, track.id)
-        if track.url:
-            add(str(track.url), track.id)
-    return matches
+    """Thin wrapper: M3U export content lives in playlist_io (REFACTOR-002)."""
+    return playlist_io.build_m3u_for_playlist(playlist)
 
 
 def _resolve_m3u_track_ids(entries: List[str], base_dir: Optional[Path] = None, tracks=None) -> List[str]:
-    if tracks is None:
-        tracks = library_scanner.get_tracks(refresh=True)
-    match_index = _build_track_match_index(tracks)
-    track_ids = []
-    seen = set()
-
-    for entry in entries:
-        value = unquote(entry.strip().strip('"'))
-        if value.lower().startswith("file://"):
-            value = value[7:]
-        value = value.replace("\\", "/")
-        candidates = [value]
-        if base_dir and not Path(value).is_absolute():
-            try:
-                resolved = (base_dir / value).resolve()
-                candidates.append(resolved.as_posix())
-                candidates.append(resolved.relative_to(settings.MUSIC_ROOT.resolve()).as_posix())
-            except Exception:
-                pass
-        candidates.append(Path(value).name)
-
-        for candidate in candidates:
-            track_id = match_index.get(candidate.replace("\\", "/").strip().lstrip("./").lower())
-            if track_id and track_id not in seen:
-                seen.add(track_id)
-                track_ids.append(track_id)
-                break
-    return track_ids
+    """Thin wrapper: M3U entry resolution lives in playlist_io (REFACTOR-002)."""
+    return playlist_io.resolve_m3u_track_ids(entries, base_dir=base_dir, tracks=tracks)
 
 
 def _import_m3u_playlist(name: str, content: str, base_dir: Optional[Path] = None, tracks=None) -> Optional[dict]:
-    entries = _parse_m3u_entries(content)
-    track_ids = _resolve_m3u_track_ids(entries, base_dir=base_dir, tracks=tracks)
-    if not track_ids:
-        return None
-    playlist = save_playlist(Path(name).stem or "Imported playlist", track_ids)
-    return {
-        "id": playlist.id,
-        "name": playlist.name,
-        "track_ids": playlist.track_ids,
-        "track_count": len(playlist.track_ids),
-        "matched_track_count": len(track_ids),
-        "entry_count": len(entries),
-    }
+    """Thin wrapper: M3U playlist import lives in playlist_io (REFACTOR-002)."""
+    return playlist_io.import_m3u_playlist(name, content, base_dir=base_dir, tracks=tracks)
 
 
 def _clear_playback_queue():
@@ -1591,14 +1359,7 @@ def _current_track_matches(expected_track: dict | None) -> bool:
 
 
 def _playback_state_matches_track(state: dict | None, track: dict | None) -> bool:
-    state = state or {}
-    track = track or {}
-    source = track.get("source")
-    current_file = state.get("current_file")
-    track_url = track.get("url")
-    if source in {"local", "radio"} and current_file and track_url and current_file != track_url:
-        return False
-    return True
+    return playback_state.playback_state_matches_track(state, track)
 
 
 async def _wait_for_player_current_file(expected_url: str | None, timeout_ms: int = 1600) -> bool:
@@ -1614,30 +1375,11 @@ async def _wait_for_player_current_file(expected_url: str | None, timeout_ms: in
 
 
 def _brief_sink_inputs(entries: list[dict]) -> list[dict]:
-    result = []
-    for entry in entries:
-        props = entry.get("properties") or {}
-        result.append({
-            "id": entry.get("id"),
-            "sink": entry.get("sink"),
-            "node": props.get("node.name"),
-            "app": props.get("application.name") or props.get("application.id"),
-            "media": props.get("media.name"),
-            "rate": entry.get("sample_rate"),
-            "corked": entry.get("corked"),
-            "muted": entry.get("muted"),
-            "volume_percent": entry.get("volume_percent"),
-        })
-    return result
+    return sink_inputs.brief_sink_inputs(entries)
 
 
 def _active_unmuted_sink_inputs(entries: list[dict]) -> list[dict]:
-    return [
-        entry for entry in entries
-        if not entry.get("corked")
-        and not entry.get("muted")
-        and int(entry.get("volume_percent") or 100) > 0
-    ]
+    return sink_inputs.active_unmuted_sink_inputs(entries)
 
 
 def _silent_active_source_links_present(source: str, links_text: str, output_mode: dict) -> bool:
@@ -1655,29 +1397,6 @@ def _silent_active_source_links_present(source: str, links_text: str, output_mod
     if not output_key:
         return True
     return output_key in links_text and "ee_soe_output_level:output_FL" in links_text
-
-
-async def _confirm_configured_default_sink(output_mode: dict) -> bool:
-    output_key = str(output_mode.get("effective_output_key") or "").strip()
-    if not output_key or output_key == "easyeffects_sink":
-        return False
-    try:
-        await _run_pactl_command("set-default-sink", output_key)
-        logger.info("Silent-active recovery confirmed default sink: %s", output_key)
-        return True
-    except Exception as exc:
-        logger.warning("Silent-active recovery default sink confirm failed: output=%s error=%s", output_key, exc)
-        return False
-
-
-async def _resync_output_graph_for_current_mode(overview: dict) -> None:
-    output_mode = overview.get("output_mode") or {}
-    mode = output_mode.get("mode") or OUTPUT_MODE_STEREO
-    if mode == OUTPUT_MODE_STEREO:
-        await _ensure_stereo_easyeffects_output_graph(overview)
-        return
-    if subwoofer_runtime is not None:
-        await _sync_subwoofer_runtime(overview)
 
 
 def _silent_active_snapshot(
@@ -1905,41 +1624,6 @@ async def _check_and_recover_silent_active(
     return
 
 
-async def _recover_silent_active_mpv_source(track: dict | None) -> None:
-    if not player_instance or not player_instance._running or not track:
-        return
-    if not _current_track_matches(track):
-        return
-    url = track.get("url")
-    if not url:
-        return
-    logger.warning("Silent-active recovery reloading mpv source once: source=%s url=%s", track.get("source"), url)
-    committed_generation = playback_transition_generation
-    player_instance.loadfile(url, mode="replace")
-    player_instance.set_pause(False)
-    _mark_player_state_authoritative(player_instance.state)
-    asyncio.create_task(_sync_peak_monitor_after_playback_transition(track.copy()))
-    asyncio.create_task(
-        _maybe_recover_samplerate_mismatch(
-            track.copy(), transition_generation=committed_generation,
-        )
-    )
-    if subwoofer_runtime is not None:
-        asyncio.create_task(
-            _sync_subwoofer_runtime_after_playback_transition(
-                track.copy(), transition_generation=committed_generation,
-            )
-        )
-
-
-async def _recover_silent_active_spotify(signature: str) -> None:
-    global latest_spotify_state
-    logger.warning("Silent-active recovery re-running Spotify handoff once: signature=%s", signature)
-    data = await _complete_spotify_entry_handoff()
-    latest_spotify_state = {**(latest_spotify_state or {}), **data}
-    await sync_peak_monitor_for_spotify_state(data)
-
-
 def _playback_transition_context_is_current(generation: int | None) -> bool:
     """Return true only for the committed playback context captured by a task."""
     return (
@@ -2114,13 +1798,32 @@ async def _sync_subwoofer_runtime_after_playback_transition(
         and expected_track.get("url") == local_playback_handoff_completed_url
         and expected_track.get("sample_rate_hz") == local_playback_handoff_completed_rate
     ):
+        # SR-001: Only treat the completed local handoff as a no-op when the
+        # helper is already running at the completed rate. After a measurement
+        # the helper can still run at 48 kHz while this marker still describes
+        # the pre-measurement 44.1 kHz handoff; skipping the sync would leave
+        # the helper at the stale rate after a resume.
+        runtime_snapshot = subwoofer_runtime.snapshot()
+        helper_rate = _helper_argument_sample_rate(runtime_snapshot)
+        if (
+            runtime_snapshot.get("active")
+            and helper_rate == expected_track.get("sample_rate_hz")
+        ):
+            logger.info(
+                "Subwoofer runtime playback transition sync no-op: local handoff already completed "
+                "before playback activation url=%s sample_rate=%s",
+                expected_track.get("url"),
+                expected_track.get("sample_rate_hz"),
+            )
+            return
         logger.info(
-            "Subwoofer runtime playback transition sync no-op: local handoff already completed "
-            "before playback activation url=%s sample_rate=%s",
+            "Subwoofer runtime playback transition sync proceeding despite completed local handoff: "
+            "url=%s expected_rate=%s helper_active=%s helper_rate=%s",
             expected_track.get("url"),
             expected_track.get("sample_rate_hz"),
+            runtime_snapshot.get("active"),
+            helper_rate,
         )
-        return
     try:
         expected_rate = await _resolve_expected_playback_samplerate(expected_track.get("source") or "")
         if not _playback_transition_context_is_current(transition_generation):
@@ -2136,15 +1839,17 @@ async def _sync_subwoofer_runtime_after_playback_transition(
             # source handoffs, but do not hold the lock during later settling.
             aligned = False
             if source_transition_lock is None:
-                aligned = await _ensure_radio_samplerate_force(
+                aligned = await _ensure_playback_samplerate_force(
                     expected_rate, "radio-playback-transition",
+                    policy=samplerate_orchestration.RADIO_POLICY,
                 )
             else:
                 async with source_transition_lock:
                     if not _playback_transition_context_is_current(transition_generation):
                         return
-                    aligned = await _ensure_radio_samplerate_force(
+                    aligned = await _ensure_playback_samplerate_force(
                         expected_rate, "radio-playback-transition",
+                        policy=samplerate_orchestration.RADIO_POLICY,
                     )
         else:
             aligned = await _wait_for_samplerate_alignment(expected_rate, timeout_ms=3500)
@@ -2298,20 +2003,8 @@ async def _wait_for_selected_output_effective_rate(expected_rate: int, timeout_m
 
 
 def _audio_output_overview_with_effective_rate(overview: dict, effective_rate: int) -> dict:
-    output_mode = dict(overview.get("output_mode") or {})
-    selected_output = dict(overview.get("selected_output") or {})
-    current_output = dict(overview.get("current_output") or {})
-    output_mode["effective_output_rate"] = effective_rate
-    if selected_output:
-        selected_output["active_rate"] = effective_rate
-    if current_output and current_output.get("key") == selected_output.get("key"):
-        current_output["active_rate"] = effective_rate
-    return {
-        **overview,
-        "output_mode": output_mode,
-        "selected_output": selected_output or overview.get("selected_output"),
-        "current_output": current_output or overview.get("current_output"),
-    }
+    """Thin wrapper: overview payload normalization lives in samplerate (REFACTOR-003)."""
+    return samplerate.audio_output_overview_with_effective_rate(overview, effective_rate)
 
 
 def _pulse_suspend_sink_for_samplerate(output_key: str, reason: str) -> None:
@@ -2334,18 +2027,8 @@ def _pulse_suspend_sink_for_samplerate(output_key: str, reason: str) -> None:
 
 
 def _measurement_helper_snapshot_summary(snapshot: dict | None) -> dict:
-    snapshot = snapshot or {}
-    config = snapshot.get("config") or {}
-    return {
-        "active": bool(snapshot.get("active")),
-        "helper_pid": snapshot.get("helper_pid"),
-        "sample_rate": config.get("sample_rate"),
-        "sub_alignment_ms": config.get("sub_alignment_ms"),
-        "main_delay_ms": config.get("derived_main_delay_ms"),
-        "sub_delay_ms": config.get("derived_sub_delay_ms"),
-        "stage": snapshot.get("stage"),
-        "last_error": snapshot.get("last_error"),
-    }
+    """Thin wrapper: helper snapshot summary lives in samplerate (REFACTOR-003)."""
+    return samplerate.measurement_helper_snapshot_summary(snapshot)
 
 
 def _log_22_measurement_sweep_config(config: SubwooferRuntimeConfig, snapshot: dict | None) -> None:
@@ -2828,8 +2511,9 @@ async def _prepare_radio_handoff_before_loadfile() -> int:
     if not isinstance(radio_rate, int) or radio_rate <= 0:
         raise RuntimeError("Radio samplerate target unavailable before loadfile")
 
-    aligned = await _ensure_radio_samplerate_force(
+    aligned = await _ensure_playback_samplerate_force(
         radio_rate, "radio-start-before-loadfile",
+        policy=samplerate_orchestration.RADIO_POLICY,
     )
     if not aligned:
         try:
@@ -2982,7 +2666,10 @@ async def _maybe_recover_samplerate_mismatch(
             return
         if source in {"local", "radio"}:
             try:
-                await _ensure_radio_samplerate_force(mpv_rate, f"{source}-samplerate-mismatch")
+                await _ensure_playback_samplerate_force(
+                    mpv_rate, f"{source}-samplerate-mismatch",
+                    policy=samplerate_orchestration.DEFAULT_POLICY,
+                )
             except Exception as exc:
                 logger.warning("Playback samplerate force-rate failed during mismatch recovery: %s", exc)
         if not _playback_transition_context_is_current(transition_generation):
@@ -3558,13 +3245,16 @@ async def sync_peak_monitor_for_playback_state(
                     return
                 if source in {"local", "radio"} and expected_rate and not aligned:
                     try:
-                        aligned = await _ensure_radio_samplerate_force(expected_rate, f"peak-monitor-playback-transition:{source}")
+                        aligned = await _ensure_playback_samplerate_force(
+                            expected_rate, f"peak-monitor-playback-transition:{source}",
+                            policy=samplerate_orchestration.DEFAULT_POLICY,
+                        )
                     except Exception as exc:
                         logger.warning("Playback samplerate force-rate failed during playback transition: %s", exc)
                     if not _playback_transition_context_is_current(transition_generation):
                         return
                 elif source not in {"local", "radio"}:
-                    _clear_radio_samplerate_force_if_active(f"playback-transition:{source}")
+                    _clear_playback_samplerate_force_if_active(f"playback-transition:{source}")
                 if not aligned:
                     await asyncio.sleep(PEAK_MONITOR_RESTART_SETTLE_MS / 1000)
                     if not _playback_transition_context_is_current(transition_generation):
@@ -3607,7 +3297,7 @@ async def sync_peak_monitor_for_playback_state(
             # pw-record restart + PipeWire link glitches on resume.
             # Mark as not armed so the resume path will trigger relink().
             logger.info("Peak monitor pausing (process stays alive, armed=False): signature=%s", peak_monitor_context_signature)
-            _clear_radio_samplerate_force_if_active("playback-inactive")
+            _clear_playback_samplerate_force_if_active("playback-inactive")
             peak_monitor_playback_armed = False
             # peak_monitor_context_signature is preserved for same-source resume detection.
 
@@ -4307,40 +3997,18 @@ async def _sync_bluetooth_input_monitoring(source_overview: dict | None = None) 
 
 
 def _overview_sample_rate(overview: dict | None) -> int | None:
-    """Return a rate from an already captured overview for stale detection only."""
-    if not isinstance(overview, dict):
-        return None
-    output_mode = overview.get("output_mode") or {}
-    selected_output = overview.get("selected_output") or overview.get("current_output") or {}
-    for value in (
-        output_mode.get("effective_output_rate"),
-        selected_output.get("active_rate"),
-        overview.get("active_rate"),
-    ):
-        if isinstance(value, int) and value > 0:
-            return value
-    return None
+    """Thin wrapper: overview rate extraction lives in samplerate (REFACTOR-003)."""
+    return samplerate.overview_sample_rate(overview)
 
 
 def _authoritative_sample_rate(status: dict | None) -> int | None:
-    """Read the live rate which owns the helper start decision."""
-    if not isinstance(status, dict):
-        return None
-    for key in ("force_rate", "active_rate"):
-        value = status.get(key)
-        if isinstance(value, int) and value > 0:
-            return value
-    return None
+    """Thin wrapper: authoritative rate extraction lives in samplerate (REFACTOR-003)."""
+    return samplerate.authoritative_sample_rate(status)
 
 
 def _helper_argument_sample_rate(snapshot: dict | None) -> int | None:
-    args = (snapshot or {}).get("helper_args") or []
-    try:
-        index = args.index("--rate")
-        value = int(args[index + 1])
-    except (ValueError, TypeError, IndexError):
-        return None
-    return value if value > 0 else None
+    """Thin wrapper: helper --rate argument extraction lives in samplerate (REFACTOR-003)."""
+    return samplerate.helper_argument_sample_rate(snapshot)
 
 
 async def _sync_subwoofer_runtime(
@@ -4852,6 +4520,7 @@ async def lifespan(app: FastAPI):
         logger.info("Hardware controller closed")
 
 app = FastAPI(lifespan=lifespan)
+app.include_router(radio_api_router)
 
 # Static files
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -4880,34 +4549,6 @@ async def apple_touch_icon_root():
 @app.get("/site.webmanifest")
 async def site_webmanifest_root():
     return FileResponse(STATIC_DIR / "site.webmanifest", media_type="application/manifest+json")
-
-def _station_art_url_if_available(url: Optional[str]) -> str:
-    value = str(url or "").strip()
-    if not value:
-        return ""
-    if value.startswith("/static/station-art/"):
-        art_path = (STATIC_DIR / "station-art" / Path(value).name).resolve()
-        if not _path_within_root(art_path, STATIC_DIR / "station-art") or not art_path.is_file():
-            return ""
-    return value
-
-
-def _station_api_payload(station):
-    image_url = _station_art_url_if_available(station.image_url)
-    custom_image_url = _station_art_url_if_available(station.custom_image_url)
-    cached_custom_image_url = _station_art_url_if_available(getattr(station, "cached_custom_image_url", None))
-    return {
-        "id": station.id,
-        "title": station.name,
-        "image": cached_custom_image_url or custom_image_url or image_url or "",
-        "image_url": image_url,
-        "custom_image_url": custom_image_url,
-        "cached_custom_image_url": cached_custom_image_url,
-        "stream_url": station.stream_url,
-        "input_url": station.input_url or station.stream_url,
-        "artist": "Radio",
-    }
-
 
 def _cover_media_type(path: Path) -> str:
     suffix = path.suffix.lower()
@@ -5071,72 +4712,6 @@ def _record_local_track_started(track_info: Optional[dict]) -> None:
     except Exception as exc:
         logger.debug("Failed to update local track play stats for %s: %s", track_id, exc)
 
-
-@app.get("/api/stations")
-async def list_stations():
-    return [_station_api_payload(station) for station in get_stations()]
-
-
-@app.post("/api/stations")
-async def create_station(req: StationUpsertRequest):
-    try:
-        station = add_station(req.name, req.stream_url, req.custom_image_url)
-        return {
-            "status": "ok",
-            "station": _station_api_payload(station),
-        }
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-
-@app.put("/api/stations/{station_id}")
-async def edit_station(station_id: str, req: StationUpsertRequest):
-    try:
-        station = update_station(station_id, req.name, req.stream_url, req.custom_image_url)
-        return {
-            "status": "ok",
-            "station": _station_api_payload(station),
-        }
-    except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-
-@app.delete("/api/stations/{station_id}")
-async def remove_station(station_id: str):
-    try:
-        delete_station(station_id)
-        return {"status": "ok", "deleted": station_id}
-    except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-
-class StationImportItem(BaseModel):
-    name: str = ""
-    url: str = ""
-    logo: str = ""
-    genre: str = ""
-
-@app.post("/api/stations/import")
-async def import_stations(items: list[StationImportItem]):
-    results = []
-    for item in items:
-        name = (item.name or "").strip()
-        stream_url = (item.url or "").strip()
-        custom_image_url = (item.logo or "").strip()
-        if not stream_url:
-            results.append({"status": "skipped", "reason": "missing url", "name": name})
-            continue
-        if not name:
-            from urllib.parse import urlparse
-            parsed = urlparse(stream_url)
-            name = parsed.netloc or "Unknown Station"
-        try:
-            station = add_station(name, stream_url, custom_image_url)
-            results.append({"status": "ok", "name": name})
-        except ValueError as e:
-            results.append({"status": "error", "name": name, "reason": str(e)})
-    return {"results": results}
 
 @app.get("/api/tracks")
 async def list_tracks():
@@ -6112,7 +5687,10 @@ async def toggle_playback():
                             released,
                         )
                         # Now set the correct rate and load fresh
-                        await _ensure_radio_samplerate_force(expected_rate, "radio-restart-after-measurement")
+                        await _ensure_playback_samplerate_force(
+                            expected_rate, "radio-restart-after-measurement",
+                            policy=samplerate_orchestration.RADIO_POLICY,
+                        )
                         player_instance.loadfile(radio_url, mode="replace")
                         player_instance.set_pause(False)
                         _mark_player_state_authoritative(player_instance.state)
@@ -6189,6 +5767,17 @@ async def toggle_playback():
             asyncio.create_task(_release_local_samplerate_prearm(prearm_rate, prearm_generation, "toggle-resume"))
         if was_paused and current_track_info and (current_track_info.get("source") in {"local", "radio"}):
             committed_generation = playback_transition_generation
+            # SR-001: bind the existing committed-transition helper sync to the
+            # resume so a helper still running at 48 kHz (e.g. after a
+            # measurement) is reliably re-synced to the resumed 44.1 kHz
+            # playback. The task is generation-bound and no-ops when the helper
+            # already matches; it never creates a second helper restart.
+            asyncio.create_task(
+                _sync_subwoofer_runtime_after_playback_transition(
+                    (current_track_info or {}).copy(),
+                    transition_generation=committed_generation,
+                )
+            )
             asyncio.create_task(
                 _maybe_recover_samplerate_mismatch(
                     (current_track_info or {}).copy(),
@@ -6447,6 +6036,46 @@ async def get_status():
     if player_instance:
         state = build_playback_payload(player_instance.state)
         state["metadata"] = player_instance.get_metadata() if state.get("current_file") else {}
+        track = state.get("current_track") or {}
+        if track.get("source") == "radio":
+            station_id = str(track.get("id") or "").removeprefix("radio_")
+            stream_url = str(track.get("url") or "")
+            # Provider lookup is metadata-only and occurs after the playback
+            # payload has been built.  It cannot affect loadfile or audio state.
+            provider_metadata = await radio_metadata_service.get(station_id, stream_url)
+            active_track = (current_track_info or {})
+            active_station_id = str(active_track.get("id") or "").removeprefix("radio_")
+            if provider_metadata and station_id == active_station_id:
+                state["radio_metadata"] = provider_metadata
+            else:
+                icy_title = str(state.get("live_title") or "").strip()
+                state["radio_metadata"] = {
+                    "station_id": station_id,
+                    "provider": None,
+                    "track_id": f"icy:{station_id}:{icy_title}" if icy_title else None,
+                    "artist": None,
+                    "title": icy_title or None,
+                    "album": None,
+                    "cover_url": None,
+                    "started_at": None,
+                    "ends_at": None,
+                    "duration_seconds": None,
+                    "progress_seconds": None,
+                    "history": [],
+                    "source": "icy" if icy_title else "station",
+                    "fetched_at": time.time(),
+                    "stale": False,
+                }
+        else:
+            state["radio_metadata"] = None
+        # Live stream facts from mpv (codec/bitrate/samplerate/depth) for the
+        # tech line.  Read-only; never derived from URLs or catalog fields.
+        if track.get("source") in ("radio", "local") and state.get("current_file"):
+            state["stream_info"] = normalize_stream_info(
+                player_instance.get_stream_audio_info()
+            )
+        else:
+            state["stream_info"] = None
         state["system"] = {"version": _read_version_file()}
         return state
     return {"running": False, "system": {"version": _read_version_file()}}
@@ -6529,6 +6158,16 @@ async def system_restore():
     }
 
 async def _maybe_repair_active_app_samplerate_drift(status: dict) -> None:
+    """Repair active local/radio playback rate drift observed from the status poll.
+
+    SR-001: the sequence is fully serialized and gate-protected:
+      committed playback generation + track check -> measurement-session guard
+      -> set playback force-rate -> one controlled sink suspend/resume when the
+      sink has not aligned -> bounded alignment wait -> helper sync at the same
+      rate (the helper's own gates re-check the live rate before starting it).
+      No helper sync while hardware sink and target rate disagree; on missing
+      alignment the repair aborts with a bounded, clearly logged attempt.
+    """
     global last_app_samplerate_drift_repair_at
     now = time.monotonic()
     if now - last_app_samplerate_drift_repair_at < 2.0:
@@ -6543,6 +6182,30 @@ async def _maybe_repair_active_app_samplerate_drift(status: dict) -> None:
     expected_rate = await _resolve_expected_playback_samplerate(source)
     if not isinstance(expected_rate, int) or expected_rate <= 0 or active_rate == expected_rate:
         return
+    if measurement_sr_session is not None and measurement_sr_session.active:
+        logger.info(
+            "Playback samplerate drift repair skipped: active measurement session "
+            "source=%s expected_rate=%s measurement_rate=%s",
+            source,
+            expected_rate,
+            measurement_sr_session.measurement_rate,
+        )
+        return
+    transition_generation = playback_transition_generation
+    if not _playback_transition_context_is_current(transition_generation):
+        logger.info(
+            "Playback samplerate drift repair skipped: no committed playback transition context "
+            "source=%s generation=%s",
+            source,
+            transition_generation,
+        )
+        return
+    if not _current_track_matches(current_track_info):
+        logger.info(
+            "Playback samplerate drift repair skipped: track changed source=%s",
+            source,
+        )
+        return
     last_app_samplerate_drift_repair_at = now
     logger.info(
         "Repairing active app samplerate drift from status poll: source=%s expected_rate=%s active_rate=%s track=%s",
@@ -6551,7 +6214,54 @@ async def _maybe_repair_active_app_samplerate_drift(status: dict) -> None:
         active_rate,
         (current_track_info or {}).get("url"),
     )
-    await _ensure_radio_samplerate_force(expected_rate, f"status-drift-repair:{source}")
+    if source_transition_lock is None:
+        await _repair_active_app_samplerate_drift_locked(
+            expected_rate, source, transition_generation,
+        )
+    else:
+        async with source_transition_lock:
+            if not _playback_transition_context_is_current(transition_generation):
+                return
+            await _repair_active_app_samplerate_drift_locked(
+                expected_rate, source, transition_generation,
+            )
+
+
+async def _repair_active_app_samplerate_drift_locked(
+    expected_rate: int,
+    source: str,
+    transition_generation: int,
+) -> None:
+    """SR-001 serialized drift repair; caller holds source_transition_lock.
+
+    Order: set playback force-rate -> one controlled sink suspend/resume when
+    the sink has not aligned -> bounded alignment wait -> helper sync only
+    after force-rate and hardware sink agree. Missing alignment aborts the
+    repair without touching the helper (no endless retry).
+    """
+    try:
+        aligned = await _ensure_playback_samplerate_force(
+            expected_rate, f"status-drift-repair:{source}",
+            policy=samplerate_orchestration.STATUS_DRIFT_REPAIR_POLICY,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Playback samplerate force-rate failed during drift repair: %s", exc,
+        )
+        return
+    if not aligned:
+        return
+    if (
+        not _playback_transition_context_is_current(transition_generation)
+        or not _current_track_matches(current_track_info)
+    ):
+        logger.info(
+            "Playback samplerate drift repair aborted: context changed before helper sync "
+            "source=%s expected_rate=%s",
+            source,
+            expected_rate,
+        )
+        return
     if subwoofer_runtime is not None:
         await _sync_subwoofer_runtime(reason="status-poll-rate-repair")
 
@@ -6816,118 +6526,13 @@ async def save_audio_source_selection_route(request: Request):
 
 
 def _parse_effects_extras_from_json(body: dict) -> dict:
-    limiter_enabled = bool(body.get("limiterEnabled", body.get("limiter_enabled", False)))
-    headroom_enabled = bool(body.get("headroomEnabled", body.get("headroom_enabled", False)))
-    headroom_gain_db = float(body.get("headroomGainDb", body.get("headroom_gain_db", -3.0)) or -3.0)
-    autogain_enabled = bool(body.get("autogainEnabled", body.get("autogain_enabled", False)))
-    autogain_target_db = float(body.get("autogainTargetDb", body.get("autogain_target_db", -12.0)) or -12.0)
-    loudness_enabled = bool(body.get("loudnessEnabled", body.get("loudness_enabled", False)))
-    loudness_fft_size = int(body.get("loudnessFftSize", body.get("loudness_fft_size", 4096)) or 4096)
-    loudness_strength = body.get("loudnessStrength", body.get("loudness_strength", 10))
-    loudness_volume_db = float(body.get("loudnessVolumeDb", body.get("loudness_volume_db", 0.0)) or 0.0)
-    delay_enabled = bool(body.get("delayEnabled", body.get("delay_enabled", False)))
-    delay_left_ms = float(body.get("delayLeftMs", body.get("delay_left_ms", 0.0)) or 0.0)
-    delay_right_ms = float(body.get("delayRightMs", body.get("delay_right_ms", 0.0)) or 0.0)
-    bass_enabled = bool(body.get("bassEnabled", body.get("bass_enabled", False)))
-    bass_amount = float(body.get("bassAmount", body.get("bass_amount", 0.0)) or 0.0)
-    tone_effect_enabled = bool(body.get("toneEffectEnabled", body.get("tone_effect_enabled", False)))
-    tone_effect_mode = str(body.get("toneEffectMode", body.get("tone_effect_mode", "crystalizer")) or "crystalizer").strip().lower()
-    return {
-        "limiter": {"enabled": limiter_enabled},
-        "headroom": {
-            "enabled": headroom_enabled,
-            "params": {
-                "gainDb": headroom_gain_db,
-            },
-        },
-        "autogain": {
-            "enabled": autogain_enabled,
-            "params": {
-                "targetDb": autogain_target_db,
-            },
-        },
-        "loudness": {
-            "enabled": loudness_enabled,
-            "params": {
-                "fftSize": loudness_fft_size,
-                "strength": loudness_strength,
-                "volumeDb": loudness_volume_db,
-                "calibration": body.get("calibration") if isinstance(body.get("calibration"), dict) else {},
-                "calibrationProfiles": body.get("calibrationProfiles") if isinstance(body.get("calibrationProfiles"), dict) else {},
-            },
-        },
-        "delay": {
-            "enabled": delay_enabled,
-            "params": {
-                "leftMs": delay_left_ms,
-                "rightMs": delay_right_ms,
-            },
-        },
-        "bass_enhancer": {
-            "enabled": bass_enabled,
-            "params": {
-                "amount": bass_amount,
-                "harmonics": 8.5,
-                "scope": 100.0,
-                "blend": 0.0,
-            },
-        },
-        "tone_effect": {
-            "enabled": tone_effect_enabled,
-            "mode": tone_effect_mode,
-        },
-    }
+    """Thin wrapper: EasyEffects extras parsing lives in effects_extras (REFACTOR-010)."""
+    return effects_extras.parse_effects_extras_from_json(body)
 
 
 def _merge_effects_extras_from_json(previous: dict, body: dict) -> dict:
-    """Apply only explicitly supplied JSON fields to persisted extras."""
-    merged = copy.deepcopy(previous)
-
-    def supplied(*names: str) -> tuple[bool, Any]:
-        for name in names:
-            if name in body:
-                return True, body[name]
-        return False, None
-
-    scalar_fields = (
-        ("limiter", "enabled", ("limiterEnabled", "limiter_enabled"), bool),
-        ("headroom", "enabled", ("headroomEnabled", "headroom_enabled"), bool),
-        ("autogain", "enabled", ("autogainEnabled", "autogain_enabled"), bool),
-        ("loudness", "enabled", ("loudnessEnabled", "loudness_enabled"), bool),
-        ("delay", "enabled", ("delayEnabled", "delay_enabled"), bool),
-        ("bass_enhancer", "enabled", ("bassEnabled", "bass_enabled"), bool),
-        ("tone_effect", "enabled", ("toneEffectEnabled", "tone_effect_enabled"), bool),
-        ("tone_effect", "mode", ("toneEffectMode", "tone_effect_mode"), str),
-    )
-    for section, field, names, converter in scalar_fields:
-        present, value = supplied(*names)
-        if present:
-            merged.setdefault(section, {})[field] = converter(value)
-
-    param_fields = (
-        ("headroom", "gainDb", ("headroomGainDb", "headroom_gain_db"), float),
-        ("autogain", "targetDb", ("autogainTargetDb", "autogain_target_db"), float),
-        ("loudness", "fftSize", ("loudnessFftSize", "loudness_fft_size"), int),
-        ("loudness", "strength", ("loudnessStrength", "loudness_strength"), str),
-        ("delay", "leftMs", ("delayLeftMs", "delay_left_ms"), float),
-        ("delay", "rightMs", ("delayRightMs", "delay_right_ms"), float),
-        ("bass_enhancer", "amount", ("bassAmount", "bass_amount"), float),
-    )
-    for section, field, names, converter in param_fields:
-        present, value = supplied(*names)
-        if present:
-            merged.setdefault(section, {}).setdefault("params", {})[field] = converter(value)
-
-    for field, body_name in (
-        ("calibration", "calibration"),
-        ("calibrationProfiles", "calibrationProfiles"),
-    ):
-        if body_name in body:
-            value = body[body_name]
-            if not isinstance(value, dict):
-                raise ValueError(f"{body_name} must be an object")
-            merged.setdefault("loudness", {}).setdefault("params", {})[field] = copy.deepcopy(value)
-    return merged
+    """Thin wrapper: EasyEffects extras merge lives in effects_extras (REFACTOR-010)."""
+    return effects_extras.merge_effects_extras_from_json(previous, body)
 
 
 def _resolve_effects_extras(extras: dict | None = None) -> dict:
@@ -6940,37 +6545,13 @@ def _resolve_effects_extras(extras: dict | None = None) -> dict:
 
 
 def _is_pure_loudness_strength_change(previous: dict, current: dict) -> bool:
-    previous_without_strength = copy.deepcopy(previous)
-    current_without_strength = copy.deepcopy(current)
-    previous_strength = (
-        previous_without_strength.get("loudness", {})
-        .get("params", {})
-        .pop("strength", None)
-    )
-    current_strength = (
-        current_without_strength.get("loudness", {})
-        .get("params", {})
-        .pop("strength", None)
-    )
-    return (
-        previous_strength != current_strength
-        and previous_without_strength == current_without_strength
-        and bool(current.get("loudness", {}).get("enabled"))
-    )
+    """Thin wrapper: strength-change detection lives in effects_extras (REFACTOR-010)."""
+    return effects_extras.is_pure_loudness_strength_change(previous, current)
 
 
 def _is_runtime_autogain_loudness_change(previous: dict, current: dict) -> bool:
-    previous_other = copy.deepcopy(previous)
-    current_other = copy.deepcopy(current)
-    previous_pair = (
-        previous_other.pop("autogain", None),
-        previous_other.pop("loudness", None),
-    )
-    current_pair = (
-        current_other.pop("autogain", None),
-        current_other.pop("loudness", None),
-    )
-    return previous_pair != current_pair and previous_other == current_other
+    """Thin wrapper: autogain/loudness change detection lives in effects_extras (REFACTOR-010)."""
+    return effects_extras.is_runtime_autogain_loudness_change(previous, current)
 
 
 def _require_easyeffects_manager():
@@ -7954,27 +7535,11 @@ async def download_easyeffects_preset_file(preset_name: str):
     return FileResponse(preset_path, filename=preset_path.name)
 
 def _normalize_measurement_optional_input_channel(value: Any) -> str:
-    if value is None or value == "":
-        return ""
-    try:
-        channel = int(str(value).strip())
-    except (TypeError, ValueError):
-        return ""
-    return str(channel) if channel >= 1 else ""
+    return normalize_measurement_optional_input_channel(value)
 
 
 def _measurement_setup_settings_from_payload(settings: dict[str, Any]) -> dict[str, Any]:
-    measure_settings = settings.get("measure") if isinstance(settings.get("measure"), dict) else {}
-    reference_input_channel = measure_settings.get("selectedReferenceInputChannel")
-    if reference_input_channel is None:
-        reference_input_channel = measure_settings.get("reference_input_channel")
-    return {
-        "selectedInputId": str(measure_settings.get("selectedInputId") or ""),
-        "selectedMicInputChannel": _normalize_measurement_optional_input_channel(
-            measure_settings.get("selectedMicInputChannel")
-        ) or "1",
-        "selectedReferenceInputChannel": _normalize_measurement_optional_input_channel(reference_input_channel),
-    }
+    return measurement_setup_settings_from_payload(settings)
 
 
 def _read_measurement_setup_settings() -> dict[str, Any]:

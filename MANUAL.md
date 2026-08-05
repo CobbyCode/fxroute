@@ -48,14 +48,21 @@ EasyEffects does the live audio processing. FXRoute makes it easier to control, 
 
 ## 4. Radio
 
-Use **Radio** for simple internet radio playback.
+Use **Radio** for internet radio playback.
 
 You can:
 
-- play built-in stations
-- add custom stream URLs
-- add or edit station artwork
-- delete stations you no longer use
+- play stations from the curated catalog, grouped by genre with station
+  artwork (SomaFM, Radio Paradise, FIP, KEXP, and more)
+- search stations via Radio Browser by name, genre, or country, with
+  low-quality streams filtered out
+- add your own stream URLs to the personal catalog
+- edit the name, URL, and artwork of personal stations
+- delete personal stations you no longer use
+- see live stream info (codec, bitrate, sample rate) in the playback bar
+- open the cover detail card for the current station, with live metadata
+  and artwork when the station provides them (Radio Paradise, FIP, SomaFM,
+  and KEXP are enriched with dedicated providers)
 
 Radio is the quickest way to check that playback, output selection, and DSP routing are working.
 

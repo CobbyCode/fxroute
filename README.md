@@ -48,7 +48,9 @@ It is built for mini PCs, desktops, ARM boards, and dedicated stereo boxes that 
 
 - browser UI for desktop and mobile control
 - local music playback with queue, playlists, uploads, ZIP album imports, album browsing, cached album metadata, artist info, similar-artist discovery, and media URL imports
-- internet radio with built-in and custom stations
+- internet radio with a curated station catalog, personal station management
+  (add/edit/delete streams with custom artwork), Radio Browser station search,
+  and enriched metadata and artwork for Radio Paradise, FIP, SomaFM, and KEXP
 - Spotify desktop control through `playerctl` / MPRIS, including passive metadata refresh for automatic track changes
 - Spotify Lossless playback through a current local Spotify desktop client for eligible Premium accounts, when Lossless is enabled in Spotify (up to 24-bit/44.1 kHz FLAC); FXRoute provides remote client control, not the Spotify stream
 - EasyEffects preset switching, PEQ, convolver import/generation, output helpers, and A/B compare
@@ -66,9 +68,15 @@ It is built for mini PCs, desktops, ARM boards, and dedicated stereo boxes that 
   can use up to ±6 dB while four final Stage outputs are checked against
   −1 dBFS
 - sample-rate-aware playback handling for local files, radio, Spotify, and Bluetooth handoff cases
+- rich now-playing and cover detail views for local, radio, and Spotify
+  playback, including stream tech lines (codec/bitrate/sample rate) and
+  tag-info blocks
 - Bluetooth input visibility/control when the host audio stack supports it
 - optional local HTTPS/Caddy setup with downloadable local certificate for trusted LAN clients
 - installer support for systemd user service, Flatpak EasyEffects, PipeWire/BlueZ dependencies, firewall comfort rules, and `.local` LAN naming
+- installer package-manager support for apt (Debian/Ubuntu), dnf (Fedora),
+  zypper (openSUSE), and pacman (Arch/Manjaro); package-manager preparation
+  runs at most once per installer run
 
 ## Intended setup
 
@@ -173,7 +181,7 @@ Typical URLs:
 
 ## Main sections
 
-- **Radio** — built-in and custom internet stations
+- **Radio** — curated station catalog, personal stations, Radio Browser search, live metadata and artwork for Radio Paradise, FIP, SomaFM, and KEXP
 - **Library** — local files, album browsing, cached metadata, artist info, similar-artist discovery, playlists, uploads, imports, downloads, and deletion
 - **DSP** — EasyEffects presets, PEQ, convolver, helpers, A/B compare, and preset creation
 - **Measure** — practical host-mic measurement and tuning workflow
