@@ -54,6 +54,17 @@ PEAK_MONITOR_RATE_MATCH_TIMEOUT_MS = 900
 RADIO_SAMPLERATE_RENEGOTIATE_DELAY_MS = 1200
 RADIO_SAMPLERATE_PRESET_BOUNCE_DELAY_MS = 350
 RADIO_EXPECTED_SAMPLE_RATE_HZ = 44100
+RADIO_POST_LOAD_RATE_TIMEOUT_MS = 3000
+RADIO_POST_LOAD_RATE_STABILITY_POLLS = 3
+# Bounded readback wait for the EasyEffects output ports after a rate switch
+# or a missing-graph repair. No fixed sleeps: the handoff polls pw-link until
+# ee_soe_output_level:output_FL/FR are exposed, then starts/syncs the helper.
+PLAYBACK_HANDOFF_EE_PORT_TIMEOUT_MS = 5000
+# Bounded readback-driven repair rounds for transient link races inside the
+# shared handoff: after the helper sync the graph is re-checked per component
+# (EE ports, helper ports, EE->helper and helper->HW links) and only missing
+# pieces are repaired; every round is re-verified by readback, no blind sleeps.
+PLAYBACK_HANDOFF_LINK_REPAIR_MAX_ROUNDS = 2
 SPOTIFY_PREARM_SAMPLE_RATE_HZ = 44100
 RADIO_RECONNECT_DELAY_SECONDS = 2.0
 RADIO_RECONNECT_MAX_ATTEMPTS = 5
@@ -801,6 +812,7 @@ from samplerate import (
     set_bluetooth_receiver_enabled,
 )
 from spotify import (
+    _stop_process,
     playerctl_available,
     spotify_installed,
     get_status as spotify_get_status,
@@ -1563,17 +1575,14 @@ async def _check_and_recover_silent_active(
     if not isinstance(vu_db, (int, float)) or vu_db > SILENT_ACTIVE_FLOOR_DB:
         return
 
-    # PATCH silent-active-neutralize (2026-07-07):
-    # Skip detection when the EE output peak meter has not yet observed a
-    # sample. During EE preset / convolver reload, output_peak.detected
-    # stays False and vu_db falls back to its default (-60). Treating that
-    # as "silent audio" caused a loadfile() recovery loop on every library
-    # start. Testing confirmed real audio on UMC even with the EE Output
-    # Meter reporting -60.
-    output_peak = peak_snapshot.get("output_peak") or {}
-    if not output_peak.get("detected"):
+    # Skip when no current sample is available: vu_db then only reflects the
+    # technical -60 dB floor, not real silence. Freshness (vu_fresh) is the
+    # sample-validity signal of peak_monitor.snapshot(); the peak-hold
+    # "detected" flag is unrelated to sample validity and must not gate the
+    # diagnosis.
+    if not peak_snapshot.get("vu_fresh"):
         logger.info(
-            "SILENT-ACTIVE-DIAG skip: peak_not_detected vu_db=%s source=%s signature=%s",
+            "SILENT-ACTIVE-DIAG skip: peak_samples_stale vu_db=%s source=%s signature=%s",
             vu_db, source, signature,
         )
         return
@@ -1682,88 +1691,509 @@ async def _sync_peak_monitor_after_playback_transition(
             )
 
 
-async def _complete_local_playback_handoff(track_info: dict, expected_rate: int) -> None:
-    """Finish a local rate handoff while the newly loaded MPV track is paused."""
+async def _easyeffects_output_ports_present() -> bool:
+    """Readback: are ee_soe_output_level:output_FL/FR exposed right now?"""
+    try:
+        links_text = await _run_pw_link_command("-io")
+    except Exception:
+        return False
+    return (
+        "ee_soe_output_level:output_FL" in links_text
+        and "ee_soe_output_level:output_FR" in links_text
+    )
+
+
+async def _wait_for_easyeffects_output_ports(timeout_ms: int) -> bool:
+    """Poll pw-link -io until the EasyEffects output ports are exposed.
+
+    Readback-driven replacement for fixed sleeps: the handoff only proceeds
+    to the helper sync once the EE output ports actually exist. The EE
+    preset sync (step 3) triggers the port recreation; this wait observes it.
+    """
+    deadline = time.monotonic() + max(timeout_ms, 0) / 1000
+    while True:
+        if await _easyeffects_output_ports_present():
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        await asyncio.sleep(PIPEWIRE_HANDOFF_POLL_INTERVAL_MS / 1000)
+
+
+async def _playback_graph_diagnosis(audio_overview: dict | None = None) -> dict:
+    """Fine-grained readback of the playback graph, component by component.
+
+    Distinguishes the EE output ports, the native helper ports, the
+    EE -> helper links and the helper -> hardware links (stereo:
+    EE -> hardware) so a missing graph can be logged and repaired per
+    component. Never raises: any readback failure yields an incomplete
+    diagnosis. The bool result of _playback_graph_links_complete is derived
+    from this single source of truth (links imply their ports, so the
+    semantics of the bool are unchanged).
+    """
+    result = {
+        "mode": None,
+        "output_key": "",
+        "ee_ports": False,
+        "helper_ports": None,
+        "links": {},
+        "links_complete": False,
+    }
+    try:
+        overview = audio_overview or get_audio_output_overview()
+        output_mode = overview.get("output_mode") or {}
+        mode = output_mode.get("mode")
+        output_key = str(output_mode.get("effective_output_key") or "").strip()
+        result["mode"] = mode
+        result["output_key"] = output_key
+        if not output_key:
+            return result
+        io_text = await _run_pw_link_command("-io")
+        link_text = await _run_pw_link_command("-l")
+    except Exception:
+        return result
+
+    ee_fl = "ee_soe_output_level:output_FL"
+    ee_fr = "ee_soe_output_level:output_FR"
+    result["ee_ports"] = ee_fl in io_text and ee_fr in io_text
+    if mode not in OUTPUT_MODE_SUBWOOFER_MODES:
+        result["links"] = {
+            f"{ee_fl} -> {output_key}:playback_FL": _contains_link(
+                link_text, ee_fl, f"{output_key}:playback_FL"
+            ),
+            f"{ee_fr} -> {output_key}:playback_FR": _contains_link(
+                link_text, ee_fr, f"{output_key}:playback_FR"
+            ),
+        }
+        result["links_complete"] = result["ee_ports"] and all(result["links"].values())
+        return result
+
+    helper = "fxroute_21_stage1"
+    result["helper_ports"] = all(
+        f"{helper}:{port}" in io_text
+        for port in ("input_L", "input_R", "output_1", "output_2", "output_3", "output_4")
+    )
+    result["links"] = {
+        f"{ee_fl} -> {helper}:input_L": _contains_link(link_text, ee_fl, f"{helper}:input_L"),
+        f"{ee_fr} -> {helper}:input_R": _contains_link(link_text, ee_fr, f"{helper}:input_R"),
+        f"{helper}:output_1 -> {output_key}:playback_FL": _contains_link(
+            link_text, f"{helper}:output_1", f"{output_key}:playback_FL"
+        ),
+        f"{helper}:output_2 -> {output_key}:playback_FR": _contains_link(
+            link_text, f"{helper}:output_2", f"{output_key}:playback_FR"
+        ),
+    }
+    if mode != OUTPUT_MODE_SUBWOOFER_21:
+        result["links"][f"{helper}:output_3 -> {output_key}:playback_RL"] = _contains_link(
+            link_text, f"{helper}:output_3", f"{output_key}:playback_RL"
+        )
+        result["links"][f"{helper}:output_4 -> {output_key}:playback_RR"] = _contains_link(
+            link_text, f"{helper}:output_4", f"{output_key}:playback_RR"
+        )
+    result["links_complete"] = (
+        result["ee_ports"]
+        and result["helper_ports"]
+        and all(result["links"].values())
+    )
+    return result
+
+
+def _missing_playback_graph_links(diagnosis: dict) -> list:
+    """Names of the links that are missing in a graph diagnosis."""
+    return [
+        link for link, present in (diagnosis.get("links") or {}).items()
+        if not present
+    ]
+
+
+def _log_playback_graph_diagnosis(
+    diagnosis: dict,
+    *,
+    target_rate: int,
+    reason: str,
+    detail: str,
+) -> None:
+    """Log every missing graph component individually (EE ports, helper
+    ports, each missing link) so a failed handoff is diagnosable."""
+    logger.warning(
+        "Playback handoff graph incomplete: mode=%s output_key=%s target_rate=%s "
+        "ee_ports=%s helper_ports=%s missing_links=%s reason=%s detail=%s",
+        diagnosis.get("mode"),
+        diagnosis.get("output_key"),
+        target_rate,
+        diagnosis.get("ee_ports"),
+        diagnosis.get("helper_ports"),
+        _missing_playback_graph_links(diagnosis),
+        reason,
+        detail,
+    )
+
+
+async def _repair_playback_graph_once(
+    *,
+    diagnosis: dict,
+    target_rate: int,
+    reason: str,
+    detail: str,
+    ee_port_timeout_ms: int,
+) -> None:
+    """Repair the missing components of one graph diagnosis, readback-driven.
+
+    Runs inside the shared handoff while mpv stays paused:
+    - missing EE output ports: EE preset sync recreates them, then the
+      bounded port readback wait observes them
+    - missing helper ports or any EE->helper / helper->HW link: the
+      subwoofer runtime sync restores them (its link repair carries the
+      pw-link ENOENT retry for transient PipeWire port recreation)
+    - no native runtime: the EE preset reload is the only repair primitive
+      (rebuilds the stereo EE -> hardware output graph)
+    Raises RuntimeError when a required component cannot be restored within
+    the bound; the caller rolls back and surfaces the error.
+    """
+    if not diagnosis.get("ee_ports"):
+        await _sync_easyeffects_preset_for_playback_samplerate(
+            sample_rate_hz=target_rate, reason=reason, detail=detail,
+        )
+        if not await _wait_for_easyeffects_output_ports(ee_port_timeout_ms):
+            raise RuntimeError(
+                "Playback handoff repair failed: EasyEffects output ports "
+                f"missing: expected={target_rate} reason={reason} detail={detail}"
+            )
+    if subwoofer_runtime is None:
+        await _sync_easyeffects_preset_for_playback_samplerate(
+            sample_rate_hz=target_rate, reason=reason, detail=detail,
+        )
+        if not await _wait_for_easyeffects_output_ports(ee_port_timeout_ms):
+            raise RuntimeError(
+                "Playback handoff repair failed: EasyEffects output graph "
+                f"missing: expected={target_rate} reason={reason} detail={detail}"
+            )
+        return
+    await _sync_subwoofer_runtime(reason=reason)
+
+
+async def _playback_graph_links_complete(audio_overview: dict | None = None) -> bool:
+    """Readback: are the audio-path links actually present right now?
+
+    Stereo: ee_soe_output_level:output_FL/FR -> hardware sink playback_FL/FR.
+    2.1/2.2: EE -> helper inputs AND helper outputs -> hardware sink.
+    A running helper process alone does not prove a complete graph.
+    """
+    diagnosis = await _playback_graph_diagnosis(audio_overview)
+    return diagnosis["links_complete"]
+
+
+async def _rollback_playback_handoff(
+    previous_force_rate: int,
+    helper_pid_before: Optional[int],
+    reason: str,
+) -> None:
+    """Restore force-rate and stop a helper started by a failed handoff.
+
+    Never leaves a dangling state with a wrong force-rate and an unverified
+    helper: the force-rate is written back to its pre-handoff value and a
+    helper that this handoff started is terminated. Afterwards a status
+    readback is logged so the consistent paused/idle state is provable:
+    no wrong force-rate, no half helper graph, no stale links, no
+    unintended unpause (the handoff itself never touches playback pause).
+    """
+    global playback_samplerate_force_rate
+    try:
+        _set_pipewire_force_rate(previous_force_rate)
+        playback_samplerate_force_rate = previous_force_rate or None
+    except Exception as exc:
+        logger.warning(
+            "Playback handoff rollback force-rate failed: reason=%s error=%s",
+            reason, exc,
+        )
+    if subwoofer_runtime is None or helper_pid_before is not None:
+        pass
+    else:
+        try:
+            runtime_snapshot = subwoofer_runtime.snapshot()
+            if runtime_snapshot.get("helper_pid") is not None:
+                await subwoofer_runtime._stop_helper()
+                logger.info(
+                    "Playback handoff rollback stopped helper started by failed handoff: reason=%s",
+                    reason,
+                )
+        except Exception as exc:
+            logger.warning(
+                "Playback handoff rollback helper stop failed: reason=%s error=%s",
+                reason, exc,
+            )
+
+    # Abschließender Status-Readback: belegt konsistenten Idle-Zustand.
+    try:
+        final_force_rate = _get_current_pipewire_force_rate()
+    except Exception:
+        final_force_rate = None
+    helper_pid_after = None
+    helper_active_after = False
+    if subwoofer_runtime is not None:
+        try:
+            runtime_snapshot = subwoofer_runtime.snapshot()
+            helper_pid_after = runtime_snapshot.get("helper_pid")
+            helper_active_after = bool(runtime_snapshot.get("active"))
+        except Exception:
+            pass
+    try:
+        links_complete = await _playback_graph_links_complete()
+    except Exception:
+        links_complete = False
+    try:
+        player_paused = bool(player_instance and player_instance.state.get("paused"))
+    except Exception:
+        player_paused = None
+    logger.info(
+        "Playback handoff rollback readback: reason=%s previous_force_rate=%s "
+        "final_force_rate=%s helper_pid_after=%s helper_active_after=%s "
+        "graph_links_complete=%s player_paused=%s",
+        reason, previous_force_rate, final_force_rate, helper_pid_after,
+        helper_active_after, links_complete, player_paused,
+    )
+
+
+async def _complete_playback_handoff(
+    *,
+    target_rate: int,
+    reason: str,
+    transition_generation: int,
+    detail: str = "",
+    ee_port_timeout_ms: int = PLAYBACK_HANDOFF_EE_PORT_TIMEOUT_MS,
+) -> bool:
+    """Shared readback-driven playback handoff (local + radio).
+
+    Only the target-rate determination differs between the callers; the
+    sink/force-rate, EasyEffects and helper reconciliation is identical:
+      1. generation/currency check (stale -> abort, nothing touched)
+      2. sink + force-rate aligned idempotently (no write when already set)
+      3. EasyEffects preset synced on rate change or missing output ports
+      4. readback wait for ee_soe_output_level:output_FL/FR
+      5. only then the helper is synchronized
+      6. bounded readback-driven repair of transient link races while mpv
+         stays paused: missing EE/helper ports or EE->helper / helper->HW
+         links are repaired selectively and re-verified per round
+      7. full graph/rate alignment verified
+    No-op when rate and graph already match; graph-only repair when the
+    rate matches but ports/helper are missing. On failure the previous
+    force-rate is restored and a helper started by this handoff is
+    stopped, then a RuntimeError names the failed component.
+    """
+    if not isinstance(target_rate, int) or target_rate <= 0:
+        return False
+    if transition_generation != playback_transition_generation:
+        logger.info(
+            "Playback handoff aborted: stale transition generation=%s current=%s reason=%s detail=%s",
+            transition_generation, playback_transition_generation, reason, detail,
+        )
+        return False
+
+    try:
+        samplerate_status = get_samplerate_status()
+    except Exception:
+        samplerate_status = {}
+    active_rate = samplerate_status.get("active_rate")
+    force_rate = samplerate_status.get("force_rate")
+    previous_force_rate = _get_current_pipewire_force_rate()
+
+    rate_aligned = (
+        isinstance(active_rate, int)
+        and active_rate == target_rate
+        and (force_rate in {None, 0, target_rate})
+    )
+
+    try:
+        overview = get_audio_output_overview()
+    except Exception:
+        overview = {}
+    output_mode = overview.get("output_mode") or {}
+    mode = output_mode.get("mode")
+    subwoofer_mode = mode in OUTPUT_MODE_SUBWOOFER_MODES
+
+    graph_diagnosis = await _playback_graph_diagnosis(overview)
+    ee_ports_present = graph_diagnosis["ee_ports"]
+    links_complete = graph_diagnosis["links_complete"]
+    if not (ee_ports_present and links_complete):
+        _log_playback_graph_diagnosis(
+            graph_diagnosis,
+            target_rate=target_rate,
+            reason=reason,
+            detail=detail,
+        )
+    helper_ok = True
+    if subwoofer_mode:
+        if subwoofer_runtime is None:
+            helper_ok = False
+        else:
+            runtime_snapshot = subwoofer_runtime.snapshot()
+            helper_ok = (
+                bool(runtime_snapshot.get("active"))
+                and _helper_argument_sample_rate(runtime_snapshot) == target_rate
+            )
+    graph_complete = ee_ports_present and links_complete and helper_ok
+
+    if rate_aligned and graph_complete:
+        logger.info(
+            "Playback handoff no-op: rate=%s graph complete reason=%s detail=%s",
+            target_rate, reason, detail,
+        )
+        return True
+
+    helper_pid_before = None
+    if subwoofer_runtime is not None:
+        try:
+            helper_pid_before = subwoofer_runtime.snapshot().get("helper_pid")
+        except Exception:
+            helper_pid_before = None
+
+    try:
+        if not rate_aligned:
+            aligned = await _ensure_playback_samplerate_force(
+                target_rate, reason,
+                policy=samplerate_orchestration.RADIO_POLICY,
+            )
+            if not aligned:
+                raise RuntimeError(
+                    "Playback handoff failed: sink/force-rate not aligned: "
+                    f"expected={target_rate} active={active_rate} force={force_rate} reason={reason}"
+                )
+
+        if (not rate_aligned) or (not ee_ports_present) or (not links_complete):
+            await _sync_easyeffects_preset_for_playback_samplerate(
+                sample_rate_hz=target_rate, reason=reason, detail=detail,
+            )
+
+        if not await _wait_for_easyeffects_output_ports(ee_port_timeout_ms):
+            raise RuntimeError(
+                "Playback handoff failed: EasyEffects output ports missing: "
+                f"expected={target_rate} timeout_ms={ee_port_timeout_ms} reason={reason} detail={detail}"
+            )
+
+        if subwoofer_runtime is not None:
+            await _sync_subwoofer_runtime(reason=reason)
+    except Exception:
+        await _rollback_playback_handoff(previous_force_rate, helper_pid_before, reason)
+        raise
+
+    # Bounded readback-driven repair of transient link races, while mpv is
+    # still paused. The old follow-up sync after unpause is gone: healing
+    # must happen here or the handoff fails. Each round diagnoses the
+    # missing components (EE ports, helper ports, EE->helper and
+    # helper->HW links), repairs only those and re-verifies by readback;
+    # no blind sleeps.
+    try:
+        diagnosis = await _playback_graph_diagnosis()
+        repair_rounds = 0
+        while (
+            not diagnosis["links_complete"]
+            and repair_rounds < PLAYBACK_HANDOFF_LINK_REPAIR_MAX_ROUNDS
+        ):
+            repair_rounds += 1
+            logger.warning(
+                "Playback handoff graph repair: round=%s/%s reason=%s detail=%s "
+                "ee_ports=%s helper_ports=%s missing_links=%s",
+                repair_rounds,
+                PLAYBACK_HANDOFF_LINK_REPAIR_MAX_ROUNDS,
+                reason,
+                detail,
+                diagnosis["ee_ports"],
+                diagnosis["helper_ports"],
+                _missing_playback_graph_links(diagnosis),
+            )
+            await _repair_playback_graph_once(
+                diagnosis=diagnosis,
+                target_rate=target_rate,
+                reason=reason,
+                detail=detail,
+                ee_port_timeout_ms=ee_port_timeout_ms,
+            )
+            diagnosis = await _playback_graph_diagnosis()
+        if not diagnosis["links_complete"]:
+            _log_playback_graph_diagnosis(
+                diagnosis,
+                target_rate=target_rate,
+                reason=reason,
+                detail=detail,
+            )
+    except Exception:
+        await _rollback_playback_handoff(previous_force_rate, helper_pid_before, reason)
+        raise
+
+    try:
+        final_status = get_samplerate_status()
+    except Exception:
+        final_status = {}
+    verified = (
+        isinstance(final_status.get("active_rate"), int)
+        and final_status.get("active_rate") == target_rate
+        and (final_status.get("force_rate") in {None, 0, target_rate})
+    )
+    if verified and subwoofer_mode:
+        if subwoofer_runtime is None:
+            verified = False
+        else:
+            runtime_snapshot = subwoofer_runtime.snapshot()
+            verified = (
+                bool(runtime_snapshot.get("active"))
+                and _helper_argument_sample_rate(runtime_snapshot) == target_rate
+            )
+    if not verified:
+        await _rollback_playback_handoff(previous_force_rate, helper_pid_before, reason)
+        raise RuntimeError(
+            "Playback handoff failed: graph/rate alignment verification missing: "
+            f"expected={target_rate} active={final_status.get('active_rate')} "
+            f"force={final_status.get('force_rate')} reason={reason} detail={detail}"
+        )
+
+    final_links = await _playback_graph_links_complete()
+    if not final_links:
+        await _rollback_playback_handoff(previous_force_rate, helper_pid_before, reason)
+        raise RuntimeError(
+            "Playback handoff failed: graph links verification missing: "
+            f"expected={target_rate} reason={reason} detail={detail}"
+        )
+
+    logger.info(
+        "Playback handoff complete: rate=%s reason=%s detail=%s",
+        target_rate, reason, detail,
+    )
+    return True
+
+
+async def _complete_local_playback_handoff(
+    track_info: dict,
+    expected_rate: Optional[int],
+    *,
+    transition_generation: int,
+) -> None:
+    """Finish a local rate handoff while the newly loaded MPV track is paused.
+
+    Local-specific part is only the target-rate determination: known
+    library metadata preferred, MPV live rate as fallback. The actual
+    reconciliation runs in the shared _complete_playback_handoff.
+    """
     global local_playback_handoff_completed_url, local_playback_handoff_completed_rate
 
-    aligned = await _wait_for_local_samplerate_stability(
-        expected_rate, timeout_ms=900,
+    target_rate = expected_rate
+    if not isinstance(target_rate, int) or target_rate <= 0:
+        target_rate = await _wait_for_player_audio_samplerate()
+    if not isinstance(target_rate, int) or target_rate <= 0:
+        logger.info(
+            "Local playback handoff skipped: no target rate available url=%s",
+            track_info.get("url"),
+        )
+        return
+
+    ok = await _complete_playback_handoff(
+        target_rate=target_rate,
+        reason="local-playback-handoff",
+        transition_generation=transition_generation,
+        detail=f"title={track_info.get('title') or track_info.get('id')}",
     )
-    if not aligned:
-        # A paused, newly loaded mpv stream may not trigger PipeWire clock
-        # renegotiation by itself. Pulse the selected sink while mpv is still
-        # paused, then require the rate to remain stable before playback.
-        logger.info(
-            "Local samplerate handoff sink pulse required: expected_rate=%s status=%s",
-            expected_rate, get_samplerate_status(),
-        )
-        status = get_samplerate_status()
-        if status.get("force_rate") != expected_rate:
-            _set_pipewire_force_rate(expected_rate)
-        pulsed = await _suspend_resume_playback_sink(
-            reason="local-playback-handoff", force=True,
-        )
-        aligned = pulsed and await _wait_for_local_samplerate_stability(
-            expected_rate, timeout_ms=2600,
-        )
-    if not aligned:
-        status = get_samplerate_status()
-        raise RuntimeError(
-            "Local samplerate handoff did not align before playback activation: "
-            f"expected={expected_rate} active={status.get('active_rate')} "
-            f"force={status.get('force_rate')}"
-        )
-
-    overview = get_audio_output_overview()
-    output_mode = overview.get("output_mode") or {}
-    if output_mode.get("mode") in OUTPUT_MODE_SUBWOOFER_MODES and subwoofer_runtime is not None:
-        # Do not pass the pre-load overview as a stale-rate token: it can
-        # still describe the previous track while the sink has just aligned.
-        await _sync_subwoofer_runtime(reason="local-playback-handoff")
-        status = get_samplerate_status()
-        runtime_snapshot = subwoofer_runtime.snapshot()
-        helper_rate = _helper_argument_sample_rate(runtime_snapshot)
-        if not (
-            status.get("active_rate") == expected_rate
-            and status.get("force_rate") == expected_rate
-            and helper_rate == expected_rate
-            and runtime_snapshot.get("active")
-        ):
-            # Sink renegotiation can briefly invalidate the helper's input
-            # links while the new graph is being created. Retry this local
-            # handoff once after the graph has had a bounded settling window;
-            # the global link watcher remains unchanged.
-            logger.info(
-                "Local samplerate handoff helper graph not ready; retrying once: "
-                "expected_rate=%s helper_rate=%s runtime_active=%s",
-                expected_rate, helper_rate, runtime_snapshot.get("active"),
-            )
-            await asyncio.sleep(0.65)
-            await _sync_subwoofer_runtime(reason="local-playback-handoff-retry")
-            status = get_samplerate_status()
-            runtime_snapshot = subwoofer_runtime.snapshot()
-            helper_rate = _helper_argument_sample_rate(runtime_snapshot)
-        if not (
-            status.get("active_rate") == expected_rate
-            and status.get("force_rate") == expected_rate
-            and helper_rate == expected_rate
-            and runtime_snapshot.get("active")
-        ):
-            raise RuntimeError(
-                "Local samplerate handoff triple-match missing before playback activation: "
-                f"expected={expected_rate} active={status.get('active_rate')} "
-                f"force={status.get('force_rate')} helper={helper_rate} "
-                f"runtime_active={runtime_snapshot.get('active')}"
-            )
-        logger.info(
-            "Local samplerate handoff verified before playback activation: url=%s "
-            "expected_rate=%s hardware_sink_rate=%s helper_rate=%s helper_pid=%s",
-            track_info.get("url"), expected_rate, status.get("active_rate"),
-            helper_rate, runtime_snapshot.get("helper_pid"),
-        )
-
+    if not ok:
+        return
     local_playback_handoff_completed_url = track_info.get("url")
-    local_playback_handoff_completed_rate = expected_rate
+    local_playback_handoff_completed_rate = target_rate
 
 
 async def _sync_subwoofer_runtime_after_playback_transition(
@@ -1825,7 +2255,9 @@ async def _sync_subwoofer_runtime_after_playback_transition(
             helper_rate,
         )
     try:
-        expected_rate = await _resolve_expected_playback_samplerate(expected_track.get("source") or "")
+        expected_rate = await _resolve_expected_playback_samplerate(
+            expected_track.get("source") or "", prefer_live_radio_rate=True,
+        )
         if not _playback_transition_context_is_current(transition_generation):
             return
         if not isinstance(expected_rate, int) or expected_rate <= 0:
@@ -2496,41 +2928,129 @@ async def _wait_for_player_audio_samplerate(
     return None
 
 
-async def _resolve_expected_playback_samplerate(source: str) -> Optional[int]:
+async def _resolve_expected_playback_samplerate(
+    source: str, *, prefer_live_radio_rate: bool = False,
+) -> Optional[int]:
     # MPV still exposes the previous local track's audio-params before a radio
     # loadfile.  That value is not evidence for the radio stream's rate and
     # would incorrectly carry a local 48000-Hz context into this handoff.
+    # After the loadfile the decoded stream rate is authoritative; callers
+    # that provably run post-loadfile opt into the live rate via
+    # prefer_live_radio_rate and fall back to the configured radio rate only
+    # while mpv has not exposed a valid rate yet.
     if source == "radio":
+        if prefer_live_radio_rate:
+            live_rate = _get_player_audio_samplerate()
+            if isinstance(live_rate, int) and live_rate > 0:
+                return live_rate
+            return RADIO_EXPECTED_SAMPLE_RATE_HZ
         return RADIO_EXPECTED_SAMPLE_RATE_HZ
     return await _wait_for_player_audio_samplerate()
 
 
-async def _prepare_radio_handoff_before_loadfile() -> int:
-    """Establish and verify the radio rate before activating the stream."""
-    radio_rate = await _resolve_expected_playback_samplerate("radio")
-    if not isinstance(radio_rate, int) or radio_rate <= 0:
-        raise RuntimeError("Radio samplerate target unavailable before loadfile")
+async def _wait_for_radio_live_rate_after_load(
+    previous_rate: Optional[int],
+    transition_generation: int,
+    *,
+    timeout_ms: int = RADIO_POST_LOAD_RATE_TIMEOUT_MS,
+) -> Optional[int]:
+    """Wait for the newly loaded station's decoded rate while mpv is paused.
 
-    aligned = await _ensure_playback_samplerate_force(
-        radio_rate, "radio-start-before-loadfile",
-        policy=samplerate_orchestration.RADIO_POLICY,
+    Accepts a rate that differs from the pre-loadfile rate immediately (the
+    new stream's rate), or a rate equal to the pre-loadfile rate once it
+    stayed stable across RADIO_POST_LOAD_RATE_STABILITY_POLLS consecutive
+    polls (same-rate station switch). Aborts on a stale transition
+    generation and on timeout without a valid rate (caller falls back
+    safely; no stale pre-loadfile params are used as evidence).
+    """
+    deadline = time.monotonic() + max(timeout_ms, 0) / 1000
+    stable_same = 0
+    while time.monotonic() <= deadline:
+        if transition_generation != playback_transition_generation:
+            logger.info(
+                "Radio post-load rate wait aborted: stale transition "
+                "generation=%s current=%s",
+                transition_generation,
+                playback_transition_generation,
+            )
+            return None
+        rate = _get_player_audio_samplerate()
+        if isinstance(rate, int) and rate > 0:
+            if previous_rate is None or rate != previous_rate:
+                return rate
+            stable_same += 1
+            if stable_same >= RADIO_POST_LOAD_RATE_STABILITY_POLLS:
+                return rate
+        else:
+            stable_same = 0
+        await asyncio.sleep(PIPEWIRE_HANDOFF_POLL_INTERVAL_MS / 1000)
+    logger.warning(
+        "Radio post-load rate wait timed out after %sms: previous_rate=%s",
+        timeout_ms,
+        previous_rate,
     )
-    if not aligned:
-        try:
-            samplerate_status = get_samplerate_status()
-        except Exception:
-            samplerate_status = {}
-        raise RuntimeError(
-            "Radio samplerate handoff did not align before loadfile: "
-            f"expected={radio_rate} active={samplerate_status.get('active_rate')} "
-            f"force={samplerate_status.get('force_rate')}"
+    return None
+
+
+async def _complete_radio_handoff_after_load(
+    track_info: dict,
+    previous_rate: Optional[int],
+    *,
+    transition_generation: int,
+    timeout_ms: int = RADIO_POST_LOAD_RATE_TIMEOUT_MS,
+) -> Optional[int]:
+    """Establish the newly loaded station's rate while mpv stays paused.
+
+    Only the live rate of the current transition is accepted (never the
+    pre-loadfile stale params). The target-rate determination is the only
+    radio-specific part; the reconciliation itself runs in the shared
+    _complete_playback_handoff (sink/force-rate, EE preset + port
+    readback, helper sync, transient link-race repair, alignment
+    verification). On timeout the existing safe fallback
+    (RADIO_EXPECTED_SAMPLE_RATE_HZ) is used and the failure is logged.
+    Errors of the shared handoff are NOT swallowed: they propagate to the
+    caller so /api/play keeps mpv paused and returns HTTP 500 instead of
+    unpausing after a failed handoff. A stale transition generation aborts
+    cleanly (returns None, nothing touched) - only the newest generation
+    may reconcile the sink.
+    """
+    live_rate = await _wait_for_radio_live_rate_after_load(
+        previous_rate, transition_generation, timeout_ms=timeout_ms,
+    )
+    if transition_generation != playback_transition_generation:
+        # A newer transition took over while this handoff waited (rapid
+        # station switch). Only the newest generation may reconcile the
+        # sink; abort without touching force-rate/preset/helper.
+        logger.info(
+            "Radio post-load handoff aborted: stale transition generation=%s "
+            "current=%s url=%s",
+            transition_generation,
+            playback_transition_generation,
+            track_info.get("url"),
+        )
+        return None
+    if not isinstance(live_rate, int) or live_rate <= 0:
+        live_rate = RADIO_EXPECTED_SAMPLE_RATE_HZ
+        logger.error(
+            "Radio post-load live rate unavailable within %sms; using safe "
+            "fallback=%s url=%s previous_rate=%s",
+            timeout_ms,
+            live_rate,
+            track_info.get("url"),
+            previous_rate,
         )
 
-    logger.info(
-        "Radio samplerate handoff verified before loadfile: expected_rate=%s",
-        radio_rate,
+    # Shared handoff failure propagates (mpv stays paused, /api/play
+    # answers HTTP 500). No tolerant swallowing and no follow-up sync:
+    # the delayed mismatch recovery remains only as a second safety net
+    # for rate drift, not as the repair of a failed handoff.
+    await _complete_playback_handoff(
+        target_rate=live_rate,
+        reason="radio-post-load-handoff",
+        transition_generation=transition_generation,
+        detail=f"url={track_info.get('url')}",
     )
-    return radio_rate
+    return live_rate
 
 
 async def _sync_easyeffects_preset_for_playback_samplerate(
@@ -2632,7 +3152,9 @@ async def _maybe_recover_samplerate_mismatch(
     ):
         return
 
-    mpv_rate = await _resolve_expected_playback_samplerate(expected_track.get("source") or "")
+    mpv_rate = await _resolve_expected_playback_samplerate(
+        expected_track.get("source") or "", prefer_live_radio_rate=True,
+    )
     if not _playback_transition_context_is_current(transition_generation):
         return
     if not mpv_rate:
@@ -2822,7 +3344,7 @@ async def _maybe_recover_spotify_samplerate_mismatch(
         spotify_samplerate_recovery_active = False
 
 
-def _prepare_local_queue(track_id: str, queue_track_ids: Optional[list[str]] = None, shuffle: bool = False, loop: bool = False):
+def _prepare_local_queue(track_id: str, queue_track_ids: Optional[list[str]] = None, shuffle: bool = False, loop: bool = False, *, reshuffle: bool = True):
     global playback_queue, playback_queue_original, playback_queue_index, playback_queue_mode, playback_queue_loop, playback_queue_shuffle, single_track_loop
     playback_queue = []
     playback_queue_original = []
@@ -2834,19 +3356,21 @@ def _prepare_local_queue(track_id: str, queue_track_ids: Optional[list[str]] = N
     tracks = library_scanner.get_tracks()
     tracks_by_id = {track.id: track for track in tracks}
 
-    selected_ids = [track_id]
-    if queue_track_ids:
-        selected_ids = [candidate for candidate in queue_track_ids if candidate in tracks_by_id]
-        if track_id not in selected_ids:
-            selected_ids.insert(0, track_id)
+    selected_ids = []
+    requested_ids = queue_track_ids if queue_track_ids else [track_id]
+    for candidate in requested_ids:
+        if candidate in tracks_by_id and candidate not in selected_ids:
+            selected_ids.append(candidate)
+    if track_id in tracks_by_id and track_id not in selected_ids:
+        selected_ids.insert(0, track_id)
 
-    ordered_tracks = [tracks_by_id[track.id].to_dict() for track in tracks if track.id in set(selected_ids)]
+    ordered_tracks = [tracks_by_id[selected_id].to_dict() for selected_id in selected_ids]
     if not ordered_tracks:
         raise HTTPException(status_code=404, detail="Track not found")
 
     original_tracks = [dict(track) for track in ordered_tracks]
 
-    if shuffle and len(ordered_tracks) > 1:
+    if shuffle and reshuffle and len(ordered_tracks) > 1:
         current_track = next((track for track in ordered_tracks if track.get("id") == track_id), ordered_tracks[0])
         remaining = [track for track in ordered_tracks if track.get("id") != current_track.get("id")]
         random.shuffle(remaining)
@@ -2895,7 +3419,17 @@ async def _load_queue_track(index: int, *, transition_reason: str = "queue navig
 
         if playback_queue_mode == "mpv_native":
             queue_transition_target_url = next_url
+            # Keep mpv paused across the track switch: sink, EE graph and
+            # native helper must be verified before the new track becomes
+            # audible. All mpv-native queue tracks share one sample rate, so
+            # the handoff is a graph-repair no-op unless the graph is broken.
+            player_instance.set_pause(True)
             player_instance.set_playlist_pos(index)
+            await _complete_local_playback_handoff(
+                synced_track,
+                synced_track.get("sample_rate_hz"),
+                transition_generation=playback_transition_generation,
+            )
             player_instance.set_pause(False)
             _record_local_track_started(synced_track)
             playback_transition_generation += 1
@@ -2912,12 +3446,18 @@ async def _load_queue_track(index: int, *, transition_reason: str = "queue navig
 
         prearm_rate, prearm_generation = await _prearm_known_local_samplerate(next_track, f"{transition_reason}:queue")
         queue_transition_target_url = next_url
+        # Keep mpv paused across the shared handoff: sink/force-rate, EE
+        # preset + port readback and helper graph must be verified before the
+        # next track becomes audible. Only then the caller releases playback.
+        player_instance.set_pause(True)
         player_instance.loadfile(next_url, mode="replace")
+        await _complete_local_playback_handoff(
+            next_track,
+            prearm_rate,
+            transition_generation=playback_transition_generation,
+        )
         if prearm_rate and prearm_generation:
             asyncio.create_task(_release_local_samplerate_prearm(prearm_rate, prearm_generation, f"{transition_reason}:queue"))
-        # Sync 2.1 helper at pre-armed rate before audio becomes audible
-        if subwoofer_runtime is not None and prearm_rate is not None:
-            await _sync_subwoofer_runtime(get_audio_output_overview())
         player_instance.set_pause(False)
         _record_local_track_started(next_track)
         playback_transition_generation += 1
@@ -3031,6 +3571,7 @@ def _sync_active_local_queue_selection(queue_track_ids: Optional[list[str]] = No
         queue_track_ids,
         shuffle=shuffle,
         loop=loop,
+        reshuffle=False,
     )
     current_track_info = track_info
     last_track_info = track_info
@@ -3167,6 +3708,8 @@ def build_playback_payload(state: Optional[dict] = None) -> dict:
         "hold_ms": 0,
         "threshold": 1.0,
         "vu_db": None,
+        "vu_fresh": False,
+        "vu_age_ms": None,
         "target": None,
         "last_over_at": None,
         "last_error": None,
@@ -3239,7 +3782,9 @@ async def sync_peak_monitor_for_playback_state(
             elif peak_monitor_context_signature != desired_signature:
                 peak_monitor_playback_armed = True
                 peak_monitor_context_signature = desired_signature
-                expected_rate = await _resolve_expected_playback_samplerate(source) if source in {"local", "radio"} else None
+                expected_rate = await _resolve_expected_playback_samplerate(
+                    source, prefer_live_radio_rate=True,
+                ) if source in {"local", "radio"} else None
                 aligned = await _wait_for_samplerate_alignment(expected_rate) if expected_rate else False
                 if not _playback_transition_context_is_current(transition_generation):
                     return
@@ -3537,14 +4082,24 @@ async def on_player_state_change(state: dict):
         current_file = state.get("current_file")
         if current_file == queue_transition_target_url and not state.get("ended"):
             queue_transition_target_url = None
-        elif current_file and current_file != queue_transition_target_url:
-            queue_transition_target_url = None
 
     if playback_queue_mode == "mpv_native" and len(playback_queue) > 1:
         native_index = state.get("playlist_pos")
-        if not isinstance(native_index, int):
-            current_file = state.get("current_file")
-            native_index = next((idx for idx, item in enumerate(playback_queue) if item.get("url") == current_file), None)
+        current_file = state.get("current_file")
+        # The file path is the settled playback truth.  mpv can emit a stale
+        # playlist-pos while a native queue is being primed; using it first
+        # rebinds current_track_info to the wrong queue entry and permanently
+        # blocks the peak-monitor transition guard.  Prefer the unique queue
+        # entry matching current_file whenever it is available.
+        file_index = next(
+            (idx for idx, item in enumerate(playback_queue) if item.get("url") == current_file),
+            None,
+        ) if current_file else None
+        if file_index is not None:
+            native_index = file_index
+        if isinstance(native_index, int) and 0 <= native_index < len(playback_queue):
+            if current_file and playback_queue[native_index].get("url") != current_file:
+                native_index = None
         if isinstance(native_index, int) and 0 <= native_index < len(playback_queue):
             if playback_queue_index != native_index or (current_track_info or {}).get("id") != playback_queue[native_index].get("id"):
                 playback_queue_index = native_index
@@ -3566,12 +4121,18 @@ async def on_player_state_change(state: dict):
             if single_track_loop and current_track_info and current_track_info.get("url"):
                 await _wait_for_pipewire_mpv_release()
                 prearm_rate, prearm_generation = await _prearm_known_local_samplerate(current_track_info, "single-track-loop")
+                # Keep mpv paused across the shared handoff: the graph must be
+                # verified before the loop restart becomes audible again.
+                player_instance.set_pause(True)
                 player_instance.loadfile(current_track_info["url"], mode="replace")
+                await _complete_local_playback_handoff(
+                    current_track_info,
+                    prearm_rate,
+                    transition_generation=playback_transition_generation,
+                )
                 if prearm_rate and prearm_generation:
                     asyncio.create_task(_release_local_samplerate_prearm(prearm_rate, prearm_generation, "single-track-loop"))
-                # Sync 2.1 helper at pre-armed rate before audio becomes audible
-                if subwoofer_runtime is not None and prearm_rate is not None:
-                    await _sync_subwoofer_runtime(get_audio_output_overview())
+                player_instance.set_pause(False)
                 return
         finally:
             queue_advancing = False
@@ -4331,22 +4892,11 @@ async def _spotify_playerctl_watch_loop() -> None:
             if proc.returncode not in (0, None):
                 logger.warning("Spotify playerctl watch exited with %s: %s", proc.returncode, stderr.decode(errors="ignore").strip() or "no stderr")
         except asyncio.CancelledError:
-            if proc and proc.returncode is None:
-                proc.terminate()
-                try:
-                    await asyncio.wait_for(proc.wait(), timeout=1)
-                except Exception:
-                    proc.kill()
             raise
         except Exception as exc:
             logger.warning("Spotify playerctl watch loop failed: %s", exc)
         finally:
-            if proc and proc.returncode is None:
-                proc.terminate()
-                try:
-                    await asyncio.wait_for(proc.wait(), timeout=1)
-                except Exception:
-                    proc.kill()
+            await _stop_process(proc)
         await asyncio.sleep(1.0)
 
 
@@ -4592,7 +5142,10 @@ def _serve_cover_image(image_path: Path, size: int = 256) -> FileResponse:
         img = img.convert("RGB")
         img.thumbnail((size, size), Image.LANCZOS)
         save_kwargs = {"quality": 85} if suffix in (".jpg", ".jpeg") else {}
-        tmp = cached.with_suffix(cached.suffix + ".tmp")
+        # Keep the image suffix last so Pillow can infer the encoder for the
+        # atomic temporary write (e.g. ``cover.tmp.jpg`` rather than
+        # ``cover.jpg.tmp``).
+        tmp = cached.with_name(f"{cached.stem}.tmp{cached.suffix}")
         img.save(str(tmp), **save_kwargs)
         tmp.replace(cached)
     return FileResponse(str(cached), media_type=_cover_media_type(cached))
@@ -5276,8 +5829,23 @@ async def play_track(req: PlayRequest):
                         track_info = {"id": f"radio_{s.id}", "title": s.name, "artist": "Radio", "source": "radio", "url": s.stream_url}
                         break
             else:
+                # Queue jump onto the currently active queue (e.g. cover
+                # queue click while shuffle is on): the frontend sends the
+                # queue in its exact current order, so it must be preserved
+                # 1:1. Shuffle stays active as a mode; the existing order is
+                # not regenerated. Only a genuinely new queue order gets a
+                # fresh shuffle (legacy behavior for starting a new queue
+                # with the shuffle toggle enabled).
+                active_queue_ids = [item.get("id") for item in playback_queue]
                 _clear_playback_queue()
-                track_info = _prepare_local_queue(track_id, queue_track_ids, shuffle=req.shuffle, loop=req.loop)
+                preserve_queue_order = bool(queue_track_ids) and list(queue_track_ids) == active_queue_ids
+                track_info = _prepare_local_queue(
+                    track_id,
+                    queue_track_ids,
+                    shuffle=req.shuffle,
+                    loop=req.loop,
+                    reshuffle=not preserve_queue_order,
+                )
                 play_url = track_info.get("url")
 
             if not play_url:
@@ -5314,34 +5882,55 @@ async def play_track(req: PlayRequest):
                     await _apply_hard_playback_handoff(previous_file, play_url, handoff_reason, "play")
                 if playback_queue_mode == "mpv_native" and len(playback_queue) > 1:
                     prearm_rate, prearm_generation = await _prearm_known_local_samplerate(track_info, "play:mpv-native-queue")
-                    # Sync 2.1 helper at pre-armed rate before audio starts
-                    if subwoofer_runtime is not None and prearm_rate is not None:
-                        await _sync_subwoofer_runtime(get_audio_output_overview())
+                    # Shared handoff before the native playlist primes: sink,
+                    # EE graph and helper must be verified before the first
+                    # track of the queue becomes audible.
+                    await _complete_local_playback_handoff(
+                        track_info,
+                        prearm_rate,
+                        transition_generation=playback_transition_generation,
+                    )
                     if not _prime_mpv_native_queue(playback_queue_index):
                         raise HTTPException(status_code=500, detail="Failed to initialize native mpv playlist")
                     if prearm_rate and prearm_generation:
                         asyncio.create_task(_release_local_samplerate_prearm(prearm_rate, prearm_generation, "play:mpv-native-queue"))
                 else:
                     prearm_rate, prearm_generation = await _prearm_known_local_samplerate(track_info, "play")
-                    # Radio must not become active until its target rate, sink,
-                    # and native helper have been established and verified.
-                    if source == "radio":
-                        await _prepare_radio_handoff_before_loadfile()
-
+                    # Radio: keep the current committed output rate; load the
+                    # new station paused, read its decoded rate, then switch
+                    # exactly once (or not at all) before it becomes audible.
+                    radio_previous_rate = _get_player_audio_samplerate() if source == "radio" else None
                     local_handoff_pending = source == "local" and prearm_rate is not None
-                    if local_handoff_pending:
-                        # Keep mpv paused across loadfile: the sink and the native
-                        # helper must be ready before the new track can be heard.
+                    radio_handoff_pending = source == "radio"
+                    if radio_handoff_pending or local_handoff_pending:
+                        # Keep mpv paused across loadfile: the sink and the
+                        # native helper must be ready before the new track can
+                        # be heard.
                         player_instance.set_pause(True)
                     player_instance.loadfile(play_url, mode="replace")
+                    if radio_handoff_pending:
+                        player_instance.set_pause(True)
+                        await _complete_radio_handoff_after_load(
+                            track_info,
+                            radio_previous_rate,
+                            transition_generation=playback_transition_generation,
+                        )
                     if local_handoff_pending:
                         player_instance.set_pause(True)
-                        await _complete_local_playback_handoff(track_info, prearm_rate)
+                        await _complete_local_playback_handoff(
+                            track_info,
+                            prearm_rate,
+                            transition_generation=playback_transition_generation,
+                        )
                     if prearm_rate and prearm_generation:
                         asyncio.create_task(_release_local_samplerate_prearm(prearm_rate, prearm_generation, "play"))
+                    # Unpause only after a verified handoff: the radio
+                    # wrapper propagates handoff failures, so reaching this
+                    # line means sink/EE/helper/graph are aligned and the
+                    # transient link-race repair already ran inside the
+                    # shared handoff while mpv stayed paused. No follow-up
+                    # _sync_subwoofer_runtime here (no double helper sync).
                     player_instance.set_pause(False)
-                    if subwoofer_runtime is not None and source == "radio":
-                        await _sync_subwoofer_runtime(get_audio_output_overview())
 
             current_track_info = track_info
             last_track_info = track_info
@@ -6179,7 +6768,9 @@ async def _maybe_repair_active_app_samplerate_drift(status: dict) -> None:
     if source not in {"local", "radio"}:
         return
     active_rate = status.get("active_rate") if isinstance(status, dict) else None
-    expected_rate = await _resolve_expected_playback_samplerate(source)
+    expected_rate = await _resolve_expected_playback_samplerate(
+        source, prefer_live_radio_rate=True,
+    )
     if not isinstance(expected_rate, int) or expected_rate <= 0 or active_rate == expected_rate:
         return
     if measurement_sr_session is not None and measurement_sr_session.active:

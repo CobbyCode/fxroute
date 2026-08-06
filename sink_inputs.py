@@ -97,5 +97,5 @@ def active_unmuted_sink_inputs(entries: list[dict]) -> list[dict]:
         entry for entry in entries
         if not entry.get("corked")
         and not entry.get("muted")
-        and int(entry.get("volume_percent") or 100) > 0
+        and (entry.get("volume_percent") is None or int(entry.get("volume_percent")) > 0)
     ]

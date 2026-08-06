@@ -29,6 +29,8 @@ let state = {
             hold_ms: 0,
             threshold: 1.0,
             vu_db: null,
+            vu_fresh: false,
+            vu_age_ms: null,
             target: null,
             last_over_at: null,
             last_error: null,
@@ -254,6 +256,7 @@ let lastRadioTrack = null;
 let pauseActionRequestId = 0;
 const FOOTER_SINGLE_TRACK_START_LOCK_MS = 5000;
 let volumeTimer = null;
+let volumeDisplayTimer = null;
 let volumeRequestInFlight = false;
 let pendingVolume = null;
 let volumeGestureActive = false;
@@ -278,6 +281,9 @@ let settingsStatusPollTimer = null;
 let settingsOutputScanOnFocusDone = false;
 let measurementInputScanOnFocusDone = false;
 let measurementResizeScheduled = false;
+let measurementGraphResizeObserver = null;
+let playbackFooterResizeObserver = null;
+let playbackFooterSpaceFrame = null;
 let measurementGraphPointerId = null;
 let measurementPeqTakeFeedbackTimer = null;
 let measurementPeqLastTouchCreateAt = 0;
@@ -573,6 +579,7 @@ const elements = {
     outputLevelBadge: document.getElementById('output-level-badge'),
     peakWarningBadge: document.getElementById('peak-warning-badge'),
     seekSlider: document.getElementById('seek-slider'),
+    seekRow: document.querySelector('.seek-row'),
     seekCurrent: document.getElementById('seek-current'),
     seekDuration: document.getElementById('seek-duration'),
     volumeSlider: document.getElementById('volume-slider'),
@@ -592,6 +599,7 @@ document.addEventListener('DOMContentLoaded', () => {
     try { setupWebSocket(); } catch(e) { console.error('setupWebSocket crashed:', e); }
     try { setupTabNavigation(); } catch(e) { console.error('setupTabNavigation crashed:', e); }
     try { setupPlaybackControls(); } catch(e) { console.error('setupPlaybackControls crashed:', e); }
+    try { initPlaybackFooterLayout(); } catch(e) { console.error('initPlaybackFooterLayout crashed:', e); }
     try { setupSettingsActions(); } catch(e) { console.error('setupSettingsActions crashed:', e); }
     try { initSeek(); } catch(e) { console.error('initSeek crashed:', e); }
     try {
@@ -2214,6 +2222,52 @@ function globalSeekEnd() {
     }
 }
 
+function syncPlaybackFooterSpace() {
+    playbackFooterSpaceFrame = null;
+    const bar = elements.playbackBar;
+    if (!bar || getComputedStyle(bar).display === 'none') {
+        document.documentElement.style.setProperty('--playback-footer-space', '1.5rem');
+        return;
+    }
+    const rect = bar.getBoundingClientRect();
+    const bottomInset = Math.max(0, window.innerHeight - rect.bottom);
+    const clearance = Math.ceil(rect.height + bottomInset + 16);
+    document.documentElement.style.setProperty('--playback-footer-space', `${clearance}px`);
+}
+
+function schedulePlaybackFooterSpaceSync() {
+    if (playbackFooterSpaceFrame !== null) return;
+    playbackFooterSpaceFrame = requestAnimationFrame(syncPlaybackFooterSpace);
+}
+
+function initPlaybackFooterLayout() {
+    if (!elements.playbackBar) return;
+    if (typeof ResizeObserver === 'function') {
+        playbackFooterResizeObserver = new ResizeObserver(schedulePlaybackFooterSpaceSync);
+        playbackFooterResizeObserver.observe(elements.playbackBar);
+    }
+    window.addEventListener('resize', schedulePlaybackFooterSpaceSync);
+    schedulePlaybackFooterSpaceSync();
+}
+
+function setFooterProgressState(available, readonly = false) {
+    const showProgress = !!available;
+    elements.playbackBar?.classList.toggle('has-progress', showProgress);
+    elements.playbackBar?.classList.toggle('progress-readonly', showProgress && !!readonly);
+    elements.seekRow?.classList.toggle('hidden', !showProgress);
+}
+
+function showVolumeDisplayTemporarily() {
+    const controls = elements.volumeSlider?.closest('.controls');
+    if (!controls) return;
+    controls.classList.add('is-adjusting-volume');
+    clearTimeout(volumeDisplayTimer);
+    volumeDisplayTimer = setTimeout(() => {
+        controls.classList.remove('is-adjusting-volume');
+        volumeDisplayTimer = null;
+    }, 900);
+}
+
 function setupPlaybackControls() {
     if (!elements.btnPlayPause || !elements.volumeSlider) {
         console.error('Playback controls are missing in the DOM');
@@ -2745,6 +2799,7 @@ async function handleVolumeChange(e) {
     optimisticVolume = actualVolume;
     volumeSyncGraceUntil = Date.now() + VOLUME_SYNC_GRACE_MS;
     setLocalVolume(sliderValue);
+    showVolumeDisplayTemporarily();
     if (getEffectivePlaybackControlSource() === 'spotify') {
         queueSpotifyVolumeSend(actualVolume);
         return;
@@ -2799,7 +2854,7 @@ function triggerSamplerateBurstPolling() {
     });
 }
 async function fetchMetadata() {
-    if (!state.playback.playing && !state.playback.paused) return;
+    if (!state.playback.playing && !state.playback.paused && window.__footerSource !== 'spotify') return;
     try {
         const resp = await fetch('/api/status');
         if (!resp.ok) return;
@@ -2895,7 +2950,7 @@ function formatOutputLevelBadgeDb(level) {
     return `${sign}${digits} dB`;
 }
 
-function renderPeakWarningBadge() {
+function renderPeakWarningBadge(activeOverride = null) {
     const warning = state.playback.output_peak_warning || {};
     const showPeak = !!warning.detected;
     const title = warning.target?.description || warning.target?.source_name || 'EasyEffects output monitor';
@@ -2907,7 +2962,16 @@ function renderPeakWarningBadge() {
     }
 
     if (elements.outputLevelBadge) {
-        const showVu = !!warning.available && vuDb !== null;
+        // `detected` is the short peak-alert hold, not sample validity.  The
+        // VU badge needs a recent real capture sample and active playback;
+        // otherwise the technical -60 dB floor must remain invisible.
+        const playbackActive = activeOverride === null
+            ? (window.__footerSource === 'spotify'
+                ? window.__spotifyLastData?.status === 'Playing'
+                : !!state.playback.playing && !state.playback.paused)
+            : !!activeOverride;
+        const showVu = !!warning.available && warning.vu_fresh === true
+            && playbackActive && vuDb !== null;
         elements.outputLevelBadge.classList.toggle('hidden', !showVu);
         elements.outputLevelBadge.textContent = showVu ? formatOutputLevelBadgeDb(vuDb) : '';
         elements.outputLevelBadge.title = showVu ? `Post-EasyEffects output level (slow VU) on ${title}` : '';
@@ -3410,26 +3474,20 @@ function updatePlaybackUI() {
     // When Spotify owns the footer, local UI must NOT touch footer elements at all.
     // Refresh from Spotify truth and return — the Spotify poll owns the footer exclusively.
     if (window.__footerSource === 'spotify') {
-        updatePlaybackCover(null);
         stopPlaybackPositionPoll();
         const spData = window.__spotifyLastData;
         if (!freezeActive && spData) updateFooterForSpotify(spData);
         highlightActiveTrack();
         return;
     }
-    // Set body dataset for CSS radio/song rules
+    // Source classes remain available to unrelated page features. The footer
+    // itself is laid out exclusively from the data-backed visibility classes.
     const isRadio = current_track && current_track.source === 'radio';
     if (!freezeActive) {
         document.body.classList.remove('source-local', 'source-radio');
         document.body.classList.add(isRadio ? 'source-radio' : 'source-local');
         const radioMetadata = isRadio ? state.playback.radio_metadata : null;
-        const validRadioProgress = !!(radioMetadata && !radioMetadata.stale
-            && Number.isFinite(Number(radioMetadata.started_at))
-            && Number(radioMetadata.duration_seconds) > 0);
-        document.body.classList.toggle('radio-has-progress', validRadioProgress);
-        // Hide seek-row on radio unless provider timing is reliable.
-        const seekRow = document.querySelector('.seek-row');
-        if (seekRow) seekRow.style.display = isRadio ? (validRadioProgress ? 'flex' : 'none') : '';
+        elements.playbackBar?.classList.toggle('has-media', !!current_track);
         // Track info
         if (current_track) {
             elements.trackTitle.textContent = isRadio && live_title ? live_title : current_track.title;
@@ -3446,8 +3504,9 @@ function updatePlaybackUI() {
                 : (isRadio && live_title ? current_track.title : (current_track.artist || ''));
             if (scTitle) scTitle.textContent = providerMetadata ? providerMetadata.title : (isRadio && live_title ? live_title : current_track.title);
             if (scAlbum) {
-                scAlbum.textContent = providerMetadata?.album || '';
-                scAlbum.style.display = providerMetadata?.album ? '' : 'none';
+                const album = providerMetadata?.album || (!isRadio ? current_track.album : '') || '';
+                scAlbum.textContent = album;
+                scAlbum.style.display = album ? '' : 'none';
             }
             elements.trackArtist.textContent = isRadio && live_title ? current_track.title : (current_track.artist || '');
             elements.trackArtist.style.display = 'none';
@@ -3455,6 +3514,15 @@ function updatePlaybackUI() {
             elements.trackTitle.textContent = 'Not playing';
             elements.trackTitle.classList.add('placeholder');
             elements.trackArtist.textContent = '';
+            const scArtist = document.getElementById('sc-artist');
+            const scTitle = document.getElementById('sc-title');
+            const scAlbum = document.getElementById('sc-album');
+            if (scArtist) scArtist.textContent = '';
+            if (scTitle) scTitle.textContent = '';
+            if (scAlbum) {
+                scAlbum.textContent = '';
+                scAlbum.style.display = 'none';
+            }
             if (elements.trackTitle) elements.trackTitle.style.display = '';
             if (elements.trackArtist) elements.trackArtist.style.display = '';
         }
@@ -7308,11 +7376,22 @@ function getMeasurementGraphBounds(displayWidth, displayHeight) {
     };
 }
 
+function getMeasurementGraphDisplaySize(canvas) {
+    if (!canvas) return { width: 0, height: 0 };
+    const rect = canvas.getBoundingClientRect();
+    return {
+        width: Math.max(1, Math.round(rect.width || canvas.clientWidth || 0)),
+        height: Math.max(1, Math.round(rect.height || canvas.clientHeight || 0)),
+    };
+}
+
 function getMeasurementGraphRenderContext() {
     const canvas = elements.measurementGraph;
     if (!canvas) return null;
-    const displayWidth = Math.max(320, Math.round(canvas.clientWidth || canvas.width || 960));
-    const displayHeight = Math.max(260, Math.round(canvas.clientHeight || canvas.height || 420));
+    const displaySize = getMeasurementGraphDisplaySize(canvas);
+    if (!displaySize.width || !displaySize.height) return null;
+    const displayWidth = displaySize.width;
+    const displayHeight = displaySize.height;
     const bounds = getMeasurementGraphBounds(displayWidth, displayHeight);
     const range = getMeasurementGraphRange(getGraphMeasurementEntries());
     return { canvas, displayWidth, displayHeight, bounds, range };
@@ -8558,6 +8637,11 @@ function scheduleMeasurementGraphRender() {
     });
 }
 
+function scheduleMeasurementGraphRenderForResize() {
+    if (!elements.measurementPanel || elements.measurementPanel.classList.contains('hidden')) return;
+    scheduleMeasurementGraphRender();
+}
+
 function getSortedNumericValues(values = []) {
     return MeasurementDsp.getSortedNumericValues(values);
 }
@@ -8645,8 +8729,10 @@ function drawMeasurementGraph() {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    const displayWidth = Math.max(320, Math.round(canvas.clientWidth || canvas.width || 960));
-    const displayHeight = Math.max(260, Math.round(canvas.clientHeight || canvas.height || 420));
+    const displaySize = getMeasurementGraphDisplaySize(canvas);
+    if (!displaySize.width || !displaySize.height) return;
+    const displayWidth = displaySize.width;
+    const displayHeight = displaySize.height;
     const dpr = window.devicePixelRatio || 1;
     const targetWidth = Math.round(displayWidth * dpr);
     const targetHeight = Math.round(displayHeight * dpr);
@@ -10858,11 +10944,15 @@ function setupMeasurementActions() {
         elements.measurementGraph.addEventListener('pointerleave', handleMeasurementGraphPointerLeave);
         elements.measurementGraph.addEventListener('wheel', handleMeasurementPeqGraphWheel, { passive: false });
     }
-    window.addEventListener('resize', () => {
-        if (!elements.measurementPanel.classList.contains('hidden')) {
-            scheduleMeasurementGraphRender();
-        }
-    });
+    const measurementGraphWrap = elements.measurementGraph?.closest('.measurement-graph-wrap');
+    if (measurementGraphWrap && typeof ResizeObserver === 'function') {
+        measurementGraphResizeObserver = new ResizeObserver(() => scheduleMeasurementGraphRenderForResize());
+        measurementGraphResizeObserver.observe(measurementGraphWrap);
+    }
+    window.addEventListener('resize', scheduleMeasurementGraphRenderForResize);
+    window.addEventListener('orientationchange', scheduleMeasurementGraphRenderForResize);
+    document.addEventListener('fullscreenchange', scheduleMeasurementGraphRenderForResize);
+    window.visualViewport?.addEventListener('resize', scheduleMeasurementGraphRenderForResize);
     renderMeasurementPanel();
 }
 
@@ -12756,12 +12846,12 @@ function initSeek() {
     elements.seekSlider.addEventListener('touchend', seekEnd);
 }
 function seekStart() {
-    if (state.playback.current_track?.source === 'radio') return;
+    if (elements.playbackBar?.classList.contains('progress-readonly')) return;
     seekDragging = true;
     if (window.__footerSource === 'spotify') window.__spotifySeeking = true;
 }
 function seekEnd() {
-    if (state.playback.current_track?.source === 'radio') return;
+    if (elements.playbackBar?.classList.contains('progress-readonly')) return;
     seekDragging = false;
     if (window.__footerSource === 'spotify') {
         window.__spotifySeeking = false;
@@ -12778,7 +12868,7 @@ function seekEnd() {
     }
 }
 function seekChange() {
-    if (state.playback.current_track?.source === 'radio') return;
+    if (elements.playbackBar?.classList.contains('progress-readonly')) return;
     const pos = parseInt(elements.seekSlider.value, 10) || 0;
     if (window.__footerSource === 'spotify') {
         const spotifyData = window.__spotifyLastData;
@@ -12810,15 +12900,35 @@ function formatTime(s) {
 }
 function updateSeekUI() {
     if (!elements.seekSlider || !elements.seekCurrent || !elements.seekDuration) return;
-    const radioMetadata = state.playback.current_track?.source === 'radio' ? state.playback.radio_metadata : null;
-    const radioTimed = radioMetadata && !radioMetadata.stale && Number(radioMetadata.duration_seconds) > 0;
-    const duration = radioTimed ? Number(radioMetadata.duration_seconds) : (state.playback.duration || 0);
-    let position = radioTimed ? Number(radioMetadata.progress_seconds || 0) : (state.playback.position || 0);
-    if (radioTimed && state.playback.playing && !state.playback.paused) {
-        position = Math.min(duration, Math.max(0, Date.now() / 1000 - Number(radioMetadata.started_at)));
+    const currentTrack = state.playback.current_track;
+    const isRadio = currentTrack?.source === 'radio';
+    const radioMetadata = isRadio ? state.playback.radio_metadata : null;
+    const radioDuration = Number(radioMetadata?.duration_seconds);
+    const radioProgress = radioMetadata?.progress_seconds === null || radioMetadata?.progress_seconds === undefined
+        ? Number.NaN
+        : Number(radioMetadata.progress_seconds);
+    const radioStartedAt = radioMetadata?.started_at === null || radioMetadata?.started_at === undefined
+        ? Number.NaN
+        : Number(radioMetadata.started_at);
+    const radioTimed = !!(radioMetadata && !radioMetadata.stale && radioDuration > 0
+        && (Number.isFinite(radioProgress) || Number.isFinite(radioStartedAt)));
+    const duration = radioTimed ? radioDuration : (isRadio ? 0 : Number(state.playback.duration || 0));
+    let position = radioTimed && Number.isFinite(radioProgress)
+        ? radioProgress
+        : (isRadio ? 0 : Number(state.playback.position || 0));
+    if (radioTimed && Number.isFinite(radioStartedAt) && state.playback.playing && !state.playback.paused) {
+        position = Math.min(duration, Math.max(0, Date.now() / 1000 - radioStartedAt));
     }
-    elements.seekSlider.disabled = !!radioTimed;
-    elements.seekSlider.setAttribute('aria-disabled', radioTimed ? 'true' : 'false');
+    const hasProgress = !!currentTrack && Number.isFinite(duration) && duration > 0;
+    setFooterProgressState(hasProgress, radioTimed);
+    elements.seekSlider.disabled = hasProgress && radioTimed;
+    elements.seekSlider.setAttribute('aria-disabled', hasProgress && radioTimed ? 'true' : 'false');
+    if (!hasProgress) {
+        elements.seekCurrent.textContent = '0:00';
+        elements.seekDuration.textContent = '0:00';
+        elements.seekSlider.value = 0;
+        return;
+    }
     elements.seekDuration.textContent = formatTime(duration);
     if (!seekDragging) {
         elements.seekCurrent.textContent = formatTime(position);
@@ -12923,6 +13033,50 @@ function spotifyTrackKey(data) {
     ].join('|');
 }
 
+function mergeSpotifyState(data) {
+    const incoming = data && typeof data === 'object' ? data : {};
+    const previous = window.__spotifyLastData && typeof window.__spotifyLastData === 'object'
+        ? window.__spotifyLastData
+        : {};
+    if (!Object.keys(previous).length) return { ...incoming };
+
+    // playerctl can briefly return an incomplete record while MPRIS is
+    // updating. Keep the last complete Spotify record during that window;
+    // an explicit new track id starts a fresh metadata record.
+    const previousTrackId = previous.trackId || previous.trackid || '';
+    const incomingTrackId = incoming.trackId || incoming.trackid || '';
+    const sameTrack = !incomingTrackId || !previousTrackId || incomingTrackId === previousTrackId;
+    if (incoming.available === false && previous.available === true && previous.status !== 'Stopped') {
+        return { ...previous };
+    }
+    if (incoming.status === 'Stopped' && !incoming.title && !incoming.artist && !incoming.album && !incoming.artUrl) {
+        return {
+            ...incoming,
+            title: '',
+            artist: '',
+            album: '',
+            artUrl: '',
+            artwork_url: '',
+            artwork_available: false,
+            artwork_source: 'none',
+        };
+    }
+    if (!sameTrack) return { ...incoming };
+
+    const merged = { ...previous, ...incoming };
+    const stableFields = [
+        'artist', 'title', 'album', 'trackId', 'trackid', 'artUrl',
+        'artwork_url', 'artwork_available', 'artwork_source', 'duration',
+        'stream_info',
+    ];
+    for (const field of stableFields) {
+        if (incoming[field] === undefined || incoming[field] === null || incoming[field] === '') {
+            if (previous[field] !== undefined) merged[field] = previous[field];
+        }
+    }
+    return merged;
+}
+
 function syncSpotifySourceOwnership(data) {
     if (!data || !data.available) return;
     window.__spotifyLastData = data;
@@ -12958,20 +13112,22 @@ function setSpotifyUiVisibility(installed) {
 function handleIncomingSpotifyState(data, options = {}) {
     if (!data) return;
     const { renderTab = true, renderFooter = true } = options;
-    setSpotifyUiVisibility(data.installed === true);
-    if (data.installed !== true) {
+    const previousData = window.__spotifyLastData || {};
+    const mergedData = mergeSpotifyState(data);
+    setSpotifyUiVisibility(mergedData.installed === true);
+    if (mergedData.installed !== true) {
         stopSpotifyPoll();
     }
-    const previousTrackKey = spotifyTrackKey(window.__spotifyLastData || {});
-    const nextTrackKey = spotifyTrackKey(data);
+    const previousTrackKey = spotifyTrackKey(previousData);
+    const nextTrackKey = spotifyTrackKey(mergedData);
     const trackChanged = previousTrackKey !== nextTrackKey;
 
     footerDebug('incoming-spotify-state', {
         payload: {
-            title: data?.title || null,
-            artist: data?.artist || null,
-            status: data?.status || null,
-            available: !!data?.available,
+            title: mergedData?.title || null,
+            artist: mergedData?.artist || null,
+            status: mergedData?.status || null,
+            available: !!mergedData?.available,
         },
         renderTab,
         renderFooter,
@@ -12980,9 +13136,9 @@ function handleIncomingSpotifyState(data, options = {}) {
         trackChanged,
     });
 
-    window.__spotifyLastData = data;
-    if (shouldAdoptSpotifyUpdate(data)) {
-        syncSpotifySourceOwnership(data);
+    window.__spotifyLastData = mergedData;
+    if (shouldAdoptSpotifyUpdate(mergedData)) {
+        syncSpotifySourceOwnership(mergedData);
     }
     reconcileFooterSource();
 
@@ -12992,12 +13148,12 @@ function handleIncomingSpotifyState(data, options = {}) {
     }
 
     if (renderFooter && window.__footerSource === 'spotify') {
-        updateFooterForSpotify(data);
+        updateFooterForSpotify(mergedData);
     }
     if (renderTab) {
         const spotifyTab = document.getElementById('tab-spotify');
         if (spotifyTab && spotifyTab.classList.contains('active')) {
-            renderSpotifyTab(data);
+            renderSpotifyTab(mergedData);
         }
     }
 }
@@ -13284,16 +13440,59 @@ function startSpotifyPoll() {
 function updateFooterForSpotify(data) {
     if (window.__footerSource !== 'spotify') return;
     if (footerContentFreezeActive()) return;
-    updatePlaybackCover(spotifyArtworkItem(data));
+    const hasMedia = !!(data?.available && (data.title || data.artist || data.album || data.status !== 'Stopped'));
+    updatePlaybackCover(hasMedia ? spotifyArtworkItem(data) : null);
+    elements.playbackBar?.classList.toggle('has-media', hasMedia);
+    elements.playbackBar?.classList.toggle('is-playing', hasMedia && data.status === 'Playing');
+    elements.playbackBar?.classList.toggle('is-paused', hasMedia && data.status === 'Paused');
+    if (elements.playbackEq) {
+        elements.playbackEq.classList.remove('peak-alert');
+        elements.playbackEq.title = '';
+        if (!elements.playbackEq.querySelector('.bar')) {
+            elements.playbackEq.innerHTML = '<span class="bar"></span><span class="bar"></span><span class="bar"></span><span class="bar"></span>';
+        }
+    }
     if (typeof data.volume === 'number' && !volumeGestureActive && !spotifyVolumeRequestInFlight && pendingSpotifyVolume === null) {
         state.playback.volume = data.volume;
         renderVolumeControlsFromActualVolume(data.volume);
     }
-    if (!data.available || (data.status === 'Stopped' && !data.title)) return;
+    if (!hasMedia) {
+        setFooterProgressState(false);
+        if (elements.btnPlayPause) {
+            elements.btnPlayPause.disabled = true;
+            elements.btnPlayPause.textContent = '▶';
+        }
+        if (elements.btnPrevious) elements.btnPrevious.classList.add('hidden');
+        if (elements.btnNext) elements.btnNext.classList.add('hidden');
+        if (elements.btnClearQueue) elements.btnClearQueue.classList.add('hidden');
+        if (elements.queueStatus) elements.queueStatus.classList.add('hidden');
+        if (elements.samplerateStatus) elements.samplerateStatus.classList.add('hidden');
+        if (elements.playbackEq) elements.playbackEq.style.display = 'none';
+        renderPeakWarningBadge(false);
+        const titleEl = document.getElementById('track-title');
+        const artistEl = document.getElementById('track-artist');
+        const scTitle = document.getElementById('sc-title');
+        const scArtist = document.getElementById('sc-artist');
+        const scAlbum = document.getElementById('sc-album');
+        if (titleEl) {
+            titleEl.textContent = 'Not playing';
+            titleEl.classList.add('placeholder');
+            titleEl.style.display = '';
+        }
+        if (artistEl) {
+            artistEl.textContent = '';
+            artistEl.style.display = '';
+        }
+        if (scTitle) scTitle.textContent = '';
+        if (scArtist) scArtist.textContent = '';
+        if (scAlbum) {
+            scAlbum.textContent = '';
+            scAlbum.style.display = 'none';
+        }
+        return;
+    }
     document.body.classList.remove('source-local', 'source-radio');
     document.body.classList.add('source-local');
-    const seekRow = document.querySelector('.seek-row');
-    if (seekRow) seekRow.style.display = '';
     if (elements.btnPlayPause) {
         elements.btnPlayPause.disabled = false;
         elements.btnPlayPause.textContent = data.status === 'Playing' ? '⏸' : '▶';
@@ -13318,17 +13517,40 @@ function updateFooterForSpotify(data) {
     }
     const scTitle = document.getElementById('sc-title');
     const scArtist = document.getElementById('sc-artist');
+    const scAlbum = document.getElementById('sc-album');
     if (scTitle) scTitle.textContent = data.title || '';
     if (scArtist) scArtist.textContent = data.artist || '';
-    if (!window.__spotifySeeking && elements.seekSlider && elements.seekCurrent && elements.seekDuration) {
+    if (scAlbum) {
+        scAlbum.textContent = data.album || '';
+        scAlbum.style.display = data.album ? '' : 'none';
+    }
+    if (elements.seekSlider && elements.seekCurrent && elements.seekDuration) {
         const pos = Number(data.position || 0);
         const dur = Number(data.duration || 0);
-        elements.seekCurrent.textContent = formatTime(pos);
-        elements.seekDuration.textContent = formatTime(dur);
-        if (dur > 0) elements.seekSlider.value = Math.round((pos / dur) * 1000);
-        else elements.seekSlider.value = 0;
+        const hasProgress = Number.isFinite(dur) && dur > 0;
+        setFooterProgressState(hasProgress, false);
+        elements.seekSlider.disabled = false;
+        elements.seekSlider.setAttribute('aria-disabled', 'false');
+        if (!hasProgress) {
+            elements.seekCurrent.textContent = '0:00';
+            elements.seekDuration.textContent = '0:00';
+            elements.seekSlider.value = 0;
+        } else if (!window.__spotifySeeking) {
+            elements.seekCurrent.textContent = formatTime(pos);
+            elements.seekDuration.textContent = formatTime(dur);
+            elements.seekSlider.value = Math.round((pos / dur) * 1000);
+        }
     }
-    renderPeakWarningBadge();
+    if (elements.samplerateStatus) {
+        const streamLine = formatRadioStreamLine(data.stream_info);
+        const samplerate = state.samplerate || {};
+        const samplerateLine = samplerate.available && samplerate.active_rate
+            ? `${samplerate.mode === 'auto' ? 'Auto · ' : ''}${(samplerate.active_rate / 1000).toFixed(1).replace(/\.0$/, '')} kHz`
+            : '';
+        elements.samplerateStatus.textContent = streamLine || samplerateLine;
+        elements.samplerateStatus.classList.toggle('hidden', !(streamLine || samplerateLine));
+    }
+    renderPeakWarningBadge(data.status === 'Playing');
 }
 
 // Spotify tab internal UI (cover, controls inside the tab)

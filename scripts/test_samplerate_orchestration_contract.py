@@ -32,91 +32,136 @@ class EventLedger:
 
 
 class SamplerateOrchestrationContractTests(unittest.IsolatedAsyncioTestCase):
-    async def test_local_handoff_stability_then_sink_pulse(self):
-        """Local activation waits for stability before the one fallback pulse."""
-        ledger = EventLedger()
-        stability_results = iter((False, True))
+    async def test_local_playback_handoff_shared_reconcile(self):
+        """Local activation reconciles via the shared handoff (48k target).
 
-        async def stability(_rate: int, *, timeout_ms: int, stable_ms: int = 350) -> bool:
-            ledger.add("local.alignment-stability")
-            return next(stability_results)
+        The local wrapper only determines the target rate; the shared
+        _complete_playback_handoff performs sink/force-rate, EE preset +
+        EE port readback, helper sync and final verification.
+        """
+        ledger = EventLedger()
+        status = {"active_rate": 44100, "force_rate": 44100}
 
         def samplerate_status() -> dict:
             ledger.add("local.read-rate")
-            return {"active_rate": 44100, "force_rate": 44100}
+            return dict(status)
 
-        def set_force(rate: int) -> None:
-            ledger.add(f"local.force-rate:{rate}")
-
-        async def pulse(*, reason: str, force: bool) -> bool:
-            ledger.add("local.sink-pulse")
+        async def ensure_force(rate, reason, *, policy=None) -> bool:
+            ledger.add(f"local.ensure-force:{rate}")
+            status["active_rate"] = rate
+            status["force_rate"] = rate
             return True
 
-        with patch.object(main, "_wait_for_local_samplerate_stability", stability), patch.object(
-            main, "get_samplerate_status", samplerate_status
-        ), patch.object(main, "_set_pipewire_force_rate", set_force), patch.object(
-            main, "_suspend_resume_playback_sink", pulse
+        async def preset_sync(**_kwargs) -> None:
+            ledger.add("local.preset-sync")
+
+        async def helper_sync(*_args, **_kwargs) -> None:
+            ledger.add("local.helper-sync")
+
+        async def sleep(_delay: float) -> None:
+            ledger.add("local.settle")
+
+        async def pw_link(*_args: str) -> str:
+            return (
+                "ee_soe_output_level:output_FL\n"
+                "ee_soe_output_level:output_FR\n"
+                "ee_soe_output_level:output_FL -> alsa_output.pci-0000_00_1f.3.analog-stereo:playback_FL\n"
+                "ee_soe_output_level:output_FR -> alsa_output.pci-0000_00_1f.3.analog-stereo:playback_FR\n"
+            )
+
+        main.playback_transition_generation = 40
+        with patch.object(main, "get_samplerate_status", samplerate_status), patch.object(
+            main, "_ensure_playback_samplerate_force", ensure_force
+        ), patch.object(main, "_sync_easyeffects_preset_for_playback_samplerate", preset_sync), patch.object(
+            main, "_sync_subwoofer_runtime", helper_sync
         ), patch.object(
+            main, "_get_current_pipewire_force_rate", lambda: 44100
+        ), patch.object(main, "_run_pw_link_command", pw_link), patch.object(
             main, "get_audio_output_overview",
-            return_value={"output_mode": {"mode": "stereo"}},
+            return_value={"output_mode": {"mode": "stereo", "effective_output_key": "alsa_output.pci-0000_00_1f.3.analog-stereo"}},
+        ), patch.object(main.asyncio, "sleep", sleep), patch.object(
+            main, "subwoofer_runtime", object(),
         ):
             await main._complete_local_playback_handoff(
-                {"source": "local", "url": "/music/a.flac"}, 48000
+                {"source": "local", "url": "/music/a.flac"}, 48000,
+                transition_generation=40,
             )
 
         ledger.assert_exact(
             self,
             [
-                "local.alignment-stability",
                 "local.read-rate",
+                "local.ensure-force:48000",
+                "local.preset-sync",
+                "local.helper-sync",
                 "local.read-rate",
-                "local.force-rate:48000",
-                "local.sink-pulse",
-                "local.alignment-stability",
             ],
         )
 
-    async def test_radio_start_force_alignment_pulse_alignment_before_loadfile(self):
-        """Radio establishes its fixed rate before the caller may load the URL."""
-        ledger = EventLedger()
-        align_results = iter((False, True))
+    async def test_radio_post_load_handoff_switches_once(self):
+        """Radio post-load handoff reconciles exactly once to the live rate.
 
-        async def resolve(source: str) -> int:
-            ledger.add("radio.resolve-rate")
-            return 44100
+        The radio wrapper only determines the live rate; the shared
+        _complete_playback_handoff performs sink/force-rate, EE preset + EE
+        port readback, helper sync and final verification.
+        """
+        ledger = EventLedger()
+        status = {"active_rate": 44100, "force_rate": 44100}
 
         def samplerate_status() -> dict:
             ledger.add("radio.read-rate")
-            return {"active_rate": 48000, "force_rate": 0}
+            return dict(status)
 
-        def set_force(rate: int) -> None:
-            ledger.add(f"radio.force-rate:{rate}")
-
-        async def wait(_rate: int, *, timeout_ms: int) -> bool:
-            ledger.add("radio.alignment")
-            return next(align_results)
-
-        async def pulse(*, reason: str, force: bool) -> bool:
-            ledger.add("radio.sink-pulse")
+        async def ensure_force(rate, reason, *, policy=None) -> bool:
+            ledger.add(f"radio.ensure-force:{rate}")
+            status["active_rate"] = rate
+            status["force_rate"] = rate
             return True
 
-        with patch.object(main, "_resolve_expected_playback_samplerate", resolve), patch.object(
-            main, "get_samplerate_status", samplerate_status
-        ), patch.object(main, "_set_pipewire_force_rate", set_force), patch.object(
-            main, "_wait_for_samplerate_alignment", wait
-        ), patch.object(main, "_suspend_resume_playback_sink", pulse):
-            result = await main._prepare_radio_handoff_before_loadfile()
+        async def preset_sync(**_kwargs) -> None:
+            ledger.add("radio.preset-sync")
 
-        self.assertEqual(result, 44100)
+        async def helper_sync(*_args, **_kwargs) -> None:
+            ledger.add("radio.helper-sync")
+
+        async def sleep(_delay: float) -> None:
+            ledger.add("radio.settle")
+
+        async def pw_link(*_args: str) -> str:
+            return (
+                "ee_soe_output_level:output_FL\n"
+                "ee_soe_output_level:output_FR\n"
+                "ee_soe_output_level:output_FL -> alsa_output.pci-0000_00_1f.3.analog-stereo:playback_FL\n"
+                "ee_soe_output_level:output_FR -> alsa_output.pci-0000_00_1f.3.analog-stereo:playback_FR\n"
+            )
+
+        track = {"id": "radio_48k", "source": "radio", "url": "https://radio.example/48k"}
+        with patch.object(main, "_get_player_audio_samplerate", return_value=48000), patch.object(
+            main, "get_samplerate_status", samplerate_status
+        ), patch.object(main, "_ensure_playback_samplerate_force", ensure_force), patch.object(
+            main, "_sync_easyeffects_preset_for_playback_samplerate", preset_sync
+        ), patch.object(main, "_sync_subwoofer_runtime", helper_sync), patch.object(
+            main.asyncio, "sleep", sleep
+        ), patch.object(main, "_get_current_pipewire_force_rate", lambda: 44100), patch.object(
+            main, "_run_pw_link_command", pw_link
+        ), patch.object(
+            main, "get_audio_output_overview",
+            return_value={"output_mode": {"mode": "stereo", "effective_output_key": "alsa_output.pci-0000_00_1f.3.analog-stereo"}},
+        ), patch.object(main, "subwoofer_runtime", object()):
+            main.playback_transition_generation = 40
+            result = await main._complete_radio_handoff_after_load(
+                track, 44100, transition_generation=40,
+            )
+
+        self.assertEqual(result, 48000)
         ledger.assert_exact(
             self,
             [
-                "radio.resolve-rate",
                 "radio.read-rate",
-                "radio.force-rate:44100",
-                "radio.alignment",
-                "radio.sink-pulse",
-                "radio.alignment",
+                "radio.ensure-force:48000",
+                "radio.preset-sync",
+                "radio.helper-sync",
+                "radio.read-rate",
             ],
         )
         self.assertEqual(samplerate_orchestration.RADIO_POLICY.initial_alignment_timeout_ms, 400)
@@ -261,7 +306,7 @@ class SamplerateOrchestrationContractTests(unittest.IsolatedAsyncioTestCase):
         async def sleep(_delay: float) -> None:
             ledger.add("resume.settle")
 
-        async def resolve(source: str) -> int:
+        async def resolve(source: str, prefer_live_radio_rate: bool = False) -> int:
             ledger.add("resume.resolve-rate")
             return 44100
 

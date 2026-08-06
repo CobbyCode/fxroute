@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased
+
+## 0.9.3 (2026-08-06)
+
+### Changed
+- Unified playback graph handoff for local and radio sources: same sample
+  rate stays untouched (no re-switch), different rates are aligned before
+  playback becomes audible, with shared graph verification for EasyEffects,
+  the subwoofer helper and PipeWire links, and clean rollback on failed
+  handoff.
+
+### Fixed
+- Footer layout and progress presentation stay stable across desktop,
+  compact-width, and Spotify-owned playback states.
+- Playback handoffs now settle sample-rate changes before audio starts and
+  recover cleanly when the active source changes.
+- Queue jumps preserve the intended track order even when shuffle is enabled,
+  while native playback transitions converge back to the correct queue state.
+- Album cover thumbnails continue to cache reliably when image conversion uses
+  temporary files.
+- The Measurement graph recalculates its current container width and height and
+  redraws after window, orientation, fullscreen, or container-size changes;
+  tablet portrait layouts keep a bounded graph height.
+
 ## 0.9.2 (2026-08-05)
 
 ### Added
@@ -2344,12 +2368,3 @@
 
 ## 0.1.0
 - initial FXRoute implementation
-
-## 0.4.35 (2026-04-14)
-- **Spotify Integration**: Full Spotify control tab via playerctl/MPRIS — play/pause, previous/next, shuffle, loop, seek slider, cover art, track info
-- **Source-Agnostic Architecture**: Three-concept source model: `__visibleTab` (UI tab), `__footerSource` (footer display), controls route by visible tab
-- **Source Exclusivity**: Backend-level mutual exclusion — Spotify and MPV can't play simultaneously. Playerctl pause for Spotify (no API cooldown), `set_pause(True)` for MPV, explicit `set_pause(False)` after `loadfile` to fix paused-after-Spotify bug
-- **Footer Stability**: `updatePlaybackUI()` guards footer writes when Spotify is footer source. Spotify poll runs always, centralized `updateFooterForSpotify()` for Spotify footer state
-- **Autoplay Fix**: `playRadio`/`playLocal` cancel in-flight actions instead of blocking. WebSocket `playback` events skipped during `playbackActionInFlight` to prevent optimistic state overwrite
-- **MPV Pause Fix**: `loadfile` doesn't reset MPV's pause property — added explicit `set_pause(False)` after loadfile when switching from Spotify
-- **UI Polish**: Spotify tab between Radio and Library. Unavailable states styled as cards. Progress bar, shuffle/loop buttons with capability gating

@@ -16,6 +16,12 @@ from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
+# Bounded backoff for the mpv event-listener reconnect: the listener never
+# spins in a tight loop. After a broken socket/read it waits, then retries,
+# doubling up to the cap until the connection is established again.
+LISTENER_RECONNECT_DELAY_INITIAL = 0.2
+LISTENER_RECONNECT_DELAY_MAX = 5.0
+
 # Normalization of live stream facts (mpv property values, not URL guesses).
 LOSSLESS_CODECS = {"flac", "alac", "ape", "wavpack", "tta"}
 STREAM_CODEC_LABELS = {
@@ -176,7 +182,13 @@ class MPVWrapper:
         logger.info("MPV stopped")
 
     def _send_command(self, command: str, *args) -> Dict[str, Any]:
-        """Send a command to mpv via the JSON IPC socket."""
+        """Send a command to mpv via the JSON IPC socket.
+
+        mpv may emit asynchronous events (e.g. start-file) on the command
+        connection before the command's response; the reader keeps consuming
+        lines until the matching request_id arrives instead of stopping at
+        the first newline.
+        """
         if not self._running:
             raise MPVError("MPV is not running")
 
@@ -189,8 +201,27 @@ class MPVWrapper:
                 sock.settimeout(5)
                 sock.sendall((json.dumps(msg) + "\n").encode())
 
+                deadline = time.time() + 5
                 buffer = b""
-                while b"\n" not in buffer:
+                while True:
+                    while b"\n" in buffer:
+                        line, buffer = buffer.split(b"\n", 1)
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            payload = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        if payload.get("request_id") == msg["request_id"]:
+                            response_error = payload.get("error")
+                            if response_error not in (None, "success"):
+                                raise MPVError(f"MPV command {command} failed: {response_error}")
+                            return payload
+                    remaining = deadline - time.time()
+                    if remaining <= 0:
+                        raise socket.timeout
+                    sock.settimeout(remaining)
                     chunk = sock.recv(4096)
                     if not chunk:
                         break
@@ -198,77 +229,81 @@ class MPVWrapper:
             finally:
                 sock.close()
 
-            if not buffer:
-                return {}
-
-            for line in buffer.decode(errors="ignore").splitlines():
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    payload = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if payload.get("request_id") == msg["request_id"]:
-                    return payload
-
-            return {}
+            raise MPVError(f"MPV returned no matching response for {command}")
+        except MPVError:
+            raise
+        except socket.timeout:
+            logger.error(f"Failed to send command {command}: timed out waiting for response")
+            raise MPVError(f"IPC communication failed: {command} timed out") from None
         except Exception as e:
             logger.error(f"Failed to send command {command}: {e}")
             raise MPVError(f"IPC communication failed: {e}") from e
 
     def _event_listener_loop(self):
-        """Listen for mpv property-change events on a dedicated IPC connection."""
-        while self._running and self._listener_socket is None:
-            try:
-                sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                sock.connect(self.socket_path)
-                sock.settimeout(1.0)
-                self._listener_socket = sock
-            except Exception as e:
-                logger.debug(f"Waiting for mpv listener socket: {e}")
-                time.sleep(0.2)
+        """Listen for mpv property-change events on a dedicated IPC connection.
 
-        if not self._listener_socket:
-            return
+        The connection is re-established with a bounded backoff whenever the
+        socket breaks or a read fails while the player is still running.
+        """
+        reconnect_delay = LISTENER_RECONNECT_DELAY_INITIAL
+        while self._running:
+            if self._listener_socket is None:
+                try:
+                    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                    sock.connect(self.socket_path)
+                    sock.settimeout(1.0)
+                    self._listener_socket = sock
+                    reconnect_delay = LISTENER_RECONNECT_DELAY_INITIAL
+                except Exception as e:
+                    logger.debug(f"Waiting for mpv listener socket: {e}")
+                    time.sleep(reconnect_delay)
+                    reconnect_delay = min(reconnect_delay * 2, LISTENER_RECONNECT_DELAY_MAX)
+                    continue
 
-        for prop, observer_id in self._observer_ids.items():
-            try:
-                msg = {"command": ["observe_property", observer_id, prop], "request_id": int(time.time() * 1000)}
-                self._listener_socket.sendall((json.dumps(msg) + "\n").encode())
-            except Exception as e:
-                logger.debug(f"Failed to register mpv listener property {prop}: {e}")
+            for prop, observer_id in self._observer_ids.items():
+                try:
+                    msg = {"command": ["observe_property", observer_id, prop], "request_id": int(time.time() * 1000)}
+                    self._listener_socket.sendall((json.dumps(msg) + "\n").encode())
+                except Exception as e:
+                    logger.debug(f"Failed to register mpv listener property {prop}: {e}")
 
-        buffer = ""
-        while self._running and self._listener_socket:
-            try:
-                chunk = self._listener_socket.recv(4096)
-                if not chunk:
+            buffer = ""
+            while self._running and self._listener_socket:
+                try:
+                    chunk = self._listener_socket.recv(4096)
+                    if not chunk:
+                        break
+                    buffer += chunk.decode(errors="ignore")
+                    while "\n" in buffer:
+                        line, buffer = buffer.split("\n", 1)
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            event = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        self._handle_event(event)
+                except socket.timeout:
+                    continue
+                except Exception as e:
+                    if self._running:
+                        logger.warning(f"MPV event listener error: {e}")
                     break
-                buffer += chunk.decode(errors="ignore")
-                while "\n" in buffer:
-                    line, buffer = buffer.split("\n", 1)
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        event = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    self._handle_event(event)
-            except socket.timeout:
-                continue
-            except Exception as e:
-                if self._running:
-                    logger.warning(f"MPV event listener error: {e}")
-                break
 
-        if self._listener_socket:
-            try:
-                self._listener_socket.close()
-            except Exception:
-                pass
-            self._listener_socket = None
+            if self._listener_socket:
+                try:
+                    self._listener_socket.close()
+                except Exception:
+                    pass
+                self._listener_socket = None
+
+            if not self._running:
+                break
+            # Socket/read error or EOF while the player is still active:
+            # reconnect after a bounded delay (never a tight loop).
+            time.sleep(reconnect_delay)
+            reconnect_delay = min(reconnect_delay * 2, LISTENER_RECONNECT_DELAY_MAX)
 
     def _handle_event(self, event: Dict[str, Any]):
         event_name = event.get("event")
@@ -311,7 +346,9 @@ class MPVWrapper:
                     changed = True
 
             elif name == "volume":
-                volume = int(round(data or self._state.get("volume", 100)))
+                # data == 0 is a valid mute value and must not be discarded
+                # by a truthiness fallback.
+                volume = int(round(data)) if data is not None else self._state.get("volume", 100)
                 if self._state.get("volume") != volume:
                     self._state["volume"] = volume
                     changed = True
@@ -365,6 +402,12 @@ class MPVWrapper:
         with self.lock:
             logger.info(f"Loading: {path} (mode: {mode})")
             result = self._send_command("loadfile", path, mode)
+            # Appending to an mpv playlist must not masquerade as an active
+            # track change.  The previous implementation overwrote
+            # current_file for every appended entry, leaving the player state
+            # on the last queued file until a later path event happened.
+            if mode == "append":
+                return result
             self._last_end_reason = None
             self._state["playing"] = True
             self._state["paused"] = False

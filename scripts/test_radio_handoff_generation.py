@@ -56,7 +56,7 @@ class PlaybackTransitionGenerationTests(unittest.IsolatedAsyncioTestCase):
         }
         self.resolved_sources = []
 
-        async def resolve_rate(source):
+        async def resolve_rate(source, prefer_live_radio_rate=False):
             self.resolved_sources.append(source)
             return 44_100 if source == "radio" else 48_000
 

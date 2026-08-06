@@ -76,6 +76,7 @@ class EasyEffectsPeakMonitor:
         self._capture_node_name: Optional[str] = None
         self._vu_db: Optional[float] = None
         self._last_vu_update_at: Optional[float] = None
+        self._last_audio_sample_at: Optional[float] = None
         self._last_vu_emit_at = 0.0
 
     async def start(self):
@@ -113,6 +114,8 @@ class EasyEffectsPeakMonitor:
             logger.info("Peak monitor relink: repairing links for %s -> %s",
                         capture_name, target.source_name)
             await self._link_capture_stream(target, capture_name)
+            self._last_error = None
+            await self._emit_if_changed(force=True)
             logger.info("Peak monitor relink completed in %.3fs",
                         time.monotonic() - relink_started_at)
             return True
@@ -159,6 +162,7 @@ class EasyEffectsPeakMonitor:
         self._last_error = None
         self._vu_db = None
         self._last_vu_update_at = None
+        self._last_audio_sample_at = None
         self._last_vu_emit_at = 0.0
         logger.info("Peak monitor stop completed in %.3fs (had_task=%s had_proc=%s)", time.monotonic() - stop_started_at, had_task, had_proc)
 
@@ -166,12 +170,18 @@ class EasyEffectsPeakMonitor:
         now = time.monotonic()
         active = now < self._hold_until
         hold_ms = max(0, int((self._hold_until - now) * 1000))
+        sample_age_ms = (
+            max(0, int((now - self._last_audio_sample_at) * 1000))
+            if self._last_audio_sample_at is not None else None
+        )
         return {
             "available": self._target is not None,
             "detected": active,
             "hold_ms": hold_ms,
             "threshold": PEAK_THRESHOLD,
             "vu_db": round(self._vu_db, 1) if self._vu_db is not None else None,
+            "vu_fresh": bool(sample_age_ms is not None and sample_age_ms <= int(CAPTURE_NO_DATA_TIMEOUT * 1000)),
+            "vu_age_ms": sample_age_ms,
             "target": {
                 "source_id": self._target.source_id,
                 "source_name": self._target.source_name,
@@ -229,6 +239,7 @@ class EasyEffectsPeakMonitor:
         capture_node_name = f"{CAPTURE_NODE_NAME}_{next(CAPTURE_NODE_SEQUENCE)}"
         capture_rate = _resolve_capture_rate()
         self._capture_node_name = capture_node_name
+        self._last_audio_sample_at = None
         cmd = [
             "pw-record",
             "--target",
@@ -260,6 +271,10 @@ class EasyEffectsPeakMonitor:
         )
         logger.info("Peak monitor pw-record spawned in %.3fs for capture node %s", time.monotonic() - capture_started_at, capture_node_name)
         assert self._proc.stdout is not None
+        # Start the no-data clock before the initial link attempt.  A failed
+        # first link is recoverable, but must still use the normal capture
+        # timeout rather than reaching the read loop with an unbound clock.
+        last_data_at = time.monotonic()
         try:
             try:
                 link_started_at = time.monotonic()
@@ -278,6 +293,7 @@ class EasyEffectsPeakMonitor:
                 now = time.monotonic()
                 if chunk:
                     last_data_at = now
+                    self._last_audio_sample_at = now
                     peak = self._chunk_peak(chunk)
                     rms = self._chunk_rms(chunk)
                     self._update_vu_db(self._linear_to_db(rms), now)

@@ -33,7 +33,7 @@ function extractFunction(name) {
     throw new Error(`unterminated ${name}`);
 }
 
-const sandbox = {};
+const sandbox = { window: { __spotifyLastData: {} } };
 vm.createContext(sandbox);
 // Dependencies for the artwork resolution chain.
 vm.runInContext(extractFunction('trackCoverUrl'), sandbox);
@@ -42,11 +42,13 @@ vm.runInContext(extractFunction('playbackArtworkUrl'), sandbox);
 vm.runInContext(extractFunction('playbackArtworkKnownAvailable'), sandbox);
 vm.runInContext(extractFunction('spotifyArtworkItem'), sandbox);
 vm.runInContext(extractFunction('coverDetailSpotifyMeta'), sandbox);
+vm.runInContext(extractFunction('mergeSpotifyState'), sandbox);
 
 const meta = sandbox.coverDetailSpotifyMeta;
 const artwork = sandbox.spotifyArtworkItem;
 const artUrl = sandbox.playbackArtworkUrl;
 const artKnown = sandbox.playbackArtworkKnownAvailable;
+const merge = sandbox.mergeSpotifyState;
 
 function canon(value) {
     if (Array.isArray(value)) return value.map(canon);
@@ -124,5 +126,36 @@ check('artwork not known available without artUrl', artKnown(withoutArt), false)
 // artUrl alias artUrl wins over artwork_url (same as footer: artwork_url || artUrl)
 const both = artwork({ artwork_url: 'https://i.scdn.co/image/main', artUrl: 'https://i.scdn.co/image/main' });
 check('artwork_url field also resolves', artUrl(both), 'https://i.scdn.co/image/main');
+
+// ---- partial status updates must not clear the common footer ----
+
+sandbox.window.__spotifyLastData = {
+    available: true,
+    installed: true,
+    status: 'Playing',
+    trackId: 'track-1',
+    title: 'Stable title',
+    artist: 'Stable artist',
+    album: 'Stable album',
+    artUrl: 'https://i.scdn.co/image/stable',
+    duration: 180,
+};
+const partial = merge({ available: true, installed: true, status: 'Playing', trackId: 'track-1', position: 12 });
+check('partial same-track status keeps footer metadata', partial, {
+    ...sandbox.window.__spotifyLastData,
+    position: 12,
+});
+
+const next = merge({ available: true, installed: true, status: 'Playing', trackId: 'track-2', title: 'New title', artist: 'New artist', album: '', artUrl: '' });
+check('new track starts a fresh metadata record', next, {
+    available: true,
+    installed: true,
+    status: 'Playing',
+    trackId: 'track-2',
+    title: 'New title',
+    artist: 'New artist',
+    album: '',
+    artUrl: '',
+});
 
 console.log(`PASS  scripts/test_cover_detail_spotify.js (${passed} checks)`);

@@ -90,10 +90,11 @@ class ActiveUnmutedSinkInputsTests(unittest.TestCase):
         ]
         self.assertEqual([e["id"] for e in active_unmuted_sink_inputs(entries)], [1])
 
-    def test_missing_none_and_numeric_zero_use_fallback_100(self):
-        # fehlend / None / numerisch 0 -> `or 100` -> aktiv
-        for entry in ({}, {"volume_percent": None}, {"volume_percent": 0}):
+    def test_missing_and_none_use_fallback_100_numeric_zero_is_muted(self):
+        # fehlend / None -> Fallback 100 -> aktiv; numerisch 0 -> stumm
+        for entry in ({}, {"volume_percent": None}):
             self.assertEqual(active_unmuted_sink_inputs([entry]), [entry])
+        self.assertEqual(active_unmuted_sink_inputs([{"volume_percent": 0}]), [])
 
     def test_string_zero_and_negative_inactive(self):
         for entry in ({"volume_percent": "0"}, {"volume_percent": -5}, {"volume_percent": "-5"}):

@@ -67,11 +67,36 @@ SPOTIFY_CAPABILITIES = {
 # Low-level runner
 # ---------------------------------------------------------------------------
 
+async def _stop_process(proc: asyncio.subprocess.Process | None) -> None:
+    """Terminate a still-running subprocess, escalate to kill, then wait.
+
+    Guarantees the child is reaped (no orphaned/zombie playerctl processes),
+    also on timeout or cancellation. Safe to call on already-exited processes.
+    """
+    if proc is None or proc.returncode is not None:
+        return
+    proc.terminate()
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=1.0)
+        return
+    except (asyncio.TimeoutError, ProcessLookupError, ChildProcessError):
+        pass
+    try:
+        proc.kill()
+    except (ProcessLookupError, ChildProcessError):
+        pass
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=1.0)
+    except (asyncio.TimeoutError, ProcessLookupError, ChildProcessError):
+        pass
+
+
 async def _run(*args: str, timeout: float = 4.0) -> str | None:
     """Run a playerctl command, return stdout or None on failure."""
     cmd = _find_playerctl()
     if cmd is None:
         return None
+    proc: asyncio.subprocess.Process | None = None
     try:
         proc = await asyncio.create_subprocess_exec(
             cmd, *args,
@@ -85,6 +110,10 @@ async def _run(*args: str, timeout: float = 4.0) -> str | None:
     except (asyncio.TimeoutError, OSError) as exc:
         logger.debug("playerctl %s failed: %s", args, exc)
         return None
+    finally:
+        # Timeout or cancellation leaves the child running; reap it so no
+        # playerctl process is orphaned.
+        await _stop_process(proc)
 
 # ---------------------------------------------------------------------------
 # Public helpers

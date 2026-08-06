@@ -43,44 +43,41 @@ async def run_gate(statuses: list[dict], *, timeout_ms: int, stable_ms: int = 35
         main.asyncio.sleep = original_sleep
 
 
-async def run_handoff(*, stability_results: list[bool], status: dict) -> tuple[list[int], int]:
-    original_wait = main._wait_for_local_samplerate_stability
-    original_status = main.get_samplerate_status
-    original_set_force_rate = main._set_pipewire_force_rate
-    original_pulse = main._suspend_resume_playback_sink
-    original_overview = main.get_audio_output_overview
-    results = iter(stability_results)
-    force_rate_updates: list[int] = []
-    pulse_count = 0
+async def run_handoff(
+    *, expected_rate: int | None, generation: int, live_rate: int | None = None,
+) -> tuple[list[dict], bool]:
+    """Verify the thin local wrapper delegates to the shared handoff.
 
-    async def fake_wait(expected_rate: int, *, timeout_ms: int, stable_ms: int = 350) -> bool:
-        assert expected_rate == 48000
-        return next(results)
+    The wrapper only determines the target rate (library metadata
+    preferred, MPV live rate as fallback) and forwards the transition
+    generation; the reconciliation itself runs in the shared
+    _complete_playback_handoff.
+    """
+    original_handoff = main._complete_playback_handoff
+    original_generation = main.playback_transition_generation
+    original_live = main._wait_for_player_audio_samplerate
+    calls: list[dict] = []
 
-    def fake_set_force_rate(rate: int) -> None:
-        force_rate_updates.append(rate)
-
-    async def fake_pulse(*, reason: str, force: bool) -> bool:
-        nonlocal pulse_count
-        assert reason == "local-playback-handoff"
-        assert force
-        pulse_count += 1
+    async def fake_shared(**kwargs):
+        calls.append(kwargs)
         return True
 
+    async def fake_live():
+        return live_rate
+
     try:
-        main._wait_for_local_samplerate_stability = fake_wait
-        main.get_samplerate_status = lambda: status
-        main._set_pipewire_force_rate = fake_set_force_rate
-        main._suspend_resume_playback_sink = fake_pulse
-        main.get_audio_output_overview = lambda: {"output_mode": {"mode": "stereo"}}
-        await main._complete_local_playback_handoff({"url": "test.flac"}, 48000)
-        return force_rate_updates, pulse_count
+        main._complete_playback_handoff = fake_shared
+        main.playback_transition_generation = generation
+        main._wait_for_player_audio_samplerate = fake_live
+        await main._complete_local_playback_handoff(
+            {"url": "test.flac"}, expected_rate,
+            transition_generation=generation,
+        )
+        return calls, True
     finally:
-        main._wait_for_local_samplerate_stability = original_wait
-        main.get_samplerate_status = original_status
-        main._set_pipewire_force_rate = original_set_force_rate
-        main._suspend_resume_playback_sink = original_pulse
-        main.get_audio_output_overview = original_overview
+        main._complete_playback_handoff = original_handoff
+        main.playback_transition_generation = original_generation
+        main._wait_for_player_audio_samplerate = original_live
 
 
 async def main_async() -> None:
@@ -106,19 +103,15 @@ async def main_async() -> None:
     )
     assert stable, "matching active and force rates must pass after stable_ms"
 
-    force_rate_updates, pulse_count = await run_handoff(
-        stability_results=[False, True],
-        status={"active_rate": 48000, "force_rate": 44100},
-    )
-    assert force_rate_updates == [48000], "a lost force_rate must be restored before the pulse"
-    assert pulse_count == 1, "an unstable handoff must pulse the sink once"
+    calls, _ = await run_handoff(expected_rate=48000, generation=42)
+    assert len(calls) == 1, "the local wrapper must delegate to the shared handoff"
+    assert calls[0]["target_rate"] == 48000, "library metadata must be the preferred target rate"
+    assert calls[0]["reason"] == "local-playback-handoff"
+    assert calls[0]["transition_generation"] == 42, "the wrapper must forward the transition generation"
 
-    force_rate_updates, pulse_count = await run_handoff(
-        stability_results=[True],
-        status={"active_rate": 48000, "force_rate": 48000},
-    )
-    assert force_rate_updates == [], "a stable handoff must not rewrite force_rate"
-    assert pulse_count == 0, "an already stable handoff must not pulse the sink"
+    calls, _ = await run_handoff(expected_rate=None, generation=42, live_rate=44100)
+    assert len(calls) == 1, "metadata-less tracks must still hand off"
+    assert calls[0]["target_rate"] == 44100, "missing metadata falls back to the MPV live rate"
 
 
 if __name__ == "__main__":

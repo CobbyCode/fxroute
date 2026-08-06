@@ -5,42 +5,39 @@ FXRoute is a browser-based audio control surface for Linux listening machines.
 It is built for mini PCs, desktops, ARM boards, and dedicated stereo boxes that run local playback, EasyEffects DSP, radio, library playback, measurement tools, and optional Spotify desktop control — all remote-controlled from a phone, tablet, or laptop on the local network.
 
 <p align="center">
-  <img src="media/before-after-r.png" alt="FXRoute measurement graph showing raw and corrected right-channel response" width="780">
-</p>
-
-<p align="center">
   <strong>Measure, compare, and sketch PEQ/convolver corrections directly in the browser.</strong>
 </p>
 
 <table>
   <tr>
-    <td width="50%"><img src="media/screenshots/desktop/02-routing-player.png" alt="FXRoute routing and player view"></td>
-    <td width="50%"><img src="media/screenshots/desktop/04-dsp-presets.png" alt="FXRoute DSP preset controls"></td>
+    <td width="33%"><img src="media/screenshots/01-radio.png" alt="FXRoute radio catalog and now-playing view"></td>
+    <td width="33%"><img src="media/screenshots/02-desktop-library.png" alt="FXRoute desktop library album grid"></td>
+    <td width="33%"><img src="media/screenshots/03-queue-now-playing.png" alt="FXRoute queue and now-playing view"></td>
   </tr>
   <tr>
-    <td align="center"><strong>Playback and routing</strong></td>
-    <td align="center"><strong>DSP presets and A/B compare</strong></td>
+    <td align="center"><strong>Radio</strong></td>
+    <td align="center"><strong>Desktop library</strong></td>
+    <td align="center"><strong>Queue / Now Playing</strong></td>
   </tr>
   <tr>
-    <td width="50%"><img src="media/screenshots/desktop/12-measurement-editor.png" alt="FXRoute PEQ measurement editor"></td>
-    <td width="50%"><img src="media/screenshots/desktop/album-about-artist.png" alt="FXRoute album artist information view"></td>
+    <td width="33%"><img src="media/screenshots/04-spotify.png" alt="FXRoute Spotify control view"></td>
+    <td width="33%"><img src="media/screenshots/05-crossover-subwoofer.png" alt="FXRoute crossover and subwoofer controls"></td>
+    <td width="33%"><img src="media/screenshots/06-convolver-measurement.png" alt="FXRoute convolver and measurement view"></td>
   </tr>
   <tr>
-    <td align="center"><strong>Measurement PEQ editor</strong></td>
-    <td align="center"><strong>Album artist info</strong></td>
-  </tr>
-</table>
-
-<table>
-  <tr>
-    <td width="33%"><img src="media/screenshots/mobile/01-library.png" alt="FXRoute mobile library"></td>
-    <td width="33%"><img src="media/screenshots/mobile/02-radio.png" alt="FXRoute mobile radio tab"></td>
-    <td width="33%"><img src="media/screenshots/mobile/03-create-fir-preset.png" alt="FXRoute mobile FIR preset editor"></td>
+    <td align="center"><strong>Spotify</strong></td>
+    <td align="center"><strong>Crossover / Subwoofer</strong></td>
+    <td align="center"><strong>Convolver / Measurement</strong></td>
   </tr>
   <tr>
+    <td width="33%"><img src="media/screenshots/07-spl-calibration.png" alt="FXRoute SPL calibration view"></td>
+    <td width="33%"><img src="media/screenshots/08-tablet-library.png" alt="FXRoute tablet library album grid"></td>
+    <td width="33%"><img src="media/screenshots/09-mobile-library.png" alt="FXRoute mobile library album grid"></td>
+  </tr>
+  <tr>
+    <td align="center"><strong>SPL Calibration</strong></td>
+    <td align="center"><strong>Tablet library</strong></td>
     <td align="center"><strong>Mobile library</strong></td>
-    <td align="center"><strong>Mobile radio</strong></td>
-    <td align="center"><strong>Mobile PEQ preset</strong></td>
   </tr>
 </table>
 

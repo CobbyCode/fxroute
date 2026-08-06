@@ -12,7 +12,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=0.4.458">
     <link rel="manifest" href="/static/site.webmanifest?v=0.4.458">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/static/style.css?v=0.9.2">
+    <link rel="stylesheet" href="/static/style.css?v=0.9.3-release1">
 </head>
 <body>
     <!-- Offline indicator -->
@@ -1149,17 +1149,18 @@
     <!-- Playback bar (fixed bottom) -->
     <footer id="playback-bar" class="playback-bar">
         <div class="track-info">
-            <img id="playback-cover" class="playback-cover hidden" alt="" />
-            <div>
+            <div class="playback-visual">
+                <img id="playback-cover" class="playback-cover hidden" alt="" />
                 <span id="playback-eq" class="playback-eq" style="display:none;">
                     <span class="bar"></span><span class="bar"></span><span class="bar"></span><span class="bar"></span>
                 </span>
-                <span id="track-title" class="track-title placeholder">Not playing</span>
             </div>
-            <div id="track-artist" class="track-artist"></div>
+            <div class="track-fallback">
+                <span id="track-title" class="track-title placeholder">Not playing</span>
+                <div id="track-artist" class="track-artist"></div>
+            </div>
         </div>
         <div class="playback-center">
-            <!-- Desktop: 2-row song info above seek slider -->
             <div class="song-info">
                 <span class="sc-artist" id="sc-artist"></span>
                 <span class="sc-title" id="sc-title"></span>
@@ -1170,8 +1171,7 @@
                 <div id="queue-status" class="queue-status hidden">Queue 1 / 1</div>
                 <div id="output-level-badge" class="output-level-badge hidden">-60 dB</div>
             </div>
-            <!-- Seek slider row (hidden for radio) -->
-            <div class="seek-row">
+            <div class="seek-row hidden">
                 <span id="seek-current" class="seek-time">0:00</span>
                 <input
                     type="range"
@@ -1181,24 +1181,31 @@
                     value="0"
                     class="seek-slider"
                     step="1"
+                    aria-label="Playback position"
                 >
                 <span id="seek-duration" class="seek-time">0:00</span>
             </div>
         </div>
         <div class="controls">
-            <button id="btn-previous" class="control-btn control-btn-secondary hidden" disabled>⏮</button>
-            <button id="btn-play-pause" class="control-btn" disabled>▶</button>
-            <button id="btn-next" class="control-btn control-btn-secondary hidden" disabled>⏭</button>
-            <button id="btn-clear-queue" class="control-btn control-btn-clear hidden" disabled title="Clear queue" aria-label="Clear queue">✕</button>
-            <input
-                type="range"
-                id="volume-slider"
-                min="0"
-                max="100"
-                value="100"
-                class="volume-slider"
-            >
-            <span id="volume-display" class="volume-display">100%</span>
+            <div class="transport-controls">
+                <button id="btn-previous" class="control-btn control-btn-secondary hidden" disabled aria-label="Previous">⏮</button>
+                <button id="btn-play-pause" class="control-btn" disabled aria-label="Play or pause">▶</button>
+                <button id="btn-next" class="control-btn control-btn-secondary hidden" disabled aria-label="Next">⏭</button>
+                <button id="btn-clear-queue" class="control-btn control-btn-clear hidden" disabled title="Clear queue" aria-label="Clear queue">✕</button>
+            </div>
+            <label class="volume-control" for="volume-slider">
+                <span class="volume-icon" aria-hidden="true">VOL</span>
+                <input
+                    type="range"
+                    id="volume-slider"
+                    min="0"
+                    max="100"
+                    value="100"
+                    class="volume-slider"
+                    aria-label="Volume"
+                >
+                <span id="volume-display" class="volume-display">100%</span>
+            </label>
         </div>
     </footer>
 
@@ -1232,8 +1239,8 @@
     <!-- Toast notifications -->
     <div id="toast-container" class="toast-container"></div>
 
-    <script src="/static/measurement_dsp.js?v=0.9.2"></script>
-    <script src="/static/radio.js?v=0.9.2"></script>
-    <script src="/static/app.js?v=0.9.2"></script>
+    <script src="/static/measurement_dsp.js?v=0.9.3"></script>
+    <script src="/static/radio.js?v=0.9.3"></script>
+    <script src="/static/app.js?v=0.9.3-release1"></script>
 </body>
 </html>

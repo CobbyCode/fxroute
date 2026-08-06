@@ -92,7 +92,7 @@ class RadioBrowserTests(unittest.TestCase):
             self.assertEqual(params["reverse"], "true")
             self.assertEqual(params["limit"], radio_api.RADIO_BROWSER_QUERY_LIMIT)
             self.assertEqual(call.kwargs["timeout"], (2, 5))
-            self.assertEqual(call.kwargs["headers"]["User-Agent"], "FXRoute/0.9.2")
+            self.assertEqual(call.kwargs["headers"]["User-Agent"], "FXRoute/0.9.3")
         self.assertCountEqual(field_sets, [["name"], ["country"], ["language"], ["tag"]])
 
     @patch("radio_api.requests.get")
