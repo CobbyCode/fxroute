@@ -20,23 +20,23 @@ It is built for mini PCs, desktops, ARM boards, and dedicated stereo boxes that 
     <td align="center"><strong>Queue / Now Playing</strong></td>
   </tr>
   <tr>
-    <td width="33%"><img src="media/screenshots/04-spotify.png" alt="FXRoute Spotify control view"></td>
+    <td width="33%"><img src="media/screenshots/04-dsp-ab-output-helpers.png" alt="DSP A/B compare and output helpers"></td>
     <td width="33%"><img src="media/screenshots/05-crossover-subwoofer.png" alt="FXRoute crossover and subwoofer controls"></td>
     <td width="33%"><img src="media/screenshots/06-convolver-measurement.png" alt="FXRoute convolver and measurement view"></td>
   </tr>
   <tr>
-    <td align="center"><strong>Spotify</strong></td>
+    <td align="center"><strong>DSP – A/B Compare &amp; Output Helpers</strong></td>
     <td align="center"><strong>Crossover / Subwoofer</strong></td>
     <td align="center"><strong>Convolver / Measurement</strong></td>
   </tr>
   <tr>
-    <td width="33%"><img src="media/screenshots/07-spl-calibration.png" alt="FXRoute SPL calibration view"></td>
-    <td width="33%"><img src="media/screenshots/08-tablet-library.png" alt="FXRoute tablet library album grid"></td>
+    <td width="33%"><img src="media/screenshots/07-spotify.png" alt="FXRoute Spotify control view"></td>
+    <td width="33%"><img src="media/screenshots/08-spl-calibration.png" alt="FXRoute SPL calibration view"></td>
     <td width="33%"><img src="media/screenshots/09-mobile-library.png" alt="FXRoute mobile library album grid"></td>
   </tr>
   <tr>
+    <td align="center"><strong>Spotify</strong></td>
     <td align="center"><strong>SPL Calibration</strong></td>
-    <td align="center"><strong>Tablet library</strong></td>
     <td align="center"><strong>Mobile library</strong></td>
   </tr>
 </table>
