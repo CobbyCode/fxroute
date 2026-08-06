@@ -1101,6 +1101,7 @@ hardware_controller = None
 peak_monitor_playback_armed = False
 peak_monitor_transition_lock = None
 peak_monitor_context_signature = None
+radio_handoff_monitor_ready_url: str | None = None
 easyeffects_preset_load_lock = None
 source_transition_lock = None
 external_input_loopback_module_id = None
@@ -1647,6 +1648,7 @@ async def _sync_peak_monitor_after_playback_transition(
     timeout_ms: int = 2500,
     transition_generation: int | None = None,
 ) -> None:
+    global radio_handoff_monitor_ready_url, peak_monitor_playback_armed, peak_monitor_context_signature
     if not expected_track or expected_track.get("source") not in {"local", "radio"}:
         return
     if transition_generation is None:
@@ -1666,6 +1668,21 @@ async def _sync_peak_monitor_after_playback_transition(
         _playback_transition_context_is_current(transition_generation)
         and _current_track_matches(expected_track)
     ):
+        if (
+            expected_track.get("source") == "radio"
+            and radio_handoff_monitor_ready_url == expected_track.get("url")
+        ):
+            radio_handoff_monitor_ready_url = None
+            peak_monitor_context_signature = f"player:radio:{expected_track.get('url') or ''}"
+            if peak_monitor_playback_armed:
+                logger.info(
+                    "Radio handoff prepared peak monitor context; skipping full monitor rebuild: url=%s",
+                    expected_track.get("url"),
+                )
+                return
+            # Paused -> radio needs only the existing monitor process relink.
+            # The regular state-sync branch below performs that relink and
+            # falls back to a full restart only when the process is unusable.
         # Skip redundant peak-monitor restart when on_player_state_change
         # has already armed it. A duplicate restart ~2.5 s into playback
         # reloads the EasyEffects preset while audio is running, causing
@@ -1835,6 +1852,7 @@ async def _repair_playback_graph_once(
     reason: str,
     detail: str,
     ee_port_timeout_ms: int,
+    preserve_easyeffects_output_graph: bool = False,
 ) -> None:
     """Repair the missing components of one graph diagnosis, readback-driven.
 
@@ -1858,6 +1876,9 @@ async def _repair_playback_graph_once(
                 "Playback handoff repair failed: EasyEffects output ports "
                 f"missing: expected={target_rate} reason={reason} detail={detail}"
             )
+    if preserve_easyeffects_output_graph and diagnosis.get("mode") == OUTPUT_MODE_STEREO:
+        await _repair_stereo_output_links_once(diagnosis)
+        return
     if subwoofer_runtime is None:
         await _sync_easyeffects_preset_for_playback_samplerate(
             sample_rate_hz=target_rate, reason=reason, detail=detail,
@@ -1869,6 +1890,23 @@ async def _repair_playback_graph_once(
             )
         return
     await _sync_subwoofer_runtime(reason=reason)
+
+
+async def _repair_stereo_output_links_once(diagnosis: dict) -> None:
+    """Repair only missing stereo EE->hardware links, without reloading EE."""
+    output_key = str(diagnosis.get("output_key") or "").strip()
+    if not output_key:
+        raise RuntimeError("Playback handoff repair failed: missing stereo output target")
+    expected = (
+        ("ee_soe_output_level:output_FL", f"{output_key}:playback_FL"),
+        ("ee_soe_output_level:output_FR", f"{output_key}:playback_FR"),
+    )
+    links_text = await _run_pw_link_command("-l")
+    for source, target in expected:
+        if _contains_link(links_text, source, target):
+            continue
+        logger.info("Radio handoff repairing EE->hardware link: %s -> %s", source, target)
+        await _connect_ports((source,), target)
 
 
 async def _playback_graph_links_complete(audio_overview: dict | None = None) -> bool:
@@ -1960,6 +1998,7 @@ async def _complete_playback_handoff(
     transition_generation: int,
     detail: str = "",
     ee_port_timeout_ms: int = PLAYBACK_HANDOFF_EE_PORT_TIMEOUT_MS,
+    preserve_easyeffects_output_graph: bool = False,
 ) -> bool:
     """Shared readback-driven playback handoff (local + radio).
 
@@ -2010,6 +2049,12 @@ async def _complete_playback_handoff(
     mode = output_mode.get("mode")
     subwoofer_mode = mode in OUTPUT_MODE_SUBWOOFER_MODES
 
+    if preserve_easyeffects_output_graph and not await _ensure_mpv_to_easyeffects_links():
+        raise RuntimeError(
+            "Playback handoff failed: MPV to EasyEffects links unavailable: "
+            f"reason={reason} detail={detail}"
+        )
+
     graph_diagnosis = await _playback_graph_diagnosis(overview)
     ee_ports_present = graph_diagnosis["ee_ports"]
     links_complete = graph_diagnosis["links_complete"]
@@ -2058,7 +2103,11 @@ async def _complete_playback_handoff(
                     f"expected={target_rate} active={active_rate} force={force_rate} reason={reason}"
                 )
 
-        if (not rate_aligned) or (not ee_ports_present) or (not links_complete):
+        if (
+            (not rate_aligned)
+            or (not ee_ports_present)
+            or (not links_complete and not preserve_easyeffects_output_graph)
+        ):
             await _sync_easyeffects_preset_for_playback_samplerate(
                 sample_rate_hz=target_rate, reason=reason, detail=detail,
             )
@@ -2069,7 +2118,9 @@ async def _complete_playback_handoff(
                 f"expected={target_rate} timeout_ms={ee_port_timeout_ms} reason={reason} detail={detail}"
             )
 
-        if subwoofer_runtime is not None:
+        if subwoofer_runtime is not None and not (
+            preserve_easyeffects_output_graph and not subwoofer_mode
+        ):
             await _sync_subwoofer_runtime(reason=reason)
     except Exception:
         await _rollback_playback_handoff(previous_force_rate, helper_pid_before, reason)
@@ -2106,6 +2157,7 @@ async def _complete_playback_handoff(
                 reason=reason,
                 detail=detail,
                 ee_port_timeout_ms=ee_port_timeout_ms,
+                preserve_easyeffects_output_graph=preserve_easyeffects_output_graph,
             )
             diagnosis = await _playback_graph_diagnosis()
         if not diagnosis["links_complete"]:
@@ -2143,6 +2195,13 @@ async def _complete_playback_handoff(
             "Playback handoff failed: graph/rate alignment verification missing: "
             f"expected={target_rate} active={final_status.get('active_rate')} "
             f"force={final_status.get('force_rate')} reason={reason} detail={detail}"
+        )
+
+    if preserve_easyeffects_output_graph and not await _ensure_mpv_to_easyeffects_links():
+        await _rollback_playback_handoff(previous_force_rate, helper_pid_before, reason)
+        raise RuntimeError(
+            "Playback handoff failed: final MPV to EasyEffects links missing: "
+            f"reason={reason} detail={detail}"
         )
 
     final_links = await _playback_graph_links_complete()
@@ -2506,6 +2565,42 @@ def _contains_link(text: str, source: str, target: str) -> bool:
     reverse_pw_link_io = f"{target}\n  |<- {source}"
     forward_pw_link_io = f"{source}\n  |-> {target}"
     return direct in text or reverse_pw_link_io in text or forward_pw_link_io in text
+
+
+async def _ensure_mpv_to_easyeffects_links(timeout_ms: int = 1500) -> bool:
+    """Ensure only the newly-created MPV stream is connected to EasyEffects.
+
+    Radio-to-radio switches keep the existing EasyEffects output graph. MPV's
+    PipeWire stream is the part that is recreated by ``loadfile`` and may need
+    an idempotent direct link while mpv is still paused.
+    """
+    expected = (
+        ("mpv:output_FL", "easyeffects_sink:playback_FL"),
+        ("mpv:output_FR", "easyeffects_sink:playback_FR"),
+    )
+    deadline = time.monotonic() + max(timeout_ms, 0) / 1000
+    while True:
+        try:
+            links_text = await _run_pw_link_command("-l")
+            missing = [(source, target) for source, target in expected if not _contains_link(links_text, source, target)]
+            if not missing:
+                logger.info("Radio handoff MPV->EasyEffects links complete")
+                return True
+            for source, target in missing:
+                logger.info("Radio handoff repairing MPV->EasyEffects link: %s -> %s", source, target)
+                await _connect_ports((source,), target)
+        except Exception as exc:
+            if time.monotonic() >= deadline:
+                logger.warning("Radio handoff MPV->EasyEffects link repair failed: %s", exc)
+                return False
+        if time.monotonic() >= deadline:
+            break
+        await asyncio.sleep(PIPEWIRE_HANDOFF_POLL_INTERVAL_MS / 1000)
+    try:
+        links_text = await _run_pw_link_command("-l")
+        return all(_contains_link(links_text, source, target) for source, target in expected)
+    except Exception:
+        return False
 
 
 async def _dump_21_runtime_state(label: str, ui_state: dict | None = None) -> dict:
@@ -2997,6 +3092,7 @@ async def _complete_radio_handoff_after_load(
     previous_rate: Optional[int],
     *,
     transition_generation: int,
+    preserve_easyeffects_output_graph: bool = False,
     timeout_ms: int = RADIO_POST_LOAD_RATE_TIMEOUT_MS,
 ) -> Optional[int]:
     """Establish the newly loaded station's rate while mpv stays paused.
@@ -3049,6 +3145,7 @@ async def _complete_radio_handoff_after_load(
         reason="radio-post-load-handoff",
         transition_generation=transition_generation,
         detail=f"url={track_info.get('url')}",
+        preserve_easyeffects_output_graph=preserve_easyeffects_output_graph,
     )
     return live_rate
 
@@ -3729,7 +3826,7 @@ async def sync_peak_monitor_for_playback_state(
     state: dict,
     transition_generation: int | None = None,
 ):
-    global peak_monitor_playback_armed, peak_monitor, peak_monitor_transition_lock, peak_monitor_context_signature, current_track_info
+    global peak_monitor_playback_armed, peak_monitor, peak_monitor_transition_lock, peak_monitor_context_signature, current_track_info, radio_handoff_monitor_ready_url
     if not peak_monitor:
         return
     if transition_generation is None:
@@ -3756,6 +3853,22 @@ async def sync_peak_monitor_for_playback_state(
         desired_signature = f"player:{source}:{state.get('current_file') or ''}" if is_active_playback else None
 
         if is_active_playback:
+            if (
+                source == "radio"
+                and radio_handoff_monitor_ready_url == state.get("current_file")
+            ):
+                radio_handoff_monitor_ready_url = None
+                peak_monitor_context_signature = desired_signature
+                if peak_monitor_playback_armed:
+                    logger.info(
+                        "Radio handoff preserved active peak monitor; skipping full monitor rebuild: url=%s",
+                        state.get("current_file"),
+                    )
+                    return
+                logger.info(
+                    "Radio handoff will relink existing peak monitor after pause: url=%s",
+                    state.get("current_file"),
+                )
             # Resume from pause/inactive with same source:
             # only restart the peak monitor — do NOT reload the EasyEffects
             # preset or repair the output graph, which causes an audible crack.
@@ -4903,7 +5016,7 @@ async def _spotify_playerctl_watch_loop() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan: startup and shutdown."""
-    global settings, player_instance, library_scanner, downloader, easyeffects_manager, measurement_store, measurement_sr_session, peak_monitor, subwoofer_runtime, subwoofer_runtime_link_watch_task, hardware_controller, peak_monitor_playback_armed, peak_monitor_transition_lock, peak_monitor_context_signature, easyeffects_preset_load_lock, source_transition_lock, external_input_loopback_module_id, external_input_loopback_source_name, bluetooth_input_source_name, bluetooth_monitor_task, bluetooth_agent_process, spotify_playerctl_watch_task, spotify_playerctl_detect_task, spotify_state_refresh_task, spotify_state_poll_task, spotify_playerctl_last_trigger_at, spotify_samplerate_recovery_lock, spotify_samplerate_recovery_active, current_source_mode, latest_spotify_state
+    global settings, player_instance, library_scanner, downloader, easyeffects_manager, measurement_store, measurement_sr_session, peak_monitor, subwoofer_runtime, subwoofer_runtime_link_watch_task, hardware_controller, peak_monitor_playback_armed, peak_monitor_transition_lock, peak_monitor_context_signature, radio_handoff_monitor_ready_url, easyeffects_preset_load_lock, source_transition_lock, external_input_loopback_module_id, external_input_loopback_source_name, bluetooth_input_source_name, bluetooth_monitor_task, bluetooth_agent_process, spotify_playerctl_watch_task, spotify_playerctl_detect_task, spotify_state_refresh_task, spotify_state_poll_task, spotify_playerctl_last_trigger_at, spotify_samplerate_recovery_lock, spotify_samplerate_recovery_active, current_source_mode, latest_spotify_state
 
     # Startup
     logger.info("Starting FXRoute... build_id=%s", _read_build_id())
@@ -4964,6 +5077,7 @@ async def lifespan(app: FastAPI):
         peak_monitor_playback_armed = False
         peak_monitor_transition_lock = asyncio.Lock()
         peak_monitor_context_signature = None
+        radio_handoff_monitor_ready_url = None
         easyeffects_preset_load_lock = asyncio.Lock()
         source_transition_lock = asyncio.Lock()
         spotify_samplerate_recovery_lock = asyncio.Lock()
@@ -5772,7 +5886,7 @@ async def play_track(req: PlayRequest):
     track_id = req.track_id
     url = req.url
     queue_track_ids = req.queue_track_ids or []
-    global player_instance, current_track_info, last_track_info, last_radio_track_info, source_transition_lock, current_footer_owner, radio_reconnect_attempts, radio_reconnect_url, radio_reconnect_active_since, playback_stream_stale_after_measurement, _playback_state_before_measurement, radio_stream_stale_after_measurement, _radio_state_before_measurement, local_playback_handoff_completed_url, local_playback_handoff_completed_rate, playback_transition_generation
+    global player_instance, current_track_info, last_track_info, last_radio_track_info, source_transition_lock, current_footer_owner, radio_reconnect_attempts, radio_reconnect_url, radio_reconnect_active_since, playback_stream_stale_after_measurement, _playback_state_before_measurement, radio_stream_stale_after_measurement, _radio_state_before_measurement, local_playback_handoff_completed_url, local_playback_handoff_completed_rate, playback_transition_generation, radio_handoff_monitor_ready_url
     if not player_instance or not player_instance._running:
         raise HTTPException(status_code=503, detail="Player not available")
     if not _can_send_play_command():
@@ -5853,10 +5967,17 @@ async def play_track(req: PlayRequest):
 
             local_playback_handoff_completed_url = None
             local_playback_handoff_completed_rate = None
+            radio_handoff_monitor_ready_url = None
             player_state = player_instance.state
             previous_file = player_state.get("current_file")
             previous_source = (current_track_info or {}).get("source")
             same_source = previous_file == play_url
+            radio_to_radio_handoff = (
+                source == "radio"
+                and previous_source == "radio"
+                and bool(previous_file)
+                and previous_file != play_url
+            )
             apply_hard_handoff, handoff_reason = _should_apply_hard_handoff_for_requested_play(
                 requested_source=source,
                 previous_source=previous_source,
@@ -5910,11 +6031,21 @@ async def play_track(req: PlayRequest):
                     player_instance.loadfile(play_url, mode="replace")
                     if radio_handoff_pending:
                         player_instance.set_pause(True)
-                        await _complete_radio_handoff_after_load(
-                            track_info,
-                            radio_previous_rate,
-                            transition_generation=playback_transition_generation,
-                        )
+                        if radio_to_radio_handoff:
+                            await _complete_radio_handoff_after_load(
+                                track_info,
+                                radio_previous_rate,
+                                transition_generation=playback_transition_generation,
+                                preserve_easyeffects_output_graph=True,
+                            )
+                        else:
+                            await _complete_radio_handoff_after_load(
+                                track_info,
+                                radio_previous_rate,
+                                transition_generation=playback_transition_generation,
+                            )
+                        if radio_to_radio_handoff:
+                            radio_handoff_monitor_ready_url = track_info.get("url")
                     if local_handoff_pending:
                         player_instance.set_pause(True)
                         await _complete_local_playback_handoff(

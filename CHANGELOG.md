@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.9.4 (2026-08-06)
+
+### Fixed
+- Radio-to-radio station switching: removed unnecessary EasyEffects preset
+  reloads and full peak-monitor rebuilds, and fixed the long-pause silence and
+  short volume jump.
+
 ## 0.9.3 (2026-08-06)
 
 ### Changed
