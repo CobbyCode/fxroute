@@ -115,20 +115,15 @@ class MainCoreTransitionRuntime:
             return
         if not self.use_core:
             return
-        kwargs: dict[str, Any] = {
-            "target_rate": request.target_rate,
-            "reason": self.detail,
-            "transition_generation": self.generation,
-            "detail": request.detail,
-            "preserve_easyeffects_output_graph": self.preserve_easyeffects_output_graph,
-            "force_graph_rebuild": bool(request.rate_change),
-            "previous_force_rate": self.previous_force_rate,
-        }
-        if self.ee_port_timeout_ms is not None:
-            kwargs["ee_port_timeout_ms"] = self.ee_port_timeout_ms
-        result = await main._complete_playback_handoff(**kwargs)
-        if result is False:
-            raise RuntimeError("stale transition generation")
+        await main._coordinator_establish_effects_and_helper(
+            request,
+            previous_force_rate=self.previous_force_rate,
+            ee_port_timeout_ms=(
+                self.ee_port_timeout_ms
+                if self.ee_port_timeout_ms is not None
+                else main.PLAYBACK_HANDOFF_EE_PORT_TIMEOUT_MS
+            ),
+        )
 
     async def prepare_target_source(self, request: Any) -> None:
         self.events.append("prepare")
@@ -141,6 +136,11 @@ class MainCoreTransitionRuntime:
 
     async def verify_committed_transition(self, request: Any) -> dict[str, Any]:
         self.events.append("commit-readback")
+        return {"committed": True, "active_rate": request.target_rate}
+
+    async def verify_transition_graph(self, request: Any) -> dict[str, Any]:
+        """Model the staged graph readback before source-volume restore."""
+        self.events.append("graph-readback")
         return {"committed": True, "active_rate": request.target_rate}
 
     async def pause_source_after_failure(self, request: Any) -> None:

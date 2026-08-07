@@ -64,6 +64,11 @@ class OwnershipStructureTests(unittest.TestCase):
         self.assertIn("failure_latched", coordinator)
         self.assertIn("output-gate-restore", coordinator)
 
+    def test_status_never_commits_playing_while_transition_is_active(self):
+        body = function_source("build_playback_payload")
+        self.assertIn('transition_status.get("active")', body)
+        self.assertIn('"transitioning"', body)
+
 
 if __name__ == "__main__":
     unittest.main()

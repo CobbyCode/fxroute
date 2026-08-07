@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
-"""REFACTOR-008: unified radio/local handoff error semantics.
+"""Coordinator-owned radio/local transition error semantics.
 
 Covers:
-- _complete_radio_handoff_after_load propagates shared-handoff failures
-  (no tolerant swallow), stale generations still abort cleanly
-- transient link races (missing EE->helper links in 2.2) are repaired
-  inside the shared handoff while mpv stays paused: exactly one handoff,
-  readback-driven repair rounds, no blind sleeps
+- radio live-rate resolution propagates transition failures through the
+  Coordinator (no tolerant swallow), stale generations still abort cleanly
+- transient link races (missing EE->helper links in 2.2) are repaired by the
+  Coordinator's canonical graph stage while mpv stays paused
 - /api/play: set_pause(False) only after a verified handoff; on failure
   no unpause, no follow-up _sync_subwoofer_runtime after the handoff
 - local and radio failure semantics are consistent (error -> HTTP 500)
-- no-op cases still run without helper/preset sync
+- no-op cases still run without helper/preset rebuild
 - the graph-incomplete diagnosis log names EE ports, helper ports and
   each missing link individually
 All PipeWire/mpv/EE I/O is mocked; no live audio commands are executed.
@@ -71,7 +70,7 @@ def _links_text(state: dict) -> str:
     return text
 
 
-def _make_runtime(helper_state: dict, stopped: list):
+def _make_runtime(helper_state: dict, stopped: list, links_state: dict | None = None):
     """Fake subwoofer_runtime whose snapshot reflects helper_state."""
 
     async def stop_helper(self):
@@ -80,12 +79,20 @@ def _make_runtime(helper_state: dict, stopped: list):
         helper_state["helper_pid"] = None
         helper_state["helper_args"] = None
 
+    async def reclean_direct_easyeffects_links(self):
+        # This is the production link-only reconciliation boundary.  It must
+        # not restart the helper or touch the sample-rate force.  Tests that
+        # model a transient EE port race can opt into healing the link state.
+        if links_state is not None and links_state.get("repairable", True):
+            links_state["ee_to_helper"] = True
+
     return type(
         "Runtime",
         (),
         {
             "snapshot": lambda self: dict(helper_state),
             "_stop_helper": stop_helper,
+            "reclean_direct_easyeffects_links": reclean_direct_easyeffects_links,
         },
     )()
 
@@ -145,17 +152,17 @@ class RadioHandoffWrapperTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("graph links verification missing", str(ctx.exception))
 
     async def test_stale_generation_aborts_cleanly(self):
-        # A newer transition took over: clean abort (None), the shared
-        # handoff must not be invoked at all (nothing touched).
+        # A newer transition took over: clean abort (None), the Coordinator
+        # must not be invoked at all (nothing touched).
         main.playback_transition_generation = 101
         with self.assertRaises(RuntimeError) as ctx:
             await self._run(generation=100)
         self.assertIn("stale transition generation", str(ctx.exception))
 
-    async def test_success_returns_live_rate_with_single_handoff(self):
+    async def test_success_returns_live_rate_with_single_coordinator_transition(self):
         result, calls, runtime = await self._run(live_rate=44100)
         self.assertEqual(result, 44100)
-        self.assertEqual(len(calls), 1, "exactly one shared handoff")
+        self.assertEqual(len(calls), 1, "exactly one Coordinator transition")
         self.assertEqual(calls[0]["target_rate"], 44100)
         self.assertEqual(calls[0]["reason"], "radio-post-load-handoff")
         self.assertEqual(calls[0]["transition_generation"], 100)
@@ -164,15 +171,15 @@ class RadioHandoffWrapperTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_live_rate_unavailable_falls_back_and_handoffs(self):
         # Timeout on the live rate: safe fallback 44100 is used and the
-        # shared handoff still runs exactly once (no swallowed error).
+        # Coordinator transition still runs exactly once (no swallowed error).
         result, calls, _runtime = await self._run(live_rate=None)
         self.assertEqual(result, 44100)
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0]["target_rate"], 44100)
 
     async def test_same_rate_complete_graph_is_noop_without_syncs(self):
-        # 2.2, 44100 -> 44100, complete graph and helper at rate: the shared
-        # handoff is a no-op - no preset reload, no helper sync.
+        # 2.2, 44100 -> 44100, complete graph and helper at rate: the
+        # Coordinator transition is a no-op - no preset reload, no helper sync.
         calls = {"preset": [], "subwoofer": []}
         status = {"active_rate": 44100, "force_rate": 44100}
         helper_state = {
@@ -223,8 +230,8 @@ class RadioHandoffWrapperTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls["subwoofer"], [], "no-op must not sync the helper")
 
 
-class RadioHandoffRepairTests(unittest.IsolatedAsyncioTestCase):
-    """Transient link races are repaired inside the shared handoff (2.2)."""
+class RadioCoordinatorGraphTests(unittest.IsolatedAsyncioTestCase):
+    """Transient 2.2 link races are reconciled inside the Coordinator."""
 
     async def asyncSetUp(self):
         self.originals = {
@@ -246,7 +253,10 @@ class RadioHandoffRepairTests(unittest.IsolatedAsyncioTestCase):
         """
         calls = {"force": [], "preset": [], "subwoofer": []}
         status = {"active_rate": 48000, "force_rate": 48000}
-        links_state = {"ee_to_helper": True}
+        links_state = {
+            "ee_to_helper": True,
+            "repairable": bool(repair_after_first_sync),
+        }
         helper_state = {"active": False, "helper_pid": None, "helper_args": None}
         stopped = []
 
@@ -278,7 +288,7 @@ class RadioHandoffRepairTests(unittest.IsolatedAsyncioTestCase):
         async def pw_link(*args):
             return _links_text(links_state)
 
-        runtime = _make_runtime(helper_state, stopped)
+        runtime = _make_runtime(helper_state, stopped, links_state)
 
         with patch.object(
             main, "get_samplerate_status", side_effect=lambda: dict(status)
@@ -304,7 +314,7 @@ class RadioHandoffRepairTests(unittest.IsolatedAsyncioTestCase):
         return result, calls, stopped
 
     async def test_transient_missing_ee_to_helper_links_repaired_in_handoff(self):
-        # The link race is healed inside the single shared handoff by a
+        # The link race is healed inside the single Coordinator transition by a
         # second, readback-driven sync - not by a follow-up sync after
         # unpause. Handoff succeeds, no rollback.
         result, calls, stopped = await self._run(repair_after_first_sync=True)
@@ -312,27 +322,25 @@ class RadioHandoffRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls["force"], [(44100, "radio-post-load-handoff")])
         self.assertEqual(len(calls["preset"]), 1, "rate change -> preset sync")
         self.assertEqual(
-            len(calls["subwoofer"]), 2,
-            "initial sync + one bounded repair round, both inside the handoff",
+            len(calls["subwoofer"]), 1,
+            "the helper is established exactly once; link-only reconciliation heals the race",
         )
         self.assertEqual(stopped, [], "no rollback on success")
 
-    async def test_unrepairable_links_fail_with_rollback(self):
-        # Links stay missing after both bounded repair rounds: the handoff
-        # fails with a concrete error and rolls back (force restored,
-        # helper started by this handoff stopped). No silent success.
+    async def test_unrepairable_links_fail_without_parallel_rollback(self):
+        # Links stay missing: the Coordinator fails with a concrete error.
+        # There is no second handoff or parallel helper rollback.
         result_holder = {}
         with self.assertRaises(RuntimeError) as ctx:
             await self._run(repair_after_first_sync=False)
         message = str(ctx.exception)
-        self.assertIn("graph links verification missing", message)
-        self.assertIn("44100", message)
+        self.assertIn("canonical topology", message)
 
-    async def test_unrepairable_links_rollback_restores_force_and_stops_helper(self):
+    async def test_unrepairable_links_do_not_start_parallel_rollback(self):
         force_writes = []
         calls = {"force": [], "preset": [], "subwoofer": []}
         status = {"active_rate": 48000, "force_rate": 48000}
-        links_state = {"ee_to_helper": True}
+        links_state = {"ee_to_helper": True, "repairable": False}
         helper_state = {"active": False, "helper_pid": None, "helper_args": None}
         stopped = []
 
@@ -362,7 +370,7 @@ class RadioHandoffRepairTests(unittest.IsolatedAsyncioTestCase):
             force_writes.append(rate)
             status["force_rate"] = rate
 
-        runtime = _make_runtime(helper_state, stopped)
+        runtime = _make_runtime(helper_state, stopped, links_state)
 
         with patch.object(
             main, "get_samplerate_status", side_effect=lambda: dict(status)
@@ -388,11 +396,11 @@ class RadioHandoffRepairTests(unittest.IsolatedAsyncioTestCase):
                 )
         self.assertEqual(
             len(calls["subwoofer"]),
-            3,
-            "initial sync + 2 bounded repair rounds, then fail",
+            1,
+            "helper establishment is attempted once, then canonical readback fails",
         )
-        self.assertEqual(force_writes, [48000], "previous force-rate restored")
-        self.assertEqual(stopped, [True], "helper started by the handoff must stop")
+        self.assertEqual(force_writes, [], "Coordinator failure has no parallel force-rate rollback")
+        self.assertEqual(stopped, [], "Coordinator failure has no parallel helper rollback")
 
 
 class RadioHandoffDiagnosisLogTests(unittest.IsolatedAsyncioTestCase):
@@ -416,7 +424,7 @@ class RadioHandoffDiagnosisLogTests(unittest.IsolatedAsyncioTestCase):
         # links (fine-grained, per link) before the handoff fails.
         calls = {"preset": [], "subwoofer": []}
         status = {"active_rate": 44100, "force_rate": 44100}
-        links_state = {"ee_to_helper": False}
+        links_state = {"ee_to_helper": False, "repairable": False}
         helper_state = {"active": True, "helper_pid": 999, "helper_args": ["--rate", "44100"]}
         warnings = []
 
@@ -432,7 +440,7 @@ class RadioHandoffDiagnosisLogTests(unittest.IsolatedAsyncioTestCase):
         async def pw_link(*args):
             return _links_text(links_state)
 
-        runtime = _make_runtime(helper_state, [])
+        runtime = _make_runtime(helper_state, [], links_state)
 
         def record_warning(*args, **kwargs):
             warnings.append(args)
@@ -459,7 +467,7 @@ class RadioHandoffDiagnosisLogTests(unittest.IsolatedAsyncioTestCase):
                     target_url=STATION_URL,
                     detail="radio-post-load-handoff",
                 )
-        self.assertIn("graph links verification missing", str(ctx.exception))
+        self.assertIn("canonical topology", str(ctx.exception))
         entries = [
             args for args in warnings
             if "graph incomplete" in str(args[0])
@@ -467,13 +475,14 @@ class RadioHandoffDiagnosisLogTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(entries, "a graph-incomplete diagnosis log must be emitted")
         fmt_args = entries[0]
         # (fmt, mode, output_key, target_rate, ee_ports, helper_ports,
+        #  helper_active, helper_rate, direct_bypass, source_links,
         #  missing_links, reason, detail)
         self.assertEqual(fmt_args[1], "subwoofer-2.2")
         self.assertEqual(fmt_args[2], OUTPUT_KEY)
         self.assertEqual(fmt_args[3], 44100)
         self.assertTrue(fmt_args[4], "EE output ports were present")
         self.assertTrue(fmt_args[5], "helper ports were present")
-        missing = fmt_args[6]
+        missing = fmt_args[10]
         self.assertEqual(
             missing,
             [
@@ -482,7 +491,7 @@ class RadioHandoffDiagnosisLogTests(unittest.IsolatedAsyncioTestCase):
             ],
             "exactly the missing EE->helper links are named",
         )
-        self.assertEqual(fmt_args[7], "radio-post-load-handoff")
+        self.assertEqual(fmt_args[11], "coordinator-play")
 
 
 class RadioPlayErrorSemanticsTests(unittest.IsolatedAsyncioTestCase):
@@ -597,6 +606,9 @@ class RadioPlayErrorSemanticsTests(unittest.IsolatedAsyncioTestCase):
         async def noop_sleep(_delay):
             return None
 
+        async def pw_link(*_args):
+            return _links_text(links_state)
+
         class EndpointRuntime:
             def __init__(self):
                 self.muted = False
@@ -641,29 +653,10 @@ class RadioPlayErrorSemanticsTests(unittest.IsolatedAsyncioTestCase):
                         transition_generation=main.playback_transition_generation,
                     )
                     return
-
-                rate_changed = status.get("active_rate") != request.target_rate
-                helper_args = helper_state.get("helper_args") or []
-                helper_rate = helper_args[-1] if helper_args else None
-                try:
-                    helper_rate = int(helper_rate)
-                except (TypeError, ValueError):
-                    pass
-                graph_missing = (
-                    not links_state.get("ee_to_helper", True)
-                    or not helper_state.get("active")
-                    or helper_rate != request.target_rate
+                await main._coordinator_establish_effects_and_helper(
+                    request,
+                    ee_port_timeout_ms=main.PLAYBACK_HANDOFF_EE_PORT_TIMEOUT_MS,
                 )
-                if rate_changed or graph_missing:
-                    await noop_preset(reason="coordinator-effects")
-                    for _round in range(3):
-                        await sync_runtime()
-                        if links_state.get("ee_to_helper", True):
-                            break
-                    if not links_state.get("ee_to_helper", True):
-                        if stopped is not None:
-                            stopped.append(True)
-                        raise RuntimeError("Playback handoff failed: graph links verification missing")
 
             async def prepare_target_source(self, request):
                 player.set_volume(0)
@@ -687,6 +680,14 @@ class RadioPlayErrorSemanticsTests(unittest.IsolatedAsyncioTestCase):
             async def pause_source_after_failure(self, request):
                 player.set_pause(True)
                 player.set_volume(0)
+
+        class GraphRuntime:
+            def snapshot(self):
+                return dict(helper_state)
+
+            async def reclean_direct_easyeffects_links(self):
+                if links_state.get("repairable", True):
+                    links_state["ee_to_helper"] = True
 
         runtime = EndpointRuntime()
         coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
@@ -715,6 +716,19 @@ class RadioPlayErrorSemanticsTests(unittest.IsolatedAsyncioTestCase):
             patch.object(main, "_mark_player_state_authoritative", lambda state: None),
             patch.object(main, "_maybe_recover_samplerate_mismatch", _noop),
             patch.object(main, "_schedule_silent_active_watch", lambda **kwargs: None),
+            patch.object(
+                main, "get_audio_output_overview",
+                return_value={
+                    "output_mode": {
+                        "mode": "subwoofer-2.2",
+                        "effective_output_key": OUTPUT_KEY,
+                    }
+                },
+            ),
+            patch.object(main, "_run_pw_link_command", pw_link),
+            patch.object(main, "_sync_easyeffects_preset_for_playback_samplerate", noop_preset),
+            patch.object(main, "_sync_subwoofer_runtime", sync_runtime),
+            patch.object(main, "subwoofer_runtime", GraphRuntime()),
             patch.object(main, "playback_transition_coordinator", coordinator),
         ]
         with ExitStack() as stack:
@@ -734,12 +748,12 @@ class RadioPlayErrorSemanticsTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_radio_transient_repair_single_handoff_then_unpause(self):
         # Radio 48 -> 44.1 in 2.2 with a transiently missing EE->helper
-        # link set: repaired inside the single shared handoff; the play
+        # link set: reconciled inside the single Coordinator transition; the play
         # endpoint unpauses only afterwards and runs NO follow-up sync.
         sync_calls = []
         events = []
         status = {"active_rate": 48000, "force_rate": 48000}
-        links_state = {"ee_to_helper": True}
+        links_state = {"ee_to_helper": True, "repairable": True}
         helper_state = {"active": False, "helper_pid": None, "helper_args": None}
         stopped = []
 
@@ -776,7 +790,7 @@ class RadioPlayErrorSemanticsTests(unittest.IsolatedAsyncioTestCase):
             player.pause_calls, [True, True, True, False],
             "paused across load+handoff, unpaused only after verified handoff",
         )
-        self.assertEqual(len(sync_calls), 2, "initial sync + one repair round")
+        self.assertEqual(len(sync_calls), 1, "helper establishment occurs once")
         self.assertTrue(
             all(not args for args, _ in sync_calls),
             "no positional overview argument: the old follow-up "
@@ -787,12 +801,12 @@ class RadioPlayErrorSemanticsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stopped, [], "no rollback on success")
 
     async def test_radio_handoff_failure_no_unpause_no_followup_sync(self):
-        # EE->helper links never heal: bounded repair rounds fail, the
+        # EE->helper links never heal: canonical readback fails, the
         # handoff raises, /api/play answers HTTP 500, mpv stays paused and
         # no sync runs after the handoff.
         sync_calls = []
         status = {"active_rate": 48000, "force_rate": 48000}
-        links_state = {"ee_to_helper": True}
+        links_state = {"ee_to_helper": True, "repairable": False}
         helper_state = {"active": False, "helper_pid": None, "helper_args": None}
         stopped = []
 
@@ -820,22 +834,19 @@ class RadioPlayErrorSemanticsTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual(ctx.exception.status_code, 500)
         # The failing path is shared with local: the concrete handoff
-        # failure was logged by the shared handoff before propagation.
+        # failure was logged by the Coordinator before propagation.
         player = outcome["player"]
         self.assertEqual(player.pause_calls, [True, True], "must stay paused")
         self.assertNotIn(False, player.pause_calls, "no unpause after failed handoff")
-        self.assertEqual(
-            len(sync_calls), 3,
-            "initial sync + 2 bounded repair rounds, all inside the handoff",
-        )
+        self.assertEqual(len(sync_calls), 1, "helper establishment occurs once")
         self.assertTrue(
             all(not args for args, _ in sync_calls),
             "no follow-up sync with an overview after the handoff",
         )
-        self.assertEqual(stopped, [True], "helper started by the handoff rolled back")
+        self.assertEqual(stopped, [], "Coordinator failure has no parallel helper rollback")
 
     async def test_local_handoff_failure_propagates_500_like_radio(self):
-        # Local path: the shared-handoff failure propagates to /api/play as
+        # Local path: the Coordinator failure propagates to /api/play as
         # HTTP 500 exactly like the radio path (consistent error semantics),
         # mpv stays paused.
         async def failing_local_handoff(track_info, expected_rate, *, transition_generation):
@@ -871,7 +882,7 @@ class RadioPlayErrorSemanticsTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(False, player.pause_calls)
 
     async def test_radio_same_rate_noop_unpauses_without_syncs(self):
-        # 44100 -> 44100 with a complete graph: the shared handoff is a
+        # 44100 -> 44100 with a complete graph: the Coordinator transition is a
         # no-op, so no preset reload and no helper sync at all; the
         # endpoint still unpauses (nothing failed).
         sync_calls = []

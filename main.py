@@ -53,7 +53,6 @@ PEAK_MONITOR_INACTIVE_GRACE_MS = 450
 PEAK_MONITOR_RESTART_SETTLE_MS = 320
 PEAK_MONITOR_RATE_MATCH_TIMEOUT_MS = 900
 RADIO_SAMPLERATE_RENEGOTIATE_DELAY_MS = 1200
-RADIO_SAMPLERATE_PRESET_BOUNCE_DELAY_MS = 350
 RADIO_EXPECTED_SAMPLE_RATE_HZ = 44100
 RADIO_POST_LOAD_RATE_TIMEOUT_MS = 3000
 RADIO_POST_LOAD_RATE_STABILITY_POLLS = 3
@@ -61,11 +60,6 @@ RADIO_POST_LOAD_RATE_STABILITY_POLLS = 3
 # or a missing-graph repair. No fixed sleeps: the handoff polls pw-link until
 # ee_soe_output_level:output_FL/FR are exposed, then starts/syncs the helper.
 PLAYBACK_HANDOFF_EE_PORT_TIMEOUT_MS = 5000
-# Bounded readback-driven repair rounds for transient link races inside the
-# shared handoff: after the helper sync the graph is re-checked per component
-# (EE ports, helper ports, EE->helper and helper->HW links) and only missing
-# pieces are repaired; every round is re-verified by readback, no blind sleeps.
-PLAYBACK_HANDOFF_LINK_REPAIR_MAX_ROUNDS = 2
 SPOTIFY_PREARM_SAMPLE_RATE_HZ = 44100
 RADIO_RECONNECT_DELAY_SECONDS = 2.0
 RADIO_RECONNECT_MAX_ATTEMPTS = 5
@@ -972,6 +966,9 @@ peak_monitor_context_signature = None
 easyeffects_preset_load_lock = None
 source_transition_lock = None
 playback_transition_coordinator: PlaybackTransitionCoordinator | None = None
+coordinator_recovery_lock: asyncio.Lock | None = None
+coordinator_recovery_inflight_signature: str | None = None
+coordinator_recovery_last_signature: str | None = None
 external_input_loopback_module_id = None
 external_input_loopback_source_name = None
 bluetooth_input_source_name = None
@@ -1144,6 +1141,10 @@ class FxrouteTransitionRuntime(TransitionRuntime):
         }
 
     async def quiet_old_source(self, request: TransitionRequest) -> None:
+        if request.graph_only:
+            # A graph-only reconciliation must not pause, reload, or otherwise
+            # disturb the source.  The coordinator still owns the output gate.
+            return
         if request.source == "spotify":
             await pause_local_playback_for_spotify_broadcast()
             return
@@ -1193,6 +1194,8 @@ class FxrouteTransitionRuntime(TransitionRuntime):
         return live_rate
 
     async def establish_target_rate(self, request: TransitionRequest) -> None:
+        if request.graph_only:
+            return
         if not isinstance(request.target_rate, int) or request.target_rate <= 0:
             raise RuntimeError("Playback transition has no target sample rate")
         aligned = await _ensure_playback_samplerate_force(
@@ -1214,20 +1217,14 @@ class FxrouteTransitionRuntime(TransitionRuntime):
             return
         if not isinstance(request.target_rate, int) or request.target_rate <= 0:
             return
-        await _complete_playback_handoff(
-            target_rate=request.target_rate,
-            reason=f"coordinator-{request.operation}",
-            transition_generation=playback_transition_generation,
-            detail=request.detail,
-            # The target MPV stream is created in the next coordinator stage;
-            # source-to-EE links are therefore established after the paused
-            # target exists, never by a pre-armed production graph.
-            preserve_easyeffects_output_graph=False,
-            force_graph_rebuild=request.rate_change,
+        await _coordinator_establish_effects_and_helper(
+            request,
             previous_force_rate=self._previous_force_rate,
         )
 
     async def prepare_target_source(self, request: TransitionRequest) -> None:
+        if request.graph_only:
+            return
         if request.source == "spotify":
             return
         if not _player_is_running():
@@ -1255,6 +1252,8 @@ class FxrouteTransitionRuntime(TransitionRuntime):
             player_instance.set_pause(True)
 
     async def start_target_source(self, request: TransitionRequest) -> None:
+        if request.graph_only:
+            return
         if request.source == "spotify":
             if request.operation == "spotify-next":
                 data = await spotify_next()
@@ -1303,7 +1302,7 @@ class FxrouteTransitionRuntime(TransitionRuntime):
             transition_id,
         )
 
-    async def verify_committed_transition(self, request: TransitionRequest) -> dict[str, Any]:
+    async def _verify_transition(self, request: TransitionRequest, *, require_source_volume: bool) -> dict[str, Any]:
         try:
             rate = dict(get_samplerate_status())
         except Exception:
@@ -1318,7 +1317,12 @@ class FxrouteTransitionRuntime(TransitionRuntime):
                 raise RuntimeError("MPV is not actually playing at transition commit")
             if not request.should_play and not state.get("paused"):
                 raise RuntimeError("MPV pause state was not confirmed at transition commit")
-            if request.should_play and state.get("volume") is not None and state.get("volume") != 100:
+            if (
+                require_source_volume
+                and request.should_play
+                and state.get("volume") is not None
+                and state.get("volume") != 100
+            ):
                 raise RuntimeError(f"MPV source volume was not restored: {state.get('volume')}")
         else:
             spotify_state = await get_spotify_ui_state()
@@ -1336,7 +1340,11 @@ class FxrouteTransitionRuntime(TransitionRuntime):
             if rate.get("force_rate") not in {None, 0, request.target_rate}:
                 raise RuntimeError(f"force-rate mismatch at commit: {rate.get('force_rate')}")
 
-        graph_complete = await _playback_graph_links_complete()
+        graph_complete = await _playback_graph_links_complete(
+            source=request.source,
+            target_rate=request.target_rate,
+            require_source=True,
+        )
         if not graph_complete:
             raise RuntimeError("production playback links were not complete at commit")
 
@@ -1375,7 +1383,15 @@ class FxrouteTransitionRuntime(TransitionRuntime):
             "force_rate": rate.get("force_rate"),
             "graph_complete": True,
             "helper_rate": helper_rate,
+            "source_volume": state.get("volume"),
         }
+
+    async def verify_transition_graph(self, request: TransitionRequest) -> dict[str, Any]:
+        """Verify the production graph while the output gate is still closed."""
+        return await self._verify_transition(request, require_source_volume=False)
+
+    async def verify_committed_transition(self, request: TransitionRequest) -> dict[str, Any]:
+        return await self._verify_transition(request, require_source_volume=True)
 
     async def pause_source_after_failure(self, request: TransitionRequest) -> None:
         if request.source == "spotify":
@@ -1462,8 +1478,16 @@ async def _request_coordinated_recovery(
     reason: str,
     *,
     reload_source: bool = False,
+    graph_only: bool = False,
+    diagnosis: Mapping[str, Any] | None = None,
 ) -> None:
-    """Queue graph/rate recovery through the coordinator; never mutate inline."""
+    """Request one deduplicated recovery through the Coordinator.
+
+    Watchers pass the canonical graph signature.  Identical observations are
+    coalesced, so a persistent bypass link cannot create a two-second full
+    handoff loop.
+    """
+    global coordinator_recovery_lock, coordinator_recovery_inflight_signature, coordinator_recovery_last_signature
     if playback_transition_coordinator is None or not track:
         return
     source = str(track.get("source") or "")
@@ -1472,32 +1496,92 @@ async def _request_coordinated_recovery(
     target_rate = _coordinator_target_rate(source, track)
     if not isinstance(target_rate, int) or target_rate <= 0:
         return
-    if playback_transition_coordinator.transition_active:
-        logger.info("Coordinator recovery deferred while another transition is active: reason=%s", reason)
-        return
-    request = TransitionRequest(
-        operation="recovery",
-        source=source,
-        target_rate=target_rate,
-        target_url=str(track.get("url") or "") or None,
-        target_track=dict(track),
-        should_play=True,
-        rate_change=True,
-        reload_source=reload_source,
-        detail=reason,
+
+    if source == "spotify":
+        try:
+            should_play = (await get_spotify_ui_state()).get("status") == "Playing"
+        except Exception:
+            should_play = False
+    else:
+        state = dict(player_instance.state if player_instance else {})
+        should_play = bool(
+            state.get("current_file")
+            and state.get("playing")
+            and not state.get("paused")
+            and not state.get("ended")
+        )
+
+    operation = "graph-reconcile" if graph_only else "recovery"
+    rate_change = False if graph_only else _coordinator_rate_change(target_rate)
+    effective_reload = False if graph_only else reload_source
+    signature = json.dumps(
+        {
+            "source": source,
+            "url": str(track.get("url") or ""),
+            "target_rate": target_rate,
+            "should_play": should_play,
+            "rate_change": rate_change,
+            "reload_source": effective_reload,
+            "graph_only": graph_only,
+            "graph": (diagnosis or {}).get("signature") if diagnosis else None,
+        },
+        sort_keys=True,
     )
-    try:
-        result = await _run_coordinated_transition(request)
-        if source == "radio" and isinstance(result.target_rate, int) and result.target_rate > 0:
-            track["sample_rate_hz"] = result.target_rate
-            if (
-                current_track_info
-                and current_track_info.get("source") == "radio"
-                and current_track_info.get("url") == track.get("url")
-            ):
-                current_track_info["sample_rate_hz"] = result.target_rate
-    except PlaybackTransitionFailure as exc:
-        logger.warning("Coordinator recovery failed: %s", exc.as_status())
+    if coordinator_recovery_lock is None:
+        coordinator_recovery_lock = asyncio.Lock()
+
+    async with coordinator_recovery_lock:
+        if signature in {
+            coordinator_recovery_inflight_signature,
+            coordinator_recovery_last_signature,
+        }:
+            logger.info(
+                "Coordinator recovery deduplicated: reason=%s graph_only=%s signature=%s",
+                reason,
+                graph_only,
+                signature,
+            )
+            return
+        # Do not latch a request that merely arrived while another transition
+        # was active.  The next watcher observation must still be allowed to
+        # retry after that transition has committed.
+        if playback_transition_coordinator.transition_active:
+            logger.info("Coordinator recovery deferred while another transition is active: reason=%s", reason)
+            return
+        coordinator_recovery_inflight_signature = signature
+        attempted = False
+        try:
+            request = TransitionRequest(
+                operation=operation,
+                source=source,
+                target_rate=target_rate,
+                target_url=str(track.get("url") or "") or None,
+                target_track=dict(track),
+                should_play=should_play,
+                rate_change=rate_change,
+                reload_source=effective_reload,
+                graph_only=graph_only,
+                detail=reason,
+            )
+            attempted = True
+            result = await _run_coordinated_transition(request)
+            if source == "radio" and isinstance(result.target_rate, int) and result.target_rate > 0:
+                track["sample_rate_hz"] = result.target_rate
+                if (
+                    current_track_info
+                    and current_track_info.get("source") == "radio"
+                    and current_track_info.get("url") == track.get("url")
+                ):
+                    current_track_info["sample_rate_hz"] = result.target_rate
+        except PlaybackTransitionFailure as exc:
+            logger.warning("Coordinator recovery failed: %s", exc.as_status())
+        finally:
+            coordinator_recovery_inflight_signature = None
+            # Keep the failed signature latched until the canonical snapshot
+            # changes; this prevents an identical watcher storm while still
+            # allowing a genuinely changed graph or source state to retry.
+            if attempted:
+                coordinator_recovery_last_signature = signature
 
 
 def _transition_error_http(exc: PlaybackTransitionFailure) -> HTTPException:
@@ -1625,24 +1709,6 @@ def _queue_payload() -> dict:
     }
 
 
-def _should_use_mpv_native_queue(ordered_tracks: list[dict]) -> bool:
-    if len(ordered_tracks) <= 1:
-        return False
-
-    sample_rates = set()
-    for track in ordered_tracks:
-        if track.get("source") != "local":
-            return False
-        if not track.get("url"):
-            return False
-        sample_rate_hz = track.get("sample_rate_hz")
-        if not isinstance(sample_rate_hz, int) or sample_rate_hz <= 0:
-            return False
-        sample_rates.add(sample_rate_hz)
-
-    return len(sample_rates) == 1
-
-
 def _sync_track_context_from_queue_index(index: int) -> Optional[dict]:
     global current_track_info, last_track_info, playback_queue_index
     if index < 0 or index >= len(playback_queue):
@@ -1659,59 +1725,6 @@ def _reset_mpv_loop_state() -> None:
         return
     player_instance.set_loop_playlist(False)
     player_instance.set_loop_file(False)
-
-
-def _prime_mpv_native_queue(start_index: int) -> bool:
-    if len(playback_queue) <= 1:
-        return False
-
-    first_url = playback_queue[0].get("url")
-    if not first_url:
-        return False
-
-    player_instance.set_pause(True)
-    player_instance.loadfile(first_url, mode="replace")
-    for item in playback_queue[1:]:
-        item_url = item.get("url")
-        if not item_url:
-            return False
-        player_instance.loadfile(item_url, mode="append")
-    if start_index > 0:
-        player_instance.set_playlist_pos(start_index)
-    player_instance.set_loop_playlist(playback_queue_loop)
-    player_instance.set_loop_file(False)
-    player_instance.set_pause(False)
-    return True
-
-
-def _trim_mpv_native_queue_to_current() -> None:
-    if not player_instance or not player_instance._running:
-        return
-    current_index = playback_queue_index
-    playlist_count = player_instance.get_property("playlist-count")
-    if not isinstance(current_index, int) or current_index < 0:
-        return
-    if not isinstance(playlist_count, int) or playlist_count <= 1:
-        player_instance.set_loop_playlist(False)
-        return
-    for index in range(playlist_count - 1, -1, -1):
-        if index == current_index:
-            continue
-        player_instance.remove_playlist_index(index)
-    player_instance.set_loop_playlist(False)
-
-
-def _should_apply_hard_handoff_for_requested_play(*, requested_source: str, previous_source: Optional[str], previous_file: Optional[str], next_url: Optional[str]) -> tuple[bool, Optional[str]]:
-    if not previous_file or not next_url or previous_file == next_url:
-        return False, None
-
-    if requested_source == "local" and previous_source == "local":
-        return True, "manual local track switch"
-
-    if requested_source in {"local", "radio"} and previous_source in {"local", "radio"} and requested_source != previous_source:
-        return True, f"source change {previous_source}->{requested_source}"
-
-    return False, None
 
 
 def _current_track_matches(expected_track: dict | None) -> bool:
@@ -2033,24 +2046,35 @@ async def _wait_for_easyeffects_output_ports(timeout_ms: int) -> bool:
         await asyncio.sleep(PIPEWIRE_HANDOFF_POLL_INTERVAL_MS / 1000)
 
 
-async def _playback_graph_diagnosis(audio_overview: dict | None = None) -> dict:
-    """Fine-grained readback of the playback graph, component by component.
+async def _playback_graph_diagnosis(
+    audio_overview: dict | None = None,
+    *,
+    source: str | None = None,
+    target_rate: int | None = None,
+    require_source: bool = False,
+) -> dict:
+    """Return the one canonical, read-only production-graph snapshot.
 
-    Distinguishes the EE output ports, the native helper ports, the
-    EE -> helper links and the helper -> hardware links (stereo:
-    EE -> hardware) so a missing graph can be logged and repaired per
-    component. Never raises: any readback failure yields an incomplete
-    diagnosis. The bool result of _playback_graph_links_complete is derived
-    from this single source of truth (links imply their ports, so the
-    semantics of the bool are unchanged).
+    The Coordinator and every watcher use this function unchanged.  In
+    stereo the valid output is EE -> hardware.  In 2.1/2.2 the helper owns
+    every hardware output and direct EE -> hardware links are explicitly
+    invalid, even when the helper links are also present.
     """
     result = {
         "mode": None,
         "output_key": "",
         "ee_ports": False,
         "helper_ports": None,
+        "helper_active": None,
+        "helper_rate": None,
+        "helper_rate_matches": None,
         "links": {},
+        "source_links": {},
+        "source_links_complete": None,
+        "direct_ee_to_hw_present": False,
         "links_complete": False,
+        "bypass_only": False,
+        "signature": "unreadable",
     }
     try:
         overview = audio_overview or get_audio_output_overview()
@@ -2069,6 +2093,22 @@ async def _playback_graph_diagnosis(audio_overview: dict | None = None) -> dict:
     ee_fl = "ee_soe_output_level:output_FL"
     ee_fr = "ee_soe_output_level:output_FR"
     result["ee_ports"] = ee_fl in io_text and ee_fr in io_text
+
+    source_node = "spotify" if source == "spotify" else "mpv" if source in {"local", "radio"} else None
+    if source_node:
+        result["source_links"] = {
+            f"{source_node}:output_FL -> easyeffects_sink:playback_FL": _contains_link(
+                link_text, f"{source_node}:output_FL", "easyeffects_sink:playback_FL"
+            ),
+            f"{source_node}:output_FR -> easyeffects_sink:playback_FR": _contains_link(
+                link_text, f"{source_node}:output_FR", "easyeffects_sink:playback_FR"
+            ),
+        }
+        result["source_links_complete"] = all(result["source_links"].values())
+    elif require_source:
+        result["source_links_complete"] = False
+
+    source_ok = result["source_links_complete"] is not False
     if mode not in OUTPUT_MODE_SUBWOOFER_MODES:
         result["links"] = {
             f"{ee_fl} -> {output_key}:playback_FL": _contains_link(
@@ -2078,35 +2118,88 @@ async def _playback_graph_diagnosis(audio_overview: dict | None = None) -> dict:
                 link_text, ee_fr, f"{output_key}:playback_FR"
             ),
         }
-        result["links_complete"] = result["ee_ports"] and all(result["links"].values())
-        return result
+        result["links_complete"] = (
+            source_ok and result["ee_ports"] and all(result["links"].values())
+        )
+    else:
+        helper = "fxroute_21_stage1"
+        result["helper_ports"] = all(
+            f"{helper}:{port}" in io_text
+            for port in ("input_L", "input_R", "output_1", "output_2", "output_3", "output_4")
+        )
+        result["links"] = {
+            f"{ee_fl} -> {helper}:input_L": _contains_link(link_text, ee_fl, f"{helper}:input_L"),
+            f"{ee_fr} -> {helper}:input_R": _contains_link(link_text, ee_fr, f"{helper}:input_R"),
+            f"{helper}:output_1 -> {output_key}:playback_FL": _contains_link(
+                link_text, f"{helper}:output_1", f"{output_key}:playback_FL"
+            ),
+            f"{helper}:output_2 -> {output_key}:playback_FR": _contains_link(
+                link_text, f"{helper}:output_2", f"{output_key}:playback_FR"
+            ),
+        }
+        if mode != OUTPUT_MODE_SUBWOOFER_21:
+            result["links"][f"{helper}:output_3 -> {output_key}:playback_RL"] = _contains_link(
+                link_text, f"{helper}:output_3", f"{output_key}:playback_RL"
+            )
+            result["links"][f"{helper}:output_4 -> {output_key}:playback_RR"] = _contains_link(
+                link_text, f"{helper}:output_4", f"{output_key}:playback_RR"
+            )
 
-    helper = "fxroute_21_stage1"
-    result["helper_ports"] = all(
-        f"{helper}:{port}" in io_text
-        for port in ("input_L", "input_R", "output_1", "output_2", "output_3", "output_4")
-    )
-    result["links"] = {
-        f"{ee_fl} -> {helper}:input_L": _contains_link(link_text, ee_fl, f"{helper}:input_L"),
-        f"{ee_fr} -> {helper}:input_R": _contains_link(link_text, ee_fr, f"{helper}:input_R"),
-        f"{helper}:output_1 -> {output_key}:playback_FL": _contains_link(
-            link_text, f"{helper}:output_1", f"{output_key}:playback_FL"
-        ),
-        f"{helper}:output_2 -> {output_key}:playback_FR": _contains_link(
-            link_text, f"{helper}:output_2", f"{output_key}:playback_FR"
-        ),
-    }
-    if mode != OUTPUT_MODE_SUBWOOFER_21:
-        result["links"][f"{helper}:output_3 -> {output_key}:playback_RL"] = _contains_link(
-            link_text, f"{helper}:output_3", f"{output_key}:playback_RL"
+        direct_links = {
+            f"{ee_fl} -> {output_key}:playback_FL": _contains_link(
+                link_text, ee_fl, f"{output_key}:playback_FL"
+            ),
+            f"{ee_fr} -> {output_key}:playback_FR": _contains_link(
+                link_text, ee_fr, f"{output_key}:playback_FR"
+            ),
+        }
+        result["direct_ee_to_hw_present"] = any(direct_links.values())
+        helper_topology_complete = (
+            result["ee_ports"]
+            and result["helper_ports"]
+            and all(result["links"].values())
         )
-        result["links"][f"{helper}:output_4 -> {output_key}:playback_RR"] = _contains_link(
-            link_text, f"{helper}:output_4", f"{output_key}:playback_RR"
+        try:
+            helper_snapshot = subwoofer_runtime.snapshot() if subwoofer_runtime is not None else {}
+            result["helper_active"] = bool(helper_snapshot.get("active"))
+            result["helper_rate"] = _helper_argument_sample_rate(helper_snapshot)
+        except Exception:
+            result["helper_active"] = False
+        result["helper_rate_matches"] = (
+            bool(result["helper_active"])
+            and (
+                target_rate is None
+                or result["helper_rate"] == target_rate
+            )
         )
-    result["links_complete"] = (
-        result["ee_ports"]
-        and result["helper_ports"]
-        and all(result["links"].values())
+        helper_valid = bool(result["helper_rate_matches"])
+        result["bypass_only"] = bool(
+            source_ok and helper_topology_complete and helper_valid and result["direct_ee_to_hw_present"]
+        )
+        # Direct EE -> hardware links are part of the invalid state, not an
+        # optional extra.  This is the key invariant shared by commit and
+        # watcher readback.
+        result["links_complete"] = bool(
+            source_ok
+            and helper_topology_complete
+            and helper_valid
+            and not result["direct_ee_to_hw_present"]
+        )
+
+    result["signature"] = "|".join(
+        (
+            str(result.get("mode")),
+            str(result.get("output_key")),
+            str(result.get("ee_ports")),
+            str(result.get("helper_ports")),
+            str(result.get("helper_active")),
+            str(result.get("helper_rate")),
+            str(result.get("helper_rate_matches")),
+            str(result.get("source_links_complete")),
+            str(result.get("direct_ee_to_hw_present")),
+            str(result.get("links_complete")),
+            ";".join(f"{key}={value}" for key, value in sorted(result.get("links", {}).items())),
+        )
     )
     return result
 
@@ -2130,63 +2223,21 @@ def _log_playback_graph_diagnosis(
     ports, each missing link) so a failed handoff is diagnosable."""
     logger.warning(
         "Playback handoff graph incomplete: mode=%s output_key=%s target_rate=%s "
-        "ee_ports=%s helper_ports=%s missing_links=%s reason=%s detail=%s",
+        "ee_ports=%s helper_ports=%s helper_active=%s helper_rate=%s "
+        "direct_bypass=%s source_links=%s missing_links=%s reason=%s detail=%s",
         diagnosis.get("mode"),
         diagnosis.get("output_key"),
         target_rate,
         diagnosis.get("ee_ports"),
         diagnosis.get("helper_ports"),
+        diagnosis.get("helper_active"),
+        diagnosis.get("helper_rate"),
+        diagnosis.get("direct_ee_to_hw_present"),
+        diagnosis.get("source_links_complete"),
         _missing_playback_graph_links(diagnosis),
         reason,
         detail,
     )
-
-
-async def _repair_playback_graph_once(
-    *,
-    diagnosis: dict,
-    target_rate: int,
-    reason: str,
-    detail: str,
-    ee_port_timeout_ms: int,
-    preserve_easyeffects_output_graph: bool = False,
-) -> None:
-    """Repair the missing components of one graph diagnosis, readback-driven.
-
-    Runs inside the shared handoff while mpv stays paused:
-    - missing EE output ports: EE preset sync recreates them, then the
-      bounded port readback wait observes them
-    - missing helper ports or any EE->helper / helper->HW link: the
-      subwoofer runtime sync restores them (its link repair carries the
-      pw-link ENOENT retry for transient PipeWire port recreation)
-    - no native runtime: the EE preset reload is the only repair primitive
-      (rebuilds the stereo EE -> hardware output graph)
-    Raises RuntimeError when a required component cannot be restored within
-    the bound; the caller rolls back and surfaces the error.
-    """
-    if not diagnosis.get("ee_ports"):
-        await _sync_easyeffects_preset_for_playback_samplerate(
-            sample_rate_hz=target_rate, reason=reason, detail=detail,
-        )
-        if not await _wait_for_easyeffects_output_ports(ee_port_timeout_ms):
-            raise RuntimeError(
-                "Playback handoff repair failed: EasyEffects output ports "
-                f"missing: expected={target_rate} reason={reason} detail={detail}"
-            )
-    if preserve_easyeffects_output_graph and diagnosis.get("mode") == OUTPUT_MODE_STEREO:
-        await _repair_stereo_output_links_once(diagnosis)
-        return
-    if subwoofer_runtime is None:
-        await _sync_easyeffects_preset_for_playback_samplerate(
-            sample_rate_hz=target_rate, reason=reason, detail=detail,
-        )
-        if not await _wait_for_easyeffects_output_ports(ee_port_timeout_ms):
-            raise RuntimeError(
-                "Playback handoff repair failed: EasyEffects output graph "
-                f"missing: expected={target_rate} reason={reason} detail={detail}"
-            )
-        return
-    await _sync_subwoofer_runtime(reason=reason)
 
 
 async def _repair_stereo_output_links_once(diagnosis: dict) -> None:
@@ -2206,323 +2257,113 @@ async def _repair_stereo_output_links_once(diagnosis: dict) -> None:
         await _connect_ports((source,), target)
 
 
-async def _playback_graph_links_complete(audio_overview: dict | None = None) -> bool:
-    """Readback: are the audio-path links actually present right now?
-
-    Stereo: ee_soe_output_level:output_FL/FR -> hardware sink playback_FL/FR.
-    2.1/2.2: EE -> helper inputs AND helper outputs -> hardware sink.
-    A running helper process alone does not prove a complete graph.
-    """
-    diagnosis = await _playback_graph_diagnosis(audio_overview)
-    return diagnosis["links_complete"]
-
-
-async def _rollback_playback_handoff(
-    previous_force_rate: int,
-    helper_pid_before: Optional[int],
-    reason: str,
-) -> None:
-    """Restore force-rate and stop a helper started by a failed handoff.
-
-    Never leaves a dangling state with a wrong force-rate and an unverified
-    helper: the force-rate is written back to its pre-handoff value and a
-    helper that this handoff started is terminated. Afterwards a status
-    readback is logged so the consistent paused/idle state is provable:
-    no wrong force-rate, no half helper graph, no stale links, no
-    unintended unpause (the handoff itself never touches playback pause).
-    """
-    global playback_samplerate_force_rate
-    try:
-        _set_pipewire_force_rate(previous_force_rate)
-        playback_samplerate_force_rate = previous_force_rate or None
-    except Exception as exc:
-        logger.warning(
-            "Playback handoff rollback force-rate failed: reason=%s error=%s",
-            reason, exc,
-        )
-    if subwoofer_runtime is None or helper_pid_before is not None:
-        pass
-    else:
-        try:
-            runtime_snapshot = subwoofer_runtime.snapshot()
-            if runtime_snapshot.get("helper_pid") is not None:
-                await subwoofer_runtime._stop_helper()
-                logger.info(
-                    "Playback handoff rollback stopped helper started by failed handoff: reason=%s",
-                    reason,
-                )
-        except Exception as exc:
-            logger.warning(
-                "Playback handoff rollback helper stop failed: reason=%s error=%s",
-                reason, exc,
-            )
-
-    # Abschließender Status-Readback: belegt konsistenten Idle-Zustand.
-    try:
-        final_force_rate = _get_current_pipewire_force_rate()
-    except Exception:
-        final_force_rate = None
-    helper_pid_after = None
-    helper_active_after = False
-    if subwoofer_runtime is not None:
-        try:
-            runtime_snapshot = subwoofer_runtime.snapshot()
-            helper_pid_after = runtime_snapshot.get("helper_pid")
-            helper_active_after = bool(runtime_snapshot.get("active"))
-        except Exception:
-            pass
-    try:
-        links_complete = await _playback_graph_links_complete()
-    except Exception:
-        links_complete = False
-    try:
-        player_paused = bool(player_instance and player_instance.state.get("paused"))
-    except Exception:
-        player_paused = None
-    logger.info(
-        "Playback handoff rollback readback: reason=%s previous_force_rate=%s "
-        "final_force_rate=%s helper_pid_after=%s helper_active_after=%s "
-        "graph_links_complete=%s player_paused=%s",
-        reason, previous_force_rate, final_force_rate, helper_pid_after,
-        helper_active_after, links_complete, player_paused,
-    )
+async def _coordinator_reconcile_subwoofer_links_only() -> None:
+    """Repair only the 2.1/2.2 link topology, never restart the helper."""
+    if subwoofer_runtime is None:
+        raise RuntimeError("subwoofer helper runtime is not available")
+    reconcile = getattr(subwoofer_runtime, "reclean_direct_easyeffects_links", None)
+    if not callable(reconcile):
+        raise RuntimeError("subwoofer runtime has no link-only reconciliation")
+    await reconcile()
 
 
-async def _complete_playback_handoff(
+async def _coordinator_establish_effects_and_helper(
+    request: TransitionRequest,
     *,
-    target_rate: int,
-    reason: str,
-    transition_generation: int,
-    detail: str = "",
-    ee_port_timeout_ms: int = PLAYBACK_HANDOFF_EE_PORT_TIMEOUT_MS,
-    preserve_easyeffects_output_graph: bool = False,
-    force_graph_rebuild: bool = False,
     previous_force_rate: int | None = None,
-) -> bool:
-    """Shared readback-driven playback handoff (local + radio).
+    ee_port_timeout_ms: int = PLAYBACK_HANDOFF_EE_PORT_TIMEOUT_MS,
+) -> None:
+    """Build the effects/helper graph inside the Coordinator-owned gate.
 
-    Only the target-rate determination differs between the callers; the
-    sink/force-rate, EasyEffects and helper reconciliation is identical:
-      1. generation/currency check (stale -> abort, nothing touched)
-      2. sink + force-rate aligned idempotently (no write when already set)
-      3. EasyEffects preset synced on rate change or missing output ports
-      4. readback wait for ee_soe_output_level:output_FL/FR
-      5. only then the helper is synchronized
-      6. bounded readback-driven repair of transient link races while mpv
-         stays paused: missing EE/helper ports or EE->helper / helper->HW
-         links are repaired selectively and re-verified per round
-      7. full graph/rate alignment verified
-    No-op when rate and graph already match; graph-only repair when the
-    rate matches but ports/helper are missing. On failure the previous
-    force-rate is restored and a helper started by this handoff is
-    stopped, then a RuntimeError names the failed component.
+    This is intentionally smaller than the removed legacy handoff.  Rate
+    alignment belongs to ``establish_target_rate``; source loading belongs to
+    the following adapter stages; this function only performs the idempotent
+    EE/helper/link work and then uses the canonical graph readback.
     """
+    del previous_force_rate  # kept in the adapter call for source compatibility
+    target_rate = request.target_rate
     if not isinstance(target_rate, int) or target_rate <= 0:
-        return False
-    if transition_generation != playback_transition_generation:
-        logger.info(
-            "Playback handoff aborted: stale transition generation=%s current=%s reason=%s detail=%s",
-            transition_generation, playback_transition_generation, reason, detail,
-        )
-        return False
+        return
 
-    try:
-        samplerate_status = get_samplerate_status()
-    except Exception:
-        samplerate_status = {}
-    active_rate = samplerate_status.get("active_rate")
-    force_rate = samplerate_status.get("force_rate")
-    if previous_force_rate is None:
-        previous_force_rate = _get_current_pipewire_force_rate()
-
-    rate_aligned = (
-        isinstance(active_rate, int)
-        and active_rate == target_rate
-        and (force_rate in {None, 0, target_rate})
+    overview = get_audio_output_overview()
+    mode = (overview.get("output_mode") or {}).get("mode")
+    diagnosis = await _playback_graph_diagnosis(
+        overview,
+        target_rate=target_rate,
+        require_source=False,
     )
 
-    try:
-        overview = get_audio_output_overview()
-    except Exception:
-        overview = {}
-    output_mode = overview.get("output_mode") or {}
-    mode = output_mode.get("mode")
-    subwoofer_mode = mode in OUTPUT_MODE_SUBWOOFER_MODES
-
-    if preserve_easyeffects_output_graph and not await _ensure_mpv_to_easyeffects_links():
-        raise RuntimeError(
-            "Playback handoff failed: MPV to EasyEffects links unavailable: "
-            f"reason={reason} detail={detail}"
-        )
-
-    graph_diagnosis = await _playback_graph_diagnosis(overview)
-    ee_ports_present = graph_diagnosis["ee_ports"]
-    links_complete = graph_diagnosis["links_complete"]
-    if not (ee_ports_present and links_complete):
-        _log_playback_graph_diagnosis(
-            graph_diagnosis,
-            target_rate=target_rate,
-            reason=reason,
-            detail=detail,
-        )
-    helper_ok = True
-    if subwoofer_mode:
-        if subwoofer_runtime is None:
-            helper_ok = False
-        else:
-            runtime_snapshot = subwoofer_runtime.snapshot()
-            helper_ok = (
-                bool(runtime_snapshot.get("active"))
-                and _helper_argument_sample_rate(runtime_snapshot) == target_rate
+    if request.graph_only:
+        if not diagnosis.get("bypass_only"):
+            raise RuntimeError(
+                "graph-only reconciliation requested for a non-bypass graph: "
+                f"signature={diagnosis.get('signature')}"
             )
-    graph_complete = ee_ports_present and links_complete and helper_ok
-
-    if rate_aligned and graph_complete and not force_graph_rebuild:
-        logger.info(
-            "Playback handoff no-op: rate=%s graph complete reason=%s detail=%s",
-            target_rate, reason, detail,
-        )
-        return True
-
-    helper_pid_before = None
-    if subwoofer_runtime is not None:
-        try:
-            helper_pid_before = subwoofer_runtime.snapshot().get("helper_pid")
-        except Exception:
-            helper_pid_before = None
-
-    try:
-        if not rate_aligned:
-            aligned = await _ensure_playback_samplerate_force(
-                target_rate, reason,
-                policy=samplerate_orchestration.RADIO_POLICY,
-            )
-            if not aligned:
-                raise RuntimeError(
-                    "Playback handoff failed: sink/force-rate not aligned: "
-                    f"expected={target_rate} active={active_rate} force={force_rate} reason={reason}"
-                )
-
-        if (
-            force_graph_rebuild
-            or (not rate_aligned)
-            or (not ee_ports_present)
-            or (not links_complete and not preserve_easyeffects_output_graph)
-        ):
+        await _coordinator_reconcile_subwoofer_links_only()
+    else:
+        needs_preset = bool(request.rate_change or not diagnosis.get("ee_ports"))
+        if needs_preset:
             await _sync_easyeffects_preset_for_playback_samplerate(
-                sample_rate_hz=target_rate, reason=reason, detail=detail,
+                sample_rate_hz=target_rate,
+                reason=f"coordinator-{request.operation}",
+                detail=request.detail,
             )
-
         if not await _wait_for_easyeffects_output_ports(ee_port_timeout_ms):
             raise RuntimeError(
-                "Playback handoff failed: EasyEffects output ports missing: "
-                f"expected={target_rate} timeout_ms={ee_port_timeout_ms} reason={reason} detail={detail}"
+                "Coordinator effects stage failed: EasyEffects output ports were not confirmed"
             )
 
-        if subwoofer_runtime is not None and not (
-            preserve_easyeffects_output_graph and not subwoofer_mode
-        ):
-            await _sync_subwoofer_runtime(reason=reason)
-    except Exception:
-        await _rollback_playback_handoff(previous_force_rate, helper_pid_before, reason)
-        raise
+        if mode in OUTPUT_MODE_SUBWOOFER_MODES:
+            helper_snapshot = subwoofer_runtime.snapshot() if subwoofer_runtime is not None else {}
+            helper_needs_sync = bool(
+                request.rate_change
+                or not helper_snapshot.get("active")
+                or _helper_argument_sample_rate(helper_snapshot) != target_rate
+                or not diagnosis.get("helper_ports")
+                or not all(diagnosis.get("links", {}).values())
+            )
+            if helper_needs_sync:
+                await _sync_subwoofer_runtime(
+                    reason=f"coordinator-{request.operation}",
+                )
+            # EasyEffects may recreate its direct front links after a preset
+            # action.  Reconcile them after helper setup without restarting
+            # either process.
+            await _coordinator_reconcile_subwoofer_links_only()
+        elif not diagnosis.get("links_complete"):
+            await _repair_stereo_output_links_once(diagnosis)
 
-    # Bounded readback-driven repair of transient link races, while mpv is
-    # still paused. The old follow-up sync after unpause is gone: healing
-    # must happen here or the handoff fails. Each round diagnoses the
-    # missing components (EE ports, helper ports, EE->helper and
-    # helper->HW links), repairs only those and re-verifies by readback;
-    # no blind sleeps.
-    try:
-        diagnosis = await _playback_graph_diagnosis()
-        repair_rounds = 0
-        while (
-            not diagnosis["links_complete"]
-            and repair_rounds < PLAYBACK_HANDOFF_LINK_REPAIR_MAX_ROUNDS
-        ):
-            repair_rounds += 1
-            logger.warning(
-                "Playback handoff graph repair: round=%s/%s reason=%s detail=%s "
-                "ee_ports=%s helper_ports=%s missing_links=%s",
-                repair_rounds,
-                PLAYBACK_HANDOFF_LINK_REPAIR_MAX_ROUNDS,
-                reason,
-                detail,
-                diagnosis["ee_ports"],
-                diagnosis["helper_ports"],
-                _missing_playback_graph_links(diagnosis),
-            )
-            await _repair_playback_graph_once(
-                diagnosis=diagnosis,
-                target_rate=target_rate,
-                reason=reason,
-                detail=detail,
-                ee_port_timeout_ms=ee_port_timeout_ms,
-                preserve_easyeffects_output_graph=preserve_easyeffects_output_graph,
-            )
-            diagnosis = await _playback_graph_diagnosis()
-        if not diagnosis["links_complete"]:
-            _log_playback_graph_diagnosis(
-                diagnosis,
-                target_rate=target_rate,
-                reason=reason,
-                detail=detail,
-            )
-    except Exception:
-        await _rollback_playback_handoff(previous_force_rate, helper_pid_before, reason)
-        raise
-
-    try:
-        final_status = get_samplerate_status()
-    except Exception:
-        final_status = {}
-    verified = (
-        isinstance(final_status.get("active_rate"), int)
-        and final_status.get("active_rate") == target_rate
-        and (final_status.get("force_rate") in {None, 0, target_rate})
+    final = await _playback_graph_diagnosis(
+        target_rate=target_rate,
+        require_source=False,
     )
-    if verified and subwoofer_mode:
-        if subwoofer_runtime is None:
-            verified = False
-        else:
-            runtime_snapshot = subwoofer_runtime.snapshot()
-            verified = (
-                bool(runtime_snapshot.get("active"))
-                and _helper_argument_sample_rate(runtime_snapshot) == target_rate
-            )
-    if not verified:
-        await _rollback_playback_handoff(previous_force_rate, helper_pid_before, reason)
+    if not final.get("links_complete"):
+        _log_playback_graph_diagnosis(
+            final,
+            target_rate=target_rate,
+            reason=f"coordinator-{request.operation}",
+            detail=request.detail,
+        )
         raise RuntimeError(
-            "Playback handoff failed: graph/rate alignment verification missing: "
-            f"expected={target_rate} active={final_status.get('active_rate')} "
-            f"force={final_status.get('force_rate')} reason={reason} detail={detail}"
+            "Coordinator effects/helper graph did not reach the canonical topology"
         )
 
-    if preserve_easyeffects_output_graph and not await _ensure_mpv_to_easyeffects_links():
-        await _rollback_playback_handoff(previous_force_rate, helper_pid_before, reason)
-        raise RuntimeError(
-            "Playback handoff failed: final MPV to EasyEffects links missing: "
-            f"reason={reason} detail={detail}"
-        )
 
-    final_links = await _playback_graph_links_complete()
-    if not final_links:
-        await _rollback_playback_handoff(previous_force_rate, helper_pid_before, reason)
-        raise RuntimeError(
-            "Playback handoff failed: graph links verification missing: "
-            f"expected={target_rate} reason={reason} detail={detail}"
-        )
-
-    logger.info(
-        "Playback handoff complete: rate=%s reason=%s detail=%s",
-        target_rate, reason, detail,
+async def _playback_graph_links_complete(
+    audio_overview: dict | None = None,
+    *,
+    source: str | None = None,
+    target_rate: int | None = None,
+    require_source: bool = False,
+) -> bool:
+    """Read the canonical graph snapshot and return its commit predicate."""
+    diagnosis = await _playback_graph_diagnosis(
+        audio_overview,
+        source=source,
+        target_rate=target_rate,
+        require_source=require_source,
     )
-    return True
-
-
-
-
-
+    return diagnosis["links_complete"]
 
 
 def _capture_playback_state_before_measurement():
@@ -3062,17 +2903,6 @@ async def _repair_subwoofer_runtime_inputs_after_measurement_release(target_rate
         )
 
 
-def _subwoofer_helper_input_links_present() -> bool:
-    result = _run_debug_command(["pw-link", "-l"], 2.0)
-    if result.get("returncode") != 0:
-        return True
-    text = result.get("stdout", "")
-    return (
-        _contains_link(text, "ee_soe_output_level:output_FL", "fxroute_21_stage1:input_L")
-        and _contains_link(text, "ee_soe_output_level:output_FR", "fxroute_21_stage1:input_R")
-    )
-
-
 async def _subwoofer_runtime_link_watch_loop() -> None:
     while True:
         await asyncio.sleep(2.0)
@@ -3083,26 +2913,36 @@ async def _subwoofer_runtime_link_watch_loop() -> None:
             output_mode = overview.get("output_mode") or {}
             if output_mode.get("mode") not in OUTPUT_MODE_SUBWOOFER_MODES:
                 continue
-            if getattr(subwoofer_runtime, "sync_in_progress", False):
-                continue
-            if hasattr(subwoofer_runtime, "_reclean_lock") and subwoofer_runtime._reclean_lock.locked():
-                logger.info("SUBLINK watch skipped reason=repair_in_progress")
-                continue
-            snapshot = subwoofer_runtime.snapshot()
-            input_links_present = _subwoofer_helper_input_links_present()
-            direct_links_present = await subwoofer_runtime.direct_easyeffects_front_links_present()
-            if snapshot.get("active") and input_links_present and not direct_links_present:
+            if playback_transition_coordinator is not None and playback_transition_coordinator.transition_active:
                 continue
             track = dict(current_track_info or {})
-            logger.info(
-                "Subwoofer link watcher observed incomplete production graph; requesting coordinator recovery: "
-                "runtime_active=%s helper_pid=%s input_links_present=%s direct_links_present=%s",
-                snapshot.get("active"),
-                snapshot.get("helper_pid"),
-                input_links_present,
-                direct_links_present,
+            if not track:
+                continue
+            source = str(track.get("source") or "")
+            target_rate = _coordinator_target_rate(source, track)
+            diagnosis = await _playback_graph_diagnosis(
+                overview,
+                source=source,
+                target_rate=target_rate,
+                require_source=True,
             )
-            await _request_coordinated_recovery(track, "subwoofer-link-watcher")
+            if diagnosis.get("links_complete"):
+                continue
+            logger.info(
+                "Subwoofer link watcher observed incomplete canonical graph; requesting Coordinator action: "
+                "bypass_only=%s helper_active=%s helper_rate=%s direct_bypass=%s signature=%s",
+                diagnosis.get("bypass_only"),
+                diagnosis.get("helper_active"),
+                diagnosis.get("helper_rate"),
+                diagnosis.get("direct_ee_to_hw_present"),
+                diagnosis.get("signature"),
+            )
+            await _request_coordinated_recovery(
+                track,
+                "subwoofer-link-watcher",
+                graph_only=bool(diagnosis.get("bypass_only")),
+                diagnosis=diagnosis,
+            )
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -3303,7 +3143,10 @@ def _prepare_local_queue(track_id: str, queue_track_ids: Optional[list[str]] = N
 
     playback_queue = ordered_tracks if len(ordered_tracks) > 1 else []
     playback_queue_original = original_tracks if len(original_tracks) > 1 else []
-    playback_queue_mode = "mpv_native" if _should_use_mpv_native_queue(playback_queue) else "app_replace"
+    # Every queue track is loaded through PlaybackTransitionCoordinator so a
+    # queue cannot bypass rate/graph/gate commit ordering via MPV's native
+    # playlist API.
+    playback_queue_mode = "app_replace"
     playback_queue_loop = bool(loop and len(ordered_tracks) > 1)
     playback_queue_shuffle = bool(shuffle and len(ordered_tracks) > 1)
     single_track_loop = bool(loop and len(ordered_tracks) == 1)
@@ -3401,14 +3244,10 @@ def _set_queue_shuffle(enabled: bool) -> bool:
         random.shuffle(remaining)
         playback_queue = [current_track] + remaining
         playback_queue_index = 0
-        if playback_queue_mode == "mpv_native" and player_instance and player_instance._running:
-            _prime_mpv_native_queue(playback_queue_index)
     elif playback_queue_original:
         playback_queue = [dict(track) for track in playback_queue_original]
         if current_track_id:
             playback_queue_index = next((index for index, track in enumerate(playback_queue) if track.get("id") == current_track_id), current_index)
-        if playback_queue_mode == "mpv_native" and player_instance and player_instance._running:
-            _prime_mpv_native_queue(playback_queue_index if playback_queue_index >= 0 else 0)
     return True
 
 
@@ -3421,8 +3260,6 @@ def _set_queue_loop(enabled: bool) -> bool:
         return False
     if len(playback_queue) > 1:
         playback_queue_loop = bool(enabled)
-        if playback_queue_mode == "mpv_native" and player_instance and player_instance._running:
-            player_instance.set_loop_playlist(playback_queue_loop)
         single_track_loop = False
         return True
     single_track_loop = bool(enabled)
@@ -3439,9 +3276,6 @@ def _sync_active_local_queue_selection(queue_track_ids: Optional[list[str]] = No
     player_state = player_instance.state if player_instance else {}
     if not player_state.get("current_file") or player_state.get("ended"):
         raise HTTPException(status_code=409, detail="Nothing is currently loaded to update")
-
-    if playback_queue_mode == "mpv_native" and len(playback_queue) > 1:
-        _trim_mpv_native_queue_to_current()
 
     track_info = _prepare_local_queue(
         current_track["id"],
@@ -3592,7 +3426,22 @@ def build_playback_payload(state: Optional[dict] = None) -> dict:
         "last_error": None,
     }
     if playback_transition_coordinator:
-        playback_state["transition"] = playback_transition_coordinator.status()
+        transition_status = playback_transition_coordinator.status()
+        playback_state["transition"] = transition_status
+        gate = transition_status.get("gate") or {}
+        if transition_status.get("active") or gate.get("closed") or gate.get("failure_latched"):
+            # A physical source may still report playing while FXRoute owns a
+            # safety mute, or while the coordinator has not yet returned a
+            # committed result.  Do not expose that transient as committed
+            # normal playback to the UI; the structured transition status is
+            # the authoritative state until the gate is released.
+            playback_state["playing"] = False
+            playback_state["safe_muted"] = True
+            playback_state["transition_status"] = (
+                "failure-latched"
+                if gate.get("failure_latched")
+                else "transitioning" if transition_status.get("active") else "safe-muted"
+            )
 
     # Keep playback/status payloads lightweight. EasyEffects has dedicated
     # endpoints and websocket updates, and pulling full EasyEffects status here
@@ -3906,29 +3755,6 @@ async def on_player_state_change(state: dict):
         current_file = state.get("current_file")
         if current_file == queue_transition_target_url and not state.get("ended"):
             queue_transition_target_url = None
-
-    if playback_queue_mode == "mpv_native" and len(playback_queue) > 1:
-        native_index = state.get("playlist_pos")
-        current_file = state.get("current_file")
-        # The file path is the settled playback truth.  mpv can emit a stale
-        # playlist-pos while a native queue is being primed; using it first
-        # rebinds current_track_info to the wrong queue entry and permanently
-        # blocks the peak-monitor transition guard.  Prefer the unique queue
-        # entry matching current_file whenever it is available.
-        file_index = next(
-            (idx for idx, item in enumerate(playback_queue) if item.get("url") == current_file),
-            None,
-        ) if current_file else None
-        if file_index is not None:
-            native_index = file_index
-        if isinstance(native_index, int) and 0 <= native_index < len(playback_queue):
-            if current_file and playback_queue[native_index].get("url") != current_file:
-                native_index = None
-        if isinstance(native_index, int) and 0 <= native_index < len(playback_queue):
-            if playback_queue_index != native_index or (current_track_info or {}).get("id") != playback_queue[native_index].get("id"):
-                playback_queue_index = native_index
-                current_track_info = dict(playback_queue[native_index])
-                last_track_info = dict(playback_queue[native_index])
 
     if (
         not queue_advancing
@@ -4729,7 +4555,7 @@ async def _spotify_playerctl_watch_loop() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan: startup and shutdown."""
-    global settings, player_instance, library_scanner, downloader, easyeffects_manager, measurement_store, measurement_sr_session, peak_monitor, subwoofer_runtime, subwoofer_runtime_link_watch_task, hardware_controller, peak_monitor_playback_armed, peak_monitor_transition_lock, peak_monitor_context_signature, easyeffects_preset_load_lock, source_transition_lock, playback_transition_coordinator, external_input_loopback_module_id, external_input_loopback_source_name, bluetooth_input_source_name, bluetooth_monitor_task, bluetooth_agent_process, spotify_playerctl_watch_task, spotify_playerctl_detect_task, spotify_state_refresh_task, spotify_playerctl_last_trigger_at, current_source_mode, latest_spotify_state
+    global settings, player_instance, library_scanner, downloader, easyeffects_manager, measurement_store, measurement_sr_session, peak_monitor, subwoofer_runtime, subwoofer_runtime_link_watch_task, hardware_controller, peak_monitor_playback_armed, peak_monitor_transition_lock, peak_monitor_context_signature, easyeffects_preset_load_lock, source_transition_lock, playback_transition_coordinator, coordinator_recovery_lock, coordinator_recovery_inflight_signature, coordinator_recovery_last_signature, external_input_loopback_module_id, external_input_loopback_source_name, bluetooth_input_source_name, bluetooth_monitor_task, bluetooth_agent_process, spotify_playerctl_watch_task, spotify_playerctl_detect_task, spotify_state_refresh_task, spotify_playerctl_last_trigger_at, current_source_mode, latest_spotify_state
 
     # Startup
     logger.info("Starting FXRoute... build_id=%s", _read_build_id())
@@ -4773,6 +4599,9 @@ async def lifespan(app: FastAPI):
             FxrouteTransitionRuntime(),
             gate_state_path=_playback_gate_state_path(),
         )
+        coordinator_recovery_lock = asyncio.Lock()
+        coordinator_recovery_inflight_signature = None
+        coordinator_recovery_last_signature = None
         startup_gate_reconciled = await playback_transition_coordinator.reconcile_startup_gate()
         logger.info(
             "Playback transition startup gate reconciled: success=%s status=%s",
@@ -5676,8 +5505,6 @@ async def play_track(req: PlayRequest):
     )
     # Native mpv queue priming used to bypass the transition owner.  Keep the
     # queue metadata, but let the coordinator stage each target explicitly.
-    if playback_queue_mode == "mpv_native":
-        globals()["playback_queue_mode"] = "app_replace"
     try:
         result = await _run_coordinated_transition(request)
     except PlaybackTransitionFailure as exc:
@@ -5875,8 +5702,6 @@ async def clear_playback_queue():
         raise HTTPException(status_code=503, detail="Player not available")
 
     had_queue = len(playback_queue) > 1
-    if playback_queue_mode == "mpv_native" and had_queue:
-        _trim_mpv_native_queue_to_current()
     _clear_playback_queue()
     playback = build_playback_payload(player_instance.state)
     await manager.broadcast({"type": "playback", "data": playback})

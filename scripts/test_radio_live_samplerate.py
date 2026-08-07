@@ -161,7 +161,7 @@ class RadioMismatchRecoveryLiveRateTests(unittest.IsolatedAsyncioTestCase):
 
 
 class RadioPostLoadHandoffTests(unittest.IsolatedAsyncioTestCase):
-    """_wait_for_radio_live_rate_after_load / _complete_radio_handoff_after_load.
+    """Live radio-rate resolution under the Coordinator's output gate.
 
     Covers the post-loadfile phase-dependent handoff contract:
     - 48 -> 48 and 44.1 -> 44.1: no rate switch at all
@@ -203,8 +203,8 @@ class RadioPostLoadHandoffTests(unittest.IsolatedAsyncioTestCase):
 
         live_rates: list -> side_effect sequence; callable -> always used.
         The samplerate status is a mutable dict: the mocked ensure-force
-        updates it, so the shared handoff's final verification sees the
-        new rate (exactly one switch, no rollback).
+        updates it, so the Coordinator's final verification sees the
+        new rate (exactly one switch, no parallel rollback).
         """
         calls = {"force": [], "preset": [], "subwoofer": []}
         logs = []
@@ -309,7 +309,10 @@ class RadioPostLoadHandoffTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, 48000)
         self.assertEqual(calls["force"], [(48000, "radio-post-load-handoff")])
         self.assertEqual(len(calls["preset"]), 1)
-        self.assertEqual(len(calls["subwoofer"]), 1)
+        # This fixture uses the stereo graph; no subwoofer helper is part of
+        # that topology.  The Coordinator still performs the canonical graph
+        # readback before opening the gate.
+        self.assertEqual(len(calls["subwoofer"]), 0)
 
     async def test_48_to_44_switches_exactly_once(self):
         track = {"id": "radio_44c", "source": "radio", "url": "https://radio.example/44c"}
@@ -319,7 +322,7 @@ class RadioPostLoadHandoffTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, 44100)
         self.assertEqual(calls["force"], [(44100, "radio-post-load-handoff")])
         self.assertEqual(len(calls["preset"]), 1)
-        self.assertEqual(len(calls["subwoofer"]), 1)
+        self.assertEqual(len(calls["subwoofer"]), 0)
 
     async def test_first_radio_start_accepts_any_valid_live_rate(self):
         # previous_rate None (no prior stream): first valid live rate wins.

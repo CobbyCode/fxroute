@@ -32,6 +32,12 @@ OLD_HANDOFF_NAMES = {
     "_bounce_easyeffects_preset_for_samplerate_recovery",
     "_maybe_repair_active_app_samplerate_drift",
     "_repair_active_app_samplerate_drift_locked",
+    "_complete_playback_handoff",
+    "_rollback_playback_handoff",
+    "_repair_playback_graph_once",
+    "_should_use_mpv_native_queue",
+    "_prime_mpv_native_queue",
+    "_trim_mpv_native_queue",
 }
 
 MUTATION_CALL_NAMES = {
@@ -45,7 +51,6 @@ MUTATION_CALL_NAMES = {
     "_connect_ports",
     "_disconnect_ports",
     "_ensure_mpv_to_easyeffects_links",
-    "_repair_playback_graph_once",
     "_repair_stereo_output_links_once",
     "_set_hardware_sink_mute",
     "ensure_stereo_output_graph",
@@ -121,6 +126,7 @@ def _reason(context: str, name: str) -> str | None:
             "establish_target_rate", "prepare_target_source", "set_hardware_mute",
             "_complete_playback_handoff", "_rollback_playback_handoff",
             "_repair_playback_graph_once", "_repair_stereo_output_links_once",
+            "_coordinator_establish_effects_and_helper",
             "_ensure_mpv_to_easyeffects_links",
             "_sync_easyeffects_preset_for_playback_samplerate",
         }
@@ -129,6 +135,8 @@ def _reason(context: str, name: str) -> str | None:
         return "Coordinator adapter/core: production transition graph ownership"
     if leaf == "_ensure_stereo_easyeffects_output_graph":
         return "central output-graph adapter; reached from helper sync in Coordinator or startup/config sync"
+    if leaf == "_coordinator_reconcile_subwoofer_links_only":
+        return "Coordinator-only link reconciliation; no helper/process restart"
     if leaf in {"_easyeffects_output_ports_present", "_playback_graph_diagnosis"}:
         return "read-only graph diagnosis/readback"
     if leaf in {

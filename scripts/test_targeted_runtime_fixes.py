@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Small regressions for the peak, MPV, native-queue and callback fixes."""
+"""Small regressions for peak, MPV and Coordinator-owned queue callbacks."""
 
 import asyncio
 import json
@@ -151,8 +151,8 @@ class MPVCommandTests(unittest.TestCase):
         self.assertEqual(result["error"], "success")
 
 
-class NativeQueueTests(unittest.IsolatedAsyncioTestCase):
-    async def test_old_callback_keeps_target_until_new_path_event(self):
+class QueueCallbackOwnershipTests(unittest.IsolatedAsyncioTestCase):
+    async def test_callback_does_not_commit_queue_track_from_playlist_events(self):
         names = (
             "playback_queue", "playback_queue_mode", "playback_queue_index",
             "queue_transition_target_url", "current_track_info", "last_track_info",
@@ -167,7 +167,7 @@ class NativeQueueTests(unittest.IsolatedAsyncioTestCase):
                 {"id": "a", "source": "local", "url": "/music/a.flac"},
                 {"id": "b", "source": "local", "url": "/music/b.flac"},
             ]
-            main.playback_queue_mode = "mpv_native"
+            main.playback_queue_mode = "app_replace"
             main.playback_queue_index = 0
             main.queue_transition_target_url = "/music/b.flac"
             main.current_track_info = dict(main.playback_queue[0])
@@ -199,9 +199,12 @@ class NativeQueueTests(unittest.IsolatedAsyncioTestCase):
                 "_seq": 2, "current_file": "/music/b.flac", "playlist_pos": 1,
                 "paused": False, "ended": False,
             })
+            # The Coordinator endpoint owns the queue-track commit.  A player
+            # callback may clear the transition marker, but stale MPV
+            # playlist metadata must not commit a different queue item.
             self.assertIsNone(main.queue_transition_target_url)
-            self.assertEqual(main.current_track_info["url"], "/music/b.flac")
-            self.assertEqual(main.playback_queue_index, 1)
+            self.assertEqual(main.current_track_info["url"], "/music/a.flac")
+            self.assertEqual(main.playback_queue_index, 0)
         finally:
             for name, value in originals.items():
                 setattr(main, name, value)
@@ -322,7 +325,6 @@ class ApiPlayQueueOrderTests(unittest.IsolatedAsyncioTestCase):
         return [
             patch.object(main, "_can_send_play_command", return_value=True),
             patch.object(main, "_run_coordinated_transition", coordinated),
-            patch.object(main, "_should_use_mpv_native_queue", return_value=False),
             patch.object(main, "_maybe_recover_samplerate_mismatch", no_op),
             patch.object(main, "_schedule_silent_active_watch", lambda **_k: None),
             patch.object(main, "build_playback_payload", lambda state: {}),

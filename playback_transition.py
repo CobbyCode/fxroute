@@ -73,6 +73,7 @@ class TransitionRequest:
     should_play: bool = True
     rate_change: bool = False
     reload_source: bool = True
+    graph_only: bool = False
     detail: str = ""
 
 
@@ -109,6 +110,8 @@ class TransitionRuntime(Protocol):
     async def set_source_volume(self, volume: int, transition_id: str) -> None: ...
 
     async def verify_committed_transition(self, request: TransitionRequest) -> Mapping[str, Any]: ...
+
+    async def verify_transition_graph(self, request: TransitionRequest) -> Mapping[str, Any]: ...
 
     async def pause_source_after_failure(self, request: TransitionRequest) -> None: ...
 
@@ -314,6 +317,7 @@ class PlaybackTransitionCoordinator:
                     "spotify-toggle",
                     "measurement-restore",
                     "recovery",
+                    "graph-reconcile",
                 }
             )
             try:
@@ -329,7 +333,7 @@ class PlaybackTransitionCoordinator:
                 stage = "quiet-old-source"
                 await self.runtime.quiet_old_source(request)
 
-                if gate_required:
+                if gate_required and not active_request.graph_only:
                     # Radio streams expose their decoded rate only after a
                     # paused target stream exists.  The adapter may stage
                     # that target under the already-closed gate and return
@@ -384,11 +388,33 @@ class PlaybackTransitionCoordinator:
                     stage = "target-source-start"
                     await self.runtime.start_target_source(active_request)
 
-                stage = "source-volume-restore"
-                await self.runtime.set_source_volume(100, transition_id)
+                if gate_required:
+                    # The graph must be read back while the output gate is
+                    # still closed and the target source is still at volume 0.
+                    # Only after this staged commit succeeds may source
+                    # volume and the hardware gate be restored.
+                    stage = "staged-graph-readback"
+                    staged_verifier = getattr(self.runtime, "verify_transition_graph", None)
+                    if callable(staged_verifier):
+                        state = await staged_verifier(active_request)
+                    else:
+                        state = await self.runtime.verify_committed_transition(active_request)
+                    if not bool(state.get("committed", True)):
+                        raise RuntimeError("staged transition readback did not satisfy graph contract")
 
-                stage = "commit-readback"
-                state = await self.runtime.verify_committed_transition(active_request)
+                    if not active_request.graph_only and active_request.should_play:
+                        stage = "source-volume-restore"
+                        await self.runtime.set_source_volume(100, transition_id)
+
+                        stage = "commit-readback"
+                        state = await self.runtime.verify_committed_transition(active_request)
+                else:
+                    if active_request.should_play:
+                        stage = "source-volume-restore"
+                        await self.runtime.set_source_volume(100, transition_id)
+
+                    stage = "commit-readback"
+                    state = await self.runtime.verify_committed_transition(active_request)
                 if not bool(state.get("committed", True)):
                     raise RuntimeError("transition readback did not satisfy commit contract")
 

@@ -4,6 +4,7 @@
 
 import asyncio
 import pathlib
+import tempfile
 import sys
 import unittest
 
@@ -90,6 +91,16 @@ class FakeRuntime:
             raise AssertionError("rate not committed")
         if self.volume != 100:
             raise AssertionError("source volume not restored")
+        if request.should_play and (self.paused or not self.playing):
+            raise AssertionError("source not playing")
+        if not request.should_play and not self.paused:
+            raise AssertionError("source not paused")
+        return {"committed": True, "active_rate": self.rate}
+
+    async def verify_transition_graph(self, request):
+        await self._stage("verify-graph")
+        if self.rate != request.target_rate:
+            raise AssertionError("rate not aligned")
         if request.should_play and (self.paused or not self.playing):
             raise AssertionError("source not playing")
         if not request.should_play and not self.paused:
@@ -250,6 +261,28 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(runtime.paused)
         self.assertFalse(runtime.playing)
         self.assertFalse(runtime.muted)
+
+    async def test_startup_reconciles_a_persisted_fxroute_failure_mute(self):
+        with tempfile.TemporaryDirectory(prefix="fxroute-gate-test-") as directory:
+            gate_path = pathlib.Path(directory) / "playback-gate.json"
+            runtime = FakeRuntime(muted=False, fail_stage="rate")
+            first = PlaybackTransitionCoordinator(
+                runtime, gate_settle_seconds=0, gate_state_path=gate_path
+            )
+
+            with self.assertRaises(PlaybackTransitionFailure):
+                await first.execute(request())
+            self.assertTrue(gate_path.exists())
+            self.assertTrue(runtime.muted)
+
+            second = PlaybackTransitionCoordinator(
+                runtime, gate_settle_seconds=0, gate_state_path=gate_path
+            )
+            self.assertTrue(await second.reconcile_startup_gate())
+            self.assertFalse(runtime.muted)
+            self.assertFalse(second.gate.closed)
+            self.assertFalse(second.gate.failure_latched)
+            self.assertFalse(gate_path.exists())
 
 
 class PlayerLoadContractTests(unittest.TestCase):
