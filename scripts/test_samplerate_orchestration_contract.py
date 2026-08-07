@@ -223,8 +223,15 @@ class SamplerateOrchestrationContractTests(unittest.IsolatedAsyncioTestCase):
 
         track = {"source": "radio", "url": "https://radio.example/live", "sample_rate_hz": 44100}
         with patch.object(main, "playback_transition_coordinator", FakeCoordinator()), patch.object(
-            main, "_run_coordinated_transition", run
-        ):
+            main, "player_instance", SimpleNamespace(state={
+                "current_file": "https://radio.example/live",
+                "playing": True,
+                "paused": False,
+                "ended": False,
+            })
+        ), patch.object(main, "current_track_info", dict(track)), patch.object(
+            main, "coordinator_last_successful_commit_id", "tr-status-repair"
+        ), patch.object(main, "_run_coordinated_transition", run):
             await main._request_coordinated_recovery(track, "status-drift-repair")
 
         self.assertEqual(len(calls), 1)

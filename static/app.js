@@ -161,9 +161,6 @@ let state = {
         active_rate: null,
         mode: null,
         force_rate: null,
-        configured_default_rate: null,
-        default_rate: null,
-        pending_default_rate: null,
     },
     settings: {
         audioOutputs: {
@@ -318,8 +315,6 @@ const elements = {
     settingsOutputSelect: document.getElementById('settings-output-select'),
     settingsOutputModeSelect: document.getElementById('settings-output-mode-select'),
     settingsOutputModeHint: document.getElementById('settings-output-mode-hint'),
-    settingsSamplerateSelect: document.getElementById('settings-samplerate-select'),
-    settingsSamplerateHint: document.getElementById('settings-samplerate-hint'),
     settingsSourceSelect: document.getElementById('settings-source-select'),
     settingsSourceModeHint: document.getElementById('settings-source-mode-hint'),
     settingsBluetoothStatus: document.getElementById('settings-bluetooth-status'),
@@ -963,11 +958,6 @@ function setupSettingsActions() {
             void switchAudioOutputMode(event.target.value || 'stereo');
         });
     }
-    if (elements.settingsSamplerateSelect) {
-        elements.settingsSamplerateSelect.addEventListener('change', (event) => {
-            void savePipewireDefaultRate(event.target.value || '48000');
-        });
-    }
     if (elements.settingsSourceSelect) {
         elements.settingsSourceSelect.addEventListener('change', (event) => {
             const value = event.target.value || 'app-playback';
@@ -1099,11 +1089,6 @@ function isSubwooferModeName(mode) {
 
 function normalizeOutputModeName(mode) {
     return isSubwooferModeName(mode) ? mode : 'stereo';
-}
-
-function normalizePipewireDefaultRate(value) {
-    const rate = Number(value);
-    return [44100, 48000, 88200, 96000, 176400, 192000].includes(rate) ? rate : 48000;
 }
 
 function formatSampleRateKhz(rate) {
@@ -1813,24 +1798,6 @@ function renderSettingsPanel() {
             elements.settingsOutputModeHint.textContent = channels
                 ? `Stereo mode active. Selected output reports ${channels} channels.`
                 : 'Stereo output mode active.';
-        }
-    }
-    if (elements.settingsSamplerateSelect && !isSelectFocused(elements.settingsSamplerateSelect)) {
-        const samplerate = state.samplerate || {};
-        const configured = normalizePipewireDefaultRate(samplerate.configured_default_rate ?? samplerate.default_rate ?? 48000);
-        const pending = samplerate.pending_default_rate;
-        elements.settingsSamplerateSelect.value = String(pending ?? configured);
-        elements.settingsSamplerateSelect.disabled = pending !== null || samplerate.available === false;
-    }
-    if (elements.settingsSamplerateHint) {
-        const samplerate = state.samplerate || {};
-        if (!samplerate.available) {
-            elements.settingsSamplerateHint.textContent = 'Configured default: unavailable.';
-        } else {
-            const configured = normalizePipewireDefaultRate(samplerate.configured_default_rate ?? samplerate.default_rate ?? 48000);
-            const active = samplerate.active_rate ? ` · active ${formatSampleRateKhz(samplerate.active_rate)}` : '';
-            const restart = samplerate.restart_required ? ' · restart PipeWire/session or reboot to apply' : ' · restart PipeWire/session or reboot after changes';
-            elements.settingsSamplerateHint.textContent = `Configured default: ${formatSampleRateKhz(configured)}${active}${restart}`;
         }
     }
 
@@ -2918,29 +2885,6 @@ function renderSamplerateUI() {
     elements.samplerateStatus.classList.remove('hidden');
 }
 
-async function savePipewireDefaultRate(value) {
-    const defaultRate = normalizePipewireDefaultRate(value);
-    state.samplerate.pending_default_rate = defaultRate;
-    renderSettingsPanel();
-    try {
-        const resp = await fetch('/api/audio/samplerate', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ default_rate: defaultRate }),
-        });
-        const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(data.detail || 'Failed to save PipeWire default sample rate');
-        state.samplerate = { ...state.samplerate, ...data, pending_default_rate: null };
-        renderSamplerateUI();
-        renderSettingsPanel();
-        showToast(`Default sample rate saved: ${formatSampleRateKhz(defaultRate)}`, 'success');
-    } catch (error) {
-        state.samplerate.pending_default_rate = null;
-        renderSettingsPanel();
-        showToast(error.message || 'Failed to save PipeWire default sample rate', 'error');
-    }
-}
-
 function formatOutputLevelBadgeDb(level) {
     const rounded = Math.round(Number(level));
     if (!Number.isFinite(rounded)) return '';
@@ -3666,7 +3610,7 @@ async function fetchSamplerateStatus() {
         const resp = await fetch('/api/audio/samplerate');
         if (!resp.ok) throw new Error('Failed to fetch samplerate status');
         const data = await resp.json();
-        state.samplerate = { ...state.samplerate, ...data, pending_default_rate: state.samplerate.pending_default_rate ?? null };
+        state.samplerate = { ...state.samplerate, ...data };
         renderSamplerateUI();
         renderSettingsPanel();
     } catch (e) {

@@ -42,15 +42,22 @@ class _TestSession:
         self._orig_radio_stream_stale = main.radio_stream_stale_after_measurement
         self._orig_last_measurement_window_seen_at = main.last_measurement_window_seen_at
         self._orig_get_player_audio_samplerate = main._get_player_audio_samplerate
+        self._orig_get_spotify_ui_state = main.get_spotify_ui_state
+        self._orig_latest_spotify_state = main.latest_spotify_state
+        self._orig_current_footer_owner = main.current_footer_owner
         self._orig_playback_intent_generation = main.playback_intent_generation
         self._orig_playback_transition_coordinator = main.playback_transition_coordinator
+        self._orig_run_coordinated_transition = main._run_coordinated_transition
+        self._orig_coordinator_current_playback_context = main._coordinator_current_playback_context
 
         # Mock system state
         self._force_rate = 44100
         self._window_seen_at = 0.0
         self._track_info: dict | None = None
         self._player_state: dict = {}
+        self._spotify_state: dict = {}
         self._set_force_calls: list[int] = []
+        self._transition_requests = []
 
         # Patch
         main.measurement_sr_session = main.MeasurementSampleRateSession()
@@ -65,8 +72,12 @@ class _TestSession:
         main._get_current_pipewire_force_rate = self._mock_get_current_pipewire_force_rate
         main._is_measurement_window_open = self._mock_is_measurement_window_open
         main._get_player_audio_samplerate = self._mock_get_player_audio_samplerate
+        main.get_spotify_ui_state = self._mock_get_spotify_ui_state
+        main.latest_spotify_state = None
         main.playback_intent_generation = 0
         main.player_instance = None
+        main._run_coordinated_transition = self._mock_run_coordinated_transition
+        main._coordinator_current_playback_context = self._mock_coordinator_current_playback_context
 
         self._session: main.MeasurementSampleRateSession = main.measurement_sr_session
 
@@ -83,6 +94,52 @@ class _TestSession:
 
     def _mock_get_player_audio_samplerate(self) -> int | None:
         return self._force_rate
+
+    async def _mock_run_coordinated_transition(self, request):
+        import main
+        self._transition_requests.append(request)
+        self._force_rate = request.target_rate
+        if request.source in {"local", "radio"} and main.player_instance is not None:
+            state = main.player_instance.state
+            state["paused"] = True
+            state["playing"] = False
+        elif request.source == "spotify":
+            self._spotify_state["status"] = "Playing" if request.should_play else "Paused"
+        return type("_TransitionResult", (), {
+            "committed": True,
+            "target_rate": request.target_rate,
+        })()
+
+    async def _mock_coordinator_current_playback_context(self):
+        import main
+        track = dict(main.current_track_info or {})
+        state = dict(main.player_instance.state if main.player_instance else {})
+        spotify_state = await main.get_spotify_ui_state()
+        spotify_identity = spotify_state.get("trackId") or spotify_state.get("url")
+        if spotify_identity and spotify_state.get("status") in {"Playing", "Paused"}:
+            return {
+                "source": "spotify",
+                "target_url": spotify_identity,
+                "target_track": {
+                    "source": "spotify",
+                    "id": spotify_state.get("trackId"),
+                    "url": spotify_identity,
+                    "title": spotify_state.get("title"),
+                    "artist": spotify_state.get("artist"),
+                },
+                "should_play": spotify_state.get("status") == "Playing",
+                "spotify": spotify_state,
+            }
+        return {
+            "source": track.get("source") or "local",
+            "target_url": state.get("current_file"),
+            "target_track": track,
+            "should_play": bool(not state.get("paused") and not state.get("ended")),
+            "spotify": spotify_state,
+        }
+
+    async def _mock_get_spotify_ui_state(self, data=None):
+        return dict(data or self._spotify_state)
 
     def _mock_is_measurement_window_open(self) -> bool:
         if self._window_seen_at <= 0:
@@ -115,7 +172,20 @@ class _TestSession:
                 "paused": False,
                 "ended": False,
             },
+            "set_pause": lambda self, paused: self.state.update(
+                paused=bool(paused), playing=not bool(paused)
+            ),
         })()
+
+    def set_spotify_playing(self, track_id: str = "spotify:track:test") -> None:
+        self._spotify_state = {
+            "available": True,
+            "status": "Playing",
+            "trackId": track_id,
+            "url": track_id,
+            "title": "Spotify Track",
+            "artist": "Spotify Artist",
+        }
 
     def clear_track(self) -> None:
         import main
@@ -137,8 +207,13 @@ class _TestSession:
         main.radio_stream_stale_after_measurement = self._orig_radio_stream_stale
         main.last_measurement_window_seen_at = self._orig_last_measurement_window_seen_at
         main._get_player_audio_samplerate = self._orig_get_player_audio_samplerate
+        main.get_spotify_ui_state = self._orig_get_spotify_ui_state
+        main.latest_spotify_state = self._orig_latest_spotify_state
+        main.current_footer_owner = self._orig_current_footer_owner
         main.playback_intent_generation = self._orig_playback_intent_generation
         main.playback_transition_coordinator = self._orig_playback_transition_coordinator
+        main._run_coordinated_transition = self._orig_run_coordinated_transition
+        main._coordinator_current_playback_context = self._orig_coordinator_current_playback_context
 
 
 # ── Test cases ────────────────────────────────────────────────────────────────
@@ -219,6 +294,9 @@ class TestCentralCapture:
                     "paused": False,
                     "ended": False,
                 },
+                "set_pause": lambda self, paused: self.state.update(
+                    paused=bool(paused), playing=not bool(paused)
+                ),
             })()
 
             # Second job registers; session already active → capture guard prevents re-capture
@@ -245,7 +323,9 @@ class TestCentralCapture:
             )
             saved = main._playback_state_before_measurement
             assert saved is not None
-            assert main._measurement_restore_snapshot_matches_current_intent(saved)
+            assert asyncio.get_event_loop().run_until_complete(
+                main._measurement_restore_snapshot_matches_current_intent(saved)
+            )
 
             main.current_track_info = {
                 "source": "local",
@@ -253,11 +333,168 @@ class TestCentralCapture:
                 "id": "other",
             }
             main.player_instance.state["current_file"] = "file:///other.flac"
-            assert not main._measurement_restore_snapshot_matches_current_intent(saved)
+            assert not asyncio.get_event_loop().run_until_complete(
+                main._measurement_restore_snapshot_matches_current_intent(saved)
+            )
 
             main.current_track_info = None
             main.player_instance = None
-            assert not main._measurement_restore_snapshot_matches_current_intent(saved)
+            assert not asyncio.get_event_loop().run_until_complete(
+                main._measurement_restore_snapshot_matches_current_intent(saved)
+            )
+        finally:
+            ts.cleanup()
+
+    def test_spotify_capture_uses_live_entry_context_and_restores_same_track(self) -> None:
+        """Spotify A is captured from entry context, paused for measurement, then restarted."""
+        ts = _TestSession()
+        try:
+            import main
+
+            ts.set_spotify_playing("spotify:track:A")
+            ts.set_track_playing(source="local", sample_rate=44100)
+            main.player_instance.state.update(paused=True, playing=False)
+            local_track_before = dict(main.current_track_info)
+            local_state_before = dict(main.player_instance.state)
+            # A stale cache must not become the capture authority.
+            main.latest_spotify_state = {
+                "available": True,
+                "status": "Playing",
+                "trackId": "spotify:track:B",
+            }
+
+            restore_calls = []
+
+            class Coordinator:
+                async def restore_measurement(self, **kwargs):
+                    restore_calls.append(kwargs)
+                    ts._spotify_state["status"] = "Playing"
+                    return SimpleNamespace(committed=True)
+
+            main.playback_transition_coordinator = Coordinator()
+            asyncio.get_event_loop().run_until_complete(
+                ts._session.register_manual_job("spotify-a")
+            )
+
+            saved = main._playback_state_before_measurement
+            assert saved is not None
+            assert saved["source"] == "spotify"
+            assert saved["id"] == "spotify:track:A"
+            assert saved["url"] == "spotify:track:A"
+            assert ts._spotify_state["status"] == "Paused"
+            assert main.current_track_info == local_track_before
+
+            asyncio.get_event_loop().run_until_complete(ts._session.request_close())
+            asyncio.get_event_loop().run_until_complete(
+                ts._session.unregister_manual_job("spotify-a")
+            )
+
+            assert len(restore_calls) == 1
+            assert restore_calls[0]["target_url"] == "spotify:track:A"
+            assert restore_calls[0]["should_play"] is True
+            assert restore_calls[0]["restore_intent"]["id"] == "spotify:track:A"
+            assert ts._spotify_state["status"] == "Playing"
+            assert main.current_track_info == local_track_before
+            assert main.player_instance.state == local_state_before
+        finally:
+            ts.cleanup()
+
+    def test_spotify_snapshot_is_discarded_after_external_track_change(self) -> None:
+        """A snapshot for Spotify A must not resurrect Spotify after an external switch to B."""
+        ts = _TestSession()
+        try:
+            import main
+
+            ts.set_spotify_playing("spotify:track:A")
+            ts.set_track_playing(source="local", sample_rate=44100)
+            main.player_instance.state.update(paused=True, playing=False)
+            local_track_before = dict(main.current_track_info)
+            coordinator = SimpleNamespace(
+                restore_measurement=AsyncMock(return_value=SimpleNamespace(committed=True))
+            )
+            main.playback_transition_coordinator = coordinator
+
+            asyncio.get_event_loop().run_until_complete(
+                ts._session.register_manual_job("spotify-a")
+            )
+            ts._spotify_state.update({
+                "status": "Paused",
+                "trackId": "spotify:track:B",
+                "url": "spotify:track:B",
+            })
+
+            saved = main._playback_state_before_measurement
+            assert saved is not None
+            assert not asyncio.get_event_loop().run_until_complete(
+                main._measurement_restore_snapshot_matches_current_intent(saved)
+            )
+
+            asyncio.get_event_loop().run_until_complete(ts._session.request_close())
+            asyncio.get_event_loop().run_until_complete(
+                ts._session.unregister_manual_job("spotify-a")
+            )
+
+            coordinator.restore_measurement.assert_not_awaited()
+            assert main._playback_state_before_measurement is None
+            assert main.current_track_info == local_track_before
+            assert not main.current_track_info.get("source") == "spotify"
+        finally:
+            ts.cleanup()
+
+    def test_spotify_runtime_restore_validation_ignores_local_mpv_context(self) -> None:
+        """Runtime validation uses Spotify state, not a paused local MPV context."""
+        ts = _TestSession()
+        try:
+            import main
+            from playback_transition import TransitionRequest
+
+            ts.set_spotify_playing("spotify:track:A")
+            ts.set_track_playing(source="local", sample_rate=44100)
+            main.player_instance.state.update(
+                current_file="file:///local.flac",
+                paused=True,
+                playing=False,
+            )
+            local_track_before = dict(main.current_track_info)
+            intent = {
+                "source": "spotify",
+                "id": "spotify:track:A",
+                "url": "spotify:track:A",
+                "path": "spotify:track:A",
+                "track_info": {
+                    "source": "spotify",
+                    "id": "spotify:track:A",
+                    "url": "spotify:track:A",
+                },
+                "intent_generation": main.playback_intent_generation,
+            }
+            request = TransitionRequest(
+                operation="measurement-restore",
+                source="spotify",
+                target_rate=44100,
+                target_url="spotify:track:A",
+                target_track=intent["track_info"],
+                should_play=True,
+                rate_change=True,
+                reload_source=True,
+                restore_intent=intent,
+            )
+            runtime = main.FxrouteTransitionRuntime()
+
+            ts._spotify_state["status"] = "Paused"
+            assert asyncio.get_event_loop().run_until_complete(
+                runtime.validate_measurement_restore_intent(request, {})
+            ) is True
+            assert main.current_track_info == local_track_before
+
+            ts._spotify_state.update({
+                "trackId": "spotify:track:B",
+                "url": "spotify:track:B",
+            })
+            assert asyncio.get_event_loop().run_until_complete(
+                runtime.validate_measurement_restore_intent(request, {})
+            ) is False
+            assert main.current_track_info == local_track_before
         finally:
             ts.cleanup()
 

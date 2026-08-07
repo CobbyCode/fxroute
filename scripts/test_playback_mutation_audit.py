@@ -137,6 +137,8 @@ def _reason(context: str, name: str) -> str | None:
             "_complete_playback_handoff", "_rollback_playback_handoff",
             "_repair_playback_graph_once", "_repair_stereo_output_links_once",
             "_coordinator_establish_effects_and_helper",
+            "_relink_post_start_missing_production_links",
+            "rollback_output_mode_runtime",
             "_ensure_mpv_to_easyeffects_links",
             "_sync_easyeffects_preset_for_playback_samplerate",
         }

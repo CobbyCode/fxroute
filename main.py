@@ -21,10 +21,11 @@ import zipfile
 import numpy as np
 import samplerate_orchestration
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, List, Mapping, Optional
-from urllib.parse import quote, unquote
+from urllib.parse import quote, unquote, urlparse
 from uuid import uuid4
 
 import uvicorn
@@ -659,6 +660,7 @@ try:
 except ImportError:
     HardwareController = None
 from measurement import (
+    MEASUREMENT_DEFAULT_SAMPLE_RATE,
     MeasurementStore,
     measurement_setup_settings_from_payload,
     normalize_measurement_optional_input_channel,
@@ -727,6 +729,8 @@ from samplerate import (
     get_audio_source_overview,
     get_bluetooth_audio_overview,
     get_samplerate_status,
+    persist_audio_output_mode,
+    prepare_audio_output_mode,
     set_audio_output_mode,
     set_audio_output_selection,
     set_audio_source_selection,
@@ -784,35 +788,46 @@ class MeasurementSampleRateSession:
         self.measurement_rate = int(measurement_rate)
         self._playback_captured = False
         self._rate_changed = False
-        # Capture playback state centrally BEFORE switching force-rate
-        # so manual sweeps, L/R-repeat and Auto Sub all use the same path.
-        _capture_playback_state_before_measurement()
         try:
             status = get_samplerate_status()
             self.original_force_rate = int(status.get("force_rate") or 0)
         except Exception as exc:
             logger.warning("Measurement sample-rate session could not read force-rate: %s", exc)
             self.original_force_rate = 0
-        if self.original_force_rate != self.measurement_rate:
-            try:
-                _set_pipewire_force_rate(self.measurement_rate)
-                self._rate_changed = True
-            except Exception as exc:
-                logger.error(
-                    "Measurement sample-rate session could not set force-rate to %s Hz: %s",
-                    self.measurement_rate,
-                    exc,
-                )
-                # Do not expose a measurement session whose required rate was
-                # never established.  In particular, callers must not start a
-                # sweep while the sink is still running at the playback rate.
-                self._playback_captured = False
-                _playback_state_before_measurement = None
-                _radio_state_before_measurement = None
-                self.original_force_rate = 0
-                raise RuntimeError(
-                    f"Could not set measurement force-rate to {self.measurement_rate} Hz"
-                ) from exc
+        try:
+            context = await _coordinator_current_playback_context()
+            # Capture playback state from the same read-only live context that
+            # the guarded measurement-entry transition will pause.  This is
+            # especially important for Spotify, where current_track_info and
+            # MPV are intentionally unrelated transport state.
+            _capture_playback_state_before_measurement(context)
+            transition_result = await _run_coordinated_transition(TransitionRequest(
+                operation="measurement-entry",
+                source=str(context.get("source") or "local"),
+                target_rate=self.measurement_rate,
+                target_url=context.get("target_url"),
+                target_track=dict(context.get("target_track") or {}),
+                should_play=False,
+                rate_change=self.original_force_rate != self.measurement_rate,
+                reload_source=False,
+                detail="measurement-entry",
+            ))
+            if not transition_result.committed:
+                raise RuntimeError("measurement entry was not committed")
+            self._rate_changed = self.original_force_rate != self.measurement_rate
+        except Exception as exc:
+            logger.error(
+                "Measurement sample-rate session could not establish its guarded entry at %s Hz: %s",
+                self.measurement_rate,
+                exc,
+            )
+            self._playback_captured = False
+            _playback_state_before_measurement = None
+            _radio_state_before_measurement = None
+            self.original_force_rate = 0
+            raise RuntimeError(
+                f"Could not establish guarded measurement entry at {self.measurement_rate} Hz"
+            ) from exc
         self.active = True
         self.close_requested = False
         self.deferred_release_pending = False
@@ -905,7 +920,7 @@ class MeasurementSampleRateSession:
 
         restore_value = self.original_force_rate if self.original_force_rate > 0 else 0
         captured_playback_snapshot = _playback_state_before_measurement
-        snapshot_is_current = _measurement_restore_snapshot_matches_current_intent(
+        snapshot_is_current = await _measurement_restore_snapshot_matches_current_intent(
             captured_playback_snapshot
         ) if captured_playback_snapshot else False
         if captured_playback_snapshot and not snapshot_is_current:
@@ -931,7 +946,11 @@ class MeasurementSampleRateSession:
         )
         if playback_restore_via_coordinator:
             coordinator_attempted = True
-            track = dict((current_track_info or {}))
+            track = dict(
+                (playback_snapshot.get("track_info") or {})
+                if playback_source == "spotify"
+                else (current_track_info or {})
+            )
             track.update({
                 "source": playback_source,
                 "url": playback_snapshot.get("url") or playback_snapshot.get("path"),
@@ -1286,7 +1305,7 @@ class FxrouteTransitionRuntime(TransitionRuntime):
             rate = dict(get_samplerate_status())
         except Exception:
             rate = {}
-        return {
+        snapshot = {
             "player": state,
             "active_rate": rate.get("active_rate"),
             "force_rate": rate.get("force_rate"),
@@ -1295,6 +1314,18 @@ class FxrouteTransitionRuntime(TransitionRuntime):
             "current_track": dict(current_track_info or {}),
             "playback_intent_generation": playback_intent_generation,
         }
+        if request.operation == "output-mode-switch":
+            snapshot["output_mode_overview"] = copy.deepcopy(get_audio_output_overview())
+            snapshot["output_mode_config"] = copy.deepcopy(
+                samplerate._load_raw_audio_output_mode()
+            )
+            snapshot["ee_active_preset"] = (
+                easyeffects_manager.get_active_preset()
+                if easyeffects_manager is not None
+                else None
+            )
+            snapshot["spotify"] = await get_spotify_ui_state()
+        return snapshot
 
     def target_source_staged(self, request: TransitionRequest) -> bool:
         """Report whether this transition has staged a new MPV target."""
@@ -1429,6 +1460,29 @@ class FxrouteTransitionRuntime(TransitionRuntime):
             return True
 
         expected_source = str(intent.get("source") or request.source)
+        if expected_source == "spotify":
+            try:
+                spotify_state = await get_spotify_ui_state()
+            except Exception:
+                return False
+            expected_identities = _spotify_snapshot_identity_values(intent)
+            if not expected_identities:
+                expected_identities = _spotify_snapshot_identity_values({
+                    "target_url": request.target_url,
+                    "track_info": request.target_track,
+                })
+            live_identities = _spotify_identity_values(spotify_state)
+            status = str(spotify_state.get("status") or "").strip().lower()
+            if status not in {"playing", "paused"}:
+                return False
+            if not expected_identities or not live_identities.intersection(expected_identities):
+                return False
+            expected_generation = intent.get("intent_generation")
+            return not (
+                isinstance(expected_generation, int)
+                and expected_generation != playback_intent_generation
+            )
+
         expected_id = intent.get("id")
         expected_url = intent.get("url") or intent.get("path") or request.target_url
         live_track = current_track_info or {}
@@ -1470,6 +1524,15 @@ class FxrouteTransitionRuntime(TransitionRuntime):
                 if not released:
                     await asyncio.sleep(SOURCE_HANDOFF_SETTLE_MS / 1000)
                 return
+            if request.operation in {"measurement-entry", "output-mode-switch"}:
+                spotify_state = await get_spotify_ui_state()
+                if _is_spotify_playback_active(spotify_state):
+                    await spotify_pause()
+                    if not await _wait_for_pipewire_spotify_release():
+                        raise RuntimeError(
+                            "active Spotify sink input did not quiesce before guarded graph transition"
+                        )
+                return
             local_state = dict(player_instance.state if player_instance else {})
             local_track = current_track_info or {}
             if (
@@ -1508,7 +1571,11 @@ class FxrouteTransitionRuntime(TransitionRuntime):
         # stream alive and only quiets it.  A real rate change must release the
         # old stream before the target-rate negotiation begins.
         player_instance.set_pause(True)
-        should_release = bool(request.rate_change and state.get("current_file"))
+        should_release = bool(
+            request.rate_change
+            and request.operation not in {"measurement-entry", "output-mode-switch"}
+            and state.get("current_file")
+        )
         if should_release:
             player_instance.stop_playback()
             released = await _wait_for_pipewire_mpv_release()
@@ -1938,7 +2005,12 @@ class FxrouteTransitionRuntime(TransitionRuntime):
         dsp_reinitialized: bool = False,
     ) -> dict[str, Any]:
         """Re-apply the canonical DSP work point after a rate/EE mutation."""
-        if not (request.rate_change or dsp_reinitialized) or not request.should_play:
+        if not (request.rate_change or dsp_reinitialized):
+            return {"stabilized": True, "no_op": True}
+        if (
+            not request.should_play
+            and request.operation not in {"measurement-entry", "output-mode-switch"}
+        ):
             return {"stabilized": True, "no_op": True}
 
         manager = easyeffects_manager
@@ -1982,10 +2054,19 @@ class FxrouteTransitionRuntime(TransitionRuntime):
             raise RuntimeError(
                 f"force-rate changed during DSP stabilization: {rate.get('force_rate')}"
             )
+        graph_overview = (
+            request.output_mode_target
+            if request.operation == "output-mode-switch" and request.output_mode_target
+            else None
+        )
         graph = await _playback_graph_diagnosis(
+            graph_overview,
             source=request.source,
             target_rate=request.target_rate,
-            require_source=True,
+            require_source=(
+                request.should_play
+                or (request.operation == "output-mode-switch" and bool(request.target_url))
+            ),
         )
         if not graph.get("links_complete"):
             raise RuntimeError(
@@ -2144,6 +2225,250 @@ class FxrouteTransitionRuntime(TransitionRuntime):
             require_effects_runtime=False,
         )
 
+    async def verify_measurement_entry(self, request: TransitionRequest) -> dict[str, Any]:
+        """Confirm the paused measurement handoff without starting music."""
+        status = dict(get_samplerate_status())
+        if status.get("active_rate") != request.target_rate:
+            raise RuntimeError(
+                "measurement entry hardware rate mismatch: "
+                f"expected={request.target_rate} actual={status.get('active_rate')}"
+            )
+        if status.get("force_rate") not in {None, 0, request.target_rate}:
+            raise RuntimeError(
+                "measurement entry force-rate mismatch: "
+                f"expected={request.target_rate} actual={status.get('force_rate')}"
+            )
+
+        readbacks: list[dict[str, Any]] = []
+        for _ in range(2):
+            readbacks.append(
+                await _playback_graph_diagnosis(
+                    target_rate=request.target_rate,
+                    require_source=False,
+                )
+            )
+        signatures = [str(item.get("signature")) for item in readbacks]
+        if not all(item.get("links_complete") for item in readbacks) or len(set(signatures)) != 1:
+            final = readbacks[-1] if readbacks else {}
+            _log_playback_graph_diagnosis(
+                final,
+                target_rate=int(request.target_rate or 0),
+                reason="measurement-entry",
+                detail=request.detail,
+            )
+            raise RuntimeError(
+                "measurement entry canonical graph did not reach two stable readbacks"
+            )
+
+        if request.source in {"local", "radio"} and request.target_url:
+            state = dict(player_instance.state if player_instance else {})
+            if state.get("current_file") != request.target_url:
+                raise RuntimeError(
+                    "measurement entry changed the loaded music source: "
+                    f"expected={request.target_url} actual={state.get('current_file')}"
+                )
+            if not state.get("paused"):
+                raise RuntimeError("music source was not left paused for measurement")
+        elif request.source == "spotify":
+            spotify_state = await get_spotify_ui_state()
+            if spotify_state.get("status") == "Playing":
+                raise RuntimeError("Spotify was not left paused for measurement")
+
+        return {
+            "committed": True,
+            "measurement_entry": True,
+            "active_rate": status.get("active_rate"),
+            "force_rate": status.get("force_rate"),
+            "graph_complete": True,
+            "graph_signature": signatures[-1],
+        }
+
+    async def verify_output_mode_runtime(self, request: TransitionRequest) -> dict[str, Any]:
+        """Confirm a target output-mode graph before its durable config write."""
+        target_overview = copy.deepcopy(request.output_mode_target)
+        if not target_overview:
+            raise RuntimeError("output-mode transition has no target overview")
+        target_rate = request.target_rate
+        if not isinstance(target_rate, int) or target_rate <= 0:
+            raise RuntimeError("output-mode transition has no authoritative sample rate")
+
+        rate = dict(get_samplerate_status())
+        if rate.get("active_rate") != target_rate:
+            raise RuntimeError(
+                "output-mode transition hardware rate mismatch: "
+                f"expected={target_rate} actual={rate.get('active_rate')}"
+            )
+        if rate.get("force_rate") not in {None, 0, target_rate}:
+            raise RuntimeError(
+                "output-mode transition force-rate mismatch: "
+                f"expected={target_rate} actual={rate.get('force_rate')}"
+            )
+
+        readbacks: list[dict[str, Any]] = []
+        for _ in range(2):
+            readbacks.append(
+                await _playback_graph_diagnosis(
+                    target_overview,
+                    source=(
+                        request.source
+                        if request.target_url or request.should_play
+                        else None
+                    ),
+                    target_rate=target_rate,
+                    require_source=bool(request.target_url or request.should_play),
+                )
+            )
+        signatures = [str(item.get("signature")) for item in readbacks]
+        if not all(item.get("links_complete") for item in readbacks) or len(set(signatures)) != 1:
+            final = readbacks[-1] if readbacks else {}
+            _log_playback_graph_diagnosis(
+                final,
+                target_rate=target_rate,
+                reason="output-mode-switch",
+                detail=request.detail,
+            )
+            raise RuntimeError(
+                "output-mode graph did not reach two stable canonical readbacks"
+            )
+
+        spotify_stream_rate = None
+        if request.source == "spotify" and request.should_play:
+            spotify_stream_rate = await _wait_for_spotify_sink_input_samplerate(
+                expected_rate=target_rate,
+            )
+            if spotify_stream_rate != target_rate:
+                raise RuntimeError(
+                    "Spotify stream rate mismatch during output-mode commit: "
+                    f"expected={target_rate} actual={spotify_stream_rate}"
+                )
+
+        if request.source in {"local", "radio"} and request.target_url:
+            state = dict(player_instance.state if player_instance else {})
+            if state.get("current_file") != request.target_url:
+                raise RuntimeError(
+                    "output-mode transition changed the loaded music source: "
+                    f"expected={request.target_url} actual={state.get('current_file')}"
+                )
+            if request.should_play and (state.get("paused") or not state.get("playing")):
+                raise RuntimeError("music transport did not resume for output-mode commit")
+            if not request.should_play and not state.get("paused"):
+                raise RuntimeError("music transport was not left paused for output-mode commit")
+        elif request.source == "spotify":
+            spotify_state = await get_spotify_ui_state()
+            if request.should_play and spotify_state.get("status") != "Playing":
+                raise RuntimeError("Spotify did not resume for output-mode commit")
+            if not request.should_play and spotify_state.get("status") == "Playing":
+                raise RuntimeError("Spotify was not left paused for output-mode commit")
+
+        return {
+            "committed": True,
+            "output_mode_graph": True,
+            "graph_complete": True,
+            "graph_signature": signatures[-1],
+            "active_rate": rate.get("active_rate"),
+            "force_rate": rate.get("force_rate"),
+            "spotify_stream_rate": spotify_stream_rate,
+        }
+
+    async def commit_output_mode_runtime(self, request: TransitionRequest) -> dict[str, Any]:
+        """Write the target mode only after the guarded graph readback."""
+        if not request.output_mode_config:
+            raise RuntimeError("output-mode transition has no durable target config")
+        result = persist_audio_output_mode(request.output_mode_config)
+        return {
+            "output_mode_persisted": True,
+            "output_mode": dict(result.get("output_mode") or {}),
+        }
+
+    async def rollback_output_mode_runtime(
+        self,
+        request: TransitionRequest,
+        snapshot: Mapping[str, Any] | None,
+    ) -> None:
+        """Restore the old mode graph/config while the failure gate is closed."""
+        snapshot = snapshot or {}
+        old_overview = snapshot.get("output_mode_overview")
+        old_config = snapshot.get("output_mode_config")
+        if not isinstance(old_overview, Mapping):
+            raise RuntimeError("output-mode rollback has no previous overview")
+        old_overview = copy.deepcopy(dict(old_overview))
+        old_mode = (old_overview.get("output_mode") or {}).get("mode")
+        old_preset = snapshot.get("ee_active_preset")
+        if not isinstance(old_config, Mapping) or not old_config:
+            old_output_mode = dict(old_overview.get("output_mode") or {})
+            old_config = {"mode": old_mode or OUTPUT_MODE_STEREO}
+            if old_mode in OUTPUT_MODE_SUBWOOFER_22_MODES:
+                if old_output_mode.get("subwoofers"):
+                    old_config["subwoofers"] = copy.deepcopy(old_output_mode["subwoofers"])
+                if old_output_mode.get("subwoofer"):
+                    old_config["subwoofer"] = copy.deepcopy(old_output_mode["subwoofer"])
+            else:
+                old_config["subwoofer"] = copy.deepcopy(old_output_mode.get("subwoofer") or {})
+        # Restore persistence first.  If the old graph cannot be rebuilt, the
+        # durable mode still cannot claim the failed target configuration.
+        persist_audio_output_mode(old_config)
+        if easyeffects_manager is not None and old_preset:
+            current_preset = easyeffects_manager.get_active_preset()
+            if current_preset != old_preset:
+                easyeffects_manager.load_preset(old_preset, convolver_sample_rate_hz=request.target_rate)
+        await _sync_subwoofer_runtime(
+            old_overview,
+            reason="coordinator-output-mode-rollback",
+            target_overview=old_overview,
+        )
+        rollback_request = replace(request, output_mode_target=old_overview)
+        await self._verify_output_mode_rollback(rollback_request, old_mode)
+
+    async def _verify_output_mode_rollback(
+        self,
+        request: TransitionRequest,
+        _old_mode: Any,
+    ) -> None:
+        readbacks = [
+            await _playback_graph_diagnosis(
+                request.output_mode_target,
+                target_rate=request.target_rate,
+                require_source=False,
+            )
+            for _ in range(2)
+        ]
+        if not all(item.get("links_complete") for item in readbacks) or len({str(item.get("signature")) for item in readbacks}) != 1:
+            raise RuntimeError("previous output-mode graph could not be restored")
+
+    async def restore_output_mode_transport(
+        self,
+        request: TransitionRequest,
+        snapshot: Mapping[str, Any] | None,
+        transition_id: str,
+    ) -> None:
+        """Restore playing/paused transport after the mode graph commits."""
+        snapshot = snapshot or {}
+        previous_player = dict(snapshot.get("player") or {})
+        previous_spotify = dict(snapshot.get("spotify") or {})
+        if request.source in {"local", "radio"} and _player_is_running():
+            previous_volume = previous_player.get("volume")
+            if isinstance(previous_volume, (int, float)):
+                await self.set_source_volume(int(round(previous_volume)), transition_id)
+            should_play = bool(
+                previous_player.get("playing")
+                and not previous_player.get("paused")
+                and not previous_player.get("ended")
+            )
+            player_instance.set_pause(not should_play)
+            state = dict(player_instance.state if player_instance else {})
+            if should_play and (state.get("paused") or not state.get("playing")):
+                raise RuntimeError("local transport did not resume after output-mode commit")
+            if not should_play and not state.get("paused"):
+                raise RuntimeError("local pause state did not survive output-mode commit")
+        elif request.source == "spotify":
+            should_play = previous_spotify.get("status") == "Playing"
+            if should_play:
+                data = await spotify_play()
+                if data.get("status") not in {"Playing", "playing"}:
+                    raise RuntimeError("Spotify did not resume after output-mode commit")
+            else:
+                await spotify_pause()
+
     async def reconcile_post_start_graph(self, request: TransitionRequest) -> dict[str, Any]:
         """Run the bounded final graph reconciliation before staged commit."""
         return await _coordinator_reconcile_post_start_graph(request)
@@ -2183,6 +2508,130 @@ def _coordinator_target_rate(source: str, track: Mapping[str, Any] | None = None
         return int(track.get("sample_rate_hz") or RADIO_EXPECTED_SAMPLE_RATE_HZ)
     value = track.get("sample_rate_hz")
     return int(value) if isinstance(value, int) and value > 0 else None
+
+
+def _normalize_spotify_identity(value: Any) -> str | None:
+    """Return a stable comparison key for a Spotify track identity."""
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    if raw.lower().startswith("spotify:track:"):
+        track_id = raw.split(":", 2)[2].split("?", 1)[0].strip("/")
+        return f"spotify:track:{track_id}" if track_id else None
+
+    parsed = urlparse(raw)
+    if parsed.scheme.lower() == "spotify":
+        parts = [part for part in (parsed.netloc, *parsed.path.strip("/").split("/")) if part]
+        if len(parts) >= 2 and parts[0].lower() == "track":
+            return f"spotify:track:{parts[1]}"
+    if parsed.netloc:
+        parts = [unquote(part) for part in parsed.path.strip("/").split("/") if part]
+        for index, part in enumerate(parts[:-1]):
+            if part.lower() == "track":
+                return f"spotify:track:{parts[index + 1]}"
+    return raw
+
+
+def _spotify_identity_values(value: Mapping[str, Any] | None) -> set[str]:
+    """Collect stable Spotify identity candidates from a live/snapshot mapping."""
+    if not isinstance(value, Mapping):
+        return set()
+    identities: set[str] = set()
+    for key in (
+        "trackId",
+        "trackid",
+        "spotify_track_id",
+        "spotify_identity",
+        "id",
+        "url",
+        "uri",
+        "path",
+        "spotify_url",
+        "target_url",
+    ):
+        normalized = _normalize_spotify_identity(value.get(key))
+        if not normalized:
+            continue
+        identities.add(normalized)
+        if normalized.startswith("spotify:track:"):
+            identities.add(normalized.rsplit(":", 1)[-1])
+    return identities
+
+
+def _spotify_snapshot_identity_values(snapshot: Mapping[str, Any] | None) -> set[str]:
+    """Collect Spotify identity from both snapshot fields and its track record."""
+    if not isinstance(snapshot, Mapping):
+        return set()
+    identities = _spotify_identity_values(snapshot)
+    for key in ("track_info", "target_track", "spotify"):
+        nested = snapshot.get(key)
+        if isinstance(nested, Mapping):
+            identities.update(_spotify_identity_values(nested))
+    return identities
+
+
+async def _coordinator_current_playback_context() -> dict[str, Any]:
+    """Read the currently owned source without mutating either transport."""
+    local_state = dict(player_instance.state if player_instance else {})
+    local_track = dict(current_track_info or {})
+    spotify_state = await get_spotify_ui_state()
+    local_active = _is_local_playback_active(local_state)
+    spotify_active = _is_spotify_playback_active(spotify_state)
+
+    if local_active and local_track.get("source") in {"local", "radio"}:
+        return {
+            "source": local_track.get("source"),
+            "target_url": local_state.get("current_file"),
+            "target_track": local_track,
+            "should_play": True,
+            "spotify": spotify_state,
+        }
+    if spotify_active:
+        track_id = spotify_state.get("trackId") or spotify_state.get("url")
+        return {
+            "source": "spotify",
+            "target_url": str(track_id or "") or None,
+            "target_track": {
+                "source": "spotify",
+                "id": spotify_state.get("trackId"),
+                "url": track_id,
+                "title": spotify_state.get("title"),
+                "artist": spotify_state.get("artist"),
+                "sample_rate_hz": SPOTIFY_PREARM_SAMPLE_RATE_HZ,
+            },
+            "should_play": True,
+            "spotify": spotify_state,
+        }
+    if local_track.get("source") in {"local", "radio"} and local_state.get("current_file"):
+        return {
+            "source": local_track.get("source"),
+            "target_url": local_state.get("current_file"),
+            "target_track": local_track,
+            "should_play": bool(local_state.get("playing") and not local_state.get("paused")),
+            "spotify": spotify_state,
+        }
+    if current_footer_owner == "spotify" and spotify_state.get("trackId"):
+        return {
+            "source": "spotify",
+            "target_url": str(spotify_state.get("trackId")),
+            "target_track": {
+                "source": "spotify",
+                "id": spotify_state.get("trackId"),
+                "url": spotify_state.get("trackId"),
+                "title": spotify_state.get("title"),
+                "artist": spotify_state.get("artist"),
+                "sample_rate_hz": SPOTIFY_PREARM_SAMPLE_RATE_HZ,
+            },
+            "should_play": False,
+            "spotify": spotify_state,
+        }
+    return {
+        "source": "local",
+        "target_url": None,
+        "target_track": {},
+        "should_play": False,
+        "spotify": spotify_state,
+    }
 
 
 def _coordinator_rate_change(target_rate: int | None) -> bool:
@@ -3016,6 +3465,7 @@ async def _playback_graph_diagnosis(
         "bypass_only": False,
         "port_identities": {
             "source": (),
+            "source_target": (),
             "ee": (),
             "helper": (),
             "output": (),
@@ -3058,8 +3508,15 @@ async def _playback_graph_diagnosis(
         f"{source_node}:output_FL",
         f"{source_node}:output_FR",
     ) if source_node else ()
+    source_target_port_names = (
+        "easyeffects_sink:playback_FL",
+        "easyeffects_sink:playback_FR",
+    )
     result["port_identities"] = {
         "source": tuple(port for port in source_port_names if port in io_text),
+        "source_target": tuple(
+            port for port in source_target_port_names if port in io_text
+        ),
         "ee": tuple(port for port in (ee_fl, ee_fr) if port in io_text),
         "helper": tuple(port for port in helper_port_names if port in io_text),
         "output": tuple(port for port in output_port_names if port in io_text),
@@ -3179,12 +3636,26 @@ async def _playback_graph_diagnosis(
     return result
 
 
-def _missing_playback_graph_links(diagnosis: dict) -> list:
-    """Names of the links that are missing in a graph diagnosis."""
-    return [
+def _missing_playback_graph_links(
+    diagnosis: Mapping[str, Any],
+    *,
+    include_source: bool = False,
+) -> list[str]:
+    """Names of missing canonical links from a graph diagnosis."""
+    missing = [
         link for link, present in (diagnosis.get("links") or {}).items()
         if not present
     ]
+    if include_source:
+        missing = [
+            *[
+                link
+                for link, present in (diagnosis.get("source_links") or {}).items()
+                if not present
+            ],
+            *missing,
+        ]
+    return missing
 
 
 def _log_playback_graph_diagnosis(
@@ -3242,17 +3713,21 @@ async def _coordinator_reconcile_subwoofer_links_only() -> None:
     await reconcile()
 
 
-def _post_start_graph_links_are_repairable(diagnosis: Mapping[str, Any]) -> bool:
+def _post_start_graph_links_are_repairable(
+    diagnosis: Mapping[str, Any],
+    *,
+    include_source: bool = False,
+) -> bool:
     """Return true only when a diagnosis contains stable ports and link-only drift.
 
-    This predicate intentionally excludes source-link loss, helper lifecycle or
-    rate problems, direct bypass links, and missing port identities.  Those
-    states must fail the current transition instead of being repaired by a
-    broader post-start mechanism.
+    Source-link loss is repairable only for the output-mode commit, where the
+    source was deliberately re-created under the gate.  Helper lifecycle or
+    rate problems, direct bypass links, and missing port identities remain
+    fatal.
     """
     if not diagnosis.get("output_key") or not diagnosis.get("ee_ports"):
         return False
-    if diagnosis.get("source_links_complete") is not True:
+    if diagnosis.get("source_links_complete") is not True and not include_source:
         return False
     if diagnosis.get("direct_ee_to_hw_present"):
         return False
@@ -3270,7 +3745,10 @@ def _post_start_graph_links_are_repairable(diagnosis: Mapping[str, Any]) -> bool
         if isinstance(ports, (tuple, list, set, frozenset))
         for port in ports
     }
-    for link in _missing_playback_graph_links(diagnosis):
+    for link in _missing_playback_graph_links(
+        diagnosis,
+        include_source=include_source,
+    ):
         try:
             source, target = link.split(" -> ", 1)
         except ValueError:
@@ -3282,6 +3760,8 @@ def _post_start_graph_links_are_repairable(diagnosis: Mapping[str, Any]) -> bool
 
 async def _relink_post_start_missing_production_links(
     diagnosis: Mapping[str, Any],
+    *,
+    include_source: bool = False,
 ) -> bool:
     """Relink only the missing production edges from the current readback.
 
@@ -3289,10 +3769,16 @@ async def _relink_post_start_missing_production_links(
     readback, so a recreated PipeWire port cannot be mistaken for an old
     identity.  ``_connect_ports`` is idempotent for an already existing edge.
     """
-    missing = _missing_playback_graph_links(diagnosis)
+    missing = _missing_playback_graph_links(
+        diagnosis,
+        include_source=include_source,
+    )
     if not missing:
         return False
-    if not _post_start_graph_links_are_repairable(diagnosis):
+    if not _post_start_graph_links_are_repairable(
+        diagnosis,
+        include_source=include_source,
+    ):
         raise RuntimeError(
             "post-start graph was not link-only drift with stable current ports"
         )
@@ -3318,6 +3804,16 @@ async def _coordinator_reconcile_post_start_graph(
     watcher recovery is entered here.
     """
     target_rate = request.target_rate
+    target_overview = (
+        copy.deepcopy(request.output_mode_target)
+        if request.operation == "output-mode-switch" and request.output_mode_target
+        else None
+    )
+    graph_source = (
+        request.source
+        if request.target_url or request.should_play
+        else None
+    )
     if not isinstance(target_rate, int) or target_rate <= 0:
         return {
             "graph_complete": True,
@@ -3326,11 +3822,16 @@ async def _coordinator_reconcile_post_start_graph(
         }
 
     initial = await _playback_graph_diagnosis(
-        source=request.source,
+        target_overview,
+        source=graph_source,
         target_rate=target_rate,
-        require_source=True,
+        require_source=graph_source is not None,
     )
-    initial_missing = _missing_playback_graph_links(initial)
+    include_source = request.operation == "output-mode-switch"
+    initial_missing = _missing_playback_graph_links(
+        initial,
+        include_source=include_source,
+    )
     if not initial.get("links_complete") and not initial_missing:
         _log_playback_graph_diagnosis(
             initial,
@@ -3341,15 +3842,19 @@ async def _coordinator_reconcile_post_start_graph(
         raise RuntimeError(
             "post-start graph readback was incomplete without link-only drift"
         )
-    relinked = await _relink_post_start_missing_production_links(initial)
+    relinked = await _relink_post_start_missing_production_links(
+        initial,
+        include_source=include_source,
+    )
 
     readbacks: list[dict[str, Any]] = []
     for _ in range(POST_START_GRAPH_STABILITY_READBACKS):
         readbacks.append(
             await _playback_graph_diagnosis(
-                source=request.source,
+                target_overview,
+                source=graph_source,
                 target_rate=target_rate,
-                require_source=True,
+                require_source=graph_source is not None,
             )
         )
 
@@ -3402,7 +3907,7 @@ async def _coordinator_establish_effects_and_helper(
             "links_reconciled": False,
         }
 
-    overview = get_audio_output_overview()
+    overview = copy.deepcopy(request.output_mode_target) if request.output_mode_target else get_audio_output_overview()
     mode = (overview.get("output_mode") or {}).get("mode")
     preset_reloaded = False
     helper_rebuilt = False
@@ -3450,7 +3955,24 @@ async def _coordinator_establish_effects_and_helper(
                         "sample-rate reload: %s",
                         exc,
                     )
-        if needs_preset:
+        if request.operation == "output-mode-switch" and easyeffects_manager is not None:
+            compare = easyeffects_manager.load_compare_state()
+            active_side = compare.get("activeSide") if compare.get("activeSide") in {"A", "B"} else None
+            target_preset = (
+                compare.get("presetA") if active_side == "A" else
+                compare.get("presetB") if active_side == "B" else
+                None
+            )
+            current_preset = easyeffects_manager.get_active_preset()
+            if target_preset and current_preset != target_preset:
+                easyeffects_manager.load_preset(target_preset, convolver_sample_rate_hz=target_rate)
+                needs_preset = True
+                preset_reloaded = True
+                logger.info(
+                    "Coordinator output-mode switch loaded compare-active preset under gate: %s",
+                    target_preset,
+                )
+        if needs_preset and not preset_reloaded:
             await _sync_easyeffects_preset_for_playback_samplerate(
                 sample_rate_hz=target_rate,
                 reason=f"coordinator-{request.operation}",
@@ -3462,7 +3984,16 @@ async def _coordinator_establish_effects_and_helper(
                 "Coordinator effects stage failed: EasyEffects output ports were not confirmed"
             )
 
-        if mode in OUTPUT_MODE_SUBWOOFER_MODES:
+        if request.operation == "output-mode-switch":
+            await _sync_subwoofer_runtime(
+                audio_overview=overview,
+                reason="coordinator-output-mode-switch",
+                _rate_lock_held=False,
+                target_overview=overview,
+            )
+            helper_rebuilt = mode in OUTPUT_MODE_SUBWOOFER_MODES
+            links_reconciled = True
+        elif mode in OUTPUT_MODE_SUBWOOFER_MODES:
             helper_snapshot = subwoofer_runtime.snapshot() if subwoofer_runtime is not None else {}
             helper_needs_sync = bool(
                 request.rate_change
@@ -3472,9 +4003,20 @@ async def _coordinator_establish_effects_and_helper(
                 or not all(diagnosis.get("links", {}).values())
             )
             if helper_needs_sync:
-                await _sync_subwoofer_runtime(
-                    reason=f"coordinator-{request.operation}",
-                )
+                if request.operation == "measurement-entry":
+                    await _sync_subwoofer_runtime(
+                        audio_overview=overview,
+                        reason=f"coordinator-{request.operation}",
+                        _rate_lock_held=True,
+                    )
+                else:
+                    # Preserve the original adapter call shape for normal
+                    # playback transitions; measurement/output-mode are the
+                    # only operations that must carry an explicit target
+                    # overview through this Coordinator-owned path.
+                    await _sync_subwoofer_runtime(
+                        reason=f"coordinator-{request.operation}",
+                    )
                 helper_rebuilt = True
             # EasyEffects may recreate its direct front links after a preset
             # action.  Reconcile them after helper setup without restarting
@@ -3487,6 +4029,7 @@ async def _coordinator_establish_effects_and_helper(
             links_reconciled = True
 
     final = await _playback_graph_diagnosis(
+        overview,
         target_rate=target_rate,
         require_source=False,
     )
@@ -3527,8 +4070,10 @@ async def _playback_graph_links_complete(
     return diagnosis["links_complete"]
 
 
-def _capture_playback_state_before_measurement():
-    """Save playback state before measurement starts (radio + library/local).
+def _capture_playback_state_before_measurement(
+    playback_context: Mapping[str, Any] | None = None,
+):
+    """Save playback state before measurement starts.
 
     After measurement at 48 kHz, the active playback stream (paused/playing) is
     stale at the wrong sample rate. This capture enables a controlled restart
@@ -3545,6 +4090,54 @@ def _capture_playback_state_before_measurement():
         return
     _playback_state_before_measurement = None
     _radio_state_before_measurement = None
+    context = playback_context if isinstance(playback_context, Mapping) else {}
+    if context.get("source") == "spotify":
+        spotify_state = dict(context.get("spotify") or {})
+        target_track = dict(context.get("target_track") or {})
+        spotify_identity = str(
+            context.get("target_url")
+            or target_track.get("id")
+            or target_track.get("url")
+            or spotify_state.get("trackId")
+            or spotify_state.get("url")
+            or ""
+        ).strip()
+        if not spotify_identity:
+            return
+        track_id = target_track.get("id") or spotify_state.get("trackId")
+        was_playing = bool(context.get("should_play"))
+        track_info = dict(target_track)
+        track_info.update({
+            "source": "spotify",
+            "id": track_id,
+            "url": spotify_identity,
+            "title": track_info.get("title") or spotify_state.get("title"),
+            "artist": track_info.get("artist") or spotify_state.get("artist"),
+            "sample_rate_hz": SPOTIFY_PREARM_SAMPLE_RATE_HZ,
+        })
+        _playback_state_before_measurement = {
+            "source": "spotify",
+            "track_info": track_info,
+            "url": spotify_identity,
+            "path": spotify_identity,
+            "current_file": None,
+            "id": track_id,
+            "spotify_identity": spotify_identity,
+            "title": track_info.get("title"),
+            "expected_rate": SPOTIFY_PREARM_SAMPLE_RATE_HZ,
+            "position": 0.0,
+            "was_paused": not was_playing,
+            "was_playing": was_playing,
+            "intent_generation": playback_intent_generation,
+        }
+        if measurement_sr_session is not None:
+            measurement_sr_session._playback_captured = True
+        logger.info(
+            "PLAYBACK-CAPTURE-DIAG Spotify state captured before measurement: id=%s expected_rate=%s",
+            track_id or spotify_identity,
+            SPOTIFY_PREARM_SAMPLE_RATE_HZ,
+        )
+        return
     if not current_track_info:
         return
     source = current_track_info.get("source")
@@ -3612,13 +4205,93 @@ def _capture_playback_state_before_measurement():
         measurement_sr_session._playback_captured = True
 
 
-def _measurement_restore_snapshot_matches_current_intent(
+async def _measurement_entry_preflight(measurement_rate: int = MEASUREMENT_DEFAULT_SAMPLE_RATE) -> None:
+    """Validate the guarded measurement state before creating a sweep job."""
+    coordinator = playback_transition_coordinator
+    if coordinator is None:
+        raise RuntimeError("PlaybackTransitionCoordinator is not available for measurement entry")
+    if coordinator.transition_active or coordinator.gate.failure_latched or coordinator.gate.closed:
+        raise RuntimeError("measurement entry is blocked by an active or latched playback transition")
+
+    status = dict(get_samplerate_status())
+    if status.get("active_rate") != measurement_rate:
+        raise RuntimeError(
+            "measurement entry preflight rate mismatch: "
+            f"expected={measurement_rate} actual={status.get('active_rate')}"
+        )
+    if status.get("force_rate") not in {None, 0, measurement_rate}:
+        raise RuntimeError(
+            "measurement entry preflight force-rate mismatch: "
+            f"expected={measurement_rate} actual={status.get('force_rate')}"
+        )
+
+    diagnosis = await _playback_graph_diagnosis(
+        target_rate=measurement_rate,
+        require_source=False,
+    )
+    if not diagnosis.get("links_complete"):
+        _log_playback_graph_diagnosis(
+            diagnosis,
+            target_rate=measurement_rate,
+            reason="measurement-entry-preflight",
+            detail="before-sweep",
+        )
+        raise RuntimeError("measurement entry preflight found an incomplete canonical graph")
+
+    if measurement_store is not None:
+        playback_target = measurement_store._resolve_playback_target()
+        if not isinstance(playback_target, Mapping) or not playback_target.get("target_name"):
+            raise RuntimeError("measurement entry preflight found no playback target")
+        playback_route = measurement_store._build_measurement_playback_route(
+            "fxroute-measure-preflight",
+            playback_target,
+        )
+        if not isinstance(playback_route, Mapping) or not playback_route.get("route"):
+            raise RuntimeError("measurement entry preflight found no playback route")
+        target_name = str(playback_route.get("playback_target_name") or "").strip()
+        list_ports = getattr(measurement_store, "_list_pw_ports", None)
+        if not target_name or not callable(list_ports):
+            raise RuntimeError("measurement entry preflight could not inspect playback route ports")
+        try:
+            ports = set(str(port) for port in list_ports(target_name))
+        except Exception as exc:
+            raise RuntimeError(f"measurement entry preflight could not read playback route ports: {exc}") from exc
+        required_ports = {
+            f"{target_name}:playback_FL",
+            f"{target_name}:playback_FR",
+        }
+        if not required_ports.issubset(ports):
+            raise RuntimeError(
+                "measurement entry preflight playback route is incomplete: "
+                f"target={target_name} missing={sorted(required_ports - ports)}"
+            )
+
+
+async def _measurement_restore_snapshot_matches_current_intent(
     snapshot: Mapping[str, Any] | None,
 ) -> bool:
     """Return whether a captured playback snapshot is still user-intended."""
     if not snapshot:
         return False
     expected_source = str(snapshot.get("source") or "")
+    if expected_source == "spotify":
+        try:
+            spotify_state = await get_spotify_ui_state()
+        except Exception:
+            return False
+        expected_identities = _spotify_snapshot_identity_values(snapshot)
+        live_identities = _spotify_identity_values(spotify_state)
+        status = str(spotify_state.get("status") or "").strip().lower()
+        if status not in {"playing", "paused"}:
+            return False
+        if not expected_identities or not live_identities.intersection(expected_identities):
+            return False
+        expected_generation = snapshot.get("intent_generation")
+        return not (
+            isinstance(expected_generation, int)
+            and expected_generation != playback_intent_generation
+        )
+
     expected_track = snapshot.get("track_info") or {}
     expected_id = snapshot.get("id") or expected_track.get("id")
     expected_url = (
@@ -5705,6 +6378,7 @@ async def _sync_subwoofer_runtime(
     *,
     reason: str = "unspecified",
     _rate_lock_held: bool = False,
+    target_overview: dict | None = None,
 ) -> dict:
     """Synchronize the native helper from one live, lock-protected rate.
 
@@ -5748,7 +6422,7 @@ async def _sync_subwoofer_runtime(
             )
             return overview
 
-        current_overview = get_audio_output_overview()
+        current_overview = target_overview or audio_overview or get_audio_output_overview()
         current_mode = current_overview.get("output_mode") or {}
         if current_mode.get("mode") == OUTPUT_MODE_STEREO:
             # Leave the subwoofer graph in the same ordered transition path as
@@ -7548,86 +8222,34 @@ async def save_audio_output_mode_route(request: Request):
     except Exception:
         raise HTTPException(status_code=400, detail='Invalid JSON body, expected {"mode": <string>, "subwoofer": <object?>, "subwoofers": <object?>}')
 
+    if measurement_sr_session is not None and measurement_sr_session.active:
+        raise HTTPException(status_code=423, detail="Measurement is active; output mode switch is locked")
+
     try:
-        result = set_audio_output_mode(mode, subwoofer, subwoofers)
+        target = prepare_audio_output_mode(mode, subwoofer, subwoofers)
+        context = await _coordinator_current_playback_context()
+        status = get_samplerate_status()
+        target_rate = status.get("active_rate")
+        if not isinstance(target_rate, int) or target_rate <= 0:
+            target_rate = status.get("force_rate")
+        if not isinstance(target_rate, int) or target_rate <= 0:
+            raise RuntimeError("current hardware sample rate is unavailable")
 
-        # ── Convolver Slot Pre-Sync ──
-        # Load the compare-active preset BEFORE _sync_subwoofer_runtime so
-        # ensure_stereo_output_graph reloads the correct preset and the
-        # post-sync consistency check becomes a no-op.
-        # This avoids the double-preset-load cascade:
-        #   old: sync loads preset-A → graph builds → slot check loads preset-B → graph rebuilds
-        #   new: pre-load preset-B → sync reloads preset-B → graph builds once → slot check no-op
-        target_preset_before_sync: str | None = None
-        if easyeffects_manager is not None:
-            compare_pre = easyeffects_manager.load_compare_state()
-            ee_pre = easyeffects_manager.get_active_preset()
-            logger.info(
-                "CONVOLVER-SLOT pre-switch: new_mode=%s compare_pre=%s ee_active_pre=%s",
-                mode,
-                json.dumps(compare_pre, sort_keys=True, default=str) if compare_pre else '{}',
-                ee_pre,
-            )
-            active_side_pre = compare_pre.get("activeSide") if compare_pre.get("activeSide") in {"A", "B"} else None
-            if active_side_pre == "A":
-                target_preset_before_sync = compare_pre.get("presetA", "") or None
-            elif active_side_pre == "B":
-                target_preset_before_sync = compare_pre.get("presetB", "") or None
+        await _run_coordinated_transition(TransitionRequest(
+            operation="output-mode-switch",
+            source=str(context.get("source") or "local"),
+            target_rate=target_rate,
+            target_url=context.get("target_url"),
+            target_track=dict(context.get("target_track") or {}),
+            should_play=bool(context.get("should_play")),
+            rate_change=False,
+            reload_source=False,
+            detail="api-audio-output-mode",
+            output_mode_target=dict(target["overview"]),
+            output_mode_config=dict(target["config"]),
+        ))
 
-            if target_preset_before_sync and ee_pre and ee_pre != target_preset_before_sync:
-                try:
-                    easyeffects_manager.load_preset(target_preset_before_sync)
-                    logger.info(
-                        "CONVOLVER-SLOT pre-loaded target preset before sync: %s (was %s)",
-                        target_preset_before_sync, ee_pre,
-                    )
-                except Exception as exc:
-                    logger.warning("CONVOLVER-SLOT pre-load failed: %s", exc)
-                    target_preset_before_sync = None
-
-        await _sync_subwoofer_runtime(result, reason="output-mode-switch")
-
-        # ── Convolver Slot Consistency After Mode Switch ──
-        # Should be a no-op when pre-load was successful; only fires as
-        # safety net for edge cases (preset changed externally during sync).
-        if easyeffects_manager is not None:
-            compare = easyeffects_manager.load_compare_state()
-            active_side = compare.get("activeSide") if compare.get("activeSide") in {"A", "B"} else None
-            if active_side == "A":
-                side_preset = compare.get("presetA", "")
-            elif active_side == "B":
-                side_preset = compare.get("presetB", "")
-            else:
-                side_preset = ""
-            ee_active = easyeffects_manager.get_active_preset()
-            logger.info(
-                "CONVOLVER-SLOT post-sync: new_mode=%s compare_activeSide=%s "
-                "compare_presetA=%s compare_presetB=%s ee_active_preset=%s",
-                mode, active_side, compare.get("presetA"), compare.get("presetB"), ee_active,
-            )
-            if side_preset and ee_active and ee_active != side_preset:
-                logger.warning(
-                    "CONVOLVER-SLOT MISMATCH: compare says %s=%s but EE has %s loaded. Re-applying %s.",
-                    active_side, side_preset, ee_active, side_preset,
-                )
-                try:
-                    easyeffects_manager.load_preset(side_preset)
-                except Exception as exc:
-                    logger.warning("CONVOLVER-SLOT re-apply failed: %s", exc)
-            elif not side_preset:
-                logger.info("CONVOLVER-SLOT no active compare slot (ee_active=%s)", ee_active)
-            else:
-                logger.info("CONVOLVER-SLOT consistent: compare=%s EE=%s", side_preset, ee_active)
-
-        # Enrich 2.2 response with derived delays for API/debug verification
-        om = result.get("output_mode") or {}
-        if om.get("mode") in OUTPUT_MODE_SUBWOOFER_22_MODES:
-            cfg = SubwooferRuntimeConfig.from_overview(result)
-            om["derived_main_delay_ms"] = cfg.derived_main_delay_ms
-            om["derived_sub1_delay_ms"] = cfg.derived_sub1_delay_ms
-            om["derived_sub2_delay_ms"] = cfg.derived_sub2_delay_ms
-            result["output_mode"] = om
-
+        result = _with_subwoofer_derived_delays(get_audio_output_overview())
         if subwoofer_runtime is not None:
             result["output_mode"] = {
                 **(result.get("output_mode") or {}),
@@ -7637,6 +8259,8 @@ async def save_audio_output_mode_route(request: Request):
         return result
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    except PlaybackTransitionFailure as exc:
+        raise _transition_error_http(exc) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=f"Failed to save audio output mode: {exc}")
 
@@ -8954,7 +9578,7 @@ async def start_measurement(
     try:
         if measurement_sr_session is not None:
             sweep_gen = await measurement_sr_session.register_manual_job(pending_job_id)
-        await _sync_subwoofer_runtime_for_measurement_sweep(measurement_rate)
+        await _measurement_entry_preflight(measurement_rate)
         job = await measurement_store.start_measurement(
             input_id=input_id,
             channel=channel,
@@ -9004,7 +9628,7 @@ async def start_lr_repeat_measurement(
     try:
         if measurement_sr_session is not None:
             sweep_gen = await measurement_sr_session.register_manual_job(pending_job_id)
-        await _sync_subwoofer_runtime_for_measurement_sweep(measurement_rate)
+        await _measurement_entry_preflight(measurement_rate)
         job = await measurement_store.start_lr_repeat_measurement(
             input_id=input_id,
             base_name=base_name,

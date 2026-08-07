@@ -7,7 +7,7 @@ import os
 import re
 import subprocess
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 
 NON_SELECTABLE_OUTPUT_KEYS = {"easyeffects_sink"}
@@ -773,18 +773,6 @@ def _normalize_pipewire_default_rate(value: Any) -> int:
     return rate
 
 
-def _render_pipewire_clock_rate_dropin(default_rate: int) -> str:
-    normalized = _normalize_pipewire_default_rate(default_rate)
-    allowed_rates = " ".join(str(rate) for rate in PIPEWIRE_ALLOWED_RATES)
-    return (
-        "# Managed by FXRoute. Changes take effect after restarting PipeWire/session or rebooting.\n"
-        "context.properties = {\n"
-        f"    default.clock.rate = {normalized}\n"
-        f"    default.clock.allowed-rates = [ {allowed_rates} ]\n"
-        "}\n"
-    )
-
-
 def _parse_pipewire_clock_rate_dropin(text: str) -> dict[str, Any]:
     rate_match = re.search(r"default\.clock\.rate\s*=\s*(\d+)", text)
     allowed_match = re.search(r"default\.clock\.allowed-rates\s*=\s*\[([^\]]*)\]", text)
@@ -824,14 +812,6 @@ def _load_pipewire_clock_rate_config() -> dict[str, Any]:
     return parsed
 
 
-def set_pipewire_default_rate_selection(default_rate: Any) -> dict[str, Any]:
-    normalized = _normalize_pipewire_default_rate(default_rate)
-    path = _pipewire_clock_rate_dropin_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(_render_pipewire_clock_rate_dropin(normalized))
-    return get_samplerate_status()
-
-
 def _save_audio_output_selection(selected_key: str) -> None:
     path = _audio_output_selection_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -840,7 +820,7 @@ def _save_audio_output_selection(selected_key: str) -> None:
     }, indent=2) + "\n")
 
 
-def _save_audio_output_mode(
+def _build_audio_output_mode_payload(
     mode: str,
     subwoofer: dict[str, Any] | None = None,
     subwoofers: dict[str, Any] | None = None,
@@ -856,9 +836,19 @@ def _save_audio_output_mode(
             existing = json.loads(path.read_text())
         except Exception:
             pass
+    previous = _load_audio_output_mode()
 
     if normalized_mode in OUTPUT_MODE_SUBWOOFER_22_MODES:
         storage_key = _subwoofer_22_storage_key(normalized_mode)
+        if subwoofers is None:
+            target_subwoofers = existing.get(storage_key)
+            if not isinstance(target_subwoofers, dict):
+                target_subwoofers = existing.get("subwoofers")
+            subwoofers = target_subwoofers
+        if subwoofer is None and isinstance(existing.get("subwoofer"), dict):
+            subwoofer = existing.get("subwoofer")
+        if subwoofer is None and isinstance(previous.get("subwoofer"), dict):
+            subwoofer = previous.get("subwoofer")
         normalized = _normalize_subwoofer_22_config(subwoofers, subwoofer or existing.get("subwoofer"))
         subwoofer_22_payload = {
             "sub1": normalized["sub1"],
@@ -887,6 +877,10 @@ def _save_audio_output_mode(
         if "subwoofer" in existing:
             payload["subwoofer"] = existing["subwoofer"]
     else:
+        if subwoofer is None and isinstance(existing.get("subwoofer"), dict):
+            subwoofer = existing.get("subwoofer")
+        if subwoofer is None and isinstance(previous.get("subwoofer"), dict):
+            subwoofer = previous.get("subwoofer")
         payload = {
             "mode": normalized_mode,
             "subwoofer": _normalize_subwoofer_config(subwoofer),
@@ -896,6 +890,17 @@ def _save_audio_output_mode(
             if bc_key in existing:
                 payload[bc_key] = existing[bc_key]
 
+    return payload
+
+
+def _save_audio_output_mode(
+    mode: str,
+    subwoofer: dict[str, Any] | None = None,
+    subwoofers: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Persist one already-normalized output-mode payload."""
+    payload = _build_audio_output_mode_payload(mode, subwoofer, subwoofers)
+    path = _audio_output_mode_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2) + "\n")
     return payload
@@ -1578,11 +1583,18 @@ def _load_raw_audio_output_mode() -> dict[str, Any]:
         return {}
 
 
-def set_audio_output_mode(
+def prepare_audio_output_mode(
     mode: str,
     subwoofer: dict[str, Any] | None = None,
     subwoofers: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """Validate and build an output-mode target without persisting it.
+
+    The returned ``config`` is the exact durable payload that may be written
+    only after the Coordinator has committed the corresponding runtime graph.
+    ``overview`` is a live hardware overview with the target mode overlaid so
+    the guarded runtime can stage the new topology before persistence.
+    """
     normalized_mode = (mode or OUTPUT_MODE_STEREO).strip()
     valid_modes = {OUTPUT_MODE_STEREO, *OUTPUT_MODE_SUBWOOFER_MODES}
     if normalized_mode not in valid_modes:
@@ -1599,38 +1611,39 @@ def set_audio_output_mode(
                 else "2.2"
             )
             raise ValueError(f"{label} Subwoofer requires a selected multichannel output with at least 4 channels")
-    previous = _load_audio_output_mode()
-    raw_config = _load_raw_audio_output_mode()
-
-    if normalized_mode in OUTPUT_MODE_SUBWOOFER_22_MODES:
-        if subwoofers is None:
-            # Switching modes without explicit subwoofers: load target mode's saved values
-            storage_key = _subwoofer_22_storage_key(normalized_mode)
-            target_subwoofers = raw_config.get(storage_key)
-            if not isinstance(target_subwoofers, dict):
-                target_subwoofers = raw_config.get("subwoofers")
-            subwoofers = target_subwoofers
-        if subwoofer is None and isinstance(raw_config.get("subwoofer"), dict):
-            subwoofer = raw_config.get("subwoofer")
-        saved = _save_audio_output_mode(
-            normalized_mode,
-            subwoofer=subwoofer if subwoofer is not None else previous.get("subwoofer"),
-            subwoofers=subwoofers,
-        )
-    else:
-        if subwoofer is None and isinstance(raw_config.get("subwoofer"), dict):
-            subwoofer = raw_config.get("subwoofer")
-        saved = _save_audio_output_mode(
-            normalized_mode,
-            subwoofer=subwoofer if subwoofer is not None else previous.get("subwoofer"),
-        )
-
+    saved = _build_audio_output_mode_payload(normalized_mode, subwoofer, subwoofers)
     overview = get_audio_output_overview()
     overview["output_mode"] = {
         **(overview.get("output_mode") or {}),
         **saved,
     }
-    return overview
+    return {"overview": overview, "config": saved}
+
+
+def persist_audio_output_mode(config: Mapping[str, Any]) -> dict[str, Any]:
+    """Persist a previously validated output-mode target after graph commit."""
+    payload = dict(config or {})
+    mode = str(payload.get("mode") or "").strip()
+    if mode not in {OUTPUT_MODE_STEREO, *OUTPUT_MODE_SUBWOOFER_MODES}:
+        raise ValueError(f"Unknown output mode: {mode}")
+    path = _audio_output_mode_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2) + "\n")
+    return get_audio_output_overview()
+
+
+def set_audio_output_mode(
+    mode: str,
+    subwoofer: dict[str, Any] | None = None,
+    subwoofers: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Compatibility wrapper for non-playback configuration callers.
+
+    Playback-facing API routes must use ``prepare_audio_output_mode`` and let
+    the Coordinator call ``persist_audio_output_mode`` after its graph commit.
+    """
+    target = prepare_audio_output_mode(mode, subwoofer, subwoofers)
+    return persist_audio_output_mode(target["config"])
 
 
 def set_audio_source_selection(mode: str, input_key: str | None = None) -> dict[str, Any]:

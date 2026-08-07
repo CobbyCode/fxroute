@@ -87,6 +87,11 @@ class TransitionRequest:
     native_queue_jump: int | None = None
     native_queue_loop: bool = False
     native_queue_shuffle: bool = False
+    # Output-mode changes are staged as one Coordinator transaction.  The
+    # target overview/config are deliberately carried as immutable request
+    # data so runtime mutations cannot escape the gate-owned state machine.
+    output_mode_target: Mapping[str, Any] = field(default_factory=dict)
+    output_mode_config: Mapping[str, Any] = field(default_factory=dict)
     # Measurement restore is still a normal Coordinator transition, but its
     # caller may carry a position and an intent token captured before the
     # measurement window.  The runtime validates that token immediately
@@ -166,6 +171,29 @@ class TransitionRuntime(Protocol):
         snapshot: Mapping[str, Any] | None,
         *,
         target_staged: bool,
+    ) -> None: ...
+
+    async def verify_measurement_entry(
+        self, request: TransitionRequest
+    ) -> Mapping[str, Any]: ...
+
+    async def verify_output_mode_runtime(
+        self, request: TransitionRequest
+    ) -> Mapping[str, Any]: ...
+
+    async def commit_output_mode_runtime(
+        self, request: TransitionRequest
+    ) -> Mapping[str, Any]: ...
+
+    async def rollback_output_mode_runtime(
+        self, request: TransitionRequest, snapshot: Mapping[str, Any] | None
+    ) -> None: ...
+
+    async def restore_output_mode_transport(
+        self,
+        request: TransitionRequest,
+        snapshot: Mapping[str, Any] | None,
+        transition_id: str,
     ) -> None: ...
 
 
@@ -522,6 +550,8 @@ class PlaybackTransitionCoordinator:
                     "spotify-play",
                     "spotify-toggle",
                     "measurement-restore",
+                    "measurement-entry",
+                    "output-mode-switch",
                     "recovery",
                     "graph-reconcile",
                 }
@@ -638,6 +668,122 @@ class PlaybackTransitionCoordinator:
                         transition_id,
                         stage="after-effects-helper-links",
                     )
+
+                if active_request.operation in {"measurement-entry", "output-mode-switch"}:
+                    if active_request.operation == "measurement-entry":
+                        enter_stage("measurement-entry-graph-readback")
+                        verifier = getattr(self.runtime, "verify_measurement_entry", None)
+                        if callable(verifier):
+                            state = await verifier(active_request)
+                        else:
+                            state = await self.runtime.verify_transition_graph(active_request)
+                        if not bool(state.get("committed", True)):
+                            raise RuntimeError(
+                                "measurement entry readback did not satisfy graph contract"
+                            )
+                    else:
+                        # The target graph is not committed until the old
+                        # transport has been put back under the still-closed
+                        # gate.  Starting Spotify here is intentional: its
+                        # newly-created sink ports are part of the same final
+                        # source-graph commit.
+                        enter_stage("output-mode-transport-restore")
+                        restorer = getattr(self.runtime, "restore_output_mode_transport", None)
+                        if not callable(restorer):
+                            raise RuntimeError(
+                                "Coordinator output-mode transport restore is unavailable"
+                            )
+                        await restorer(active_request, snapshot, transition_id)
+                        await self.ensure_output_gate_closed(
+                            transition_id,
+                            stage="after-output-mode-transport-restore",
+                        )
+
+                        enter_stage("post-start-graph-reconcile")
+                        post_start_reconciler = getattr(
+                            self.runtime, "reconcile_post_start_graph", None
+                        )
+                        if not callable(post_start_reconciler):
+                            raise RuntimeError(
+                                "Coordinator output-mode graph reconciliation is unavailable"
+                            )
+                        post_start_state = await post_start_reconciler(active_request)
+                        if (
+                            not isinstance(post_start_state, Mapping)
+                            or not post_start_state.get("graph_complete", False)
+                        ):
+                            raise RuntimeError(
+                                "output-mode post-start graph reconciliation did not confirm a complete graph"
+                            )
+                        post_start_graph_state = dict(post_start_state)
+
+                        enter_stage("output-mode-graph-readback")
+                        verifier = getattr(self.runtime, "verify_output_mode_runtime", None)
+                        if not callable(verifier):
+                            raise RuntimeError(
+                                "Coordinator output-mode runtime verifier is unavailable"
+                            )
+                        state = await verifier(active_request)
+                        if not bool(state.get("committed", True)):
+                            raise RuntimeError(
+                                "output-mode graph readback did not satisfy commit contract"
+                            )
+
+                    if effects_state.get("dsp_reinitialized"):
+                        enter_stage("effects-dsp-stabilize")
+                        stabilizer = getattr(
+                            self.runtime, "stabilize_effects_after_rate_change", None
+                        )
+                        if not callable(stabilizer):
+                            raise RuntimeError(
+                                "post-transition DSP stabilization is not available"
+                            )
+                        dsp_state = await stabilizer(
+                            active_request,
+                            dsp_reinitialized=True,
+                        )
+                        if not isinstance(dsp_state, Mapping) or not dsp_state.get(
+                            "stabilized", False
+                        ):
+                            raise RuntimeError(
+                                "post-transition DSP stabilization was not confirmed"
+                            )
+
+                    if active_request.operation == "output-mode-switch":
+                        enter_stage("output-mode-persist")
+                        committer = getattr(self.runtime, "commit_output_mode_runtime", None)
+                        if not callable(committer):
+                            raise RuntimeError(
+                                "Coordinator output-mode persistence is unavailable"
+                            )
+                        committed_mode = await committer(active_request)
+                        if isinstance(committed_mode, Mapping):
+                            state = {**dict(state), **dict(committed_mode)}
+
+                    if gate_required:
+                        enter_stage("before-output-gate-restore")
+                        await self.ensure_output_gate_closed(
+                            transition_id,
+                            stage="before-output-gate-restore",
+                        )
+                        enter_stage("output-gate-restore")
+                        await self._hold_gate_after_verification()
+                        await self._restore_gate(transition_id)
+
+                    result_state = dict(state)
+                    if effects_state:
+                        result_state["effects_graph"] = dict(effects_state)
+                    result = TransitionResult(
+                        transition_id=transition_id,
+                        committed=True,
+                        source=active_request.source,
+                        target_rate=active_request.target_rate,
+                        state=result_state,
+                    )
+                    self.last_result = result
+                    self.last_error = None
+                    log_timing("committed")
+                    return result
 
                 enter_stage("target-source-prepare")
                 target_prepare_started = True
@@ -798,6 +944,16 @@ class PlaybackTransitionCoordinator:
                     await self.runtime.pause_source_after_failure(active_request)
                 except Exception:
                     pass
+                if active_request.operation == "output-mode-switch":
+                    rollback = getattr(self.runtime, "rollback_output_mode_runtime", None)
+                    if callable(rollback):
+                        try:
+                            await rollback(active_request, snapshot)
+                        except Exception:
+                            logger.warning(
+                                "Output-mode runtime rollback failed; keeping the failure gate latched",
+                                exc_info=True,
+                            )
                 target_staged = False
                 staged_detector = getattr(self.runtime, "target_source_staged", None)
                 if callable(staged_detector):
