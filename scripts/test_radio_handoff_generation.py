@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Focused regressions for SR-002 playback-context invalidation."""
 
-import ast
 import asyncio
 import sys
 import unittest
@@ -126,21 +125,6 @@ class PlaybackTransitionGenerationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.monitor.relinks, 1)
         self.assertEqual(self.monitor.restarts, 0)
 
-    async def test_stale_deferred_samplerate_recovery_is_discarded(self):
-        async def invalidate_during_delay(_delay):
-            main.playback_transition_generation = 6
-
-        original_sleep = main.asyncio.sleep
-        main.asyncio.sleep = invalidate_during_delay
-        try:
-            await main._maybe_recover_samplerate_mismatch(
-                main.current_track_info.copy(), transition_generation=4,
-            )
-        finally:
-            main.asyncio.sleep = original_sleep
-
-        self.assertEqual(self.resolved_sources, [])
-
     async def test_deferred_subwoofer_repair_is_coordinator_owned(self):
         # The watcher no longer has a direct helper-sync callback to invalidate;
         # its only allowed action is a Coordinator recovery request.
@@ -149,31 +133,8 @@ class PlaybackTransitionGenerationTests(unittest.IsolatedAsyncioTestCase):
             "direct deferred helper sync must be removed in favor of Coordinator recovery",
         )
 
-    def test_all_deferred_context_sync_calls_bind_generation(self):
-        tree = ast.parse((Path(__file__).resolve().parents[1] / "main.py").read_text())
-        targets = {
-            "_maybe_recover_samplerate_mismatch",
-        }
-        unbound = []
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call) or not node.args:
-                continue
-            if not (
-                isinstance(node.func, ast.Attribute)
-                and isinstance(node.func.value, ast.Name)
-                and node.func.value.id == "asyncio"
-                and node.func.attr == "create_task"
-            ):
-                continue
-            deferred = node.args[0]
-            if not isinstance(deferred, ast.Call) or not isinstance(deferred.func, ast.Name):
-                continue
-            if deferred.func.id not in targets:
-                continue
-            if not any(keyword.arg == "transition_generation" for keyword in deferred.keywords):
-                unbound.append((deferred.func.id, deferred.lineno))
-
-        self.assertEqual(unbound, [])
+    def test_legacy_delayed_samplerate_recovery_path_is_removed(self):
+        self.assertFalse(hasattr(main, "_maybe_recover_samplerate_mismatch"))
 
 
 async def async_value(value):

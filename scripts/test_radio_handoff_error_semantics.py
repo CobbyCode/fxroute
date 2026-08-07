@@ -729,7 +729,7 @@ class RadioPlayErrorSemanticsTests(unittest.IsolatedAsyncioTestCase):
             patch.object(main.asyncio, "sleep", noop_sleep),
             patch.object(main, "_record_local_track_started", lambda track: None),
             patch.object(main, "_mark_player_state_authoritative", lambda state: None),
-            patch.object(main, "_maybe_recover_samplerate_mismatch", _noop),
+            patch.object(main, "_observe_playback_samplerate_drift", _noop),
             patch.object(main, "_schedule_silent_active_watch", lambda **kwargs: None),
             patch.object(
                 main, "get_audio_output_overview",

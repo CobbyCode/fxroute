@@ -325,7 +325,7 @@ class ApiPlayQueueOrderTests(unittest.IsolatedAsyncioTestCase):
         return [
             patch.object(main, "_can_send_play_command", return_value=True),
             patch.object(main, "_run_coordinated_transition", coordinated),
-            patch.object(main, "_maybe_recover_samplerate_mismatch", no_op),
+            patch.object(main, "_observe_playback_samplerate_drift", no_op),
             patch.object(main, "_schedule_silent_active_watch", lambda **_k: None),
             patch.object(main, "build_playback_payload", lambda state: {}),
             patch.object(main.random, "shuffle", new=recording_shuffle),

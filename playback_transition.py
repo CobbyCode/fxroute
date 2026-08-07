@@ -87,6 +87,12 @@ class TransitionRequest:
     native_queue_jump: int | None = None
     native_queue_loop: bool = False
     native_queue_shuffle: bool = False
+    # Measurement restore is still a normal Coordinator transition, but its
+    # caller may carry a position and an intent token captured before the
+    # measurement window.  The runtime validates that token immediately
+    # before any old source can be resurrected.
+    restore_position: float | None = None
+    restore_intent: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -106,6 +112,12 @@ class TransitionRuntime(Protocol):
     async def set_hardware_mute(self, muted: bool, transition_id: str) -> None: ...
 
     async def read_transition_snapshot(self, request: TransitionRequest) -> Mapping[str, Any]: ...
+
+    async def validate_measurement_restore_intent(
+        self,
+        request: TransitionRequest,
+        snapshot: Mapping[str, Any],
+    ) -> bool: ...
 
     async def quiet_old_source(self, request: TransitionRequest) -> None: ...
 
@@ -428,18 +440,62 @@ class PlaybackTransitionCoordinator:
                     "graph-reconcile",
                 }
             )
+
+            async def skip_measurement_restore(reason: str) -> TransitionResult:
+                """Discard a stale measurement snapshot without mutating playback."""
+                if gate_required and self.gate.closed:
+                    await self._restore_gate(transition_id)
+                result = TransitionResult(
+                    transition_id=transition_id,
+                    committed=False,
+                    source=active_request.source,
+                    target_rate=active_request.target_rate,
+                    state={
+                        "committed": False,
+                        "skipped": True,
+                        "reason": reason,
+                    },
+                )
+                self.last_result = result
+                self.last_error = None
+                logger.info(
+                    "Measurement playback restore skipped before source load: "
+                    "transition_id=%s reason=%s",
+                    transition_id,
+                    reason,
+                )
+                return result
+
             try:
                 if not await self._reconcile_startup_gate_locked():
                     raise RuntimeError(
                         f"stale output gate could not be reconciled: {self._startup_gate_error or 'unknown error'}"
                     )
                 snapshot = await self.runtime.read_transition_snapshot(request)
+                restore_validator = getattr(
+                    self.runtime, "validate_measurement_restore_intent", None
+                )
+                if (
+                    active_request.operation == "measurement-restore"
+                    and active_request.restore_intent
+                    and callable(restore_validator)
+                    and not await restore_validator(active_request, snapshot)
+                ):
+                    return await skip_measurement_restore("intent-changed-before-gate")
                 if gate_required:
                     enter_stage("output-gate-close")
                     await self._close_gate(transition_id)
 
                 enter_stage("quiet-old-source")
                 await self.runtime.quiet_old_source(request)
+
+                if (
+                    active_request.operation == "measurement-restore"
+                    and active_request.restore_intent
+                    and callable(restore_validator)
+                    and not await restore_validator(active_request, snapshot)
+                ):
+                    return await skip_measurement_restore("intent-changed-after-quiet")
 
                 if gate_required and not active_request.graph_only:
                     # Radio streams expose their decoded rate only after a
@@ -637,6 +693,8 @@ class PlaybackTransitionCoordinator:
         target_url: str | None,
         target_track: Mapping[str, Any],
         should_play: bool,
+        restore_position: float | None = None,
+        restore_intent: Mapping[str, Any] | None = None,
     ) -> TransitionResult:
         """Restore playback after a measurement through the same state machine."""
         return await self.execute(TransitionRequest(
@@ -649,6 +707,8 @@ class PlaybackTransitionCoordinator:
             rate_change=True,
             reload_source=True,
             detail="measurement-release",
+            restore_position=restore_position,
+            restore_intent=dict(restore_intent or {}),
         ))
 
 

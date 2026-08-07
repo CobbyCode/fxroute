@@ -11,6 +11,8 @@ import asyncio
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 # Ensure the project root is on sys.path so 'import main' works.
 _project_root = Path(__file__).resolve().parent.parent
@@ -40,6 +42,8 @@ class _TestSession:
         self._orig_radio_stream_stale = main.radio_stream_stale_after_measurement
         self._orig_last_measurement_window_seen_at = main.last_measurement_window_seen_at
         self._orig_get_player_audio_samplerate = main._get_player_audio_samplerate
+        self._orig_playback_intent_generation = main.playback_intent_generation
+        self._orig_playback_transition_coordinator = main.playback_transition_coordinator
 
         # Mock system state
         self._force_rate = 44100
@@ -61,6 +65,7 @@ class _TestSession:
         main._get_current_pipewire_force_rate = self._mock_get_current_pipewire_force_rate
         main._is_measurement_window_open = self._mock_is_measurement_window_open
         main._get_player_audio_samplerate = self._mock_get_player_audio_samplerate
+        main.playback_intent_generation = 0
         main.player_instance = None
 
         self._session: main.MeasurementSampleRateSession = main.measurement_sr_session
@@ -132,6 +137,8 @@ class _TestSession:
         main.radio_stream_stale_after_measurement = self._orig_radio_stream_stale
         main.last_measurement_window_seen_at = self._orig_last_measurement_window_seen_at
         main._get_player_audio_samplerate = self._orig_get_player_audio_samplerate
+        main.playback_intent_generation = self._orig_playback_intent_generation
+        main.playback_transition_coordinator = self._orig_playback_transition_coordinator
 
 
 # ── Test cases ────────────────────────────────────────────────────────────────
@@ -224,6 +231,62 @@ class TestCentralCapture:
             )
             # The snapshot should still be the original (local, not radio)
             assert main._playback_state_before_measurement["source"] == "local"
+        finally:
+            ts.cleanup()
+
+    def test_restore_snapshot_is_invalid_after_track_change_or_stop(self) -> None:
+        """The release contract rejects a snapshot that no longer matches intent."""
+        ts = _TestSession()
+        try:
+            import main
+            ts.set_track_playing(source="local", sample_rate=44100)
+            asyncio.get_event_loop().run_until_complete(
+                ts._session.register_manual_job("job-1")
+            )
+            saved = main._playback_state_before_measurement
+            assert saved is not None
+            assert main._measurement_restore_snapshot_matches_current_intent(saved)
+
+            main.current_track_info = {
+                "source": "local",
+                "url": "file:///other.flac",
+                "id": "other",
+            }
+            main.player_instance.state["current_file"] = "file:///other.flac"
+            assert not main._measurement_restore_snapshot_matches_current_intent(saved)
+
+            main.current_track_info = None
+            main.player_instance = None
+            assert not main._measurement_restore_snapshot_matches_current_intent(saved)
+        finally:
+            ts.cleanup()
+
+    def test_release_forwards_position_and_intent_to_coordinator(self) -> None:
+        """Measurement release restores the captured local position in one transition."""
+        ts = _TestSession()
+        try:
+            import main
+            ts.set_track_playing(source="local", sample_rate=44100)
+            coordinator = SimpleNamespace(
+                restore_measurement=AsyncMock(
+                    return_value=SimpleNamespace(committed=True)
+                )
+            )
+            main.playback_transition_coordinator = coordinator
+
+            asyncio.get_event_loop().run_until_complete(
+                ts._session.register_manual_job("job-1")
+            )
+            asyncio.get_event_loop().run_until_complete(ts._session.request_close())
+            asyncio.get_event_loop().run_until_complete(
+                ts._session.unregister_manual_job("job-1")
+            )
+
+            coordinator.restore_measurement.assert_awaited_once()
+            kwargs = coordinator.restore_measurement.await_args.kwargs
+            assert kwargs["restore_position"] == 10.0
+            assert kwargs["restore_intent"]["intent_generation"] == 0
+            assert kwargs["should_play"] is True
         finally:
             ts.cleanup()
 

@@ -40,6 +40,7 @@ class FakeRuntime:
         self.paused = True
         self.playing = False
         self.volume = 100
+        self.position = 0.0
         self.effects_rebuilds = 0
         self.helper_rebuilds = 0
         self.dsp_stabilizations = 0
@@ -74,7 +75,7 @@ class FakeRuntime:
 
     async def resolve_target_rate(self, request):
         await self._stage("resolve-rate")
-        return request.target_rate
+        return 48_000 if request.target_rate is None else request.target_rate
 
     async def establish_target_rate(self, request):
         await self._stage("rate")
@@ -98,6 +99,9 @@ class FakeRuntime:
             self.volume = 0
         self.paused = True
         self.playing = False
+        if request.restore_position is not None:
+            self.position = float(request.restore_position)
+            self.events.append("seek")
 
     async def start_target_source(self, request):
         await self._stage("start")
@@ -366,12 +370,61 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
             target_url="/music/restored.flac",
             target_track={"source": "local", "url": "/music/restored.flac"},
             should_play=False,
+            restore_position=123.5,
         )
 
         self.assertEqual(runtime.current_file, "/music/restored.flac")
         self.assertTrue(runtime.paused)
         self.assertFalse(runtime.playing)
+        self.assertEqual(runtime.position, 123.5)
+        self.assertLess(runtime.events.index("seek"), runtime.events.index("start"))
         self.assertFalse(runtime.muted)
+
+    async def test_stale_measurement_restore_is_discarded_before_source_mutation(self):
+        runtime = FakeRuntime(muted=False)
+
+        async def validate(_request, _snapshot):
+            return False
+
+        runtime.validate_measurement_restore_intent = validate
+        coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
+        result = await coordinator.restore_measurement(
+            source="local",
+            target_rate=44_100,
+            target_url="/music/old.flac",
+            target_track={"source": "local", "url": "/music/old.flac"},
+            should_play=True,
+            restore_position=20.0,
+            restore_intent={"source": "local", "url": "/music/old.flac"},
+        )
+
+        self.assertFalse(result.committed)
+        self.assertTrue(result.state["skipped"])
+        self.assertNotIn("quiet", runtime.events)
+        self.assertNotIn("prepare", runtime.events)
+        self.assertFalse(coordinator.gate.closed)
+
+    async def test_local_unknown_rate_is_committed_from_same_transition(self):
+        runtime = FakeRuntime(muted=False)
+        coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
+        unknown_rate_request = TransitionRequest(
+            operation="play",
+            source="local",
+            target_rate=None,
+            target_url="/music/unknown.flac",
+            target_track={"source": "local", "url": "/music/unknown.flac"},
+            should_play=True,
+            rate_change=False,
+            reload_source=True,
+        )
+
+        result = await coordinator.execute(unknown_rate_request)
+
+        self.assertTrue(result.committed)
+        self.assertEqual(result.target_rate, 48_000)
+        self.assertEqual(runtime.rate, 48_000)
+        self.assertLess(runtime.events.index("resolve-rate"), runtime.events.index("rate"))
+        self.assertLess(runtime.events.index("rate"), runtime.events.index("prepare"))
 
     async def test_startup_reconciles_a_persisted_fxroute_failure_mute(self):
         with tempfile.TemporaryDirectory(prefix="fxroute-gate-test-") as directory:

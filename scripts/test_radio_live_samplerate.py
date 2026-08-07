@@ -97,67 +97,89 @@ class RadioLiveSamplerateResolutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rate, 48000)
 
 
-class RadioMismatchRecoveryLiveRateTests(unittest.IsolatedAsyncioTestCase):
-    """Delayed recovery submits one request to the Coordinator."""
+class SamplerateDriftWatcherTests(unittest.IsolatedAsyncioTestCase):
+    """Stable MPV/source drift is observed before one Coordinator request."""
 
     async def asyncSetUp(self):
         self.originals = {
             name: getattr(main, name)
             for name in (
-                "easyeffects_manager", "player_instance", "source_transition_lock",
-                "playback_transition_generation", "current_track_info",
-                "asyncio",
+                "player_instance", "current_track_info",
+                "playback_transition_coordinator", "measurement_sr_session",
+                "samplerate_drift_signature", "samplerate_drift_readbacks",
+                "_is_measurement_window_open",
             )
         }
-        main.easyeffects_manager = object()
-        main.player_instance = type("Player", (), {"_running": True})()
-        main.source_transition_lock = None
-        main.playback_transition_generation = 42
+
+        class Player:
+            _running = True
+            state = {
+                "current_file": "https://radio.example/48k",
+                "paused": False,
+                "playing": True,
+                "ended": False,
+            }
+
+        main.player_instance = Player()
         main.current_track_info = {
-            "id": "radio_48k", "source": "radio", "url": "https://radio.example/48k"
+            "id": "radio_48k",
+            "source": "radio",
+            "url": "https://radio.example/48k",
+            "sample_rate_hz": 44100,
         }
+        main.playback_transition_coordinator = type("Coordinator", (), {"transition_active": False})()
+        main.measurement_sr_session = type("Measurement", (), {"active": False})()
+        main._is_measurement_window_open = lambda: False
+        main.samplerate_drift_signature = None
+        main.samplerate_drift_readbacks = 0
 
     async def asyncTearDown(self):
         for name, value in self.originals.items():
             setattr(main, name, value)
 
-    async def test_recovery_forces_live_48k_when_sink_is_44_1(self):
-        track = {"id": "radio_48k", "source": "radio", "url": "https://radio.example/48k"}
+    async def test_two_matching_mismatch_readbacks_request_one_recovery(self):
         recovery = AsyncMock()
-        with patch.object(main, "_request_coordinated_recovery", recovery), patch.object(
-            main.asyncio, "sleep", AsyncMock()
+        with patch.object(main, "_get_player_audio_samplerate", return_value=48000), patch.object(
+            main, "_request_coordinated_recovery", recovery
         ):
-            await main._maybe_recover_samplerate_mismatch(
-                track, transition_generation=42
-            )
+            await main._observe_playback_samplerate_drift()
+            recovery.assert_not_awaited()
+            await main._observe_playback_samplerate_drift()
 
-        # Recovery no longer resolves or mutates the graph inline.  The
-        # Coordinator owns the live-rate resolution and commit/rollback.
-        recovery.assert_awaited_once_with(track, "delayed-samplerate-recovery")
+        recovery.assert_awaited_once()
+        self.assertEqual(recovery.await_args.args[1], "samplerate-drift-watcher")
+        self.assertTrue(recovery.await_args.kwargs["reload_source"])
+        self.assertEqual(recovery.await_args.kwargs["diagnosis"]["actual_rate"], 48000)
 
-    async def test_recovery_noop_when_live_rate_matches_sink(self):
-        track = {"id": "radio_44k", "source": "radio", "url": "https://radio.example/44k"}
-
+    async def test_stable_mismatch_resets_when_source_changes(self):
         recovery = AsyncMock()
-        with patch.object(main, "_request_coordinated_recovery", recovery), patch.object(
-            main.asyncio, "sleep", AsyncMock()
+        with patch.object(main, "_get_player_audio_samplerate", return_value=48000), patch.object(
+            main, "_request_coordinated_recovery", recovery
         ):
-            await main._maybe_recover_samplerate_mismatch(
-                track, transition_generation=42
-            )
-        recovery.assert_awaited_once_with(track, "delayed-samplerate-recovery")
+            await main._observe_playback_samplerate_drift()
+            main.current_track_info = {
+                "id": "radio_other",
+                "source": "radio",
+                "url": "https://radio.example/other",
+                "sample_rate_hz": 44100,
+            }
+            main.player_instance.state["current_file"] = "https://radio.example/other"
+            await main._observe_playback_samplerate_drift()
 
-    async def test_recovery_fallback_44100_when_player_rate_unavailable(self):
-        track = {"id": "radio_unknown", "source": "radio", "url": "https://radio.example/x"}
+        recovery.assert_not_awaited()
 
+    async def test_active_transition_or_measurement_never_requests_recovery(self):
         recovery = AsyncMock()
-        with patch.object(main, "_request_coordinated_recovery", recovery), patch.object(
-            main.asyncio, "sleep", AsyncMock()
+        with patch.object(main, "_get_player_audio_samplerate", return_value=48000), patch.object(
+            main, "_request_coordinated_recovery", recovery
         ):
-            await main._maybe_recover_samplerate_mismatch(
-                track, transition_generation=42
-            )
-        recovery.assert_awaited_once_with(track, "delayed-samplerate-recovery")
+            main.playback_transition_coordinator.transition_active = True
+            await main._observe_playback_samplerate_drift()
+            main.playback_transition_coordinator.transition_active = False
+            main.measurement_sr_session.active = True
+            await main._observe_playback_samplerate_drift()
+
+        recovery.assert_not_awaited()
 
 
 class RadioPostLoadHandoffTests(unittest.IsolatedAsyncioTestCase):

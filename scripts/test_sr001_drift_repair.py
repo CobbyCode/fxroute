@@ -53,29 +53,8 @@ class CoordinatorRecoveryTests(unittest.IsolatedAsyncioTestCase):
             )
         run.assert_not_awaited()
 
-    async def test_delayed_local_recovery_only_submits_after_generation_check(self):
-        coordinator = _CoordinatorDouble()
-        recovery = AsyncMock()
-        with patch.object(main, "_request_coordinated_recovery", recovery), patch.object(
-            main.asyncio, "sleep", new=AsyncMock()
-        ), patch.object(main, "_playback_transition_context_is_current", return_value=True):
-            await main._maybe_recover_samplerate_mismatch(
-                {"source": "local", "url": "/music/a.flac", "sample_rate_hz": 44100},
-                transition_generation=8,
-            )
-        recovery.assert_awaited_once()
-        self.assertEqual(recovery.await_args.args[1], "delayed-samplerate-recovery")
-
-    async def test_delayed_recovery_aborts_for_stale_generation(self):
-        recovery = AsyncMock()
-        with patch.object(main, "_request_coordinated_recovery", recovery), patch.object(
-            main.asyncio, "sleep", new=AsyncMock()
-        ), patch.object(main, "_playback_transition_context_is_current", return_value=False):
-            await main._maybe_recover_samplerate_mismatch(
-                {"source": "radio", "url": "https://radio.example/live", "sample_rate_hz": 44100},
-                transition_generation=9,
-            )
-        recovery.assert_not_awaited()
+    async def test_old_delayed_recovery_path_is_removed(self):
+        self.assertFalse(hasattr(main, "_maybe_recover_samplerate_mismatch"))
 
     async def test_spotify_recovery_uses_same_coordinator_submission(self):
         coordinator = _CoordinatorDouble()
