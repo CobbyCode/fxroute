@@ -308,7 +308,11 @@ class RadioPostLoadHandoffTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(result, 48000)
         self.assertEqual(calls["force"], [(48000, "radio-post-load-handoff")])
-        self.assertEqual(len(calls["preset"]), 1)
+        self.assertEqual(
+            len(calls["preset"]),
+            0,
+            "a working EasyEffects graph must not reload its preset for rate alone",
+        )
         # This fixture uses the stereo graph; no subwoofer helper is part of
         # that topology.  The Coordinator still performs the canonical graph
         # readback before opening the gate.
@@ -321,7 +325,11 @@ class RadioPostLoadHandoffTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(result, 44100)
         self.assertEqual(calls["force"], [(44100, "radio-post-load-handoff")])
-        self.assertEqual(len(calls["preset"]), 1)
+        self.assertEqual(
+            len(calls["preset"]),
+            0,
+            "a working EasyEffects graph must not reload its preset for rate alone",
+        )
         self.assertEqual(len(calls["subwoofer"]), 0)
 
     async def test_first_radio_start_accepts_any_valid_live_rate(self):

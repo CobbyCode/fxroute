@@ -107,6 +107,10 @@ class TransitionRuntime(Protocol):
 
     async def start_target_source(self, request: TransitionRequest) -> None: ...
 
+    async def stabilize_effects_after_rate_change(
+        self, request: TransitionRequest
+    ) -> Mapping[str, Any]: ...
+
     async def set_source_volume(self, volume: int, transition_id: str) -> None: ...
 
     async def verify_committed_transition(self, request: TransitionRequest) -> Mapping[str, Any]: ...
@@ -305,6 +309,7 @@ class PlaybackTransitionCoordinator:
         async with self.lock:
             stage = "snapshot"
             active_request = request
+            dsp_state: Mapping[str, Any] = {}
             gate_required = bool(
                 request.rate_change
                 or request.reload_source
@@ -406,6 +411,23 @@ class PlaybackTransitionCoordinator:
                         stage = "source-volume-restore"
                         await self.runtime.set_source_volume(100, transition_id)
 
+                        if active_request.rate_change:
+                            stage = "effects-dsp-stabilize"
+                            stabilizer = getattr(
+                                self.runtime, "stabilize_effects_after_rate_change", None
+                            )
+                            if not callable(stabilizer):
+                                raise RuntimeError(
+                                    "post-start DSP stabilization is not available"
+                                )
+                            dsp_state = await stabilizer(active_request)
+                            if not isinstance(dsp_state, Mapping) or not dsp_state.get(
+                                "stabilized", False
+                            ):
+                                raise RuntimeError(
+                                    "post-start DSP stabilization was not confirmed"
+                                )
+
                         stage = "commit-readback"
                         state = await self.runtime.verify_committed_transition(active_request)
                 else:
@@ -423,12 +445,15 @@ class PlaybackTransitionCoordinator:
                     await self._hold_gate_after_verification()
                     await self._restore_gate(transition_id)
 
+                result_state = dict(state)
+                if dsp_state:
+                    result_state["effects_dsp"] = dict(dsp_state)
                 result = TransitionResult(
                     transition_id=transition_id,
                     committed=True,
                     source=active_request.source,
                     target_rate=active_request.target_rate,
-                    state=dict(state),
+                    state=result_state,
                 )
                 self.last_result = result
                 self.last_error = None

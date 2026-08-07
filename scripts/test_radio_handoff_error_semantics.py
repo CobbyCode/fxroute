@@ -320,7 +320,11 @@ class RadioCoordinatorGraphTests(unittest.IsolatedAsyncioTestCase):
         result, calls, stopped = await self._run(repair_after_first_sync=True)
         self.assertTrue(result)
         self.assertEqual(calls["force"], [(44100, "radio-post-load-handoff")])
-        self.assertEqual(len(calls["preset"]), 1, "rate change -> preset sync")
+        self.assertEqual(
+            len(calls["preset"]),
+            0,
+            "a working EasyEffects graph must not reload its preset for rate alone",
+        )
         self.assertEqual(
             len(calls["subwoofer"]), 1,
             "the helper is established exactly once; link-only reconciliation heals the race",
@@ -669,6 +673,15 @@ class RadioPlayErrorSemanticsTests(unittest.IsolatedAsyncioTestCase):
 
             async def set_source_volume(self, volume, transition_id):
                 player.set_volume(volume)
+
+            async def stabilize_effects_after_rate_change(self, request):
+                return {
+                    "stabilized": True,
+                    "no_op": not request.rate_change,
+                    "active_rate": self.active_rate,
+                    "force_rate": self.active_rate,
+                    "graph_complete": True,
+                }
 
             async def verify_committed_transition(self, request):
                 if request.target_url and player.state.get("current_file") != request.target_url:

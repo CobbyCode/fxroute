@@ -225,9 +225,11 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
         ), patch.object(main, "subwoofer_runtime", helper), patch.object(
             main, "_sync_easyeffects_preset_for_playback_samplerate",
             side_effect=lambda **_kwargs: calls.__setitem__("preset", calls["preset"] + 1),
-        ), patch.object(main, "_sync_subwoofer_runtime", side_effect=sync):
+        ), patch.object(main, "_sync_subwoofer_runtime", side_effect=sync), patch.object(
+            main, "easyeffects_manager", None
+        ):
             await main._coordinator_establish_effects_and_helper(request)
-        self.assertEqual(calls, {"preset": 1, "sync": 1})
+        self.assertEqual(calls, {"preset": 0, "sync": 1})
         self.assertEqual(helper.reconcile_calls, 1)
 
 
@@ -352,6 +354,49 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
         ):
             await main._coordinator_establish_effects_and_helper(request)
         self.assertEqual(calls, {"preset": 0, "repair": 0})
+
+    async def test_rate_change_reloads_only_when_active_convolver_requires_it(self):
+        helper = HelperDouble(active=False, rate=None)
+        overview = {
+            "output_mode": {
+                "mode": "subwoofer-2.2",
+                "effective_output_key": OUTPUT_KEY,
+            }
+        }
+        calls = {"preset": 0, "sync": 0}
+
+        class ConvolverManager:
+            def active_preset_requires_samplerate_reload(self, _rate):
+                return True
+
+        async def sync(**_kwargs):
+            calls["sync"] += 1
+            helper.active = True
+            helper.rate = 48000
+
+        async def pw_link(*_args):
+            return _links_text("subwoofer-2.2")
+
+        request = TransitionRequest(
+            operation="play",
+            source="local",
+            target_rate=48000,
+            target_url="/music/target.flac",
+            should_play=True,
+            rate_change=True,
+            reload_source=True,
+        )
+        with patch.object(main, "get_audio_output_overview", return_value=overview), patch.object(
+            main, "_run_pw_link_command", side_effect=pw_link
+        ), patch.object(main, "subwoofer_runtime", helper), patch.object(
+            main,
+            "_sync_easyeffects_preset_for_playback_samplerate",
+            side_effect=lambda **_kwargs: calls.__setitem__("preset", calls["preset"] + 1),
+        ), patch.object(main, "_sync_subwoofer_runtime", side_effect=sync), patch.object(
+            main, "easyeffects_manager", ConvolverManager()
+        ):
+            await main._coordinator_establish_effects_and_helper(request)
+        self.assertEqual(calls, {"preset": 1, "sync": 1})
 
     async def test_graph_only_rejects_missing_non_bypass_graph(self):
         helper = HelperDouble(active=True, rate=48000)

@@ -30,6 +30,7 @@ class FakeRuntime:
         self.volume = 100
         self.effects_rebuilds = 0
         self.helper_rebuilds = 0
+        self.dsp_stabilizations = 0
 
     async def _stage(self, name):
         self.events.append(name)
@@ -80,6 +81,17 @@ class FakeRuntime:
         await self._stage("start")
         self.paused = not request.should_play
         self.playing = request.should_play
+
+    async def stabilize_effects_after_rate_change(self, request):
+        await self._stage("dsp-stabilize")
+        self.dsp_stabilizations += 1
+        return {
+            "stabilized": True,
+            "no_op": False,
+            "active_rate": self.rate,
+            "force_rate": self.rate,
+            "graph_complete": True,
+        }
 
     async def set_source_volume(self, volume, transition_id):
         self.events.append(f"source-volume:{volume}")
@@ -215,6 +227,26 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(runtime.muted)
         self.assertEqual(runtime.effects_rebuilds, 2)
         self.assertEqual(runtime.helper_rebuilds, 2)
+        self.assertEqual(runtime.dsp_stabilizations, 2)
+
+    async def test_gate_stays_closed_until_post_start_dsp_readback(self):
+        runtime = FakeRuntime(muted=False)
+        coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
+
+        await coordinator.execute(request())
+
+        self.assertLess(
+            runtime.events.index("source-volume:100"),
+            runtime.events.index("dsp-stabilize"),
+        )
+        self.assertLess(
+            runtime.events.index("dsp-stabilize"),
+            runtime.events.index("verify"),
+        )
+        self.assertLess(
+            runtime.events.index("verify"),
+            runtime.events.index("mute:False"),
+        )
 
     async def test_same_rate_resume_and_radio_switch_do_not_request_rate_rebuild(self):
         runtime = FakeRuntime(muted=False)
@@ -243,6 +275,7 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(runtime.effects_rebuilds, 0)
         self.assertEqual(runtime.helper_rebuilds, 0)
+        self.assertEqual(runtime.dsp_stabilizations, 0)
         self.assertFalse(runtime.muted)
 
     async def test_measurement_restore_reloads_a_paused_source_through_same_gate(self):

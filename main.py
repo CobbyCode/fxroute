@@ -1292,6 +1292,202 @@ class FxrouteTransitionRuntime(TransitionRuntime):
             await asyncio.sleep(0.05)
         raise RuntimeError("target MPV stream did not start and advance")
 
+    async def _read_and_validate_effects_runtime(
+        self, extras: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """Read the active DSP work point after a guarded runtime update."""
+        manager = easyeffects_manager
+        if manager is None:
+            return {}
+
+        loudness = extras.get("loudness") or {}
+        autogain = extras.get("autogain") or {}
+        loudness_enabled = bool(loudness.get("enabled"))
+        autogain_enabled = bool(autogain.get("enabled"))
+        result: dict[str, Any] = {}
+
+        read_loudness = getattr(manager, "read_loudness_runtime", None)
+        if callable(read_loudness):
+            try:
+                loudness_runtime = await asyncio.to_thread(read_loudness)
+            except Exception:
+                if loudness_enabled:
+                    raise
+                loudness_runtime = None
+            if isinstance(loudness_runtime, dict):
+                try:
+                    actual_volume = float(loudness_runtime["volume"])
+                    actual_output_gain = float(loudness_runtime["output_gain"])
+                except (KeyError, TypeError, ValueError) as exc:
+                    if loudness_enabled:
+                        raise RuntimeError(
+                            f"EasyEffects Loudness readback is incomplete: {exc}"
+                        ) from exc
+                    loudness_runtime = None
+                if isinstance(loudness_runtime, dict):
+                    minimum = float(manager.LOUDNESS_PLUGIN_VOLUME_MIN_DB)
+                    maximum = float(manager.LOUDNESS_PLUGIN_VOLUME_MAX_DB)
+                    if not minimum <= actual_volume <= maximum:
+                        raise RuntimeError(
+                            "EasyEffects Loudness volume is outside the installed LSP range: "
+                            f"{actual_volume} not in [{minimum}, {maximum}]"
+                        )
+                    expected_payload = manager._loudness_plugin_payload(
+                        loudness, autogain
+                    )
+                    if loudness_enabled:
+                        if loudness_runtime.get("bypass"):
+                            raise RuntimeError(
+                                "EasyEffects Loudness was bypassed after DSP stabilization"
+                            )
+                        if not math.isclose(
+                            actual_volume,
+                            float(expected_payload["volume"]),
+                            rel_tol=0.0,
+                            abs_tol=0.05,
+                        ) or not math.isclose(
+                            actual_output_gain,
+                            float(expected_payload["output-gain"]),
+                            rel_tol=0.0,
+                            abs_tol=0.05,
+                        ):
+                            raise RuntimeError(
+                                "EasyEffects Loudness work point mismatch: "
+                                f"expected=({expected_payload['volume']}, "
+                                f"{expected_payload['output-gain']}) "
+                                f"actual=({actual_volume}, {actual_output_gain})"
+                            )
+                    result["loudness"] = {
+                        "volume": actual_volume,
+                        "output_gain": actual_output_gain,
+                        "bypass": bool(loudness_runtime.get("bypass")),
+                    }
+        elif loudness_enabled:
+            raise RuntimeError("EasyEffects Loudness readback is unavailable")
+
+        read_autogain = getattr(manager, "read_autogain_runtime", None)
+        if callable(read_autogain):
+            try:
+                autogain_runtime = await asyncio.to_thread(read_autogain)
+            except Exception:
+                if autogain_enabled:
+                    raise
+                autogain_runtime = None
+            if isinstance(autogain_runtime, dict):
+                try:
+                    actual_target = float(autogain_runtime["target"])
+                except (KeyError, TypeError, ValueError) as exc:
+                    if autogain_enabled:
+                        raise RuntimeError(
+                            f"EasyEffects Auto Gain readback is incomplete: {exc}"
+                        ) from exc
+                    autogain_runtime = None
+                if isinstance(autogain_runtime, dict):
+                    expected_autogain = manager._autogain_plugin_payload(autogain)
+                    if autogain_enabled:
+                        if autogain_runtime.get("bypass"):
+                            raise RuntimeError(
+                                "EasyEffects Auto Gain was bypassed after DSP stabilization"
+                            )
+                        if not math.isclose(
+                            actual_target,
+                            float(expected_autogain["target"]),
+                            rel_tol=0.0,
+                            abs_tol=0.05,
+                        ):
+                            raise RuntimeError(
+                                "EasyEffects Auto Gain target mismatch: "
+                                f"expected={expected_autogain['target']} actual={actual_target}"
+                            )
+                    result["autogain"] = {
+                        "target": actual_target,
+                        "bypass": bool(autogain_runtime.get("bypass")),
+                    }
+        elif autogain_enabled:
+            raise RuntimeError("EasyEffects Auto Gain readback is unavailable")
+
+        return result
+
+    async def stabilize_effects_after_rate_change(
+        self, request: TransitionRequest
+    ) -> dict[str, Any]:
+        """Re-apply the canonical DSP work point after a real rate change."""
+        if not request.rate_change or not request.should_play:
+            return {"stabilized": True, "no_op": True}
+
+        manager = easyeffects_manager
+        if manager is None:
+            return {"stabilized": True, "no_op": True}
+
+        extras = manager.load_global_extras()
+        loudness_enabled = bool((extras.get("loudness") or {}).get("enabled"))
+        autogain_enabled = bool((extras.get("autogain") or {}).get("enabled"))
+        if not loudness_enabled and not autogain_enabled:
+            return {"stabilized": True, "no_op": True}
+
+        apply_runtime = getattr(manager, "apply_autogain_loudness_runtime", None)
+        if not callable(apply_runtime):
+            raise RuntimeError("guarded Auto Gain/Loudness runtime is unavailable")
+
+        # Passing the same canonical extras on both sides deliberately uses the
+        # existing guarded order without reloading the preset.  The helper
+        # method keeps the outputGain guard in place while the LSP volume port
+        # settles, then ramps back to the canonical work point.
+        await asyncio.to_thread(
+            apply_runtime,
+            extras,
+            extras,
+            persist_all_presets=False,
+        )
+        settle_seconds = float(
+            getattr(manager, "LOUDNESS_STRENGTH_VOLUME_SETTLE_SECONDS", 0.0)
+        )
+        if settle_seconds > 0:
+            await asyncio.sleep(settle_seconds)
+
+        effects_runtime = await self._read_and_validate_effects_runtime(extras)
+        rate = dict(get_samplerate_status())
+        if rate.get("active_rate") != request.target_rate:
+            raise RuntimeError(
+                "target rate changed during DSP stabilization: "
+                f"expected={request.target_rate} actual={rate.get('active_rate')}"
+            )
+        if rate.get("force_rate") not in {None, 0, request.target_rate}:
+            raise RuntimeError(
+                f"force-rate changed during DSP stabilization: {rate.get('force_rate')}"
+            )
+        graph = await _playback_graph_diagnosis(
+            source=request.source,
+            target_rate=request.target_rate,
+            require_source=True,
+        )
+        if not graph.get("links_complete"):
+            raise RuntimeError(
+                "production graph changed during DSP stabilization: "
+                f"{graph.get('signature')}"
+            )
+
+        result = {
+            "stabilized": True,
+            "no_op": False,
+            "active_rate": rate.get("active_rate"),
+            "force_rate": rate.get("force_rate"),
+            "graph_complete": True,
+            "graph_signature": graph.get("signature"),
+            "effects_runtime": effects_runtime,
+        }
+        logger.info(
+            "Playback transition post-start DSP stabilization complete: "
+            "source=%s rate=%s force=%s loudness=%s autogain=%s graph=%s",
+            request.source,
+            result["active_rate"],
+            result["force_rate"],
+            effects_runtime.get("loudness"),
+            effects_runtime.get("autogain"),
+            result["graph_signature"],
+        )
+        return result
+
     async def set_source_volume(self, volume: int, transition_id: str) -> None:
         set_volume = getattr(player_instance, "set_volume", None) if _player_is_running() else None
         if callable(set_volume):
@@ -1302,7 +1498,13 @@ class FxrouteTransitionRuntime(TransitionRuntime):
             transition_id,
         )
 
-    async def _verify_transition(self, request: TransitionRequest, *, require_source_volume: bool) -> dict[str, Any]:
+    async def _verify_transition(
+        self,
+        request: TransitionRequest,
+        *,
+        require_source_volume: bool,
+        require_effects_runtime: bool = True,
+    ) -> dict[str, Any]:
         try:
             rate = dict(get_samplerate_status())
         except Exception:
@@ -1367,52 +1569,13 @@ class FxrouteTransitionRuntime(TransitionRuntime):
         except Exception as exc:
             raise RuntimeError(f"subwoofer helper readback failed at commit: {exc}") from exc
 
-        if easyeffects_manager:
+        effects_runtime = {}
+        if easyeffects_manager and require_effects_runtime:
             preset = await asyncio.to_thread(easyeffects_manager.get_active_preset)
             if not preset:
                 raise RuntimeError("EasyEffects active preset was not confirmed at commit")
             extras = easyeffects_manager.load_global_extras()
-            if (extras.get("loudness") or {}).get("enabled"):
-                read_runtime = getattr(easyeffects_manager, "read_loudness_runtime", None)
-                if not callable(read_runtime):
-                    raise RuntimeError("EasyEffects Loudness readback is unavailable")
-                runtime = await asyncio.to_thread(read_runtime)
-                if not isinstance(runtime, dict) or runtime.get("bypass"):
-                    raise RuntimeError("EasyEffects Loudness state was not confirmed at commit")
-                try:
-                    expected_payload = easyeffects_manager._loudness_plugin_payload(
-                        extras["loudness"], extras.get("autogain")
-                    )
-                    actual_volume = float(runtime["volume"])
-                    actual_output_gain = float(runtime["output_gain"])
-                except (AttributeError, KeyError, TypeError, ValueError) as exc:
-                    raise RuntimeError(f"EasyEffects Loudness readback is incomplete: {exc}") from exc
-                if not (
-                    easyeffects_manager.LOUDNESS_PLUGIN_VOLUME_MIN_DB
-                    <= actual_volume
-                    <= easyeffects_manager.LOUDNESS_PLUGIN_VOLUME_MAX_DB
-                ):
-                    raise RuntimeError(
-                        "EasyEffects Loudness volume is outside the installed LSP range: "
-                        f"{actual_volume} not in [{easyeffects_manager.LOUDNESS_PLUGIN_VOLUME_MIN_DB}, "
-                        f"{easyeffects_manager.LOUDNESS_PLUGIN_VOLUME_MAX_DB}]"
-                    )
-                if not math.isclose(
-                    actual_volume,
-                    float(expected_payload["volume"]),
-                    rel_tol=0.0,
-                    abs_tol=0.05,
-                ) or not math.isclose(
-                    actual_output_gain,
-                    float(expected_payload["output-gain"]),
-                    rel_tol=0.0,
-                    abs_tol=0.05,
-                ):
-                    raise RuntimeError(
-                        "EasyEffects Loudness work point mismatch: "
-                        f"expected=({expected_payload['volume']}, {expected_payload['output-gain']}) "
-                        f"actual=({actual_volume}, {actual_output_gain})"
-                    )
+            effects_runtime = await self._read_and_validate_effects_runtime(extras)
         return {
             "committed": True,
             "player": state,
@@ -1421,11 +1584,16 @@ class FxrouteTransitionRuntime(TransitionRuntime):
             "graph_complete": True,
             "helper_rate": helper_rate,
             "source_volume": state.get("volume"),
+            "effects_runtime": effects_runtime,
         }
 
     async def verify_transition_graph(self, request: TransitionRequest) -> dict[str, Any]:
         """Verify the production graph while the output gate is still closed."""
-        return await self._verify_transition(request, require_source_volume=False)
+        return await self._verify_transition(
+            request,
+            require_source_volume=False,
+            require_effects_runtime=False,
+        )
 
     async def verify_committed_transition(self, request: TransitionRequest) -> dict[str, Any]:
         return await self._verify_transition(request, require_source_volume=True)
@@ -2338,7 +2506,31 @@ async def _coordinator_establish_effects_and_helper(
             )
         await _coordinator_reconcile_subwoofer_links_only()
     else:
-        needs_preset = bool(request.rate_change or not diagnosis.get("ee_ports"))
+        needs_preset = not diagnosis.get("ee_ports")
+        if not needs_preset and easyeffects_manager is not None:
+            requires_convolver_reload = getattr(
+                easyeffects_manager,
+                "active_preset_requires_samplerate_reload",
+                None,
+            )
+            if callable(requires_convolver_reload):
+                try:
+                    needs_preset = bool(
+                        await asyncio.to_thread(
+                            requires_convolver_reload,
+                            target_rate,
+                        )
+                    )
+                except Exception as exc:
+                    # Preserve a functioning active graph when its preset file
+                    # cannot be inspected.  A missing/broken graph still takes
+                    # the reload path above; an unknown convolver is not a
+                    # reason to reload every rate transition.
+                    logger.warning(
+                        "Coordinator could not inspect active preset for convolver "
+                        "sample-rate reload: %s",
+                        exc,
+                    )
         if needs_preset:
             await _sync_easyeffects_preset_for_playback_samplerate(
                 sample_rate_hz=target_rate,

@@ -555,6 +555,21 @@ class EasyEffectsManager:
             "bypass": bypass_text in {"1", "true", "on", "yes"},
         }
 
+    def read_autogain_runtime(self) -> Dict[str, Any]:
+        """Read the active Auto Gain target and bypass state."""
+        target_text = self.get_active_plugin_property("autogain", 0, "target")
+        bypass_text = self.get_active_plugin_property("autogain", 0, "bypass").lower()
+        try:
+            target = float(target_text)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(
+                f"EasyEffects Auto Gain readback was not numeric: target={target_text!r}"
+            ) from exc
+        return {
+            "target": target,
+            "bypass": bypass_text in {"1", "true", "on", "yes"},
+        }
+
     @staticmethod
     def _link_target_has_source(link_output: str, target_port: str, source_prefix: str) -> bool:
         in_target = False
@@ -1553,6 +1568,23 @@ class EasyEffectsManager:
             and plugin_name.startswith("convolver#")
             and isinstance(plugin_payload, dict)
             and plugin_payload.get("bypass") is not True
+        )
+
+    def active_preset_requires_samplerate_reload(
+        self, sample_rate_hz: Optional[int] = None
+    ) -> bool:
+        """Return whether the active preset has a live rate-sensitive convolver."""
+        del sample_rate_hz  # the presence of a live convolver is the predicate
+        active_preset = self.get_active_preset()
+        if not active_preset or active_preset in self.EXCLUDED_GLOBAL_EXTRAS_PRESETS:
+            return False
+        payload = self._read_preset_payload(active_preset)
+        output = payload.get("output") if isinstance(payload, dict) else None
+        if not isinstance(output, dict):
+            return False
+        return any(
+            self._is_active_convolver_plugin(plugin_name, plugin_payload)
+            for plugin_name, plugin_payload in output.items()
         )
 
     def _apply_convolver_samplerate_compensation(self, output: Dict[str, Any], sample_rate_hz: Optional[int]) -> bool:

@@ -131,6 +131,16 @@ class MainCoreTransitionRuntime:
     async def start_target_source(self, request: Any) -> None:
         self.events.append("start")
 
+    async def stabilize_effects_after_rate_change(self, request: Any) -> dict[str, Any]:
+        self.events.append("dsp-stabilize")
+        return {
+            "stabilized": True,
+            "no_op": not request.rate_change,
+            "active_rate": request.target_rate,
+            "force_rate": request.target_rate,
+            "graph_complete": True,
+        }
+
     async def set_source_volume(self, volume: int, transition_id: str) -> None:
         self.events.append(f"source-volume:{volume}")
 
