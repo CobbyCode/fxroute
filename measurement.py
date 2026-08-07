@@ -301,6 +301,7 @@ class MeasurementStore:
         calibration_ref: str | None = None,
         sweep_profile: dict[str, float] | None = None,
         measurement_scope: str = MEASUREMENT_SCOPE_ACTIVE_CHAIN,
+        playback_gain: float | None = None,
     ) -> dict[str, Any]:
         # Guard against concurrent measurement jobs
         active_job = self._find_active_or_cancelling_job()
@@ -349,6 +350,14 @@ class MeasurementStore:
             calibration_ref=calibration_ref,
         )
         normalized_scope = self._normalize_measurement_scope(measurement_scope)
+        normalized_playback_gain = None
+        if playback_gain is not None:
+            try:
+                normalized_playback_gain = float(playback_gain)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("playback_gain must be a finite non-negative number") from exc
+            if not math.isfinite(normalized_playback_gain) or normalized_playback_gain < 0.0:
+                raise ValueError("playback_gain must be a finite non-negative number")
 
         job_id = f"measurement-job-{uuid4().hex[:12]}"
         now = self._utc_now()
@@ -375,6 +384,7 @@ class MeasurementStore:
             "message": "Sweep queued.",
             "scope_note": MEASUREMENT_SCOPE_NOTE,
             "measurement_scope": normalized_scope,
+            "playback_gain": normalized_playback_gain,
             "result": None,
             "error": None,
             "sweep_profile": sweep_profile if isinstance(sweep_profile, dict) and sweep_profile else None,
@@ -2151,6 +2161,7 @@ class MeasurementStore:
                     playback_path=playback_path,
                     playback_target=playback_target,
                     measurement_scope=measurement_scope,
+                    playback_gain=job.get("playback_gain"),
                     sweep_meta=sweep_meta,
                     sample_rate=sample_rate,
                     duration_seconds=duration_seconds,
@@ -2209,6 +2220,7 @@ class MeasurementStore:
                                 playback_path=playback_path,
                                 playback_target=playback_target,
                                 measurement_scope=measurement_scope,
+                                playback_gain=job.get("playback_gain"),
                                 sweep_meta=sweep_meta,
                                 sample_rate=sample_rate,
                                 duration_seconds=duration_seconds,
@@ -2284,6 +2296,7 @@ class MeasurementStore:
                             playback_path=playback_path,
                             playback_target=playback_target,
                             measurement_scope=measurement_scope,
+                            playback_gain=job.get("playback_gain"),
                             sweep_meta=sweep_meta,
                             sample_rate=sample_rate,
                             duration_seconds=duration_seconds,
@@ -2433,6 +2446,7 @@ class MeasurementStore:
         playback_path: Path,
         playback_target: dict[str, Any],
         measurement_scope: str,
+        playback_gain: float | None,
         sweep_meta: dict[str, Any],
         sample_rate: int,
         duration_seconds: float,
@@ -2479,6 +2493,7 @@ class MeasurementStore:
             playback_path=playback_path,
             playback_target=playback_target,
             playback_route=playback_route,
+            playback_gain=playback_gain,
         )
 
         record_process = subprocess.Popen(record_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -6043,9 +6058,10 @@ class MeasurementStore:
         playback_path: Path,
         playback_target: dict[str, Any],
         playback_route: dict[str, Any],
+        playback_gain: float | None = None,
     ) -> list[str]:
         if playback_route.get("route") in MEASUREMENT_SUBWOOFER_HELPER_ROUTES or playback_route.get("route") == "subwoofer-active-chain":
-            return [
+            command = [
                 "pw-play",
                 "-P",
                 "node.autoconnect=false",
@@ -6055,6 +6071,15 @@ class MeasurementStore:
                 "0",
                 str(playback_path),
             ]
+            if playback_route.get("route") in MEASUREMENT_SUBWOOFER_HELPER_ROUTES and playback_gain is not None:
+                try:
+                    normalized_gain = float(playback_gain)
+                except (TypeError, ValueError) as exc:
+                    raise ValueError("playback_gain must be a finite non-negative number") from exc
+                if not math.isfinite(normalized_gain) or normalized_gain < 0.0:
+                    raise ValueError("playback_gain must be a finite non-negative number")
+                command.insert(-1, f"--volume={normalized_gain:.9g}")
+            return command
         return [
             "pw-play",
             "-P",

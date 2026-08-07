@@ -10904,6 +10904,47 @@ def _auto_sub_candidate_ledger(
     return ledger
 
 
+def _capture_auto_sub_playback_gain() -> dict[str, Any]:
+    """Capture one fixed neutral source gain for an AutoSub optimization job."""
+    manager = easyeffects_manager
+    loudness_enabled = False
+    volume_db = 0.0
+    if manager is not None:
+        try:
+            extras = manager.load_global_extras()
+            loudness = extras.get("loudness") if isinstance(extras, dict) else {}
+            loudness = loudness if isinstance(loudness, dict) else {}
+            loudness_enabled = bool(loudness.get("enabled"))
+            if loudness_enabled:
+                volume_db = float(loudness.get("params", {}).get("volumeDb", 0.0))
+        except Exception as exc:
+            raise RuntimeError("Could not capture the EasyEffects Loudness volume for AutoSub") from exc
+    if not math.isfinite(volume_db):
+        raise RuntimeError("EasyEffects Loudness volume for AutoSub is not finite")
+    playback_gain = 10.0 ** (volume_db / 20.0) if loudness_enabled else 1.0
+    if not math.isfinite(playback_gain) or playback_gain < 0.0:
+        raise RuntimeError("AutoSub playback gain is not finite")
+    return {
+        "enabled": loudness_enabled,
+        "volume_db": volume_db if loudness_enabled else 0.0,
+        "linear": playback_gain,
+        "source": "loudness.params.volumeDb" if loudness_enabled else "hardware-sink",
+    }
+
+
+def _auto_sub_job_playback_gain(job: Mapping[str, Any]) -> float:
+    """Read the immutable per-job source gain, defaulting old jobs to unity."""
+    payload = job.get("playback_gain")
+    value = payload.get("linear", 1.0) if isinstance(payload, Mapping) else (1.0 if payload is None else payload)
+    try:
+        playback_gain = float(value)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("AutoSub job playback gain is invalid") from exc
+    if not math.isfinite(playback_gain) or playback_gain < 0.0:
+        raise RuntimeError("AutoSub job playback gain is invalid")
+    return playback_gain
+
+
 @app.post("/api/measurements/auto-sub-optimize/start")
 async def start_auto_sub_optimize(
     input_id: str = Form(...),
@@ -10940,6 +10981,7 @@ async def start_auto_sub_optimize(
         output_mode = mode_state.get("mode")
         if output_mode not in OUTPUT_MODE_SUBWOOFER_MODES:
             raise HTTPException(status_code=400, detail="Auto Sub Optimize requires 2.1 or 2.2 Subwoofer output mode")
+        auto_sub_playback_gain = _capture_auto_sub_playback_gain()
 
         if output_mode in OUTPUT_MODE_SUBWOOFER_22_MODES:
             sub1 = _auto_sub_22_sub(mode_state, "sub1")
@@ -10993,6 +11035,7 @@ async def start_auto_sub_optimize(
                 "available": False,
                 "reason": target_curve_error or "Vertical Main/Target level reference has not passed its mandatory gate",
             },
+            "playback_gain": auto_sub_playback_gain,
             "current_sweep_id": "",
             "cancel_requested": False,
             "cancelled_at": None,
@@ -11005,10 +11048,11 @@ async def start_auto_sub_optimize(
         }
         _AUTO_SUB_JOBS[job_id] = job
         logger.info(
-            "AUTOSUB job=%s start mode=%s fc=%sHz candidates=%s target_curve=%s auto_gain=%s",
+            "AUTOSUB job=%s start mode=%s fc=%sHz candidates=%s target_curve=%s auto_gain=%s playback_gain=%s",
             job_id, output_mode, fc, len(scan_delays),
             json.dumps(target_curve, sort_keys=True, separators=(",", ":")) if target_curve else "unavailable",
             json.dumps(job["auto_gain"], sort_keys=True, separators=(",", ":")),
+            json.dumps(auto_sub_playback_gain, sort_keys=True, separators=(",", ":")),
         )
 
         calibration_bytes = None
@@ -11173,7 +11217,7 @@ class AutoSubPeakSafetyError(RuntimeError):
 
 def _auto_sub_stage_peak_prediction(
     *, sweep_profile: dict[str, Any], sample_rate: int, channel: str,
-    config: SubwooferRuntimeConfig,
+    config: SubwooferRuntimeConfig, playback_gain: float = 1.0,
 ) -> dict[str, Any]:
     """Run the known measurement PCM through the native Stage1 DSP topology."""
     rate = int(sample_rate)
@@ -11190,6 +11234,13 @@ def _auto_sub_stage_peak_prediction(
         sweep[:fade_len] *= np.linspace(0.0, 1.0, fade_len)
         sweep[-fade_len:] *= np.linspace(1.0, 0.0, fade_len)
     sweep *= 0.8 / max(float(np.max(np.abs(sweep))), 1e-12)
+    try:
+        source_gain = float(playback_gain)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("playback_gain must be a finite non-negative number") from exc
+    if not math.isfinite(source_gain) or source_gain < 0.0:
+        raise ValueError("playback_gain must be a finite non-negative number")
+    sweep *= source_gain
     zeros = np.zeros_like(sweep)
     left = sweep if channel in ("left", "stereo") else zeros
     right = sweep if channel in ("right", "stereo") else zeros
@@ -11250,6 +11301,7 @@ def _auto_sub_stage_peak_prediction(
         "maximum_dbfs": max(peak_dbfs.values()),
         "limit_dbfs": _AUTO_SUB_STAGE_PEAK_LIMIT_DBFS,
         "safe": max(peak_dbfs.values()) <= _AUTO_SUB_STAGE_PEAK_LIMIT_DBFS,
+        "playback_gain": source_gain,
     }
 
 
@@ -11513,11 +11565,13 @@ async def _measure_auto_sub_candidate(
             "error": str(exc),
             "scan": stage,
         })
+    playback_gain = _auto_sub_job_playback_gain(job)
     stage_peak_prediction = _auto_sub_stage_peak_prediction(
         sweep_profile=auto_sub_sweep_profile,
         sample_rate=auto_sub_rate,
         channel=channel,
         config=SubwooferRuntimeConfig.from_overview(get_audio_output_overview()),
+        playback_gain=playback_gain,
     )
     if exact_sub_mute:
         for key in ("output_3", "output_4"):
@@ -11562,6 +11616,7 @@ async def _measure_auto_sub_candidate(
             calibration_bytes=calibration_bytes,
             sweep_profile=auto_sub_sweep_profile,
             measurement_scope="raw_helper",
+            playback_gain=playback_gain,
         )
         sweep_id = sweep_job["id"]
         job["current_sweep_id"] = sweep_id
