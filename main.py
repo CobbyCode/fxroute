@@ -1264,10 +1264,55 @@ class FxrouteTransitionRuntime(TransitionRuntime):
         set_volume = getattr(player_instance, "set_volume", None)
         if callable(set_volume):
             set_volume(0)
+
+        if request.native_queue:
+            queue_tracks = tuple(request.native_queue)
+            jump_index = request.native_queue_jump
+            if jump_index is not None:
+                if jump_index < 0 or jump_index >= len(queue_tracks):
+                    raise RuntimeError(f"native MPV queue index is out of range: {jump_index}")
+                player_instance.set_pause(True)
+                player_instance.set_playlist_pos(jump_index)
+            elif request.reload_source:
+                start_index = request.native_queue_index
+                if start_index is None:
+                    start_index = 0
+                if start_index < 0 or start_index >= len(queue_tracks):
+                    raise RuntimeError(f"native MPV queue start index is out of range: {start_index}")
+                first_url = str(queue_tracks[0].get("url") or "")
+                if not first_url:
+                    raise RuntimeError("native MPV queue has no first URL")
+                _load_player_paused(first_url)
+                for queued_track in queue_tracks[1:]:
+                    queued_url = str(queued_track.get("url") or "")
+                    if not queued_url:
+                        raise RuntimeError("native MPV queue contains an empty URL")
+                    player_instance.loadfile(queued_url, mode="append")
+                player_instance.set_loop_playlist(bool(request.native_queue_loop))
+                set_shuffle = getattr(player_instance, "set_shuffle", None)
+                if callable(set_shuffle):
+                    set_shuffle(bool(request.native_queue_shuffle))
+                player_instance.set_playlist_pos(start_index)
+            else:
+                player_instance.set_pause(True)
+
+            if not await _wait_for_player_current_file(request.target_url):
+                raise RuntimeError("native MPV queue target did not settle while paused")
+
         if request.reload_source:
             if not request.target_url:
                 raise RuntimeError("Playback transition has no target URL")
-            if self._staged_target_url != request.target_url:
+            if request.native_queue:
+                # The native queue branch already staged the target and the
+                # complete MPV playlist.  Do not replace it with app_replace.
+                pass
+            elif self._staged_target_url != request.target_url:
+                # A non-native transition must not inherit loop/shuffle
+                # controls from a previously committed native playlist.
+                player_instance.set_loop_playlist(False)
+                set_shuffle = getattr(player_instance, "set_shuffle", None)
+                if callable(set_shuffle):
+                    set_shuffle(False)
                 _load_player_paused(request.target_url)
                 if not await _wait_for_player_current_file(request.target_url):
                     raise RuntimeError("target MPV stream did not settle while paused")
@@ -1300,24 +1345,65 @@ class FxrouteTransitionRuntime(TransitionRuntime):
         if not request.should_play:
             return
         deadline = time.monotonic() + 1.8
-        first_position: float | None = None
+        last_readback: dict[str, Any] = {}
+        get_property = getattr(player_instance, "get_property", None)
         while time.monotonic() <= deadline:
-            state = player_instance.state
-            position = state.get("position")
-            if isinstance(position, (int, float)) and first_position is None:
-                first_position = float(position)
-            if (
-                (not request.target_url or state.get("current_file") == request.target_url)
-                and not state.get("paused")
-                and state.get("playing")
-                and (
-                    first_position is None
-                    or float(state.get("position") or 0.0) > first_position + 0.01
-                )
-            ):
-                return
+            if callable(get_property):
+                try:
+                    live_path = get_property("path")
+                    live_paused = get_property("pause")
+                    live_idle = get_property("idle-active")
+                    live_time_pos = get_property("time-pos")
+                    live_audio_params = get_property("audio-params")
+                    last_readback = {
+                        "path": live_path,
+                        "pause": live_paused,
+                        "idle-active": live_idle,
+                        "time-pos": live_time_pos,
+                        "audio-params": live_audio_params,
+                    }
+                    time_active = isinstance(live_time_pos, (int, float))
+                    audio_active = isinstance(live_audio_params, Mapping) and bool(live_audio_params)
+                    path_matches = not request.target_url or live_path == request.target_url
+                    if (
+                        not path_matches
+                        and isinstance(live_path, str)
+                        and live_path.startswith("file://")
+                    ):
+                        path_matches = unquote(live_path[7:]) == request.target_url
+                    if (
+                        path_matches
+                        and live_paused is False
+                        and live_idle is False
+                        and time_active
+                        and audio_active
+                    ):
+                        logger.info(
+                            "Playback target start confirmed by MPV IPC: path=%s time_pos=%s audio=%s",
+                            live_path,
+                            live_time_pos,
+                            live_audio_params,
+                        )
+                        return
+                except Exception as exc:
+                    last_readback = {"error": str(exc)}
+            else:
+                # Small test adapters may only expose the cached state.  The
+                # production MPVWrapper always has get_property(), so the
+                # actual runtime contract above remains IPC-based.
+                state = player_instance.state
+                if (
+                    (not request.target_url or state.get("current_file") == request.target_url)
+                    and not state.get("paused")
+                    and state.get("playing")
+                    and isinstance(state.get("position"), (int, float))
+                ):
+                    return
             await asyncio.sleep(0.05)
-        raise RuntimeError("target MPV stream did not start and advance")
+        raise RuntimeError(
+            "target MPV stream did not pass live IPC start readback: "
+            f"{last_readback}"
+        )
 
     async def _read_and_validate_effects_runtime(
         self, extras: Mapping[str, Any]
@@ -1960,6 +2046,9 @@ def _reset_mpv_loop_state() -> None:
         return
     player_instance.set_loop_playlist(False)
     player_instance.set_loop_file(False)
+    set_shuffle = getattr(player_instance, "set_shuffle", None)
+    if callable(set_shuffle):
+        set_shuffle(False)
 
 
 def _current_track_matches(expected_track: dict | None) -> bool:
@@ -3393,6 +3482,34 @@ async def _maybe_recover_spotify_samplerate_mismatch(
     await _request_coordinated_recovery(track, f"spotify-{reason}")
 
 
+def _can_use_native_local_queue(tracks: list[dict]) -> bool:
+    """Return whether MPV can own one already-safe homogeneous playlist."""
+    if len(tracks) <= 1:
+        return False
+    rates = []
+    for track in tracks:
+        if track.get("source", "local") != "local" or not str(track.get("url") or "").strip():
+            return False
+        rate = track.get("sample_rate_hz")
+        if not isinstance(rate, int) or rate <= 0:
+            return False
+        rates.append(rate)
+    return len(set(rates)) == 1
+
+
+def _native_queue_request_fields() -> dict[str, Any]:
+    """Snapshot native-queue metadata for a Coordinator request."""
+    if playback_queue_mode != "native_mpv" or not _can_use_native_local_queue(playback_queue):
+        return {}
+    start_index = playback_queue_index if playback_queue_index >= 0 else 0
+    return {
+        "native_queue": tuple(dict(item) for item in playback_queue),
+        "native_queue_index": start_index,
+        "native_queue_loop": bool(playback_queue_loop),
+        "native_queue_shuffle": bool(playback_queue_shuffle),
+    }
+
+
 def _prepare_local_queue(track_id: str, queue_track_ids: Optional[list[str]] = None, shuffle: bool = False, loop: bool = False, *, reshuffle: bool = True):
     global playback_queue, playback_queue_original, playback_queue_index, playback_queue_mode, playback_queue_loop, playback_queue_shuffle, single_track_loop
     playback_queue = []
@@ -3427,10 +3544,11 @@ def _prepare_local_queue(track_id: str, queue_track_ids: Optional[list[str]] = N
 
     playback_queue = ordered_tracks if len(ordered_tracks) > 1 else []
     playback_queue_original = original_tracks if len(original_tracks) > 1 else []
-    # Every queue track is loaded through PlaybackTransitionCoordinator so a
-    # queue cannot bypass rate/graph/gate commit ordering via MPV's native
-    # playlist API.
-    playback_queue_mode = "app_replace"
+    # A homogeneous local queue is safe to hand to MPV only after the
+    # Coordinator has committed the common rate/DSP/graph/gate state.  The
+    # request carries the immutable queue snapshot; the mode becomes visible
+    # as native only after that transition commits.
+    playback_queue_mode = "native_mpv" if _can_use_native_local_queue(ordered_tracks) else "app_replace"
     playback_queue_loop = bool(loop and len(ordered_tracks) > 1)
     playback_queue_shuffle = bool(shuffle and len(ordered_tracks) > 1)
     single_track_loop = bool(loop and len(ordered_tracks) == 1)
@@ -3458,6 +3576,8 @@ async def _load_queue_track(index: int, *, transition_reason: str = "queue navig
         return False
     source = str(next_track.get("source") or "local")
     target_rate = _coordinator_target_rate(source, next_track)
+    native_fields = _native_queue_request_fields()
+    native_jump = playback_queue_mode == "native_mpv"
     request = TransitionRequest(
         operation="queue",
         source=source,
@@ -3466,8 +3586,10 @@ async def _load_queue_track(index: int, *, transition_reason: str = "queue navig
         target_track=next_track,
         should_play=True,
         rate_change=_coordinator_rate_change(target_rate),
-        reload_source=True,
+        reload_source=not native_jump,
         detail=transition_reason,
+        **native_fields,
+        native_queue_jump=index if native_jump else None,
     )
     try:
         result = await _run_coordinated_transition(request)
@@ -3486,22 +3608,28 @@ async def _advance_playback_queue(*, transition_reason: str = "queue advance") -
         return False
     next_index = playback_queue_index + 1
     if next_index >= len(playback_queue):
-        manual_shuffle_wrap = playback_queue_shuffle and transition_reason.startswith("manual queue next")
-        if playback_queue_loop or manual_shuffle_wrap:
-            if playback_queue_shuffle:
-                current_index = playback_queue_index if 0 <= playback_queue_index < len(playback_queue) else 0
-                current_track_id = (playback_queue[current_index] or {}).get("id")
-                current_track = dict(playback_queue[current_index])
-                remaining = [dict(track) for track in playback_queue if track.get("id") != current_track_id]
-                random.shuffle(remaining)
-                playback_queue[:] = [current_track] + remaining
-                playback_queue_index = 0
-                next_index = 1 if len(playback_queue) > 1 else 0
-            else:
+        if playback_queue_mode == "native_mpv":
+            if playback_queue_loop:
                 next_index = 0
+            else:
+                return False
         else:
-            _clear_playback_queue()
-            return False
+            manual_shuffle_wrap = playback_queue_shuffle and transition_reason.startswith("manual queue next")
+            if playback_queue_loop or manual_shuffle_wrap:
+                if playback_queue_shuffle:
+                    current_index = playback_queue_index if 0 <= playback_queue_index < len(playback_queue) else 0
+                    current_track_id = (playback_queue[current_index] or {}).get("id")
+                    current_track = dict(playback_queue[current_index])
+                    remaining = [dict(track) for track in playback_queue if track.get("id") != current_track_id]
+                    random.shuffle(remaining)
+                    playback_queue[:] = [current_track] + remaining
+                    playback_queue_index = 0
+                    next_index = 1 if len(playback_queue) > 1 else 0
+                else:
+                    next_index = 0
+            else:
+                _clear_playback_queue()
+                return False
     return await _load_queue_track(next_index, transition_reason=transition_reason)
 
 
@@ -3519,6 +3647,12 @@ def _set_queue_shuffle(enabled: bool) -> bool:
     if len(playback_queue) <= 1:
         playback_queue_shuffle = False
         return False
+    if playback_queue_mode == "native_mpv":
+        playback_queue_shuffle = bool(enabled)
+        set_shuffle = getattr(player_instance, "set_shuffle", None) if player_instance else None
+        if callable(set_shuffle):
+            set_shuffle(playback_queue_shuffle)
+        return True
     playback_queue_shuffle = bool(enabled)
     current_index = playback_queue_index if 0 <= playback_queue_index < len(playback_queue) else 0
     current_track_id = (playback_queue[current_index] or {}).get("id") if playback_queue else None
@@ -3545,6 +3679,8 @@ def _set_queue_loop(enabled: bool) -> bool:
     if len(playback_queue) > 1:
         playback_queue_loop = bool(enabled)
         single_track_loop = False
+        if playback_queue_mode == "native_mpv" and player_instance:
+            player_instance.set_loop_playlist(playback_queue_loop)
         return True
     single_track_loop = bool(enabled)
     playback_queue_loop = False
@@ -3604,6 +3740,34 @@ def get_output_volume_safe(default: int = 100) -> int:
     except Exception as exc:
         logger.warning("Failed to read output volume, using fallback %s: %s", default, exc)
         return default
+
+
+def _set_canonical_output_volume(volume: float | int) -> dict[str, Any]:
+    """Apply the one UI-volume contract for local, radio and Spotify.
+
+    Loudness owns the attenuation when enabled, therefore the physical system
+    master remains at 100%.  Without Loudness the existing FXRoute system
+    volume curve remains authoritative.
+    """
+    requested = max(0, min(100, int(round(float(volume)))))
+    extras = easyeffects_manager.load_global_extras() if easyeffects_manager else {}
+    loudness = extras.get("loudness") if isinstance(extras, dict) else {}
+    if isinstance(loudness, dict) and loudness.get("enabled") and easyeffects_manager:
+        volume_db = easyeffects_manager.loudness_db_from_percent(requested)
+        volume_result = easyeffects_manager.set_loudness_volume_db(volume_db)
+        set_output_volume(100)
+        return {
+            "volume": requested,
+            "loudnessVolumeDb": float(
+                volume_result["extras"]["loudness"]["params"]["volumeDb"]
+            ),
+            "loudness_enabled": True,
+        }
+    return {
+        "volume": set_output_volume(requested),
+        "loudnessVolumeDb": None,
+        "loudness_enabled": False,
+    }
 
 
 async def get_spotify_ui_state(data: Optional[dict] = None) -> dict:
@@ -4040,6 +4204,32 @@ async def on_player_state_change(state: dict):
         if current_file == queue_transition_target_url and not state.get("ended"):
             queue_transition_target_url = None
 
+    # Once a homogeneous queue has been committed, MPV owns natural playlist
+    # boundaries.  A path/playlist-pos event only updates application context;
+    # it must never start another rate, DSP, graph or gate transition.
+    if (
+        playback_queue_mode == "native_mpv"
+        and len(playback_queue) > 1
+        and not _playback_transition_is_active()
+        and not state.get("ended")
+        and state.get("current_file")
+    ):
+        queue_index = state.get("playlist_pos")
+        if not isinstance(queue_index, int) or not 0 <= queue_index < len(playback_queue):
+            queue_index = next(
+                (
+                    index
+                    for index, track in enumerate(playback_queue)
+                    if track.get("url") == state.get("current_file")
+                ),
+                None,
+            )
+        if queue_index is not None:
+            track = dict(playback_queue[queue_index])
+            playback_queue_index = queue_index
+            current_track_info = track
+            last_track_info = track
+
     if (
         not queue_advancing
         and not queue_transition_target_url
@@ -4047,6 +4237,7 @@ async def on_player_state_change(state: dict):
         and not state.get("current_file")
         and current_track_info
         and current_track_info.get("source") == "local"
+        and playback_queue_mode != "native_mpv"
     ):
         queue_advancing = True
         try:
@@ -5718,7 +5909,7 @@ async def delete_library_folder(req: DeleteFolderRequest):
 
 @app.post("/api/play")
 async def play_track(req: PlayRequest):
-    global current_track_info, last_track_info, last_radio_track_info
+    global current_track_info, last_track_info, last_radio_track_info, playback_queue_mode
     if not player_instance or not player_instance._running:
         raise HTTPException(status_code=503, detail="Player not available")
     if not _can_send_play_command():
@@ -5771,10 +5962,11 @@ async def play_track(req: PlayRequest):
             # committed only after the coordinator's readback gate succeeds.
             current_track_info = saved_context
             last_track_info = saved_last_context
-        if not track_info or not track_info.get("url"):
-            raise HTTPException(status_code=404, detail="Track not found")
+    if not track_info or not track_info.get("url"):
+        raise HTTPException(status_code=404, detail="Track not found")
 
     target_url = str(track_info.get("url") or "")
+    native_queue_fields = _native_queue_request_fields() if source == "local" else {}
     same_target = previous_state.get("current_file") == target_url and not previous_state.get("ended")
     request = TransitionRequest(
         operation="play",
@@ -5784,19 +5976,24 @@ async def play_track(req: PlayRequest):
         target_track=dict(track_info),
         should_play=True,
         rate_change=_coordinator_rate_change(_coordinator_target_rate(source, track_info)),
-        reload_source=(not same_target) or _coordinator_rate_change(_coordinator_target_rate(source, track_info)),
+        reload_source=bool(native_queue_fields)
+        or (not same_target)
+        or _coordinator_rate_change(_coordinator_target_rate(source, track_info)),
         detail=f"title={track_info.get('title') or track_info.get('id')}",
+        **native_queue_fields,
     )
-    # Native mpv queue priming used to bypass the transition owner.  Keep the
-    # queue metadata, but let the coordinator stage each target explicitly.
     try:
         result = await _run_coordinated_transition(request)
     except PlaybackTransitionFailure as exc:
+        if native_queue_fields:
+            playback_queue_mode = "app_replace"
         raise _transition_error_http(exc) from exc
     if source == "radio" and isinstance(result.target_rate, int) and result.target_rate > 0:
         track_info["sample_rate_hz"] = result.target_rate
 
     _commit_coordinated_track(track_info, source=source)
+    if native_queue_fields:
+        playback_queue_mode = "native_mpv"
     return {
         "status": "playing",
         "url": target_url,
@@ -5931,16 +6128,8 @@ async def set_volume(request: Request):
         vol = int(body.get("volume", 50))
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON body, expected {\"volume\": <int>}")
-    vol = max(0, min(100, vol))
     try:
-        extras = easyeffects_manager.load_global_extras() if easyeffects_manager else {}
-        if extras.get("loudness", {}).get("enabled"):
-            volume_db = easyeffects_manager.loudness_db_from_percent(vol)
-            volume_result = easyeffects_manager.set_loudness_volume_db(volume_db)
-            set_output_volume(100)
-            applied_volume = vol
-        else:
-            applied_volume = set_output_volume(vol)
+        volume_result = _set_canonical_output_volume(vol)
     except SystemVolumeError as exc:
         raise HTTPException(status_code=500, detail=f"Failed to set output volume: {exc}")
     ensure_local_source_volume()
@@ -5948,12 +6137,11 @@ async def set_volume(request: Request):
     # /api/spotify/volume, so this endpoint should not block on multiple
     # playerctl/Spotify status reads on slow boards.
     await manager.broadcast({"type": "playback", "data": build_playback_payload(player_instance.state)})
-    response = {"volume": applied_volume}
-    if extras.get("loudness", {}).get("enabled"):
-        response["loudnessVolumeDb"] = float(
-            volume_result["extras"]["loudness"]["params"]["volumeDb"]
-        )
-    return response
+    return {
+        "volume": volume_result["volume"],
+        **({"loudnessVolumeDb": volume_result["loudnessVolumeDb"]}
+           if volume_result.get("loudness_enabled") else {}),
+    }
 
 @app.post("/api/playback/next")
 async def next_playback():
@@ -13933,12 +14121,14 @@ async def api_spotify_volume(request: Request):
     body = await request.json()
     volume = float(body.get("volume", 100))
     try:
-        applied_volume = set_output_volume(volume)
+        volume_result = _set_canonical_output_volume(volume)
     except SystemVolumeError as exc:
         raise HTTPException(status_code=500, detail=f"Failed to set output volume: {exc}")
     ensure_local_source_volume()
     data = await broadcast_spotify_state()
-    data["volume"] = applied_volume
+    data["volume"] = volume_result["volume"]
+    if volume_result.get("loudness_enabled"):
+        data["loudnessVolumeDb"] = volume_result["loudnessVolumeDb"]
     return data
 
 

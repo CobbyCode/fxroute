@@ -494,6 +494,11 @@ class MPVWrapper:
         with self.lock:
             return self.set_property("loop-playlist", "inf" if enabled else "no")
 
+    def set_shuffle(self, enabled: bool):
+        """Enable or disable mpv's native playlist shuffle mode."""
+        with self.lock:
+            return self.set_property("shuffle", bool(enabled))
+
     def set_loop_file(self, enabled: bool):
         """Enable or disable mpv single-file looping."""
         with self.lock:

@@ -79,6 +79,14 @@ class TransitionRequest:
     reload_source: bool = True
     graph_only: bool = False
     detail: str = ""
+    # A homogeneous local MPV playlist is staged and committed as one
+    # transition.  The playlist itself is still owned by MPV after commit;
+    # the Coordinator continues to own rate, DSP, graph and output-gate state.
+    native_queue: tuple[Mapping[str, Any], ...] = field(default_factory=tuple)
+    native_queue_index: int | None = None
+    native_queue_jump: int | None = None
+    native_queue_loop: bool = False
+    native_queue_shuffle: bool = False
 
 
 @dataclass(frozen=True)
