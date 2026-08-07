@@ -25,11 +25,13 @@ class TransactionRuntime:
         *,
         fail_output_verify: bool = False,
         initially_muted: bool = False,
+        initially_easyeffects_muted: bool = False,
         dsp_reinitialized: bool = False,
         real_reconcile: bool = False,
     ):
         self.events: list[str] = []
         self.muted = initially_muted
+        self.easyeffects_muted = initially_easyeffects_muted
         self.fail_output_verify = fail_output_verify
         self.rate = 44100
         self.volume = 72
@@ -47,6 +49,18 @@ class TransactionRuntime:
     async def set_hardware_mute(self, muted, _transition_id):
         self.muted = bool(muted)
         self.events.append(f"mute:{self.muted}")
+
+    async def read_sink_mute(self, sink_name):
+        if sink_name != "easyeffects_sink":
+            raise AssertionError(f"unexpected explicit sink: {sink_name}")
+        self.events.append(f"read-sink-mute:{self.easyeffects_muted}")
+        return self.easyeffects_muted
+
+    async def set_sink_mute(self, sink_name, muted, _transition_id):
+        if sink_name != "easyeffects_sink":
+            raise AssertionError(f"unexpected explicit sink: {sink_name}")
+        self.easyeffects_muted = bool(muted)
+        self.events.append(f"sink-mute:{self.easyeffects_muted}")
 
     async def read_transition_snapshot(self, _request):
         self.events.append("snapshot")
@@ -127,6 +141,10 @@ class TransactionRuntime:
         self.events.append("verify-graph")
         return {"committed": True}
 
+    async def verify_committed_transition(self, _request):
+        self.events.append("commit-readback")
+        return {"committed": True}
+
     async def prepare_target_source(self, _request):
         self.events.append("prepare")
 
@@ -173,6 +191,66 @@ def _request(
 
 
 class CoordinatorTransactionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_spotify_play_clears_stale_hardware_and_internal_mutes(self):
+        runtime = TransactionRuntime(
+            initially_muted=True,
+            initially_easyeffects_muted=True,
+        )
+        coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
+
+        result = await coordinator.execute(_request("spotify-play", source="spotify"))
+
+        self.assertTrue(result.committed)
+        self.assertFalse(runtime.muted)
+        self.assertFalse(runtime.easyeffects_muted)
+        self.assertLess(runtime.events.index("mute:True"), runtime.events.index("sink-mute:False"))
+        self.assertLess(runtime.events.index("sink-mute:False"), runtime.events.index("mute:False"))
+
+    async def test_running_output_mode_switch_clears_stale_mutes(self):
+        runtime = TransactionRuntime(
+            initially_muted=True,
+            initially_easyeffects_muted=True,
+        )
+        coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
+
+        result = await coordinator.execute(_request("output-mode-switch"))
+
+        self.assertTrue(result.committed)
+        self.assertFalse(runtime.muted)
+        self.assertFalse(runtime.easyeffects_muted)
+
+    async def test_paused_output_mode_switch_preserves_existing_mutes(self):
+        runtime = TransactionRuntime(
+            initially_muted=True,
+            initially_easyeffects_muted=True,
+        )
+        coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
+
+        result = await coordinator.execute(_request("output-mode-switch", should_play=False))
+
+        self.assertTrue(result.committed)
+        self.assertTrue(runtime.muted)
+        self.assertTrue(runtime.easyeffects_muted)
+
+    async def test_measurement_entry_unmutes_both_sinks_before_sweep(self):
+        runtime = TransactionRuntime(
+            initially_muted=True,
+            initially_easyeffects_muted=True,
+        )
+        coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
+
+        result = await coordinator.execute(
+            _request("measurement-entry", target_rate=48000, should_play=False)
+        )
+
+        self.assertTrue(result.committed)
+        self.assertFalse(runtime.muted)
+        self.assertFalse(runtime.easyeffects_muted)
+        self.assertLess(
+            runtime.events.index("sink-mute:False"),
+            runtime.events.index("verify-measurement-entry"),
+        )
+
     async def test_output_mode_persists_only_after_stable_graph_and_restores_transport(self):
         runtime = TransactionRuntime()
         coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)

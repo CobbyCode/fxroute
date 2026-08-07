@@ -23,12 +23,14 @@ class FakeRuntime:
         self,
         *,
         muted=False,
+        easyeffects_muted=False,
         fail_stage=None,
         force_dsp_reinit=False,
         drop_mute_read_number=None,
         fail_mute_read_number=None,
     ):
         self.muted = muted
+        self.easyeffects_muted = easyeffects_muted
         self.fail_stage = fail_stage
         self.force_dsp_reinit = force_dsp_reinit
         self.drop_mute_read_number = drop_mute_read_number
@@ -64,6 +66,21 @@ class FakeRuntime:
     async def set_hardware_mute(self, muted, transition_id):
         self.muted = muted
         self.events.append(f"mute:{muted}")
+
+    async def read_sink_mute(self, sink_name):
+        self.assert_sink_name(sink_name)
+        self.events.append(f"read-sink-mute:{self.easyeffects_muted}")
+        return self.easyeffects_muted
+
+    async def set_sink_mute(self, sink_name, muted, transition_id):
+        self.assert_sink_name(sink_name)
+        self.easyeffects_muted = bool(muted)
+        self.events.append(f"sink-mute:{self.easyeffects_muted}")
+
+    @staticmethod
+    def assert_sink_name(sink_name):
+        if sink_name != "easyeffects_sink":
+            raise AssertionError(f"unexpected explicit sink: {sink_name}")
 
     async def read_transition_snapshot(self, request):
         await self._stage("snapshot")
@@ -244,14 +261,27 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(coordinator.gate.failure_latched)
         self.assertIsNone(coordinator.gate.original_user_muted)
 
-    async def test_intentionally_user_muted_sink_remains_muted_after_success(self):
-        runtime = FakeRuntime(muted=True)
+    async def test_audible_spotify_play_clears_stale_hardware_and_easyeffects_mutes(self):
+        runtime = FakeRuntime(muted=True, easyeffects_muted=True)
         coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
 
-        await coordinator.execute(request())
+        result = await coordinator.execute(TransitionRequest(
+            operation="spotify-play",
+            source="spotify",
+            target_rate=44_100,
+            target_url="spotify:track:stale-mute",
+            target_track={"source": "spotify", "url": "spotify:track:stale-mute"},
+            should_play=True,
+            rate_change=False,
+            reload_source=True,
+        ))
 
-        self.assertTrue(runtime.muted)
+        self.assertTrue(result.committed)
+        self.assertFalse(runtime.muted)
+        self.assertFalse(runtime.easyeffects_muted)
         self.assertFalse(coordinator.gate.closed)
+        self.assertLess(runtime.events.index("mute:True"), runtime.events.index("sink-mute:False"))
+        self.assertLess(runtime.events.index("sink-mute:False"), runtime.events.index("mute:False"))
 
     async def test_failure_exposes_structured_ui_status(self):
         runtime = FakeRuntime(muted=False, fail_stage="effects-helper-links")

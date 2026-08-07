@@ -23,6 +23,8 @@ from uuid import uuid4
 
 logger = logging.getLogger(__name__)
 
+EASYEFFECTS_TRANSPORT_SINK = "easyeffects_sink"
+
 
 class PlaybackTransitionFailure(RuntimeError):
     """A transition failed before its readback contract was committed."""
@@ -121,6 +123,12 @@ class TransitionRuntime(Protocol):
     async def read_hardware_mute(self) -> bool: ...
 
     async def set_hardware_mute(self, muted: bool, transition_id: str) -> None: ...
+
+    async def read_sink_mute(self, sink_name: str) -> bool: ...
+
+    async def set_sink_mute(
+        self, sink_name: str, muted: bool, transition_id: str
+    ) -> None: ...
 
     async def read_transition_snapshot(self, request: TransitionRequest) -> Mapping[str, Any]: ...
 
@@ -281,6 +289,27 @@ class PlaybackTransitionCoordinator:
         persisted = self._load_gate_state()
         if not persisted or persisted.get("owner") != "fxroute" or not persisted.get("closed"):
             self._clear_gate_state()
+            try:
+                await self._ensure_easyeffects_sink_unmuted(
+                    "startup-stale-mute-reconcile"
+                )
+                observed_muted = await self.runtime.read_hardware_mute()
+                if observed_muted:
+                    await self.runtime.set_hardware_mute(
+                        False, "startup-stale-mute-reconcile"
+                    )
+                    if await self.runtime.read_hardware_mute():
+                        raise RuntimeError(
+                            "startup stale hardware mute could not be cleared"
+                        )
+                    logger.info(
+                        "Playback transition startup cleared stale hardware mute"
+                    )
+            except Exception as exc:
+                self._startup_gate_error = str(exc)
+                self._startup_gate_reconciled = False
+                return False
+            self._startup_gate_error = None
             self._startup_gate_reconciled = True
             return True
 
@@ -321,11 +350,78 @@ class PlaybackTransitionCoordinator:
         async with self.lock:
             return await self._reconcile_startup_gate_locked()
 
-    async def _close_gate(self, transition_id: str) -> None:
+    @staticmethod
+    def _request_expects_audible_output(request: TransitionRequest) -> bool:
+        """Return whether a committed request must leave the output audible."""
+        return bool(request.should_play or request.operation == "measurement-entry")
+
+    async def _read_easyeffects_sink_mute(self) -> bool | None:
+        reader = getattr(self.runtime, "read_sink_mute", None)
+        if not callable(reader):
+            # Minimal test adapters predating the explicit internal-sink
+            # contract have no second physical sink.  The production adapter
+            # always implements this readback.
+            return None
+        try:
+            return bool(await reader(EASYEFFECTS_TRANSPORT_SINK))
+        except Exception as exc:
+            raise RuntimeError(
+                "EasyEffects sink mute readback failed: "
+                f"{exc}"
+            ) from exc
+
+    async def _set_easyeffects_sink_mute(
+        self, muted: bool, transition_id: str
+    ) -> None:
+        setter = getattr(self.runtime, "set_sink_mute", None)
+        if not callable(setter):
+            raise RuntimeError(
+                "EasyEffects sink mute control is unavailable for an audible transition"
+            )
+        try:
+            await setter(EASYEFFECTS_TRANSPORT_SINK, muted, transition_id)
+        except Exception as exc:
+            raise RuntimeError(
+                "EasyEffects sink mute write failed: "
+                f"{exc}"
+            ) from exc
+
+    async def _ensure_easyeffects_sink_unmuted(self, transition_id: str) -> None:
+        observed_muted = await self._read_easyeffects_sink_mute()
+        if observed_muted is None:
+            return
+        if observed_muted:
+            await self._set_easyeffects_sink_mute(False, transition_id)
+        readback = await self._read_easyeffects_sink_mute()
+        if readback is not False:
+            raise RuntimeError(
+                "EasyEffects sink mute could not be confirmed unmuted"
+            )
+
+    async def _verify_audible_output_readback(self, stage: str) -> None:
+        hardware_muted = bool(await self.runtime.read_hardware_mute())
+        if hardware_muted:
+            raise RuntimeError(
+                f"hardware output remained muted at audible commit boundary: {stage}"
+            )
+        easyeffects_muted = await self._read_easyeffects_sink_mute()
+        if easyeffects_muted is True:
+            raise RuntimeError(
+                f"EasyEffects sink remained muted at audible commit boundary: {stage}"
+            )
+
+    async def _close_gate(
+        self, transition_id: str, *, audible_output: bool = False
+    ) -> None:
         observed_muted = await self.runtime.read_hardware_mute()
         # A mute left behind by an earlier FXRoute failure is owned by the
         # coordinator, not evidence of a newly user-muted sink.
-        if not self.gate.closed:
+        if audible_output:
+            # Audible play/recovery/measurement-entry is an explicit request
+            # for sound.  A stale physical mute must not become the next
+            # transition's user intent.
+            self.gate.original_user_muted = False
+        elif not self.gate.closed:
             self.gate.original_user_muted = bool(observed_muted)
         elif self.gate.failure_latched and not observed_muted:
             # The user explicitly unmuted after the failure; begin a fresh
@@ -341,6 +437,8 @@ class PlaybackTransitionCoordinator:
         await self.runtime.set_hardware_mute(True, transition_id)
         if not await self.runtime.read_hardware_mute():
             raise RuntimeError("hardware output gate could not be confirmed closed")
+        if audible_output:
+            await self._ensure_easyeffects_sink_unmuted(transition_id)
 
     async def ensure_output_gate_closed(
         self,
@@ -388,15 +486,21 @@ class PlaybackTransitionCoordinator:
         if self.gate.closed and self.gate_settle_seconds:
             await asyncio.sleep(self.gate_settle_seconds)
 
-    async def _restore_gate(self, transition_id: str) -> None:
+    async def _restore_gate(
+        self, transition_id: str, *, audible_output: bool = False
+    ) -> None:
         if not self.gate.closed:
             return
         if self.gate.transition_id != transition_id or self.gate.owner != "fxroute":
             raise RuntimeError("hardware output gate ownership changed during transition")
-        restore_muted = bool(self.gate.original_user_muted)
+        restore_muted = False if audible_output else bool(self.gate.original_user_muted)
+        if audible_output:
+            await self._ensure_easyeffects_sink_unmuted(transition_id)
         await self.runtime.set_hardware_mute(restore_muted, transition_id)
         if (await self.runtime.read_hardware_mute()) != restore_muted:
             raise RuntimeError("hardware output gate restoration was not confirmed")
+        if audible_output:
+            await self._verify_audible_output_readback("before-gate-open")
         self.gate.closed = False
         self.gate.owner = None
         self.gate.transition_id = None
@@ -404,6 +508,13 @@ class PlaybackTransitionCoordinator:
         self.gate.failure_latched = False
         self.gate.original_user_muted = None
         self._clear_gate_state()
+        if audible_output:
+            await self._verify_audible_output_readback("after-gate-open")
+            logger.info(
+                "Playback transition audible sink readback: easyeffects_sink_muted=False "
+                "hardware_muted=False gate.closed=%s",
+                self.gate.closed,
+            )
 
     async def _latch_failure(self, transition_id: str) -> None:
         self.gate.failure_latched = True
@@ -556,6 +667,7 @@ class PlaybackTransitionCoordinator:
                     "graph-reconcile",
                 }
             )
+            audible_output = self._request_expects_audible_output(request)
 
             async def skip_measurement_restore(reason: str) -> TransitionResult:
                 """Discard a stale measurement snapshot without mutating playback."""
@@ -600,7 +712,10 @@ class PlaybackTransitionCoordinator:
                     return await skip_measurement_restore("intent-changed-before-gate")
                 if gate_required:
                     enter_stage("output-gate-close")
-                    await self._close_gate(transition_id)
+                    await self._close_gate(
+                        transition_id,
+                        audible_output=audible_output,
+                    )
 
                 enter_stage("quiet-old-source")
                 await self.runtime.quiet_old_source(request)
@@ -768,7 +883,10 @@ class PlaybackTransitionCoordinator:
                         )
                         enter_stage("output-gate-restore")
                         await self._hold_gate_after_verification()
-                        await self._restore_gate(transition_id)
+                        await self._restore_gate(
+                            transition_id,
+                            audible_output=audible_output,
+                        )
 
                     result_state = dict(state)
                     if effects_state:
@@ -909,7 +1027,10 @@ class PlaybackTransitionCoordinator:
                     )
                     enter_stage("output-gate-restore")
                     await self._hold_gate_after_verification()
-                    await self._restore_gate(transition_id)
+                    await self._restore_gate(
+                        transition_id,
+                        audible_output=audible_output,
+                    )
 
                 result_state = dict(state)
                 if effects_state:

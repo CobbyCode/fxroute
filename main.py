@@ -1212,9 +1212,9 @@ def _playback_gate_state_path() -> Path:
     return Path("/tmp") / f"fxroute-playback-gate-{os.getuid()}.json"
 
 
-def _read_hardware_sink_mute(output_key: str) -> bool:
+def _read_sink_mute(sink_name: str) -> bool:
     completed = subprocess.run(
-        ["pactl", "get-sink-mute", output_key],
+        ["pactl", "get-sink-mute", sink_name],
         capture_output=True,
         text=True,
         check=False,
@@ -1222,20 +1222,20 @@ def _read_hardware_sink_mute(output_key: str) -> bool:
     )
     if completed.returncode != 0:
         stderr = (completed.stderr or "").strip()
-        raise RuntimeError(stderr or f"pactl get-sink-mute {output_key} failed")
+        raise RuntimeError(stderr or f"pactl get-sink-mute {sink_name} failed")
     match = re.search(
         r"(?:^|\n)\s*Mute:\s*(yes|no)\s*$",
         completed.stdout or "",
         re.IGNORECASE | re.MULTILINE,
     )
     if not match:
-        raise RuntimeError(f"Could not parse mute state for hardware sink {output_key}")
+        raise RuntimeError(f"Could not parse mute state for sink {sink_name}")
     return match.group(1).lower() == "yes"
 
 
-def _set_hardware_sink_mute(output_key: str, muted: bool) -> None:
+def _set_sink_mute(sink_name: str, muted: bool) -> None:
     completed = subprocess.run(
-        ["pactl", "set-sink-mute", output_key, "1" if muted else "0"],
+        ["pactl", "set-sink-mute", sink_name, "1" if muted else "0"],
         capture_output=True,
         text=True,
         check=False,
@@ -1243,7 +1243,15 @@ def _set_hardware_sink_mute(output_key: str, muted: bool) -> None:
     )
     if completed.returncode != 0:
         stderr = (completed.stderr or "").strip()
-        raise RuntimeError(stderr or f"pactl set-sink-mute {output_key} {int(muted)} failed")
+        raise RuntimeError(stderr or f"pactl set-sink-mute {sink_name} {int(muted)} failed")
+
+
+def _read_hardware_sink_mute(output_key: str) -> bool:
+    return _read_sink_mute(output_key)
+
+
+def _set_hardware_sink_mute(output_key: str, muted: bool) -> None:
+    _set_sink_mute(output_key, muted)
 
 
 def _player_is_running(player=None) -> bool:
@@ -1294,6 +1302,20 @@ class FxrouteTransitionRuntime(TransitionRuntime):
         logger.info(
             "Playback transition output gate set: output=%s muted=%s transition_id=%s",
             output_key,
+            muted,
+            transition_id,
+        )
+
+    async def read_sink_mute(self, sink_name: str) -> bool:
+        return await asyncio.to_thread(_read_sink_mute, sink_name)
+
+    async def set_sink_mute(
+        self, sink_name: str, muted: bool, transition_id: str
+    ) -> None:
+        await asyncio.to_thread(_set_sink_mute, sink_name, muted)
+        logger.info(
+            "Playback transition explicit sink mute set: sink=%s muted=%s transition_id=%s",
+            sink_name,
             muted,
             transition_id,
         )
