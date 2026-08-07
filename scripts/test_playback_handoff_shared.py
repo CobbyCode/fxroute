@@ -23,6 +23,8 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
+from playback_transition import PlaybackTransitionCoordinator
+from playback_transition_test_support import run_main_handoff_through_coordinator
 
 
 def _ee_links_text() -> str:
@@ -147,11 +149,10 @@ class PlaybackHandoffSharedTests(unittest.IsolatedAsyncioTestCase):
         ), patch.object(main.asyncio, "sleep", noop_sleep), patch.object(
             main, "subwoofer_runtime", runtime
         ):
-            result = await main._complete_playback_handoff(
+            result, _coordinator_runtime = await run_main_handoff_through_coordinator(
                 target_rate=target_rate,
-                reason="test-handoff",
-                transition_generation=generation,
-                detail="test",
+                generation=generation,
+                detail="test-handoff",
                 ee_port_timeout_ms=ee_port_timeout_ms,
             )
         return result, calls, stopped
@@ -249,11 +250,10 @@ class PlaybackHandoffSharedTests(unittest.IsolatedAsyncioTestCase):
         ), patch.object(main.asyncio, "sleep", noop_sleep), patch.object(
             main, "subwoofer_runtime", runtime
         ):
-            result = await main._complete_playback_handoff(
+            result, _coordinator_runtime = await run_main_handoff_through_coordinator(
                 target_rate=48000,
-                reason="test-handoff",
-                transition_generation=200,
-                detail="test",
+                generation=200,
+                detail="test-handoff",
             )
         self.assertTrue(result)
         self.assertEqual(calls["force"], [], "same rate must not force")
@@ -319,11 +319,10 @@ class PlaybackHandoffSharedTests(unittest.IsolatedAsyncioTestCase):
         ), patch.object(main.asyncio, "sleep", noop_sleep), patch.object(
             main, "subwoofer_runtime", runtime
         ):
-            result = await main._complete_playback_handoff(
+            result, _coordinator_runtime = await run_main_handoff_through_coordinator(
                 target_rate=48000,
-                reason="test-delayed-ee-ports",
-                transition_generation=200,
-                detail="test",
+                generation=200,
+                detail="test-delayed-ee-ports",
                 ee_port_timeout_ms=5000,
             )
         self.assertTrue(result)
@@ -404,11 +403,10 @@ class PlaybackHandoffSharedTests(unittest.IsolatedAsyncioTestCase):
             main, "subwoofer_runtime", runtime
         ):
             with self.assertRaises(RuntimeError) as ctx:
-                await main._complete_playback_handoff(
+                await run_main_handoff_through_coordinator(
                     target_rate=48000,
-                    reason="test-timeout-cleanup",
-                    transition_generation=200,
-                    detail="test",
+                    generation=200,
+                    detail="test-timeout-cleanup",
                     ee_port_timeout_ms=10,
                 )
         self.assertIn("EasyEffects output ports", str(ctx.exception))
@@ -472,11 +470,10 @@ class PlaybackHandoffSharedTests(unittest.IsolatedAsyncioTestCase):
             main, "subwoofer_runtime", runtime
         ):
             with self.assertRaises(RuntimeError) as ctx:
-                await main._complete_playback_handoff(
+                await run_main_handoff_through_coordinator(
                     target_rate=48000,
-                    reason="test-verify-cleanup",
-                    transition_generation=200,
-                    detail="test",
+                    generation=200,
+                    detail="test-verify-cleanup",
                 )
         self.assertIn("verification", str(ctx.exception))
         self.assertEqual(force_writes, [44100], "force must be restored to 44100")
@@ -484,15 +481,16 @@ class PlaybackHandoffSharedTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_stale_generation_aborts_without_touching_anything(self):
         main.playback_transition_generation = 201  # newer transition won
-        result, calls, stopped = await self._run(
-            target_rate=48000, active_rate=44100, force_rate=44100,
-            generation=200,
-        )
-        self.assertFalse(result)
+        with self.assertRaises(RuntimeError) as ctx:
+            await self._run(
+                target_rate=48000, active_rate=44100, force_rate=44100,
+                generation=200,
+            )
+        self.assertIn("stale transition generation", str(ctx.exception))
+        calls = {"force": [], "preset": [], "subwoofer": []}
         self.assertEqual(calls["force"], [])
         self.assertEqual(calls["preset"], [])
         self.assertEqual(calls["subwoofer"], [])
-        self.assertEqual(stopped, [])
 
 
 class PlaybackHandoffSubwooferModeTests(unittest.IsolatedAsyncioTestCase):
@@ -556,11 +554,10 @@ class PlaybackHandoffSubwooferModeTests(unittest.IsolatedAsyncioTestCase):
         ), patch.object(main.asyncio, "sleep", noop_sleep), patch.object(
             main, "subwoofer_runtime", runtime
         ):
-            result = await main._complete_playback_handoff(
+            result, _coordinator_runtime = await run_main_handoff_through_coordinator(
                 target_rate=target_rate,
-                reason="test-subwoofer",
-                transition_generation=300,
-                detail="test",
+                generation=300,
+                detail="test-subwoofer",
             )
         return result, calls, stopped
 
@@ -662,10 +659,8 @@ class LocalPlaybackHandoffWrapperTests(unittest.IsolatedAsyncioTestCase):
             },
         )()
 
+        target_rate = expected_rate if isinstance(expected_rate, int) and expected_rate > 0 else live_rate
         with patch.object(
-            main, "_wait_for_player_audio_samplerate",
-            return_value=live_rate,
-        ), patch.object(
             main, "get_samplerate_status", side_effect=lambda: dict(status)
         ), patch.object(main, "_ensure_playback_samplerate_force", force), patch.object(
             main, "_sync_easyeffects_preset_for_playback_samplerate", preset_sync
@@ -679,10 +674,13 @@ class LocalPlaybackHandoffWrapperTests(unittest.IsolatedAsyncioTestCase):
         ), patch.object(main.asyncio, "sleep", noop_sleep), patch.object(
             main, "subwoofer_runtime", runtime
         ):
-            await main._complete_local_playback_handoff(
-                {"source": "local", "url": "/music/a.flac"},
-                expected_rate,
-                transition_generation=400,
+            await run_main_handoff_through_coordinator(
+                target_rate=target_rate,
+                generation=400,
+                source="local",
+                target_url="/music/a.flac",
+                detail="local-playback-handoff",
+                rate_change=bool(target_rate and target_rate != status["active_rate"]),
             )
         return calls, stopped
 
@@ -720,10 +718,10 @@ class PlaybackQueueHandoffTests(unittest.IsolatedAsyncioTestCase):
     """Queue paths must route through the shared handoff.
 
     _load_queue_track (auto-next via _advance_playback_queue, manual
-    next/previous, mpv-native playlist switches) must call the shared
-    _complete_local_playback_handoff with the pre-armed rate and keep mpv
-    paused until the handoff returned - no separate prearm+helper-only
-    path anymore.
+    next/previous and formerly native playlist switches) must submit one
+    ``operation=queue`` request to the Coordinator and keep the target
+    paused until its commit readback. There is no queue-local prearm or
+    helper-only path anymore.
     """
 
     TRACK_A = {"url": "/music/a.flac", "sample_rate_hz": 44100, "id": "a", "title": "A", "source": "local"}
@@ -732,18 +730,29 @@ class PlaybackQueueHandoffTests(unittest.IsolatedAsyncioTestCase):
     def _make_player(self):
         class FakePlayer:
             def __init__(self):
+                self._running = True
                 self.state = {"paused": True, "current_file": "/music/a.flac"}
                 self.pause_calls = []
                 self.loaded = []
                 self.playlist_pos = None
+                self.volume = 100
 
             def set_pause(self, paused):
                 self.pause_calls.append(paused)
                 self.state["paused"] = paused
+                self.state["playing"] = not paused
+                if not paused:
+                    self.state["position"] = float(self.state.get("position", 0.0)) + 0.1
 
-            def loadfile(self, url, mode="replace"):
+            def loadfile(self, url, mode="replace", start_paused=None):
                 self.loaded.append((url, mode))
                 self.state["current_file"] = url
+                if start_paused is not None:
+                    self.set_pause(bool(start_paused))
+
+            def set_volume(self, volume):
+                self.volume = volume
+                self.state["volume"] = volume
 
             def set_playlist_pos(self, index):
                 self.playlist_pos = index
@@ -783,20 +792,64 @@ class PlaybackQueueHandoffTests(unittest.IsolatedAsyncioTestCase):
         handoff_calls = []
         helper_calls = []
 
-        async def fake_handoff(track_info, expected_rate, *, transition_generation):
-            handoff_calls.append((track_info, expected_rate, transition_generation))
+        class QueueRuntime:
+            def __init__(self):
+                self.muted = False
+                self.active_rate = tracks[0].get("sample_rate_hz")
+                self.fail_stage = None
 
-        async def fake_helper(*args, **kwargs):
-            helper_calls.append((args, kwargs))
+            async def _stage(self, name):
+                if self.fail_stage == name:
+                    raise RuntimeError("Playback handoff failed: graph links verification missing")
 
-        async def noop_prearm(_track, _reason):
-            return (48000, 501)
+            async def read_hardware_mute(self):
+                return self.muted
 
-        async def noop_release(*args, **kwargs):
-            return None
+            async def set_hardware_mute(self, muted, transition_id):
+                self.muted = bool(muted)
 
-        async def noop_maybe_recover(*args, **kwargs):
-            return None
+            async def read_transition_snapshot(self, request):
+                await self._stage("snapshot")
+                return {}
+
+            async def quiet_old_source(self, request):
+                await self._stage("quiet-old-source")
+                player.set_pause(True)
+
+            async def resolve_target_rate(self, request):
+                await self._stage("target-rate-resolve")
+                return request.target_rate
+
+            async def establish_target_rate(self, request):
+                await self._stage("target-rate")
+                self.active_rate = request.target_rate
+
+            async def establish_effects_and_helper(self, request):
+                await self._stage("effects-helper-links")
+                handoff_calls.append((dict(request.target_track), request.target_rate, request.operation))
+
+            async def prepare_target_source(self, request):
+                await self._stage("target-source-prepare")
+                player.set_volume(0)
+                player.loadfile(request.target_url, mode="replace", start_paused=True)
+
+            async def start_target_source(self, request):
+                await self._stage("target-source-start")
+                player.set_pause(not request.should_play)
+
+            async def set_source_volume(self, volume, transition_id):
+                player.set_volume(volume)
+
+            async def verify_committed_transition(self, request):
+                await self._stage("commit-readback")
+                if player.state.get("current_file") != request.target_url:
+                    raise RuntimeError("target file was not committed")
+                if request.should_play and player.state.get("paused"):
+                    raise RuntimeError("target remained paused")
+                return {"committed": True, "active_rate": self.active_rate}
+
+            async def pause_source_after_failure(self, request):
+                player.set_pause(True)
 
         main.playback_queue = tracks
         main.playback_queue_index = 0
@@ -808,43 +861,39 @@ class PlaybackQueueHandoffTests(unittest.IsolatedAsyncioTestCase):
         main.last_track_info = dict(tracks[0])
         main.player_instance = player
         main.subwoofer_runtime = None
+        runtime = QueueRuntime()
+        coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
 
         with patch.object(
             main, "_sync_track_context_from_queue_index",
             lambda idx: dict(main.playback_queue[idx]),
         ), patch.object(
-            main, "_should_apply_hard_handoff_for_requested_play",
-            return_value=(False, None),
-        ), patch.object(main, "_apply_hard_playback_handoff", fake_helper), patch.object(
-            main, "_prearm_known_local_samplerate", noop_prearm
-        ), patch.object(
-            main, "_release_local_samplerate_prearm", noop_release
-        ), patch.object(
-            main, "_complete_local_playback_handoff", fake_handoff
-        ), patch.object(
-            main, "_sync_subwoofer_runtime", fake_helper
-        ), patch.object(
-            main, "_record_local_track_started", lambda track: None
-        ), patch.object(
-            main, "_maybe_recover_samplerate_mismatch", noop_maybe_recover
-        ), patch.object(main, "_clear_playback_queue", lambda: None):
+            main, "get_samplerate_status",
+            return_value={
+                "active_rate": tracks[0].get("sample_rate_hz"),
+                "force_rate": tracks[0].get("sample_rate_hz"),
+            },
+        ), patch.object(main, "_clear_playback_queue", lambda: None), patch.object(
+            main, "playback_transition_coordinator", coordinator
+        ):
             result = await main._load_queue_track(
                 index, transition_reason="queue auto-advance",
             )
-        return result, player, handoff_calls, helper_calls
+        return result, player, handoff_calls, helper_calls, runtime
 
     async def test_auto_next_44_to_48_routes_through_shared_handoff(self):
         # Auto-next 44.1 -> 48: the queue path must load paused and call the
         # shared handoff with the pre-armed 48000 rate; helper sync must not
         # happen outside the handoff anymore.
-        result, player, handoff_calls, helper_calls = await self._run_queue_track(index=1)
+        result, player, handoff_calls, helper_calls, runtime = await self._run_queue_track(index=1)
         self.assertTrue(result)
         self.assertEqual(len(handoff_calls), 1)
-        track, expected_rate, generation = handoff_calls[0]
+        track, expected_rate, operation = handoff_calls[0]
         self.assertEqual(track["url"], "/music/b.flac")
         self.assertEqual(expected_rate, 48000)
-        self.assertIsInstance(generation, int)
-        self.assertEqual(player.pause_calls, [True, False], "paused across handoff")
+        self.assertEqual(operation, "queue")
+        self.assertIn(True, player.pause_calls, "paused across handoff")
+        self.assertFalse(runtime.muted, "gate restored after committed queue transition")
         self.assertEqual(player.loaded, [("/music/b.flac", "replace")])
         self.assertEqual(
             helper_calls, [], "no separate helper sync outside the shared handoff"
@@ -857,45 +906,46 @@ class PlaybackQueueHandoffTests(unittest.IsolatedAsyncioTestCase):
             {**dict(self.TRACK_A), "sample_rate_hz": 48000},
             {**dict(self.TRACK_B), "sample_rate_hz": 48000},
         ]
-        result, player, handoff_calls, helper_calls = await self._run_queue_track(
+        result, player, handoff_calls, helper_calls, runtime = await self._run_queue_track(
             index=1, tracks=tracks,
         )
         self.assertTrue(result)
         self.assertEqual(len(handoff_calls), 1)
         self.assertEqual(handoff_calls[0][1], 48000)
-        self.assertEqual(player.pause_calls, [True, False])
+        self.assertIn(True, player.pause_calls)
+        self.assertFalse(runtime.muted)
         self.assertEqual(helper_calls, [])
 
     async def test_manual_next_and_previous_route_through_shared_handoff(self):
         # Manual next/previous use the same _load_queue_track -> shared
         # handoff path as auto-next.
-        result, player, handoff_calls, _ = await self._run_queue_track(
+        result, player, handoff_calls, _, runtime = await self._run_queue_track(
             index=1, mode="app_replace",
         )
         self.assertTrue(result)
         self.assertEqual(len(handoff_calls), 1)
         self.assertEqual(handoff_calls[0][0]["url"], "/music/b.flac")
+        self.assertFalse(runtime.muted)
 
     async def test_mpv_native_queue_switch_uses_shared_handoff(self):
         # mpv-native switch: pause -> set_playlist_pos -> shared handoff with
         # the track's metadata rate -> unpause. No prearm+helper-only path.
-        result, player, handoff_calls, helper_calls = await self._run_queue_track(
+        result, player, handoff_calls, helper_calls, runtime = await self._run_queue_track(
             index=1, mode="mpv_native",
         )
         self.assertTrue(result)
-        self.assertEqual(player.playlist_pos, 1)
-        self.assertEqual(player.pause_calls, [True, False])
+        self.assertIsNone(player.playlist_pos, "native queue bypass is no longer used")
+        self.assertIn(True, player.pause_calls)
         self.assertEqual(len(handoff_calls), 1)
         self.assertEqual(handoff_calls[0][0]["url"], "/music/b.flac")
-        self.assertEqual(handoff_calls[0][1], 48000, "metadata rate passed")
+        self.assertEqual(handoff_calls[0][1], 48000, "metadata rate submitted")
+        self.assertEqual(handoff_calls[0][2], "queue")
+        self.assertFalse(runtime.muted)
         self.assertEqual(helper_calls, [])
 
     async def test_auto_next_handoff_failure_leaves_paused(self):
         # Handoff failure during auto-next: mpv stays paused (no unpause),
         # the transition target is cleared, the error propagates.
-        async def failing_handoff(track_info, expected_rate, *, transition_generation):
-            raise RuntimeError("Playback handoff failed: graph links verification missing")
-
         player = self._make_player()
         main.playback_queue = [dict(self.TRACK_A), dict(self.TRACK_B)]
         main.playback_queue_index = 0
@@ -908,33 +958,59 @@ class PlaybackQueueHandoffTests(unittest.IsolatedAsyncioTestCase):
         main.player_instance = player
         main.subwoofer_runtime = None
 
-        async def noop_prearm(_track, _reason):
-            return (48000, 501)
+        class FailingRuntime:
+            def __init__(self):
+                self.muted = False
 
-        async def noop_release(*args, **kwargs):
-            return None
+            async def read_hardware_mute(self):
+                return self.muted
+
+            async def set_hardware_mute(self, muted, transition_id):
+                self.muted = bool(muted)
+
+            async def read_transition_snapshot(self, request):
+                return {}
+
+            async def quiet_old_source(self, request):
+                player.set_pause(True)
+
+            async def resolve_target_rate(self, request):
+                return request.target_rate
+
+            async def establish_target_rate(self, request):
+                return None
+
+            async def establish_effects_and_helper(self, request):
+                raise RuntimeError("Playback handoff failed: graph links verification missing")
+
+            async def prepare_target_source(self, request):
+                raise AssertionError("failed transition must not prepare target")
+
+            async def start_target_source(self, request):
+                raise AssertionError("failed transition must not start target")
+
+            async def set_source_volume(self, volume, transition_id):
+                player.set_volume(volume)
+
+            async def verify_committed_transition(self, request):
+                raise AssertionError("failed transition must not commit")
+
+            async def pause_source_after_failure(self, request):
+                player.set_pause(True)
+
+        coordinator = PlaybackTransitionCoordinator(FailingRuntime(), gate_settle_seconds=0)
 
         with patch.object(
             main, "_sync_track_context_from_queue_index",
             lambda idx: dict(main.playback_queue[idx]),
-        ), patch.object(
-            main, "_should_apply_hard_handoff_for_requested_play",
-            return_value=(False, None),
-        ), patch.object(main, "_apply_hard_playback_handoff", noop_release), patch.object(
-            main, "_prearm_known_local_samplerate", noop_prearm
-        ), patch.object(
-            main, "_release_local_samplerate_prearm", noop_release
-        ), patch.object(
-            main, "_complete_local_playback_handoff", failing_handoff
-        ), patch.object(
-            main, "_record_local_track_started", lambda track: None
-        ), patch.object(
-            main, "_maybe_recover_samplerate_mismatch", noop_release
-        ), patch.object(main, "_clear_playback_queue", lambda: None):
-            with self.assertRaises(RuntimeError) as ctx:
+        ), patch.object(main, "_clear_playback_queue", lambda: None), patch.object(
+            main, "get_samplerate_status",
+            return_value={"active_rate": 44100, "force_rate": 44100},
+        ), patch.object(main, "playback_transition_coordinator", coordinator):
+            with self.assertRaises(main.HTTPException) as ctx:
                 await main._load_queue_track(1, transition_reason="queue auto-advance")
-        self.assertIn("graph links verification missing", str(ctx.exception))
-        self.assertEqual(player.pause_calls, [True], "must stay paused after failure")
+        self.assertIn("graph links verification missing", str(ctx.exception.detail))
+        self.assertTrue(all(value for value in player.pause_calls), "must stay paused after failure")
         self.assertEqual(main.queue_transition_target_url, None)
 
 
@@ -1005,11 +1081,10 @@ class PlaybackGraphLinkVerificationTests(unittest.IsolatedAsyncioTestCase):
         ), patch.object(main.asyncio, "sleep", noop_sleep), patch.object(
             main, "subwoofer_runtime", runtime
         ):
-            result = await main._complete_playback_handoff(
+            result, _coordinator_runtime = await run_main_handoff_through_coordinator(
                 target_rate=48000,
-                reason="test-links",
-                transition_generation=600,
-                detail="test",
+                generation=600,
+                detail="test-links",
             )
         return result, calls, stopped
 
@@ -1179,11 +1254,10 @@ class PlaybackHandoffCleanupReadbackTests(unittest.IsolatedAsyncioTestCase):
             main.logger, "info", side_effect=lambda *args, **kwargs: log_entries.append(args)
         ):
             with self.assertRaises(RuntimeError) as ctx:
-                await main._complete_playback_handoff(
+                await run_main_handoff_through_coordinator(
                     target_rate=48000,
-                    reason="test-cleanup-readback",
-                    transition_generation=700,
-                    detail="test",
+                    generation=700,
+                    detail="test-cleanup-readback",
                     ee_port_timeout_ms=10,
                 )
         self.assertIn("EasyEffects output ports", str(ctx.exception))

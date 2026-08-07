@@ -4,10 +4,12 @@
 import asyncio
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
+from playback_transition_test_support import run_main_handoff_through_coordinator
 
 
 async def run_gate(statuses: list[dict], *, timeout_ms: int, stable_ms: int = 350) -> bool:
@@ -45,39 +47,38 @@ async def run_gate(statuses: list[dict], *, timeout_ms: int, stable_ms: int = 35
 
 async def run_handoff(
     *, expected_rate: int | None, generation: int, live_rate: int | None = None,
-) -> tuple[list[dict], bool]:
-    """Verify the thin local wrapper delegates to the shared handoff.
-
-    The wrapper only determines the target rate (library metadata
-    preferred, MPV live rate as fallback) and forwards the transition
-    generation; the reconciliation itself runs in the shared
-    _complete_playback_handoff.
-    """
-    original_handoff = main._complete_playback_handoff
+) -> tuple[list[str], object]:
+    """Verify metadata/live-rate resolution enters the Coordinator contract."""
     original_generation = main.playback_transition_generation
-    original_live = main._wait_for_player_audio_samplerate
-    calls: list[dict] = []
+    events: list[str] = []
+    status = {"active_rate": 44100, "force_rate": 44100}
 
-    async def fake_shared(**kwargs):
-        calls.append(kwargs)
+    def samplerate_status() -> dict:
+        return dict(status)
+
+    async def ensure_force(rate, reason, *, policy=None) -> bool:
+        status["active_rate"] = rate
+        status["force_rate"] = rate
         return True
 
-    async def fake_live():
-        return live_rate
-
     try:
-        main._complete_playback_handoff = fake_shared
         main.playback_transition_generation = generation
-        main._wait_for_player_audio_samplerate = fake_live
-        await main._complete_local_playback_handoff(
-            {"url": "test.flac"}, expected_rate,
-            transition_generation=generation,
-        )
-        return calls, True
+        target_rate = expected_rate if expected_rate is not None else live_rate
+        with patch.object(main, "get_samplerate_status", samplerate_status), patch.object(
+            main, "_ensure_playback_samplerate_force", ensure_force
+        ), patch.object(main, "_get_current_pipewire_force_rate", lambda: status["force_rate"]):
+            result, _runtime = await run_main_handoff_through_coordinator(
+                target_rate=target_rate,
+                generation=generation,
+                source="local",
+                detail="local-playback-handoff",
+                use_core=False,
+                rate_change=True,
+                events=events,
+            )
+        return events, result
     finally:
-        main._complete_playback_handoff = original_handoff
         main.playback_transition_generation = original_generation
-        main._wait_for_player_audio_samplerate = original_live
 
 
 async def main_async() -> None:
@@ -103,15 +104,14 @@ async def main_async() -> None:
     )
     assert stable, "matching active and force rates must pass after stable_ms"
 
-    calls, _ = await run_handoff(expected_rate=48000, generation=42)
-    assert len(calls) == 1, "the local wrapper must delegate to the shared handoff"
-    assert calls[0]["target_rate"] == 48000, "library metadata must be the preferred target rate"
-    assert calls[0]["reason"] == "local-playback-handoff"
-    assert calls[0]["transition_generation"] == 42, "the wrapper must forward the transition generation"
+    events, result = await run_handoff(expected_rate=48000, generation=42)
+    assert result.target_rate == 48000, "library metadata must be the preferred target rate"
+    assert events.index("gate.set:True") < events.index("rate")
+    assert events.index("commit-readback") < events.index("gate.set:False")
 
-    calls, _ = await run_handoff(expected_rate=None, generation=42, live_rate=44100)
-    assert len(calls) == 1, "metadata-less tracks must still hand off"
-    assert calls[0]["target_rate"] == 44100, "missing metadata falls back to the MPV live rate"
+    events, result = await run_handoff(expected_rate=None, generation=42, live_rate=44100)
+    assert result.target_rate == 44100, "missing metadata falls back to the MPV live rate"
+    assert events.index("gate.set:True") < events.index("start")
 
 
 if __name__ == "__main__":

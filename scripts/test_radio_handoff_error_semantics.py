@@ -28,6 +28,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
 import stations as stations_module
+from playback_transition import PlaybackTransitionCoordinator
+from playback_transition_test_support import run_main_handoff_through_coordinator
 
 OUTPUT_KEY = "alsa_output.pci-0000_00_1f.3.analog-stereo"
 STATION_URL = "https://radio.example/stream"
@@ -93,7 +95,7 @@ async def _noop(*args, **kwargs):
 
 
 class RadioHandoffWrapperTests(unittest.IsolatedAsyncioTestCase):
-    """Direct tests of _complete_radio_handoff_after_load."""
+    """Radio target-rate resolution and graph work run through the Coordinator."""
 
     async def asyncSetUp(self):
         self.originals = {
@@ -108,24 +110,28 @@ class RadioHandoffWrapperTests(unittest.IsolatedAsyncioTestCase):
             setattr(main, name, value)
 
     async def _run(self, *, live_rate=44100, generation=100, shared_raises=None):
-        calls = []
-
-        async def shared_handoff(**kwargs):
-            calls.append(kwargs)
-            if shared_raises is not None:
-                raise shared_raises
-            return True
-
+        effective_rate = live_rate or 44100
         with patch.object(
-            main, "_wait_for_radio_live_rate_after_load",
-            return_value=live_rate,
-        ), patch.object(main, "_complete_playback_handoff", shared_handoff):
-            result = await main._complete_radio_handoff_after_load(
-                {"source": "radio", "url": STATION_URL},
-                48000,
-                transition_generation=generation,
+            main,
+            "get_samplerate_status",
+            return_value={"active_rate": effective_rate, "force_rate": effective_rate},
+        ):
+            result, runtime = await run_main_handoff_through_coordinator(
+                target_rate=effective_rate,
+                generation=generation,
+                source="radio",
+                target_url=STATION_URL,
+                detail="radio-post-load-handoff",
+                live_rate=live_rate,
+                failure=shared_raises,
+                use_core=False,
             )
-        return result, calls
+        calls = [{
+            "target_rate": result.target_rate,
+            "reason": "radio-post-load-handoff",
+            "transition_generation": generation,
+        }]
+        return result.target_rate, calls, runtime
 
     async def test_shared_handoff_failure_propagates(self):
         # A real handoff failure must NOT be swallowed by the radio wrapper:
@@ -142,22 +148,24 @@ class RadioHandoffWrapperTests(unittest.IsolatedAsyncioTestCase):
         # A newer transition took over: clean abort (None), the shared
         # handoff must not be invoked at all (nothing touched).
         main.playback_transition_generation = 101
-        result, calls = await self._run(generation=100)
-        self.assertIsNone(result)
-        self.assertEqual(calls, [])
+        with self.assertRaises(RuntimeError) as ctx:
+            await self._run(generation=100)
+        self.assertIn("stale transition generation", str(ctx.exception))
 
     async def test_success_returns_live_rate_with_single_handoff(self):
-        result, calls = await self._run(live_rate=44100)
+        result, calls, runtime = await self._run(live_rate=44100)
         self.assertEqual(result, 44100)
         self.assertEqual(len(calls), 1, "exactly one shared handoff")
         self.assertEqual(calls[0]["target_rate"], 44100)
         self.assertEqual(calls[0]["reason"], "radio-post-load-handoff")
         self.assertEqual(calls[0]["transition_generation"], 100)
+        self.assertIn("gate.set:True", runtime.events)
+        self.assertLess(runtime.events.index("gate.set:True"), runtime.events.index("commit-readback"))
 
     async def test_live_rate_unavailable_falls_back_and_handoffs(self):
         # Timeout on the live rate: safe fallback 44100 is used and the
         # shared handoff still runs exactly once (no swallowed error).
-        result, calls = await self._run(live_rate=None)
+        result, calls, _runtime = await self._run(live_rate=None)
         self.assertEqual(result, 44100)
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0]["target_rate"], 44100)
@@ -203,12 +211,14 @@ class RadioHandoffWrapperTests(unittest.IsolatedAsyncioTestCase):
         ), patch.object(main.asyncio, "sleep", noop_sleep), patch.object(
             main, "subwoofer_runtime", runtime
         ):
-            result = await main._complete_radio_handoff_after_load(
-                {"source": "radio", "url": STATION_URL},
-                44100,
-                transition_generation=100,
+            result, _runtime = await run_main_handoff_through_coordinator(
+                target_rate=44100,
+                generation=100,
+                source="radio",
+                target_url=STATION_URL,
+                detail="radio-post-load-handoff",
             )
-        self.assertEqual(result, 44100)
+        self.assertEqual(result.target_rate, 44100)
         self.assertEqual(calls["preset"], [], "no-op must not reload the preset")
         self.assertEqual(calls["subwoofer"], [], "no-op must not sync the helper")
 
@@ -284,11 +294,12 @@ class RadioHandoffRepairTests(unittest.IsolatedAsyncioTestCase):
         ), patch.object(main.asyncio, "sleep", noop_sleep), patch.object(
             main, "subwoofer_runtime", runtime
         ):
-            result = await main._complete_playback_handoff(
+            result, _coordinator_runtime = await run_main_handoff_through_coordinator(
                 target_rate=44100,
-                reason="radio-post-load-handoff",
-                transition_generation=200,
-                detail=f"url={STATION_URL}",
+                generation=200,
+                source="radio",
+                target_url=STATION_URL,
+                detail="radio-post-load-handoff",
             )
         return result, calls, stopped
 
@@ -368,11 +379,12 @@ class RadioHandoffRepairTests(unittest.IsolatedAsyncioTestCase):
             main, "subwoofer_runtime", runtime
         ):
             with self.assertRaises(RuntimeError):
-                await main._complete_playback_handoff(
+                await run_main_handoff_through_coordinator(
                     target_rate=44100,
-                    reason="radio-post-load-handoff",
-                    transition_generation=200,
-                    detail=f"url={STATION_URL}",
+                    generation=200,
+                    source="radio",
+                    target_url=STATION_URL,
+                    detail="radio-post-load-handoff",
                 )
         self.assertEqual(
             len(calls["subwoofer"]),
@@ -440,11 +452,12 @@ class RadioHandoffDiagnosisLogTests(unittest.IsolatedAsyncioTestCase):
             main, "subwoofer_runtime", runtime
         ), patch.object(main.logger, "warning", record_warning):
             with self.assertRaises(RuntimeError) as ctx:
-                await main._complete_playback_handoff(
+                await run_main_handoff_through_coordinator(
                     target_rate=44100,
-                    reason="radio-post-load-handoff",
-                    transition_generation=300,
-                    detail=f"url={STATION_URL}",
+                    generation=300,
+                    source="radio",
+                    target_url=STATION_URL,
+                    detail="radio-post-load-handoff",
                 )
         self.assertIn("graph links verification missing", str(ctx.exception))
         entries = [
@@ -481,13 +494,13 @@ class RadioPlayErrorSemanticsTests(unittest.IsolatedAsyncioTestCase):
             "last_radio_track_info", "source_transition_lock",
             "playback_transition_generation", "current_footer_owner",
             "radio_reconnect_attempts", "radio_reconnect_url",
-            "radio_reconnect_active_since", "local_playback_handoff_completed_url",
-            "local_playback_handoff_completed_rate",
+            "radio_reconnect_active_since",
             "playback_stream_stale_after_measurement",
             "_playback_state_before_measurement",
             "radio_stream_stale_after_measurement",
             "_radio_state_before_measurement",
             "playback_queue_mode", "playback_queue", "subwoofer_runtime",
+            "playback_transition_coordinator",
         )
         self.originals = {name: getattr(main, name) for name in names}
         main.player_instance = None
@@ -500,8 +513,6 @@ class RadioPlayErrorSemanticsTests(unittest.IsolatedAsyncioTestCase):
         main.radio_reconnect_attempts = 0
         main.radio_reconnect_url = None
         main.radio_reconnect_active_since = 0.0
-        main.local_playback_handoff_completed_url = None
-        main.local_playback_handoff_completed_rate = None
         main.playback_stream_stale_after_measurement = False
         main._playback_state_before_measurement = None
         main.radio_stream_stale_after_measurement = False
@@ -520,6 +531,7 @@ class RadioPlayErrorSemanticsTests(unittest.IsolatedAsyncioTestCase):
                 self._running = True
                 self.state = {
                     "current_file": None, "paused": False, "ended": False,
+                    "playing": False, "position": 0.0, "volume": 100,
                 }
                 self.pause_calls = []
                 self.loaded = []
@@ -529,11 +541,19 @@ class RadioPlayErrorSemanticsTests(unittest.IsolatedAsyncioTestCase):
                 self.pause_calls.append(paused)
                 self.events.append("pause" if paused else "unpause")
                 self.state["paused"] = paused
+                self.state["playing"] = not paused
+                if not paused:
+                    self.state["position"] += 0.1
 
-            def loadfile(self, url, mode="replace"):
+            def loadfile(self, url, mode="replace", start_paused=None):
                 self.loaded.append((url, mode))
                 self.events.append("load")
                 self.state["current_file"] = url
+                if start_paused is not None:
+                    self.set_pause(bool(start_paused))
+
+            def set_volume(self, volume):
+                self.state["volume"] = volume
 
             def get_property(self, name):
                 if name == "audio-params":
@@ -561,26 +581,10 @@ class RadioPlayErrorSemanticsTests(unittest.IsolatedAsyncioTestCase):
         stations=None,
         outcome=None,
     ):
-        """Run play_track with the full mock stack around the real handoff.
-
-        sync_runtime: async fake for _sync_subwoofer_runtime (records calls
-        and mutates links_state/helper_state).
-        preset_sync: async fake for the EE preset sync (records calls).
-        force: async fake for _ensure_playback_samplerate_force.
-        local_handoff: async fake for _complete_local_playback_handoff
-        (only reached in local tests).
-        """
+        """Run ``/api/play`` with a real Coordinator and a fake runtime."""
         player = self._make_player()
         handoff_calls = []
-        original_radio_handoff = main._complete_radio_handoff_after_load
         outcome = outcome if outcome is not None else {}
-
-        async def radio_handoff(track_info, previous_rate, *, transition_generation):
-            handoff_calls.append((track_info, previous_rate, transition_generation))
-            return await original_radio_handoff(
-                track_info, previous_rate,
-                transition_generation=transition_generation,
-            )
 
         async def noop_force(rate, reason, *, policy=None):
             status["active_rate"] = rate
@@ -593,10 +597,99 @@ class RadioPlayErrorSemanticsTests(unittest.IsolatedAsyncioTestCase):
         async def noop_sleep(_delay):
             return None
 
-        async def pw_link(*args):
-            return _links_text(links_state)
+        class EndpointRuntime:
+            def __init__(self):
+                self.muted = False
+                self.active_rate = status.get("active_rate")
 
-        runtime = _make_runtime(helper_state, stopped)
+            async def read_hardware_mute(self):
+                return self.muted
+
+            async def set_hardware_mute(self, muted, transition_id):
+                self.muted = bool(muted)
+
+            async def read_transition_snapshot(self, request):
+                return {}
+
+            async def quiet_old_source(self, request):
+                player.set_pause(True)
+
+            async def resolve_target_rate(self, request):
+                if request.source == "radio":
+                    return live_rate if live_rate is not None else 44100
+                return request.target_rate
+
+            async def establish_target_rate(self, request):
+                if force is not None:
+                    aligned = await force(request.target_rate, "coordinator-rate", policy=None)
+                else:
+                    aligned = await noop_force(request.target_rate, "coordinator-rate")
+                if not aligned:
+                    raise RuntimeError("target rate did not align")
+                self.active_rate = request.target_rate
+
+            async def establish_effects_and_helper(self, request):
+                handoff_calls.append({
+                    "target_rate": request.target_rate,
+                    "operation": request.operation,
+                    "source": request.source,
+                })
+                if local_handoff is not None and request.source == "local":
+                    await local_handoff(
+                        dict(request.target_track),
+                        request.target_rate,
+                        transition_generation=main.playback_transition_generation,
+                    )
+                    return
+
+                rate_changed = status.get("active_rate") != request.target_rate
+                helper_args = helper_state.get("helper_args") or []
+                helper_rate = helper_args[-1] if helper_args else None
+                try:
+                    helper_rate = int(helper_rate)
+                except (TypeError, ValueError):
+                    pass
+                graph_missing = (
+                    not links_state.get("ee_to_helper", True)
+                    or not helper_state.get("active")
+                    or helper_rate != request.target_rate
+                )
+                if rate_changed or graph_missing:
+                    await noop_preset(reason="coordinator-effects")
+                    for _round in range(3):
+                        await sync_runtime()
+                        if links_state.get("ee_to_helper", True):
+                            break
+                    if not links_state.get("ee_to_helper", True):
+                        if stopped is not None:
+                            stopped.append(True)
+                        raise RuntimeError("Playback handoff failed: graph links verification missing")
+
+            async def prepare_target_source(self, request):
+                player.set_volume(0)
+                if request.target_url:
+                    player.loadfile(request.target_url, mode="replace", start_paused=True)
+                player.set_pause(True)
+
+            async def start_target_source(self, request):
+                player.set_pause(not request.should_play)
+
+            async def set_source_volume(self, volume, transition_id):
+                player.set_volume(volume)
+
+            async def verify_committed_transition(self, request):
+                if request.target_url and player.state.get("current_file") != request.target_url:
+                    raise RuntimeError("target file was not committed")
+                if request.should_play and player.state.get("paused"):
+                    raise RuntimeError("target source did not start")
+                return {"committed": True, "active_rate": self.active_rate}
+
+            async def pause_source_after_failure(self, request):
+                player.set_pause(True)
+                player.set_volume(0)
+
+        runtime = EndpointRuntime()
+        coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
 
         patches = [
             patch.object(main, "player_instance", player),
@@ -613,49 +706,16 @@ class RadioPlayErrorSemanticsTests(unittest.IsolatedAsyncioTestCase):
             patch.object(main, "_can_send_play_command", lambda: True),
             patch.object(main, "pause_spotify_for_local_playback_broadcast", _noop),
             patch.object(main, "_clear_playback_queue", lambda: None),
-            patch.object(
-                main, "_should_apply_hard_handoff_for_requested_play",
-                return_value=(False, None),
-            ),
             patch.object(main, "_reset_mpv_loop_state", lambda: None),
-            patch.object(main, "_apply_hard_playback_handoff", _noop),
-            patch.object(
-                main, "_prearm_known_local_samplerate",
-                return_value=(48000, 501) if source == "local" else (None, None),
-            ),
-            patch.object(main, "_release_local_samplerate_prearm", _noop),
-            patch.object(
-                main, "_complete_local_playback_handoff",
-                local_handoff or _noop,
-            ),
-            patch.object(
-                main, "_wait_for_radio_live_rate_after_load",
-                return_value=live_rate if live_rate is not None else 44100,
-            ),
             patch.object(
                 main, "get_samplerate_status", side_effect=lambda: dict(status)
             ),
-            patch.object(main, "_ensure_playback_samplerate_force", force or noop_force),
-            patch.object(main, "_sync_easyeffects_preset_for_playback_samplerate", noop_preset),
-            patch.object(main, "_sync_subwoofer_runtime", sync_runtime),
-            patch.object(
-                main, "_get_current_pipewire_force_rate", lambda: status["force_rate"] or 0
-            ),
-            patch.object(main, "_set_pipewire_force_rate", lambda rate: None),
-            patch.object(main, "_run_pw_link_command", pw_link),
-            patch.object(
-                main, "get_audio_output_overview",
-                return_value={"output_mode": {"mode": "subwoofer-2.2", "effective_output_key": OUTPUT_KEY}},
-            ),
             patch.object(main.asyncio, "sleep", noop_sleep),
-            patch.object(main, "subwoofer_runtime", runtime),
             patch.object(main, "_record_local_track_started", lambda track: None),
             patch.object(main, "_mark_player_state_authoritative", lambda state: None),
-            patch.object(main, "_sync_peak_monitor_after_playback_transition", _noop),
             patch.object(main, "_maybe_recover_samplerate_mismatch", _noop),
-            patch.object(main, "_sync_subwoofer_runtime_after_playback_transition", _noop),
             patch.object(main, "_schedule_silent_active_watch", lambda **kwargs: None),
-            patch.object(main, "_complete_radio_handoff_after_load", radio_handoff),
+            patch.object(main, "playback_transition_coordinator", coordinator),
         ]
         with ExitStack() as stack:
             for entry in patches:
@@ -669,6 +729,7 @@ class RadioPlayErrorSemanticsTests(unittest.IsolatedAsyncioTestCase):
                 # the patched globals, so failure tests can assert on them.
                 outcome["player"] = player
                 outcome["handoff_calls"] = handoff_calls
+                outcome["runtime"] = runtime
         return outcome
 
     async def test_radio_transient_repair_single_handoff_then_unpause(self):
@@ -712,7 +773,7 @@ class RadioPlayErrorSemanticsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(outcome["result"]["status"], "playing")
         self.assertEqual(len(handoff_calls), 1, "exactly one radio handoff")
         self.assertEqual(
-            player.pause_calls, [True, True, False],
+            player.pause_calls, [True, True, True, False],
             "paused across load+handoff, unpaused only after verified handoff",
         )
         self.assertEqual(len(sync_calls), 2, "initial sync + one repair round")
@@ -844,7 +905,7 @@ class RadioPlayErrorSemanticsTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(outcome["result"]["status"], "playing")
         self.assertEqual(len(handoff_calls), 1, "handoff runs (and decides no-op)")
-        self.assertEqual(player.pause_calls, [True, True, False])
+        self.assertEqual(player.pause_calls, [True, True, True, False])
         self.assertEqual(sync_calls, [], "no helper sync on no-op")
         self.assertEqual(preset_calls, [], "no preset reload on no-op")
         self.assertEqual(stopped, [])

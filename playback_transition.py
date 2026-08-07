@@ -214,7 +214,7 @@ class PlaybackTransitionCoordinator:
                 }
             )
             try:
-                await self.runtime.read_transition_snapshot(request)
+                snapshot = await self.runtime.read_transition_snapshot(request)
                 if gate_required:
                     stage = "output-gate-close"
                     await self._close_gate(transition_id)
@@ -241,6 +241,24 @@ class PlaybackTransitionCoordinator:
                                     or resolved_rate != active_request.target_rate
                                 ),
                             )
+                    snapshot_active_rate = snapshot.get("active_rate") if isinstance(snapshot, Mapping) else None
+                    snapshot_force_rate = snapshot.get("force_rate") if isinstance(snapshot, Mapping) else None
+                    if (
+                        isinstance(active_request.target_rate, int)
+                        and isinstance(snapshot_active_rate, int)
+                    ):
+                        # A radio's initial configured fallback (usually
+                        # 44.1 kHz) may be replaced by its decoded live rate
+                        # while the target is staged.  Recompute the actual
+                        # transition after that resolution so an already
+                        # aligned 48 kHz stream does not rebuild EE/helper.
+                        active_request = replace(
+                            active_request,
+                            rate_change=not (
+                                snapshot_active_rate == active_request.target_rate
+                                and snapshot_force_rate in {None, 0, active_request.target_rate}
+                            ),
+                        )
                     stage = "target-rate"
                     await self.runtime.establish_target_rate(active_request)
 

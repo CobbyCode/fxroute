@@ -44,11 +44,12 @@ class OwnershipStructureTests(unittest.TestCase):
             self.assertNotIn("_prearm_spotify_samplerate", body, name)
             self.assertIn("_run_coordinated_transition", body, name)
 
-    def test_measurement_release_calls_coordinator_before_legacy_restore_paths(self):
+    def test_measurement_release_has_single_coordinator_owned_playback_restore(self):
         body = function_source("_release")
         self.assertIn("playback_transition_coordinator.restore_measurement", body)
-        self.assertIn("coordinator_attempted", body)
-        self.assertIn("not coordinator_attempted", body)
+        self.assertIn("playback_restore_via_coordinator", body)
+        self.assertIn("direct restore is intentionally suppressed", body)
+        self.assertIn("measurement_only_restore", body)
 
     def test_watchers_only_request_coordinator_recovery(self):
         watcher = function_source("_subwoofer_runtime_link_watch_loop")

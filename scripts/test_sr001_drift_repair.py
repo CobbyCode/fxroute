@@ -1,373 +1,162 @@
 #!/usr/bin/env python3
-"""SR-001 regression tests: serialized status-poll drift repair + resume helper sync.
-
-Covers:
-- status repair 48000 -> 44100 with final triple match (force-rate, sink, helper)
-- full no-op while an active measurement session owns the rate
-- resume with helper at 48000 and playback at 44100 (transition sync not skipped)
-- stale playback generation / changed track aborts the repair
-- missing sink alignment aborts without a false helper restart
-- already-consistent state is a no-op
-"""
+"""SR-001 contracts after samplerate recovery became coordinator-owned."""
 
 from __future__ import annotations
 
-import asyncio
 import sys
 import unittest
-from contextlib import ExitStack
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
-import samplerate_orchestration
 
 
-class FakePlayer:
-    def __init__(self, state):
-        self.state = state
-        self._running = True
+class _CoordinatorDouble:
+    def __init__(self, *, active: bool = False, target_rate: int | None = None):
+        self.transition_active = active
+        self.target_rate = target_rate
+        self.requests = []
 
 
-class FakeMeasurementSession:
-    def __init__(self, active=False, measurement_rate=48000):
-        self.active = active
-        self.measurement_rate = measurement_rate
+class CoordinatorRecoveryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_radio_recovery_submits_one_coordinator_request(self):
+        coordinator = _CoordinatorDouble(target_rate=48000)
 
+        async def run(request):
+            coordinator.requests.append(request)
+            return SimpleNamespace(target_rate=48000)
 
-class FakeSubwooferRuntime:
-    def __init__(self, helper_rate=None, active=True):
-        self._helper_rate = helper_rate
-        self._active = active
-
-    def snapshot(self):
-        return {
-            "active": self._active,
-            "helper_pid": 1234 if self._active else None,
-            "helper_args": ["--rate", str(self._helper_rate)] if self._helper_rate else [],
-            "config": {"sample_rate": self._helper_rate} if self._helper_rate else {},
-            "last_error": None,
-        }
-
-
-def _radio_track():
-    return {"source": "radio", "url": "http://radio.example/stream", "id": "radio-1", "title": "Station"}
-
-
-def _local_track():
-    return {"source": "local", "url": "/music/track.flac", "id": "t1", "title": "Track", "sample_rate_hz": 44100}
-
-
-def _playing_state(url):
-    return {"current_file": url, "paused": False, "ended": False, "position": 1.0}
-
-
-class StatusRepairSerializedTests(unittest.IsolatedAsyncioTestCase):
-    """_maybe_repair_active_app_samplerate_drift with full serialization."""
-
-    async def asyncSetUp(self):
-        self.originals = {}
-        for name in (
-            "player_instance", "current_track_info", "measurement_sr_session",
-            "source_transition_lock", "playback_transition_generation",
-            "last_app_samplerate_drift_repair_at", "subwoofer_runtime",
+        track = {"source": "radio", "url": "https://radio.example/live", "sample_rate_hz": 44100}
+        with patch.object(main, "playback_transition_coordinator", coordinator), patch.object(
+            main, "_run_coordinated_transition", run
         ):
-            self.originals[name] = getattr(main, name, None)
-        main.player_instance = FakePlayer(_playing_state(_radio_track()["url"]))
-        main.current_track_info = _radio_track()
-        main.measurement_sr_session = FakeMeasurementSession(active=False)
-        main.source_transition_lock = None
-        main.playback_transition_generation = 2  # committed (even)
-        main.last_app_samplerate_drift_repair_at = 0.0
-        # Non-None so the helper-sync guard `if subwoofer_runtime is not None`
-        # passes; _sync_subwoofer_runtime itself is mocked in each test.
-        main.subwoofer_runtime = FakeSubwooferRuntime(helper_rate=48000)
+            await main._request_coordinated_recovery(track, "status-drift-repair")
 
-    async def asyncTearDown(self):
-        for name, value in self.originals.items():
-            setattr(main, name, value)
+        self.assertEqual(len(coordinator.requests), 1)
+        request = coordinator.requests[0]
+        self.assertEqual(request.operation, "recovery")
+        self.assertEqual(request.source, "radio")
+        self.assertTrue(request.rate_change)
+        self.assertEqual(track["sample_rate_hz"], 48000)
 
-    async def _run_repair(self, active_rate=48000):
-        status = {"active_rate": active_rate}
-        return await main._maybe_repair_active_app_samplerate_drift(status)
+    async def test_recovery_does_not_mutate_while_transition_is_active(self):
+        coordinator = _CoordinatorDouble(active=True)
+        with patch.object(main, "playback_transition_coordinator", coordinator), patch.object(
+            main, "_run_coordinated_transition", AsyncMock()
+        ) as run:
+            await main._request_coordinated_recovery(
+                {"source": "local", "url": "/music/a.flac", "sample_rate_hz": 44100},
+                "status-drift-repair",
+            )
+        run.assert_not_awaited()
 
-    def _enter_base(self, stack):
-        stack.enter_context(patch.object(main, "_is_local_playback_active", return_value=True))
-        stack.enter_context(patch.object(main, "_playback_state_matches_track", return_value=True))
-        stack.enter_context(patch.object(main, "_current_track_matches", return_value=True))
-        stack.enter_context(patch.object(
-            main, "_resolve_expected_playback_samplerate", AsyncMock(return_value=44100),
-        ))
+    async def test_delayed_local_recovery_only_submits_after_generation_check(self):
+        coordinator = _CoordinatorDouble()
+        recovery = AsyncMock()
+        with patch.object(main, "_request_coordinated_recovery", recovery), patch.object(
+            main.asyncio, "sleep", new=AsyncMock()
+        ), patch.object(main, "_playback_transition_context_is_current", return_value=True):
+            await main._maybe_recover_samplerate_mismatch(
+                {"source": "local", "url": "/music/a.flac", "sample_rate_hz": 44100},
+                transition_generation=8,
+            )
+        recovery.assert_awaited_once()
+        self.assertEqual(recovery.await_args.args[1], "delayed-samplerate-recovery")
 
-    async def test_repair_48000_to_44100_triple_match(self):
-        calls = []
+    async def test_delayed_recovery_aborts_for_stale_generation(self):
+        recovery = AsyncMock()
+        with patch.object(main, "_request_coordinated_recovery", recovery), patch.object(
+            main.asyncio, "sleep", new=AsyncMock()
+        ), patch.object(main, "_playback_transition_context_is_current", return_value=False):
+            await main._maybe_recover_samplerate_mismatch(
+                {"source": "radio", "url": "https://radio.example/live", "sample_rate_hz": 44100},
+                transition_generation=9,
+            )
+        recovery.assert_not_awaited()
 
-        async def fake_ensure(rate, reason, *, policy):
-            calls.append(("ensure", rate, reason, policy.name))
-            return True  # force + sink aligned
+    async def test_spotify_recovery_uses_same_coordinator_submission(self):
+        coordinator = _CoordinatorDouble()
+        recovery = AsyncMock()
+        with patch.object(main, "_request_coordinated_recovery", recovery), patch.object(
+            main, "get_spotify_ui_state",
+            AsyncMock(return_value={"status": "Playing", "title": "Track", "artist": "Artist"}),
+        ), patch.object(main.asyncio, "sleep", new=AsyncMock()):
+            await main._maybe_recover_spotify_samplerate_mismatch(delay_ms=0, reason="watcher")
+        recovery.assert_awaited_once()
+        request_track = recovery.await_args.args[0]
+        self.assertEqual(request_track["source"], "spotify")
 
-        async def fake_sync(**kwargs):
-            calls.append(("sync", kwargs.get("reason")))
+    async def test_recovery_failure_is_latched_by_coordinator(self):
+        from playback_transition import PlaybackTransitionCoordinator, PlaybackTransitionFailure, TransitionRequest
 
-        with ExitStack() as stack:
-            self._enter_base(stack)
-            stack.enter_context(patch.object(main, "_ensure_playback_samplerate_force", side_effect=fake_ensure))
-            suspend = AsyncMock(return_value=True)
-            stack.enter_context(patch.object(main, "_suspend_resume_playback_sink", suspend))
-            stack.enter_context(patch.object(main, "_wait_for_samplerate_alignment", AsyncMock(return_value=True)))
-            stack.enter_context(patch.object(main, "_sync_subwoofer_runtime", side_effect=fake_sync))
-            await self._run_repair(active_rate=48000)
+        class Runtime:
+            def __init__(self):
+                self.muted = False
+                self.fail = True
+                self.events = []
 
-        self.assertEqual(
-            calls,
-            [("ensure", 44100, "status-drift-repair:radio", "status-drift-repair"), ("sync", "status-poll-rate-repair")],
+            async def read_hardware_mute(self):
+                return self.muted
+
+            async def set_hardware_mute(self, muted, transition_id):
+                self.muted = muted
+
+            async def read_transition_snapshot(self, request):
+                return {"active_rate": 44100, "force_rate": 44100}
+
+            async def quiet_old_source(self, request):
+                self.events.append("quiet")
+
+            async def resolve_target_rate(self, request):
+                return request.target_rate
+
+            async def establish_target_rate(self, request):
+                self.events.append("rate")
+                if self.fail:
+                    raise RuntimeError("rate mismatch")
+
+            async def establish_effects_and_helper(self, request):
+                self.events.append("graph")
+
+            async def prepare_target_source(self, request):
+                self.events.append("prepare")
+
+            async def start_target_source(self, request):
+                self.events.append("start")
+
+            async def set_source_volume(self, volume, transition_id):
+                self.events.append(f"volume:{volume}")
+
+            async def verify_committed_transition(self, request):
+                return {"committed": True}
+
+            async def pause_source_after_failure(self, request):
+                self.events.append("pause")
+
+        runtime = Runtime()
+        coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
+        request = TransitionRequest(
+            operation="recovery", source="local", target_rate=48000,
+            target_url="/music/a.flac", should_play=True,
+            rate_change=True, reload_source=True,
         )
-        suspend.assert_not_awaited()  # aligned without sink pulse
+        with self.assertRaises(PlaybackTransitionFailure):
+            await coordinator.execute(request)
+        self.assertTrue(coordinator.gate.failure_latched)
+        self.assertTrue(runtime.muted)
+        self.assertIn("pause", runtime.events)
 
-    async def test_repair_uses_common_reconcile_result_before_helper_sync(self):
-        calls = []
-
-        async def fake_ensure(rate, reason, *, policy):
-            calls.append(("ensure", rate, reason, policy.name))
-            return False
-
-        async def fake_sync(**kwargs):
-            calls.append(("sync", kwargs.get("reason")))
-
-        with ExitStack() as stack:
-            self._enter_base(stack)
-            stack.enter_context(patch.object(main, "_ensure_playback_samplerate_force", side_effect=fake_ensure))
-            stack.enter_context(patch.object(main, "_sync_subwoofer_runtime", side_effect=fake_sync))
-            await self._run_repair(active_rate=48000)
-
-        self.assertEqual(
-            calls,
-            [("ensure", 44100, "status-drift-repair:radio", "status-drift-repair")],
-        )
-
-    async def test_noop_during_active_measurement_session(self):
-        main.measurement_sr_session = FakeMeasurementSession(active=True)
-        with ExitStack() as stack:
-            self._enter_base(stack)
-            ensure = AsyncMock()
-            suspend = AsyncMock()
-            sync = AsyncMock()
-            stack.enter_context(patch.object(main, "_ensure_playback_samplerate_force", ensure))
-            stack.enter_context(patch.object(main, "_suspend_resume_playback_sink", suspend))
-            stack.enter_context(patch.object(main, "_sync_subwoofer_runtime", sync))
-            await self._run_repair(active_rate=48000)
-        ensure.assert_not_awaited()
-        suspend.assert_not_awaited()
-        sync.assert_not_awaited()
-
-    async def test_noop_when_already_consistent(self):
-        with ExitStack() as stack:
-            self._enter_base(stack)
-            ensure = AsyncMock()
-            suspend = AsyncMock()
-            sync = AsyncMock()
-            stack.enter_context(patch.object(main, "_ensure_playback_samplerate_force", ensure))
-            stack.enter_context(patch.object(main, "_suspend_resume_playback_sink", suspend))
-            stack.enter_context(patch.object(main, "_sync_subwoofer_runtime", sync))
-            await self._run_repair(active_rate=44100)  # active == expected
-        ensure.assert_not_awaited()
-        suspend.assert_not_awaited()
-        sync.assert_not_awaited()
-
-    async def test_abort_on_stale_generation(self):
-        main.playback_transition_generation = 3  # odd = transition in flight
-        with ExitStack() as stack:
-            self._enter_base(stack)
-            ensure = AsyncMock()
-            suspend = AsyncMock()
-            sync = AsyncMock()
-            stack.enter_context(patch.object(main, "_ensure_playback_samplerate_force", ensure))
-            stack.enter_context(patch.object(main, "_suspend_resume_playback_sink", suspend))
-            stack.enter_context(patch.object(main, "_sync_subwoofer_runtime", sync))
-            await self._run_repair(active_rate=48000)
-        ensure.assert_not_awaited()
-        suspend.assert_not_awaited()
-        sync.assert_not_awaited()
-
-    async def test_abort_on_changed_track(self):
-        with ExitStack() as stack:
-            self._enter_base(stack)
-            stack.enter_context(patch.object(main, "_current_track_matches", return_value=False))
-            ensure = AsyncMock()
-            suspend = AsyncMock()
-            sync = AsyncMock()
-            stack.enter_context(patch.object(main, "_ensure_playback_samplerate_force", ensure))
-            stack.enter_context(patch.object(main, "_suspend_resume_playback_sink", suspend))
-            stack.enter_context(patch.object(main, "_sync_subwoofer_runtime", sync))
-            await self._run_repair(active_rate=48000)
-        ensure.assert_not_awaited()
-        suspend.assert_not_awaited()
-        sync.assert_not_awaited()
-
-    async def test_abort_on_missing_sink_alignment_no_helper_restart(self):
-        with ExitStack() as stack:
-            self._enter_base(stack)
-            ensure = AsyncMock(return_value=False)
-            stack.enter_context(patch.object(main, "_ensure_playback_samplerate_force", ensure))
-            sync = AsyncMock()
-            stack.enter_context(patch.object(main, "_sync_subwoofer_runtime", sync))
-            await self._run_repair(active_rate=48000)
-        ensure.assert_awaited_once_with(
-            44100,
-            "status-drift-repair:radio",
-            policy=samplerate_orchestration.STATUS_DRIFT_REPAIR_POLICY,
-        )
-        sync.assert_not_awaited()
-
-    async def test_abort_when_sink_suspend_skipped(self):
-        with ExitStack() as stack:
-            self._enter_base(stack)
-            ensure = AsyncMock(return_value=False)
-            stack.enter_context(patch.object(main, "_ensure_playback_samplerate_force", ensure))
-            sync = AsyncMock()
-            stack.enter_context(patch.object(main, "_sync_subwoofer_runtime", sync))
-            await self._run_repair(active_rate=48000)
-        ensure.assert_awaited_once_with(
-            44100,
-            "status-drift-repair:radio",
-            policy=samplerate_orchestration.STATUS_DRIFT_REPAIR_POLICY,
-        )
-        sync.assert_not_awaited()
-
-    async def test_repair_serialized_under_source_transition_lock(self):
-        main.source_transition_lock = asyncio.Lock()
-        with ExitStack() as stack:
-            self._enter_base(stack)
-            stack.enter_context(patch.object(main, "_ensure_playback_samplerate_force", AsyncMock(return_value=True)))
-            stack.enter_context(patch.object(main, "_suspend_resume_playback_sink", AsyncMock(return_value=True)))
-            sync = AsyncMock()
-            stack.enter_context(patch.object(main, "_sync_subwoofer_runtime", sync))
-            await self._run_repair(active_rate=48000)
-        sync.assert_awaited_once()
-
-    async def test_repair_skipped_when_playback_not_active(self):
-        with ExitStack() as stack:
-            stack.enter_context(patch.object(main, "_is_local_playback_active", return_value=False))
-            ensure = AsyncMock()
-            sync = AsyncMock()
-            stack.enter_context(patch.object(main, "_ensure_playback_samplerate_force", ensure))
-            stack.enter_context(patch.object(main, "_sync_subwoofer_runtime", sync))
-            await self._run_repair(active_rate=48000)
-        ensure.assert_not_awaited()
-        sync.assert_not_awaited()
-
-
-class ResumeHelperSyncTests(unittest.IsolatedAsyncioTestCase):
-    """_sync_subwoofer_runtime_after_playback_transition on resume paths."""
-
-    async def asyncSetUp(self):
-        self.originals = {}
-        for name in (
-            "player_instance", "current_track_info", "subwoofer_runtime",
-            "source_transition_lock", "playback_transition_generation",
-            "local_playback_handoff_completed_url", "local_playback_handoff_completed_rate",
-        ):
-            self.originals[name] = getattr(main, name, None)
-        main.source_transition_lock = None
-        main.playback_transition_generation = 2  # committed
-        main.local_playback_handoff_completed_url = _local_track()["url"]
-        main.local_playback_handoff_completed_rate = 44100
-        main.player_instance = FakePlayer(_playing_state(_local_track()["url"]))
-        main.current_track_info = _local_track()
-
-    async def asyncTearDown(self):
-        for name, value in self.originals.items():
-            setattr(main, name, value)
-
-    def _enter_base(self, stack):
-        stack.enter_context(patch.object(main, "_wait_for_player_current_file", AsyncMock(return_value=True)))
-        stack.enter_context(patch.object(main, "_current_track_matches", return_value=True))
-        stack.enter_context(patch.object(
-            main, "_resolve_expected_playback_samplerate", AsyncMock(return_value=44100),
-        ))
-        stack.enter_context(patch.object(main, "_wait_for_samplerate_alignment", AsyncMock(return_value=True)))
-        stack.enter_context(patch.object(
-            main, "get_audio_output_overview",
-            return_value={"output_mode": {"mode": "subwoofer-2.2"}},
-        ))
-
-    async def test_resume_with_helper_48000_syncs_helper_to_44100(self):
-        # Completed local handoff marker exists (44.1 kHz), but the helper still
-        # runs at 48 kHz (e.g. after a measurement): the no-op guard must NOT
-        # skip the transition sync.
-        main.subwoofer_runtime = FakeSubwooferRuntime(helper_rate=48000)
-        with ExitStack() as stack:
-            self._enter_base(stack)
-            sync = AsyncMock()
-            stack.enter_context(patch.object(main, "_sync_subwoofer_runtime", sync))
-            await main._sync_subwoofer_runtime_after_playback_transition(
-                _local_track(), transition_generation=main.playback_transition_generation,
-            )
-        sync.assert_awaited_once()
-        kwargs = sync.await_args.kwargs
-        self.assertEqual(kwargs.get("reason"), "playback-transition")
-
-    async def test_resume_with_helper_already_44100_is_noop(self):
-        main.subwoofer_runtime = FakeSubwooferRuntime(helper_rate=44100)
-        with ExitStack() as stack:
-            self._enter_base(stack)
-            sync = AsyncMock()
-            stack.enter_context(patch.object(main, "_sync_subwoofer_runtime", sync))
-            await main._sync_subwoofer_runtime_after_playback_transition(
-                _local_track(), transition_generation=main.playback_transition_generation,
-            )
-        sync.assert_not_awaited()
-
-    async def test_resume_without_completed_handoff_still_syncs(self):
-        main.subwoofer_runtime = FakeSubwooferRuntime(helper_rate=44100)
-        main.local_playback_handoff_completed_url = None
-        main.local_playback_handoff_completed_rate = None
-        with ExitStack() as stack:
-            self._enter_base(stack)
-            sync = AsyncMock()
-            stack.enter_context(patch.object(main, "_sync_subwoofer_runtime", sync))
-            await main._sync_subwoofer_runtime_after_playback_transition(
-                _local_track(), transition_generation=main.playback_transition_generation,
-            )
-        sync.assert_awaited_once()
-
-    async def test_resume_aborts_on_stale_generation(self):
-        main.subwoofer_runtime = FakeSubwooferRuntime(helper_rate=48000)
-        with ExitStack() as stack:
-            self._enter_base(stack)
-            sync = AsyncMock()
-            stack.enter_context(patch.object(main, "_sync_subwoofer_runtime", sync))
-            await main._sync_subwoofer_runtime_after_playback_transition(
-                _local_track(), transition_generation=3,  # odd / stale
-            )
-        sync.assert_not_awaited()
-
-    async def test_resume_radio_uses_force_then_helper_sync(self):
-        main.subwoofer_runtime = FakeSubwooferRuntime(helper_rate=48000)
-        main.current_track_info = _radio_track()
-        radio = _radio_track()
-        with ExitStack() as stack:
-            stack.enter_context(patch.object(main, "_wait_for_player_current_file", AsyncMock(return_value=True)))
-            stack.enter_context(patch.object(main, "_current_track_matches", return_value=True))
-            stack.enter_context(patch.object(
-                main, "_resolve_expected_playback_samplerate", AsyncMock(return_value=44100),
-            ))
-            ensure = AsyncMock(return_value=True)
-            stack.enter_context(patch.object(main, "_ensure_playback_samplerate_force", ensure))
-            stack.enter_context(patch.object(
-                main, "get_audio_output_overview",
-                return_value={"output_mode": {"mode": "subwoofer-2.2"}},
-            ))
-            sync = AsyncMock()
-            stack.enter_context(patch.object(main, "_sync_subwoofer_runtime", sync))
-            await main._sync_subwoofer_runtime_after_playback_transition(
-                radio, transition_generation=main.playback_transition_generation,
-            )
-        ensure.assert_awaited_once()
-        ensure.assert_awaited_with(44100, "radio-playback-transition", policy=samplerate_orchestration.RADIO_POLICY)
-        sync.assert_awaited_once()
+    async def test_recovery_requests_have_no_parallel_direct_mutation(self):
+        source = (Path(__file__).resolve().parents[1] / "main.py").read_text()
+        start = source.index("async def _request_coordinated_recovery")
+        end = source.index("def _transition_error_http", start)
+        body = source[start:end]
+        self.assertNotIn("_set_pipewire_force_rate", body)
+        self.assertNotIn("_sync_subwoofer_runtime", body)
+        self.assertIn("_run_coordinated_transition", body)
 
 
 if __name__ == "__main__":

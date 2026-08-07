@@ -225,13 +225,22 @@ class _FakePlayer:
     _running = True
 
     def __init__(self):
-        self.state = {"current_file": None, "paused": False, "ended": False, "volume": 100}
+        self.state = {
+            "current_file": None, "paused": False, "playing": False,
+            "ended": False, "position": 0.0, "volume": 100,
+        }
 
     def set_pause(self, paused):
         self.state["paused"] = paused
 
-    def loadfile(self, path, mode="replace"):
+    def loadfile(self, path, mode="replace", start_paused=False):
         self.state["current_file"] = path
+        self.state["paused"] = bool(start_paused)
+        self.state["playing"] = not start_paused
+        self.state["position"] = 1.0
+
+    def set_volume(self, volume):
+        self.state["volume"] = volume
 
     def set_loop_playlist(self, enabled):
         return None
@@ -256,8 +265,7 @@ class ApiPlayQueueOrderTests(unittest.IsolatedAsyncioTestCase):
                 "single_track_loop", "queue_transition_target_url", "peak_monitor",
                 "source_transition_lock", "playback_stream_stale_after_measurement",
                 "_playback_state_before_measurement", "radio_stream_stale_after_measurement",
-                "_radio_state_before_measurement", "local_playback_handoff_completed_url",
-                "local_playback_handoff_completed_rate", "playback_transition_generation",
+                "_radio_state_before_measurement", "playback_transition_generation",
                 "radio_reconnect_attempts", "radio_reconnect_url",
                 "radio_reconnect_active_since",
             )
@@ -284,12 +292,11 @@ class ApiPlayQueueOrderTests(unittest.IsolatedAsyncioTestCase):
         main._playback_state_before_measurement = None
         main.radio_stream_stale_after_measurement = False
         main._radio_state_before_measurement = None
-        main.local_playback_handoff_completed_url = None
-        main.local_playback_handoff_completed_rate = None
         main.playback_transition_generation = 0
         main.radio_reconnect_attempts = 0
         main.radio_reconnect_url = None
         main.radio_reconnect_active_since = 0.0
+        self.transition_requests = []
         return originals
 
     def _restore(self, originals):
@@ -300,17 +307,23 @@ class ApiPlayQueueOrderTests(unittest.IsolatedAsyncioTestCase):
         async def no_op(*_args, **_kwargs):
             return None
 
-        async def no_prearm(*_args, **_kwargs):
-            return None, None
+        async def coordinated(request):
+            self.transition_requests.append(request)
+            main.player_instance.state.update({
+                "current_file": request.target_url,
+                "paused": not request.should_play,
+                "playing": request.should_play,
+                "ended": False,
+                "position": 1.0,
+                "volume": 100,
+            })
+            return SimpleNamespace(target_rate=request.target_rate)
 
         return [
             patch.object(main, "_can_send_play_command", return_value=True),
-            patch.object(main, "pause_spotify_for_local_playback_broadcast", no_op),
-            patch.object(main, "_prearm_known_local_samplerate", no_prearm),
+            patch.object(main, "_run_coordinated_transition", coordinated),
             patch.object(main, "_should_use_mpv_native_queue", return_value=False),
-            patch.object(main, "_sync_peak_monitor_after_playback_transition", no_op),
             patch.object(main, "_maybe_recover_samplerate_mismatch", no_op),
-            patch.object(main, "_sync_subwoofer_runtime_after_playback_transition", no_op),
             patch.object(main, "_schedule_silent_active_watch", lambda **_k: None),
             patch.object(main, "build_playback_payload", lambda state: {}),
             patch.object(main.random, "shuffle", new=recording_shuffle),

@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
+from playback_transition_test_support import run_main_handoff_through_coordinator
 
 
 class RadioLiveSamplerateResolutionTests(unittest.IsolatedAsyncioTestCase):
@@ -97,7 +98,7 @@ class RadioLiveSamplerateResolutionTests(unittest.IsolatedAsyncioTestCase):
 
 
 class RadioMismatchRecoveryLiveRateTests(unittest.IsolatedAsyncioTestCase):
-    """_maybe_recover_samplerate_mismatch opts into the live radio rate."""
+    """Delayed recovery submits one request to the Coordinator."""
 
     async def asyncSetUp(self):
         self.originals = {
@@ -122,88 +123,41 @@ class RadioMismatchRecoveryLiveRateTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_recovery_forces_live_48k_when_sink_is_44_1(self):
         track = {"id": "radio_48k", "source": "radio", "url": "https://radio.example/48k"}
-        resolved = []
-        forced = []
-
-        async def resolve(source: str, prefer_live_radio_rate: bool = False) -> int:
-            resolved.append((source, prefer_live_radio_rate))
-            return 48000
-
-        async def force(rate: int, reason: str, policy=None) -> bool:
-            forced.append((rate, reason))
-            return True
-
-        async def noop_sleep(_delay: float) -> None:
-            return None
-
-        with patch.object(main, "_resolve_expected_playback_samplerate", resolve), patch.object(
-            main, "_ensure_playback_samplerate_force", force
-        ), patch.object(main, "get_samplerate_status", return_value={"active_rate": 44100}), patch.object(
-            main, "_playback_transition_context_is_current", return_value=True
-        ), patch.object(main, "_current_track_matches", return_value=True), patch.object(
-            main, "_sync_easyeffects_preset_for_playback_samplerate", AsyncMock()
-        ), patch.object(main, "refresh_peak_monitor_after_effects_change", AsyncMock()), patch.object(
-            main.asyncio, "sleep", noop_sleep
+        recovery = AsyncMock()
+        with patch.object(main, "_request_coordinated_recovery", recovery), patch.object(
+            main.asyncio, "sleep", AsyncMock()
         ):
             await main._maybe_recover_samplerate_mismatch(
                 track, transition_generation=42
             )
 
-        # Post-loadfile recovery must resolve the live radio rate (48 kHz)
-        # and force the sink to it, instead of assuming 44.1 kHz.
-        self.assertEqual(resolved, [("radio", True)])
-        self.assertEqual(forced, [(48000, "radio-samplerate-mismatch")])
+        # Recovery no longer resolves or mutates the graph inline.  The
+        # Coordinator owns the live-rate resolution and commit/rollback.
+        recovery.assert_awaited_once_with(track, "delayed-samplerate-recovery")
 
     async def test_recovery_noop_when_live_rate_matches_sink(self):
         track = {"id": "radio_44k", "source": "radio", "url": "https://radio.example/44k"}
 
-        async def resolve(source: str, prefer_live_radio_rate: bool = False) -> int:
-            return 44100
-
-        force = AsyncMock()
-        preset_sync = AsyncMock()
-        peak_refresh = AsyncMock()
-        with patch.object(main, "_resolve_expected_playback_samplerate", resolve), patch.object(
-            main, "_ensure_playback_samplerate_force", force
-        ), patch.object(main, "get_samplerate_status", return_value={"active_rate": 44100}), patch.object(
-            main, "_playback_transition_context_is_current", return_value=True
-        ), patch.object(main, "_current_track_matches", return_value=True), patch.object(
-            main, "_sync_easyeffects_preset_for_playback_samplerate", preset_sync
-        ), patch.object(main, "refresh_peak_monitor_after_effects_change", peak_refresh), patch.object(
+        recovery = AsyncMock()
+        with patch.object(main, "_request_coordinated_recovery", recovery), patch.object(
             main.asyncio, "sleep", AsyncMock()
         ):
             await main._maybe_recover_samplerate_mismatch(
                 track, transition_generation=42
             )
-            # 44.1 kHz stream on a 44.1 kHz sink: no force, no preset bounce.
-            force.assert_not_awaited()
-            preset_sync.assert_not_awaited()
-            peak_refresh.assert_not_awaited()
+        recovery.assert_awaited_once_with(track, "delayed-samplerate-recovery")
 
     async def test_recovery_fallback_44100_when_player_rate_unavailable(self):
         track = {"id": "radio_unknown", "source": "radio", "url": "https://radio.example/x"}
 
-        async def resolve(source: str, prefer_live_radio_rate: bool = False) -> int:
-            return 44100
-
-        force = AsyncMock()
-        preset_sync = AsyncMock()
-        with patch.object(main, "_resolve_expected_playback_samplerate", resolve), patch.object(
-            main, "_ensure_playback_samplerate_force", force
-        ), patch.object(main, "get_samplerate_status", return_value={"active_rate": 44100}), patch.object(
-            main, "_playback_transition_context_is_current", return_value=True
-        ), patch.object(main, "_current_track_matches", return_value=True), patch.object(
-            main, "_sync_easyeffects_preset_for_playback_samplerate", preset_sync
-        ), patch.object(main, "refresh_peak_monitor_after_effects_change", AsyncMock()), patch.object(
+        recovery = AsyncMock()
+        with patch.object(main, "_request_coordinated_recovery", recovery), patch.object(
             main.asyncio, "sleep", AsyncMock()
         ):
             await main._maybe_recover_samplerate_mismatch(
                 track, transition_generation=42
             )
-            # Safe 44.1 kHz fallback: sink already at 44100 -> consistent no-op,
-            # never an invalid force-rate.
-            force.assert_not_awaited()
-            preset_sync.assert_not_awaited()
+        recovery.assert_awaited_once_with(track, "delayed-samplerate-recovery")
 
 
 class RadioPostLoadHandoffTests(unittest.IsolatedAsyncioTestCase):
@@ -245,7 +199,7 @@ class RadioPostLoadHandoffTests(unittest.IsolatedAsyncioTestCase):
         generation=100,
         timeout_ms=1000,
     ):
-        """Run _complete_radio_handoff_after_load with mocked primitives.
+        """Run radio live-rate resolution inside the Coordinator.
 
         live_rates: list -> side_effect sequence; callable -> always used.
         The samplerate status is a mutable dict: the mocked ensure-force
@@ -284,6 +238,21 @@ class RadioPostLoadHandoffTests(unittest.IsolatedAsyncioTestCase):
             if isinstance(live_rates, list)
             else patch.object(main, "_get_player_audio_samplerate", return_value=live_rates)
         )
+
+        async def resolve_live_rate(_request):
+            if live_rates is None:
+                live_rate = None
+            else:
+                live_rate = await main._wait_for_radio_live_rate_after_load(
+                    previous_rate,
+                    transition_generation=generation,
+                    timeout_ms=timeout_ms,
+                )
+            if not isinstance(live_rate, int) or live_rate <= 0:
+                logs.append(("error", ("radio live rate unavailable",)))
+                return main.RADIO_EXPECTED_SAMPLE_RATE_HZ
+            return live_rate
+
         with rate_mock, patch.object(
             main, "get_samplerate_status", side_effect=lambda: dict(status)
         ), patch.object(main, "_ensure_playback_samplerate_force", force), patch.object(
@@ -296,12 +265,15 @@ class RadioPostLoadHandoffTests(unittest.IsolatedAsyncioTestCase):
         ), patch.object(
             main.asyncio, "sleep", noop_sleep
         ), patch.object(main, "logger", type("L", (), {"info": lambda *a, **k: logs.append(("info", a)), "warning": lambda *a, **k: logs.append(("warning", a)), "error": lambda *a, **k: logs.append(("error", a)), "debug": lambda *a, **k: None})()):
-            result = await main._complete_radio_handoff_after_load(
-                track, previous_rate,
-                transition_generation=generation,
-                timeout_ms=timeout_ms,
+            result, _runtime = await run_main_handoff_through_coordinator(
+                target_rate=main.RADIO_EXPECTED_SAMPLE_RATE_HZ,
+                generation=generation,
+                source="radio",
+                target_url=track["url"],
+                detail="radio-post-load-handoff",
+                resolver=resolve_live_rate,
             )
-        return result, calls, logs
+        return result.target_rate, calls, logs
 
     async def test_48_to_48_no_rate_switch(self):
         track = {"id": "radio_48b", "source": "radio", "url": "https://radio.example/48b"}
@@ -385,13 +357,27 @@ class RadioPostLoadHandoffTests(unittest.IsolatedAsyncioTestCase):
 
         # Same-rate poll: only accepted after stability polls, so the sleep
         # (and the generation bump inside it) runs before a rate is returned.
+        async def resolver(_request):
+            rate = await main._wait_for_radio_live_rate_after_load(
+                44100, transition_generation=100, timeout_ms=1000,
+            )
+            if rate is None:
+                raise RuntimeError("stale transition generation")
+            return rate
+
         with patch.object(
             main, "_get_player_audio_samplerate", return_value=44100
         ), patch.object(main.asyncio, "sleep", side_effect=bump_during_sleep):
-            result = await main._complete_radio_handoff_after_load(
-                track, 44100, transition_generation=100, timeout_ms=1000,
-            )
-        self.assertIsNone(result)
+            with self.assertRaises(RuntimeError) as ctx:
+                await run_main_handoff_through_coordinator(
+                    target_rate=44100,
+                    generation=100,
+                    source="radio",
+                    target_url=track["url"],
+                    detail="radio-post-load-handoff",
+                    resolver=resolver,
+                )
+        self.assertIn("stale transition generation", str(ctx.exception))
 
     async def test_missing_live_rate_uses_safe_fallback_and_logs_error(self):
         track = {"id": "radio_x", "source": "radio", "url": "https://radio.example/x"}

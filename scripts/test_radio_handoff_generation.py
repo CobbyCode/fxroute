@@ -96,7 +96,7 @@ class PlaybackTransitionGenerationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.monitor.restarts, 1)
         self.assertEqual(self.monitor.relinks, 0)
         self.assertEqual(main.peak_monitor_context_signature, "player:local:/music/local.flac")
-        self.assertEqual(self.resolved_sources, ["local"])
+        self.assertEqual(self.resolved_sources, [], "peak monitor must not resolve or mutate rate")
 
     async def test_local_to_radio_uses_committed_radio_context(self):
         main.current_track_info = {
@@ -112,7 +112,7 @@ class PlaybackTransitionGenerationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(self.monitor.restarts, 1)
         self.assertEqual(main.peak_monitor_context_signature, "player:radio:https://radio.example/stream")
-        self.assertEqual(self.resolved_sources, ["radio"])
+        self.assertEqual(self.resolved_sources, [], "peak monitor must not resolve or mutate rate")
 
     async def test_same_source_resume_keeps_relink_optimization(self):
         main.peak_monitor_playback_armed = False
@@ -141,26 +141,18 @@ class PlaybackTransitionGenerationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(self.resolved_sources, [])
 
-    async def test_stale_deferred_subwoofer_sync_is_discarded(self):
-        main.subwoofer_runtime = object()
-
-        async def settle_then_invalidate(_url, timeout_ms):
-            main.playback_transition_generation = 6
-            return True
-
-        main._wait_for_player_current_file = settle_then_invalidate
-
-        await main._sync_subwoofer_runtime_after_playback_transition(
-            main.current_track_info.copy(), transition_generation=4,
+    async def test_deferred_subwoofer_repair_is_coordinator_owned(self):
+        # The watcher no longer has a direct helper-sync callback to invalidate;
+        # its only allowed action is a Coordinator recovery request.
+        self.assertFalse(
+            hasattr(main, "_sync_subwoofer_runtime_after_playback_transition"),
+            "direct deferred helper sync must be removed in favor of Coordinator recovery",
         )
-
-        self.assertEqual(self.resolved_sources, [])
 
     def test_all_deferred_context_sync_calls_bind_generation(self):
         tree = ast.parse((Path(__file__).resolve().parents[1] / "main.py").read_text())
         targets = {
             "_maybe_recover_samplerate_mismatch",
-            "_sync_subwoofer_runtime_after_playback_transition",
         }
         unbound = []
         for node in ast.walk(tree):
