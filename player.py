@@ -397,8 +397,16 @@ class MPVWrapper:
         if changed:
             self._notify_callbacks()
 
-    def loadfile(self, path: str, mode: str = "replace"):
-        """Load a file/URL and start playback."""
+    def loadfile(self, path: str, mode: str = "replace", *, start_paused: bool | None = None):
+        """Load a file/URL, optionally preserving or explicitly setting pause.
+
+        A transition may stage a target while the output gate is closed.  The
+        old implementation unconditionally rewrote the cached state to
+        ``paused=False`` immediately after ``loadfile``; callbacks could then
+        observe a playing target before the coordinator had verified the graph.
+        ``None`` preserves the cached pause state, while callers that own the
+        transition can explicitly request a paused load.
+        """
         with self.lock:
             logger.info(f"Loading: {path} (mode: {mode})")
             result = self._send_command("loadfile", path, mode)
@@ -408,9 +416,11 @@ class MPVWrapper:
             # on the last queued file until a later path event happened.
             if mode == "append":
                 return result
+            if start_paused is None:
+                start_paused = bool(self._state.get("paused"))
             self._last_end_reason = None
-            self._state["playing"] = True
-            self._state["paused"] = False
+            self._state["playing"] = not bool(start_paused)
+            self._state["paused"] = bool(start_paused)
             self._state["current_file"] = path
             self._state["position"] = 0.0
             self._state["duration"] = 0.0
