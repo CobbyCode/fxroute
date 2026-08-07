@@ -1,14 +1,5 @@
 #!/usr/bin/env python3
-"""Focused regressions for phase-dependent radio live-rate resolution.
-
-Covers the SR radio samplerate recovery contract:
-- pre-loadfile radio handoff keeps RADIO_EXPECTED_SAMPLE_RATE_HZ (44100)
-- post-loadfile callers may opt into the live mpv rate via
-  prefer_live_radio_rate=True and fall back to 44100 while mpv has no
-  valid rate yet
-- station switches are followed (44.1 -> 48 -> 44.1), no stale rate reuse
-- local and spotify resolution paths stay unchanged
-"""
+"""Focused regressions for Coordinator-owned radio live-rate resolution."""
 
 import asyncio
 import sys
@@ -22,81 +13,6 @@ import main
 from playback_transition_test_support import run_main_handoff_through_coordinator
 
 
-class RadioLiveSamplerateResolutionTests(unittest.IsolatedAsyncioTestCase):
-    """_resolve_expected_playback_samplerate phase behavior."""
-
-    async def test_radio_without_option_uses_fixed_44100(self):
-        # Pre-loadfile handoff must keep the configured radio rate even when
-        # the player still exposes (stale) audio params.
-        with patch.object(main, "_get_player_audio_samplerate", return_value=48000):
-            rate = await main._resolve_expected_playback_samplerate("radio")
-        self.assertEqual(rate, 44100)
-
-    async def test_radio_prefer_live_uses_player_rate(self):
-        with patch.object(main, "_get_player_audio_samplerate", return_value=48000):
-            rate = await main._resolve_expected_playback_samplerate(
-                "radio", prefer_live_radio_rate=True
-            )
-        self.assertEqual(rate, 48000)
-
-    async def test_radio_prefer_live_falls_back_when_unavailable(self):
-        with patch.object(main, "_get_player_audio_samplerate", return_value=None):
-            rate = await main._resolve_expected_playback_samplerate(
-                "radio", prefer_live_radio_rate=True
-            )
-        self.assertEqual(rate, 44100)
-
-    async def test_radio_prefer_live_falls_back_on_invalid_rate(self):
-        for invalid in (0, -1, "48000", {}):
-            with patch.object(main, "_get_player_audio_samplerate", return_value=invalid):
-                rate = await main._resolve_expected_playback_samplerate(
-                    "radio", prefer_live_radio_rate=True
-                )
-            self.assertEqual(rate, 44100, f"invalid rate {invalid!r} must fall back")
-
-    async def test_radio_prefer_live_tracks_44_1_to_48_to_44_1(self):
-        # Each switch must be followed; the resolved rate is always the
-        # current player rate, never a cached/stale one.
-        with patch.object(
-            main, "_get_player_audio_samplerate", side_effect=[44100, 48000, 44100]
-        ):
-            rates = [
-                await main._resolve_expected_playback_samplerate(
-                    "radio", prefer_live_radio_rate=True
-                ),
-                await main._resolve_expected_playback_samplerate(
-                    "radio", prefer_live_radio_rate=True
-                ),
-                await main._resolve_expected_playback_samplerate(
-                    "radio", prefer_live_radio_rate=True
-                ),
-            ]
-        self.assertEqual(rates, [44100, 48000, 44100])
-
-    async def test_local_path_unchanged_waits_for_player_rate(self):
-        # Local playback must keep waiting for the player rate; the radio
-        # option must not alter local behavior.
-        async def wait(timeout_ms: int = 900) -> int:
-            return 96000
-
-        with patch.object(main, "_wait_for_player_audio_samplerate", side_effect=wait):
-            rate = await main._resolve_expected_playback_samplerate(
-                "local", prefer_live_radio_rate=True
-            )
-        self.assertEqual(rate, 96000)
-
-    async def test_spotify_path_unchanged_waits_for_player_rate(self):
-        # Spotify is not radio: resolution keeps the generic player-rate wait.
-        async def wait(timeout_ms: int = 900) -> int:
-            return 48000
-
-        with patch.object(main, "_wait_for_player_audio_samplerate", side_effect=wait):
-            rate = await main._resolve_expected_playback_samplerate(
-                "spotify", prefer_live_radio_rate=True
-            )
-        self.assertEqual(rate, 48000)
-
-
 class SamplerateDriftWatcherTests(unittest.IsolatedAsyncioTestCase):
     """Stable MPV/source drift is observed before one Coordinator request."""
 
@@ -107,7 +23,7 @@ class SamplerateDriftWatcherTests(unittest.IsolatedAsyncioTestCase):
                 "player_instance", "current_track_info",
                 "playback_transition_coordinator", "measurement_sr_session",
                 "samplerate_drift_signature", "samplerate_drift_readbacks",
-                "_is_measurement_window_open",
+                "_is_measurement_window_open", "get_samplerate_status",
             )
         }
 
@@ -130,6 +46,10 @@ class SamplerateDriftWatcherTests(unittest.IsolatedAsyncioTestCase):
         main.playback_transition_coordinator = type("Coordinator", (), {"transition_active": False})()
         main.measurement_sr_session = type("Measurement", (), {"active": False})()
         main._is_measurement_window_open = lambda: False
+        main.get_samplerate_status = lambda: {
+            "active_rate": 44100,
+            "force_rate": 44100,
+        }
         main.samplerate_drift_signature = None
         main.samplerate_drift_readbacks = 0
 
@@ -138,8 +58,13 @@ class SamplerateDriftWatcherTests(unittest.IsolatedAsyncioTestCase):
             setattr(main, name, value)
 
     async def test_two_matching_mismatch_readbacks_request_one_recovery(self):
+        """MPV/track 44.1 with hardware at 48 kHz requests repair at 44.1."""
         recovery = AsyncMock()
-        with patch.object(main, "_get_player_audio_samplerate", return_value=48000), patch.object(
+        with patch.object(main, "_get_player_audio_samplerate", return_value=44100), patch.object(
+            main,
+            "get_samplerate_status",
+            return_value={"active_rate": 48000, "force_rate": 48000},
+        ), patch.object(
             main, "_request_coordinated_recovery", recovery
         ):
             await main._observe_playback_samplerate_drift()
@@ -149,7 +74,38 @@ class SamplerateDriftWatcherTests(unittest.IsolatedAsyncioTestCase):
         recovery.assert_awaited_once()
         self.assertEqual(recovery.await_args.args[1], "samplerate-drift-watcher")
         self.assertTrue(recovery.await_args.kwargs["reload_source"])
-        self.assertEqual(recovery.await_args.kwargs["diagnosis"]["actual_rate"], 48000)
+        self.assertEqual(recovery.await_args.args[0]["sample_rate_hz"], 44100)
+        self.assertEqual(recovery.await_args.kwargs["diagnosis"]["mpv_rate"], 44100)
+        self.assertEqual(recovery.await_args.kwargs["diagnosis"]["hardware_rate"], 48000)
+
+    async def test_mpvliverate_is_authoritative_when_track_rate_is_stale(self):
+        """MPV 48 kHz / track 44.1 / hardware 44.1 repairs to 48 kHz."""
+        recovery = AsyncMock()
+        with patch.object(main, "_get_player_audio_samplerate", return_value=48000), patch.object(
+            main,
+            "get_samplerate_status",
+            return_value={"active_rate": 44100, "force_rate": 44100},
+        ), patch.object(main, "_request_coordinated_recovery", recovery):
+            await main._observe_playback_samplerate_drift()
+            recovery.assert_not_awaited()
+            await main._observe_playback_samplerate_drift()
+
+        recovery.assert_awaited_once()
+        self.assertEqual(recovery.await_args.args[0]["sample_rate_hz"], 48000)
+        self.assertEqual(recovery.await_args.kwargs["diagnosis"]["track_rate"], 44100)
+        self.assertEqual(recovery.await_args.kwargs["diagnosis"]["mpv_rate"], 48000)
+
+    async def test_matching_mpv_track_and_hardware_rates_are_healthy(self):
+        recovery = AsyncMock()
+        with patch.object(main, "_get_player_audio_samplerate", return_value=44100), patch.object(
+            main,
+            "get_samplerate_status",
+            return_value={"active_rate": 44100, "force_rate": None},
+        ), patch.object(main, "_request_coordinated_recovery", recovery):
+            await main._observe_playback_samplerate_drift()
+            await main._observe_playback_samplerate_drift()
+
+        recovery.assert_not_awaited()
 
     async def test_stable_mismatch_resets_when_source_changes(self):
         recovery = AsyncMock()

@@ -38,7 +38,7 @@ class PlaybackTransitionGenerationTests(unittest.IsolatedAsyncioTestCase):
             "peak_monitor", "manager", "peak_monitor_transition_lock",
             "peak_monitor_playback_armed", "peak_monitor_context_signature",
             "playback_transition_generation", "current_track_info",
-            "_resolve_expected_playback_samplerate", "_wait_for_samplerate_alignment",
+            "_wait_for_samplerate_alignment",
             "_sync_easyeffects_preset_for_playback_samplerate",
             "_ensure_stereo_easyeffects_output_graph",
             "easyeffects_manager", "player_instance", "subwoofer_runtime",
@@ -53,13 +53,6 @@ class PlaybackTransitionGenerationTests(unittest.IsolatedAsyncioTestCase):
         main.current_track_info = {
             "id": "local-track", "source": "local", "url": "/music/local.flac"
         }
-        self.resolved_sources = []
-
-        async def resolve_rate(source, prefer_live_radio_rate=False):
-            self.resolved_sources.append(source)
-            return 44_100 if source == "radio" else 48_000
-
-        main._resolve_expected_playback_samplerate = resolve_rate
         main._wait_for_samplerate_alignment = lambda _rate: async_value(True)
         main._sync_easyeffects_preset_for_playback_samplerate = lambda **_kwargs: async_value(None)
         main._ensure_stereo_easyeffects_output_graph = lambda: async_value(None)
@@ -95,7 +88,6 @@ class PlaybackTransitionGenerationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.monitor.restarts, 1)
         self.assertEqual(self.monitor.relinks, 0)
         self.assertEqual(main.peak_monitor_context_signature, "player:local:/music/local.flac")
-        self.assertEqual(self.resolved_sources, [], "peak monitor must not resolve or mutate rate")
 
     async def test_local_to_radio_uses_committed_radio_context(self):
         main.current_track_info = {
@@ -111,7 +103,6 @@ class PlaybackTransitionGenerationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(self.monitor.restarts, 1)
         self.assertEqual(main.peak_monitor_context_signature, "player:radio:https://radio.example/stream")
-        self.assertEqual(self.resolved_sources, [], "peak monitor must not resolve or mutate rate")
 
     async def test_same_source_resume_keeps_relink_optimization(self):
         main.peak_monitor_playback_armed = False

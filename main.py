@@ -49,10 +49,11 @@ LOCAL_TRACK_SWITCH_SETTLE_MS = 260
 SOURCE_HANDOFF_SETTLE_MS = 260
 PIPEWIRE_HANDOFF_RELEASE_TIMEOUT_MS = 1800
 PIPEWIRE_HANDOFF_POLL_INTERVAL_MS = 50
+SPOTIFY_SINK_INPUT_RATE_TIMEOUT_MS = 1800
+SPOTIFY_SINK_INPUT_RATE_STABILITY_POLLS = 2
 PEAK_MONITOR_INACTIVE_GRACE_MS = 450
 PEAK_MONITOR_RESTART_SETTLE_MS = 320
 PEAK_MONITOR_RATE_MATCH_TIMEOUT_MS = 900
-RADIO_SAMPLERATE_RENEGOTIATE_DELAY_MS = 1200
 RADIO_EXPECTED_SAMPLE_RATE_HZ = 44100
 RADIO_POST_LOAD_RATE_TIMEOUT_MS = 3000
 RADIO_POST_LOAD_RATE_STABILITY_POLLS = 3
@@ -174,12 +175,67 @@ def _list_spotify_sink_inputs() -> list[dict]:
     ]
 
 
-def _get_first_sink_input_samplerate(entries: list[dict]) -> Optional[int]:
+def _spotify_sink_input_observation(
+    entries: list[dict],
+    *,
+    expected_rate: int | None = None,
+    preferred_identity: object | None = None,
+) -> tuple[object, int] | None:
+    """Select one Spotify sink input and retain an identity for stability checks."""
+    candidates: list[tuple[object, int]] = []
     for entry in entries:
+        corked = entry.get("corked")
+        if isinstance(corked, str):
+            corked = corked.strip().lower() in {"1", "true", "yes", "on"}
+        if corked:
+            # A corked input is an old/paused PipeWire stream.  It must not
+            # validate a new Playing entry or hide a newly created active
+            # input with a different rate.
+            continue
         rate = entry.get("sample_rate")
         if isinstance(rate, int) and rate > 0:
-            return rate
-    return None
+            properties = entry.get("properties") or {}
+            identity: object = entry.get("id")
+            if identity is None:
+                identity = entry.get("index")
+            if identity is None:
+                identity = (
+                    properties.get("node.name"),
+                    properties.get("application.name") or properties.get("application.id"),
+                    properties.get("media.name"),
+                )
+            candidates.append((identity, rate))
+    if not candidates:
+        return None
+
+    selected_identity, selected_rate = candidates[0]
+    preferred = next(
+        (
+            candidate
+            for candidate in candidates
+            if preferred_identity is not None and candidate[0] == preferred_identity
+        ),
+        None,
+    )
+    expected = next(
+        (
+            candidate
+            for candidate in candidates
+            if isinstance(expected_rate, int)
+            and expected_rate > 0
+            and candidate[1] == expected_rate
+        ),
+        None,
+    )
+    if preferred is not None and (expected_rate is None or preferred[1] == expected_rate):
+        selected_identity, selected_rate = preferred
+    elif expected is not None:
+        # A stale preferred input must not mask a newly appeared input that
+        # already has the rate required by the Coordinator commit contract.
+        selected_identity, selected_rate = expected
+    elif preferred is not None:
+        selected_identity, selected_rate = preferred
+    return selected_identity, selected_rate
 
 
 async def _wait_for_sink_input_release(list_fn, timeout_ms: int) -> bool:
@@ -193,6 +249,65 @@ async def _wait_for_sink_input_release(list_fn, timeout_ms: int) -> bool:
 
 async def _wait_for_pipewire_mpv_release(timeout_ms: int = PIPEWIRE_HANDOFF_RELEASE_TIMEOUT_MS) -> bool:
     return await _wait_for_sink_input_release(_list_mpv_sink_inputs, timeout_ms)
+
+
+async def _wait_for_pipewire_spotify_release(
+    timeout_ms: int = PIPEWIRE_HANDOFF_RELEASE_TIMEOUT_MS,
+) -> bool:
+    return await _wait_for_sink_input_release(_list_spotify_sink_inputs, timeout_ms)
+
+
+async def _wait_for_spotify_sink_input_samplerate(
+    *,
+    expected_rate: int | None = None,
+    timeout_ms: int = SPOTIFY_SINK_INPUT_RATE_TIMEOUT_MS,
+) -> int:
+    """Read a stable Spotify stream rate before an entry transition commits."""
+    if not isinstance(expected_rate, int) or expected_rate <= 0:
+        raise RuntimeError(f"Spotify entry has no valid expected samplerate: {expected_rate}")
+    poll_interval_ms = max(PIPEWIRE_HANDOFF_POLL_INTERVAL_MS, 1)
+    max_polls = max(1, math.ceil(max(timeout_ms, 0) / poll_interval_ms) + 1)
+    last_observation: tuple[object, int] | None = None
+    stable_polls = 0
+    last_rate: int | None = None
+    for poll_index in range(max_polls):
+        try:
+            observation = _spotify_sink_input_observation(
+                _list_spotify_sink_inputs(),
+                expected_rate=expected_rate,
+                preferred_identity=(last_observation[0] if last_observation else None),
+            )
+        except Exception:
+            observation = None
+        if observation is not None:
+            identity, rate = observation
+            last_rate = rate
+            if rate == expected_rate and observation == last_observation:
+                stable_polls += 1
+            elif rate == expected_rate:
+                stable_polls = 1
+            else:
+                # A wrong/transient rate is observed but never accepted as a
+                # stable entry result.  The counter also resets on an input
+                # identity change so an old Spotify stream cannot validate a
+                # newly appeared one.
+                stable_polls = 0
+            last_observation = (identity, rate)
+            if rate == expected_rate and stable_polls >= SPOTIFY_SINK_INPUT_RATE_STABILITY_POLLS:
+                return rate
+        else:
+            # A disappearing input is a new stream boundary.  Do not carry
+            # stability across that gap, even if the next input reuses the
+            # same PipeWire identity.
+            last_observation = None
+            stable_polls = 0
+        if poll_index + 1 < max_polls:
+            await asyncio.sleep(poll_interval_ms / 1000)
+    raise RuntimeError(
+        "Spotify sink-input samplerate did not become readable and stable "
+        f"at the expected rate within {timeout_ms} ms "
+        f"(expected={expected_rate} last={last_rate})"
+    )
 
 
 
@@ -215,38 +330,6 @@ async def _wait_for_samplerate_alignment(expected_rate: Optional[int], timeout_m
         sink_rate = samplerate_status.get("active_rate")
         if isinstance(sink_rate, int) and sink_rate == expected_rate:
             return True
-        await asyncio.sleep(PIPEWIRE_HANDOFF_POLL_INTERVAL_MS / 1000)
-    return False
-
-
-async def _wait_for_local_samplerate_stability(
-    expected_rate: int,
-    *,
-    timeout_ms: int,
-    stable_ms: int = 350,
-) -> bool:
-    """Require the local handoff rate to remain valid before activating MPV."""
-    if expected_rate <= 0 or timeout_ms <= 0 or stable_ms < 0:
-        return False
-    deadline = time.monotonic() + timeout_ms / 1000
-    stable_since: Optional[float] = None
-    while time.monotonic() <= deadline:
-        try:
-            samplerate_status = get_samplerate_status()
-        except Exception:
-            samplerate_status = {}
-        aligned = (
-            samplerate_status.get("active_rate") == expected_rate
-            and samplerate_status.get("force_rate") == expected_rate
-        )
-        now = time.monotonic()
-        if aligned:
-            if stable_since is None:
-                stable_since = now
-            if now - stable_since >= stable_ms / 1000:
-                return True
-        else:
-            stable_since = None
         await asyncio.sleep(PIPEWIRE_HANDOFF_POLL_INTERVAL_MS / 1000)
     return False
 
@@ -1003,7 +1086,8 @@ source_transition_lock = None
 playback_transition_coordinator: PlaybackTransitionCoordinator | None = None
 coordinator_recovery_lock: asyncio.Lock | None = None
 coordinator_recovery_inflight_signature: str | None = None
-coordinator_recovery_last_signature: str | None = None
+coordinator_recovery_last_signature: tuple[str, str | None] | None = None
+coordinator_last_successful_commit_id: str | None = None
 external_input_loopback_module_id = None
 external_input_loopback_source_name = None
 bluetooth_input_source_name = None
@@ -1036,7 +1120,7 @@ radio_metadata_service = RadioMetadataService()
 _radio_state_before_measurement: dict[str, Any] | None = None
 playback_stream_stale_after_measurement = False
 _playback_state_before_measurement: dict[str, Any] | None = None
-samplerate_drift_signature: tuple[str, str, int, int] | None = None
+samplerate_drift_signature: tuple[Any, ...] | None = None
 samplerate_drift_readbacks = 0
 playback_queue = []
 playback_queue_original = []
@@ -1222,9 +1306,29 @@ class FxrouteTransitionRuntime(TransitionRuntime):
             # disturb the source.  The coordinator still owns the output gate.
             return
         if request.source == "spotify":
-            await pause_local_playback_for_spotify_broadcast()
+            if request.operation == "recovery" and request.reload_source and request.should_play:
+                # A Spotify samplerate recovery must release the old sink
+                # input before the Coordinator changes the hardware rate and
+                # starts Spotify again.  This is intentionally kept inside
+                # the Coordinator-owned quiet stage.
+                await spotify_pause()
+                released = await _wait_for_pipewire_spotify_release()
+                if not released:
+                    await asyncio.sleep(SOURCE_HANDOFF_SETTLE_MS / 1000)
+                return
+            local_state = dict(player_instance.state if player_instance else {})
+            local_track = current_track_info or {}
+            if (
+                local_track.get("source") in {"local", "radio"}
+                and _has_local_footer_context(local_state)
+            ):
+                await pause_local_playback_for_spotify_broadcast()
             return
-        await pause_spotify_for_local_playback_broadcast()
+        if request.source not in {"local", "radio"}:
+            return
+        spotify_state = await get_spotify_ui_state()
+        if _is_spotify_playback_active(spotify_state):
+            await pause_spotify_for_local_playback_broadcast()
         if not _player_is_running():
             return
         state = player_instance.state
@@ -1373,6 +1477,11 @@ class FxrouteTransitionRuntime(TransitionRuntime):
             set_volume(0)
 
         if request.native_queue:
+            set_shuffle = getattr(player_instance, "set_shuffle", None)
+            if callable(set_shuffle):
+                # Disable any legacy MPV-side permutation before staging or
+                # jumping within the explicit FXRoute queue order.
+                set_shuffle(False)
             queue_tracks = tuple(request.native_queue)
             jump_index = request.native_queue_jump
             if jump_index is not None:
@@ -1396,9 +1505,6 @@ class FxrouteTransitionRuntime(TransitionRuntime):
                         raise RuntimeError("native MPV queue contains an empty URL")
                     player_instance.loadfile(queued_url, mode="append")
                 player_instance.set_loop_playlist(bool(request.native_queue_loop))
-                set_shuffle = getattr(player_instance, "set_shuffle", None)
-                if callable(set_shuffle):
-                    set_shuffle(bool(request.native_queue_shuffle))
                 player_instance.set_playlist_pos(start_index)
             else:
                 player_instance.set_pause(True)
@@ -1789,6 +1895,20 @@ class FxrouteTransitionRuntime(TransitionRuntime):
             if not request.should_play and spotify_state.get("status") == "Playing":
                 raise RuntimeError("Spotify pause state was not confirmed at transition commit")
 
+        spotify_stream_rate = None
+        if request.source == "spotify" and request.should_play:
+            spotify_stream_rate = await _wait_for_spotify_sink_input_samplerate(
+                expected_rate=request.target_rate,
+            )
+            if (
+                isinstance(request.target_rate, int)
+                and spotify_stream_rate != request.target_rate
+            ):
+                raise RuntimeError(
+                    "Spotify stream rate mismatch at commit: "
+                    f"expected={request.target_rate} actual={spotify_stream_rate}"
+                )
+
         if isinstance(request.target_rate, int) and request.target_rate > 0:
             if rate.get("active_rate") != request.target_rate:
                 raise RuntimeError(
@@ -1796,6 +1916,14 @@ class FxrouteTransitionRuntime(TransitionRuntime):
                 )
             if rate.get("force_rate") not in {None, 0, request.target_rate}:
                 raise RuntimeError(f"force-rate mismatch at commit: {rate.get('force_rate')}")
+        if (
+            spotify_stream_rate is not None
+            and rate.get("active_rate") != spotify_stream_rate
+        ):
+            raise RuntimeError(
+                "Spotify stream and hardware rates disagree at commit: "
+                f"spotify={spotify_stream_rate} hardware={rate.get('active_rate')}"
+            )
 
         graph_complete = await _playback_graph_links_complete(
             source=request.source,
@@ -1836,6 +1964,7 @@ class FxrouteTransitionRuntime(TransitionRuntime):
             "player": state,
             "active_rate": rate.get("active_rate"),
             "force_rate": rate.get("force_rate"),
+            "spotify_stream_rate": spotify_stream_rate,
             "graph_complete": True,
             "helper_rate": helper_rate,
             "source_volume": state.get("volume"),
@@ -1907,9 +2036,21 @@ def _playback_transition_is_active() -> bool:
     )
 
 
+def _coordinator_commit_context_id() -> str | None:
+    """Return the newest successful Coordinator commit context."""
+    global coordinator_last_successful_commit_id
+    result = getattr(playback_transition_coordinator, "last_result", None)
+    if getattr(result, "committed", False):
+        transition_id = getattr(result, "transition_id", None)
+        if transition_id:
+            coordinator_last_successful_commit_id = str(transition_id)
+    return coordinator_last_successful_commit_id
+
+
 async def _run_coordinated_transition(request: TransitionRequest):
     """Run one transition and maintain the legacy generation readback guard."""
     global playback_transition_generation, playback_transition_coordinator
+    global coordinator_last_successful_commit_id
     if playback_transition_coordinator is None:
         # Unit callers may invoke an endpoint without running FastAPI's
         # lifespan.  Production still initializes the same singleton during
@@ -1921,16 +2062,16 @@ async def _run_coordinated_transition(request: TransitionRequest):
     playback_transition_generation += 1
     try:
         result = await playback_transition_coordinator.execute(request)
-        playback_transition_generation += 1
+        if getattr(result, "committed", False):
+            transition_id = getattr(result, "transition_id", None)
+            if transition_id:
+                coordinator_last_successful_commit_id = str(transition_id)
         return result
-    except PlaybackTransitionFailure:
+    finally:
+        # The Coordinator owns transition cleanup.  This outer guard only
+        # closes the legacy generation interval, including cancellation.
         if playback_transition_generation % 2:
             playback_transition_generation += 1
-        raise
-    except Exception:
-        if playback_transition_generation % 2:
-            playback_transition_generation += 1
-        raise
 
 
 async def _request_coordinated_recovery(
@@ -1987,19 +2128,30 @@ async def _request_coordinated_recovery(
         },
         sort_keys=True,
     )
+    # Capture the context at observation time, before waiting for another
+    # recovery attempt to release the lock.  A duplicate queued while that
+    # attempt is running must still deduplicate against the attempt's
+    # original context, even if the first attempt commits successfully.
+    attempt_commit_context_id = _coordinator_commit_context_id()
     if coordinator_recovery_lock is None:
         coordinator_recovery_lock = asyncio.Lock()
 
     async with coordinator_recovery_lock:
-        if signature in {
-            coordinator_recovery_inflight_signature,
-            coordinator_recovery_last_signature,
-        }:
+        # Capture the successful commit context before this attempt starts.
+        # A successful recovery advances the Coordinator's last_result while
+        # it is running; that new ID must not be stored as the context of the
+        # attempt that just produced it.
+        dedupe_key = (signature, attempt_commit_context_id)
+        if (
+            signature == coordinator_recovery_inflight_signature
+            or dedupe_key == coordinator_recovery_last_signature
+        ):
             logger.info(
-                "Coordinator recovery deduplicated: reason=%s graph_only=%s signature=%s",
+                "Coordinator recovery deduplicated: reason=%s graph_only=%s signature=%s commit_context=%s",
                 reason,
                 graph_only,
                 signature,
+                attempt_commit_context_id,
             )
             return
         # Do not latch a request that merely arrived while another transition
@@ -2037,11 +2189,15 @@ async def _request_coordinated_recovery(
             logger.warning("Coordinator recovery failed: %s", exc.as_status())
         finally:
             coordinator_recovery_inflight_signature = None
-            # Keep the failed signature latched until the canonical snapshot
-            # changes; this prevents an identical watcher storm while still
-            # allowing a genuinely changed graph or source state to retry.
+            # Keep the observation deduplicated only within the Coordinator
+            # commit context in which this attempt began.  A successful
+            # recovery advances the context, so a later identical fault is
+            # eligible for a fresh attempt.
             if attempted:
-                coordinator_recovery_last_signature = signature
+                coordinator_recovery_last_signature = (
+                    signature,
+                    attempt_commit_context_id,
+                )
 
 
 def _transition_error_http(exc: PlaybackTransitionFailure) -> HTTPException:
@@ -3518,7 +3674,7 @@ def _reset_samplerate_drift_observation() -> None:
 
 
 async def _observe_playback_samplerate_drift() -> None:
-    """Observe a stable MPV/source-rate mismatch without mutating playback."""
+    """Observe a stable source/MPV/hardware-rate mismatch without mutating playback."""
     global samplerate_drift_signature, samplerate_drift_readbacks
 
     # The Coordinator and the measurement session own all rate mutations.  A
@@ -3547,26 +3703,47 @@ async def _observe_playback_samplerate_drift() -> None:
         _reset_samplerate_drift_observation()
         return
 
-    # The rate stored on current_track_info is written from the Coordinator's
-    # committed result.  It is therefore the expected-rate truth for this
-    # source, while MPV's audio-params is the independent actual-rate readback.
-    expected_rate = _coordinator_target_rate(source, track)
+    # Read all rate domains as one observation.  The track rate is the last
+    # successful Coordinator context, MPV audio-params is the live source
+    # truth, and the PipeWire values are the current hardware readback.
+    track_rate = track.get("sample_rate_hz")
+    if not isinstance(track_rate, int) or track_rate <= 0:
+        track_rate = _coordinator_target_rate(source, track)
     actual_rate = _get_player_audio_samplerate()
+    try:
+        samplerate_status = get_samplerate_status()
+    except Exception:
+        samplerate_status = {}
+    active_rate = samplerate_status.get("active_rate") if isinstance(samplerate_status, dict) else None
+    force_rate = samplerate_status.get("force_rate") if isinstance(samplerate_status, dict) else None
     if (
-        not isinstance(expected_rate, int)
-        or expected_rate <= 0
+        not isinstance(track_rate, int)
+        or track_rate <= 0
         or not isinstance(actual_rate, int)
         or actual_rate <= 0
-        or actual_rate == expected_rate
+        or not isinstance(active_rate, int)
+        or active_rate <= 0
     ):
+        _reset_samplerate_drift_observation()
+        return
+
+    healthy = (
+        track_rate == actual_rate
+        and active_rate == actual_rate
+        and (force_rate is None or force_rate == 0 or force_rate == actual_rate)
+    )
+    if healthy:
         _reset_samplerate_drift_observation()
         return
 
     signature = (
         source,
         expected_url or str(track.get("id") or ""),
-        expected_rate,
+        str(current_file),
+        track_rate,
         actual_rate,
+        active_rate,
+        force_rate,
     )
     if signature == samplerate_drift_signature:
         samplerate_drift_readbacks += 1
@@ -3583,22 +3760,33 @@ async def _observe_playback_samplerate_drift() -> None:
     diagnosis = {
         "signature": (
             f"samplerate:{source}:{expected_url or track.get('id')}:"
-            f"{expected_rate}->{actual_rate}"
+            f"track={track_rate}:mpv={actual_rate}:active={active_rate}:force={force_rate}"
         ),
-        "expected_rate": expected_rate,
+        "expected_rate": track_rate,
+        "track_rate": track_rate,
         "actual_rate": actual_rate,
+        "mpv_rate": actual_rate,
+        "hardware_rate": active_rate,
+        "force_rate": force_rate,
     }
     _reset_samplerate_drift_observation()
     logger.warning(
         "Stable playback samplerate drift observed; requesting Coordinator recovery: "
-        "source=%s url=%s expected=%s actual=%s",
+        "source=%s url=%s track=%s mpv=%s active=%s force=%s",
         source,
         expected_url,
-        expected_rate,
+        track_rate,
         actual_rate,
+        active_rate,
+        force_rate,
     )
+    recovery_track = dict(track)
+    # MPV is the authoritative source-rate readback for this repair.  Keep
+    # the watcher read-only by passing a copy; the Coordinator updates the
+    # committed track context only after a successful recovery commit.
+    recovery_track["sample_rate_hz"] = actual_rate
     await _request_coordinated_recovery(
-        track,
+        recovery_track,
         "samplerate-drift-watcher",
         reload_source=True,
         diagnosis=diagnosis,
@@ -3688,26 +3876,6 @@ async def _wait_for_player_audio_samplerate(
     return None
 
 
-async def _resolve_expected_playback_samplerate(
-    source: str, *, prefer_live_radio_rate: bool = False,
-) -> Optional[int]:
-    # MPV still exposes the previous local track's audio-params before a radio
-    # loadfile.  That value is not evidence for the radio stream's rate and
-    # would incorrectly carry a local 48000-Hz context into this handoff.
-    # After the loadfile the decoded stream rate is authoritative; callers
-    # that provably run post-loadfile opt into the live rate via
-    # prefer_live_radio_rate and fall back to the configured radio rate only
-    # while mpv has not exposed a valid rate yet.
-    if source == "radio":
-        if prefer_live_radio_rate:
-            live_rate = _get_player_audio_samplerate()
-            if isinstance(live_rate, int) and live_rate > 0:
-                return live_rate
-            return RADIO_EXPECTED_SAMPLE_RATE_HZ
-        return RADIO_EXPECTED_SAMPLE_RATE_HZ
-    return await _wait_for_player_audio_samplerate()
-
-
 async def _wait_for_radio_live_rate_after_load(
     previous_rate: Optional[int],
     transition_generation: int,
@@ -3782,24 +3950,6 @@ async def _sync_easyeffects_preset_for_playback_samplerate(
 
 
 
-async def _maybe_recover_spotify_samplerate_mismatch(
-    delay_ms: int = RADIO_SAMPLERATE_RENEGOTIATE_DELAY_MS,
-    reason: str = "unspecified",
-) -> None:
-    if delay_ms > 0:
-        await asyncio.sleep(delay_ms / 1000)
-    spotify_state = await get_spotify_ui_state()
-    if spotify_state.get("status") != "Playing":
-        return
-    track = {
-        "source": "spotify",
-        "title": spotify_state.get("title"),
-        "artist": spotify_state.get("artist"),
-        "sample_rate_hz": SPOTIFY_PREARM_SAMPLE_RATE_HZ,
-    }
-    await _request_coordinated_recovery(track, f"spotify-{reason}")
-
-
 def _can_use_native_local_queue(tracks: list[dict]) -> bool:
     """Return whether MPV can own one already-safe homogeneous playlist."""
     if len(tracks) <= 1:
@@ -3824,7 +3974,9 @@ def _native_queue_request_fields() -> dict[str, Any]:
         "native_queue": tuple(dict(item) for item in playback_queue),
         "native_queue_index": start_index,
         "native_queue_loop": bool(playback_queue_loop),
-        "native_queue_shuffle": bool(playback_queue_shuffle),
+        # Queue order is already concrete in playback_queue.  Keep the field
+        # explicit for request compatibility, but never ask MPV to reshuffle it.
+        "native_queue_shuffle": False,
     }
 
 
@@ -3962,30 +4114,96 @@ async def _rewind_playback_queue(*, transition_reason: str = "queue rewind") -> 
     return await _load_queue_track(prev_index, transition_reason=transition_reason)
 
 
-def _set_queue_shuffle(enabled: bool) -> bool:
-    global playback_queue, playback_queue_original, playback_queue_index, playback_queue_shuffle
+async def _set_queue_shuffle(enabled: bool) -> bool:
+    global playback_queue, playback_queue_original, playback_queue_index
+    global playback_queue_shuffle, current_track_info, last_track_info
     if len(playback_queue) <= 1:
         playback_queue_shuffle = False
         return False
-    if playback_queue_mode == "native_mpv":
-        playback_queue_shuffle = bool(enabled)
-        set_shuffle = getattr(player_instance, "set_shuffle", None) if _player_is_running() else None
-        if callable(set_shuffle):
-            set_shuffle(playback_queue_shuffle)
-        return True
-    playback_queue_shuffle = bool(enabled)
     current_index = playback_queue_index if 0 <= playback_queue_index < len(playback_queue) else 0
-    current_track_id = (playback_queue[current_index] or {}).get("id") if playback_queue else None
+    current_track = dict(playback_queue[current_index])
+    current_track_id = current_track.get("id")
+    current_track_url = current_track.get("url")
+
     if enabled:
-        current_track = dict(playback_queue[current_index])
-        remaining = [dict(track) for track in playback_queue if track.get("id") != current_track_id]
+        remaining = [
+            dict(track)
+            for index, track in enumerate(playback_queue)
+            if index != current_index
+        ]
         random.shuffle(remaining)
-        playback_queue = [current_track] + remaining
-        playback_queue_index = 0
+        target_queue = [current_track] + remaining
+        target_index = 0
     elif playback_queue_original:
-        playback_queue = [dict(track) for track in playback_queue_original]
-        if current_track_id:
-            playback_queue_index = next((index for index, track in enumerate(playback_queue) if track.get("id") == current_track_id), current_index)
+        target_queue = [dict(track) for track in playback_queue_original]
+        target_index = next(
+            (
+                index
+                for index, track in enumerate(target_queue)
+                if (
+                    current_track_id is not None
+                    and track.get("id") == current_track_id
+                )
+                or (
+                    current_track_id is None
+                    and current_track_url
+                    and track.get("url") == current_track_url
+                )
+            ),
+            min(current_index, len(target_queue) - 1),
+        )
+    else:
+        target_queue = [dict(track) for track in playback_queue]
+        target_index = current_index
+
+    if playback_queue_mode == "native_mpv":
+        # Replacing a native playlist changes the source staging boundary and
+        # therefore belongs to the Coordinator.  Keep the old queue visible
+        # until this gated replacement commits successfully.
+        target_track = dict(target_queue[target_index])
+        target_url = str(target_track.get("url") or "")
+        if not target_url:
+            return False
+        player_state = player_instance.state if player_instance else {}
+        should_play = bool(
+            player_state.get("playing")
+            and not player_state.get("paused")
+            and not player_state.get("ended")
+        )
+        target_rate = _coordinator_target_rate("local", target_track)
+        try:
+            result = await _run_coordinated_transition(TransitionRequest(
+                operation="queue",
+                source="local",
+                target_rate=target_rate,
+                target_url=target_url,
+                target_track=target_track,
+                should_play=should_play,
+                rate_change=_coordinator_rate_change(target_rate),
+                reload_source=True,
+                detail="queue-shuffle-on" if enabled else "queue-shuffle-off",
+                native_queue=tuple(target_queue),
+                native_queue_index=target_index,
+                native_queue_loop=bool(playback_queue_loop),
+                native_queue_shuffle=False,
+            ))
+        except PlaybackTransitionFailure:
+            raise
+
+        committed_rate = getattr(result, "target_rate", None)
+        if isinstance(committed_rate, int) and committed_rate > 0:
+            for track in target_queue:
+                track["sample_rate_hz"] = committed_rate
+        playback_queue = target_queue
+        playback_queue_index = target_index
+        playback_queue_shuffle = bool(enabled)
+        current_track_info = dict(target_queue[target_index])
+        last_track_info = dict(target_queue[target_index])
+        return True
+
+    playback_queue = target_queue
+    playback_queue_index = target_index
+    playback_queue_shuffle = bool(enabled)
     return True
 
 
@@ -5236,11 +5454,15 @@ async def _spotify_playerctl_event_detect_check(reason: str) -> None:
     try:
         burst_delays = (0.05, 0.15, 0.30, 0.60)
         last_snapshot: tuple[object, object, object, object] | None = None
+        mismatch_signature: tuple[object, int, int] | None = None
+        mismatch_readbacks = 0
         for index, delay_s in enumerate(burst_delays):
             if delay_s > 0:
                 await asyncio.sleep(delay_s if index == 0 else max(0.0, delay_s - burst_delays[index - 1]))
             spotify_inputs = _list_spotify_sink_inputs()
-            spotify_rate = _get_first_sink_input_samplerate(spotify_inputs)
+            spotify_observation = _spotify_sink_input_observation(spotify_inputs)
+            spotify_identity = spotify_observation[0] if spotify_observation else None
+            spotify_rate = spotify_observation[1] if spotify_observation else None
             spotify_state = await get_spotify_ui_state()
             samplerate_status = get_samplerate_status()
             sink_rate = samplerate_status.get("active_rate")
@@ -5251,25 +5473,62 @@ async def _spotify_playerctl_event_detect_check(reason: str) -> None:
                 sink_rate,
             )
             if spotify_state.get("status") == "Playing" and isinstance(spotify_rate, int) and isinstance(sink_rate, int):
-                if spotify_rate != sink_rate:
+                canonical_rate = SPOTIFY_PREARM_SAMPLE_RATE_HZ
+                if spotify_rate != canonical_rate or sink_rate != canonical_rate:
+                    current_mismatch = (spotify_identity, spotify_rate, sink_rate)
+                    if current_mismatch == mismatch_signature:
+                        mismatch_readbacks += 1
+                    else:
+                        mismatch_signature = current_mismatch
+                        mismatch_readbacks = 1
                     logger.info(
-                        "Spotify detect watcher burst hit: reason=%s probe=%s/%s spotify_rate=%s sink_rate=%s title=%s",
+                        "Spotify detect watcher mismatch probe: reason=%s probe=%s/%s stable=%s/%s "
+                        "spotify_rate=%s sink_rate=%s title=%s",
                         reason,
                         index + 1,
                         len(burst_delays),
+                        mismatch_readbacks,
+                        SPOTIFY_SINK_INPUT_RATE_STABILITY_POLLS,
                         spotify_rate,
                         sink_rate,
                         spotify_state.get("title"),
                     )
+                    if mismatch_readbacks < SPOTIFY_SINK_INPUT_RATE_STABILITY_POLLS:
+                        continue
                     logger.warning(
-                        "Spotify mismatch detected by watcher: reason=%s spotify_rate=%s sink_rate=%s title=%s",
+                        "Stable Spotify samplerate mismatch after transport event; requesting Coordinator recovery: "
+                        "reason=%s spotify_rate=%s sink_rate=%s title=%s",
                         reason,
                         spotify_rate,
                         sink_rate,
                         spotify_state.get("title"),
                     )
-                    await _maybe_recover_spotify_samplerate_mismatch(delay_ms=0, reason=f"watcher:{reason}")
+                    track = {
+                        "source": "spotify",
+                        "id": spotify_state.get("trackId"),
+                        "title": spotify_state.get("title"),
+                        "artist": spotify_state.get("artist"),
+                        "sample_rate_hz": SPOTIFY_PREARM_SAMPLE_RATE_HZ,
+                    }
+                    diagnosis = {
+                        "signature": (
+                            f"spotify-samplerate:{spotify_identity}:"
+                            f"{spotify_rate}->{sink_rate}"
+                        ),
+                        "source": "spotify",
+                        "actual_rate": spotify_rate,
+                        "expected_rate": SPOTIFY_PREARM_SAMPLE_RATE_HZ,
+                        "hardware_rate": sink_rate,
+                    }
+                    await _request_coordinated_recovery(
+                        track,
+                        f"spotify-{reason}",
+                        reload_source=True,
+                        diagnosis=diagnosis,
+                    )
                     break
+                mismatch_signature = None
+                mismatch_readbacks = 0
                 logger.info(
                     "Spotify detect watcher: reason=%s probe=%s/%s status=%s spotify_inputs=%s spotify_rate=%s sink_rate=%s footer_owner=%s title=%s",
                     reason,
@@ -5283,6 +5542,8 @@ async def _spotify_playerctl_event_detect_check(reason: str) -> None:
                     spotify_state.get("title"),
                 )
                 break
+            mismatch_signature = None
+            mismatch_readbacks = 0
         else:
             if last_snapshot is not None:
                 status, inputs_count, spotify_rate, sink_rate = last_snapshot
@@ -5307,12 +5568,16 @@ async def _spotify_playerctl_event_detect_check(reason: str) -> None:
 
 def _schedule_spotify_playerctl_event_detect(reason: str) -> None:
     global spotify_playerctl_detect_task, spotify_playerctl_last_trigger_at
+    if spotify_playerctl_detect_task and not spotify_playerctl_detect_task.done():
+        logger.debug(
+            "Spotify playerctl detect event coalesced while detect/recovery task is active: reason=%s",
+            reason,
+        )
+        return
     now = time.monotonic()
     if now - spotify_playerctl_last_trigger_at < 1.0:
         return
     spotify_playerctl_last_trigger_at = now
-    if spotify_playerctl_detect_task and not spotify_playerctl_detect_task.done():
-        spotify_playerctl_detect_task.cancel()
     spotify_playerctl_detect_task = asyncio.create_task(
         _spotify_playerctl_event_detect_check(reason),
         name="spotify-playerctl-event-detect",
@@ -5376,7 +5641,7 @@ async def _spotify_playerctl_watch_loop() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan: startup and shutdown."""
-    global settings, player_instance, library_scanner, downloader, easyeffects_manager, measurement_store, measurement_sr_session, peak_monitor, subwoofer_runtime, subwoofer_runtime_link_watch_task, hardware_controller, peak_monitor_playback_armed, peak_monitor_transition_lock, peak_monitor_context_signature, easyeffects_preset_load_lock, source_transition_lock, playback_transition_coordinator, coordinator_recovery_lock, coordinator_recovery_inflight_signature, coordinator_recovery_last_signature, external_input_loopback_module_id, external_input_loopback_source_name, bluetooth_input_source_name, bluetooth_monitor_task, bluetooth_agent_process, spotify_playerctl_watch_task, spotify_playerctl_detect_task, spotify_state_refresh_task, spotify_playerctl_last_trigger_at, current_source_mode, latest_spotify_state
+    global settings, player_instance, library_scanner, downloader, easyeffects_manager, measurement_store, measurement_sr_session, peak_monitor, subwoofer_runtime, subwoofer_runtime_link_watch_task, hardware_controller, peak_monitor_playback_armed, peak_monitor_transition_lock, peak_monitor_context_signature, easyeffects_preset_load_lock, source_transition_lock, playback_transition_coordinator, coordinator_recovery_lock, coordinator_recovery_inflight_signature, coordinator_recovery_last_signature, coordinator_last_successful_commit_id, external_input_loopback_module_id, external_input_loopback_source_name, bluetooth_input_source_name, bluetooth_monitor_task, bluetooth_agent_process, spotify_playerctl_watch_task, spotify_playerctl_detect_task, spotify_state_refresh_task, spotify_playerctl_last_trigger_at, current_source_mode, latest_spotify_state
 
     # Startup
     logger.info("Starting FXRoute... build_id=%s", _read_build_id())
@@ -5423,6 +5688,7 @@ async def lifespan(app: FastAPI):
         coordinator_recovery_lock = asyncio.Lock()
         coordinator_recovery_inflight_signature = None
         coordinator_recovery_last_signature = None
+        coordinator_last_successful_commit_id = None
         startup_gate_reconciled = await playback_transition_coordinator.reconcile_startup_gate()
         logger.info(
             "Playback transition startup gate reconciled: success=%s status=%s",
@@ -6359,26 +6625,12 @@ async def pause_playback():
     state = player_instance.state
     if not state.get("current_file") or state.get("ended"):
         raise HTTPException(status_code=409, detail="Nothing is currently loaded to pause or resume")
-    track = dict(current_track_info or {})
-    source = str(track.get("source") or "local")
-    target_rate = _coordinator_target_rate(source, track)
-    request = TransitionRequest(
-        operation="pause",
-        source=source,
-        target_rate=target_rate,
-        target_url=str(track.get("url") or state.get("current_file") or ""),
-        target_track=track,
-        should_play=False,
-        rate_change=False,
-        reload_source=False,
-        detail="api-pause",
-    )
-    try:
-        await _run_coordinated_transition(request)
-    except PlaybackTransitionFailure as exc:
-        raise _transition_error_http(exc) from exc
-    _mark_playback_intent_changed()
+    # v0.9.4 contract: this endpoint is a pure MPV pause toggle.  It must not
+    # rebuild the committed source/rate/graph just because transport changed.
+    player_instance.pause()
     new_state = player_instance.state
+    _mark_player_state_authoritative(new_state)
+    _mark_playback_intent_changed()
     return {
         "status": "paused" if new_state.get("paused") else "playing",
         "playback": build_playback_payload(new_state),
@@ -6399,19 +6651,28 @@ async def toggle_playback():
     if state.get("current_file") and not state.get("ended") and active_track.get("source") in {"local", "radio"}:
         was_paused = bool(state.get("paused"))
         source = str(active_track.get("source"))
+        if not was_paused:
+            # Same-source pause is transport only.  Resuming below remains a
+            # Coordinator transition because it is a Local/Radio play action.
+            player_instance.pause()
+            new_state = player_instance.state
+            _mark_player_state_authoritative(new_state)
+            _mark_playback_intent_changed()
+            return {
+                "status": "playing" if not new_state.get("paused") else "paused",
+                "playback": build_playback_payload(new_state),
+            }
         target_rate = _coordinator_target_rate(source, active_track)
         request = TransitionRequest(
-            operation="resume" if was_paused else "pause",
+            operation="resume",
             source=source,
             target_rate=target_rate,
             target_url=str(active_track.get("url") or state.get("current_file") or ""),
             target_track=active_track,
-            should_play=was_paused,
-            rate_change=was_paused and _coordinator_rate_change(target_rate),
-            reload_source=was_paused and (
-                target_rate is None or _coordinator_rate_change(target_rate)
-            ),
-            detail="toggle-resume" if was_paused else "toggle-pause",
+            should_play=True,
+            rate_change=_coordinator_rate_change(target_rate),
+            reload_source=(target_rate is None or _coordinator_rate_change(target_rate)),
+            detail="toggle-resume",
         )
         try:
             result = await _run_coordinated_transition(request)
@@ -6421,8 +6682,6 @@ async def toggle_playback():
             if source in {"local", "radio"} and isinstance(result.target_rate, int) and result.target_rate > 0:
                 active_track["sample_rate_hz"] = result.target_rate
             _commit_coordinated_track(active_track, source=source)
-        else:
-            _mark_playback_intent_changed()
         new_state = player_instance.state
         return {
             "status": "playing" if not new_state.get("paused") else "paused",
@@ -6574,8 +6833,11 @@ async def set_playback_shuffle(request: Request):
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON, expected {\"enabled\": <bool>}")
 
-    if not _set_queue_shuffle(enabled):
-        raise HTTPException(status_code=409, detail="Shuffle requires an active local queue")
+    try:
+        if not await _set_queue_shuffle(enabled):
+            raise HTTPException(status_code=409, detail="Shuffle requires an active local queue")
+    except PlaybackTransitionFailure as exc:
+        raise _transition_error_http(exc) from exc
 
     playback = build_playback_payload(player_instance.state)
     await manager.broadcast({"type": "playback", "data": playback})
@@ -14379,33 +14641,27 @@ async def api_spotify_play():
 
 @app.post("/api/spotify/pause")
 async def api_spotify_pause():
-    request = TransitionRequest(
-        operation="pause",
-        source="spotify",
-        target_rate=SPOTIFY_PREARM_SAMPLE_RATE_HZ,
-        should_play=False,
-        rate_change=False,
-        reload_source=False,
-        detail="api-spotify-pause",
-    )
-    try:
-        await _run_coordinated_transition(request)
-    except PlaybackTransitionFailure as exc:
-        raise _transition_error_http(exc) from exc
-    return await broadcast_spotify_state(await get_spotify_ui_state())
+    # Spotify pause is an MPRIS transport command, not a source handoff.
+    data = await spotify_pause()
+    return await broadcast_spotify_state(data)
 
 
 @app.post("/api/spotify/toggle")
 async def api_spotify_toggle():
     sd = await get_spotify_ui_state()
-    should_play = sd.get("status") != "Playing"
+    if sd.get("status") == "Playing":
+        # Toggling an already-playing Spotify source is transport-only.  In
+        # particular it must not quiet MPV or clear the local queue/context.
+        data = await spotify_pause()
+        return await broadcast_spotify_state(data)
+
     request = TransitionRequest(
         operation="spotify-toggle",
         source="spotify",
         target_rate=SPOTIFY_PREARM_SAMPLE_RATE_HZ,
-        should_play=should_play,
-        rate_change=should_play and _coordinator_rate_change(SPOTIFY_PREARM_SAMPLE_RATE_HZ),
-        reload_source=should_play,
+        should_play=True,
+        rate_change=_coordinator_rate_change(SPOTIFY_PREARM_SAMPLE_RATE_HZ),
+        reload_source=True,
         detail="api-spotify-toggle",
     )
     try:
@@ -14418,38 +14674,15 @@ async def api_spotify_toggle():
 
 @app.post("/api/spotify/next")
 async def api_spotify_next():
-    request = TransitionRequest(
-        operation="spotify-next",
-        source="spotify",
-        target_rate=SPOTIFY_PREARM_SAMPLE_RATE_HZ,
-        should_play=True,
-        rate_change=_coordinator_rate_change(SPOTIFY_PREARM_SAMPLE_RATE_HZ),
-        reload_source=True,
-        detail="api-spotify-next",
-    )
-    try:
-        await _run_coordinated_transition(request)
-    except PlaybackTransitionFailure as exc:
-        raise _transition_error_http(exc) from exc
-    return await broadcast_spotify_state(await get_spotify_ui_state())
+    # Next/previous stay within Spotify and never affect the FXRoute source.
+    data = await spotify_next()
+    return await broadcast_spotify_state(data)
 
 
 @app.post("/api/spotify/previous")
 async def api_spotify_previous():
-    request = TransitionRequest(
-        operation="spotify-previous",
-        source="spotify",
-        target_rate=SPOTIFY_PREARM_SAMPLE_RATE_HZ,
-        should_play=True,
-        rate_change=_coordinator_rate_change(SPOTIFY_PREARM_SAMPLE_RATE_HZ),
-        reload_source=True,
-        detail="api-spotify-previous",
-    )
-    try:
-        await _run_coordinated_transition(request)
-    except PlaybackTransitionFailure as exc:
-        raise _transition_error_http(exc) from exc
-    return await broadcast_spotify_state(await get_spotify_ui_state())
+    data = await spotify_previous()
+    return await broadcast_spotify_state(data)
 
 
 @app.post("/api/spotify/shuffle")

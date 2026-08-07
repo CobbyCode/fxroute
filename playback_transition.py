@@ -373,6 +373,69 @@ class PlaybackTransitionCoordinator:
             # structured status still records the output gate as latched.
             pass
 
+    async def _cancel_cleanup(
+        self,
+        request: TransitionRequest,
+        transition_id: str,
+        *,
+        gate_required: bool,
+    ) -> None:
+        """Best-effort safety cleanup executed outside the cancelled task."""
+        # Latch first: the synchronous gate state and persistence happen
+        # before the hardware write, so even a second cancellation leaves the
+        # Coordinator in an explicitly unsafe/closed state.
+        if gate_required:
+            try:
+                await self._latch_failure(transition_id)
+            except BaseException as exc:
+                logger.warning(
+                    "Playback transition cancellation could not fully latch the output gate: %s",
+                    exc,
+                )
+        try:
+            await self.runtime.set_source_volume(0, transition_id)
+        except BaseException as exc:
+            logger.warning(
+                "Playback transition cancellation could not attenuate the source: %s",
+                exc,
+            )
+        try:
+            await self.runtime.pause_source_after_failure(request)
+        except BaseException as exc:
+            logger.warning(
+                "Playback transition cancellation could not pause the source: %s",
+                exc,
+            )
+
+    async def _finish_cancel_cleanup(
+        self,
+        request: TransitionRequest,
+        transition_id: str,
+        *,
+        gate_required: bool,
+    ) -> None:
+        """Drain cancellation cleanup before releasing the transition lock."""
+        cleanup_task = asyncio.create_task(
+            self._cancel_cleanup(
+                request,
+                transition_id,
+                gate_required=gate_required,
+            ),
+            name="playback-transition-cancel-cleanup",
+        )
+        while not cleanup_task.done():
+            try:
+                await asyncio.shield(cleanup_task)
+            except asyncio.CancelledError:
+                # A second cancellation must not interrupt the safety drain.
+                # The original cancellation is re-raised by execute() after
+                # this method returns.
+                continue
+        try:
+            await cleanup_task
+        except BaseException as exc:
+            logger.warning("Playback transition cancellation cleanup failed: %s", exc)
+
     async def execute(self, request: TransitionRequest) -> TransitionResult:
         """Run one transition and commit only after complete readback."""
 
@@ -665,6 +728,22 @@ class PlaybackTransitionCoordinator:
                 self.last_error = None
                 log_timing("committed")
                 return result
+            except asyncio.CancelledError:
+                await self._finish_cancel_cleanup(
+                    active_request,
+                    transition_id,
+                    gate_required=gate_required,
+                )
+                self.last_error = {
+                    "ok": False,
+                    "transition_id": transition_id,
+                    "stage": stage,
+                    "failure_latched": bool(gate_required),
+                    "cancelled": True,
+                    "message": f"Playback transition cancelled at {stage}",
+                }
+                log_timing("cancelled")
+                raise
             except Exception as exc:
                 try:
                     await self.runtime.set_source_volume(0, transition_id)

@@ -19,7 +19,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
-from playback_transition import TransitionRequest
+from playback_transition import PlaybackTransitionFailure, TransitionRequest
 
 
 OUTPUT_KEY = "alsa_output.pci-0000_00_1f.3.analog-stereo"
@@ -263,6 +263,7 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
             main, "coordinator_recovery_lock", None
         ), patch.object(main, "coordinator_recovery_inflight_signature", None), patch.object(
             main, "coordinator_recovery_last_signature", None
+        ), patch.object(main, "coordinator_last_successful_commit_id", None
         ), patch.object(main, "get_samplerate_status", return_value={
             "active_rate": 48000,
             "force_rate": 48000,
@@ -309,6 +310,7 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
             main, "coordinator_recovery_lock", None
         ), patch.object(main, "coordinator_recovery_inflight_signature", None), patch.object(
             main, "coordinator_recovery_last_signature", None
+        ), patch.object(main, "coordinator_last_successful_commit_id", None
         ), patch.object(main, "get_samplerate_status", return_value={
             "active_rate": 44100,
             "force_rate": 44100,
@@ -321,6 +323,148 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(requests[0].should_play)
         self.assertFalse(requests[0].rate_change)
         self.assertTrue(requests[0].reload_source is False)
+
+    async def test_failed_recovery_signature_retries_after_new_successful_commit_context(self):
+        class CoordinatorDouble:
+            transition_active = False
+
+        coordinator = CoordinatorDouble()
+        class PlayerDouble:
+            state = {
+                "current_file": "/music/current.flac",
+                "playing": True,
+                "paused": False,
+                "ended": False,
+            }
+
+        requests = []
+
+        async def run(request):
+            requests.append(request)
+            if len(requests) == 1:
+                raise PlaybackTransitionFailure(
+                    "recovery failed", transition_id="tr-failed", stage="commit-readback"
+                )
+            return SimpleNamespace(target_rate=44100)
+
+        track = {
+            "source": "local",
+            "url": "/music/current.flac",
+            "sample_rate_hz": 44100,
+        }
+        with patch.object(main, "playback_transition_coordinator", coordinator), patch.object(
+            main, "player_instance", PlayerDouble()
+        ), patch.object(main, "_run_coordinated_transition", run), patch.object(
+            main, "coordinator_recovery_lock", None
+        ), patch.object(main, "coordinator_recovery_inflight_signature", None), patch.object(
+            main, "coordinator_recovery_last_signature", None
+        ), patch.object(main, "coordinator_last_successful_commit_id", "tr-before"), patch.object(
+            main, "get_samplerate_status", return_value={"active_rate": 48000, "force_rate": 48000}
+        ):
+            diagnosis = {"signature": "rate:44100->48000"}
+            await main._request_coordinated_recovery(track, "spotify-watcher", diagnosis=diagnosis)
+            await main._request_coordinated_recovery(track, "spotify-watcher-repeat", diagnosis=diagnosis)
+            coordinator.last_result = SimpleNamespace(
+                committed=True,
+                transition_id="tr-later-success",
+            )
+            await main._request_coordinated_recovery(track, "spotify-watcher-after-commit", diagnosis=diagnosis)
+
+        self.assertEqual(len(requests), 2)
+
+    async def test_successful_recovery_allows_same_signature_after_its_commit(self):
+        class CoordinatorDouble:
+            transition_active = False
+            last_result = None
+
+        coordinator = CoordinatorDouble()
+        class PlayerDouble:
+            state = {
+                "current_file": "/music/current.flac",
+                "playing": True,
+                "paused": False,
+                "ended": False,
+            }
+
+        requests = []
+
+        async def run(request):
+            requests.append(request)
+            transition_id = f"tr-success-{len(requests)}"
+            coordinator.last_result = SimpleNamespace(
+                committed=True,
+                transition_id=transition_id,
+            )
+            return SimpleNamespace(
+                target_rate=44100,
+                committed=True,
+                transition_id=transition_id,
+            )
+
+        track = {
+            "source": "local",
+            "url": "/music/current.flac",
+            "sample_rate_hz": 44100,
+        }
+        with patch.object(main, "playback_transition_coordinator", coordinator), patch.object(
+            main, "player_instance", PlayerDouble()
+        ), patch.object(main, "_run_coordinated_transition", run), patch.object(
+            main, "coordinator_recovery_lock", None
+        ), patch.object(main, "coordinator_recovery_inflight_signature", None), patch.object(
+            main, "coordinator_recovery_last_signature", None
+        ), patch.object(main, "coordinator_last_successful_commit_id", "tr-before"), patch.object(
+            main, "get_samplerate_status", return_value={"active_rate": 48000, "force_rate": 48000}
+        ):
+            diagnosis = {"signature": "rate:44100->48000"}
+            await main._request_coordinated_recovery(track, "watcher", diagnosis=diagnosis)
+            await main._request_coordinated_recovery(track, "watcher-repeat", diagnosis=diagnosis)
+
+        self.assertEqual(len(requests), 2)
+
+    async def test_outer_transition_generation_closes_on_cancel_then_success(self):
+        class CoordinatorDouble:
+            def __init__(self):
+                self.calls = 0
+                self.started_generations = []
+                self.entered = asyncio.Event()
+
+            async def execute(self, _request):
+                self.calls += 1
+                self.started_generations.append(main.playback_transition_generation)
+                if self.calls == 1:
+                    self.entered.set()
+                    await asyncio.Event().wait()
+                return SimpleNamespace(
+                    committed=True,
+                    transition_id="tr-follow-up-success",
+                    target_rate=44100,
+                )
+
+        coordinator = CoordinatorDouble()
+        request = TransitionRequest(
+            operation="play",
+            source="local",
+            target_rate=44100,
+            target_url="/music/current.flac",
+            should_play=True,
+            rate_change=True,
+            reload_source=True,
+        )
+        with patch.object(main, "playback_transition_coordinator", coordinator), patch.object(
+            main, "playback_transition_generation", 20
+        ), patch.object(main, "coordinator_last_successful_commit_id", None):
+            cancelled = asyncio.create_task(main._run_coordinated_transition(request))
+            await coordinator.entered.wait()
+            cancelled.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await cancelled
+
+            self.assertEqual(main.playback_transition_generation % 2, 0)
+            result = await main._run_coordinated_transition(request)
+
+        self.assertTrue(result.committed)
+        self.assertEqual(coordinator.started_generations, [21, 23])
+        self.assertEqual(main.playback_transition_generation % 2, 0)
 
     async def test_same_rate_stereo_does_not_reload_effects_or_helper(self):
         overview = {
@@ -375,6 +519,9 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
             main, "_player_is_running", return_value=True
         ), patch.object(
             main, "pause_spotify_for_local_playback_broadcast", new=AsyncMock()
+        ), patch.object(
+            main, "get_spotify_ui_state",
+            new=AsyncMock(return_value={"available": True, "status": "Paused"}),
         ):
             await main.FxrouteTransitionRuntime().quiet_old_source(request)
 

@@ -2,14 +2,17 @@
 """Static ownership audit for playback graph/rate mutations.
 
 The low-level PipeWire/EasyEffects/helper primitives remain in their existing
-modules.  This audit checks the application callsites: playback entrypoints
-must submit to PlaybackTransitionCoordinator, while startup/configuration and
-measurement workflows are explicitly classified as separate owners.
+modules.  This audit checks the application callsites: source-entry and graph
+mutations must submit to PlaybackTransitionCoordinator, while same-source
+transport endpoints may call only their transport primitive.  Startup,
+configuration and measurement workflows are explicitly classified as separate
+owners.
 """
 
 from __future__ import annotations
 
 import ast
+import re
 from pathlib import Path
 
 
@@ -32,6 +35,7 @@ OLD_HANDOFF_NAMES = {
     "_bounce_easyeffects_preset_for_samplerate_recovery",
     "_maybe_repair_active_app_samplerate_drift",
     "_repair_active_app_samplerate_drift_locked",
+    "_maybe_recover_spotify_samplerate_mismatch",
     "_complete_playback_handoff",
     "_rollback_playback_handoff",
     "_repair_playback_graph_once",
@@ -71,10 +75,16 @@ PLAYBACK_ENTRYPOINTS = {
     "api_spotify_previous",
 }
 
+TRANSPORT_ONLY_ENTRYPOINTS = {
+    "pause_playback",
+    "api_spotify_pause",
+    "api_spotify_next",
+    "api_spotify_previous",
+}
+
 SINGLE_OWNER_PATHS = {
-    "play_track", "pause_playback", "toggle_playback", "_load_queue_track",
-    "_advance_playback_queue", "api_spotify_play", "api_spotify_pause",
-    "api_spotify_toggle", "api_spotify_next", "api_spotify_previous",
+    "play_track", "toggle_playback", "_load_queue_track",
+    "_advance_playback_queue", "api_spotify_play", "api_spotify_toggle",
     "_request_coordinated_recovery", "_release",
 }
 
@@ -185,7 +195,15 @@ def main() -> int:
             errors.append(f"playback entrypoint missing: {entrypoint}")
             continue
         body = ast.get_source_segment(SOURCE, nodes[0]) or ""
-        if "_run_coordinated_transition" not in body and entrypoint != "_advance_playback_queue":
+        if entrypoint in TRANSPORT_ONLY_ENTRYPOINTS:
+            if "_run_coordinated_transition" in body:
+                errors.append(f"transport endpoint enters coordinator: {entrypoint}")
+            for mutation in MUTATION_CALL_NAMES:
+                if re.search(rf"\b{re.escape(mutation)}\s*\(", body):
+                    errors.append(
+                        f"transport endpoint directly mutates playback graph: {entrypoint} -> {mutation}"
+                    )
+        elif "_run_coordinated_transition" not in body and entrypoint != "_advance_playback_queue":
             errors.append(f"playback entrypoint bypasses coordinator: {entrypoint}")
         for old in OLD_HANDOFF_NAMES:
             if old in body:
@@ -225,7 +243,8 @@ def main() -> int:
         print(f"  main.py:{line} {context} -> {name}: {_reason(context, name)}")
     print("  Hardware mute writer: only FxrouteTransitionRuntime.set_hardware_mute")
     print("  Force-rate writer: _ensure_playback_samplerate_force plus guarded measurement owner")
-    print("  Single-owner paths: Play, Pause/Resume, Queue, Auto-Advance, Replay, Radio, Spotify, Recovery, Measurement-Restore")
+    print("  Single-owner paths: source entry, Resume, Queue, Auto-Advance, Replay, Radio, Spotify handoff, Recovery, Measurement-Restore")
+    print("  Transport-only paths: MPV pause toggle, Spotify pause/next/previous")
     print("  Legacy handoff/prearm/drift wrappers: removed")
     return 0
 

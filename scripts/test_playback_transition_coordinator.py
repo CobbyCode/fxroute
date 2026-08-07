@@ -165,6 +165,32 @@ def request(*, rate_change=True):
 
 
 class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cancellation_latches_gate_and_pauses_source(self):
+        runtime = FakeRuntime(muted=False)
+        entered_rate = asyncio.Event()
+
+        async def block_at_rate(request):
+            await runtime._stage("rate")
+            entered_rate.set()
+            await asyncio.Event().wait()
+
+        runtime.establish_target_rate = block_at_rate
+        coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
+        task = asyncio.create_task(coordinator.execute(request()))
+
+        await entered_rate.wait()
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+
+        self.assertTrue(runtime.muted)
+        self.assertTrue(coordinator.gate.closed)
+        self.assertTrue(coordinator.gate.failure_latched)
+        self.assertEqual(runtime.volume, 0)
+        self.assertTrue(runtime.paused)
+        self.assertFalse(runtime.playing)
+        self.assertIn("pause-after-failure", runtime.events)
+
     async def test_success_restores_original_unmuted_state_after_commit(self):
         runtime = FakeRuntime(muted=False)
         coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)

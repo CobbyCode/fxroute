@@ -27,22 +27,44 @@ class OwnershipStructureTests(unittest.TestCase):
         self.assertNotIn("_set_pipewire_force_rate", body)
         self.assertNotIn("_sync_subwoofer_runtime", body)
 
-    def test_active_playback_entrypoints_do_not_prearm_or_bypass_coordinator(self):
+    def test_coordinated_playback_entrypoints_do_not_prearm_or_bypass_coordinator(self):
         for name in (
             "play_track",
             "toggle_playback",
             "_load_queue_track",
-            "pause_playback",
             "api_spotify_play",
-            "api_spotify_pause",
             "api_spotify_toggle",
-            "api_spotify_next",
-            "api_spotify_previous",
         ):
             body = function_source(name)
             self.assertNotIn("_prearm_known_local_samplerate", body, name)
             self.assertNotIn("_prearm_spotify_samplerate", body, name)
             self.assertIn("_run_coordinated_transition", body, name)
+
+    def test_same_source_transport_paths_do_not_enter_coordinator_or_mutate_graph(self):
+        forbidden = (
+            "_run_coordinated_transition",
+            "_set_pipewire_force_rate",
+            "_ensure_playback_samplerate_force",
+            "_sync_easyeffects_preset_for_playback_samplerate",
+            "_sync_subwoofer_runtime",
+            "_ensure_mpv_to_easyeffects_links",
+            "_set_hardware_sink_mute",
+        )
+        for name in (
+            "pause_playback",
+            "api_spotify_pause",
+            "api_spotify_next",
+            "api_spotify_previous",
+        ):
+            body = function_source(name)
+            for symbol in forbidden:
+                self.assertNotIn(symbol, body, f"{name}: {symbol}")
+
+    def test_spotify_toggle_only_coordinator_handoffs_when_starting(self):
+        body = function_source("api_spotify_toggle")
+        self.assertIn('sd.get("status") == "Playing"', body)
+        self.assertIn("spotify_pause", body)
+        self.assertIn("_run_coordinated_transition", body)
 
     def test_measurement_release_has_single_coordinator_owned_playback_restore(self):
         body = function_source("_release")
