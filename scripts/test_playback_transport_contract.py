@@ -173,6 +173,46 @@ class TransportContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(request.reload_source)
 
 
+class FooterOwnershipContractTests(unittest.TestCase):
+    def test_active_spotify_wins_over_loaded_paused_local_context(self):
+        player = SimpleNamespace(
+            state={
+                "current_file": "/music/paused.flac",
+                "playing": False,
+                "paused": True,
+                "ended": False,
+            }
+        )
+        local_track = {"source": "local", "url": "/music/paused.flac"}
+        with patch.object(main, "player_instance", player), patch.object(
+            main, "current_track_info", local_track
+        ), patch.object(main, "current_footer_owner", "local"):
+            owner = main._get_authoritative_footer_owner(
+                spotify_state={"available": True, "status": "Playing"}
+            )
+
+        self.assertEqual(owner, "spotify")
+
+    def test_loaded_paused_spotify_does_not_hide_active_local_playback(self):
+        player = SimpleNamespace(
+            state={
+                "current_file": "/music/active.flac",
+                "playing": True,
+                "paused": False,
+                "ended": False,
+            }
+        )
+        local_track = {"source": "local", "url": "/music/active.flac"}
+        with patch.object(main, "player_instance", player), patch.object(
+            main, "current_track_info", local_track
+        ), patch.object(main, "current_footer_owner", "spotify"):
+            owner = main._get_authoritative_footer_owner(
+                spotify_state={"available": True, "status": "Paused"}
+            )
+
+        self.assertEqual(owner, "local")
+
+
 class QuietSourceContractTests(unittest.IsolatedAsyncioTestCase):
     async def test_same_local_source_does_not_quiet_paused_spotify(self):
         player = SimpleNamespace(
@@ -224,11 +264,71 @@ class QuietSourceContractTests(unittest.IsolatedAsyncioTestCase):
         ), patch.object(main, "get_spotify_ui_state", new=AsyncMock(return_value={
             "available": True, "status": "Playing"
         })), patch.object(main, "pause_spotify_for_local_playback_broadcast", pause_spotify), patch.object(
-            main, "_player_is_running", return_value=True
+            main, "_wait_for_pipewire_spotify_release", new=AsyncMock(return_value=True)
+        ) as release, patch.object(main, "_player_is_running", return_value=True
         ):
             await main.FxrouteTransitionRuntime().quiet_old_source(request)
 
         pause_spotify.assert_awaited_once()
+        release.assert_awaited_once()
+
+    async def test_spotify_release_ignores_corked_historical_input(self):
+        entries = iter((
+            [{
+                "id": "active",
+                "corked": False,
+                "muted": False,
+                "volume_percent": 100,
+            }, {
+                "id": "old",
+                "corked": True,
+                "muted": False,
+                "volume_percent": 100,
+            }],
+            [{
+                "id": "old",
+                "corked": True,
+                "muted": False,
+                "volume_percent": 100,
+            }],
+        ))
+        with patch.object(main, "_list_spotify_sink_inputs", side_effect=lambda: next(entries)), patch.object(
+            main.asyncio, "sleep", new=AsyncMock()
+        ):
+            released = await main._wait_for_pipewire_spotify_release(timeout_ms=100)
+
+        self.assertTrue(released)
+
+    async def test_local_handoff_aborts_before_mpv_mutation_when_spotify_stays_active(self):
+        player = SimpleNamespace(
+            state={"current_file": "/music/new.flac", "playing": True, "paused": False},
+            set_volume=Mock(),
+            set_pause=Mock(),
+            stop_playback=Mock(),
+        )
+        pause_spotify = AsyncMock()
+        request = TransitionRequest(
+            operation="play",
+            source="local",
+            target_rate=44100,
+            target_url="/music/new.flac",
+            should_play=True,
+            reload_source=True,
+        )
+        with patch.object(main, "player_instance", player), patch.object(
+            main, "current_track_info", {"source": "local", "url": "/music/old.flac"}
+        ), patch.object(main, "get_spotify_ui_state", new=AsyncMock(return_value={
+            "available": True, "status": "Playing"
+        })), patch.object(main, "pause_spotify_for_local_playback_broadcast", pause_spotify), patch.object(
+            main, "_wait_for_pipewire_spotify_release", new=AsyncMock(return_value=False)
+        ), patch.object(main, "_player_is_running", return_value=True
+        ):
+            with self.assertRaisesRegex(RuntimeError, "did not quiesce"):
+                await main.FxrouteTransitionRuntime().quiet_old_source(request)
+
+        pause_spotify.assert_awaited_once()
+        player.set_volume.assert_not_called()
+        player.set_pause.assert_not_called()
 
 
 if __name__ == "__main__":

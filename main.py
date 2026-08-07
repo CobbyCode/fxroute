@@ -61,6 +61,9 @@ RADIO_POST_LOAD_RATE_STABILITY_POLLS = 3
 # or a missing-graph repair. No fixed sleeps: the handoff polls pw-link until
 # ee_soe_output_level:output_FL/FR are exposed, then starts/syncs the helper.
 PLAYBACK_HANDOFF_EE_PORT_TIMEOUT_MS = 5000
+# A post-source-start graph repair is deliberately a short, deterministic
+# readback window.  It is not a second watcher or a general graph recovery.
+POST_START_GRAPH_STABILITY_READBACKS = 2
 SPOTIFY_PREARM_SAMPLE_RATE_HZ = 44100
 RADIO_RECONNECT_DELAY_SECONDS = 2.0
 RADIO_RECONNECT_MAX_ATTEMPTS = 5
@@ -254,7 +257,13 @@ async def _wait_for_pipewire_mpv_release(timeout_ms: int = PIPEWIRE_HANDOFF_RELE
 async def _wait_for_pipewire_spotify_release(
     timeout_ms: int = PIPEWIRE_HANDOFF_RELEASE_TIMEOUT_MS,
 ) -> bool:
-    return await _wait_for_sink_input_release(_list_spotify_sink_inputs, timeout_ms)
+    # A paused Spotify client may retain a corked historical sink-input.  That
+    # input is not producing audio and must not block a source handoff.  Only
+    # active, audible Spotify inputs are relevant to the quiescence contract.
+    def active_spotify_inputs() -> list[dict]:
+        return _active_unmuted_sink_inputs(_list_spotify_sink_inputs())
+
+    return await _wait_for_sink_input_release(active_spotify_inputs, timeout_ms)
 
 
 async def _wait_for_spotify_sink_input_samplerate(
@@ -580,11 +589,34 @@ def _get_authoritative_footer_owner(playback_state: dict | None = None, spotify_
     global current_footer_owner, latest_spotify_state, player_instance
     playback_state = playback_state or (player_instance.state if player_instance else {})
     spotify_state = spotify_state or latest_spotify_state or {}
-    if _has_local_footer_context(playback_state):
+
+    # A loaded/paused MPV file is only fallback context.  First resolve the
+    # sources that are actually producing audio; otherwise a paused Local
+    # track would mask a currently playing Spotify client (and vice versa).
+    local_active = _is_local_playback_active(playback_state)
+    spotify_active = _is_spotify_playback_active(spotify_state)
+    if spotify_active and not local_active:
+        current_footer_owner = "spotify"
+        return current_footer_owner
+    if local_active and not spotify_active:
         current_footer_owner = "local"
         return current_footer_owner
-    if _is_spotify_playback_active(spotify_state):
+
+    if local_active and spotify_active:
+        # This is an inconsistent dual-active readback.  Keep the already
+        # committed owner when possible; it is deterministic and avoids a UI
+        # flip while the two source states converge.
+        if current_footer_owner in {"local", "spotify"}:
+            return current_footer_owner
         current_footer_owner = "spotify"
+        return current_footer_owner
+
+    # Neither source is active.  The committed owner is the first fallback;
+    # only an unowned loaded MPV context may establish a local fallback.
+    if current_footer_owner in {"local", "spotify"}:
+        return current_footer_owner
+    if _has_local_footer_context(playback_state):
+        current_footer_owner = "local"
         return current_footer_owner
     return current_footer_owner or "local"
 
@@ -1264,6 +1296,128 @@ class FxrouteTransitionRuntime(TransitionRuntime):
             "playback_intent_generation": playback_intent_generation,
         }
 
+    def target_source_staged(self, request: TransitionRequest) -> bool:
+        """Report whether this transition has staged a new MPV target."""
+        return bool(
+            request.source in {"local", "radio"}
+            and request.target_url
+            and self._staged_target_url == request.target_url
+        )
+
+    async def abort_failed_transition(
+        self,
+        request: TransitionRequest,
+        snapshot: Mapping[str, Any] | None,
+        *,
+        target_staged: bool,
+    ) -> None:
+        """Finish a failed MPV handoff without mixing old and new context.
+
+        The Coordinator has already attenuated and paused the source before it
+        calls this hook. If MPV still exposes the exact pre-transition file,
+        the committed context can remain available for an intentional retry.
+        Once a new target was staged (or the old file disappeared), clear the
+        active metadata and queue, while preserving ``last_track_info``.
+        """
+        global current_track_info, current_footer_owner
+        global playback_queue, playback_queue_original, playback_queue_index
+        global playback_queue_mode, queue_transition_target_url
+        global playback_queue_loop, playback_queue_shuffle, single_track_loop
+
+        if request.source not in {"local", "radio"}:
+            return
+
+        previous_state = dict((snapshot or {}).get("player") or {})
+        current_state = dict(player_instance.state if player_instance else {})
+        previous_file = previous_state.get("current_file")
+        current_file = current_state.get("current_file")
+        previous_context_unchanged = (
+            not target_staged
+            and current_file == previous_file
+            and not (current_file is None and current_track_info)
+        )
+
+        if previous_context_unchanged:
+            live_track = current_track_info or {}
+            if current_file and live_track.get("url") not in {None, current_file}:
+                snapshot_track = dict((snapshot or {}).get("current_track") or {})
+                if snapshot_track.get("url") == current_file:
+                    current_track_info = snapshot_track
+                else:
+                    previous_context_unchanged = False
+            if previous_context_unchanged:
+                # ``/api/play`` prepares queue metadata before entering the
+                # Coordinator. If it fails before MPV stages the new target,
+                # that queue is still uncommitted even though the old MPV
+                # file remains valid. Clear it rather than exposing a new
+                # queue next to the retained old track. Recovery/graph-only
+                # attempts do not own queue metadata and keep it intact.
+                if request.operation in {"play", "queue"} or request.native_queue:
+                    try:
+                        _clear_playback_queue()
+                    except Exception:
+                        logger.warning(
+                            "Failed to clear uncommitted queue during transition abort",
+                            exc_info=True,
+                        )
+                        playback_queue = []
+                        playback_queue_original = []
+                        playback_queue_index = -1
+                        playback_queue_mode = "app_replace"
+                        queue_transition_target_url = None
+                        playback_queue_loop = False
+                        playback_queue_shuffle = False
+                        single_track_loop = False
+                return
+
+        # The target was staged, the old file disappeared, or the active
+        # metadata no longer matches MPV. Stop the physical target first and
+        # then invalidate only the active context. last_track_info is
+        # deliberately untouched so the caller can offer a retry.
+        if _player_is_running():
+            try:
+                set_volume = getattr(player_instance, "set_volume", None)
+                if callable(set_volume):
+                    set_volume(0)
+            except Exception:
+                logger.warning(
+                    "Failed to attenuate MPV during failed transition abort",
+                    exc_info=True,
+                )
+            try:
+                stop_playback = getattr(player_instance, "stop_playback", None)
+                if callable(stop_playback):
+                    stop_playback()
+                else:
+                    player_instance.set_pause(True)
+            except Exception:
+                logger.warning(
+                    "Failed to stop staged MPV target during transition abort",
+                    exc_info=True,
+                )
+
+        try:
+            _clear_playback_queue()
+        except Exception:
+            # A broken native playlist command must not leave the application
+            # queue pointing at a target which is no longer active.
+            logger.warning(
+                "Failed to trim native queue during transition abort",
+                exc_info=True,
+            )
+            playback_queue = []
+            playback_queue_original = []
+            playback_queue_index = -1
+            playback_queue_mode = "app_replace"
+            queue_transition_target_url = None
+            playback_queue_loop = False
+            playback_queue_shuffle = False
+            single_track_loop = False
+
+        current_track_info = None
+        current_footer_owner = "local"
+        _mark_player_state_authoritative(player_instance.state if player_instance else {})
+
     async def validate_measurement_restore_intent(
         self,
         request: TransitionRequest,
@@ -1329,6 +1483,14 @@ class FxrouteTransitionRuntime(TransitionRuntime):
         spotify_state = await get_spotify_ui_state()
         if _is_spotify_playback_active(spotify_state):
             await pause_spotify_for_local_playback_broadcast()
+            # The output gate is already closed at this Coordinator stage.
+            # Do not touch rate/DSP/helper state until the active Spotify
+            # stream has disappeared. Corked historical inputs are ignored by
+            # the read-only release helper and therefore need not vanish.
+            if not await _wait_for_pipewire_spotify_release():
+                raise RuntimeError(
+                    "active Spotify sink input did not quiesce before MPV handoff"
+                )
         if not _player_is_running():
             return
         state = player_instance.state
@@ -1489,6 +1651,7 @@ class FxrouteTransitionRuntime(TransitionRuntime):
                     raise RuntimeError(f"native MPV queue index is out of range: {jump_index}")
                 player_instance.set_pause(True)
                 player_instance.set_playlist_pos(jump_index)
+                self._staged_target_url = request.target_url
             elif request.reload_source:
                 start_index = request.native_queue_index
                 if start_index is None:
@@ -1506,6 +1669,7 @@ class FxrouteTransitionRuntime(TransitionRuntime):
                     player_instance.loadfile(queued_url, mode="append")
                 player_instance.set_loop_playlist(bool(request.native_queue_loop))
                 player_instance.set_playlist_pos(start_index)
+                self._staged_target_url = request.target_url
             else:
                 player_instance.set_pause(True)
 
@@ -1527,6 +1691,7 @@ class FxrouteTransitionRuntime(TransitionRuntime):
                 if callable(set_shuffle):
                     set_shuffle(False)
                 _load_player_paused(request.target_url)
+                self._staged_target_url = request.target_url
                 if not await _wait_for_player_current_file(request.target_url):
                     raise RuntimeError("target MPV stream did not settle while paused")
             else:
@@ -1979,6 +2144,10 @@ class FxrouteTransitionRuntime(TransitionRuntime):
             require_effects_runtime=False,
         )
 
+    async def reconcile_post_start_graph(self, request: TransitionRequest) -> dict[str, Any]:
+        """Run the bounded final graph reconciliation before staged commit."""
+        return await _coordinator_reconcile_post_start_graph(request)
+
     async def verify_committed_transition(self, request: TransitionRequest) -> dict[str, Any]:
         return await self._verify_transition(request, require_source_volume=True)
 
@@ -2045,6 +2214,49 @@ def _coordinator_commit_context_id() -> str | None:
         if transition_id:
             coordinator_last_successful_commit_id = str(transition_id)
     return coordinator_last_successful_commit_id
+
+
+async def _recovery_context_is_valid(request: TransitionRequest) -> bool:
+    """Validate a watcher recovery against the still-committed live source."""
+    expected_context = request.recovery_commit_context_id
+    expected_source = request.recovery_source or request.source
+    expected_url = request.recovery_url or request.target_url
+    if not expected_context or expected_source != request.source or not expected_url:
+        return False
+    if _coordinator_commit_context_id() != expected_context:
+        return False
+    if _playback_transition_is_active():
+        return False
+    gate = getattr(playback_transition_coordinator, "gate", None)
+    if gate is not None and bool(getattr(gate, "failure_latched", False)):
+        return False
+
+    if expected_source == "spotify":
+        try:
+            spotify_state = await get_spotify_ui_state()
+        except Exception:
+            return False
+        if spotify_state.get("status") != "Playing":
+            return False
+        live_identity = str(
+            spotify_state.get("trackId")
+            or spotify_state.get("url")
+            or ""
+        )
+        return live_identity == str(expected_url)
+
+    state = dict(player_instance.state if player_instance else {})
+    if state.get("current_file") != expected_url or state.get("ended"):
+        return False
+    # A paused/loaded committed local context is still a valid context for a
+    # graph/rate observation; a missing active file is not.
+    live_track = current_track_info or {}
+    if live_track:
+        if live_track.get("source") != expected_source:
+            return False
+        if live_track.get("url") != expected_url:
+            return False
+    return True
 
 
 async def _run_coordinated_transition(request: TransitionRequest):
@@ -2118,7 +2330,7 @@ async def _request_coordinated_recovery(
     signature = json.dumps(
         {
             "source": source,
-            "url": str(track.get("url") or ""),
+            "url": str(track.get("url") or track.get("id") or ""),
             "target_rate": target_rate,
             "should_play": should_play,
             "rate_change": rate_change,
@@ -2133,6 +2345,14 @@ async def _request_coordinated_recovery(
     # attempt is running must still deduplicate against the attempt's
     # original context, even if the first attempt commits successfully.
     attempt_commit_context_id = _coordinator_commit_context_id()
+    if not attempt_commit_context_id:
+        logger.info(
+            "Coordinator recovery discarded without a committed context: reason=%s source=%s url=%s",
+            reason,
+            source,
+            track.get("url") or track.get("id"),
+        )
+        return
     if coordinator_recovery_lock is None:
         coordinator_recovery_lock = asyncio.Lock()
 
@@ -2160,24 +2380,43 @@ async def _request_coordinated_recovery(
         if playback_transition_coordinator.transition_active:
             logger.info("Coordinator recovery deferred while another transition is active: reason=%s", reason)
             return
-        coordinator_recovery_inflight_signature = signature
         attempted = False
         try:
+            observed_url = str(track.get("url") or track.get("id") or "") or None
+            recovery_track = dict(track)
+            if source == "spotify" and observed_url:
+                recovery_track.setdefault("url", observed_url)
             request = TransitionRequest(
                 operation=operation,
                 source=source,
                 target_rate=target_rate,
-                target_url=str(track.get("url") or "") or None,
-                target_track=dict(track),
+                target_url=observed_url,
+                target_track=recovery_track,
                 should_play=should_play,
                 rate_change=rate_change,
                 reload_source=effective_reload,
                 graph_only=graph_only,
                 detail=reason,
+                recovery_commit_context_id=attempt_commit_context_id,
+                recovery_source=source,
+                recovery_url=observed_url,
             )
+            # This is deliberately immediately before execution.  A watcher
+            # must never resurrect a target after an intervening user action,
+            # failed handoff, or committed source change.
+            if not await _recovery_context_is_valid(request):
+                logger.info(
+                    "Coordinator recovery discarded after context recheck: reason=%s source=%s url=%s commit_context=%s",
+                    reason,
+                    source,
+                    observed_url,
+                    attempt_commit_context_id,
+                )
+                return
+            coordinator_recovery_inflight_signature = signature
             attempted = True
             result = await _run_coordinated_transition(request)
-            if source in {"local", "radio"} and isinstance(result.target_rate, int) and result.target_rate > 0:
+            if getattr(result, "committed", False) and source in {"local", "radio"} and isinstance(result.target_rate, int) and result.target_rate > 0:
                 track["sample_rate_hz"] = result.target_rate
                 if (
                     current_track_info
@@ -2308,45 +2547,71 @@ def _import_m3u_playlist(name: str, content: str, base_dir: Optional[Path] = Non
     return playlist_io.import_m3u_playlist(name, content, base_dir=base_dir, tracks=tracks)
 
 
-def _reduce_native_mpv_playlist_to_current() -> None:
-    """Keep only MPV's currently playing entry before clearing FXRoute queue state."""
-    if not player_instance or not getattr(player_instance, "_running", False):
-        return
+def _native_mpv_playlist_is_effectively_current_only() -> bool:
+    """Confirm that MPV already has no queued entry beyond the current file."""
+    if not _player_is_running():
+        return False
+    state = dict(getattr(player_instance, "state", {}) or {})
+    if not state.get("current_file"):
+        return False
     get_property = getattr(player_instance, "get_property", None)
-    remove_index = getattr(player_instance, "remove_playlist_index", None)
-    if not callable(remove_index):
+    if not callable(get_property):
+        return False
+    try:
+        playlist_count = get_property("playlist-count")
+    except Exception:
+        return False
+    return isinstance(playlist_count, int) and playlist_count <= 1
+
+
+def _native_mpv_playlist_error_is_stale(exc: Exception) -> bool:
+    """Recognize only errors caused by an already-gone playlist entry."""
+    message = str(exc).lower()
+    command_error = "playlist-remove" in message or "playlist-clear" in message
+    stale_state = any(
+        marker in message
+        for marker in (
+            "already gone",
+            "already removed",
+            "playlist entry",
+            "playlist index",
+            "no such entry",
+            "out of range",
+            "is empty",
+        )
+    )
+    return command_error and stale_state
+
+
+def _reduce_native_mpv_playlist_to_current() -> None:
+    """Keep MPV's current file and atomically drop all queued entries.
+
+    ``playlist-clear`` is explicitly idempotent with respect to the currently
+    played entry.  The former index loop was vulnerable to a concurrent MPV
+    playlist change: a stale ``playlist-remove`` then aborted ``/api/play``
+    before the Coordinator could receive the new request.
+    """
+    if not _player_is_running():
         return
-
-    state = player_instance.state
-    current_index = state.get("playlist_pos")
-    playlist_count = None
-    if callable(get_property):
-        try:
-            current_index = get_property("playlist-pos")
-        except Exception:
-            pass
-        try:
-            playlist_count = get_property("playlist-count")
-        except Exception:
-            pass
-    if not isinstance(current_index, int):
-        current_index = 0
-    if not isinstance(playlist_count, int) or playlist_count <= 0:
-        playlist_count = len(playback_queue) if playback_queue else 1
-    if current_index < 0 or current_index >= playlist_count:
-        current_index = 0
-
-    for index in range(playlist_count - 1, current_index, -1):
-        remove_index(index)
-    for _ in range(current_index):
-        remove_index(0)
-
-    # Removing entries before the current one shifts it to playlist position 0.
-    # The command is harmless when it was already at position 0 and keeps the
-    # wrapper's cached context aligned with MPV's resulting playlist.
-    set_playlist_pos = getattr(player_instance, "set_playlist_pos", None)
-    if current_index and callable(set_playlist_pos):
-        set_playlist_pos(0)
+    clear_playlist = getattr(player_instance, "clear_playlist", None)
+    if not callable(clear_playlist):
+        # Keep small adapters used by maintenance/test contexts compatible;
+        # production MPVWrapper exposes clear_playlist explicitly.
+        send_command = getattr(player_instance, "_send_command", None)
+        if callable(send_command):
+            clear_playlist = lambda: send_command("playlist-clear")
+    if not callable(clear_playlist):
+        raise RuntimeError("MPV adapter cannot clear its native playlist")
+    try:
+        clear_playlist()
+    except Exception as exc:
+        # A shortened playlist can race the clear command.  Only suppress this
+        # narrow stale-entry case after a read-only proof that MPV is already
+        # reduced to its current file; genuine IPC failures remain fatal.
+        if _native_mpv_playlist_error_is_stale(exc) and _native_mpv_playlist_is_effectively_current_only():
+            logger.info("Native MPV playlist was already reduced while clearing stale entries: %s", exc)
+            return
+        raise
 
 
 def _clear_playback_queue():
@@ -2749,6 +3014,12 @@ async def _playback_graph_diagnosis(
         "direct_ee_to_hw_present": False,
         "links_complete": False,
         "bypass_only": False,
+        "port_identities": {
+            "source": (),
+            "ee": (),
+            "helper": (),
+            "output": (),
+        },
         "signature": "unreadable",
     }
     try:
@@ -2767,9 +3038,32 @@ async def _playback_graph_diagnosis(
 
     ee_fl = "ee_soe_output_level:output_FL"
     ee_fr = "ee_soe_output_level:output_FR"
+    helper = "fxroute_21_stage1"
+    helper_port_names = tuple(
+        f"{helper}:{port}"
+        for port in ("input_L", "input_R", "output_1", "output_2", "output_3", "output_4")
+    )
+    output_port_names = tuple(
+        f"{output_key}:playback_{channel}"
+        for channel in (
+            "FL",
+            "FR",
+            *(("RL", "RR") if mode in OUTPUT_MODE_SUBWOOFER_MODES and mode != OUTPUT_MODE_SUBWOOFER_21 else ()),
+        )
+    )
     result["ee_ports"] = ee_fl in io_text and ee_fr in io_text
 
     source_node = "spotify" if source == "spotify" else "mpv" if source in {"local", "radio"} else None
+    source_port_names = (
+        f"{source_node}:output_FL",
+        f"{source_node}:output_FR",
+    ) if source_node else ()
+    result["port_identities"] = {
+        "source": tuple(port for port in source_port_names if port in io_text),
+        "ee": tuple(port for port in (ee_fl, ee_fr) if port in io_text),
+        "helper": tuple(port for port in helper_port_names if port in io_text),
+        "output": tuple(port for port in output_port_names if port in io_text),
+    }
     if source_node:
         result["source_links"] = {
             f"{source_node}:output_FL -> easyeffects_sink:playback_FL": _contains_link(
@@ -2797,10 +3091,8 @@ async def _playback_graph_diagnosis(
             source_ok and result["ee_ports"] and all(result["links"].values())
         )
     else:
-        helper = "fxroute_21_stage1"
         result["helper_ports"] = all(
-            f"{helper}:{port}" in io_text
-            for port in ("input_L", "input_R", "output_1", "output_2", "output_3", "output_4")
+            port in io_text for port in helper_port_names
         )
         result["links"] = {
             f"{ee_fl} -> {helper}:input_L": _contains_link(link_text, ee_fl, f"{helper}:input_L"),
@@ -2873,7 +3165,15 @@ async def _playback_graph_diagnosis(
             str(result.get("source_links_complete")),
             str(result.get("direct_ee_to_hw_present")),
             str(result.get("links_complete")),
+            ";".join(
+                f"{key}={value}"
+                for key, value in sorted(result.get("source_links", {}).items())
+            ),
             ";".join(f"{key}={value}" for key, value in sorted(result.get("links", {}).items())),
+            ";".join(
+                f"{key}={','.join(str(port) for port in ports)}"
+                for key, ports in sorted(result.get("port_identities", {}).items())
+            ),
         )
     )
     return result
@@ -2940,6 +3240,143 @@ async def _coordinator_reconcile_subwoofer_links_only() -> None:
     if not callable(reconcile):
         raise RuntimeError("subwoofer runtime has no link-only reconciliation")
     await reconcile()
+
+
+def _post_start_graph_links_are_repairable(diagnosis: Mapping[str, Any]) -> bool:
+    """Return true only when a diagnosis contains stable ports and link-only drift.
+
+    This predicate intentionally excludes source-link loss, helper lifecycle or
+    rate problems, direct bypass links, and missing port identities.  Those
+    states must fail the current transition instead of being repaired by a
+    broader post-start mechanism.
+    """
+    if not diagnosis.get("output_key") or not diagnosis.get("ee_ports"):
+        return False
+    if diagnosis.get("source_links_complete") is not True:
+        return False
+    if diagnosis.get("direct_ee_to_hw_present"):
+        return False
+    if diagnosis.get("mode") in OUTPUT_MODE_SUBWOOFER_MODES:
+        if diagnosis.get("helper_ports") is not True:
+            return False
+        if diagnosis.get("helper_active") is not True:
+            return False
+        if diagnosis.get("helper_rate_matches") is not True:
+            return False
+
+    identities = {
+        str(port)
+        for ports in (diagnosis.get("port_identities") or {}).values()
+        if isinstance(ports, (tuple, list, set, frozenset))
+        for port in ports
+    }
+    for link in _missing_playback_graph_links(diagnosis):
+        try:
+            source, target = link.split(" -> ", 1)
+        except ValueError:
+            return False
+        if source not in identities or target not in identities:
+            return False
+    return True
+
+
+async def _relink_post_start_missing_production_links(
+    diagnosis: Mapping[str, Any],
+) -> bool:
+    """Relink only the missing production edges from the current readback.
+
+    The endpoint names come from the immediately preceding canonical
+    readback, so a recreated PipeWire port cannot be mistaken for an old
+    identity.  ``_connect_ports`` is idempotent for an already existing edge.
+    """
+    missing = _missing_playback_graph_links(diagnosis)
+    if not missing:
+        return False
+    if not _post_start_graph_links_are_repairable(diagnosis):
+        raise RuntimeError(
+            "post-start graph was not link-only drift with stable current ports"
+        )
+    for link in missing:
+        source, target = link.split(" -> ", 1)
+        logger.info(
+            "Coordinator post-start graph relinking current production edge: %s -> %s",
+            source,
+            target,
+        )
+        await _connect_ports((source,), target)
+    return True
+
+
+async def _coordinator_reconcile_post_start_graph(
+    request: TransitionRequest,
+) -> dict[str, Any]:
+    """Reconcile a transient production-link loss before staged commit.
+
+    This is a final Coordinator-owned step shared by Local, Radio and
+    Spotify.  It performs at most one targeted link-only repair and then
+    requires two identical complete graph readbacks.  No preset, helper or
+    watcher recovery is entered here.
+    """
+    target_rate = request.target_rate
+    if not isinstance(target_rate, int) or target_rate <= 0:
+        return {
+            "graph_complete": True,
+            "post_start_graph_reconciled": False,
+            "post_start_graph_links_relinked": False,
+        }
+
+    initial = await _playback_graph_diagnosis(
+        source=request.source,
+        target_rate=target_rate,
+        require_source=True,
+    )
+    initial_missing = _missing_playback_graph_links(initial)
+    if not initial.get("links_complete") and not initial_missing:
+        _log_playback_graph_diagnosis(
+            initial,
+            target_rate=target_rate,
+            reason=f"post-start-{request.operation}",
+            detail=request.detail,
+        )
+        raise RuntimeError(
+            "post-start graph readback was incomplete without link-only drift"
+        )
+    relinked = await _relink_post_start_missing_production_links(initial)
+
+    readbacks: list[dict[str, Any]] = []
+    for _ in range(POST_START_GRAPH_STABILITY_READBACKS):
+        readbacks.append(
+            await _playback_graph_diagnosis(
+                source=request.source,
+                target_rate=target_rate,
+                require_source=True,
+            )
+        )
+
+    signatures = [str(readback.get("signature")) for readback in readbacks]
+    stable_complete = bool(
+        len(readbacks) == POST_START_GRAPH_STABILITY_READBACKS
+        and all(readback.get("links_complete") for readback in readbacks)
+        and len(set(signatures)) == 1
+    )
+    if not stable_complete:
+        final = readbacks[-1] if readbacks else initial
+        _log_playback_graph_diagnosis(
+            final,
+            target_rate=target_rate,
+            reason=f"post-start-{request.operation}",
+            detail=request.detail,
+        )
+        raise RuntimeError(
+            "post-start production graph did not reach two stable canonical readbacks"
+        )
+
+    return {
+        "graph_complete": True,
+        "post_start_graph_reconciled": True,
+        "post_start_graph_links_relinked": relinked,
+        "graph_signature": signatures[-1],
+    }
 
 
 async def _coordinator_establish_effects_and_helper(
@@ -5506,6 +5943,7 @@ async def _spotify_playerctl_event_detect_check(reason: str) -> None:
                     track = {
                         "source": "spotify",
                         "id": spotify_state.get("trackId"),
+                        "url": spotify_state.get("trackId"),
                         "title": spotify_state.get("title"),
                         "artist": spotify_state.get("artist"),
                         "sample_rate_hz": SPOTIFY_PREARM_SAMPLE_RATE_HZ,

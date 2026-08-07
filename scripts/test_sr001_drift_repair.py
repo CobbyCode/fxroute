@@ -25,12 +25,22 @@ class CoordinatorRecoveryTests(unittest.IsolatedAsyncioTestCase):
     async def test_radio_recovery_submits_one_coordinator_request(self):
         coordinator = _CoordinatorDouble(target_rate=48000)
 
+        class PlayerDouble:
+            state = {
+                "current_file": "https://radio.example/live",
+                "playing": True,
+                "paused": False,
+                "ended": False,
+            }
+
         async def run(request):
             coordinator.requests.append(request)
-            return SimpleNamespace(target_rate=48000)
+            return SimpleNamespace(target_rate=48000, committed=True)
 
         track = {"source": "radio", "url": "https://radio.example/live", "sample_rate_hz": 44100}
         with patch.object(main, "playback_transition_coordinator", coordinator), patch.object(
+            main, "player_instance", PlayerDouble()
+        ), patch.object(main, "coordinator_last_successful_commit_id", "tr-radio"), patch.object(
             main, "_run_coordinated_transition", run
         ):
             await main._request_coordinated_recovery(track, "status-drift-repair")

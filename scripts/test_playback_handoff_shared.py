@@ -263,7 +263,7 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
             main, "coordinator_recovery_lock", None
         ), patch.object(main, "coordinator_recovery_inflight_signature", None), patch.object(
             main, "coordinator_recovery_last_signature", None
-        ), patch.object(main, "coordinator_last_successful_commit_id", None
+        ), patch.object(main, "coordinator_last_successful_commit_id", "tr-context"
         ), patch.object(main, "get_samplerate_status", return_value={
             "active_rate": 48000,
             "force_rate": 48000,
@@ -310,7 +310,7 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
             main, "coordinator_recovery_lock", None
         ), patch.object(main, "coordinator_recovery_inflight_signature", None), patch.object(
             main, "coordinator_recovery_last_signature", None
-        ), patch.object(main, "coordinator_last_successful_commit_id", None
+        ), patch.object(main, "coordinator_last_successful_commit_id", "tr-context"
         ), patch.object(main, "get_samplerate_status", return_value={
             "active_rate": 44100,
             "force_rate": 44100,
@@ -323,6 +323,71 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(requests[0].should_play)
         self.assertFalse(requests[0].rate_change)
         self.assertTrue(requests[0].reload_source is False)
+        self.assertEqual(requests[0].recovery_commit_context_id, "tr-context")
+        self.assertEqual(requests[0].recovery_source, "local")
+        self.assertEqual(requests[0].recovery_url, "/music/current.flac")
+
+    async def test_recovery_is_discarded_when_observed_mpv_context_is_gone(self):
+        class CoordinatorDouble:
+            transition_active = False
+
+        class PlayerDouble:
+            state = {
+                "current_file": None,
+                "playing": False,
+                "paused": False,
+                "ended": False,
+            }
+
+        run = AsyncMock()
+        track = {
+            "source": "radio",
+            "url": "https://radio.example/live",
+            "sample_rate_hz": 44100,
+        }
+        with patch.object(main, "playback_transition_coordinator", CoordinatorDouble()), patch.object(
+            main, "player_instance", PlayerDouble()
+        ), patch.object(main, "current_track_info", dict(track)), patch.object(
+            main, "coordinator_last_successful_commit_id", "tr-committed"
+        ), patch.object(main, "_run_coordinated_transition", run), patch.object(
+            main, "coordinator_recovery_lock", None
+        ), patch.object(main, "coordinator_recovery_inflight_signature", None), patch.object(
+            main, "coordinator_recovery_last_signature", None
+        ):
+            await main._request_coordinated_recovery(track, "radio-watcher")
+
+        run.assert_not_awaited()
+
+    async def test_recovery_is_discarded_when_commit_context_changes_before_execution(self):
+        class CoordinatorDouble:
+            transition_active = False
+
+        class PlayerDouble:
+            state = {
+                "current_file": "/music/current.flac",
+                "playing": True,
+                "paused": False,
+                "ended": False,
+            }
+
+        run = AsyncMock()
+        track = {
+            "source": "local",
+            "url": "/music/current.flac",
+            "sample_rate_hz": 44100,
+        }
+        with patch.object(main, "playback_transition_coordinator", CoordinatorDouble()), patch.object(
+            main, "player_instance", PlayerDouble()
+        ), patch.object(main, "_run_coordinated_transition", run), patch.object(
+            main, "coordinator_recovery_lock", None
+        ), patch.object(main, "coordinator_recovery_inflight_signature", None), patch.object(
+            main, "coordinator_recovery_last_signature", None
+        ), patch.object(
+            main, "_coordinator_commit_context_id", side_effect=("tr-before", "tr-after")
+        ):
+            await main._request_coordinated_recovery(track, "local-watcher")
+
+        run.assert_not_awaited()
 
     async def test_failed_recovery_signature_retries_after_new_successful_commit_context(self):
         class CoordinatorDouble:

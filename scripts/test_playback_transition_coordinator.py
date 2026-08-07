@@ -264,6 +264,33 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status["stage"], "effects-helper-links")
         self.assertEqual(coordinator.status()["last_error"], status)
 
+    async def test_failed_staged_target_uses_snapshot_abort_contract(self):
+        runtime = FakeRuntime(muted=False, fail_stage="verify-graph")
+        async def snapshot(_request):
+            return {
+                "player": {"current_file": "/music/current.flac"},
+                "current_track": {"source": "local", "url": "/music/current.flac"},
+            }
+
+        runtime.read_transition_snapshot = snapshot
+        runtime.target_source_staged = lambda _request: True
+        abort_calls = []
+
+        async def abort(_request, snapshot, *, target_staged):
+            abort_calls.append((snapshot, target_staged))
+
+        runtime.abort_failed_transition = abort
+        coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
+
+        with self.assertRaises(PlaybackTransitionFailure):
+            await coordinator.execute(request())
+
+        self.assertEqual(len(abort_calls), 1)
+        snapshot, target_staged = abort_calls[0]
+        self.assertEqual(snapshot["player"]["current_file"], "/music/current.flac")
+        self.assertTrue(target_staged)
+        self.assertTrue(coordinator.gate.failure_latched)
+
     async def test_same_rate_pause_does_not_change_hardware_gate(self):
         runtime = FakeRuntime(muted=False)
         coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)

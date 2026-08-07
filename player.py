@@ -489,6 +489,14 @@ class MPVWrapper:
             self._notify_callbacks()
             return result
 
+    def clear_playlist(self):
+        """Remove queued entries while keeping the currently played file."""
+        with self.lock:
+            result = self._send_command("playlist-clear")
+            self._state["playlist_pos"] = 0 if self._state.get("current_file") else None
+            self._notify_callbacks()
+            return result
+
     def set_loop_playlist(self, enabled: bool):
         """Enable or disable mpv playlist looping."""
         with self.lock:

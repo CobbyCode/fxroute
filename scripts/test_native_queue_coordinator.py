@@ -91,6 +91,12 @@ class _QueuePlayer:
         if 0 <= index < len(self.playlist):
             self.state["current_file"] = self.playlist[index]
 
+    def clear_playlist(self):
+        self.calls.append(("playlist-clear",))
+        current_file = self.state.get("current_file")
+        self.playlist = [current_file] if current_file else []
+        self.state["playlist_pos"] = 0 if current_file else None
+
     def set_loop_playlist(self, enabled):
         self.calls.append(("loop-playlist", bool(enabled)))
 
@@ -302,10 +308,82 @@ class NativeQueueMutationTests(unittest.TestCase):
             self.assertEqual(main.playback_queue, [])
             self.assertFalse(main.playback_queue_loop)
             self.assertFalse(main.playback_queue_shuffle)
-            self.assertIn(("remove-playlist", 2), fake.calls)
-            self.assertIn(("remove-playlist", 0), fake.calls)
+            self.assertIn(("playlist-clear",), fake.calls)
             self.assertIn(("loop-playlist", False), fake.calls)
             self.assertIn(("shuffle", False), fake.calls)
+        finally:
+            for name, value in originals.items():
+                setattr(main, name, value)
+
+    def test_clear_tolerates_already_shortened_native_playlist(self):
+        class StaleClearPlayer(_QueuePlayer):
+            def clear_playlist(self):
+                self.calls.append(("playlist-clear",))
+                raise RuntimeError("MPV command playlist-clear failed: playlist entry already gone")
+
+        fake = StaleClearPlayer()
+        fake.playlist = ["/music/b.flac"]
+        fake.state.update({
+            "current_file": "/music/b.flac",
+            "playlist_pos": 0,
+            "paused": False,
+            "playing": True,
+        })
+        names = (
+            "player_instance", "playback_queue", "playback_queue_original",
+            "playback_queue_index", "playback_queue_mode", "playback_queue_loop",
+            "playback_queue_shuffle", "single_track_loop",
+        )
+        originals = {name: getattr(main, name) for name in names}
+        try:
+            main.player_instance = fake
+            main.playback_queue = [_track("a", 48000), _track("b", 48000)]
+            main.playback_queue_original = list(main.playback_queue)
+            main.playback_queue_index = 1
+            main.playback_queue_mode = "native_mpv"
+            main.playback_queue_loop = True
+            main.playback_queue_shuffle = True
+            main.single_track_loop = False
+
+            main._clear_playback_queue()
+
+            self.assertEqual(fake.playlist, ["/music/b.flac"])
+            self.assertEqual(main.playback_queue, [])
+            self.assertEqual(main.playback_queue_mode, "app_replace")
+        finally:
+            for name, value in originals.items():
+                setattr(main, name, value)
+
+    def test_clear_does_not_hide_a_real_mpv_ipc_error(self):
+        class BrokenClearPlayer(_QueuePlayer):
+            def clear_playlist(self):
+                self.calls.append(("playlist-clear",))
+                raise RuntimeError("IPC communication failed: timed out")
+
+        fake = BrokenClearPlayer()
+        fake.playlist = ["/music/a.flac", "/music/b.flac"]
+        fake.state.update({
+            "current_file": "/music/a.flac",
+            "playlist_pos": 0,
+            "paused": False,
+            "playing": True,
+        })
+        names = (
+            "player_instance", "playback_queue", "playback_queue_original",
+            "playback_queue_index", "playback_queue_mode", "playback_queue_loop",
+            "playback_queue_shuffle", "single_track_loop",
+        )
+        originals = {name: getattr(main, name) for name in names}
+        try:
+            main.player_instance = fake
+            main.playback_queue = [_track("a", 48000), _track("b", 48000)]
+            main.playback_queue_original = list(main.playback_queue)
+            main.playback_queue_index = 0
+            main.playback_queue_mode = "native_mpv"
+            with self.assertRaisesRegex(RuntimeError, "IPC communication failed"):
+                main._clear_playback_queue()
+            self.assertEqual(main.playback_queue_mode, "native_mpv")
+            self.assertEqual(len(main.playback_queue), 2)
         finally:
             for name, value in originals.items():
                 setattr(main, name, value)

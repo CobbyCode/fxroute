@@ -93,6 +93,12 @@ class TransitionRequest:
     # before any old source can be resurrected.
     restore_position: float | None = None
     restore_intent: Mapping[str, Any] = field(default_factory=dict)
+    # Watcher-triggered recovery is valid only for the committed context that
+    # produced the observation.  The application revalidates these fields
+    # immediately before handing the request to the Coordinator.
+    recovery_commit_context_id: str | None = None
+    recovery_source: str | None = None
+    recovery_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -133,6 +139,10 @@ class TransitionRuntime(Protocol):
 
     async def start_target_source(self, request: TransitionRequest) -> None: ...
 
+    async def reconcile_post_start_graph(
+        self, request: TransitionRequest
+    ) -> Mapping[str, Any]: ...
+
     async def stabilize_effects_after_rate_change(
         self,
         request: TransitionRequest,
@@ -147,6 +157,16 @@ class TransitionRuntime(Protocol):
     async def verify_transition_graph(self, request: TransitionRequest) -> Mapping[str, Any]: ...
 
     async def pause_source_after_failure(self, request: TransitionRequest) -> None: ...
+
+    def target_source_staged(self, request: TransitionRequest) -> bool: ...
+
+    async def abort_failed_transition(
+        self,
+        request: TransitionRequest,
+        snapshot: Mapping[str, Any] | None,
+        *,
+        target_staged: bool,
+    ) -> None: ...
 
 
 class PlaybackTransitionCoordinator:
@@ -487,7 +507,10 @@ class PlaybackTransitionCoordinator:
 
             active_request = request
             effects_state: Mapping[str, Any] = {}
+            post_start_graph_state: Mapping[str, Any] = {}
             dsp_state: Mapping[str, Any] = {}
+            snapshot: Mapping[str, Any] = {}
+            target_prepare_started = False
             gate_required = bool(
                 request.rate_change
                 or request.reload_source
@@ -617,6 +640,7 @@ class PlaybackTransitionCoordinator:
                     )
 
                 enter_stage("target-source-prepare")
+                target_prepare_started = True
                 await self.runtime.prepare_target_source(active_request)
 
                 if gate_required:
@@ -631,6 +655,25 @@ class PlaybackTransitionCoordinator:
                 await self.runtime.start_target_source(active_request)
 
                 if gate_required:
+                    # Source creation can recreate PipeWire ports and lose a
+                    # production edge after the earlier effects/helper stage.
+                    # Reconcile that bounded link-only drift while the gate is
+                    # still closed, before the existing staged commit readback.
+                    enter_stage("post-start-graph-reconcile")
+                    post_start_reconciler = getattr(
+                        self.runtime, "reconcile_post_start_graph", None
+                    )
+                    if callable(post_start_reconciler):
+                        post_start_state = await post_start_reconciler(active_request)
+                        if (
+                            not isinstance(post_start_state, Mapping)
+                            or not post_start_state.get("graph_complete", False)
+                        ):
+                            raise RuntimeError(
+                                "post-start graph reconciliation did not confirm a complete graph"
+                            )
+                        post_start_graph_state = dict(post_start_state)
+
                     # The graph must be read back while the output gate is
                     # still closed and the target source is still at volume 0.
                     # Only after this staged commit succeeds may source
@@ -715,6 +758,8 @@ class PlaybackTransitionCoordinator:
                 result_state = dict(state)
                 if effects_state:
                     result_state["effects_graph"] = dict(effects_state)
+                if post_start_graph_state:
+                    result_state["post_start_graph"] = dict(post_start_graph_state)
                 if dsp_state:
                     result_state["effects_dsp"] = dict(dsp_state)
                 result = TransitionResult(
@@ -753,6 +798,35 @@ class PlaybackTransitionCoordinator:
                     await self.runtime.pause_source_after_failure(active_request)
                 except Exception:
                     pass
+                target_staged = False
+                staged_detector = getattr(self.runtime, "target_source_staged", None)
+                if callable(staged_detector):
+                    try:
+                        target_staged = bool(staged_detector(active_request))
+                    except Exception:
+                        target_staged = False
+                elif (
+                    target_prepare_started
+                    and active_request.source in {"local", "radio"}
+                    and active_request.reload_source
+                ):
+                    # A minimal test/runtime adapter may not expose the
+                    # concrete staging marker. Once its mutating prepare stage
+                    # started, prefer invalidation over old/new metadata mix.
+                    target_staged = True
+                aborter = getattr(self.runtime, "abort_failed_transition", None)
+                if callable(aborter):
+                    try:
+                        await aborter(
+                            active_request,
+                            snapshot,
+                            target_staged=target_staged,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "Playback transition abort cleanup failed",
+                            exc_info=True,
+                        )
                 if gate_required:
                     await self._latch_failure(transition_id)
                 error = PlaybackTransitionFailure(
