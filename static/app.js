@@ -1097,6 +1097,21 @@ function formatSampleRateKhz(rate) {
     return `${(numeric / 1000).toFixed(1).replace(/\.0$/, '')} kHz`;
 }
 
+function formatTransitionErrorDetail(detail, fallback = 'Request failed') {
+    if (typeof detail === 'string' && detail.trim()) return detail;
+    if (detail && typeof detail === 'object') {
+        const message = typeof detail.message === 'string' ? detail.message.trim() : '';
+        if (message) {
+            const stage = typeof detail.stage === 'string' ? detail.stage.trim() : '';
+            if (stage && !message.toLowerCase().includes(stage.toLowerCase())) {
+                return `${message} (stage: ${stage})`;
+            }
+            return message;
+        }
+    }
+    return fallback;
+}
+
 function formatRadioStreamLine(streamInfo) {
     if (!streamInfo || typeof streamInfo !== 'object') return '';
     const parts = [];
@@ -1151,6 +1166,7 @@ function getAudioOutputModeSignature(mode, settings = null, options = {}) {
 async function saveAudioOutputMode(mode, settings = null, options = {}) {
     const modeOnly = !!options.modeOnly;
     const suppressApply = !!options.suppressApply;
+    const propagateError = !!options.propagateError;
     const requestBody = buildAudioOutputModeRequest(mode, settings, options);
     const nextMode = requestBody.mode;
     const previousMode = state.settings.audioOutputs.output_mode?.mode || 'stereo';
@@ -1173,7 +1189,7 @@ async function saveAudioOutputMode(mode, settings = null, options = {}) {
             body: JSON.stringify(requestBody),
         });
         const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(data.detail || 'Failed to save output mode');
+        if (!resp.ok) throw new Error(formatTransitionErrorDetail(data.detail, 'Failed to save output mode'));
         if (
             requestId !== _audioOutputModeRequestId
             || mutationGeneration !== _audioOutputModeMutationGeneration
@@ -1218,6 +1234,7 @@ async function saveAudioOutputMode(mode, settings = null, options = {}) {
         }
         renderSettingsPanel();
         setSubwooferFeedback('Failed', 'error');
+        if (propagateError) throw error;
         showToast(error.message || 'Failed to save output mode', 'error');
         return null;
     }
@@ -1232,7 +1249,7 @@ async function switchAudioOutputMode(mode) {
     }
     if (nextMode === currentMode) return;
     _audioOutputModeSwitchInProgress = true;
-    window.clearTimeout(_subwooferSaveTimer);
+    cancelPendingSubwooferSave();
     _subwooferLastRequestedSignature = '';
 
     // Lock UI immediately — disable select and show "Switching…" label
@@ -1268,24 +1285,22 @@ async function switchAudioOutputMode(mode) {
 }
 
 /**
- * Flush current subwoofer settings to the backend before a measurement.
- * This ensures the running helper uses the latest alignment/level/polarity.
- * Skips when not in a subwoofer mode. Throws on HTTP error.
+ * Await only a real pending/running debounced subwoofer save before a
+ * measurement. A committed mode must not be posted again just because the
+ * measurement panel was opened.
  */
 async function flushSubwooferSettingsBeforeMeasurement() {
     const outputMode = state.settings.audioOutputs?.output_mode || {};
     if (!isSubwooferModeName(outputMode.mode)) return;
-    const requestBody = isSubwoofer22Mode(outputMode.mode)
-        ? buildAudioOutputModeRequest(outputMode.mode, collectSubwoofer22Settings())
-        : buildAudioOutputModeRequest('subwoofer-2.1', collectSubwooferSettings());
-    const resp = await fetch('/api/audio/output-mode', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(requestBody),
-    });
-    if (!resp.ok) {
-        const data = await resp.json().catch(() => ({}));
-        throw new Error(data.detail || 'Failed to save subwoofer settings before measurement');
+
+    let pendingPromise = null;
+    if (_subwooferPendingSave) {
+        pendingPromise = _subwooferPendingSave.start();
+    }
+    if (pendingPromise) {
+        await pendingPromise;
+    } else if (_subwooferSavePromise) {
+        await _subwooferSavePromise;
     }
 }
 
@@ -9105,7 +9120,7 @@ async function startAutoSubOptimize() {
             body: formData,
         });
         const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(data.detail || 'Failed to start Auto Sub Optimize');
+        if (!resp.ok) throw new Error(formatTransitionErrorDetail(data.detail, 'Failed to start Auto Sub Optimize'));
         const job = data.job || {};
         measurementState.autoSubJobId = String(job.id || '');
         measurementState.statusText = job.message || 'Auto Sub Optimize: queued';
@@ -9134,7 +9149,7 @@ async function cancelAutoSubOptimize() {
     try {
         const resp = await fetch(`/api/measurements/auto-sub-optimize/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' });
         const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(data.detail || 'Failed to cancel Auto Sub Optimize');
+        if (!resp.ok) throw new Error(formatTransitionErrorDetail(data.detail, 'Failed to cancel Auto Sub Optimize'));
         state.measurement.statusText = String(data.job?.message || 'Cancelling Auto Sub Optimize…');
     } catch (error) {
         console.error('cancelAutoSubOptimize failed', error);
@@ -9155,7 +9170,7 @@ async function pollAutoSubJob(jobId) {
         try {
             const resp = await fetch(`/api/measurements/auto-sub-optimize/jobs/${encodeURIComponent(jobId)}`);
             const data = await resp.json().catch(() => ({}));
-            if (!resp.ok) throw new Error(data.detail || 'Failed to poll Auto Sub job');
+            if (!resp.ok) throw new Error(formatTransitionErrorDetail(data.detail, 'Failed to poll Auto Sub job'));
             const job = data.job || {};
             const status = job.status || 'unknown';
             const fineScan = job.fine_scan || {};
@@ -9461,7 +9476,7 @@ async function startHostMeasurement() {
 
     const resp = await fetch('/api/measurements/start', { method: 'POST', body: formData });
     const data = await resp.json().catch(() => ({}));
-    if (!resp.ok) throw new Error(data.detail || 'Failed to start measurement');
+    if (!resp.ok) throw new Error(formatTransitionErrorDetail(data.detail, 'Failed to start measurement'));
     const job = data.job || {};
     state.measurement.activeJobId = String(job.id || '');
     state.measurement.activeMeasurementKind = normalizeMeasurementKind(job.job_kind || 'single') || 'single';
@@ -9500,7 +9515,7 @@ async function startLrRepeatMeasurement() {
     await postRuntimeDebugSnapshot('ui-before-measurement-start', { measurementKind: 'lr-repeat' });
     const resp = await fetch('/api/measurements/lr-repeat/start', { method: 'POST', body: formData });
     const data = await resp.json().catch(() => ({}));
-    if (!resp.ok) throw new Error(data.detail || 'Failed to start L/R repeat measurement');
+    if (!resp.ok) throw new Error(formatTransitionErrorDetail(data.detail, 'Failed to start L/R repeat measurement'));
     const job = data.job || {};
     state.measurement.activeJobId = String(job.id || '');
     state.measurement.activeMeasurementKind = normalizeMeasurementKind(job.job_kind || 'lr-repeat') || 'lr_repeat';
@@ -9577,7 +9592,7 @@ async function cancelMeasurement() {
     try {
         const resp = await fetch(`/api/measurements/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' });
         const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(data.detail || 'Failed to cancel measurement');
+        if (!resp.ok) throw new Error(formatTransitionErrorDetail(data.detail, 'Failed to cancel measurement'));
         state.measurement.statusText = String(data.job?.message || 'Measurement cancelled.');
         if (MEASUREMENT_JOB_CANCELLED_STATES.has(getMeasurementJobStatus(data.job || {}))) {
             state.measurement.activeJobId = '';
@@ -9600,7 +9615,7 @@ async function pollMeasurementJob(jobId) {
     for (let attempt = 0; attempt < 360; attempt += 1) {
         const resp = await fetch(`/api/measurements/jobs/${encodeURIComponent(jobId)}`);
         const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(data.detail || 'Failed to fetch measurement job');
+        if (!resp.ok) throw new Error(formatTransitionErrorDetail(data.detail, 'Failed to fetch measurement job'));
         const job = data.job || {};
         const jobStatus = getMeasurementJobStatus(job);
         state.measurement.statusText = formatMeasurementJobStatusText(job, state.measurement.statusText || 'Measurement running…');
@@ -9667,7 +9682,7 @@ async function pollMeasurementJob(jobId) {
                 jobStatus,
                 failed: true,
             });
-            throw new Error(job.error?.detail || job.message || 'Measurement failed');
+            throw new Error(formatTransitionErrorDetail(job.error?.detail, job.message || 'Measurement failed'));
         }
         if (MEASUREMENT_JOB_CANCELLED_STATES.has(jobStatus)) {
             state.measurement.activeJobId = '';
@@ -9755,7 +9770,7 @@ async function saveCurrentMeasurement() {
             body: JSON.stringify(payload),
         });
         const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(data.detail || 'Failed to save measurement');
+        if (!resp.ok) throw new Error(formatTransitionErrorDetail(data.detail, 'Failed to save measurement'));
         const savedMeasurements = Array.isArray(data.measurements)
             ? data.measurements.map((measurement, index) => normalizeMeasurementEntry(measurement, index))
             : [normalizeMeasurementEntry(data.measurement || payload, 0)];
@@ -9795,7 +9810,7 @@ async function deleteMeasurement(measurementId, measurementName = 'Measurement')
     try {
         const resp = await fetch(`/api/measurements/${encodeURIComponent(measurementId)}`, { method: 'DELETE' });
         const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(data.detail || 'Failed to delete measurement');
+        if (!resp.ok) throw new Error(formatTransitionErrorDetail(data.detail, 'Failed to delete measurement'));
         delete state.measurement.visibilityById[measurementId];
         delete state.measurement.reviewVisibilityById[measurementId];
         state.measurement.statusText = 'Saved runs updated.';
@@ -9827,7 +9842,7 @@ async function deleteSelectedMeasurements() {
         for (const measurement of measurements) {
             const resp = await fetch(`/api/measurements/${encodeURIComponent(measurement.id)}`, { method: 'DELETE' });
             const data = await resp.json().catch(() => ({}));
-            if (!resp.ok) throw new Error(data.detail || `Failed to delete ${measurement.name}`);
+            if (!resp.ok) throw new Error(formatTransitionErrorDetail(data.detail, `Failed to delete ${measurement.name}`));
             delete state.measurement.visibilityById[measurement.id];
             delete state.measurement.reviewVisibilityById[measurement.id];
             deletedCount += 1;
@@ -9875,7 +9890,7 @@ async function mergeSelectedMeasurements() {
         } catch (_error) {
             data = {};
         }
-        if (!resp.ok) throw new Error(data.detail || responseText.trim() || 'Failed to merge selected measurements');
+        if (!resp.ok) throw new Error(formatTransitionErrorDetail(data.detail, responseText.trim() || 'Failed to merge selected measurements'));
         const merged = normalizeMeasurementEntry(data.measurement || {}, 0);
         if (merged.id) {
             state.measurement.visibilityById[merged.id] = true;
@@ -12115,6 +12130,8 @@ function setSubwooferFeedback(message, cls = '') {
 }
 
 let _subwooferSaveTimer = null;
+let _subwooferSavePromise = null;
+let _subwooferPendingSave = null;
 let _subwooferLastRequestedSignature = '';
 const SUBWOOFER_COMMIT_DEBOUNCE_MS = 600;
 
@@ -12129,21 +12146,84 @@ function updateSubwooferDraftFromControls() {
     return settings;
 }
 
+function beginSubwooferSave(pending) {
+    const previousSave = _subwooferSavePromise;
+    const run = (async () => {
+        if (previousSave) await previousSave;
+        _subwooferLastRequestedSignature = pending.signature;
+        setSubwooferFeedback('Applying…');
+        const result = await saveAudioOutputMode(pending.mode, pending.settings, { propagateError: true });
+        if (!result) throw new Error('Subwoofer settings save was superseded before commit');
+        return result;
+    })();
+    _subwooferSavePromise = run;
+    run.then(
+        () => {
+            if (_subwooferSavePromise === run) _subwooferSavePromise = null;
+        },
+        () => {
+            if (_subwooferSavePromise === run) _subwooferSavePromise = null;
+        },
+    );
+    return run;
+}
+
+function createPendingSubwooferSave(mode, settings, signature) {
+    let resolvePending;
+    let rejectPending;
+    const promise = new Promise((resolve, reject) => {
+        resolvePending = resolve;
+        rejectPending = reject;
+    });
+    const pending = {
+        mode,
+        settings,
+        signature,
+        promise,
+        started: false,
+        reject: rejectPending,
+        start: null,
+    };
+    pending.start = () => {
+        if (pending.started) return pending.promise;
+        pending.started = true;
+        if (_subwooferPendingSave === pending) _subwooferPendingSave = null;
+        _subwooferSaveTimer = null;
+        beginSubwooferSave(pending).then(resolvePending, rejectPending);
+        return pending.promise;
+    };
+    // Background debounced saves are intentionally fire-and-forget, but their
+    // rejection remains observable to the measurement preflush if awaited.
+    promise.catch(() => {});
+    return pending;
+}
+
+function cancelPendingSubwooferSave(reason = 'Subwoofer settings save superseded') {
+    if (_subwooferSaveTimer !== null) {
+        window.clearTimeout(_subwooferSaveTimer);
+        _subwooferSaveTimer = null;
+    }
+    const pending = _subwooferPendingSave;
+    _subwooferPendingSave = null;
+    if (pending && !pending.started) pending.reject(new Error(reason));
+}
+
 function saveSubwooferDebounced(delayMs = SUBWOOFER_COMMIT_DEBOUNCE_MS) {
-    window.clearTimeout(_subwooferSaveTimer);
+    cancelPendingSubwooferSave();
     const settings = updateSubwooferDraftFromControls();
     const mode = state.settings.audioOutputs.output_mode?.mode || 'stereo';
     const signature = getAudioOutputModeSignature(mode, settings);
-    if (signature === _subwooferLastRequestedSignature) return;
+    if (signature === _subwooferLastRequestedSignature) {
+        return _subwooferSavePromise || Promise.resolve(null);
+    }
     state.settings.audioOutputs.output_mode = {
         ...(state.settings.audioOutputs.output_mode || {}),
         ...(settings.subwoofers ? settings : { subwoofer: settings }),
     };
-    _subwooferSaveTimer = window.setTimeout(() => {
-        _subwooferLastRequestedSignature = signature;
-        setSubwooferFeedback('Applying…');
-        void saveAudioOutputMode(mode, settings);
-    }, delayMs);
+    const pending = createPendingSubwooferSave(mode, settings, signature);
+    _subwooferPendingSave = pending;
+    _subwooferSaveTimer = window.setTimeout(() => pending.start(), delayMs);
+    return pending.promise;
 }
 
 function loadSavedEffectsExtras() {

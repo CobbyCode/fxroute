@@ -2444,6 +2444,8 @@ class FxrouteTransitionRuntime(TransitionRuntime):
             reason="coordinator-output-mode-rollback",
             target_overview=old_overview,
         )
+        if old_mode in OUTPUT_MODE_SUBWOOFER_MODES:
+            await _coordinator_reconcile_subwoofer_links_only()
         rollback_request = replace(request, output_mode_target=old_overview)
         await self._verify_output_mode_rollback(rollback_request, old_mode)
 
@@ -4020,7 +4022,9 @@ async def _coordinator_establish_effects_and_helper(
                 target_overview=overview,
             )
             helper_rebuilt = mode in OUTPUT_MODE_SUBWOOFER_MODES
-            links_reconciled = True
+            if mode in OUTPUT_MODE_SUBWOOFER_MODES:
+                await _coordinator_reconcile_subwoofer_links_only()
+                links_reconciled = True
         elif mode in OUTPUT_MODE_SUBWOOFER_MODES:
             helper_snapshot = subwoofer_runtime.snapshot() if subwoofer_runtime is not None else {}
             helper_needs_sync = bool(

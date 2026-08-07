@@ -349,6 +349,119 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
         self.assertLess(events.index("graph-readback"), events.index("commit-readback"))
         self.assertLess(events.index("commit-readback"), events.index("gate.set:False"))
 
+    async def test_output_mode_subwoofer_sync_reconciles_before_final_readback(self):
+        """A transient EE->helper loss is repaired before the mode commit readback."""
+        helper = HelperDouble(active=True, rate=48000)
+        link_state = {"lost": False}
+        events = []
+
+        async def diagnose(*_args, **_kwargs):
+            events.append("diagnosis")
+            complete = not link_state["lost"]
+            return {
+                "mode": "subwoofer-2.2",
+                "output_key": OUTPUT_KEY,
+                "ee_ports": True,
+                "helper_ports": True,
+                "helper_active": True,
+                "helper_rate_matches": True,
+                "links": {
+                    "ee_soe_output_level:output_FL -> fxroute_21_stage1:input_L": complete,
+                    "ee_soe_output_level:output_FR -> fxroute_21_stage1:input_R": complete,
+                },
+                "links_complete": complete,
+                "signature": "subwoofer-2.2|complete" if complete else "subwoofer-2.2|missing",
+            }
+
+        async def sync_helper(*_args, **_kwargs):
+            events.append("sync")
+            link_state["lost"] = True
+
+        async def reconcile():
+            events.append("reconcile")
+            link_state["lost"] = False
+
+        request = TransitionRequest(
+            operation="output-mode-switch",
+            source="local",
+            target_rate=48000,
+            target_url="/music/current.flac",
+            should_play=True,
+            rate_change=False,
+            reload_source=False,
+            output_mode_target=self.overview,
+            output_mode_config={"mode": "subwoofer-2.2"},
+        )
+        with patch.object(main, "subwoofer_runtime", helper), patch.object(
+            main, "easyeffects_manager", None
+        ), patch.object(
+            main, "_wait_for_easyeffects_output_ports", new=AsyncMock(return_value=True)
+        ), patch.object(
+            main, "_playback_graph_diagnosis", new=AsyncMock(side_effect=diagnose)
+        ), patch.object(main, "_sync_subwoofer_runtime", side_effect=sync_helper), patch.object(
+            main, "_coordinator_reconcile_subwoofer_links_only", side_effect=reconcile
+        ) as reconciler:
+            result = await main._coordinator_establish_effects_and_helper(request)
+
+        self.assertTrue(result["graph_complete"])
+        self.assertTrue(result["links_reconciled"])
+        reconciler.assert_awaited_once()
+        self.assertEqual(events, ["diagnosis", "sync", "reconcile", "diagnosis"])
+
+    async def test_output_mode_rollback_reconciles_subwoofer_links_before_verify(self):
+        """Rollback repairs the old subwoofer links before evaluating the graph."""
+        runtime = main.FxrouteTransitionRuntime()
+        old_overview = {
+            "output_mode": {
+                "mode": "subwoofer-2.2",
+                "effective_output_key": OUTPUT_KEY,
+            }
+        }
+        snapshot = {
+            "output_mode_overview": old_overview,
+            "output_mode_config": {"mode": "subwoofer-2.2"},
+        }
+        link_state = {"lost": False}
+        events = []
+
+        async def sync_helper(*_args, **_kwargs):
+            events.append("sync")
+            link_state["lost"] = True
+
+        async def reconcile():
+            events.append("reconcile")
+            link_state["lost"] = False
+
+        async def diagnose(*_args, **_kwargs):
+            events.append("verify")
+            complete = not link_state["lost"]
+            return {
+                "links_complete": complete,
+                "signature": "old-subwoofer|complete" if complete else "old-subwoofer|missing",
+            }
+
+        request = TransitionRequest(
+            operation="output-mode-switch",
+            source="local",
+            target_rate=48000,
+            target_url="/music/current.flac",
+            should_play=True,
+            output_mode_target={"output_mode": {"mode": "stereo"}},
+            output_mode_config={"mode": "stereo"},
+        )
+        with patch.object(main, "persist_audio_output_mode", return_value={}), patch.object(
+            main, "easyeffects_manager", None
+        ), patch.object(main, "_sync_subwoofer_runtime", side_effect=sync_helper), patch.object(
+            main, "_coordinator_reconcile_subwoofer_links_only", side_effect=reconcile
+        ) as reconciler, patch.object(
+            main, "_playback_graph_diagnosis", new=AsyncMock(side_effect=diagnose)
+        ):
+            await runtime.rollback_output_mode_runtime(request, snapshot)
+
+        reconciler.assert_awaited_once()
+        self.assertEqual(events, ["sync", "reconcile", "verify", "verify"])
+        self.assertLess(events.index("reconcile"), events.index("verify"))
+
 
 class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
     async def test_identical_recovery_signature_is_deduplicated(self):
