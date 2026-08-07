@@ -5,6 +5,7 @@
 import copy
 import json
 import logging
+import os
 import re
 import shutil
 import time
@@ -1032,6 +1033,14 @@ def _hardware_sink_for_transition() -> str:
     return output_key
 
 
+def _playback_gate_state_path() -> Path:
+    """Return the per-user marker used to recover a stale FXRoute mute."""
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
+    if runtime_dir:
+        return Path(runtime_dir) / "fxroute-playback-gate.json"
+    return Path("/tmp") / f"fxroute-playback-gate-{os.getuid()}.json"
+
+
 def _read_hardware_sink_mute(output_key: str) -> bool:
     completed = subprocess.run(
         ["pactl", "get-sink-mute", output_key],
@@ -1431,6 +1440,7 @@ async def _run_coordinated_transition(request: TransitionRequest):
         # startup; lazy construction keeps the ownership boundary identical.
         playback_transition_coordinator = PlaybackTransitionCoordinator(
             FxrouteTransitionRuntime(),
+            gate_state_path=_playback_gate_state_path(),
         )
     playback_transition_generation += 1
     try:
@@ -4761,6 +4771,13 @@ async def lifespan(app: FastAPI):
 
         playback_transition_coordinator = PlaybackTransitionCoordinator(
             FxrouteTransitionRuntime(),
+            gate_state_path=_playback_gate_state_path(),
+        )
+        startup_gate_reconciled = await playback_transition_coordinator.reconcile_startup_gate()
+        logger.info(
+            "Playback transition startup gate reconciled: success=%s status=%s",
+            startup_gate_reconciled,
+            playback_transition_coordinator.status(),
         )
         logger.info("Playback transition coordinator initialized")
 

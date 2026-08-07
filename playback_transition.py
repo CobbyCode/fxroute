@@ -12,8 +12,10 @@ PipeWire, EasyEffects, or a live hardware sink.
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 from typing import Any, Mapping, Protocol
 from uuid import uuid4
 
@@ -120,13 +122,22 @@ class PlaybackTransitionCoordinator:
     request, while this class controls the mutation order and commit point.
     """
 
-    def __init__(self, runtime: TransitionRuntime, *, gate_settle_seconds: float = 0.25) -> None:
+    def __init__(
+        self,
+        runtime: TransitionRuntime,
+        *,
+        gate_settle_seconds: float = 0.25,
+        gate_state_path: str | Path | None = None,
+    ) -> None:
         self.runtime = runtime
         self.gate_settle_seconds = max(0.0, gate_settle_seconds)
+        self.gate_state_path = Path(gate_state_path) if gate_state_path else None
         self.lock = asyncio.Lock()
         self.gate = OutputGateState()
         self.last_error: dict[str, Any] | None = None
         self.last_result: TransitionResult | None = None
+        self._startup_gate_reconciled = self.gate_state_path is None
+        self._startup_gate_error: str | None = None
 
     @property
     def transition_active(self) -> bool:
@@ -136,9 +147,95 @@ class PlaybackTransitionCoordinator:
         return {
             "active": self.transition_active,
             "gate": self.gate.as_dict(),
+            "startup_gate_reconciled": self._startup_gate_reconciled,
+            "startup_gate_error": self._startup_gate_error,
             "last_error": dict(self.last_error) if self.last_error else None,
             "last_transition_id": self.last_result.transition_id if self.last_result else None,
         }
+
+    def _persist_gate_state(self) -> None:
+        """Persist ownership before muting so a restart can resolve stale state."""
+        if self.gate_state_path is None:
+            return
+        path = self.gate_state_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+        payload = {"version": 1, "gate": self.gate.as_dict()}
+        try:
+            temporary.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def _load_gate_state(self) -> dict[str, Any] | None:
+        if self.gate_state_path is None:
+            return None
+        try:
+            payload = json.loads(self.gate_state_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return None
+        except (OSError, TypeError, ValueError):
+            self.gate_state_path.unlink(missing_ok=True)
+            return None
+        state = payload.get("gate") if isinstance(payload, dict) else None
+        return state if isinstance(state, dict) else None
+
+    def _clear_gate_state(self) -> None:
+        if self.gate_state_path is None:
+            return
+        try:
+            self.gate_state_path.unlink(missing_ok=True)
+        except OSError:
+            # The in-memory gate is still authoritative for this process; a
+            # stale marker is harmless because startup reconciliation restores
+            # the same user-mute value before clearing it on the next start.
+            pass
+
+    async def _reconcile_startup_gate_locked(self) -> bool:
+        if self._startup_gate_reconciled:
+            return True
+        persisted = self._load_gate_state()
+        if not persisted or persisted.get("owner") != "fxroute" or not persisted.get("closed"):
+            self._clear_gate_state()
+            self._startup_gate_reconciled = True
+            return True
+
+        transition_id = str(persisted.get("transition_id") or "startup-gate-reconcile")
+        original_user_muted = bool(persisted.get("original_user_muted"))
+        self.gate = OutputGateState(
+            closed=True,
+            original_user_muted=original_user_muted,
+            owner="fxroute",
+            transition_id=transition_id,
+            failure_latched=bool(persisted.get("failure_latched")),
+            closed_at=persisted.get("closed_at"),
+        )
+        try:
+            await self.runtime.set_hardware_mute(original_user_muted, transition_id)
+            if await self.runtime.read_hardware_mute() != original_user_muted:
+                raise RuntimeError("startup output-gate restoration was not confirmed")
+        except Exception as exc:
+            self._startup_gate_error = str(exc)
+            self.gate.failure_latched = True
+            self.gate.closed = True
+            self.gate.owner = "fxroute"
+            try:
+                self._persist_gate_state()
+                await self.runtime.set_hardware_mute(True, transition_id)
+            except Exception:
+                pass
+            return False
+
+        self.gate = OutputGateState()
+        self._clear_gate_state()
+        self._startup_gate_error = None
+        self._startup_gate_reconciled = True
+        return True
+
+    async def reconcile_startup_gate(self) -> bool:
+        """Resolve an FXRoute-owned mute left by an earlier process."""
+        async with self.lock:
+            return await self._reconcile_startup_gate_locked()
 
     async def _close_gate(self, transition_id: str) -> None:
         observed_muted = await self.runtime.read_hardware_mute()
@@ -156,6 +253,7 @@ class PlaybackTransitionCoordinator:
         self.gate.owner = "fxroute"
         self.gate.transition_id = transition_id
         self.gate.closed_at = time.monotonic()
+        self._persist_gate_state()
         await self.runtime.set_hardware_mute(True, transition_id)
         if not await self.runtime.read_hardware_mute():
             raise RuntimeError("hardware output gate could not be confirmed closed")
@@ -179,12 +277,17 @@ class PlaybackTransitionCoordinator:
         self.gate.closed_at = None
         self.gate.failure_latched = False
         self.gate.original_user_muted = None
+        self._clear_gate_state()
 
     async def _latch_failure(self, transition_id: str) -> None:
         self.gate.failure_latched = True
         self.gate.closed = True
         self.gate.owner = "fxroute"
         self.gate.transition_id = transition_id
+        try:
+            self._persist_gate_state()
+        except Exception:
+            pass
         try:
             await self.runtime.set_hardware_mute(True, transition_id)
         except Exception:
@@ -214,6 +317,10 @@ class PlaybackTransitionCoordinator:
                 }
             )
             try:
+                if not await self._reconcile_startup_gate_locked():
+                    raise RuntimeError(
+                        f"stale output gate could not be reconciled: {self._startup_gate_error or 'unknown error'}"
+                    )
                 snapshot = await self.runtime.read_transition_snapshot(request)
                 if gate_required:
                     stage = "output-gate-close"
