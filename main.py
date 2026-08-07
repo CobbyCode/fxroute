@@ -939,8 +939,7 @@ class MeasurementSampleRateSession:
         force_rate_owned = True
         coordinator_attempted = False
         playback_restore_via_coordinator = bool(
-            self._rate_changed
-            and playback_source in {"local", "radio", "spotify"}
+            playback_source in {"local", "radio", "spotify"}
             and playback_target_rate
             and snapshot_is_current
         )
@@ -966,6 +965,8 @@ class MeasurementSampleRateSession:
                     target_url=track.get("url"),
                     target_track=track,
                     should_play=bool(playback_snapshot.get("was_playing")),
+                    rate_change=self._rate_changed,
+                    reload_source=self._rate_changed,
                     restore_position=(
                         playback_snapshot.get("position")
                         if playback_source == "local"
@@ -2126,7 +2127,12 @@ class FxrouteTransitionRuntime(TransitionRuntime):
                 raise RuntimeError("MPV is not actually playing at transition commit")
             if not request.should_play and not state.get("paused"):
                 raise RuntimeError("MPV pause state was not confirmed at transition commit")
-            if (
+            if require_source_volume and request.operation == "measurement-restore":
+                if request.source in {"local", "radio"} and state.get("volume") != 100:
+                    raise RuntimeError(
+                        f"MPV source volume was not restored: {state.get('volume')}"
+                    )
+            elif (
                 require_source_volume
                 and request.should_play
                 and state.get("volume") is not None

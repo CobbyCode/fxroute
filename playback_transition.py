@@ -833,7 +833,17 @@ class PlaybackTransitionCoordinator:
                     if not bool(state.get("committed", True)):
                         raise RuntimeError("staged transition readback did not satisfy graph contract")
 
-                    if not active_request.graph_only and active_request.should_play:
+                    restore_source_volume = bool(
+                        not active_request.graph_only
+                        and (
+                            active_request.should_play
+                            or (
+                                active_request.operation == "measurement-restore"
+                                and active_request.source in {"local", "radio"}
+                            )
+                        )
+                    )
+                    if restore_source_volume:
                         enter_stage("before-source-volume-gate")
                         await self.ensure_output_gate_closed(
                             transition_id,
@@ -1002,6 +1012,8 @@ class PlaybackTransitionCoordinator:
         target_url: str | None,
         target_track: Mapping[str, Any],
         should_play: bool,
+        rate_change: bool = True,
+        reload_source: bool = True,
         restore_position: float | None = None,
         restore_intent: Mapping[str, Any] | None = None,
     ) -> TransitionResult:
@@ -1013,8 +1025,8 @@ class PlaybackTransitionCoordinator:
             target_url=target_url,
             target_track=target_track,
             should_play=should_play,
-            rate_change=True,
-            reload_source=True,
+            rate_change=rate_change,
+            reload_source=reload_source,
             detail="measurement-release",
             restore_position=restore_position,
             restore_intent=dict(restore_intent or {}),

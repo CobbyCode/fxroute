@@ -41,6 +41,7 @@ class FakeRuntime:
         self.playing = False
         self.volume = 100
         self.position = 0.0
+        self.load_count = 0
         self.effects_rebuilds = 0
         self.helper_rebuilds = 0
         self.dsp_stabilizations = 0
@@ -96,6 +97,7 @@ class FakeRuntime:
         if request.target_url:
             self.current_file = request.target_url
         if request.reload_source:
+            self.load_count += 1
             self.volume = 0
         self.paused = True
         self.playing = False
@@ -432,6 +434,76 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(runtime.position, 123.5)
         self.assertLess(runtime.events.index("seek"), runtime.events.index("start"))
         self.assertFalse(runtime.muted)
+
+    async def test_measurement_restore_same_rate_playing_reuses_existing_source(self):
+        runtime = FakeRuntime(muted=False)
+        runtime.current_file = "/music/current.flac"
+        runtime.volume = 0
+        runtime.paused = True
+        runtime.playing = False
+        coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
+
+        await coordinator.restore_measurement(
+            source="local",
+            target_rate=44_100,
+            target_url="/music/current.flac",
+            target_track={"source": "local", "url": "/music/current.flac"},
+            should_play=True,
+            rate_change=False,
+            reload_source=False,
+        )
+
+        self.assertEqual(runtime.load_count, 0)
+        self.assertEqual(runtime.current_file, "/music/current.flac")
+        self.assertTrue(runtime.playing)
+        self.assertFalse(runtime.paused)
+        self.assertEqual(runtime.volume, 100)
+        self.assertIn("source-volume:100", runtime.events)
+
+    async def test_measurement_restore_same_rate_paused_restores_mpv_volume(self):
+        runtime = FakeRuntime(muted=False)
+        runtime.current_file = "/music/current.flac"
+        runtime.volume = 0
+        runtime.paused = True
+        runtime.playing = False
+        coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
+
+        await coordinator.restore_measurement(
+            source="local",
+            target_rate=44_100,
+            target_url="/music/current.flac",
+            target_track={"source": "local", "url": "/music/current.flac"},
+            should_play=False,
+            rate_change=False,
+            reload_source=False,
+        )
+
+        self.assertEqual(runtime.load_count, 0)
+        self.assertTrue(runtime.paused)
+        self.assertFalse(runtime.playing)
+        self.assertEqual(runtime.volume, 100)
+        self.assertIn("source-volume:100", runtime.events)
+
+    async def test_measurement_restore_rate_round_trip_keeps_controlled_reload(self):
+        runtime = FakeRuntime(muted=False)
+        coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
+
+        await coordinator.execute(request(rate_change=True))
+        await coordinator.restore_measurement(
+            source="local",
+            target_rate=44_100,
+            target_url="/music/return.flac",
+            target_track={"source": "local", "url": "/music/return.flac"},
+            should_play=True,
+            rate_change=True,
+            reload_source=True,
+        )
+
+        self.assertEqual(runtime.rate, 44_100)
+        self.assertEqual(runtime.load_count, 2)
+        self.assertEqual(runtime.current_file, "/music/return.flac")
+        self.assertTrue(runtime.playing)
+        self.assertEqual(runtime.volume, 100)
 
     async def test_stale_measurement_restore_is_discarded_before_source_mutation(self):
         runtime = FakeRuntime(muted=False)
