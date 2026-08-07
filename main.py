@@ -1152,12 +1152,22 @@ class FxrouteTransitionRuntime(TransitionRuntime):
         if not _player_is_running():
             return
         state = player_instance.state
-        if request.operation == "recovery" and state.get("current_file"):
+        set_volume = getattr(player_instance, "set_volume", None)
+        if callable(set_volume):
+            set_volume(0)
+        if (
+            request.operation == "recovery"
+            and state.get("current_file")
+            and not request.rate_change
+        ):
             player_instance.set_pause(True)
             return
-        should_release = bool(request.reload_source and state.get("current_file"))
+        # A healthy same-rate replacement keeps the existing MPV/PipeWire
+        # stream alive and only quiets it.  A real rate change must release the
+        # old stream before the target-rate negotiation begins.
+        player_instance.set_pause(True)
+        should_release = bool(request.rate_change and state.get("current_file"))
         if should_release:
-            player_instance.set_pause(True)
             player_instance.stop_playback()
             released = await _wait_for_pipewire_mpv_release()
             if not released:
@@ -1198,6 +1208,21 @@ class FxrouteTransitionRuntime(TransitionRuntime):
             return
         if not isinstance(request.target_rate, int) or request.target_rate <= 0:
             raise RuntimeError("Playback transition has no target sample rate")
+        try:
+            status = dict(get_samplerate_status())
+        except Exception:
+            status = {}
+        if (
+            status.get("active_rate") == request.target_rate
+            and status.get("force_rate") in {None, 0, request.target_rate}
+        ):
+            logger.info(
+                "Playback transition target-rate no-op: rate=%s operation=%s source=%s",
+                request.target_rate,
+                request.operation,
+                request.source,
+            )
+            return
         aligned = await _ensure_playback_samplerate_force(
             request.target_rate,
             f"coordinator:{request.operation}:{request.source}",
@@ -1212,12 +1237,14 @@ class FxrouteTransitionRuntime(TransitionRuntime):
                 f"force={status.get('force_rate')}"
             )
 
-    async def establish_effects_and_helper(self, request: TransitionRequest) -> None:
+    async def establish_effects_and_helper(
+        self, request: TransitionRequest
+    ) -> dict[str, Any]:
         if request.operation == "pause":
-            return
+            return {"dsp_reinitialized": False, "helper_rebuilt": False}
         if not isinstance(request.target_rate, int) or request.target_rate <= 0:
-            return
-        await _coordinator_establish_effects_and_helper(
+            return {"dsp_reinitialized": False, "helper_rebuilt": False}
+        return await _coordinator_establish_effects_and_helper(
             request,
             previous_force_rate=self._previous_force_rate,
         )
@@ -1409,10 +1436,13 @@ class FxrouteTransitionRuntime(TransitionRuntime):
         return result
 
     async def stabilize_effects_after_rate_change(
-        self, request: TransitionRequest
+        self,
+        request: TransitionRequest,
+        *,
+        dsp_reinitialized: bool = False,
     ) -> dict[str, Any]:
-        """Re-apply the canonical DSP work point after a real rate change."""
-        if not request.rate_change or not request.should_play:
+        """Re-apply the canonical DSP work point after a rate/EE mutation."""
+        if not (request.rate_change or dsp_reinitialized) or not request.should_play:
             return {"stabilized": True, "no_op": True}
 
         manager = easyeffects_manager
@@ -2477,7 +2507,7 @@ async def _coordinator_establish_effects_and_helper(
     *,
     previous_force_rate: int | None = None,
     ee_port_timeout_ms: int = PLAYBACK_HANDOFF_EE_PORT_TIMEOUT_MS,
-) -> None:
+) -> dict[str, Any]:
     """Build the effects/helper graph inside the Coordinator-owned gate.
 
     This is intentionally smaller than the removed legacy handoff.  Rate
@@ -2488,10 +2518,18 @@ async def _coordinator_establish_effects_and_helper(
     del previous_force_rate  # kept in the adapter call for source compatibility
     target_rate = request.target_rate
     if not isinstance(target_rate, int) or target_rate <= 0:
-        return
+        return {
+            "dsp_reinitialized": False,
+            "preset_reloaded": False,
+            "helper_rebuilt": False,
+            "links_reconciled": False,
+        }
 
     overview = get_audio_output_overview()
     mode = (overview.get("output_mode") or {}).get("mode")
+    preset_reloaded = False
+    helper_rebuilt = False
+    links_reconciled = False
     diagnosis = await _playback_graph_diagnosis(
         overview,
         target_rate=target_rate,
@@ -2505,9 +2543,13 @@ async def _coordinator_establish_effects_and_helper(
                 f"signature={diagnosis.get('signature')}"
             )
         await _coordinator_reconcile_subwoofer_links_only()
+        links_reconciled = True
     else:
         needs_preset = not diagnosis.get("ee_ports")
-        if not needs_preset and easyeffects_manager is not None:
+        # A healthy same-rate graph must not reload its preset.  A convolver
+        # that needs the target rate is relevant only during a real rate
+        # transition; missing EE ports remain a genuine recovery condition.
+        if request.rate_change and not needs_preset and easyeffects_manager is not None:
             requires_convolver_reload = getattr(
                 easyeffects_manager,
                 "active_preset_requires_samplerate_reload",
@@ -2537,6 +2579,7 @@ async def _coordinator_establish_effects_and_helper(
                 reason=f"coordinator-{request.operation}",
                 detail=request.detail,
             )
+            preset_reloaded = True
         if not await _wait_for_easyeffects_output_ports(ee_port_timeout_ms):
             raise RuntimeError(
                 "Coordinator effects stage failed: EasyEffects output ports were not confirmed"
@@ -2555,12 +2598,16 @@ async def _coordinator_establish_effects_and_helper(
                 await _sync_subwoofer_runtime(
                     reason=f"coordinator-{request.operation}",
                 )
+                helper_rebuilt = True
             # EasyEffects may recreate its direct front links after a preset
             # action.  Reconcile them after helper setup without restarting
             # either process.
-            await _coordinator_reconcile_subwoofer_links_only()
+            if helper_needs_sync or not diagnosis.get("links_complete"):
+                await _coordinator_reconcile_subwoofer_links_only()
+                links_reconciled = True
         elif not diagnosis.get("links_complete"):
             await _repair_stereo_output_links_once(diagnosis)
+            links_reconciled = True
 
     final = await _playback_graph_diagnosis(
         target_rate=target_rate,
@@ -2576,6 +2623,14 @@ async def _coordinator_establish_effects_and_helper(
         raise RuntimeError(
             "Coordinator effects/helper graph did not reach the canonical topology"
         )
+    return {
+        "dsp_reinitialized": preset_reloaded,
+        "preset_reloaded": preset_reloaded,
+        "helper_rebuilt": helper_rebuilt,
+        "links_reconciled": links_reconciled,
+        "graph_complete": True,
+        "graph_signature": final.get("signature"),
+    }
 
 
 async def _playback_graph_links_complete(

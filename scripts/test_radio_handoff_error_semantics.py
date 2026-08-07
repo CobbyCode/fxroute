@@ -674,10 +674,12 @@ class RadioPlayErrorSemanticsTests(unittest.IsolatedAsyncioTestCase):
             async def set_source_volume(self, volume, transition_id):
                 player.set_volume(volume)
 
-            async def stabilize_effects_after_rate_change(self, request):
+            async def stabilize_effects_after_rate_change(
+                self, request, *, dsp_reinitialized=False
+            ):
                 return {
                     "stabilized": True,
-                    "no_op": not request.rate_change,
+                    "no_op": not (request.rate_change or dsp_reinitialized),
                     "active_rate": self.active_rate,
                     "force_rate": self.active_rate,
                     "graph_complete": True,

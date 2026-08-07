@@ -12,7 +12,7 @@ import asyncio
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import sys
 
@@ -354,6 +354,69 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
         ):
             await main._coordinator_establish_effects_and_helper(request)
         self.assertEqual(calls, {"preset": 0, "repair": 0})
+
+    async def test_same_rate_source_switch_quiets_without_releasing_mpv_stream(self):
+        player = SimpleNamespace(
+            state={"current_file": "/music/old.flac"},
+            set_volume=Mock(),
+            set_pause=Mock(),
+            stop_playback=Mock(),
+        )
+        request = TransitionRequest(
+            operation="play",
+            source="local",
+            target_rate=48000,
+            target_url="/music/new.flac",
+            should_play=True,
+            rate_change=False,
+            reload_source=True,
+        )
+        with patch.object(main, "player_instance", player), patch.object(
+            main, "_player_is_running", return_value=True
+        ), patch.object(
+            main, "pause_spotify_for_local_playback_broadcast", new=AsyncMock()
+        ):
+            await main.FxrouteTransitionRuntime().quiet_old_source(request)
+
+        player.set_volume.assert_called_once_with(0)
+        player.set_pause.assert_called_once_with(True)
+        player.stop_playback.assert_not_called()
+
+    async def test_same_rate_22_graph_does_not_reclean_or_rebuild_helper(self):
+        helper = HelperDouble(active=True, rate=48000)
+        overview = {
+            "output_mode": {
+                "mode": "subwoofer-2.2",
+                "effective_output_key": OUTPUT_KEY,
+            }
+        }
+        request = TransitionRequest(
+            operation="play",
+            source="local",
+            target_rate=48000,
+            target_url="/music/same-rate.flac",
+            should_play=True,
+            rate_change=False,
+            reload_source=True,
+        )
+
+        async def pw_link(*_args):
+            return _links_text("subwoofer-2.2")
+
+        with patch.object(main, "get_audio_output_overview", return_value=overview), patch.object(
+            main, "_run_pw_link_command", side_effect=pw_link
+        ), patch.object(main, "subwoofer_runtime", helper), patch.object(
+            main, "easyeffects_manager", None
+        ), patch.object(
+            main, "_sync_subwoofer_runtime",
+            side_effect=AssertionError("same-rate helper rebuild"),
+        ):
+            result = await main._coordinator_establish_effects_and_helper(request)
+
+        self.assertFalse(result["dsp_reinitialized"])
+        self.assertFalse(result["helper_rebuilt"])
+        self.assertFalse(result["links_reconciled"])
+        self.assertEqual(helper.reconcile_calls, 0)
 
     async def test_rate_change_reloads_only_when_active_convolver_requires_it(self):
         helper = HelperDouble(active=False, rate=None)

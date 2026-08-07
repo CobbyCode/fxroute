@@ -19,9 +19,21 @@ from player import MPVWrapper
 
 
 class FakeRuntime:
-    def __init__(self, *, muted=False, fail_stage=None):
+    def __init__(
+        self,
+        *,
+        muted=False,
+        fail_stage=None,
+        force_dsp_reinit=False,
+        drop_mute_read_number=None,
+        fail_mute_read_number=None,
+    ):
         self.muted = muted
         self.fail_stage = fail_stage
+        self.force_dsp_reinit = force_dsp_reinit
+        self.drop_mute_read_number = drop_mute_read_number
+        self.fail_mute_read_number = fail_mute_read_number
+        self.mute_reads = 0
         self.events = []
         self.rate = 44_100
         self.current_file = "/music/current.flac"
@@ -38,6 +50,12 @@ class FakeRuntime:
             raise RuntimeError(name)
 
     async def read_hardware_mute(self):
+        self.mute_reads += 1
+        if self.mute_reads == self.fail_mute_read_number:
+            raise RuntimeError("physical mute read failed")
+        if self.mute_reads == self.drop_mute_read_number:
+            self.events.append("read-mute:False-transient")
+            return False
         self.events.append(f"read-mute:{self.muted}")
         return self.muted
 
@@ -67,6 +85,10 @@ class FakeRuntime:
         if request.rate_change:
             self.effects_rebuilds += 1
             self.helper_rebuilds += 1
+        return {
+            "dsp_reinitialized": bool(request.rate_change or self.force_dsp_reinit),
+            "helper_rebuilt": bool(request.rate_change),
+        }
 
     async def prepare_target_source(self, request):
         await self._stage("prepare")
@@ -82,12 +104,14 @@ class FakeRuntime:
         self.paused = not request.should_play
         self.playing = request.should_play
 
-    async def stabilize_effects_after_rate_change(self, request):
+    async def stabilize_effects_after_rate_change(
+        self, request, *, dsp_reinitialized=False
+    ):
         await self._stage("dsp-stabilize")
         self.dsp_stabilizations += 1
         return {
             "stabilized": True,
-            "no_op": False,
+            "no_op": not (request.rate_change or dsp_reinitialized),
             "active_rate": self.rate,
             "force_rate": self.rate,
             "graph_complete": True,
@@ -148,6 +172,28 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertLess(runtime.events.index("mute:True"), runtime.events.index("rate"))
         self.assertLess(runtime.events.index("verify"), runtime.events.index("mute:False"))
         self.assertEqual(coordinator.gate.as_dict()["owner"], None)
+
+    async def test_gate_readback_recloses_a_transiently_unmuted_sink(self):
+        runtime = FakeRuntime(muted=False, drop_mute_read_number=3)
+        coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
+
+        result = await coordinator.execute(request())
+
+        self.assertTrue(result.committed)
+        self.assertFalse(runtime.muted)
+        self.assertIn("read-mute:False-transient", runtime.events)
+        self.assertGreaterEqual(runtime.events.count("mute:True"), 2)
+
+    async def test_gate_readback_failure_latches_a_safe_transition(self):
+        runtime = FakeRuntime(muted=False, fail_mute_read_number=3)
+        coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
+
+        with self.assertRaises(PlaybackTransitionFailure) as caught:
+            await coordinator.execute(request())
+
+        self.assertEqual(caught.exception.stage, "target-rate")
+        self.assertTrue(coordinator.gate.failure_latched)
+        self.assertTrue(runtime.muted)
 
     async def test_failure_latches_gate_and_next_success_does_not_inherit_fxroute_mute_as_user_mute(self):
         runtime = FakeRuntime(muted=False, fail_stage="rate")
@@ -277,6 +323,38 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(runtime.helper_rebuilds, 0)
         self.assertEqual(runtime.dsp_stabilizations, 0)
         self.assertFalse(runtime.muted)
+
+    async def test_same_rate_effects_reinitialization_triggers_post_start_dsp(self):
+        runtime = FakeRuntime(muted=False, force_dsp_reinit=True)
+        coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
+        same_rate_request = TransitionRequest(
+            operation="play",
+            source="local",
+            target_rate=44_100,
+            target_url="/music/same-rate.flac",
+            target_track={"source": "local", "url": "/music/same-rate.flac"},
+            should_play=True,
+            rate_change=False,
+            reload_source=True,
+        )
+
+        result = await coordinator.execute(same_rate_request)
+
+        self.assertTrue(result.committed)
+        self.assertEqual(runtime.dsp_stabilizations, 1)
+        self.assertTrue(result.state["effects_graph"]["dsp_reinitialized"])
+
+    async def test_each_transition_emits_one_stage_timing_line(self):
+        runtime = FakeRuntime(muted=False)
+        coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
+
+        with self.assertLogs("playback_transition", level="INFO") as captured:
+            await coordinator.execute(request())
+
+        timing = [line for line in captured.output if "Playback transition timing:" in line]
+        self.assertEqual(len(timing), 1)
+        self.assertIn("transition_id=tr-", timing[0])
+        self.assertIn("target-rate=", timing[0])
 
     async def test_measurement_restore_reloads_a_paused_source_through_same_gate(self):
         runtime = FakeRuntime(muted=False)

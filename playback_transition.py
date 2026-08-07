@@ -13,11 +13,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Mapping, Protocol
 from uuid import uuid4
+
+
+logger = logging.getLogger(__name__)
 
 
 class PlaybackTransitionFailure(RuntimeError):
@@ -101,14 +105,19 @@ class TransitionRuntime(Protocol):
 
     async def establish_target_rate(self, request: TransitionRequest) -> None: ...
 
-    async def establish_effects_and_helper(self, request: TransitionRequest) -> None: ...
+    async def establish_effects_and_helper(
+        self, request: TransitionRequest
+    ) -> Mapping[str, Any]: ...
 
     async def prepare_target_source(self, request: TransitionRequest) -> None: ...
 
     async def start_target_source(self, request: TransitionRequest) -> None: ...
 
     async def stabilize_effects_after_rate_change(
-        self, request: TransitionRequest
+        self,
+        request: TransitionRequest,
+        *,
+        dsp_reinitialized: bool = False,
     ) -> Mapping[str, Any]: ...
 
     async def set_source_volume(self, volume: int, transition_id: str) -> None: ...
@@ -265,6 +274,48 @@ class PlaybackTransitionCoordinator:
         if not await self.runtime.read_hardware_mute():
             raise RuntimeError("hardware output gate could not be confirmed closed")
 
+    async def ensure_output_gate_closed(
+        self,
+        transition_id: str,
+        *,
+        stage: str,
+    ) -> None:
+        """Confirm the physical sink mute while this transition owns the gate.
+
+        The in-memory state is only an ownership record.  Every critical
+        boundary reads the actual sink state and repairs a lost mute once.  A
+        failed readback is fatal so a transition can never proceed on the
+        assumption that an output gate is still closed.
+        """
+        if (
+            not self.gate.closed
+            or self.gate.owner != "fxroute"
+            or self.gate.transition_id != transition_id
+        ):
+            raise RuntimeError(
+                f"hardware output gate ownership missing at {stage}"
+            )
+        try:
+            muted = bool(await self.runtime.read_hardware_mute())
+        except Exception as exc:
+            raise RuntimeError(
+                f"hardware output gate readback failed at {stage}: {exc}"
+            ) from exc
+        if muted:
+            return
+
+        try:
+            await self.runtime.set_hardware_mute(True, transition_id)
+            muted = bool(await self.runtime.read_hardware_mute())
+        except Exception as exc:
+            raise RuntimeError(
+                f"hardware output gate re-mute failed at {stage}: {exc}"
+            ) from exc
+        if not muted:
+            raise RuntimeError(
+                f"hardware output gate could not be confirmed closed at {stage}"
+            )
+
     async def _hold_gate_after_verification(self) -> None:
         if self.gate.closed and self.gate_settle_seconds:
             await asyncio.sleep(self.gate_settle_seconds)
@@ -308,7 +359,51 @@ class PlaybackTransitionCoordinator:
         transition_id = f"tr-{uuid4().hex}"
         async with self.lock:
             stage = "snapshot"
+            transition_started = time.monotonic()
+            stage_started = transition_started
+            stage_timings: dict[str, float] = {}
+
+            def enter_stage(name: str) -> None:
+                nonlocal stage, stage_started
+                now = time.monotonic()
+                stage_timings[stage] = stage_timings.get(stage, 0.0) + (
+                    now - stage_started
+                )
+                stage = name
+                stage_started = now
+
+            def log_timing(outcome: str) -> None:
+                now = time.monotonic()
+                stage_timings[stage] = stage_timings.get(stage, 0.0) + (
+                    now - stage_started
+                )
+                details = ",".join(
+                    f"{name}={duration * 1000:.1f}ms"
+                    for name, duration in stage_timings.items()
+                )
+                total_ms = (now - transition_started) * 1000
+                if outcome == "committed":
+                    logger.info(
+                        "Playback transition timing: transition_id=%s "
+                        "outcome=committed total_ms=%.1f stages=%s",
+                        transition_id,
+                        total_ms,
+                        details,
+                    )
+                else:
+                    logger.warning(
+                        "Playback transition timing: transition_id=%s "
+                        "outcome=failed stage=%s stage_ms=%.1f total_ms=%.1f "
+                        "stages=%s",
+                        transition_id,
+                        stage,
+                        stage_timings.get(stage, 0.0) * 1000,
+                        total_ms,
+                        details,
+                    )
+
             active_request = request
+            effects_state: Mapping[str, Any] = {}
             dsp_state: Mapping[str, Any] = {}
             gate_required = bool(
                 request.rate_change
@@ -332,10 +427,10 @@ class PlaybackTransitionCoordinator:
                     )
                 snapshot = await self.runtime.read_transition_snapshot(request)
                 if gate_required:
-                    stage = "output-gate-close"
+                    enter_stage("output-gate-close")
                     await self._close_gate(transition_id)
 
-                stage = "quiet-old-source"
+                enter_stage("quiet-old-source")
                 await self.runtime.quiet_old_source(request)
 
                 if gate_required and not active_request.graph_only:
@@ -344,7 +439,7 @@ class PlaybackTransitionCoordinator:
                     # that target under the already-closed gate and return
                     # the authoritative rate; all following stages then use
                     # the resolved immutable request.
-                    stage = "target-rate-resolve"
+                    enter_stage("target-rate-resolve")
                     resolver = getattr(self.runtime, "resolve_target_rate", None)
                     if callable(resolver):
                         resolved_rate = await resolver(active_request)
@@ -375,30 +470,45 @@ class PlaybackTransitionCoordinator:
                                 and snapshot_force_rate in {None, 0, active_request.target_rate}
                             ),
                         )
-                    stage = "target-rate"
+                    enter_stage("target-rate")
                     await self.runtime.establish_target_rate(active_request)
+                    await self.ensure_output_gate_closed(
+                        transition_id,
+                        stage="after-target-rate",
+                    )
 
-                stage = "effects-helper-links"
-                await self.runtime.establish_effects_and_helper(active_request)
+                enter_stage("effects-helper-links")
+                effects_result = await self.runtime.establish_effects_and_helper(
+                    active_request
+                )
+                if isinstance(effects_result, Mapping):
+                    effects_state = dict(effects_result)
+                if gate_required:
+                    await self.ensure_output_gate_closed(
+                        transition_id,
+                        stage="after-effects-helper-links",
+                    )
 
-                stage = "target-source-prepare"
+                enter_stage("target-source-prepare")
                 await self.runtime.prepare_target_source(active_request)
 
                 if gate_required:
                     # The target starts muted at both boundaries: hardware is
                     # still gated and MPV source volume is explicitly zero.
-                    stage = "target-source-start"
-                    await self.runtime.start_target_source(active_request)
-                else:
-                    stage = "target-source-start"
-                    await self.runtime.start_target_source(active_request)
+                    enter_stage("before-target-source-start-gate")
+                    await self.ensure_output_gate_closed(
+                        transition_id,
+                        stage="before-target-source-start",
+                    )
+                enter_stage("target-source-start")
+                await self.runtime.start_target_source(active_request)
 
                 if gate_required:
                     # The graph must be read back while the output gate is
                     # still closed and the target source is still at volume 0.
                     # Only after this staged commit succeeds may source
                     # volume and the hardware gate be restored.
-                    stage = "staged-graph-readback"
+                    enter_stage("staged-graph-readback")
                     staged_verifier = getattr(self.runtime, "verify_transition_graph", None)
                     if callable(staged_verifier):
                         state = await staged_verifier(active_request)
@@ -408,11 +518,20 @@ class PlaybackTransitionCoordinator:
                         raise RuntimeError("staged transition readback did not satisfy graph contract")
 
                     if not active_request.graph_only and active_request.should_play:
-                        stage = "source-volume-restore"
+                        enter_stage("before-source-volume-gate")
+                        await self.ensure_output_gate_closed(
+                            transition_id,
+                            stage="before-source-volume-restore",
+                        )
+                        enter_stage("source-volume-restore")
                         await self.runtime.set_source_volume(100, transition_id)
 
-                        if active_request.rate_change:
-                            stage = "effects-dsp-stabilize"
+                        dsp_required = bool(
+                            active_request.rate_change
+                            or effects_state.get("dsp_reinitialized")
+                        )
+                        if dsp_required:
+                            enter_stage("effects-dsp-stabilize")
                             stabilizer = getattr(
                                 self.runtime, "stabilize_effects_after_rate_change", None
                             )
@@ -420,7 +539,12 @@ class PlaybackTransitionCoordinator:
                                 raise RuntimeError(
                                     "post-start DSP stabilization is not available"
                                 )
-                            dsp_state = await stabilizer(active_request)
+                            dsp_state = await stabilizer(
+                                active_request,
+                                dsp_reinitialized=bool(
+                                    effects_state.get("dsp_reinitialized")
+                                ),
+                            )
                             if not isinstance(dsp_state, Mapping) or not dsp_state.get(
                                 "stabilized", False
                             ):
@@ -428,24 +552,42 @@ class PlaybackTransitionCoordinator:
                                     "post-start DSP stabilization was not confirmed"
                                 )
 
-                        stage = "commit-readback"
+                        enter_stage("after-dsp-stabilization-gate")
+                        await self.ensure_output_gate_closed(
+                            transition_id,
+                            stage="after-dsp-stabilization",
+                        )
+                        enter_stage("commit-readback")
                         state = await self.runtime.verify_committed_transition(active_request)
                 else:
                     if active_request.should_play:
-                        stage = "source-volume-restore"
+                        if gate_required:
+                            enter_stage("before-source-volume-gate")
+                            await self.ensure_output_gate_closed(
+                                transition_id,
+                                stage="before-source-volume-restore",
+                            )
+                        enter_stage("source-volume-restore")
                         await self.runtime.set_source_volume(100, transition_id)
 
-                    stage = "commit-readback"
+                    enter_stage("commit-readback")
                     state = await self.runtime.verify_committed_transition(active_request)
                 if not bool(state.get("committed", True)):
                     raise RuntimeError("transition readback did not satisfy commit contract")
 
                 if gate_required:
-                    stage = "output-gate-restore"
+                    enter_stage("before-output-gate-restore")
+                    await self.ensure_output_gate_closed(
+                        transition_id,
+                        stage="before-output-gate-restore",
+                    )
+                    enter_stage("output-gate-restore")
                     await self._hold_gate_after_verification()
                     await self._restore_gate(transition_id)
 
                 result_state = dict(state)
+                if effects_state:
+                    result_state["effects_graph"] = dict(effects_state)
                 if dsp_state:
                     result_state["effects_dsp"] = dict(dsp_state)
                 result = TransitionResult(
@@ -457,6 +599,7 @@ class PlaybackTransitionCoordinator:
                 )
                 self.last_result = result
                 self.last_error = None
+                log_timing("committed")
                 return result
             except Exception as exc:
                 try:
@@ -475,6 +618,7 @@ class PlaybackTransitionCoordinator:
                     stage=stage,
                 )
                 self.last_error = error.as_status()
+                log_timing("failed")
                 raise error from exc
 
     async def restore_measurement(

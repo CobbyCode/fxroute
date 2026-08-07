@@ -107,15 +107,15 @@ class MainCoreTransitionRuntime:
         if not aligned:
             raise RuntimeError("test target-rate alignment failed")
 
-    async def establish_effects_and_helper(self, request: Any) -> None:
+    async def establish_effects_and_helper(self, request: Any) -> dict[str, Any]:
         self.events.append("effects-helper-links")
         if self.failure is not None:
             raise self.failure
         if request.target_rate is None:
-            return
+            return {"dsp_reinitialized": False, "helper_rebuilt": False}
         if not self.use_core:
-            return
-        await main._coordinator_establish_effects_and_helper(
+            return {"dsp_reinitialized": False, "helper_rebuilt": False}
+        return await main._coordinator_establish_effects_and_helper(
             request,
             previous_force_rate=self.previous_force_rate,
             ee_port_timeout_ms=(
@@ -131,11 +131,13 @@ class MainCoreTransitionRuntime:
     async def start_target_source(self, request: Any) -> None:
         self.events.append("start")
 
-    async def stabilize_effects_after_rate_change(self, request: Any) -> dict[str, Any]:
+    async def stabilize_effects_after_rate_change(
+        self, request: Any, *, dsp_reinitialized: bool = False
+    ) -> dict[str, Any]:
         self.events.append("dsp-stabilize")
         return {
             "stabilized": True,
-            "no_op": not request.rate_change,
+            "no_op": not (request.rate_change or dsp_reinitialized),
             "active_rate": request.target_rate,
             "force_rate": request.target_rate,
             "graph_complete": True,
