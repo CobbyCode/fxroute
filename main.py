@@ -4009,7 +4009,7 @@ async def _coordinator_establish_effects_and_helper(
                 or not all(diagnosis.get("links", {}).values())
             )
             if helper_needs_sync:
-                if request.operation == "measurement-entry":
+                if request.operation in {"measurement-entry", "measurement-restore"}:
                     await _sync_subwoofer_runtime(
                         audio_overview=overview,
                         reason=f"coordinator-{request.operation}",

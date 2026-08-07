@@ -19,7 +19,8 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
-from playback_transition import PlaybackTransitionFailure, TransitionRequest
+from playback_transition import PlaybackTransitionCoordinator, PlaybackTransitionFailure, TransitionRequest
+from playback_transition_test_support import MainCoreTransitionRuntime
 
 
 OUTPUT_KEY = "alsa_output.pci-0000_00_1f.3.analog-stereo"
@@ -231,6 +232,122 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
             await main._coordinator_establish_effects_and_helper(request)
         self.assertEqual(calls, {"preset": 0, "sync": 1})
         self.assertEqual(helper.reconcile_calls, 1)
+
+    async def test_measurement_restore_respects_held_session_lock_and_commits(self):
+        """Restore must not re-enter the measurement lock during helper sync."""
+        helper = HelperDouble(active=True, rate=48000)
+        overview = {
+            "output_mode": {
+                "mode": "subwoofer-2.2",
+                "effective_output_key": OUTPUT_KEY,
+            }
+        }
+        initial = {
+            "ee_ports": True,
+            "helper_ports": True,
+            "links": {
+                "ee_soe_output_level:output_FL -> fxroute_21_stage1:input_L": False,
+                "ee_soe_output_level:output_FR -> fxroute_21_stage1:input_R": False,
+            },
+            "links_complete": False,
+        }
+        stable = {
+            "ee_ports": True,
+            "helper_ports": True,
+            "links": {
+                "ee_soe_output_level:output_FL -> fxroute_21_stage1:input_L": True,
+                "ee_soe_output_level:output_FR -> fxroute_21_stage1:input_R": True,
+            },
+            "links_complete": True,
+            "signature": "stable-measurement-restore",
+        }
+        measurement_lock = asyncio.Lock()
+        lock_flags = []
+        reconciler = AsyncMock()
+        events = []
+
+        async def sync_helper(*_args, _rate_lock_held=False, **_kwargs):
+            lock_flags.append(_rate_lock_held)
+            if not _rate_lock_held:
+                async with measurement_lock:
+                    return overview
+            return overview
+
+        async def post_start_reconcile(_request):
+            events.append("post-start-graph-reconcile")
+            return {"graph_complete": True}
+
+        request = TransitionRequest(
+            operation="measurement-restore",
+            source="radio",
+            target_rate=48000,
+            target_url="https://radio.example/stream",
+            target_track={"source": "radio", "url": "https://radio.example/stream"},
+            should_play=False,
+            rate_change=False,
+            reload_source=False,
+        )
+        with patch.object(main, "measurement_sr_session", SimpleNamespace(lock=measurement_lock)), patch.object(
+            main, "get_audio_output_overview", return_value=overview
+        ), patch.object(
+            main, "get_samplerate_status", return_value={"active_rate": 48000, "force_rate": 48000}
+        ), patch.object(
+            main, "_get_current_pipewire_force_rate", return_value=48000
+        ), patch.object(
+            main, "_playback_graph_diagnosis", new=AsyncMock(side_effect=[initial, stable])
+        ), patch.object(
+            main, "_wait_for_easyeffects_output_ports", new=AsyncMock(return_value=True)
+        ), patch.object(
+            main, "_sync_subwoofer_runtime", side_effect=sync_helper
+        ), patch.object(
+            main, "_coordinator_reconcile_subwoofer_links_only", reconciler
+        ), patch.object(main, "subwoofer_runtime", helper), patch.object(
+            main, "easyeffects_manager", None
+        ):
+            runtime = MainCoreTransitionRuntime(
+                target_rate=48000,
+                generation=main.playback_transition_generation,
+                source="radio",
+                target_url="https://radio.example/stream",
+                operation="measurement-restore",
+                use_core=True,
+                events=events,
+            )
+            runtime.reconcile_post_start_graph = post_start_reconcile
+            coordinator = PlaybackTransitionCoordinator(
+                runtime,
+                gate_settle_seconds=0,
+            )
+            await measurement_lock.acquire()
+            try:
+                result = await asyncio.wait_for(
+                    coordinator.restore_measurement(
+                        source=request.source,
+                        target_rate=request.target_rate,
+                        target_url=request.target_url,
+                        target_track=request.target_track,
+                        should_play=request.should_play,
+                        rate_change=request.rate_change,
+                        reload_source=request.reload_source,
+                    ),
+                    timeout=0.5,
+                )
+            finally:
+                measurement_lock.release()
+
+        self.assertTrue(result.committed)
+        self.assertEqual(lock_flags, [True])
+        reconciler.assert_awaited_once()
+        self.assertFalse(coordinator.gate.closed)
+        self.assertIn("effects-helper-links", events)
+        self.assertIn("post-start-graph-reconcile", events)
+        self.assertIn("graph-readback", events)
+        self.assertIn("commit-readback", events)
+        self.assertIn("gate.set:False", events)
+        self.assertLess(events.index("effects-helper-links"), events.index("post-start-graph-reconcile"))
+        self.assertLess(events.index("post-start-graph-reconcile"), events.index("graph-readback"))
+        self.assertLess(events.index("graph-readback"), events.index("commit-readback"))
+        self.assertLess(events.index("commit-readback"), events.index("gate.set:False"))
 
 
 class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
