@@ -766,6 +766,7 @@ class MeasurementSampleRateSession:
 
     def __init__(self) -> None:
         self.active = False
+        self.entry_in_progress = False
         self.measurement_rate = 48_000
         self.original_force_rate = 0
         self.active_manual_job_ids: set[str] = set()
@@ -778,6 +779,11 @@ class MeasurementSampleRateSession:
         self._playback_captured = False
         self._rate_changed = False
 
+    @property
+    def owns_audio_graph(self) -> bool:
+        """Return whether measurement currently owns the playback graph."""
+        return bool(self.entry_in_progress or self.active)
+
     async def _start_locked(self, measurement_rate: int) -> int:
         if self.active:
             return self.generation
@@ -788,6 +794,7 @@ class MeasurementSampleRateSession:
         self.measurement_rate = int(measurement_rate)
         self._playback_captured = False
         self._rate_changed = False
+        self.entry_in_progress = True
         try:
             status = get_samplerate_status()
             self.original_force_rate = int(status.get("force_rate") or 0)
@@ -815,6 +822,9 @@ class MeasurementSampleRateSession:
             if not transition_result.committed:
                 raise RuntimeError("measurement entry was not committed")
             self._rate_changed = self.original_force_rate != self.measurement_rate
+        except asyncio.CancelledError:
+            self.entry_in_progress = False
+            raise
         except Exception as exc:
             logger.error(
                 "Measurement sample-rate session could not establish its guarded entry at %s Hz: %s",
@@ -825,10 +835,12 @@ class MeasurementSampleRateSession:
             _playback_state_before_measurement = None
             _radio_state_before_measurement = None
             self.original_force_rate = 0
+            self.entry_in_progress = False
             raise RuntimeError(
                 f"Could not establish guarded measurement entry at {self.measurement_rate} Hz"
             ) from exc
         self.active = True
+        self.entry_in_progress = False
         self.close_requested = False
         self.deferred_release_pending = False
         logger.info(
@@ -2789,6 +2801,12 @@ async def _run_coordinated_transition(request: TransitionRequest):
             playback_transition_generation += 1
 
 
+def _measurement_audio_graph_owned() -> bool:
+    """Return whether the Measurement session currently owns audio routing."""
+    session = measurement_sr_session
+    return bool(session is not None and getattr(session, "owns_audio_graph", False))
+
+
 async def _request_coordinated_recovery(
     track: Mapping[str, Any],
     reason: str,
@@ -2804,6 +2822,12 @@ async def _request_coordinated_recovery(
     handoff loop.
     """
     global coordinator_recovery_lock, coordinator_recovery_inflight_signature, coordinator_recovery_last_signature
+    if _measurement_audio_graph_owned():
+        logger.info(
+            "Coordinator recovery skipped while Measurement owns the audio graph: reason=%s",
+            reason,
+        )
+        return
     if playback_transition_coordinator is None or not track:
         return
     source = str(track.get("source") or "")
@@ -2883,6 +2907,12 @@ async def _request_coordinated_recovery(
         if playback_transition_coordinator.transition_active:
             logger.info("Coordinator recovery deferred while another transition is active: reason=%s", reason)
             return
+        if _measurement_audio_graph_owned():
+            logger.info(
+                "Coordinator recovery skipped before execution while Measurement owns the audio graph: reason=%s",
+                reason,
+            )
+            return
         attempted = False
         try:
             observed_url = str(track.get("url") or track.get("id") or "") or None
@@ -2914,6 +2944,12 @@ async def _request_coordinated_recovery(
                     source,
                     observed_url,
                     attempt_commit_context_id,
+                )
+                return
+            if _measurement_audio_graph_owned():
+                logger.info(
+                    "Coordinator recovery skipped at execution boundary while Measurement owns the audio graph: reason=%s",
+                    reason,
                 )
                 return
             coordinator_recovery_inflight_signature = signature
@@ -4902,7 +4938,7 @@ async def _observe_playback_samplerate_drift() -> None:
     # playback drift and must not start a competing repair.
     if _playback_transition_is_active() or _is_measurement_window_open() or (
         measurement_sr_session is not None and measurement_sr_session.active
-    ):
+    ) or _measurement_audio_graph_owned():
         _reset_samplerate_drift_observation()
         return
 
@@ -5017,6 +5053,9 @@ async def _subwoofer_runtime_link_watch_loop() -> None:
     while True:
         await asyncio.sleep(2.0)
         try:
+            if _measurement_audio_graph_owned():
+                logger.debug("Subwoofer link watcher skipped while Measurement owns the audio graph")
+                continue
             await _observe_playback_samplerate_drift()
             if subwoofer_runtime is None:
                 continue
