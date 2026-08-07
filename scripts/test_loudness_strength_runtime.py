@@ -140,6 +140,32 @@ def test_numeric_strength_offsets_and_legacy_mapping():
         )
 
 
+def test_loudness_plugin_bounds_preserve_total_attenuation():
+    manager = RecordingManager()
+
+    above_max = extras(1)
+    above_max["loudness"]["params"].update({
+        "volumeDb": 0.0,
+        "calibration": {"requiredAdjustmentDb": -50.0},
+    })
+    high = manager._loudness_plugin_payload(
+        manager.normalize_effects_extras(above_max)["loudness"]
+    )
+    assert high["volume"] == manager.LOUDNESS_PLUGIN_VOLUME_MAX_DB
+    assert math.isclose(high["volume"] + high["output-gain"], 0.0, abs_tol=1e-9)
+
+    below_min = extras(10)
+    below_min["loudness"]["params"].update({
+        "volumeDb": -80.0,
+        "calibration": {"requiredAdjustmentDb": 50.0},
+    })
+    low = manager._loudness_plugin_payload(
+        manager.normalize_effects_extras(below_min)["loudness"]
+    )
+    assert low["volume"] == manager.LOUDNESS_PLUGIN_VOLUME_MIN_DB
+    assert math.isclose(low["volume"] + low["output-gain"], -80.0, abs_tol=1e-9)
+
+
 def test_rounded_numeric_property_acknowledgement():
     manager = RecordingManager()
     mutations = []

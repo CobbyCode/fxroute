@@ -122,6 +122,10 @@ class EasyEffectsManager:
     }
     LOUDNESS_STRENGTH_GUARD_DB = 18.0
     LOUDNESS_OUTPUT_GAIN_MIN_DB = -36.0
+    # Installed LSP Loudness Compensator Stereo metadata
+    # (loud_comp_stereo.ttl, volume port): strict bounds -83..+7 dB.
+    LOUDNESS_PLUGIN_VOLUME_MIN_DB = -83.0
+    LOUDNESS_PLUGIN_VOLUME_MAX_DB = 7.0
     LOUDNESS_STRENGTH_GUARD_SETTLE_SECONDS = 0.06
     # The Local Server acknowledgement only confirms the control value.  The
     # LSP volume port is still smoothing in the audio thread at that point.
@@ -531,6 +535,25 @@ class EasyEffectsManager:
             f"get_property:output:{plugin_name}:{int(instance_id)}:{property_name}",
             timeout=0.5,
         ).strip()
+
+    def read_loudness_runtime(self) -> Dict[str, Any]:
+        """Read the active LSP Loudness work point after a preset/transition."""
+        volume_text = self.get_active_plugin_property("loudness", 0, "volume")
+        output_gain_text = self.get_active_plugin_property("loudness", 0, "outputGain")
+        bypass_text = self.get_active_plugin_property("loudness", 0, "bypass").lower()
+        try:
+            volume = float(volume_text)
+            output_gain = float(output_gain_text)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(
+                f"EasyEffects Loudness readback was not numeric: volume={volume_text!r} "
+                f"outputGain={output_gain_text!r}"
+            ) from exc
+        return {
+            "volume": volume,
+            "output_gain": output_gain,
+            "bypass": bypass_text in {"1", "true", "on", "yes"},
+        }
 
     @staticmethod
     def _link_target_has_source(link_output: str, target_port: str, source_prefix: str) -> bool:
@@ -1435,6 +1458,19 @@ class EasyEffectsManager:
             if autogain["enabled"] else 0.0
         )
         effective_offset_db = strength_offset_db + autogain_offset_db
+        raw_plugin_volume_db = (
+            master_attenuation_db - calibration_offset_db + effective_offset_db
+            if enabled else master_attenuation_db
+        )
+        # The LSP port has strict bounds.  Keep the requested total attenuation
+        # invariant by moving only the out-of-range remainder to output-gain;
+        # this preserves the strength/autogain curve until the real plugin
+        # boundary is reached and avoids sending the invalid transient value
+        # (for example 7.03 dB) that caused the acknowledgement failures.
+        plugin_volume_db = max(
+            self.LOUDNESS_PLUGIN_VOLUME_MIN_DB,
+            min(self.LOUDNESS_PLUGIN_VOLUME_MAX_DB, raw_plugin_volume_db),
+        )
         return {
             "bypass": not enabled,
             "clipping": False,
@@ -1445,12 +1481,12 @@ class EasyEffectsManager:
             "mode": "FFT",
             # Coupled SPL calibration: this gain only exists inside the active
             # Loudness block and never feeds the global/limiter gain path.
-            "output-gain": calibration_offset_db - effective_offset_db if enabled else 0.0,
-            "std": "ISO226-2023",
-            "volume": (
-                master_attenuation_db - calibration_offset_db + effective_offset_db
-                if enabled else master_attenuation_db
+            "output-gain": (
+                master_attenuation_db - plugin_volume_db
+                if enabled else 0.0
             ),
+            "std": "ISO226-2023",
+            "volume": plugin_volume_db,
         }
 
     def _crystalizer_plugin_payload(self, tone_effect: Dict[str, Any]) -> Dict[str, Any]:

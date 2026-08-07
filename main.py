@@ -1373,9 +1373,46 @@ class FxrouteTransitionRuntime(TransitionRuntime):
                 raise RuntimeError("EasyEffects active preset was not confirmed at commit")
             extras = easyeffects_manager.load_global_extras()
             if (extras.get("loudness") or {}).get("enabled"):
-                runtime = await asyncio.to_thread(easyeffects_manager.read_loudness_runtime)
+                read_runtime = getattr(easyeffects_manager, "read_loudness_runtime", None)
+                if not callable(read_runtime):
+                    raise RuntimeError("EasyEffects Loudness readback is unavailable")
+                runtime = await asyncio.to_thread(read_runtime)
                 if not isinstance(runtime, dict) or runtime.get("bypass"):
                     raise RuntimeError("EasyEffects Loudness state was not confirmed at commit")
+                try:
+                    expected_payload = easyeffects_manager._loudness_plugin_payload(
+                        extras["loudness"], extras.get("autogain")
+                    )
+                    actual_volume = float(runtime["volume"])
+                    actual_output_gain = float(runtime["output_gain"])
+                except (AttributeError, KeyError, TypeError, ValueError) as exc:
+                    raise RuntimeError(f"EasyEffects Loudness readback is incomplete: {exc}") from exc
+                if not (
+                    easyeffects_manager.LOUDNESS_PLUGIN_VOLUME_MIN_DB
+                    <= actual_volume
+                    <= easyeffects_manager.LOUDNESS_PLUGIN_VOLUME_MAX_DB
+                ):
+                    raise RuntimeError(
+                        "EasyEffects Loudness volume is outside the installed LSP range: "
+                        f"{actual_volume} not in [{easyeffects_manager.LOUDNESS_PLUGIN_VOLUME_MIN_DB}, "
+                        f"{easyeffects_manager.LOUDNESS_PLUGIN_VOLUME_MAX_DB}]"
+                    )
+                if not math.isclose(
+                    actual_volume,
+                    float(expected_payload["volume"]),
+                    rel_tol=0.0,
+                    abs_tol=0.05,
+                ) or not math.isclose(
+                    actual_output_gain,
+                    float(expected_payload["output-gain"]),
+                    rel_tol=0.0,
+                    abs_tol=0.05,
+                ):
+                    raise RuntimeError(
+                        "EasyEffects Loudness work point mismatch: "
+                        f"expected=({expected_payload['volume']}, {expected_payload['output-gain']}) "
+                        f"actual=({actual_volume}, {actual_output_gain})"
+                    )
         return {
             "committed": True,
             "player": state,
