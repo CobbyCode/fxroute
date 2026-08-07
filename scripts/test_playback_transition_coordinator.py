@@ -170,6 +170,73 @@ class FakeRuntime:
         await self._stage("pause-after-failure")
 
 
+class MeasurementSessionRuntime:
+    def __init__(self, graphs):
+        self.graphs = [dict(graph) for graph in graphs]
+        self.events = []
+        self.muted = True
+        self.easyeffects_muted = True
+        self.reconcile_calls = 0
+
+    async def read_hardware_mute(self):
+        self.events.append(f"read-mute:{self.muted}")
+        return self.muted
+
+    async def set_hardware_mute(self, muted, _transition_id):
+        self.muted = bool(muted)
+        self.events.append(f"mute:{self.muted}")
+
+    async def read_sink_mute(self, sink_name):
+        self.assert_sink_name(sink_name)
+        self.events.append(f"read-sink-mute:{self.easyeffects_muted}")
+        return self.easyeffects_muted
+
+    async def set_sink_mute(self, sink_name, muted, _transition_id):
+        self.assert_sink_name(sink_name)
+        self.easyeffects_muted = bool(muted)
+        self.events.append(f"sink-mute:{self.easyeffects_muted}")
+
+    @staticmethod
+    def assert_sink_name(sink_name):
+        if sink_name != "easyeffects_sink":
+            raise AssertionError(f"unexpected explicit sink: {sink_name}")
+
+    async def read_measurement_session_graph(self, _target_rate):
+        self.events.append("graph-read")
+        graph = self.graphs.pop(0) if self.graphs else self.graphs[-1]
+        return dict(graph)
+
+    async def reconcile_measurement_session_graph(self, _target_rate):
+        self.reconcile_calls += 1
+        self.events.append("link-reconcile")
+
+
+def _measurement_graph(
+    *,
+    complete=False,
+    repairable=True,
+    helper_active=True,
+    helper_ports=True,
+    helper_rate_matches=True,
+    helper_rate=48_000,
+    signature="measurement-graph",
+):
+    return {
+        "mode": "subwoofer-2.2",
+        "output_key": "alsa_output.test",
+        "ee_ports": True,
+        "helper_ports": helper_ports,
+        "helper_active": helper_active,
+        "helper_rate": helper_rate,
+        "helper_rate_matches": helper_rate_matches,
+        "measurement_rate_aligned": True,
+        "direct_ee_to_hw_present": False,
+        "links_complete": complete,
+        "repairable_link_loss": repairable,
+        "signature": signature,
+    }
+
+
 def request(*, rate_change=True):
     return TransitionRequest(
         operation="play",
@@ -184,6 +251,66 @@ def request(*, rate_change=True):
 
 
 class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_active_measurement_reconcile_repairs_once_and_commits_two_stable_readbacks(self):
+        incomplete = _measurement_graph(signature="missing-ee-helper")
+        stable = _measurement_graph(complete=True, repairable=False, signature="stable")
+        runtime = MeasurementSessionRuntime([incomplete, incomplete, stable, stable])
+        coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
+
+        result = await coordinator.reconcile_measurement_session(
+            target_rate=48_000,
+            initial_graph=incomplete,
+        )
+
+        self.assertTrue(result["committed"])
+        self.assertTrue(result["reconciled"])
+        self.assertEqual(result["stable_readbacks"], 2)
+        self.assertEqual(runtime.reconcile_calls, 1)
+        self.assertEqual(runtime.events.count("graph-read"), 4)
+        self.assertLess(runtime.events.index("mute:True"), runtime.events.index("link-reconcile"))
+        self.assertLess(runtime.events.index("sink-mute:False"), runtime.events.index("link-reconcile"))
+        self.assertGreater(runtime.events.count("mute:False"), 0)
+        self.assertLess(runtime.events.index("link-reconcile"), runtime.events.index("mute:False"))
+        self.assertFalse(runtime.muted)
+        self.assertFalse(runtime.easyeffects_muted)
+        self.assertFalse(coordinator.gate.closed)
+        self.assertFalse(coordinator.gate.failure_latched)
+
+    async def test_complete_active_measurement_graph_is_a_read_only_noop(self):
+        complete = _measurement_graph(complete=True, repairable=False, signature="stable")
+        runtime = MeasurementSessionRuntime([complete])
+        coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
+
+        result = await coordinator.reconcile_measurement_session(
+            target_rate=48_000,
+            initial_graph=complete,
+        )
+
+        self.assertTrue(result["committed"])
+        self.assertFalse(result["reconciled"])
+        self.assertEqual(runtime.reconcile_calls, 0)
+        self.assertEqual(runtime.events, [])
+
+    async def test_invalid_measurement_session_graph_is_blocked_without_reconcile(self):
+        invalid = _measurement_graph(
+            repairable=False,
+            helper_ports=False,
+            helper_rate_matches=False,
+            signature="invalid-helper",
+        )
+        runtime = MeasurementSessionRuntime([invalid])
+        coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
+
+        with self.assertRaises(RuntimeError):
+            await coordinator.reconcile_measurement_session(
+                target_rate=48_000,
+                initial_graph=invalid,
+            )
+
+        self.assertEqual(runtime.reconcile_calls, 0)
+        self.assertNotIn("mute:True", runtime.events)
+        self.assertFalse(coordinator.gate.closed)
+
     async def test_cancellation_latches_gate_and_pauses_source(self):
         runtime = FakeRuntime(muted=False)
         entered_rate = asyncio.Event()

@@ -204,6 +204,12 @@ class TransitionRuntime(Protocol):
         transition_id: str,
     ) -> None: ...
 
+    async def read_measurement_session_graph(
+        self, target_rate: int
+    ) -> Mapping[str, Any]: ...
+
+    async def reconcile_measurement_session_graph(self, target_rate: int) -> None: ...
+
 
 class PlaybackTransitionCoordinator:
     """Serialize every playback transition and own the output-gate lifecycle.
@@ -594,6 +600,180 @@ class PlaybackTransitionCoordinator:
             await cleanup_task
         except BaseException as exc:
             logger.warning("Playback transition cancellation cleanup failed: %s", exc)
+
+    async def reconcile_measurement_session(
+        self,
+        *,
+        target_rate: int,
+        initial_graph: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        """Repair one active-measurement link loss without touching transport.
+
+        An already-active measurement session has already completed its normal
+        rate/source handoff.  Its entry preflight may therefore use this
+        narrower Coordinator transaction when only the 2.1/2.2 production
+        links drifted.  No source, rate, preset, or helper lifecycle stage is
+        entered here; the adapter's reconcile hook is link-only by contract.
+        """
+        if not isinstance(target_rate, int) or target_rate <= 0:
+            raise RuntimeError("measurement session reconcile has no valid target rate")
+        if bool(initial_graph.get("links_complete")):
+            return {
+                "committed": True,
+                "reconciled": False,
+                "graph_complete": True,
+                "graph_signature": initial_graph.get("signature"),
+            }
+
+        reader = getattr(self.runtime, "read_measurement_session_graph", None)
+        reconciler = getattr(
+            self.runtime,
+            "reconcile_measurement_session_graph",
+            None,
+        )
+        if not callable(reader) or not callable(reconciler):
+            raise RuntimeError(
+                "measurement session graph reconciliation is unavailable"
+            )
+
+        transition_id = f"tr-{uuid4().hex}"
+        async with self.lock:
+            if not await self._reconcile_startup_gate_locked():
+                raise RuntimeError(
+                    "stale output gate could not be reconciled: "
+                    f"{self._startup_gate_error or 'unknown error'}"
+                )
+            if self.gate.failure_latched or self.gate.closed:
+                raise RuntimeError(
+                    "measurement session reconcile is blocked by a latched output gate"
+                )
+
+            stage = "measurement-session-readonly"
+            current = await reader(target_rate)
+            if not isinstance(current, Mapping):
+                raise RuntimeError(
+                    "measurement session graph readback was not a mapping"
+                )
+            if current.get("links_complete"):
+                return {
+                    "committed": True,
+                    "reconciled": False,
+                    "graph_complete": True,
+                    "graph_signature": current.get("signature"),
+                }
+            if not current.get("repairable_link_loss"):
+                raise RuntimeError(
+                    "measurement session graph is not a repairable link-only loss"
+                )
+
+            gate_owned = False
+            try:
+                stage = "measurement-session-gate-close"
+                await self._close_gate(transition_id, audible_output=True)
+                gate_owned = True
+                await self.ensure_output_gate_closed(
+                    transition_id,
+                    stage="measurement-session-after-gate-close",
+                )
+
+                stage = "measurement-session-readonly-under-gate"
+                gated = await reader(target_rate)
+                if not isinstance(gated, Mapping):
+                    raise RuntimeError(
+                        "measurement session gated graph readback was not a mapping"
+                    )
+                if gated.get("links_complete"):
+                    stage = "measurement-session-gate-restore"
+                    await self._restore_gate(transition_id, audible_output=True)
+                    gate_owned = False
+                    return {
+                        "committed": True,
+                        "reconciled": False,
+                        "graph_complete": True,
+                        "graph_signature": gated.get("signature"),
+                    }
+                if not gated.get("repairable_link_loss"):
+                    raise RuntimeError(
+                        "measurement session gated graph is not a repairable link-only loss"
+                    )
+
+                stage = "measurement-session-link-reconcile"
+                await reconciler(target_rate)
+
+                stage = "measurement-session-stable-readback"
+                readbacks: list[Mapping[str, Any]] = []
+                for _ in range(2):
+                    readback = await reader(target_rate)
+                    if not isinstance(readback, Mapping):
+                        raise RuntimeError(
+                            "measurement session stable graph readback was not a mapping"
+                        )
+                    readbacks.append(readback)
+                signatures = [str(readback.get("signature")) for readback in readbacks]
+                if not (
+                    len(readbacks) == 2
+                    and all(readback.get("links_complete") for readback in readbacks)
+                    and len(set(signatures)) == 1
+                ):
+                    raise RuntimeError(
+                        "measurement session graph did not reach two stable canonical readbacks"
+                    )
+
+                await self.ensure_output_gate_closed(
+                    transition_id,
+                    stage="measurement-session-before-gate-restore",
+                )
+                stage = "measurement-session-gate-restore"
+                await self._restore_gate(transition_id, audible_output=True)
+                gate_owned = False
+
+                final = dict(readbacks[-1])
+                final.update(
+                    {
+                        "committed": True,
+                        "reconciled": True,
+                        "graph_complete": True,
+                        "stable_readbacks": 2,
+                        "graph_signature": signatures[-1],
+                    }
+                )
+                result = TransitionResult(
+                    transition_id=transition_id,
+                    committed=True,
+                    source="measurement",
+                    target_rate=target_rate,
+                    state=final,
+                )
+                self.last_result = result
+                self.last_error = None
+                logger.info(
+                    "Measurement session graph reconcile committed: "
+                    "transition_id=%s target_rate=%s signature=%s stable_readbacks=2",
+                    transition_id,
+                    target_rate,
+                    signatures[-1],
+                )
+                return final
+            except Exception as exc:
+                if gate_owned or (
+                    self.gate.closed and self.gate.transition_id == transition_id
+                ):
+                    await self._latch_failure(transition_id)
+                failure = PlaybackTransitionFailure(
+                    "measurement session graph reconcile failed at "
+                    f"{stage}: {exc}",
+                    transition_id=transition_id,
+                    stage=stage,
+                )
+                self.last_error = failure.as_status()
+                logger.warning(
+                    "Measurement session graph reconcile failed: "
+                    "transition_id=%s stage=%s error=%s",
+                    transition_id,
+                    stage,
+                    exc,
+                )
+                raise failure from exc
 
     async def execute(self, request: TransitionRequest) -> TransitionResult:
         """Run one transition and commit only after complete readback."""

@@ -1320,6 +1320,30 @@ class FxrouteTransitionRuntime(TransitionRuntime):
             transition_id,
         )
 
+    async def read_measurement_session_graph(self, target_rate: int) -> dict[str, Any]:
+        """Read the active-measurement graph without touching playback state."""
+        rate = dict(get_samplerate_status())
+        diagnosis = await _playback_graph_diagnosis(
+            target_rate=target_rate,
+            require_source=False,
+        )
+        result = dict(diagnosis)
+        result["active_rate"] = rate.get("active_rate")
+        result["force_rate"] = rate.get("force_rate")
+        result["measurement_rate_aligned"] = bool(
+            rate.get("active_rate") == target_rate
+            and rate.get("force_rate") in {None, 0, target_rate}
+        )
+        result["repairable_link_loss"] = _measurement_session_link_loss_is_repairable(
+            result,
+            target_rate=target_rate,
+        )
+        return result
+
+    async def reconcile_measurement_session_graph(self, _target_rate: int) -> None:
+        """Repair only existing 2.1/2.2 production links."""
+        await _coordinator_reconcile_subwoofer_links_only()
+
     async def read_transition_snapshot(self, request: TransitionRequest) -> dict[str, Any]:
         self._staged_target_url = None
         self._previous_force_rate = _get_current_pipewire_force_rate()
@@ -3688,6 +3712,38 @@ def _missing_playback_graph_links(
     return missing
 
 
+def _measurement_session_link_loss_is_repairable(
+    diagnosis: Mapping[str, Any],
+    *,
+    target_rate: int,
+) -> bool:
+    """Allow only the known EE->helper input-link drift during measurement."""
+    if diagnosis.get("links_complete"):
+        return False
+    if diagnosis.get("mode") not in OUTPUT_MODE_SUBWOOFER_MODES:
+        return False
+    if diagnosis.get("ee_ports") is not True:
+        return False
+    if diagnosis.get("helper_ports") is not True:
+        return False
+    if diagnosis.get("helper_active") is not True:
+        return False
+    if diagnosis.get("helper_rate_matches") is not True:
+        return False
+    if diagnosis.get("measurement_rate_aligned") is not True:
+        return False
+    if diagnosis.get("direct_ee_to_hw_present"):
+        return False
+    if diagnosis.get("helper_rate") != target_rate:
+        return False
+    missing = set(_missing_playback_graph_links(diagnosis))
+    repairable = {
+        "ee_soe_output_level:output_FL -> fxroute_21_stage1:input_L",
+        "ee_soe_output_level:output_FR -> fxroute_21_stage1:input_R",
+    }
+    return bool(missing) and missing.issubset(repairable)
+
+
 def _log_playback_graph_diagnosis(
     diagnosis: dict,
     *,
@@ -4262,13 +4318,35 @@ async def _measurement_entry_preflight(measurement_rate: int = MEASUREMENT_DEFAU
         require_source=False,
     )
     if not diagnosis.get("links_complete"):
-        _log_playback_graph_diagnosis(
-            diagnosis,
-            target_rate=measurement_rate,
-            reason="measurement-entry-preflight",
-            detail="before-sweep",
+        session_active = bool(
+            measurement_sr_session is not None
+            and getattr(measurement_sr_session, "active", False)
         )
-        raise RuntimeError("measurement entry preflight found an incomplete canonical graph")
+        reconciler = getattr(
+            coordinator,
+            "reconcile_measurement_session",
+            None,
+        )
+        if session_active and callable(reconciler):
+            reconciled_state = await reconciler(
+                target_rate=measurement_rate,
+                initial_graph=diagnosis,
+            )
+            if not isinstance(reconciled_state, Mapping) or not (
+                reconciled_state.get("graph_complete") is True
+                or reconciled_state.get("links_complete") is True
+            ):
+                raise RuntimeError(
+                    "measurement session reconcile did not confirm a complete canonical graph"
+                )
+        else:
+            _log_playback_graph_diagnosis(
+                diagnosis,
+                target_rate=measurement_rate,
+                reason="measurement-entry-preflight",
+                detail="before-sweep",
+            )
+            raise RuntimeError("measurement entry preflight found an incomplete canonical graph")
 
     if measurement_store is not None:
         playback_target = measurement_store._resolve_playback_target()

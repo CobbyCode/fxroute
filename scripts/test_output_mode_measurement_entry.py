@@ -453,7 +453,11 @@ class EntryBoundaryTests(unittest.IsolatedAsyncioTestCase):
             transition_active=False,
             gate=SimpleNamespace(failure_latched=False, closed=False),
         )
+        reconcile = AsyncMock()
+        coordinator.reconcile_measurement_session = reconcile
         with patch.object(main, "playback_transition_coordinator", coordinator), patch.object(
+            main, "measurement_sr_session", SimpleNamespace(active=True)
+        ), patch.object(
             main, "measurement_store", Store()
         ), patch.object(main, "get_samplerate_status", return_value={
             "active_rate": 48000,
@@ -463,6 +467,60 @@ class EntryBoundaryTests(unittest.IsolatedAsyncioTestCase):
             "signature": "stable",
         })):
             await main._measurement_entry_preflight(48000)
+        reconcile.assert_not_awaited()
+
+    async def test_active_measurement_preflight_reconciles_only_link_loss_before_sweep(self):
+        class Store:
+            def _resolve_playback_target(self):
+                return {"target_name": "alsa_output.test"}
+
+            def _build_measurement_playback_route(self, _node, target):
+                return {
+                    "route": "direct-sink",
+                    "playback_target_name": target["target_name"],
+                }
+
+            def _list_pw_ports(self, target):
+                return [f"{target}:playback_FL", f"{target}:playback_FR"]
+
+        reconcile = AsyncMock(return_value={
+            "committed": True,
+            "reconciled": True,
+            "graph_complete": True,
+            "stable_readbacks": 2,
+        })
+        coordinator = SimpleNamespace(
+            transition_active=False,
+            gate=SimpleNamespace(failure_latched=False, closed=False),
+            reconcile_measurement_session=reconcile,
+        )
+        diagnosis = {
+            "mode": "subwoofer-2.2",
+            "ee_ports": True,
+            "helper_ports": True,
+            "helper_active": True,
+            "helper_rate": 48000,
+            "helper_rate_matches": True,
+            "direct_ee_to_hw_present": False,
+            "links_complete": False,
+            "signature": "missing-ee-helper",
+        }
+        with patch.object(main, "playback_transition_coordinator", coordinator), patch.object(
+            main, "measurement_sr_session", SimpleNamespace(active=True)
+        ), patch.object(main, "measurement_store", Store()), patch.object(
+            main, "get_samplerate_status", return_value={
+                "active_rate": 48000,
+                "force_rate": 48000,
+            }
+        ), patch.object(
+            main, "_playback_graph_diagnosis", new=AsyncMock(return_value=diagnosis)
+        ):
+            await main._measurement_entry_preflight(48000)
+
+        reconcile.assert_awaited_once_with(
+            target_rate=48000,
+            initial_graph=diagnosis,
+        )
 
     async def test_measurement_entry_and_output_mode_endpoint_sources_have_no_direct_graph_mutators(self):
         output_mode_source = inspect.getsource(main.save_audio_output_mode_route)
@@ -488,6 +546,64 @@ class EntryBoundaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("_render_pipewire_clock_rate_dropin", samplerate_source)
         self.assertNotIn("method: 'POST'", app[app.find("/api/audio/samplerate") - 100: app.find("/api/audio/samplerate") + 150])
         self.assertIn("/api/audio/samplerate", app)
+
+
+class MeasurementSessionRuntimeReadbackTests(unittest.IsolatedAsyncioTestCase):
+    async def test_runtime_marks_only_healthy_subwoofer_input_loss_repairable(self):
+        runtime = main.FxrouteTransitionRuntime()
+        diagnosis = {
+            "mode": "subwoofer-2.2",
+            "output_key": "alsa_output.test",
+            "ee_ports": True,
+            "helper_ports": True,
+            "helper_active": True,
+            "helper_rate": 48000,
+            "helper_rate_matches": True,
+            "direct_ee_to_hw_present": False,
+            "links": {
+                "ee_soe_output_level:output_FL -> fxroute_21_stage1:input_L": False,
+                "ee_soe_output_level:output_FR -> fxroute_21_stage1:input_R": False,
+                "fxroute_21_stage1:output_1 -> alsa_output.test:playback_FL": True,
+                "fxroute_21_stage1:output_2 -> alsa_output.test:playback_FR": True,
+                "fxroute_21_stage1:output_3 -> alsa_output.test:playback_RL": True,
+                "fxroute_21_stage1:output_4 -> alsa_output.test:playback_RR": True,
+            },
+            "links_complete": False,
+            "signature": "missing-ee-helper",
+        }
+        with patch.object(
+            main,
+            "get_samplerate_status",
+            return_value={"active_rate": 48000, "force_rate": 48000},
+        ), patch.object(
+            main, "_playback_graph_diagnosis", new=AsyncMock(return_value=diagnosis)
+        ):
+            readback = await runtime.read_measurement_session_graph(48000)
+
+        self.assertTrue(readback["measurement_rate_aligned"])
+        self.assertTrue(readback["repairable_link_loss"])
+
+        invalid_rate = dict(readback)
+        invalid_rate["active_rate"] = 44100
+        invalid_rate["measurement_rate_aligned"] = False
+        self.assertFalse(
+            main._measurement_session_link_loss_is_repairable(
+                invalid_rate,
+                target_rate=48000,
+            )
+        )
+
+        invalid_helper_link = dict(readback)
+        invalid_helper_link["links"] = dict(readback["links"])
+        invalid_helper_link["links"][
+            "fxroute_21_stage1:output_1 -> alsa_output.test:playback_FL"
+        ] = False
+        self.assertFalse(
+            main._measurement_session_link_loss_is_repairable(
+                invalid_helper_link,
+                target_rate=48000,
+            )
+        )
 
 
 class OutputModePersistenceSplitTests(unittest.TestCase):
