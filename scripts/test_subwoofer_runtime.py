@@ -198,6 +198,136 @@ class SubwooferRuntimeStatusTest(unittest.TestCase):
             self.assertFalse(runtime.snapshot()["active"])
             self.assertIn(("pw-link", "-d", "fxroute_21_stage1:output_3", "mock_output:playback_RL"), commands)
 
+    def test_initial_verify_reconciles_missing_helper_inputs_without_restarting_helper(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            helper = Path(temp_dir) / "fxroute_21_passthrough"
+            helper.write_text("#!/bin/sh\n", encoding="utf-8")
+            processes = []
+            verify_calls = 0
+            reconcile_calls = 0
+            full_graph = mock_graph_links("mock_output")
+            missing_helper_inputs = full_graph.replace(
+                "ee_soe_output_level:output_FL\n  |-> fxroute_21_stage1:input_L\n", ""
+            ).replace(
+                "ee_soe_output_level:output_FR\n  |-> fxroute_21_stage1:input_R\n", ""
+            )
+
+            async def fake_runner(args):
+                nonlocal verify_calls
+                command = tuple(args)
+                if command == ("pw-link", "-io"):
+                    return CommandResult(0, "\n".join(
+                        [
+                            "fxroute_21_stage1:input_L",
+                            "fxroute_21_stage1:input_R",
+                            "fxroute_21_stage1:output_1",
+                            "fxroute_21_stage1:output_2",
+                            "fxroute_21_stage1:output_3",
+                            "fxroute_21_stage1:output_4",
+                        ]
+                    ), "")
+                if command == ("pw-link", "-l"):
+                    verify_calls += 1
+                    graph = missing_helper_inputs if verify_calls == 1 else full_graph
+                    return CommandResult(0, graph, "")
+                return CommandResult(0, "", "")
+
+            async def fake_launcher(_args):
+                process = FakeProcess()
+                processes.append(process)
+                return process
+
+            async def fake_reclean(*, skip_if_locked=False):
+                nonlocal reconcile_calls
+                reconcile_calls += 1
+                self.assertFalse(skip_if_locked)
+                return True
+
+            runtime = Subwoofer21Runtime(
+                helper_binary=helper,
+                command_runner=fake_runner,
+                process_launcher=fake_launcher,
+                sleeper=lambda _seconds: asyncio.sleep(0),
+            )
+            runtime._reclean_guarded = fake_reclean
+
+            with self.assertLogs("subwoofer_runtime", level="INFO") as logs:
+                asyncio.run(runtime.sync(make_config(output_key="mock_output")))
+
+            snapshot = runtime.snapshot()
+            self.assertTrue(snapshot["active"])
+            self.assertIsNone(snapshot["last_error"])
+            self.assertTrue(snapshot["links_configured"])
+            self.assertEqual(snapshot["helper_pid"], processes[0].pid)
+            self.assertEqual(len(processes), 1)
+            self.assertEqual(verify_calls, 2)
+            self.assertEqual(reconcile_calls, 1)
+            self.assertTrue(any("Starting 2.1 helper: pid=12345" in line for line in logs.output))
+
+    def test_initial_verify_failure_after_one_reconcile_keeps_existing_cleanup(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            helper = Path(temp_dir) / "fxroute_21_passthrough"
+            helper.write_text("#!/bin/sh\n", encoding="utf-8")
+            processes = []
+            verify_calls = 0
+            reconcile_calls = 0
+            full_graph = mock_graph_links("mock_output")
+            missing_helper_inputs = full_graph.replace(
+                "ee_soe_output_level:output_FL\n  |-> fxroute_21_stage1:input_L\n", ""
+            ).replace(
+                "ee_soe_output_level:output_FR\n  |-> fxroute_21_stage1:input_R\n", ""
+            )
+
+            async def fake_runner(args):
+                nonlocal verify_calls
+                command = tuple(args)
+                if command == ("pw-link", "-io"):
+                    return CommandResult(0, "\n".join(
+                        [
+                            "fxroute_21_stage1:input_L",
+                            "fxroute_21_stage1:input_R",
+                            "fxroute_21_stage1:output_1",
+                            "fxroute_21_stage1:output_2",
+                            "fxroute_21_stage1:output_3",
+                            "fxroute_21_stage1:output_4",
+                        ]
+                    ), "")
+                if command == ("pw-link", "-l"):
+                    verify_calls += 1
+                    return CommandResult(0, missing_helper_inputs, "")
+                return CommandResult(0, "", "")
+
+            async def fake_launcher(_args):
+                process = FakeProcess()
+                processes.append(process)
+                return process
+
+            async def fake_reclean(*, skip_if_locked=False):
+                nonlocal reconcile_calls
+                reconcile_calls += 1
+                self.assertFalse(skip_if_locked)
+                return True
+
+            runtime = Subwoofer21Runtime(
+                helper_binary=helper,
+                command_runner=fake_runner,
+                process_launcher=fake_launcher,
+                sleeper=lambda _seconds: asyncio.sleep(0),
+            )
+            runtime._reclean_guarded = fake_reclean
+
+            asyncio.run(runtime.sync(make_config(output_key="mock_output")))
+
+            snapshot = runtime.snapshot()
+            self.assertFalse(snapshot["active"])
+            self.assertFalse(snapshot["links_configured"])
+            self.assertIsNone(snapshot["helper_pid"])
+            self.assertIn("missing links", snapshot["last_error"])
+            self.assertTrue(processes[0].terminated)
+            self.assertEqual(len(processes), 1)
+            self.assertEqual(verify_calls, 2)
+            self.assertEqual(reconcile_calls, 1)
+
     def test_main_highpass_enabled_passes_crossover_to_helper(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             helper = Path(temp_dir) / "fxroute_21_passthrough"

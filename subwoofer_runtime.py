@@ -551,7 +551,14 @@ class Subwoofer21Runtime:
         if needs_configure:
             try:
                 await self._configure_graph(config)
-                await self._verify_graph(config)
+                try:
+                    await self._verify_graph(config)
+                except Exception:
+                    process = self._process
+                    if process is None or getattr(process, "returncode", None) is not None:
+                        raise
+                    await self._reclean_guarded(skip_if_locked=False)
+                    await self._verify_graph(config)
                 self._config = config
                 self._current_stream_key = stream_key
                 self._last_error = None
@@ -735,11 +742,16 @@ class Subwoofer21Runtime:
             peak_path,
         ]
         mode_num = "2.2 Stereo Bass" if config.output_mode == OUTPUT_MODE_SUBWOOFER_22_STEREO else "2.2" if config.output_mode == OUTPUT_MODE_SUBWOOFER_22 else "2.1"
-        logger.info("Starting %s helper: %s", mode_num, shlex.join(args))
         self._last_helper_args = list(args)
         self._exact_sub_mute = False
         self._process = await self._process_launcher(args)
         self._last_started_at = time.time()
+        logger.info(
+            "Starting %s helper: pid=%s command=%s",
+            mode_num,
+            getattr(self._process, "pid", None),
+            shlex.join(args),
+        )
         await self._wait_for_helper_ports()
 
     async def _configure_graph(self, config: SubwooferRuntimeConfig) -> None:
