@@ -483,6 +483,24 @@ class EasyEffectsManager:
         value: int | float | bool,
     ) -> None:
         """Set and acknowledge one property on the running output plugin."""
+        if (
+            plugin_name == "loudness"
+            and property_name == "volume"
+            and not isinstance(value, bool)
+        ):
+            requested = float(value)
+            if not math.isfinite(requested):
+                raise ValueError("EasyEffects Loudness volume must be finite")
+            if not (
+                self.LOUDNESS_PLUGIN_VOLUME_MIN_DB
+                <= requested
+                <= self.LOUDNESS_PLUGIN_VOLUME_MAX_DB
+            ):
+                raise ValueError(
+                    "EasyEffects Loudness volume is outside the installed LSP range: "
+                    f"{requested} not in [{self.LOUDNESS_PLUGIN_VOLUME_MIN_DB}, "
+                    f"{self.LOUDNESS_PLUGIN_VOLUME_MAX_DB}]"
+                )
         serialized = str(value).lower() if isinstance(value, bool) else format(float(value), ".15g")
         self._send_socket_command_without_response(
             f"set_property:output:{plugin_name}:{int(instance_id)}:{property_name}:{serialized}"

@@ -166,21 +166,21 @@ def test_loudness_plugin_bounds_preserve_total_attenuation():
     assert math.isclose(low["volume"] + low["output-gain"], -80.0, abs_tol=1e-9)
 
 
-def test_rounded_numeric_property_acknowledgement():
+def test_invalid_loudness_volume_is_rejected_before_socket_mutation():
     manager = RecordingManager()
     mutations = []
-    responses = iter(("not-ready", "7"))
     manager._send_socket_command_without_response = mutations.append
-    manager._send_socket_command = lambda command, timeout: next(responses)
+    try:
+        EasyEffectsManager.set_active_plugin_property(
+            manager,
+            "loudness", 0, "volume", 7.03094544423532
+        )
+    except ValueError as exc:
+        assert "outside the installed LSP range" in str(exc)
+    else:
+        raise AssertionError("invalid loudness volume was accepted")
 
-    EasyEffectsManager.set_active_plugin_property(
-        manager,
-        "loudness", 0, "volume", 7.03094544423532
-    )
-
-    assert mutations == [
-        "set_property:output:loudness:0:volume:7.03094544423532"
-    ]
+    assert mutations == []
 
 
 def test_rollback_on_loudness_volume_failure():
@@ -313,7 +313,7 @@ def test_production_dsp_settle_exceeds_control_ack_window():
 def main():
     test_all_adjacent_transitions()
     test_numeric_strength_offsets_and_legacy_mapping()
-    test_rounded_numeric_property_acknowledgement()
+    test_invalid_loudness_volume_is_rejected_before_socket_mutation()
     test_rollback_on_loudness_volume_failure()
     test_failure_rollback_has_no_positive_envelope()
     test_volume_and_combined_controls_are_guarded()
