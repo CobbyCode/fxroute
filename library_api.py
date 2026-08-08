@@ -171,7 +171,7 @@ def _cached_embedded_cover(track_id: str, track_path: Path) -> tuple[Optional[Pa
 
 
 def _track_cover_available(track_id: str) -> bool:
-    from main import library_scanner
+    from main import library_scanner, settings
 
     tracks_by_id = {track.id: track for track in library_scanner.get_tracks(refresh=False)}
     track = tracks_by_id.get(track_id)
@@ -231,7 +231,7 @@ async def list_tracks():
 
 @router.get("/api/tracks/file/{track_id:path}")
 async def download_track_file(track_id: str):
-    from main import library_scanner
+    from main import library_scanner, settings
 
     tracks_by_id = {track.id: track for track in library_scanner.get_tracks(refresh=True)}
     track = tracks_by_id.get(track_id)
@@ -247,7 +247,7 @@ async def download_track_file(track_id: str):
 
 @router.get("/api/tracks/cover/{track_id:path}")
 async def get_track_cover(track_id: str):
-    from main import library_scanner
+    from main import library_scanner, settings
 
     tracks_by_id = {track.id: track for track in library_scanner.get_tracks(refresh=False)}
     track = tracks_by_id.get(track_id)
