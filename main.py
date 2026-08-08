@@ -422,11 +422,7 @@ def _measurement_session_blocks_playback_rate(expected_rate: Optional[int]) -> b
     # An open-but-idle measurement window (no running sweep/auto-sub/SPL
     # job) must not block playback rate changes; the next measurement
     # entry/preflight re-establishes its rate.
-    return bool(
-        measurement_sr_session.active_manual_job_ids
-        or measurement_sr_session.active_spl_job_ids
-        or measurement_sr_session.active_auto_sub_job_id is not None
-    )
+    return measurement_sr_session.has_active_jobs
 
 
 async def _ensure_playback_samplerate_force(
@@ -876,6 +872,19 @@ class MeasurementSampleRateSession:
     def owns_audio_graph(self) -> bool:
         """Return whether measurement currently owns the playback graph."""
         return bool(self.entry_in_progress or self.active)
+
+    @property
+    def has_active_jobs(self) -> bool:
+        """Return whether any measurement job is actually running.
+
+        An open-but-idle measurement window (no sweep/auto-sub/SPL job)
+        must not lock playback-rate or output-mode mutations.
+        """
+        return bool(
+            self.active_manual_job_ids
+            or self.active_spl_job_ids
+            or self.active_auto_sub_job_id is not None
+        )
 
     async def _start_locked(self, measurement_rate: int) -> int:
         if self.active:
@@ -8527,7 +8536,7 @@ async def save_audio_output_mode_route(request: Request):
     except Exception:
         raise HTTPException(status_code=400, detail='Invalid JSON body, expected {"mode": <string>, "subwoofer": <object?>, "subwoofers": <object?>}')
 
-    if measurement_sr_session is not None and measurement_sr_session.active:
+    if measurement_sr_session is not None and measurement_sr_session.has_active_jobs:
         raise HTTPException(status_code=423, detail="Measurement is active; output mode switch is locked")
 
     try:

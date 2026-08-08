@@ -382,7 +382,7 @@ class EntryBoundaryTests(unittest.IsolatedAsyncioTestCase):
             "config": {"mode": "subwoofer-2.1", "subwoofer": {}},
         }
         run = AsyncMock(return_value=SimpleNamespace(committed=True))
-        with patch.object(main, "measurement_sr_session", SimpleNamespace(active=False)), patch.object(
+        with patch.object(main, "measurement_sr_session", SimpleNamespace(active=False, has_active_jobs=False)), patch.object(
             main, "prepare_audio_output_mode", return_value=target
         ), patch.object(main, "_coordinator_current_playback_context", new=AsyncMock(return_value={
             "source": "local",

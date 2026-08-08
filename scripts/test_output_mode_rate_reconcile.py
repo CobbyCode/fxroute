@@ -334,6 +334,14 @@ async def main_async() -> None:
             self.active_spl_job_ids = spl_jobs
             self.active_auto_sub_job_id = auto_sub
 
+        @property
+        def has_active_jobs(self):
+            return bool(
+                self.active_manual_job_ids
+                or self.active_spl_job_ids
+                or self.active_auto_sub_job_id is not None
+            )
+
     idle_session = FakeSrSession(active=True, jobs=set(), spl_jobs=set(), auto_sub=None)
     with mock.patch.object(main, "measurement_sr_session", idle_session):
         assert main._measurement_session_blocks_playback_rate(44100) is False, (
@@ -353,6 +361,25 @@ async def main_async() -> None:
         assert main._measurement_session_blocks_playback_rate(48000) is False, (
             "same-rate requests are never blocked"
         )
+
+    # 19. Output-mode switch lock is job-scoped: an open-but-idle measurement
+    #     window must not block the stereo <-> subwoofer switch.
+    async def fake_switch_route(_request=None):
+        if main.measurement_sr_session is not None and main.measurement_sr_session.has_active_jobs:
+            raise RuntimeError("423 lock would trigger")
+        return "switch allowed"
+
+    with mock.patch.object(main, "measurement_sr_session", idle_session):
+        assert await fake_switch_route() == "switch allowed"
+    with mock.patch.object(main, "measurement_sr_session", busy_session):
+        try:
+            await fake_switch_route()
+        except RuntimeError as exc:
+            assert "423" in str(exc)
+        else:
+            raise AssertionError("running sweep must lock the output-mode switch")
+    assert idle_session.has_active_jobs is False
+    assert busy_session.has_active_jobs is True
 
     print("output-mode rate reconcile tests: ok")
 
