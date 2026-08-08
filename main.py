@@ -415,11 +415,17 @@ def _get_current_pipewire_force_rate() -> Optional[int]:
 
 
 def _measurement_session_blocks_playback_rate(expected_rate: Optional[int]) -> bool:
+    if measurement_sr_session is None or not measurement_sr_session.active:
+        return False
+    if not isinstance(expected_rate, int) or expected_rate == measurement_sr_session.measurement_rate:
+        return False
+    # An open-but-idle measurement window (no running sweep/auto-sub/SPL
+    # job) must not block playback rate changes; the next measurement
+    # entry/preflight re-establishes its rate.
     return bool(
-        measurement_sr_session is not None
-        and measurement_sr_session.active
-        and isinstance(expected_rate, int)
-        and expected_rate != measurement_sr_session.measurement_rate
+        measurement_sr_session.active_manual_job_ids
+        or measurement_sr_session.active_spl_job_ids
+        or measurement_sr_session.active_auto_sub_job_id is not None
     )
 
 
@@ -2203,6 +2209,30 @@ class FxrouteTransitionRuntime(TransitionRuntime):
             require_source=source_required,
         )
         if not graph.get("links_complete"):
+            # Link-only drift during DSP stabilization (EE reconfigures its
+            # graph while the guarded runtime apply settles): one bounded
+            # repair attempt, then re-read before failing the transition.
+            graph_mode = graph.get("mode")
+            try:
+                if graph_mode == OUTPUT_MODE_STEREO:
+                    await _repair_stereo_output_links_once(graph)
+                elif graph_mode in OUTPUT_MODE_SUBWOOFER_MODES:
+                    await _coordinator_reconcile_subwoofer_links_only()
+                else:
+                    graph_mode = None
+                if graph_mode is not None:
+                    graph = await _playback_graph_diagnosis(
+                        graph_overview,
+                        source=request.source if source_required else None,
+                        target_rate=request.target_rate,
+                        require_source=source_required,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "DSP stabilization link repair failed: %s",
+                    exc,
+                )
+        if not graph.get("links_complete"):
             raise RuntimeError(
                 "production graph changed during DSP stabilization: "
                 f"{graph.get('signature')}"
@@ -2343,7 +2373,27 @@ class FxrouteTransitionRuntime(TransitionRuntime):
             if not preset:
                 raise RuntimeError("EasyEffects active preset was not confirmed at commit")
             extras = easyeffects_manager.load_global_extras()
-            effects_runtime = await self._read_and_validate_effects_runtime(extras)
+            try:
+                effects_runtime = await self._read_and_validate_effects_runtime(extras)
+            except RuntimeError:
+                # Recoverable DSP work-point drift (e.g. a stale SPL-noise
+                # state surviving an EasyEffects restart/preset reload):
+                # re-apply the canonical runtime once under the still-closed
+                # gate and re-validate before failing the transition.
+                apply_runtime = getattr(
+                    easyeffects_manager, "apply_autogain_loudness_runtime", None
+                )
+                if not callable(apply_runtime):
+                    raise
+                logger.warning(
+                    "Playback commit effects runtime drifted; re-applying canonical "
+                    "runtime: operation=%s",
+                    request.operation,
+                )
+                await asyncio.to_thread(
+                    apply_runtime, extras, extras, persist_all_presets=False
+                )
+                effects_runtime = await self._read_and_validate_effects_runtime(extras)
         return {
             "committed": True,
             "player": state,

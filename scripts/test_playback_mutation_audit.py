@@ -145,6 +145,8 @@ def _reason(context: str, name: str) -> str | None:
         or "_sync_locked" in context
     ):
         return "Coordinator adapter/core: production transition graph ownership"
+    if leaf == "stabilize_effects_after_rate_change":
+        return "Coordinator adapter/core: bounded link-only repair under the closed gate"
     if leaf == "_ensure_stereo_easyeffects_output_graph":
         return "central output-graph adapter; reached from helper sync in Coordinator or startup/config sync"
     if leaf == "_reconcile_transition_sink_rate":
