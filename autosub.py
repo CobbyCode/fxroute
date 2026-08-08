@@ -81,9 +81,8 @@ def _auto_sub_cancelled_candidate(delay_ms: float, stage: str) -> dict[str, Any]
 
 
 async def _restore_auto_sub_original_config(original_config_snapshot: dict[str, Any]) -> None:
-    from main import subwoofer_runtime
-
     """Restore subwoofer config from snapshot."""
+    from main import subwoofer_runtime
     try:
         from samplerate import set_audio_output_mode
         mode = original_config_snapshot.get("mode", "stereo") or "stereo"
@@ -1022,9 +1021,8 @@ def _auto_sub_candidate_ledger(
 
 
 def _capture_auto_sub_playback_gain() -> dict[str, Any]:
-    from main import easyeffects_manager
-
     """Capture one fixed neutral source gain for an AutoSub optimization job."""
+    from main import easyeffects_manager
     manager = easyeffects_manager
     loudness_enabled = False
     volume_db = 0.0
@@ -1555,9 +1553,8 @@ async def _measure_auto_sub_candidate(
     sub2_polarity: str | None = None,
     exact_sub_mute: bool = False,
 ) -> dict[str, Any]:
-    from main import _sync_subwoofer_runtime_for_measurement_sweep, measurement_store, subwoofer_runtime
-
     """Measure one AutoSub delay candidate with the standard safety checks."""
+    from main import _sync_subwoofer_runtime_for_measurement_sweep, measurement_store, subwoofer_runtime
     from samplerate import _load_audio_output_mode
 
     _marks = {"start": time.monotonic()}

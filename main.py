@@ -12,16 +12,13 @@ import time
 import asyncio
 import hashlib
 import math
-import statistics
 import random
 import subprocess
 import tempfile
 import zipfile
-import numpy as np
 import samplerate_orchestration
 from contextlib import asynccontextmanager
 from dataclasses import replace
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, List, Mapping, Optional
 from urllib.parse import quote, unquote, urlparse
@@ -29,7 +26,7 @@ from uuid import uuid4
 
 import uvicorn
 from fastapi import FastAPI, Request, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File, Form
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 
@@ -714,22 +711,16 @@ def _dedupe_archive_name(name: str, used_names: set[str]) -> str:
     return zip_album.dedupe_archive_name(name, used_names)
 
 from models import (
-    DeleteFolderRequest,
-    DeleteTracksRequest,
-    DownloadTracksRequest,
-    PlaylistSaveRequest,
     PlayRequest,
 )
 from player import get_player, MPVNotInstalledError, normalize_stream_info
 from radio_api import _station_api_payload, router as radio_api_router
 from stations import get_stations
-from playlists import delete_playlist, get_playlists, save_playlist
 import playlist_io
 import sink_inputs
 import playback_state
 import samplerate
 from library import (
-    AUDIO_EXTENSIONS,
     LibraryScanner,
     cleanup_track_parent_folder,
     folder_has_audio_files,
@@ -749,7 +740,6 @@ from measurement import (
     MeasurementStore,
     measurement_setup_settings_from_payload,
     normalize_measurement_optional_input_channel,
-    score_sub_alignment_candidates,
 )
 from peak_monitor import EasyEffectsPeakMonitor
 from subwoofer_runtime import (
@@ -809,7 +799,6 @@ from samplerate import (
     get_samplerate_status,
     persist_audio_output_mode,
     prepare_audio_output_mode,
-    set_audio_output_mode,
     set_audio_output_selection,
     set_audio_source_selection,
     set_bluetooth_receiver_enabled,
@@ -832,7 +821,6 @@ from system_volume import SystemVolumeError, get_output_volume, set_output_volum
 logger = logging.getLogger(__name__)
 
 import zip_album
-from zip_album import UPLOAD_AUDIO_EXTENSIONS, PLAYLIST_FILE_EXTENSIONS
 import install_info
 import effects_extras
 import spl_calibration

@@ -295,8 +295,8 @@ async def get_smart_top40_cover():
 
 @router.get("/api/albums")
 async def list_albums(query: Optional[str] = None):
-    from main import library_scanner
     """List albums grouped from the local library, optionally filtered by search query."""
+    from main import library_scanner
     if not library_scanner:
         raise HTTPException(status_code=503, detail="Library not available")
     albums = library_scanner.get_albums()
@@ -336,8 +336,8 @@ async def list_albums(query: Optional[str] = None):
 
 @router.get("/api/albums/{album_id}/tracks")
 async def get_album_tracks(album_id: str):
-    from main import library_scanner
     """Return tracks for a specific album, sorted by disc/track number."""
+    from main import library_scanner
     if not library_scanner:
         raise HTTPException(status_code=503, detail="Library not available")
     tracks = library_scanner.get_album_tracks(album_id)
@@ -348,8 +348,8 @@ async def get_album_tracks(album_id: str):
 
 @router.post("/api/albums/{album_id}/favorite")
 async def set_album_favorite(album_id: str, request: Request):
-    from main import library_scanner
     """Persist album favorite state in the smart metadata cache."""
+    from main import library_scanner
     if not library_scanner:
         raise HTTPException(status_code=503, detail="Library not available")
     tracks = library_scanner.get_album_tracks(album_id)
@@ -363,8 +363,8 @@ async def set_album_favorite(album_id: str, request: Request):
 
 @router.get("/api/albums/{album_id}/discover")
 async def get_album_discover(album_id: str, refresh: bool = False):
-    from main import library_scanner
     """Return cached similar-music suggestions for an album."""
+    from main import library_scanner
     if not library_scanner:
         raise HTTPException(status_code=503, detail="Library not available")
     tracks = library_scanner.get_album_tracks(album_id)
@@ -382,10 +382,10 @@ async def get_album_discover(album_id: str, refresh: bool = False):
 
 @router.get("/api/albums/{album_id}/cover")
 async def get_album_cover(album_id: str, size: int = 256):
-    from main import library_scanner
     """Return cover image for an album, resized to thumbnail.
     Priority: folder cover > embedded cover > external cover > 404.
     """
+    from main import library_scanner
     if not library_scanner:
         raise HTTPException(status_code=503, detail="Library not available")
     tracks = library_scanner.get_album_tracks(album_id)

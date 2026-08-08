@@ -17,9 +17,16 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-MAIN = ROOT / "main.py"
-SOURCE = MAIN.read_text()
-TREE = ast.parse(SOURCE)
+
+# Application callsite scope: main.py plus the extracted AutoSub module.
+# Playback entrypoints and single-owner paths live only in main.py; both
+# files are parsed for direct mutation calls so the extraction cannot
+# create an audit coverage gap.
+AUDIT_FILES = ("main.py", "autosub.py")
+SOURCES = {name: (ROOT / name).read_text() for name in AUDIT_FILES}
+TREES = {name: ast.parse(source) for name, source in SOURCES.items()}
+MAIN_SOURCE = SOURCES["main.py"]
+TREE = TREES["main.py"]
 
 OLD_HANDOFF_NAMES = {
     "_legacy_play_track",
@@ -97,10 +104,10 @@ def _function_names() -> set[str]:
     }
 
 
-def _calls() -> list[tuple[int, str, str]]:
-    result: list[tuple[int, str, str]] = []
+def _calls() -> list[tuple[str, int, str, str]]:
+    result: list[tuple[str, int, str, str]] = []
 
-    def walk(node: ast.AST, stack: tuple[str, ...] = ()) -> None:
+    def walk(node: ast.AST, file_name: str, stack: tuple[str, ...] = ()) -> None:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             stack = stack + (node.name,)
         if isinstance(node, ast.Call):
@@ -110,7 +117,7 @@ def _calls() -> list[tuple[int, str, str]]:
             elif isinstance(node.func, ast.Attribute):
                 name = node.func.attr
             if name in MUTATION_CALL_NAMES:
-                result.append((node.lineno, "/".join(stack) or "<module>", name))
+                result.append((file_name, node.lineno, "/".join(stack) or "<module>", name))
             if name == "to_thread" and node.args:
                 delegated = node.args[0]
                 delegated_name = None
@@ -119,11 +126,12 @@ def _calls() -> list[tuple[int, str, str]]:
                 elif isinstance(delegated, ast.Attribute):
                     delegated_name = delegated.attr
                 if delegated_name in {"_set_hardware_sink_mute", "ensure_stereo_output_graph"}:
-                    result.append((node.lineno, "/".join(stack) or "<module>", delegated_name))
+                    result.append((file_name, node.lineno, "/".join(stack) or "<module>", delegated_name))
         for child in ast.iter_child_nodes(node):
-            walk(child, stack)
+            walk(child, file_name, stack)
 
-    walk(TREE)
+    for file_name, tree in TREES.items():
+        walk(tree, file_name)
     return sorted(result)
 
 
@@ -163,6 +171,12 @@ def _reason(context: str, name: str) -> str | None:
     }:
         return "measurement workflow, outside playback transitions"
     if leaf in {
+        "_measure_auto_sub_candidate", "_capture_auto_sub_main_references",
+        "_measure_auto_sub_combined_candidate", "_run_auto_sub_optimize",
+        "_run_auto_sub_22_optimize", "_run_auto_sub_22_stereo_optimize",
+    }:
+        return "AutoSub sweep workflow, outside playback transitions"
+    if leaf in {
         "lifespan", "save_audio_output_selection_route", "save_audio_output_mode_route",
         "_finish_easyeffects_preset_mutation", "save_easyeffects_extras",
         "load_easyeffects_preset",
@@ -186,10 +200,10 @@ def main() -> int:
         if old in names:
             errors.append(f"obsolete handoff function still defined: {old}")
 
-    for line, context, name in _calls():
+    for file_name, line, context, name in _calls():
         reason = _reason(context, name)
         if reason is None:
-            errors.append(f"unclassified direct mutation at main.py:{line}: {context} -> {name}")
+            errors.append(f"unclassified direct mutation at {file_name}:{line}: {context} -> {name}")
 
     for entrypoint in sorted(PLAYBACK_ENTRYPOINTS):
         nodes = [
@@ -200,7 +214,7 @@ def main() -> int:
         if not nodes:
             errors.append(f"playback entrypoint missing: {entrypoint}")
             continue
-        body = ast.get_source_segment(SOURCE, nodes[0]) or ""
+        body = ast.get_source_segment(MAIN_SOURCE, nodes[0]) or ""
         if entrypoint in TRANSPORT_ONLY_ENTRYPOINTS:
             if "_run_coordinated_transition" in body:
                 errors.append(f"transport endpoint enters coordinator: {entrypoint}")
@@ -224,7 +238,7 @@ def main() -> int:
         if not nodes:
             errors.append(f"single-owner path missing: {path_name}")
             continue
-        body = ast.get_source_segment(SOURCE, nodes[0]) or ""
+        body = ast.get_source_segment(MAIN_SOURCE, nodes[0]) or ""
         if path_name == "_advance_playback_queue":
             if "_load_queue_track" not in body:
                 errors.append("auto-advance does not enter the coordinator-backed queue loader")
@@ -245,8 +259,8 @@ def main() -> int:
         return 1
 
     print("Playback mutation ownership audit: PASS")
-    for line, context, name in _calls():
-        print(f"  main.py:{line} {context} -> {name}: {_reason(context, name)}")
+    for file_name, line, context, name in _calls():
+        print(f"  {file_name}:{line} {context} -> {name}: {_reason(context, name)}")
     print("  Hardware mute writer: only FxrouteTransitionRuntime.set_hardware_mute")
     print("  Force-rate writer: _ensure_playback_samplerate_force plus guarded measurement owner")
     print("  Single-owner paths: source entry, Resume, Queue, Auto-Advance, Replay, Radio, Spotify handoff, Recovery, Measurement-Restore")
