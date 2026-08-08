@@ -203,43 +203,25 @@ def _record_local_track_started(track_info: Optional[dict]) -> None:
         logger.debug("Failed to update local track play stats for %s: %s", track_id, exc)
 
 
+def _cleanup_temp_file(path: Path):
+    path.unlink(missing_ok=True)
+
+
+def _resolve_library_folder(folder: str, music_root: Path) -> Path:
+    requested = Path(str(folder or "").strip().lstrip("/"))
+    if not str(requested):
+        raise HTTPException(status_code=400, detail="folder is required")
+    if requested.is_absolute() or ".." in requested.parts:
+        raise HTTPException(status_code=400, detail="Invalid folder path")
+    folder_path = (music_root / requested).resolve()
+    if folder_path == music_root.resolve() or not path_within_root(folder_path, music_root):
+        raise HTTPException(status_code=403, detail="Folder path outside music root")
+    if not folder_path.is_dir():
+        raise HTTPException(status_code=404, detail="Folder not found")
+    return folder_path
+
+
 @router.get("/api/tracks")
-def _cleanup_temp_file(path: Path):
-    path.unlink(missing_ok=True)
-
-
-def _resolve_library_folder(folder: str, music_root: Path) -> Path:
-    requested = Path(str(folder or "").strip().lstrip("/"))
-    if not str(requested):
-        raise HTTPException(status_code=400, detail="folder is required")
-    if requested.is_absolute() or ".." in requested.parts:
-        raise HTTPException(status_code=400, detail="Invalid folder path")
-    folder_path = (music_root / requested).resolve()
-    if folder_path == music_root.resolve() or not path_within_root(folder_path, music_root):
-        raise HTTPException(status_code=403, detail="Folder path outside music root")
-    if not folder_path.is_dir():
-        raise HTTPException(status_code=404, detail="Folder not found")
-    return folder_path
-
-
-def _cleanup_temp_file(path: Path):
-    path.unlink(missing_ok=True)
-
-
-def _resolve_library_folder(folder: str, music_root: Path) -> Path:
-    requested = Path(str(folder or "").strip().lstrip("/"))
-    if not str(requested):
-        raise HTTPException(status_code=400, detail="folder is required")
-    if requested.is_absolute() or ".." in requested.parts:
-        raise HTTPException(status_code=400, detail="Invalid folder path")
-    folder_path = (music_root / requested).resolve()
-    if folder_path == music_root.resolve() or not path_within_root(folder_path, music_root):
-        raise HTTPException(status_code=403, detail="Folder path outside music root")
-    if not folder_path.is_dir():
-        raise HTTPException(status_code=404, detail="Folder not found")
-    return folder_path
-
-
 async def list_tracks():
     from main import library_scanner
 
