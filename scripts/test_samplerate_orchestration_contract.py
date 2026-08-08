@@ -62,7 +62,7 @@ class SamplerateOrchestrationContractTests(unittest.IsolatedAsyncioTestCase):
                 "ee_soe_output_level:output_FR -> alsa_output.pci-0000_00_1f.3.analog-stereo:playback_FR\n"
             )
 
-        main.playback_transition_generation = 40
+        main.playback_transition_epoch = 40
         with patch.object(main, "get_samplerate_status", samplerate_status), patch.object(
             main, "_ensure_playback_samplerate_force", ensure_force
         ), patch.object(main, "_sync_easyeffects_preset_for_playback_samplerate", preset_sync), patch.object(
@@ -221,6 +221,15 @@ class SamplerateOrchestrationContractTests(unittest.IsolatedAsyncioTestCase):
 
         class FakeCoordinator:
             transition_active = False
+            last_successful_commit_id = "tr-status-repair"
+
+            def recovery_context_is_current(self, context_id):
+                return context_id == self.last_successful_commit_id
+
+            async def run_recovery(self, **kwargs):
+                if await kwargs["validate"]():
+                    return await kwargs["execute"]()
+                return None
 
         async def run(request):
             calls.append(request)

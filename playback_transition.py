@@ -17,13 +17,16 @@ import logging
 import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Mapping, Protocol
+from typing import Any, Awaitable, Callable, Mapping, Protocol
 from uuid import uuid4
 
 
 logger = logging.getLogger(__name__)
 
 EASYEFFECTS_TRANSPORT_SINK = "easyeffects_sink"
+
+RecoveryValidator = Callable[[], Awaitable[bool]]
+RecoveryExecutor = Callable[[], Awaitable[Any]]
 
 
 class PlaybackTransitionFailure(RuntimeError):
@@ -84,6 +87,10 @@ class TransitionRequest:
     # A homogeneous local MPV playlist is staged and committed as one
     # transition.  The playlist itself is still owned by MPV after commit;
     # the Coordinator continues to own rate, DSP, graph and output-gate state.
+    # Assigned by the application before entering the Coordinator.  Unlike
+    # the old odd/even generation, this identifies one attempted entry even
+    # when a successor is already waiting for the transition lock.
+    attempt_epoch: int | None = None
     native_queue: tuple[Mapping[str, Any], ...] = field(default_factory=tuple)
     native_queue_index: int | None = None
     native_queue_jump: int | None = None
@@ -234,6 +241,10 @@ class PlaybackTransitionCoordinator:
         self.gate = OutputGateState()
         self.last_error: dict[str, Any] | None = None
         self.last_result: TransitionResult | None = None
+        self._last_successful_commit_id: str | None = None
+        self._recovery_lock = asyncio.Lock()
+        self._recovery_inflight_key: tuple[str, str] | None = None
+        self._recovery_last_key: tuple[str, str] | None = None
         self._startup_gate_reconciled = self.gate_state_path is None
         self._startup_gate_error: str | None = None
 
@@ -244,12 +255,82 @@ class PlaybackTransitionCoordinator:
     def status(self) -> dict[str, Any]:
         return {
             "active": self.transition_active,
+            "transition_blocked": self.transition_blocked,
             "gate": self.gate.as_dict(),
             "startup_gate_reconciled": self._startup_gate_reconciled,
             "startup_gate_error": self._startup_gate_error,
             "last_error": dict(self.last_error) if self.last_error else None,
             "last_transition_id": self.last_result.transition_id if self.last_result else None,
         }
+
+    @property
+    def transition_blocked(self) -> bool:
+        """Return whether the Coordinator blocks normal playback admission."""
+        return bool(
+            self.transition_active
+            or self.gate.failure_latched
+            or self.gate.closed
+        )
+
+    @property
+    def last_successful_commit_id(self) -> str | None:
+        """Return the latest committed transition identity."""
+        return self._last_successful_commit_id
+
+    def recovery_context_is_current(self, commit_context_id: str | None) -> bool:
+        """Return whether a watcher still targets the latest committed context."""
+        return bool(
+            commit_context_id
+            and self.last_successful_commit_id == commit_context_id
+            and not self.transition_active
+            and not self.gate.failure_latched
+        )
+
+    async def run_recovery(
+        self,
+        *,
+        signature: str,
+        commit_context_id: str,
+        validate: RecoveryValidator,
+        execute: RecoveryExecutor,
+    ) -> Any:
+        """Coalesce one watcher recovery within its committed context.
+
+        Live transport validation remains in the application callback.  This
+        method owns only serialization, context-specific deduplication, and
+        the attempt lifecycle around the actual Coordinator request.
+        """
+        dedupe_key = (str(signature), str(commit_context_id))
+        async with self._recovery_lock:
+            if (
+                dedupe_key == self._recovery_inflight_key
+                or dedupe_key == self._recovery_last_key
+            ):
+                logger.info(
+                    "Coordinator recovery deduplicated: signature=%s commit_context=%s",
+                    signature,
+                    commit_context_id,
+                )
+                return None
+            if self.transition_active:
+                logger.info(
+                    "Coordinator recovery deferred while another transition is active: signature=%s",
+                    signature,
+                )
+                return None
+            if not await validate():
+                return None
+            self._recovery_inflight_key = dedupe_key
+            try:
+                return await execute()
+            finally:
+                self._recovery_inflight_key = None
+                self._recovery_last_key = dedupe_key
+
+    def _record_result(self, result: TransitionResult) -> None:
+        self.last_result = result
+        if result.committed:
+            self._last_successful_commit_id = result.transition_id
 
     def _persist_gate_state(self) -> None:
         """Persist ownership before muting so a restart can resolve stale state."""
@@ -744,7 +825,7 @@ class PlaybackTransitionCoordinator:
                     target_rate=target_rate,
                     state=final,
                 )
-                self.last_result = result
+                self._record_result(result)
                 self.last_error = None
                 logger.info(
                     "Measurement session graph reconcile committed: "
@@ -864,7 +945,7 @@ class PlaybackTransitionCoordinator:
                         "reason": reason,
                     },
                 )
-                self.last_result = result
+                self._record_result(result)
                 self.last_error = None
                 logger.info(
                     "Measurement playback restore skipped before source load: "
@@ -1078,7 +1159,7 @@ class PlaybackTransitionCoordinator:
                         target_rate=active_request.target_rate,
                         state=result_state,
                     )
-                    self.last_result = result
+                    self._record_result(result)
                     self.last_error = None
                     log_timing("committed")
                     return result
@@ -1226,7 +1307,7 @@ class PlaybackTransitionCoordinator:
                     target_rate=active_request.target_rate,
                     state=result_state,
                 )
-                self.last_result = result
+                self._record_result(result)
                 self.last_error = None
                 log_timing("committed")
                 return result
@@ -1317,6 +1398,7 @@ class PlaybackTransitionCoordinator:
         reload_source: bool = True,
         restore_position: float | None = None,
         restore_intent: Mapping[str, Any] | None = None,
+        attempt_epoch: int | None = None,
     ) -> TransitionResult:
         """Restore playback after a measurement through the same state machine."""
         return await self.execute(TransitionRequest(
@@ -1331,6 +1413,7 @@ class PlaybackTransitionCoordinator:
             detail="measurement-release",
             restore_position=restore_position,
             restore_intent=dict(restore_intent or {}),
+            attempt_epoch=attempt_epoch,
         ))
 
 

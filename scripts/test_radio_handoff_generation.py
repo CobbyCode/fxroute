@@ -37,7 +37,7 @@ class PlaybackTransitionGenerationTests(unittest.IsolatedAsyncioTestCase):
         names = (
             "peak_monitor", "manager", "peak_monitor_transition_lock",
             "peak_monitor_playback_armed", "peak_monitor_context_signature",
-            "playback_transition_generation", "current_track_info",
+            "playback_transition_epoch", "current_track_info",
             "_wait_for_samplerate_alignment",
             "_sync_easyeffects_preset_for_playback_samplerate",
             "_ensure_stereo_easyeffects_output_graph",
@@ -49,7 +49,7 @@ class PlaybackTransitionGenerationTests(unittest.IsolatedAsyncioTestCase):
         main.peak_monitor = self.monitor
         main.manager = FakeManager()
         main.peak_monitor_transition_lock = asyncio.Lock()
-        main.playback_transition_generation = 4
+        main.playback_transition_epoch = 4
         main.current_track_info = {
             "id": "local-track", "source": "local", "url": "/music/local.flac"
         }

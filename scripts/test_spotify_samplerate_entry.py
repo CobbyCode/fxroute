@@ -252,6 +252,15 @@ class SpotifyEntrySamplerateTests(unittest.IsolatedAsyncioTestCase):
     async def test_spotify_recovery_request_is_reload_coordinated(self):
         class CoordinatorDouble:
             transition_active = False
+            last_successful_commit_id = "tr-spotify-recovery"
+
+            def recovery_context_is_current(self, context_id):
+                return context_id == self.last_successful_commit_id
+
+            async def run_recovery(self, **kwargs):
+                if await kwargs["validate"]():
+                    return await kwargs["execute"]()
+                return None
 
         run = AsyncMock(return_value=SimpleNamespace(target_rate=44100))
         track = {
@@ -262,9 +271,7 @@ class SpotifyEntrySamplerateTests(unittest.IsolatedAsyncioTestCase):
         }
         with patch.object(main, "playback_transition_coordinator", CoordinatorDouble()), patch.object(
             main, "_run_coordinated_transition", run
-        ), patch.object(main, "coordinator_recovery_lock", None), patch.object(
-            main, "coordinator_recovery_inflight_signature", None
-        ), patch.object(main, "coordinator_recovery_last_signature", None), patch.object(
+        ), patch.object(
             main, "coordinator_last_successful_commit_id", "tr-spotify-recovery"
         ), patch.object(
             main, "get_spotify_ui_state", new=AsyncMock(

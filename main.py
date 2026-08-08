@@ -951,6 +951,7 @@ class MeasurementSampleRateSession:
         )
         if playback_restore_via_coordinator:
             coordinator_attempted = True
+            attempt_epoch = _begin_playback_transition_attempt()
             track = dict(
                 (playback_snapshot.get("track_info") or {})
                 if playback_source == "spotify"
@@ -979,6 +980,7 @@ class MeasurementSampleRateSession:
                         else None
                     ),
                     restore_intent=playback_snapshot,
+                    attempt_epoch=attempt_epoch,
                 )
                 if not restore_result.committed:
                     logger.info(
@@ -1001,6 +1003,8 @@ class MeasurementSampleRateSession:
                     )
             except Exception as exc:
                 logger.warning("Measurement restore through coordinator failed; retaining safe state: %s", exc)
+            finally:
+                _end_playback_transition_attempt()
         try:
             # Active playback restoration is exclusively coordinator-owned.  A
             # failed or unavailable coordinator must leave the playback gate
@@ -1125,9 +1129,6 @@ peak_monitor_context_signature = None
 easyeffects_preset_load_lock = None
 source_transition_lock = None
 playback_transition_coordinator: PlaybackTransitionCoordinator | None = None
-coordinator_recovery_lock: asyncio.Lock | None = None
-coordinator_recovery_inflight_signature: str | None = None
-coordinator_recovery_last_signature: tuple[str, str | None] | None = None
 coordinator_last_successful_commit_id: str | None = None
 external_input_loopback_module_id = None
 external_input_loopback_source_name = None
@@ -1147,7 +1148,8 @@ last_measurement_window_seen_at = 0.0
 silent_active_recovery_attempts: set[str] = set()
 silent_active_watch_tasks: dict[str, asyncio.Task] = {}
 latest_player_state_seq_seen = 0
-playback_transition_generation = 0
+playback_transition_epoch = 0
+playback_transition_pending_attempts = 0
 playback_intent_generation = 0
 current_track_info = None
 last_track_info = None
@@ -1173,6 +1175,33 @@ spl_calibration_noise_process = None
 spl_calibration_noise_file: Path | None = None
 spl_calibration_restore_state: dict[str, Any] | None = None
 SPL_CALIBRATION_JOB_ID = "spl-calibration"
+
+
+def _begin_playback_transition_attempt() -> int:
+    global playback_transition_epoch, playback_transition_pending_attempts
+    playback_transition_epoch += 1
+    playback_transition_pending_attempts += 1
+    return playback_transition_epoch
+
+
+def _end_playback_transition_attempt() -> None:
+    global playback_transition_pending_attempts
+    playback_transition_pending_attempts -= 1
+    if playback_transition_pending_attempts < 0:
+        playback_transition_pending_attempts = 0
+        logger.critical("playback transition attempt accounting underflow")
+
+
+def _capture_playback_transition_epoch() -> int | None:
+    """Capture a playback-context token; None while an attempt is in flight.
+
+    A token captured while any attempt is active must stay invalid forever,
+    matching the legacy odd/even generation contract: only idle captures may
+    ever become a committed context.
+    """
+    if playback_transition_pending_attempts > 0:
+        return None
+    return playback_transition_epoch
 
 
 def _hardware_sink_for_transition() -> str:
@@ -1634,9 +1663,12 @@ class FxrouteTransitionRuntime(TransitionRuntime):
         _load_player_paused(request.target_url)
         if not await _wait_for_player_current_file(request.target_url):
             raise RuntimeError("radio target stream did not settle while paused")
+        attempt_epoch = request.attempt_epoch
+        if not isinstance(attempt_epoch, int):
+            attempt_epoch = playback_transition_epoch
         live_rate = await _wait_for_radio_live_rate_after_load(
             previous_rate,
-            playback_transition_generation,
+            attempt_epoch,
         )
         if not isinstance(live_rate, int) or live_rate <= 0:
             live_rate = RADIO_EXPECTED_SAMPLE_RATE_HZ
@@ -2660,11 +2692,9 @@ def _playback_transition_is_active() -> bool:
 def _coordinator_commit_context_id() -> str | None:
     """Return the newest successful Coordinator commit context."""
     global coordinator_last_successful_commit_id
-    result = getattr(playback_transition_coordinator, "last_result", None)
-    if getattr(result, "committed", False):
-        transition_id = getattr(result, "transition_id", None)
-        if transition_id:
-            coordinator_last_successful_commit_id = str(transition_id)
+    context_id = getattr(playback_transition_coordinator, "last_successful_commit_id", None)
+    if context_id:
+        coordinator_last_successful_commit_id = str(context_id)
     return coordinator_last_successful_commit_id
 
 
@@ -2675,12 +2705,12 @@ async def _recovery_context_is_valid(request: TransitionRequest) -> bool:
     expected_url = request.recovery_url or request.target_url
     if not expected_context or expected_source != request.source or not expected_url:
         return False
-    if _coordinator_commit_context_id() != expected_context:
-        return False
-    if _playback_transition_is_active():
-        return False
-    gate = getattr(playback_transition_coordinator, "gate", None)
-    if gate is not None and bool(getattr(gate, "failure_latched", False)):
+    coordinator = playback_transition_coordinator
+    context_validator = getattr(coordinator, "recovery_context_is_current", None)
+    if callable(context_validator):
+        if not context_validator(expected_context):
+            return False
+    elif _coordinator_commit_context_id() != expected_context or _playback_transition_is_active():
         return False
 
     if expected_source == "spotify":
@@ -2712,9 +2742,9 @@ async def _recovery_context_is_valid(request: TransitionRequest) -> bool:
 
 
 async def _run_coordinated_transition(request: TransitionRequest):
-    """Run one transition and maintain the legacy generation readback guard."""
-    global playback_transition_generation, playback_transition_coordinator
-    global coordinator_last_successful_commit_id
+    """Run one transition under a monotonic attempt epoch."""
+    global playback_transition_epoch, playback_transition_pending_attempts
+    global playback_transition_coordinator, coordinator_last_successful_commit_id
     if playback_transition_coordinator is None:
         # Unit callers may invoke an endpoint without running FastAPI's
         # lifespan.  Production still initializes the same singleton during
@@ -2723,7 +2753,8 @@ async def _run_coordinated_transition(request: TransitionRequest):
             FxrouteTransitionRuntime(),
             gate_state_path=_playback_gate_state_path(),
         )
-    playback_transition_generation += 1
+    attempt_epoch = _begin_playback_transition_attempt()
+    request = replace(request, attempt_epoch=attempt_epoch)
     try:
         result = await playback_transition_coordinator.execute(request)
         if getattr(result, "committed", False):
@@ -2732,10 +2763,9 @@ async def _run_coordinated_transition(request: TransitionRequest):
                 coordinator_last_successful_commit_id = str(transition_id)
         return result
     finally:
-        # The Coordinator owns transition cleanup.  This outer guard only
-        # closes the legacy generation interval, including cancellation.
-        if playback_transition_generation % 2:
-            playback_transition_generation += 1
+        # The epoch changes before lock acquisition, so queued successors
+        # invalidate older callbacks even while the current attempt drains.
+        _end_playback_transition_attempt()
 
 
 def _measurement_audio_graph_owned() -> bool:
@@ -2758,7 +2788,6 @@ async def _request_coordinated_recovery(
     coalesced, so a persistent bypass link cannot create a two-second full
     handoff loop.
     """
-    global coordinator_recovery_lock, coordinator_recovery_inflight_signature, coordinator_recovery_last_signature
     if _measurement_audio_graph_owned():
         logger.info(
             "Coordinator recovery skipped while Measurement owns the audio graph: reason=%s",
@@ -2804,10 +2833,8 @@ async def _request_coordinated_recovery(
         },
         sort_keys=True,
     )
-    # Capture the context at observation time, before waiting for another
-    # recovery attempt to release the lock.  A duplicate queued while that
-    # attempt is running must still deduplicate against the attempt's
-    # original context, even if the first attempt commits successfully.
+    # Freeze the observation context before entering the Coordinator-owned
+    # recovery slot.  A queued duplicate must retain the original context.
     attempt_commit_context_id = _coordinator_commit_context_id()
     if not attempt_commit_context_id:
         logger.info(
@@ -2817,102 +2844,78 @@ async def _request_coordinated_recovery(
             track.get("url") or track.get("id"),
         )
         return
-    if coordinator_recovery_lock is None:
-        coordinator_recovery_lock = asyncio.Lock()
 
-    async with coordinator_recovery_lock:
-        # Capture the successful commit context before this attempt starts.
-        # A successful recovery advances the Coordinator's last_result while
-        # it is running; that new ID must not be stored as the context of the
-        # attempt that just produced it.
-        dedupe_key = (signature, attempt_commit_context_id)
-        if (
-            signature == coordinator_recovery_inflight_signature
-            or dedupe_key == coordinator_recovery_last_signature
-        ):
-            logger.info(
-                "Coordinator recovery deduplicated: reason=%s graph_only=%s signature=%s commit_context=%s",
-                reason,
-                graph_only,
-                signature,
-                attempt_commit_context_id,
-            )
-            return
-        # Do not latch a request that merely arrived while another transition
-        # was active.  The next watcher observation must still be allowed to
-        # retry after that transition has committed.
-        if playback_transition_coordinator.transition_active:
-            logger.info("Coordinator recovery deferred while another transition is active: reason=%s", reason)
-            return
+    observed_url = str(track.get("url") or track.get("id") or "") or None
+    recovery_track = dict(track)
+    if source == "spotify" and observed_url:
+        recovery_track.setdefault("url", observed_url)
+    request = TransitionRequest(
+        operation=operation,
+        source=source,
+        target_rate=target_rate,
+        target_url=observed_url,
+        target_track=recovery_track,
+        should_play=should_play,
+        rate_change=rate_change,
+        reload_source=effective_reload,
+        graph_only=graph_only,
+        detail=reason,
+        recovery_commit_context_id=attempt_commit_context_id,
+        recovery_source=source,
+        recovery_url=observed_url,
+    )
+
+    async def validate_recovery() -> bool:
         if _measurement_audio_graph_owned():
             logger.info(
                 "Coordinator recovery skipped before execution while Measurement owns the audio graph: reason=%s",
                 reason,
             )
-            return
-        attempted = False
-        try:
-            observed_url = str(track.get("url") or track.get("id") or "") or None
-            recovery_track = dict(track)
-            if source == "spotify" and observed_url:
-                recovery_track.setdefault("url", observed_url)
-            request = TransitionRequest(
-                operation=operation,
-                source=source,
-                target_rate=target_rate,
-                target_url=observed_url,
-                target_track=recovery_track,
-                should_play=should_play,
-                rate_change=rate_change,
-                reload_source=effective_reload,
-                graph_only=graph_only,
-                detail=reason,
-                recovery_commit_context_id=attempt_commit_context_id,
-                recovery_source=source,
-                recovery_url=observed_url,
+            return False
+        if not await _recovery_context_is_valid(request):
+            logger.info(
+                "Coordinator recovery discarded after context recheck: reason=%s source=%s url=%s commit_context=%s",
+                reason,
+                source,
+                observed_url,
+                attempt_commit_context_id,
             )
-            # This is deliberately immediately before execution.  A watcher
-            # must never resurrect a target after an intervening user action,
-            # failed handoff, or committed source change.
-            if not await _recovery_context_is_valid(request):
-                logger.info(
-                    "Coordinator recovery discarded after context recheck: reason=%s source=%s url=%s commit_context=%s",
-                    reason,
-                    source,
-                    observed_url,
-                    attempt_commit_context_id,
-                )
-                return
-            if _measurement_audio_graph_owned():
-                logger.info(
-                    "Coordinator recovery skipped at execution boundary while Measurement owns the audio graph: reason=%s",
-                    reason,
-                )
-                return
-            coordinator_recovery_inflight_signature = signature
-            attempted = True
+            return False
+        if _measurement_audio_graph_owned():
+            logger.info(
+                "Coordinator recovery skipped at execution boundary while Measurement owns the audio graph: reason=%s",
+                reason,
+            )
+            return False
+        return True
+
+    async def execute_recovery():
+        try:
             result = await _run_coordinated_transition(request)
-            if getattr(result, "committed", False) and source in {"local", "radio"} and isinstance(result.target_rate, int) and result.target_rate > 0:
-                track["sample_rate_hz"] = result.target_rate
-                if (
-                    current_track_info
-                    and current_track_info.get("source") == source
-                    and current_track_info.get("url") == track.get("url")
-                ):
-                    current_track_info["sample_rate_hz"] = result.target_rate
         except PlaybackTransitionFailure as exc:
             logger.warning("Coordinator recovery failed: %s", exc.as_status())
-        finally:
-            coordinator_recovery_inflight_signature = None
-            # Keep the observation deduplicated only within the Coordinator
-            # commit context in which this attempt began.  A successful
-            # recovery advances the context, so a later identical fault is
-            # eligible for a fresh attempt.
-            if attempted:
-                coordinator_recovery_last_signature = (
-                    signature,
-                    attempt_commit_context_id,
-                )
+            return None
+        if (
+            getattr(result, "committed", False)
+            and source in {"local", "radio"}
+            and isinstance(result.target_rate, int)
+            and result.target_rate > 0
+        ):
+            track["sample_rate_hz"] = result.target_rate
+            if (
+                current_track_info
+                and current_track_info.get("source") == source
+                and current_track_info.get("url") == track.get("url")
+            ):
+                current_track_info["sample_rate_hz"] = result.target_rate
+        return result
+
+    await playback_transition_coordinator.run_recovery(
+        signature=signature,
+        commit_context_id=attempt_commit_context_id,
+        validate=validate_recovery,
+        execute=execute_recovery,
+    )
 
 
 def _transition_error_http(exc: PlaybackTransitionFailure) -> HTTPException:
@@ -3424,11 +3427,16 @@ async def _check_and_recover_silent_active(
 
 
 def _playback_transition_context_is_current(generation: int | None) -> bool:
-    """Return true only for the committed playback context captured by a task."""
+    """Return true only for a context token captured at an idle boundary.
+
+    A token captured while any attempt was in flight is None (or an epoch
+    that a newer attempt superseded) and can never become current again,
+    exactly like a legacy odd-generation capture.
+    """
     return (
         isinstance(generation, int)
-        and generation == playback_transition_generation
-        and generation % 2 == 0
+        and generation == playback_transition_epoch
+        and playback_transition_pending_attempts == 0
     )
 
 
@@ -4255,7 +4263,7 @@ async def _measurement_entry_preflight(measurement_rate: int = MEASUREMENT_DEFAU
     coordinator = playback_transition_coordinator
     if coordinator is None:
         raise RuntimeError("PlaybackTransitionCoordinator is not available for measurement entry")
-    if coordinator.transition_active or coordinator.gate.failure_latched or coordinator.gate.closed:
+    if coordinator.transition_blocked:
         raise RuntimeError("measurement entry is blocked by an active or latched playback transition")
 
     status = dict(get_samplerate_status())
@@ -5009,7 +5017,7 @@ async def _subwoofer_runtime_link_watch_loop() -> None:
             output_mode = overview.get("output_mode") or {}
             if output_mode.get("mode") not in OUTPUT_MODE_SUBWOOFER_MODES:
                 continue
-            if playback_transition_coordinator is not None and playback_transition_coordinator.transition_active:
+            if _playback_transition_is_active():
                 continue
             track = dict(current_track_info or {})
             if not track:
@@ -5099,12 +5107,12 @@ async def _wait_for_radio_live_rate_after_load(
     deadline = time.monotonic() + max(timeout_ms, 0) / 1000
     stable_same = 0
     while time.monotonic() <= deadline:
-        if transition_generation != playback_transition_generation:
+        if transition_generation != playback_transition_epoch:
             logger.info(
                 "Radio post-load rate wait aborted: stale transition "
                 "generation=%s current=%s",
                 transition_generation,
-                playback_transition_generation,
+                playback_transition_epoch,
             )
             return None
         rate = _get_player_audio_samplerate()
@@ -5637,7 +5645,7 @@ def build_playback_payload(state: Optional[dict] = None) -> dict:
         transition_status = playback_transition_coordinator.status()
         playback_state["transition"] = transition_status
         gate = transition_status.get("gate") or {}
-        if transition_status.get("active") or gate.get("closed") or gate.get("failure_latched"):
+        if transition_status.get("transition_blocked"):
             # A physical source may still report playing while FXRoute owns a
             # safety mute, or while the coordinator has not yet returned a
             # committed result.  Do not expose that transient as committed
@@ -5669,7 +5677,7 @@ async def sync_peak_monitor_for_playback_state(
     if not peak_monitor:
         return
     if transition_generation is None:
-        transition_generation = playback_transition_generation
+        transition_generation = _capture_playback_transition_epoch()
     if not _playback_transition_context_is_current(transition_generation):
         return
     if peak_monitor_transition_lock is None:
@@ -5937,7 +5945,7 @@ def _schedule_radio_reconnect_if_needed(state: dict) -> None:
         _radio_reconnect_after_delay(
             dict(track_info),
             radio_reconnect_attempts,
-            playback_transition_generation,
+            _capture_playback_transition_epoch(),
         )
     )
 
@@ -5952,7 +5960,7 @@ def _mark_player_state_authoritative(state: dict | None) -> None:
 
 async def on_player_state_change(state: dict):
     global queue_advancing, playback_queue_index, current_track_info, last_track_info, queue_transition_target_url, latest_player_state_seq_seen
-    callback_generation = playback_transition_generation
+    callback_generation = _capture_playback_transition_epoch()
     seq = state.get("_seq")
     if isinstance(seq, int):
         if seq < latest_player_state_seq_seen:
@@ -6054,7 +6062,7 @@ async def on_player_state_change(state: dict):
         logger.debug(
             "Discarding stale player callback after playback transition: callback_generation=%s current_generation=%s",
             callback_generation,
-            playback_transition_generation,
+            playback_transition_epoch,
         )
         return
     await manager.broadcast({"type": "playback", "data": build_playback_payload(state)})
@@ -6856,7 +6864,7 @@ async def _spotify_playerctl_watch_loop() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan: startup and shutdown."""
-    global settings, player_instance, library_scanner, downloader, easyeffects_manager, measurement_store, measurement_sr_session, peak_monitor, subwoofer_runtime, subwoofer_runtime_link_watch_task, hardware_controller, peak_monitor_playback_armed, peak_monitor_transition_lock, peak_monitor_context_signature, easyeffects_preset_load_lock, source_transition_lock, playback_transition_coordinator, coordinator_recovery_lock, coordinator_recovery_inflight_signature, coordinator_recovery_last_signature, coordinator_last_successful_commit_id, external_input_loopback_module_id, external_input_loopback_source_name, bluetooth_input_source_name, bluetooth_monitor_task, bluetooth_agent_process, spotify_playerctl_watch_task, spotify_playerctl_detect_task, spotify_state_refresh_task, spotify_playerctl_last_trigger_at, current_source_mode, latest_spotify_state
+    global settings, player_instance, library_scanner, downloader, easyeffects_manager, measurement_store, measurement_sr_session, peak_monitor, subwoofer_runtime, subwoofer_runtime_link_watch_task, hardware_controller, peak_monitor_playback_armed, peak_monitor_transition_lock, peak_monitor_context_signature, easyeffects_preset_load_lock, source_transition_lock, playback_transition_coordinator, coordinator_last_successful_commit_id, external_input_loopback_module_id, external_input_loopback_source_name, bluetooth_input_source_name, bluetooth_monitor_task, bluetooth_agent_process, spotify_playerctl_watch_task, spotify_playerctl_detect_task, spotify_state_refresh_task, spotify_playerctl_last_trigger_at, current_source_mode, latest_spotify_state
 
     # Startup
     logger.info("Starting FXRoute... build_id=%s", _read_build_id())
@@ -6900,9 +6908,6 @@ async def lifespan(app: FastAPI):
             FxrouteTransitionRuntime(),
             gate_state_path=_playback_gate_state_path(),
         )
-        coordinator_recovery_lock = asyncio.Lock()
-        coordinator_recovery_inflight_signature = None
-        coordinator_recovery_last_signature = None
         coordinator_last_successful_commit_id = None
         startup_gate_reconciled = await playback_transition_coordinator.reconcile_startup_gate()
         logger.info(

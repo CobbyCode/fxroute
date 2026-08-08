@@ -107,9 +107,9 @@ class RadioHandoffWrapperTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.originals = {
             name: getattr(main, name)
-            for name in ("playback_transition_generation", "subwoofer_runtime")
+            for name in ("playback_transition_epoch", "subwoofer_runtime")
         }
-        main.playback_transition_generation = 100
+        main.playback_transition_epoch = 100
         main.subwoofer_runtime = None
 
     async def asyncTearDown(self):
@@ -154,10 +154,10 @@ class RadioHandoffWrapperTests(unittest.IsolatedAsyncioTestCase):
     async def test_stale_generation_aborts_cleanly(self):
         # A newer transition took over: clean abort (None), the Coordinator
         # must not be invoked at all (nothing touched).
-        main.playback_transition_generation = 101
+        main.playback_transition_epoch = 101
         with self.assertRaises(RuntimeError) as ctx:
             await self._run(generation=100)
-        self.assertIn("stale transition generation", str(ctx.exception))
+        self.assertIn("stale transition epoch", str(ctx.exception))
 
     async def test_success_returns_live_rate_with_single_coordinator_transition(self):
         result, calls, runtime = await self._run(live_rate=44100)
@@ -236,9 +236,9 @@ class RadioCoordinatorGraphTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.originals = {
             name: getattr(main, name)
-            for name in ("playback_transition_generation", "subwoofer_runtime")
+            for name in ("playback_transition_epoch", "subwoofer_runtime")
         }
-        main.playback_transition_generation = 200
+        main.playback_transition_epoch = 200
 
     async def asyncTearDown(self):
         for name, value in self.originals.items():
@@ -413,9 +413,9 @@ class RadioHandoffDiagnosisLogTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.originals = {
             name: getattr(main, name)
-            for name in ("playback_transition_generation", "subwoofer_runtime")
+            for name in ("playback_transition_epoch", "subwoofer_runtime")
         }
-        main.playback_transition_generation = 300
+        main.playback_transition_epoch = 300
 
     async def asyncTearDown(self):
         for name, value in self.originals.items():
@@ -505,7 +505,7 @@ class RadioPlayErrorSemanticsTests(unittest.IsolatedAsyncioTestCase):
         names = (
             "player_instance", "current_track_info", "last_track_info",
             "last_radio_track_info", "source_transition_lock",
-            "playback_transition_generation", "current_footer_owner",
+            "playback_transition_epoch", "current_footer_owner",
             "radio_reconnect_attempts", "radio_reconnect_url",
             "radio_reconnect_active_since",
             "_playback_state_before_measurement",
@@ -518,7 +518,7 @@ class RadioPlayErrorSemanticsTests(unittest.IsolatedAsyncioTestCase):
         main.last_track_info = None
         main.last_radio_track_info = None
         main.source_transition_lock = None
-        main.playback_transition_generation = 100
+        main.playback_transition_epoch = 100
         main.current_footer_owner = None
         main.radio_reconnect_attempts = 0
         main.radio_reconnect_url = None
@@ -648,7 +648,7 @@ class RadioPlayErrorSemanticsTests(unittest.IsolatedAsyncioTestCase):
                     await local_handoff(
                         dict(request.target_track),
                         request.target_rate,
-                        transition_generation=main.playback_transition_generation,
+                        transition_generation=main.playback_transition_epoch,
                     )
                     return
                 await main._coordinator_establish_effects_and_helper(

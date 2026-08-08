@@ -156,11 +156,11 @@ class RadioPostLoadHandoffTests(unittest.IsolatedAsyncioTestCase):
         self.originals = {
             name: getattr(main, name)
             for name in (
-                "playback_transition_generation", "subwoofer_runtime",
+                "playback_transition_epoch", "subwoofer_runtime",
                 "asyncio",
             )
         }
-        main.playback_transition_generation = 100
+        main.playback_transition_epoch = 100
         main.subwoofer_runtime = object()
 
     async def asyncTearDown(self):
@@ -320,12 +320,12 @@ class RadioPostLoadHandoffTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls["force"], [(48000, "radio-post-load-handoff")])
 
     async def test_stale_generation_aborts_live_rate_wait(self):
-        # A rapid station switch bumps playback_transition_generation while
+        # A rapid station switch bumps playback_transition_epoch while
         # the old handoff still waits; only the newest generation may win.
         # The generation must flip after the first stable same-rate poll
         # (during sleep), not before the first check.
         def bump_during_sleep(_delay):
-            main.playback_transition_generation += 1
+            main.playback_transition_epoch += 1
 
         with patch.object(
             main, "_get_player_audio_samplerate", return_value=44100
@@ -342,7 +342,7 @@ class RadioPostLoadHandoffTests(unittest.IsolatedAsyncioTestCase):
         track = {"id": "radio_stale", "source": "radio", "url": "https://radio.example/stale"}
 
         def bump_during_sleep(_delay):
-            main.playback_transition_generation += 1
+            main.playback_transition_epoch += 1
 
         # Same-rate poll: only accepted after stability polls, so the sleep
         # (and the generation bump inside it) runs before a rate is returned.

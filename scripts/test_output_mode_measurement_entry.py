@@ -451,6 +451,7 @@ class EntryBoundaryTests(unittest.IsolatedAsyncioTestCase):
 
         coordinator = SimpleNamespace(
             transition_active=False,
+            transition_blocked=False,
             gate=SimpleNamespace(failure_latched=False, closed=False),
         )
         reconcile = AsyncMock()
@@ -491,6 +492,7 @@ class EntryBoundaryTests(unittest.IsolatedAsyncioTestCase):
         })
         coordinator = SimpleNamespace(
             transition_active=False,
+            transition_blocked=False,
             gate=SimpleNamespace(failure_latched=False, closed=False),
             reconcile_measurement_session=reconcile,
         )

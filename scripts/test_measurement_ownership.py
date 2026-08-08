@@ -29,9 +29,6 @@ class MeasurementOwnershipTests(unittest.IsolatedAsyncioTestCase):
                 "_coordinator_target_rate",
                 "_coordinator_rate_change",
                 "_coordinator_commit_context_id",
-                "coordinator_recovery_lock",
-                "coordinator_recovery_inflight_signature",
-                "coordinator_recovery_last_signature",
                 "_playback_graph_diagnosis",
                 "_observe_playback_samplerate_drift",
                 "get_audio_output_overview",
@@ -88,6 +85,7 @@ class MeasurementOwnershipTests(unittest.IsolatedAsyncioTestCase):
         run = AsyncMock()
         coordinator = SimpleNamespace(
             transition_active=False,
+            transition_blocked=False,
             gate=SimpleNamespace(closed=False, failure_latched=False),
         )
 
@@ -145,6 +143,7 @@ class MeasurementOwnershipTests(unittest.IsolatedAsyncioTestCase):
         session.measurement_rate = 48000
         coordinator = SimpleNamespace(
             transition_active=False,
+            transition_blocked=False,
             gate=SimpleNamespace(closed=False, failure_latched=False),
             reconcile_measurement_session=AsyncMock(return_value={
                 "committed": True,
@@ -183,7 +182,15 @@ class MeasurementOwnershipTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_recovery_is_allowed_after_measurement_release(self):
         session = main.MeasurementSampleRateSession()
-        coordinator = SimpleNamespace(transition_active=False)
+        class Coordinator:
+            transition_active = False
+
+            async def run_recovery(self, **kwargs):
+                if await kwargs["validate"]():
+                    return await kwargs["execute"]()
+                return None
+
+        coordinator = Coordinator()
         player = SimpleNamespace(state={
             "current_file": "/music/a.flac",
             "playing": True,
@@ -200,11 +207,7 @@ class MeasurementOwnershipTests(unittest.IsolatedAsyncioTestCase):
             main, "_coordinator_rate_change", return_value=False
         ), patch.object(main, "_coordinator_commit_context_id", return_value="tr-after-release"), patch.object(
             main, "_recovery_context_is_valid", new=AsyncMock(return_value=True)
-        ), patch.object(main, "_run_coordinated_transition", run), patch.object(
-            main, "coordinator_recovery_lock", None
-        ), patch.object(main, "coordinator_recovery_inflight_signature", None), patch.object(
-            main, "coordinator_recovery_last_signature", None
-        ):
+        ), patch.object(main, "_run_coordinated_transition", run):
             await main._request_coordinated_recovery(track, "post-measurement-watcher")
 
         run.assert_awaited_once()

@@ -80,8 +80,11 @@ class MainCoreTransitionRuntime:
         self.events.append("rate")
         if request.target_rate is None:
             return
-        if self.generation != main.playback_transition_generation:
-            raise RuntimeError("stale transition generation")
+        attempt_epoch = request.attempt_epoch
+        if not isinstance(attempt_epoch, int):
+            attempt_epoch = self.generation
+        if attempt_epoch != main.playback_transition_epoch:
+            raise RuntimeError("stale transition epoch")
         try:
             status = main.get_samplerate_status()
         except Exception:
@@ -196,6 +199,7 @@ async def run_main_handoff_through_coordinator(
         rate_change=rate_change,
         reload_source=True,
         detail=detail,
+        attempt_epoch=generation,
     )
     coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
     result = await coordinator.execute(request)

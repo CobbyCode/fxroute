@@ -156,7 +156,7 @@ class QueueCallbackOwnershipTests(unittest.IsolatedAsyncioTestCase):
         names = (
             "playback_queue", "playback_queue_mode", "playback_queue_index",
             "queue_transition_target_url", "current_track_info", "last_track_info",
-            "queue_advancing", "single_track_loop", "playback_transition_generation",
+            "queue_advancing", "single_track_loop", "playback_transition_epoch",
             "latest_player_state_seq_seen", "source_transition_lock", "manager",
             "peak_monitor", "build_playback_payload", "_schedule_radio_reconnect_if_needed",
             "sync_peak_monitor_for_playback_state",
@@ -174,7 +174,7 @@ class QueueCallbackOwnershipTests(unittest.IsolatedAsyncioTestCase):
             main.last_track_info = dict(main.playback_queue[0])
             main.queue_advancing = False
             main.single_track_loop = False
-            main.playback_transition_generation = 2
+            main.playback_transition_epoch = 2
             main.latest_player_state_seq_seen = 0
             main.source_transition_lock = None
             main.manager = _FakeManager()
@@ -267,7 +267,7 @@ class ApiPlayQueueOrderTests(unittest.IsolatedAsyncioTestCase):
                 "playback_queue_mode", "playback_queue_loop", "playback_queue_shuffle",
                 "single_track_loop", "queue_transition_target_url", "peak_monitor",
                 "source_transition_lock", "_playback_state_before_measurement",
-                "playback_transition_generation",
+                "playback_transition_epoch",
                 "radio_reconnect_attempts", "radio_reconnect_url",
                 "radio_reconnect_active_since",
             )
@@ -291,7 +291,7 @@ class ApiPlayQueueOrderTests(unittest.IsolatedAsyncioTestCase):
         main.peak_monitor = None
         main.source_transition_lock = None
         main._playback_state_before_measurement = None
-        main.playback_transition_generation = 0
+        main.playback_transition_epoch = 0
         main.radio_reconnect_attempts = 0
         main.radio_reconnect_url = None
         main.radio_reconnect_active_since = 0.0

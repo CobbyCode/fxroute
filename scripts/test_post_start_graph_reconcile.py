@@ -89,7 +89,7 @@ class PostStartGraphReconcileTests(unittest.IsolatedAsyncioTestCase):
         events: list[str] = []
         runtime = MainCoreTransitionRuntime(
             target_rate=48000,
-            generation=main.playback_transition_generation,
+            generation=main.playback_transition_epoch,
             use_core=False,
             events=events,
         )
@@ -155,7 +155,7 @@ class PostStartGraphReconcileTests(unittest.IsolatedAsyncioTestCase):
         events: list[str] = []
         runtime = MainCoreTransitionRuntime(
             target_rate=48000,
-            generation=main.playback_transition_generation,
+            generation=main.playback_transition_epoch,
             use_core=False,
             events=events,
         )

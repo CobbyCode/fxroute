@@ -20,6 +20,13 @@ class _CoordinatorDouble:
         self.target_rate = target_rate
         self.requests = []
 
+    async def run_recovery(self, **kwargs):
+        if self.transition_active:
+            return None
+        if await kwargs["validate"]():
+            return await kwargs["execute"]()
+        return None
+
 
 class CoordinatorRecoveryTests(unittest.IsolatedAsyncioTestCase):
     async def test_radio_recovery_submits_one_coordinator_request(self):

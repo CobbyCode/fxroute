@@ -517,6 +517,7 @@ class TestCentralCapture:
             assert kwargs["should_play"] is True
             assert kwargs["rate_change"] is True
             assert kwargs["reload_source"] is True
+            assert isinstance(kwargs["attempt_epoch"], int)
         finally:
             ts.cleanup()
 

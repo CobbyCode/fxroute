@@ -306,7 +306,7 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
         ):
             runtime = MainCoreTransitionRuntime(
                 target_rate=48000,
-                generation=main.playback_transition_generation,
+                generation=main.playback_transition_epoch,
                 source="radio",
                 target_url="https://radio.example/stream",
                 operation="measurement-restore",
@@ -463,12 +463,39 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
         self.assertLess(events.index("reconcile"), events.index("verify"))
 
 
+
+class RecoveryCoordinatorDouble:
+    def __init__(self, *, transition_active: bool = False):
+        self._transition_active = transition_active
+        self.last_result = None
+        self._delegate = PlaybackTransitionCoordinator(SimpleNamespace(), gate_settle_seconds=0)
+
+    @property
+    def transition_active(self) -> bool:
+        return self._transition_active
+
+    @property
+    def last_successful_commit_id(self) -> str | None:
+        if getattr(self.last_result, "committed", False):
+            return str(self.last_result.transition_id)
+        return getattr(main, "coordinator_last_successful_commit_id", None)
+
+    def recovery_context_is_current(self, commit_context_id: str | None) -> bool:
+        return bool(
+            commit_context_id
+            and not self.transition_active
+            and main._coordinator_commit_context_id() == commit_context_id
+        )
+
+    async def run_recovery(self, **kwargs):
+        if self.transition_active:
+            return None
+        return await self._delegate.run_recovery(**kwargs)
+
+
 class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
     async def test_identical_recovery_signature_is_deduplicated(self):
         requests = []
-
-        class CoordinatorDouble:
-            transition_active = False
 
         class PlayerDouble:
             state = {
@@ -487,13 +514,9 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
             "url": "/music/current.flac",
             "sample_rate_hz": 44100,
         }
-        with patch.object(main, "playback_transition_coordinator", CoordinatorDouble()), patch.object(
+        with patch.object(main, "playback_transition_coordinator", RecoveryCoordinatorDouble()), patch.object(
             main, "player_instance", PlayerDouble()
-        ), patch.object(main, "_run_coordinated_transition", run), patch.object(
-            main, "coordinator_recovery_lock", None
-        ), patch.object(main, "coordinator_recovery_inflight_signature", None), patch.object(
-            main, "coordinator_recovery_last_signature", None
-        ), patch.object(main, "coordinator_last_successful_commit_id", "tr-context"
+        ), patch.object(main, "_run_coordinated_transition", run), patch.object(main, "coordinator_last_successful_commit_id", "tr-context"
         ), patch.object(main, "get_samplerate_status", return_value={
             "active_rate": 48000,
             "force_rate": 48000,
@@ -514,9 +537,6 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
     async def test_recovery_preserves_actual_paused_state(self):
         requests = []
 
-        class CoordinatorDouble:
-            transition_active = False
-
         class PlayerDouble:
             state = {
                 "current_file": "/music/current.flac",
@@ -534,13 +554,9 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
             "url": "/music/current.flac",
             "sample_rate_hz": 44100,
         }
-        with patch.object(main, "playback_transition_coordinator", CoordinatorDouble()), patch.object(
+        with patch.object(main, "playback_transition_coordinator", RecoveryCoordinatorDouble()), patch.object(
             main, "player_instance", PlayerDouble()
-        ), patch.object(main, "_run_coordinated_transition", run), patch.object(
-            main, "coordinator_recovery_lock", None
-        ), patch.object(main, "coordinator_recovery_inflight_signature", None), patch.object(
-            main, "coordinator_recovery_last_signature", None
-        ), patch.object(main, "coordinator_last_successful_commit_id", "tr-context"
+        ), patch.object(main, "_run_coordinated_transition", run), patch.object(main, "coordinator_last_successful_commit_id", "tr-context"
         ), patch.object(main, "get_samplerate_status", return_value={
             "active_rate": 44100,
             "force_rate": 44100,
@@ -558,9 +574,6 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(requests[0].recovery_url, "/music/current.flac")
 
     async def test_recovery_is_discarded_when_observed_mpv_context_is_gone(self):
-        class CoordinatorDouble:
-            transition_active = False
-
         class PlayerDouble:
             state = {
                 "current_file": None,
@@ -575,23 +588,16 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
             "url": "https://radio.example/live",
             "sample_rate_hz": 44100,
         }
-        with patch.object(main, "playback_transition_coordinator", CoordinatorDouble()), patch.object(
+        with patch.object(main, "playback_transition_coordinator", RecoveryCoordinatorDouble()), patch.object(
             main, "player_instance", PlayerDouble()
         ), patch.object(main, "current_track_info", dict(track)), patch.object(
             main, "coordinator_last_successful_commit_id", "tr-committed"
-        ), patch.object(main, "_run_coordinated_transition", run), patch.object(
-            main, "coordinator_recovery_lock", None
-        ), patch.object(main, "coordinator_recovery_inflight_signature", None), patch.object(
-            main, "coordinator_recovery_last_signature", None
-        ):
+        ), patch.object(main, "_run_coordinated_transition", run):
             await main._request_coordinated_recovery(track, "radio-watcher")
 
         run.assert_not_awaited()
 
     async def test_recovery_is_discarded_when_commit_context_changes_before_execution(self):
-        class CoordinatorDouble:
-            transition_active = False
-
         class PlayerDouble:
             state = {
                 "current_file": "/music/current.flac",
@@ -606,13 +612,9 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
             "url": "/music/current.flac",
             "sample_rate_hz": 44100,
         }
-        with patch.object(main, "playback_transition_coordinator", CoordinatorDouble()), patch.object(
+        with patch.object(main, "playback_transition_coordinator", RecoveryCoordinatorDouble()), patch.object(
             main, "player_instance", PlayerDouble()
         ), patch.object(main, "_run_coordinated_transition", run), patch.object(
-            main, "coordinator_recovery_lock", None
-        ), patch.object(main, "coordinator_recovery_inflight_signature", None), patch.object(
-            main, "coordinator_recovery_last_signature", None
-        ), patch.object(
             main, "_coordinator_commit_context_id", side_effect=("tr-before", "tr-after")
         ):
             await main._request_coordinated_recovery(track, "local-watcher")
@@ -620,10 +622,7 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
         run.assert_not_awaited()
 
     async def test_failed_recovery_signature_retries_after_new_successful_commit_context(self):
-        class CoordinatorDouble:
-            transition_active = False
-
-        coordinator = CoordinatorDouble()
+        coordinator = RecoveryCoordinatorDouble()
         class PlayerDouble:
             state = {
                 "current_file": "/music/current.flac",
@@ -649,11 +648,7 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
         }
         with patch.object(main, "playback_transition_coordinator", coordinator), patch.object(
             main, "player_instance", PlayerDouble()
-        ), patch.object(main, "_run_coordinated_transition", run), patch.object(
-            main, "coordinator_recovery_lock", None
-        ), patch.object(main, "coordinator_recovery_inflight_signature", None), patch.object(
-            main, "coordinator_recovery_last_signature", None
-        ), patch.object(main, "coordinator_last_successful_commit_id", "tr-before"), patch.object(
+        ), patch.object(main, "_run_coordinated_transition", run), patch.object(main, "coordinator_last_successful_commit_id", "tr-before"), patch.object(
             main, "get_samplerate_status", return_value={"active_rate": 48000, "force_rate": 48000}
         ):
             diagnosis = {"signature": "rate:44100->48000"}
@@ -668,11 +663,7 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(requests), 2)
 
     async def test_successful_recovery_allows_same_signature_after_its_commit(self):
-        class CoordinatorDouble:
-            transition_active = False
-            last_result = None
-
-        coordinator = CoordinatorDouble()
+        coordinator = RecoveryCoordinatorDouble()
         class PlayerDouble:
             state = {
                 "current_file": "/music/current.flac",
@@ -703,11 +694,7 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
         }
         with patch.object(main, "playback_transition_coordinator", coordinator), patch.object(
             main, "player_instance", PlayerDouble()
-        ), patch.object(main, "_run_coordinated_transition", run), patch.object(
-            main, "coordinator_recovery_lock", None
-        ), patch.object(main, "coordinator_recovery_inflight_signature", None), patch.object(
-            main, "coordinator_recovery_last_signature", None
-        ), patch.object(main, "coordinator_last_successful_commit_id", "tr-before"), patch.object(
+        ), patch.object(main, "_run_coordinated_transition", run), patch.object(main, "coordinator_last_successful_commit_id", "tr-before"), patch.object(
             main, "get_samplerate_status", return_value={"active_rate": 48000, "force_rate": 48000}
         ):
             diagnosis = {"signature": "rate:44100->48000"}
@@ -716,19 +703,26 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(requests), 2)
 
-    async def test_outer_transition_generation_closes_on_cancel_then_success(self):
+    async def test_overlapping_attempt_epochs_stay_stale_until_last_entry_finishes(self):
         class CoordinatorDouble:
             def __init__(self):
                 self.calls = 0
-                self.started_generations = []
-                self.entered = asyncio.Event()
+                self.started_epochs = []
+                self.first_entered = asyncio.Event()
+                self.second_entered = asyncio.Event()
+                self.release_second = asyncio.Event()
+                self.lock = asyncio.Lock()
 
-            async def execute(self, _request):
+            async def execute(self, request):
                 self.calls += 1
-                self.started_generations.append(main.playback_transition_generation)
-                if self.calls == 1:
-                    self.entered.set()
-                    await asyncio.Event().wait()
+                self.started_epochs.append(request.attempt_epoch)
+                if self.calls == 2:
+                    self.second_entered.set()
+                async with self.lock:
+                    if self.calls == 1:
+                        self.first_entered.set()
+                        await asyncio.Event().wait()
+                    await self.release_second.wait()
                 return SimpleNamespace(
                     committed=True,
                     transition_id="tr-follow-up-success",
@@ -746,20 +740,35 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
             reload_source=True,
         )
         with patch.object(main, "playback_transition_coordinator", coordinator), patch.object(
-            main, "playback_transition_generation", 20
-        ), patch.object(main, "coordinator_last_successful_commit_id", None):
-            cancelled = asyncio.create_task(main._run_coordinated_transition(request))
-            await coordinator.entered.wait()
-            cancelled.cancel()
+            main, "playback_transition_epoch", 0
+        ), patch.object(main, "playback_transition_pending_attempts", 0), patch.object(
+            main, "coordinator_last_successful_commit_id", None
+        ):
+            first = asyncio.create_task(main._run_coordinated_transition(request))
+            await coordinator.first_entered.wait()
+            second = asyncio.create_task(main._run_coordinated_transition(request))
+            await coordinator.second_entered.wait()
+
+            self.assertEqual(coordinator.started_epochs, [1, 2])
+            self.assertEqual(main.playback_transition_epoch, 2)
+            self.assertEqual(main.playback_transition_pending_attempts, 2)
+            self.assertFalse(main._playback_transition_context_is_current(2))
+            self.assertIsNone(main._capture_playback_transition_epoch())
+
+            first.cancel()
             with self.assertRaises(asyncio.CancelledError):
-                await cancelled
+                await first
+            self.assertEqual(main.playback_transition_pending_attempts, 1)
+            self.assertFalse(main._playback_transition_context_is_current(2))
+            self.assertIsNone(main._capture_playback_transition_epoch())
 
-            self.assertEqual(main.playback_transition_generation % 2, 0)
-            result = await main._run_coordinated_transition(request)
-
-        self.assertTrue(result.committed)
-        self.assertEqual(coordinator.started_generations, [21, 23])
-        self.assertEqual(main.playback_transition_generation % 2, 0)
+            coordinator.release_second.set()
+            result = await second
+            self.assertTrue(result.committed)
+            self.assertEqual(main.playback_transition_epoch, 2)
+            self.assertEqual(main.playback_transition_pending_attempts, 0)
+            self.assertTrue(main._playback_transition_context_is_current(2))
+            self.assertEqual(main._capture_playback_transition_epoch(), 2)
 
     async def test_same_rate_stereo_does_not_reload_effects_or_helper(self):
         overview = {

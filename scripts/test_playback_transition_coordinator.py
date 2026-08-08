@@ -731,6 +731,86 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(gate_path.exists())
 
 
+    async def test_public_admission_and_commit_context_api(self):
+        runtime = FakeRuntime(muted=False)
+        coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
+
+        self.assertFalse(coordinator.transition_blocked)
+        self.assertIsNone(coordinator.last_successful_commit_id)
+        result = await coordinator.execute(request())
+        self.assertTrue(result.committed)
+        self.assertEqual(coordinator.last_successful_commit_id, result.transition_id)
+        self.assertTrue(coordinator.recovery_context_is_current(result.transition_id))
+        self.assertFalse(coordinator.recovery_context_is_current("tr-other"))
+
+        coordinator.gate.closed = True
+        self.assertTrue(coordinator.transition_blocked)
+        coordinator.gate.closed = False
+        coordinator.gate.failure_latched = True
+        self.assertTrue(coordinator.transition_blocked)
+
+    async def test_recovery_slot_deduplicates_by_signature_and_context(self):
+        coordinator = PlaybackTransitionCoordinator(FakeRuntime(), gate_settle_seconds=0)
+        started = asyncio.Event()
+        release = asyncio.Event()
+        calls = []
+
+        async def validate():
+            return True
+
+        async def execute():
+            calls.append("attempt")
+            started.set()
+            await release.wait()
+            return "committed"
+
+        first = asyncio.create_task(coordinator.run_recovery(
+            signature="rate-drift",
+            commit_context_id="tr-context",
+            validate=validate,
+            execute=execute,
+        ))
+        await started.wait()
+        duplicate = asyncio.create_task(coordinator.run_recovery(
+            signature="rate-drift",
+            commit_context_id="tr-context",
+            validate=validate,
+            execute=execute,
+        ))
+        await asyncio.sleep(0)
+        release.set()
+
+        self.assertEqual(await first, "committed")
+        self.assertIsNone(await duplicate)
+        self.assertEqual(calls, ["attempt"])
+
+        self.assertEqual(
+            await coordinator.run_recovery(
+                signature="rate-drift",
+                commit_context_id="tr-new-context",
+                validate=validate,
+                execute=execute,
+            ),
+            "committed",
+        )
+        self.assertEqual(calls, ["attempt", "attempt"])
+
+        async def reject():
+            return False
+
+        self.assertIsNone(
+            await coordinator.run_recovery(
+                signature="rejected",
+                commit_context_id="tr-context",
+                validate=reject,
+                execute=execute,
+            )
+        )
+        self.assertNotEqual(
+            coordinator._recovery_last_key, ("rejected", "tr-context")
+        )
+
+
 class PlayerLoadContractTests(unittest.TestCase):
     def test_loadfile_preserves_cached_pause_until_explicit_start(self):
         player = MPVWrapper()
