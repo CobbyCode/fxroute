@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import main
+import library_api
 import playlist_io
 
 
@@ -269,18 +270,18 @@ class PlaylistIOApiTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(main, "settings", self.settings),
             patch.object(main, "library_scanner", scanner),
-            patch.object(main, "get_playlists", return_value=[playlist]),
+            patch.object(library_api, "get_playlists", return_value=[playlist]),
         ):
-            response = await main.export_playlist("p1")
+            response = await library_api.export_playlist("p1")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.media_type, "audio/x-mpegurl; charset=utf-8")
         self.assertIn('attachment; filename="My-Mix.m3u8"', response.headers["content-disposition"])
         self.assertEqual(response.body.decode(), "#EXTM3U\n#EXTINF:240,Artist - Song\nalbum/song.flac\n")
 
     async def test_export_api_404_for_unknown_playlist(self):
-        with patch.object(main, "settings", self.settings), patch.object(main, "library_scanner", SimpleNamespace(get_tracks=lambda refresh=True: [])), patch.object(main, "get_playlists", return_value=[]):
-            with self.assertRaises(main.HTTPException) as ctx:
-                await main.export_playlist("missing")
+        with patch.object(main, "settings", self.settings), patch.object(main, "library_scanner", SimpleNamespace(get_tracks=lambda refresh=True: [])), patch.object(library_api, "get_playlists", return_value=[]):
+            with self.assertRaises(library_api.HTTPException) as ctx:
+                await library_api.export_playlist("missing")
         self.assertEqual(ctx.exception.status_code, 404)
 
     async def test_upload_playlist_api_response_unchanged(self):
@@ -305,7 +306,7 @@ class PlaylistIOApiTests(unittest.IsolatedAsyncioTestCase):
             patch.object(main, "library_scanner", scanner),
             patch("playlist_io.save_playlist", return_value=saved) as save,
         ):
-            payload = await main.upload_track(file=FakeUpload(b"#EXTM3U\nalbum/song.flac\n"))
+            payload = await library_api.upload_track(file=FakeUpload(b"#EXTM3U\nalbum/song.flac\n"))
         self.assertEqual(payload["status"], "imported")
         self.assertEqual(payload["kind"], "playlist")
         self.assertEqual(payload["filename"], "mix.m3u8")
@@ -331,8 +332,8 @@ class PlaylistIOApiTests(unittest.IsolatedAsyncioTestCase):
                 return None
 
         with patch.object(main, "settings", self.settings), patch.object(main, "library_scanner", scanner):
-            with self.assertRaises(main.HTTPException) as ctx:
-                await main.upload_track(file=FakeUpload())
+            with self.assertRaises(library_api.HTTPException) as ctx:
+                await library_api.upload_track(file=FakeUpload())
         self.assertEqual(ctx.exception.status_code, 400)
         self.assertEqual(ctx.exception.detail, "Playlist did not match any library tracks")
 
