@@ -80,6 +80,9 @@ class RadioBrowserTests(unittest.TestCase):
 
         self.assertEqual(len(results), 4)
         self.assertEqual(mock_get.call_count, 4)
+        expected_user_agent = (
+            f"FXRoute/{(radio_api.BASE_DIR / 'VERSION').read_text(encoding='utf-8').strip()}"
+        )
         field_sets = []
         for call in mock_get.call_args_list:
             params = call.kwargs["params"]
@@ -92,7 +95,7 @@ class RadioBrowserTests(unittest.TestCase):
             self.assertEqual(params["reverse"], "true")
             self.assertEqual(params["limit"], radio_api.RADIO_BROWSER_QUERY_LIMIT)
             self.assertEqual(call.kwargs["timeout"], (2, 5))
-            self.assertEqual(call.kwargs["headers"]["User-Agent"], "FXRoute/0.9.3")
+            self.assertEqual(call.kwargs["headers"]["User-Agent"], expected_user_agent)
         self.assertCountEqual(field_sets, [["name"], ["country"], ["language"], ["tag"]])
 
     @patch("radio_api.requests.get")

@@ -508,10 +508,7 @@ class RadioPlayErrorSemanticsTests(unittest.IsolatedAsyncioTestCase):
             "playback_transition_generation", "current_footer_owner",
             "radio_reconnect_attempts", "radio_reconnect_url",
             "radio_reconnect_active_since",
-            "playback_stream_stale_after_measurement",
             "_playback_state_before_measurement",
-            "radio_stream_stale_after_measurement",
-            "_radio_state_before_measurement",
             "playback_queue_mode", "playback_queue", "subwoofer_runtime",
             "playback_transition_coordinator",
         )
@@ -526,10 +523,7 @@ class RadioPlayErrorSemanticsTests(unittest.IsolatedAsyncioTestCase):
         main.radio_reconnect_attempts = 0
         main.radio_reconnect_url = None
         main.radio_reconnect_active_since = 0.0
-        main.playback_stream_stale_after_measurement = False
         main._playback_state_before_measurement = None
-        main.radio_stream_stale_after_measurement = False
-        main._radio_state_before_measurement = None
         main.playback_queue_mode = "app_replace"
         main.playback_queue = []
         main.subwoofer_runtime = None

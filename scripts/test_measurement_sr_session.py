@@ -37,9 +37,6 @@ class _TestSession:
         self._orig_get_current_pipewire_force_rate = main._get_current_pipewire_force_rate
         self._orig_is_measurement_window_open = main._is_measurement_window_open
         self._orig_playback_state_before_measurement = main._playback_state_before_measurement
-        self._orig_radio_state_before_measurement = main._radio_state_before_measurement
-        self._orig_playback_stream_stale = main.playback_stream_stale_after_measurement
-        self._orig_radio_stream_stale = main.radio_stream_stale_after_measurement
         self._orig_last_measurement_window_seen_at = main.last_measurement_window_seen_at
         self._orig_get_player_audio_samplerate = main._get_player_audio_samplerate
         self._orig_get_spotify_ui_state = main.get_spotify_ui_state
@@ -62,9 +59,6 @@ class _TestSession:
         # Patch
         main.measurement_sr_session = main.MeasurementSampleRateSession()
         main._playback_state_before_measurement = None
-        main._radio_state_before_measurement = None
-        main.playback_stream_stale_after_measurement = False
-        main.radio_stream_stale_after_measurement = False
         main.current_track_info = self._track_info
         main.last_measurement_window_seen_at = self._window_seen_at
         main.get_samplerate_status = self._mock_get_samplerate_status
@@ -202,9 +196,6 @@ class _TestSession:
         main._get_current_pipewire_force_rate = self._orig_get_current_pipewire_force_rate
         main._is_measurement_window_open = self._orig_is_measurement_window_open
         main._playback_state_before_measurement = self._orig_playback_state_before_measurement
-        main._radio_state_before_measurement = self._orig_radio_state_before_measurement
-        main.playback_stream_stale_after_measurement = self._orig_playback_stream_stale
-        main.radio_stream_stale_after_measurement = self._orig_radio_stream_stale
         main.last_measurement_window_seen_at = self._orig_last_measurement_window_seen_at
         main._get_player_audio_samplerate = self._orig_get_player_audio_samplerate
         main.get_spotify_ui_state = self._orig_get_spotify_ui_state
@@ -902,14 +893,13 @@ class TestHeartbeatReopen:
         finally:
             ts.cleanup()
 
-    def test_stale_marking_on_release(self) -> None:
-        """Release marks playback stale when expected_rate != measurement_rate."""
+    def test_release_after_rate_mismatch_completes(self) -> None:
+        """A release after a rate-mismatched session completes and keeps the snapshot."""
         ts = _TestSession()
         try:
             import main
             ts.set_window_open(True)
             ts.set_track_playing(source="local", sample_rate=44100)
-            main.playback_stream_stale_after_measurement = False
 
             asyncio.get_event_loop().run_until_complete(
                 ts._session.register_manual_job("job-1")
@@ -922,9 +912,6 @@ class TestHeartbeatReopen:
             )
             asyncio.get_event_loop().run_until_complete(
                 ts._session.unregister_manual_job("job-1")
-            )
-            assert main.playback_stream_stale_after_measurement is True, (
-                "playback should be marked stale after measurement at different rate"
             )
         finally:
             ts.cleanup()

@@ -101,7 +101,14 @@ class SamplerateOrchestrationContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertLess(ledger.events.index("source-volume:100"), ledger.events.index("dsp-stabilize"))
         self.assertLess(ledger.events.index("dsp-stabilize"), ledger.events.index("commit-readback"))
         self.assertLess(ledger.events.index("commit-readback"), ledger.events.index("gate.set:False"))
-        self.assertEqual(ledger.events[-2], "gate.set:False")
+        # d513424 contract: the audible gate open ends with set_hardware_mute(False)
+        # followed only by the required hardware-mute readbacks (post-set readback
+        # plus the before/after-gate-open audible checks).
+        gate_open_index = ledger.events.index("gate.set:False")
+        self.assertTrue(
+            all(event == "gate.read" for event in ledger.events[gate_open_index + 1 :]),
+            "audible gate open must be followed only by hardware-mute readbacks",
+        )
         self.assertFalse(runtime.muted)
 
     async def test_radio_post_load_handoff_switches_once(self):
@@ -141,8 +148,7 @@ class SamplerateOrchestrationContractTests(unittest.IsolatedAsyncioTestCase):
             name: getattr(main, name)
             for name in (
                 "measurement_sr_session", "playback_transition_coordinator",
-                "_playback_state_before_measurement", "_radio_state_before_measurement",
-                "playback_stream_stale_after_measurement", "radio_stream_stale_after_measurement",
+                "_playback_state_before_measurement",
                 "current_track_info", "player_instance",
             )
         }
@@ -163,7 +169,6 @@ class SamplerateOrchestrationContractTests(unittest.IsolatedAsyncioTestCase):
                 "expected_rate": 44100,
                 "was_playing": True,
             }
-            main._radio_state_before_measurement = None
             main.current_track_info = {"source": "local", "url": "/music/a.flac"}
             main.player_instance = SimpleNamespace(
                 state={"current_file": "/music/a.flac", "ended": False}

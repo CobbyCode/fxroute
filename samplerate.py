@@ -1912,3 +1912,18 @@ def measurement_helper_snapshot_summary(snapshot: dict | None) -> dict:
         "stage": snapshot.get("stage"),
         "last_error": snapshot.get("last_error"),
     }
+
+
+def playback_rate_aligned(status: Mapping[str, Any] | None, target_rate: int | None) -> bool:
+    """Return whether a samplerate status readback matches the target rate.
+
+    Canonical alignment predicate shared by the transition adapter: the active
+    rate must equal the target and no conflicting force-rate may be in place
+    (None/0 mean "no force-rate set").
+    """
+    if not isinstance(status, Mapping):
+        return False
+    return bool(
+        status.get("active_rate") == target_rate
+        and status.get("force_rate") in {None, 0, target_rate}
+    )

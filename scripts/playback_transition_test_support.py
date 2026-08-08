@@ -47,10 +47,6 @@ class MainCoreTransitionRuntime:
         self.use_core = use_core
         self.events = events if events is not None else []
         self.muted = False
-        try:
-            self.previous_force_rate = main._get_current_pipewire_force_rate()
-        except Exception:
-            self.previous_force_rate = None
 
     async def read_hardware_mute(self) -> bool:
         self.events.append("gate.read")
@@ -62,10 +58,6 @@ class MainCoreTransitionRuntime:
 
     async def read_transition_snapshot(self, request: Any) -> dict[str, Any]:
         self.events.append("snapshot")
-        try:
-            self.previous_force_rate = main._get_current_pipewire_force_rate()
-        except Exception:
-            self.previous_force_rate = None
         try:
             status = dict(main.get_samplerate_status())
         except Exception:
@@ -94,10 +86,7 @@ class MainCoreTransitionRuntime:
             status = main.get_samplerate_status()
         except Exception:
             status = {}
-        if (
-            status.get("active_rate") == request.target_rate
-            and status.get("force_rate") in {None, 0, request.target_rate}
-        ):
+        if main.samplerate.playback_rate_aligned(status, request.target_rate):
             return
         aligned = await main._ensure_playback_samplerate_force(
             request.target_rate,
@@ -117,7 +106,6 @@ class MainCoreTransitionRuntime:
             return {"dsp_reinitialized": False, "helper_rebuilt": False}
         return await main._coordinator_establish_effects_and_helper(
             request,
-            previous_force_rate=self.previous_force_rate,
             ee_port_timeout_ms=(
                 self.ee_port_timeout_ms
                 if self.ee_port_timeout_ms is not None
@@ -197,10 +185,7 @@ async def run_main_handoff_through_coordinator(
             status = main.get_samplerate_status()
         except Exception:
             status = {}
-        rate_change = not (
-            status.get("active_rate") == target_rate
-            and status.get("force_rate") in {None, 0, target_rate}
-        )
+        rate_change = not main.samplerate.playback_rate_aligned(status, target_rate)
     request = TransitionRequest(
         operation=operation,
         source=source,

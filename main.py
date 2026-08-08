@@ -635,7 +635,7 @@ from models import (
     PlaylistSaveRequest,
     PlayRequest,
 )
-from player import get_player, MPVNotInstalledError, MPVError, normalize_stream_info
+from player import get_player, MPVNotInstalledError, normalize_stream_info
 from radio_api import _station_api_payload, router as radio_api_router
 from stations import get_stations
 from playlists import delete_playlist, get_playlists, save_playlist
@@ -743,13 +743,11 @@ from spotify import (
     get_status as spotify_get_status,
     play as spotify_play,
     pause as spotify_pause,
-    toggle as spotify_toggle,
     next_track as spotify_next,
     previous as spotify_previous,
     shuffle_toggle as spotify_shuffle_toggle,
     loop_cycle as spotify_loop_cycle,
     seek_to as spotify_seek_to,
-    set_volume as spotify_set_volume,
 )
 from system_volume import SystemVolumeError, get_output_volume, set_output_volume
 
@@ -788,9 +786,8 @@ class MeasurementSampleRateSession:
         if self.active:
             return self.generation
         # Reset old snapshots so a new session always starts fresh.
-        global _playback_state_before_measurement, _radio_state_before_measurement
+        global _playback_state_before_measurement
         _playback_state_before_measurement = None
-        _radio_state_before_measurement = None
         self.measurement_rate = int(measurement_rate)
         self._playback_captured = False
         self._rate_changed = False
@@ -833,7 +830,6 @@ class MeasurementSampleRateSession:
             )
             self._playback_captured = False
             _playback_state_before_measurement = None
-            _radio_state_before_measurement = None
             self.original_force_rate = 0
             self.entry_in_progress = False
             raise RuntimeError(
@@ -927,8 +923,7 @@ class MeasurementSampleRateSession:
         return True
 
     async def _release(self) -> None:
-        global playback_stream_stale_after_measurement, radio_stream_stale_after_measurement
-        global _playback_state_before_measurement, _radio_state_before_measurement
+        global _playback_state_before_measurement
 
         restore_value = self.original_force_rate if self.original_force_rate > 0 else 0
         captured_playback_snapshot = _playback_state_before_measurement
@@ -941,7 +936,6 @@ class MeasurementSampleRateSession:
                 "no longer matches the captured track; no old source will be resurrected"
             )
             _playback_state_before_measurement = None
-            _radio_state_before_measurement = None
         playback_snapshot = captured_playback_snapshot if snapshot_is_current else {}
         playback_source = playback_snapshot.get("source") or (current_track_info or {}).get("source")
         playback_target_rate = playback_snapshot.get("expected_rate")
@@ -991,9 +985,6 @@ class MeasurementSampleRateSession:
                         "Measurement restore was skipped because its playback intent changed "
                         "inside the Coordinator contract"
                     )
-                    playback_stream_stale_after_measurement = True
-                    if playback_source == "radio":
-                        radio_stream_stale_after_measurement = True
                     coordinator_attempted = False
                     playback_restore_via_coordinator = False
                     playback_snapshot = {}
@@ -1002,10 +993,7 @@ class MeasurementSampleRateSession:
                     target_rate = restore_value
                 else:
                     self._rate_changed = False
-                    playback_stream_stale_after_measurement = False
-                    radio_stream_stale_after_measurement = False
                     _playback_state_before_measurement = None
-                    _radio_state_before_measurement = None
                     logger.info(
                         "Measurement restore committed through PlaybackTransitionCoordinator: source=%s target_rate=%s",
                         playback_source,
@@ -1013,9 +1001,6 @@ class MeasurementSampleRateSession:
                     )
             except Exception as exc:
                 logger.warning("Measurement restore through coordinator failed; retaining safe state: %s", exc)
-                playback_stream_stale_after_measurement = True
-                if playback_source == "radio":
-                    radio_stream_stale_after_measurement = True
         try:
             # Active playback restoration is exclusively coordinator-owned.  A
             # failed or unavailable coordinator must leave the playback gate
@@ -1050,13 +1035,6 @@ class MeasurementSampleRateSession:
                         restore_value,
                         target_rate,
                     )
-
-            if self._rate_changed and not coordinator_attempted and _playback_state_before_measurement is not None:
-                saved_rate = _playback_state_before_measurement.get("expected_rate")
-                if isinstance(saved_rate, int) and saved_rate > 0 and saved_rate != self.measurement_rate:
-                    playback_stream_stale_after_measurement = True
-                    if _playback_state_before_measurement.get("source") == "radio":
-                        radio_stream_stale_after_measurement = True
 
             try:
                 runtime_restore_rate = playback_target_rate or restore_value
@@ -1107,7 +1085,6 @@ class MeasurementSampleRateSession:
             self._rate_changed = False
             self.original_force_rate = 0
             _playback_state_before_measurement = None
-            _radio_state_before_measurement = None
             self.generation += 1
             logger.info(
                 "Measurement sample-rate session released: generation=%s next_generation=%s restore_rate=%s",
@@ -1179,10 +1156,7 @@ radio_reconnect_task = None
 radio_reconnect_attempts = 0
 radio_reconnect_url = None
 radio_reconnect_active_since = 0.0
-radio_stream_stale_after_measurement = False
 radio_metadata_service = RadioMetadataService()
-_radio_state_before_measurement: dict[str, Any] | None = None
-playback_stream_stale_after_measurement = False
 _playback_state_before_measurement: dict[str, Any] | None = None
 samplerate_drift_signature: tuple[Any, ...] | None = None
 samplerate_drift_readbacks = 0
@@ -1301,7 +1275,6 @@ class FxrouteTransitionRuntime(TransitionRuntime):
     def __init__(self) -> None:
         self._output_key: str | None = None
         self._staged_target_url: str | None = None
-        self._previous_force_rate: int | None = None
 
     async def read_hardware_mute(self) -> bool:
         self._output_key = _hardware_sink_for_transition()
@@ -1343,8 +1316,7 @@ class FxrouteTransitionRuntime(TransitionRuntime):
         result["active_rate"] = rate.get("active_rate")
         result["force_rate"] = rate.get("force_rate")
         result["measurement_rate_aligned"] = bool(
-            rate.get("active_rate") == target_rate
-            and rate.get("force_rate") in {None, 0, target_rate}
+            samplerate.playback_rate_aligned(rate, target_rate)
         )
         result["repairable_link_loss"] = _measurement_session_link_loss_is_repairable(
             result,
@@ -1358,7 +1330,6 @@ class FxrouteTransitionRuntime(TransitionRuntime):
 
     async def read_transition_snapshot(self, request: TransitionRequest) -> dict[str, Any]:
         self._staged_target_url = None
-        self._previous_force_rate = _get_current_pipewire_force_rate()
         state = dict(player_instance.state if player_instance else {})
         try:
             rate = dict(get_samplerate_status())
@@ -1520,52 +1491,27 @@ class FxrouteTransitionRuntime(TransitionRuntime):
 
         expected_source = str(intent.get("source") or request.source)
         if expected_source == "spotify":
-            try:
-                spotify_state = await get_spotify_ui_state()
-            except Exception:
-                return False
             expected_identities = _spotify_snapshot_identity_values(intent)
             if not expected_identities:
                 expected_identities = _spotify_snapshot_identity_values({
                     "target_url": request.target_url,
                     "track_info": request.target_track,
                 })
-            live_identities = _spotify_identity_values(spotify_state)
-            status = str(spotify_state.get("status") or "").strip().lower()
-            if status not in {"playing", "paused"}:
-                return False
-            if not expected_identities or not live_identities.intersection(expected_identities):
-                return False
-            expected_generation = intent.get("intent_generation")
-            return not (
-                isinstance(expected_generation, int)
-                and expected_generation != playback_intent_generation
+            return await _spotify_intent_matches_live_state(
+                expected_identities,
+                intent.get("intent_generation"),
             )
 
         expected_id = intent.get("id")
-        expected_url = intent.get("url") or intent.get("path") or request.target_url
-        live_track = current_track_info or {}
-        if str(live_track.get("source") or "") != expected_source:
-            return False
-        if expected_id not in {None, ""} and live_track.get("id") != expected_id:
-            return False
-        if expected_url and live_track.get("url") != expected_url:
-            return False
-
-        state = dict(player_instance.state if player_instance else {})
-        current_file = state.get("current_file")
-        if not current_file or state.get("ended"):
-            return False
-        expected_file = intent.get("current_file")
-        if expected_file and current_file != expected_file:
-            return False
-        expected_generation = intent.get("intent_generation")
-        if (
-            isinstance(expected_generation, int)
-            and expected_generation != playback_intent_generation
-        ):
-            return False
-        return True
+        if expected_id in {None, ""}:
+            expected_id = None
+        return _local_intent_matches_live_state(
+            expected_source=expected_source,
+            expected_id=expected_id,
+            expected_url=intent.get("url") or intent.get("path") or request.target_url,
+            expected_file=intent.get("current_file"),
+            intent_generation=intent.get("intent_generation"),
+        )
 
     async def quiet_old_source(self, request: TransitionRequest) -> None:
         if request.graph_only:
@@ -1711,10 +1657,7 @@ class FxrouteTransitionRuntime(TransitionRuntime):
             status = dict(get_samplerate_status())
         except Exception:
             status = {}
-        if (
-            status.get("active_rate") == request.target_rate
-            and status.get("force_rate") in {None, 0, request.target_rate}
-        ):
+        if samplerate.playback_rate_aligned(status, request.target_rate):
             logger.info(
                 "Playback transition target-rate no-op: rate=%s operation=%s source=%s",
                 request.target_rate,
@@ -1743,10 +1686,7 @@ class FxrouteTransitionRuntime(TransitionRuntime):
             return {"dsp_reinitialized": False, "helper_rebuilt": False}
         if not isinstance(request.target_rate, int) or request.target_rate <= 0:
             return {"dsp_reinitialized": False, "helper_rebuilt": False}
-        return await _coordinator_establish_effects_and_helper(
-            request,
-            previous_force_rate=self._previous_force_rate,
-        )
+        return await _coordinator_establish_effects_and_helper(request)
 
     async def prepare_target_source(self, request: TransitionRequest) -> None:
         if request.graph_only:
@@ -2707,10 +2647,7 @@ def _coordinator_rate_change(target_rate: int | None) -> bool:
         status = get_samplerate_status()
     except Exception:
         return True
-    return not (
-        status.get("active_rate") == target_rate
-        and status.get("force_rate") in {None, 0, target_rate}
-    )
+    return not samplerate.playback_rate_aligned(status, target_rate)
 
 
 def _playback_transition_is_active() -> bool:
@@ -4009,7 +3946,6 @@ async def _coordinator_reconcile_post_start_graph(
 async def _coordinator_establish_effects_and_helper(
     request: TransitionRequest,
     *,
-    previous_force_rate: int | None = None,
     ee_port_timeout_ms: int = PLAYBACK_HANDOFF_EE_PORT_TIMEOUT_MS,
 ) -> dict[str, Any]:
     """Build the effects/helper graph inside the Coordinator-owned gate.
@@ -4019,7 +3955,6 @@ async def _coordinator_establish_effects_and_helper(
     the following adapter stages; this function only performs the idempotent
     EE/helper/link work and then uses the canonical graph readback.
     """
-    del previous_force_rate  # kept in the adapter call for source compatibility
     target_rate = request.target_rate
     if not isinstance(target_rate, int) or target_rate <= 0:
         return {
@@ -4205,15 +4140,11 @@ def _capture_playback_state_before_measurement(
 
     Stores source, url/path, id, title, expected_rate, position, and paused
     flag so the controlled restart can restore the user's exact spot.
-
-    Side-effect: also fills _radio_state_before_measurement / radio_stream_stale
-    so the existing radio-specific path in toggle_playback keeps working.
     """
-    global _playback_state_before_measurement, _radio_state_before_measurement
+    global _playback_state_before_measurement
     if measurement_sr_session is not None and measurement_sr_session._playback_captured:
         return
     _playback_state_before_measurement = None
-    _radio_state_before_measurement = None
     context = playback_context if isinstance(playback_context, Mapping) else {}
     if context.get("source") == "spotify":
         spotify_state = dict(context.get("spotify") or {})
@@ -4309,16 +4240,6 @@ def _capture_playback_state_before_measurement(
         "intent_generation": playback_intent_generation,
     }
     _playback_state_before_measurement = saved_state
-    # Mirror to radio-specific state for backwards compat with radio branch
-    if source == "radio":
-        _radio_state_before_measurement = {
-            "track_info": dict(current_track_info),
-            "url": saved_state["url"],
-            "id": saved_state["id"],
-            "title": saved_state["title"],
-            "expected_rate": expected_rate,
-            "position": saved_state["position"],
-        }
     logger.info(
         "PLAYBACK-CAPTURE-DIAG state captured before measurement: source=%s url=%s id=%s "
         "expected_rate=%s position=%.2f was_paused=%s was_playing=%s",
@@ -4413,39 +4334,36 @@ async def _measurement_entry_preflight(measurement_rate: int = MEASUREMENT_DEFAU
             )
 
 
-async def _measurement_restore_snapshot_matches_current_intent(
-    snapshot: Mapping[str, Any] | None,
+async def _spotify_intent_matches_live_state(
+    expected_identities: set[str],
+    intent_generation: Any,
 ) -> bool:
-    """Return whether a captured playback snapshot is still user-intended."""
-    if not snapshot:
+    """Return whether the live Spotify state still matches a captured intent."""
+    try:
+        spotify_state = await get_spotify_ui_state()
+    except Exception:
         return False
-    expected_source = str(snapshot.get("source") or "")
-    if expected_source == "spotify":
-        try:
-            spotify_state = await get_spotify_ui_state()
-        except Exception:
-            return False
-        expected_identities = _spotify_snapshot_identity_values(snapshot)
-        live_identities = _spotify_identity_values(spotify_state)
-        status = str(spotify_state.get("status") or "").strip().lower()
-        if status not in {"playing", "paused"}:
-            return False
-        if not expected_identities or not live_identities.intersection(expected_identities):
-            return False
-        expected_generation = snapshot.get("intent_generation")
-        return not (
-            isinstance(expected_generation, int)
-            and expected_generation != playback_intent_generation
-        )
-
-    expected_track = snapshot.get("track_info") or {}
-    expected_id = snapshot.get("id") or expected_track.get("id")
-    expected_url = (
-        snapshot.get("url")
-        or snapshot.get("path")
-        or expected_track.get("url")
-        or expected_track.get("path")
+    live_identities = _spotify_identity_values(spotify_state)
+    status = str(spotify_state.get("status") or "").strip().lower()
+    if status not in {"playing", "paused"}:
+        return False
+    if not expected_identities or not live_identities.intersection(expected_identities):
+        return False
+    return not (
+        isinstance(intent_generation, int)
+        and intent_generation != playback_intent_generation
     )
+
+
+def _local_intent_matches_live_state(
+    *,
+    expected_source: str,
+    expected_id: Any,
+    expected_url: str | None,
+    expected_file: str | None,
+    intent_generation: Any,
+) -> bool:
+    """Return whether the live MPV/local context still matches a captured intent."""
     live_track = current_track_info or {}
     if str(live_track.get("source") or "") != expected_source:
         return False
@@ -4458,16 +4376,44 @@ async def _measurement_restore_snapshot_matches_current_intent(
     current_file = state.get("current_file")
     if not current_file or state.get("ended"):
         return False
-    expected_file = snapshot.get("current_file") or expected_url
     if expected_file and current_file != expected_file:
         return False
-    expected_generation = snapshot.get("intent_generation")
     if (
-        isinstance(expected_generation, int)
-        and expected_generation != playback_intent_generation
+        isinstance(intent_generation, int)
+        and intent_generation != playback_intent_generation
     ):
         return False
     return True
+
+
+async def _measurement_restore_snapshot_matches_current_intent(
+    snapshot: Mapping[str, Any] | None,
+) -> bool:
+    """Return whether a captured playback snapshot is still user-intended."""
+    if not snapshot:
+        return False
+    expected_source = str(snapshot.get("source") or "")
+    if expected_source == "spotify":
+        return await _spotify_intent_matches_live_state(
+            _spotify_snapshot_identity_values(snapshot),
+            snapshot.get("intent_generation"),
+        )
+
+    expected_track = snapshot.get("track_info") or {}
+    expected_id = snapshot.get("id") or expected_track.get("id")
+    expected_url = (
+        snapshot.get("url")
+        or snapshot.get("path")
+        or expected_track.get("url")
+        or expected_track.get("path")
+    )
+    return _local_intent_matches_live_state(
+        expected_source=expected_source,
+        expected_id=expected_id,
+        expected_url=expected_url,
+        expected_file=snapshot.get("current_file") or expected_url,
+        intent_generation=snapshot.get("intent_generation"),
+    )
 
 
 def _resolve_measurement_start_sample_rate() -> int:
@@ -5239,6 +5185,25 @@ def _native_queue_request_fields() -> dict[str, Any]:
     }
 
 
+def _shuffled_around_current(tracks: list[dict], current_track: dict | None) -> list[dict]:
+    """Return dict copies with the current track first and the rest shuffled.
+
+    The current track is identified by its id so duplicate copies of the same
+    track stay together at the front.  With ``current_track`` omitted, only
+    the shuffled copies are returned.
+    """
+    current = dict(current_track) if current_track is not None else None
+    remaining = [
+        dict(track)
+        for track in tracks
+        if current is None or track.get("id") != current.get("id")
+    ]
+    random.shuffle(remaining)
+    if current is None:
+        return remaining
+    return [current] + remaining
+
+
 def _prepare_local_queue(track_id: str, queue_track_ids: Optional[list[str]] = None, shuffle: bool = False, loop: bool = False, *, reshuffle: bool = True):
     global playback_queue, playback_queue_original, playback_queue_index, playback_queue_mode, playback_queue_loop, playback_queue_shuffle, single_track_loop
     playback_queue = []
@@ -5267,9 +5232,7 @@ def _prepare_local_queue(track_id: str, queue_track_ids: Optional[list[str]] = N
 
     if shuffle and reshuffle and len(ordered_tracks) > 1:
         current_track = next((track for track in ordered_tracks if track.get("id") == track_id), ordered_tracks[0])
-        remaining = [track for track in ordered_tracks if track.get("id") != current_track.get("id")]
-        random.shuffle(remaining)
-        ordered_tracks = [current_track] + remaining
+        ordered_tracks = _shuffled_around_current(ordered_tracks, current_track)
 
     playback_queue = ordered_tracks if len(ordered_tracks) > 1 else []
     playback_queue_original = original_tracks if len(original_tracks) > 1 else []
@@ -5349,11 +5312,8 @@ async def _advance_playback_queue(*, transition_reason: str = "queue advance") -
             if playback_queue_loop or manual_shuffle_wrap:
                 if playback_queue_shuffle:
                     current_index = playback_queue_index if 0 <= playback_queue_index < len(playback_queue) else 0
-                    current_track_id = (playback_queue[current_index] or {}).get("id")
                     current_track = dict(playback_queue[current_index])
-                    remaining = [dict(track) for track in playback_queue if track.get("id") != current_track_id]
-                    random.shuffle(remaining)
-                    playback_queue[:] = [current_track] + remaining
+                    playback_queue[:] = _shuffled_around_current(playback_queue, current_track)
                     playback_queue_index = 0
                     next_index = 1 if len(playback_queue) > 1 else 0
                 else:
@@ -5385,13 +5345,7 @@ async def _set_queue_shuffle(enabled: bool) -> bool:
     current_track_url = current_track.get("url")
 
     if enabled:
-        remaining = [
-            dict(track)
-            for index, track in enumerate(playback_queue)
-            if index != current_index
-        ]
-        random.shuffle(remaining)
-        target_queue = [current_track] + remaining
+        target_queue = _shuffled_around_current(playback_queue, current_track)
         target_index = 0
     elif playback_queue_original:
         target_queue = [dict(track) for track in playback_queue_original]
@@ -5779,7 +5733,7 @@ async def sync_peak_monitor_for_playback_state(
         ):
             await asyncio.sleep(PEAK_MONITOR_INACTIVE_GRACE_MS / 1000)
             refreshed_player_state = player_instance.state if player_instance else {}
-            if refreshed_player_state.get("current_file") and not refreshed_player_state.get("paused") and not refreshed_player_state.get("ended"):
+            if _is_local_playback_active(refreshed_player_state):
                 return
             spotify_state = await get_spotify_ui_state()
             if spotify_state.get("available") and spotify_state.get("status") == "Playing":
@@ -5883,7 +5837,7 @@ async def refresh_peak_monitor_after_effects_change(reason: str = "effects-chang
 
     player_state = player_instance.state if player_instance else {}
     spotify_state = await get_spotify_ui_state()
-    is_local_playing = bool(player_state.get("current_file") and not player_state.get("paused") and not player_state.get("ended"))
+    is_local_playing = _is_local_playback_active(player_state)
     is_spotify_playing = bool(spotify_state.get("available") and spotify_state.get("status") == "Playing")
 
     if not is_local_playing and not is_spotify_playing:

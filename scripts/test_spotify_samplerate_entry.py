@@ -254,15 +254,26 @@ class SpotifyEntrySamplerateTests(unittest.IsolatedAsyncioTestCase):
             transition_active = False
 
         run = AsyncMock(return_value=SimpleNamespace(target_rate=44100))
-        track = {"source": "spotify", "trackId": "spotify:track:1", "sample_rate_hz": 44100}
+        track = {
+            "source": "spotify",
+            "trackId": "spotify:track:1",
+            "url": "spotify:track:1",
+            "sample_rate_hz": 44100,
+        }
         with patch.object(main, "playback_transition_coordinator", CoordinatorDouble()), patch.object(
             main, "_run_coordinated_transition", run
         ), patch.object(main, "coordinator_recovery_lock", None), patch.object(
             main, "coordinator_recovery_inflight_signature", None
         ), patch.object(main, "coordinator_recovery_last_signature", None), patch.object(
-            main, "coordinator_last_successful_commit_id", None
+            main, "coordinator_last_successful_commit_id", "tr-spotify-recovery"
         ), patch.object(
-            main, "get_spotify_ui_state", new=AsyncMock(return_value={"status": "Playing"})
+            main, "get_spotify_ui_state", new=AsyncMock(
+                return_value={
+                    "status": "Playing",
+                    "trackId": "spotify:track:1",
+                    "url": "spotify:track:1",
+                }
+            )
         ), patch.object(
             main, "get_samplerate_status", return_value={"active_rate": 48000, "force_rate": 48000}
         ):
@@ -276,6 +287,7 @@ class SpotifyEntrySamplerateTests(unittest.IsolatedAsyncioTestCase):
         request = run.await_args.args[0]
         self.assertEqual(request.operation, "recovery")
         self.assertEqual(request.source, "spotify")
+        self.assertEqual(request.recovery_commit_context_id, "tr-spotify-recovery")
         self.assertTrue(request.should_play)
         self.assertTrue(request.reload_source)
         self.assertTrue(request.rate_change)
