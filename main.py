@@ -752,7 +752,12 @@ from measurement import (
     score_sub_alignment_candidates,
 )
 from peak_monitor import EasyEffectsPeakMonitor
-from subwoofer_runtime import Subwoofer21Runtime, SubwooferRuntimeConfig, DEFAULT_SAMPLE_RATE
+from subwoofer_runtime import (
+    DEFAULT_SAMPLE_RATE,
+    Subwoofer21Runtime,
+    SubwooferRuntimeConfig,
+    _contains_link,
+)
 from playback_transition import (
     PlaybackTransitionCoordinator,
     PlaybackTransitionFailure,
@@ -4746,15 +4751,6 @@ def _run_debug_command(args: list[str], timeout: float = 2.0) -> dict:
         }
     except Exception as exc:
         return {"returncode": -1, "stdout": "", "stderr": str(exc)}
-
-
-def _contains_link(text: str, source: str, target: str) -> bool:
-    if source not in text or target not in text:
-        return False
-    direct = f"{source} -> {target}"
-    reverse_pw_link_io = f"{target}\n  |<- {source}"
-    forward_pw_link_io = f"{source}\n  |-> {target}"
-    return direct in text or reverse_pw_link_io in text or forward_pw_link_io in text
 
 
 async def _ensure_mpv_to_easyeffects_links(timeout_ms: int = 1500) -> bool:
