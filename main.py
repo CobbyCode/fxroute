@@ -2152,8 +2152,20 @@ class FxrouteTransitionRuntime(TransitionRuntime):
         *,
         dsp_reinitialized: bool = False,
     ) -> dict[str, Any]:
-        """Re-apply the canonical DSP work point after a rate/EE mutation."""
-        if not (request.rate_change or dsp_reinitialized):
+        """Re-apply the canonical DSP work point after a rate/EE mutation.
+
+        An output-mode switch may reload the compare preset or rebuild the
+        EasyEffects graph (up to a full service restart), each of which can
+        re-apply a stale preset loudness work point over the user volume.
+        The switch therefore re-applies the canonical extras unconditionally
+        instead of gating on rate_change/dsp_reinitialized, so the volume
+        never resurrects an older preset value.
+        """
+        if not (
+            request.rate_change
+            or dsp_reinitialized
+            or request.operation == "output-mode-switch"
+        ):
             return {"stabilized": True, "no_op": True}
         if (
             not request.should_play

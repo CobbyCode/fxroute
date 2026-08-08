@@ -1105,7 +1105,10 @@ class PlaybackTransitionCoordinator:
                                 "output-mode graph readback did not satisfy commit contract"
                             )
 
-                    if effects_state.get("dsp_reinitialized"):
+                    if (
+                        effects_state.get("dsp_reinitialized")
+                        or active_request.operation == "output-mode-switch"
+                    ):
                         enter_stage("effects-dsp-stabilize")
                         stabilizer = getattr(
                             self.runtime, "stabilize_effects_after_rate_change", None

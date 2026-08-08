@@ -25,7 +25,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from playback_transition import TransitionRequest
+from playback_transition import PlaybackTransitionCoordinator, TransitionRequest
 
 import samplerate
 import main
@@ -291,6 +291,179 @@ async def _runtime_sync_in_progress_flag() -> None:
     print("Subwoofer21Runtime.sync_in_progress flag: ok")
 
 
+
+
+
+class VolumeSwitchRuntime:
+    """Fake runtime for the mode-switch volume regression.
+
+    The audible volume (``volume``) mirrors the canonical user volume
+    (``canonical_volume``) unless a mode switch resurrects a stale preset
+    work point (mimicking the EasyEffects graph rebuild / service restart
+    re-applying its own preset loudness state).  The Coordinator's DSP
+    stabilization must repair that by re-applying the canonical volume.
+    """
+
+    def __init__(self, *, canonical_volume: int, stale_volume: int):
+        self.canonical_volume = canonical_volume
+        self.volume = canonical_volume
+        self.stale_volume = stale_volume
+        self.muted = False
+        self.ee_muted = False
+        self.events: list[str] = []
+
+    def set_volume(self, volume: int) -> None:
+        self.canonical_volume = volume
+        self.volume = volume
+
+    def resurrect_stale_volume(self) -> None:
+        self.volume = self.stale_volume
+
+    async def read_hardware_mute(self) -> bool:
+        return self.muted
+
+    async def set_hardware_mute(self, muted: bool, _transition_id: str) -> None:
+        self.muted = bool(muted)
+
+    async def read_sink_mute(self, _sink_name: str) -> bool:
+        return self.ee_muted
+
+    async def set_sink_mute(self, _sink_name: str, muted: bool, _transition_id: str) -> None:
+        self.ee_muted = bool(muted)
+
+    async def read_transition_snapshot(self, _request) -> dict:
+        return {
+            "player": {
+                "current_file": "/music/current.flac",
+                "playing": True,
+                "paused": False,
+                "volume": 100,
+            },
+            "output_mode_overview": {"output_mode": {"mode": "stereo"}},
+            "output_mode_config": {"mode": "stereo"},
+            "spotify": {"status": "Playing"},
+        }
+
+    async def quiet_old_source(self, _request) -> None:
+        self.events.append("quiet")
+
+    async def resolve_target_rate(self, request) -> int:
+        return request.target_rate
+
+    async def establish_target_rate(self, request) -> None:
+        self.events.append("target-rate")
+
+    async def establish_effects_and_helper(self, _request) -> dict:
+        self.events.append("effects-helper-links")
+        self.resurrect_stale_volume()
+        return {"dsp_reinitialized": False}
+
+    async def restore_output_mode_transport(self, _request, _snapshot, _transition_id) -> None:
+        self.events.append("restore-transport")
+
+    async def reconcile_post_start_graph(self, _request) -> dict:
+        return {"graph_complete": True}
+
+    async def verify_output_mode_runtime(self, _request) -> dict:
+        return {"committed": True, "graph_complete": True}
+
+    async def commit_output_mode_runtime(self, _request) -> dict:
+        self.events.append("persist")
+        return {"output_mode_persisted": True}
+
+    async def stabilize_effects_after_rate_change(
+        self, _request, *, dsp_reinitialized: bool = False
+    ) -> dict:
+        self.events.append("dsp-stabilize")
+        self.volume = self.canonical_volume
+        return {"stabilized": True}
+
+    async def pause_source_after_failure(self, _request) -> None:
+        self.events.append("pause-after-failure")
+
+    async def abort_failed_transition(self, _request, _snapshot, *, target_staged) -> None:
+        self.events.append(f"abort:{target_staged}")
+
+    def target_source_staged(self, _request) -> bool:
+        return False
+
+    async def verify_transition_graph(self, _request) -> dict:
+        return {"committed": True}
+
+    async def verify_committed_transition(self, _request) -> dict:
+        return {"committed": True}
+
+    async def prepare_target_source(self, _request) -> None:
+        pass
+
+    async def start_target_source(self, _request) -> None:
+        pass
+
+    async def set_source_volume(self, _volume: int, _transition_id: str) -> None:
+        pass
+
+
+def _mode_request(mode: str, *, operation: str = "output-mode-switch") -> TransitionRequest:
+    return TransitionRequest(
+        operation=operation,
+        source="local",
+        target_rate=44100,
+        target_url="/music/current.flac",
+        target_track={"source": "local", "url": "/music/current.flac"},
+        should_play=True,
+        rate_change=False,
+        reload_source=False,
+        output_mode_target={"output_mode": {"mode": mode}},
+        output_mode_config={"mode": mode, "subwoofer": {}},
+    )
+
+
+async def _mode_switch_volume_preserved() -> None:
+    """Volume X in A -> B -> volume Y -> back to A: Y must survive.
+
+    The EasyEffects preset reload / graph rebuild (up to a service restart)
+    re-applies a stale preset loudness work point over the canonical user
+    volume; the output-mode switch must always re-apply the canonical
+    volume instead of resurrecting the older value.
+    """
+    runtime = VolumeSwitchRuntime(canonical_volume=40, stale_volume=20)
+    coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
+
+    # Mode A (stereo) at volume X=40.
+    assert runtime.volume == 40
+    # A -> B (2.2): stale preset volume resurrects, switch must re-apply 40.
+    result = await coordinator.execute(_mode_request("subwoofer-2.2"))
+    assert result.committed, result
+    assert runtime.volume == 40, runtime.volume
+    assert "dsp-stabilize" in runtime.events
+
+    # Volume changed to Y=75 while in mode B.
+    runtime.set_volume(75)
+    assert runtime.volume == 75
+
+    # B -> A (stereo): the old mode-A value (40) must NOT come back.
+    result = await coordinator.execute(_mode_request("stereo"))
+    assert result.committed, result
+    assert runtime.volume == 75, runtime.volume
+
+    # Reverse direction: A -> B keeps Y as well.
+    result = await coordinator.execute(_mode_request("subwoofer-2.2"))
+    assert result.committed, result
+    assert runtime.volume == 75, runtime.volume
+    assert runtime.events.count("dsp-stabilize") == 3, runtime.events
+
+    # Control: a plain play transition without DSP reinit keeps the old
+    # no-stabilize behavior (the fix must not widen the gate).
+    control = VolumeSwitchRuntime(canonical_volume=50, stale_volume=20)
+    control_coordinator = PlaybackTransitionCoordinator(control, gate_settle_seconds=0)
+    result = await control_coordinator.execute(
+        _mode_request("stereo", operation="play")
+    )
+    assert result.committed, result
+    assert "dsp-stabilize" not in control.events, control.events
+    print("mode-switch volume survives preset resurrection (both directions): ok")
+
+
 async def main_async() -> None:
     _run_samplerate_roundtrip()
     await _route_same_mode_direct()
@@ -299,6 +472,7 @@ async def main_async() -> None:
     await _link_watcher_kept_out_for_other_reasons()
     await _recovery_deferred_during_subwoofer_sync()
     await _runtime_sync_in_progress_flag()
+    await _mode_switch_volume_preserved()
     print("crossover / sub mute regression tests: ok")
 
 
