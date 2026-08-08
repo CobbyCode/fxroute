@@ -535,13 +535,102 @@ async def _ensure_playback_samplerate_force(
     return aligned
 
 
+_RATE_RENEGOTIATION_TRIGGER_WAIT_MS = 2500
 
 
+def _rate_renegotiation_trigger_path(sample_rate: int) -> Path:
+    return Path(tempfile.gettempdir()) / f"fxroute-rate-renegotiation-trigger-{sample_rate}.wav"
+
+
+def _ensure_rate_renegotiation_trigger_file(sample_rate: int) -> Path | None:
+    """Generate (once) a short silent stream used to wake an idle hardware sink.
+
+    A fully idle/suspended hardware sink ignores ``clock.force-rate`` writes
+    and suspend/resume pulses; the only proven renegotiation trigger is a
+    brief silent stream, after which the sink keeps the forced rate.
+    """
+    path = _rate_renegotiation_trigger_path(sample_rate)
+    if path.exists():
+        return path
+    try:
+        generated = subprocess.run(
+            [
+                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                "-f", "lavfi", "-i", f"anullsrc=r={sample_rate}:cl=stereo",
+                "-t", "0.8", "-c:a", "pcm_s16le", str(path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except Exception as exc:
+        logger.warning("Rate renegotiation trigger generation failed: %s", exc)
+        return None
+    if generated.returncode != 0:
+        logger.warning(
+            "Rate renegotiation trigger generation failed: %s",
+            (generated.stderr or "").strip(),
+        )
+        return None
+    return path
+
+
+async def _trigger_idle_sink_renegotiation(sample_rate: int) -> bool:
+    """Renegotiate an idle/suspended sink to the forced rate with a silent stream."""
+    path = _ensure_rate_renegotiation_trigger_file(sample_rate)
+    if path is None:
+        return False
+    try:
+        subprocess.Popen(
+            ["pw-play", "--volume=0", str(path)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception as exc:
+        logger.warning("Rate renegotiation trigger playback failed: %s", exc)
+        return False
+    logger.info(
+        "Rate renegotiation trigger played: rate=%s (silent stream, volume 0)",
+        sample_rate,
+    )
+    return await _wait_for_samplerate_alignment(
+        sample_rate, timeout_ms=_RATE_RENEGOTIATION_TRIGGER_WAIT_MS
+    )
+
+
+async def _reconcile_transition_sink_rate(target_rate: int, *, reason: str) -> bool:
+    """Re-establish the hardware sink rate before a transition stage commits.
+
+    The effects/helper graph rebuild inside a transition can leave the sink
+    suspended at the configured default rate while ``clock.force-rate`` already
+    points at the target.  A suspended sink ignores force-rate writes and
+    suspend/resume pulses; the bounded fallback below plays a short silent
+    stream, the only proven renegotiation trigger on an idle graph.
+    """
+    try:
+        status = dict(get_samplerate_status())
+    except Exception:
+        status = {}
+    if samplerate.playback_rate_aligned(status, target_rate):
+        return True
+    aligned = await _ensure_playback_samplerate_force(
+        target_rate,
+        reason=f"coordinator-{reason}",
+        policy=samplerate_orchestration.RADIO_POLICY,
+    )
+    if not aligned:
+        aligned = await _trigger_idle_sink_renegotiation(target_rate)
+    if not aligned:
+        return False
+    try:
+        status = dict(get_samplerate_status())
+    except Exception:
+        status = {}
+    return bool(samplerate.playback_rate_aligned(status, target_rate))
 
 
 def _is_local_playback_active(state: dict | None) -> bool:
     return playback_state.is_local_playback_active(state)
-
 
 def _is_spotify_playback_active(state: dict | None) -> bool:
     return playback_state.is_spotify_playback_active(state)
@@ -1704,6 +1793,8 @@ class FxrouteTransitionRuntime(TransitionRuntime):
             policy=samplerate_orchestration.RADIO_POLICY,
         )
         if not aligned:
+            aligned = await _trigger_idle_sink_renegotiation(request.target_rate)
+        if not aligned:
             status = get_samplerate_status()
             raise RuntimeError(
                 "target hardware rate did not settle: "
@@ -2090,14 +2181,15 @@ class FxrouteTransitionRuntime(TransitionRuntime):
             if request.operation == "output-mode-switch" and request.output_mode_target
             else None
         )
+        source_required = bool(
+            request.should_play
+            or (request.operation == "output-mode-switch" and bool(request.target_url))
+        )
         graph = await _playback_graph_diagnosis(
             graph_overview,
-            source=request.source,
+            source=request.source if source_required else None,
             target_rate=request.target_rate,
-            require_source=(
-                request.should_play
-                or (request.operation == "output-mode-switch" and bool(request.target_url))
-            ),
+            require_source=source_required,
         )
         if not graph.get("links_complete"):
             raise RuntimeError(
@@ -2264,6 +2356,11 @@ class FxrouteTransitionRuntime(TransitionRuntime):
     async def verify_measurement_entry(self, request: TransitionRequest) -> dict[str, Any]:
         """Confirm the paused measurement handoff without starting music."""
         status = dict(get_samplerate_status())
+        if not samplerate.playback_rate_aligned(status, request.target_rate):
+            await _reconcile_transition_sink_rate(
+                request.target_rate, reason="measurement-entry"
+            )
+            status = dict(get_samplerate_status())
         if status.get("active_rate") != request.target_rate:
             raise RuntimeError(
                 "measurement entry hardware rate mismatch: "
@@ -2329,6 +2426,11 @@ class FxrouteTransitionRuntime(TransitionRuntime):
             raise RuntimeError("output-mode transition has no authoritative sample rate")
 
         rate = dict(get_samplerate_status())
+        if not samplerate.playback_rate_aligned(rate, target_rate):
+            await _reconcile_transition_sink_rate(
+                target_rate, reason="output-mode-switch"
+            )
+            rate = dict(get_samplerate_status())
         if rate.get("active_rate") != target_rate:
             raise RuntimeError(
                 "output-mode transition hardware rate mismatch: "
@@ -4049,6 +4151,21 @@ async def _coordinator_establish_effects_and_helper(
                 "Coordinator effects stage failed: EasyEffects output ports were not confirmed"
             )
 
+        if request.operation in {"measurement-entry", "output-mode-switch"}:
+            # The EE preset reload/rebuild above can leave the hardware sink
+            # suspended at the configured default rate.  Re-establish the
+            # target rate before the helper/stereo runtime sync, which defers
+            # on any sink/authoritative rate mismatch.
+            if not await _reconcile_transition_sink_rate(
+                target_rate, reason=f"effects-{request.operation}"
+            ):
+                status = dict(get_samplerate_status())
+                raise RuntimeError(
+                    "Coordinator effects stage rate reconcile failed: "
+                    f"expected={target_rate} active={status.get('active_rate')} "
+                    f"force={status.get('force_rate')}"
+                )
+
         if request.operation == "output-mode-switch":
             await _sync_subwoofer_runtime(
                 audio_overview=overview,
@@ -4267,6 +4384,11 @@ async def _measurement_entry_preflight(measurement_rate: int = MEASUREMENT_DEFAU
         raise RuntimeError("measurement entry is blocked by an active or latched playback transition")
 
     status = dict(get_samplerate_status())
+    if not samplerate.playback_rate_aligned(status, measurement_rate):
+        await _reconcile_transition_sink_rate(
+            measurement_rate, reason="measurement-entry-preflight"
+        )
+        status = dict(get_samplerate_status())
     if status.get("active_rate") != measurement_rate:
         raise RuntimeError(
             "measurement entry preflight rate mismatch: "
