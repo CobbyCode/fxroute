@@ -7,6 +7,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import main
+import spl_calibration
 
 
 class FakeMeasurementStore:
@@ -72,12 +73,12 @@ def main_test():
             }
             main.measurement_store = FakeMeasurementStore(cal, [umik_input()])
 
-            header = main._parse_umik_calibration_header(cal)
+            header = spl_calibration._parse_umik_calibration_header(cal)
             assert header == {"sensitivity_factor_db": 0.371, "serial_number": "7148364"}
-            assert main._is_umik1_input(umik_input()) is True
-            assert main._is_umik1_input(umik_input(device_vendor_id="0x1234")) is False
-            assert main._is_umik1_input(umik_input(device_product_id="0x0008")) is False
-            assert main._is_umik1_input(
+            assert spl_calibration._is_umik1_input(umik_input()) is True
+            assert spl_calibration._is_umik1_input(umik_input(device_vendor_id="0x1234")) is False
+            assert spl_calibration._is_umik1_input(umik_input(device_product_id="0x0008")) is False
+            assert spl_calibration._is_umik1_input(
                 umik_input(
                     node_name="UMIK-2",
                     node_description="UMIK-2 Gain 18dB",
@@ -85,7 +86,7 @@ def main_test():
                     device_description="UMIK-2 Gain: 18dB",
                 )
             ) is False
-            capability = main._spl_auto_capability()
+            capability = spl_calibration._spl_auto_capability()
             assert capability["available"] is True
             assert capability["microphone_model"] == "UMIK-1"
             assert capability["serial_number"] == "7148364"
@@ -99,12 +100,12 @@ def main_test():
                 encoding="utf-8",
             )
             main.measurement_store = FakeMeasurementStore(wrong_cal, [umik_input()])
-            assert main._spl_auto_capability()["available"] is False
+            assert spl_calibration._spl_auto_capability()["available"] is False
 
             missing_sensitivity = Path(directory) / "680d1373e3-7148364.txt"
             missing_sensitivity.write_text("SERNO: 7148364\n10 0\n1000 0\n", encoding="utf-8")
             main.measurement_store = FakeMeasurementStore(missing_sensitivity, [umik_input()])
-            assert main._spl_auto_capability()["available"] is False
+            assert spl_calibration._spl_auto_capability()["available"] is False
 
             missing_sensitivity.write_text(
                 '"Sens Factor =0.371dB, SERNO: 7148364"\n10 0\n1000 0\n',
@@ -114,13 +115,13 @@ def main_test():
                 missing_sensitivity,
                 [umik_input(capture_gain_db=None, capture_volume_percent=None)],
             )
-            assert main._spl_auto_capability()["available"] is False
+            assert spl_calibration._spl_auto_capability()["available"] is False
 
             main.measurement_store = FakeMeasurementStore(
                 missing_sensitivity,
                 [umik_input(node_description="Umik-1", device_description="Umik-1")],
             )
-            capability = main._spl_auto_capability()
+            capability = spl_calibration._spl_auto_capability()
             assert capability["available"] is False
             assert capability["checks"]["internal_gain_18_db"] is False
 
@@ -128,12 +129,12 @@ def main_test():
             sample_rate = 48000
             t = np.arange(sample_rate * 3) / sample_rate
             sine = 0.05 * np.sqrt(2.0) * np.sin(2.0 * np.pi * 1000.0 * t)
-            measured = main._c_weighted_spl_from_capture(
+            measured = spl_calibration._c_weighted_spl_from_capture(
                 sine, sample_rate, 0.371, missing_sensitivity
             )
             assert abs(measured - (20.0 * np.log10(0.05) + 124.0 - 0.371)) < 0.1
 
-            assert main._calculate_spl_required_adjustment(82.5) == 0.5
+            assert spl_calibration._calculate_spl_required_adjustment(82.5) == 0.5
     finally:
         main.measurement_store = original_store
         main._read_measurement_setup_settings = original_settings

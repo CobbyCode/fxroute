@@ -6,6 +6,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import main
+import spl_calibration
 
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "1880171.txt"
@@ -60,27 +61,27 @@ def main_test():
         }
         main.measurement_store = FakeMeasurementStore([umm6_input()])
 
-        assert main._UMM6_PROFILE.parse_calibration_header(FIXTURE) == {
+        assert spl_calibration._UMM6_PROFILE.parse_calibration_header(FIXTURE) == {
             "sensitivity_factor_db": -19.59,
             "serial_number": "1880171",
         }
-        curve = main._UMM6_PROFILE.parse_calibration_curve(FIXTURE)
+        curve = spl_calibration._UMM6_PROFILE.parse_calibration_curve(FIXTURE)
         assert curve is not None and len(curve) == 3
         frequencies, corrections, phases = curve
         assert len(frequencies) == 15
         assert corrections[8] == -0.01
         assert phases[-1] == -11.37
 
-        assert main._is_umm6_input(umm6_input()) is True
-        assert main._is_umm6_input(umm6_input(device_vendor_id="0x2752")) is False
-        assert main._is_umm6_input(umm6_input(device_product_id="0x0007")) is False
-        assert main._is_umm6_input(umm6_input(
+        assert spl_calibration._is_umm6_input(umm6_input()) is True
+        assert spl_calibration._is_umm6_input(umm6_input(device_vendor_id="0x2752")) is False
+        assert spl_calibration._is_umm6_input(umm6_input(device_product_id="0x0007")) is False
+        assert spl_calibration._is_umm6_input(umm6_input(
             node_name="generic", node_description="generic", device_name="generic",
             device_description="generic", device_product_name="generic",
             alsa_card_name="generic", alsa_long_card_name="generic",
         )) is False
 
-        capability = main._spl_auto_capability()
+        capability = spl_calibration._spl_auto_capability()
         assert capability["available"] is True
         assert capability["microphone_model"] == "Dayton UMM-6"
         assert capability["reference_sensitivity_dbfs_per_pa"] == -19.0
@@ -93,19 +94,19 @@ def main_test():
         ]
         for input_item, expected_reason in fail_closed_cases:
             main.measurement_store = FakeMeasurementStore([input_item])
-            failed = main._spl_auto_capability()
+            failed = spl_calibration._spl_auto_capability()
             assert failed["available"] is False
             assert expected_reason in failed["reason"]
 
         main.measurement_store = FakeMeasurementStore([umm6_input(), umm6_input(id="duplicate")])
-        assert main._spl_auto_capability()["available"] is False
+        assert spl_calibration._spl_auto_capability()["available"] is False
 
         import tempfile
         with tempfile.TemporaryDirectory() as directory:
             wrong_serial = Path(directory) / "9999999.txt"
             wrong_serial.write_text(FIXTURE.read_text(encoding="utf-8"), encoding="utf-8")
             main.measurement_store = FakeMeasurementStore([umm6_input()], wrong_serial)
-            assert main._spl_auto_capability()["available"] is False
+            assert spl_calibration._spl_auto_capability()["available"] is False
 
             malformed = Path(directory) / "1880171.txt"
             malformed.write_text(
@@ -113,7 +114,7 @@ def main_test():
                 encoding="utf-8",
             )
             main.measurement_store = FakeMeasurementStore([umm6_input()], malformed)
-            failed = main._spl_auto_capability()
+            failed = spl_calibration._spl_auto_capability()
             assert failed["available"] is False
             assert "frequency/correction/phase" in failed["reason"]
 
@@ -121,8 +122,8 @@ def main_test():
         sample_rate = 48000
         time = np.arange(sample_rate * 3) / sample_rate
         sine = 0.05 * np.sqrt(2.0) * np.sin(2.0 * np.pi * 1000.0 * time)
-        measured = main._c_weighted_spl_from_capture(
-            sine, sample_rate, -19.59, FIXTURE, profile=main._UMM6_PROFILE
+        measured = spl_calibration._c_weighted_spl_from_capture(
+            sine, sample_rate, -19.59, FIXTURE, profile=spl_calibration._UMM6_PROFILE
         )
         expected = 20.0 * np.log10(0.05) + 94.0 - (-19.59)
         assert abs(measured - expected) < 0.1

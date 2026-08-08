@@ -9,6 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
+import spl_calibration
 from easyeffects import EasyEffectsManager
 
 
@@ -117,10 +118,10 @@ def test_spl_noise_uses_and_restores_neutral_autogain_loudness_runtime() -> None
             main.subprocess.Popen = FakeNoiseProcess
             main.tempfile.gettempdir = lambda: directory
             main.time.sleep = lambda _seconds: None
-            main.spl_calibration_noise_process = None
-            main.spl_calibration_restore_state = None
+            spl_calibration.spl_calibration_noise_process = None
+            spl_calibration.spl_calibration_restore_state = None
 
-            result = main._start_spl_calibration_noise()
+            result = spl_calibration._start_spl_calibration_noise()
             assert result["status"] == "playing"
             assert fake.runtime_events[:3] == [
                 ("autogain", 0, "bypass", True),
@@ -132,7 +133,7 @@ def test_spl_noise_uses_and_restores_neutral_autogain_loudness_runtime() -> None
             assert fake.active_apply_calls == 0
             assert fake.all_apply_calls == 0
 
-            main._stop_spl_calibration_noise()
+            spl_calibration._stop_spl_calibration_noise()
             assert fake.runtime_events[3:] == [
                 ("autogain", 0, "target", -12.0),
                 ("autogain", 0, "bypass", False),
@@ -141,7 +142,7 @@ def test_spl_noise_uses_and_restores_neutral_autogain_loudness_runtime() -> None
                 ("loudness", 0, "bypass", False),
             ]
             assert volume_events == [100, 37]
-            assert main.spl_calibration_restore_state is None
+            assert spl_calibration.spl_calibration_restore_state is None
         finally:
             main.easyeffects_manager = original_manager
             main.get_output_volume = original_get_volume
@@ -149,8 +150,8 @@ def test_spl_noise_uses_and_restores_neutral_autogain_loudness_runtime() -> None
             main.subprocess.Popen = original_popen
             main.tempfile.gettempdir = original_gettempdir
             main.time.sleep = original_sleep
-            main.spl_calibration_noise_process = None
-            main.spl_calibration_restore_state = None
+            spl_calibration.spl_calibration_noise_process = None
+            spl_calibration.spl_calibration_restore_state = None
 
 
 def test_spl_neutralization_failure_restores_runtime() -> None:
@@ -176,10 +177,10 @@ def test_spl_neutralization_failure_restores_runtime() -> None:
         main.get_output_volume = lambda: 37
         main.set_output_volume = volume_events.append
         main.time.sleep = lambda _seconds: None
-        main.spl_calibration_noise_process = None
-        main.spl_calibration_restore_state = None
+        spl_calibration.spl_calibration_noise_process = None
+        spl_calibration.spl_calibration_restore_state = None
         try:
-            main._start_spl_calibration_noise()
+            spl_calibration._start_spl_calibration_noise()
         except RuntimeError as exc:
             assert str(exc) == "neutral output gain failed"
         else:
@@ -190,41 +191,41 @@ def test_spl_neutralization_failure_restores_runtime() -> None:
         assert fake.runtime[("autogain", 0, "bypass")] == "false"
         assert fake.runtime[("autogain", 0, "target")] == "-12.0"
         assert volume_events == [37]
-        assert main.spl_calibration_restore_state is None
+        assert spl_calibration.spl_calibration_restore_state is None
     finally:
         main.easyeffects_manager = original_manager
         main.get_output_volume = original_get_volume
         main.set_output_volume = original_set_volume
         main.time.sleep = original_sleep
-        main.spl_calibration_noise_process = None
-        main.spl_calibration_restore_state = None
+        spl_calibration.spl_calibration_noise_process = None
+        spl_calibration.spl_calibration_restore_state = None
 
 
 async def test_save_applies_only_coupled_loudness_offset() -> None:
     fake = FakeEasyEffects()
     original_manager = main.easyeffects_manager
-    original_profile = main._spl_output_profile
-    original_capability = main._spl_auto_capability
+    original_profile = spl_calibration._spl_output_profile
+    original_capability = spl_calibration._spl_auto_capability
     original_set_volume = main.set_output_volume
     system_volume_writes = []
     try:
         main.easyeffects_manager = fake
-        main._spl_output_profile = lambda: {"id": "usb-a", "label": "USB A"}
-        main._spl_auto_capability = lambda: {
+        spl_calibration._spl_output_profile = lambda: {"id": "usb-a", "label": "USB A"}
+        spl_calibration._spl_auto_capability = lambda: {
             "available": True,
             "microphone_model": "UMIK-1",
             "calibration_file_id": "cal-7148364",
             "calibration_filename": "7148364.txt",
         }
         main.set_output_volume = system_volume_writes.append
-        main.spl_calibration_noise_process = None
-        main.spl_calibration_restore_state = None
+        spl_calibration.spl_calibration_noise_process = None
+        spl_calibration.spl_calibration_restore_state = None
 
         output_before = fake.normalizer._apply_extras_to_output(
             {"plugins_order": []},
             fake.extras,
         )
-        result = await main.apply_spl_calibration(FakeRequest())
+        result = await spl_calibration.apply_spl_calibration(FakeRequest())
         params = fake.extras["loudness"]["params"]
         calibration = params["calibration"]
 
@@ -249,10 +250,10 @@ async def test_save_applies_only_coupled_loudness_offset() -> None:
         assert output["loudness#0"]["output-gain"] == 27.9
     finally:
         main.easyeffects_manager = original_manager
-        main._spl_output_profile = original_profile
-        main._spl_auto_capability = original_capability
+        spl_calibration._spl_output_profile = original_profile
+        spl_calibration._spl_auto_capability = original_capability
         main.set_output_volume = original_set_volume
-        main.spl_calibration_restore_state = None
+        spl_calibration.spl_calibration_restore_state = None
 
 
 def test_legacy_trim_is_not_migrated_or_rewritten() -> None:
@@ -282,8 +283,8 @@ def test_legacy_trim_is_not_migrated_or_rewritten() -> None:
 
 
 async def main_test() -> None:
-    assert round(main._calculate_spl_required_adjustment(55.1), 1) == 27.9
-    assert main._calculate_spl_required_adjustment(83.0) == 0.0
+    assert round(spl_calibration._calculate_spl_required_adjustment(55.1), 1) == 27.9
+    assert spl_calibration._calculate_spl_required_adjustment(83.0) == 0.0
     test_spl_noise_uses_and_restores_neutral_autogain_loudness_runtime()
     test_spl_neutralization_failure_restores_runtime()
     await test_save_applies_only_coupled_loudness_offset()
