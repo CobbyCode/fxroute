@@ -25,6 +25,8 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from playback_transition import TransitionRequest
+
 import samplerate
 import main
 
@@ -196,10 +198,107 @@ async def _route_mode_switch_coordinated() -> None:
     print("mode-switch route keeps coordinated transition: ok")
 
 
+
+
+RADIO_URL = "https://ice4.somafm.com/groovesalad-256-mp3"
+
+
+def _radio_recovery_request(detail: str = "subwoofer-link-watcher") -> TransitionRequest:
+    return TransitionRequest(
+        operation="recovery",
+        source="radio",
+        detail=detail,
+        target_url=RADIO_URL,
+        should_play=True,
+        recovery_commit_context_id="tr-123",
+        recovery_source="radio",
+        recovery_url=RADIO_URL,
+    )
+
+
+def _fake_coordinator(*, current: bool, latched: bool = False, commit: str = "tr-123", active: bool = False):
+    return mock.MagicMock(
+        recovery_context_is_current=mock.MagicMock(return_value=current),
+        last_successful_commit_id=commit,
+        transition_active=active,
+        gate=mock.MagicMock(failure_latched=latched),
+    )
+
+
+def _idle_runtime() -> mock.MagicMock:
+    return mock.MagicMock(sync_in_progress=False)
+
+
+async def _recovery_valid(
+    request: TransitionRequest,
+    *,
+    coordinator: mock.MagicMock,
+    runtime: mock.MagicMock | None,
+) -> bool:
+    with mock.patch.object(main, "playback_transition_coordinator", coordinator), \
+            mock.patch.object(main, "subwoofer_runtime", runtime), \
+            mock.patch.object(
+                main, "player_instance",
+                mock.MagicMock(state={"current_file": RADIO_URL, "ended": False}),
+            ), \
+            mock.patch.object(
+                main, "current_track_info",
+                {"source": "radio", "url": RADIO_URL},
+            ):
+        return await main._recovery_context_is_valid(request)
+
+
+async def _link_watcher_latch_reentry() -> None:
+    """The subwoofer link watcher may re-enter across a latched gate."""
+    latched = _fake_coordinator(current=False, latched=True)
+    assert await _recovery_valid(_radio_recovery_request(), coordinator=latched, runtime=_idle_runtime()) is True
+    print("link watcher recovery re-enters a latched gate: ok")
+
+
+async def _link_watcher_kept_out_for_other_reasons() -> None:
+    """Non-watcher recoveries, stale commits and active transitions stay out."""
+    other = _radio_recovery_request(detail="samplerate-drift-watcher")
+    assert await _recovery_valid(other, coordinator=_fake_coordinator(current=False, latched=True), runtime=_idle_runtime()) is False
+    stale = _fake_coordinator(current=False, latched=True, commit="tr-999")
+    assert await _recovery_valid(_radio_recovery_request(), coordinator=stale, runtime=_idle_runtime()) is False
+    active = _fake_coordinator(current=False, latched=True, active=True)
+    assert await _recovery_valid(_radio_recovery_request(), coordinator=active, runtime=_idle_runtime()) is False
+    print("latched-gate re-entry stays limited to the link watcher: ok")
+
+
+async def _recovery_deferred_during_subwoofer_sync() -> None:
+    """No watcher recovery may start while the runtime reconfigures links."""
+    running = mock.MagicMock(sync_in_progress=True)
+    assert await _recovery_valid(_radio_recovery_request(), coordinator=_fake_coordinator(current=True), runtime=running) is False
+    assert await _recovery_valid(_radio_recovery_request(), coordinator=_fake_coordinator(current=True), runtime=None) is True
+    print("recovery deferred while subwoofer runtime reconfigures: ok")
+
+
+async def _runtime_sync_in_progress_flag() -> None:
+    """Subwoofer21Runtime.sync_in_progress tracks the active reconfig lock."""
+    from subwoofer_runtime import Subwoofer21Runtime
+
+    runtime = Subwoofer21Runtime()
+    assert runtime.sync_in_progress is False
+    runtime._pending_config = object()
+    assert runtime.sync_in_progress is True
+    runtime._pending_config = None
+    lock = asyncio.Lock()
+    runtime._sync_lock = lock
+    async with lock:
+        assert runtime.sync_in_progress is True
+    assert runtime.sync_in_progress is False
+    print("Subwoofer21Runtime.sync_in_progress flag: ok")
+
+
 async def main_async() -> None:
     _run_samplerate_roundtrip()
     await _route_same_mode_direct()
     await _route_mode_switch_coordinated()
+    await _link_watcher_latch_reentry()
+    await _link_watcher_kept_out_for_other_reasons()
+    await _recovery_deferred_during_subwoofer_sync()
+    await _runtime_sync_in_progress_flag()
     print("crossover / sub mute regression tests: ok")
 
 

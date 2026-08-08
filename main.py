@@ -2881,8 +2881,37 @@ async def _recovery_context_is_valid(request: TransitionRequest) -> bool:
     context_validator = getattr(coordinator, "recovery_context_is_current", None)
     if callable(context_validator):
         if not context_validator(expected_context):
-            return False
+            # A failed transition latches the coordinator gate; while the
+            # latch is held recovery_context_is_current() is always False and
+            # watcher recoveries would be deadlocked forever.  A subwoofer
+            # link repair against the still-committed context may re-enter:
+            # the Coordinator's own gate-close/restore stages own the latch
+            # (clear it on restore) and the helper re-sync restores the
+            # missing links.
+            commit_is_current = (
+                getattr(coordinator, "last_successful_commit_id", None)
+                == expected_context
+            )
+            gate = getattr(coordinator, "gate", None)
+            gate_latched = bool(
+                gate is not None and bool(getattr(gate, "failure_latched", False))
+            )
+            latch_reentry = bool(
+                request.detail == "subwoofer-link-watcher"
+                and commit_is_current
+                and gate_latched
+                and not bool(getattr(coordinator, "transition_active", False))
+            )
+            if not latch_reentry:
+                return False
     elif _coordinator_commit_context_id() != expected_context or _playback_transition_is_active():
+        return False
+
+    if subwoofer_runtime is not None and subwoofer_runtime.sync_in_progress:
+        logger.debug(
+            "Coordinator recovery deferred while subwoofer runtime reconfiguration is in progress: reason=%s",
+            request.detail,
+        )
         return False
 
     if expected_source == "spotify":
@@ -5224,6 +5253,11 @@ async def _subwoofer_runtime_link_watch_loop() -> None:
             if output_mode.get("mode") not in OUTPUT_MODE_SUBWOOFER_MODES:
                 continue
             if _playback_transition_is_active():
+                continue
+            if subwoofer_runtime.sync_in_progress:
+                logger.debug(
+                    "Subwoofer link watcher skipped while a subwoofer runtime reconfiguration is in progress"
+                )
                 continue
             track = dict(current_track_info or {})
             if not track:

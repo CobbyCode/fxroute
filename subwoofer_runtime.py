@@ -611,7 +611,8 @@ class Subwoofer21Runtime:
 
     @property
     def sync_in_progress(self) -> bool:
-        return self._sync_lock.locked()
+        """Return whether a helper/link reconfiguration is currently running."""
+        return bool(self._sync_lock.locked() or self._pending_config is not None)
 
     def clear_measurement_prime(self) -> None:
         self._needs_measurement_prime = False
