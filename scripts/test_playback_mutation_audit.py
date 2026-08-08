@@ -151,6 +151,8 @@ def _reason(context: str, name: str) -> str | None:
         return "rate reconciliation primitive invoked by Coordinator adapter/verifier or measurement entry"
     if leaf == "_coordinator_reconcile_subwoofer_links_only":
         return "Coordinator-only link reconciliation; no helper/process restart"
+    if leaf == "reconcile_measurement_session_graph":
+        return "Coordinator measurement-session link-only reconciliation"
     if leaf in {"_easyeffects_output_ports_present", "_playback_graph_diagnosis"}:
         return "read-only graph diagnosis/readback"
     if leaf in {

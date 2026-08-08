@@ -1443,8 +1443,19 @@ class FxrouteTransitionRuntime(TransitionRuntime):
         return result
 
     async def reconcile_measurement_session_graph(self, _target_rate: int) -> None:
-        """Repair only existing 2.1/2.2 production links."""
-        await _coordinator_reconcile_subwoofer_links_only()
+        """Repair only existing production links; never reload EE or the helper."""
+        diagnosis = await _playback_graph_diagnosis(
+            target_rate=_target_rate,
+            require_source=False,
+        )
+        if diagnosis.get("mode") in OUTPUT_MODE_SUBWOOFER_MODES:
+            await _coordinator_reconcile_subwoofer_links_only()
+        elif diagnosis.get("mode") == OUTPUT_MODE_STEREO:
+            await _repair_stereo_output_links_once(diagnosis)
+        else:
+            raise RuntimeError(
+                "measurement session graph reconciliation has no mode repair path"
+            )
 
     async def read_transition_snapshot(self, request: TransitionRequest) -> dict[str, Any]:
         self._staged_target_url = None
@@ -3800,20 +3811,34 @@ def _measurement_session_link_loss_is_repairable(
     *,
     target_rate: int,
 ) -> bool:
-    """Allow only the known EE->helper input-link drift during measurement."""
+    """Allow only the known production-link drift during measurement.
+
+    Subwoofer modes: EE->helper input-link drift.  Stereo: EE->hardware
+    link drift with the EE output ports still present.
+    """
     if diagnosis.get("links_complete"):
         return False
-    if diagnosis.get("mode") not in OUTPUT_MODE_SUBWOOFER_MODES:
-        return False
     if diagnosis.get("ee_ports") is not True:
+        return False
+    if diagnosis.get("measurement_rate_aligned") is not True:
+        return False
+    output_key = str(diagnosis.get("output_key") or "").strip()
+    if not output_key:
+        return False
+    if diagnosis.get("mode") == OUTPUT_MODE_STEREO:
+        missing = set(_missing_playback_graph_links(diagnosis))
+        repairable = {
+            f"ee_soe_output_level:output_FL -> {output_key}:playback_FL",
+            f"ee_soe_output_level:output_FR -> {output_key}:playback_FR",
+        }
+        return bool(missing) and missing.issubset(repairable)
+    if diagnosis.get("mode") not in OUTPUT_MODE_SUBWOOFER_MODES:
         return False
     if diagnosis.get("helper_ports") is not True:
         return False
     if diagnosis.get("helper_active") is not True:
         return False
     if diagnosis.get("helper_rate_matches") is not True:
-        return False
-    if diagnosis.get("measurement_rate_aligned") is not True:
         return False
     if diagnosis.get("direct_ee_to_hw_present"):
         return False

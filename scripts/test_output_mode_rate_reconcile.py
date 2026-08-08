@@ -176,6 +176,53 @@ async def main_async() -> None:
         else:
             raise AssertionError("measurement preflight must fail when the rate never settles")
 
+    # 12. Measurement-session link-loss reconcile: stereo EE->hardware link
+    #     drift is repairable; missing EE ports / rate mismatch are not.
+    def stereo_diagnosis(links_present, *, ee_ports=True, aligned=True, mode="stereo"):
+        links = {
+            "ee_soe_output_level:output_FL -> alsa_output.usb-BEHRINGER_UMC204HD_192k-00.analog-surround-40:playback_FL": links_present,
+            "ee_soe_output_level:output_FR -> alsa_output.usb-BEHRINGER_UMC204HD_192k-00.analog-surround-40:playback_FR": links_present,
+        }
+        return {
+            "links_complete": ee_ports and links_present,
+            "mode": mode,
+            "output_key": "alsa_output.usb-BEHRINGER_UMC204HD_192k-00.analog-surround-40",
+            "ee_ports": ee_ports,
+            "helper_ports": None,
+            "helper_active": None,
+            "helper_rate": None,
+            "helper_rate_matches": None,
+            "measurement_rate_aligned": aligned,
+            "direct_ee_to_hw_present": False,
+            "links": links,
+        }
+
+    assert main._measurement_session_link_loss_is_repairable(
+        stereo_diagnosis(links_present=False), target_rate=48000
+    ) is True, "stereo EE->hardware link drift must be repairable"
+    assert main._measurement_session_link_loss_is_repairable(
+        stereo_diagnosis(links_present=True), target_rate=48000
+    ) is False, "complete graph is not a link loss"
+    assert main._measurement_session_link_loss_is_repairable(
+        stereo_diagnosis(links_present=False, ee_ports=False), target_rate=48000
+    ) is False, "missing EE ports are not a link-only loss"
+    assert main._measurement_session_link_loss_is_repairable(
+        stereo_diagnosis(links_present=False, aligned=False), target_rate=48000
+    ) is False, "rate mismatch is not a link-only loss"
+
+    # 13. Stereo reconciler must pick the stereo link repair path.
+    reconciler_calls = []
+    async def fake_repair_stereo(diagnosis):
+        reconciler_calls.append(diagnosis.get("mode"))
+    repair_stereo_mock = mock.AsyncMock(side_effect=fake_repair_stereo)
+    with mock.patch.object(main, "_playback_graph_diagnosis", new=mock.AsyncMock(return_value=stereo_diagnosis(False))), \
+         mock.patch.object(main, "_repair_stereo_output_links_once", new=repair_stereo_mock) as repair, \
+         mock.patch.object(main, "_coordinator_reconcile_subwoofer_links_only", new=mock.AsyncMock()) as sub_repair:
+        await runtime.reconcile_measurement_session_graph(48000)
+        repair.assert_awaited_once()
+        sub_repair.assert_not_awaited()
+        assert reconciler_calls == ["stereo"]
+
     print("output-mode rate reconcile tests: ok")
 
 
