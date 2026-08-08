@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.9.7 (2026-08-08)
+
+### Playback & routing
+- Output-mode switches (Stereo ↔ 2.1/2.2) are more stable: the canonical
+  volume work point is re-applied on every mode switch, so a restarted
+  EasyEffects pipeline no longer resurrects an older preset volume.
+- Crossover edits in 2.2 mode are persisted and read back correctly again
+  (the crossover was stuck at 80 Hz).
+- Pure subwoofer parameter changes (crossover, level, alignment, polarity,
+  highpass) no longer trigger unnecessary output mutes; only real
+  Stereo ↔ 2.1/2.2 mode switches close the output gate.
+- Subwoofer link watching no longer races helper restarts or A/B
+  compare/preset-load link repairs, so the output stays unmuted and
+  playback is no longer paused by latched recovery failures.
+
+### AutoSub
+- Fixed the `final_gain_sweep` NameError in the 2.2 Stereo AutoSub final
+  gain sweep.
+
 ## 0.9.6 (2026-08-08)
 
 ### Playback & routing
