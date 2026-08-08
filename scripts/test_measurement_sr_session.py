@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock
 # Ensure the project root is on sys.path so 'import main' works.
 _project_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_project_root))
+import measurement_session
 
 
 # ── Mocks ────────────────────────────────────────────────────────────────────
@@ -27,6 +28,7 @@ class _TestSession:
     def __init__(self):
         # Import main lazily so mocking work.
         import main
+        import measurement_session
         self._main = main
         # Replace globals needed by the session / capture code.
         self._orig_measurement_sr_session = main.measurement_sr_session
@@ -36,7 +38,7 @@ class _TestSession:
         self._orig_set_pipewire_force_rate = main._set_pipewire_force_rate
         self._orig_get_current_pipewire_force_rate = main._get_current_pipewire_force_rate
         self._orig_is_measurement_window_open = main._is_measurement_window_open
-        self._orig_playback_state_before_measurement = main._playback_state_before_measurement
+        self._orig_playback_state_before_measurement = measurement_session._playback_state_before_measurement
         self._orig_last_measurement_window_seen_at = main.last_measurement_window_seen_at
         self._orig_get_player_audio_samplerate = main._get_player_audio_samplerate
         self._orig_get_spotify_ui_state = main.get_spotify_ui_state
@@ -58,7 +60,7 @@ class _TestSession:
 
         # Patch
         main.measurement_sr_session = main.MeasurementSampleRateSession()
-        main._playback_state_before_measurement = None
+        measurement_session._playback_state_before_measurement = None
         main.current_track_info = self._track_info
         main.last_measurement_window_seen_at = self._window_seen_at
         main.get_samplerate_status = self._mock_get_samplerate_status
@@ -195,7 +197,7 @@ class _TestSession:
         main._set_pipewire_force_rate = self._orig_set_pipewire_force_rate
         main._get_current_pipewire_force_rate = self._orig_get_current_pipewire_force_rate
         main._is_measurement_window_open = self._orig_is_measurement_window_open
-        main._playback_state_before_measurement = self._orig_playback_state_before_measurement
+        measurement_session._playback_state_before_measurement = self._orig_playback_state_before_measurement
         main.last_measurement_window_seen_at = self._orig_last_measurement_window_seen_at
         main._get_player_audio_samplerate = self._orig_get_player_audio_samplerate
         main.get_spotify_ui_state = self._orig_get_spotify_ui_state
@@ -219,7 +221,7 @@ class TestCentralCapture:
             import main
             ts.set_window_open(True)
             ts.set_track_playing(source="local", sample_rate=44100)
-            assert main._playback_state_before_measurement is None
+            assert measurement_session._playback_state_before_measurement is None
 
             # Register first manual job → triggers _start_locked
             gen = asyncio.get_event_loop().run_until_complete(
@@ -229,7 +231,7 @@ class TestCentralCapture:
             assert ts._session.active is True
             assert ts._session._playback_captured is True
             # Capture should have saved playback state before force-rate change
-            saved = main._playback_state_before_measurement
+            saved = measurement_session._playback_state_before_measurement
             assert saved is not None, "playback state was not captured"
             assert saved.get("source") == "local"
             assert saved.get("expected_rate") == 44100
@@ -250,7 +252,7 @@ class TestCentralCapture:
             assert gen >= 0
             assert ts._session.active is True
             assert ts._session._playback_captured is True
-            saved = main._playback_state_before_measurement
+            saved = measurement_session._playback_state_before_measurement
             assert saved is not None
             assert saved.get("source") == "radio"
         finally:
@@ -267,7 +269,7 @@ class TestCentralCapture:
             asyncio.get_event_loop().run_until_complete(
                 ts._session.register_manual_job("job-1")
             )
-            first_capture = id(main._playback_state_before_measurement)
+            first_capture = id(measurement_session._playback_state_before_measurement)
             assert first_capture != id(None)
 
             # Change track info mid-session (simulate track change)
@@ -294,12 +296,12 @@ class TestCentralCapture:
             asyncio.get_event_loop().run_until_complete(
                 ts._session.register_manual_job("job-2")
             )
-            second_capture = id(main._playback_state_before_measurement)
+            second_capture = id(measurement_session._playback_state_before_measurement)
             assert second_capture == first_capture, (
                 "second registration re-captured playback (should reuse first snapshot)"
             )
             # The snapshot should still be the original (local, not radio)
-            assert main._playback_state_before_measurement["source"] == "local"
+            assert measurement_session._playback_state_before_measurement["source"] == "local"
         finally:
             ts.cleanup()
 
@@ -312,10 +314,10 @@ class TestCentralCapture:
             asyncio.get_event_loop().run_until_complete(
                 ts._session.register_manual_job("job-1")
             )
-            saved = main._playback_state_before_measurement
+            saved = measurement_session._playback_state_before_measurement
             assert saved is not None
             assert asyncio.get_event_loop().run_until_complete(
-                main._measurement_restore_snapshot_matches_current_intent(saved)
+                measurement_session._measurement_restore_snapshot_matches_current_intent(saved)
             )
 
             main.current_track_info = {
@@ -325,13 +327,13 @@ class TestCentralCapture:
             }
             main.player_instance.state["current_file"] = "file:///other.flac"
             assert not asyncio.get_event_loop().run_until_complete(
-                main._measurement_restore_snapshot_matches_current_intent(saved)
+                measurement_session._measurement_restore_snapshot_matches_current_intent(saved)
             )
 
             main.current_track_info = None
             main.player_instance = None
             assert not asyncio.get_event_loop().run_until_complete(
-                main._measurement_restore_snapshot_matches_current_intent(saved)
+                measurement_session._measurement_restore_snapshot_matches_current_intent(saved)
             )
         finally:
             ts.cleanup()
@@ -367,7 +369,7 @@ class TestCentralCapture:
                 ts._session.register_manual_job("spotify-a")
             )
 
-            saved = main._playback_state_before_measurement
+            saved = measurement_session._playback_state_before_measurement
             assert saved is not None
             assert saved["source"] == "spotify"
             assert saved["id"] == "spotify:track:A"
@@ -414,10 +416,10 @@ class TestCentralCapture:
                 "url": "spotify:track:B",
             })
 
-            saved = main._playback_state_before_measurement
+            saved = measurement_session._playback_state_before_measurement
             assert saved is not None
             assert not asyncio.get_event_loop().run_until_complete(
-                main._measurement_restore_snapshot_matches_current_intent(saved)
+                measurement_session._measurement_restore_snapshot_matches_current_intent(saved)
             )
 
             asyncio.get_event_loop().run_until_complete(ts._session.request_close())
@@ -426,7 +428,7 @@ class TestCentralCapture:
             )
 
             coordinator.restore_measurement.assert_not_awaited()
-            assert main._playback_state_before_measurement is None
+            assert measurement_session._playback_state_before_measurement is None
             assert main.current_track_info == local_track_before
             assert not main.current_track_info.get("source") == "spotify"
         finally:
@@ -567,8 +569,8 @@ class TestCentralCapture:
             asyncio.get_event_loop().run_until_complete(
                 ts._session.register_manual_job("job-1")
             )
-            assert main._playback_state_before_measurement is not None
-            assert main._playback_state_before_measurement["source"] == "local"
+            assert measurement_session._playback_state_before_measurement is not None
+            assert measurement_session._playback_state_before_measurement["source"] == "local"
             gen1 = ts._session.generation
 
             # Force release (simulate close + job finish)
@@ -590,7 +592,7 @@ class TestCentralCapture:
             )
             assert ts._session.active is True
             # Old snapshot should have been reset before new capture
-            saved = main._playback_state_before_measurement
+            saved = measurement_session._playback_state_before_measurement
             assert saved is not None
             assert saved.get("source") == "radio", (
                 f"expected radio source, got {saved.get('source')}"
@@ -623,7 +625,7 @@ class TestCentralCapture:
             )
             # Since _playback_captured is True, the capture function returns early.
             # The snapshot should still be whatever it was (None from the first attempt).
-            assert main._playback_state_before_measurement is None, (
+            assert measurement_session._playback_state_before_measurement is None, (
                 "late capture happened after initial no-playback session start"
             )
         finally:
@@ -905,7 +907,7 @@ class TestHeartbeatReopen:
             asyncio.get_event_loop().run_until_complete(
                 ts._session.register_manual_job("job-1")
             )
-            assert main._playback_state_before_measurement is not None
+            assert measurement_session._playback_state_before_measurement is not None
 
             # Release
             asyncio.get_event_loop().run_until_complete(

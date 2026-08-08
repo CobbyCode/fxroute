@@ -15,6 +15,7 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 import main
+import measurement_session
 import samplerate
 from playback_transition import PlaybackTransitionCoordinator, PlaybackTransitionFailure, TransitionRequest
 
@@ -417,7 +418,7 @@ class EntryBoundaryTests(unittest.IsolatedAsyncioTestCase):
             main.measurement_sr_session = session
             main.current_track_info = None
             main.player_instance = None
-            with patch.object(main, "_capture_playback_state_before_measurement"), patch.object(
+            with patch.object(measurement_session, "_capture_playback_state_before_measurement"), patch.object(
                 main, "get_samplerate_status", return_value={"force_rate": 44100, "active_rate": 44100}
             ), patch.object(main, "_coordinator_current_playback_context", new=AsyncMock(return_value={
                 "source": "local",
@@ -467,7 +468,7 @@ class EntryBoundaryTests(unittest.IsolatedAsyncioTestCase):
             "links_complete": True,
             "signature": "stable",
         })):
-            await main._measurement_entry_preflight(48000)
+            await measurement_session._measurement_entry_preflight(48000)
         reconcile.assert_not_awaited()
 
     async def test_active_measurement_preflight_reconciles_only_link_loss_before_sweep(self):
@@ -517,7 +518,7 @@ class EntryBoundaryTests(unittest.IsolatedAsyncioTestCase):
         ), patch.object(
             main, "_playback_graph_diagnosis", new=AsyncMock(return_value=diagnosis)
         ):
-            await main._measurement_entry_preflight(48000)
+            await measurement_session._measurement_entry_preflight(48000)
 
         reconcile.assert_awaited_once_with(
             target_rate=48000,

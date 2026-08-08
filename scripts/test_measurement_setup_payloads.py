@@ -4,8 +4,8 @@
 - measurement.normalize_measurement_optional_input_channel
 - measurement.measurement_setup_settings_from_payload
 
-sowie Wrapper-Parität gegen main._normalize_measurement_optional_input_channel
-und main._measurement_setup_settings_from_payload.
+sowie Wrapper-Parität gegen measurement_session._normalize_measurement_optional_input_channel
+und measurement_session._measurement_setup_settings_from_payload.
 """
 import copy
 import sys
@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import main
+import measurement_session
 from measurement import (
     measurement_setup_settings_from_payload,
     normalize_measurement_optional_input_channel,
@@ -126,7 +127,7 @@ class WrapperParityTests(unittest.TestCase):
     def test_normalize_wrapper_matches_module_function(self):
         for value in (None, "", " 3 ", 3, 0, -1, "abc", 1, "0", " 12 ", 3.5, True):
             self.assertEqual(
-                main._normalize_measurement_optional_input_channel(value),
+                measurement_session._normalize_measurement_optional_input_channel(value),
                 normalize_measurement_optional_input_channel(value),
                 f"Parität für {value!r}",
             )
@@ -143,7 +144,7 @@ class WrapperParityTests(unittest.TestCase):
         ]
         for payload in payloads:
             self.assertEqual(
-                main._measurement_setup_settings_from_payload(payload),
+                measurement_session._measurement_setup_settings_from_payload(payload),
                 measurement_setup_settings_from_payload(payload),
                 f"Parität für {payload!r}",
             )

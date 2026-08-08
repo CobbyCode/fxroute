@@ -7,6 +7,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import main
+import measurement_session
 import spl_calibration
 
 
@@ -56,13 +57,13 @@ def umik2_input(**updates):
 
 def main_test():
     original_store = main.measurement_store
-    original_settings = main._read_measurement_setup_settings
+    original_settings = measurement_session._read_measurement_setup_settings
     try:
         with tempfile.TemporaryDirectory() as directory:
             cal = Path(directory) / "cal-8107963.txt"
             valid_header = '"Sens Factor =-12.11dB, AGain =18dB, SERNO: 8107963"\n'
             cal.write_text(valid_header + "10 0\n1000 0\n20000 0\n", encoding="utf-8")
-            main._read_measurement_setup_settings = lambda: {
+            measurement_session._read_measurement_setup_settings = lambda: {
                 "selectedInputId": "pw-source-umik2",
                 "selectedMicInputChannel": "1",
                 "selectedReferenceInputChannel": "",
@@ -131,7 +132,7 @@ def main_test():
             assert abs(measured - (expected + 18.0)) > 17.9
     finally:
         main.measurement_store = original_store
-        main._read_measurement_setup_settings = original_settings
+        measurement_session._read_measurement_setup_settings = original_settings
 
     print("UMIK-2 metadata, Sens Factor/AGain/SERNO and fail-closed capture gate: ok")
 

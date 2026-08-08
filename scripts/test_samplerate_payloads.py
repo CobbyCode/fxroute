@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import main
+import measurement_session
 import samplerate
 
 
@@ -238,11 +239,11 @@ class MainWrapperParityTests(unittest.TestCase):
     def test_snapshot_summary_wrapper_matches(self):
         snapshot = {"active": True, "config": {"sample_rate": 48000}, "stage": "x"}
         self.assertEqual(
-            main._measurement_helper_snapshot_summary(snapshot),
+            measurement_session._measurement_helper_snapshot_summary(snapshot),
             samplerate.measurement_helper_snapshot_summary(snapshot),
         )
         self.assertEqual(
-            main._measurement_helper_snapshot_summary(None),
+            measurement_session._measurement_helper_snapshot_summary(None),
             samplerate.measurement_helper_snapshot_summary(None),
         )
 

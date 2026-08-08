@@ -7,6 +7,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import main
+import measurement_session
 import spl_calibration
 
 
@@ -57,7 +58,7 @@ def umik_input(**updates):
 
 def main_test():
     original_store = main.measurement_store
-    original_settings = main._read_measurement_setup_settings
+    original_settings = measurement_session._read_measurement_setup_settings
     try:
         with tempfile.TemporaryDirectory() as directory:
             cal = Path(directory) / "680d1373e3-7148364.txt"
@@ -66,7 +67,7 @@ def main_test():
                 "10 0\n1000 0\n20000 0\n",
                 encoding="utf-8",
             )
-            main._read_measurement_setup_settings = lambda: {
+            measurement_session._read_measurement_setup_settings = lambda: {
                 "selectedInputId": "pw-source-199",
                 "selectedMicInputChannel": "1",
                 "selectedReferenceInputChannel": "",
@@ -137,7 +138,7 @@ def main_test():
             assert spl_calibration._calculate_spl_required_adjustment(82.5) == 0.5
     finally:
         main.measurement_store = original_store
-        main._read_measurement_setup_settings = original_settings
+        measurement_session._read_measurement_setup_settings = original_settings
 
     print("UMIK-1 metadata, Sens Factor/SERNO, fail-closed gain/cal and manual path: ok")
 

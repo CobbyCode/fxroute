@@ -20,6 +20,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
+import measurement_session
 from playback_transition import TransitionRequest
 
 
@@ -161,7 +162,7 @@ async def main_async() -> None:
          mock.patch.object(main, "playback_transition_coordinator", mock.Mock(transition_blocked=False)), \
          mock.patch.object(main, "_playback_graph_diagnosis", new=mock.AsyncMock(return_value={"links_complete": True, "signature": "sig"})), \
          mock.patch.object(main, "_reconcile_transition_sink_rate", new=reconcile_10_mock) as reconcile:
-        await main._measurement_entry_preflight(48000)
+        await measurement_session._measurement_entry_preflight(48000)
         reconcile.assert_awaited_once_with(48000, reason="measurement-entry-preflight")
 
     # 11. Measurement preflight: reconcile failure keeps the fast-fail error.
@@ -170,7 +171,7 @@ async def main_async() -> None:
          mock.patch.object(main, "_playback_graph_diagnosis", new=mock.AsyncMock(return_value={"links_complete": True, "signature": "sig"})), \
          mock.patch.object(main, "_reconcile_transition_sink_rate", new=mock.AsyncMock(return_value=False)):
         try:
-            await main._measurement_entry_preflight(48000)
+            await measurement_session._measurement_entry_preflight(48000)
         except RuntimeError as exc:
             assert "preflight rate mismatch" in str(exc)
         else:

@@ -1554,7 +1554,8 @@ async def _measure_auto_sub_candidate(
     exact_sub_mute: bool = False,
 ) -> dict[str, Any]:
     """Measure one AutoSub delay candidate with the standard safety checks."""
-    from main import _sync_subwoofer_runtime_for_measurement_sweep, measurement_store, subwoofer_runtime
+    from main import measurement_store, subwoofer_runtime
+    from measurement_session import _sync_subwoofer_runtime_for_measurement_sweep
     from samplerate import _load_audio_output_mode
 
     _marks = {"start": time.monotonic()}
@@ -2804,11 +2805,11 @@ async def _run_auto_sub_22_optimize(
     fine_step_ms: float,
 ) -> None:
     from main import (
-        _resolve_measurement_start_sample_rate,
         measurement_sr_session,
         measurement_store,
         subwoofer_runtime,
     )
+    from measurement_session import _resolve_measurement_start_sample_rate
     global _auto_sub_lock
     from samplerate import _load_audio_output_mode, set_audio_output_mode
 
@@ -3505,11 +3506,11 @@ async def _run_auto_sub_22_stereo_optimize(
     original_config_snapshot: dict[str, Any],
 ) -> None:
     from main import (
-        _resolve_measurement_start_sample_rate,
         measurement_sr_session,
         measurement_store,
         subwoofer_runtime,
     )
+    from measurement_session import _resolve_measurement_start_sample_rate
     global _auto_sub_lock
     from samplerate import _load_audio_output_mode, set_audio_output_mode
 
@@ -4634,11 +4635,11 @@ async def _run_auto_sub_optimize(
     original_config_snapshot: dict[str, Any],
 ) -> None:
     from main import (
-        _resolve_measurement_start_sample_rate,
         measurement_sr_session,
         measurement_store,
         subwoofer_runtime,
     )
+    from measurement_session import _resolve_measurement_start_sample_rate
     global _auto_sub_lock
     from samplerate import _load_audio_output_mode, set_audio_output_mode
 

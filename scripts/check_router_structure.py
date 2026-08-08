@@ -20,23 +20,49 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-MODULES = ("spl_calibration.py", "library_api.py", "autosub.py")
+MODULES = ("spl_calibration.py", "library_api.py", "autosub.py", "measurement_session.py")
 MAIN_GLOBALS = {
+    "SPOTIFY_PREARM_SAMPLE_RATE_HZ",
+    "PIPEWIRE_HANDOFF_POLL_INTERVAL_MS",
+    "current_track_info",
     "easyeffects_manager",
+    "get_audio_output_overview",
+    "get_samplerate_status",
     "library_scanner",
     "measurement_sr_session",
     "measurement_store",
+    "player_instance",
+    "playback_intent_generation",
+    "playback_transition_coordinator",
     "settings",
     "subwoofer_runtime",
-    "_read_measurement_setup_settings",
+    "_audio_output_overview_with_effective_rate",
+    "_begin_playback_transition_attempt",
+    "_coordinator_current_playback_context",
+    "_end_playback_transition_attempt",
+    "_ensure_playback_samplerate_force",
+    "_get_current_pipewire_force_rate",
+    "_get_player_audio_samplerate",
+    "_local_intent_matches_live_state",
+    "_log_playback_graph_diagnosis",
+    "_path_within_root",
+    "_playback_graph_diagnosis",
+    "_pulse_suspend_sink_for_samplerate",
+    "_reconcile_transition_sink_rate",
     "_require_easyeffects_manager",
-    "_resolve_measurement_start_sample_rate",
-    "_sync_subwoofer_runtime_for_measurement_sweep",
+    "_run_coordinated_transition",
+    "_set_pipewire_force_rate",
+    "_spotify_intent_matches_live_state",
+    "_spotify_snapshot_identity_values",
+    "_sync_subwoofer_runtime",
+    "_sync_subwoofer_runtime_at_rate",
+    "_wait_for_samplerate_alignment",
 }
 ROUTE_METHODS = {"get", "post", "put", "delete", "patch"}
 ROUTE_HANDLER_PREFIXES = (
     "get_", "set_", "list_", "create_", "update_", "export_", "remove_",
     "delete_", "upload_", "download_", "start_", "cancel_", "apply_", "measure_",
+    "save_", "merge_",
 )
 
 errors: list[str] = []

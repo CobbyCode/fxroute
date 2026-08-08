@@ -26,6 +26,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
+import measurement_session
 import stations as stations_module
 from playback_transition import PlaybackTransitionCoordinator
 from playback_transition_test_support import run_main_handoff_through_coordinator
@@ -508,7 +509,6 @@ class RadioPlayErrorSemanticsTests(unittest.IsolatedAsyncioTestCase):
             "playback_transition_epoch", "current_footer_owner",
             "radio_reconnect_attempts", "radio_reconnect_url",
             "radio_reconnect_active_since",
-            "_playback_state_before_measurement",
             "playback_queue_mode", "playback_queue", "subwoofer_runtime",
             "playback_transition_coordinator",
         )
@@ -523,7 +523,7 @@ class RadioPlayErrorSemanticsTests(unittest.IsolatedAsyncioTestCase):
         main.radio_reconnect_attempts = 0
         main.radio_reconnect_url = None
         main.radio_reconnect_active_since = 0.0
-        main._playback_state_before_measurement = None
+        measurement_session._playback_state_before_measurement = None
         main.playback_queue_mode = "app_replace"
         main.playback_queue = []
         main.subwoofer_runtime = None

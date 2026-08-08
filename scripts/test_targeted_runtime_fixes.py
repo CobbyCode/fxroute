@@ -17,6 +17,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
+import measurement_session
 import player
 from peak_monitor import EasyEffectsPeakMonitor, MonitorTarget
 
@@ -266,7 +267,7 @@ class ApiPlayQueueOrderTests(unittest.IsolatedAsyncioTestCase):
                 "playback_queue", "playback_queue_original", "playback_queue_index",
                 "playback_queue_mode", "playback_queue_loop", "playback_queue_shuffle",
                 "single_track_loop", "queue_transition_target_url", "peak_monitor",
-                "source_transition_lock", "_playback_state_before_measurement",
+                "source_transition_lock",
                 "playback_transition_epoch",
                 "radio_reconnect_attempts", "radio_reconnect_url",
                 "radio_reconnect_active_since",
@@ -290,7 +291,7 @@ class ApiPlayQueueOrderTests(unittest.IsolatedAsyncioTestCase):
         main.queue_transition_target_url = None
         main.peak_monitor = None
         main.source_transition_lock = None
-        main._playback_state_before_measurement = None
+        measurement_session._playback_state_before_measurement = None
         main.playback_transition_epoch = 0
         main.radio_reconnect_attempts = 0
         main.radio_reconnect_url = None

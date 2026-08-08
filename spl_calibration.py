@@ -273,7 +273,8 @@ def _is_umm6_input(item: dict[str, Any]) -> bool:
 
 
 def _spl_auto_capability() -> dict[str, Any]:
-    from main import _read_measurement_setup_settings, measurement_store
+    from main import measurement_store
+    from measurement_session import _read_measurement_setup_settings
 
     calibration_state = measurement_store.get_calibration_state() if measurement_store else {}
     active_id = str(calibration_state.get("active_calibration_file_id") or "")
@@ -652,7 +653,8 @@ def _start_spl_calibration_noise() -> dict[str, Any]:
 
 @router.post("/api/measurements/spl-calibration/automatic")
 async def measure_spl_automatically():
-    from main import _read_measurement_setup_settings, measurement_sr_session
+    from main import measurement_sr_session
+    from measurement_session import _read_measurement_setup_settings
 
     capability = _spl_auto_capability()
     if not capability["available"]:

@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
+import measurement_session
 
 
 class MeasurementOwnershipTests(unittest.IsolatedAsyncioTestCase):
@@ -66,7 +67,7 @@ class MeasurementOwnershipTests(unittest.IsolatedAsyncioTestCase):
         ), patch.object(
             main, "_coordinator_current_playback_context", new=AsyncMock(return_value=context)
         ), patch.object(
-            main, "_capture_playback_state_before_measurement"
+            measurement_session, "_capture_playback_state_before_measurement"
         ), patch.object(main, "_run_coordinated_transition", new=run_transition):
             task = asyncio.create_task(session.start(48000))
             await asyncio.wait_for(entered.wait(), timeout=1.0)
@@ -171,8 +172,8 @@ class MeasurementOwnershipTests(unittest.IsolatedAsyncioTestCase):
         ), patch.object(main, "_playback_graph_diagnosis", diagnosis), patch.object(
             main, "measurement_store", None
         ):
-            await main._measurement_entry_preflight(48000)
-            await main._measurement_entry_preflight(48000)
+            await measurement_session._measurement_entry_preflight(48000)
+            await measurement_session._measurement_entry_preflight(48000)
 
         coordinator.reconcile_measurement_session.assert_awaited_once_with(
             target_rate=48000,

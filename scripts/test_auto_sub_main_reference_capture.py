@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import main
+import measurement_session
 import autosub
 from subwoofer_runtime import Subwoofer21Runtime, SubwooferRuntimeConfig
 
@@ -250,7 +251,7 @@ class MainReferenceSnapshotTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(autosub, "get_audio_output_overview", return_value={}),
                 patch.object(main.SubwooferRuntimeConfig, "from_overview", return_value=runtime_config()),
                 # Pre-arm responsibility moved to _sync_subwoofer_runtime_for_measurement_sweep.
-                patch.object(main, "_sync_subwoofer_runtime_for_measurement_sweep", new_callable=AsyncMock, return_value=None),
+                patch.object(measurement_session, "_sync_subwoofer_runtime_for_measurement_sweep", new_callable=AsyncMock, return_value=None),
                 patch.object(main.asyncio, "sleep", side_effect=no_sleep),
                 patch("samplerate._load_audio_output_mode", return_value={"subwoofer": {"sub_alignment_ms": 2.0}}),
             ):

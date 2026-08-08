@@ -6,6 +6,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import main
+import measurement_session
 import spl_calibration
 
 
@@ -52,9 +53,9 @@ def umm6_input(**updates):
 
 def main_test():
     original_store = main.measurement_store
-    original_settings = main._read_measurement_setup_settings
+    original_settings = measurement_session._read_measurement_setup_settings
     try:
-        main._read_measurement_setup_settings = lambda: {
+        measurement_session._read_measurement_setup_settings = lambda: {
             "selectedInputId": "pw-source-umm6",
             "selectedMicInputChannel": "1",
             "selectedReferenceInputChannel": "",
@@ -129,7 +130,7 @@ def main_test():
         assert abs(measured - expected) < 0.1
     finally:
         main.measurement_store = original_store
-        main._read_measurement_setup_settings = original_settings
+        measurement_session._read_measurement_setup_settings = original_settings
 
     print("UMM-6 metadata, fixture header/phase curve, +30 dB capture gate and SPL reference: ok")
 

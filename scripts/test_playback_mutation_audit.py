@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 # Playback entrypoints and single-owner paths live only in main.py; both
 # files are parsed for direct mutation calls so the extraction cannot
 # create an audit coverage gap.
-AUDIT_FILES = ("main.py", "autosub.py")
+AUDIT_FILES = ("main.py", "autosub.py", "measurement_session.py")
 SOURCES = {name: (ROOT / name).read_text() for name in AUDIT_FILES}
 TREES = {name: ast.parse(source) for name, source in SOURCES.items()}
 MAIN_SOURCE = SOURCES["main.py"]
@@ -99,7 +99,8 @@ SINGLE_OWNER_PATHS = {
 def _function_names() -> set[str]:
     return {
         node.name
-        for node in ast.walk(TREE)
+        for tree in TREES.values()
+        for node in ast.walk(tree)
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
 
@@ -230,15 +231,22 @@ def main() -> int:
                 errors.append(f"{entrypoint} still references obsolete path {old}")
 
     for path_name in sorted(SINGLE_OWNER_PATHS):
-        nodes = [
-            node
-            for node in ast.walk(TREE)
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == path_name
-        ]
+        nodes: list[ast.AST] = []
+        owning_source = ""
+        for fname, tree in TREES.items():
+            matches = [
+                node
+                for node in ast.walk(tree)
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == path_name
+            ]
+            if matches:
+                nodes = matches
+                owning_source = SOURCES[fname]
+                break
         if not nodes:
             errors.append(f"single-owner path missing: {path_name}")
             continue
-        body = ast.get_source_segment(MAIN_SOURCE, nodes[0]) or ""
+        body = ast.get_source_segment(owning_source, nodes[0]) or ""
         if path_name == "_advance_playback_queue":
             if "_load_queue_track" not in body:
                 errors.append("auto-advance does not enter the coordinator-backed queue loader")

@@ -12,6 +12,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
+import measurement_session
 import samplerate_orchestration
 from playback_transition_test_support import run_main_handoff_through_coordinator
 
@@ -148,8 +149,7 @@ class SamplerateOrchestrationContractTests(unittest.IsolatedAsyncioTestCase):
             name: getattr(main, name)
             for name in (
                 "measurement_sr_session", "playback_transition_coordinator",
-                "_playback_state_before_measurement",
-                "current_track_info", "player_instance",
+                    "current_track_info", "player_instance",
             )
         }
 
@@ -164,7 +164,7 @@ class SamplerateOrchestrationContractTests(unittest.IsolatedAsyncioTestCase):
             session = main.MeasurementSampleRateSession()
             main.measurement_sr_session = session
             main.playback_transition_coordinator = FakeCoordinator()
-            main._playback_state_before_measurement = {
+            measurement_session._playback_state_before_measurement = {
                 "source": "local", "url": "/music/a.flac", "current_file": "/music/a.flac",
                 "expected_rate": 44100,
                 "was_playing": True,

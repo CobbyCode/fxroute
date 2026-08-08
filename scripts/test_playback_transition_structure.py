@@ -8,15 +8,22 @@ import unittest
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-SOURCE = (ROOT / "main.py").read_text()
-TREE = ast.parse(SOURCE)
+SOURCES = {
+    file_name: (ROOT / file_name).read_text()
+    for file_name in ("main.py", "measurement_session.py")
+}
+TREES = {
+    file_name: ast.parse(source)
+    for file_name, source in SOURCES.items()
+}
 
 
 def function_source(name):
-    lines = SOURCE.splitlines(keepends=True)
-    for node in ast.walk(TREE):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
-            return "".join(lines[node.lineno - 1: node.end_lineno])
+    for file_name, source in SOURCES.items():
+        lines = source.splitlines(keepends=True)
+        for node in ast.walk(TREES[file_name]):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
+                return "".join(lines[node.lineno - 1: node.end_lineno])
     raise AssertionError(f"function not found: {name}")
 
 
