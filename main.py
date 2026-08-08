@@ -14507,7 +14507,10 @@ async def _run_auto_sub_22_stereo_optimize(
                 "sub1": float(_auto_sub_22_sub(final_gain_snapshot, "sub1").get("level_db", 0.0)),
                 "sub2": float(_auto_sub_22_sub(final_gain_snapshot, "sub2").get("level_db", 0.0)),
             },
-            "stage_output_peaks": (final_gain_sweep or {}).get("stage_output_peaks"),
+            "stage_output_peaks": {
+                "left": final_gain_left.get("stage_output_peaks"),
+                "right": final_gain_right.get("stage_output_peaks"),
+            },
         })
         overall_score = (0.6 * min(left_score, right_score)) + (0.4 * ((left_score + right_score) / 2.0))
         left_xo_score = float(left_winner.get("xo_score", 0.0) or 0.0)
