@@ -160,10 +160,8 @@ def _reason(context: str, name: str) -> str | None:
     if leaf in {
         "_start_locked", "_release", "_sync_subwoofer_runtime_for_measurement_sweep",
         "_sync_subwoofer_runtime_at_rate", "start_measurement", "start_lr_repeat_measurement",
-        "_restore_auto_sub_original_config", "_measure_auto_sub_candidate",
-        "_run_auto_sub_22_optimize", "_run_auto_sub_22_stereo_optimize", "_run_auto_sub_optimize",
     }:
-        return "measurement/AutoSub workflow, outside playback transitions"
+        return "measurement workflow, outside playback transitions"
     if leaf in {
         "lifespan", "save_audio_output_selection_route", "save_audio_output_mode_route",
         "_finish_easyeffects_preset_mutation", "save_easyeffects_extras",

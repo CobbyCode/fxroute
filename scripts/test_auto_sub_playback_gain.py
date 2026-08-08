@@ -10,6 +10,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
+import autosub
 from measurement import MEASUREMENT_SUBWOOFER_HELPER_ROUTE, MeasurementStore
 
 
@@ -36,7 +37,7 @@ class AutoSubPlaybackGainTests(unittest.TestCase):
         with patch.object(main, "easyeffects_manager", manager), patch.object(
             main, "set_output_volume"
         ) as set_output_volume:
-            captured = main._capture_auto_sub_playback_gain()
+            captured = autosub._capture_auto_sub_playback_gain()
 
         self.assertEqual(captured["linear"], 1.0)
         self.assertEqual(captured["volume_db"], 0.0)
@@ -57,7 +58,7 @@ class AutoSubPlaybackGainTests(unittest.TestCase):
             "loudness": {"enabled": True, "params": {"volumeDb": -20.0}},
         })
         with patch.object(main, "easyeffects_manager", manager):
-            captured = main._capture_auto_sub_playback_gain()
+            captured = autosub._capture_auto_sub_playback_gain()
 
         self.assertAlmostEqual(captured["linear"], 0.1, places=12)
         self.assertEqual(captured["volume_db"], -20.0)
@@ -80,14 +81,14 @@ class AutoSubPlaybackGainTests(unittest.TestCase):
             "sweep_seconds": 0.1,
             "tail_seconds": 0.1,
         }
-        full = main._auto_sub_stage_peak_prediction(
+        full = autosub._auto_sub_stage_peak_prediction(
             sweep_profile=profile,
             sample_rate=48000,
             channel="stereo",
             config=runtime_config(),
             playback_gain=1.0,
         )
-        quiet = main._auto_sub_stage_peak_prediction(
+        quiet = autosub._auto_sub_stage_peak_prediction(
             sweep_profile=profile,
             sample_rate=48000,
             channel="stereo",
@@ -116,9 +117,9 @@ class AutoSubPlaybackGainTests(unittest.TestCase):
         self.assertNotIn("--volume=", with_gain)
 
     def test_old_jobs_default_to_unity_gain(self):
-        self.assertEqual(main._auto_sub_job_playback_gain({}), 1.0)
+        self.assertEqual(autosub._auto_sub_job_playback_gain({}), 1.0)
         self.assertAlmostEqual(
-            main._auto_sub_job_playback_gain({"playback_gain": {"linear": 0.1}}),
+            autosub._auto_sub_job_playback_gain({"playback_gain": {"linear": 0.1}}),
             0.1,
         )
 

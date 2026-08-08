@@ -10,11 +10,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import main
+import autosub
 
 
 class AutoSubTargetCurveSnapshotTests(unittest.TestCase):
     def validate(self, payload):
-        return main._validate_auto_sub_target_curve_snapshot(json.dumps(payload))
+        return autosub._validate_auto_sub_target_curve_snapshot(json.dumps(payload))
 
     def test_builtin_curve_is_complete_and_detached(self):
         payload = {"key": "bass_shelf", "label": "Bass Shelf", "provenance": "built_in", "points": [[20, 4], [200, 0], [20000, 0]]}
@@ -51,7 +52,7 @@ class AutoSubTargetCurveSnapshotTests(unittest.TestCase):
         ]
         for raw in invalid:
             with self.subTest(raw=raw):
-                snapshot, error = main._validate_auto_sub_target_curve_snapshot(raw)
+                snapshot, error = autosub._validate_auto_sub_target_curve_snapshot(raw)
                 self.assertIsNone(snapshot)
                 self.assertTrue(error)
                 self.assertNotEqual(snapshot, {"key": "neutral", "points": [[20, 0], [20000, 0]]})
@@ -62,7 +63,7 @@ class AutoSubTargetCurveSnapshotTests(unittest.TestCase):
         raw = {"points_left": [[20, -10], [100, -5], [300, -2]], "points_right": [[20, -8], [100, -4], [300, -1]]}
         raw_before = copy.deepcopy(raw)
         target_before = copy.deepcopy(target)
-        main._auto_sub_measurement_from_sweep(raw, "Before", "AutoSub Before")
+        autosub._auto_sub_measurement_from_sweep(raw, "Before", "AutoSub Before")
         self.assertEqual(raw, raw_before)
         self.assertEqual(target, target_before)
 

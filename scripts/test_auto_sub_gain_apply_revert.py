@@ -8,6 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import main
+import autosub
 
 
 def diagnostic(left, right, calculated=True):
@@ -28,49 +29,49 @@ class AutoGainApplyRevertTests(unittest.TestCase):
 
     def test_21_and_22_mono_use_same_common_delta(self):
         source = diagnostic(2.0, 4.0)
-        self.assertEqual(main._auto_sub_gain_deltas(source, main.OUTPUT_MODE_SUBWOOFER_21), {"left": 3.0, "right": 3.0})
-        self.assertEqual(main._auto_sub_gain_deltas(source, main.OUTPUT_MODE_SUBWOOFER_22), {"left": 3.0, "right": 3.0})
+        self.assertEqual(autosub._auto_sub_gain_deltas(source, main.OUTPUT_MODE_SUBWOOFER_21), {"left": 3.0, "right": 3.0})
+        self.assertEqual(autosub._auto_sub_gain_deltas(source, main.OUTPUT_MODE_SUBWOOFER_22), {"left": 3.0, "right": 3.0})
 
     def test_22_stereo_preserves_separate_deltas(self):
         self.assertEqual(
-            main._auto_sub_gain_deltas(diagnostic(2.0, -1.0), main.OUTPUT_MODE_SUBWOOFER_22_STEREO),
+            autosub._auto_sub_gain_deltas(diagnostic(2.0, -1.0), main.OUTPUT_MODE_SUBWOOFER_22_STEREO),
             {"left": 2.0, "right": -1.0},
         )
 
     def test_second_feedback_step_is_limited_to_one_db(self):
         self.assertEqual(
-            main._auto_sub_gain_deltas(diagnostic(-9.0, -7.0), main.OUTPUT_MODE_SUBWOOFER_21, max_abs_db=1.0),
+            autosub._auto_sub_gain_deltas(diagnostic(-9.0, -7.0), main.OUTPUT_MODE_SUBWOOFER_21, max_abs_db=1.0),
             {"left": -1.0, "right": -1.0},
         )
 
     def test_22_snapshot_applies_equal_delta_and_preserves_relative_gain(self):
         snapshot = {"subwoofers": {"sub1": {"level_db": -5.0}, "sub2": {"level_db": -2.0}}}
-        updated = main._auto_sub_22_snapshot_with_gain(snapshot, left_delta_db=3.0, right_delta_db=3.0)
+        updated = autosub._auto_sub_22_snapshot_with_gain(snapshot, left_delta_db=3.0, right_delta_db=3.0)
         self.assertEqual(updated["subwoofers"]["sub1"]["level_db"], -2.0)
         self.assertEqual(updated["subwoofers"]["sub2"]["level_db"], 1.0)
         self.assertEqual(updated["subwoofers"]["sub2"]["level_db"] - updated["subwoofers"]["sub1"]["level_db"], 3.0)
         self.assertEqual(snapshot["subwoofers"]["sub1"]["level_db"], -5.0)
 
     def test_verification_accepts_improvement(self):
-        verdict = main._auto_sub_gain_verdict(diagnostic(3.0, -2.0), diagnostic(0.4, -0.2), main.OUTPUT_MODE_SUBWOOFER_21)
+        verdict = autosub._auto_sub_gain_verdict(diagnostic(3.0, -2.0), diagnostic(0.4, -0.2), main.OUTPUT_MODE_SUBWOOFER_21)
         self.assertTrue(verdict["accepted"])
 
     def test_verification_reverts_when_either_channel_is_worse(self):
-        verdict = main._auto_sub_gain_verdict(diagnostic(1.0, 1.0), diagnostic(0.2, 1.4), main.OUTPUT_MODE_SUBWOOFER_22_STEREO)
+        verdict = autosub._auto_sub_gain_verdict(diagnostic(1.0, 1.0), diagnostic(0.2, 1.4), main.OUTPUT_MODE_SUBWOOFER_22_STEREO)
         self.assertFalse(verdict["accepted"])
         self.assertFalse(verdict["channels"]["right"]["accepted"])
 
     def test_verification_tolerates_quarter_db_measurement_noise(self):
-        verdict = main._auto_sub_gain_verdict(diagnostic(1.0, 1.0), diagnostic(1.24, 1.25), main.OUTPUT_MODE_SUBWOOFER_21)
+        verdict = autosub._auto_sub_gain_verdict(diagnostic(1.0, 1.0), diagnostic(1.24, 1.25), main.OUTPUT_MODE_SUBWOOFER_21)
         self.assertTrue(verdict["accepted"])
 
     def test_unavailable_diagnostics_never_apply(self):
-        self.assertEqual(main._auto_sub_gain_deltas(diagnostic(1, 1, calculated=False), main.OUTPUT_MODE_SUBWOOFER_21), {})
-        verdict = main._auto_sub_gain_verdict(diagnostic(1, 1, calculated=False), diagnostic(0, 0), main.OUTPUT_MODE_SUBWOOFER_21)
+        self.assertEqual(autosub._auto_sub_gain_deltas(diagnostic(1, 1, calculated=False), main.OUTPUT_MODE_SUBWOOFER_21), {})
+        verdict = autosub._auto_sub_gain_verdict(diagnostic(1, 1, calculated=False), diagnostic(0, 0), main.OUTPUT_MODE_SUBWOOFER_21)
         self.assertFalse(verdict["accepted"])
 
     def test_response_correction_uses_measured_sensitivity(self):
-        correction = main._auto_sub_gain_response_correction(
+        correction = autosub._auto_sub_gain_response_correction(
             diagnostic(-2.0, -2.4), diagnostic(-1.0, -1.2),
             {"left": -2.0, "right": -2.0}, main.OUTPUT_MODE_SUBWOOFER_21,
         )
@@ -79,7 +80,7 @@ class AutoGainApplyRevertTests(unittest.TestCase):
         self.assertEqual(correction["deltas_db"], {"left": -2.0, "right": -2.0})
 
     def test_response_correction_preserves_sub_two_db_value(self):
-        correction = main._auto_sub_gain_response_correction(
+        correction = autosub._auto_sub_gain_response_correction(
             diagnostic(-3.704, -3.704), diagnostic(-1.704, -1.704),
             {"left": -2.0, "right": -2.0}, main.OUTPUT_MODE_SUBWOOFER_21,
         )
@@ -88,7 +89,7 @@ class AutoGainApplyRevertTests(unittest.TestCase):
         self.assertEqual(correction["applied_deltas_db"], {"left": -1.704, "right": -1.704})
 
     def test_response_correction_keeps_total_search_within_six_db(self):
-        correction = main._auto_sub_gain_response_correction(
+        correction = autosub._auto_sub_gain_response_correction(
             diagnostic(-5.725, -5.725), diagnostic(-3.725, -3.725),
             {"left": -2.0, "right": -2.0}, main.OUTPUT_MODE_SUBWOOFER_22,
         )
@@ -99,7 +100,7 @@ class AutoGainApplyRevertTests(unittest.TestCase):
 
     def test_default_first_step_supports_full_six_db_range(self):
         self.assertEqual(
-            main._auto_sub_gain_deltas(diagnostic(9.0, 9.0), main.OUTPUT_MODE_SUBWOOFER_21),
+            autosub._auto_sub_gain_deltas(diagnostic(9.0, 9.0), main.OUTPUT_MODE_SUBWOOFER_21),
             {"left": 6.0, "right": 6.0},
         )
 
@@ -117,10 +118,10 @@ class AutoGainApplyRevertTests(unittest.TestCase):
         unsafe_config = main.SubwooferRuntimeConfig(
             **{**safe_config.__dict__, "sub_level_db": 6.0, "sub2_level_db": 6.0},
         )
-        safe = main._auto_sub_stage_peak_prediction(
+        safe = autosub._auto_sub_stage_peak_prediction(
             sweep_profile=profile, sample_rate=48000, channel="stereo", config=safe_config,
         )
-        unsafe = main._auto_sub_stage_peak_prediction(
+        unsafe = autosub._auto_sub_stage_peak_prediction(
             sweep_profile=profile, sample_rate=48000, channel="stereo", config=unsafe_config,
         )
         self.assertTrue(safe["safe"])
@@ -135,21 +136,21 @@ class AutoGainApplyRevertTests(unittest.TestCase):
             key: 10.0 ** (db / 20.0)
             for key, db in predicted["dbfs"].items()
         }
-        comparison = main._auto_sub_stage_peak_comparison(predicted, measured)
+        comparison = autosub._auto_sub_stage_peak_comparison(predicted, measured)
         self.assertEqual(set(comparison["measured"]["dbfs"]), {"output_1", "output_2", "output_3", "output_4"})
         self.assertFalse(comparison["relevant_mismatch"])
 
     def test_peak_safety_failure_aborts_and_final_result_persists_peaks(self):
-        candidate_source = inspect.getsource(main._measure_auto_sub_candidate)
-        finalize_source = inspect.getsource(main._finalize_autosub_job)
+        candidate_source = inspect.getsource(autosub._measure_auto_sub_candidate)
+        finalize_source = inspect.getsource(autosub._finalize_autosub_job)
         self.assertIn("raise AutoSubPeakSafetyError", candidate_source)
         self.assertIn("except AutoSubPeakSafetyError:", candidate_source)
         self.assertIn('"stage_output_peaks": (final_gain_sweep or {}).get("stage_output_peaks")',
-                      inspect.getsource(main._run_auto_sub_optimize))
+                      inspect.getsource(autosub._run_auto_sub_optimize))
         self.assertIn('job["result"]["auto_gain"]', finalize_source)
 
     def test_response_correction_still_rejects_values_above_six_db(self):
-        correction = main._auto_sub_gain_response_correction(
+        correction = autosub._auto_sub_gain_response_correction(
             diagnostic(-9.0, -9.0), diagnostic(-7.0, -7.0),
             {"left": -2.0, "right": -2.0}, main.OUTPUT_MODE_SUBWOOFER_22_STEREO,
         )
@@ -159,7 +160,7 @@ class AutoGainApplyRevertTests(unittest.TestCase):
         self.assertEqual(correction["reason"], "Measured final Gain correction is implausible")
 
     def test_response_correction_rejects_wrong_direction(self):
-        correction = main._auto_sub_gain_response_correction(
+        correction = autosub._auto_sub_gain_response_correction(
             diagnostic(-2.0, -2.0), diagnostic(-3.0, -3.0),
             {"left": -2.0, "right": -2.0}, main.OUTPUT_MODE_SUBWOOFER_21,
         )
@@ -167,7 +168,7 @@ class AutoGainApplyRevertTests(unittest.TestCase):
         self.assertIn("implausible", correction["reason"])
 
     def test_22_stereo_keeps_accepted_step1_when_optional_correction_is_unavailable(self):
-        source = inspect.getsource(main._run_auto_sub_22_stereo_optimize)
+        source = inspect.getsource(autosub._run_auto_sub_22_stereo_optimize)
         fallback = source.split('if not correction_plan.get("available"):', 1)[1].split(
             'if any(abs(value) > 0.0005 for value in correction_deltas.values()):', 1
         )[0]
@@ -177,7 +178,7 @@ class AutoGainApplyRevertTests(unittest.TestCase):
         self.assertNotIn('set_audio_output_mode(', fallback)
 
     def test_22_stereo_retains_only_independently_improved_step1_side(self):
-        source = inspect.getsource(main._run_auto_sub_22_stereo_optimize)
+        source = inspect.getsource(autosub._run_auto_sub_22_stereo_optimize)
         self.assertIn('accepted_step1_sides = {', source)
         self.assertIn('if accepted_step1_sides[side] else 0.0', source)
         self.assertIn('elif not all(accepted_step1_sides.values()):', source)
@@ -189,10 +190,10 @@ class AutoGainApplyRevertTests(unittest.TestCase):
         anchor = {"status": "ready", "target_vertical_offset_db": 0.0}
         broad_peak = self._curve(lambda index: 11.0 if 14 <= index <= 30 else 0.0)
         narrow_peak = self._curve(lambda index: 20.0 if index == 24 else 0.0)
-        broad = main._auto_sub_stereo_corridor_violation(
+        broad = autosub._auto_sub_stereo_corridor_violation(
             points=broad_peak, target_curve=target, anchor=anchor, crossover_hz=80, direction=-1.0,
         )
-        narrow = main._auto_sub_stereo_corridor_violation(
+        narrow = autosub._auto_sub_stereo_corridor_violation(
             points=narrow_peak, target_curve=target, anchor=anchor, crossover_hz=80, direction=-1.0,
         )
         self.assertTrue(broad["relevant"])
@@ -211,7 +212,7 @@ class AutoGainApplyRevertTests(unittest.TestCase):
                 "right": {"response_change_per_db": 0.628},
             },
         }
-        plan = main._auto_sub_stereo_probe_plan(
+        plan = autosub._auto_sub_stereo_probe_plan(
             correction_plan=correction_plan, gain_after=diagnostic(-0.476, -4.77),
             gain_deltas={"left": -0.714, "right": -2.0},
             accepted_step1_sides={"left": True, "right": True},
@@ -224,14 +225,14 @@ class AutoGainApplyRevertTests(unittest.TestCase):
         self.assertTrue(plan["channels"]["right"]["eligible"])
 
     def test_22_stereo_probe_acceptance_is_per_side_and_requires_both_improvements(self):
-        source = inspect.getsource(main._run_auto_sub_22_stereo_optimize)
+        source = inspect.getsource(autosub._run_auto_sub_22_stereo_optimize)
         self.assertIn("score_better = after_score < before_score", source)
         self.assertIn('float(after_corridor.get("severity_db", 0.0)) < float(before_corridor.get("severity_db", 0.0))', source)
         self.assertIn("correction_deltas.get(side, 0.0) if accepted_probe_sides[side] else 0.0", source)
         self.assertIn("Stereo corridor probe rejected; Step 1 retained", source)
 
     def test_22_mono_keeps_accepted_step1_when_optional_correction_is_unavailable(self):
-        source = inspect.getsource(main._run_auto_sub_22_optimize)
+        source = inspect.getsource(autosub._run_auto_sub_22_optimize)
         fallback = source.split('if not correction_plan.get("available"):', 1)[1].split(
             'elif abs(correction_delta) > 0.0005:', 1
         )[0]
@@ -240,7 +241,7 @@ class AutoGainApplyRevertTests(unittest.TestCase):
         self.assertNotIn('set_audio_output_mode(', fallback)
 
     def test_21_keeps_accepted_step1_when_optional_correction_is_unavailable(self):
-        source = inspect.getsource(main._run_auto_sub_optimize)
+        source = inspect.getsource(autosub._run_auto_sub_optimize)
         fallback = source.split('if not correction_plan.get("available"):', 1)[1].split(
             'elif abs(correction_delta) > 0.0005:', 1
         )[0]

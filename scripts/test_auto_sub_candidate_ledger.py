@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import main
+import autosub
 
 
 def candidate(delay, left=3, right=3, **extra):
@@ -25,7 +26,7 @@ def candidate(delay, left=3, right=3, **extra):
 class CandidateLedgerTests(unittest.TestCase):
     def ledger(self, candidates, scoring, **kwargs):
         with patch.object(main.logger, "info"):
-            return main._auto_sub_candidate_ledger(candidates, scoring, **kwargs)
+            return autosub._auto_sub_candidate_ledger(candidates, scoring, **kwargs)
 
     def test_complete_pool_exclusion_and_roles_without_mutation(self):
         candidates = [candidate(0), candidate(1), candidate(2, right=0)]

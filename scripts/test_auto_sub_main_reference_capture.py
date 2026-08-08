@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import main
+import autosub
 from subwoofer_runtime import Subwoofer21Runtime, SubwooferRuntimeConfig
 
 
@@ -106,7 +107,7 @@ class MainReferenceSnapshotTests(unittest.IsolatedAsyncioTestCase):
     def test_normalization_inverse_sign_is_addition(self):
         # MeasurementStore builds normalized_db = raw_db - normalized_by_db.
         self.assertEqual(
-            main._auto_sub_reconstruct_calibrated_points([[20.0, -7.5], [80.0, 1.25]], -12.5),
+            autosub._auto_sub_reconstruct_calibrated_points([[20.0, -7.5], [80.0, 1.25]], -12.5),
             [[20.0, -20.0], [80.0, -11.25]],
         )
 
@@ -129,8 +130,8 @@ class MainReferenceSnapshotTests(unittest.IsolatedAsyncioTestCase):
                 }
 
             job = {"auto_gain": {"available": False, "reason": "gain not implemented"}}
-            with patch.object(main, "_measure_auto_sub_candidate", side_effect=fake_measure):
-                await main._capture_auto_sub_main_references(
+            with patch.object(autosub, "_measure_auto_sub_candidate", side_effect=fake_measure):
+                await autosub._capture_auto_sub_main_references(
                     job=job, fc=80, input_id="mic", mic_input_channel="1",
                     reference_input_channel="", calibration_ref="", calibration_filename=None,
                     calibration_bytes=None, auto_sub_sweep_profile={}, auto_sub_rate=48_000,
@@ -159,8 +160,8 @@ class MainReferenceSnapshotTests(unittest.IsolatedAsyncioTestCase):
             }
 
         job = {"auto_gain": {"available": False, "reason": "pending"}}
-        with patch.object(main, "_measure_auto_sub_candidate", side_effect=fake_measure):
-            await main._capture_auto_sub_main_references(
+        with patch.object(autosub, "_measure_auto_sub_candidate", side_effect=fake_measure):
+            await autosub._capture_auto_sub_main_references(
                 job=job, fc=80, input_id="mic", mic_input_channel="1", reference_input_channel="",
                 calibration_ref="", calibration_filename=None, calibration_bytes=None,
                 auto_sub_sweep_profile={}, auto_sub_rate=48_000,
@@ -175,7 +176,7 @@ class MainReferenceSnapshotTests(unittest.IsolatedAsyncioTestCase):
         # Realistic sweep profile: the candidate path runs the native Stage1 peak
         # prediction against it, so it must be a valid profile that predicts a safe sweep.
         sweep_profile = {"sweep_seconds": 0.1, "sweep_start_hz": 20.0, "sweep_end_hz": 200.0}
-        prediction = main._auto_sub_stage_peak_prediction(
+        prediction = autosub._auto_sub_stage_peak_prediction(
             sweep_profile=sweep_profile, sample_rate=48_000, channel="left",
             config=runtime_config(),
         )
@@ -245,15 +246,15 @@ class MainReferenceSnapshotTests(unittest.IsolatedAsyncioTestCase):
             with (
                 patch.object(main, "subwoofer_runtime", runtime),
                 patch.object(main, "measurement_store", store),
-                patch.object(main, "set_audio_output_mode"),
-                patch.object(main, "get_audio_output_overview", return_value={}),
+                patch.object(autosub, "set_audio_output_mode"),
+                patch.object(autosub, "get_audio_output_overview", return_value={}),
                 patch.object(main.SubwooferRuntimeConfig, "from_overview", return_value=runtime_config()),
                 # Pre-arm responsibility moved to _sync_subwoofer_runtime_for_measurement_sweep.
                 patch.object(main, "_sync_subwoofer_runtime_for_measurement_sweep", new_callable=AsyncMock, return_value=None),
                 patch.object(main.asyncio, "sleep", side_effect=no_sleep),
                 patch("samplerate._load_audio_output_mode", return_value={"subwoofer": {"sub_alignment_ms": 2.0}}),
             ):
-                call = main._measure_auto_sub_candidate(
+                call = autosub._measure_auto_sub_candidate(
                         delay_ms=2.0, job=job, candidate_index=1, total=2,
                         stage="main_reference", fc=80, input_id="mic", channel="left",
                         mic_input_channel="1", reference_input_channel="", calibration_ref="",
