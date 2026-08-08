@@ -603,21 +603,6 @@ class EasyEffectsManager:
                     return True
         return False
 
-    @staticmethod
-    def _link_source_has_target_prefix(link_output: str, source_port: str, target_prefix: str) -> bool:
-        in_source = False
-        for line in link_output.splitlines():
-            if line == source_port:
-                in_source = True
-                continue
-            if in_source and not line.startswith(" "):
-                return False
-            if in_source and "|->" in line:
-                target = line.split("|->", 1)[1].strip()
-                if target.startswith(target_prefix):
-                    return True
-        return False
-
     def _read_pipewire_links(self) -> str:
         result = subprocess.run(["pw-link", "-l"], capture_output=True, text=True, timeout=3)
         if result.returncode != 0:
@@ -633,9 +618,6 @@ class EasyEffectsManager:
         for channel in ("FL", "FR"):
             hardware_target = f"{output_device}:playback_{channel}"
             if not self._link_target_has_source(links, hardware_target, "ee_soe_"):
-                return False
-            ee_input_source = f"easyeffects_sink:monitor_{channel}"
-            if not self._link_source_has_target_prefix(links, ee_input_source, "ee_soe_"):
                 return False
         return True
 
