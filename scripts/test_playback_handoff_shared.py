@@ -938,5 +938,44 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
                 await main._coordinator_establish_effects_and_helper(request)
 
 
+
+
+    async def test_post_start_bypass_reconciles_second_generation_direct_links(self):
+        """Post-start readback must heal a re-created direct-link bypass
+        instead of failing the committed output-mode switch."""
+        helper = HelperDouble(active=True, rate=48000, direct=True)
+        request = TransitionRequest(
+            operation="output-mode-switch",
+            source="radio",
+            target_rate=48000,
+            target_url="https://radio.example/stream",
+            target_track={"source": "radio", "url": "https://radio.example/stream"},
+            should_play=True,
+            rate_change=False,
+            reload_source=False,
+            output_mode_target={
+                "output_mode": {
+                    "mode": "subwoofer-2.2",
+                    "effective_output_key": OUTPUT_KEY,
+                }
+            },
+        )
+
+        async def pw_link(*_args):
+            return _links_text("subwoofer-2.2", direct=helper.direct)
+
+        with patch.object(main, "_run_pw_link_command", side_effect=pw_link), patch.object(
+            main, "subwoofer_runtime", helper
+        ), patch.object(main, "get_audio_output_overview", return_value={
+            "output_mode": {"mode": "subwoofer-2.2", "effective_output_key": OUTPUT_KEY}
+        }):
+            result = await main._coordinator_reconcile_post_start_graph(request)
+
+        self.assertTrue(result["graph_complete"])
+        self.assertEqual(helper.reconcile_calls, 1)
+        self.assertFalse(helper.direct)
+
+
+
 if __name__ == "__main__":
     unittest.main()

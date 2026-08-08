@@ -4106,15 +4106,24 @@ async def _coordinator_reconcile_post_start_graph(
         include_source=include_source,
     )
     if not initial.get("links_complete") and not initial_missing:
-        _log_playback_graph_diagnosis(
-            initial,
-            target_rate=target_rate,
-            reason=f"post-start-{request.operation}",
-            detail=request.detail,
-        )
-        raise RuntimeError(
-            "post-start graph readback was incomplete without link-only drift"
-        )
+        if initial.get("bypass_only"):
+            # EasyEffects can recreate its direct EE -> hardware front links
+            # after the output-mode preset reload, even though the helper
+            # topology and the commit stage just reconciled them.  That is
+            # the same invalid-but-link-only state the watcher heals via a
+            # graph-only recovery; reconcile it here instead of failing the
+            # committed transition over a second-generation bypass.
+            await _coordinator_reconcile_subwoofer_links_only()
+        else:
+            _log_playback_graph_diagnosis(
+                initial,
+                target_rate=target_rate,
+                reason=f"post-start-{request.operation}",
+                detail=request.detail,
+            )
+            raise RuntimeError(
+                "post-start graph readback was incomplete without link-only drift"
+            )
     relinked = await _relink_post_start_missing_production_links(
         initial,
         include_source=include_source,
