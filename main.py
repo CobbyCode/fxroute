@@ -4281,6 +4281,15 @@ async def _coordinator_establish_effects_and_helper(
             if mode in OUTPUT_MODE_SUBWOOFER_MODES:
                 await _coordinator_reconcile_subwoofer_links_only()
                 links_reconciled = True
+            elif not diagnosis.get("links_complete"):
+                # The direct EE -> hardware front links were restored by the
+                # SUB-STOP above, but a concurrently taken pw-link snapshot
+                # can transiently miss them (link readback racing the link
+                # creation).  Repair the stereo links idempotently instead of
+                # letting the final diagnosis fail the switch over a stale
+                # read.
+                await _repair_stereo_output_links_once(diagnosis)
+                links_reconciled = True
         elif mode in OUTPUT_MODE_SUBWOOFER_MODES:
             helper_snapshot = subwoofer_runtime.snapshot() if subwoofer_runtime is not None else {}
             helper_needs_sync = bool(
