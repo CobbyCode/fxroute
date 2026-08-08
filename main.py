@@ -8541,6 +8541,29 @@ async def save_audio_output_mode_route(request: Request):
 
     try:
         target = prepare_audio_output_mode(mode, subwoofer, subwoofers)
+        target_mode = str(target["config"].get("mode") or "").strip()
+
+        # A same-mode request is a pure DSP parameter change (crossover, level,
+        # alignment, polarity, highpass).  It changes no routing, samplerate or
+        # graph topology, so it must not enter the Coordinator's muted
+        # output-mode transition.  Restore the pre-coordinator direct sync:
+        # persist the settings and push them into the native helper without
+        # ever closing the hardware-output gate.
+        current_mode = str(
+            (samplerate._load_audio_output_mode().get("mode") or OUTPUT_MODE_STEREO)
+        ).strip()
+        if target_mode == current_mode:
+            result = persist_audio_output_mode(target["config"])
+            await _sync_subwoofer_runtime(result, reason="output-mode-params")
+            result = _with_subwoofer_derived_delays(result)
+            if subwoofer_runtime is not None:
+                result["output_mode"] = {
+                    **(result.get("output_mode") or {}),
+                    "runtime": subwoofer_runtime.snapshot(),
+                }
+            await refresh_peak_monitor_after_effects_change("audio-output-mode-params")
+            return result
+
         context = await _coordinator_current_playback_context()
         status = get_samplerate_status()
         target_rate = status.get("active_rate")

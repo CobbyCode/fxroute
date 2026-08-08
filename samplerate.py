@@ -625,13 +625,17 @@ def _normalize_single_sub_config(payload: dict[str, Any] | None = None) -> dict[
 def _normalize_subwoofer_22_config(
     subwoofers: dict[str, Any] | None = None,
     fallback_21: dict[str, Any] | None = None,
+    global_override: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Normalize 2.2 subwoofer config.
 
     sub1 derives from fallback_21 when subwoofers.sub1 is missing.
-    Global fields (crossover, slope, highpass) come from fallback_21 or defaults.
+    Global fields (crossover, slope, highpass) come from fallback_21 or
+    defaults, unless ``global_override`` supplies explicit durable fields
+    (the top-level 2.2 payload wins over the legacy 2.1 block).
     """
     subwoofers = subwoofers or {}
+    override = global_override or {}
 
     # Global fields from fallback_21 (existing 2.1 subwoofer block) or defaults
     if fallback_21:
@@ -640,6 +644,8 @@ def _normalize_subwoofer_22_config(
     else:
         raw_freq = 80
         raw_hp = True
+    raw_freq = override.get("crossover_frequency_hz", raw_freq)
+    raw_hp = override.get("main_highpass_enabled", raw_hp)
 
     try:
         frequency = int(round(float(raw_freq)))
@@ -729,6 +735,7 @@ def _load_audio_output_mode() -> dict[str, Any]:
         normalized = _normalize_subwoofer_22_config(
             source_subwoofers,
             payload.get("subwoofer"),
+            payload,
         )
         return {
             "mode": mode,
@@ -873,9 +880,19 @@ def _build_audio_output_mode_payload(
         for other_key in other_storage_keys:
             if other_key in existing:
                 payload[other_key] = existing[other_key]
-        # Preserve existing 2.1 subwoofer block for BC
+        # Preserve existing 2.1 subwoofer block for BC. The 2.2 save owns the
+        # global fields, so keep the legacy block's crossover/highpass in sync
+        # with the top-level 2.2 payload; otherwise a later 2.1 migration (or
+        # the legacy readback path) would resurrect the stale value.
         if "subwoofer" in existing:
-            payload["subwoofer"] = existing["subwoofer"]
+            if isinstance(existing.get("subwoofer"), dict):
+                payload["subwoofer"] = {
+                    **existing["subwoofer"],
+                    "crossover_frequency_hz": normalized["crossover_frequency_hz"],
+                    "main_highpass_enabled": normalized["main_highpass_enabled"],
+                }
+            else:
+                payload["subwoofer"] = existing["subwoofer"]
     else:
         if subwoofer is None and isinstance(existing.get("subwoofer"), dict):
             subwoofer = existing.get("subwoofer")
