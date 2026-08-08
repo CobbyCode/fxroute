@@ -111,6 +111,24 @@ def _auto_sub_clamped_delay(delay_ms: float) -> float:
     return round(max(-40.0, min(40.0, float(delay_ms))), 2)
 
 
+def _auto_sub_sweep_profile(fc: float) -> dict[str, float]:
+    """Build the bass-focused AutoSub sweep profile for a crossover frequency."""
+    auto_sub_sweep_low_hz = 20.0
+    auto_sub_sweep_high_hz = max(600.0, min(float(fc) * 8.0, 2000.0))
+    if fc <= 60:
+        auto_sub_sweep_sec, auto_sub_tail_sec = 3.5, 1.5
+    elif fc <= 120:
+        auto_sub_sweep_sec, auto_sub_tail_sec = 3.0, 1.3
+    else:
+        auto_sub_sweep_sec, auto_sub_tail_sec = 2.5, 1.1
+    return {
+        "sweep_start_hz": auto_sub_sweep_low_hz,
+        "sweep_end_hz": auto_sub_sweep_high_hz,
+        "sweep_seconds": auto_sub_sweep_sec,
+        "tail_seconds": auto_sub_tail_sec,
+    }
+
+
 def _auto_sub_snapshot_copy(mode_state: dict[str, Any]) -> dict[str, Any]:
     try:
         return json.loads(json.dumps(mode_state))
@@ -2790,6 +2808,24 @@ def _finalize_autosub_job(job: dict[str, Any] | None, job_id: str) -> None:
     logger.info("AUTOSUB job=%s cleanup complete state=%s", job_id, job.get("status") or "idle")
 
 
+async def _finish_auto_sub_worker(job: dict[str, Any], job_id: str) -> None:
+    """Release the shared AutoSub lock, finalize the job and schedule its cleanup task."""
+    from main import measurement_sr_session
+    if measurement_sr_session is not None:
+        await measurement_sr_session.unregister_auto_sub(job_id)
+    _finalize_autosub_job(job, job_id)
+    try:
+        _auto_sub_lock.release()
+    except RuntimeError:
+        pass
+
+    async def _cleanup_autosub_job():
+        await asyncio.sleep(600)
+        _AUTO_SUB_JOBS.pop(job_id, None)
+
+    asyncio.create_task(_cleanup_autosub_job())
+
+
 async def _run_auto_sub_22_optimize(
     job_id: str,
     input_id: str,
@@ -2844,20 +2880,7 @@ async def _run_auto_sub_22_optimize(
             await _restore_original_config()
             return
 
-        auto_sub_sweep_low_hz = 20.0
-        auto_sub_sweep_high_hz = max(600.0, min(float(fc) * 8.0, 2000.0))
-        if fc <= 60:
-            auto_sub_sweep_sec, auto_sub_tail_sec = 3.5, 1.5
-        elif fc <= 120:
-            auto_sub_sweep_sec, auto_sub_tail_sec = 3.0, 1.3
-        else:
-            auto_sub_sweep_sec, auto_sub_tail_sec = 2.5, 1.1
-        auto_sub_sweep_profile = {
-            "sweep_start_hz": auto_sub_sweep_low_hz,
-            "sweep_end_hz": auto_sub_sweep_high_hz,
-            "sweep_seconds": auto_sub_sweep_sec,
-            "tail_seconds": auto_sub_tail_sec,
-        }
+        auto_sub_sweep_profile = _auto_sub_sweep_profile(fc)
         auto_sub_rate = _resolve_measurement_start_sample_rate()
         await _capture_auto_sub_main_references(
             job=job, fc=fc, input_id=input_id,
@@ -3476,20 +3499,7 @@ async def _run_auto_sub_22_optimize(
         await _restore_original_config()
 
     finally:
-        if measurement_sr_session is not None:
-            await measurement_sr_session.unregister_auto_sub(job_id)
-        _finalize_autosub_job(job, job_id)
-        try:
-            _auto_sub_lock.release()
-        except RuntimeError:
-            pass
-        cleanup_job_id = job_id
-
-        async def _cleanup_autosub_job():
-            await asyncio.sleep(600)
-            _AUTO_SUB_JOBS.pop(cleanup_job_id, None)
-
-        asyncio.create_task(_cleanup_autosub_job())
+        await _finish_auto_sub_worker(job, job_id)
 
 
 async def _run_auto_sub_22_stereo_optimize(
@@ -3547,20 +3557,7 @@ async def _run_auto_sub_22_stereo_optimize(
             await _restore_original_config()
             return
 
-        auto_sub_sweep_low_hz = 20.0
-        auto_sub_sweep_high_hz = max(600.0, min(float(fc) * 8.0, 2000.0))
-        if fc <= 60:
-            auto_sub_sweep_sec, auto_sub_tail_sec = 3.5, 1.5
-        elif fc <= 120:
-            auto_sub_sweep_sec, auto_sub_tail_sec = 3.0, 1.3
-        else:
-            auto_sub_sweep_sec, auto_sub_tail_sec = 2.5, 1.1
-        auto_sub_sweep_profile = {
-            "sweep_start_hz": auto_sub_sweep_low_hz,
-            "sweep_end_hz": auto_sub_sweep_high_hz,
-            "sweep_seconds": auto_sub_sweep_sec,
-            "tail_seconds": auto_sub_tail_sec,
-        }
+        auto_sub_sweep_profile = _auto_sub_sweep_profile(fc)
         auto_sub_rate = _resolve_measurement_start_sample_rate()
         await _capture_auto_sub_main_references(
             job=job, fc=fc, input_id=input_id,
@@ -4601,20 +4598,7 @@ async def _run_auto_sub_22_stereo_optimize(
         await _restore_original_config()
 
     finally:
-        if measurement_sr_session is not None:
-            await measurement_sr_session.unregister_auto_sub(job_id)
-        _finalize_autosub_job(job, job_id)
-        try:
-            _auto_sub_lock.release()
-        except RuntimeError:
-            pass
-        cleanup_job_id = job_id
-
-        async def _cleanup_autosub_job():
-            await asyncio.sleep(600)
-            _AUTO_SUB_JOBS.pop(cleanup_job_id, None)
-
-        asyncio.create_task(_cleanup_autosub_job())
+        await _finish_auto_sub_worker(job, job_id)
 
 
 async def _run_auto_sub_optimize(
@@ -4665,20 +4649,7 @@ async def _run_auto_sub_optimize(
         total = len(scan_delays) * 2
 
         # AutoSub bass-focused sweep settings
-        auto_sub_sweep_low_hz = 20.0
-        auto_sub_sweep_high_hz = max(600.0, min(float(fc) * 8.0, 2000.0))
-        if fc <= 60:
-            auto_sub_sweep_sec, auto_sub_tail_sec = 3.5, 1.5
-        elif fc <= 120:
-            auto_sub_sweep_sec, auto_sub_tail_sec = 3.0, 1.3
-        else:
-            auto_sub_sweep_sec, auto_sub_tail_sec = 2.5, 1.1
-        auto_sub_sweep_profile = {
-            "sweep_start_hz": auto_sub_sweep_low_hz,
-            "sweep_end_hz": auto_sub_sweep_high_hz,
-            "sweep_seconds": auto_sub_sweep_sec,
-            "tail_seconds": auto_sub_tail_sec,
-        }
+        auto_sub_sweep_profile = _auto_sub_sweep_profile(fc)
 
         # Resolve sample rate once for all sweeps
         auto_sub_rate = _resolve_measurement_start_sample_rate()
@@ -5357,18 +5328,6 @@ async def _run_auto_sub_optimize(
         await _restore_original_config()
 
     finally:
-        if measurement_sr_session is not None:
-            await measurement_sr_session.unregister_auto_sub(job_id)
-        _finalize_autosub_job(job, job_id)
-        try:
-            _auto_sub_lock.release()
-        except RuntimeError:
-            pass  # Lock was not held
-        # Schedule job cleanup after 10 minutes
-        cleanup_job_id = job_id
-        async def _cleanup_autosub_job():
-            await asyncio.sleep(600)
-            _AUTO_SUB_JOBS.pop(cleanup_job_id, None)
-        asyncio.create_task(_cleanup_autosub_job())
+        await _finish_auto_sub_worker(job, job_id)
 
 
