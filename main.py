@@ -15550,7 +15550,13 @@ async def load_easyeffects_preset(request: Request):
                 compare["activeSide"] = "B"
                 ee_manager.save_compare_state(compare)
             status = ee_manager.get_status()
-        if subwoofer_runtime is not None and subwoofer_runtime.snapshot().get("active"):
+        if (
+            subwoofer_runtime is not None
+            and subwoofer_runtime.snapshot().get("active")
+            and not subwoofer_runtime.sync_in_progress
+        ):
+            # A running helper sync owns the graph and verifies/repairs its
+            # own links; a concurrent reclean would race that repair.
             await subwoofer_runtime._reclean_guarded(skip_if_locked=False)
         await manager.broadcast({"type": "easyeffects", "data": status})
         schedule_peak_monitor_refresh_after_effects_change("preset-load")

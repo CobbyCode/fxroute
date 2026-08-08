@@ -464,6 +464,63 @@ async def _mode_switch_volume_preserved() -> None:
     print("mode-switch volume survives preset resurrection (both directions): ok")
 
 
+
+
+
+async def _preset_load_reclean_skipped_during_sync() -> None:
+    """A/B flip repair must not race an in-flight subwoofer sync."""
+    active_runtime = mock.MagicMock(
+        snapshot=mock.MagicMock(return_value={"active": True}),
+        sync_in_progress=True,
+        _reclean_guarded=mock.AsyncMock(),
+    )
+    ee_manager = mock.MagicMock()
+    ee_manager.load_preset.return_value = None
+    ee_manager.load_compare_state.return_value = {"presetA": "Neutral", "presetB": "B", "activeSide": None}
+    ee_manager.get_status.return_value = {"active_preset": "Neutral", "compare": {}}
+    broadcast = mock.AsyncMock()
+    stack = mock.patch.multiple(
+        main,
+        _require_easyeffects_manager=mock.MagicMock(return_value=ee_manager),
+        subwoofer_runtime=active_runtime,
+        manager=mock.MagicMock(broadcast=broadcast),
+        schedule_peak_monitor_refresh_after_effects_change=mock.MagicMock(),
+    )
+    with stack:
+        await main.load_easyeffects_preset(FakeRequest({"preset_name": "Neutral"}))
+    active_runtime._reclean_guarded.assert_not_awaited()
+
+    idle_runtime = mock.MagicMock(
+        snapshot=mock.MagicMock(return_value={"active": True}),
+        sync_in_progress=False,
+        _reclean_guarded=mock.AsyncMock(),
+    )
+    stack2 = mock.patch.multiple(
+        main,
+        _require_easyeffects_manager=mock.MagicMock(return_value=ee_manager),
+        subwoofer_runtime=idle_runtime,
+        manager=mock.MagicMock(broadcast=mock.AsyncMock()),
+        schedule_peak_monitor_refresh_after_effects_change=mock.MagicMock(),
+    )
+    with stack2:
+        await main.load_easyeffects_preset(FakeRequest({"preset_name": "Neutral"}))
+    idle_runtime._reclean_guarded.assert_awaited_once()
+    print("preset-load reclean defers to an in-flight subwoofer sync: ok")
+
+
+async def _runtime_sync_in_progress_covers_link_repair() -> None:
+    """sync_in_progress must cover the preset-load link repair lock."""
+    from subwoofer_runtime import Subwoofer21Runtime
+
+    runtime = Subwoofer21Runtime()
+    lock = asyncio.Lock()
+    runtime._reclean_lock = lock
+    async with lock:
+        assert runtime.sync_in_progress is True
+    assert runtime.sync_in_progress is False
+    print("Subwoofer21Runtime.sync_in_progress covers link repair: ok")
+
+
 async def main_async() -> None:
     _run_samplerate_roundtrip()
     await _route_same_mode_direct()
@@ -473,6 +530,8 @@ async def main_async() -> None:
     await _recovery_deferred_during_subwoofer_sync()
     await _runtime_sync_in_progress_flag()
     await _mode_switch_volume_preserved()
+    await _preset_load_reclean_skipped_during_sync()
+    await _runtime_sync_in_progress_covers_link_repair()
     print("crossover / sub mute regression tests: ok")
 
 
