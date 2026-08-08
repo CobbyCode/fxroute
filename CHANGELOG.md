@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.9.6 (2026-08-08)
+
+### Playback & routing
+- Output-mode switches (Stereo ↔ 2.1/2.2) no longer fail on transient
+  hardware-sink rate drift: the transition reconciles the sink rate after the
+  effects/helper graph rebuild, with a bounded silent-stream renegotiation
+  trigger for an idle sink.
+- Playback resumes reliably after SPL calibration: the commit readback
+  re-applies a drifted EasyEffects runtime work point once, the DSP
+  stabilization stage repairs link-only drift, and the measurement-session
+  rate lock now applies only while a measurement job is actually running.
+- Output-mode switching is no longer blocked by an open-but-idle measurement
+  window; a running sweep still locks the switch.
+- Measurement-session link recovery now also covers the stereo EE→hardware
+  link-loss case, not only 2.1/2.2 EE→helper links.
+
+### Measurements
+- SPL Calibration is available in Stereo, 2.1 and 2.2 output modes (was gated
+  to subwoofer modes).
+- Sweep start after an SPL calibration repairs missing stereo links instead
+  of failing with "measurement session graph is not a repairable link-only
+  loss".
+
 ## Unreleased
 
 ## 0.9.5 (2026-08-08)
