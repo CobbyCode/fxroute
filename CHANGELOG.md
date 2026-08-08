@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+## 0.9.5 (2026-08-08)
+
+### Playback & routing
+- Hardened playback transitions across Local, Radio and Spotify.
+- Improved sample-rate switching and output-mode changes between Stereo, 2.1
+  and 2.2.
+- Fixed stale output mutes and silent-but-playing states.
+- Restored reliable gapless playback, native queue/shuffle behavior and
+  transport parity.
+
+### Measurements
+- Stabilized measurement entry/restore and repeated sweeps within one
+  measurement session.
+- Prevented background playback recovery from interfering with active
+  measurements.
+- Improved PipeWire graph reconciliation and subwoofer-helper link recovery.
+
+### Spotify
+- Improved source handoff, transport state, footer ownership and samplerate
+  recovery.
+
+### AutoSub
+- AutoSub raw-helper sweeps now respect the selected playback level when
+  Loudness is enabled without applying the Loudness frequency contour to the
+  measurement.
+
+### UI / diagnostics
+- Removed the obsolete Default Sample Rate selector.
+- Improved playback-transition error messages instead of generic object
+  errors.
+
 ## 0.9.4 (2026-08-06)
 
 ### Fixed
