@@ -173,6 +173,48 @@ class SplCalibrationLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(session.unregistered), 1)
         self.assertIsNone(spl_calibration._spl_operation)
 
+    async def test_request_cancellation_drains_owned_thread_before_cleanup(self):
+        entered = threading.Event()
+        release = threading.Event()
+        thread_observations = []
+
+        def delayed_start(operation):
+            entered.set()
+            release.wait(timeout=2)
+            thread_observations.append(operation.cancel_requested)
+            return {"status": "playing"}
+
+        with mock.patch.object(
+            spl_calibration,
+            "_register_operation",
+            mock.AsyncMock(),
+        ), mock.patch.object(
+            spl_calibration,
+            "_start_spl_calibration_noise",
+            side_effect=delayed_start,
+        ):
+            request_task = asyncio.create_task(
+                spl_calibration.set_spl_calibration_noise(FakeRequest())
+            )
+            self.assertTrue(
+                await asyncio.wait_for(asyncio.to_thread(entered.wait), timeout=2)
+            )
+            operation = spl_calibration._spl_operation
+            request_task.cancel()
+            await asyncio.sleep(0)
+
+            self.assertIs(spl_calibration._spl_operation, operation)
+            self.assertFalse(operation.completed.is_set())
+            self.assertEqual(thread_observations, [])
+
+            release.set()
+            with self.assertRaises(asyncio.CancelledError):
+                await request_task
+
+        self.assertEqual(thread_observations, [True])
+        self.assertTrue(operation.completed.is_set())
+        self.assertIsNone(spl_calibration._spl_operation)
+
     async def test_cleanup_fallback_removes_session_id_after_cancelled_unregister(self):
         class FailingSession:
             def __init__(self):

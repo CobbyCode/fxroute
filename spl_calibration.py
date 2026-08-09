@@ -725,6 +725,41 @@ async def _register_operation(operation: _SplCalibrationOperation) -> None:
     await _measurement_entry_preflight(48_000)
 
 
+def _request_operation_process_stop(operation: _SplCalibrationOperation) -> None:
+    operation.cancel_requested = True
+    for process in (operation.recorder, operation.noise_process):
+        if process is not None and process.poll() is None:
+            try:
+                process.terminate()
+            except Exception:
+                logger.exception("Failed to request SPL calibration process stop")
+
+
+async def _run_operation_thread(
+    operation: _SplCalibrationOperation,
+    func: Any,
+    /,
+    *args: Any,
+    **kwargs: Any,
+) -> Any:
+    """Drain owner-mutating thread work before propagating request cancellation."""
+    thread_task = asyncio.create_task(asyncio.to_thread(func, *args, **kwargs))
+    cancelled = False
+    while not thread_task.done():
+        try:
+            await asyncio.shield(thread_task)
+        except asyncio.CancelledError:
+            cancelled = True
+            _request_operation_process_stop(operation)
+    if cancelled:
+        try:
+            thread_task.result()
+        except BaseException:
+            logger.exception("SPL calibration thread failed while request was cancelled")
+        raise asyncio.CancelledError
+    return thread_task.result()
+
+
 async def _cleanup_operation(operation: _SplCalibrationOperation) -> None:
     global _spl_operation
 
@@ -854,7 +889,7 @@ async def _cleanup_operation_shielded(operation: _SplCalibrationOperation) -> No
 async def _watch_manual_noise(operation: _SplCalibrationOperation) -> None:
     try:
         if operation.noise_process is not None:
-            await asyncio.to_thread(operation.noise_process.wait)
+            await _run_operation_thread(operation, operation.noise_process.wait)
     finally:
         await _cleanup_operation_shielded(operation)
 
@@ -864,14 +899,8 @@ async def _stop_active_operation() -> None:
         operation = _spl_operation
         if operation is None:
             return
-        operation.cancel_requested = True
         worker_task = operation.worker_task
-        for process in (operation.recorder, operation.noise_process):
-            if process is not None and process.poll() is None:
-                try:
-                    process.terminate()
-                except Exception:
-                    logger.exception("Failed to request SPL calibration process stop")
+        _request_operation_process_stop(operation)
     if worker_task is asyncio.current_task() or worker_task is None:
         await _cleanup_operation_shielded(operation)
         return
@@ -923,7 +952,11 @@ async def set_spl_calibration_noise(request: Request):
     operation = await _acquire_operation("manual-noise")
     try:
         await _register_operation(operation)
-        result = await asyncio.to_thread(_start_spl_calibration_noise, operation)
+        result = await _run_operation_thread(
+            operation,
+            _start_spl_calibration_noise,
+            operation,
+        )
         if operation.cancel_requested:
             raise RuntimeError("SPL calibration was stopped")
         watcher = asyncio.create_task(
@@ -964,7 +997,8 @@ async def measure_spl_automatically():
         channel_index = max(0, int(settings.get("selectedMicInputChannel") or "1") - 1)
 
         await _register_operation(operation)
-        before_gain = await asyncio.to_thread(
+        before_gain = await _run_operation_thread(
+            operation,
             subprocess.run,
             ["pactl", "get-source-volume", node_name],
             capture_output=True,
@@ -982,7 +1016,8 @@ async def measure_spl_automatically():
             )
         operation.source_volume_percent = float(before_match.group(1))
         if abs(operation.source_volume_percent - 100.0) > 0.05:
-            await asyncio.to_thread(
+            await _run_operation_thread(
+                operation,
                 subprocess.run,
                 ["pactl", "set-source-volume", node_name, "100%"],
                 capture_output=True,
@@ -990,7 +1025,8 @@ async def measure_spl_automatically():
                 timeout=3,
                 check=True,
             )
-        verified = await asyncio.to_thread(
+        verified = await _run_operation_thread(
+            operation,
             subprocess.run,
             ["pactl", "get-source-volume", node_name],
             capture_output=True,
@@ -1017,15 +1053,23 @@ async def measure_spl_automatically():
         await asyncio.sleep(0.2)
         if operation.cancel_requested:
             raise RuntimeError("SPL calibration was stopped")
-        await asyncio.to_thread(_start_spl_calibration_noise, operation)
+        await _run_operation_thread(
+            operation,
+            _start_spl_calibration_noise,
+            operation,
+        )
         try:
-            _stdout, stderr = await asyncio.to_thread(
+            _stdout, stderr = await _run_operation_thread(
+                operation,
                 operation.recorder.communicate,
                 timeout=8,
             )
         except subprocess.TimeoutExpired:
             operation.recorder.kill()
-            _stdout, stderr = await asyncio.to_thread(operation.recorder.communicate)
+            _stdout, stderr = await _run_operation_thread(
+                operation,
+                operation.recorder.communicate,
+            )
             raise RuntimeError(f"{microphone_model} automatic SPL capture timed out")
         if operation.cancel_requested:
             raise RuntimeError("SPL calibration was stopped")
