@@ -2608,6 +2608,12 @@ class MeasurementStore:
                     daemon=True,
                 )
                 direct_bypass_monitor_thread.start()
+            elif playback_route["route"] == "direct-sink":
+                playback_route_diagnostics = self._link_measurement_playback_to_direct_sink(
+                    play_node_name=play_node_name,
+                    playback_target=playback_target,
+                    playback_route=playback_route,
+                )
             time.sleep(0.2)
             if detailed_diagnostics_enabled:
                 routing_snapshots.append(
@@ -3006,6 +3012,12 @@ class MeasurementStore:
             play_proc = subprocess.Popen(play_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             if playback_route["route"] in MEASUREMENT_SUBWOOFER_HELPER_ROUTES:
                 playback_route_diagnostics = self._link_measurement_playback_to_21_helper(
+                    play_node_name=play_node,
+                    playback_target=playback_target,
+                    playback_route=playback_route,
+                )
+            elif playback_route["route"] == "direct-sink":
+                playback_route_diagnostics = self._link_measurement_playback_to_direct_sink(
                     play_node_name=play_node,
                     playback_target=playback_target,
                     playback_route=playback_route,
@@ -6080,12 +6092,21 @@ class MeasurementStore:
                     raise ValueError("playback_gain must be a finite non-negative number")
                 command.insert(-1, f"--volume={normalized_gain:.9g}")
             return command
+        # Direct-sink (stereo) playback must not rely on pw-play --target
+        # autoconnect: PipeWire resolves it non-deterministically (observed
+        # live: the sweep node linked output_FL to the sink FR input and
+        # output_FR to an EasyEffects internal output port, producing a
+        # silent/wrong sweep).  Mirror the subwoofer routes: disable
+        # autoconnect and link the play node explicitly after its ports
+        # exist.
         return [
             "pw-play",
             "-P",
+            "node.autoconnect=false",
+            "-P",
             f"node.name={play_node_name}",
             "--target",
-            playback_target["target_name"],
+            "0",
             str(playback_path),
         ]
 
@@ -6272,6 +6293,60 @@ class MeasurementStore:
         logger.info(
             "Subwoofer active-chain measurement playback manually linked: output_mode=%s play_node=%s input_links=%s",
             playback_route.get("output_mode") or "",
+            play_node_name,
+            diagnostics["active_chain_input_links"],
+        )
+        return diagnostics
+
+    def _link_measurement_playback_to_direct_sink(
+        self,
+        *,
+        play_node_name: str,
+        playback_target: dict[str, Any],
+        playback_route: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Deterministically link the sweep playback into the hardware sink.
+
+        The direct-sink (stereo) route previously relied on pw-play
+        --target autoconnect, which PipeWire resolves non-deterministically
+        (observed live: the sweep node linked output_FL to the sink FR input
+        and output_FR to an EasyEffects internal output port).  Mirror the
+        subwoofer routes: disable autoconnect, wait for the play node ports
+        and link explicitly to the target sink FL/FR.
+        """
+        diagnostics = self._new_measurement_playback_route_diagnostics(playback_route)
+        play_ports = self._wait_for_measurement_play_ports(play_node_name)
+        sink_name = str(playback_route.get("playback_target_name") or playback_target.get("target_name") or "").strip()
+        sink_ports = self._list_pw_ports(sink_name)
+        input_left = f"{sink_name}:playback_FL"
+        input_right = f"{sink_name}:playback_FR"
+        if input_left not in sink_ports or input_right not in sink_ports:
+            raise RuntimeError(
+                "Direct-sink measurement playback route unavailable: sink playback ports missing "
+                f"for {sink_name} (ports={sink_ports})"
+            )
+
+        temporary_links = [
+            {"source_port": play_ports["left"], "target_port": input_left, "role": "measurement-play-left-to-direct-sink"},
+            {"source_port": play_ports["right"], "target_port": input_right, "role": "measurement-play-right-to-direct-sink"},
+        ]
+        created_links: list[dict[str, str]] = []
+        try:
+            for link in temporary_links:
+                self._create_pipewire_link(str(link["source_port"]), str(link["target_port"]))
+                created_links.append(link)
+        except Exception:
+            self._cleanup_measurement_playback_links(
+                play_node_name=play_node_name,
+                temporary_links=created_links,
+            )
+            raise
+
+        diagnostics["temporary_playback_links"] = temporary_links
+        diagnostics["active_chain_input_links"] = list(temporary_links)
+        diagnostics["play_node_links_after_manual_link"] = self._list_relevant_pw_links([play_node_name, sink_name])
+        logger.info(
+            "Direct-sink measurement playback manually linked: play_node=%s input_links=%s",
             play_node_name,
             diagnostics["active_chain_input_links"],
         )
