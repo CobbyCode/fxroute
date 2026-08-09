@@ -358,16 +358,8 @@ class Downloader:
             self._shutdown_event.set()
             process = self._process
             thread = self._worker_thread
-            callback_futures = list(self._callback_futures)
             self._callbacks.clear()
             self._callback_loop = None
-        for future in callback_futures:
-            future.cancel()
-        for future in callback_futures:
-            try:
-                future.result(timeout=timeout)
-            except Exception:
-                pass
         if process is not None and process.poll() is None:
             process.terminate()
         if thread is not None and thread is not threading.current_thread():
@@ -380,6 +372,15 @@ class Downloader:
             thread.join(timeout=timeout)
         if thread is not None and thread.is_alive():
             raise RuntimeError("Download worker did not stop")
+        with self._lock:
+            callback_futures = list(self._callback_futures)
+        for future in callback_futures:
+            future.cancel()
+        for future in callback_futures:
+            try:
+                future.result(timeout=timeout)
+            except Exception:
+                pass
 
     @property
     def active_download(self) -> Optional[Dict]:

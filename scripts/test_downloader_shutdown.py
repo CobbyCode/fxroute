@@ -41,8 +41,10 @@ class DownloaderShutdownTests(unittest.TestCase):
         downloader._worker_thread = worker
 
         original_join = worker.join
+        late_future = MagicMock()
 
         def join(timeout=None):
+            downloader._callback_futures.add(late_future)
             release.set()
             original_join(timeout)
 
@@ -53,6 +55,7 @@ class DownloaderShutdownTests(unittest.TestCase):
         self.assertFalse(worker.is_alive())
         self.assertEqual(downloader._callbacks, [])
         self.assertIsNone(downloader._callback_loop)
+        late_future.cancel.assert_called_once()
 
     def test_shutdown_cancels_submitted_callback_futures(self):
         with patch.object(Downloader, "_verify_ytdlp"), patch("downloader.get_settings") as settings:
