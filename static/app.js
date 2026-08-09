@@ -4702,6 +4702,7 @@ function updateLibrarySelectionUI() {
     if (elements.downloadSelectedTracksBtn) {
         elements.downloadSelectedTracksBtn.classList.toggle('hidden', totalSelectedCount === 0);
         elements.downloadSelectedTracksBtn.disabled = totalSelectedCount === 0 || state.library.selectionDownloadPending;
+        elements.downloadSelectedTracksBtn.classList.toggle('is-busy', state.library.selectionDownloadPending);
     }
 
     // Delete: visible in all modes when tracks selected

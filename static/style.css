@@ -4106,6 +4106,19 @@ input[type="number"]::-webkit-outer-spin-button {
     padding: 0.65rem;
     font-size: 1.05rem;
 }
+#download-selected-tracks .btn-spinner { display: none; }
+#download-selected-tracks.is-busy .btn-spinner {
+    display: inline-block;
+    width: 0.9em;
+    height: 0.9em;
+    margin-right: 0.35rem;
+    border: 2px solid currentColor;
+    border-right-color: transparent;
+    border-radius: 50%;
+    vertical-align: -0.1em;
+    animation: btn-spin 0.7s linear infinite;
+}
+@keyframes btn-spin { to { transform: rotate(360deg); } }
 .btn-icon-toggle {
     min-width: 44px;
     width: 44px;
