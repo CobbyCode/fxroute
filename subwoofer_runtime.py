@@ -534,13 +534,35 @@ class Subwoofer21Runtime:
                 await self._start_helper(config)
             except Exception as exc:
                 mode_num = "2.2 Stereo Bass" if config.output_mode == OUTPUT_MODE_SUBWOOFER_22_STEREO else "2.2" if config.output_mode == OUTPUT_MODE_SUBWOOFER_22 else "2.1"
-                logger.exception(f"Failed to start {mode_num} native helper")
-                await self._stop_for_21_reconfig()
-                await self._stop_orphan_helpers()
-                self._config = config
-                self._current_stream_key = None
-                self._last_error = str(exc)
-                return
+                if "did not expose expected ports" in str(exc):
+                    # A transient PipeWire registry/name conflict can keep the
+                    # node's ports from registering right after a graph
+                    # handoff.  Retry the start once after a short settle
+                    # before surfacing the failure.
+                    logger.warning(
+                        "%s helper ports did not appear in time; retrying once: %s",
+                        mode_num, exc,
+                    )
+                    await self._stop_helper()
+                    await self._sleep(0.5)
+                    try:
+                        await self._start_helper(config)
+                    except Exception as retry_exc:
+                        logger.error("Failed to start %s native helper (retry): %s", mode_num, retry_exc)
+                        await self._stop_for_21_reconfig()
+                        await self._stop_orphan_helpers()
+                        self._config = config
+                        self._current_stream_key = None
+                        self._last_error = str(retry_exc)
+                        return
+                else:
+                    logger.exception(f"Failed to start {mode_num} native helper")
+                    await self._stop_for_21_reconfig()
+                    await self._stop_orphan_helpers()
+                    self._config = config
+                    self._current_stream_key = None
+                    self._last_error = str(exc)
+                    return
             needs_configure = True
         else:
             needs_configure = (
@@ -1047,7 +1069,37 @@ class Subwoofer21Runtime:
             if result.returncode == 0 and all(port in result.stdout for port in expected):
                 return
             await self._sleep(0.1)
-        raise RuntimeError(f"2.1 helper did not expose expected ports: {', '.join(expected)}")
+        detail = ""
+        stderr = await self._read_helper_stderr()
+        if stderr:
+            detail += f"; helper stderr: {stderr.strip()}"
+        similar = await self._similar_helper_ports()
+        if similar:
+            detail += f"; similar ports present: {similar}"
+        raise RuntimeError(
+            f"2.1 helper did not expose expected ports: {', '.join(expected)}{detail}"
+        )
+
+    async def _read_helper_stderr(self) -> str:
+        process = self._process
+        stderr = getattr(process, "stderr", None)
+        if stderr is None:
+            return ""
+        try:
+            return await asyncio.wait_for(stderr.read(65536), timeout=0.5)
+        except Exception:
+            return ""
+
+    async def _similar_helper_ports(self) -> list[str]:
+        try:
+            result = await self._command_runner(["pw-link", "-io"])
+        except Exception:
+            return []
+        return sorted({
+            line.strip()
+            for line in (result.stdout or "").splitlines()
+            if self._helper_node_name in line
+        })
 
     async def _link_present(self, link: PipeWireLink) -> bool:
         result = await self._command_runner(["pw-link", "-l"])
@@ -1143,5 +1195,5 @@ class Subwoofer21Runtime:
         return await asyncio.create_subprocess_exec(
             *args,
             stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
         )
