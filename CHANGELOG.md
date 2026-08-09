@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.9.8 (2026-08-09)
+
+### Playback & routing
+- Output-mode switches (Stereo ↔ 2.1/2.2) are more stable: the final graph
+  verification re-reads and repairs the link state after a short settle, so
+  a transient PipeWire readback can no longer fail a valid switch and roll
+  back the mode.
+- A failed mode switch no longer leaves the local source muted: the
+  pre-switch volume is restored from the transition snapshot.
+- The native helper start retries once when PipeWire's port listing
+  transiently misses the freshly started helper, and captures the helper's
+  own error output for diagnosis instead of discarding it.
+
+### Measurement
+- Stereo sweeps now play deterministically through the active EasyEffects
+  chain (Loudness, limiter, output gain).  Previously the sweep connection
+  depended on PipeWire's autoconnect, which could route the sweep to the
+  wrong ports (silent sweep) — and an earlier attempt to fix that exposed a
+  level-unsafe direct-to-DAC path.  Measurement semantics and sweep level
+  are unchanged; the active-chain route is now guaranteed in every output
+  mode and fails closed if the chain is unavailable.
+
+### Maintainability & stability
+- Internal restructuring of the codebase for maintainability: measurement
+  session, AutoSub, SPL calibration and the library API now live in
+  dedicated modules, and duplicated subwoofer/AutoSub helper code was
+  consolidated.  No user-facing behavior change was intended.
+
 ## 0.9.7 (2026-08-08)
 
 ### Playback & routing
