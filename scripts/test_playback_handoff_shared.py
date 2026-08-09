@@ -507,7 +507,7 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
 
         async def run(request):
             requests.append(request)
-            return SimpleNamespace(target_rate=44100)
+            return SimpleNamespace(target_rate=44100, committed=True)
 
         track = {
             "source": "local",
@@ -621,7 +621,7 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
 
         run.assert_not_awaited()
 
-    async def test_failed_recovery_signature_retries_after_new_successful_commit_context(self):
+    async def test_failed_recovery_signature_retries_same_key_then_new_commit_context(self):
         coordinator = RecoveryCoordinatorDouble()
         class PlayerDouble:
             state = {
@@ -639,7 +639,7 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
                 raise PlaybackTransitionFailure(
                     "recovery failed", transition_id="tr-failed", stage="commit-readback"
                 )
-            return SimpleNamespace(target_rate=44100)
+            return SimpleNamespace(target_rate=44100, committed=True)
 
         track = {
             "source": "local",
@@ -653,6 +653,7 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
         ):
             diagnosis = {"signature": "rate:44100->48000"}
             await main._request_coordinated_recovery(track, "spotify-watcher", diagnosis=diagnosis)
+            # A failed attempt must not suppress an immediate retry of the same key.
             await main._request_coordinated_recovery(track, "spotify-watcher-repeat", diagnosis=diagnosis)
             coordinator.last_result = SimpleNamespace(
                 committed=True,
@@ -660,7 +661,7 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
             )
             await main._request_coordinated_recovery(track, "spotify-watcher-after-commit", diagnosis=diagnosis)
 
-        self.assertEqual(len(requests), 2)
+        self.assertEqual(len(requests), 3)
 
     async def test_successful_recovery_allows_same_signature_after_its_commit(self):
         coordinator = RecoveryCoordinatorDouble()

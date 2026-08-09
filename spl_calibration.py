@@ -723,10 +723,44 @@ def _operation_lock() -> asyncio.Lock:
     return _runtime.operation_lock
 
 
+def _operation_owns_no_resources(operation: _SplCalibrationOperation) -> bool:
+    """Return whether a finished operation demonstrably owns no live resources.
+
+    Ownership may only be recovered when the operation's own cleanup lifecycle
+    has completed (``completed`` is only set by the final cleanup step) AND
+    nothing can still collide with a new operation: the owning worker task is
+    finished, every owned process has exited, and the sample-rate session no
+    longer tracks the job id.  A freshly acquired operation that is still in
+    its setup phase (no worker/process/session yet) is never stale.
+    """
+    if not operation.completed.is_set():
+        return False
+    worker_task = operation.worker_task
+    if worker_task is not None and not worker_task.done():
+        return False
+    for process in (operation.recorder, operation.noise_process):
+        if process is not None and process.poll() is None:
+            return False
+    session = operation.session
+    if session is not None:
+        active_ids = getattr(session, "active_spl_job_ids", None)
+        if isinstance(active_ids, set) and operation.session_job_id in active_ids:
+            return False
+    return True
+
+
 async def _acquire_operation(kind: str) -> _SplCalibrationOperation:
     async with _operation_lock():
-        if _runtime.operation is not None:
-            raise HTTPException(status_code=409, detail="SPL calibration is already active")
+        existing = _runtime.operation
+        if existing is not None:
+            if _operation_owns_no_resources(existing):
+                logger.warning(
+                    "SPL calibration stale ownership recovered: operation=%s no owned resources remain",
+                    existing.id,
+                )
+                _runtime.operation = None
+            else:
+                raise HTTPException(status_code=409, detail="SPL calibration is already active")
         operation_id = uuid4().hex
         operation = _SplCalibrationOperation(
             id=operation_id,

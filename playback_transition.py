@@ -323,10 +323,15 @@ class PlaybackTransitionCoordinator:
                 return None
             self._recovery_inflight_key = dedupe_key
             try:
-                return await execute()
+                result = await execute()
             finally:
                 self._recovery_inflight_key = None
+            # Only a committed recovery is remembered for deduplication.  A
+            # failed or uncommitted attempt must not permanently suppress
+            # legitimate retries of the same signature/context.
+            if result is not None and getattr(result, "committed", False):
                 self._recovery_last_key = dedupe_key
+            return result
 
     def _record_result(self, result: TransitionResult) -> None:
         self.last_result = result

@@ -317,6 +317,10 @@ class MeasurementStore:
     ) -> dict[str, Any]:
         if self._shutdown:
             raise RuntimeError("Measurement store is shutting down")
+        # Promote stale non-terminal jobs without a live worker before the
+        # active-job guard, otherwise a stale cancelling/running record could
+        # block every future measurement forever.
+        self._normalize_stale_jobs()
         # Guard against concurrent measurement jobs
         active_job = self._find_active_or_cancelling_job()
         if active_job is not None:
@@ -330,7 +334,6 @@ class MeasurementStore:
                 f"Another measurement is still active ({active_id}, status={active_status}). "
                 "Wait for it to finish or cancel it first."
             )
-        self._cleanup_expired_cancelling_jobs()
         inputs = self._measurement_inputs_with_sample_rate(self._discover_capture_inputs())
         selected_input = self._resolve_capture_input(inputs, input_id=input_id, input_key=input_key)
         if not selected_input.get("available"):
@@ -429,6 +432,10 @@ class MeasurementStore:
         # Guard against concurrent measurement jobs
         if self._shutdown:
             raise RuntimeError("Measurement store is shutting down")
+        # Promote stale non-terminal jobs without a live worker before the
+        # active-job guard, otherwise a stale cancelling/running record could
+        # block every future measurement forever.
+        self._normalize_stale_jobs()
         active_job = self._find_active_or_cancelling_job()
         if active_job is not None:
             active_id = active_job["id"]
@@ -441,7 +448,6 @@ class MeasurementStore:
                 f"Another measurement is still active ({active_id}, status={active_status}). "
                 "Wait for it to finish or cancel it first."
             )
-        self._cleanup_expired_cancelling_jobs()
         inputs = self._measurement_inputs_with_sample_rate(self._discover_capture_inputs())
         selected_input = self._resolve_capture_input(inputs, input_id=input_id, input_key=input_key)
         if not selected_input.get("available"):
@@ -543,6 +549,10 @@ class MeasurementStore:
             if not path.exists():
                 raise KeyError(job_id)
             job = json.loads(path.read_text(encoding="utf-8"))
+            if str(job.get("status") or "") not in {"completed", "failed", "cancelled"}:
+                task = self._job_tasks.get(job_id)
+                if task is None or task.done():
+                    self._promote_stale_job_to_terminal(job_id, job)
             self._jobs[job_id] = job
         return deepcopy(job)
 
@@ -767,6 +777,7 @@ class MeasurementStore:
         path.unlink()
 
     def has_active_measurement_job(self) -> bool:
+        self._normalize_stale_jobs()
         return any(
             str(job.get("status") or "") in {"queued", "running", "cancelling"}
             for job in self._jobs.values()
@@ -3271,28 +3282,37 @@ class MeasurementStore:
                 return job
         return None
 
-    def _cleanup_expired_cancelling_jobs(self) -> None:
-        """Promote stale cancelling jobs to cancelled when the worker thread is gone."""
-        for _job_id in list(self._jobs.keys()):
-            job = self._jobs.get(_job_id)
-            if job is None:
+    def _normalize_stale_jobs(self) -> None:
+        """Promote non-terminal jobs without a live worker to a terminal state.
+
+        A job whose runner task is missing or already finished can never make
+        further progress (e.g. a persisted record resurrected after a service
+        restart, or a runner task that was lost).  Such jobs must not block
+        future measurements forever; genuinely running jobs are untouched.
+        """
+        for job_id, job in list(self._jobs.items()):
+            if str(job.get("status") or "") in {"completed", "failed", "cancelled"}:
                 continue
-            status = str(job.get("status") or "")
-            if status != "cancelling":
+            task = self._job_tasks.get(job_id)
+            if task is not None and not task.done():
                 continue
-            task = self._job_tasks.get(_job_id)
-            if task is None or task.done():
-                self._cancelled_jobs.add(_job_id)
-                job["status"] = "cancelled"
-                job["updated_at"] = self._utc_now()
-                job["message"] = "Measurement cancelled."
-                job["result"] = None
-                job["error"] = None
-                self._persist_job(job)
-                logger.warning(
-                    "MEASUREMENT-CANCEL-DIAG expired cancelling job promoted to cancelled: job_id=%s",
-                    _job_id,
-                )
+            self._promote_stale_job_to_terminal(job_id, job)
+
+    def _promote_stale_job_to_terminal(self, job_id: str, job: dict[str, Any]) -> None:
+        """Normalize a stale non-terminal job to cancelled and persist it."""
+        previous_status = str(job.get("status") or "")
+        self._cancelled_jobs.add(job_id)
+        job["status"] = "cancelled"
+        job["updated_at"] = self._utc_now()
+        job["message"] = "Measurement interrupted (no live worker)."
+        job["result"] = None
+        job["error"] = None
+        self._persist_job(job)
+        logger.warning(
+            "MEASUREMENT-CANCEL-DIAG stale job without live worker promoted to terminal state: "
+            "job_id=%s previous_status=%s",
+            job_id, previous_status,
+        )
 
     def _should_retry_host_capture(self, exc: Exception) -> bool:
         error_codes = self._capture_quality_error_codes(exc)

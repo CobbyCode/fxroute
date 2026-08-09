@@ -2852,16 +2852,35 @@ def _finalize_autosub_job(job: dict[str, Any] | None, job_id: str) -> None:
     logger.info("AUTOSUB job=%s cleanup complete state=%s", job_id, job.get("status") or "idle")
 
 
-async def _finish_auto_sub_worker(job: dict[str, Any], job_id: str) -> None:
-    """Release the shared AutoSub lock, finalize the job and schedule its cleanup task."""
+async def _finish_auto_sub_worker(job: dict[str, Any] | None, job_id: str) -> None:
+    """Release the shared AutoSub lock, finalize the job and schedule its cleanup task.
+
+    Ownership structure: the lock is released unconditionally in the outer
+    finally.  Neither a failing sample-rate session unregister nor a failing
+    finalize may prevent the release, otherwise every subsequent AutoSub
+    operation would block forever with 423.  Cleanup failures are logged and
+    never overwrite the worker/job outcome (a failed job stays failed, a
+    cancelled job stays cancelled).
+    """
     from main import measurement_sr_session
-    if measurement_sr_session is not None:
-        await measurement_sr_session.unregister_auto_sub(job_id)
-    _finalize_autosub_job(job, job_id)
     try:
-        _auto_sub_lock.release()
-    except RuntimeError:
-        pass
+        if measurement_sr_session is not None:
+            try:
+                await measurement_sr_session.unregister_auto_sub(job_id)
+            except Exception:
+                logger.exception(
+                    "AUTOSUB job=%s measurement sample-rate session unregister failed", job_id
+                )
+        try:
+            _finalize_autosub_job(job, job_id)
+        except Exception:
+            logger.exception("AUTOSUB job=%s finalize failed", job_id)
+    finally:
+        try:
+            _auto_sub_lock.release()
+        except RuntimeError:
+            # The lock is not held (already released); the job status is final.
+            logger.debug("AUTOSUB job=%s lock release skipped (not held)", job_id)
 
     async def _cleanup_autosub_job():
         await asyncio.sleep(600)

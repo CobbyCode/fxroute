@@ -371,5 +371,92 @@ class SplCalibrationLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("if (splCalibrationNoiseActive)", close_body)
 
 
+    async def test_stale_ownership_without_resources_is_recoverable(self):
+        operation = await spl_calibration._acquire_operation("automatic")
+        done = asyncio.create_task(asyncio.sleep(0))
+        await done
+        operation.worker_task = done
+        session = FakeSession()
+        operation.session = session
+        operation.registration_attempted = True
+        operation.completed.set()
+
+        successor = await spl_calibration._acquire_operation("manual-noise")
+
+        self.assertNotEqual(successor.id, operation.id)
+        self.assertIs(spl_calibration._runtime.operation, successor)
+        await spl_calibration._cleanup_operation(successor)
+
+    async def test_live_process_keeps_stale_ownership_blocking(self):
+        operation = await spl_calibration._acquire_operation("automatic")
+        done = asyncio.create_task(asyncio.sleep(0))
+        await done
+        operation.worker_task = done
+        operation.completed.set()
+        process = FakeProcess()
+        operation.noise_process = process
+
+        with self.assertRaises(Exception) as raised:
+            await spl_calibration._acquire_operation("manual-noise")
+        self.assertEqual(getattr(raised.exception, "status_code", None), 409)
+        self.assertIs(spl_calibration._runtime.operation, operation)
+        process.returncode = 0
+        await spl_calibration._cleanup_operation(operation)
+
+    async def test_active_session_id_keeps_stale_ownership_blocking(self):
+        operation = await spl_calibration._acquire_operation("automatic")
+        done = asyncio.create_task(asyncio.sleep(0))
+        await done
+        operation.worker_task = done
+        operation.completed.set()
+        session = FakeSession()
+        operation.session = session
+        operation.registration_attempted = True
+        session.active_ids.add(operation.session_job_id)
+        session.active_spl_job_ids = session.active_ids
+
+        with self.assertRaises(Exception) as raised:
+            await spl_calibration._acquire_operation("manual-noise")
+        self.assertEqual(getattr(raised.exception, "status_code", None), 409)
+        self.assertIs(spl_calibration._runtime.operation, operation)
+        await spl_calibration._cleanup_operation(operation)
+
+
+    async def test_fresh_operation_mid_setup_is_not_reaped(self):
+        operation = await spl_calibration._acquire_operation("automatic")
+        with self.assertRaises(Exception) as raised:
+            await spl_calibration._acquire_operation("manual-noise")
+        self.assertEqual(getattr(raised.exception, "status_code", None), 409)
+        self.assertIs(spl_calibration._runtime.operation, operation)
+        await spl_calibration._cleanup_operation(operation)
+
+    async def test_unfinished_lifecycle_is_not_reaped_even_without_resources(self):
+        operation = await spl_calibration._acquire_operation("automatic")
+        done = asyncio.create_task(asyncio.sleep(0))
+        await done
+        operation.worker_task = done
+        with self.assertRaises(Exception) as raised:
+            await spl_calibration._acquire_operation("manual-noise")
+        self.assertEqual(getattr(raised.exception, "status_code", None), 409)
+        self.assertIs(spl_calibration._runtime.operation, operation)
+        await spl_calibration._cleanup_operation(operation)
+
+    async def test_registration_in_progress_is_not_reaped(self):
+        operation = await spl_calibration._acquire_operation("automatic")
+        done = asyncio.create_task(asyncio.sleep(0))
+        await done
+        operation.worker_task = done
+        session = FakeSession()
+        operation.session = session
+        operation.registration_attempted = True
+        session.active_ids.add(operation.session_job_id)
+        session.active_spl_job_ids = session.active_ids
+        with self.assertRaises(Exception) as raised:
+            await spl_calibration._acquire_operation("manual-noise")
+        self.assertEqual(getattr(raised.exception, "status_code", None), 409)
+        self.assertIs(spl_calibration._runtime.operation, operation)
+        await spl_calibration._cleanup_operation(operation)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
