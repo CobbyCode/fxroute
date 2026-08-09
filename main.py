@@ -3975,13 +3975,20 @@ async def _coordinator_establish_effects_and_helper(
         target_rate=target_rate,
         require_source=False,
     )
-    if not final.get("links_complete") and mode not in OUTPUT_MODE_SUBWOOFER_MODES:
-        # The direct EE -> hardware front links were just (re-)created by the
-        # SUB-STOP/repair above.  PipeWire's link listing can lag the creation
-        # event longer than the repair read; re-read after a short settle
-        # before declaring the switch failed.
+    if not final.get("links_complete"):
+        # The production edges were just (re-)created by the SUB-STOP/helper
+        # sync above, and EasyEffects can recreate its output nodes during
+        # the transition, dropping the fresh links again.  A pw-link read
+        # taken in such an unstable instant can transiently miss a single
+        # edge (observed live: one missing helper input link right after the
+        # sync verified the full graph).  Repair idempotently per mode and
+        # re-read after a short settle before declaring the switch failed.
         for _ in range(3):
-            await asyncio.sleep(PIPEWIRE_HANDOFF_POLL_INTERVAL_MS * 4 / 1000)
+            if mode not in OUTPUT_MODE_SUBWOOFER_MODES:
+                await _repair_stereo_output_links_once(final)
+            elif subwoofer_runtime is not None:
+                await _coordinator_reconcile_subwoofer_links_only()
+            await asyncio.sleep(PIPEWIRE_HANDOFF_POLL_INTERVAL_MS * 5 / 1000)
             final = await _playback_graph_diagnosis(
                 overview,
                 target_rate=target_rate,

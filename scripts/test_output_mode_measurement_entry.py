@@ -360,6 +360,79 @@ class CoordinatorTransactionTests(unittest.IsolatedAsyncioTestCase):
         self.assertLess(runtime.events.index("persist-output-mode"), runtime.events.index("mute:False"))
         self.assertTrue(runtime.spotify_source_link_confirmed)
 
+    async def test_subwoofer_switch_final_readback_settles_over_transient_missing_link(self):
+        """A subwoofer output-mode switch must not fail when the final
+        diagnosis transiently misses a single helper input edge that the
+        runtime repair had just confirmed present."""
+        overview = {
+            "output_mode": {
+                "mode": "subwoofer-2.2",
+                "effective_output_key": "alsa_output.test",
+            }
+        }
+        incomplete = {
+            "mode": "subwoofer-2.2",
+            "output_key": "alsa_output.test",
+            "ee_ports": True,
+            "helper_ports": True,
+            "helper_active": True,
+            "helper_rate": 48000,
+            "helper_rate_matches": True,
+            "source_links": {},
+            "source_links_complete": None,
+            "direct_ee_to_hw_present": False,
+            "links": {
+                "ee_soe_output_level:output_FL -> fxroute_21_stage1:input_L": False,
+                "ee_soe_output_level:output_FR -> fxroute_21_stage1:input_R": True,
+                "fxroute_21_stage1:output_1 -> alsa_output.test:playback_FL": True,
+                "fxroute_21_stage1:output_2 -> alsa_output.test:playback_FR": True,
+                "fxroute_21_stage1:output_3 -> alsa_output.test:playback_RL": True,
+                "fxroute_21_stage1:output_4 -> alsa_output.test:playback_RR": True,
+            },
+            "links_complete": False,
+            "bypass_only": False,
+            "port_identities": {
+                "source": (),
+                "source_target": (),
+                "ee": ("ee_soe_output_level:output_FL", "ee_soe_output_level:output_FR"),
+                "helper": (
+                    "fxroute_21_stage1:input_L", "fxroute_21_stage1:input_R",
+                    "fxroute_21_stage1:output_1", "fxroute_21_stage1:output_2",
+                    "fxroute_21_stage1:output_3", "fxroute_21_stage1:output_4",
+                ),
+                "output": ("alsa_output.test:playback_FL", "alsa_output.test:playback_FR"),
+            },
+            "signature": "subwoofer-input-l-missing",
+        }
+        complete = dict(incomplete)
+        complete["links"] = {key: True for key in incomplete["links"]}
+        complete["links_complete"] = True
+        complete["signature"] = "subwoofer-links-stable"
+        request = TransitionRequest(
+            operation="output-mode-switch",
+            source="local",
+            target_rate=48000,
+            target_url="/music/current.flac",
+            target_track={"source": "local", "url": "/music/current.flac"},
+            should_play=True,
+            rate_change=False,
+            reload_source=False,
+            output_mode_target=overview,
+            output_mode_config={"mode": "subwoofer-2.2"},
+        )
+        with patch.object(main, "subwoofer_runtime", SimpleNamespace()), patch.object(
+            main, "easyeffects_manager", None
+        ), patch.object(
+            main, "_playback_graph_diagnosis", new=AsyncMock(side_effect=[incomplete, incomplete, complete])
+        ), patch.object(main, "_sync_subwoofer_runtime", new=AsyncMock()), patch.object(
+            main, "_wait_for_easyeffects_output_ports", new=AsyncMock(return_value=True)
+        ), patch.object(main, "_reconcile_transition_sink_rate", new=AsyncMock(return_value=True)), patch.object(
+            main, "_coordinator_reconcile_subwoofer_links_only", new=AsyncMock()
+        ), patch.object(main.asyncio, "sleep", new=AsyncMock()):
+            result = await main._coordinator_establish_effects_and_helper(request)
+
+        self.assertTrue(result["graph_complete"])
+
     async def test_stereo_switch_final_readback_settles_over_transient_missing_links(self):
         """A stereo output-mode switch must not fail when the final diagnosis
         transiently misses the just-created direct EE->hardware front links."""
