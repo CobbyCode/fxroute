@@ -229,6 +229,7 @@ class MeasurementStore:
         self._jobs: dict[str, dict[str, Any]] = {}
         self._job_tasks: dict[str, asyncio.Task[Any]] = {}
         self._job_processes: dict[str, list[subprocess.Popen[str]]] = {}
+        self._job_process_lock = threading.Lock()
         self._cancelled_jobs: set[str] = set()
         self._last_successful_lag: int | None = None
 
@@ -393,6 +394,7 @@ class MeasurementStore:
         self._persist_job(job)
         task = asyncio.create_task(self._run_measurement_job(job_id))
         self._job_tasks[job_id] = task
+        task.add_done_callback(lambda completed, owned_job_id=job_id: self._measurement_job_task_done(owned_job_id, completed))
         return self.get_job(job_id)
 
     async def start_lr_repeat_measurement(
@@ -485,6 +487,7 @@ class MeasurementStore:
         self._persist_job(job)
         task = asyncio.create_task(self._run_measurement_job(job_id))
         self._job_tasks[job_id] = task
+        task.add_done_callback(lambda completed, owned_job_id=job_id: self._measurement_job_task_done(owned_job_id, completed))
         return self.get_job(job_id)
 
 
@@ -678,12 +681,20 @@ class MeasurementStore:
         }
 
     def cancel_job(self, job_id: str) -> dict[str, Any]:
-        job = self.get_job(job_id)
-        status = str(job.get("status") or "")
-        if status in {"completed", "failed", "cancelled"}:
-            return job
-        self._cancelled_jobs.add(job_id)
-        proc_list = self._job_processes.get(job_id, [])
+        self.get_job(job_id)
+        with self._job_process_lock:
+            live_job = self._jobs[job_id]
+            status = str(live_job.get("status") or "")
+            if status in {"completed", "failed", "cancelled"}:
+                return deepcopy(live_job)
+            self._cancelled_jobs.add(job_id)
+            proc_list = list(self._job_processes.get(job_id, []))
+            # Use "cancelling" so release watcher does NOT fire prematurely.
+            live_job["status"] = "cancelling"
+            live_job["updated_at"] = self._utc_now()
+            live_job["message"] = "Measurement cancelled."
+            live_job["error"] = None
+            self._persist_job(live_job)
         if proc_list:
             logger.warning(
                 "MEASUREMENT-CANCEL-DIAG subprocesses terminated: job_id=%s process_count=%d",
@@ -695,25 +706,10 @@ class MeasurementStore:
                     process.terminate()
             except Exception:
                 pass
-        task = self._job_tasks.get(job_id)
-        if task is not None and not task.done():
-            task.cancel()
-            logger.warning(
-                "MEASUREMENT-CANCEL-DIAG asyncio task cancel requested: job_id=%s",
-                job_id,
-            )
-        live_job = self._jobs.get(job_id)
-        if live_job is not None:
-            # Use "cancelling" so release watcher does NOT fire prematurely
-            live_job["status"] = "cancelling"
-            live_job["updated_at"] = self._utc_now()
-            live_job["message"] = "Measurement cancelled."
-            live_job["error"] = None
-            self._persist_job(live_job)
-            logger.warning(
-                "MEASUREMENT-CANCEL-DIAG cancel requested: job_id=%s status=cancelling",
-                job_id,
-            )
+        logger.warning(
+            "MEASUREMENT-CANCEL-DIAG cancel requested: job_id=%s status=cancelling",
+            job_id,
+        )
         return self.get_job(job_id)
 
     def delete_measurement(self, measurement_id: str) -> None:
@@ -726,7 +722,39 @@ class MeasurementStore:
         path.unlink()
 
     def has_active_measurement_job(self) -> bool:
-        return any(str(job.get("status") or "") in {"queued", "running"} for job in self._jobs.values())
+        return any(
+            str(job.get("status") or "") in {"queued", "running", "cancelling"}
+            for job in self._jobs.values()
+        )
+
+    def _start_job_process(self, job_id: str, command: list[str]) -> subprocess.Popen[str]:
+        """Atomically refuse cancellation or register the new child process."""
+        with self._job_process_lock:
+            if job_id in self._cancelled_jobs:
+                raise RuntimeError("Measurement cancelled.")
+            process = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self._job_processes.setdefault(job_id, []).append(process)
+            return process
+
+    def _measurement_job_task_done(self, job_id: str, task: asyncio.Task[Any]) -> None:
+        """Finalize a runner cancelled before its coroutine could take ownership."""
+        if not task.cancelled():
+            return
+        job = self._jobs.get(job_id)
+        if job is None or str(job.get("status") or "") != "queued":
+            return
+        self._cancelled_jobs.add(job_id)
+        job["status"] = "cancelled"
+        job["updated_at"] = self._utc_now()
+        job["message"] = "Measurement cancelled."
+        job["result"] = None
+        job["error"] = None
+        self._persist_job(job)
 
     def upload_calibration_file(self, filename: str, data: bytes) -> dict[str, Any]:
         if not data:
@@ -840,15 +868,38 @@ class MeasurementStore:
         here when the worker thread finishes, so the release watcher and
         new-job guard see the final state.
         """
-        was_cancelling_before = job_id in self._cancelled_jobs
         job = self._jobs[job_id]
-        job["status"] = "running"
-        job["updated_at"] = self._utc_now()
-        job["message"] = "Running L/R repeat…" if job.get("job_kind") == "lr-repeat" else "Running sweep…"
-        self._persist_job(job)
+        with self._job_process_lock:
+            was_cancelling_before = job_id in self._cancelled_jobs
+            if not was_cancelling_before:
+                job["status"] = "running"
+                job["updated_at"] = self._utc_now()
+                job["message"] = "Running L/R repeat…" if job.get("job_kind") == "lr-repeat" else "Running sweep…"
+                self._persist_job(job)
         try:
+            if was_cancelling_before:
+                raise RuntimeError("Measurement cancelled.")
             executor = self._execute_lr_repeat_job if job.get("job_kind") == "lr-repeat" else self._execute_capture_job
-            result = await asyncio.to_thread(executor, deepcopy(job))
+            worker_task = asyncio.create_task(asyncio.to_thread(executor, deepcopy(job)))
+            try:
+                result = await asyncio.shield(worker_task)
+            except asyncio.CancelledError:
+                # Wrapper cancellation cannot stop a worker thread. Request
+                # cooperative cancellation and retain ownership until it exits.
+                self.cancel_job(job_id)
+                while not worker_task.done():
+                    try:
+                        await asyncio.shield(worker_task)
+                    except asyncio.CancelledError:
+                        continue
+                    except Exception:
+                        break
+                if worker_task.done() and not worker_task.cancelled():
+                    try:
+                        worker_task.result()
+                    except Exception:
+                        pass
+                raise
 
             was_cancelled_during = job_id in self._cancelled_jobs
             if was_cancelled_during:
@@ -857,50 +908,54 @@ class MeasurementStore:
                     job_id, was_cancelling_before,
                 )
 
-            if job_id in self._cancelled_jobs:
-                job["status"] = "cancelled"
-                job["updated_at"] = self._utc_now()
-                job["message"] = "Measurement cancelled."
-                job["result"] = None
-                job["error"] = None
-            else:
-                job["status"] = "completed"
-                job["updated_at"] = self._utc_now()
-                job["message"] = result.get("message") or "Measurement finished."
-                job["result"] = self._public_job_result(result)
-                if isinstance(result.get("calibration"), dict):
-                    job["calibration"] = deepcopy(result["calibration"])
-                job["error"] = None
+            with self._job_process_lock:
+                if job_id in self._cancelled_jobs:
+                    job["status"] = "cancelled"
+                    job["updated_at"] = self._utc_now()
+                    job["message"] = "Measurement cancelled."
+                    job["result"] = None
+                    job["error"] = None
+                else:
+                    job["status"] = "completed"
+                    job["updated_at"] = self._utc_now()
+                    job["message"] = result.get("message") or "Measurement finished."
+                    job["result"] = self._public_job_result(result)
+                    if isinstance(result.get("calibration"), dict):
+                        job["calibration"] = deepcopy(result["calibration"])
+                    job["error"] = None
         except asyncio.CancelledError:
-            self._cancelled_jobs.add(job_id)
             logger.warning(
                 "MEASUREMENT-CANCEL-DIAG job terminal cleanup (CancelledError): job_id=%s",
                 job_id,
             )
-            job["status"] = "cancelled"
-            job["updated_at"] = self._utc_now()
-            job["message"] = "Measurement cancelled."
-            job["result"] = None
-            job["error"] = None
-        except Exception as exc:
-            if job_id in self._cancelled_jobs:
-                logger.warning(
-                    "MEASUREMENT-CANCEL-DIAG job terminal cleanup (exception+cancelled): job_id=%s exc=%s",
-                    job_id, exc,
-                )
+            with self._job_process_lock:
+                self._cancelled_jobs.add(job_id)
                 job["status"] = "cancelled"
                 job["updated_at"] = self._utc_now()
                 job["message"] = "Measurement cancelled."
                 job["result"] = None
                 job["error"] = None
-            else:
-                job["status"] = "failed"
-                job["updated_at"] = self._utc_now()
-                job["message"] = str(exc) or "Measurement failed"
-                job["result"] = None
-                job["error"] = {"detail": str(exc)}
+        except Exception as exc:
+            with self._job_process_lock:
+                if job_id in self._cancelled_jobs:
+                    logger.warning(
+                        "MEASUREMENT-CANCEL-DIAG job terminal cleanup (exception+cancelled): job_id=%s exc=%s",
+                        job_id, exc,
+                    )
+                    job["status"] = "cancelled"
+                    job["updated_at"] = self._utc_now()
+                    job["message"] = "Measurement cancelled."
+                    job["result"] = None
+                    job["error"] = None
+                else:
+                    job["status"] = "failed"
+                    job["updated_at"] = self._utc_now()
+                    job["message"] = str(exc) or "Measurement failed"
+                    job["result"] = None
+                    job["error"] = {"detail": str(exc)}
         finally:
-            self._job_processes.pop(job_id, None)
+            with self._job_process_lock:
+                self._job_processes.pop(job_id, None)
             self._persist_job(job)
             logger.warning(
                 "MEASUREMENT-CANCEL-DIAG job terminal cleanup complete: job_id=%s final_status=%s",
@@ -1258,6 +1313,7 @@ class MeasurementStore:
                 # Unique ID per sweep so each capture gets its own WAV file
                 sweep_id = f"{job_id}-repeat{repeat_index + 1}-{channel}"
                 capture_job["id"] = sweep_id
+                capture_job["_owner_job_id"] = job_id
                 capture_job["channel"] = channel
                 capture_job["capture_profile"] = "lr-repeat"
                 result = self._execute_capture_job(capture_job)
@@ -2020,6 +2076,7 @@ class MeasurementStore:
 
     def _execute_capture_job(self, job: dict[str, Any]) -> dict[str, Any]:
         job_id = str(job["id"])
+        owner_job_id = str(job.get("_owner_job_id") or job_id)
         selected_input = job.get("input") or {}
         input_channels = job.get("input_channels") if isinstance(job.get("input_channels"), dict) else {}
         channel = str(job.get("channel") or "left")
@@ -2126,7 +2183,7 @@ class MeasurementStore:
         reference_warning = str(input_channels.get("reference_disabled_reason") or "").strip()
 
         # Cancel guard: check before any attempt
-        if job_id in self._cancelled_jobs:
+        if owner_job_id in self._cancelled_jobs:
             logger.warning(
                 "MEASUREMENT-CANCEL-DIAG retry aborted before first attempt: job_id=%s",
                 job_id,
@@ -2141,7 +2198,7 @@ class MeasurementStore:
             )
             try:
                 # Cancel guard: check before each capture attempt
-                if job_id in self._cancelled_jobs:
+                if owner_job_id in self._cancelled_jobs:
                     logger.warning(
                         "MEASUREMENT-CANCEL-DIAG retry aborted before capture attempt %d/%d: job_id=%s",
                         attempts_used, HOST_SWEEP_MAX_ATTEMPTS, job_id,
@@ -2153,6 +2210,7 @@ class MeasurementStore:
                 attempt_reference = electrical_reference if use_electrical_reference else host_reference
                 analysis, capture_info, playback_info = self._run_host_capture_attempt(
                     job_id=job_id,
+                    owner_job_id=owner_job_id,
                     mic_source_node_name=source_node_name,
                     reference_capture=attempt_reference,
                     channel=playback_channel,
@@ -2179,7 +2237,7 @@ class MeasurementStore:
                     reference_status = self._evaluate_electrical_reference_status(analysis)
 
                     # Cancel guard: check before QC-based ER fallback
-                    if job_id in self._cancelled_jobs:
+                    if owner_job_id in self._cancelled_jobs:
                         logger.warning(
                             "MEASUREMENT-CANCEL-DIAG retry aborted before ER fallback: job_id=%s",
                             job_id,
@@ -2212,6 +2270,7 @@ class MeasurementStore:
                                 capture_path.unlink()
                             analysis, capture_info, playback_info = self._run_host_capture_attempt(
                                 job_id=job_id,
+                                owner_job_id=owner_job_id,
                                 mic_source_node_name=source_node_name,
                                 reference_capture=host_reference,
                                 channel=playback_channel,
@@ -2260,7 +2319,7 @@ class MeasurementStore:
                 break
             except Exception as exc:
                 # Cancel safety: cancellation is ALWAYS terminal
-                if self._is_measurement_cancelled(job_id, exc):
+                if self._is_measurement_cancelled(owner_job_id, exc):
                     logger.warning(
                         "MEASUREMENT-CANCEL-DIAG retry aborted because job cancelled: job_id=%s attempt=%d/%d exc=%s",
                         job_id, attempts_used, HOST_SWEEP_MAX_ATTEMPTS, exc,
@@ -2276,7 +2335,7 @@ class MeasurementStore:
                     )
 
                     # Cancel guard: check before ER exception fallback
-                    if job_id in self._cancelled_jobs:
+                    if owner_job_id in self._cancelled_jobs:
                         logger.warning(
                             "MEASUREMENT-CANCEL-DIAG retry aborted before ER exception fallback: job_id=%s",
                             job_id,
@@ -2288,6 +2347,7 @@ class MeasurementStore:
                             capture_path.unlink()
                         analysis, capture_info, playback_info = self._run_host_capture_attempt(
                             job_id=job_id,
+                            owner_job_id=owner_job_id,
                             mic_source_node_name=source_node_name,
                             reference_capture=host_reference,
                             channel=playback_channel,
@@ -2317,7 +2377,7 @@ class MeasurementStore:
                         logger.warning("Electrical reference fallback capture also failed for %s", job_id, exc_info=True)
 
                         # Cancel check after ER fallback also failed
-                        if job_id in self._cancelled_jobs:
+                        if owner_job_id in self._cancelled_jobs:
                             logger.warning(
                                 "MEASUREMENT-CANCEL-DIAG retry aborted after ER fallback failed (job cancelled): job_id=%s",
                                 job_id,
@@ -2325,7 +2385,7 @@ class MeasurementStore:
                             raise RuntimeError("Measurement cancelled.")
 
                 # Cancel guard before retry decision
-                if job_id in self._cancelled_jobs:
+                if owner_job_id in self._cancelled_jobs:
                     logger.warning(
                         "MEASUREMENT-CANCEL-DIAG retry aborted: job_id=%s",
                         job_id,
@@ -2342,9 +2402,9 @@ class MeasurementStore:
                     "MEASUREMENT-CANCEL-DIAG retry sleep: job_id=%s attempt=%d/%d delay=%.2f",
                     job_id, attempts_used, HOST_SWEEP_MAX_ATTEMPTS, HOST_SWEEP_RETRY_DELAY_SECONDS,
                 )
-                self._cancel_aware_sleep(job_id, HOST_SWEEP_RETRY_DELAY_SECONDS)
+                self._cancel_aware_sleep(owner_job_id, HOST_SWEEP_RETRY_DELAY_SECONDS)
                 # Re-check after sleep before next loop iteration
-                if job_id in self._cancelled_jobs:
+                if owner_job_id in self._cancelled_jobs:
                     logger.warning(
                         "MEASUREMENT-CANCEL-DIAG retry aborted after sleep (job cancelled): job_id=%s",
                         job_id,
@@ -2438,6 +2498,7 @@ class MeasurementStore:
         self,
         *,
         job_id: str,
+        owner_job_id: str,
         mic_source_node_name: str,
         reference_capture: dict[str, Any],
         channel: str,
@@ -2496,8 +2557,7 @@ class MeasurementStore:
             playback_gain=playback_gain,
         )
 
-        record_process = subprocess.Popen(record_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        self._job_processes[job_id] = [record_process]
+        record_process = self._start_job_process(owner_job_id, record_command)
         monitored_channel_index = mic_input_channel_index if electrical_reference_channel_index is not None else 1
         level_monitor_stop = threading.Event()
         level_monitor_thread = threading.Thread(
@@ -2588,8 +2648,7 @@ class MeasurementStore:
                     "Helper/config not in consistent state - sweep refused."
                 )
 
-            play_process = subprocess.Popen(play_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            self._job_processes[job_id] = [record_process, play_process]
+            play_process = self._start_job_process(owner_job_id, play_command)
             if playback_route["route"] in MEASUREMENT_SUBWOOFER_HELPER_ROUTES:
                 playback_route_diagnostics = self._link_measurement_playback_to_21_helper(
                     play_node_name=play_node_name,
@@ -2697,7 +2756,7 @@ class MeasurementStore:
                 f"{direct_bypass_monitor_violations[:4]}"
             )
 
-        if job_id in self._cancelled_jobs:
+        if owner_job_id in self._cancelled_jobs:
             raise RuntimeError("Measurement cancelled.")
 
         capture_usable = capture_path.exists() and capture_path.stat().st_size > 44
