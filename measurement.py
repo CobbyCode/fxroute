@@ -173,6 +173,8 @@ HOST_ALIGNMENT_SCORE_FAIL_THRESHOLD = 0.84
 HOST_ALIGNMENT_SCORE_WARN_THRESHOLD = 0.90
 CAPTURE_CLIP_FAIL_DBFS = -0.2
 CAPTURE_CLIP_WARN_DBFS = -1.0
+CAPTURE_LEVEL_LOW_PEAK_DBFS = -45.0
+CAPTURE_LEVEL_LOW_RMS_DBFS = -60.0
 ELECTRICAL_REFERENCE_MIN_PEAK_DBFS = -70.0
 ELECTRICAL_REFERENCE_MIN_ALIGNMENT_SCORE = 0.84
 ELECTRICAL_REFERENCE_MIN_IR_SHARPNESS_DB = 18.0
@@ -259,6 +261,9 @@ class MeasurementStore:
 
     def list_inputs(self) -> dict[str, Any]:
         inputs = self._measurement_inputs_with_sample_rate(self._discover_capture_inputs())
+        settings = self._read_settings()
+        measure_settings = settings.get("measure") if isinstance(settings.get("measure"), dict) else {}
+        selection = resolve_measurement_input_selection(inputs, measure_settings)
         return {
             "status": "ok",
             "scope_note": MEASUREMENT_SCOPE_NOTE,
@@ -272,6 +277,7 @@ class MeasurementStore:
                 },
             ],
             "inputs": inputs,
+            "selection": selection,
             "capture_available": any(item.get("available") for item in inputs),
             "discovery": {
                 "method": "wpctl status -n + pactl list short sources",
@@ -286,6 +292,7 @@ class MeasurementStore:
             source_sample_rate = item.get("sample_rate")
             annotated.append({
                 **item,
+                "persistent_id": measurement_input_persistent_id(item),
                 "source_sample_rate": source_sample_rate,
                 "sample_rate": measurement_rate,
                 "measurement_sample_rate": measurement_rate,
@@ -296,6 +303,7 @@ class MeasurementStore:
         self,
         *,
         input_id: str,
+        input_key: str = "",
         channel: str,
         mic_input_channel: str | int | None = "1",
         reference_input_channel: str | int | None = "",
@@ -324,9 +332,7 @@ class MeasurementStore:
             )
         self._cleanup_expired_cancelling_jobs()
         inputs = self._measurement_inputs_with_sample_rate(self._discover_capture_inputs())
-        selected_input = next((item for item in inputs if item["id"] == input_id), None)
-        if not selected_input:
-            raise ValueError("Selected capture input is no longer available")
+        selected_input = self._resolve_capture_input(inputs, input_id=input_id, input_key=input_key)
         if not selected_input.get("available"):
             raise ValueError("Selected capture input is not available")
 
@@ -410,6 +416,7 @@ class MeasurementStore:
         self,
         *,
         input_id: str,
+        input_key: str = "",
         base_name: str = "",
         mic_input_channel: str | int | None = "1",
         reference_input_channel: str | int | None = "",
@@ -436,9 +443,7 @@ class MeasurementStore:
             )
         self._cleanup_expired_cancelling_jobs()
         inputs = self._measurement_inputs_with_sample_rate(self._discover_capture_inputs())
-        selected_input = next((item for item in inputs if item["id"] == input_id), None)
-        if not selected_input:
-            raise ValueError("Selected capture input is no longer available")
+        selected_input = self._resolve_capture_input(inputs, input_id=input_id, input_key=input_key)
         if not selected_input.get("available"):
             raise ValueError("Selected capture input is not available")
         input_channel_count = max(1, int(selected_input.get("channels") or 1))
@@ -500,6 +505,35 @@ class MeasurementStore:
         self._job_tasks[job_id] = task
         task.add_done_callback(lambda completed, owned_job_id=job_id: self._measurement_job_task_done(owned_job_id, completed))
         return self.get_job(job_id)
+
+    @staticmethod
+    def _resolve_capture_input(
+        inputs: list[dict[str, Any]],
+        *,
+        input_id: str,
+        input_key: str = "",
+    ) -> dict[str, Any]:
+        stable_key = str(input_key or "").strip()
+        if stable_key:
+            matches = [
+                item for item in inputs
+                if str(item.get("persistent_id") or measurement_input_persistent_id(item)) == stable_key
+            ]
+            if len(matches) > 1:
+                raise ValueError("Selected capture input identity is ambiguous")
+            selected = matches[0] if matches else None
+        else:
+            selected = next((item for item in inputs if item.get("id") == input_id), None)
+        if not selected:
+            raise ValueError("Selected capture input is no longer available")
+        return selected
+
+    def resolve_capture_input_id(self, *, input_id: str, input_key: str = "") -> str:
+        inputs = self._measurement_inputs_with_sample_rate(self._discover_capture_inputs())
+        selected = self._resolve_capture_input(inputs, input_id=input_id, input_key=input_key)
+        if not selected.get("available"):
+            raise ValueError("Selected capture input is not available")
+        return str(selected["id"])
 
 
     def get_job(self, job_id: str) -> dict[str, Any]:
@@ -2142,6 +2176,7 @@ class MeasurementStore:
         input_channels = job.get("input_channels") if isinstance(job.get("input_channels"), dict) else {}
         channel = str(job.get("channel") or "left")
         measurement_scope = self._normalize_measurement_scope(job.get("measurement_scope"))
+        measurement_role = str(job.get("measurement_role") or "").strip().lower()
         calibration_meta = job.get("calibration") if isinstance(job.get("calibration"), dict) else {"filename": "", "applied": False}
 
         sample_rate = self._resolve_measurement_sample_rate()
@@ -2280,6 +2315,7 @@ class MeasurementStore:
                     playback_path=playback_path,
                     playback_target=playback_target,
                     measurement_scope=measurement_scope,
+                    measurement_role=measurement_role,
                     playback_gain=job.get("playback_gain"),
                     sweep_meta=sweep_meta,
                     sample_rate=sample_rate,
@@ -2340,6 +2376,7 @@ class MeasurementStore:
                                 playback_path=playback_path,
                                 playback_target=playback_target,
                                 measurement_scope=measurement_scope,
+                                measurement_role=measurement_role,
                                 playback_gain=job.get("playback_gain"),
                                 sweep_meta=sweep_meta,
                                 sample_rate=sample_rate,
@@ -2357,26 +2394,16 @@ class MeasurementStore:
                             self._append_reference_fallback_warning(analysis, reference_warning)
                 capture_level_low = self._analysis_has_warning_code(analysis, "capture-level-low")
                 final_capture_level_low = capture_level_low
-                if (
-                    capture_level_low
-                    and not mic_auto_boosted
-                    and attempt_index == HOST_SWEEP_AUTO_GAIN_RETRY_ATTEMPT - 1
+                mic_target = str(selected_input.get("node_serial") or source_node_name).strip()
+                if self._try_raise_mic_for_low_capture(
+                    analysis,
+                    mic_target=mic_target,
+                    attempt_index=attempt_index,
+                    mic_auto_boosted=mic_auto_boosted,
                 ):
-                    mic_target = str(selected_input.get("node_serial") or source_node_name).strip()
-                    if mic_target:
-                        try:
-                            current_mic_volume = get_node_volume(mic_target)
-                        except SystemVolumeError:
-                            current_mic_volume = None
-                        if isinstance(current_mic_volume, int) and current_mic_volume < HOST_SWEEP_AUTO_GAIN_TARGET_PERCENT:
-                            try:
-                                set_node_volume(mic_target, HOST_SWEEP_AUTO_GAIN_TARGET_PERCENT)
-                            except SystemVolumeError:
-                                pass
-                            else:
-                                mic_auto_boosted = True
-                                time.sleep(HOST_SWEEP_RETRY_DELAY_SECONDS)
-                                continue
+                    mic_auto_boosted = True
+                    time.sleep(HOST_SWEEP_RETRY_DELAY_SECONDS)
+                    continue
                 break
             except Exception as exc:
                 # Cancel safety: cancellation is ALWAYS terminal
@@ -2417,6 +2444,7 @@ class MeasurementStore:
                             playback_path=playback_path,
                             playback_target=playback_target,
                             measurement_scope=measurement_scope,
+                            measurement_role=measurement_role,
                             playback_gain=job.get("playback_gain"),
                             sweep_meta=sweep_meta,
                             sample_rate=sample_rate,
@@ -2433,6 +2461,16 @@ class MeasurementStore:
                         )
                         self._append_reference_fallback_warning(analysis, reference_warning)
                         final_capture_level_low = self._analysis_has_warning_code(analysis, "capture-level-low")
+                        mic_target = str(selected_input.get("node_serial") or source_node_name).strip()
+                        if self._try_raise_mic_for_low_capture(
+                            analysis,
+                            mic_target=mic_target,
+                            attempt_index=attempt_index,
+                            mic_auto_boosted=mic_auto_boosted,
+                        ):
+                            mic_auto_boosted = True
+                            time.sleep(HOST_SWEEP_RETRY_DELAY_SECONDS)
+                            continue
                         break
                     except Exception:
                         logger.warning("Electrical reference fallback capture also failed for %s", job_id, exc_info=True)
@@ -2571,6 +2609,7 @@ class MeasurementStore:
         playback_path: Path,
         playback_target: dict[str, Any],
         measurement_scope: str,
+        measurement_role: str,
         playback_gain: float | None,
         sweep_meta: dict[str, Any],
         sample_rate: int,
@@ -2622,7 +2661,10 @@ class MeasurementStore:
         )
 
         record_process = self._start_job_process(owner_job_id, record_command)
-        monitored_channel_index = mic_input_channel_index if electrical_reference_channel_index is not None else 1
+        monitored_channel_index = self._recorded_mic_channel_index(
+            mic_input_channel_index,
+            has_electrical_reference=electrical_reference_channel_index is not None,
+        )
         level_monitor_stop = threading.Event()
         level_monitor_thread = threading.Thread(
             target=self._monitor_capture_input_level,
@@ -2673,6 +2715,7 @@ class MeasurementStore:
                     record_node_name=record_node_name,
                     requested_channel=channel,
                     mic_input_channel_index=mic_input_channel_index,
+                    record_process=record_process,
                 )
             if detailed_diagnostics_enabled:
                 routing_snapshots.append(
@@ -2836,8 +2879,12 @@ class MeasurementStore:
             raise RuntimeError("Capture finished but no usable host-reference WAV data was produced")
 
         reference_channel_label = str(reference_capture.get("channel_label") or "reference")
-        analysis_channel_index = mic_input_channel_index if electrical_reference_channel_index is not None else 1
+        analysis_channel_index = self._recorded_mic_channel_index(
+            mic_input_channel_index,
+            has_electrical_reference=electrical_reference_channel_index is not None,
+        )
         reference_channel_index = electrical_reference_channel_index if electrical_reference_channel_index is not None else 0
+        self._update_measurement_job_message(owner_job_id, "Processing measurement…")
         try:
             is_21_active = any(
                 bool(snap.get("processes")) for snap in helper_process_snapshots
@@ -2854,6 +2901,7 @@ class MeasurementStore:
                 analysis_channel_index=analysis_channel_index,
                 reference_channel_label=reference_channel_label,
                 is_21_dsp_active=is_21_active,
+                measurement_role=measurement_role,
             )
         except Exception:
             helper_process_snapshots.append(self._snapshot_fxroute_21_helper_processes("after-capture-analysis-failure"))
@@ -3130,6 +3178,7 @@ class MeasurementStore:
                 record_node_name=record_node,
                 requested_channel=channel,
                 mic_input_channel_index=0,
+                record_process=record_proc,
             )
             time.sleep(record_preroll_seconds)
             play_proc = subprocess.Popen(play_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -3374,7 +3423,14 @@ class MeasurementStore:
         confidence_text = "lower confidence" if not math.isfinite(confidence_value) or confidence_value < 0.75 else "timing stable"
         return f"Acoustic-only timing · {delay_text} · {confidence_text}"
 
-    def _update_capture_input_level_status(self, job_id: str, peak_dbfs: float, clipped: bool) -> None:
+    def _update_capture_input_level_status(
+        self,
+        job_id: str,
+        peak_dbfs: float,
+        clipped: bool,
+        *,
+        channel_index: int | None = None,
+    ) -> None:
         job = self._jobs.get(job_id)
         parent_repeat_job = None
         if not job:
@@ -3390,12 +3446,25 @@ class MeasurementStore:
         job["input_level"] = {
             "peak_dbfs": round(max(CAPTURE_LEVEL_STATUS_MIN_DBFS, peak_dbfs), 1),
             "clipped": bool(clipped),
+            "channel_index": int(channel_index) if channel_index is not None else None,
+            "channel_number": int(channel_index) + 1 if channel_index is not None else None,
             "updated_at": now,
         }
         try:
             self._persist_job(job)
         except Exception:
             logger.debug("Failed to persist measurement input level status for %s", job_id, exc_info=True)
+
+    def _update_measurement_job_message(self, job_id: str, message: str) -> None:
+        job = self._jobs.get(job_id)
+        if not job or str(job.get("status") or "") != "running":
+            return
+        job["message"] = message
+        job["updated_at"] = self._utc_now()
+        try:
+            self._persist_job(job)
+        except Exception:
+            logger.debug("Failed to persist measurement job message for %s", job_id, exc_info=True)
 
     def _monitor_capture_input_level(
         self,
@@ -3427,7 +3496,12 @@ class MeasurementStore:
                             peak_sample = int(np.max(np.abs(channel_samples))) if channel_samples.size else 0
                             peak_dbfs = 20.0 * math.log10(max(peak_sample / 32768.0, 1e-9))
                             clipped = clipped or peak_sample >= 32760 or peak_dbfs >= CAPTURE_CLIP_FAIL_DBFS
-                            self._update_capture_input_level_status(job_id, peak_dbfs, clipped)
+                            self._update_capture_input_level_status(
+                                job_id,
+                                peak_dbfs,
+                                clipped,
+                                channel_index=channel_index,
+                            )
             except Exception:
                 logger.debug("Measurement input level monitor failed for %s", job_id, exc_info=True)
             stop_event.wait(CAPTURE_LEVEL_STATUS_INTERVAL_SECONDS)
@@ -3437,6 +3511,42 @@ class MeasurementStore:
             return False
         items = ((analysis.get("quality_checks") or {}).get("items") or [])
         return any(str(item.get("code") or "").strip() == code and item.get("level") == "warning" for item in items)
+
+    @staticmethod
+    def _recorded_mic_channel_index(
+        mic_input_channel_index: int,
+        *,
+        has_electrical_reference: bool,
+    ) -> int:
+        # Host-reference capture is repacked as reference=FL, selected mic=FR.
+        return int(mic_input_channel_index) if has_electrical_reference else 1
+
+    def _try_raise_mic_for_low_capture(
+        self,
+        analysis: dict[str, Any] | None,
+        *,
+        mic_target: str,
+        attempt_index: int,
+        mic_auto_boosted: bool,
+    ) -> bool:
+        if (
+            not self._analysis_has_warning_code(analysis, "capture-level-low")
+            or mic_auto_boosted
+            or attempt_index != HOST_SWEEP_AUTO_GAIN_RETRY_ATTEMPT - 1
+            or not mic_target
+        ):
+            return False
+        try:
+            current_mic_volume = get_node_volume(mic_target)
+        except SystemVolumeError:
+            return False
+        if not isinstance(current_mic_volume, int) or current_mic_volume >= HOST_SWEEP_AUTO_GAIN_TARGET_PERCENT:
+            return False
+        try:
+            set_node_volume(mic_target, HOST_SWEEP_AUTO_GAIN_TARGET_PERCENT)
+        except SystemVolumeError:
+            return False
+        return True
 
     def _build_impulse_response_debug_segment(
         self,
@@ -3744,6 +3854,10 @@ class MeasurementStore:
         }
         if measurement_role:
             payload["measurement_role"] = measurement_role
+        if measurement_role == "direct" and analysis.get("direct_response") is not None:
+            payload["analysis"]["direct_response"] = deepcopy(analysis["direct_response"])
+        if measurement_role in {"direct", "mlp", "integration"} and analysis.get("complex_response") is not None:
+            payload["analysis"]["complex_response"] = deepcopy(analysis["complex_response"])
         if impulse_response_debug:
             payload["analysis"]["impulse_response"]["debug_segment"] = impulse_response_debug
         return self._normalize_measurement(payload)
@@ -3752,6 +3866,11 @@ class MeasurementStore:
     def _uses_electrical_reference_timing(reference_channel_label: str) -> bool:
         label = str(reference_channel_label or "").lower()
         return label == "reference" or "electrical_reference" in label
+
+    @staticmethod
+    def _hybrid_analysis_requirements(measurement_role: str) -> tuple[bool, bool]:
+        role = str(measurement_role or "").strip().lower()
+        return role == "direct", role in {"direct", "mlp", "integration"}
 
     def _analyze_sweep_capture(
         self,
@@ -3768,6 +3887,7 @@ class MeasurementStore:
         reference_channel_label: str = "reference",
         timing_override: dict[str, Any] | None = None,
         is_21_dsp_active: bool = False,
+        measurement_role: str = "",
     ) -> dict[str, Any]:
         sample_rate, raw_signal = self._load_wav_array(capture_path)
         signal = self._select_analysis_channel(raw_signal, channel=channel, channel_index=analysis_channel_index)
@@ -3940,39 +4060,57 @@ class MeasurementStore:
             magnitude=response_magnitude,
             calibration_curve=calibration_curve,
         )
-        direct_window = analyze_direct_window(
-            timing_impulse_response,
-            sample_rate,
-            int(direct_timing_meta["direct_arrival_index"]),
-        )
-        direct_frequencies, direct_magnitude = build_gated_response(
-            timing_impulse_response,
-            sample_rate,
-            direct_window,
-        )
-        direct_display = self._build_display_points(
-            frequencies=direct_frequencies,
-            magnitude=direct_magnitude,
-            calibration_curve=calibration_curve,
-        )
-        direct_lower_hz = float(direct_window["lower_reliable_hz"])
-        direct_window["points"] = [
-            point for point in direct_display["review_points"]
-            if float(point[0]) >= direct_lower_hz
-        ]
-        complex_response = build_complex_response(
-            timing_impulse_response,
-            sample_rate,
-            calibration_curve=calibration_curve,
-        )
+        needs_direct_response, needs_complex_response = self._hybrid_analysis_requirements(measurement_role)
+        direct_window = None
+        complex_response = None
+        if needs_direct_response:
+            direct_window = analyze_direct_window(
+                timing_impulse_response,
+                sample_rate,
+                int(direct_timing_meta["direct_arrival_index"]),
+                timing_metadata=direct_timing_meta,
+            )
+            if direct_window["usable"]:
+                direct_frequencies, direct_magnitude = build_gated_response(
+                    timing_impulse_response,
+                    sample_rate,
+                    direct_window,
+                )
+                direct_display = self._build_display_points(
+                    frequencies=direct_frequencies,
+                    magnitude=direct_magnitude,
+                    calibration_curve=calibration_curve,
+                )
+                direct_lower_hz = float(direct_window["lower_reliable_hz"])
+                direct_window["points"] = [
+                    point for point in direct_display["review_points"]
+                    if float(point[0]) >= direct_lower_hz
+                ]
+            else:
+                direct_window["points"] = []
+        if needs_complex_response:
+            complex_response = build_complex_response(
+                timing_impulse_response,
+                sample_rate,
+                calibration_curve=calibration_curve,
+            )
         capture_audit = self._build_capture_audit(
             raw_signal=raw_signal,
             sample_rate=sample_rate,
         )
+        selected_mic_channel_index = int(analysis_channel_index) if analysis_channel_index is not None else 0
+        capture_audit.update({
+            "selected_mic_channel_index": selected_mic_channel_index,
+            "selected_mic_channel_number": selected_mic_channel_index + 1,
+            "selected_mic_peak_dbfs": round(peak_dbfs, 2),
+            "selected_mic_rms_dbfs": round(rms_dbfs, 2),
+            "reference_channel_index": int(reference_channel_index) if reference_channel_index is not None else None,
+        })
         quality_checks = self._build_capture_quality_checks(
             capture_audit=capture_audit,
             timing=timing,
             peak_dbfs=peak_dbfs,
+            rms_dbfs=rms_dbfs,
             trusted_band_meta=display_data["trusted_band_meta"],
             trusted_max_hz=display_data["trusted_band"][1],
             response_outliers=display_data.get("response_outliers") or [],
@@ -4077,10 +4215,12 @@ class MeasurementStore:
                 "preview": self._build_ir_preview(timing_impulse_response, sample_rate, direct_timing_meta, ir_meta),
             },
             "variable_window": variable_window_meta,
-            "direct_response": direct_window,
-            "complex_response": complex_response,
             "_impulse_response_debug_segment": impulse_response_debug_segment,
         }
+        if direct_window is not None:
+            analysis["direct_response"] = direct_window
+        if complex_response is not None:
+            analysis["complex_response"] = complex_response
         hard_failures = [item["message"] for item in quality_checks["items"] if item.get("level") == "error"]
 
         if hard_failures:
@@ -5505,6 +5645,7 @@ class MeasurementStore:
         capture_audit: dict[str, Any],
         timing: dict[str, Any],
         peak_dbfs: float,
+        rms_dbfs: float,
         trusted_band_meta: dict[str, Any],
         trusted_max_hz: float,
         response_outliers: list[dict[str, float | str]] | None = None,
@@ -5525,7 +5666,12 @@ class MeasurementStore:
         elif peak_dbfs >= CAPTURE_CLIP_WARN_DBFS:
             add("warning", "capture-near-clipping", f"Recorded sweep peaked very close to clipping ({peak_dbfs:.2f} dBFS).")
 
-        rms_dbfs = float(capture_audit.get("rms_dbfs") or 0.0)
+        if peak_dbfs <= CAPTURE_LEVEL_LOW_PEAK_DBFS or rms_dbfs <= CAPTURE_LEVEL_LOW_RMS_DBFS:
+            add(
+                "warning",
+                "capture-level-low",
+                f"Microphone capture level was low (peak {peak_dbfs:.2f} dBFS, RMS {rms_dbfs:.2f} dBFS).",
+            )
         drift_ppm = abs(float(timing.get("drift_ppm") or 0.0))
         alignment_fail_threshold = ALIGNMENT_SCORE_FAIL_THRESHOLD
         alignment_warn_threshold = ALIGNMENT_SCORE_WARN_THRESHOLD
@@ -5950,6 +6096,7 @@ class MeasurementStore:
         record_node_name: str,
         requested_channel: str,
         mic_input_channel_index: int = 0,
+        record_process: subprocess.Popen[str],
     ) -> dict[str, Any]:
         deadline = time.monotonic() + 4.0
         reference_ports: list[str] = []
@@ -5962,9 +6109,46 @@ class MeasurementStore:
             record_inputs = [port for port in record_ports if ":input_" in port]
             if reference_ports and mic_ports and record_inputs:
                 break
+            returncode = record_process.poll()
+            if returncode is not None:
+                record_stdout, record_stderr = record_process.communicate()
+                missing = [
+                    name
+                    for name, ports in (
+                        ("reference_ports", reference_ports),
+                        ("mic_ports", mic_ports),
+                        ("record_inputs", record_inputs),
+                    )
+                    if not ports
+                ]
+                detail = (record_stderr or record_stdout or "no process output").strip()
+                raise RuntimeError(
+                    f"pw-record exited during PipeWire port discovery with returncode {returncode}: {detail}; "
+                    f"missing port groups: {', '.join(missing) or 'none'}"
+                )
             time.sleep(0.1)
         else:
-            raise RuntimeError(f"Unable to discover PipeWire ports for host-reference capture into {record_node_name}")
+            missing = [
+                name
+                for name, ports in (
+                    ("reference_ports", reference_ports),
+                    ("mic_ports", mic_ports),
+                    ("record_inputs", record_inputs),
+                )
+                if not ports
+            ]
+            returncode = record_process.poll()
+            process_status = "running" if returncode is None else f"exited with returncode {returncode}"
+            process_detail = ""
+            if returncode is not None:
+                record_stdout, record_stderr = record_process.communicate()
+                detail = (record_stderr or record_stdout or "no process output").strip()
+                process_detail = f", output={detail}"
+            raise RuntimeError(
+                f"Unable to discover PipeWire ports for host-reference capture into {record_node_name}; "
+                f"missing port groups: {', '.join(missing) or 'none'}; pw-record={process_status}{process_detail}; "
+                f"reference_ports={reference_ports}; mic_ports={mic_ports}; record_inputs={record_inputs}"
+            )
 
         reference_suffixes = [":monitor_FR", ":output_FR", ":capture_FR", ":capture_MONO", ":output_MONO", ":monitor_FL", ":output_FL", ":capture_FL"] if requested_channel == "right" else [":monitor_FL", ":output_FL", ":capture_FL", ":capture_MONO", ":output_MONO", ":monitor_FR", ":output_FR", ":capture_FR"]
         mic_suffixes = self._port_suffixes_for_channel_index(mic_input_channel_index) + [":capture_MONO", ":output_MONO"]
@@ -7673,6 +7857,57 @@ def normalize_measurement_optional_input_channel(value: Any) -> str:
     return str(channel) if channel >= 1 else ""
 
 
+def measurement_input_persistent_id(input_item: dict[str, Any]) -> str:
+    device_serial = str(input_item.get("device_serial") or "").strip()
+    node_name = str(input_item.get("node_name") or "").strip()
+    if device_serial:
+        node_suffix = f"|node-name:{node_name}" if node_name else ""
+        return f"device-serial:{device_serial}{node_suffix}"
+    if node_name:
+        return f"node-name:{node_name}"
+    hardware_parts = [
+        str(input_item.get(key) or "").strip()
+        for key in (
+            "device_vendor_id", "device_product_id", "alsa_long_card_name",
+            "alsa_card_name", "alsa_device",
+        )
+    ]
+    hardware_parts = [part for part in hardware_parts if part]
+    return f"hardware:{'|'.join(hardware_parts)}" if hardware_parts else ""
+
+
+def resolve_measurement_input_selection(
+    inputs: list[dict[str, Any]],
+    measure_settings: dict[str, Any],
+) -> dict[str, Any]:
+    persistent_id = str(measure_settings.get("selectedInputKey") or "").strip()
+    legacy_id = str(measure_settings.get("selectedInputId") or "").strip()
+    configured = bool(persistent_id or legacy_id)
+    selected = None
+    if persistent_id:
+        matches = [
+            item for item in inputs
+            if str(item.get("persistent_id") or measurement_input_persistent_id(item)) == persistent_id
+        ]
+        selected = matches[0] if len(matches) == 1 else None
+    elif legacy_id:
+        selected = next((item for item in inputs if str(item.get("id") or "") == legacy_id), None)
+    elif inputs:
+        selected = inputs[0]
+
+    resolved_persistent_id = (
+        str(selected.get("persistent_id") or measurement_input_persistent_id(selected))
+        if selected else persistent_id
+    )
+    return {
+        "configured": configured,
+        "input_id": str(selected.get("id") or "") if selected else "",
+        "persistent_id": resolved_persistent_id,
+        "unavailable": configured and selected is None,
+        "legacy_input_id": legacy_id,
+    }
+
+
 def measurement_setup_settings_from_payload(settings: dict[str, Any]) -> dict[str, Any]:
     measure_settings = settings.get("measure") if isinstance(settings.get("measure"), dict) else {}
     reference_input_channel = measure_settings.get("selectedReferenceInputChannel")
@@ -7680,6 +7915,10 @@ def measurement_setup_settings_from_payload(settings: dict[str, Any]) -> dict[st
         reference_input_channel = measure_settings.get("reference_input_channel")
     return {
         "selectedInputId": str(measure_settings.get("selectedInputId") or ""),
+        "selectedInputKey": str(measure_settings.get("selectedInputKey") or ""),
+        "selectedInputConfigured": bool(
+            measure_settings.get("selectedInputKey") or measure_settings.get("selectedInputId")
+        ),
         "selectedMicInputChannel": normalize_measurement_optional_input_channel(
             measure_settings.get("selectedMicInputChannel")
         ) or "1",

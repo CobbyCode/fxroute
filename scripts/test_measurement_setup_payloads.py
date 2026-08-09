@@ -18,8 +18,11 @@ sys.path.insert(0, str(ROOT))
 import main
 import measurement_session
 from measurement import (
+    MeasurementStore,
+    measurement_input_persistent_id,
     measurement_setup_settings_from_payload,
     normalize_measurement_optional_input_channel,
+    resolve_measurement_input_selection,
 )
 
 
@@ -51,6 +54,8 @@ class SetupSettingsFromPayloadTests(unittest.TestCase):
             measurement_setup_settings_from_payload({}),
             {
                 "selectedInputId": "",
+                "selectedInputKey": "",
+                "selectedInputConfigured": False,
                 "selectedMicInputChannel": "1",
                 "selectedReferenceInputChannel": "",
             },
@@ -62,6 +67,8 @@ class SetupSettingsFromPayloadTests(unittest.TestCase):
                 measurement_setup_settings_from_payload(payload),
                 {
                     "selectedInputId": "",
+                    "selectedInputKey": "",
+                    "selectedInputConfigured": False,
                     "selectedMicInputChannel": "1",
                     "selectedReferenceInputChannel": "",
                 },
@@ -79,6 +86,8 @@ class SetupSettingsFromPayloadTests(unittest.TestCase):
             measurement_setup_settings_from_payload(payload),
             {
                 "selectedInputId": "mic-1",
+                "selectedInputKey": "",
+                "selectedInputConfigured": True,
                 "selectedMicInputChannel": "3",
                 "selectedReferenceInputChannel": "2",
             },
@@ -121,6 +130,83 @@ class SetupSettingsFromPayloadTests(unittest.TestCase):
         self.assertEqual(result["selectedInputId"], "42")
         result = measurement_setup_settings_from_payload({"measure": {"selectedInputId": None}})
         self.assertEqual(result["selectedInputId"], "")
+
+    def test_stable_input_key_is_returned(self):
+        result = measurement_setup_settings_from_payload({
+            "measure": {"selectedInputId": "pw-source-54", "selectedInputKey": "device-serial:UMIK-123"}
+        })
+        self.assertEqual(result["selectedInputKey"], "device-serial:UMIK-123")
+        self.assertTrue(result["selectedInputConfigured"])
+
+
+class MeasurementInputPersistenceTests(unittest.TestCase):
+    @staticmethod
+    def _umik(input_id):
+        return {
+            "id": input_id,
+            "device_serial": "miniDSP-UMIK-123",
+            "node_name": "alsa_input.usb-miniDSP_UMIK-1_123.analog-stereo",
+        }
+
+    def test_same_serial_resolves_after_pipewire_node_id_changes(self):
+        old_input = self._umik("pw-source-54")
+        stable_id = measurement_input_persistent_id(old_input)
+        new_input = self._umik("pw-source-65")
+        new_input["persistent_id"] = measurement_input_persistent_id(new_input)
+
+        selection = resolve_measurement_input_selection(
+            [new_input],
+            {"selectedInputId": "pw-source-54", "selectedInputKey": stable_id},
+        )
+
+        self.assertEqual(selection["input_id"], "pw-source-65")
+        self.assertEqual(selection["persistent_id"], stable_id)
+        self.assertFalse(selection["unavailable"])
+
+    def test_missing_saved_source_never_falls_back_to_first_input(self):
+        other = {
+            "id": "pw-source-10",
+            "device_serial": "OTHER-456",
+            "node_name": "alsa_input.usb-Other_Microphone.analog-stereo",
+        }
+        other["persistent_id"] = measurement_input_persistent_id(other)
+
+        selection = resolve_measurement_input_selection(
+            [other],
+            {"selectedInputId": "pw-source-54", "selectedInputKey": "device-serial:miniDSP-UMIK-123"},
+        )
+
+        self.assertEqual(selection["input_id"], "")
+        self.assertTrue(selection["unavailable"])
+        self.assertNotEqual(selection["input_id"], other["id"])
+
+    def test_start_resolution_uses_stable_key_not_reused_old_node_id(self):
+        selected = self._umik("pw-source-65")
+        selected["persistent_id"] = measurement_input_persistent_id(selected)
+        wrong = {
+            "id": "pw-source-54",
+            "device_serial": "OTHER-456",
+            "node_name": "alsa_input.usb-Other_Microphone.analog-stereo",
+        }
+        wrong["persistent_id"] = measurement_input_persistent_id(wrong)
+
+        resolved = MeasurementStore._resolve_capture_input(
+            [wrong, selected],
+            input_id="pw-source-54",
+            input_key=selected["persistent_id"],
+        )
+
+        self.assertEqual(resolved["id"], "pw-source-65")
+
+    def test_first_time_setup_may_select_first_input(self):
+        first = self._umik("pw-source-65")
+        first["persistent_id"] = measurement_input_persistent_id(first)
+
+        selection = resolve_measurement_input_selection([first], {})
+
+        self.assertEqual(selection["input_id"], "pw-source-65")
+        self.assertFalse(selection["configured"])
+        self.assertFalse(selection["unavailable"])
 
 
 class WrapperParityTests(unittest.TestCase):

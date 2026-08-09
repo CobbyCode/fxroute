@@ -14,6 +14,11 @@ assert(indexSource.includes('id="measurement-hybrid-panel"'));
 assert(indexSource.indexOf('hybrid_measurement.js') < indexSource.indexOf('app.js?v='), 'hybrid model must load before app');
 assert(appSource.includes("formData.append('measurement_role', step.role)"));
 assert(appSource.includes("hybrid_constraints: model.constraints"));
+assert(appSource.includes('HybridMeasurement.isUsableDirectMeasurement(measurement)'));
+assert(appSource.includes("'Cancel measurement'"));
+assert(appSource.includes('cancelHybridWizardMeasurement'));
+assert(appSource.includes("processing ? `Processing ${step.channel"));
+assert(indexSource.includes('hybrid-seat-cushion-left'));
 
 function points(level) {
     return [[40, level], [80, level], [160, level], [320, level], [1000, level], [5000, level], [12000, level]];
@@ -35,6 +40,16 @@ function capture(role, position, channel, value) {
     return { role, position, channel, measurement: value };
 }
 
+function directTimingMeasurement(channel, arrivalMs) {
+    const value = measurement(channel, 0, { directResponse });
+    value.analysis.reference_path = {
+        capture_mode: 'dual-channel',
+        timing_status: 'acoustic-only',
+        acoustic_arrival_corrected_ms: arrivalMs,
+    };
+    return value;
+}
+
 for (const mode of ['stereo', 'subwoofer-2.1', 'subwoofer-2.2', 'subwoofer-2.2-stereo']) {
     const sequence = Hybrid.buildSequence(mode);
     assert.equal(sequence.mode, mode);
@@ -43,6 +58,14 @@ for (const mode of ['stereo', 'subwoofer-2.1', 'subwoofer-2.2', 'subwoofer-2.2-s
     assert.equal(sequence.steps.filter(step => step.role === 'secondary').length, 4);
     assert.equal(sequence.steps.filter(step => step.role === 'integration').length, mode === 'stereo' ? 0 : 1);
 }
+
+const positionSequence = Hybrid.buildSequence('stereo').steps;
+assert.equal(Hybrid.getPositionSeriesEnd(positionSequence, 0), 0, 'direct left requires its own start');
+assert.equal(Hybrid.getPositionSeriesEnd(positionSequence, 1), 1, 'direct right requires its own start');
+assert.equal(Hybrid.getPositionSeriesEnd(positionSequence, 2), 3, 'main position runs left and right automatically');
+assert.equal(Hybrid.getPositionSeriesEnd(positionSequence, 4), 5, 'left secondary position runs left and right automatically');
+assert.equal(Hybrid.getPositionSeriesEnd(positionSequence, 6), 7, 'right secondary position runs left and right automatically');
+assert.equal(Hybrid.getPreviousPositionIndex(positionSequence, 6), 4, 'Back returns to the start of the previous position');
 
 const localNullCaptures = [
     capture('mlp', 'mlp', 'left', measurement('left', -10)),
@@ -79,6 +102,22 @@ assert(middleWeight > 0 && middleWeight < 0.85, 'transition must crossfade smoot
 assert.equal(Hybrid.getHybridDirectWeight(1000, lower), 0.85);
 
 const directResponse = { usable: true, lower_reliable_hz: 300, points: points(2) };
+assert(Hybrid.isUsableDirectMeasurement(measurement('left', 0, { directResponse })), 'good direct measurement must be accepted');
+const leftDirectCapture = capture('direct', 'direct-left', 'left', directTimingMeasurement('left', 84.0));
+const wrongRightPosition = Hybrid.validateDirectMicrophonePosition(
+    directTimingMeasurement('right', 89.5),
+    [leftDirectCapture],
+    'right',
+);
+assert(wrongRightPosition.available);
+assert(!wrongRightPosition.plausible, 'large paired timing difference must reject the wrong direct microphone position');
+assert(wrongRightPosition.reason.includes('too far from the right speaker'));
+const correctRightPosition = Hybrid.validateDirectMicrophonePosition(
+    directTimingMeasurement('right', 84.8),
+    [leftDirectCapture],
+    'right',
+);
+assert(correctRightPosition.plausible, 'normal L/R direct timing difference must remain accepted');
 const profileCaptures = [];
 for (const channel of ['left', 'right']) {
     profileCaptures.push(capture('direct', `direct-${channel}`, channel, measurement(channel, 0, { directResponse })));
@@ -92,6 +131,20 @@ assert.strictEqual(profile.right.timingMeasurement, profileCaptures[5].measureme
 assert.equal(profile.left.transition.highFrequencyRoomWeight, 0.15);
 assert(profile.left.transition.endHz > profile.left.transition.startHz);
 
+const spatialTransitionCaptures = [];
+for (const channel of ['left', 'right']) {
+    spatialTransitionCaptures.push(capture('direct', `direct-${channel}`, channel, measurement(channel, 0, { directResponse })));
+    spatialTransitionCaptures.push(capture('mlp', 'mlp', channel, measurement(channel, -10)));
+    spatialTransitionCaptures.push(capture('secondary', 'left', channel, measurement(channel, 0)));
+    spatialTransitionCaptures.push(capture('secondary', 'right', channel, measurement(channel, 0)));
+}
+const spatialProfile = Hybrid.buildProfile(spatialTransitionCaptures, 'stereo');
+const lowConstraint = spatialProfile.left.constraints.find(item => item.frequency === 40);
+const highConstraint = spatialProfile.left.constraints.find(item => item.frequency === 5000);
+assert(lowConstraint.boostConfidence <= 0.051, 'secondary veto must remain effective in the room-dominant bass range');
+assert(highConstraint.boostConfidence > 0.8, 'secondary veto must fade in the direct-dominant range');
+assert(highConstraint.spatialWeight < lowConstraint.spatialWeight, 'spatial influence must crossfade smoothly with frequency');
+
 const complexLeft = { schema: 'x', points: [[40, 1, 0], [80, 0, 1]] };
 const complexRight = { schema: 'x', points: [[40, 0, 1], [80, 1, 0]] };
 const complexActual = { schema: 'x', points: [[40, 1, 1], [80, 1, 1]] };
@@ -103,5 +156,30 @@ const validation = Hybrid.validateComplexSum(
 assert.equal(validation.status, 'ok');
 assert(Math.abs(validation.rmsErrorDb) < 1e-9);
 assert.deepEqual(validation.predicted, [[40, 1, 1], [80, 1, 1]]);
+
+const phaseInverted = Hybrid.validateComplexSum(
+    measurement('left', 0, { complexResponse: { points: [[40, 1, 0]] } }),
+    measurement('right', 0, { complexResponse: { points: [[40, 0, 0]] } }),
+    measurement('stereo', 0, { complexResponse: { points: [[40, -1, 0]] } }),
+);
+assert(Math.abs(phaseInverted.magnitudeRmsErrorDb) < 1e-9, 'phase inversion has the same magnitude');
+assert.equal(phaseInverted.phaseRmsErrorDeg, 180);
+assert.equal(phaseInverted.complexResidualRms, 2);
+assert.equal(phaseInverted.status, 'poor', '180 degree complex error must never validate as OK');
+assert.deepEqual(phaseInverted.validationBandHz, [20, 500]);
+assert(appSource.includes('complex residual'));
+assert(appSource.includes('no separate integration sweep was performed'));
+assert(appSource.includes('integration.limitation'));
+
+const stereoDiagram = Hybrid.getDiagramState('stereo', 'left');
+assert(!stereoDiagram.subs.left.visible && !stereoDiagram.subs.right.visible);
+const oneSubDiagram = Hybrid.getDiagramState('subwoofer-2.1', 'left');
+assert(oneSubDiagram.subs.left.visible && oneSubDiagram.subs.left.single && !oneSubDiagram.subs.right.visible);
+const monoSubsDiagram = Hybrid.getDiagramState('subwoofer-2.2', 'left');
+assert(monoSubsDiagram.subs.left.active && monoSubsDiagram.subs.right.active);
+const stereoSubsLeft = Hybrid.getDiagramState('subwoofer-2.2-stereo', 'left');
+assert(stereoSubsLeft.subs.left.active && !stereoSubsLeft.subs.right.active);
+const stereoSubsRight = Hybrid.getDiagramState('subwoofer-2.2-stereo', 'right');
+assert(!stereoSubsRight.subs.left.active && stereoSubsRight.subs.right.active);
 
 console.log('hybrid measurement tests: ok');

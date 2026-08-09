@@ -1119,6 +1119,7 @@ def _auto_sub_job_playback_gain(job: Mapping[str, Any]) -> float:
 @router.post("/api/measurements/auto-sub-optimize/start")
 async def start_auto_sub_optimize(
     input_id: str = Form(...),
+    input_key: str = Form(""),
     channel: str = Form("left"),
     mic_input_channel: str = Form("1"),
     reference_input_channel: str = Form(""),
@@ -1130,6 +1131,10 @@ async def start_auto_sub_optimize(
     global _auto_sub_lock
     if not measurement_store:
         raise HTTPException(status_code=503, detail="Measurement store not available")
+    try:
+        input_id = measurement_store.resolve_capture_input_id(input_id=input_id, input_key=input_key)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not _auto_sub_lock:
         _auto_sub_lock = asyncio.Lock()
 

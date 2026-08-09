@@ -88,6 +88,10 @@ let state = {
         currentMeasurementName: '',
         inputs: [],
         selectedInputId: '',
+        selectedInputLegacyId: '',
+        selectedInputKey: '',
+        selectedInputConfigured: false,
+        selectedInputUnavailable: false,
         selectedMicInputChannel: '1',
         selectedReferenceInputChannel: '',
         selectedChannel: 'left',
@@ -158,6 +162,8 @@ let state = {
             sequence: [],
             captures: [],
             status: '',
+            phase: '',
+            cancelRequested: false,
             quality: null,
             profile: null,
         },
@@ -292,6 +298,7 @@ let librarySelectionSyncRequestId = 0;
 let settingsStatusPollTimer = null;
 let settingsOutputScanOnFocusDone = false;
 let measurementInputScanOnFocusDone = false;
+let measurementSettingsRevision = 0;
 let measurementResizeScheduled = false;
 let measurementGraphResizeObserver = null;
 let playbackFooterResizeObserver = null;
@@ -8530,21 +8537,29 @@ async function deleteSelectedMeasurementHouseCurve() {
     }
 }
 
-function applyMeasurementSetupSettings(settings = {}) {
+function applyMeasurementSetupSettings(settings = {}, fields = null) {
     if (!settings || typeof settings !== 'object') return;
-    if (Object.prototype.hasOwnProperty.call(settings, 'selectedInputId')) {
-        state.measurement.selectedInputId = String(settings.selectedInputId || '');
+    const applies = (field) => !fields || fields.has(field);
+    if (applies('selectedInputId') && Object.prototype.hasOwnProperty.call(settings, 'selectedInputId')) {
+        state.measurement.selectedInputLegacyId = String(settings.selectedInputId || '');
     }
-    if (Object.prototype.hasOwnProperty.call(settings, 'selectedMicInputChannel')) {
+    if (applies('selectedInputKey') && Object.prototype.hasOwnProperty.call(settings, 'selectedInputKey')) {
+        state.measurement.selectedInputKey = String(settings.selectedInputKey || '');
+    }
+    if ((applies('selectedInputId') || applies('selectedInputKey')) && Object.prototype.hasOwnProperty.call(settings, 'selectedInputConfigured')) {
+        state.measurement.selectedInputConfigured = !!settings.selectedInputConfigured;
+    }
+    if (applies('selectedMicInputChannel') && Object.prototype.hasOwnProperty.call(settings, 'selectedMicInputChannel')) {
         state.measurement.selectedMicInputChannel = String(settings.selectedMicInputChannel || '1');
     }
-    if (Object.prototype.hasOwnProperty.call(settings, 'selectedReferenceInputChannel')) {
+    if (applies('selectedReferenceInputChannel') && Object.prototype.hasOwnProperty.call(settings, 'selectedReferenceInputChannel')) {
         state.measurement.selectedReferenceInputChannel = String(settings.selectedReferenceInputChannel || '');
     }
     normalizeMeasurementInputChannelSelections();
 }
 
 async function saveMeasurementSetupSettings(patch = {}) {
+    const revision = ++measurementSettingsRevision;
     try {
         const resp = await fetch('/api/measurements/settings', {
             method: 'PATCH',
@@ -8553,7 +8568,9 @@ async function saveMeasurementSetupSettings(patch = {}) {
         });
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) throw new Error(data.detail || 'Failed to save measurement settings');
-        applyMeasurementSetupSettings(data.measurement_settings || {});
+        if (revision === measurementSettingsRevision) {
+            applyMeasurementSetupSettings(data.measurement_settings || {}, new Set(Object.keys(patch)));
+        }
         renderMeasurementPanel();
     } catch (error) {
         console.error('saveMeasurementSetupSettings failed', error);
@@ -8561,6 +8578,7 @@ async function saveMeasurementSetupSettings(patch = {}) {
 }
 
 async function fetchMeasurements() {
+    const settingsRevision = measurementSettingsRevision;
     state.measurement.loading = true;
     renderMeasurementPanel();
     try {
@@ -8575,7 +8593,9 @@ async function fetchMeasurements() {
         state.measurement.calibrationOptions = Array.isArray(data.calibrations) ? data.calibrations : [];
         state.measurement.selectedCalibrationRef = String(data.active_calibration_file_id || '');
         state.measurement.houseCurveOptions = Array.isArray(data.house_curves) ? data.house_curves : [];
-        applyMeasurementSetupSettings(data.measurement_settings || {});
+        if (settingsRevision === measurementSettingsRevision) {
+            applyMeasurementSetupSettings(data.measurement_settings || {});
+        }
         if (state.measurement.selectedCalibrationRef && !state.measurement.calibrationOptions.some(item => item.id === state.measurement.selectedCalibrationRef)) {
             state.measurement.selectedCalibrationRef = '';
         }
@@ -8606,18 +8626,25 @@ async function fetchMeasurementInputs() {
                 note: String(input.note || ''),
                 channels: Math.max(1, Number(input.channels || 1)),
                 nodeName: String(input.node_name || ''),
+                persistentId: String(input.persistent_id || ''),
             }))
             : [];
+        const previousInputId = state.measurement.selectedInputId;
+        const previousInputKey = state.measurement.selectedInputKey;
+        const selection = data.selection && typeof data.selection === 'object' ? data.selection : {};
         state.measurement.inputs = inputs;
-        state.measurement.selectedInputId = inputs.some(input => input.id === state.measurement.selectedInputId)
-            ? state.measurement.selectedInputId
-            : (inputs[0]?.id || '');
+        state.measurement.selectedInputId = String(selection.input_id || '');
+        state.measurement.selectedInputKey = String(selection.persistent_id || previousInputKey || '');
+        state.measurement.selectedInputConfigured = !!selection.configured;
+        state.measurement.selectedInputUnavailable = !!selection.unavailable;
         normalizeMeasurementInputChannelSelections();
         state.measurement.hostCaptureAvailable = !!data.capture_available && !!inputs.length;
         state.measurement.captureAvailable = state.measurement.hostCaptureAvailable;
         state.measurement.modeNote = measurementModeNoteText();
         if (!state.measurement.startInFlight && !state.measurement.activeJobId) {
-            if (!state.measurement.hostCaptureAvailable) {
+            if (state.measurement.selectedInputUnavailable) {
+                state.measurement.statusText = 'The selected measurement microphone is currently unavailable. Reconnect it or deliberately select another input.';
+            } else if (!state.measurement.hostCaptureAvailable) {
                 state.measurement.statusText = inputs.length
                     ? 'No available capture source is ready right now.'
                     : 'No PipeWire capture sources are currently visible on this host.';
@@ -8625,10 +8652,22 @@ async function fetchMeasurementInputs() {
                 state.measurement.statusText = describeMeasurementScope(data.scope_note);
             }
         }
+        if (state.measurement.selectedInputId && (
+            !state.measurement.selectedInputConfigured
+            || previousInputId !== state.measurement.selectedInputId
+            || previousInputKey !== state.measurement.selectedInputKey
+        )) {
+            state.measurement.selectedInputConfigured = true;
+            void saveMeasurementSetupSettings({
+                selectedInputId: state.measurement.selectedInputId,
+                selectedInputKey: state.measurement.selectedInputKey,
+            });
+        }
     } catch (error) {
         console.error('fetchMeasurementInputs failed', error);
         state.measurement.inputs = [];
         state.measurement.selectedInputId = '';
+        state.measurement.selectedInputUnavailable = state.measurement.selectedInputConfigured;
         state.measurement.hostCaptureAvailable = false;
         state.measurement.captureAvailable = false;
         state.measurement.modeNote = measurementModeNoteText();
@@ -9111,7 +9150,7 @@ function getMeasurementJobStatus(job = {}) {
 function normalizeMeasurementKind(kind) {
     if (kind === 'lr-repeat' || kind === 'lr_repeat') return 'lr_repeat';
     if (kind === 'auto_sub' || kind === 'auto-sub' || kind === 'autosub') return 'auto_sub';
-    if (kind === 'single') return 'single';
+    if (kind === 'single' || kind === 'hybrid') return kind;
     return '';
 }
 
@@ -9166,7 +9205,7 @@ function syncMeasurementStartButtonFallback() {
 
     elements.measurementStartBtn.disabled = calibrationBusy
         ? true
-        : (activeJobRunning ? !singleActive : (measurementState.inputsLoading || !measurementState.hostCaptureAvailable));
+        : (activeJobRunning ? !singleActive : (measurementState.inputsLoading || !measurementModeReady()));
     elements.measurementStartBtn.textContent = singleActive
         ? 'Cancel measurement'
         : (measurementState.startInFlight ? 'Starting...' : 'Start Single Sweep');
@@ -9174,7 +9213,7 @@ function syncMeasurementStartButtonFallback() {
         elements.measurementRepeatStartBtn.disabled = calibrationBusy
             ? true
             : (activeJobRunning ? !lrActive
-            : (measurementState.startInFlight || measurementState.inputsLoading || !measurementState.hostCaptureAvailable));
+            : (measurementState.startInFlight || measurementState.inputsLoading || !measurementModeReady()));
         elements.measurementRepeatStartBtn.textContent = lrActive
             ? 'Cancel measurement'
             : 'Start L/R Repeat';
@@ -9209,7 +9248,9 @@ function syncAutoSubButton() {
     const activeKind = getActiveMeasurementKind();
     const autoSubActive = activeKind === 'auto_sub';
     const autoSubReadyToCancel = autoSubActive && !!measurementState.autoSubJobId;
-    elements.measurementAutoSubStartBtn.disabled = autoSubActive ? !autoSubReadyToCancel : (measurementState.startInFlight || hasActiveMeasurementJob());
+    elements.measurementAutoSubStartBtn.disabled = autoSubActive
+        ? !autoSubReadyToCancel
+        : (measurementState.startInFlight || hasActiveMeasurementJob() || !measurementModeReady());
     elements.measurementAutoSubStartBtn.textContent = autoSubActive ? 'Cancel Auto Sub' : 'Auto Sub Optimize';
 
     // Sync subwoofer controls lock
@@ -9244,6 +9285,7 @@ async function startAutoSubOptimize() {
     try {
         const formData = new FormData();
         formData.append('input_id', inputId);
+        formData.append('input_key', measurementState.selectedInputKey || '');
         formData.append('channel', measurementState.selectedChannel || 'left');
         normalizeMeasurementInputChannelSelections();
         formData.append('mic_input_channel', measurementState.selectedMicInputChannel || '1');
@@ -9599,6 +9641,7 @@ async function startHostMeasurement() {
 
     const formData = new FormData();
     formData.append('input_id', state.measurement.selectedInputId);
+    formData.append('input_key', state.measurement.selectedInputKey || '');
     formData.append('channel', state.measurement.selectedChannel || 'left');
     normalizeMeasurementInputChannelSelections();
     const referenceWarning = getMeasurementReferenceWarning();
@@ -9640,6 +9683,7 @@ async function startLrRepeatMeasurement() {
     await flushSubwooferSettingsBeforeMeasurement();
     const formData = new FormData();
     formData.append('input_id', state.measurement.selectedInputId);
+    formData.append('input_key', state.measurement.selectedInputKey || '');
     formData.append('base_name', state.measurement.currentMeasurementName || '');
     normalizeMeasurementInputChannelSelections();
     const referenceWarning = getMeasurementReferenceWarning();
@@ -9673,7 +9717,7 @@ function getHybridWizardState() {
     if (!state.measurement.hybridWizard || typeof state.measurement.hybridWizard !== 'object') {
         state.measurement.hybridWizard = {
             open: false, running: false, jobId: '', stepIndex: 0, mode: 'stereo',
-            sequence: [], captures: [], status: '', quality: null, profile: null,
+            sequence: [], captures: [], status: '', phase: '', cancelRequested: false, quality: null, profile: null,
         };
     }
     return state.measurement.hybridWizard;
@@ -9685,6 +9729,12 @@ function getCurrentOutputModeName() {
 
 function openHybridMeasurementWizard() {
     const wizard = getHybridWizardState();
+    if (wizard.running) {
+        wizard.open = true;
+        elements.measurementHybridPanel?.classList.remove('hidden');
+        renderHybridMeasurementWizard();
+        return;
+    }
     const sequence = HybridMeasurement.buildSequence(getCurrentOutputModeName());
     Object.assign(wizard, {
         open: true,
@@ -9695,6 +9745,8 @@ function openHybridMeasurementWizard() {
         sequence: sequence.steps,
         captures: [],
         status: measurementModeReady() ? 'Ready for the first measurement.' : 'Complete Measurement Setup before starting.',
+        phase: '',
+        cancelRequested: false,
         quality: null,
         profile: null,
     });
@@ -9705,10 +9757,8 @@ function openHybridMeasurementWizard() {
 
 async function closeHybridMeasurementWizard() {
     const wizard = getHybridWizardState();
-    const wasRunning = wizard.running && wizard.jobId;
-    if (wasRunning) {
-        await fetch(`/api/measurements/jobs/${encodeURIComponent(wizard.jobId)}/cancel`, { method: 'POST' }).catch(() => null);
-    }
+    const wasRunning = wizard.running;
+    if (wasRunning) await cancelHybridWizardMeasurement();
     wizard.open = false;
     if (!wasRunning) {
         wizard.running = false;
@@ -9721,18 +9771,25 @@ async function closeHybridMeasurementWizard() {
     renderMeasurementPanelDefensively('hybrid wizard close');
 }
 
-function renderHybridRoomDiagram(step = {}, mode = 'stereo') {
+function renderHybridRoomDiagram(step = {}, mode = 'stereo', complete = false) {
     const panel = elements.measurementHybridPanel;
     if (!panel) return;
     panel.querySelectorAll('[data-hybrid-position]').forEach(node => {
         node.classList.toggle('is-target', node.getAttribute('data-hybrid-position') === step.position);
     });
-    panel.querySelectorAll('[data-hybrid-speaker]').forEach(node => {
+    const diagram = HybridMeasurement.getDiagramState(mode, step.channel, complete);
+    panel.querySelectorAll('.hybrid-speaker[data-hybrid-speaker]').forEach(node => {
         const speaker = node.getAttribute('data-hybrid-speaker');
-        const active = step.channel === 'stereo' || speaker === step.channel || (speaker === 'sub' && mode !== 'stereo');
-        node.classList.toggle('is-active', active);
+        node.classList.toggle('is-active', !!diagram.speakers[speaker]);
     });
-    panel.querySelectorAll('[data-hybrid-sub]').forEach(node => node.classList.toggle('hidden', mode === 'stereo'));
+    panel.querySelectorAll('[data-hybrid-sub]').forEach(node => {
+        const branch = node.getAttribute('data-hybrid-sub');
+        const sub = diagram.subs[branch] || {};
+        node.classList.toggle('hidden', !sub.visible);
+        node.classList.toggle('is-active', !!sub.active);
+        node.classList.toggle('is-single', !!sub.single);
+        node.textContent = sub.label || 'SUB';
+    });
 }
 
 function renderHybridMeasurementWizard() {
@@ -9745,20 +9802,22 @@ function renderHybridMeasurementWizard() {
         const done = complete ? wizard.sequence.length : wizard.stepIndex;
         elements.measurementHybridProgress.textContent = `${done} / ${wizard.sequence.length}`;
     }
-    if (elements.measurementHybridTitle) elements.measurementHybridTitle.textContent = complete ? 'Measurement sequence complete' : (current?.title || 'Advanced Measurement');
+    if (elements.measurementHybridTitle) elements.measurementHybridTitle.textContent = complete ? 'Measurement complete' : (current?.title || 'Advanced Measurement');
     if (elements.measurementHybridInstruction) {
-        const instruction = complete ? 'The role-aware correction model is ready.' : (current?.instruction || '');
+        const instruction = complete ? 'All measurements were completed successfully.' : (current?.instruction || '');
         elements.measurementHybridInstruction.textContent = instruction;
         elements.measurementHybridInstruction.classList.toggle('is-move', !!current?.move && !complete);
+        elements.measurementHybridInstruction.classList.toggle('is-complete', complete);
     }
-    if (elements.measurementHybridActive) elements.measurementHybridActive.textContent = complete ? '' : `Active during sweep: ${current?.active || ''}`;
+    if (elements.measurementHybridActive) elements.measurementHybridActive.textContent = complete ? '' : `Measuring: ${current?.active || ''}`;
     if (elements.measurementHybridStatus) {
         elements.measurementHybridStatus.textContent = wizard.status || '';
         elements.measurementHybridStatus.dataset.level = wizard.quality?.level || '';
+        elements.measurementHybridStatus.classList.toggle('is-busy', wizard.running && !!wizard.phase);
     }
     if (elements.measurementHybridPrimaryBtn) {
-        elements.measurementHybridPrimaryBtn.textContent = complete ? 'Open filter generator' : (wizard.running ? 'Measuring…' : (wizard.quality?.retry ? 'Repeat sweep' : 'Start sweep'));
-        elements.measurementHybridPrimaryBtn.disabled = wizard.running || (!complete && !measurementModeReady());
+        elements.measurementHybridPrimaryBtn.textContent = complete ? 'Open filter generator' : (wizard.running ? 'Cancel measurement' : (wizard.quality?.retry ? 'Repeat measurement' : 'Start measurement'));
+        elements.measurementHybridPrimaryBtn.disabled = !wizard.running && !complete && !measurementModeReady();
     }
     if (elements.measurementHybridBackBtn) elements.measurementHybridBackBtn.disabled = wizard.running || wizard.stepIndex === 0 || complete;
     if (elements.measurementHybridSummary) {
@@ -9768,21 +9827,30 @@ function renderHybridMeasurementWizard() {
             const right = wizard.profile.right.transition;
             const integration = wizard.profile.integration;
             elements.measurementHybridSummary.innerHTML = [
-                'Direct response L/R captured',
-                'Primary position captured; MLP timing reference established',
-                'Listening-area stability analysed (70 / 15 / 15)',
-                `Hybrid transition: L ${Math.round(left.startHz)}–${Math.round(left.endHz)} Hz · R ${Math.round(right.startHz)}–${Math.round(right.endHz)} Hz`,
-                wizard.mode === 'stereo' ? 'L/R complex sum predicted from MLP captures' : `System integration: ${escapeHtml(integration.status)}`,
-            ].map(item => `<div class="hybrid-summary-item">${item}</div>`).join('');
+                'Left and right speaker response captured',
+                'Main listening position measured and aligned',
+                'Nearby listening positions analysed',
+                'Speaker and room responses combined',
+                wizard.mode === 'stereo' ? 'Left and right response model completed' : 'L/R system consistency checked',
+                `<strong>Speaker/room transition:</strong><br>Left: ${Math.round(left.startHz)}–${Math.round(left.endHz)} Hz<br>Right: ${Math.round(right.startHz)}–${Math.round(right.endHz)} Hz`,
+            ].map(item => `<div class="hybrid-summary-item">${item}</div>`).join('') + `
+                <details class="hybrid-advanced-details">
+                    <summary>Advanced details</summary>
+                    <p>${wizard.mode === 'stereo'
+                        ? 'The L/R complex sum was predicted from the main-position captures; no separate integration sweep was performed.'
+                        : `Consistency status: ${escapeHtml(integration.status)} · band ${integration.validationBandHz.join('–')} Hz · magnitude ${Number.isFinite(integration.magnitudeRmsErrorDb) ? `${integration.magnitudeRmsErrorDb.toFixed(1)} dB` : 'unavailable'} · phase ${Number.isFinite(integration.phaseRmsErrorDeg) ? `${integration.phaseRmsErrorDeg.toFixed(1)}°` : 'unavailable'} · complex residual ${Number.isFinite(integration.complexResidualRms) ? integration.complexResidualRms.toFixed(2) : 'unavailable'} · ${integration.comparedPoints} points`}</p>
+                    ${wizard.mode === 'stereo' ? '' : `<p>${escapeHtml(integration.limitation)}</p>`}
+                </details>`;
         }
     }
-    renderHybridRoomDiagram(current || {}, wizard.mode);
+    renderHybridRoomDiagram(current || {}, wizard.mode, complete);
 }
 
 function buildHybridMeasurementForm(step) {
     normalizeMeasurementInputChannelSelections();
     const formData = new FormData();
     formData.append('input_id', state.measurement.selectedInputId);
+    formData.append('input_key', state.measurement.selectedInputKey || '');
     formData.append('channel', step.channel);
     formData.append('measurement_role', step.role);
     formData.append('mic_input_channel', state.measurement.selectedMicInputChannel || '1');
@@ -9791,6 +9859,88 @@ function buildHybridMeasurementForm(step) {
     if (calibrationFile) formData.append('calibration_file', calibrationFile);
     else if (state.measurement.selectedCalibrationRef) formData.append('calibration_ref', state.measurement.selectedCalibrationRef);
     return formData;
+}
+
+function hybridSpeakerName(channel) {
+    if (channel === 'left') return 'left speaker';
+    if (channel === 'right') return 'right speaker';
+    return 'left and right speakers';
+}
+
+async function runHybridWizardStep(step) {
+    const wizard = getHybridWizardState();
+    wizard.quality = null;
+    wizard.phase = 'measuring';
+    wizard.status = `Measuring ${hybridSpeakerName(step.channel)}…`;
+    renderHybridMeasurementWizard();
+    const response = await fetch('/api/measurements/start', { method: 'POST', body: buildHybridMeasurementForm(step) });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(formatTransitionErrorDetail(data.detail, 'Failed to start advanced measurement'));
+    const jobId = String(data.job?.id || '');
+    wizard.jobId = jobId;
+    state.measurement.activeJobId = jobId;
+    state.measurement.activeMeasurementKind = 'hybrid';
+    if (wizard.cancelRequested) {
+        await fetch(`/api/measurements/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' }).catch(() => null);
+    }
+
+    for (let attempt = 0; attempt < 360; attempt += 1) {
+        const poll = await fetch(`/api/measurements/jobs/${encodeURIComponent(jobId)}`);
+        const payload = await poll.json().catch(() => ({}));
+        if (!poll.ok) throw new Error(formatTransitionErrorDetail(payload.detail, 'Failed to fetch advanced measurement'));
+        const job = payload.job || {};
+        const status = getMeasurementJobStatus(job);
+        const processing = String(job.message || '').toLowerCase().startsWith('processing');
+        wizard.phase = processing ? 'processing' : (wizard.cancelRequested ? 'cancelling' : 'measuring');
+        wizard.status = wizard.cancelRequested
+            ? 'Cancelling measurement…'
+            : (processing ? `Processing ${step.channel === 'stereo' ? 'measurement' : step.channel}…` : `Measuring ${hybridSpeakerName(step.channel)}…`);
+        renderHybridMeasurementWizard();
+        if (MEASUREMENT_JOB_SUCCESS_STATES.has(status)) {
+            if (wizard.cancelRequested) return false;
+            const measurement = normalizeMeasurementEntry(getMeasurementJobResultMeasurement(job), 0);
+            if (step.role === 'direct' && !HybridMeasurement.isUsableDirectMeasurement(measurement)) {
+                wizard.quality = { level: 'error', retry: true };
+                wizard.status = measurement.analysis?.direct_response?.retry_reason
+                    || 'The direct speaker response could not be measured reliably. Check that the microphone is about 1 m from the speaker and not close to a wall or other reflecting surface, then repeat the measurement.';
+                return false;
+            }
+            if (step.role === 'direct') {
+                const positionCheck = HybridMeasurement.validateDirectMicrophonePosition(
+                    measurement,
+                    wizard.captures,
+                    step.channel,
+                );
+                measurement.analysis.direct_response.position_check = positionCheck;
+                if (positionCheck.available && !positionCheck.plausible) {
+                    wizard.quality = { level: 'error', retry: true };
+                    wizard.status = positionCheck.reason;
+                    return false;
+                }
+            }
+            wizard.captures = wizard.captures.filter(item => item.stepId !== step.id);
+            wizard.captures.push({ stepId: step.id, role: step.role, position: step.position, channel: step.channel, measurement });
+            wizard.quality = { level: 'ok', retry: false };
+            wizard.stepIndex += 1;
+            return true;
+        }
+        if (MEASUREMENT_JOB_FAILED_STATES.has(status)) throw new Error(formatTransitionErrorDetail(job.error?.detail, job.message || 'Measurement failed'));
+        if (MEASUREMENT_JOB_CANCELLED_STATES.has(status)) return false;
+        await sleep(800);
+    }
+    throw new Error('Measurement timed out.');
+}
+
+async function cancelHybridWizardMeasurement() {
+    const wizard = getHybridWizardState();
+    if (!wizard.running || wizard.cancelRequested) return;
+    wizard.cancelRequested = true;
+    wizard.phase = 'cancelling';
+    wizard.status = 'Cancelling measurement…';
+    renderHybridMeasurementWizard();
+    if (wizard.jobId) {
+        await fetch(`/api/measurements/jobs/${encodeURIComponent(wizard.jobId)}/cancel`, { method: 'POST' }).catch(() => null);
+    }
 }
 
 async function runHybridWizardSweep() {
@@ -9804,57 +9954,47 @@ async function runHybridWizardSweep() {
         renderHybridMeasurementWizard();
         return;
     }
+    const seriesEnd = HybridMeasurement.getPositionSeriesEnd(wizard.sequence, wizard.stepIndex);
     wizard.running = true;
+    wizard.cancelRequested = false;
     wizard.quality = null;
-    wizard.status = 'Preparing sweep…';
+    wizard.phase = 'preparing';
+    wizard.status = 'Preparing measurement…';
     renderHybridMeasurementWizard();
     try {
         await flushSubwooferSettingsBeforeMeasurement();
-        const response = await fetch('/api/measurements/start', { method: 'POST', body: buildHybridMeasurementForm(step) });
-        const data = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(formatTransitionErrorDetail(data.detail, 'Failed to start advanced measurement'));
-        wizard.jobId = String(data.job?.id || '');
-        state.measurement.activeJobId = wizard.jobId;
-        state.measurement.activeMeasurementKind = 'hybrid';
-        for (let attempt = 0; attempt < 360; attempt += 1) {
-            const poll = await fetch(`/api/measurements/jobs/${encodeURIComponent(wizard.jobId)}`);
-            const payload = await poll.json().catch(() => ({}));
-            if (!poll.ok) throw new Error(formatTransitionErrorDetail(payload.detail, 'Failed to fetch advanced measurement'));
-            const job = payload.job || {};
-            const status = getMeasurementJobStatus(job);
-            wizard.status = formatMeasurementJobStatusText(job, 'Measurement running…');
-            renderHybridMeasurementWizard();
-            if (MEASUREMENT_JOB_SUCCESS_STATES.has(status)) {
-                const measurement = normalizeMeasurementEntry(getMeasurementJobResultMeasurement(job), 0);
-                if (step.role === 'direct' && !measurement.analysis?.direct_response?.usable) {
-                    wizard.quality = { level: 'error', retry: true };
-                    wizard.status = 'Direct sound or a usable reflection-free window was not found. Adjust the microphone and repeat.';
-                    return;
-                }
-                wizard.captures = wizard.captures.filter(item => item.stepId !== step.id);
-                wizard.captures.push({ stepId: step.id, role: step.role, position: step.position, channel: step.channel, measurement });
-                const direct = measurement.analysis?.direct_response;
-                wizard.quality = { level: 'ok', retry: false };
-                wizard.status = direct
-                    ? `Good · ${direct.usable_window_ms} ms window · reliable above about ${Math.round(direct.lower_reliable_hz)} Hz.`
-                    : 'Good measurement.';
-                wizard.stepIndex += 1;
-                if (wizard.stepIndex >= wizard.sequence.length) {
-                    wizard.profile = HybridMeasurement.buildProfile(wizard.captures, wizard.mode);
-                    wizard.status = 'All required measurements passed.';
-                }
-                return;
+        while (wizard.stepIndex <= seriesEnd && !wizard.cancelRequested) {
+            const current = wizard.sequence[wizard.stepIndex];
+            const completed = await runHybridWizardStep(current);
+            wizard.jobId = '';
+            state.measurement.activeJobId = '';
+            if (!completed || wizard.cancelRequested) break;
+            if (wizard.stepIndex <= seriesEnd) {
+                const next = wizard.sequence[wizard.stepIndex];
+                wizard.phase = 'preparing';
+                wizard.status = `Preparing ${next.channel}…`;
+                renderHybridMeasurementWizard();
+                await sleep(400);
             }
-            if (MEASUREMENT_JOB_FAILED_STATES.has(status)) throw new Error(formatTransitionErrorDetail(job.error?.detail, job.message || 'Measurement failed'));
-            if (MEASUREMENT_JOB_CANCELLED_STATES.has(status)) throw new Error('Measurement cancelled.');
-            await sleep(800);
         }
-        throw new Error('Measurement timed out.');
+        if (wizard.cancelRequested) {
+            wizard.status = 'Measurement cancelled. The microphone position is ready to measure again.';
+            wizard.quality = null;
+        } else if (wizard.stepIndex >= wizard.sequence.length) {
+            wizard.profile = HybridMeasurement.buildProfile(wizard.captures, wizard.mode);
+            wizard.status = 'All measurements were completed successfully.';
+        } else if (!wizard.quality?.retry) {
+            wizard.status = 'Position measured successfully. Move the microphone as shown for the next measurement.';
+        }
     } catch (error) {
-        wizard.status = error.message || 'Advanced measurement failed.';
-        wizard.quality = { level: 'error', retry: true };
+        wizard.status = wizard.cancelRequested
+            ? 'Measurement cancelled. The microphone position is ready to measure again.'
+            : (error.message || 'Advanced measurement failed.');
+        wizard.quality = wizard.cancelRequested ? null : { level: 'error', retry: true };
     } finally {
         wizard.running = false;
+        wizard.phase = '';
+        wizard.cancelRequested = false;
         wizard.jobId = '';
         state.measurement.activeJobId = '';
         state.measurement.activeMeasurementKind = '';
@@ -9906,15 +10046,16 @@ function setupHybridMeasurementWizard() {
     elements.measurementHybridOpenBtn.addEventListener('click', openHybridMeasurementWizard);
     elements.measurementHybridCloseBtn?.addEventListener('click', () => { void closeHybridMeasurementWizard(); });
     elements.measurementHybridPrimaryBtn?.addEventListener('click', () => {
-        if (getHybridWizardState().profile) openHybridProfileInConvolver();
+        if (getHybridWizardState().running) void cancelHybridWizardMeasurement();
+        else if (getHybridWizardState().profile) openHybridProfileInConvolver();
         else void runHybridWizardSweep();
     });
     elements.measurementHybridBackBtn?.addEventListener('click', () => {
         const wizard = getHybridWizardState();
         if (!wizard.running && wizard.stepIndex > 0) {
-            wizard.stepIndex -= 1;
+            wizard.stepIndex = HybridMeasurement.getPreviousPositionIndex(wizard.sequence, wizard.stepIndex);
             wizard.quality = null;
-            wizard.status = 'Previous step selected. Existing result will be replaced when measured again.';
+            wizard.status = 'Previous microphone position selected. Existing results will be replaced when measured again.';
             renderHybridMeasurementWizard();
         }
     });
@@ -10364,9 +10505,12 @@ function renderMeasurementPanel() {
         elements.measurementInputGroup.classList.remove('hidden');
     }
     if (elements.measurementInputSelect && !isSelectFocused(elements.measurementInputSelect)) {
-        const inputs = measurementState.inputs && measurementState.inputs.length
+        const availableInputs = measurementState.inputs && measurementState.inputs.length
             ? measurementState.inputs
             : [{ id: '', label: measurementState.inputsLoading ? 'Loading…' : 'No host capture inputs available' }];
+        const inputs = measurementState.selectedInputUnavailable
+            ? [{ id: '', label: 'Previously selected microphone (unavailable)' }, ...availableInputs]
+            : availableInputs;
         elements.measurementInputSelect.innerHTML = inputs.map(input => `<option value="${escapeHtml(input.id)}" ${input.id === measurementState.selectedInputId ? 'selected' : ''}>${escapeHtml(input.label)}</option>`).join('');
         elements.measurementInputSelect.disabled = measurementState.inputsLoading || !measurementState.hostCaptureAvailable;
     }
@@ -10380,14 +10524,14 @@ function renderMeasurementPanel() {
         elements.measurementMicInputChannelSelect.innerHTML = inputChannelOptions
             .map(value => `<option value="${value}" ${value === measurementState.selectedMicInputChannel ? 'selected' : ''}>Input ${value}</option>`)
             .join('');
-        elements.measurementMicInputChannelSelect.disabled = measurementState.startInFlight || !measurementState.hostCaptureAvailable;
+        elements.measurementMicInputChannelSelect.disabled = measurementState.startInFlight || !measurementModeReady();
     }
     if (elements.measurementReferenceInputChannelSelect && !isSelectFocused(elements.measurementReferenceInputChannelSelect)) {
         const referenceOptions = [''].concat(inputChannelOptions);
         elements.measurementReferenceInputChannelSelect.innerHTML = referenceOptions
             .map(value => `<option value="${value}" ${value === (measurementState.selectedReferenceInputChannel || '') ? 'selected' : ''}>${value ? `Input ${value}` : 'None'}</option>`)
             .join('');
-        elements.measurementReferenceInputChannelSelect.disabled = measurementState.startInFlight || !measurementState.hostCaptureAvailable;
+        elements.measurementReferenceInputChannelSelect.disabled = measurementState.startInFlight || !measurementModeReady();
     }
     if (elements.measurementReferenceWarning) {
         const referenceWarning = getMeasurementReferenceWarning();
@@ -10468,7 +10612,7 @@ function renderMeasurementPanel() {
         const activeJobRunning = hasActiveMeasurementJob();
         elements.measurementStartBtn.disabled = measurementState.calibrationUpdating || measurementState.calibrationDeleting
             ? true
-            : (activeJobRunning ? activeKind !== 'single' : (measurementState.inputsLoading || !measurementState.hostCaptureAvailable));
+            : (activeJobRunning ? activeKind !== 'single' : (measurementState.inputsLoading || !measurementModeReady()));
         elements.measurementStartBtn.textContent = activeKind === 'single'
             ? 'Cancel measurement'
             : (measurementState.startInFlight ? 'Starting…' : 'Start Single Sweep');
@@ -10479,7 +10623,7 @@ function renderMeasurementPanel() {
         elements.measurementRepeatStartBtn.disabled = measurementState.calibrationUpdating || measurementState.calibrationDeleting
             ? true
             : (activeJobRunning ? activeKind !== 'lr_repeat'
-            : (measurementState.startInFlight || measurementState.inputsLoading || !measurementState.hostCaptureAvailable));
+            : (measurementState.startInFlight || measurementState.inputsLoading || !measurementModeReady()));
         elements.measurementRepeatStartBtn.textContent = activeKind === 'lr_repeat'
             ? 'Cancel measurement'
             : 'Start L/R Repeat';
@@ -11047,9 +11191,14 @@ function setupMeasurementActions() {
         elements.measurementInputSelect.addEventListener('focus', scanMeasurementInputsOnceForSelect);
         elements.measurementInputSelect.addEventListener('change', (event) => {
             state.measurement.selectedInputId = event.target.value || '';
+            const selectedInput = getSelectedMeasurementInput();
+            state.measurement.selectedInputKey = selectedInput?.persistentId || '';
+            state.measurement.selectedInputConfigured = !!selectedInput;
+            state.measurement.selectedInputUnavailable = false;
             normalizeMeasurementInputChannelSelections();
             void saveMeasurementSetupSettings({
                 selectedInputId: state.measurement.selectedInputId,
+                selectedInputKey: state.measurement.selectedInputKey,
                 selectedMicInputChannel: state.measurement.selectedMicInputChannel || '1',
                 selectedReferenceInputChannel: state.measurement.selectedReferenceInputChannel || '',
             });

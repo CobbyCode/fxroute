@@ -2119,33 +2119,61 @@ body {
 }
 .hybrid-sub-left { left: 11%; }
 .hybrid-sub-right { left: 89%; }
+.hybrid-sub-left.is-single { left: 50%; }
 .hybrid-sub.is-active { border-color: var(--accent); color: var(--accent); }
 
 .hybrid-seat {
     left: 50%;
-    top: 78%;
-    width: 116px;
-    height: 54px;
-    border-radius: 22px 22px 10px 10px;
-    background: color-mix(in srgb, var(--text-secondary) 18%, var(--bg-card));
-    color: var(--text-secondary);
-    font-size: 0.72rem;
+    top: 79%;
+    width: 210px;
+    height: 92px;
+    z-index: 1;
 }
+.hybrid-seat-back {
+    position: absolute;
+    inset: 0 16px 26px;
+    border: 2px solid var(--border);
+    border-radius: 28px 28px 12px 12px;
+    background: color-mix(in srgb, var(--text-secondary) 12%, var(--bg-card));
+}
+.hybrid-seat-cushion {
+    position: absolute;
+    bottom: 10px;
+    width: 82px;
+    height: 38px;
+    border: 1px solid var(--border);
+    border-radius: 10px 10px 16px 16px;
+    background: color-mix(in srgb, var(--text-secondary) 18%, var(--bg-card));
+}
+.hybrid-seat-cushion-left { left: 22px; }
+.hybrid-seat-cushion-right { right: 22px; }
+.hybrid-seat-arm {
+    position: absolute;
+    bottom: 4px;
+    width: 24px;
+    height: 54px;
+    border: 2px solid var(--border);
+    border-radius: 12px;
+    background: var(--bg-card);
+}
+.hybrid-seat-arm-left { left: 0; }
+.hybrid-seat-arm-right { right: 0; }
 
 .hybrid-mic {
-    width: 38px;
-    height: 38px;
+    width: 48px;
+    height: 34px;
+    z-index: 2;
     border: 1px dashed var(--border);
-    border-radius: 50%;
-    color: transparent;
-    font-size: 0.65rem;
+    border-radius: 999px;
+    color: var(--text-muted);
+    font-size: 0.62rem;
     transition: 180ms ease;
 }
 .hybrid-mic-direct-left { left: 23%; top: 38%; }
 .hybrid-mic-direct-right { left: 77%; top: 38%; }
-.hybrid-mic-left { left: 37%; top: 68%; }
-.hybrid-mic-mlp { left: 50%; top: 68%; }
-.hybrid-mic-right { left: 63%; top: 68%; }
+.hybrid-mic-left { left: 37%; top: 69%; }
+.hybrid-mic-mlp { left: 50%; top: 66%; }
+.hybrid-mic-right { left: 63%; top: 69%; }
 .hybrid-mic.is-target {
     border: 2px solid var(--success);
     background: color-mix(in srgb, var(--success) 18%, var(--bg-card));
@@ -2166,9 +2194,22 @@ body {
 .hybrid-step-card h3 { margin: 1.75rem 0 0.65rem; font-size: clamp(1.4rem, 3vw, 2rem); }
 .hybrid-instruction { margin: 0; color: var(--text-primary); font-size: 1.05rem; line-height: 1.5; }
 .hybrid-instruction.is-move::before { content: 'Move microphone'; display: block; margin-bottom: 0.3rem; color: var(--accent); font-size: 0.72rem; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; }
-.hybrid-instruction:not(.is-move)::before { content: 'Keep microphone here'; display: block; margin-bottom: 0.3rem; color: var(--success); font-size: 0.72rem; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; }
+.hybrid-instruction:not(.is-move):not(.is-complete)::before { content: 'Keep microphone here'; display: block; margin-bottom: 0.3rem; color: var(--success); font-size: 0.72rem; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; }
 .hybrid-active { color: var(--text-secondary); }
 .hybrid-status { min-height: 3rem; margin-top: auto; padding: 0.8rem; border-radius: 12px; background: var(--bg-elevated); color: var(--text-secondary); }
+.hybrid-status.is-busy::before {
+    content: '';
+    display: inline-block;
+    width: 0.9rem;
+    height: 0.9rem;
+    margin-right: 0.55rem;
+    vertical-align: -0.12rem;
+    border: 2px solid color-mix(in srgb, var(--accent) 25%, transparent);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: hybrid-status-spin 0.8s linear infinite;
+}
+@keyframes hybrid-status-spin { to { transform: rotate(360deg); } }
 .hybrid-status[data-level="ok"] { color: var(--success); }
 .hybrid-status[data-level="error"] { color: var(--danger); }
 .hybrid-action-row { display: grid; grid-template-columns: minmax(90px, 0.35fr) minmax(180px, 1fr); gap: 0.7rem; margin-top: 0.9rem; }
@@ -2176,6 +2217,9 @@ body {
 .hybrid-summary { display: grid; gap: 0.45rem; margin: 0.7rem 0; }
 .hybrid-summary-item { padding-left: 1.2rem; color: var(--text-secondary); font-size: 0.84rem; }
 .hybrid-summary-item::before { content: '✓'; float: left; margin-left: -1.2rem; color: var(--success); }
+.hybrid-advanced-details { margin-top: 0.35rem; color: var(--text-muted); font-size: 0.78rem; }
+.hybrid-advanced-details summary { cursor: pointer; color: var(--text-secondary); }
+.hybrid-advanced-details p { margin: 0.5rem 0 0; line-height: 1.45; }
 
 .measurement-channel-chip-row,
 .measurement-smoothing-chips,

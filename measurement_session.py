@@ -973,6 +973,8 @@ def _update_measurement_setup_settings(patch: dict[str, Any]) -> dict[str, Any]:
 
     if "selectedInputId" in patch or "input_id" in patch:
         measure_settings["selectedInputId"] = str(patch.get("selectedInputId", patch.get("input_id")) or "").strip()
+    if "selectedInputKey" in patch or "input_key" in patch:
+        measure_settings["selectedInputKey"] = str(patch.get("selectedInputKey", patch.get("input_key")) or "").strip()
     if "selectedMicInputChannel" in patch or "mic_input_channel" in patch:
         raw_mic = patch.get("selectedMicInputChannel", patch.get("mic_input_channel"))
         measure_settings["selectedMicInputChannel"] = _normalize_measurement_optional_input_channel(raw_mic) or "1"
@@ -1208,6 +1210,7 @@ async def _start_registered_manual_measurement(
 @router.post("/api/measurements/start")
 async def start_measurement(
     input_id: str = Form(...),
+    input_key: str = Form(""),
     channel: str = Form("left"),
     mic_input_channel: str = Form("1"),
     reference_input_channel: str = Form(""),
@@ -1234,6 +1237,7 @@ async def start_measurement(
             measurement_rate,
             lambda: measurement_store.start_measurement(
                 input_id=input_id,
+                input_key=input_key,
                 channel=channel,
                 mic_input_channel=mic_input_channel,
                 reference_input_channel=reference_input_channel,
@@ -1252,6 +1256,7 @@ async def start_measurement(
 @router.post("/api/measurements/lr-repeat/start")
 async def start_lr_repeat_measurement(
     input_id: str = Form(...),
+    input_key: str = Form(""),
     base_name: str = Form(""),
     mic_input_channel: str = Form("1"),
     reference_input_channel: str = Form(""),
@@ -1277,6 +1282,7 @@ async def start_lr_repeat_measurement(
             measurement_rate,
             lambda: measurement_store.start_lr_repeat_measurement(
                 input_id=input_id,
+                input_key=input_key,
                 base_name=base_name,
                 mic_input_channel=mic_input_channel,
                 reference_input_channel=reference_input_channel,

@@ -334,6 +334,9 @@ def _spl_auto_capability() -> dict[str, Any]:
     selected_id = str(settings.get("selectedInputId") or "")
     inputs_payload = measurement_store.list_inputs() if measurement_store else {}
     inputs = inputs_payload.get("inputs") if isinstance(inputs_payload, dict) else []
+    selection = inputs_payload.get("selection") if isinstance(inputs_payload, dict) else None
+    if isinstance(selection, dict) and selection.get("configured"):
+        selected_id = str(selection.get("input_id") or "")
     selected = next((item for item in (inputs or []) if str(item.get("id") or "") == selected_id), {})
     profile = (
         _UMIK1_PROFILE if selected and _is_umik1_input(selected)

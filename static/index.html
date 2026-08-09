@@ -12,7 +12,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=0.4.458">
     <link rel="manifest" href="/static/site.webmanifest?v=0.4.458">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/static/style.css?v=0.9.3-release3">
+    <link rel="stylesheet" href="/static/style.css?v=0.9.3-release5">
 </head>
 <body>
     <!-- Offline indicator -->
@@ -1158,14 +1158,20 @@
                     <div class="hybrid-room-view" aria-label="Top view of speakers and listening positions">
                         <div class="hybrid-speaker hybrid-speaker-left" data-hybrid-speaker="left">L</div>
                         <div class="hybrid-speaker hybrid-speaker-right" data-hybrid-speaker="right">R</div>
-                        <div class="hybrid-sub hybrid-sub-left" data-hybrid-speaker="sub" data-hybrid-sub>SUB</div>
-                        <div class="hybrid-sub hybrid-sub-right" data-hybrid-speaker="sub" data-hybrid-sub>SUB</div>
-                        <div class="hybrid-seat">Listening seat</div>
+                        <div class="hybrid-sub hybrid-sub-left" data-hybrid-sub="left">SUB 1</div>
+                        <div class="hybrid-sub hybrid-sub-right" data-hybrid-sub="right">SUB 2</div>
+                        <div class="hybrid-seat" aria-hidden="true">
+                            <div class="hybrid-seat-back"></div>
+                            <div class="hybrid-seat-cushion hybrid-seat-cushion-left"></div>
+                            <div class="hybrid-seat-cushion hybrid-seat-cushion-right"></div>
+                            <div class="hybrid-seat-arm hybrid-seat-arm-left"></div>
+                            <div class="hybrid-seat-arm hybrid-seat-arm-right"></div>
+                        </div>
                         <div class="hybrid-mic hybrid-mic-direct-left" data-hybrid-position="direct-left">Mic</div>
                         <div class="hybrid-mic hybrid-mic-direct-right" data-hybrid-position="direct-right">Mic</div>
-                        <div class="hybrid-mic hybrid-mic-left" data-hybrid-position="left">Mic</div>
-                        <div class="hybrid-mic hybrid-mic-mlp" data-hybrid-position="mlp">Mic</div>
-                        <div class="hybrid-mic hybrid-mic-right" data-hybrid-position="right">Mic</div>
+                        <div class="hybrid-mic hybrid-mic-left" data-hybrid-position="left">Left</div>
+                        <div class="hybrid-mic hybrid-mic-mlp" data-hybrid-position="mlp">Main</div>
+                        <div class="hybrid-mic hybrid-mic-right" data-hybrid-position="right">Right</div>
                     </div>
                     <div class="hybrid-step-card">
                         <div class="hybrid-progress-row"><span>Progress</span><strong id="measurement-hybrid-progress">0 / 0</strong></div>
@@ -1176,7 +1182,7 @@
                         <div id="measurement-hybrid-summary" class="hybrid-summary hidden"></div>
                         <div class="hybrid-action-row">
                             <button id="measurement-hybrid-back" class="btn-secondary" type="button">Back</button>
-                            <button id="measurement-hybrid-primary" class="btn-primary" type="button">Start sweep</button>
+                            <button id="measurement-hybrid-primary" class="btn-primary" type="button">Start measurement</button>
                         </div>
                     </div>
                 </div>
@@ -1278,8 +1284,8 @@
     <div id="toast-container" class="toast-container"></div>
 
     <script src="/static/measurement_dsp.js?v=0.9.3-release1"></script>
-    <script src="/static/hybrid_measurement.js?v=0.9.9-release1"></script>
+    <script src="/static/hybrid_measurement.js?v=0.9.9-release4"></script>
     <script src="/static/radio.js?v=0.9.3"></script>
-    <script src="/static/app.js?v=0.9.9-release4"></script>
+    <script src="/static/app.js?v=0.9.9-release9"></script>
 </body>
 </html>
