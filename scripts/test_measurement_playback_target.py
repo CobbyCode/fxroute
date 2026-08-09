@@ -74,6 +74,92 @@ class MeasurementPlaybackTargetTests(unittest.TestCase):
         target = self._resolve(stereo_overview(), scope=MEASUREMENT_SCOPE_RAW_HELPER)
         self.assertEqual(target["target_name"], "alsa_output.hw")
 
+    def test_subwoofer_active_chain_repairs_missing_easyeffects_helper_links(self):
+        playback_target = {"target_name": "easyeffects_sink"}
+        playback_route = {
+            "route": "subwoofer-active-chain",
+            "output_mode": "subwoofer-2.2",
+            "playback_target_name": "easyeffects_sink",
+            "helper_node_name": "fxroute_21_stage1",
+        }
+        existing_links = set()
+        creation_order = []
+
+        def create_link(source_port, target_port):
+            creation_order.append((source_port, target_port))
+            existing_links.add((source_port, target_port))
+
+        with patch.object(
+            self.store,
+            "_wait_for_measurement_play_ports",
+            return_value={"left": "measure:output_FL", "right": "measure:output_FR"},
+        ), patch.object(
+            self.store,
+            "_list_pw_ports",
+            return_value=["easyeffects_sink:playback_FL", "easyeffects_sink:playback_FR"],
+        ), patch.object(
+            self.store, "_create_pipewire_link", side_effect=create_link
+        ) as create, patch.object(
+            self.store,
+            "_pipewire_link_exists",
+            side_effect=lambda source, target: (source, target) in existing_links,
+        ), patch.object(
+            self.store, "_remove_subwoofer_direct_easyeffects_hardware_links", return_value=[]
+        ), patch.object(
+            self.store, "_find_subwoofer_direct_easyeffects_hardware_links", return_value=[]
+        ), patch.object(
+            self.store, "_list_relevant_pw_links", return_value=[]
+        ):
+            diagnostics = self.store._link_measurement_playback_to_active_chain(
+                play_node_name="measure",
+                playback_target=playback_target,
+                playback_route=playback_route,
+            )
+
+        created_links = [call.args for call in create.call_args_list]
+        self.assertIn(("ee_soe_output_level:output_FL", "fxroute_21_stage1:input_L"), created_links)
+        self.assertIn(("ee_soe_output_level:output_FR", "fxroute_21_stage1:input_R"), created_links)
+        self.assertNotIn(("measure:output_FL", "alsa_output.hw:playback_FL"), created_links)
+        self.assertLess(
+            creation_order.index(("ee_soe_output_level:output_FR", "fxroute_21_stage1:input_R")),
+            creation_order.index(("measure:output_FL", "easyeffects_sink:playback_FL")),
+        )
+        self.assertEqual(len(diagnostics["active_chain_output_links"]), 2)
+
+    def test_measurement_cleanup_does_not_remove_active_chain_output_links(self):
+        temporary_links = [
+            {
+                "source_port": "measure:output_FL",
+                "target_port": "easyeffects_sink:playback_FL",
+            },
+            {
+                "source_port": "measure:output_FR",
+                "target_port": "easyeffects_sink:playback_FR",
+            },
+        ]
+        with patch.object(self.store, "_disconnect_link", return_value=True) as disconnect, patch(
+            "measurement.subprocess.run"
+        ) as run:
+            run.return_value.returncode = 0
+            run.return_value.stdout = ""
+            self.store._cleanup_measurement_playback_links(
+                play_node_name="measure",
+                temporary_links=temporary_links,
+            )
+
+        removed_links = [call.args for call in disconnect.call_args_list]
+        self.assertEqual(
+            removed_links,
+            [
+                ("measure:output_FL", "easyeffects_sink:playback_FL"),
+                ("measure:output_FR", "easyeffects_sink:playback_FR"),
+            ],
+        )
+        self.assertNotIn(
+            ("ee_soe_output_level:output_FL", "fxroute_21_stage1:input_L"),
+            removed_links,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

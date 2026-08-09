@@ -6179,6 +6179,7 @@ class MeasurementStore:
             "temporary_playback_links": [],
             "play_node_helper_links": [],
             "active_chain_input_links": [],
+            "active_chain_output_links": [],
             "direct_hardware_links_removed": [],
             "direct_hardware_links_remaining": [],
             "play_node_links_after_manual_link": [],
@@ -6293,6 +6294,16 @@ class MeasurementStore:
             {"source_port": play_ports["left"], "target_port": input_left, "role": "measurement-play-left-to-active-chain"},
             {"source_port": play_ports["right"], "target_port": input_right, "role": "measurement-play-right-to-active-chain"},
         ]
+        helper_node_name = str(playback_route.get("helper_node_name") or "fxroute_21_stage1")
+        diagnostics["direct_hardware_links_removed"] = self._remove_subwoofer_direct_easyeffects_hardware_links(playback_target)
+        diagnostics["active_chain_output_links"] = self._ensure_subwoofer_active_chain_output_links(helper_node_name)
+        diagnostics["direct_hardware_links_remaining"] = self._find_subwoofer_direct_easyeffects_hardware_links(playback_target)
+        if diagnostics["direct_hardware_links_remaining"]:
+            raise RuntimeError(
+                "Subwoofer active-chain measurement still has direct EasyEffects hardware links after cleanup: "
+                f"{diagnostics['direct_hardware_links_remaining']}"
+            )
+
         created_links: list[dict[str, str]] = []
         try:
             for link in temporary_links:
@@ -6305,18 +6316,6 @@ class MeasurementStore:
             )
             raise
 
-        helper_node_name = str(playback_route.get("helper_node_name") or "fxroute_21_stage1")
-        diagnostics["direct_hardware_links_removed"] = self._remove_subwoofer_direct_easyeffects_hardware_links(playback_target)
-        diagnostics["direct_hardware_links_remaining"] = self._find_subwoofer_direct_easyeffects_hardware_links(playback_target)
-        if diagnostics["direct_hardware_links_remaining"]:
-            self._cleanup_measurement_playback_links(
-                play_node_name=play_node_name,
-                temporary_links=created_links,
-            )
-            raise RuntimeError(
-                "Subwoofer active-chain measurement still has direct EasyEffects hardware links after cleanup: "
-                f"{diagnostics['direct_hardware_links_remaining']}"
-            )
         helper_links = [
             {"source_port": source_port, "target_port": target_port, "role": "measurement-play-direct-helper"}
             for source_port, target_port in (
@@ -6357,6 +6356,35 @@ class MeasurementStore:
             diagnostics["active_chain_input_links"],
         )
         return diagnostics
+
+    def _ensure_subwoofer_active_chain_output_links(self, helper_node_name: str) -> list[dict[str, str]]:
+        links = [
+            {
+                "source_port": "ee_soe_output_level:output_FL",
+                "target_port": f"{helper_node_name}:input_L",
+                "role": "active-chain-left-to-helper-input",
+            },
+            {
+                "source_port": "ee_soe_output_level:output_FR",
+                "target_port": f"{helper_node_name}:input_R",
+                "role": "active-chain-right-to-helper-input",
+            },
+        ]
+        repaired: list[str] = []
+        for link in links:
+            source_port = link["source_port"]
+            target_port = link["target_port"]
+            if not self._pipewire_link_exists(source_port, target_port):
+                self._create_pipewire_link(source_port, target_port)
+                repaired.append(f"{source_port} -> {target_port}")
+            if not self._pipewire_link_exists(source_port, target_port):
+                raise RuntimeError(
+                    "Subwoofer active-chain measurement playback route unavailable: "
+                    f"required EasyEffects helper link missing ({source_port} -> {target_port})"
+                )
+        if repaired:
+            logger.info("Repaired subwoofer active-chain measurement output links: %s", repaired)
+        return links
 
     def _link_measurement_playback_to_direct_sink(
         self,
