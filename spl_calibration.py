@@ -393,7 +393,7 @@ def _spl_auto_capability() -> dict[str, Any]:
     elif not selected:
         reason = "The selected measurement input is no longer available."
     elif not supported_model or not unique_umik:
-        reason = "The selected input is not the uniquely identified supported UMIK USB capture device."
+        reason = ""
     elif not active:
         reason = f"Select the matching {supported_model} calibration file."
     elif not sensitivity_plausible or not cal_serial:
@@ -652,13 +652,13 @@ def _start_spl_calibration_noise(operation: _SplCalibrationOperation) -> dict[st
         if operation.cancel_requested:
             raise RuntimeError("SPL calibration was stopped")
 
-        noise_path = Path(tempfile.gettempdir()) / "fxroute-spl-calibration-pink-noise.wav"
+        noise_path = Path(tempfile.gettempdir()) / "fxroute-spl-calibration-pink-noise-v2.wav"
         if not noise_path.exists():
             generated = subprocess.run(
                 [
                     "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
                     "-f", "lavfi", "-i", "anoisesrc=color=pink:duration=60:sample_rate=48000",
-                    "-af", "loudnorm=I=-23:TP=-3:LRA=7,afade=t=in:st=0:d=0.5,afade=t=out:st=59.5:d=0.5",
+                    "-af", "loudnorm=I=-23:TP=-3:LRA=7,afade=t=in:st=0:d=1,afade=t=out:st=59.5:d=0.5",
                     "-ac", "2", "-ar", "48000", str(noise_path),
                 ],
                 capture_output=True,

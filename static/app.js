@@ -5614,6 +5614,50 @@ function setupEffectsActions() {
 
 let splCalibrationNoiseActive = false;
 let splCalibrationAutomaticAvailable = false;
+let splCalibrationAutomaticRunning = false;
+let splCalibrationOperationGeneration = 0;
+
+function splCalibrationModeLabel(data) {
+    return data.automatic?.available
+        ? `Automatic SPL measurement — ${data.automatic.microphone_model} detected`
+        : 'Manual SPL measurement';
+}
+
+function resetSplCalibrationNoiseButton() {
+    if (!elements.splCalibrationNoise) return;
+    elements.splCalibrationNoise.disabled = false;
+    elements.splCalibrationNoise.textContent = splCalibrationNoiseActive ? 'Stop noise' : 'Start noise';
+}
+
+async function runSplCalibrationNoiseCountdown(generation) {
+    for (const count of [3, 2, 1]) {
+        if (generation !== splCalibrationOperationGeneration) return false;
+        if (elements.splCalibrationNoise) elements.splCalibrationNoise.textContent = `Starting noise: ${count}`;
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+    return generation === splCalibrationOperationGeneration;
+}
+
+async function stopSplCalibrationOperation(statusText = '') {
+    const generation = ++splCalibrationOperationGeneration;
+    splCalibrationAutomaticRunning = false;
+    if (elements.splCalibrationNoise) elements.splCalibrationNoise.disabled = true;
+    try {
+        const response = await fetch('/api/measurements/spl-calibration/noise', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enabled: false }),
+        });
+        if (!response.ok) throw new Error('Failed to stop SPL calibration');
+    } finally {
+        if (generation !== splCalibrationOperationGeneration) return;
+        splCalibrationNoiseActive = false;
+        resetSplCalibrationNoiseButton();
+        if (statusText && elements.splCalibrationStatus) {
+            elements.splCalibrationStatus.textContent = statusText;
+        }
+    }
+}
 
 async function openSplCalibration() {
     elements.splCalibrationPanel?.classList.remove('hidden');
@@ -5625,9 +5669,7 @@ async function openSplCalibration() {
         splCalibrationAutomaticAvailable = !!data.automatic?.available;
         if (elements.splCalibrationNoise) elements.splCalibrationNoise.textContent = splCalibrationNoiseActive ? 'Stop noise' : 'Start noise';
         if (elements.splCalibrationAutoStatus) {
-            elements.splCalibrationAutoStatus.textContent = data.automatic?.available
-                ? `${data.automatic.microphone_model} detected · calibrated`
-                : `${data.automatic?.reason || 'Manual C/Slow meter entry is required.'}`;
+            elements.splCalibrationAutoStatus.textContent = splCalibrationModeLabel(data);
         }
     } catch (error) {
         if (elements.splCalibrationStatus) elements.splCalibrationStatus.textContent = error.message;
@@ -5635,25 +5677,40 @@ async function openSplCalibration() {
 }
 
 async function closeSplCalibration() {
-    await fetch('/api/measurements/spl-calibration/noise', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled: false }),
-    }).catch(() => null);
-    splCalibrationNoiseActive = false;
+    await stopSplCalibrationOperation().catch(() => null);
     elements.splCalibrationPanel?.classList.add('hidden');
 }
 
 async function toggleSplCalibrationNoise() {
+    if (splCalibrationAutomaticRunning) {
+        await stopSplCalibrationOperation('Automatic SPL measurement cancelled.').catch((error) => {
+            if (elements.splCalibrationStatus) elements.splCalibrationStatus.textContent = error.message;
+        });
+        return;
+    }
     const next = !splCalibrationNoiseActive;
+    if (!next) {
+        await stopSplCalibrationOperation('Noise stopped; previous volume state restored.').catch((error) => {
+            if (elements.splCalibrationStatus) elements.splCalibrationStatus.textContent = error.message;
+        });
+        return;
+    }
+    const generation = ++splCalibrationOperationGeneration;
     if (elements.splCalibrationNoise) elements.splCalibrationNoise.disabled = true;
     try {
-        if (next && splCalibrationAutomaticAvailable) {
+        if (!await runSplCalibrationNoiseCountdown(generation)) return;
+        if (splCalibrationAutomaticAvailable) {
+            splCalibrationAutomaticRunning = true;
+            if (elements.splCalibrationNoise) {
+                elements.splCalibrationNoise.disabled = false;
+                elements.splCalibrationNoise.textContent = 'Cancel measurement';
+            }
             if (elements.splCalibrationStatus) {
-                elements.splCalibrationStatus.textContent = 'Automatic UMIK C-weighted measurement: settling and averaging for 3 seconds…';
+                elements.splCalibrationStatus.textContent = 'Automatic SPL measurement in progress…';
             }
             const response = await fetch('/api/measurements/spl-calibration/automatic', { method: 'POST' });
             const data = await response.json();
+            if (generation !== splCalibrationOperationGeneration) return;
             if (!response.ok) throw new Error(data.detail || 'Automatic UMIK SPL measurement failed');
             if (elements.splCalibrationMeasured) {
                 elements.splCalibrationMeasured.value = Number(data.measured_spl_db).toFixed(1);
@@ -5669,21 +5726,25 @@ async function toggleSplCalibrationNoise() {
         const response = await fetch('/api/measurements/spl-calibration/noise', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ enabled: next }),
+            body: JSON.stringify({ enabled: true }),
         });
         const data = await response.json();
+        if (generation !== splCalibrationOperationGeneration) return;
         if (!response.ok) throw new Error(data.detail || 'Calibration noise failed');
-        splCalibrationNoiseActive = next;
-        if (elements.splCalibrationNoise) elements.splCalibrationNoise.textContent = next ? 'Stop noise' : 'Start noise';
+        splCalibrationNoiseActive = true;
+        if (elements.splCalibrationNoise) elements.splCalibrationNoise.textContent = 'Stop noise';
         if (elements.splCalibrationStatus) {
-            elements.splCalibrationStatus.textContent = next
-                ? 'Settling… read the C/Slow meter after about 1 second and average for about 3 seconds.'
-                : 'Noise stopped; previous volume state restored.';
+            elements.splCalibrationStatus.textContent = 'Settling… read the C/Slow meter after about 1 second and average for about 3 seconds.';
         }
     } catch (error) {
-        if (elements.splCalibrationStatus) elements.splCalibrationStatus.textContent = error.message;
+        if (generation === splCalibrationOperationGeneration && elements.splCalibrationStatus) {
+            elements.splCalibrationStatus.textContent = error.message;
+        }
     } finally {
-        if (elements.splCalibrationNoise) elements.splCalibrationNoise.disabled = false;
+        if (generation === splCalibrationOperationGeneration) {
+            splCalibrationAutomaticRunning = false;
+            resetSplCalibrationNoiseButton();
+        }
     }
 }
 

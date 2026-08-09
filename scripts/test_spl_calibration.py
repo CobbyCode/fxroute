@@ -114,7 +114,7 @@ def test_spl_noise_uses_and_restores_neutral_autogain_loudness_runtime() -> None
         current_volume[0] = value
         volume_events.append(value)
     with tempfile.TemporaryDirectory(prefix="fxroute-spl-neutral-") as directory:
-        noise_path = Path(directory) / "fxroute-spl-calibration-pink-noise.wav"
+        noise_path = Path(directory) / "fxroute-spl-calibration-pink-noise-v2.wav"
         noise_path.write_bytes(b"test")
         try:
             main.easyeffects_manager = fake
