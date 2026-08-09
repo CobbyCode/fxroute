@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.9.9 (2026-08-09)
+
+### Measurement & runtime stability
+- Measurement sessions and the runtime are more robust: worker cancellation
+  is fully awaited, the active-chain output links are re-established after
+  chain recovery, the measurement bypass is cleaned up after chain
+  activation, and shutdown drains SPL workers, late download callbacks and
+  remaining runtime resources instead of leaking them.
+- Pending software updates are reconciled more reliably: interrupted update
+  reconciliations are retried and preserved instead of being lost.
+
+### Playback & routing
+- After a 2.2↔Stereo switch that triggers mode recovery, the A/B compare
+  level state is restored, so the active side's preset stays consistent
+  instead of silently falling back to the wrong side.
+
+### SPL calibration
+- Calibration runs are serialized (no overlapping calibrations), cancellation
+  drains workers cleanly, and the calibration controls in the UI are
+  completed.
+
+### Maintainability & stability
+- Internal module boundaries are now explicit (measurement session, SPL
+  calibration, library API, playlist I/O, EasyEffects preset persistence)
+  with clear resource ownership, reducing the risk of leaks across shutdown
+  and mode switches.  No user-facing behavior change was intended.
+
 ## 0.9.8 (2026-08-09)
 
 ### Playback & routing
