@@ -11,6 +11,7 @@ import shutil
 import time
 import asyncio
 import hashlib
+import inspect
 import math
 import random
 import subprocess
@@ -843,6 +844,8 @@ downloader = None
 easyeffects_manager = None
 measurement_store = None
 measurement_sr_session = None
+measurement_watchdog_task = None
+library_scan_task = None
 peak_monitor = None
 subwoofer_runtime = None
 subwoofer_runtime_link_watch_task = None
@@ -871,6 +874,8 @@ current_footer_owner = "local"
 last_measurement_window_seen_at = 0.0
 silent_active_recovery_attempts: set[str] = set()
 silent_active_watch_tasks: dict[str, asyncio.Task] = {}
+lifecycle_background_tasks: set[asyncio.Task] = set()
+library_refresh_tasks: set[asyncio.Task] = set()
 latest_player_state_seq_seen = 0
 playback_transition_epoch = 0
 playback_transition_pending_attempts = 0
@@ -3117,6 +3122,20 @@ def _schedule_silent_active_watch(
     silent_active_watch_tasks[signature] = task
 
 
+def _create_lifecycle_background_task(coro, *, name: str) -> asyncio.Task:
+    task = asyncio.create_task(coro, name=name)
+    lifecycle_background_tasks.add(task)
+    task.add_done_callback(lifecycle_background_tasks.discard)
+    return task
+
+
+def _create_library_refresh_task(scanner: LibraryScanner, *, name: str) -> asyncio.Task:
+    task = asyncio.create_task(asyncio.to_thread(scanner.refresh, True), name=name)
+    library_refresh_tasks.add(task)
+    task.add_done_callback(library_refresh_tasks.discard)
+    return task
+
+
 async def _silent_active_watch_after_settle(
     *,
     source: str,
@@ -4297,7 +4316,10 @@ async def _sync_subwoofer_runtime_at_rate(target_rate: int, *, _rate_lock_held: 
         runtime_snapshot.get("helper_pid"),
         _helper_argument_sample_rate(runtime_snapshot),
     )
-    asyncio.create_task(_repair_subwoofer_runtime_inputs_after_measurement_release(target_rate))
+    _create_lifecycle_background_task(
+        _repair_subwoofer_runtime_inputs_after_measurement_release(target_rate),
+        name="measurement-release-input-repair",
+    )
 
 
 async def _repair_subwoofer_runtime_inputs_after_measurement_release(target_rate: int) -> None:
@@ -5344,7 +5366,10 @@ async def _run_peak_monitor_refresh_after_effects_change(reason: str, timeout: f
 
 
 def schedule_peak_monitor_refresh_after_effects_change(reason: str = "effects-change"):
-    asyncio.create_task(_run_peak_monitor_refresh_after_effects_change(reason))
+    _create_lifecycle_background_task(
+        _run_peak_monitor_refresh_after_effects_change(reason),
+        name=f"peak-monitor-refresh:{reason}",
+    )
 
 
 
@@ -5794,13 +5819,14 @@ async def _ensure_external_input_loopback(source_name: str) -> None:
     if external_input_loopback_source_name == normalized:
         return
     await _disable_external_input_loopback()
-    for channel in ("FL", "FR"):
-        source_port = f"{normalized}:capture_{channel}"
-        sink_port = f"easyeffects_sink:playback_{channel}"
-        try:
+    try:
+        for channel in ("FL", "FR"):
+            source_port = f"{normalized}:capture_{channel}"
+            sink_port = f"easyeffects_sink:playback_{channel}"
             await _connect_ports((source_port,), sink_port)
-        except Exception:
-            raise
+    except BaseException:
+        await _disconnect_external_input_source(normalized)
+        raise
     external_input_loopback_module_id = None
     external_input_loopback_source_name = normalized
     logger.info("Enabled direct external-input monitoring from %s to easyeffects_sink", normalized)
@@ -5833,16 +5859,24 @@ async def _disconnect_bluetooth_input_source(source_name: str | None) -> None:
 async def _stop_bluetooth_audio_agent() -> None:
     global bluetooth_agent_process
     proc = bluetooth_agent_process
-    bluetooth_agent_process = None
     if not proc:
         return
-    if proc.returncode is None:
-        proc.terminate()
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=3)
-        except asyncio.TimeoutError:
+    try:
+        if proc.returncode is None:
+            proc.terminate()
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=3)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+    except asyncio.CancelledError:
+        if proc.returncode is None:
             proc.kill()
             await proc.wait()
+        raise
+    finally:
+        if bluetooth_agent_process is proc:
+            bluetooth_agent_process = None
 
 
 async def _ensure_bluetooth_audio_agent() -> None:
@@ -5856,7 +5890,11 @@ async def _ensure_bluetooth_audio_agent() -> None:
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.PIPE,
     )
-    await asyncio.sleep(0.4)
+    try:
+        await asyncio.sleep(0.4)
+    except BaseException:
+        await _stop_bluetooth_audio_agent()
+        raise
     if bluetooth_agent_process.returncode is not None:
         stderr = await bluetooth_agent_process.stderr.read()
         bluetooth_agent_process = None
@@ -5909,7 +5947,11 @@ async def _ensure_bluetooth_input_loopback(source_name: str) -> None:
     if bluetooth_input_source_name == normalized:
         return
     await _clear_bluetooth_input_monitoring_links()
-    await _link_bluetooth_source_to_easyeffects(normalized)
+    try:
+        await _link_bluetooth_source_to_easyeffects(normalized)
+    except BaseException:
+        await _disconnect_bluetooth_input_source(normalized)
+        raise
     bluetooth_input_source_name = normalized
     logger.info("Enabled Bluetooth input monitoring from %s to easyeffects_sink", normalized)
 
@@ -6337,35 +6379,33 @@ async def _spotify_playerctl_watch_loop() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan: startup and shutdown."""
-    global settings, player_instance, library_scanner, downloader, easyeffects_manager, measurement_store, measurement_sr_session, peak_monitor, subwoofer_runtime, subwoofer_runtime_link_watch_task, hardware_controller, peak_monitor_playback_armed, peak_monitor_transition_lock, peak_monitor_context_signature, easyeffects_preset_load_lock, source_transition_lock, playback_transition_coordinator, coordinator_last_successful_commit_id, external_input_loopback_module_id, external_input_loopback_source_name, bluetooth_input_source_name, bluetooth_monitor_task, bluetooth_agent_process, spotify_playerctl_watch_task, spotify_playerctl_detect_task, spotify_state_refresh_task, spotify_playerctl_last_trigger_at, current_source_mode, latest_spotify_state
+    global settings, player_instance, library_scanner, library_scan_task, downloader, easyeffects_manager, measurement_store, measurement_sr_session, measurement_watchdog_task, peak_monitor, subwoofer_runtime, subwoofer_runtime_link_watch_task, hardware_controller, peak_monitor_playback_armed, peak_monitor_transition_lock, peak_monitor_context_signature, easyeffects_preset_load_lock, source_transition_lock, playback_transition_coordinator, coordinator_last_successful_commit_id, external_input_loopback_module_id, external_input_loopback_source_name, bluetooth_input_source_name, bluetooth_monitor_task, bluetooth_agent_process, spotify_playerctl_watch_task, spotify_playerctl_detect_task, spotify_state_refresh_task, spotify_state_poll_task, spotify_playerctl_last_trigger_at, current_source_mode, latest_spotify_state, radio_reconnect_task
 
-    # Startup
     logger.info("Starting FXRoute... build_id=%s", _read_build_id())
     try:
         settings = get_settings()
-        logger.info(f"Configuration loaded. MUSIC_ROOT: {settings.MUSIC_ROOT}")
-        logger.info(f"Download directory: {settings.download_dir}")
+        logger.info("Configuration loaded. MUSIC_ROOT: %s", settings.MUSIC_ROOT)
+        logger.info("Download directory: %s", settings.download_dir)
 
-        # Initialize player
         player_instance = get_player()
         try:
             player_instance.start()
             logger.info("MPV player started")
             ensure_local_source_volume()
-        except MPVNotInstalledError as e:
-            logger.error(f"Failed to start MPV: {e}")
+        except MPVNotInstalledError as exc:
+            logger.error("Failed to start MPV: %s", exc)
 
-        # Initialize library scanner without blocking startup on large libraries.
         library_scanner = LibraryScanner()
         library_scanner.prepare_scan_status()
-        asyncio.create_task(asyncio.to_thread(library_scanner.refresh, True))
+        library_scan_task = _create_library_refresh_task(
+            library_scanner,
+            name="initial-library-scan",
+        )
         logger.info("Library scanner initialized; initial scan running in background")
 
-        # Initialize downloader
         downloader = Downloader()
         logger.info("Downloader initialized")
 
-        # Initialize EasyEffects manager
         easyeffects_manager = EasyEffectsManager()
         if easyeffects_manager.load_global_extras().get("loudness", {}).get("enabled"):
             set_output_volume(100)
@@ -6374,7 +6414,10 @@ async def lifespan(app: FastAPI):
         measurement_store = MeasurementStore()
         logger.info("Measurement store initialized: %s", measurement_store.measurements_dir)
         measurement_sr_session = MeasurementSampleRateSession()
-        asyncio.create_task(measurement_sr_session.run_watchdog())
+        measurement_watchdog_task = asyncio.create_task(
+            measurement_sr_session.run_watchdog(),
+            name="measurement-session-watchdog",
+        )
         logger.info("Measurement sample-rate session initialized")
 
         playback_transition_coordinator = PlaybackTransitionCoordinator(
@@ -6403,7 +6446,6 @@ async def lifespan(app: FastAPI):
 
         peak_monitor = EasyEffectsPeakMonitor(on_change=on_peak_monitor_change)
         subwoofer_runtime = Subwoofer21Runtime()
-        # Clean any orphan 2.1 helpers from a previous run before syncing state
         try:
             await subwoofer_runtime._stop_orphan_helpers()
         except Exception:
@@ -6422,7 +6464,10 @@ async def lifespan(app: FastAPI):
             if applied_output and applied_output.get("selected_output"):
                 logger.info("Re-applied persisted audio output selection: %s", applied_output["selected_output"].get("target_label"))
             await _sync_subwoofer_runtime(applied_output or get_audio_output_overview())
-            subwoofer_runtime_link_watch_task = asyncio.create_task(_subwoofer_runtime_link_watch_loop())
+            subwoofer_runtime_link_watch_task = asyncio.create_task(
+                _subwoofer_runtime_link_watch_loop(),
+                name="subwoofer-runtime-link-watch",
+            )
         except Exception as exc:
             logger.warning("Failed to re-apply persisted audio output selection: %s", exc)
 
@@ -6441,78 +6486,159 @@ async def lifespan(app: FastAPI):
         except Exception as exc:
             logger.warning("Failed to re-apply source monitoring: %s", exc)
 
-        bluetooth_monitor_task = asyncio.create_task(_bluetooth_input_monitor_loop())
+        bluetooth_monitor_task = asyncio.create_task(
+            _bluetooth_input_monitor_loop(),
+            name="bluetooth-input-monitor",
+        )
         spotify_playerctl_last_trigger_at = 0.0
         logger.info("Starting Spotify playerctl watch task")
-        spotify_playerctl_watch_task = asyncio.create_task(_spotify_playerctl_watch_loop())
+        spotify_playerctl_watch_task = asyncio.create_task(
+            _spotify_playerctl_watch_loop(),
+            name="spotify-playerctl-watch",
+        )
         logger.info("Starting Spotify metadata poll fallback task")
-        spotify_state_poll_task = asyncio.create_task(_spotify_state_poll_loop())
+        spotify_state_poll_task = asyncio.create_task(
+            _spotify_state_poll_loop(),
+            name="spotify-state-poll",
+        )
 
-        # Register callbacks for state changes
         player_instance.register_callbacks(on_player_state_change)
         downloader.register_callback(on_download_progress, asyncio.get_running_loop())
-
         logger.info("Application startup complete build_id=%s", _read_build_id())
-    except Exception as e:
-        logger.error(f"Startup failed: {e}")
-
-    yield
-
-    # Shutdown
-    if subwoofer_runtime_link_watch_task:
-        subwoofer_runtime_link_watch_task.cancel()
-        try:
-            await subwoofer_runtime_link_watch_task
-        except asyncio.CancelledError:
-            pass
-    if player_instance:
-        player_instance.stop()
-        logger.info("MPV player stopped")
-    if subwoofer_runtime:
-        await subwoofer_runtime.stop()
-        logger.info("Subwoofer runtime stopped")
-    if bluetooth_monitor_task:
-        bluetooth_monitor_task.cancel()
-        try:
-            await bluetooth_monitor_task
-        except asyncio.CancelledError:
-            pass
-    if spotify_playerctl_watch_task:
-        spotify_playerctl_watch_task.cancel()
-        try:
-            await spotify_playerctl_watch_task
-        except asyncio.CancelledError:
-            pass
-    if spotify_playerctl_detect_task:
-        spotify_playerctl_detect_task.cancel()
-        try:
-            await spotify_playerctl_detect_task
-        except asyncio.CancelledError:
-            pass
-    if spotify_state_refresh_task:
-        spotify_state_refresh_task.cancel()
-        try:
-            await spotify_state_refresh_task
-        except asyncio.CancelledError:
-            pass
-    if spotify_state_poll_task:
-        spotify_state_poll_task.cancel()
-        try:
-            await spotify_state_poll_task
-        except asyncio.CancelledError:
-            pass
-    await _disable_bluetooth_input_monitoring()
-    try:
-        set_bluetooth_receiver_enabled(False)
+        yield
+    except asyncio.CancelledError:
+        logger.warning("FXRoute startup or lifespan cancelled")
+        raise
     except Exception:
-        pass
-    await _disable_external_input_loopback()
-    if peak_monitor:
-        await peak_monitor.stop()
-        logger.info("EasyEffects output peak monitor stopped")
-    if hardware_controller:
-        hardware_controller.close()
-        logger.info("Hardware controller closed")
+        logger.exception("FXRoute startup or lifespan failed")
+        raise
+    finally:
+        await _shutdown_lifespan_resources()
+
+
+async def _shutdown_lifespan_resources() -> None:
+    global settings, player_instance, library_scanner, library_scan_task, downloader, easyeffects_manager, measurement_store, measurement_sr_session, measurement_watchdog_task, peak_monitor, subwoofer_runtime, subwoofer_runtime_link_watch_task, hardware_controller, peak_monitor_transition_lock, peak_monitor_context_signature, easyeffects_preset_load_lock, source_transition_lock, playback_transition_coordinator, external_input_loopback_module_id, external_input_loopback_source_name, bluetooth_input_source_name, bluetooth_monitor_task, bluetooth_agent_process, spotify_playerctl_watch_task, spotify_playerctl_detect_task, spotify_state_refresh_task, spotify_state_poll_task, radio_reconnect_task
+
+    async def cleanup(label: str, operation) -> None:
+        nonlocal cleanup_cancelled
+        try:
+            result = operation()
+            if inspect.isawaitable(result):
+                task = asyncio.ensure_future(result)
+                while not task.done():
+                    try:
+                        await asyncio.shield(task)
+                    except asyncio.CancelledError:
+                        cleanup_cancelled = True
+                        continue
+                task.result()
+        except asyncio.CancelledError:
+            cleanup_cancelled = True
+            logger.warning("Cleanup cancellation deferred until resources are released: %s", label)
+        except Exception:
+            logger.exception("Cleanup failed: %s", label)
+
+    cleanup_cancelled = False
+    owned_tasks = [
+        subwoofer_runtime_link_watch_task,
+        measurement_watchdog_task,
+        bluetooth_monitor_task,
+        spotify_playerctl_watch_task,
+        spotify_playerctl_detect_task,
+        spotify_state_refresh_task,
+        spotify_state_poll_task,
+        radio_reconnect_task,
+        *silent_active_watch_tasks.values(),
+        *lifecycle_background_tasks,
+    ]
+    tasks = list({task for task in owned_tasks if task is not None and not task.done()})
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        async def drain_background_tasks() -> None:
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for task, result in zip(tasks, results):
+                if isinstance(result, BaseException) and not isinstance(result, asyncio.CancelledError):
+                    logger.warning("Background task failed during cleanup: task=%s error=%s", task.get_name(), result)
+
+        await cleanup("background-tasks", drain_background_tasks)
+    silent_active_watch_tasks.clear()
+    lifecycle_background_tasks.clear()
+
+    if player_instance is not None:
+        await cleanup(
+            "player-callbacks",
+            lambda: player_instance.shutdown_callbacks(on_player_state_change),
+        )
+    await cleanup("autosub", autosub.shutdown)
+    if measurement_store is not None:
+        await cleanup("measurement-store", measurement_store.shutdown)
+    if measurement_sr_session is not None:
+        await cleanup("measurement-session", measurement_sr_session.request_close)
+    late_background_tasks = [task for task in lifecycle_background_tasks if not task.done()]
+    for task in late_background_tasks:
+        task.cancel()
+    if late_background_tasks:
+        await cleanup(
+            "late-background-tasks",
+            lambda: asyncio.gather(*late_background_tasks, return_exceptions=True),
+        )
+    lifecycle_background_tasks.clear()
+    if downloader is not None:
+        await cleanup("downloader", lambda: asyncio.to_thread(downloader.shutdown))
+    if library_scanner is not None:
+        library_scanner.cancel_refresh()
+    refresh_tasks = [task for task in library_refresh_tasks if not task.done()]
+    if refresh_tasks:
+        await cleanup(
+            "library-refresh-tasks",
+            lambda: asyncio.gather(*refresh_tasks, return_exceptions=True),
+        )
+    library_refresh_tasks.clear()
+    if player_instance is not None:
+        await cleanup("player", lambda: asyncio.to_thread(player_instance.stop))
+    if subwoofer_runtime is not None:
+        await cleanup("subwoofer-runtime", subwoofer_runtime.stop)
+    if bluetooth_agent_process is not None or bluetooth_input_source_name is not None:
+        await cleanup("bluetooth-input", _disable_bluetooth_input_monitoring)
+    await cleanup("bluetooth-receiver", lambda: asyncio.to_thread(set_bluetooth_receiver_enabled, False))
+    if external_input_loopback_module_id is not None or external_input_loopback_source_name is not None:
+        await cleanup("external-input", _disable_external_input_loopback)
+    if peak_monitor is not None:
+        await cleanup("peak-monitor", peak_monitor.stop)
+    if hardware_controller is not None:
+        await cleanup("hardware-controller", lambda: asyncio.to_thread(hardware_controller.close))
+
+    settings = None
+    player_instance = None
+    library_scanner = None
+    library_scan_task = None
+    downloader = None
+    easyeffects_manager = None
+    measurement_store = None
+    measurement_sr_session = None
+    measurement_watchdog_task = None
+    peak_monitor = None
+    subwoofer_runtime = None
+    subwoofer_runtime_link_watch_task = None
+    hardware_controller = None
+    peak_monitor_transition_lock = None
+    peak_monitor_context_signature = None
+    easyeffects_preset_load_lock = None
+    source_transition_lock = None
+    playback_transition_coordinator = None
+    external_input_loopback_module_id = None
+    external_input_loopback_source_name = None
+    bluetooth_input_source_name = None
+    bluetooth_monitor_task = None
+    bluetooth_agent_process = None
+    spotify_playerctl_watch_task = None
+    spotify_playerctl_detect_task = None
+    spotify_state_refresh_task = None
+    spotify_state_poll_task = None
+    radio_reconnect_task = None
+    if cleanup_cancelled:
+        raise asyncio.CancelledError
 
 app = FastAPI(lifespan=lifespan)
 app.include_router(radio_api_router)
@@ -8133,7 +8259,10 @@ async def refresh_library():
     if library_scanner:
         if not library_scanner.scanning:
             library_scanner.prepare_scan_status()
-            asyncio.create_task(asyncio.to_thread(library_scanner.refresh, True))
+            _create_library_refresh_task(
+                library_scanner,
+                name="manual-library-refresh",
+            )
         return {"status": "scanning", **library_scanner.status()}
     return {"status": "error", "message": "Library scanner not initialized"}
 
