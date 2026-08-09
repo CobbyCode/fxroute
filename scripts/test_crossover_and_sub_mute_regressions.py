@@ -20,6 +20,7 @@ import json
 import os
 import sys
 import tempfile
+from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
@@ -508,6 +509,68 @@ async def _preset_load_reclean_skipped_during_sync() -> None:
     print("preset-load reclean defers to an in-flight subwoofer sync: ok")
 
 
+async def _mode_switch_reapplies_compare_after_runtime_sync() -> None:
+    """Stereo recovery restores the latest A/B side after an EE restart."""
+    active_preset = "A"
+    events = []
+    ee_manager = mock.MagicMock()
+    ee_manager.load_compare_state.side_effect = [
+        {"presetA": "A", "presetB": "B", "activeSide": "A"},
+        # Model a user selecting B while runtime sync restarts EasyEffects.
+        {"presetA": "A", "presetB": "B", "activeSide": "B"},
+    ]
+    ee_manager.get_active_preset.side_effect = lambda: active_preset
+
+    def load_preset(name, *, convolver_sample_rate_hz=None):
+        nonlocal active_preset
+        events.append(("load", name, convolver_sample_rate_hz))
+        active_preset = name
+
+    ee_manager.load_preset.side_effect = load_preset
+
+    async def sync_runtime(**_kwargs):
+        nonlocal active_preset
+        events.append(("runtime-sync",))
+        active_preset = "stale-ee-restart-preset"
+
+    wait_for_ports = mock.AsyncMock(return_value=True)
+    complete_graph = {
+        "ee_ports": True,
+        "links_complete": True,
+        "links": {},
+        "signature": "stereo-complete",
+    }
+    request = replace(
+        _mode_request("stereo"),
+        output_mode_target={
+            "output_mode": {
+                "mode": "stereo",
+                "effective_output_key": "mock_output",
+            }
+        },
+    )
+    with mock.patch.multiple(
+        main,
+        easyeffects_manager=ee_manager,
+        easyeffects_preset_load_lock=asyncio.Lock(),
+        _playback_graph_diagnosis=mock.AsyncMock(return_value=complete_graph),
+        _wait_for_easyeffects_output_ports=wait_for_ports,
+        _reconcile_transition_sink_rate=mock.AsyncMock(return_value=True),
+        _sync_subwoofer_runtime=mock.AsyncMock(side_effect=sync_runtime),
+        _repair_stereo_output_links_once=mock.AsyncMock(),
+    ):
+        result = await main._coordinator_establish_effects_and_helper(request)
+
+    assert result["preset_reloaded"] is True
+    assert events == [
+        ("runtime-sync",),
+        ("load", "B", 44100),
+    ], events
+    assert active_preset == "B"
+    assert wait_for_ports.await_count == 2
+    print("mode switch restores latest compare preset after runtime sync: ok")
+
+
 async def _runtime_sync_in_progress_covers_link_repair() -> None:
     """sync_in_progress must cover the preset-load link repair lock."""
     from subwoofer_runtime import Subwoofer21Runtime
@@ -531,6 +594,7 @@ async def main_async() -> None:
     await _runtime_sync_in_progress_flag()
     await _mode_switch_volume_preserved()
     await _preset_load_reclean_skipped_during_sync()
+    await _mode_switch_reapplies_compare_after_runtime_sync()
     await _runtime_sync_in_progress_covers_link_repair()
     print("crossover / sub mute regression tests: ok")
 

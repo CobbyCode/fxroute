@@ -3833,6 +3833,8 @@ async def _coordinator_establish_effects_and_helper(
     the following adapter stages; this function only performs the idempotent
     EE/helper/link work and then uses the canonical graph readback.
     """
+    global easyeffects_preset_load_lock
+
     target_rate = request.target_rate
     if not isinstance(target_rate, int) or target_rate <= 0:
         return {
@@ -3847,6 +3849,7 @@ async def _coordinator_establish_effects_and_helper(
     preset_reloaded = False
     helper_rebuilt = False
     links_reconciled = False
+    compare_target_preset = None
     diagnosis = await _playback_graph_diagnosis(
         overview,
         target_rate=target_rate,
@@ -3893,19 +3896,19 @@ async def _coordinator_establish_effects_and_helper(
         if request.operation == "output-mode-switch" and easyeffects_manager is not None:
             compare = easyeffects_manager.load_compare_state()
             active_side = compare.get("activeSide") if compare.get("activeSide") in {"A", "B"} else None
-            target_preset = (
+            compare_target_preset = (
                 compare.get("presetA") if active_side == "A" else
                 compare.get("presetB") if active_side == "B" else
                 None
             )
             current_preset = easyeffects_manager.get_active_preset()
-            if target_preset and current_preset != target_preset:
-                easyeffects_manager.load_preset(target_preset, convolver_sample_rate_hz=target_rate)
+            if compare_target_preset and current_preset != compare_target_preset:
+                easyeffects_manager.load_preset(compare_target_preset, convolver_sample_rate_hz=target_rate)
                 needs_preset = True
                 preset_reloaded = True
                 logger.info(
                     "Coordinator output-mode switch loaded compare-active preset under gate: %s",
-                    target_preset,
+                    compare_target_preset,
                 )
         if needs_preset and not preset_reloaded:
             await _sync_easyeffects_preset_for_playback_samplerate(
@@ -3941,6 +3944,41 @@ async def _coordinator_establish_effects_and_helper(
                 _rate_lock_held=False,
                 target_overview=overview,
             )
+            if easyeffects_manager is not None:
+                if easyeffects_preset_load_lock is None:
+                    easyeffects_preset_load_lock = asyncio.Lock()
+                async with easyeffects_preset_load_lock:
+                    # A/B can change while runtime sync recovers the graph, so
+                    # use the current side rather than the pre-sync snapshot.
+                    compare = easyeffects_manager.load_compare_state()
+                    active_side = compare.get("activeSide") if compare.get("activeSide") in {"A", "B"} else None
+                    compare_target_preset = (
+                        compare.get("presetA") if active_side == "A" else
+                        compare.get("presetB") if active_side == "B" else
+                        None
+                    )
+                    if (
+                        compare_target_preset
+                        and easyeffects_manager.get_active_preset() != compare_target_preset
+                    ):
+                        # Stereo graph recovery may restart EasyEffects after
+                        # the first reconciliation, resurrecting EE's own last
+                        # preset and stale filter gain work point.
+                        easyeffects_manager.load_preset(
+                            compare_target_preset,
+                            convolver_sample_rate_hz=target_rate,
+                        )
+                        if not await _wait_for_easyeffects_output_ports(ee_port_timeout_ms):
+                            raise RuntimeError(
+                                "Coordinator compare preset restore did not recreate "
+                                "EasyEffects output ports"
+                            )
+                        preset_reloaded = True
+                        logger.info(
+                            "Coordinator output-mode switch restored compare-active preset "
+                            "after runtime sync: %s",
+                            compare_target_preset,
+                        )
             helper_rebuilt = mode in OUTPUT_MODE_SUBWOOFER_MODES
             if mode in OUTPUT_MODE_SUBWOOFER_MODES:
                 await _coordinator_reconcile_subwoofer_links_only()
