@@ -100,6 +100,7 @@
         const dipGuard = String(settings.dipGuard || 'off');
         const safetyMarginDb = Math.max(0, Number(settings.safetyMarginDb) || 1);
         const autoGainEnabled = settings.autoGainEnabled !== false;
+        const confidencePoints = Array.isArray(settings.correctionConfidence) ? settings.correctionConfidence : [];
         const requestedCorrections = points.map(([frequency, measuredDb]) => {
             const targetDb = getMeasurementConvolverCurveDbFromPoints(curvePoints, frequency);
             const requestedDb = targetDb - measuredDb;
@@ -109,10 +110,14 @@
         const corrections = requestedCorrections.map((item, index) => {
             const guarded = applyMeasurementConvolverDipGuard(requestedCorrections, index, dipGuard);
             dipGuardReductionMaxDb = Math.max(dipGuardReductionMaxDb, guarded.reductionDb || 0);
+            const confidence = getMeasurementCorrectionConfidence(confidencePoints, item.frequency);
+            const confidenceScale = guarded.correctionDb >= 0 ? confidence.boostConfidence : confidence.cutConfidence;
+            const constrainedDb = guarded.correctionDb * confidenceScale;
             return {
                 ...item,
                 dipGuardDb: Math.round((guarded.reductionDb || 0) * 10) / 10,
-                correctionDb: Math.min(maxBoostDb, Math.max(maxCutDb, guarded.correctionDb)),
+                confidence: Math.round(confidenceScale * 1000) / 1000,
+                correctionDb: Math.min(maxBoostDb, Math.max(maxCutDb, constrainedDb)),
             };
         });
         const maxPositive = Math.max(0, ...corrections.map((item) => item.correctionDb));
@@ -120,6 +125,23 @@
         const autoGainDb = autoGainEnabled ? Math.round((-(maxPositive + safetyMarginDb)) * 2) / 2 : 0;
         const lowBassBoost = corrections.some((item) => item.frequency < 40 && item.correctionDb > 0.25);
         return { corrections, maxPositive, minCorrection, autoGainDb, lowBassBoost, dipGuardReductionMaxDb: Math.round(dipGuardReductionMaxDb * 10) / 10 };
+    }
+
+    function getMeasurementCorrectionConfidence(points = [], frequencyHz = 20) {
+        if (!points.length) return { boostConfidence: 1, cutConfidence: 1 };
+        let nearest = points[0];
+        let distance = Math.abs(Math.log(Math.max(1, frequencyHz)) - Math.log(Math.max(1, Number(nearest.frequency) || 1)));
+        for (let index = 1; index < points.length; index += 1) {
+            const candidateDistance = Math.abs(Math.log(Math.max(1, frequencyHz)) - Math.log(Math.max(1, Number(points[index].frequency) || 1)));
+            if (candidateDistance < distance) {
+                nearest = points[index];
+                distance = candidateDistance;
+            }
+        }
+        return {
+            boostConfidence: Math.min(1, Math.max(0, Number(nearest.boostConfidence) || 0)),
+            cutConfidence: Math.min(1, Math.max(0, Number(nearest.cutConfidence) || 0)),
+        };
     }
 
     function interpolateMeasurementConvolverCorrection(analysis, frequencyHz, autoGainDb) {
@@ -523,6 +545,7 @@
         getMeasurementConvolverCurveDbFromPoints,
         getMeasurementConvolverAdaptiveDipGuardStrength,
         applyMeasurementConvolverDipGuard,
+        getMeasurementCorrectionConfidence,
         analyzeMeasurementConvolverCorrections,
         interpolateMeasurementConvolverCorrection,
         buildMeasurementConvolverMagnitudeBins,

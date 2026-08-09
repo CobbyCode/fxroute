@@ -1985,6 +1985,7 @@ body {
 
 #measurement-start,
 #measurement-repeat-start,
+#measurement-hybrid-open,
 #measurement-auto-sub-start,
 #measurement-spl-calibration-open {
     width: 176px;
@@ -2036,6 +2037,145 @@ body {
 .spl-calibration-dialog #spl-calibration-status {
     margin-top: 0.35rem;
 }
+
+.hybrid-measurement-overlay {
+    z-index: 1230;
+    align-items: center;
+}
+
+.hybrid-measurement-dialog {
+    position: relative;
+    width: min(980px, 100%);
+    max-height: calc(100dvh - 2rem);
+    overflow-y: auto;
+}
+
+.hybrid-mode-label {
+    margin: 0 0 0.25rem;
+    color: var(--accent);
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.hybrid-wizard-grid {
+    display: grid;
+    grid-template-columns: minmax(300px, 0.9fr) minmax(320px, 1.1fr);
+    gap: 1.25rem;
+}
+
+.hybrid-room-view {
+    position: relative;
+    min-height: 470px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    background:
+        radial-gradient(circle at 50% 78%, color-mix(in srgb, var(--accent) 11%, transparent), transparent 34%),
+        linear-gradient(160deg, var(--bg-elevated), var(--bg-card));
+}
+
+.hybrid-speaker,
+.hybrid-sub,
+.hybrid-seat,
+.hybrid-mic {
+    position: absolute;
+    display: grid;
+    place-items: center;
+    transform: translate(-50%, -50%);
+}
+
+.hybrid-speaker {
+    top: 16%;
+    width: 58px;
+    height: 74px;
+    border: 2px solid var(--border);
+    border-radius: 12px 12px 18px 18px;
+    background: var(--bg-card);
+    color: var(--text-secondary);
+    font-size: 1.35rem;
+    font-weight: 800;
+    transition: 180ms ease;
+}
+
+.hybrid-speaker-left { left: 23%; }
+.hybrid-speaker-right { left: 77%; }
+.hybrid-speaker.is-active {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent) 14%, transparent), 0 0 28px color-mix(in srgb, var(--accent) 24%, transparent);
+    color: var(--text-primary);
+}
+
+.hybrid-sub {
+    top: 34%;
+    width: 48px;
+    height: 48px;
+    border: 1px solid var(--border);
+    border-radius: 50%;
+    background: var(--bg-card);
+    color: var(--text-secondary);
+    font-size: 0.62rem;
+}
+.hybrid-sub-left { left: 11%; }
+.hybrid-sub-right { left: 89%; }
+.hybrid-sub.is-active { border-color: var(--accent); color: var(--accent); }
+
+.hybrid-seat {
+    left: 50%;
+    top: 78%;
+    width: 116px;
+    height: 54px;
+    border-radius: 22px 22px 10px 10px;
+    background: color-mix(in srgb, var(--text-secondary) 18%, var(--bg-card));
+    color: var(--text-secondary);
+    font-size: 0.72rem;
+}
+
+.hybrid-mic {
+    width: 38px;
+    height: 38px;
+    border: 1px dashed var(--border);
+    border-radius: 50%;
+    color: transparent;
+    font-size: 0.65rem;
+    transition: 180ms ease;
+}
+.hybrid-mic-direct-left { left: 23%; top: 38%; }
+.hybrid-mic-direct-right { left: 77%; top: 38%; }
+.hybrid-mic-left { left: 37%; top: 68%; }
+.hybrid-mic-mlp { left: 50%; top: 68%; }
+.hybrid-mic-right { left: 63%; top: 68%; }
+.hybrid-mic.is-target {
+    border: 2px solid var(--success);
+    background: color-mix(in srgb, var(--success) 18%, var(--bg-card));
+    box-shadow: 0 0 0 7px color-mix(in srgb, var(--success) 10%, transparent);
+    color: var(--text-primary);
+}
+
+.hybrid-step-card {
+    display: flex;
+    min-height: 470px;
+    flex-direction: column;
+    padding: 1.25rem;
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    background: var(--bg-card);
+}
+.hybrid-progress-row { display: flex; justify-content: space-between; color: var(--text-secondary); font-size: 0.8rem; }
+.hybrid-step-card h3 { margin: 1.75rem 0 0.65rem; font-size: clamp(1.4rem, 3vw, 2rem); }
+.hybrid-instruction { margin: 0; color: var(--text-primary); font-size: 1.05rem; line-height: 1.5; }
+.hybrid-instruction.is-move::before { content: 'Move microphone'; display: block; margin-bottom: 0.3rem; color: var(--accent); font-size: 0.72rem; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; }
+.hybrid-instruction:not(.is-move)::before { content: 'Keep microphone here'; display: block; margin-bottom: 0.3rem; color: var(--success); font-size: 0.72rem; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; }
+.hybrid-active { color: var(--text-secondary); }
+.hybrid-status { min-height: 3rem; margin-top: auto; padding: 0.8rem; border-radius: 12px; background: var(--bg-elevated); color: var(--text-secondary); }
+.hybrid-status[data-level="ok"] { color: var(--success); }
+.hybrid-status[data-level="error"] { color: var(--danger); }
+.hybrid-action-row { display: grid; grid-template-columns: minmax(90px, 0.35fr) minmax(180px, 1fr); gap: 0.7rem; margin-top: 0.9rem; }
+.hybrid-action-row button { min-height: 54px; }
+.hybrid-summary { display: grid; gap: 0.45rem; margin: 0.7rem 0; }
+.hybrid-summary-item { padding-left: 1.2rem; color: var(--text-secondary); font-size: 0.84rem; }
+.hybrid-summary-item::before { content: '✓'; float: left; margin-left: -1.2rem; color: var(--success); }
 
 .measurement-channel-chip-row,
 .measurement-smoothing-chips,
@@ -2725,7 +2865,8 @@ body {
 
     #measurement-start,
     #measurement-repeat-start,
-    #measurement-auto-sub-start,
+    #measurement-hybrid-open,
+#measurement-auto-sub-start,
     #measurement-spl-calibration-open {
         width: 100%;
         min-width: 0;
@@ -2737,6 +2878,18 @@ body {
         padding: 0.85rem;
         border-radius: 16px;
     }
+
+    .hybrid-measurement-dialog {
+        width: min(100%, calc(100vw - 1rem));
+        max-height: calc(100dvh - 1rem);
+        padding: 0.85rem;
+        border-radius: 16px;
+    }
+
+    .hybrid-wizard-grid { grid-template-columns: 1fr; }
+    .hybrid-room-view { min-height: 300px; }
+    .hybrid-step-card { min-height: 390px; }
+    .hybrid-action-row { position: sticky; bottom: -0.85rem; margin-inline: -0.85rem; padding: 0.75rem 0.85rem; background: var(--bg-card); }
 
     .measurement-channel-chip-row,
     .measurement-smoothing-chips {

@@ -12,7 +12,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=0.4.458">
     <link rel="manifest" href="/static/site.webmanifest?v=0.4.458">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/static/style.css?v=0.9.3-release2">
+    <link rel="stylesheet" href="/static/style.css?v=0.9.3-release3">
 </head>
 <body>
     <!-- Offline indicator -->
@@ -845,6 +845,10 @@
                                         <button id="measurement-repeat-start" class="btn-secondary" type="button">Start L/R Repeat</button>
                                         <span class="measurement-repeat-help">Measures L/R three times at the same mic position.</span>
                                     </div>
+                                    <div class="measurement-workflow-group">
+                                        <button id="measurement-hybrid-open" class="btn-primary" type="button">Advanced Measurement</button>
+                                        <span class="measurement-repeat-help">Guided direct, listening-area and system integration measurement.</span>
+                                    </div>
                                     <div class="measurement-workflow-group measurement-workflow-auto-sub hidden" id="measurement-auto-sub-group">
                                         <div class="measurement-workflow-row">
                                             <button id="measurement-auto-sub-start" class="btn-primary" type="button">Auto Sub Optimize</button>
@@ -1139,6 +1143,45 @@
                 </div>
             </section>
         </div>
+        <div id="measurement-hybrid-panel" class="manage-overlay measurement-overlay hybrid-measurement-overlay hidden">
+            <div class="manage-overlay-backdrop"></div>
+            <section class="manage-dialog hybrid-measurement-dialog" role="dialog" aria-modal="true" aria-labelledby="measurement-hybrid-title">
+                <div class="manage-dialog-header measurement-dialog-header">
+                    <div>
+                        <p id="measurement-hybrid-mode" class="hybrid-mode-label"></p>
+                        <h2 id="measurement-hybrid-title" class="section-title">Advanced Measurement</h2>
+                        <p class="section-subtitle">Speaker characterisation, listening-area stability and system integration.</p>
+                    </div>
+                    <button id="measurement-hybrid-close" class="btn-ghost btn-close-manage" type="button" aria-label="Close advanced measurement">✕</button>
+                </div>
+                <div class="hybrid-wizard-grid">
+                    <div class="hybrid-room-view" aria-label="Top view of speakers and listening positions">
+                        <div class="hybrid-speaker hybrid-speaker-left" data-hybrid-speaker="left">L</div>
+                        <div class="hybrid-speaker hybrid-speaker-right" data-hybrid-speaker="right">R</div>
+                        <div class="hybrid-sub hybrid-sub-left" data-hybrid-speaker="sub" data-hybrid-sub>SUB</div>
+                        <div class="hybrid-sub hybrid-sub-right" data-hybrid-speaker="sub" data-hybrid-sub>SUB</div>
+                        <div class="hybrid-seat">Listening seat</div>
+                        <div class="hybrid-mic hybrid-mic-direct-left" data-hybrid-position="direct-left">Mic</div>
+                        <div class="hybrid-mic hybrid-mic-direct-right" data-hybrid-position="direct-right">Mic</div>
+                        <div class="hybrid-mic hybrid-mic-left" data-hybrid-position="left">Mic</div>
+                        <div class="hybrid-mic hybrid-mic-mlp" data-hybrid-position="mlp">Mic</div>
+                        <div class="hybrid-mic hybrid-mic-right" data-hybrid-position="right">Mic</div>
+                    </div>
+                    <div class="hybrid-step-card">
+                        <div class="hybrid-progress-row"><span>Progress</span><strong id="measurement-hybrid-progress">0 / 0</strong></div>
+                        <h3 id="measurement-hybrid-step-title">Advanced Measurement</h3>
+                        <p id="measurement-hybrid-instruction" class="hybrid-instruction"></p>
+                        <p id="measurement-hybrid-active" class="hybrid-active"></p>
+                        <div id="measurement-hybrid-status" class="hybrid-status" aria-live="polite"></div>
+                        <div id="measurement-hybrid-summary" class="hybrid-summary hidden"></div>
+                        <div class="hybrid-action-row">
+                            <button id="measurement-hybrid-back" class="btn-secondary" type="button">Back</button>
+                            <button id="measurement-hybrid-primary" class="btn-primary" type="button">Start sweep</button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </div>
     </main>
 
     <!-- Playback bar (fixed bottom) -->
@@ -1234,8 +1277,9 @@
     <!-- Toast notifications -->
     <div id="toast-container" class="toast-container"></div>
 
-    <script src="/static/measurement_dsp.js?v=0.9.3"></script>
+    <script src="/static/measurement_dsp.js?v=0.9.3-release1"></script>
+    <script src="/static/hybrid_measurement.js?v=0.9.9-release1"></script>
     <script src="/static/radio.js?v=0.9.3"></script>
-    <script src="/static/app.js?v=0.9.9-release3"></script>
+    <script src="/static/app.js?v=0.9.9-release4"></script>
 </body>
 </html>

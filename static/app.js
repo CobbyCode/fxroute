@@ -9,6 +9,7 @@ const CONFIG = {
     maxReconnectAttempts: 10,
 };
 const MeasurementDsp = window.FXRouteMeasurementDsp || {};
+const HybridMeasurement = window.FXRouteHybridMeasurement || {};
 let radioModule = null;
 // State
 let state = {
@@ -147,6 +148,18 @@ let state = {
             irLength: '8192',
             dragMode: null,
             draft: { left: null, right: null, presetName: '', nameTouched: false, notice: '' },
+        },
+        hybridWizard: {
+            open: false,
+            running: false,
+            jobId: '',
+            stepIndex: 0,
+            mode: 'stereo',
+            sequence: [],
+            captures: [],
+            status: '',
+            quality: null,
+            profile: null,
         },
         peqAssistant: {
             enabled: false,
@@ -428,6 +441,18 @@ const elements = {
     measurementAutoSubStartBtn: document.getElementById('measurement-auto-sub-start'),
     measurementAutoSubGroup: document.getElementById('measurement-auto-sub-group'),
     measurementAutoSubStatus: document.getElementById('measurement-auto-sub-status'),
+    measurementHybridOpenBtn: document.getElementById('measurement-hybrid-open'),
+    measurementHybridPanel: document.getElementById('measurement-hybrid-panel'),
+    measurementHybridCloseBtn: document.getElementById('measurement-hybrid-close'),
+    measurementHybridMode: document.getElementById('measurement-hybrid-mode'),
+    measurementHybridProgress: document.getElementById('measurement-hybrid-progress'),
+    measurementHybridTitle: document.getElementById('measurement-hybrid-step-title'),
+    measurementHybridInstruction: document.getElementById('measurement-hybrid-instruction'),
+    measurementHybridActive: document.getElementById('measurement-hybrid-active'),
+    measurementHybridStatus: document.getElementById('measurement-hybrid-status'),
+    measurementHybridPrimaryBtn: document.getElementById('measurement-hybrid-primary'),
+    measurementHybridBackBtn: document.getElementById('measurement-hybrid-back'),
+    measurementHybridSummary: document.getElementById('measurement-hybrid-summary'),
     measurementSaveBtn: document.getElementById('measurement-save'),
     measurementClearBtn: document.getElementById('measurement-clear'),
     measurementAssistMode: document.getElementById('measurement-assist-mode'),
@@ -616,6 +641,7 @@ document.addEventListener('DOMContentLoaded', () => {
     try { setupDownloadActions(); } catch(e) { console.error('setupDownloadActions crashed:', e); }
     try { setupEffectsActions(); } catch(e) { console.error('setupEffectsActions crashed:', e); }
     try { setupMeasurementActions(); } catch(e) { console.error('setupMeasurementActions crashed:', e); }
+    try { setupHybridMeasurementWizard(); } catch(e) { console.error('setupHybridMeasurementWizard crashed:', e); }
     try { primeSubwooferPreview(); } catch(e) { console.error('primeSubwooferPreview crashed:', e); }
     try { window.addEventListener('load', requestSubwooferPreviewRedrawFromState, { once: true }); } catch(e) { console.error('subwoofer preview load hook crashed:', e); }
     try { fetchInitialData(); } catch(e) { console.error('fetchInitialData crashed:', e); }
@@ -5997,12 +6023,14 @@ function normalizeMeasurementEntry(measurement = {}, index = 0) {
         created_at: String(measurement.created_at || ''),
         channel: String(measurement.channel || 'left'),
         measurement_kind: String(measurement.measurement_kind || ''),
+        measurement_role: String(measurement.measurement_role || ''),
         input_device: measurement.input_device || {},
         input_channels: measurement.input_channels || {},
         calibration: measurement.calibration || {},
         summary: measurement.summary || {},
         review_summary: measurement.review_summary || {},
         analysis: measurement.analysis || {},
+        audio_output_context: measurement.audio_output_context || {},
         storage_path: measurement.storage_path || '',
         traces,
         review_traces: reviewTraces,
@@ -6772,10 +6800,15 @@ function analyzeMeasurementConvolverSide(side = 'left') {
     const points = getMeasurementConvolverTracePoints(side).filter(([frequency]) => frequency >= conv.rangeStartHz && frequency <= conv.rangeEndHz);
     if (!points.length) return null;
     const curve = getMeasurementConvolverCurve(conv.targetCurve);
+    const measurement = getMeasurementConvolverMeasurementForSide(side);
+    const analysisSettings = {
+        ...conv,
+        correctionConfidence: measurement?.analysis?.hybrid_constraints || [],
+    };
     return {
         side,
         points: points.length,
-        ...MeasurementDsp.analyzeMeasurementConvolverCorrections(points, curve.points || measurementConvolverCurves.neutral.points, conv),
+        ...MeasurementDsp.analyzeMeasurementConvolverCorrections(points, curve.points || measurementConvolverCurves.neutral.points, analysisSettings),
     };
 }
 
@@ -9634,6 +9667,267 @@ async function startLrRepeatMeasurement() {
     state.measurement.statusText = formatMeasurementJobStatusText(job, 'Preparing L/R repeat…');
     renderMeasurementPanel();
     await pollMeasurementJob(state.measurement.activeJobId);
+}
+
+function getHybridWizardState() {
+    if (!state.measurement.hybridWizard || typeof state.measurement.hybridWizard !== 'object') {
+        state.measurement.hybridWizard = {
+            open: false, running: false, jobId: '', stepIndex: 0, mode: 'stereo',
+            sequence: [], captures: [], status: '', quality: null, profile: null,
+        };
+    }
+    return state.measurement.hybridWizard;
+}
+
+function getCurrentOutputModeName() {
+    return normalizeOutputModeName(state.settings.audioOutputs.output_mode?.mode || 'stereo');
+}
+
+function openHybridMeasurementWizard() {
+    const wizard = getHybridWizardState();
+    const sequence = HybridMeasurement.buildSequence(getCurrentOutputModeName());
+    Object.assign(wizard, {
+        open: true,
+        running: false,
+        jobId: '',
+        stepIndex: 0,
+        mode: sequence.mode,
+        sequence: sequence.steps,
+        captures: [],
+        status: measurementModeReady() ? 'Ready for the first measurement.' : 'Complete Measurement Setup before starting.',
+        quality: null,
+        profile: null,
+    });
+    elements.measurementHybridPanel?.classList.remove('hidden');
+    renderHybridMeasurementWizard();
+    elements.measurementHybridPrimaryBtn?.focus();
+}
+
+async function closeHybridMeasurementWizard() {
+    const wizard = getHybridWizardState();
+    const wasRunning = wizard.running && wizard.jobId;
+    if (wasRunning) {
+        await fetch(`/api/measurements/jobs/${encodeURIComponent(wizard.jobId)}/cancel`, { method: 'POST' }).catch(() => null);
+    }
+    wizard.open = false;
+    if (!wasRunning) {
+        wizard.running = false;
+        wizard.jobId = '';
+        state.measurement.activeJobId = '';
+        state.measurement.activeMeasurementKind = '';
+    }
+    elements.measurementHybridPanel?.classList.add('hidden');
+    elements.measurementHybridOpenBtn?.focus();
+    renderMeasurementPanelDefensively('hybrid wizard close');
+}
+
+function renderHybridRoomDiagram(step = {}, mode = 'stereo') {
+    const panel = elements.measurementHybridPanel;
+    if (!panel) return;
+    panel.querySelectorAll('[data-hybrid-position]').forEach(node => {
+        node.classList.toggle('is-target', node.getAttribute('data-hybrid-position') === step.position);
+    });
+    panel.querySelectorAll('[data-hybrid-speaker]').forEach(node => {
+        const speaker = node.getAttribute('data-hybrid-speaker');
+        const active = step.channel === 'stereo' || speaker === step.channel || (speaker === 'sub' && mode !== 'stereo');
+        node.classList.toggle('is-active', active);
+    });
+    panel.querySelectorAll('[data-hybrid-sub]').forEach(node => node.classList.toggle('hidden', mode === 'stereo'));
+}
+
+function renderHybridMeasurementWizard() {
+    const wizard = getHybridWizardState();
+    if (!wizard.open || !elements.measurementHybridPanel) return;
+    const complete = !!wizard.profile;
+    const current = wizard.sequence[wizard.stepIndex] || null;
+    if (elements.measurementHybridMode) elements.measurementHybridMode.textContent = `${HybridMeasurement.MODE_LABELS[wizard.mode] || wizard.mode} output mode`;
+    if (elements.measurementHybridProgress) {
+        const done = complete ? wizard.sequence.length : wizard.stepIndex;
+        elements.measurementHybridProgress.textContent = `${done} / ${wizard.sequence.length}`;
+    }
+    if (elements.measurementHybridTitle) elements.measurementHybridTitle.textContent = complete ? 'Measurement sequence complete' : (current?.title || 'Advanced Measurement');
+    if (elements.measurementHybridInstruction) {
+        const instruction = complete ? 'The role-aware correction model is ready.' : (current?.instruction || '');
+        elements.measurementHybridInstruction.textContent = instruction;
+        elements.measurementHybridInstruction.classList.toggle('is-move', !!current?.move && !complete);
+    }
+    if (elements.measurementHybridActive) elements.measurementHybridActive.textContent = complete ? '' : `Active during sweep: ${current?.active || ''}`;
+    if (elements.measurementHybridStatus) {
+        elements.measurementHybridStatus.textContent = wizard.status || '';
+        elements.measurementHybridStatus.dataset.level = wizard.quality?.level || '';
+    }
+    if (elements.measurementHybridPrimaryBtn) {
+        elements.measurementHybridPrimaryBtn.textContent = complete ? 'Open filter generator' : (wizard.running ? 'Measuring…' : (wizard.quality?.retry ? 'Repeat sweep' : 'Start sweep'));
+        elements.measurementHybridPrimaryBtn.disabled = wizard.running || (!complete && !measurementModeReady());
+    }
+    if (elements.measurementHybridBackBtn) elements.measurementHybridBackBtn.disabled = wizard.running || wizard.stepIndex === 0 || complete;
+    if (elements.measurementHybridSummary) {
+        elements.measurementHybridSummary.classList.toggle('hidden', !complete);
+        if (complete) {
+            const left = wizard.profile.left.transition;
+            const right = wizard.profile.right.transition;
+            const integration = wizard.profile.integration;
+            elements.measurementHybridSummary.innerHTML = [
+                'Direct response L/R captured',
+                'Primary position captured; MLP timing reference established',
+                'Listening-area stability analysed (70 / 15 / 15)',
+                `Hybrid transition: L ${Math.round(left.startHz)}–${Math.round(left.endHz)} Hz · R ${Math.round(right.startHz)}–${Math.round(right.endHz)} Hz`,
+                wizard.mode === 'stereo' ? 'L/R complex sum predicted from MLP captures' : `System integration: ${escapeHtml(integration.status)}`,
+            ].map(item => `<div class="hybrid-summary-item">${item}</div>`).join('');
+        }
+    }
+    renderHybridRoomDiagram(current || {}, wizard.mode);
+}
+
+function buildHybridMeasurementForm(step) {
+    normalizeMeasurementInputChannelSelections();
+    const formData = new FormData();
+    formData.append('input_id', state.measurement.selectedInputId);
+    formData.append('channel', step.channel);
+    formData.append('measurement_role', step.role);
+    formData.append('mic_input_channel', state.measurement.selectedMicInputChannel || '1');
+    formData.append('reference_input_channel', getMeasurementReferenceWarning() ? '' : (state.measurement.selectedReferenceInputChannel || ''));
+    const calibrationFile = elements.measurementCalibrationFile?.files?.[0];
+    if (calibrationFile) formData.append('calibration_file', calibrationFile);
+    else if (state.measurement.selectedCalibrationRef) formData.append('calibration_ref', state.measurement.selectedCalibrationRef);
+    return formData;
+}
+
+async function runHybridWizardSweep() {
+    const wizard = getHybridWizardState();
+    if (wizard.running || wizard.profile) return;
+    const step = wizard.sequence[wizard.stepIndex];
+    if (!step) return;
+    if (getCurrentOutputModeName() !== wizard.mode) {
+        wizard.status = 'Output mode changed. Close and restart the wizard so measurements are not mixed.';
+        wizard.quality = { level: 'error', retry: false };
+        renderHybridMeasurementWizard();
+        return;
+    }
+    wizard.running = true;
+    wizard.quality = null;
+    wizard.status = 'Preparing sweep…';
+    renderHybridMeasurementWizard();
+    try {
+        await flushSubwooferSettingsBeforeMeasurement();
+        const response = await fetch('/api/measurements/start', { method: 'POST', body: buildHybridMeasurementForm(step) });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(formatTransitionErrorDetail(data.detail, 'Failed to start advanced measurement'));
+        wizard.jobId = String(data.job?.id || '');
+        state.measurement.activeJobId = wizard.jobId;
+        state.measurement.activeMeasurementKind = 'hybrid';
+        for (let attempt = 0; attempt < 360; attempt += 1) {
+            const poll = await fetch(`/api/measurements/jobs/${encodeURIComponent(wizard.jobId)}`);
+            const payload = await poll.json().catch(() => ({}));
+            if (!poll.ok) throw new Error(formatTransitionErrorDetail(payload.detail, 'Failed to fetch advanced measurement'));
+            const job = payload.job || {};
+            const status = getMeasurementJobStatus(job);
+            wizard.status = formatMeasurementJobStatusText(job, 'Measurement running…');
+            renderHybridMeasurementWizard();
+            if (MEASUREMENT_JOB_SUCCESS_STATES.has(status)) {
+                const measurement = normalizeMeasurementEntry(getMeasurementJobResultMeasurement(job), 0);
+                if (step.role === 'direct' && !measurement.analysis?.direct_response?.usable) {
+                    wizard.quality = { level: 'error', retry: true };
+                    wizard.status = 'Direct sound or a usable reflection-free window was not found. Adjust the microphone and repeat.';
+                    return;
+                }
+                wizard.captures = wizard.captures.filter(item => item.stepId !== step.id);
+                wizard.captures.push({ stepId: step.id, role: step.role, position: step.position, channel: step.channel, measurement });
+                const direct = measurement.analysis?.direct_response;
+                wizard.quality = { level: 'ok', retry: false };
+                wizard.status = direct
+                    ? `Good · ${direct.usable_window_ms} ms window · reliable above about ${Math.round(direct.lower_reliable_hz)} Hz.`
+                    : 'Good measurement.';
+                wizard.stepIndex += 1;
+                if (wizard.stepIndex >= wizard.sequence.length) {
+                    wizard.profile = HybridMeasurement.buildProfile(wizard.captures, wizard.mode);
+                    wizard.status = 'All required measurements passed.';
+                }
+                return;
+            }
+            if (MEASUREMENT_JOB_FAILED_STATES.has(status)) throw new Error(formatTransitionErrorDetail(job.error?.detail, job.message || 'Measurement failed'));
+            if (MEASUREMENT_JOB_CANCELLED_STATES.has(status)) throw new Error('Measurement cancelled.');
+            await sleep(800);
+        }
+        throw new Error('Measurement timed out.');
+    } catch (error) {
+        wizard.status = error.message || 'Advanced measurement failed.';
+        wizard.quality = { level: 'error', retry: true };
+    } finally {
+        wizard.running = false;
+        wizard.jobId = '';
+        state.measurement.activeJobId = '';
+        state.measurement.activeMeasurementKind = '';
+        renderHybridMeasurementWizard();
+        renderMeasurementPanelDefensively('hybrid wizard sweep completion');
+    }
+}
+
+function openHybridProfileInConvolver() {
+    const wizard = getHybridWizardState();
+    if (!wizard.profile) return;
+    const buildSide = (side) => {
+        const model = wizard.profile[side];
+        const timing = model.timingMeasurement;
+        return normalizeMeasurementEntry({
+            id: `hybrid-${side}-${Date.now()}`,
+            name: `Advanced ${HybridMeasurement.MODE_LABELS[wizard.mode]} ${side === 'left' ? 'L' : 'R'}`,
+            created_at: new Date().toISOString(),
+            channel: side,
+            measurement_kind: 'hybrid-correction-model-v1',
+            measurement_role: 'hybrid-model',
+            input_device: timing.input_device,
+            input_channels: timing.input_channels,
+            calibration: timing.calibration,
+            audio_output_context: timing.audio_output_context,
+            traces: [{ kind: 'hybrid-response', role: 'trusted', label: `Hybrid ${side}`, points: model.points }],
+            analysis: {
+                ...timing.analysis,
+                hybrid_constraints: model.constraints,
+                hybrid_transition: model.transition,
+                hybrid_source_roles: ['direct', 'mlp', 'secondary', 'integration'],
+                integration_validation: wizard.profile.integration,
+            },
+        }, 0);
+    };
+    const pair = [buildSide('left'), buildSide('right')];
+    state.measurement.pendingRepeatMeasurements = pair;
+    state.measurement.currentMeasurement = pair[0];
+    state.measurement.currentMeasurementName = `Advanced ${HybridMeasurement.MODE_LABELS[wizard.mode]}`;
+    state.measurement.currentMeasurementSaved = false;
+    setMeasurementAssistMode('convolver');
+    void closeHybridMeasurementWizard();
+    renderMeasurementPanel();
+    elements.measurementConvolverPanel?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function setupHybridMeasurementWizard() {
+    if (!elements.measurementHybridPanel || !elements.measurementHybridOpenBtn) return;
+    elements.measurementHybridOpenBtn.addEventListener('click', openHybridMeasurementWizard);
+    elements.measurementHybridCloseBtn?.addEventListener('click', () => { void closeHybridMeasurementWizard(); });
+    elements.measurementHybridPrimaryBtn?.addEventListener('click', () => {
+        if (getHybridWizardState().profile) openHybridProfileInConvolver();
+        else void runHybridWizardSweep();
+    });
+    elements.measurementHybridBackBtn?.addEventListener('click', () => {
+        const wizard = getHybridWizardState();
+        if (!wizard.running && wizard.stepIndex > 0) {
+            wizard.stepIndex -= 1;
+            wizard.quality = null;
+            wizard.status = 'Previous step selected. Existing result will be replaced when measured again.';
+            renderHybridMeasurementWizard();
+        }
+    });
+    elements.measurementHybridPanel.querySelector('.manage-overlay-backdrop')?.addEventListener('click', () => {
+        if (!getHybridWizardState().running) void closeHybridMeasurementWizard();
+    });
+    document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape' && getHybridWizardState().open) {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            void closeHybridMeasurementWizard();
+        }
+    }, true);
 }
 
 async function startMeasurement() {

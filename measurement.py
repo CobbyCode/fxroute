@@ -23,6 +23,7 @@ from uuid import uuid4
 
 import numpy as np
 
+from hybrid_measurement import analyze_direct_window, build_complex_response, build_gated_response
 from samplerate import (
     OUTPUT_MODE_SUBWOOFER_21,
     OUTPUT_MODE_SUBWOOFER_22,
@@ -304,6 +305,7 @@ class MeasurementStore:
         sweep_profile: dict[str, float] | None = None,
         measurement_scope: str = MEASUREMENT_SCOPE_ACTIVE_CHAIN,
         playback_gain: float | None = None,
+        measurement_role: str = "",
     ) -> dict[str, Any]:
         if self._shutdown:
             raise RuntimeError("Measurement store is shutting down")
@@ -354,6 +356,9 @@ class MeasurementStore:
             calibration_ref=calibration_ref,
         )
         normalized_scope = self._normalize_measurement_scope(measurement_scope)
+        normalized_role = str(measurement_role or "").strip().lower()
+        if normalized_role not in {"", "direct", "mlp", "secondary", "integration"}:
+            raise ValueError("measurement_role must be direct, mlp, secondary, or integration")
         normalized_playback_gain = None
         if playback_gain is not None:
             try:
@@ -389,6 +394,7 @@ class MeasurementStore:
             "scope_note": MEASUREMENT_SCOPE_NOTE,
             "measurement_scope": normalized_scope,
             "playback_gain": normalized_playback_gain,
+            "measurement_role": normalized_role,
             "result": None,
             "error": None,
             "sweep_profile": sweep_profile if isinstance(sweep_profile, dict) and sweep_profile else None,
@@ -2483,6 +2489,7 @@ class MeasurementStore:
                 "electrical_reference": electrical_reference_channel_index + 1 if use_electrical_reference else None,
                 "reference_disabled_reason": str(input_channels.get("reference_disabled_reason") or ""),
             },
+            measurement_role=str(job.get("measurement_role") or ""),
         )
         if mic_auto_boosted and isinstance(capture_info, dict):
             capture_info["mic_auto_boosted"] = True
@@ -2524,6 +2531,8 @@ class MeasurementStore:
                 "reference_path": analysis["reference_path"],
                 "impulse_response": analysis["impulse_response"],
                 "variable_window": analysis.get("variable_window"),
+                "direct_response": analysis.get("direct_response"),
+                "complex_response": analysis.get("complex_response"),
             },
             "limitations": [
                 "This path is a real host-local sweep playback and capture flow, but it is still a conservative sweep-v3 implementation.",
@@ -3667,6 +3676,7 @@ class MeasurementStore:
         channel: str,
         calibration: dict[str, Any],
         input_channels: dict[str, Any] | None = None,
+        measurement_role: str = "",
     ) -> dict[str, Any]:
         timestamp = datetime.now(timezone.utc).replace(microsecond=0)
         created_at = timestamp.isoformat().replace("+00:00", "Z")
@@ -3732,6 +3742,8 @@ class MeasurementStore:
                 "variable_window": analysis.get("variable_window"),
             },
         }
+        if measurement_role:
+            payload["measurement_role"] = measurement_role
         if impulse_response_debug:
             payload["analysis"]["impulse_response"]["debug_segment"] = impulse_response_debug
         return self._normalize_measurement(payload)
@@ -3928,6 +3940,31 @@ class MeasurementStore:
             magnitude=response_magnitude,
             calibration_curve=calibration_curve,
         )
+        direct_window = analyze_direct_window(
+            timing_impulse_response,
+            sample_rate,
+            int(direct_timing_meta["direct_arrival_index"]),
+        )
+        direct_frequencies, direct_magnitude = build_gated_response(
+            timing_impulse_response,
+            sample_rate,
+            direct_window,
+        )
+        direct_display = self._build_display_points(
+            frequencies=direct_frequencies,
+            magnitude=direct_magnitude,
+            calibration_curve=calibration_curve,
+        )
+        direct_lower_hz = float(direct_window["lower_reliable_hz"])
+        direct_window["points"] = [
+            point for point in direct_display["review_points"]
+            if float(point[0]) >= direct_lower_hz
+        ]
+        complex_response = build_complex_response(
+            timing_impulse_response,
+            sample_rate,
+            calibration_curve=calibration_curve,
+        )
         capture_audit = self._build_capture_audit(
             raw_signal=raw_signal,
             sample_rate=sample_rate,
@@ -4040,6 +4077,8 @@ class MeasurementStore:
                 "preview": self._build_ir_preview(timing_impulse_response, sample_rate, direct_timing_meta, ir_meta),
             },
             "variable_window": variable_window_meta,
+            "direct_response": direct_window,
+            "complex_response": complex_response,
             "_impulse_response_debug_segment": impulse_response_debug_segment,
         }
         hard_failures = [item["message"] for item in quality_checks["items"] if item.get("level") == "error"]
@@ -7296,6 +7335,10 @@ class MeasurementStore:
             result["review_summary"] = self._build_summary(review_traces)
         if payload.get("measurement_kind"):
             result["measurement_kind"] = str(payload.get("measurement_kind"))
+        if payload.get("measurement_role"):
+            role = str(payload.get("measurement_role") or "").strip().lower()
+            if role in {"direct", "mlp", "secondary", "integration", "hybrid-model"}:
+                result["measurement_role"] = role
         if payload.get("notes"):
             result["notes"] = [str(item) for item in payload.get("notes") if str(item).strip()]
         if payload.get("analysis") and isinstance(payload.get("analysis"), dict):

@@ -1213,6 +1213,7 @@ async def start_measurement(
     reference_input_channel: str = Form(""),
     calibration_ref: str = Form(""),
     calibration_file: Optional[UploadFile] = File(None),
+    measurement_role: str = Form(""),
 ):
     services = _measurement_services()
     measurement_store = services.get_store()
@@ -1239,6 +1240,7 @@ async def start_measurement(
                 calibration_filename=calibration_filename,
                 calibration_bytes=calibration_bytes,
                 calibration_ref=calibration_ref,
+                measurement_role=measurement_role,
             ),
         )
     except ValueError as exc:
