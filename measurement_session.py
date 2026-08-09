@@ -16,7 +16,7 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import Any, Mapping, Optional
+from typing import Any, Awaitable, Callable, Mapping, Optional
 from uuid import uuid4
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
@@ -877,7 +877,12 @@ async def _sync_subwoofer_runtime_for_measurement_sweep(measurement_rate: int) -
     return None
 
 
-async def _unregister_measurement_job_after_completion(job_id: str, generation: int) -> None:
+async def _unregister_measurement_job_after_completion(
+    job_id: str,
+    generation: int,
+    *,
+    ownership_job_id: Optional[str] = None,
+) -> None:
     from main import (
         measurement_store,
         measurement_sr_session,
@@ -896,7 +901,7 @@ async def _unregister_measurement_job_after_completion(job_id: str, generation: 
         if status in {"completed", "failed", "cancelled"}:
             break
     if measurement_sr_session is not None and measurement_sr_session.generation == generation:
-        await measurement_sr_session.unregister_manual_job(job_id)
+        await measurement_sr_session.unregister_manual_job(ownership_job_id or job_id)
     elif measurement_sr_session is not None:
         logger.info(
             "Measurement session stale job watcher ignored: job_id=%s watcher_generation=%s current_generation=%s",
@@ -1148,6 +1153,62 @@ async def download_local_root_certificate():
         raise HTTPException(status_code=404, detail="Local root certificate not available on this host")
     return FileResponse(cert_path, filename="fxroute-local-root.crt", media_type="application/x-x509-ca-cert")
 
+
+async def _start_registered_manual_measurement(
+    sample_rate: int,
+    start_job: Callable[[], Awaitable[dict]],
+) -> dict:
+    """Own pending session registration until a concrete job takes its place."""
+    from main import measurement_sr_session
+
+    pending_job_id = f"pending:{uuid4()}"
+    sweep_gen = measurement_sr_session.generation if measurement_sr_session is not None else 0
+    pending_registered = False
+    try:
+        if measurement_sr_session is not None:
+            sweep_gen = await measurement_sr_session.register_manual_job(pending_job_id)
+            pending_registered = True
+        await _measurement_entry_preflight(sample_rate)
+        job = await start_job()
+        if measurement_sr_session is not None:
+            replacement = asyncio.create_task(
+                measurement_sr_session.replace_manual_job(pending_job_id, job["id"])
+            )
+            try:
+                await asyncio.shield(replacement)
+            except BaseException:
+                try:
+                    await replacement
+                except Exception:
+                    # Keep the pending owner until the concrete job finishes if
+                    # the atomic handoff itself failed.
+                    asyncio.create_task(
+                        _unregister_measurement_job_after_completion(
+                            job["id"], sweep_gen, ownership_job_id=pending_job_id
+                        )
+                    )
+                else:
+                    asyncio.create_task(
+                        _unregister_measurement_job_after_completion(job["id"], sweep_gen)
+                    )
+                pending_registered = False
+                raise
+            pending_registered = False
+            asyncio.create_task(_unregister_measurement_job_after_completion(job["id"], sweep_gen))
+        return job
+    except BaseException:
+        if pending_registered and measurement_sr_session is not None:
+            cleanup = asyncio.create_task(
+                measurement_sr_session.unregister_manual_job(pending_job_id)
+            )
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                # The cleanup task remains scheduled even when the request is cancelled.
+                pass
+        raise
+
+
 @router.post("/api/measurements/start")
 async def start_measurement(
     input_id: str = Form(...),
@@ -1174,31 +1235,22 @@ async def start_measurement(
         calibration_bytes = await calibration_file.read()
 
     measurement_rate = _resolve_measurement_start_sample_rate()
-    pending_job_id = f"pending:{uuid4()}"
-    sweep_gen = measurement_sr_session.generation if measurement_sr_session is not None else 0
     try:
-        if measurement_sr_session is not None:
-            sweep_gen = await measurement_sr_session.register_manual_job(pending_job_id)
-        await _measurement_entry_preflight(measurement_rate)
-        job = await measurement_store.start_measurement(
-            input_id=input_id,
-            channel=channel,
-            mic_input_channel=mic_input_channel,
-            reference_input_channel=reference_input_channel,
-            calibration_filename=calibration_filename,
-            calibration_bytes=calibration_bytes,
-            calibration_ref=calibration_ref,
+        job = await _start_registered_manual_measurement(
+            measurement_rate,
+            lambda: measurement_store.start_measurement(
+                input_id=input_id,
+                channel=channel,
+                mic_input_channel=mic_input_channel,
+                reference_input_channel=reference_input_channel,
+                calibration_filename=calibration_filename,
+                calibration_bytes=calibration_bytes,
+                calibration_ref=calibration_ref,
+            ),
         )
-        if measurement_sr_session is not None:
-            await measurement_sr_session.replace_manual_job(pending_job_id, job["id"])
-            asyncio.create_task(_unregister_measurement_job_after_completion(job["id"], sweep_gen))
     except ValueError as exc:
-        if measurement_sr_session is not None:
-            await measurement_sr_session.unregister_manual_job(pending_job_id)
         raise HTTPException(status_code=400, detail=str(exc))
     except RuntimeError as exc:
-        if measurement_sr_session is not None:
-            await measurement_sr_session.unregister_manual_job(pending_job_id)
         raise HTTPException(status_code=500, detail=str(exc))
     return {"status": "ok", "job": job}
 
@@ -1228,31 +1280,22 @@ async def start_lr_repeat_measurement(
         calibration_bytes = await calibration_file.read()
 
     measurement_rate = _resolve_measurement_start_sample_rate()
-    pending_job_id = f"pending:{uuid4()}"
-    sweep_gen = measurement_sr_session.generation if measurement_sr_session is not None else 0
     try:
-        if measurement_sr_session is not None:
-            sweep_gen = await measurement_sr_session.register_manual_job(pending_job_id)
-        await _measurement_entry_preflight(measurement_rate)
-        job = await measurement_store.start_lr_repeat_measurement(
-            input_id=input_id,
-            base_name=base_name,
-            mic_input_channel=mic_input_channel,
-            reference_input_channel=reference_input_channel,
-            calibration_filename=calibration_filename,
-            calibration_bytes=calibration_bytes,
-            calibration_ref=calibration_ref,
+        job = await _start_registered_manual_measurement(
+            measurement_rate,
+            lambda: measurement_store.start_lr_repeat_measurement(
+                input_id=input_id,
+                base_name=base_name,
+                mic_input_channel=mic_input_channel,
+                reference_input_channel=reference_input_channel,
+                calibration_filename=calibration_filename,
+                calibration_bytes=calibration_bytes,
+                calibration_ref=calibration_ref,
+            ),
         )
-        if measurement_sr_session is not None:
-            await measurement_sr_session.replace_manual_job(pending_job_id, job["id"])
-            asyncio.create_task(_unregister_measurement_job_after_completion(job["id"], sweep_gen))
     except ValueError as exc:
-        if measurement_sr_session is not None:
-            await measurement_sr_session.unregister_manual_job(pending_job_id)
         raise HTTPException(status_code=400, detail=str(exc))
     except RuntimeError as exc:
-        if measurement_sr_session is not None:
-            await measurement_sr_session.unregister_manual_job(pending_job_id)
         raise HTTPException(status_code=500, detail=str(exc))
     return {"status": "ok", "job": job}
 
