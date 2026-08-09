@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import copy
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -19,6 +21,57 @@ sys.path.insert(0, str(ROOT))
 import main
 import measurement_session
 import samplerate
+
+
+class SampleRatePolicyTests(unittest.TestCase):
+    def test_fixed_policy_overrides_source_rate_and_auto_preserves_it(self):
+        self.assertEqual(
+            samplerate.effective_playback_rate(44100, {"mode": "fixed", "rate": 48000}),
+            48000,
+        )
+        self.assertEqual(
+            samplerate.effective_playback_rate(44100, {"mode": "auto", "rate": None}),
+            44100,
+        )
+
+    def test_policy_persistence_defaults_to_auto_and_validates_candidates(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "sample-rate-policy.json"
+            with patch.object(samplerate, "_sample_rate_policy_path", return_value=path):
+                self.assertEqual(samplerate.load_sample_rate_policy(), {"mode": "auto", "rate": None})
+                samplerate.persist_sample_rate_policy({"mode": "fixed", "rate": 768000})
+                self.assertEqual(samplerate.load_sample_rate_policy(), {"mode": "fixed", "rate": 768000})
+                with self.assertRaises(ValueError):
+                    samplerate.normalize_sample_rate_policy("fixed", 32000)
+
+
+class OutputRateCapabilityTests(unittest.TestCase):
+    def test_range_capability_filters_complete_candidate_list(self):
+        payload = """
+        Prop: key Spa:Pod:Object:Param:Format:Audio:rate (65539), flags 00000000
+          Choice: type Spa:Enum:Choice:Range, flags 00000000 28 4
+            Int 44100
+            Int 44100
+            Int 192000
+        Prop: key Spa:Pod:Object:Param:Format:Audio:channels (65540), flags 00000000
+        """
+        self.assertEqual(
+            samplerate._parse_enum_format_supported_rates(payload),
+            [44100, 48000, 88200, 96000, 176400, 192000],
+        )
+
+    def test_node_inventory_maps_pipewire_id_by_sink_name(self):
+        payload = '''
+id 55, type PipeWire:Interface:Node/3
+    node.description = "DAC"
+    node.name = "alsa_output.usb-DAC"
+id 56, type PipeWire:Interface:Node/3
+    node.name = "easyeffects_sink"
+'''
+        self.assertEqual(
+            samplerate._parse_pw_node_ids(payload),
+            {"alsa_output.usb-DAC": 55, "easyeffects_sink": 56},
+        )
 
 
 class OverviewSampleRateTests(unittest.TestCase):
@@ -194,6 +247,21 @@ class MeasurementHelperSnapshotSummaryTests(unittest.TestCase):
 
 
 class MainWrapperParityTests(unittest.TestCase):
+    def test_coordinator_target_rate_uses_persisted_policy(self):
+        track = {"sample_rate_hz": 44100}
+        with patch.object(
+            samplerate,
+            "load_sample_rate_policy",
+            return_value={"mode": "fixed", "rate": 48000},
+        ):
+            self.assertEqual(main._coordinator_target_rate("local", track), 48000)
+        with patch.object(
+            samplerate,
+            "load_sample_rate_policy",
+            return_value={"mode": "auto", "rate": None},
+        ):
+            self.assertEqual(main._coordinator_target_rate("local", track), 44100)
+
     def test_overview_sample_rate_wrapper_matches(self):
         cases = [
             {"output_mode": {"effective_output_rate": 48000}, "active_rate": 96000},

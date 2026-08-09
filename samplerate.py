@@ -21,8 +21,12 @@ OUTPUT_MODE_SUBWOOFER_22 = "subwoofer-2.2"
 OUTPUT_MODE_SUBWOOFER_22_STEREO = "subwoofer-2.2-stereo"
 OUTPUT_MODE_SUBWOOFER_22_MODES = {OUTPUT_MODE_SUBWOOFER_22, OUTPUT_MODE_SUBWOOFER_22_STEREO}
 OUTPUT_MODE_SUBWOOFER_MODES = {OUTPUT_MODE_SUBWOOFER_21, *OUTPUT_MODE_SUBWOOFER_22_MODES}
-PIPEWIRE_DEFAULT_RATE_OPTIONS = [44100, 48000, 88200, 96000, 176400, 192000]
-PIPEWIRE_ALLOWED_RATES = PIPEWIRE_DEFAULT_RATE_OPTIONS
+SAMPLE_RATE_CANDIDATES = [
+    44100, 48000, 88200, 96000, 176400, 192000,
+    352800, 384000, 705600, 768000,
+]
+PIPEWIRE_DEFAULT_RATE_OPTIONS = SAMPLE_RATE_CANDIDATES
+PIPEWIRE_ALLOWED_RATES = SAMPLE_RATE_CANDIDATES
 
 
 def _run_command(args: list[str]) -> str:
@@ -316,6 +320,39 @@ def _parse_active_rate(output: str) -> int | None:
     return None
 
 
+def _parse_pw_node_ids(output: str) -> dict[str, int]:
+    nodes: dict[str, int] = {}
+    node_id: int | None = None
+    for raw_line in output.splitlines():
+        id_match = re.match(r"\s*id\s+(\d+),", raw_line)
+        if id_match:
+            node_id = int(id_match.group(1))
+            continue
+        name_match = re.match(r'\s*node\.name\s*=\s*"([^"]+)"', raw_line)
+        if node_id is not None and name_match:
+            nodes[name_match.group(1)] = node_id
+    return nodes
+
+
+def _parse_enum_format_supported_rates(output: str) -> list[int]:
+    supported: set[int] = set()
+    rate_blocks = re.findall(
+        r"Audio:rate\s*\([^\n]*\).*?(?=\n\s*Prop:|\Z)",
+        output,
+        re.DOTALL,
+    )
+    for block in rate_blocks:
+        values = [int(value) for value in re.findall(r"\bInt\s+(\d+)\b", block)]
+        if not values:
+            continue
+        if "Choice:Range" in block and len(values) >= 3:
+            minimum, maximum = values[1], values[2]
+            supported.update(rate for rate in SAMPLE_RATE_CANDIDATES if minimum <= rate <= maximum)
+        else:
+            supported.update(rate for rate in values if rate in SAMPLE_RATE_CANDIDATES)
+    return [rate for rate in SAMPLE_RATE_CANDIDATES if rate in supported]
+
+
 def _parse_pactl_sinks_short(output: str) -> list[dict[str, Any]]:
     sinks: list[dict[str, Any]] = []
     for line in output.splitlines():
@@ -576,6 +613,11 @@ def _audio_output_mode_path() -> Path:
     return config_root / "fxroute" / "audio-output-mode.json"
 
 
+def _sample_rate_policy_path() -> Path:
+    config_root = Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config"))
+    return config_root / "fxroute" / "sample-rate-policy.json"
+
+
 def _pipewire_clock_rate_dropin_path() -> Path:
     config_root = Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config"))
     return config_root / "pipewire" / "pipewire.conf.d" / "90-fxroute-clock-rate.conf"
@@ -599,6 +641,47 @@ def _load_audio_output_selection() -> dict[str, Any]:
     return {
         "selected_key": selected_key if isinstance(selected_key, str) and selected_key else None,
     }
+
+
+def load_sample_rate_policy() -> dict[str, Any]:
+    path = _sample_rate_policy_path()
+    try:
+        payload = json.loads(path.read_text()) if path.exists() else {}
+    except Exception:
+        payload = {}
+    mode = str(payload.get("mode") or "auto").strip().lower()
+    rate = _safe_int(payload.get("rate"))
+    if mode != "fixed" or rate not in SAMPLE_RATE_CANDIDATES:
+        return {"mode": "auto", "rate": None}
+    return {"mode": "fixed", "rate": rate}
+
+
+def normalize_sample_rate_policy(mode: Any, rate: Any = None) -> dict[str, Any]:
+    normalized_mode = str(mode or "auto").strip().lower()
+    if normalized_mode == "auto":
+        return {"mode": "auto", "rate": None}
+    if normalized_mode != "fixed":
+        raise ValueError("Sample rate policy must be auto or fixed")
+    normalized_rate = _safe_int(rate)
+    if normalized_rate not in SAMPLE_RATE_CANDIDATES:
+        raise ValueError("Unsupported fixed sample rate")
+    return {"mode": "fixed", "rate": normalized_rate}
+
+
+def persist_sample_rate_policy(policy: Mapping[str, Any]) -> dict[str, Any]:
+    normalized = normalize_sample_rate_policy(policy.get("mode"), policy.get("rate"))
+    path = _sample_rate_policy_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(normalized, indent=2) + "\n")
+    return normalized
+
+
+def effective_playback_rate(source_rate: int | None, policy: Mapping[str, Any] | None = None) -> int | None:
+    current = dict(policy or load_sample_rate_policy())
+    fixed_rate = current.get("rate") if current.get("mode") == "fixed" else None
+    if isinstance(fixed_rate, int) and fixed_rate > 0:
+        return fixed_rate
+    return source_rate if isinstance(source_rate, int) and source_rate > 0 else None
 
 
 def _normalize_single_sub_config(payload: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -1029,6 +1112,7 @@ def _build_selected_output_payload(selected_key: str | None, current_name: str |
             "sample_spec": selected_output.get("sample_spec"),
             "channels": selected_output.get("channels"),
             "active_rate": selected_output.get("active_rate"),
+            "supported_rates": list(selected_output.get("supported_rates") or []),
         }
     return None
 
@@ -1341,6 +1425,12 @@ def get_audio_output_overview() -> dict[str, Any]:
     except Exception as exc:
         notes.append(f"Output details unavailable: {exc}")
 
+    node_ids: dict[str, int] = {}
+    try:
+        node_ids = _parse_pw_node_ids(_run_command(["pw-cli", "ls", "Node"]))
+    except Exception as exc:
+        notes.append(f"Output sample-rate capabilities unavailable: {exc}")
+
     default_name = default_sink.get("name")
     current_name = relevant_sink.get("name") or default_name
     default_label = default_sink.get("description") or _humanize_sink_name(default_name)
@@ -1352,6 +1442,17 @@ def get_audio_output_overview() -> dict[str, Any]:
         details = sink_details.get(name or "", {})
         label = _build_sink_output_label(name, details, default_label if name == default_name and default_label else None)
         profile = _bluetooth_profile_from_node_name(name)
+        supported_rates: list[int] = []
+        node_id = node_ids.get(str(name or ""))
+        if node_id is not None:
+            try:
+                supported_rates = _parse_enum_format_supported_rates(
+                    _run_command(["pw-cli", "enum-params", str(node_id), "EnumFormat"])
+                )
+            except Exception as exc:
+                notes.append(f"Sample-rate capabilities unavailable for {label}: {exc}")
+        if not supported_rates and sink.get("active_rate") in SAMPLE_RATE_CANDIDATES:
+            supported_rates = [sink["active_rate"]]
         explicit_outputs.append({
             "id": sink.get("id"),
             "key": name,
@@ -1360,6 +1461,7 @@ def get_audio_output_overview() -> dict[str, Any]:
             "sample_spec": details.get("sample_spec") or sink.get("sample_spec"),
             "channels": _parse_sample_spec_channels(details.get("sample_spec")) or sink.get("channels"),
             "active_rate": sink.get("active_rate"),
+            "supported_rates": supported_rates,
             "state": details.get("state") or sink.get("state"),
             "is_default": name == default_name,
             "is_current": name == current_name,
@@ -1573,6 +1675,12 @@ def set_audio_output_selection(key: str) -> dict[str, Any]:
         raise ValueError(f"Unknown output: {normalized_key}")
     if not selected_output.get("selectable", True):
         raise ValueError(f"Output is not selectable: {normalized_key}")
+    policy = load_sample_rate_policy()
+    if (
+        policy.get("mode") == "fixed"
+        and policy.get("rate") not in (selected_output.get("supported_rates") or [])
+    ):
+        raise ValueError("Selected output does not support the configured fixed sample rate")
     output_mode = _load_audio_output_mode()
     if output_mode.get("mode") in OUTPUT_MODE_SUBWOOFER_MODES and (selected_output.get("channels") or 0) < 4:
         label = (
@@ -1765,6 +1873,7 @@ def _safe_int(value: str | None) -> int | None:
 
 def get_samplerate_status() -> dict[str, Any]:
     notes: list[str] = []
+    policy = load_sample_rate_policy()
     clock_rate_config = _load_pipewire_clock_rate_config()
 
     try:
@@ -1776,6 +1885,7 @@ def get_samplerate_status() -> dict[str, Any]:
             "available": False,
             "detail": str(exc),
             "mode": None,
+            "policy": policy,
             "force_rate": None,
             "configured_default_rate": clock_rate_config.get("configured_default_rate"),
             "configured_allowed_rates": clock_rate_config.get("configured_allowed_rates") or [],
@@ -1845,6 +1955,7 @@ def get_samplerate_status() -> dict[str, Any]:
         "status": "ok",
         "available": True,
         "mode": "auto" if force_rate == 0 else "fixed",
+        "policy": policy,
         "force_rate": force_rate,
         "configured_default_rate": configured_default_rate,
         "configured_allowed_rates": clock_rate_config.get("configured_allowed_rates") or [],

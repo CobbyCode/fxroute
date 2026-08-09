@@ -684,16 +684,19 @@ class EntryBoundaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("_set_pipewire_force_rate", start_source)
         self.assertNotIn("_sync_subwoofer_runtime", start_source)
 
-    def test_default_sample_rate_ui_and_frontend_post_are_removed(self):
+    def test_sample_rate_policy_reuses_settings_selector_and_coordinator(self):
         index = (pathlib.Path(__file__).resolve().parents[1] / "static" / "index.html").read_text()
         app = (pathlib.Path(__file__).resolve().parents[1] / "static" / "app.js").read_text()
         samplerate_source = (pathlib.Path(__file__).resolve().parents[1] / "samplerate.py").read_text()
-        self.assertNotIn("settings-samplerate-select", index)
-        self.assertNotIn("Default sample rate", index)
-        self.assertNotIn("savePipewireDefaultRate", app)
+        main_source = (pathlib.Path(__file__).resolve().parents[1] / "main.py").read_text()
+        self.assertIn("settings-samplerate-select", index)
+        self.assertIn("Sample Rate", index)
+        self.assertIn("saveSampleRatePolicy", app)
         self.assertNotIn("set_pipewire_default_rate_selection", samplerate_source)
         self.assertNotIn("_render_pipewire_clock_rate_dropin", samplerate_source)
-        self.assertNotIn("method: 'POST'", app[app.find("/api/audio/samplerate") - 100: app.find("/api/audio/samplerate") + 150])
+        self.assertIn('operation="sample-rate-policy"', main_source)
+        self.assertIn("_transition_sample_rate_policy", inspect.getsource(main.save_audio_samplerate_policy))
+        self.assertIn("_run_coordinated_transition", inspect.getsource(main._transition_sample_rate_policy))
         self.assertIn("/api/audio/samplerate", app)
 
 

@@ -12,7 +12,7 @@ import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 # Ensure the project root is on sys.path so 'import main' works.
 _project_root = Path(__file__).resolve().parent.parent
@@ -815,8 +815,8 @@ class TestHeartbeatReopen:
         finally:
             ts.cleanup()
 
-    def test_force_rate_restored_on_release(self) -> None:
-        """Release restores original force-rate."""
+    def test_auto_policy_replaces_old_return_to_rate_with_zero(self) -> None:
+        """Without playback, Auto releases measurement ownership to PipeWire."""
         ts = _TestSession()
         try:
             ts.set_window_open(True)
@@ -836,9 +836,31 @@ class TestHeartbeatReopen:
                 ts._session.unregister_manual_job("job-1")
             )
             assert ts._session.active is False
-            assert ts._force_rate == 96000, (
-                f"force-rate should be restored to 96000, got {ts._force_rate}"
+            assert ts._force_rate == 0, (
+                f"Auto policy should release force-rate to 0, got {ts._force_rate}"
             )
+        finally:
+            ts.cleanup()
+
+    def test_fixed_policy_restores_selected_rate(self) -> None:
+        """Without playback, Fixed returns to the durable policy rate."""
+        ts = _TestSession()
+        try:
+            ts.set_window_open(True)
+            ts._force_rate = 96000
+            with patch.object(
+                measurement_session.samplerate,
+                "load_sample_rate_policy",
+                return_value={"mode": "fixed", "rate": 96000},
+            ):
+                asyncio.get_event_loop().run_until_complete(
+                    ts._session.register_manual_job("job-1")
+                )
+                asyncio.get_event_loop().run_until_complete(ts._session.request_close())
+                asyncio.get_event_loop().run_until_complete(
+                    ts._session.unregister_manual_job("job-1")
+                )
+            assert ts._force_rate == 96000
         finally:
             ts.cleanup()
 

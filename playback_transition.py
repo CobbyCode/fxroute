@@ -101,6 +101,7 @@ class TransitionRequest:
     # data so runtime mutations cannot escape the gate-owned state machine.
     output_mode_target: Mapping[str, Any] = field(default_factory=dict)
     output_mode_config: Mapping[str, Any] = field(default_factory=dict)
+    sample_rate_policy: Mapping[str, Any] = field(default_factory=dict)
     # Measurement restore is still a normal Coordinator transition, but its
     # caller may carry a position and an intent token captured before the
     # measurement window.  The runtime validates that token immediately
@@ -924,6 +925,7 @@ class PlaybackTransitionCoordinator:
                     "measurement-restore",
                     "measurement-entry",
                     "output-mode-switch",
+                    "sample-rate-policy",
                     "recovery",
                     "graph-reconcile",
                 }
@@ -1045,7 +1047,7 @@ class PlaybackTransitionCoordinator:
                         stage="after-effects-helper-links",
                     )
 
-                if active_request.operation in {"measurement-entry", "output-mode-switch"}:
+                if active_request.operation in {"measurement-entry", "output-mode-switch", "sample-rate-policy"}:
                     if active_request.operation == "measurement-entry":
                         enter_stage("measurement-entry-graph-readback")
                         verifier = getattr(self.runtime, "verify_measurement_entry", None)
@@ -1138,6 +1140,14 @@ class PlaybackTransitionCoordinator:
                         committed_mode = await committer(active_request)
                         if isinstance(committed_mode, Mapping):
                             state = {**dict(state), **dict(committed_mode)}
+                    elif active_request.operation == "sample-rate-policy":
+                        enter_stage("sample-rate-policy-persist")
+                        committer = getattr(self.runtime, "commit_sample_rate_policy", None)
+                        if not callable(committer):
+                            raise RuntimeError("Sample-rate policy persistence is unavailable")
+                        committed_policy = await committer(active_request)
+                        if isinstance(committed_policy, Mapping):
+                            state = {**dict(state), **dict(committed_policy)}
 
                     if gate_required:
                         enter_stage("before-output-gate-restore")

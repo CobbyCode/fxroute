@@ -69,6 +69,21 @@ class SpotifyEntrySamplerateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["spotify_stream_rate"], 44100)
         self.assertEqual(result["active_rate"], 44100)
 
+    async def test_fixed_graph_rate_accepts_native_spotify_source_rate(self):
+        runtime = main.FxrouteTransitionRuntime()
+        request = self._request()
+        request = TransitionRequest(**{**request.__dict__, "target_rate": 48000})
+        patchers = self._patches(spotify_rate=44100, hardware_rate=48000)
+        with patchers[0], patchers[1], patchers[2], patchers[3], patchers[4], patchers[5], patchers[6]:
+            result = await runtime._verify_transition(
+                request,
+                require_source_volume=False,
+                require_effects_runtime=False,
+            )
+
+        self.assertEqual(result["spotify_stream_rate"], 44100)
+        self.assertEqual(result["active_rate"], 48000)
+
     async def test_entry_commit_rejects_stream_rate_different_from_target(self):
         runtime = main.FxrouteTransitionRuntime()
         patchers = self._patches(spotify_rate=48000)

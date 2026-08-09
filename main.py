@@ -794,7 +794,9 @@ from samplerate import (
     get_audio_source_overview,
     get_bluetooth_audio_overview,
     get_samplerate_status,
+    normalize_sample_rate_policy,
     persist_audio_output_mode,
+    persist_sample_rate_policy,
     prepare_audio_output_mode,
     set_audio_output_selection,
     set_audio_source_selection,
@@ -1316,7 +1318,7 @@ class FxrouteTransitionRuntime(TransitionRuntime):
                 if not released:
                     await asyncio.sleep(SOURCE_HANDOFF_SETTLE_MS / 1000)
                 return
-            if request.operation in {"measurement-entry", "output-mode-switch"}:
+            if request.operation in {"measurement-entry", "output-mode-switch", "sample-rate-policy"}:
                 spotify_state = await get_spotify_ui_state()
                 if _is_spotify_playback_active(spotify_state):
                     await spotify_pause()
@@ -1365,7 +1367,7 @@ class FxrouteTransitionRuntime(TransitionRuntime):
         player_instance.set_pause(True)
         should_release = bool(
             request.rate_change
-            and request.operation not in {"measurement-entry", "output-mode-switch"}
+            and request.operation not in {"measurement-entry", "output-mode-switch", "sample-rate-policy"}
             and state.get("current_file")
         )
         if should_release:
@@ -1405,7 +1407,7 @@ class FxrouteTransitionRuntime(TransitionRuntime):
                 request.target_url,
                 live_rate,
             )
-            return live_rate
+            return samplerate.effective_playback_rate(live_rate, request.sample_rate_policy or None)
 
         if request.source != "radio" or not request.reload_source:
             return request.target_rate
@@ -1436,7 +1438,7 @@ class FxrouteTransitionRuntime(TransitionRuntime):
                 request.target_url,
             )
         self._staged_target_url = request.target_url
-        return live_rate
+        return samplerate.effective_playback_rate(live_rate, request.sample_rate_policy or None)
 
     async def establish_target_rate(self, request: TransitionRequest) -> None:
         if request.graph_only:
@@ -1976,16 +1978,15 @@ class FxrouteTransitionRuntime(TransitionRuntime):
 
         spotify_stream_rate = None
         if request.source == "spotify" and request.should_play:
-            spotify_stream_rate = await _wait_for_spotify_sink_input_samplerate(
-                expected_rate=request.target_rate,
-            )
+            source_rate = _coordinator_source_rate("spotify", request.target_track)
+            spotify_stream_rate = await _wait_for_spotify_sink_input_samplerate(expected_rate=source_rate)
             if (
-                isinstance(request.target_rate, int)
-                and spotify_stream_rate != request.target_rate
+                isinstance(source_rate, int)
+                and spotify_stream_rate != source_rate
             ):
                 raise RuntimeError(
                     "Spotify stream rate mismatch at commit: "
-                    f"expected={request.target_rate} actual={spotify_stream_rate}"
+                    f"expected={source_rate} actual={spotify_stream_rate}"
                 )
 
         if isinstance(request.target_rate, int) and request.target_rate > 0:
@@ -1995,15 +1996,6 @@ class FxrouteTransitionRuntime(TransitionRuntime):
                 )
             if rate.get("force_rate") not in {None, 0, request.target_rate}:
                 raise RuntimeError(f"force-rate mismatch at commit: {rate.get('force_rate')}")
-        if (
-            spotify_stream_rate is not None
-            and rate.get("active_rate") != spotify_stream_rate
-        ):
-            raise RuntimeError(
-                "Spotify stream and hardware rates disagree at commit: "
-                f"spotify={spotify_stream_rate} hardware={rate.get('active_rate')}"
-            )
-
         graph_complete = await _playback_graph_links_complete(
             source=request.source,
             target_rate=request.target_rate,
@@ -2196,13 +2188,12 @@ class FxrouteTransitionRuntime(TransitionRuntime):
 
         spotify_stream_rate = None
         if request.source == "spotify" and request.should_play:
-            spotify_stream_rate = await _wait_for_spotify_sink_input_samplerate(
-                expected_rate=target_rate,
-            )
-            if spotify_stream_rate != target_rate:
+            source_rate = _coordinator_source_rate("spotify", request.target_track)
+            spotify_stream_rate = await _wait_for_spotify_sink_input_samplerate(expected_rate=source_rate)
+            if spotify_stream_rate != source_rate:
                 raise RuntimeError(
                     "Spotify stream rate mismatch during output-mode commit: "
-                    f"expected={target_rate} actual={spotify_stream_rate}"
+                    f"expected={source_rate} actual={spotify_stream_rate}"
                 )
 
         if request.source in {"local", "radio"} and request.target_url:
@@ -2242,6 +2233,12 @@ class FxrouteTransitionRuntime(TransitionRuntime):
             "output_mode_persisted": True,
             "output_mode": dict(result.get("output_mode") or {}),
         }
+
+    async def commit_sample_rate_policy(self, request: TransitionRequest) -> dict[str, Any]:
+        if not request.sample_rate_policy:
+            raise RuntimeError("sample-rate transition has no durable policy")
+        policy = persist_sample_rate_policy(request.sample_rate_policy)
+        return {"sample_rate_policy": policy}
 
     async def rollback_output_mode_runtime(
         self,
@@ -2365,7 +2362,7 @@ class FxrouteTransitionRuntime(TransitionRuntime):
                 logger.warning("Failed to pause MPV after transition failure", exc_info=True)
 
 
-def _coordinator_target_rate(source: str, track: Mapping[str, Any] | None = None) -> int | None:
+def _coordinator_source_rate(source: str, track: Mapping[str, Any] | None = None) -> int | None:
     track = track or {}
     if source == "spotify":
         return SPOTIFY_PREARM_SAMPLE_RATE_HZ
@@ -2373,6 +2370,52 @@ def _coordinator_target_rate(source: str, track: Mapping[str, Any] | None = None
         return int(track.get("sample_rate_hz") or RADIO_EXPECTED_SAMPLE_RATE_HZ)
     value = track.get("sample_rate_hz")
     return int(value) if isinstance(value, int) and value > 0 else None
+
+
+def _coordinator_target_rate(source: str, track: Mapping[str, Any] | None = None) -> int | None:
+    return samplerate.effective_playback_rate(_coordinator_source_rate(source, track))
+
+
+def _sample_rate_policy_is_auto() -> bool:
+    return samplerate.load_sample_rate_policy().get("mode") == "auto"
+
+
+async def _transition_sample_rate_policy(policy: Mapping[str, Any], *, detail: str) -> None:
+    overview = get_audio_output_overview()
+    selected_output = overview.get("selected_output") or overview.get("current_output") or {}
+    if (
+        policy.get("mode") == "fixed"
+        and policy.get("rate") not in (selected_output.get("supported_rates") or [])
+    ):
+        raise ValueError("Selected output does not support this sample rate")
+
+    context = await _coordinator_current_playback_context()
+    source = str(context.get("source") or "local")
+    source_rate = _coordinator_source_rate(source, context.get("target_track"))
+    if source in {"local", "radio"} and context.get("target_url"):
+        live_source_rate = _get_player_audio_samplerate()
+        if isinstance(live_source_rate, int) and live_source_rate > 0:
+            source_rate = live_source_rate
+    target_rate = samplerate.effective_playback_rate(source_rate, policy)
+    if not isinstance(target_rate, int) or target_rate <= 0:
+        status = get_samplerate_status()
+        target_rate = status.get("active_rate") or status.get("force_rate")
+    if not isinstance(target_rate, int) or target_rate <= 0:
+        raise RuntimeError("current hardware sample rate is unavailable")
+
+    await _run_coordinated_transition(TransitionRequest(
+        operation="sample-rate-policy",
+        source=source,
+        target_rate=target_rate,
+        target_url=context.get("target_url"),
+        target_track=dict(context.get("target_track") or {}),
+        should_play=bool(context.get("should_play")),
+        rate_change=_coordinator_rate_change(target_rate),
+        reload_source=False,
+        detail=detail,
+        output_mode_target=dict(overview),
+        sample_rate_policy=dict(policy),
+    ))
 
 
 def _normalize_spotify_identity(value: Any) -> str | None:
@@ -2753,6 +2796,7 @@ async def _request_coordinated_recovery(
             return None
         if (
             getattr(result, "committed", False)
+            and _sample_rate_policy_is_auto()
             and source in {"local", "radio"}
             and isinstance(result.target_rate, int)
             and result.target_rate > 0
@@ -4486,9 +4530,7 @@ async def _observe_playback_samplerate_drift() -> None:
     # Read all rate domains as one observation.  The track rate is the last
     # successful Coordinator context, MPV audio-params is the live source
     # truth, and the PipeWire values are the current hardware readback.
-    track_rate = track.get("sample_rate_hz")
-    if not isinstance(track_rate, int) or track_rate <= 0:
-        track_rate = _coordinator_target_rate(source, track)
+    track_rate = _coordinator_source_rate(source, track)
     actual_rate = _get_player_audio_samplerate()
     try:
         samplerate_status = get_samplerate_status()
@@ -4507,10 +4549,19 @@ async def _observe_playback_samplerate_drift() -> None:
         _reset_samplerate_drift_observation()
         return
 
+    target_rate = samplerate.effective_playback_rate(actual_rate)
+    if not isinstance(target_rate, int) or target_rate <= 0:
+        _reset_samplerate_drift_observation()
+        return
+
+    source_metadata_aligned = (
+        samplerate.load_sample_rate_policy().get("mode") == "fixed"
+        or track_rate == actual_rate
+    )
     healthy = (
-        track_rate == actual_rate
-        and active_rate == actual_rate
-        and (force_rate is None or force_rate == 0 or force_rate == actual_rate)
+        source_metadata_aligned
+        and active_rate == target_rate
+        and (force_rate is None or force_rate == 0 or force_rate == target_rate)
     )
     if healthy:
         _reset_samplerate_drift_observation()
@@ -4522,6 +4573,7 @@ async def _observe_playback_samplerate_drift() -> None:
         str(current_file),
         track_rate,
         actual_rate,
+        target_rate,
         active_rate,
         force_rate,
     )
@@ -4540,9 +4592,9 @@ async def _observe_playback_samplerate_drift() -> None:
     diagnosis = {
         "signature": (
             f"samplerate:{source}:{expected_url or track.get('id')}:"
-            f"track={track_rate}:mpv={actual_rate}:active={active_rate}:force={force_rate}"
+            f"track={track_rate}:mpv={actual_rate}:target={target_rate}:active={active_rate}:force={force_rate}"
         ),
-        "expected_rate": track_rate,
+        "expected_rate": target_rate,
         "track_rate": track_rate,
         "actual_rate": actual_rate,
         "mpv_rate": actual_rate,
@@ -4552,11 +4604,12 @@ async def _observe_playback_samplerate_drift() -> None:
     _reset_samplerate_drift_observation()
     logger.warning(
         "Stable playback samplerate drift observed; requesting Coordinator recovery: "
-        "source=%s url=%s track=%s mpv=%s active=%s force=%s",
+        "source=%s url=%s track=%s mpv=%s target=%s active=%s force=%s",
         source,
         expected_url,
         track_rate,
         actual_rate,
+        target_rate,
         active_rate,
         force_rate,
     )
@@ -4870,7 +4923,7 @@ async def _load_queue_track(index: int, *, transition_reason: str = "queue navig
         result = await _run_coordinated_transition(request)
     except PlaybackTransitionFailure as exc:
         raise _transition_error_http(exc) from exc
-    if source in {"local", "radio"} and isinstance(result.target_rate, int) and result.target_rate > 0:
+    if _sample_rate_policy_is_auto() and source in {"local", "radio"} and isinstance(result.target_rate, int) and result.target_rate > 0:
         next_track["sample_rate_hz"] = result.target_rate
         if 0 <= index < len(playback_queue):
             playback_queue[index]["sample_rate_hz"] = result.target_rate
@@ -5619,7 +5672,7 @@ async def on_player_state_change(state: dict):
                         reload_source=True,
                         detail="single-track-loop",
                     ))
-                    if isinstance(result.target_rate, int) and result.target_rate > 0:
+                    if _sample_rate_policy_is_auto() and isinstance(result.target_rate, int) and result.target_rate > 0:
                         current_track_info["sample_rate_hz"] = result.target_rate
                 except PlaybackTransitionFailure as exc:
                     logger.warning("Single-track loop transition failed: %s", exc.as_status())
@@ -6291,7 +6344,8 @@ async def _spotify_playerctl_event_detect_check(reason: str) -> None:
             )
             if spotify_state.get("status") == "Playing" and isinstance(spotify_rate, int) and isinstance(sink_rate, int):
                 canonical_rate = SPOTIFY_PREARM_SAMPLE_RATE_HZ
-                if spotify_rate != canonical_rate or sink_rate != canonical_rate:
+                target_rate = samplerate.effective_playback_rate(canonical_rate)
+                if spotify_rate != canonical_rate or sink_rate != target_rate:
                     current_mismatch = (spotify_identity, spotify_rate, sink_rate)
                     if current_mismatch == mismatch_signature:
                         mismatch_readbacks += 1
@@ -6335,7 +6389,7 @@ async def _spotify_playerctl_event_detect_check(reason: str) -> None:
                         ),
                         "source": "spotify",
                         "actual_rate": spotify_rate,
-                        "expected_rate": SPOTIFY_PREARM_SAMPLE_RATE_HZ,
+                        "expected_rate": target_rate,
                         "hardware_rate": sink_rate,
                     }
                     await _request_coordinated_recovery(
@@ -6543,6 +6597,13 @@ async def lifespan(app: FastAPI):
             applied_output = apply_persisted_audio_output_selection()
             if applied_output and applied_output.get("selected_output"):
                 logger.info("Re-applied persisted audio output selection: %s", applied_output["selected_output"].get("target_label"))
+            policy = samplerate.load_sample_rate_policy()
+            if policy.get("mode") == "fixed":
+                try:
+                    await _transition_sample_rate_policy(policy, detail="startup-sample-rate-policy")
+                    logger.info("Re-applied fixed sample-rate policy: %s Hz", policy.get("rate"))
+                except Exception as exc:
+                    logger.warning("Failed to re-apply fixed sample-rate policy: %s", exc)
             await _sync_subwoofer_runtime(applied_output or get_audio_output_overview())
             subwoofer_runtime_link_watch_task = asyncio.create_task(
                 _subwoofer_runtime_link_watch_loop(),
@@ -6915,7 +6976,7 @@ async def toggle_playback():
         except PlaybackTransitionFailure as exc:
             raise _transition_error_http(exc) from exc
         if was_paused:
-            if source in {"local", "radio"} and isinstance(result.target_rate, int) and result.target_rate > 0:
+            if _sample_rate_policy_is_auto() and source in {"local", "radio"} and isinstance(result.target_rate, int) and result.target_rate > 0:
                 active_track["sample_rate_hz"] = result.target_rate
             _commit_coordinated_track(active_track, source=source)
         new_state = player_instance.state
@@ -6945,7 +7006,7 @@ async def toggle_playback():
         result = await _run_coordinated_transition(request)
     except PlaybackTransitionFailure as exc:
         raise _transition_error_http(exc) from exc
-    if source in {"local", "radio"} and isinstance(result.target_rate, int) and result.target_rate > 0:
+    if _sample_rate_policy_is_auto() and source in {"local", "radio"} and isinstance(result.target_rate, int) and result.target_rate > 0:
         replay_track["sample_rate_hz"] = result.target_rate
     _commit_coordinated_track(replay_track, source=source)
     return {
@@ -7267,6 +7328,29 @@ async def audio_samplerate_status():
     # This endpoint is a pure readback.  Any corrective action must enter the
     # PlaybackTransitionCoordinator through an explicit recovery request.
     return status
+
+
+@app.post("/api/audio/samplerate")
+async def save_audio_samplerate_policy(request: Request):
+    if measurement_sr_session is not None and measurement_sr_session.has_active_jobs:
+        raise HTTPException(status_code=423, detail="Measurement is active; sample-rate policy is locked")
+    try:
+        body = await request.json()
+        policy = normalize_sample_rate_policy(body.get("mode"), body.get("rate"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception:
+        raise HTTPException(status_code=400, detail='Invalid JSON body, expected {"mode": "auto"|"fixed", "rate": <number?>}')
+
+    try:
+        await _transition_sample_rate_policy(policy, detail="api-audio-samplerate-policy")
+        return get_samplerate_status()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except PlaybackTransitionFailure as exc:
+        raise _transition_error_http(exc) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to save sample-rate policy: {exc}") from exc
 
 
 @app.get("/api/hardware/status")
@@ -8396,12 +8480,13 @@ async def api_spotify_status():
 
 @app.post("/api/spotify/play")
 async def api_spotify_play():
+    target_rate = _coordinator_target_rate("spotify")
     request = TransitionRequest(
         operation="spotify-play",
         source="spotify",
-        target_rate=SPOTIFY_PREARM_SAMPLE_RATE_HZ,
+        target_rate=target_rate,
         should_play=True,
-        rate_change=_coordinator_rate_change(SPOTIFY_PREARM_SAMPLE_RATE_HZ),
+        rate_change=_coordinator_rate_change(target_rate),
         reload_source=True,
         detail="api-spotify-play",
     )
@@ -8431,12 +8516,13 @@ async def api_spotify_toggle():
         data = await spotify_pause()
         return await broadcast_spotify_state(data)
 
+    target_rate = _coordinator_target_rate("spotify")
     request = TransitionRequest(
         operation="spotify-toggle",
         source="spotify",
-        target_rate=SPOTIFY_PREARM_SAMPLE_RATE_HZ,
+        target_rate=target_rate,
         should_play=True,
-        rate_change=_coordinator_rate_change(SPOTIFY_PREARM_SAMPLE_RATE_HZ),
+        rate_change=_coordinator_rate_change(target_rate),
         reload_source=True,
         detail="api-spotify-toggle",
     )

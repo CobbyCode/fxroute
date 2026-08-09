@@ -263,7 +263,8 @@ class MeasurementSampleRateSession:
         )
         global _playback_state_before_measurement
 
-        restore_value = self.original_force_rate if self.original_force_rate > 0 else 0
+        policy = samplerate.load_sample_rate_policy()
+        restore_value = int(policy.get("rate") or 0) if policy.get("mode") == "fixed" else 0
         captured_playback_snapshot = _playback_state_before_measurement
         snapshot_is_current = await _measurement_restore_snapshot_matches_current_intent(
             captured_playback_snapshot
@@ -301,8 +302,9 @@ class MeasurementSampleRateSession:
                 "path": playback_snapshot.get("path") or playback_snapshot.get("url"),
                 "id": playback_snapshot.get("id"),
                 "title": playback_snapshot.get("title"),
-                "sample_rate_hz": playback_target_rate,
             })
+            if samplerate.load_sample_rate_policy().get("mode") == "auto":
+                track["sample_rate_hz"] = playback_target_rate
             try:
                 restore_result = await playback_transition_coordinator.restore_measurement(
                     source=playback_source,
@@ -383,8 +385,7 @@ class MeasurementSampleRateSession:
                 if runtime_restore_rate <= 0:
                     status = get_samplerate_status()
                     runtime_restore_rate = int(
-                        status.get("configured_default_rate")
-                        or status.get("clock_rate")
+                        status.get("clock_rate")
                         or DEFAULT_SAMPLE_RATE
                     )
 
@@ -498,6 +499,7 @@ def _capture_playback_state_before_measurement(
             "artist": track_info.get("artist") or spotify_state.get("artist"),
             "sample_rate_hz": SPOTIFY_PREARM_SAMPLE_RATE_HZ,
         })
+        effective_rate = samplerate.effective_playback_rate(SPOTIFY_PREARM_SAMPLE_RATE_HZ)
         _playback_state_before_measurement = {
             "source": "spotify",
             "track_info": track_info,
@@ -507,7 +509,7 @@ def _capture_playback_state_before_measurement(
             "id": track_id,
             "spotify_identity": spotify_identity,
             "title": track_info.get("title"),
-            "expected_rate": SPOTIFY_PREARM_SAMPLE_RATE_HZ,
+            "expected_rate": effective_rate,
             "position": 0.0,
             "was_paused": not was_playing,
             "was_playing": was_playing,
@@ -518,7 +520,7 @@ def _capture_playback_state_before_measurement(
         logger.info(
             "PLAYBACK-CAPTURE-DIAG Spotify state captured before measurement: id=%s expected_rate=%s",
             track_id or spotify_identity,
-            SPOTIFY_PREARM_SAMPLE_RATE_HZ,
+            effective_rate,
         )
         return
     if not current_track_info:
@@ -552,6 +554,7 @@ def _capture_playback_state_before_measurement(
             source, current_track_info.get("url", ""),
         )
         return
+    expected_rate = samplerate.effective_playback_rate(expected_rate)
 
     saved_state = {
         "source": source,

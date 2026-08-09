@@ -161,6 +161,8 @@ let state = {
         active_rate: null,
         mode: null,
         force_rate: null,
+        policy: { mode: 'auto', rate: null },
+        pending: false,
     },
     settings: {
         audioOutputs: {
@@ -315,6 +317,8 @@ const elements = {
     settingsOutputSelect: document.getElementById('settings-output-select'),
     settingsOutputModeSelect: document.getElementById('settings-output-mode-select'),
     settingsOutputModeHint: document.getElementById('settings-output-mode-hint'),
+    settingsSamplerateSelect: document.getElementById('settings-samplerate-select'),
+    settingsSamplerateHint: document.getElementById('settings-samplerate-hint'),
     settingsSourceSelect: document.getElementById('settings-source-select'),
     settingsSourceModeHint: document.getElementById('settings-source-mode-hint'),
     settingsBluetoothStatus: document.getElementById('settings-bluetooth-status'),
@@ -958,6 +962,11 @@ function setupSettingsActions() {
             void switchAudioOutputMode(event.target.value || 'stereo');
         });
     }
+    if (elements.settingsSamplerateSelect) {
+        elements.settingsSamplerateSelect.addEventListener('change', (event) => {
+            void saveSampleRatePolicy(event.target.value || 'auto');
+        });
+    }
     if (elements.settingsSourceSelect) {
         elements.settingsSourceSelect.addEventListener('change', (event) => {
             const value = event.target.value || 'app-playback';
@@ -1112,8 +1121,8 @@ function formatTransitionErrorDetail(detail, fallback = 'Request failed') {
     return fallback;
 }
 
-function formatRadioStreamLine(streamInfo) {
-    if (!streamInfo || typeof streamInfo !== 'object') return '';
+function formatRadioStreamLine(streamInfo, effectiveOutputRate = null) {
+    if (!streamInfo || typeof streamInfo !== 'object') streamInfo = {};
     const parts = [];
     if (streamInfo.codec) parts.push(String(streamInfo.codec));
     if (streamInfo.profile) {
@@ -1124,8 +1133,9 @@ function formatRadioStreamLine(streamInfo) {
     if (Number.isFinite(Number(streamInfo.bit_depth)) && Number(streamInfo.bit_depth) > 0) {
         parts.push(`${Math.round(Number(streamInfo.bit_depth))} bit`);
     }
-    if (Number.isFinite(Number(streamInfo.samplerate_hz)) && Number(streamInfo.samplerate_hz) > 0) {
-        parts.push(`${(Number(streamInfo.samplerate_hz) / 1000).toFixed(1).replace(/\.0$/, '')} kHz`);
+    const displayedRate = Number(effectiveOutputRate) || Number(streamInfo.samplerate_hz);
+    if (Number.isFinite(displayedRate) && displayedRate > 0) {
+        parts.push(`${(displayedRate / 1000).toFixed(1).replace(/\.0$/, '')} kHz`);
     }
     return parts.join(' · ');
 }
@@ -1816,6 +1826,24 @@ function renderSettingsPanel() {
         }
     }
 
+    const sampleRatePolicy = state.samplerate?.policy || { mode: 'auto', rate: null };
+    const supportedRates = Array.isArray(selectedOutput?.supported_rates) ? selectedOutput.supported_rates : [];
+    if (elements.settingsSamplerateSelect && !isSelectFocused(elements.settingsSamplerateSelect)) {
+        elements.settingsSamplerateSelect.innerHTML = [
+            '<option value="auto">Auto</option>',
+            ...supportedRates.map((rate) => `<option value="${rate}">${formatSampleRateKhz(rate)}</option>`),
+        ].join('');
+        elements.settingsSamplerateSelect.value = sampleRatePolicy.mode === 'fixed'
+            ? String(sampleRatePolicy.rate || '')
+            : 'auto';
+        elements.settingsSamplerateSelect.disabled = !!state.samplerate?.pending || !overview.available;
+    }
+    if (elements.settingsSamplerateHint) {
+        elements.settingsSamplerateHint.textContent = sampleRatePolicy.mode === 'fixed'
+            ? `Playback graph and hardware output are fixed at ${formatSampleRateKhz(sampleRatePolicy.rate)}.`
+            : 'Follows the effective playback sample rate.';
+    }
+
     const sourceOverview = state.settings?.sourceMode || {};
     const sourceInputs = Array.isArray(sourceOverview.inputs) ? sourceOverview.inputs : [];
     const bluetooth = sourceOverview.bluetooth || {};
@@ -1951,6 +1979,31 @@ async function fetchAudioOutputOverview() {
         renderSettingsPanel();
         renderSubwooferPanel();
         syncAutoSubButton();
+    }
+}
+
+async function saveSampleRatePolicy(value) {
+    const rate = Number(value);
+    const policy = value === 'auto' ? { mode: 'auto', rate: null } : { mode: 'fixed', rate };
+    state.samplerate.pending = true;
+    renderSettingsPanel();
+    try {
+        const resp = await fetch('/api/audio/samplerate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(policy),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(formatTransitionErrorDetail(data.detail, 'Failed to save sample-rate policy'));
+        state.samplerate = { ...state.samplerate, ...data, pending: false };
+        renderSamplerateUI();
+        renderSettingsPanel();
+        triggerSamplerateBurstPolling();
+        showToast('Sample-rate policy updated', 'success');
+    } catch (error) {
+        state.samplerate.pending = false;
+        renderSettingsPanel();
+        showToast(error.message || 'Failed to save sample-rate policy', 'error');
     }
 }
 
@@ -2873,12 +2926,11 @@ async function fetchMetadata() {
 }
 function renderSamplerateUI() {
     if (!elements.samplerateStatus) return;
-    // Radio/library: show live stream facts (codec/bitrate/profile/depth/
-    // samplerate) from the backend stream_info block instead of the sink
-    // samplerate status.
+    // Keep source codec/bitrate facts, but the kHz value always describes the
+    // effective graph/hardware output rate.
     const activeSource = state.playback.current_track?.source;
     if (activeSource === 'radio' || activeSource === 'local') {
-        const streamLine = formatRadioStreamLine(state.playback.stream_info);
+        const streamLine = formatRadioStreamLine(state.playback.stream_info, state.samplerate?.active_rate);
         if (streamLine) {
             elements.samplerateStatus.textContent = streamLine;
             elements.samplerateStatus.classList.remove('hidden');
@@ -2895,7 +2947,7 @@ function renderSamplerateUI() {
         return;
     }
     const khz = (samplerate.active_rate / 1000).toFixed(1).replace(/\.0$/, '');
-    const modePrefix = samplerate.mode === 'auto' ? 'Auto · ' : '';
+    const modePrefix = samplerate.policy?.mode === 'auto' ? 'Auto · ' : '';
     elements.samplerateStatus.textContent = `${modePrefix}${khz} kHz`;
     elements.samplerateStatus.classList.remove('hidden');
 }
@@ -13626,10 +13678,10 @@ function updateFooterForSpotify(data) {
         }
     }
     if (elements.samplerateStatus) {
-        const streamLine = formatRadioStreamLine(data.stream_info);
+        const streamLine = formatRadioStreamLine(data.stream_info, state.samplerate?.active_rate);
         const samplerate = state.samplerate || {};
         const samplerateLine = samplerate.available && samplerate.active_rate
-            ? `${samplerate.mode === 'auto' ? 'Auto · ' : ''}${(samplerate.active_rate / 1000).toFixed(1).replace(/\.0$/, '')} kHz`
+            ? `${samplerate.policy?.mode === 'auto' ? 'Auto · ' : ''}${(samplerate.active_rate / 1000).toFixed(1).replace(/\.0$/, '')} kHz`
             : '';
         elements.samplerateStatus.textContent = streamLine || samplerateLine;
         elements.samplerateStatus.classList.toggle('hidden', !(streamLine || samplerateLine));
