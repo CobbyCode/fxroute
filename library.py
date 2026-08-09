@@ -4,6 +4,7 @@ import hashlib
 import html
 import logging
 import os
+import threading
 import re
 import subprocess
 from collections import OrderedDict
@@ -225,6 +226,7 @@ class LibraryScanner:
         self._scan_track_cache_hits = 0
         self._scan_track_cache_misses = 0
         self.metadata_store = LibraryMetadataStore()
+        self._refresh_cancel = threading.Event()
 
     def prepare_scan_status(self):
         """Mark a scan as active before scanner work starts."""
@@ -285,6 +287,9 @@ class LibraryScanner:
 
             logger.info(f"Scanning music directory: {self.music_root}")
             for root, dirs, files in os.walk(self.music_root):
+                if self._refresh_cancel.is_set():
+                    logger.info("Library scan cancelled during shutdown")
+                    return self._track_cache
                 try:
                     self._scan_current_dir = str(Path(root).relative_to(self.music_root))
                 except ValueError:
@@ -292,6 +297,9 @@ class LibraryScanner:
                 if self._scan_current_dir == ".":
                     self._scan_current_dir = ""
                 for filename in files:
+                    if self._refresh_cancel.is_set():
+                        logger.info("Library scan cancelled during shutdown")
+                        return self._track_cache
                     self._scan_files_seen += 1
                     filepath = Path(root) / filename
                     if filepath.suffix.lower() in AUDIO_EXTENSIONS:
@@ -345,6 +353,9 @@ class LibraryScanner:
             self._scan_in_progress = False
 
         return self._track_cache
+
+    def cancel_refresh(self) -> None:
+        self._refresh_cancel.set()
 
     def _create_track_from_file(self, filepath: Path) -> Optional[Track]:
         """Create a Track object with metadata from file."""

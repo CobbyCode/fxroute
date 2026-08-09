@@ -8,6 +8,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import AsyncMock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -76,6 +77,44 @@ def arg_value(args, flag):
 
 
 class SubwooferRuntimeStatusTest(unittest.TestCase):
+    def test_stop_still_terminates_helper_when_link_cleanup_fails(self):
+        runtime = Subwoofer21Runtime(helper_binary=Path("/bin/true"))
+        runtime._linked_output_key = "mock_output"
+        runtime._remove_graph_links = AsyncMock(side_effect=RuntimeError("unlink failed"))
+        runtime._stop_helper = AsyncMock()
+        runtime._restore_direct_easyeffects_front_links = AsyncMock()
+
+        with self.assertRaisesRegex(RuntimeError, "unlink failed"):
+            asyncio.run(runtime.stop())
+
+        runtime._stop_helper.assert_awaited_once()
+        runtime._restore_direct_easyeffects_front_links.assert_awaited_once_with("mock_output")
+
+    def test_stop_defers_cancellation_until_helper_is_stopped(self):
+        runtime = Subwoofer21Runtime(helper_binary=Path("/bin/true"))
+        runtime._linked_output_key = "mock_output"
+        runtime._remove_graph_links = AsyncMock(side_effect=asyncio.CancelledError)
+        runtime._stop_helper = AsyncMock()
+        runtime._restore_direct_easyeffects_front_links = AsyncMock()
+
+        with self.assertRaises(asyncio.CancelledError):
+            asyncio.run(runtime.stop())
+
+        runtime._stop_helper.assert_awaited_once()
+
+    def test_stop_defers_cancellation_during_direct_link_restore(self):
+        runtime = Subwoofer21Runtime(helper_binary=Path("/bin/true"))
+        runtime._linked_output_key = "mock_output"
+        runtime._remove_graph_links = AsyncMock()
+        runtime._stop_helper = AsyncMock()
+        runtime._restore_direct_easyeffects_front_links = AsyncMock(side_effect=asyncio.CancelledError)
+
+        with self.assertRaises(asyncio.CancelledError):
+            asyncio.run(runtime.stop())
+
+        self.assertIsNone(runtime._linked_output_key)
+        self.assertFalse(runtime._links_configured)
+
     def test_config_follows_effective_output_rate(self):
         config = SubwooferRuntimeConfig.from_overview({
             "output_mode": {

@@ -101,11 +101,14 @@ class MPVWrapper:
             "_seq": 0,
         }
         self._callbacks = []
+        self._callback_tasks: set[asyncio.Task] = set()
+        self._next_callback_token = 0
         self._last_end_reason: Optional[str] = None
         self._last_position_notify_at = 0.0
         self._last_position_notify_position = 0.0
         self._listener_socket: Optional[socket.socket] = None
         self._listener_thread: Optional[threading.Thread] = None
+        self._listener_stop_event = threading.Event()
         self._observer_ids = {
             "pause": 1,
             "time-pos": 2,
@@ -153,6 +156,7 @@ class MPVWrapper:
             time.sleep(0.1)
 
         self._running = True
+        self._listener_stop_event.clear()
         logger.info("MPV started successfully")
 
         self._listener_thread = threading.Thread(target=self._event_listener_loop, daemon=True)
@@ -161,6 +165,7 @@ class MPVWrapper:
     def stop(self):
         """Stop the mpv subprocess."""
         self._running = False
+        self._listener_stop_event.set()
 
         if self._listener_socket:
             try:
@@ -175,6 +180,14 @@ class MPVWrapper:
                 self.process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 self.process.kill()
+                self.process.wait(timeout=5)
+        listener_thread = self._listener_thread
+        if listener_thread and listener_thread is not threading.current_thread():
+            listener_thread.join(timeout=2)
+        if listener_thread and listener_thread.is_alive():
+            raise MPVError("MPV listener thread did not stop")
+        self._listener_thread = None
+        self.process = None
         try:
             os.unlink(self.socket_path)
         except FileNotFoundError:
@@ -256,7 +269,7 @@ class MPVWrapper:
                     reconnect_delay = LISTENER_RECONNECT_DELAY_INITIAL
                 except Exception as e:
                     logger.debug(f"Waiting for mpv listener socket: {e}")
-                    time.sleep(reconnect_delay)
+                    self._listener_stop_event.wait(reconnect_delay)
                     reconnect_delay = min(reconnect_delay * 2, LISTENER_RECONNECT_DELAY_MAX)
                     continue
 
@@ -302,7 +315,7 @@ class MPVWrapper:
                 break
             # Socket/read error or EOF while the player is still active:
             # reconnect after a bounded delay (never a tight loop).
-            time.sleep(reconnect_delay)
+            self._listener_stop_event.wait(reconnect_delay)
             reconnect_delay = min(reconnect_delay * 2, LISTENER_RECONNECT_DELAY_MAX)
 
     def _handle_event(self, event: Dict[str, Any]):
@@ -533,19 +546,46 @@ class MPVWrapper:
                 callback_loop = asyncio.get_running_loop()
             except RuntimeError:
                 logger.warning("Registered async callback without a running event loop")
-        self._callbacks.append((callback, callback_loop))
+        self._next_callback_token += 1
+        self._callbacks.append((callback, callback_loop, self._next_callback_token))
+
+    def unregister_callbacks(self, callback):
+        """Remove every registration for one callback."""
+        self._callbacks = [item for item in self._callbacks if item[0] is not callback]
+
+    async def shutdown_callbacks(self, callback):
+        """Stop new callback dispatch and drain tasks already queued on this loop."""
+        self.unregister_callbacks(callback)
+        await asyncio.sleep(0)
+        tasks = [task for task in self._callback_tasks if not task.done()]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    def _schedule_callback_task(self, callback, state, token):
+        if not any(item[2] == token for item in self._callbacks):
+            return
+        task = asyncio.create_task(callback(state))
+        self._callback_tasks.add(task)
+        task.add_done_callback(self._callback_tasks.discard)
 
     def _notify_callbacks(self):
         """Notify all callbacks with current state."""
         self._state["_seq"] = int(self._state.get("_seq") or 0) + 1
         snapshot = self._state.copy()
-        for callback, callback_loop in list(self._callbacks):
+        for callback, callback_loop, token in list(self._callbacks):
             try:
                 if inspect.iscoroutinefunction(callback):
                     if not callback_loop or not callback_loop.is_running():
                         logger.warning("Skipping async callback dispatch because no running loop is available")
                         continue
-                    callback_loop.call_soon_threadsafe(asyncio.create_task, callback(snapshot.copy()))
+                    callback_loop.call_soon_threadsafe(
+                        self._schedule_callback_task,
+                        callback,
+                        snapshot.copy(),
+                        token,
+                    )
                 else:
                     callback(snapshot.copy())
             except Exception as e:

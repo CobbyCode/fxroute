@@ -231,6 +231,7 @@ class MeasurementStore:
         self._job_processes: dict[str, list[subprocess.Popen[str]]] = {}
         self._job_process_lock = threading.Lock()
         self._cancelled_jobs: set[str] = set()
+        self._shutdown = False
         self._last_successful_lag: int | None = None
 
     def list_measurements(self) -> dict[str, Any]:
@@ -304,6 +305,8 @@ class MeasurementStore:
         measurement_scope: str = MEASUREMENT_SCOPE_ACTIVE_CHAIN,
         playback_gain: float | None = None,
     ) -> dict[str, Any]:
+        if self._shutdown:
+            raise RuntimeError("Measurement store is shutting down")
         # Guard against concurrent measurement jobs
         active_job = self._find_active_or_cancelling_job()
         if active_job is not None:
@@ -411,6 +414,8 @@ class MeasurementStore:
     ) -> dict[str, Any]:
         normalized_repeat_count = 3
         # Guard against concurrent measurement jobs
+        if self._shutdown:
+            raise RuntimeError("Measurement store is shutting down")
         active_job = self._find_active_or_cancelling_job()
         if active_job is not None:
             active_id = active_job["id"]
@@ -726,6 +731,56 @@ class MeasurementStore:
             str(job.get("status") or "") in {"queued", "running", "cancelling"}
             for job in self._jobs.values()
         )
+
+    async def shutdown(self) -> None:
+        """Cancel and drain every measurement owned by this store."""
+        self._shutdown = True
+        active_job_ids = [
+            job_id
+            for job_id, job in self._jobs.items()
+            if str(job.get("status") or "") in {"queued", "running", "cancelling"}
+        ]
+        for job_id in active_job_ids:
+            self.cancel_job(job_id)
+
+        with self._job_process_lock:
+            processes = [
+                process
+                for job_processes in self._job_processes.values()
+                for process in job_processes
+                if process.poll() is None
+            ]
+        for process in processes:
+            try:
+                await asyncio.to_thread(process.wait, 3)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                await asyncio.to_thread(process.wait, 3)
+            except Exception:
+                logger.exception("Failed to stop measurement process during shutdown")
+
+        tasks = [task for task in self._job_tasks.values() if not task.done()]
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+        with self._job_process_lock:
+            remaining = [
+                process
+                for processes in self._job_processes.values()
+                for process in processes
+                if process.poll() is None
+            ]
+        for process in remaining:
+            try:
+                process.terminate()
+                await asyncio.to_thread(process.wait, 3)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                await asyncio.to_thread(process.wait, 3)
+            except Exception:
+                logger.exception("Failed to stop measurement process during shutdown")
+        with self._job_process_lock:
+            self._job_processes.clear()
 
     def _start_job_process(self, job_id: str, command: list[str]) -> subprocess.Popen[str]:
         """Atomically refuse cancellation or register the new child process."""

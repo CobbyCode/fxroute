@@ -273,6 +273,91 @@ class MeasurementCancelLifecycleTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result["status"], "completed")
             self.assertEqual(store.get_job(job_id)["status"], "completed")
 
+    async def test_shutdown_cancels_and_drains_running_jobs(self):
+        with tempfile.TemporaryDirectory() as tempdir, patch.dict(
+            "os.environ", {"XDG_CONFIG_HOME": tempdir, "XDG_STATE_HOME": tempdir}
+        ):
+            store = MeasurementStore(home=Path(tempdir))
+            job_id = "measurement-job-shutdown"
+            store._jobs[job_id] = {
+                "id": job_id,
+                "status": "queued",
+                "created_at": store._utc_now(),
+                "updated_at": store._utc_now(),
+                "message": "queued",
+            }
+            entered = threading.Event()
+
+            def worker(_job):
+                entered.set()
+                while job_id not in store._cancelled_jobs:
+                    threading.Event().wait(0.01)
+                raise RuntimeError("Measurement cancelled.")
+
+            store._execute_capture_job = worker
+            task = asyncio.create_task(store._run_measurement_job(job_id))
+            store._job_tasks[job_id] = task
+            await asyncio.to_thread(entered.wait, 2)
+
+            await store.shutdown()
+
+            self.assertTrue(task.done())
+            self.assertEqual(store.get_job(job_id)["status"], "cancelled")
+            self.assertFalse(store.has_active_measurement_job())
+            self.assertTrue(store._shutdown)
+
+    async def test_shutdown_kills_process_that_ignores_terminate_before_drain(self):
+        with tempfile.TemporaryDirectory() as tempdir, patch.dict(
+            "os.environ", {"XDG_CONFIG_HOME": tempdir, "XDG_STATE_HOME": tempdir}
+        ):
+            store = MeasurementStore(home=Path(tempdir))
+            job_id = "measurement-job-stubborn-process"
+            store._jobs[job_id] = {
+                "id": job_id,
+                "status": "queued",
+                "created_at": store._utc_now(),
+                "updated_at": store._utc_now(),
+                "message": "queued",
+            }
+
+            class Process:
+                returncode = None
+                killed = False
+
+                def poll(self):
+                    return self.returncode
+
+                def terminate(self):
+                    pass
+
+                def kill(self):
+                    self.killed = True
+                    self.returncode = -9
+
+                def wait(self, _timeout):
+                    if self.returncode is None:
+                        raise __import__("subprocess").TimeoutExpired("measurement", 3)
+                    return self.returncode
+
+            process = Process()
+            store._job_processes[job_id] = [process]
+
+            def worker(_job):
+                while process.returncode is None:
+                    threading.Event().wait(0.01)
+                raise RuntimeError("Measurement cancelled.")
+
+            store._execute_capture_job = worker
+            task = asyncio.create_task(store._run_measurement_job(job_id))
+            store._job_tasks[job_id] = task
+            await asyncio.sleep(0.02)
+
+            await store.shutdown()
+
+            self.assertTrue(process.killed)
+            self.assertTrue(task.done())
+            self.assertEqual(store.get_job(job_id)["status"], "cancelled")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

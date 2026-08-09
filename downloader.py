@@ -33,6 +33,10 @@ class Downloader:
         self._cancel_requested = False
         self._callbacks = []
         self._callback_loop = None
+        self._callback_futures = set()
+        self._worker_thread = None
+        self._process = None
+        self._shutdown_event = threading.Event()
 
         # Verify yt-dlp exists
         self._verify_ytdlp()
@@ -79,6 +83,7 @@ class Downloader:
                 raise RuntimeError("Download already in progress")
 
             self._cancel_requested = False
+            self._shutdown_event.clear()
             self._active_download = {
                 "url": url,
                 "status": "starting",
@@ -94,6 +99,7 @@ class Downloader:
 
             # Start download thread
             thread = threading.Thread(target=self._download_thread, args=(url,), daemon=True)
+            self._worker_thread = thread
             thread.start()
 
             filename = self._get_output_filename(url)
@@ -120,6 +126,7 @@ class Downloader:
 
     def _download_thread(self, url: str):
         """Background thread executing yt-dlp."""
+        process = None
         try:
             # Construct output template
             output_template = str(self.download_dir / "%(title)s.%(ext)s")
@@ -150,6 +157,8 @@ class Downloader:
                 stderr=subprocess.PIPE,
                 bufsize=0,
             )
+            with self._lock:
+                self._process = process
 
             # Parse output for progress and filename
             filename = None
@@ -243,8 +252,12 @@ class Downloader:
             self._update_status("error", None, error=str(e))
         finally:
             # Keep final state for a while before clearing
-            time.sleep(2)
+            self._shutdown_event.wait(2)
             with self._lock:
+                if self._process is process:
+                    self._process = None
+                if self._worker_thread is threading.current_thread():
+                    self._worker_thread = None
                 self._active_download = None
                 self._cancel_requested = False
 
@@ -307,7 +320,10 @@ class Downloader:
                         if loop is None:
                             logger.warning("No callback loop set for async download callback")
                             continue
-                        asyncio.run_coroutine_threadsafe(callback(state), loop)
+                        future = asyncio.run_coroutine_threadsafe(callback(state), loop)
+                        with self._lock:
+                            self._callback_futures.add(future)
+                        future.add_done_callback(self._discard_callback_future)
                     else:
                         callback(state)
                 except Exception as e:
@@ -324,12 +340,46 @@ class Downloader:
         if loop is not None:
             self._callback_loop = loop
 
+    def _discard_callback_future(self, future) -> None:
+        with self._lock:
+            self._callback_futures.discard(future)
+
     def cancel(self):
         """Cancel the active download."""
         with self._lock:
             if self._active_download:
                 self._cancel_requested = True
                 logger.info("Download cancel requested")
+
+    def shutdown(self, timeout: float = 5.0) -> None:
+        """Stop the owned download process/thread and detach loop callbacks."""
+        with self._lock:
+            self._cancel_requested = True
+            self._shutdown_event.set()
+            process = self._process
+            thread = self._worker_thread
+            callback_futures = list(self._callback_futures)
+            self._callbacks.clear()
+            self._callback_loop = None
+        for future in callback_futures:
+            future.cancel()
+        for future in callback_futures:
+            try:
+                future.result(timeout=timeout)
+            except Exception:
+                pass
+        if process is not None and process.poll() is None:
+            process.terminate()
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=timeout)
+        if thread is not None and thread.is_alive():
+            with self._lock:
+                process = self._process
+            if process is not None and process.poll() is None:
+                process.kill()
+            thread.join(timeout=timeout)
+        if thread is not None and thread.is_alive():
+            raise RuntimeError("Download worker did not stop")
 
     @property
     def active_download(self) -> Optional[Dict]:

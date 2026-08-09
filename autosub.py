@@ -32,6 +32,8 @@ logger = logging.getLogger(__name__)
 
 _AUTO_SUB_JOBS: dict[str, dict[str, Any]] = {}
 _auto_sub_lock: asyncio.Lock = asyncio.Lock()
+_AUTO_SUB_WORKER_TASKS: set[asyncio.Task[Any]] = set()
+_AUTO_SUB_CLEANUP_TASKS: set[asyncio.Task[Any]] = set()
 _AUTO_SUB_MAX_CALIBRATION_BYTES: int = 2 * 1024 * 1024  # 2 MiB
 
 router = APIRouter()
@@ -66,6 +68,35 @@ def _cleanup_stale_autosub_cancelling_jobs() -> None:
 def _auto_sub_cancel_requested(job: dict[str, Any]) -> bool:
     status = str(job.get("status") or "").lower()
     return bool(job.get("cancel_requested")) or status in ("cancelled", "cancelling")
+
+
+def _start_auto_sub_worker(coro) -> None:
+    task = asyncio.create_task(coro)
+    _AUTO_SUB_WORKER_TASKS.add(task)
+    task.add_done_callback(_AUTO_SUB_WORKER_TASKS.discard)
+
+
+async def shutdown() -> None:
+    """Cooperatively cancel and drain all AutoSub-owned tasks."""
+    from main import measurement_store
+
+    for job in _AUTO_SUB_JOBS.values():
+        if str(job.get("status") or "") not in {"completed", "failed", "cancelled"}:
+            job["status"] = "cancelling"
+            job["cancel_requested"] = True
+            sweep_id = str(job.get("current_sweep_id") or "")
+            if sweep_id and measurement_store is not None:
+                try:
+                    measurement_store.cancel_job(sweep_id)
+                except (KeyError, RuntimeError):
+                    pass
+    if _AUTO_SUB_WORKER_TASKS:
+        await asyncio.gather(*list(_AUTO_SUB_WORKER_TASKS), return_exceptions=True)
+    cleanup_tasks = list(_AUTO_SUB_CLEANUP_TASKS)
+    for task in cleanup_tasks:
+        task.cancel()
+    if cleanup_tasks:
+        await asyncio.gather(*cleanup_tasks, return_exceptions=True)
 
 
 def _auto_sub_cancelled_candidate(delay_ms: float, stage: str) -> dict[str, Any]:
@@ -1224,7 +1255,7 @@ async def start_auto_sub_optimize(
                 "left": {"status": "pending", "candidates": []},
                 "right": {"status": "pending", "candidates": []},
             }
-            asyncio.create_task(
+            _start_auto_sub_worker(
                 _run_auto_sub_22_stereo_optimize(
                     job_id=job_id,
                     input_id=input_id,
@@ -1252,7 +1283,7 @@ async def start_auto_sub_optimize(
             )
             job["scan_delays"] = {"sub1": scan_delays, "sub2": sub2_scan_delays}
             job["combined_matrix"] = {"status": "pending", "fine_step_ms": fine_step_ms, "candidates": []}
-            asyncio.create_task(
+            _start_auto_sub_worker(
                 _run_auto_sub_22_optimize(
                     job_id=job_id,
                     input_id=input_id,
@@ -1269,7 +1300,7 @@ async def start_auto_sub_optimize(
                 )
             )
         else:
-            asyncio.create_task(
+            _start_auto_sub_worker(
                 _run_auto_sub_optimize(
                     job_id=job_id,
                     input_id=input_id,
@@ -1290,6 +1321,9 @@ async def start_auto_sub_optimize(
             )
         return {"status": "ok", "job": job}
     except HTTPException:
+        _auto_sub_lock.release()
+        raise
+    except asyncio.CancelledError:
         _auto_sub_lock.release()
         raise
     except Exception:
@@ -2823,7 +2857,9 @@ async def _finish_auto_sub_worker(job: dict[str, Any], job_id: str) -> None:
         await asyncio.sleep(600)
         _AUTO_SUB_JOBS.pop(job_id, None)
 
-    asyncio.create_task(_cleanup_autosub_job())
+    cleanup_task = asyncio.create_task(_cleanup_autosub_job())
+    _AUTO_SUB_CLEANUP_TASKS.add(cleanup_task)
+    cleanup_task.add_done_callback(_AUTO_SUB_CLEANUP_TASKS.discard)
 
 
 async def _run_auto_sub_22_optimize(
@@ -2871,9 +2907,9 @@ async def _run_auto_sub_22_optimize(
     def _same_pair(pair: tuple[float, float], sub1_alignment: float, sub2_alignment: float) -> bool:
         return abs(pair[0] - sub1_alignment) <= 0.05 and abs(pair[1] - sub2_alignment) <= 0.05
 
-    if measurement_sr_session is not None:
-        await measurement_sr_session.register_auto_sub(job_id)
     try:
+        if measurement_sr_session is not None:
+            await measurement_sr_session.register_auto_sub(job_id)
         if _auto_sub_cancel_requested(job):
             logger.info("AUTOSUB job=%s cancel observed (before sweeps)", job_id)
             job["message"] = "Auto Sub Optimize cancelled."
@@ -3548,9 +3584,9 @@ async def _run_auto_sub_22_stereo_optimize(
         points = reference.get("points") or []
         return points if isinstance(points, list) and len(points) >= 3 else None
 
-    if measurement_sr_session is not None:
-        await measurement_sr_session.register_auto_sub(job_id)
     try:
+        if measurement_sr_session is not None:
+            await measurement_sr_session.register_auto_sub(job_id)
         if _auto_sub_cancel_requested(job):
             logger.info("AUTOSUB job=%s cancel observed (before sweeps)", job_id)
             job["message"] = "Auto Sub Optimize cancelled."
@@ -4636,9 +4672,9 @@ async def _run_auto_sub_optimize(
         """Restore subwoofer config from snapshot."""
         await _restore_auto_sub_original_config(original_config_snapshot)
 
-    if measurement_sr_session is not None:
-        await measurement_sr_session.register_auto_sub(job_id)
     try:
+        if measurement_sr_session is not None:
+            await measurement_sr_session.register_auto_sub(job_id)
         if _auto_sub_cancel_requested(job):
             logger.info("AUTOSUB job=%s cancel observed (before sweeps)", job_id)
             job["message"] = "Auto Sub Optimize cancelled."
@@ -5329,5 +5365,3 @@ async def _run_auto_sub_optimize(
 
     finally:
         await _finish_auto_sub_worker(job, job_id)
-
-

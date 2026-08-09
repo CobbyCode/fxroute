@@ -683,10 +683,24 @@ class Subwoofer21Runtime:
         output_key = self._linked_output_key or (self._config.output_key if self._config else "")
         logger.info("SUB-STOP begin: output_key=%s has_linked=%s", output_key, bool(self._linked_output_key))
         t1 = time.monotonic()
-        await self._remove_graph_links()
+        cleanup_error: Exception | None = None
+        cancelled = False
+        try:
+            await self._remove_graph_links()
+        except asyncio.CancelledError:
+            cancelled = True
+        except Exception as exc:
+            cleanup_error = exc
+            logger.warning("Failed to remove subwoofer graph links during stop: %s", exc)
         t2 = time.monotonic()
         logger.info("SUB-STOP _remove_graph_links: %.0f ms", (t2 - t1) * 1000)
-        await self._stop_helper()
+        try:
+            await self._stop_helper()
+        except asyncio.CancelledError:
+            cancelled = True
+        except Exception as exc:
+            cleanup_error = cleanup_error or exc
+            logger.warning("Failed to stop subwoofer helper: %s", exc)
         t3 = time.monotonic()
         logger.info("SUB-STOP _stop_helper: %.0f ms", (t3 - t2) * 1000)
         if output_key:
@@ -694,14 +708,21 @@ class Subwoofer21Runtime:
                 await self._restore_direct_easyeffects_front_links(output_key)
                 t4 = time.monotonic()
                 logger.info("SUB-STOP _restore_direct_ee_links: %.0f ms", (t4 - t3) * 1000)
+            except asyncio.CancelledError:
+                cancelled = True
             except Exception as exc:
                 logger.warning("Failed to restore Stereo EasyEffects front links during 2.1 stop (output_key=%s): %s", output_key, exc)
         self._last_error = None
         self._links_configured = False
+        self._linked_output_key = None
         self._current_stream_key = None
         self._removed_direct_front_links = 0
         t_end = time.monotonic()
         logger.info("SUB-STOP total: %.0f ms", (t_end - t0) * 1000)
+        if cancelled:
+            raise asyncio.CancelledError
+        if cleanup_error is not None:
+            raise cleanup_error
 
     def _stage1_links(self, output_key: str) -> list[PipeWireLink]:
         return [
@@ -1152,19 +1173,26 @@ class Subwoofer21Runtime:
 
     async def _stop_helper(self) -> None:
         process = self._process
-        self._process = None
         self._exact_sub_mute = False
-        self._close_exact_sub_mute_ack_socket()
-        self._close_peak_control_socket()
         self._last_helper_args = None
-        if process is None or getattr(process, "returncode", None) is not None:
-            return
-        process.terminate()
         try:
-            await asyncio.wait_for(process.wait(), timeout=2.0)
-        except asyncio.TimeoutError:
-            process.kill()
-            await process.wait()
+            if process is not None and getattr(process, "returncode", None) is None:
+                process.terminate()
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=2.0)
+                except asyncio.TimeoutError:
+                    process.kill()
+                    await process.wait()
+        except asyncio.CancelledError:
+            if process is not None and getattr(process, "returncode", None) is None:
+                process.kill()
+                await process.wait()
+            raise
+        finally:
+            if self._process is process:
+                self._process = None
+            self._close_exact_sub_mute_ack_socket()
+            self._close_peak_control_socket()
 
     async def _stop_orphan_helpers(self) -> None:
         pattern = f"{self._helper_binary}.*--node-name {self._helper_node_name}"
