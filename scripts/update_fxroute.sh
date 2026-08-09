@@ -146,6 +146,19 @@ install_dependencies_if_needed() {
   log "Python dependencies are up to date."
 }
 
+deployment_marker_matches_head() {
+  local marker="$REPO_PATH/.venv/.fxroute-deployed-commit"
+  local deployed_commit=""
+  [[ -f "$marker" ]] && deployed_commit="$(tr -d '[:space:]' < "$marker")"
+  [[ -n "$deployed_commit" && "$deployed_commit" == "$(git rev-parse HEAD)" ]]
+}
+
+mark_deployment_complete() {
+  local marker="$REPO_PATH/.venv/.fxroute-deployed-commit"
+  mkdir -p "$(dirname "$marker")"
+  printf '%s\n' "$(git rev-parse HEAD)" > "$marker"
+}
+
 run_production_build() {
   if [[ -f package.json ]]; then
     log "Running frontend production build."
@@ -166,11 +179,12 @@ run_production_build() {
 build_pipewire_stage1_if_needed() {
   local build_script="$REPO_PATH/pipewire_stage1/build.sh"
   local binary="$REPO_PATH/pipewire_stage1/build/fxroute_21_passthrough"
+  local source_file="$REPO_PATH/pipewire_stage1/fxroute_21_passthrough.c"
 
   [[ -f "$build_script" ]] || return 0
 
   if [[ -f "$binary" ]]; then
-    if [[ "$build_script" -nt "$binary" ]]; then
+    if [[ "$build_script" -nt "$binary" || "$source_file" -nt "$binary" ]]; then
       log "PipeWire 2.1 helper source changed; rebuilding."
     else
       log "PipeWire 2.1 helper binary is up to date."
@@ -212,6 +226,14 @@ restart_service_if_needed() {
   else
     log "User service ${SERVICE_NAME}.service is not installed; restart skipped."
   fi
+}
+
+reconcile_checkout() {
+  install_dependencies_if_needed
+  run_production_build
+  build_pipewire_stage1_if_needed
+  restart_service_if_needed
+  mark_deployment_complete
 }
 
 setup_repo() {
@@ -271,7 +293,13 @@ main() {
   log "Remote:  ${remote_version:-unknown} (${remote_commit}) from ${remote_ref}"
 
   if [[ "$current_commit" == "$remote_commit" ]]; then
-    log "FXRoute is already up to date."
+    if [[ "$MODE" == "check" ]] || deployment_marker_matches_head; then
+      log "FXRoute is already up to date."
+      return 0
+    fi
+    log "Checkout is current, but the deployment was not completed; retrying reconciliation."
+    reconcile_checkout
+    log "Update reconciliation completed: ${current_version:-unknown} (${current_commit})"
     return 0
   fi
 
@@ -293,10 +321,7 @@ main() {
   log "Pulling updates with fast-forward only."
   git pull --ff-only
 
-  install_dependencies_if_needed
-  run_production_build
-  build_pipewire_stage1_if_needed
-  restart_service_if_needed
+  reconcile_checkout
 
   current_version="$(version_at HEAD)"
   current_commit="$(git_short HEAD)"
@@ -339,10 +364,7 @@ restore_main() {
     git reset --hard "$remote_ref"
   fi
 
-  install_dependencies_if_needed
-  run_production_build
-  build_pipewire_stage1_if_needed
-  restart_service_if_needed
+  reconcile_checkout
 
   local restored_version restored_commit
   restored_version="$(version_at HEAD)"
