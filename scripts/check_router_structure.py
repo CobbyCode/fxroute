@@ -4,7 +4,7 @@
 
 1. every @router endpoint must decorate a handler function (name matches
    the route-handler naming pattern), never a helper;
-2. no function may be defined twice in one module;
+2. no function or class method may be defined twice in one scope;
 3. no bare reference to main.py runtime globals may remain unbound
    (each function must bind them via a lazy `from main import ...` or the
    module must define/import the name at module level).
@@ -66,6 +66,31 @@ ROUTE_HANDLER_PREFIXES = (
 )
 
 errors: list[str] = []
+
+
+def check_duplicate_class_methods(path: Path) -> None:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    for class_node in (node for node in ast.walk(tree) if isinstance(node, ast.ClassDef)):
+        definitions: dict[str, list[int]] = {}
+        for node in class_node.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                definitions.setdefault(node.name, []).append(node.lineno)
+        for name, lines in definitions.items():
+            if len(lines) > 1:
+                errors.append(
+                    f"{path.name}:{class_node.name} duplicate method {name} at lines {lines}"
+                )
+
+
+def check_duplicate_module_functions(path: Path) -> None:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    definitions: dict[str, list[int]] = {}
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            definitions.setdefault(node.name, []).append(node.lineno)
+    for name, lines in definitions.items():
+        if len(lines) > 1:
+            errors.append(f"{path.name}: duplicate function {name} at lines {lines}")
 
 
 def module_level_names(tree: ast.Module) -> set[str]:
@@ -134,11 +159,15 @@ for mod in MODULES:
         if count > 1:
             errors.append(f"{mod}: duplicate definition of {name} ({count}x)")
 
+for path in ROOT.glob("*.py"):
+    check_duplicate_module_functions(path)
+    check_duplicate_class_methods(path)
+
 if errors:
     print("ROUTER STRUCTURE CHECK FAILED")
     for err in errors:
         print(f"  {err}")
     sys.exit(1)
 
-print("Router structure check ok: endpoint decorators, duplicate defs, unbound main globals")
+print("Structure check ok: endpoint decorators, duplicate defs/methods, unbound main globals")
 sys.exit(0)

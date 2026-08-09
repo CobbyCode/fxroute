@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Set
 
+from easyeffects_persistence import EasyEffectsPresetStore
+
 logger = logging.getLogger(__name__)
 
 
@@ -168,13 +170,11 @@ class EasyEffectsManager:
         self.db_file = self.runtime.db_file
         self.global_extras_file = self.runtime.global_extras_file
         self.compare_state_file = self.runtime.compare_state_file
+        self.preset_store = EasyEffectsPresetStore(self.output_dir, self.irs_dir)
 
     @staticmethod
     def _clean_preset_name(value: Any, fallback: str = "") -> str:
-        name = Path(str(value or "").strip()).name.strip()
-        if name.lower().endswith(".json"):
-            name = name[:-5].strip()
-        return name or fallback
+        return EasyEffectsPresetStore.clean_preset_name(value, fallback)
 
     def _runtime_dir(self) -> Path:
         runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
@@ -701,35 +701,7 @@ class EasyEffectsManager:
             return []
 
         self._ensure_pure_preset_exists()
-
-        pinned_order = {
-            "Direct": 0,
-            "Neutral": 1,
-            self.PURE_PRESET: 2,
-        }
-        preset_paths = sorted(
-            self.output_dir.glob("*.json"),
-            key=lambda path: (pinned_order.get(path.stem, 100), path.stem.lower()),
-        )
-
-        presets = []
-        for path in preset_paths:
-            source_presets: List[str] = []
-            try:
-                payload = json.loads(path.read_text())
-                if isinstance(payload, dict):
-                    source_presets = self._extract_source_presets_from_payload(payload)
-            except Exception:
-                source_presets = []
-            presets.append(
-                {
-                    "name": path.stem,
-                    "filename": path.name,
-                    "path": str(path),
-                    "source_presets": source_presets,
-                }
-            )
-        return presets
+        return self.preset_store.list_presets(pinned_names=["Direct", "Neutral"])
 
     def _get_active_preset_from_settings(self) -> Optional[str]:
         if not shutil.which("gsettings"):
@@ -916,84 +888,21 @@ class EasyEffectsManager:
         )
 
     def list_irs(self) -> List[dict]:
-        if not self.irs_dir.exists():
-            return []
-
-        irs = []
-        for path in sorted(self.irs_dir.iterdir()):
-            if not path.is_file():
-                continue
-            irs.append(
-                {
-                    "name": path.name,
-                    "basename": path.stem,
-                    "path": str(path),
-                    "size": path.stat().st_size,
-                }
-            )
-        return irs
-
-    def _read_preset_payload(self, preset_name: str) -> Optional[Dict[str, Any]]:
-        clean_name = self._clean_preset_name(preset_name)
-        if not clean_name:
-            return None
-
-        preset_path = self.output_dir / f"{clean_name}.json"
-        if not preset_path.exists():
-            return None
-
-        try:
-            payload = json.loads(preset_path.read_text())
-            return payload if isinstance(payload, dict) else None
-        except Exception as e:
-            logger.warning("Failed to parse EasyEffects preset '%s' for IR reference scan: %s", clean_name, e)
-            return None
+        return self.preset_store.list_irs()
 
     def _extract_kernel_names_from_payload(self, payload: Optional[Dict[str, Any]]) -> Set[str]:
-        if not isinstance(payload, dict):
-            return set()
-
-        output = payload.get("output")
-        if not isinstance(output, dict):
-            return set()
-
-        kernel_names: Set[str] = set()
-        for plugin_payload in output.values():
-            if not isinstance(plugin_payload, dict):
-                continue
-            kernel_name = plugin_payload.get("kernel-name")
-            if isinstance(kernel_name, str):
-                normalized = kernel_name.strip()
-                if normalized:
-                    kernel_names.add(normalized)
-        return kernel_names
+        return self.preset_store.extract_kernel_names(payload)
 
     def _get_preset_kernel_names(self, preset_name: str) -> Set[str]:
-        return self._extract_kernel_names_from_payload(self._read_preset_payload(preset_name))
+        payload = self.preset_store.try_read_preset(preset_name, context="IR reference scan")
+        return self._extract_kernel_names_from_payload(payload)
 
     def _get_other_referenced_kernel_names(self, excluded_preset_name: str) -> Set[str]:
-        excluded_clean = self._clean_preset_name(excluded_preset_name)
-        referenced: Set[str] = set()
-        for preset in self.list_presets():
-            preset_name = preset.get("name")
-            if not isinstance(preset_name, str) or preset_name == excluded_clean:
-                continue
-            referenced.update(self._get_preset_kernel_names(preset_name))
+        referenced, _ = self.preset_store.referenced_kernels_except(excluded_preset_name)
         return referenced
 
     def _find_ir_paths_for_kernel_name(self, kernel_name: str) -> List[Path]:
-        if not kernel_name or not self.irs_dir.exists():
-            return []
-
-        preferred_path = self.irs_dir / f"{Path(kernel_name).stem}.irs"
-        if preferred_path.exists() and preferred_path.is_file():
-            return [preferred_path]
-
-        matching_paths: List[Path] = []
-        for path in self.irs_dir.iterdir():
-            if path.is_file() and path.stem == kernel_name:
-                matching_paths.append(path)
-        return sorted(matching_paths)
+        return self.preset_store.find_ir_paths(kernel_name)
 
     def _convert_wav_to_irs(self, source_path: Path, destination: Path) -> None:
         cmd = [
@@ -1578,7 +1487,7 @@ class EasyEffectsManager:
         active_preset = self.get_active_preset()
         if not active_preset or active_preset in self.EXCLUDED_GLOBAL_EXTRAS_PRESETS:
             return False
-        payload = self._read_preset_payload(active_preset)
+        payload = self.preset_store.try_read_preset(active_preset, context="samplerate reload check")
         output = payload.get("output") if isinstance(payload, dict) else None
         if not isinstance(output, dict):
             return False
@@ -1705,18 +1614,10 @@ class EasyEffectsManager:
 
     @staticmethod
     def _normalize_source_presets(source_presets: Optional[List[str]]) -> List[str]:
-        normalized = [EasyEffectsManager._clean_preset_name(name) for name in (source_presets or []) if str(name).strip()]
-        return [name for name in normalized if name]
+        return EasyEffectsPresetStore.normalize_source_presets(source_presets)
 
     def _extract_source_presets_from_payload(self, payload: Dict[str, Any]) -> List[str]:
-        fxroute_meta = payload.get("fxroute") if isinstance(payload.get("fxroute"), dict) else {}
-        if isinstance(fxroute_meta, dict):
-            normalized = self._normalize_source_presets(
-                fxroute_meta.get("source_presets") or fxroute_meta.get("sourcePresets") or []
-            )
-            if normalized:
-                return normalized
-        return self._normalize_source_presets(payload.get("source_presets") or payload.get("sourcePresets") or [])
+        return self.preset_store.extract_source_presets(payload)
 
     def _attach_preset_metadata(self, payload: Dict[str, Any], source_presets: Optional[List[str]] = None) -> Dict[str, Any]:
         result = dict(payload or {})
@@ -1749,7 +1650,7 @@ class EasyEffectsManager:
             normalized,
             convolver_sample_rate_hz=convolver_sample_rate_hz,
         )
-        preset_path.write_text(json.dumps(payload, indent=2) + "\n")
+        self.preset_store.write_preset(clean_name, payload)
         return True
 
     def apply_global_extras_to_all_presets(self, extras: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -1914,21 +1815,6 @@ class EasyEffectsManager:
             previous, extras, persist_all_presets=False
         )
 
-    def _read_preset_payload(self, preset_name: str) -> Dict[str, Any]:
-        clean_name = self._clean_preset_name(preset_name)
-        if not clean_name:
-            raise ValueError("Invalid preset name")
-        preset_path = self.output_dir / f"{clean_name}.json"
-        if not preset_path.exists():
-            raise FileNotFoundError(f"Preset not found: {clean_name}")
-        try:
-            payload = json.loads(preset_path.read_text())
-        except Exception as e:
-            raise RuntimeError(f"Failed to read preset '{clean_name}': {e}") from e
-        if not isinstance(payload, dict):
-            raise RuntimeError(f"Preset '{clean_name}' is not a valid JSON object")
-        return payload
-
     def import_preset_json(self, preset_filename: str, preset_text: str) -> Dict[str, Any]:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         clean_preset_name = self._clean_preset_name(preset_filename)
@@ -1946,8 +1832,7 @@ class EasyEffectsManager:
         plugins_order = output.get("plugins_order")
         if plugins_order is not None and not isinstance(plugins_order, list):
             raise ValueError("Preset JSON has an invalid plugins_order")
-        preset_path = self.output_dir / f"{clean_preset_name}.json"
-        preset_path.write_text(json.dumps(payload, indent=2) + "\n")
+        preset_path = self.preset_store.write_preset(clean_preset_name, payload)
         return {
             "name": clean_preset_name,
             "filename": preset_path.name,
@@ -1978,7 +1863,7 @@ class EasyEffectsManager:
         plugin_counters: Dict[str, int] = {}
 
         for source_name in normalized_sources:
-            payload = self._read_preset_payload(source_name)
+            payload = self.preset_store.read_preset(source_name)
             output = payload.get("output") if isinstance(payload.get("output"), dict) else {}
             ordered_plugin_names = []
             seen_plugin_names = set()
@@ -2013,8 +1898,7 @@ class EasyEffectsManager:
 
         combined_payload = self._build_effects_output(base_plugins, base_order, extras if extras is not None else self.load_global_extras())
         combined_payload = self._attach_preset_metadata(combined_payload, source_presets=normalized_sources)
-        preset_path = self.output_dir / f"{clean_preset_name}.json"
-        preset_path.write_text(json.dumps(combined_payload, indent=2) + "\n")
+        preset_path = self.preset_store.write_preset(clean_preset_name, combined_payload)
         return {
             "name": clean_preset_name,
             "filename": preset_path.name,
@@ -2034,7 +1918,6 @@ class EasyEffectsManager:
             raise ValueError("Invalid preset name")
 
         kernel_name = Path(ir_filename).stem
-        preset_path = self.output_dir / f"{clean_preset_name}.json"
         payload = self._build_effects_output(
             {
                 "convolver#0": {
@@ -2056,7 +1939,7 @@ class EasyEffectsManager:
             ["convolver#0"],
             extras,
         )
-        preset_path.write_text(json.dumps(payload, indent=2) + "\n")
+        preset_path = self.preset_store.write_preset(clean_preset_name, payload)
         return {
             "name": clean_preset_name,
             "filename": preset_path.name,
@@ -2299,9 +2182,8 @@ class EasyEffectsManager:
             }
             base_order.append("delay#1")
 
-        preset_path = self.output_dir / f"{clean_preset_name}.json"
         payload = self._build_effects_output(base_plugins, base_order, extras)
-        preset_path.write_text(json.dumps(payload, indent=2) + "\n")
+        preset_path = self.preset_store.write_preset(clean_preset_name, payload)
         return {
             "name": clean_preset_name,
             "filename": preset_path.name,
@@ -2457,7 +2339,7 @@ class EasyEffectsManager:
         else:
             logger.info("Direct preset missing, recreating helper-free version...")
 
-        preset_path.write_text(json.dumps(desired_payload, indent=2) + "\n")
+        self.preset_store.write_preset(self.PURE_PRESET, desired_payload)
 
     def delete_preset(self, preset_name: str) -> None:
         clean_name = self._clean_preset_name(preset_name)
@@ -2470,11 +2352,16 @@ class EasyEffectsManager:
             raise FileNotFoundError(f"Preset not found: {clean_name}")
 
         preset_kernel_names = self._get_preset_kernel_names(clean_name)
-        referenced_elsewhere = self._get_other_referenced_kernel_names(clean_name)
+        referenced_elsewhere, reference_scan_complete = self.preset_store.referenced_kernels_except(clean_name)
         was_active = self.get_active_preset() == clean_name
         preset_path.unlink()
 
-        orphaned_kernel_names = preset_kernel_names - referenced_elsewhere
+        orphaned_kernel_names = preset_kernel_names - referenced_elsewhere if reference_scan_complete else set()
+        if preset_kernel_names and not reference_scan_complete:
+            logger.warning(
+                "Retaining IR files after deleting preset '%s' because another preset could not be inspected",
+                clean_name,
+            )
         for kernel_name in sorted(orphaned_kernel_names):
             for ir_path in self._find_ir_paths_for_kernel_name(kernel_name):
                 try:
