@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 import time
 import wave
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -20,11 +21,31 @@ from fastapi import APIRouter, HTTPException, Request
 from samplerate import get_audio_output_overview
 
 logger = logging.getLogger(__name__)
+SPL_STOP_TIMEOUT_SECONDS = 40.0
 
-spl_calibration_noise_process = None
-spl_calibration_noise_file: Path | None = None
-spl_calibration_restore_state: dict[str, Any] | None = None
-SPL_CALIBRATION_JOB_ID = "spl-calibration"
+
+@dataclass
+class _SplCalibrationOperation:
+    id: str
+    kind: str
+    session_job_id: str
+    noise_process: subprocess.Popen[Any] | None = None
+    noise_file: Path | None = None
+    recorder: subprocess.Popen[Any] | None = None
+    restore_state: dict[str, Any] | None = None
+    capture_path: Path | None = None
+    source_node: str = ""
+    source_volume_percent: float | None = None
+    session: Any = None
+    registration_attempted: bool = False
+    cancel_requested: bool = False
+    worker_task: asyncio.Task[Any] | None = None
+    cleanup_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    completed: asyncio.Event = field(default_factory=asyncio.Event)
+
+
+_spl_operation: _SplCalibrationOperation | None = None
+_spl_operation_lock: asyncio.Lock | None = None
 
 router = APIRouter()
 def _spl_output_profile() -> dict[str, str]:
@@ -508,41 +529,365 @@ def _calculate_spl_required_adjustment(measured_spl_db: float) -> float:
     return 83.0 - measured
 
 
-def _stop_spl_calibration_noise() -> None:
-    from main import easyeffects_manager, set_output_volume
-
-    global spl_calibration_noise_process, spl_calibration_restore_state
-    process = spl_calibration_noise_process
-    spl_calibration_noise_process = None
-    if process and process.poll() is None:
+def _terminate_and_reap(process: subprocess.Popen[Any] | None) -> None:
+    if process is None or process.poll() is not None:
+        return
+    try:
         process.terminate()
         try:
             process.wait(timeout=2)
+            return
         except subprocess.TimeoutExpired:
-            process.kill()
-    restore = spl_calibration_restore_state
-    spl_calibration_restore_state = None
-    if restore and easyeffects_manager:
-        try:
-            easyeffects_manager.set_active_plugin_property(
-                "autogain", 0, "target", restore["autogain_target"]
-            )
-            easyeffects_manager.set_active_plugin_property(
-                "autogain", 0, "bypass", restore["autogain_bypass"]
-            )
-            easyeffects_manager.set_active_plugin_property(
-                "loudness", 0, "outputGain", restore["loudness_output_gain"]
-            )
-            easyeffects_manager.set_active_plugin_property(
-                "loudness", 0, "volume", restore["loudness_volume"]
-            )
-            if not restore["loudness_bypass"]:
-                time.sleep(0.10)
-            easyeffects_manager.set_active_plugin_property(
-                "loudness", 0, "bypass", restore["loudness_bypass"]
-            )
-        finally:
+            pass
+    except Exception:
+        logger.exception("Failed to terminate SPL calibration process; escalating to kill")
+    process.kill()
+    process.wait(timeout=2)
+
+
+def _restore_spl_calibration_audio(operation: _SplCalibrationOperation) -> None:
+    from main import easyeffects_manager, get_output_volume, set_output_volume
+
+    restore = operation.restore_state
+    if not restore:
+        return
+    operation.restore_state = None
+
+    # Restore attenuation before re-enabling gain-bearing plugins.
+    try:
+        current_volume = get_output_volume()
+        if abs(
+            float(current_volume) - float(restore["system_volume_percent"])
+        ) <= 0.05:
+            pass
+        elif abs(float(current_volume) - 100.0) <= 0.05:
             set_output_volume(restore["system_volume_percent"])
+        else:
+            logger.info(
+                "Preserving newer system volume during SPL cleanup: current=%s owned=100",
+                current_volume,
+            )
+    except Exception:
+        logger.exception("Failed to restore system volume after SPL calibration")
+
+    if easyeffects_manager is None:
+        return
+
+    def restore_property(
+        plugin: str,
+        name: str,
+        value: Any,
+        owned_value: Any,
+    ) -> None:
+        try:
+            current = easyeffects_manager.get_active_plugin_property(plugin, 0, name)
+            if isinstance(owned_value, bool):
+                current_matches = (
+                    str(current).lower() in {"true", "1", "on"}
+                ) is owned_value
+            else:
+                current_matches = math.isclose(
+                    float(current),
+                    float(owned_value),
+                    rel_tol=0.0,
+                    abs_tol=0.05,
+                )
+            if not current_matches:
+                logger.info(
+                    "Preserving newer EasyEffects value during SPL cleanup: "
+                    "plugin=%s property=%s current=%s owned=%s",
+                    plugin,
+                    name,
+                    current,
+                    owned_value,
+                )
+                return
+            easyeffects_manager.set_active_plugin_property(plugin, 0, name, value)
+        except Exception:
+            logger.exception(
+                "Failed to restore SPL calibration property: plugin=%s property=%s",
+                plugin,
+                name,
+            )
+
+    restore_property("autogain", "bypass", restore["autogain_bypass"], True)
+    restore_property(
+        "loudness",
+        "outputGain",
+        restore["loudness_output_gain"],
+        0.0,
+    )
+    if not restore["loudness_bypass"]:
+        try:
+            time.sleep(0.10)
+        except Exception:
+            logger.exception("SPL calibration Loudness restore settle failed")
+    restore_property("loudness", "bypass", restore["loudness_bypass"], True)
+
+
+def _start_spl_calibration_noise(operation: _SplCalibrationOperation) -> dict[str, Any]:
+    from main import _require_easyeffects_manager, get_output_volume, set_output_volume
+
+    ee_manager = _require_easyeffects_manager()
+    operation.restore_state = {
+        "autogain_bypass": (
+            ee_manager.get_active_plugin_property("autogain", 0, "bypass").lower()
+            in {"true", "1", "on"}
+        ),
+        "loudness_bypass": (
+            ee_manager.get_active_plugin_property("loudness", 0, "bypass").lower()
+            in {"true", "1", "on"}
+        ),
+        "loudness_output_gain": float(
+            ee_manager.get_active_plugin_property("loudness", 0, "outputGain")
+        ),
+        "system_volume_percent": get_output_volume(),
+    }
+    try:
+        ee_manager.set_active_plugin_property("autogain", 0, "bypass", True)
+        ee_manager.set_active_plugin_property("loudness", 0, "bypass", True)
+        ee_manager.set_active_plugin_property("loudness", 0, "outputGain", 0.0)
+        time.sleep(0.10)
+        set_output_volume(100)
+        if operation.cancel_requested:
+            raise RuntimeError("SPL calibration was stopped")
+
+        noise_path = Path(tempfile.gettempdir()) / "fxroute-spl-calibration-pink-noise.wav"
+        if not noise_path.exists():
+            generated = subprocess.run(
+                [
+                    "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                    "-f", "lavfi", "-i", "anoisesrc=color=pink:duration=60:sample_rate=48000",
+                    "-af", "loudnorm=I=-23:TP=-3:LRA=7,afade=t=in:st=0:d=0.5,afade=t=out:st=59.5:d=0.5",
+                    "-ac", "2", "-ar", "48000", str(noise_path),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if generated.returncode != 0:
+                raise HTTPException(
+                    status_code=500,
+                    detail=(generated.stderr or "Pink-noise generation failed").strip(),
+                )
+        operation.noise_file = noise_path
+        if operation.cancel_requested:
+            raise RuntimeError("SPL calibration was stopped")
+        operation.noise_process = subprocess.Popen(
+            ["pw-play", "--volume=1.0", str(noise_path)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        if operation.cancel_requested:
+            _terminate_and_reap(operation.noise_process)
+            raise RuntimeError("SPL calibration was stopped")
+    except BaseException:
+        _terminate_and_reap(operation.noise_process)
+        _restore_spl_calibration_audio(operation)
+        raise
+    return {"status": "playing", "settle_seconds": 1.0, "average_seconds": 3.0}
+
+
+def _operation_lock() -> asyncio.Lock:
+    global _spl_operation_lock
+    if _spl_operation_lock is None:
+        _spl_operation_lock = asyncio.Lock()
+    return _spl_operation_lock
+
+
+async def _acquire_operation(kind: str) -> _SplCalibrationOperation:
+    global _spl_operation
+    async with _operation_lock():
+        if _spl_operation is not None:
+            raise HTTPException(status_code=409, detail="SPL calibration is already active")
+        operation_id = uuid4().hex
+        operation = _SplCalibrationOperation(
+            id=operation_id,
+            kind=kind,
+            session_job_id=f"spl-calibration:{operation_id}",
+        )
+        operation.worker_task = asyncio.current_task()
+        _spl_operation = operation
+        return operation
+
+
+async def _register_operation(operation: _SplCalibrationOperation) -> None:
+    from main import measurement_sr_session
+    from measurement_session import _measurement_entry_preflight
+
+    if measurement_sr_session is None:
+        return
+    operation.session = measurement_sr_session
+    operation.registration_attempted = True
+    await operation.session.register_spl_job(operation.session_job_id)
+    if operation.cancel_requested:
+        raise RuntimeError("SPL calibration was stopped")
+    await _measurement_entry_preflight(48_000)
+
+
+async def _cleanup_operation(operation: _SplCalibrationOperation) -> None:
+    global _spl_operation
+
+    async with operation.cleanup_lock:
+        if operation.completed.is_set() and _spl_operation is not operation:
+            return
+        operation.completed.clear()
+        cleanup_failed = False
+        for label, process in (
+            ("capture", operation.recorder),
+            ("noise", operation.noise_process),
+        ):
+            try:
+                await asyncio.to_thread(_terminate_and_reap, process)
+            except BaseException:
+                logger.exception("Failed to stop SPL calibration %s process", label)
+            if process is not None and process.poll() is None:
+                cleanup_failed = True
+            elif label == "capture":
+                operation.recorder = None
+            else:
+                operation.noise_process = None
+
+        try:
+            await asyncio.to_thread(_restore_spl_calibration_audio, operation)
+        except BaseException:
+            logger.exception("Failed to restore SPL calibration audio state")
+
+        if operation.registration_attempted:
+            released = operation.session is None
+            for _ in range(2):
+                if released:
+                    break
+                try:
+                    await operation.session.unregister_spl_job(operation.session_job_id)
+                    released = True
+                except BaseException:
+                    logger.exception("Failed to release SPL calibration sample-rate ownership")
+            if not released:
+                active_ids = getattr(operation.session, "active_spl_job_ids", None)
+                session_lock = getattr(operation.session, "lock", None)
+                if isinstance(active_ids, set) and session_lock is not None:
+                    try:
+                        async with session_lock:
+                            active_ids.discard(operation.session_job_id)
+                            check_release = getattr(operation.session, "_check_release", None)
+                            if callable(check_release):
+                                await check_release()
+                        released = operation.session_job_id not in active_ids
+                    except BaseException:
+                        logger.exception("Failed fallback SPL session ownership cleanup")
+            cleanup_failed = cleanup_failed or not released
+
+        if (
+            operation.source_node
+            and operation.source_volume_percent is not None
+            and abs(operation.source_volume_percent - 100.0) > 0.05
+        ):
+            try:
+                current = await asyncio.to_thread(
+                    subprocess.run,
+                    ["pactl", "get-source-volume", operation.source_node],
+                    capture_output=True,
+                    text=True,
+                    timeout=3,
+                    check=True,
+                )
+                gain = re.search(
+                    r"/\s*([0-9.]+)%\s*/\s*[-+0-9.]+\s*dB",
+                    current.stdout or "",
+                )
+                if gain is None:
+                    logger.warning(
+                        "Preserving capture volume because SPL cleanup could not parse "
+                        "the current gain: source=%s",
+                        operation.source_node,
+                    )
+                elif abs(float(gain.group(1)) - 100.0) > 0.05:
+                    logger.info(
+                        "Preserving newer capture volume during SPL cleanup: "
+                        "source=%s current=%s owned=100",
+                        operation.source_node,
+                        gain.group(1),
+                    )
+                else:
+                    await asyncio.to_thread(
+                        subprocess.run,
+                        [
+                            "pactl", "set-source-volume", operation.source_node,
+                            f"{operation.source_volume_percent:.4f}%",
+                        ],
+                        capture_output=True,
+                        text=True,
+                        timeout=3,
+                        check=False,
+                    )
+            except Exception:
+                logger.exception("Failed to inspect SPL calibration capture volume")
+        if operation.capture_path is not None:
+            try:
+                operation.capture_path.unlink(missing_ok=True)
+            except Exception:
+                logger.exception("Failed to remove SPL calibration capture file")
+
+        if not cleanup_failed:
+            async with _operation_lock():
+                if _spl_operation is operation:
+                    _spl_operation = None
+        operation.completed.set()
+        if cleanup_failed:
+            raise RuntimeError("SPL calibration cleanup did not release every owned resource")
+
+
+async def _cleanup_operation_shielded(operation: _SplCalibrationOperation) -> None:
+    cleanup_task = asyncio.create_task(_cleanup_operation(operation))
+    cancelled = False
+    while not cleanup_task.done():
+        try:
+            await asyncio.shield(cleanup_task)
+        except asyncio.CancelledError:
+            cancelled = True
+    cleanup_task.result()
+    if cancelled:
+        raise asyncio.CancelledError
+
+
+async def _watch_manual_noise(operation: _SplCalibrationOperation) -> None:
+    try:
+        if operation.noise_process is not None:
+            await asyncio.to_thread(operation.noise_process.wait)
+    finally:
+        await _cleanup_operation_shielded(operation)
+
+
+async def _stop_active_operation() -> None:
+    async with _operation_lock():
+        operation = _spl_operation
+        if operation is None:
+            return
+        operation.cancel_requested = True
+        worker_task = operation.worker_task
+        for process in (operation.recorder, operation.noise_process):
+            if process is not None and process.poll() is None:
+                try:
+                    process.terminate()
+                except Exception:
+                    logger.exception("Failed to request SPL calibration process stop")
+    if worker_task is asyncio.current_task() or worker_task is None:
+        await _cleanup_operation_shielded(operation)
+        return
+    try:
+        await asyncio.wait_for(
+            asyncio.shield(operation.completed.wait()),
+            timeout=SPL_STOP_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError as exc:
+        raise RuntimeError("Timed out waiting for SPL calibration cleanup") from exc
+    if _spl_operation is operation:
+        await _cleanup_operation_shielded(operation)
+
+
+async def shutdown() -> None:
+    await _stop_active_operation()
 
 
 @router.get("/api/measurements/spl-calibration")
@@ -558,130 +903,95 @@ async def get_spl_calibration():
         "output_profile": _spl_output_profile(),
         "loudness": extras["loudness"],
         "automatic": _spl_auto_capability(),
-        "noise_active": bool(spl_calibration_noise_process and spl_calibration_noise_process.poll() is None),
+        "noise_active": bool(
+            _spl_operation is not None
+            and _spl_operation.noise_process is not None
+            and _spl_operation.noise_process.poll() is None
+        ),
+        "operation_active": _spl_operation is not None,
     }
-
-
-async def _release_spl_calibration_session() -> None:
-    from main import measurement_sr_session
-
-    if measurement_sr_session is not None:
-        await measurement_sr_session.unregister_spl_job(SPL_CALIBRATION_JOB_ID)
 
 
 @router.post("/api/measurements/spl-calibration/noise")
 async def set_spl_calibration_noise(request: Request):
-    from main import measurement_sr_session
-
     body = await request.json()
     enabled = bool(body.get("enabled"))
     if not enabled:
-        _stop_spl_calibration_noise()
-        await _release_spl_calibration_session()
+        await _stop_active_operation()
         return {"status": "stopped"}
-    if measurement_sr_session is not None:
-        await measurement_sr_session.register_spl_job(SPL_CALIBRATION_JOB_ID)
+
+    operation = await _acquire_operation("manual-noise")
     try:
-        return _start_spl_calibration_noise()
-    except Exception:
-        await _release_spl_calibration_session()
-        raise
-
-
-def _start_spl_calibration_noise() -> dict[str, Any]:
-    from main import _require_easyeffects_manager, get_output_volume, set_output_volume
-
-    global spl_calibration_noise_process, spl_calibration_noise_file, spl_calibration_restore_state
-    _stop_spl_calibration_noise()
-    ee_manager = _require_easyeffects_manager()
-    spl_calibration_restore_state = {
-        "autogain_bypass": (
-            ee_manager.get_active_plugin_property("autogain", 0, "bypass").lower()
-            in {"true", "1", "on"}
-        ),
-        "autogain_target": float(
-            ee_manager.get_active_plugin_property("autogain", 0, "target")
-        ),
-        "loudness_bypass": (
-            ee_manager.get_active_plugin_property("loudness", 0, "bypass").lower()
-            in {"true", "1", "on"}
-        ),
-        "loudness_volume": float(
-            ee_manager.get_active_plugin_property("loudness", 0, "volume")
-        ),
-        "loudness_output_gain": float(
-            ee_manager.get_active_plugin_property("loudness", 0, "outputGain")
-        ),
-        "system_volume_percent": get_output_volume(),
-    }
-    try:
-        ee_manager.set_active_plugin_property("autogain", 0, "bypass", True)
-        ee_manager.set_active_plugin_property("loudness", 0, "bypass", True)
-        ee_manager.set_active_plugin_property("loudness", 0, "outputGain", 0.0)
-        time.sleep(0.10)
-        set_output_volume(100)
-    except Exception:
-        _stop_spl_calibration_noise()
-        raise
-    noise_path = Path(tempfile.gettempdir()) / "fxroute-spl-calibration-pink-noise.wav"
-    if not noise_path.exists():
-        generated = subprocess.run(
-            [
-                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-                "-f", "lavfi", "-i", "anoisesrc=color=pink:duration=60:sample_rate=48000",
-                "-af", "loudnorm=I=-23:TP=-3:LRA=7,afade=t=in:st=0:d=0.5,afade=t=out:st=59.5:d=0.5",
-                "-ac", "2", "-ar", "48000", str(noise_path),
-            ],
-            capture_output=True,
-            text=True,
+        await _register_operation(operation)
+        result = await asyncio.to_thread(_start_spl_calibration_noise, operation)
+        if operation.cancel_requested:
+            raise RuntimeError("SPL calibration was stopped")
+        watcher = asyncio.create_task(
+            _watch_manual_noise(operation),
+            name=f"spl-noise-watch:{operation.id}",
         )
-        if generated.returncode != 0:
-            _stop_spl_calibration_noise()
-            raise HTTPException(status_code=500, detail=(generated.stderr or "Pink-noise generation failed").strip())
-    spl_calibration_noise_file = noise_path
-    try:
-        spl_calibration_noise_process = subprocess.Popen(
-            ["pw-play", "--volume=1.0", str(noise_path)],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-    except Exception:
-        _stop_spl_calibration_noise()
+        operation.worker_task = watcher
+        return result
+    except BaseException:
+        await _cleanup_operation_shielded(operation)
         raise
-    return {"status": "playing", "settle_seconds": 1.0, "average_seconds": 3.0}
 
 
 @router.post("/api/measurements/spl-calibration/automatic")
 async def measure_spl_automatically():
-    from main import measurement_sr_session
     from measurement_session import _read_measurement_setup_settings
 
-    capability = _spl_auto_capability()
-    if not capability["available"]:
-        raise HTTPException(status_code=409, detail=capability["reason"])
-    selected = capability["selected_input"]
-    node_name = str(selected.get("node_name") or "")
-    microphone_model = str(capability["microphone_model"])
-    if not node_name:
-        raise HTTPException(status_code=409, detail=f"The selected {microphone_model} PipeWire node is unavailable")
-
-    capture_path = Path(tempfile.gettempdir()) / f"fxroute-spl-{microphone_model.lower()}-{uuid4().hex[:10]}.wav"
-    settings = _read_measurement_setup_settings()
-    channel_index = max(0, int(settings.get("selectedMicInputChannel") or "1") - 1)
-    previous_volume = float(capability["capture_volume_percent"])
-    recorder: subprocess.Popen[Any] | None = None
-    if measurement_sr_session is not None:
-        await measurement_sr_session.register_spl_job(SPL_CALIBRATION_JOB_ID)
+    operation = await _acquire_operation("automatic")
     try:
-        if abs(previous_volume - 100.0) > 0.05:
-            subprocess.run(
+        capability = _spl_auto_capability()
+        if not capability["available"]:
+            raise HTTPException(status_code=409, detail=capability["reason"])
+        selected = capability["selected_input"]
+        node_name = str(selected.get("node_name") or "")
+        microphone_model = str(capability["microphone_model"])
+        if not node_name:
+            raise HTTPException(
+                status_code=409,
+                detail=f"The selected {microphone_model} PipeWire node is unavailable",
+            )
+
+        operation.capture_path = (
+            Path(tempfile.gettempdir())
+            / f"fxroute-spl-{microphone_model.lower()}-{uuid4().hex[:10]}.wav"
+        )
+        operation.source_node = node_name
+        settings = _read_measurement_setup_settings()
+        channel_index = max(0, int(settings.get("selectedMicInputChannel") or "1") - 1)
+
+        await _register_operation(operation)
+        before_gain = await asyncio.to_thread(
+            subprocess.run,
+            ["pactl", "get-source-volume", node_name],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=True,
+        )
+        before_match = re.search(
+            r"/\s*([0-9.]+)%\s*/\s*([-+0-9.]+)\s*dB",
+            before_gain.stdout or "",
+        )
+        if not before_match:
+            raise RuntimeError(
+                f"The {microphone_model} capture gain could not be read before calibration"
+            )
+        operation.source_volume_percent = float(before_match.group(1))
+        if abs(operation.source_volume_percent - 100.0) > 0.05:
+            await asyncio.to_thread(
+                subprocess.run,
                 ["pactl", "set-source-volume", node_name, "100%"],
                 capture_output=True,
                 text=True,
                 timeout=3,
                 check=True,
             )
-        verified = subprocess.run(
+        verified = await asyncio.to_thread(
+            subprocess.run,
             ["pactl", "get-source-volume", node_name],
             capture_output=True,
             text=True,
@@ -691,33 +1001,45 @@ async def measure_spl_automatically():
         gain = re.search(r"/\s*([0-9.]+)%\s*/\s*([-+0-9.]+)\s*dB", verified.stdout or "")
         if not gain or abs(float(gain.group(1)) - 100.0) > 0.05 or abs(float(gain.group(2))) > 0.05:
             raise RuntimeError(f"The {microphone_model} capture gain could not be set to the 100% / 0 dB reference")
+        if operation.cancel_requested:
+            raise RuntimeError("SPL calibration was stopped")
 
-        recorder = subprocess.Popen(
+        operation.recorder = subprocess.Popen(
             [
                 "pw-record", "--target", node_name, "--rate", "48000",
                 "--channels", "2", "--format", "s16", "--sample-count", str(5 * 48000),
-                str(capture_path),
+                str(operation.capture_path),
             ],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
             text=True,
         )
         await asyncio.sleep(0.2)
-        _start_spl_calibration_noise()
+        if operation.cancel_requested:
+            raise RuntimeError("SPL calibration was stopped")
+        await asyncio.to_thread(_start_spl_calibration_noise, operation)
         try:
-            _stdout, stderr = await asyncio.to_thread(recorder.communicate, timeout=8)
+            _stdout, stderr = await asyncio.to_thread(
+                operation.recorder.communicate,
+                timeout=8,
+            )
         except subprocess.TimeoutExpired:
-            recorder.kill()
-            _stdout, stderr = recorder.communicate()
+            operation.recorder.kill()
+            _stdout, stderr = await asyncio.to_thread(operation.recorder.communicate)
             raise RuntimeError(f"{microphone_model} automatic SPL capture timed out")
-        if recorder.returncode != 0 and (not capture_path.exists() or capture_path.stat().st_size < 192044):
+        if operation.cancel_requested:
+            raise RuntimeError("SPL calibration was stopped")
+        if operation.recorder.returncode != 0 and (
+            not operation.capture_path.exists()
+            or operation.capture_path.stat().st_size < 192044
+        ):
             raise RuntimeError(
-                f"pw-record exited {recorder.returncode}: "
+                f"pw-record exited {operation.recorder.returncode}: "
                 f"{(stderr or f'{microphone_model} automatic SPL capture failed').strip()}"
             )
 
         try:
-            sample_rate, samples = _read_pcm16_channel(capture_path, channel_index)
+            sample_rate, samples = _read_pcm16_channel(operation.capture_path, channel_index)
         except Exception as exc:
             raise RuntimeError(f"Could not read the {microphone_model} capture: {type(exc).__name__}: {exc}") from exc
         stable = samples[-3 * sample_rate:]
@@ -749,34 +1071,20 @@ async def measure_spl_automatically():
     except (subprocess.CalledProcessError, RuntimeError) as exc:
         raise HTTPException(status_code=409, detail=f"{type(exc).__name__}: {exc}") from exc
     finally:
-        if recorder and recorder.poll() is None:
-            recorder.terminate()
-        _stop_spl_calibration_noise()
-        await _release_spl_calibration_session()
-        if abs(previous_volume - 100.0) > 0.05:
-            subprocess.run(
-                ["pactl", "set-source-volume", node_name, f"{previous_volume:.4f}%"],
-                capture_output=True,
-                text=True,
-                timeout=3,
-                check=False,
-            )
-        capture_path.unlink(missing_ok=True)
+        await _cleanup_operation_shielded(operation)
 
 
 @router.post("/api/measurements/spl-calibration/apply")
 async def apply_spl_calibration(request: Request):
     from main import _require_easyeffects_manager
 
-    global spl_calibration_restore_state
     body = await request.json()
     measured = float(body.get("measured_spl_db"))
     try:
         adjustment = _calculate_spl_required_adjustment(measured)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    _stop_spl_calibration_noise()
-    await _release_spl_calibration_session()
+    await _stop_active_operation()
     ee_manager = _require_easyeffects_manager()
     extras = ee_manager.load_global_extras()
     profile = _spl_output_profile()
@@ -800,7 +1108,6 @@ async def apply_spl_calibration(request: Request):
     saved = ee_manager.apply_autogain_loudness_runtime(
         ee_manager.load_global_extras(), extras, persist_all_presets=False
     )["extras"]
-    spl_calibration_restore_state = None
     return {
         "status": "ok",
         "required_adjustment_db": adjustment,

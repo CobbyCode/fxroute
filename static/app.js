@@ -5635,13 +5635,11 @@ async function openSplCalibration() {
 }
 
 async function closeSplCalibration() {
-    if (splCalibrationNoiseActive) {
-        await fetch('/api/measurements/spl-calibration/noise', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ enabled: false }),
-        }).catch(() => null);
-    }
+    await fetch('/api/measurements/spl-calibration/noise', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: false }),
+    }).catch(() => null);
     splCalibrationNoiseActive = false;
     elements.splCalibrationPanel?.classList.add('hidden');
 }

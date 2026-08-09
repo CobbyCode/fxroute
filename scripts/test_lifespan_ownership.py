@@ -133,9 +133,11 @@ class LifespanOwnershipTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_measurement_release_task_created_during_shutdown_is_drained(self):
         started = asyncio.Event()
+        cleanup_order = []
 
         class Session:
             async def request_close(self):
+                cleanup_order.append("measurement-session")
                 async def delayed_repair():
                     started.set()
                     await asyncio.Event().wait()
@@ -146,9 +148,17 @@ class LifespanOwnershipTests(unittest.IsolatedAsyncioTestCase):
                 )
 
         main.measurement_sr_session = Session()
-        with patch.object(main, "set_bluetooth_receiver_enabled"):
+        spl_shutdown = AsyncMock(side_effect=lambda: cleanup_order.append("spl-calibration"))
+        with patch.object(main, "set_bluetooth_receiver_enabled"), patch.object(
+            main.spl_calibration, "shutdown", spl_shutdown
+        ):
             await main._shutdown_lifespan_resources()
 
+        spl_shutdown.assert_awaited_once()
+        self.assertLess(
+            cleanup_order.index("spl-calibration"),
+            cleanup_order.index("measurement-session"),
+        )
         self.assertFalse(main.lifecycle_background_tasks)
         self.assertIsNone(main.measurement_sr_session)
 

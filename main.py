@@ -6611,6 +6611,7 @@ async def _shutdown_lifespan_resources() -> None:
     await cleanup("autosub", autosub.shutdown)
     if measurement_store is not None:
         await cleanup("measurement-store", measurement_store.shutdown)
+    await cleanup("spl-calibration", spl_calibration.shutdown)
     if measurement_sr_session is not None:
         await cleanup("measurement-session", measurement_sr_session.request_close)
     late_background_tasks = [task for task in lifecycle_background_tasks if not task.done()]
