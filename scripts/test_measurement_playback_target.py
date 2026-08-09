@@ -105,7 +105,7 @@ class MeasurementPlaybackTargetTests(unittest.TestCase):
             side_effect=lambda source, target: (source, target) in existing_links,
         ), patch.object(
             self.store, "_remove_subwoofer_direct_easyeffects_hardware_links", return_value=[]
-        ), patch.object(
+        ) as remove_direct, patch.object(
             self.store, "_find_subwoofer_direct_easyeffects_hardware_links", return_value=[]
         ), patch.object(
             self.store, "_list_relevant_pw_links", return_value=[]
@@ -123,6 +123,10 @@ class MeasurementPlaybackTargetTests(unittest.TestCase):
         self.assertLess(
             creation_order.index(("ee_soe_output_level:output_FR", "fxroute_21_stage1:input_R")),
             creation_order.index(("measure:output_FL", "easyeffects_sink:playback_FL")),
+        )
+        self.assertEqual(
+            remove_direct.call_count,
+            2,
         )
         self.assertEqual(len(diagnostics["active_chain_output_links"]), 2)
 

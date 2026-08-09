@@ -6316,6 +6316,20 @@ class MeasurementStore:
             )
             raise
 
+        try:
+            diagnostics["direct_hardware_links_removed"].extend(
+                self._remove_subwoofer_direct_easyeffects_hardware_links(playback_target)
+            )
+            diagnostics["active_chain_output_links"] = self._ensure_subwoofer_active_chain_output_links(
+                helper_node_name
+            )
+        except Exception:
+            self._cleanup_measurement_playback_links(
+                play_node_name=play_node_name,
+                temporary_links=created_links,
+            )
+            raise
+
         helper_links = [
             {"source_port": source_port, "target_port": target_port, "role": "measurement-play-direct-helper"}
             for source_port, target_port in (
