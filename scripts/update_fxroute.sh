@@ -299,8 +299,13 @@ main() {
   log "Remote:  ${remote_version:-unknown} (${remote_commit}) from ${remote_ref}"
 
   if [[ "$current_commit" == "$remote_commit" ]]; then
-    if [[ "$MODE" == "check" ]] || reconciliation_marker_matches_head; then
+    if reconciliation_marker_matches_head; then
       log "FXRoute is already up to date."
+      return 0
+    fi
+    if [[ "$MODE" == "check" ]]; then
+      log "Update available."
+      log "Checkout is current, but deployment reconciliation is incomplete."
       return 0
     fi
     log "Checkout is current, but the deployment was not completed; retrying reconciliation."

@@ -22,7 +22,11 @@ class NativeHelperBuildTests(unittest.TestCase):
         self.assertIn("reconciliation_marker_matches_head()", script)
         self.assertIn("mark_reconciliation_complete()", script)
         self.assertIn(
-            'if [[ "$MODE" == "check" ]] || reconciliation_marker_matches_head; then',
+            "if reconciliation_marker_matches_head; then",
+            script,
+        )
+        self.assertIn(
+            'if [[ "$MODE" == "check" ]]; then\n      log "Update available."',
             script,
         )
         self.assertIn("retrying reconciliation", script)
