@@ -39,6 +39,11 @@ _AUTO_SUB_MAX_CALIBRATION_BYTES: int = 2 * 1024 * 1024  # 2 MiB
 router = APIRouter()
 # ---------------------------------------------------------------------------
 
+
+def is_optimization_active() -> bool:
+    return bool(_auto_sub_lock and _auto_sub_lock.locked())
+
+
 def _cleanup_stale_autosub_cancelling_jobs() -> None:
     """Promote stale cancelling AutoSub jobs when the lock is not held.
 

@@ -224,7 +224,7 @@ async def test_save_applies_only_coupled_loudness_offset() -> None:
             "calibration_filename": "7148364.txt",
         }
         main.set_output_volume = system_volume_writes.append
-        spl_calibration._spl_operation = None
+        spl_calibration._runtime.operation = None
 
         output_before = fake.normalizer._apply_extras_to_output(
             {"plugins_order": []},
@@ -258,7 +258,7 @@ async def test_save_applies_only_coupled_loudness_offset() -> None:
         spl_calibration._spl_output_profile = original_profile
         spl_calibration._spl_auto_capability = original_capability
         main.set_output_volume = original_set_volume
-        spl_calibration._spl_operation = None
+        spl_calibration._runtime.operation = None
 
 
 def test_legacy_trim_is_not_migrated_or_rewritten() -> None:

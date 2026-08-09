@@ -84,18 +84,18 @@ class SplCalibrationLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.original_manager = main.easyeffects_manager
         self.original_get_volume = main.get_output_volume
         self.original_set_volume = main.set_output_volume
-        spl_calibration._spl_operation = None
-        spl_calibration._spl_operation_lock = asyncio.Lock()
+        spl_calibration._runtime.operation = None
+        spl_calibration._runtime.operation_lock = asyncio.Lock()
 
     async def asyncTearDown(self):
-        if spl_calibration._spl_operation is not None:
+        if spl_calibration._runtime.operation is not None:
             await spl_calibration._stop_active_operation()
         main.measurement_sr_session = self.original_session
         main.easyeffects_manager = self.original_manager
         main.get_output_volume = self.original_get_volume
         main.set_output_volume = self.original_set_volume
-        spl_calibration._spl_operation = None
-        spl_calibration._spl_operation_lock = None
+        spl_calibration._runtime.operation = None
+        spl_calibration._runtime.operation_lock = None
 
     async def test_double_start_is_rejected_until_owner_cleanup_finishes(self):
         operation = await spl_calibration._acquire_operation("automatic")
@@ -133,7 +133,7 @@ class SplCalibrationLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(recorder.wait_calls, 1)
         self.assertEqual(session.active_ids, set())
         self.assertEqual(session.unregistered, [operation.session_job_id])
-        self.assertIsNone(spl_calibration._spl_operation)
+        self.assertIsNone(spl_calibration._runtime.operation)
 
     async def test_natural_noise_exit_restores_and_releases_ownership(self):
         session = FakeSession()
@@ -156,7 +156,7 @@ class SplCalibrationLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(process.returncode, 0)
         self.assertEqual(session.active_ids, set())
         self.assertEqual(replacement_session.unregistered, [])
-        self.assertIsNone(spl_calibration._spl_operation)
+        self.assertIsNone(spl_calibration._runtime.operation)
 
     async def test_registration_cancellation_cannot_leave_stale_session_id(self):
         class CancellingSession(FakeSession):
@@ -171,7 +171,7 @@ class SplCalibrationLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(session.active_ids, set())
         self.assertEqual(len(session.unregistered), 1)
-        self.assertIsNone(spl_calibration._spl_operation)
+        self.assertIsNone(spl_calibration._runtime.operation)
 
     async def test_request_cancellation_drains_owned_thread_before_cleanup(self):
         entered = threading.Event()
@@ -199,11 +199,11 @@ class SplCalibrationLifecycleTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(
                 await asyncio.wait_for(asyncio.to_thread(entered.wait), timeout=2)
             )
-            operation = spl_calibration._spl_operation
+            operation = spl_calibration._runtime.operation
             request_task.cancel()
             await asyncio.sleep(0)
 
-            self.assertIs(spl_calibration._spl_operation, operation)
+            self.assertIs(spl_calibration._runtime.operation, operation)
             self.assertFalse(operation.completed.is_set())
             self.assertEqual(thread_observations, [])
 
@@ -213,7 +213,7 @@ class SplCalibrationLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(thread_observations, [True])
         self.assertTrue(operation.completed.is_set())
-        self.assertIsNone(spl_calibration._spl_operation)
+        self.assertIsNone(spl_calibration._runtime.operation)
 
     async def test_cleanup_fallback_removes_session_id_after_cancelled_unregister(self):
         class FailingSession:
@@ -239,7 +239,7 @@ class SplCalibrationLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.active_spl_job_ids, set())
         self.assertEqual(session.release_checks, 1)
         self.assertTrue(operation.completed.is_set())
-        self.assertIsNone(spl_calibration._spl_operation)
+        self.assertIsNone(spl_calibration._runtime.operation)
 
     async def test_stop_timeout_keeps_owner_and_blocks_successor(self):
         operation = await spl_calibration._acquire_operation("automatic")
@@ -249,7 +249,7 @@ class SplCalibrationLifecycleTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(RuntimeError, "Timed out"):
                 await spl_calibration._stop_active_operation()
 
-        self.assertIs(spl_calibration._spl_operation, operation)
+        self.assertIs(spl_calibration._runtime.operation, operation)
         with self.assertRaises(Exception) as raised:
             await spl_calibration._acquire_operation("manual-noise")
         self.assertEqual(getattr(raised.exception, "status_code", None), 409)
@@ -360,10 +360,14 @@ class SplCalibrationLifecycleTests(unittest.IsolatedAsyncioTestCase):
         app = (
             pathlib.Path(__file__).resolve().parents[1] / "static" / "app.js"
         ).read_text()
+        stop_body = app.split("async function stopSplCalibrationOperation", 1)[1].split(
+            "async function closeSplCalibration()", 1
+        )[0]
         close_body = app.split("async function closeSplCalibration() {", 1)[1].split(
             "async function toggleSplCalibrationNoise()", 1
         )[0]
-        self.assertIn("/api/measurements/spl-calibration/noise", close_body)
+        self.assertIn("stopSplCalibrationOperation()", close_body)
+        self.assertIn("/api/measurements/spl-calibration/noise", stop_body)
         self.assertNotIn("if (splCalibrationNoiseActive)", close_body)
 
 

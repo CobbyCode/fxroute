@@ -1,11 +1,7 @@
 """M3U/M3U8 playlist import and export helpers.
 
-Extracted verbatim from main.py (REFACTOR-002). Behavior is identical to the
-previous inline implementation: parsing, path resolution, deduplication,
-ordering, file naming, error responses and response payloads are unchanged.
-
-Dependencies on runtime globals (`settings`, `library_scanner`) are imported
-lazily from main to avoid a circular import; main.py sets them at startup.
+Parsing and path matching are independent of the application runtime. Callers
+provide the music root and, where needed, the current library tracks.
 """
 
 from __future__ import annotations
@@ -33,21 +29,17 @@ def playlist_download_filename(name: str) -> str:
     return f"{slug or 'playlist'}.m3u8"
 
 
-def track_relative_m3u_path(track) -> str:
-    from main import settings
-
-    if track.path and settings:
+def track_relative_m3u_path(track, music_root: Path) -> str:
+    if track.path:
         try:
-            return track.path.resolve().relative_to(settings.MUSIC_ROOT.resolve()).as_posix()
+            return track.path.resolve().relative_to(music_root.resolve()).as_posix()
         except Exception:
             pass
     return Path(track.url or track.id).name
 
 
-def build_m3u_for_playlist(playlist) -> str:
-    from main import library_scanner
-
-    tracks_by_id = {track.id: track for track in library_scanner.get_tracks(refresh=True)}
+def build_m3u_for_playlist(playlist, tracks, music_root: Path) -> str:
+    tracks_by_id = {track.id: track for track in tracks}
     lines = ["#EXTM3U"]
     for track_id in playlist.track_ids:
         track = tracks_by_id.get(track_id)
@@ -58,13 +50,11 @@ def build_m3u_for_playlist(playlist) -> str:
         if track.artist:
             label = f"{track.artist} - {label}"
         lines.append(f"#EXTINF:{duration},{label}")
-        lines.append(track_relative_m3u_path(track))
+        lines.append(track_relative_m3u_path(track, music_root))
     return "\n".join(lines) + "\n"
 
 
-def build_track_match_index(tracks) -> dict[str, str]:
-    from main import settings
-
+def build_track_match_index(tracks, music_root: Path) -> dict[str, str]:
     matches = {}
     ambiguous = set()
 
@@ -84,7 +74,7 @@ def build_track_match_index(tracks) -> dict[str, str]:
             continue
         path = track.path.resolve()
         try:
-            rel = path.relative_to(settings.MUSIC_ROOT.resolve()).as_posix()
+            rel = path.relative_to(music_root.resolve()).as_posix()
             add(rel, track.id)
         except Exception:
             pass
@@ -95,12 +85,15 @@ def build_track_match_index(tracks) -> dict[str, str]:
     return matches
 
 
-def resolve_m3u_track_ids(entries: List[str], base_dir: Optional[Path] = None, tracks=None) -> List[str]:
-    from main import library_scanner, settings
-
+def resolve_m3u_track_ids(
+    entries: List[str],
+    music_root: Path,
+    base_dir: Optional[Path] = None,
+    tracks=None,
+) -> List[str]:
     if tracks is None:
-        tracks = library_scanner.get_tracks(refresh=True)
-    match_index = build_track_match_index(tracks)
+        raise ValueError("tracks are required")
+    match_index = build_track_match_index(tracks, music_root)
     track_ids = []
     seen = set()
 
@@ -114,7 +107,7 @@ def resolve_m3u_track_ids(entries: List[str], base_dir: Optional[Path] = None, t
             try:
                 resolved = (base_dir / value).resolve()
                 candidates.append(resolved.as_posix())
-                candidates.append(resolved.relative_to(settings.MUSIC_ROOT.resolve()).as_posix())
+                candidates.append(resolved.relative_to(music_root.resolve()).as_posix())
             except Exception:
                 pass
         candidates.append(Path(value).name)
@@ -128,9 +121,20 @@ def resolve_m3u_track_ids(entries: List[str], base_dir: Optional[Path] = None, t
     return track_ids
 
 
-def import_m3u_playlist(name: str, content: str, base_dir: Optional[Path] = None, tracks=None) -> Optional[dict]:
+def import_m3u_playlist(
+    name: str,
+    content: str,
+    music_root: Path,
+    base_dir: Optional[Path] = None,
+    tracks=None,
+) -> Optional[dict]:
     entries = parse_m3u_entries(content)
-    track_ids = resolve_m3u_track_ids(entries, base_dir=base_dir, tracks=tracks)
+    track_ids = resolve_m3u_track_ids(
+        entries,
+        music_root,
+        base_dir=base_dir,
+        tracks=tracks,
+    )
     if not track_ids:
         return None
     playlist = save_playlist(Path(name).stem or "Imported playlist", track_ids)

@@ -5,13 +5,11 @@
 1. every @router endpoint must decorate a handler function (name matches
    the route-handler naming pattern), never a helper;
 2. no function or class method may be defined twice in one scope;
-3. no bare reference to main.py runtime globals may remain unbound
-   (each function must bind them via a lazy `from main import ...` or the
-   module must define/import the name at module level).
+3. no bare reference to main.py runtime globals may remain unbound;
+4. modules with an explicit runtime boundary must not import main.py.
 
-Catches decorator/insertion drift and missed lazy imports like a route
-decorator landing on a helper or a function using `settings` without
-importing it."""
+Catches decorator/insertion drift, missed dependency bindings and regressions
+to using main.py as a runtime service locator."""
 
 import ast
 import sys
@@ -21,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 MODULES = ("spl_calibration.py", "library_api.py", "autosub.py", "measurement_session.py")
+DECOUPLED_MODULES = ("playlist_io.py", "library_api.py", "spl_calibration.py")
 MAIN_GLOBALS = {
     "SPOTIFY_PREARM_SAMPLE_RATE_HZ",
     "PIPEWIRE_HANDOFF_POLL_INTERVAL_MS",
@@ -68,6 +67,15 @@ ROUTE_HANDLER_PREFIXES = (
 errors: list[str] = []
 
 
+def check_no_main_imports(path: Path) -> None:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "main":
+            errors.append(f"{path.name}:{node.lineno} imports runtime state from main.py")
+        elif isinstance(node, ast.Import) and any(alias.name == "main" for alias in node.names):
+            errors.append(f"{path.name}:{node.lineno} imports main.py")
+
+
 def check_duplicate_class_methods(path: Path) -> None:
     tree = ast.parse(path.read_text(encoding="utf-8"))
     for class_node in (node for node in ast.walk(tree) if isinstance(node, ast.ClassDef)):
@@ -111,6 +119,13 @@ def module_level_names(tree: ast.Module) -> set[str]:
 
 
 def bound_names(node: ast.FunctionDef | ast.AsyncFunctionDef, module_level: set[str]) -> set[str]:
+    def target_names(target: ast.expr) -> set[str]:
+        if isinstance(target, ast.Name):
+            return {target.id}
+        if isinstance(target, (ast.Tuple, ast.List)):
+            return set().union(*(target_names(item) for item in target.elts))
+        return set()
+
     bound = set()
     for arg in node.args.args + node.args.kwonlyargs:
         bound.add(arg.arg)
@@ -121,8 +136,7 @@ def bound_names(node: ast.FunctionDef | ast.AsyncFunctionDef, module_level: set[
     for sub in ast.walk(node):
         if isinstance(sub, ast.Assign):
             for target in sub.targets:
-                if isinstance(target, ast.Name):
-                    bound.add(target.id)
+                bound.update(target_names(target))
         elif isinstance(sub, ast.AnnAssign) and isinstance(sub.target, ast.Name):
             bound.add(sub.target.id)
         elif isinstance(sub, (ast.For, ast.AsyncFor)):
@@ -163,11 +177,14 @@ for path in ROOT.glob("*.py"):
     check_duplicate_module_functions(path)
     check_duplicate_class_methods(path)
 
+for mod in DECOUPLED_MODULES:
+    check_no_main_imports(ROOT / mod)
+
 if errors:
     print("ROUTER STRUCTURE CHECK FAILED")
     for err in errors:
         print(f"  {err}")
     sys.exit(1)
 
-print("Structure check ok: endpoint decorators, duplicate defs/methods, unbound main globals")
+print("Structure check ok: routers, duplicate defs, runtime-global references, decoupled modules")
 sys.exit(0)

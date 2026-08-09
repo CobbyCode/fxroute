@@ -824,14 +824,17 @@ import spl_calibration
 import autosub
 import measurement_session
 from measurement_session import (
+    MeasurementServices,
     MeasurementSampleRateSession,
     _measurement_helper_snapshot_summary,
     _wait_for_selected_output_effective_rate,
 )
 from library_api import (
+    LibraryApiRuntime,
     _record_local_track_started,
     _track_cover_available,
     _cleanup_temp_file,
+    configure_runtime as configure_library_api_runtime,
     router as library_api_router,
 )
 
@@ -899,6 +902,26 @@ queue_transition_target_url = None
 playback_queue_loop = False
 playback_queue_shuffle = False
 single_track_loop = False
+
+configure_library_api_runtime(LibraryApiRuntime(
+    get_scanner=lambda: library_scanner,
+    get_settings=lambda: settings,
+))
+spl_calibration.configure_runtime(spl_calibration.SplCalibrationDependencies(
+    get_measurement_store=lambda: measurement_store,
+    get_measurement_session=lambda: measurement_sr_session,
+    get_easyeffects_manager=lambda: easyeffects_manager,
+    require_easyeffects_manager=lambda: _require_easyeffects_manager(),
+    get_output_volume=lambda: get_output_volume(),
+    set_output_volume=lambda value: set_output_volume(value),
+    read_measurement_settings=lambda: measurement_session._read_measurement_setup_settings(),
+    measurement_entry_preflight=lambda rate: measurement_session._measurement_entry_preflight(rate),
+))
+measurement_session.configure_services(MeasurementServices(
+    get_store=lambda: measurement_store,
+    get_session=lambda: measurement_sr_session,
+    auto_sub_active=lambda: autosub.is_optimization_active(),
+))
 
 
 def _begin_playback_transition_attempt() -> int:
@@ -2841,22 +2864,41 @@ def _playlist_download_filename(name: str) -> str:
 
 def _track_relative_m3u_path(track) -> str:
     """Thin wrapper: M3U path rendering lives in playlist_io (REFACTOR-002)."""
-    return playlist_io.track_relative_m3u_path(track)
+    return playlist_io.track_relative_m3u_path(track, settings.MUSIC_ROOT)
 
 
 def _build_m3u_for_playlist(playlist) -> str:
     """Thin wrapper: M3U export content lives in playlist_io (REFACTOR-002)."""
-    return playlist_io.build_m3u_for_playlist(playlist)
+    return playlist_io.build_m3u_for_playlist(
+        playlist,
+        library_scanner.get_tracks(refresh=True),
+        settings.MUSIC_ROOT,
+    )
 
 
 def _resolve_m3u_track_ids(entries: List[str], base_dir: Optional[Path] = None, tracks=None) -> List[str]:
     """Thin wrapper: M3U entry resolution lives in playlist_io (REFACTOR-002)."""
-    return playlist_io.resolve_m3u_track_ids(entries, base_dir=base_dir, tracks=tracks)
+    if tracks is None:
+        tracks = library_scanner.get_tracks(refresh=True)
+    return playlist_io.resolve_m3u_track_ids(
+        entries,
+        settings.MUSIC_ROOT,
+        base_dir=base_dir,
+        tracks=tracks,
+    )
 
 
 def _import_m3u_playlist(name: str, content: str, base_dir: Optional[Path] = None, tracks=None) -> Optional[dict]:
     """Thin wrapper: M3U playlist import lives in playlist_io (REFACTOR-002)."""
-    return playlist_io.import_m3u_playlist(name, content, base_dir=base_dir, tracks=tracks)
+    if tracks is None:
+        tracks = library_scanner.get_tracks(refresh=True)
+    return playlist_io.import_m3u_playlist(
+        name,
+        content,
+        settings.MUSIC_ROOT,
+        base_dir=base_dir,
+        tracks=tracks,
+    )
 
 
 def _native_mpv_playlist_is_effectively_current_only() -> bool:

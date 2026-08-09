@@ -13,7 +13,7 @@ import wave
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Request
@@ -44,8 +44,36 @@ class _SplCalibrationOperation:
     completed: asyncio.Event = field(default_factory=asyncio.Event)
 
 
-_spl_operation: _SplCalibrationOperation | None = None
-_spl_operation_lock: asyncio.Lock | None = None
+@dataclass(frozen=True)
+class SplCalibrationDependencies:
+    get_measurement_store: Callable[[], Any]
+    get_measurement_session: Callable[[], Any]
+    get_easyeffects_manager: Callable[[], Any]
+    require_easyeffects_manager: Callable[[], Any]
+    get_output_volume: Callable[[], float]
+    set_output_volume: Callable[[float], None]
+    read_measurement_settings: Callable[[], dict[str, Any]]
+    measurement_entry_preflight: Callable[[int], Any]
+
+
+@dataclass
+class _SplCalibrationRuntime:
+    dependencies: SplCalibrationDependencies | None = None
+    operation: _SplCalibrationOperation | None = None
+    operation_lock: asyncio.Lock | None = None
+
+
+_runtime = _SplCalibrationRuntime()
+
+
+def configure_runtime(dependencies: SplCalibrationDependencies) -> None:
+    _runtime.dependencies = dependencies
+
+
+def _dependencies() -> SplCalibrationDependencies:
+    if _runtime.dependencies is None:
+        raise RuntimeError("SPL calibration runtime is not configured")
+    return _runtime.dependencies
 
 router = APIRouter()
 def _spl_output_profile() -> dict[str, str]:
@@ -294,16 +322,15 @@ def _is_umm6_input(item: dict[str, Any]) -> bool:
 
 
 def _spl_auto_capability() -> dict[str, Any]:
-    from main import measurement_store
-    from measurement_session import _read_measurement_setup_settings
-
+    dependencies = _dependencies()
+    measurement_store = dependencies.get_measurement_store()
     calibration_state = measurement_store.get_calibration_state() if measurement_store else {}
     active_id = str(calibration_state.get("active_calibration_file_id") or "")
     entries = calibration_state.get("calibrations") if isinstance(calibration_state, dict) else []
     active = next((item for item in (entries or []) if str(item.get("id") or "") == active_id), {})
     name = str(active.get("filename") or "")
     path = Path(str(active.get("path") or "")) if active else Path()
-    settings = _read_measurement_setup_settings()
+    settings = dependencies.read_measurement_settings()
     selected_id = str(settings.get("selectedInputId") or "")
     inputs_payload = measurement_store.list_inputs() if measurement_store else {}
     inputs = inputs_payload.get("inputs") if isinstance(inputs_payload, dict) else []
@@ -463,9 +490,9 @@ def _c_weighted_spl_from_capture(
     calibration_path: Path,
     profile: Any = None,
 ) -> float:
-    from main import measurement_store
     import numpy as spl_np
 
+    measurement_store = _dependencies().get_measurement_store()
     signal = spl_np.asarray(samples, dtype=spl_np.float64)
     signal = signal - float(spl_np.mean(signal))
     if signal.size < sample_rate:
@@ -546,8 +573,8 @@ def _terminate_and_reap(process: subprocess.Popen[Any] | None) -> None:
 
 
 def _restore_spl_calibration_audio(operation: _SplCalibrationOperation) -> None:
-    from main import easyeffects_manager, get_output_volume, set_output_volume
-
+    dependencies = _dependencies()
+    easyeffects_manager = dependencies.get_easyeffects_manager()
     restore = operation.restore_state
     if not restore:
         return
@@ -555,13 +582,13 @@ def _restore_spl_calibration_audio(operation: _SplCalibrationOperation) -> None:
 
     # Restore attenuation before re-enabling gain-bearing plugins.
     try:
-        current_volume = get_output_volume()
+        current_volume = dependencies.get_output_volume()
         if abs(
             float(current_volume) - float(restore["system_volume_percent"])
         ) <= 0.05:
             pass
         elif abs(float(current_volume) - 100.0) <= 0.05:
-            set_output_volume(restore["system_volume_percent"])
+            dependencies.set_output_volume(restore["system_volume_percent"])
         else:
             logger.info(
                 "Preserving newer system volume during SPL cleanup: current=%s owned=100",
@@ -626,9 +653,8 @@ def _restore_spl_calibration_audio(operation: _SplCalibrationOperation) -> None:
 
 
 def _start_spl_calibration_noise(operation: _SplCalibrationOperation) -> dict[str, Any]:
-    from main import _require_easyeffects_manager, get_output_volume, set_output_volume
-
-    ee_manager = _require_easyeffects_manager()
+    dependencies = _dependencies()
+    ee_manager = dependencies.require_easyeffects_manager()
     operation.restore_state = {
         "autogain_bypass": (
             ee_manager.get_active_plugin_property("autogain", 0, "bypass").lower()
@@ -641,14 +667,14 @@ def _start_spl_calibration_noise(operation: _SplCalibrationOperation) -> dict[st
         "loudness_output_gain": float(
             ee_manager.get_active_plugin_property("loudness", 0, "outputGain")
         ),
-        "system_volume_percent": get_output_volume(),
+        "system_volume_percent": dependencies.get_output_volume(),
     }
     try:
         ee_manager.set_active_plugin_property("autogain", 0, "bypass", True)
         ee_manager.set_active_plugin_property("loudness", 0, "bypass", True)
         ee_manager.set_active_plugin_property("loudness", 0, "outputGain", 0.0)
         time.sleep(0.10)
-        set_output_volume(100)
+        dependencies.set_output_volume(100)
         if operation.cancel_requested:
             raise RuntimeError("SPL calibration was stopped")
 
@@ -689,16 +715,14 @@ def _start_spl_calibration_noise(operation: _SplCalibrationOperation) -> dict[st
 
 
 def _operation_lock() -> asyncio.Lock:
-    global _spl_operation_lock
-    if _spl_operation_lock is None:
-        _spl_operation_lock = asyncio.Lock()
-    return _spl_operation_lock
+    if _runtime.operation_lock is None:
+        _runtime.operation_lock = asyncio.Lock()
+    return _runtime.operation_lock
 
 
 async def _acquire_operation(kind: str) -> _SplCalibrationOperation:
-    global _spl_operation
     async with _operation_lock():
-        if _spl_operation is not None:
+        if _runtime.operation is not None:
             raise HTTPException(status_code=409, detail="SPL calibration is already active")
         operation_id = uuid4().hex
         operation = _SplCalibrationOperation(
@@ -707,14 +731,13 @@ async def _acquire_operation(kind: str) -> _SplCalibrationOperation:
             session_job_id=f"spl-calibration:{operation_id}",
         )
         operation.worker_task = asyncio.current_task()
-        _spl_operation = operation
+        _runtime.operation = operation
         return operation
 
 
 async def _register_operation(operation: _SplCalibrationOperation) -> None:
-    from main import measurement_sr_session
-    from measurement_session import _measurement_entry_preflight
-
+    dependencies = _dependencies()
+    measurement_sr_session = dependencies.get_measurement_session()
     if measurement_sr_session is None:
         return
     operation.session = measurement_sr_session
@@ -722,7 +745,7 @@ async def _register_operation(operation: _SplCalibrationOperation) -> None:
     await operation.session.register_spl_job(operation.session_job_id)
     if operation.cancel_requested:
         raise RuntimeError("SPL calibration was stopped")
-    await _measurement_entry_preflight(48_000)
+    await dependencies.measurement_entry_preflight(48_000)
 
 
 def _request_operation_process_stop(operation: _SplCalibrationOperation) -> None:
@@ -761,10 +784,8 @@ async def _run_operation_thread(
 
 
 async def _cleanup_operation(operation: _SplCalibrationOperation) -> None:
-    global _spl_operation
-
     async with operation.cleanup_lock:
-        if operation.completed.is_set() and _spl_operation is not operation:
+        if operation.completed.is_set() and _runtime.operation is not operation:
             return
         operation.completed.clear()
         cleanup_failed = False
@@ -866,8 +887,8 @@ async def _cleanup_operation(operation: _SplCalibrationOperation) -> None:
 
         if not cleanup_failed:
             async with _operation_lock():
-                if _spl_operation is operation:
-                    _spl_operation = None
+                if _runtime.operation is operation:
+                    _runtime.operation = None
         operation.completed.set()
         if cleanup_failed:
             raise RuntimeError("SPL calibration cleanup did not release every owned resource")
@@ -896,7 +917,7 @@ async def _watch_manual_noise(operation: _SplCalibrationOperation) -> None:
 
 async def _stop_active_operation() -> None:
     async with _operation_lock():
-        operation = _spl_operation
+        operation = _runtime.operation
         if operation is None:
             return
         worker_task = operation.worker_task
@@ -911,7 +932,7 @@ async def _stop_active_operation() -> None:
         )
     except asyncio.TimeoutError as exc:
         raise RuntimeError("Timed out waiting for SPL calibration cleanup") from exc
-    if _spl_operation is operation:
+    if _runtime.operation is operation:
         await _cleanup_operation_shielded(operation)
 
 
@@ -921,9 +942,7 @@ async def shutdown() -> None:
 
 @router.get("/api/measurements/spl-calibration")
 async def get_spl_calibration():
-    from main import _require_easyeffects_manager
-
-    extras = _require_easyeffects_manager().load_global_extras()
+    extras = _dependencies().require_easyeffects_manager().load_global_extras()
     return {
         "status": "ok",
         "target_spl_db": 83.0,
@@ -933,11 +952,11 @@ async def get_spl_calibration():
         "loudness": extras["loudness"],
         "automatic": _spl_auto_capability(),
         "noise_active": bool(
-            _spl_operation is not None
-            and _spl_operation.noise_process is not None
-            and _spl_operation.noise_process.poll() is None
+            _runtime.operation is not None
+            and _runtime.operation.noise_process is not None
+            and _runtime.operation.noise_process.poll() is None
         ),
-        "operation_active": _spl_operation is not None,
+        "operation_active": _runtime.operation is not None,
     }
 
 
@@ -972,8 +991,7 @@ async def set_spl_calibration_noise(request: Request):
 
 @router.post("/api/measurements/spl-calibration/automatic")
 async def measure_spl_automatically():
-    from measurement_session import _read_measurement_setup_settings
-
+    dependencies = _dependencies()
     operation = await _acquire_operation("automatic")
     try:
         capability = _spl_auto_capability()
@@ -993,7 +1011,7 @@ async def measure_spl_automatically():
             / f"fxroute-spl-{microphone_model.lower()}-{uuid4().hex[:10]}.wav"
         )
         operation.source_node = node_name
-        settings = _read_measurement_setup_settings()
+        settings = dependencies.read_measurement_settings()
         channel_index = max(0, int(settings.get("selectedMicInputChannel") or "1") - 1)
 
         await _register_operation(operation)
@@ -1120,8 +1138,6 @@ async def measure_spl_automatically():
 
 @router.post("/api/measurements/spl-calibration/apply")
 async def apply_spl_calibration(request: Request):
-    from main import _require_easyeffects_manager
-
     body = await request.json()
     measured = float(body.get("measured_spl_db"))
     try:
@@ -1129,7 +1145,7 @@ async def apply_spl_calibration(request: Request):
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     await _stop_active_operation()
-    ee_manager = _require_easyeffects_manager()
+    ee_manager = _dependencies().require_easyeffects_manager()
     extras = ee_manager.load_global_extras()
     profile = _spl_output_profile()
     automatic = _spl_auto_capability()

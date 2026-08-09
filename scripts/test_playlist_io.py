@@ -94,15 +94,15 @@ class PlaylistIOExportTests(unittest.TestCase):
     def test_track_relative_m3u_path_under_music_root(self):
         track = make_track("t1", self.music_root / "album" / "song.flac")
         with patch.object(main, "settings", self.settings):
-            self.assertEqual(playlist_io.track_relative_m3u_path(track), "album/song.flac")
+            self.assertEqual(playlist_io.track_relative_m3u_path(track, self.music_root), "album/song.flac")
 
     def test_track_relative_m3u_path_fallback_to_url_or_id(self):
         with patch.object(main, "settings", self.settings):
             self.assertEqual(
-                playlist_io.track_relative_m3u_path(make_track("t2", None, url="http://h/stream.flac")),
+                playlist_io.track_relative_m3u_path(make_track("t2", None, url="http://h/stream.flac"), self.music_root),
                 "stream.flac",
             )
-            self.assertEqual(playlist_io.track_relative_m3u_path(make_track("t3")), "t3")
+            self.assertEqual(playlist_io.track_relative_m3u_path(make_track("t3"), self.music_root), "t3")
 
     def test_build_m3u_for_playlist_content_and_order(self):
         tracks = [
@@ -113,7 +113,7 @@ class PlaylistIOExportTests(unittest.TestCase):
         scanner = SimpleNamespace(get_tracks=lambda refresh=True: tracks)
         playlist = SimpleNamespace(id="p1", name="My Mix", track_ids=["t3", "t1", "missing", "t2"])
         with patch.object(main, "settings", self.settings), patch.object(main, "library_scanner", scanner):
-            content = playlist_io.build_m3u_for_playlist(playlist)
+            content = playlist_io.build_m3u_for_playlist(playlist, tracks, self.music_root)
         self.assertEqual(
             content,
             "#EXTM3U\n"
@@ -127,7 +127,7 @@ class PlaylistIOExportTests(unittest.TestCase):
         scanner = SimpleNamespace(get_tracks=lambda refresh=True: tracks)
         playlist = SimpleNamespace(id="p1", name="P", track_ids=["t1"])
         with patch.object(main, "settings", self.settings), patch.object(main, "library_scanner", scanner):
-            content = playlist_io.build_m3u_for_playlist(playlist)
+            content = playlist_io.build_m3u_for_playlist(playlist, tracks, self.music_root)
         self.assertIn("#EXTINF:5,untitled\nalbum/untitled.flac", content)
 
 
@@ -145,7 +145,7 @@ class PlaylistIOResolveTests(unittest.TestCase):
         abs_a = str((self.music_root / "album" / "song.flac").resolve())
         with patch.object(main, "settings", self.settings):
             self.assertEqual(
-                playlist_io.resolve_m3u_track_ids(["album/song.flac", abs_a, "album/other.flac"], tracks=tracks),
+                playlist_io.resolve_m3u_track_ids(["album/song.flac", abs_a, "album/other.flac"], self.music_root, tracks=tracks),
                 ["a", "b"],
             )
 
@@ -154,11 +154,11 @@ class PlaylistIOResolveTests(unittest.TestCase):
         base_dir = self.music_root / "uploads" / "xyz"
         with patch.object(main, "settings", self.settings):
             self.assertEqual(
-                playlist_io.resolve_m3u_track_ids(["song.flac"], base_dir=base_dir, tracks=[a]),
+                playlist_io.resolve_m3u_track_ids(["song.flac"], self.music_root, base_dir=base_dir, tracks=[a]),
                 ["a"],
             )
             self.assertEqual(
-                playlist_io.resolve_m3u_track_ids(["../album/song.flac"], base_dir=base_dir, tracks=[a]),
+                playlist_io.resolve_m3u_track_ids(["../album/song.flac"], self.music_root, base_dir=base_dir, tracks=[a]),
                 ["a"],
             )
 
@@ -171,21 +171,21 @@ class PlaylistIOResolveTests(unittest.TestCase):
         spaced = make_track("s", self.music_root / "album" / "song copy.flac")
         with patch.object(main, "settings", self.settings):
             # Windows backslashes are normalized.
-            self.assertEqual(playlist_io.resolve_m3u_track_ids(["album\\song.flac"], tracks=[a]), ["a"])
+            self.assertEqual(playlist_io.resolve_m3u_track_ids(["album\\song.flac"], self.music_root, tracks=[a]), ["a"])
             # file:// prefix is stripped.
-            self.assertEqual(playlist_io.resolve_m3u_track_ids([f"file://{abs_a}"], tracks=[a]), ["a"])
+            self.assertEqual(playlist_io.resolve_m3u_track_ids([f"file://{abs_a}"], self.music_root, tracks=[a]), ["a"])
             # POSIX absolute path matches the resolved absolute key.
-            self.assertEqual(playlist_io.resolve_m3u_track_ids([abs_a], tracks=[a]), ["a"])
+            self.assertEqual(playlist_io.resolve_m3u_track_ids([abs_a], self.music_root, tracks=[a]), ["a"])
             # URL entries match the track URL key.
             self.assertEqual(
-                playlist_io.resolve_m3u_track_ids(["http://example.com/stream/radio.flac"], tracks=[url_track]),
+                playlist_io.resolve_m3u_track_ids(["http://example.com/stream/radio.flac"], self.music_root, tracks=[url_track]),
                 ["u"],
             )
             # Quoted entries are unquoted.
-            self.assertEqual(playlist_io.resolve_m3u_track_ids(['"album/song.flac"'], tracks=[a]), ["a"])
+            self.assertEqual(playlist_io.resolve_m3u_track_ids(['"album/song.flac"'], self.music_root, tracks=[a]), ["a"])
             # Percent-encoded entries are unquoted and match the decoded path.
             self.assertEqual(
-                playlist_io.resolve_m3u_track_ids(["album/song%20copy.flac"], tracks=[spaced]),
+                playlist_io.resolve_m3u_track_ids(["album/song%20copy.flac"], self.music_root, tracks=[spaced]),
                 ["s"],
             )
 
@@ -195,7 +195,7 @@ class PlaylistIOResolveTests(unittest.TestCase):
         c = make_track("c", self.music_root / "album" / "c.flac")
         with patch.object(main, "settings", self.settings):
             result = playlist_io.resolve_m3u_track_ids(
-                ["album/b.flac", "unknown.flac", "album/a.flac", "album/b.flac", "album/c.flac"],
+                ["album/b.flac", "unknown.flac", "album/a.flac", "album/b.flac", "album/c.flac"], self.music_root,
                 tracks=[a, b, c],
             )
         # Unknown entry skipped, duplicate dropped, order preserved.
@@ -203,7 +203,7 @@ class PlaylistIOResolveTests(unittest.TestCase):
 
     def test_resolve_empty_entries(self):
         with patch.object(main, "settings", self.settings):
-            self.assertEqual(playlist_io.resolve_m3u_track_ids([], tracks=[]), [])
+            self.assertEqual(playlist_io.resolve_m3u_track_ids([], self.music_root, tracks=[]), [])
 
 
 class PlaylistIOImportTests(unittest.TestCase):
@@ -217,6 +217,7 @@ class PlaylistIOImportTests(unittest.TestCase):
         with patch.object(main, "settings", self.settings), patch("playlist_io.save_playlist") as save:
             result = playlist_io.import_m3u_playlist(
                 "nope.m3u8", "#EXTM3U\nunknown.flac\n", tracks=[],
+                music_root=self.music_root,
             )
         self.assertIsNone(result)
         save.assert_not_called()
@@ -227,6 +228,7 @@ class PlaylistIOImportTests(unittest.TestCase):
         with patch.object(main, "settings", self.settings), patch("playlist_io.save_playlist", return_value=saved) as save:
             result = playlist_io.import_m3u_playlist(
                 "mix.m3u8", "\ufeff#EXTM3U\n#EXTINF:240,Song\nalbum/song.flac\nunknown.flac\n",
+                self.music_root,
                 tracks=[track],
             )
         save.assert_called_once_with("mix", ["t1"])
@@ -252,7 +254,7 @@ class PlaylistIOImportTests(unittest.TestCase):
         with patch.object(main, "settings", self.settings), patch.object(main, "library_scanner", SimpleNamespace(get_tracks=lambda refresh=True: [])):
             self.assertEqual(
                 main._resolve_m3u_track_ids(["album/song.flac"], tracks=[]),
-                playlist_io.resolve_m3u_track_ids(["album/song.flac"], tracks=[]),
+                playlist_io.resolve_m3u_track_ids(["album/song.flac"], self.music_root, tracks=[]),
             )
 
 

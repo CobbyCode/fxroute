@@ -7,8 +7,9 @@ import logging
 import shutil
 import tempfile
 import zipfile
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Any, Callable, Optional
 
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, Response
@@ -36,6 +37,28 @@ TOP40_COVER_IMAGE = STATIC_DIR / "Top40.png"
 ALBUM_COVER_CACHE_DIR = BASE_DIR / "media" / "cache" / "album-covers"
 
 router = APIRouter()
+
+
+@dataclass(frozen=True)
+class LibraryApiRuntime:
+    get_scanner: Callable[[], Any]
+    get_settings: Callable[[], Any]
+
+
+_runtime: LibraryApiRuntime | None = None
+
+
+def configure_runtime(runtime: LibraryApiRuntime) -> None:
+    global _runtime
+    _runtime = runtime
+
+
+def _library_runtime() -> tuple[Any, Any]:
+    if _runtime is None:
+        raise RuntimeError("Library API runtime is not configured")
+    return _runtime.get_scanner(), _runtime.get_settings()
+
+
 def _cover_media_type(path: Path) -> str:
     suffix = path.suffix.lower()
     if suffix in {".jpg", ".jpeg"}:
@@ -171,7 +194,7 @@ def _cached_embedded_cover(track_id: str, track_path: Path) -> tuple[Optional[Pa
 
 
 def _track_cover_available(track_id: str) -> bool:
-    from main import library_scanner, settings
+    library_scanner, settings = _library_runtime()
 
     tracks_by_id = {track.id: track for track in library_scanner.get_tracks(refresh=False)}
     track = tracks_by_id.get(track_id)
@@ -188,7 +211,7 @@ def _track_cover_available(track_id: str) -> bool:
 
 
 def _record_local_track_started(track_info: Optional[dict]) -> None:
-    from main import library_scanner
+    library_scanner, _settings = _library_runtime()
 
     if not library_scanner or not track_info:
         return
@@ -223,16 +246,14 @@ def _resolve_library_folder(folder: str, music_root: Path) -> Path:
 
 @router.get("/api/tracks")
 async def list_tracks():
-    from main import library_scanner
-
+    library_scanner, _settings = _library_runtime()
     tracks = library_scanner.get_tracks()
     return [t.to_dict() for t in tracks]
 
 
 @router.get("/api/tracks/file/{track_id:path}")
 async def download_track_file(track_id: str):
-    from main import library_scanner, settings
-
+    library_scanner, settings = _library_runtime()
     tracks_by_id = {track.id: track for track in library_scanner.get_tracks(refresh=True)}
     track = tracks_by_id.get(track_id)
     if not track or not track.path:
@@ -247,8 +268,7 @@ async def download_track_file(track_id: str):
 
 @router.get("/api/tracks/cover/{track_id:path}")
 async def get_track_cover(track_id: str):
-    from main import library_scanner, settings
-
+    library_scanner, settings = _library_runtime()
     tracks_by_id = {track.id: track for track in library_scanner.get_tracks(refresh=False)}
     track = tracks_by_id.get(track_id)
     if not track or not track.path:
@@ -279,8 +299,7 @@ async def get_track_cover_info(track_id: str):
 
 @router.get("/api/smart/top-tracks")
 async def get_smart_top_tracks(limit: int = 40):
-    from main import library_scanner
-
+    library_scanner, _settings = _library_runtime()
     if not library_scanner:
         raise HTTPException(status_code=503, detail="Library not available")
     return library_scanner.get_top_played_tracks(limit=limit)
@@ -296,7 +315,7 @@ async def get_smart_top40_cover():
 @router.get("/api/albums")
 async def list_albums(query: Optional[str] = None):
     """List albums grouped from the local library, optionally filtered by search query."""
-    from main import library_scanner
+    library_scanner, _settings = _library_runtime()
     if not library_scanner:
         raise HTTPException(status_code=503, detail="Library not available")
     albums = library_scanner.get_albums()
@@ -337,7 +356,7 @@ async def list_albums(query: Optional[str] = None):
 @router.get("/api/albums/{album_id}/tracks")
 async def get_album_tracks(album_id: str):
     """Return tracks for a specific album, sorted by disc/track number."""
-    from main import library_scanner
+    library_scanner, _settings = _library_runtime()
     if not library_scanner:
         raise HTTPException(status_code=503, detail="Library not available")
     tracks = library_scanner.get_album_tracks(album_id)
@@ -349,7 +368,7 @@ async def get_album_tracks(album_id: str):
 @router.post("/api/albums/{album_id}/favorite")
 async def set_album_favorite(album_id: str, request: Request):
     """Persist album favorite state in the smart metadata cache."""
-    from main import library_scanner
+    library_scanner, _settings = _library_runtime()
     if not library_scanner:
         raise HTTPException(status_code=503, detail="Library not available")
     tracks = library_scanner.get_album_tracks(album_id)
@@ -364,7 +383,7 @@ async def set_album_favorite(album_id: str, request: Request):
 @router.get("/api/albums/{album_id}/discover")
 async def get_album_discover(album_id: str, refresh: bool = False):
     """Return cached similar-music suggestions for an album."""
-    from main import library_scanner
+    library_scanner, _settings = _library_runtime()
     if not library_scanner:
         raise HTTPException(status_code=503, detail="Library not available")
     tracks = library_scanner.get_album_tracks(album_id)
@@ -385,7 +404,7 @@ async def get_album_cover(album_id: str, size: int = 256):
     """Return cover image for an album, resized to thumbnail.
     Priority: folder cover > embedded cover > external cover > 404.
     """
-    from main import library_scanner
+    library_scanner, _settings = _library_runtime()
     if not library_scanner:
         raise HTTPException(status_code=503, detail="Library not available")
     tracks = library_scanner.get_album_tracks(album_id)
@@ -426,8 +445,7 @@ async def get_album_cover(album_id: str, size: int = 256):
 
 @router.post("/api/tracks/download")
 async def download_tracks(req: DownloadTracksRequest):
-    from main import library_scanner, settings
-
+    library_scanner, settings = _library_runtime()
     if not library_scanner or not settings:
         raise HTTPException(status_code=503, detail="Library not available")
     if not req.track_ids:
@@ -508,14 +526,17 @@ async def create_or_update_playlist(req: PlaylistSaveRequest):
 
 @router.get("/api/playlists/{playlist_id}/export")
 async def export_playlist(playlist_id: str):
-    from main import library_scanner, settings
-
+    library_scanner, settings = _library_runtime()
     if not library_scanner or not settings:
         raise HTTPException(status_code=503, detail="Library not available")
     playlist = next((item for item in get_playlists() if item.id == playlist_id), None)
     if not playlist:
         raise HTTPException(status_code=404, detail="Playlist not found")
-    content = playlist_io.build_m3u_for_playlist(playlist)
+    content = playlist_io.build_m3u_for_playlist(
+        playlist,
+        library_scanner.get_tracks(refresh=True),
+        settings.MUSIC_ROOT,
+    )
     filename = playlist_io.playlist_download_filename(playlist.name)
     return Response(
         content=content,
@@ -535,8 +556,7 @@ async def remove_playlist(playlist_id: str):
 
 @router.post("/api/library/upload")
 async def upload_track(file: UploadFile = File(...)):
-    from main import library_scanner, settings
-
+    library_scanner, settings = _library_runtime()
     if not library_scanner or not settings:
         raise HTTPException(status_code=503, detail="Library not available")
 
@@ -582,6 +602,7 @@ async def upload_track(file: UploadFile = File(...)):
                 imported = playlist_io.import_m3u_playlist(
                     playlist_path.name,
                     playlist_path.read_text(encoding="utf-8", errors="replace"),
+                    settings.MUSIC_ROOT,
                     base_dir=playlist_path.parent,
                     tracks=tracks,
                 )
@@ -608,7 +629,9 @@ async def upload_track(file: UploadFile = File(...)):
         if suffix in PLAYLIST_FILE_EXTENSIONS:
             content = (await file.read()).decode("utf-8", errors="replace")
             tracks = library_scanner.get_tracks(refresh=True)
-            imported = playlist_io.import_m3u_playlist(filename, content, tracks=tracks)
+            imported = playlist_io.import_m3u_playlist(
+                filename, content, settings.MUSIC_ROOT, tracks=tracks
+            )
             if not imported:
                 raise HTTPException(status_code=400, detail="Playlist did not match any library tracks")
             return {
@@ -657,8 +680,7 @@ async def upload_track(file: UploadFile = File(...)):
 
 @router.post("/api/tracks/delete")
 async def delete_tracks(req: DeleteTracksRequest):
-    from main import library_scanner, settings
-
+    library_scanner, settings = _library_runtime()
     if not library_scanner or not settings:
         raise HTTPException(status_code=503, detail="Library not available")
 
@@ -705,8 +727,7 @@ async def delete_tracks(req: DeleteTracksRequest):
 
 @router.post("/api/library/folders/delete")
 async def delete_library_folder(req: DeleteFolderRequest):
-    from main import library_scanner, settings
-
+    library_scanner, settings = _library_runtime()
     if not library_scanner or not settings:
         raise HTTPException(status_code=503, detail="Library not available")
 
@@ -739,5 +760,4 @@ async def delete_library_folder(req: DeleteFolderRequest):
         "folder_removed": not folder_path.exists(),
         "track_count": len(tracks),
     }
-
 

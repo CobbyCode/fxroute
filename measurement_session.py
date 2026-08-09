@@ -5,16 +5,16 @@
 Owns the guarded MeasurementSampleRateSession (48 kHz measurement entry and
 coordinator-backed restore), the captured-playback snapshot, the
 measurement-entry/pre-arm helpers and the /api/measurements* endpoints.
-Runtime globals (measurement_store, measurement_sr_session, subwoofer_runtime,
-playback_transition_coordinator, ...) stay in main and are imported lazily
-from main at call time so startup assignment and test monkeypatching
-semantics are unchanged.
+The store, session instance and cross-domain admission check are supplied by
+the composition root. Audio-graph operations still delegate to main's
+transition runtime because that remains the owner of playback orchestration.
 """
 
 import asyncio
 import json
 import logging
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping, Optional
 from uuid import uuid4
@@ -41,6 +41,28 @@ from subwoofer_runtime import DEFAULT_SAMPLE_RATE, SubwooferRuntimeConfig
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+@dataclass(frozen=True)
+class MeasurementServices:
+    get_store: Callable[[], Any]
+    get_session: Callable[[], Any]
+    auto_sub_active: Callable[[], bool]
+
+
+_services: MeasurementServices | None = None
+
+
+def configure_services(services: MeasurementServices) -> None:
+    global _services
+    _services = services
+
+
+def _measurement_services() -> MeasurementServices:
+    if _services is None:
+        raise RuntimeError("Measurement services are not configured")
+    return _services
+
 
 _playback_state_before_measurement: dict[str, Any] | None = None
 
@@ -440,13 +462,13 @@ def _capture_playback_state_before_measurement(
     flag so the controlled restart can restore the user's exact spot.
     """
     from main import (
-        measurement_sr_session,
         playback_intent_generation,
         _get_player_audio_samplerate,
         current_track_info,
         player_instance,
         SPOTIFY_PREARM_SAMPLE_RATE_HZ,
     )
+    measurement_sr_session = _measurement_services().get_session()
     global _playback_state_before_measurement
     if measurement_sr_session is not None and measurement_sr_session._playback_captured:
         return
@@ -564,9 +586,10 @@ async def _measurement_entry_preflight(measurement_rate: int = MEASUREMENT_DEFAU
         _reconcile_transition_sink_rate,
         _playback_graph_diagnosis,
         _log_playback_graph_diagnosis,
-        measurement_sr_session,
-        measurement_store,
     )
+    services = _measurement_services()
+    measurement_sr_session = services.get_session()
+    measurement_store = services.get_store()
     coordinator = playback_transition_coordinator
     if coordinator is None:
         raise RuntimeError("PlaybackTransitionCoordinator is not available for measurement entry")
@@ -690,9 +713,7 @@ async def _measurement_restore_snapshot_matches_current_intent(
 
 
 def _resolve_measurement_start_sample_rate() -> int:
-    from main import (
-        measurement_store,
-    )
+    measurement_store = _measurement_services().get_store()
     if measurement_store is not None and hasattr(measurement_store, "_resolve_measurement_sample_rate"):
         try:
             sample_rate = int(measurement_store._resolve_measurement_sample_rate())
@@ -883,10 +904,9 @@ async def _unregister_measurement_job_after_completion(
     *,
     ownership_job_id: Optional[str] = None,
 ) -> None:
-    from main import (
-        measurement_store,
-        measurement_sr_session,
-    )
+    services = _measurement_services()
+    measurement_store = services.get_store()
+    measurement_sr_session = services.get_session()
     logger.info("Measurement session job watcher started: job_id=%s generation=%s", job_id, generation)
     for _ in range(300):
         await asyncio.sleep(0.5)
@@ -920,9 +940,7 @@ def _measurement_setup_settings_from_payload(settings: dict[str, Any]) -> dict[s
 
 
 def _read_measurement_setup_settings() -> dict[str, Any]:
-    from main import (
-        measurement_store,
-    )
+    measurement_store = _measurement_services().get_store()
     path = getattr(measurement_store, "settings_path", None)
     if not path:
         return _measurement_setup_settings_from_payload({})
@@ -935,9 +953,7 @@ def _read_measurement_setup_settings() -> dict[str, Any]:
 
 
 def _update_measurement_setup_settings(patch: dict[str, Any]) -> dict[str, Any]:
-    from main import (
-        measurement_store,
-    )
+    measurement_store = _measurement_services().get_store()
     path = getattr(measurement_store, "settings_path", None)
     if not path:
         return _measurement_setup_settings_from_payload({})
@@ -968,9 +984,7 @@ def _update_measurement_setup_settings(patch: dict[str, Any]) -> dict[str, Any]:
 
 @router.get("/api/measurements")
 async def list_measurements():
-    from main import (
-        measurement_store,
-    )
+    measurement_store = _measurement_services().get_store()
     if not measurement_store:
         raise HTTPException(status_code=503, detail="Measurement store not available")
     payload = measurement_store.list_measurements()
@@ -980,9 +994,7 @@ async def list_measurements():
 
 @router.get("/api/measurements/settings")
 async def get_measurement_settings():
-    from main import (
-        measurement_store,
-    )
+    measurement_store = _measurement_services().get_store()
     if not measurement_store:
         raise HTTPException(status_code=503, detail="Measurement store not available")
     return {
@@ -993,9 +1005,7 @@ async def get_measurement_settings():
 
 @router.patch("/api/measurements/settings")
 async def update_measurement_settings(request: Request):
-    from main import (
-        measurement_store,
-    )
+    measurement_store = _measurement_services().get_store()
     if not measurement_store:
         raise HTTPException(status_code=503, detail="Measurement store not available")
     try:
@@ -1011,9 +1021,7 @@ async def update_measurement_settings(request: Request):
 
 @router.get("/api/measurements/inputs")
 async def list_measurement_inputs():
-    from main import (
-        measurement_store,
-    )
+    measurement_store = _measurement_services().get_store()
     if not measurement_store:
         raise HTTPException(status_code=503, detail="Measurement store not available")
     return measurement_store.list_inputs()
@@ -1021,9 +1029,7 @@ async def list_measurement_inputs():
 
 @router.post("/api/measurements/calibrations")
 async def upload_measurement_calibration(calibration_file: UploadFile = File(...)):
-    from main import (
-        measurement_store,
-    )
+    measurement_store = _measurement_services().get_store()
     if not measurement_store:
         raise HTTPException(status_code=503, detail="Measurement store not available")
     filename = calibration_file.filename or "calibration.txt"
@@ -1036,9 +1042,7 @@ async def upload_measurement_calibration(calibration_file: UploadFile = File(...
 
 @router.get("/api/measurements/calibrations/{calibration_id}/export")
 async def export_measurement_calibration(calibration_id: str):
-    from main import (
-        measurement_store,
-    )
+    measurement_store = _measurement_services().get_store()
     if not measurement_store:
         raise HTTPException(status_code=503, detail="Measurement store not available")
     try:
@@ -1052,9 +1056,7 @@ async def export_measurement_calibration(calibration_id: str):
 
 @router.patch("/api/measurements/calibrations/active")
 async def set_active_measurement_calibration(request: Request):
-    from main import (
-        measurement_store,
-    )
+    measurement_store = _measurement_services().get_store()
     if not measurement_store:
         raise HTTPException(status_code=503, detail="Measurement store not available")
     try:
@@ -1067,9 +1069,7 @@ async def set_active_measurement_calibration(request: Request):
 
 @router.delete("/api/measurements/calibrations/{calibration_id}")
 async def delete_measurement_calibration(calibration_id: str):
-    from main import (
-        measurement_store,
-    )
+    measurement_store = _measurement_services().get_store()
     if not measurement_store:
         raise HTTPException(status_code=503, detail="Measurement store not available")
     try:
@@ -1084,9 +1084,7 @@ async def delete_measurement_calibration(calibration_id: str):
 
 @router.post("/api/measurements/house-curves")
 async def upload_measurement_house_curve(house_curve_file: UploadFile = File(...)):
-    from main import (
-        measurement_store,
-    )
+    measurement_store = _measurement_services().get_store()
     if not measurement_store:
         raise HTTPException(status_code=503, detail="Measurement store not available")
     filename = house_curve_file.filename or "house-curve.txt"
@@ -1099,9 +1097,7 @@ async def upload_measurement_house_curve(house_curve_file: UploadFile = File(...
 
 @router.get("/api/measurements/house-curves/{house_curve_id}/export")
 async def export_measurement_house_curve(house_curve_id: str):
-    from main import (
-        measurement_store,
-    )
+    measurement_store = _measurement_services().get_store()
     if not measurement_store:
         raise HTTPException(status_code=503, detail="Measurement store not available")
     try:
@@ -1115,9 +1111,7 @@ async def export_measurement_house_curve(house_curve_id: str):
 
 @router.delete("/api/measurements/house-curves/{house_curve_id}")
 async def delete_measurement_house_curve(house_curve_id: str):
-    from main import (
-        measurement_store,
-    )
+    measurement_store = _measurement_services().get_store()
     if not measurement_store:
         raise HTTPException(status_code=503, detail="Measurement store not available")
     try:
@@ -1131,9 +1125,9 @@ async def delete_measurement_house_curve(house_curve_id: str):
 @router.get("/api/measurements/{measurement_id}/file")
 async def download_measurement_file(measurement_id: str):
     from main import (
-        measurement_store,
         _path_within_root,
     )
+    measurement_store = _measurement_services().get_store()
     if not measurement_store:
         raise HTTPException(status_code=503, detail="Measurement store not available")
     measurement = next((item for item in measurement_store.list_measurements().get("measurements", []) if item.get("id") == measurement_id), None)
@@ -1159,8 +1153,7 @@ async def _start_registered_manual_measurement(
     start_job: Callable[[], Awaitable[dict]],
 ) -> dict:
     """Own pending session registration until a concrete job takes its place."""
-    from main import measurement_sr_session
-
+    measurement_sr_session = _measurement_services().get_session()
     pending_job_id = f"pending:{uuid4()}"
     sweep_gen = measurement_sr_session.generation if measurement_sr_session is not None else 0
     pending_registered = False
@@ -1218,14 +1211,11 @@ async def start_measurement(
     calibration_ref: str = Form(""),
     calibration_file: Optional[UploadFile] = File(None),
 ):
-    from main import (
-        measurement_store,
-        measurement_sr_session,
-    )
-    from autosub import _auto_sub_lock
+    services = _measurement_services()
+    measurement_store = services.get_store()
     if not measurement_store:
         raise HTTPException(status_code=503, detail="Measurement store not available")
-    if _auto_sub_lock and _auto_sub_lock.locked():
+    if services.auto_sub_active():
         raise HTTPException(status_code=423, detail="Auto Sub Optimize is in progress")
 
     calibration_bytes = None
@@ -1263,14 +1253,11 @@ async def start_lr_repeat_measurement(
     calibration_ref: str = Form(""),
     calibration_file: Optional[UploadFile] = File(None),
 ):
-    from main import (
-        measurement_store,
-        measurement_sr_session,
-    )
-    from autosub import _auto_sub_lock
+    services = _measurement_services()
+    measurement_store = services.get_store()
     if not measurement_store:
         raise HTTPException(status_code=503, detail="Measurement store not available")
-    if _auto_sub_lock and _auto_sub_lock.locked():
+    if services.auto_sub_active():
         raise HTTPException(status_code=423, detail="Auto Sub Optimize is in progress")
 
     calibration_bytes = None
@@ -1301,9 +1288,7 @@ async def start_lr_repeat_measurement(
 
 @router.get("/api/measurements/jobs/{job_id}")
 async def get_measurement_job(job_id: str):
-    from main import (
-        measurement_store,
-    )
+    measurement_store = _measurement_services().get_store()
     if not measurement_store:
         raise HTTPException(status_code=503, detail="Measurement store not available")
     try:
@@ -1314,9 +1299,7 @@ async def get_measurement_job(job_id: str):
 
 @router.post("/api/measurements/jobs/{job_id}/cancel")
 async def cancel_measurement_job(job_id: str):
-    from main import (
-        measurement_store,
-    )
+    measurement_store = _measurement_services().get_store()
     if not measurement_store:
         raise HTTPException(status_code=503, detail="Measurement store not available")
     try:
@@ -1327,9 +1310,7 @@ async def cancel_measurement_job(job_id: str):
 
 @router.post("/api/measurements/save")
 async def save_measurement(request: Request):
-    from main import (
-        measurement_store,
-    )
+    measurement_store = _measurement_services().get_store()
     if not measurement_store:
         raise HTTPException(status_code=503, detail="Measurement store not available")
 
@@ -1378,9 +1359,7 @@ async def save_measurement(request: Request):
 
 @router.post("/api/measurements/merge")
 async def merge_measurements(request: Request):
-    from main import (
-        measurement_store,
-    )
+    measurement_store = _measurement_services().get_store()
     if not measurement_store:
         raise HTTPException(status_code=503, detail="Measurement store not available")
 
@@ -1407,9 +1386,7 @@ async def merge_measurements(request: Request):
 
 @router.delete("/api/measurements/{measurement_id}")
 async def delete_measurement(measurement_id: str):
-    from main import (
-        measurement_store,
-    )
+    measurement_store = _measurement_services().get_store()
     if not measurement_store:
         raise HTTPException(status_code=503, detail="Measurement store not available")
 
