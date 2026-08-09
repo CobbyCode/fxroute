@@ -360,6 +360,71 @@ class CoordinatorTransactionTests(unittest.IsolatedAsyncioTestCase):
         self.assertLess(runtime.events.index("persist-output-mode"), runtime.events.index("mute:False"))
         self.assertTrue(runtime.spotify_source_link_confirmed)
 
+    async def test_stereo_switch_final_readback_settles_over_transient_missing_links(self):
+        """A stereo output-mode switch must not fail when the final diagnosis
+        transiently misses the just-created direct EE->hardware front links."""
+        overview = {
+            "output_mode": {
+                "mode": "stereo",
+                "effective_output_key": "alsa_output.test",
+            }
+        }
+        incomplete = {
+            "mode": "stereo",
+            "output_key": "alsa_output.test",
+            "ee_ports": True,
+            "helper_ports": None,
+            "helper_active": None,
+            "helper_rate": None,
+            "helper_rate_matches": None,
+            "source_links": {},
+            "source_links_complete": None,
+            "direct_ee_to_hw_present": False,
+            "links": {
+                "ee_soe_output_level:output_FL -> alsa_output.test:playback_FL": False,
+                "ee_soe_output_level:output_FR -> alsa_output.test:playback_FR": False,
+            },
+            "links_complete": False,
+            "bypass_only": False,
+            "port_identities": {
+                "source": (),
+                "source_target": (),
+                "ee": ("ee_soe_output_level:output_FL", "ee_soe_output_level:output_FR"),
+                "helper": (),
+                "output": ("alsa_output.test:playback_FL", "alsa_output.test:playback_FR"),
+            },
+            "signature": "stereo-links-missing",
+        }
+        complete = dict(incomplete)
+        complete["links"] = {key: True for key in incomplete["links"]}
+        complete["links_complete"] = True
+        complete["signature"] = "stereo-links-stable"
+        request = TransitionRequest(
+            operation="output-mode-switch",
+            source="local",
+            target_rate=48000,
+            target_url="/music/current.flac",
+            target_track={"source": "local", "url": "/music/current.flac"},
+            should_play=True,
+            rate_change=False,
+            reload_source=False,
+            output_mode_target=overview,
+            output_mode_config={"mode": "stereo"},
+        )
+        with patch.object(main, "subwoofer_runtime", None), patch.object(
+            main, "easyeffects_manager", None
+        ), patch.object(
+            main, "_playback_graph_diagnosis", new=AsyncMock(side_effect=[incomplete, incomplete, complete])
+        ), patch.object(main, "_sync_subwoofer_runtime", new=AsyncMock()), patch.object(
+            main, "_wait_for_easyeffects_output_ports", new=AsyncMock(return_value=True)
+        ), patch.object(main, "_reconcile_transition_sink_rate", new=AsyncMock(return_value=True)), patch.object(
+            main, "_repair_stereo_output_links_once", new=AsyncMock()
+        ), patch.object(main.asyncio, "sleep", new=AsyncMock()):
+            result = await main._coordinator_establish_effects_and_helper(request)
+
+        self.assertTrue(result["graph_complete"])
+        self.assertTrue(result["links_reconciled"])
+
     async def test_output_mode_dsp_reinitialization_stabilizes_before_gate_reopens(self):
         runtime = TransactionRuntime(dsp_reinitialized=True)
         coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)

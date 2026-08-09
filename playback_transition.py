@@ -1349,6 +1349,18 @@ class PlaybackTransitionCoordinator:
                                 "Output-mode runtime rollback failed; keeping the failure gate latched",
                                 exc_info=True,
                             )
+                if active_request.source in {"local", "radio"}:
+                    # The source was attenuated to 0 during the quiet stage.
+                    # A failed transition must not leave it muted forever:
+                    # restore the pre-transition source volume from the
+                    # snapshot.
+                    previous_player = dict((snapshot or {}).get("player") or {})
+                    previous_volume = previous_player.get("volume")
+                    if isinstance(previous_volume, (int, float)):
+                        try:
+                            await self.runtime.set_source_volume(int(round(previous_volume)), transition_id)
+                        except Exception:
+                            pass
                 target_staged = False
                 staged_detector = getattr(self.runtime, "target_source_staged", None)
                 if callable(staged_detector):

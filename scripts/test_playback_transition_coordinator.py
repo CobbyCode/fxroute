@@ -423,6 +423,29 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status["stage"], "effects-helper-links")
         self.assertEqual(coordinator.status()["last_error"], status)
 
+    async def test_failed_transition_restores_previous_source_volume(self):
+        runtime = FakeRuntime(muted=False, fail_stage="effects-helper-links")
+
+        async def snapshot(_request):
+            return {
+                "player": {
+                    "current_file": "/music/current.flac",
+                    "volume": 42,
+                },
+                "current_track": {"source": "local", "url": "/music/current.flac"},
+            }
+
+        runtime.read_transition_snapshot = snapshot
+        coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
+
+        with self.assertRaises(PlaybackTransitionFailure):
+            await coordinator.execute(request())
+
+        self.assertIn("source-volume:0", runtime.events)
+        self.assertIn("source-volume:42", runtime.events)
+        self.assertEqual(runtime.volume, 42)
+        self.assertTrue(coordinator.gate.failure_latched)
+
     async def test_failed_staged_target_uses_snapshot_abort_contract(self):
         runtime = FakeRuntime(muted=False, fail_stage="verify-graph")
         async def snapshot(_request):

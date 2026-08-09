@@ -3926,13 +3926,13 @@ async def _coordinator_establish_effects_and_helper(
             if mode in OUTPUT_MODE_SUBWOOFER_MODES:
                 await _coordinator_reconcile_subwoofer_links_only()
                 links_reconciled = True
-            elif not diagnosis.get("links_complete"):
+            else:
                 # The direct EE -> hardware front links were restored by the
                 # SUB-STOP above, but a concurrently taken pw-link snapshot
                 # can transiently miss them (link readback racing the link
-                # creation).  Repair the stereo links idempotently instead of
-                # letting the final diagnosis fail the switch over a stale
-                # read.
+                # creation).  Repair the stereo links idempotently for every
+                # stereo switch; the extra read also lets the listing settle
+                # before the final diagnosis below.
                 await _repair_stereo_output_links_once(diagnosis)
                 links_reconciled = True
         elif mode in OUTPUT_MODE_SUBWOOFER_MODES:
@@ -3975,6 +3975,20 @@ async def _coordinator_establish_effects_and_helper(
         target_rate=target_rate,
         require_source=False,
     )
+    if not final.get("links_complete") and mode not in OUTPUT_MODE_SUBWOOFER_MODES:
+        # The direct EE -> hardware front links were just (re-)created by the
+        # SUB-STOP/repair above.  PipeWire's link listing can lag the creation
+        # event longer than the repair read; re-read after a short settle
+        # before declaring the switch failed.
+        for _ in range(3):
+            await asyncio.sleep(PIPEWIRE_HANDOFF_POLL_INTERVAL_MS * 4 / 1000)
+            final = await _playback_graph_diagnosis(
+                overview,
+                target_rate=target_rate,
+                require_source=False,
+            )
+            if final.get("links_complete"):
+                break
     if not final.get("links_complete"):
         _log_playback_graph_diagnosis(
             final,
