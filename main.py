@@ -7002,7 +7002,14 @@ async def system_update():
     service_name = _configured_service_name()
     result = await _run_update_script("--defer-restart")
     ok = result["returncode"] == 0
-    update_applied = ok and "Pulling updates with fast-forward only." in result.get("stdout", "")
+    stdout = result.get("stdout", "")
+    update_applied = ok and any(
+        marker in stdout
+        for marker in (
+            "Pulling updates with fast-forward only.",
+            "Checkout is current, but the deployment was not completed; retrying reconciliation.",
+        )
+    )
     if update_applied:
         asyncio.create_task(_restart_fxroute_service_after_response(service_name))
     return {

@@ -7,6 +7,7 @@ REPO_PATH="${FXROUTE_REPO_PATH:-}"
 RESTART_MODE="auto"
 CONFIG_FILE="${FXROUTE_INSTALL_CONFIG:-$HOME/.config/fxroute/install-config.env}"
 SERVICE_NAME="${FXROUTE_SERVICE_NAME:-fxroute}"
+NATIVE_HELPER_BUILD_OK=1
 
 usage() {
   cat <<EOF
@@ -146,15 +147,15 @@ install_dependencies_if_needed() {
   log "Python dependencies are up to date."
 }
 
-deployment_marker_matches_head() {
-  local marker="$REPO_PATH/.venv/.fxroute-deployed-commit"
-  local deployed_commit=""
-  [[ -f "$marker" ]] && deployed_commit="$(tr -d '[:space:]' < "$marker")"
-  [[ -n "$deployed_commit" && "$deployed_commit" == "$(git rev-parse HEAD)" ]]
+reconciliation_marker_matches_head() {
+  local marker="$REPO_PATH/.venv/.fxroute-reconciled-commit"
+  local reconciled_commit=""
+  [[ -f "$marker" ]] && reconciled_commit="$(tr -d '[:space:]' < "$marker")"
+  [[ -n "$reconciled_commit" && "$reconciled_commit" == "$(git rev-parse HEAD)" ]]
 }
 
-mark_deployment_complete() {
-  local marker="$REPO_PATH/.venv/.fxroute-deployed-commit"
+mark_reconciliation_complete() {
+  local marker="$REPO_PATH/.venv/.fxroute-reconciled-commit"
   mkdir -p "$(dirname "$marker")"
   printf '%s\n' "$(git rev-parse HEAD)" > "$marker"
 }
@@ -195,6 +196,7 @@ build_pipewire_stage1_if_needed() {
   fi
 
   if ! bash "$build_script"; then
+    NATIVE_HELPER_BUILD_OK=0
     log "PipeWire 2.1 helper build failed — 2.1 output mode will not be available until this is resolved."
   else
     log "PipeWire 2.1 helper built successfully."
@@ -233,7 +235,11 @@ reconcile_checkout() {
   run_production_build
   build_pipewire_stage1_if_needed
   restart_service_if_needed
-  mark_deployment_complete
+  if [[ "$NATIVE_HELPER_BUILD_OK" == "1" ]]; then
+    mark_reconciliation_complete
+  else
+    log "Reconciliation remains incomplete because the PipeWire 2.1 helper build failed."
+  fi
 }
 
 setup_repo() {
@@ -293,7 +299,7 @@ main() {
   log "Remote:  ${remote_version:-unknown} (${remote_commit}) from ${remote_ref}"
 
   if [[ "$current_commit" == "$remote_commit" ]]; then
-    if [[ "$MODE" == "check" ]] || deployment_marker_matches_head; then
+    if [[ "$MODE" == "check" ]] || reconciliation_marker_matches_head; then
       log "FXRoute is already up to date."
       return 0
     fi
