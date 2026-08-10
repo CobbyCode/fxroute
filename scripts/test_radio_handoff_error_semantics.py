@@ -711,7 +711,16 @@ class RadioPlayErrorSemanticsTests(unittest.IsolatedAsyncioTestCase):
             ),
             patch.object(
                 main, "_prepare_local_queue",
-                return_value={"id": "a", "title": "A", "source": "local", "url": "/music/a.flac"},
+                return_value=main._QueueCandidate(
+                    queue=[],
+                    original=[],
+                    index=-1,
+                    mode="app_replace",
+                    loop=False,
+                    shuffle=False,
+                    single_track_loop=False,
+                    track={"id": "a", "title": "A", "source": "local", "url": "/music/a.flac"},
+                ),
             ),
             patch.object(main, "_can_send_play_command", lambda: True),
             patch.object(main, "pause_spotify_for_local_playback_broadcast", _noop),

@@ -19,7 +19,7 @@ import tempfile
 import zipfile
 import samplerate_orchestration
 from contextlib import asynccontextmanager
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, List, Mapping, Optional
 from urllib.parse import quote, unquote, urlparse
@@ -1225,14 +1225,13 @@ class FxrouteTransitionRuntime(TransitionRuntime):
 
         The Coordinator has already attenuated and paused the source before it
         calls this hook. If MPV still exposes the exact pre-transition file,
-        the committed context can remain available for an intentional retry.
-        Once a new target was staged (or the old file disappeared), clear the
-        active metadata and queue, while preserving ``last_track_info``.
+        the committed context remains valid and nothing is invalidated.  Once
+        a new target was staged (or the old file disappeared), stop the
+        physical target and invalidate only the active track metadata, while
+        preserving ``last_track_info`` and the committed queue state: a failed
+        transition must never discard the previously working queue.
         """
-        global current_track_info, current_footer_owner
-        global playback_queue, playback_queue_original, playback_queue_index
-        global playback_queue_mode, queue_transition_target_url
-        global playback_queue_loop, playback_queue_shuffle, single_track_loop
+        global current_track_info, current_footer_owner, playback_queue_mode
 
         if request.source not in {"local", "radio"}:
             return
@@ -1256,34 +1255,16 @@ class FxrouteTransitionRuntime(TransitionRuntime):
                 else:
                     previous_context_unchanged = False
             if previous_context_unchanged:
-                # ``/api/play`` prepares queue metadata before entering the
-                # Coordinator. If it fails before MPV stages the new target,
-                # that queue is still uncommitted even though the old MPV
-                # file remains valid. Clear it rather than exposing a new
-                # queue next to the retained old track. Recovery/graph-only
-                # attempts do not own queue metadata and keep it intact.
-                if request.operation in {"play", "queue"} or request.native_queue:
-                    try:
-                        _clear_playback_queue()
-                    except Exception:
-                        logger.warning(
-                            "Failed to clear uncommitted queue during transition abort",
-                            exc_info=True,
-                        )
-                        playback_queue = []
-                        playback_queue_original = []
-                        playback_queue_index = -1
-                        playback_queue_mode = "app_replace"
-                        queue_transition_target_url = None
-                        playback_queue_loop = False
-                        playback_queue_shuffle = False
-                        single_track_loop = False
+                # The committed queue and track context stay valid: MPV still
+                # exposes the exact pre-transition file and a staged queue
+                # candidate was never published.  Nothing to invalidate.
                 return
 
         # The target was staged, the old file disappeared, or the active
         # metadata no longer matches MPV. Stop the physical target first and
         # then invalidate only the active context. last_track_info is
-        # deliberately untouched so the caller can offer a retry.
+        # deliberately untouched so the caller can offer a retry.  The
+        # committed queue state is preserved.
         if _player_is_running():
             try:
                 set_volume = getattr(player_instance, "set_volume", None)
@@ -1305,24 +1286,23 @@ class FxrouteTransitionRuntime(TransitionRuntime):
                     "Failed to stop staged MPV target during transition abort",
                     exc_info=True,
                 )
-
-        try:
-            _clear_playback_queue()
-        except Exception:
-            # A broken native playlist command must not leave the application
-            # queue pointing at a target which is no longer active.
-            logger.warning(
-                "Failed to trim native queue during transition abort",
-                exc_info=True,
-            )
-            playback_queue = []
-            playback_queue_original = []
-            playback_queue_index = -1
-            playback_queue_mode = "app_replace"
-            queue_transition_target_url = None
-            playback_queue_loop = False
-            playback_queue_shuffle = False
-            single_track_loop = False
+            if playback_queue_mode == "native_mpv":
+                try:
+                    # MPV may hold a partially staged replacement playlist
+                    # (or the committed playlist was already replaced by the
+                    # staging).  Trim the transport to the current file.
+                    _reduce_native_mpv_playlist_to_current()
+                    _reset_mpv_loop_state()
+                except Exception:
+                    logger.warning(
+                        "Failed to trim native playlist during transition abort",
+                        exc_info=True,
+                    )
+                # After a staged failure the retained committed queue can no
+                # longer be trusted as a complete MPV-native playlist, even
+                # when the transport cleanup itself failed.  Normalize it to
+                # app-owned navigation so the queue data stays usable.
+                playback_queue_mode = "app_replace"
 
         current_track_info = None
         current_footer_owner = "local"
@@ -2902,36 +2882,205 @@ def _commit_coordinated_track(track_info: Mapping[str, Any], *, source: str) -> 
     _mark_player_state_authoritative(player_instance.state if player_instance else {})
 
 # WebSocket connection manager
-class ConnectionManager:
-    def __init__(self):
-        self.active_connections: List[WebSocket] = []
+class _ClientSender:
+    """Bounded per-client delivery queue with exactly one send worker.
 
-    async def connect(self, websocket: WebSocket):
+    One worker per client serializes all sends (FIFO by construction) and
+    every send is bounded by a timeout.  When the bounded queue is full the
+    caller treats the client as too slow; the worker failing (timeout, send
+    error, vanished socket) marks the client for removal.
+    """
+
+    def __init__(
+        self,
+        websocket: WebSocket,
+        *,
+        timeout: float,
+        max_pending: int,
+    ) -> None:
+        self.websocket = websocket
+        self.timeout = timeout
+        self.queue: "asyncio.Queue[str]" = asyncio.Queue(maxsize=max_pending)
+        self.ready = False
+        self.failed = False
+        self._task: "asyncio.Task | None" = None
+
+    def enqueue(self, data: str) -> bool:
+        """Queue one payload; False when the bounded queue is full."""
+        try:
+            self.queue.put_nowait(data)
+        except asyncio.QueueFull:
+            return False
+        return True
+
+    async def close(self) -> None:
+        """Cancel the worker and drain any queued payloads."""
+        if self._task is not None and not self._task.done():
+            self._task.cancel()
+            try:
+                await self._task
+            except (asyncio.CancelledError, Exception):
+                pass
+        while True:
+            try:
+                self.queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            self.queue.task_done()
+
+    async def run(self) -> None:
+        while True:
+            data = await self.queue.get()
+            try:
+                if self.websocket.client_state.name != "CONNECTED":
+                    raise RuntimeError("websocket is no longer CONNECTED")
+                await asyncio.wait_for(
+                    self.websocket.send_text(data), timeout=self.timeout
+                )
+            except asyncio.TimeoutError:
+                self.failed = True
+                logger.debug(
+                    f"WebSocket send timed out after {self.timeout:.1f}s"
+                )
+                return
+            except Exception as exc:
+                self.failed = True
+                logger.debug(f"WebSocket send failed: {exc}")
+                return
+            finally:
+                self.queue.task_done()
+
+
+class ConnectionManager:
+    """Fan-out broadcasts without letting one slow client stall the others.
+
+    Every connected client owns one bounded delivery queue and exactly one
+    send worker; all sends for a socket (broadcasts, init, pong) go through
+    that worker, so per-client ordering is FIFO and concurrent ``send_text``
+    calls are impossible.  A stuck client only delays its own queue; a
+    timeout or send error removes the client, and a full queue is treated as
+    an overloaded client that is disconnected instead of silently dropping
+    events.
+    """
+
+    def __init__(self, send_timeout: float = 5.0, max_pending_sends: int = 8):
+        self.active_connections: List[WebSocket] = []
+        self._list_lock = asyncio.Lock()
+        self._senders: dict[WebSocket, _ClientSender] = {}
+        self._worker_tasks: set[asyncio.Task] = set()
+        self._send_timeout = max(0.05, send_timeout)
+        self._max_pending_sends = max(1, max_pending_sends)
+
+    async def connect(self, websocket: WebSocket) -> None:
         await websocket.accept()
-        self.active_connections.append(websocket)
+        sender = _ClientSender(
+            websocket,
+            timeout=self._send_timeout,
+            max_pending=self._max_pending_sends,
+        )
+        async with self._list_lock:
+            self.active_connections.append(websocket)
+            self._senders[websocket] = sender
+        self._spawn_worker(websocket, sender)
         logger.info(f"WebSocket connected: {len(self.active_connections)} active")
 
-    def disconnect(self, websocket: WebSocket) -> bool:
-        if websocket not in self.active_connections:
+    async def _unregister(self, websocket: WebSocket) -> _ClientSender | None:
+        async with self._list_lock:
+            sender = self._senders.pop(websocket, None)
+            if sender is not None:
+                try:
+                    self.active_connections.remove(websocket)
+                except ValueError:
+                    pass
+        return sender
+
+    async def disconnect(self, websocket: WebSocket) -> bool:
+        """Remove a client from the manager (idempotent).
+
+        The WebSocket transport close runs in an owned, bounded background
+        task so a slow or stuck close can never block producers or the
+        broadcast hotpath.  Normal peer disconnects are unaffected: the close
+        on an already-closed transport is a no-op.
+        """
+        sender = await self._unregister(websocket)
+        if sender is None:
             return False
-        self.active_connections.remove(websocket)
+        await sender.close()
+        self._schedule_transport_close(websocket)
         logger.info(f"WebSocket disconnected: {len(self.active_connections)} active")
         return True
 
-    async def broadcast(self, message: dict):
-        data = json.dumps(message)
-        dead = []
-        for connection in list(self.active_connections):
+    def _schedule_transport_close(self, websocket: WebSocket) -> None:
+        """Close the transport in a bounded owned task, never awaited inline."""
+
+        async def close_transport() -> None:
             try:
-                if connection.client_state.name != "CONNECTED":
-                    dead.append(connection)
-                    continue
-                await connection.send_text(data)
-            except Exception as e:
-                logger.debug(f"WebSocket send failed: {e}")
-                dead.append(connection)
-        for conn in set(dead):
-            self.disconnect(conn)
+                await asyncio.wait_for(
+                    websocket.close(), timeout=self._send_timeout
+                )
+            except asyncio.TimeoutError:
+                logger.debug(
+                    f"WebSocket close timed out after {self._send_timeout:.1f}s"
+                )
+            except Exception as exc:
+                logger.debug(f"WebSocket close failed: {exc}")
+
+        task = asyncio.create_task(close_transport(), name="ws-client-close")
+        self._worker_tasks.add(task)
+        task.add_done_callback(self._worker_tasks.discard)
+
+    async def send_to_client(self, websocket: WebSocket, data: str) -> bool:
+        """Queue one payload for a client's send worker.
+
+        Returns False when the client is gone, its worker already failed, or
+        its bounded queue is full; the full-queue case disconnects the client
+        as too slow.
+        """
+        sender = self._senders.get(websocket)
+        if sender is None or sender.failed:
+            return False
+        if not sender.enqueue(data):
+            await self.disconnect(websocket)
+            return False
+        return True
+
+    def mark_ready(self, websocket: WebSocket) -> bool:
+        """Unlock normal broadcasts for a client whose init is queued first."""
+        sender = self._senders.get(websocket)
+        if sender is None:
+            return False
+        sender.ready = True
+        return True
+
+    def _spawn_worker(self, websocket: WebSocket, sender: _ClientSender) -> None:
+        task = asyncio.create_task(sender.run(), name="ws-client-sender")
+        sender._task = task
+        self._worker_tasks.add(task)
+
+        def finished(_task: asyncio.Task) -> None:
+            self._worker_tasks.discard(_task)
+            if _task.cancelled() or not sender.failed:
+                return
+            cleanup = asyncio.create_task(
+                self.disconnect(websocket), name="ws-client-failure-cleanup"
+            )
+            self._worker_tasks.add(cleanup)
+            cleanup.add_done_callback(self._worker_tasks.discard)
+
+        task.add_done_callback(finished)
+
+    async def broadcast(self, message: dict) -> None:
+        data = json.dumps(message)
+        async with self._list_lock:
+            connections = list(self.active_connections)
+        for connection in connections:
+            if connection.client_state.name != "CONNECTED":
+                await self.disconnect(connection)
+                continue
+            sender = self._senders.get(connection)
+            if sender is None or not sender.ready:
+                continue
+            await self.send_to_client(connection, data)
 
 manager = ConnectionManager()
 
@@ -4873,17 +5022,80 @@ def _can_use_native_local_queue(tracks: list[dict]) -> bool:
     return len(set(rates)) == 1
 
 
-def _native_queue_request_fields() -> dict[str, Any]:
-    """Snapshot native-queue metadata for a Coordinator request."""
-    if playback_queue_mode != "native_mpv" or not _can_use_native_local_queue(playback_queue):
+@dataclass
+class _QueueCandidate:
+    """Prepared queue state that is not yet committed to the globals.
+
+    ``/api/play`` builds one of these, hands the immutable snapshot to the
+    Coordinator, and publishes it only after the playback transition
+    committed.  The committed globals stay untouched until then.
+    """
+
+    queue: list
+    original: list
+    index: int
+    mode: str
+    loop: bool
+    shuffle: bool
+    single_track_loop: bool
+    track: dict
+
+
+def _cleared_queue_candidate(track: dict | None = None) -> _QueueCandidate:
+    """Candidate for a play request that intentionally replaces any queue."""
+    return _QueueCandidate(
+        queue=[],
+        original=[],
+        index=-1,
+        mode="app_replace",
+        loop=False,
+        shuffle=False,
+        single_track_loop=False,
+        track=dict(track) if track else {},
+    )
+
+
+def _commit_queue_state(candidate: _QueueCandidate) -> None:
+    """Publish a prepared queue candidate to the committed globals."""
+    global playback_queue, playback_queue_original, playback_queue_index
+    global playback_queue_mode, queue_transition_target_url
+    global playback_queue_loop, playback_queue_shuffle, single_track_loop
+    playback_queue = [dict(item) for item in candidate.queue]
+    playback_queue_original = [dict(item) for item in candidate.original]
+    playback_queue_index = candidate.index
+    playback_queue_mode = candidate.mode
+    queue_transition_target_url = None
+    playback_queue_loop = candidate.loop
+    playback_queue_shuffle = candidate.shuffle
+    single_track_loop = candidate.single_track_loop
+
+
+def _native_queue_request_fields(queue_state: _QueueCandidate | None = None) -> dict[str, Any]:
+    """Snapshot native-queue metadata for a Coordinator request.
+
+    Reads the committed globals by default; callers staging a not-yet-
+    committed queue state pass that candidate instead.
+    """
+    if queue_state is None:
+        mode = playback_queue_mode
+        queue = playback_queue
+        index = playback_queue_index
+        loop = playback_queue_loop
+    else:
+        mode = queue_state.mode
+        queue = queue_state.queue
+        index = queue_state.index
+        loop = queue_state.loop
+    if mode != "native_mpv" or not _can_use_native_local_queue(queue):
         return {}
-    start_index = playback_queue_index if playback_queue_index >= 0 else 0
+    start_index = index if index >= 0 else 0
     return {
-        "native_queue": tuple(dict(item) for item in playback_queue),
+        "native_queue": tuple(dict(item) for item in queue),
         "native_queue_index": start_index,
-        "native_queue_loop": bool(playback_queue_loop),
-        # Queue order is already concrete in playback_queue.  Keep the field
-        # explicit for request compatibility, but never ask MPV to reshuffle it.
+        "native_queue_loop": bool(loop),
+        # Queue order is already concrete in the prepared state.  Keep the
+        # field explicit for request compatibility, but never ask MPV to
+        # reshuffle it.
         "native_queue_shuffle": False,
     }
 
@@ -4907,15 +5119,13 @@ def _shuffled_around_current(tracks: list[dict], current_track: dict | None) -> 
     return [current] + remaining
 
 
-def _prepare_local_queue(track_id: str, queue_track_ids: Optional[list[str]] = None, shuffle: bool = False, loop: bool = False, *, reshuffle: bool = True):
-    global playback_queue, playback_queue_original, playback_queue_index, playback_queue_mode, playback_queue_loop, playback_queue_shuffle, single_track_loop
-    playback_queue = []
-    playback_queue_original = []
-    playback_queue_index = -1
-    playback_queue_mode = "app_replace"
-    playback_queue_loop = False
-    playback_queue_shuffle = False
-    single_track_loop = False
+def _prepare_local_queue(track_id: str, queue_track_ids: Optional[list[str]] = None, shuffle: bool = False, loop: bool = False, *, reshuffle: bool = True) -> _QueueCandidate:
+    """Build the requested queue as an uncommitted candidate.
+
+    Metadata-only preparation: the committed queue globals are untouched
+    until ``_commit_queue_state`` publishes the candidate after a successful
+    playback transition.
+    """
     tracks = library_scanner.get_tracks()
     tracks_by_id = {track.id: track for track in tracks}
 
@@ -4937,42 +5147,64 @@ def _prepare_local_queue(track_id: str, queue_track_ids: Optional[list[str]] = N
         current_track = next((track for track in ordered_tracks if track.get("id") == track_id), ordered_tracks[0])
         ordered_tracks = _shuffled_around_current(ordered_tracks, current_track)
 
-    playback_queue = ordered_tracks if len(ordered_tracks) > 1 else []
-    playback_queue_original = original_tracks if len(original_tracks) > 1 else []
+    queue = ordered_tracks if len(ordered_tracks) > 1 else []
+    original = original_tracks if len(original_tracks) > 1 else []
     # A homogeneous local queue is safe to hand to MPV only after the
     # Coordinator has committed the common rate/DSP/graph/gate state.  The
     # request carries the immutable queue snapshot; the mode becomes visible
     # as native only after that transition commits.
-    playback_queue_mode = "native_mpv" if _can_use_native_local_queue(ordered_tracks) else "app_replace"
-    playback_queue_loop = bool(loop and len(ordered_tracks) > 1)
-    playback_queue_shuffle = bool(shuffle and len(ordered_tracks) > 1)
-    single_track_loop = bool(loop and len(ordered_tracks) == 1)
-    playback_queue_index = -1
+    mode = "native_mpv" if _can_use_native_local_queue(ordered_tracks) else "app_replace"
+    if queue:
+        track_index = next(
+            (index for index, item in enumerate(queue) if item.get("id") == track_id),
+            0,
+        )
+        track = dict(queue[track_index])
+    else:
+        track_index = -1
+        track = dict(ordered_tracks[0])
 
-    if playback_queue:
-        for index, item in enumerate(playback_queue):
-            if item.get("id") == track_id:
-                return _sync_track_context_from_queue_index(index)
-        return _sync_track_context_from_queue_index(0)
+    return _QueueCandidate(
+        queue=queue,
+        original=original,
+        index=track_index,
+        mode=mode,
+        loop=bool(loop and len(ordered_tracks) > 1),
+        shuffle=bool(shuffle and len(ordered_tracks) > 1),
+        single_track_loop=bool(loop and len(ordered_tracks) == 1),
+        track=track,
+    )
 
-    return ordered_tracks[0]
 
 
 
+async def _load_queue_track(index: int, *, transition_reason: str = "queue navigation", queue_candidate: _QueueCandidate | None = None) -> bool:
+    """Navigate to ``index`` of the committed queue.
 
-async def _load_queue_track(index: int, *, transition_reason: str = "queue navigation") -> bool:
+    ``queue_candidate`` allows queue navigation that first replaces the
+    committed queue (manual shuffle wrap): the prepared queue is published
+    only after the transition committed, and failure keeps the old
+    order/index/track context intact.
+    """
     global playback_queue_index
-    if len(playback_queue) <= 1 or index < 0 or index >= len(playback_queue):
-        return False
-    next_track = dict(playback_queue[index])
+    if queue_candidate is not None:
+        if index < 0 or index >= len(queue_candidate.queue):
+            return False
+        next_track = dict(queue_candidate.queue[index])
+        native_fields = {}
+        native_jump = False
+    else:
+        if len(playback_queue) <= 1 or index < 0 or index >= len(playback_queue):
+            return False
+        next_track = dict(playback_queue[index])
+        native_fields = _native_queue_request_fields()
+        native_jump = playback_queue_mode == "native_mpv"
     target_url = str(next_track.get("url") or "")
     if not target_url:
         _clear_playback_queue()
         return False
     source = str(next_track.get("source") or "local")
     target_rate = _coordinator_target_rate(source, next_track)
-    native_fields = _native_queue_request_fields()
-    native_jump = playback_queue_mode == "native_mpv"
     request = TransitionRequest(
         operation="queue",
         source=source,
@@ -4990,11 +5222,18 @@ async def _load_queue_track(index: int, *, transition_reason: str = "queue navig
         result = await _run_coordinated_transition(request)
     except PlaybackTransitionFailure as exc:
         raise _transition_error_http(exc) from exc
+    if not getattr(result, "committed", False):
+        raise HTTPException(status_code=500, detail="Playback transition was not committed")
+    rate_updated = False
     if _sample_rate_policy_is_auto() and source in {"local", "radio"} and isinstance(result.target_rate, int) and result.target_rate > 0:
         next_track["sample_rate_hz"] = result.target_rate
-        if 0 <= index < len(playback_queue):
-            playback_queue[index]["sample_rate_hz"] = result.target_rate
-    playback_queue_index = index
+        rate_updated = True
+    if queue_candidate is not None:
+        _commit_queue_state(queue_candidate)
+    if rate_updated and 0 <= index < len(playback_queue):
+        playback_queue[index]["sample_rate_hz"] = result.target_rate
+    if queue_candidate is None:
+        playback_queue_index = index
     _commit_coordinated_track(next_track, source=source)
     return True
 
@@ -5016,9 +5255,26 @@ async def _advance_playback_queue(*, transition_reason: str = "queue advance") -
                 if playback_queue_shuffle:
                     current_index = playback_queue_index if 0 <= playback_queue_index < len(playback_queue) else 0
                     current_track = dict(playback_queue[current_index])
-                    playback_queue[:] = _shuffled_around_current(playback_queue, current_track)
-                    playback_queue_index = 0
-                    next_index = 1 if len(playback_queue) > 1 else 0
+                    # Prepare the reshuffled wrap without touching the
+                    # committed queue: it is published only after the
+                    # navigation transition committed.
+                    shuffled = _shuffled_around_current(playback_queue, current_track)
+                    next_index = 1 if len(shuffled) > 1 else 0
+                    candidate = _QueueCandidate(
+                        queue=shuffled,
+                        original=[dict(track) for track in playback_queue_original],
+                        index=next_index,
+                        mode="app_replace",
+                        loop=playback_queue_loop,
+                        shuffle=True,
+                        single_track_loop=False,
+                        track=dict(shuffled[next_index]),
+                    )
+                    return await _load_queue_track(
+                        next_index,
+                        transition_reason=transition_reason,
+                        queue_candidate=candidate,
+                    )
                 else:
                     next_index = 0
             else:
@@ -5105,6 +5361,8 @@ async def _set_queue_shuffle(enabled: bool) -> bool:
             ))
         except PlaybackTransitionFailure:
             raise
+        if not getattr(result, "committed", False):
+            raise HTTPException(status_code=500, detail="Playback transition was not committed")
 
         committed_rate = getattr(result, "target_rate", None)
         if isinstance(committed_rate, int) and committed_rate > 0:
@@ -5160,13 +5418,15 @@ def _sync_active_local_queue_selection(queue_track_ids: Optional[list[str]] = No
         _reduce_native_mpv_playlist_to_current()
         _reset_mpv_loop_state()
 
-    track_info = _prepare_local_queue(
+    candidate = _prepare_local_queue(
         current_track["id"],
         queue_track_ids,
         shuffle=shuffle,
         loop=loop,
         reshuffle=False,
     )
+    _commit_queue_state(candidate)
+    track_info = candidate.track
     current_track_info = track_info
     last_track_info = track_info
 
@@ -6898,7 +7158,6 @@ async def site_webmanifest_root():
     return FileResponse(STATIC_DIR / "site.webmanifest", media_type="application/manifest+json")
 @app.post("/api/play")
 async def play_track(req: PlayRequest):
-    global current_track_info, last_track_info, last_radio_track_info, playback_queue_mode
     if not player_instance or not player_instance._running:
         raise HTTPException(status_code=503, detail="Player not available")
     if not _can_send_play_command():
@@ -6914,10 +7173,8 @@ async def play_track(req: PlayRequest):
     if source not in {"local", "radio"}:
         raise HTTPException(status_code=400, detail=f"Unsupported playback source: {source}")
 
-    previous_track = dict(current_track_info or {})
     previous_state = dict(player_instance.state)
     if source == "radio":
-        _clear_playback_queue()
         track_info = None
         for station in get_stations():
             if station.id == req.track_id:
@@ -6932,30 +7189,24 @@ async def play_track(req: PlayRequest):
                 break
         if not track_info:
             raise HTTPException(status_code=404, detail="Radio station not found")
+        queue_candidate = _cleared_queue_candidate(track_info)
     else:
-        saved_context = current_track_info
-        saved_last_context = last_track_info
-        try:
-            active_queue_ids = [item.get("id") for item in playback_queue]
-            _clear_playback_queue()
-            preserve_queue_order = bool(req.queue_track_ids) and list(req.queue_track_ids) == active_queue_ids
-            track_info = _prepare_local_queue(
-                req.track_id,
-                req.queue_track_ids,
-                shuffle=req.shuffle,
-                loop=req.loop,
-                reshuffle=not preserve_queue_order,
-            )
-        finally:
-            # Queue preparation is metadata-only.  The active track context is
-            # committed only after the coordinator's readback gate succeeds.
-            current_track_info = saved_context
-            last_track_info = saved_last_context
+        active_queue_ids = [item.get("id") for item in playback_queue]
+        preserve_queue_order = bool(req.queue_track_ids) and list(req.queue_track_ids) == active_queue_ids
+        queue_candidate = _prepare_local_queue(
+            req.track_id,
+            req.queue_track_ids,
+            shuffle=req.shuffle,
+            loop=req.loop,
+            reshuffle=not preserve_queue_order,
+        )
+        track_info = queue_candidate.track
     if not track_info or not track_info.get("url"):
         raise HTTPException(status_code=404, detail="Track not found")
 
     target_url = str(track_info.get("url") or "")
-    native_queue_fields = _native_queue_request_fields() if source == "local" else {}
+    native_queue_fields = _native_queue_request_fields(queue_candidate) if source == "local" else {}
+    native_trim_required = playback_queue_mode == "native_mpv" and queue_candidate.mode != "native_mpv"
     same_target = previous_state.get("current_file") == target_url and not previous_state.get("ended")
     target_rate = _coordinator_target_rate(source, track_info)
     rate_change = _coordinator_rate_change(target_rate)
@@ -6977,15 +7228,35 @@ async def play_track(req: PlayRequest):
     try:
         result = await _run_coordinated_transition(request)
     except PlaybackTransitionFailure as exc:
-        if native_queue_fields:
-            playback_queue_mode = "app_replace"
+        # The committed queue state was never touched: the candidate is only
+        # published after a successful commit below.  MPV's native playlist
+        # also stays untouched on this path, so the committed native queue
+        # remains fully navigable.
         raise _transition_error_http(exc) from exc
+    if not getattr(result, "committed", False):
+        # An uncommitted transition outcome is a failure and must not replace
+        # the committed queue state either.
+        raise HTTPException(status_code=500, detail="Playback transition was not committed")
+    if native_trim_required:
+        # The committed queue lived in MPV's native playlist.  The new target
+        # is an app-side source (single track or mixed-rate): trim MPV's
+        # playlist to the current file only after the transition committed,
+        # so a non-reload transition cannot advance through stale
+        # committed-queue entries and a failed play leaves the native
+        # transport queue intact.
+        try:
+            _reduce_native_mpv_playlist_to_current()
+            _reset_mpv_loop_state()
+        except Exception:
+            logger.warning(
+                "Failed to trim native playlist after committed play transition",
+                exc_info=True,
+            )
     if source in {"local", "radio"} and isinstance(result.target_rate, int) and result.target_rate > 0:
         track_info["sample_rate_hz"] = result.target_rate
 
+    _commit_queue_state(queue_candidate)
     _commit_coordinated_track(track_info, source=source)
-    if native_queue_fields:
-        playback_queue_mode = "native_mpv"
     return {
         "status": "playing",
         "url": target_url,
@@ -8721,7 +8992,10 @@ async def api_spotify_volume(request: Request):
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
-    await websocket.send_text(json.dumps({"type": "init", "data": {"player": {"state": build_playback_payload()}, "spotify": await get_spotify_ui_state()}}))
+    # Init is queued before the client is marked ready, so it is always the
+    # first payload delivered by the per-client send worker.
+    await manager.send_to_client(websocket, json.dumps({"type": "init", "data": {"player": {"state": build_playback_payload()}, "spotify": await get_spotify_ui_state()}}))
+    manager.mark_ready(websocket)
     try:
         while True:
             message = await websocket.receive()
@@ -8729,13 +9003,13 @@ async def websocket_endpoint(websocket: WebSocket):
                 break
             text = message.get("text")
             if text is not None:
-                await websocket.send_text(json.dumps({"type": "pong"}))
+                await manager.send_to_client(websocket, json.dumps({"type": "pong"}))
     except WebSocketDisconnect:
         pass
     except Exception as e:
         logger.warning(f"WebSocket error: {e}")
     finally:
-        manager.disconnect(websocket)
+        await manager.disconnect(websocket)
 
 @app.exception_handler(MPVNotInstalledError)
 async def mpv_not_installed_handler(request: Request, exc: MPVNotInstalledError):

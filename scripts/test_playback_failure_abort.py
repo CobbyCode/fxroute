@@ -6,6 +6,7 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -62,17 +63,28 @@ def local_request(url: str) -> TransitionRequest:
     )
 
 
+def _track_entry(track_id: str) -> dict:
+    return {
+        "id": track_id,
+        "source": "local",
+        "url": f"/music/{track_id}.flac",
+        "title": track_id,
+        "sample_rate_hz": 48000,
+    }
+
+
 class FailedTransitionAbortTests(unittest.IsolatedAsyncioTestCase):
-    async def test_staged_target_is_stopped_and_active_context_invalidated(self):
+    async def test_staged_target_is_stopped_but_committed_queue_preserved(self):
         player = PlayerDouble("/music/new.flac", playing=True)
         current = {"source": "local", "url": "/music/new.flac", "id": "new"}
         retry = dict(current)
+        queue = [dict(current), {"source": "local", "url": "/music/next.flac", "id": "next"}]
         with patch.object(main, "player_instance", player), patch.object(
             main, "current_track_info", current
         ), patch.object(main, "last_track_info", retry), patch.object(
             main, "current_footer_owner", "local"
-        ), patch.object(main, "playback_queue", [dict(current)]), patch.object(
-            main, "playback_queue_original", [dict(current)]
+        ), patch.object(main, "playback_queue", [dict(track) for track in queue]), patch.object(
+            main, "playback_queue_original", [dict(track) for track in queue]
         ), patch.object(main, "playback_queue_index", 0), patch.object(
             main, "playback_queue_mode", "app_replace"
         ), patch.object(main, "_mark_player_state_authoritative"):
@@ -85,15 +97,134 @@ class FailedTransitionAbortTests(unittest.IsolatedAsyncioTestCase):
                 target_staged=True,
             )
 
+            # A failed transition must never discard the previously working
+            # committed queue; only the active track context is invalidated.
             self.assertIsNone(main.current_track_info)
             self.assertEqual(main.last_track_info, retry)
-            self.assertEqual(main.playback_queue, [])
+            self.assertEqual(main.playback_queue, queue)
             self.assertEqual(main.playback_queue_mode, "app_replace")
 
         player.stop_playback.assert_called_once_with()
         self.assertIsNone(player.state["current_file"])
         self.assertFalse(player.state["playing"])
         self.assertEqual(player.state["volume"], 0)
+
+    async def test_staged_native_failure_normalizes_mode_but_keeps_queue(self):
+        player = PlayerDouble("/music/new.flac", playing=True)
+        current = {"source": "local", "url": "/music/new.flac", "id": "new"}
+        queue = [_track_entry("a"), _track_entry("b"), _track_entry("c")]
+        with patch.object(main, "player_instance", player), patch.object(
+            main, "current_track_info", dict(queue[1])
+        ), patch.object(main, "last_track_info", dict(queue[1])), patch.object(
+            main, "current_footer_owner", "local"
+        ), patch.object(main, "playback_queue", [dict(track) for track in queue]), patch.object(
+            main, "playback_queue_original", [dict(track) for track in queue]
+        ), patch.object(main, "playback_queue_index", 1), patch.object(
+            main, "playback_queue_mode", "native_mpv"
+        ), patch.object(main, "_reduce_native_mpv_playlist_to_current"), patch.object(
+            main, "_reset_mpv_loop_state"
+        ), patch.object(main, "_mark_player_state_authoritative"):
+            await main.FxrouteTransitionRuntime().abort_failed_transition(
+                local_request("/music/new.flac"),
+                {
+                    "player": {"current_file": "/music/old.flac"},
+                    "current_track": {"source": "local", "url": "/music/old.flac"},
+                },
+                target_staged=True,
+            )
+
+            # The staged failure replaced MPV's playlist, so the retained
+            # committed queue must not keep a false native_mpv ownership
+            # claim; the app-owned mode keeps it navigable via transitions.
+            self.assertEqual(main.playback_queue, queue)
+            self.assertEqual(main.playback_queue_index, 1)
+            self.assertEqual(main.playback_queue_mode, "app_replace")
+            self.assertIsNone(main.current_track_info)
+
+    async def test_staged_native_failure_with_broken_cleanup_still_normalizes_mode(self):
+        player = PlayerDouble("/music/new.flac", playing=True)
+        current = {"source": "local", "url": "/music/new.flac", "id": "new"}
+        queue = [_track_entry("a"), _track_entry("b"), _track_entry("c")]
+        navigation_requests = []
+        with patch.object(main, "player_instance", player), patch.object(
+            main, "current_track_info", dict(queue[1])
+        ), patch.object(main, "last_track_info", dict(queue[1])), patch.object(
+            main, "current_footer_owner", "local"
+        ), patch.object(main, "playback_queue", [dict(track) for track in queue]), patch.object(
+            main, "playback_queue_original", [dict(track) for track in queue]
+        ), patch.object(main, "playback_queue_index", 1), patch.object(
+            main, "playback_queue_mode", "native_mpv"
+        ), patch.object(
+            main, "_reduce_native_mpv_playlist_to_current",
+            side_effect=RuntimeError("IPC communication failed: timed out"),
+        ), patch.object(
+            main, "_reset_mpv_loop_state"
+        ), patch.object(main, "_mark_player_state_authoritative"):
+            await main.FxrouteTransitionRuntime().abort_failed_transition(
+                local_request("/music/new.flac"),
+                {
+                    "player": {"current_file": "/music/old.flac"},
+                    "current_track": {"source": "local", "url": "/music/old.flac"},
+                },
+                target_staged=True,
+            )
+
+            # Cleanup failure must not leave a false native_mpv ownership
+            # claim over an untrusted playlist: the retained queue data and
+            # index stay, the mode is normalized to app-owned navigation.
+            self.assertEqual(main.playback_queue, queue)
+            self.assertEqual(main.playback_queue_index, 1)
+            self.assertEqual(main.playback_queue_mode, "app_replace")
+            self.assertIsNone(main.current_track_info)
+
+            # Subsequent queue navigation must use app-owned coordinator
+            # navigation, never a false MPV-native jump.
+            async def navigate(request):
+                navigation_requests.append(request)
+                return SimpleNamespace(target_rate=48000, committed=True)
+
+            with patch.object(main, "_run_coordinated_transition", navigate), \
+                 patch.object(main, "_sample_rate_policy_is_auto", return_value=False), \
+                 patch.object(main, "_record_local_track_started", lambda *_a, **_k: None):
+                self.assertTrue(await main._load_queue_track(2, transition_reason="queue navigation"))
+            self.assertEqual(len(navigation_requests), 1)
+            request = navigation_requests[0]
+            self.assertIsNone(request.native_queue_jump, "no MPV-native jump may be issued")
+            self.assertTrue(request.reload_source)
+            self.assertEqual(main.playback_queue_index, 2)
+
+    async def test_play_failure_before_staging_keeps_committed_queue(self):
+        player = PlayerDouble("/music/old.flac", playing=True)
+        current = {"source": "local", "url": "/music/old.flac", "id": "old"}
+        queue = [dict(current), {"source": "local", "url": "/music/next.flac", "id": "next"}]
+        with patch.object(main, "player_instance", player), patch.object(
+            main, "current_track_info", current
+        ), patch.object(main, "playback_queue", [dict(track) for track in queue]), patch.object(
+            main, "playback_queue_mode", "app_replace"
+        ), patch.object(main, "_mark_player_state_authoritative"):
+            request = TransitionRequest(
+                operation="play",
+                source="local",
+                target_rate=48_000,
+                target_url="/music/other.flac",
+                target_track={"source": "local", "url": "/music/other.flac"},
+                should_play=True,
+                rate_change=True,
+                reload_source=True,
+            )
+            await main.FxrouteTransitionRuntime().abort_failed_transition(
+                request,
+                {
+                    "player": {"current_file": "/music/old.flac"},
+                    "current_track": dict(current),
+                },
+                target_staged=False,
+            )
+
+            self.assertEqual(main.current_track_info, current)
+            self.assertEqual(main.playback_queue, queue)
+
+        player.stop_playback.assert_not_called()
 
     async def test_unchanged_committed_context_is_kept_for_retry(self):
         player = PlayerDouble("/music/old.flac", playing=True)

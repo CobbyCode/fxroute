@@ -212,17 +212,47 @@ class QueueCallbackOwnershipTests(unittest.IsolatedAsyncioTestCase):
 
     def test_selected_queue_order_is_exact_and_deduplicated(self):
         original_scanner = main.library_scanner
+        names = (
+            "playback_queue", "playback_queue_original", "playback_queue_index",
+            "playback_queue_mode", "playback_queue_loop", "playback_queue_shuffle",
+            "single_track_loop",
+        )
+        originals = {name: getattr(main, name) for name in names}
         try:
             main.library_scanner = SimpleNamespace(
                 get_tracks=lambda: [_FakeTrack("a"), _FakeTrack("b"), _FakeTrack("c")],
             )
-            main._prepare_local_queue("b", ["c", "missing", "a", "c", "b"], shuffle=False)
-            self.assertEqual([item["id"] for item in main.playback_queue], ["c", "a", "b"])
+            main.playback_queue = [{"id": "old"}]
+            main.playback_queue_original = [{"id": "old"}]
+            main.playback_queue_index = 0
+            main.playback_queue_mode = "app_replace"
+            main.playback_queue_loop = False
+            main.playback_queue_shuffle = False
+            main.single_track_loop = False
 
-            main._prepare_local_queue("b", ["c", "a", "b"], shuffle=True, reshuffle=False)
+            candidate = main._prepare_local_queue(
+                "b", ["c", "missing", "a", "c", "b"], shuffle=False
+            )
+            self.assertEqual([item["id"] for item in candidate.queue], ["c", "a", "b"])
+            # Preparation is uncommitted: the active queue globals stay intact.
+            self.assertEqual(main.playback_queue, [{"id": "old"}])
+            self.assertEqual(main.playback_queue_index, 0)
+
+            main._commit_queue_state(candidate)
             self.assertEqual([item["id"] for item in main.playback_queue], ["c", "a", "b"])
+            self.assertEqual(main.playback_queue_index, 2)
+
+            main.playback_queue = [{"id": "old"}]
+            candidate = main._prepare_local_queue(
+                "b", ["c", "a", "b"], shuffle=True, reshuffle=False
+            )
+            self.assertEqual([item["id"] for item in candidate.queue], ["c", "a", "b"])
+            self.assertTrue(candidate.shuffle)
+            self.assertEqual(main.playback_queue, [{"id": "old"}])
         finally:
             main.library_scanner = original_scanner
+            for name, value in originals.items():
+                setattr(main, name, value)
 
 
 class _FakePlayer:
@@ -317,7 +347,7 @@ class ApiPlayQueueOrderTests(unittest.IsolatedAsyncioTestCase):
                 "position": 1.0,
                 "volume": 100,
             })
-            return SimpleNamespace(target_rate=request.target_rate)
+            return SimpleNamespace(target_rate=request.target_rate, committed=True)
 
         return [
             patch.object(main, "_can_send_play_command", return_value=True),
