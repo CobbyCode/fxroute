@@ -916,8 +916,34 @@ async def _unregister_measurement_job_after_completion(
     measurement_store = services.get_store()
     measurement_sr_session = services.get_session()
     logger.info("Measurement session job watcher started: job_id=%s generation=%s", job_id, generation)
-    for _ in range(300):
+    # The watcher is deliberately unbounded in wall-clock time: a registered
+    # running job must never leave the measurement session merely because a
+    # poll window elapsed, since a legitimate L/R repeat can outlive any
+    # fixed window and the session owns the sample-rate/playback guards for
+    # the whole job.  Terminality is guaranteed by the store lifecycle, so
+    # the watcher ends on its own in every real outcome:
+    # - a live worker always terminates the job (the runner terminalizes in
+    #   every path and persists the terminal status);
+    # - a stale/interrupted job without a live worker is promoted to
+    #   "cancelled" by the existing store normalization, which the watcher
+    #   observes through get_job() (resurrected records are promoted inside
+    #   the store lookup itself);
+    # - a session generation change ends the watcher immediately: the session
+    #   was released and possibly restarted, so this watcher must neither
+    #   keep polling nor unregister against the new session;
+    # - the task dies with the event loop on shutdown.  The only remaining
+    #   stop path is an explicit job cancel, which is the correct recovery
+    #   for a wedged worker.
+    while True:
         await asyncio.sleep(0.5)
+        if measurement_sr_session is not None and measurement_sr_session.generation != generation:
+            logger.info(
+                "Measurement session job watcher stopped: job_id=%s session_generation=%s watcher_generation=%s",
+                job_id,
+                measurement_sr_session.generation,
+                generation,
+            )
+            return
         if measurement_store is None:
             break
         try:
