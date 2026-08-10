@@ -21,7 +21,7 @@ import samplerate_orchestration
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, List, Mapping, Optional
+from typing import Any, Callable, List, Mapping, Optional
 from urllib.parse import quote, unquote, urlparse
 from uuid import uuid4
 
@@ -815,7 +815,7 @@ from spotify import (
     loop_cycle as spotify_loop_cycle,
     seek_to as spotify_seek_to,
 )
-from system_volume import SystemVolumeError, get_output_volume, set_output_volume
+from system_volume import SystemVolumeError, get_output_volume, set_output_volume, get_status_volume, start_volume_read_monitor
 
 logger = logging.getLogger(__name__)
 
@@ -859,7 +859,67 @@ peak_monitor_playback_armed = False
 peak_monitor_transition_lock = None
 peak_monitor_context_signature = None
 easyeffects_preset_load_lock = None
+# Serializes threaded EasyEffects mutations (convolver IR upload/create)
+# so concurrent HTTP requests cannot interleave filesystem/preset state
+# changes that used to run serially in the event loop.
+easyeffects_mutation_lock = None
 source_transition_lock = None
+
+
+def _easyeffects_mutation_lock() -> asyncio.Lock:
+    global easyeffects_mutation_lock
+    if easyeffects_mutation_lock is None:
+        easyeffects_mutation_lock = asyncio.Lock()
+    return easyeffects_mutation_lock
+
+
+# Serializes canonical volume writes (/api/volume, /api/spotify/volume) so
+# concurrent requests cannot interleave their set -> verified get -> status
+# cache publish sequences.
+canonical_volume_write_lock = None
+
+
+def _canonical_volume_write_lock() -> asyncio.Lock:
+    global canonical_volume_write_lock
+    if canonical_volume_write_lock is None:
+        canonical_volume_write_lock = asyncio.Lock()
+    return canonical_volume_write_lock
+
+
+async def _drain_worker(func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    """Run a sync worker off the event loop, surviving caller cancellation.
+
+    The caller owns the surrounding critical section (lock).  A cancelled
+    caller must not release that section while the worker thread is still
+    running: threads cannot be cancelled, so this helper waits until the
+    worker actually finished, then re-raises CancelledError.  Worker
+    exceptions are re-raised in the normal path and logged on the
+    cancellation path (the cancellation takes precedence).
+    """
+    worker = asyncio.create_task(asyncio.to_thread(func, *args, **kwargs))
+    cancelled = False
+    while not worker.done():
+        try:
+            await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            cancelled = True
+    if cancelled:
+        try:
+            worker.result()
+        except BaseException:
+            logger.exception("Worker failed while its caller was cancelled")
+        raise asyncio.CancelledError
+    return worker.result()
+
+
+async def _run_locked_worker(lock: asyncio.Lock, func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    """Run a sync worker inside a critical section that survives cancellation.
+
+    The lock is only released after the worker actually finished, even when
+    the caller is cancelled.
+    """
+    async with lock:
+        return await _drain_worker(func, *args, **kwargs)
 playback_transition_coordinator: PlaybackTransitionCoordinator | None = None
 coordinator_last_successful_commit_id: str | None = None
 external_input_loopback_module_id = None
@@ -2270,7 +2330,7 @@ class FxrouteTransitionRuntime(TransitionRuntime):
         if easyeffects_manager is not None and old_preset:
             current_preset = easyeffects_manager.get_active_preset()
             if current_preset != old_preset:
-                easyeffects_manager.load_preset(old_preset, convolver_sample_rate_hz=request.target_rate)
+                await _load_easyeffects_preset(old_preset, convolver_sample_rate_hz=request.target_rate)
         await _sync_subwoofer_runtime(
             old_overview,
             reason="coordinator-output-mode-rollback",
@@ -3286,12 +3346,19 @@ async def _check_and_recover_silent_active(
             return
     except (TypeError, ValueError):
         pass
-    if get_output_volume_safe(100) <= 0:
+    try:
+        live_volume = await asyncio.to_thread(get_output_volume)
+    except Exception as exc:
+        logger.warning(
+            "Failed to read live output volume for silent-active check: %s", exc
+        )
+        live_volume = 100
+    if live_volume <= 0:
         return
 
-    overview = get_audio_output_overview()
+    overview = await asyncio.to_thread(get_audio_output_overview)
     output_mode = overview.get("output_mode") or {}
-    links_result = _run_debug_command(["pw-link", "-l"], 2.0)
+    links_result = await asyncio.to_thread(_run_debug_command, ["pw-link", "-l"], 2.0)
     links_text = links_result.get("stdout") or ""
     if not _silent_active_source_links_present(source, links_text, output_mode):
         return
@@ -3989,7 +4056,7 @@ async def _coordinator_establish_effects_and_helper(
             )
             current_preset = easyeffects_manager.get_active_preset()
             if compare_target_preset and current_preset != compare_target_preset:
-                easyeffects_manager.load_preset(compare_target_preset, convolver_sample_rate_hz=target_rate)
+                await _load_easyeffects_preset(compare_target_preset, convolver_sample_rate_hz=target_rate)
                 needs_preset = True
                 preset_reloaded = True
                 logger.info(
@@ -4050,7 +4117,7 @@ async def _coordinator_establish_effects_and_helper(
                         # Stereo graph recovery may restart EasyEffects after
                         # the first reconciliation, resurrecting EE's own last
                         # preset and stale filter gain work point.
-                        easyeffects_manager.load_preset(
+                        await _load_easyeffects_preset(
                             compare_target_preset,
                             convolver_sample_rate_hz=target_rate,
                         )
@@ -4784,7 +4851,7 @@ async def _sync_easyeffects_preset_for_playback_samplerate(
         reason,
         detail,
     )
-    easyeffects_manager.load_preset(active_preset, convolver_sample_rate_hz=sample_rate_hz)
+    await _load_easyeffects_preset(active_preset, convolver_sample_rate_hz=sample_rate_hz)
     status = easyeffects_manager.get_status()
     await manager.broadcast({"type": "easyeffects", "data": status})
 
@@ -5131,39 +5198,43 @@ def get_output_volume_safe(default: int = 100) -> int:
                 return easyeffects_manager.loudness_percent_from_db(volume_db)
         except Exception:
             logger.warning("Failed to read Loudness volume, falling back to system volume", exc_info=True)
-    try:
-        return get_output_volume()
-    except Exception as exc:
-        logger.warning("Failed to read output volume, using fallback %s: %s", default, exc)
-        return default
+    return get_status_volume(default)
 
 
-def _set_canonical_output_volume(volume: float | int) -> dict[str, Any]:
+async def _set_canonical_output_volume(volume: float | int) -> dict[str, Any]:
     """Apply the one UI-volume contract for local, radio and Spotify.
 
     Loudness owns the attenuation when enabled, therefore the physical system
     master remains at 100%.  Without Loudness the existing FXRoute system
     volume curve remains authoritative.
+
+    The whole write is serialized against other canonical volume writes so
+    set -> verified get -> cache publish sequences never interleave.  The
+    blocking wpctl operations run off the event loop; EasyEffects manager
+    state stays on the loop (the manager is not thread-safe) and is
+    serialized against other EasyEffects mutations.
     """
-    requested = max(0, min(100, int(round(float(volume)))))
-    extras = easyeffects_manager.load_global_extras() if easyeffects_manager else {}
-    loudness = extras.get("loudness") if isinstance(extras, dict) else {}
-    if isinstance(loudness, dict) and loudness.get("enabled") and easyeffects_manager:
-        volume_db = easyeffects_manager.loudness_db_from_percent(requested)
-        volume_result = easyeffects_manager.set_loudness_volume_db(volume_db)
-        set_output_volume(100)
+    async with _canonical_volume_write_lock():
+        requested = max(0, min(100, int(round(float(volume)))))
+        extras = easyeffects_manager.load_global_extras() if easyeffects_manager else {}
+        loudness = extras.get("loudness") if isinstance(extras, dict) else {}
+        if isinstance(loudness, dict) and loudness.get("enabled") and easyeffects_manager:
+            volume_db = easyeffects_manager.loudness_db_from_percent(requested)
+            async with _easyeffects_mutation_lock():
+                volume_result = easyeffects_manager.set_loudness_volume_db(volume_db)
+            await _drain_worker(set_output_volume, 100)
+            return {
+                "volume": requested,
+                "loudnessVolumeDb": float(
+                    volume_result["extras"]["loudness"]["params"]["volumeDb"]
+                ),
+                "loudness_enabled": True,
+            }
         return {
-            "volume": requested,
-            "loudnessVolumeDb": float(
-                volume_result["extras"]["loudness"]["params"]["volumeDb"]
-            ),
-            "loudness_enabled": True,
+            "volume": await _drain_worker(set_output_volume, requested),
+            "loudnessVolumeDb": None,
+            "loudness_enabled": False,
         }
-    return {
-        "volume": set_output_volume(requested),
-        "loudnessVolumeDb": None,
-        "loudness_enabled": False,
-    }
 
 
 async def get_spotify_ui_state(data: Optional[dict] = None) -> dict:
@@ -6291,7 +6362,11 @@ async def _ensure_stereo_easyeffects_output_graph(audio_overview: dict | None = 
     if not output_key or output_key == "easyeffects_sink":
         return
     try:
-        result = await asyncio.to_thread(easyeffects_manager.ensure_stereo_output_graph, output_key)
+        result = await _run_locked_worker(
+            _easyeffects_mutation_lock(),
+            easyeffects_manager.ensure_stereo_output_graph,
+            output_key,
+        )
         if result.get("recovered"):
             logger.warning(
                 "Recovered Stereo EasyEffects output graph for %s via %s",
@@ -6513,7 +6588,7 @@ async def _spotify_playerctl_watch_loop() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan: startup and shutdown."""
-    global settings, player_instance, library_scanner, library_scan_task, downloader, easyeffects_manager, measurement_store, measurement_sr_session, measurement_watchdog_task, peak_monitor, subwoofer_runtime, subwoofer_runtime_link_watch_task, hardware_controller, peak_monitor_playback_armed, peak_monitor_transition_lock, peak_monitor_context_signature, easyeffects_preset_load_lock, source_transition_lock, playback_transition_coordinator, coordinator_last_successful_commit_id, external_input_loopback_module_id, external_input_loopback_source_name, bluetooth_input_source_name, bluetooth_monitor_task, bluetooth_agent_process, spotify_playerctl_watch_task, spotify_playerctl_detect_task, spotify_state_refresh_task, spotify_state_poll_task, spotify_playerctl_last_trigger_at, current_source_mode, latest_spotify_state, radio_reconnect_task
+    global settings, player_instance, library_scanner, library_scan_task, downloader, easyeffects_manager, measurement_store, measurement_sr_session, measurement_watchdog_task, peak_monitor, subwoofer_runtime, subwoofer_runtime_link_watch_task, hardware_controller, peak_monitor_playback_armed, peak_monitor_transition_lock, peak_monitor_context_signature, easyeffects_preset_load_lock, easyeffects_mutation_lock, canonical_volume_write_lock, source_transition_lock, playback_transition_coordinator, coordinator_last_successful_commit_id, external_input_loopback_module_id, external_input_loopback_source_name, bluetooth_input_source_name, bluetooth_monitor_task, bluetooth_agent_process, spotify_playerctl_watch_task, spotify_playerctl_detect_task, spotify_state_refresh_task, spotify_state_poll_task, spotify_playerctl_last_trigger_at, current_source_mode, latest_spotify_state, radio_reconnect_task
 
     logger.info("Starting FXRoute... build_id=%s", _read_build_id())
     try:
@@ -6543,6 +6618,9 @@ async def lifespan(app: FastAPI):
         easyeffects_manager = EasyEffectsManager()
         if easyeffects_manager.load_global_extras().get("loudness", {}).get("enabled"):
             set_output_volume(100)
+        volume_read_monitor_task = start_volume_read_monitor()
+        lifecycle_background_tasks.add(volume_read_monitor_task)
+        volume_read_monitor_task.add_done_callback(lifecycle_background_tasks.discard)
         logger.info("EasyEffects manager initialized")
 
         measurement_store = MeasurementStore()
@@ -6658,7 +6736,7 @@ async def lifespan(app: FastAPI):
 
 
 async def _shutdown_lifespan_resources() -> None:
-    global settings, player_instance, library_scanner, library_scan_task, downloader, easyeffects_manager, measurement_store, measurement_sr_session, measurement_watchdog_task, peak_monitor, subwoofer_runtime, subwoofer_runtime_link_watch_task, hardware_controller, peak_monitor_transition_lock, peak_monitor_context_signature, easyeffects_preset_load_lock, source_transition_lock, playback_transition_coordinator, external_input_loopback_module_id, external_input_loopback_source_name, bluetooth_input_source_name, bluetooth_monitor_task, bluetooth_agent_process, spotify_playerctl_watch_task, spotify_playerctl_detect_task, spotify_state_refresh_task, spotify_state_poll_task, radio_reconnect_task
+    global settings, player_instance, library_scanner, library_scan_task, downloader, easyeffects_manager, measurement_store, measurement_sr_session, measurement_watchdog_task, peak_monitor, subwoofer_runtime, subwoofer_runtime_link_watch_task, hardware_controller, peak_monitor_transition_lock, peak_monitor_context_signature, easyeffects_preset_load_lock, easyeffects_mutation_lock, canonical_volume_write_lock, source_transition_lock, playback_transition_coordinator, external_input_loopback_module_id, external_input_loopback_source_name, bluetooth_input_source_name, bluetooth_monitor_task, bluetooth_agent_process, spotify_playerctl_watch_task, spotify_playerctl_detect_task, spotify_state_refresh_task, spotify_state_poll_task, radio_reconnect_task
 
     async def cleanup(label: str, operation) -> None:
         nonlocal cleanup_cancelled
@@ -6767,6 +6845,8 @@ async def _shutdown_lifespan_resources() -> None:
     peak_monitor_transition_lock = None
     peak_monitor_context_signature = None
     easyeffects_preset_load_lock = None
+    easyeffects_mutation_lock = None
+    canonical_volume_write_lock = None
     source_transition_lock = None
     playback_transition_coordinator = None
     external_input_loopback_module_id = None
@@ -7044,7 +7124,7 @@ async def set_volume(request: Request):
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON body, expected {\"volume\": <int>}")
     try:
-        volume_result = _set_canonical_output_volume(vol)
+        volume_result = await _set_canonical_output_volume(vol)
     except SystemVolumeError as exc:
         raise HTTPException(status_code=500, detail=f"Failed to set output volume: {exc}")
     ensure_local_source_volume()
@@ -7318,7 +7398,7 @@ async def system_restore():
 
 @app.get("/api/audio/samplerate")
 async def audio_samplerate_status():
-    status = get_samplerate_status()
+    status = await asyncio.to_thread(get_samplerate_status)
     logger.info(
         "audio_samplerate_status entry: footer_owner=%s active_rate=%s sink_state=%s",
         current_footer_owner,
@@ -7393,7 +7473,7 @@ async def hardware_auto_off():
 
 @app.get("/api/audio/outputs")
 async def audio_output_overview():
-    overview = _with_subwoofer_derived_delays(get_audio_output_overview())
+    overview = _with_subwoofer_derived_delays(await asyncio.to_thread(get_audio_output_overview))
     if subwoofer_runtime is not None:
         overview["output_mode"] = {
             **(overview.get("output_mode") or {}),
@@ -7605,6 +7685,23 @@ def _require_easyeffects_manager():
     return easyeffects_manager
 
 
+async def _load_easyeffects_preset(
+    preset_name: str, *, convolver_sample_rate_hz: int | None = None
+) -> None:
+    """Serialize preset loads against threaded EasyEffects mutations.
+
+    load_preset() also synchronizes global extras into the preset and is
+    therefore not read-only: it must never run concurrently with a threaded
+    IR/preset mutation.  Lock order: the mutation lock is always acquired
+    after (never before) any preset-load lock held by the caller.
+    """
+    async with _easyeffects_mutation_lock():
+        manager = _require_easyeffects_manager()
+        manager.load_preset(
+            preset_name, convolver_sample_rate_hz=convolver_sample_rate_hz
+        )
+
+
 def _effects_extras_from_form(
     *,
     limiter_enabled: bool,
@@ -7649,7 +7746,7 @@ async def _finish_easyeffects_preset_mutation(
 ) -> dict:
     ee_manager = _require_easyeffects_manager()
     if load_after_create:
-        ee_manager.load_preset(preset_name)
+        await _load_easyeffects_preset(preset_name)
     status = ee_manager.get_status()
     await manager.broadcast({"type": "easyeffects", "data": status})
     if load_after_create or not refresh_only_when_loaded:
@@ -7684,70 +7781,87 @@ async def save_easyeffects_extras(request: Request):
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON body")
 
-    previous = ee_manager.load_global_extras()
-    parsed = _merge_effects_extras_from_json(previous, body)
-    was_loudness = bool(previous.get("loudness", {}).get("enabled"))
-    enabling_loudness = bool(parsed.get("loudness", {}).get("enabled")) and not was_loudness
-    disabling_loudness = was_loudness and not bool(parsed.get("loudness", {}).get("enabled"))
-    if enabling_loudness:
-        raw_volume = get_output_volume()
-        parsed["loudness"]["params"]["volumeDb"] = ee_manager.loudness_db_from_percent(raw_volume)
-    try:
-        extras = _resolve_effects_extras(parsed)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=400,
-            detail={"code": "invalid_effects_extras", "message": str(exc)},
-        ) from exc
-    if extras == previous:
-        logger.info("Ignored unchanged EasyEffects extras update")
-        return {
-            "status": "ok",
-            "extras": extras,
-            "updated_presets": 0,
-            "skipped_presets": [],
-        }
-    runtime_strength_change = _is_pure_loudness_strength_change(previous, extras)
-    runtime_autogain_loudness_change = _is_runtime_autogain_loudness_change(
-        previous, extras
+    # A Loudness enabled-state transition owns the canonical volume write
+    # lock from the live read through the Loudness mutation and the final
+    # master=100, so a parallel /api/volume or /api/spotify/volume request
+    # can never interleave.  All transferred values are (re)read under the
+    # lock.  Non-Loudness extras updates never take this lock.
+    canonical_transition = any(
+        key in body for key in ("loudness_enabled", "loudnessEnabled")
     )
-    disabling_master_percent = None
-    if disabling_loudness:
-        volume_db = float(extras["loudness"]["params"]["volumeDb"])
-        disabling_master_percent = ee_manager.loudness_percent_from_db(volume_db)
-        # Move the canonical attenuation back to the system master while the
-        # Loudness block is still active and guarded.  Bypassing first leaves
-        # a short 100%-master window and produces a positive transient.
-        set_output_volume(disabling_master_percent)
+    canonical_lock = None
+    if canonical_transition:
+        canonical_lock = _canonical_volume_write_lock()
+        await canonical_lock.acquire()
     try:
-        if runtime_strength_change:
-            result = ee_manager.apply_loudness_strength_runtime(previous, extras)
-        elif runtime_autogain_loudness_change:
-            result = ee_manager.apply_autogain_loudness_runtime(previous, extras)
-        else:
-            result = ee_manager.apply_global_extras_to_all_presets(extras)
-    except Exception:
-        if disabling_master_percent is not None:
-            try:
-                set_output_volume(100)
-            except Exception:
-                logger.exception(
-                    "Failed to restore system master after Loudness disable failure"
-                )
-        raise
-
-    active_preset = ee_manager.get_active_preset()
-    if (
-        not runtime_autogain_loudness_change
-        and active_preset
-        and active_preset not in ee_manager.EXCLUDED_GLOBAL_EXTRAS_PRESETS
-    ):
+        previous = ee_manager.load_global_extras()
+        parsed = _merge_effects_extras_from_json(previous, body)
+        was_loudness = bool(previous.get("loudness", {}).get("enabled"))
+        enabling_loudness = bool(parsed.get("loudness", {}).get("enabled")) and not was_loudness
+        disabling_loudness = was_loudness and not bool(parsed.get("loudness", {}).get("enabled"))
+        if enabling_loudness:
+            raw_volume = await _drain_worker(get_output_volume)
+            parsed["loudness"]["params"]["volumeDb"] = ee_manager.loudness_db_from_percent(raw_volume)
         try:
-            ee_manager.load_preset(active_preset)
-        except Exception as e:
-            logger.warning("Failed to reload active preset after extras update: %s", e)
-    if enabling_loudness:
-        set_output_volume(100)
+            extras = _resolve_effects_extras(parsed)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "invalid_effects_extras", "message": str(exc)},
+            ) from exc
+        if extras == previous:
+            logger.info("Ignored unchanged EasyEffects extras update")
+            return {
+                "status": "ok",
+                "extras": extras,
+                "updated_presets": 0,
+                "skipped_presets": [],
+            }
+        runtime_strength_change = _is_pure_loudness_strength_change(previous, extras)
+        runtime_autogain_loudness_change = _is_runtime_autogain_loudness_change(
+            previous, extras
+        )
+        disabling_master_percent = None
+        if disabling_loudness:
+            volume_db = float(extras["loudness"]["params"]["volumeDb"])
+            disabling_master_percent = ee_manager.loudness_percent_from_db(volume_db)
+            # Move the canonical attenuation back to the system master while the
+            # Loudness block is still active and guarded.  Bypassing first leaves
+            # a short 100%-master window and produces a positive transient.
+            await _drain_worker(set_output_volume, disabling_master_percent)
+        try:
+            async with _easyeffects_mutation_lock():
+                if runtime_strength_change:
+                    result = ee_manager.apply_loudness_strength_runtime(previous, extras)
+                elif runtime_autogain_loudness_change:
+                    result = ee_manager.apply_autogain_loudness_runtime(previous, extras)
+                else:
+                    result = ee_manager.apply_global_extras_to_all_presets(extras)
+        except Exception:
+            if disabling_master_percent is not None:
+                try:
+                    await _drain_worker(set_output_volume, 100)
+                except Exception:
+                    logger.exception(
+                        "Failed to restore system master after Loudness disable failure"
+                    )
+            raise
+
+        active_preset = ee_manager.get_active_preset()
+        if (
+            not runtime_autogain_loudness_change
+            and active_preset
+            and active_preset not in ee_manager.EXCLUDED_GLOBAL_EXTRAS_PRESETS
+        ):
+            try:
+                await _load_easyeffects_preset(active_preset)
+            except Exception as e:
+                logger.warning("Failed to reload active preset after extras update: %s", e)
+        if enabling_loudness:
+            await _drain_worker(set_output_volume, 100)
+    finally:
+        if canonical_lock is not None:
+            canonical_lock.release()
 
     status = ee_manager.get_status()
     await manager.broadcast({"type": "easyeffects", "data": status})
@@ -7857,7 +7971,8 @@ async def combine_easyeffects_presets(request: Request):
         raise HTTPException(status_code=400, detail="presetNames must be an array")
 
     try:
-        created = ee_manager.combine_presets(preset_name, preset_names)
+        async with _easyeffects_mutation_lock():
+            created = ee_manager.combine_presets(preset_name, preset_names)
         status = await _finish_easyeffects_preset_mutation(
             load_after_create=load_after_create,
             preset_name=created["name"],
@@ -7892,7 +8007,7 @@ async def load_easyeffects_preset(request: Request):
 
     try:
         async with easyeffects_preset_load_lock:
-            ee_manager.load_preset(preset_name)
+            await _load_easyeffects_preset(preset_name)
             compare = ee_manager.load_compare_state()
             if compare.get("presetA") == preset_name:
                 compare["activeSide"] = "A"
@@ -7927,7 +8042,12 @@ async def upload_easyeffects_ir(file: UploadFile = File(...)):
             tmp.write(await file.read())
             tmp_path = Path(tmp.name)
 
-        uploaded = ee_manager.upload_ir(tmp_path, file.filename or tmp_path.name)
+        uploaded = await _run_locked_worker(
+            _easyeffects_mutation_lock(),
+            ee_manager.upload_ir,
+            tmp_path,
+            file.filename or tmp_path.name,
+        )
         status = ee_manager.get_status()
         await manager.broadcast({"type": "easyeffects", "data": status})
         schedule_peak_monitor_refresh_after_effects_change("ir-upload")
@@ -7973,7 +8093,8 @@ async def create_convolver_preset(
     )
 
     try:
-        created = ee_manager.create_convolver_preset(preset_name, ir_filename, extras=extras)
+        async with _easyeffects_mutation_lock():
+            created = ee_manager.create_convolver_preset(preset_name, ir_filename, extras=extras)
         status = await _finish_easyeffects_preset_mutation(
             load_after_create=load_after_create,
             preset_name=created["name"],
@@ -7997,7 +8118,8 @@ async def import_easyeffects_preset_json(
 
     try:
         content = (await file.read()).decode("utf-8-sig")
-        created = ee_manager.import_preset_json(file.filename or "preset.json", content)
+        async with _easyeffects_mutation_lock():
+            created = ee_manager.import_preset_json(file.filename or "preset.json", content)
         status = await _finish_easyeffects_preset_mutation(
             load_after_create=load_after_create,
             preset_name=created["name"],
@@ -8051,32 +8173,33 @@ async def import_easyeffects_preset_bundle(
                 raise HTTPException(status_code=400, detail=f"Preset JSON is invalid: {e}") from e
             kernel_names = ee_manager._extract_kernel_names_from_payload(preset_payload if isinstance(preset_payload, dict) else None)
 
-            ee_manager.irs_dir.mkdir(parents=True, exist_ok=True)
-            imported_irs = []
-            ir_members_by_stem = {}
-            for member, rel in safe_members:
-                if rel.suffix.lower() not in {".irs", ".wav"}:
-                    continue
-                clean_ir_name = Path(rel.name).name
-                stem = Path(clean_ir_name).stem
-                if kernel_names and stem not in kernel_names:
-                    continue
-                existing = ir_members_by_stem.get(stem)
-                if existing is None or rel.suffix.lower() == ".irs":
-                    ir_members_by_stem[stem] = (member, clean_ir_name)
+            async with _easyeffects_mutation_lock():
+                ee_manager.irs_dir.mkdir(parents=True, exist_ok=True)
+                imported_irs = []
+                ir_members_by_stem = {}
+                for member, rel in safe_members:
+                    if rel.suffix.lower() not in {".irs", ".wav"}:
+                        continue
+                    clean_ir_name = Path(rel.name).name
+                    stem = Path(clean_ir_name).stem
+                    if kernel_names and stem not in kernel_names:
+                        continue
+                    existing = ir_members_by_stem.get(stem)
+                    if existing is None or rel.suffix.lower() == ".irs":
+                        ir_members_by_stem[stem] = (member, clean_ir_name)
 
-            for _, (member, clean_ir_name) in sorted(ir_members_by_stem.items()):
-                destination = ee_manager.irs_dir / clean_ir_name
-                with archive.open(member) as source, destination.open("wb") as target:
-                    shutil.copyfileobj(source, target)
-                imported_irs.append(destination.name)
+                for _, (member, clean_ir_name) in sorted(ir_members_by_stem.items()):
+                    destination = ee_manager.irs_dir / clean_ir_name
+                    with archive.open(member) as source, destination.open("wb") as target:
+                        shutil.copyfileobj(source, target)
+                    imported_irs.append(destination.name)
 
-            missing_kernels = [name for name in sorted(kernel_names) if not ee_manager._find_ir_paths_for_kernel_name(name)]
-            if missing_kernels:
-                raise HTTPException(status_code=400, detail=f"Preset bundle is missing IR file(s): {', '.join(missing_kernels)}")
+                missing_kernels = [name for name in sorted(kernel_names) if not ee_manager._find_ir_paths_for_kernel_name(name)]
+                if missing_kernels:
+                    raise HTTPException(status_code=400, detail=f"Preset bundle is missing IR file(s): {', '.join(missing_kernels)}")
 
-            preset_filename = preset_rel.name if preset_rel.name.lower() != "preset.json" else (Path(file.filename or "preset.json").stem + ".json")
-            created = ee_manager.import_preset_json(preset_filename, preset_text)
+                preset_filename = preset_rel.name if preset_rel.name.lower() != "preset.json" else (Path(file.filename or "preset.json").stem + ".json")
+                created = ee_manager.import_preset_json(preset_filename, preset_text)
             status = await _finish_easyeffects_preset_mutation(
                 load_after_create=load_after_create,
                 preset_name=created["name"],
@@ -8141,7 +8264,9 @@ async def create_convolver_preset_with_ir(
             tmp.write(await file.read())
             tmp_path = Path(tmp.name)
 
-        created = ee_manager.create_convolver_preset_with_upload(
+        created = await _run_locked_worker(
+            _easyeffects_mutation_lock(),
+            ee_manager.create_convolver_preset_with_upload,
             preset_name,
             tmp_path,
             file.filename or tmp_path.name,
@@ -8191,7 +8316,8 @@ async def create_peq_preset(request: Request):
         raise HTTPException(status_code=400, detail="peq is required")
 
     try:
-        created = ee_manager.create_peq_preset(preset_name, peq_definition, extras=extras)
+        async with _easyeffects_mutation_lock():
+            created = ee_manager.create_peq_preset(preset_name, peq_definition, extras=extras)
         status = await _finish_easyeffects_preset_mutation(
             load_after_create=load_after_create,
             preset_name=created["name"],
@@ -8251,7 +8377,8 @@ async def import_rew_peq_preset(
     )
 
     try:
-        created = ee_manager.create_peq_preset_from_rew_text(preset_name, rew_text, extras=extras)
+        async with _easyeffects_mutation_lock():
+            created = ee_manager.create_peq_preset_from_rew_text(preset_name, rew_text, extras=extras)
         status = await _finish_easyeffects_preset_mutation(
             load_after_create=load_after_create,
             preset_name=created["name"],
@@ -8338,7 +8465,9 @@ async def import_dual_filter_preset(
             right_tmp = await _save_temp(right_file)
             tmp_paths.extend([left_tmp, right_tmp])
 
-            created = ee_manager.create_convolver_preset_with_dual_uploads(
+            created = await _run_locked_worker(
+                _easyeffects_mutation_lock(),
+                ee_manager.create_convolver_preset_with_dual_uploads,
                 preset_name,
                 left_tmp,
                 left_file.filename or left_tmp.name,
@@ -8360,12 +8489,13 @@ async def import_dual_filter_preset(
             if not left_text or not right_text:
                 raise HTTPException(status_code=400, detail="Provide Left and Right REW text, or Left and Right .irs/.wav files")
 
-            created = ee_manager.create_dual_peq_preset_from_rew_texts(
-                preset_name,
-                left_text,
-                right_text,
-                extras=extras,
-            )
+            async with _easyeffects_mutation_lock():
+                created = ee_manager.create_dual_peq_preset_from_rew_texts(
+                    preset_name,
+                    left_text,
+                    right_text,
+                    extras=extras,
+                )
             import_kind = "dual-peq"
 
         created_preset = created["preset"] if import_kind == "dual-convolver" else created
@@ -8402,7 +8532,8 @@ async def delete_easyeffects_preset(request: Request):
         raise HTTPException(status_code=400, detail="preset_name is required")
 
     try:
-        ee_manager.delete_preset(preset_name)
+        async with _easyeffects_mutation_lock():
+            ee_manager.delete_preset(preset_name)
         status = ee_manager.get_status()
         await manager.broadcast({"type": "easyeffects", "data": status})
         schedule_peak_monitor_refresh_after_effects_change("preset-delete")
@@ -8576,7 +8707,7 @@ async def api_spotify_volume(request: Request):
     body = await request.json()
     volume = float(body.get("volume", 100))
     try:
-        volume_result = _set_canonical_output_volume(volume)
+        volume_result = await _set_canonical_output_volume(volume)
     except SystemVolumeError as exc:
         raise HTTPException(status_code=500, detail=f"Failed to set output volume: {exc}")
     ensure_local_source_volume()

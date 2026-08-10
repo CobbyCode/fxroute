@@ -37,6 +37,8 @@ SUBWOOFER_MODES = {OUTPUT_MODE_SUBWOOFER_21, *SUBWOOFER_22_MODES}
 DEFAULT_SAMPLE_RATE = 48_000
 NATIVE_HELPER_PENDING_MESSAGE = "PipeWire-native subwoofer helper binary is not available"
 NATIVE_HELPER_NODE_NAME = "fxroute_21_stage1"
+# Bounded tail of the native helper stderr diagnostics (~64 KiB).
+HELPER_STDERR_TAIL_LIMIT = 64 * 1024
 NATIVE_HELPER_PORTS = ("input_L", "input_R", "output_1", "output_2", "output_3", "output_4")
 EASYEFFECTS_SINK_NAME = "easyeffects_sink"
 PIPEWIRE_LINK_RETRY_ATTEMPTS = 8
@@ -284,6 +286,8 @@ class Subwoofer21Runtime:
         self._peak_control_path: str | None = None
         self._peak_control_dir: str | None = None
         self._peak_client_path: str | None = None
+        self._helper_stderr_drain_task: Optional[asyncio.Task[Any]] = None
+        self._helper_stderr_tail: bytes = b""
 
     def __del__(self) -> None:
         self._close_exact_sub_mute_ack_socket()
@@ -799,6 +803,7 @@ class Subwoofer21Runtime:
         self._exact_sub_mute = False
         self._process = await self._process_launcher(args)
         self._last_started_at = time.time()
+        self._start_helper_stderr_drain()
         logger.info(
             "Starting %s helper: pid=%s command=%s",
             mode_num,
@@ -1102,14 +1107,76 @@ class Subwoofer21Runtime:
         )
 
     async def _read_helper_stderr(self) -> str:
+        """Return the tail of the helper stderr kept by the drain task.
+
+        The continuous drain task owns the stderr pipe; this diagnostic
+        read only consumes the bounded tail buffer so it can never race the
+        drain or block on the pipe.
+        """
+        tail = self._helper_stderr_tail
+        if not tail:
+            return ""
+        return tail.decode("utf-8", "replace")
+
+    def _start_helper_stderr_drain(self) -> None:
+        """Own a continuous stderr drain for the running helper process.
+
+        The native helper writes diagnostics to stderr; without a
+        continuous reader a sufficiently large stderr output can fill the
+        kernel pipe buffer and block the real-time helper.  Only a bounded
+        tail is retained, so the pipe never stalls and RAM stays limited.
+        """
         process = self._process
         stderr = getattr(process, "stderr", None)
         if stderr is None:
-            return ""
+            return
+        self._helper_stderr_tail = b""
+        task = asyncio.create_task(
+            self._drain_helper_stderr(),
+            name=f"subwoofer-helper-stderr-drain:{self._helper_node_name}",
+        )
+        self._helper_stderr_drain_task = task
+        task.add_done_callback(self._helper_stderr_drain_done)
+
+    def _helper_stderr_drain_done(self, task: asyncio.Task[Any]) -> None:
+        if self._helper_stderr_drain_task is task:
+            self._helper_stderr_drain_task = None
+
+    async def _drain_helper_stderr(self) -> None:
+        """Read helper stderr continuously into the bounded tail buffer."""
+        process = self._process
+        stderr = getattr(process, "stderr", None)
+        if stderr is None:
+            return
         try:
-            return await asyncio.wait_for(stderr.read(65536), timeout=0.5)
+            while True:
+                chunk = await stderr.read(4096)
+                if not chunk:
+                    break
+                self._helper_stderr_tail = (
+                    self._helper_stderr_tail + chunk
+                )[-HELPER_STDERR_TAIL_LIMIT:]
+        except asyncio.CancelledError:
+            raise
         except Exception:
-            return ""
+            logger.exception("Failed to drain 2.1 helper stderr")
+
+    async def _stop_helper_stderr_drain(self) -> None:
+        """Cancel and drain the owned helper stderr drain task.
+
+        Safe to call from a cancellation path: the drain task is cancelled
+        synchronously, and a re-entrant CancelledError here does not leave
+        any task behind (the event loop reaps cancelled tasks).
+        """
+        task = self._helper_stderr_drain_task
+        self._helper_stderr_drain_task = None
+        if task is None:
+            return
+        task.cancel()
+        try:
+            await asyncio.gather(task, return_exceptions=True)
+        except asyncio.CancelledError:
+            pass
 
     async def _similar_helper_ports(self) -> list[str]:
         try:
@@ -1189,6 +1256,7 @@ class Subwoofer21Runtime:
                 await process.wait()
             raise
         finally:
+            await self._stop_helper_stderr_drain()
             if self._process is process:
                 self._process = None
             self._close_exact_sub_mute_ack_socket()

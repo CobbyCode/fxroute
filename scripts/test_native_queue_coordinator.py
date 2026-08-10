@@ -48,7 +48,7 @@ class NativeQueueSelectionTests(unittest.TestCase):
 
         with patch.object(main, "easyeffects_manager", LoudnessManager()), \
              patch.object(main, "set_output_volume", return_value=100) as set_master:
-            result = main._set_canonical_output_volume(32)
+            result = asyncio.run(main._set_canonical_output_volume(32))
         self.assertEqual(result["volume"], 32)
         self.assertEqual(result["loudnessVolumeDb"], -32.0)
         set_master.assert_called_once_with(100)

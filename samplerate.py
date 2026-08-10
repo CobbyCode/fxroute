@@ -29,8 +29,24 @@ PIPEWIRE_DEFAULT_RATE_OPTIONS = SAMPLE_RATE_CANDIDATES
 PIPEWIRE_ALLOWED_RATES = SAMPLE_RATE_CANDIDATES
 
 
+# Conservative bound for every pactl/wpctl/pw-cli/pw-metadata/bluetoothctl
+# invocation: a wedged PipeWire/BlueZ daemon must never block a caller
+# indefinitely.  Commands that legitimately need more time can pass an
+# explicit per-call timeout where the need is proven.
+COMMAND_TIMEOUT_SECONDS = 5.0
+
+
 def _run_command(args: list[str]) -> str:
-    result = subprocess.run(args, capture_output=True, text=True, check=False)
+    try:
+        result = subprocess.run(
+            args,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=COMMAND_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"Command timed out: {' '.join(args)}") from exc
     if result.returncode != 0:
         stderr = (result.stderr or "").strip()
         raise RuntimeError(stderr or f"Command failed: {' '.join(args)}")

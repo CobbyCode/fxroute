@@ -53,6 +53,12 @@ class EasyEffectsRuntime:
         }
 
 
+# Conservative bound for WAV -> IRS conversions reachable from async upload
+# endpoints.  Normal IR conversions finish far below this; the bound only
+# protects against wedged or pathological ffmpeg invocations.
+FFMPEG_CONVERSION_TIMEOUT_SECONDS = 60
+
+
 class EasyEffectsManager:
     PURE_PRESET = "Direct"
     PROTECTED_PRESETS = {"Direct", "Neutral"}
@@ -920,7 +926,10 @@ class EasyEffectsManager:
             "pcm_f32le",
             str(destination),
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=FFMPEG_CONVERSION_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(f"IR conversion timed out: {exc}") from exc
         if result.returncode != 0:
             stderr = (result.stderr or result.stdout or "Unknown ffmpeg error").strip()
             raise RuntimeError(f"IR conversion failed: {stderr}")
@@ -977,7 +986,10 @@ class EasyEffectsManager:
             "pcm_f32le",
             str(destination),
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=FFMPEG_CONVERSION_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(f"Dual IR merge timed out: {exc}") from exc
         if result.returncode != 0:
             stderr = (result.stderr or result.stdout or "Unknown ffmpeg error").strip()
             raise RuntimeError(f"Dual IR merge failed: {stderr}")

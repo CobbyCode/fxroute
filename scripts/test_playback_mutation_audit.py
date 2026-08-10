@@ -67,6 +67,14 @@ MUTATION_CALL_NAMES = {
     "ensure_stereo_output_graph",
     "load_preset",
     "set_exact_sub_mute",
+    "_load_easyeffects_preset",
+}
+
+# Mutations delegated through worker wrappers (asyncio.to_thread and the
+# cancellation-safe _run_locked_worker) instead of being called directly.
+DELEGATED_MUTATION_CALL_NAMES = {
+    "_set_hardware_sink_mute",
+    "ensure_stereo_output_graph",
 }
 
 PLAYBACK_ENTRYPOINTS = {
@@ -119,14 +127,18 @@ def _calls() -> list[tuple[str, int, str, str]]:
                 name = node.func.attr
             if name in MUTATION_CALL_NAMES:
                 result.append((file_name, node.lineno, "/".join(stack) or "<module>", name))
+            delegated = None
             if name == "to_thread" and node.args:
                 delegated = node.args[0]
+            elif name == "_run_locked_worker" and len(node.args) >= 2:
+                delegated = node.args[1]
+            if delegated is not None:
                 delegated_name = None
                 if isinstance(delegated, ast.Name):
                     delegated_name = delegated.id
                 elif isinstance(delegated, ast.Attribute):
                     delegated_name = delegated.attr
-                if delegated_name in {"_set_hardware_sink_mute", "ensure_stereo_output_graph"}:
+                if delegated_name in DELEGATED_MUTATION_CALL_NAMES:
                     result.append((file_name, node.lineno, "/".join(stack) or "<module>", delegated_name))
         for child in ast.iter_child_nodes(node):
             walk(child, file_name, stack)
@@ -180,7 +192,7 @@ def _reason(context: str, name: str) -> str | None:
     if leaf in {
         "lifespan", "save_audio_output_selection_route", "save_audio_output_mode_route",
         "_finish_easyeffects_preset_mutation", "save_easyeffects_extras",
-        "load_easyeffects_preset",
+        "load_easyeffects_preset", "_load_easyeffects_preset",
     }:
         return "startup or explicit user configuration workflow"
     if leaf.startswith("sync_peak_monitor_for_"):
