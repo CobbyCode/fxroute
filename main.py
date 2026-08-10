@@ -7308,6 +7308,8 @@ async def pause_playback():
     global player_instance
     if not player_instance or not player_instance._running:
         raise HTTPException(status_code=503, detail="Player not available")
+    if _playback_transition_is_active():
+        raise HTTPException(status_code=409, detail="A playback transition is in progress")
 
     state = player_instance.state
     if not state.get("current_file") or state.get("ended"):
@@ -7329,6 +7331,8 @@ async def toggle_playback():
     global current_track_info, last_track_info, last_radio_track_info
     if not player_instance or not player_instance._running:
         raise HTTPException(status_code=503, detail="Player not available")
+    if _playback_transition_is_active():
+        raise HTTPException(status_code=409, detail="A playback transition is in progress")
     if not _can_send_play_command():
         state = player_instance.state
         return {"status": "paused" if state.get("paused") else "playing", "playback": build_playback_payload(state)}
@@ -7410,6 +7414,8 @@ async def stop_playback():
     global player_instance, current_track_info, last_radio_track_info, radio_reconnect_attempts, radio_reconnect_url, radio_reconnect_active_since
     if not player_instance or not player_instance._running:
         raise HTTPException(status_code=503, detail="Player not available")
+    if _playback_transition_is_active():
+        raise HTTPException(status_code=409, detail="A playback transition is in progress")
     if current_track_info and current_track_info.get("source") == "radio":
         last_radio_track_info = dict(current_track_info)
     _mark_playback_intent_changed()
@@ -7555,6 +7561,8 @@ async def seek_playback(request: Request):
     global player_instance
     if not player_instance or not player_instance._running:
         raise HTTPException(status_code=503, detail="Player not available")
+    if _playback_transition_is_active():
+        raise HTTPException(status_code=409, detail="A playback transition is in progress")
     if not _can_send_play_command():
         state = player_instance.state
         return {"status": "ok", "position": state.get("position", 0), "playback": build_playback_payload(state)}
@@ -7565,6 +7573,10 @@ async def seek_playback(request: Request):
         raise HTTPException(status_code=400, detail="Invalid JSON, expected {\"position\": <float>}")
     if not player_instance.state.get("current_file"):
         raise HTTPException(status_code=409, detail="Nothing loaded to seek")
+    # Re-check after the last await: a transition may have started while the
+    # request body was being read.  Never seek or mark intent mid-transition.
+    if _playback_transition_is_active():
+        raise HTTPException(status_code=409, detail="A playback transition is in progress")
     player_instance.seek(pos)
     _mark_playback_intent_changed()
     return {"status": "ok", "position": pos, "playback": build_playback_payload(player_instance.state)}
