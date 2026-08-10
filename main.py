@@ -6224,13 +6224,44 @@ async def _run_pactl_command(*args: str) -> str:
     return stdout.decode(errors="ignore").strip()
 
 
+_PW_LINK_COMMAND_TIMEOUT_SECONDS = 10
+_PW_LINK_TERMINATE_GRACE_SECONDS = 3
+
+
+async def _stop_pw_link_process(proc) -> None:
+    """Terminate and fully reap a pw-link child (no zombie/pipe left behind).
+
+    Matches the project subprocess-stop convention: terminate first, allow a
+    bounded grace period, then kill and wait for the final exit.
+    """
+    if proc.returncode is not None:
+        return
+    proc.terminate()
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=_PW_LINK_TERMINATE_GRACE_SECONDS)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+
+
 async def _run_pw_link_command(*args: str) -> str:
     proc = await asyncio.create_subprocess_exec(
         "pw-link", *args,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    stdout, stderr = await proc.communicate()
+    try:
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(), timeout=_PW_LINK_COMMAND_TIMEOUT_SECONDS
+        )
+    except asyncio.TimeoutError:
+        # A hanging PipeWire registry must not block a request forever.
+        # Report the timeout as a controlled command failure, exactly like
+        # the nonzero-exit path below.
+        await _stop_pw_link_process(proc)
+        raise RuntimeError(
+            f"pw-link {' '.join(args)} timed out after {_PW_LINK_COMMAND_TIMEOUT_SECONDS}s"
+        )
     if proc.returncode != 0:
         raise RuntimeError(stderr.decode(errors="ignore").strip() or f"pw-link {' '.join(args)} failed")
     return stdout.decode(errors="ignore").strip()
