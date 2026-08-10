@@ -2832,17 +2832,36 @@ async def _measure_auto_sub_combined_candidate(
 
 
 def _finalize_autosub_job(job: dict[str, Any] | None, job_id: str) -> None:
-    """Transition an AutoSub job from cancelling to cancelled and log cleanup."""
+    """Transition an AutoSub job to cancelled and log cleanup.
+
+    Cancellation semantics:
+
+    - The cancel endpoint sets cancel_requested only on non-terminal jobs,
+      so status="completed" together with cancel_requested=True means the
+      cancel request arrived BEFORE the worker committed completion; such a
+      job is finalized as cancelled.
+    - A genuine worker failure is never relabelled cancelled by the
+      finalizer, even when a cancel was requested concurrently.
+    - A job already final as cancelled stays cancelled; a job that
+      completed without a pending cancel request stays completed.
+    """
     if job is None:
         logger.warning("AUTOSUB job=%s worker finished (job missing)", job_id)
         return
-    was_cancelling = str(job.get("status") or "").lower() == "cancelling"
-    was_cancel_requested = bool(job.get("cancel_requested"))
-    if was_cancelling or was_cancel_requested:
+    status = str(job.get("status") or "").lower()
+    cancel_requested = bool(job.get("cancel_requested"))
+    if status in {"failed", "cancelled"}:
+        pass
+    elif status == "cancelling" or cancel_requested:
         job["status"] = "cancelled"
         job["message"] = "Auto Sub Optimize cancelled."
         job["cancel_requested"] = True
-        logger.info("AUTOSUB job=%s worker finished (was cancelling=%s)", job_id, was_cancelling)
+        job["result"] = None
+        job["error"] = None
+        logger.info(
+            "AUTOSUB job=%s worker finished (cancel committed; prior status=%s)",
+            job_id, status,
+        )
     if isinstance(job.get("result"), dict):
         job["result"]["target_curve"] = json.loads(json.dumps(job.get("target_curve"))) if job.get("target_curve") else None
         job["result"]["auto_gain"] = json.loads(json.dumps(job.get("auto_gain")))

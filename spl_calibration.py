@@ -683,18 +683,31 @@ def _start_spl_calibration_noise(operation: _SplCalibrationOperation) -> dict[st
 
         noise_path = Path(tempfile.gettempdir()) / "fxroute-spl-calibration-pink-noise-v2.wav"
         if not noise_path.exists():
-            generated = subprocess.run(
-                [
-                    "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-                    "-f", "lavfi", "-i", "anoisesrc=color=pink:duration=60:sample_rate=48000",
-                    "-af", "loudnorm=I=-23:TP=-3:LRA=7,afade=t=in:st=0:d=1,afade=t=out:st=59.5:d=0.5",
-                    "-ac", "2", "-ar", "48000", str(noise_path),
-                ],
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
+            try:
+                generated = subprocess.run(
+                    [
+                        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                        "-f", "lavfi", "-i", "anoisesrc=color=pink:duration=60:sample_rate=48000",
+                        "-af", "loudnorm=I=-23:TP=-3:LRA=7,afade=t=in:st=0:d=1,afade=t=out:st=59.5:d=0.5",
+                        "-ac", "2", "-ar", "48000", str(noise_path),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+            except Exception:
+                # Never leave a partially written noise file behind: the next
+                # run would reuse it as if it were valid.
+                try:
+                    noise_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+                raise
             if generated.returncode != 0:
+                try:
+                    noise_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
                 raise HTTPException(
                     status_code=500,
                     detail=(generated.stderr or "Pink-noise generation failed").strip(),

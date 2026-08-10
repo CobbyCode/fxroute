@@ -740,5 +740,35 @@ class SubwooferRuntimeStatusTest(unittest.TestCase):
             self.assertEqual(arg_value(helper_command, "--bass-routing"), "stereo")
 
 
+class SubwooferAckDirCleanupTests(unittest.TestCase):
+    def test_close_ack_socket_removes_its_directory(self):
+        import socket
+        runtime = Subwoofer21Runtime(helper_binary=Path("/bin/true"))
+        ack_dir = tempfile.mkdtemp(prefix="fxroute-exact-mute-test-")
+        ack_path = str(Path(ack_dir) / "ack.sock")
+        ack_socket = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        ack_socket.bind(ack_path)
+        runtime._exact_sub_mute_ack_socket = ack_socket
+        runtime._exact_sub_mute_ack_path = ack_path
+        runtime._exact_sub_mute_ack_dir = ack_dir
+
+        runtime._close_exact_sub_mute_ack_socket()
+
+        self.assertIsNone(runtime._exact_sub_mute_ack_socket)
+        self.assertFalse(Path(ack_dir).exists())
+
+    def test_close_ack_socket_tolerates_leftover_directory_contents(self):
+        runtime = Subwoofer21Runtime(helper_binary=Path("/bin/true"))
+        ack_dir = tempfile.mkdtemp(prefix="fxroute-exact-mute-test-")
+        (Path(ack_dir) / "leftover").write_text("x")
+        runtime._exact_sub_mute_ack_socket = None
+        runtime._exact_sub_mute_ack_path = str(Path(ack_dir) / "ack.sock")
+        runtime._exact_sub_mute_ack_dir = ack_dir
+
+        runtime._close_exact_sub_mute_ack_socket()
+
+        self.assertIsNone(runtime._exact_sub_mute_ack_dir)
+
+
 if __name__ == "__main__":
     unittest.main()

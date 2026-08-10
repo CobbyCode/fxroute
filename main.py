@@ -8310,8 +8310,8 @@ async def upload_easyeffects_ir(file: UploadFile = File(...)):
         suffix = Path(file.filename or "upload.ir").suffix
         import tempfile
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-            tmp.write(await file.read())
             tmp_path = Path(tmp.name)
+            tmp.write(await file.read())
 
         uploaded = await _run_locked_worker(
             _easyeffects_mutation_lock(),
@@ -8329,8 +8329,11 @@ async def upload_easyeffects_ir(file: UploadFile = File(...)):
         logger.error(f"EasyEffects IR upload failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        if tmp_path and tmp_path.exists():
-            tmp_path.unlink(missing_ok=True)
+        if tmp_path is not None:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except Exception:
+                logger.exception("Failed to remove uploaded IR temp file %s", tmp_path)
 
 @app.post("/api/easyeffects/presets/create-convolver")
 async def create_convolver_preset(
@@ -8414,11 +8417,12 @@ async def import_easyeffects_preset_bundle(
 ):
     ee_manager = _require_easyeffects_manager()
 
-    with tempfile.NamedTemporaryFile(prefix="fxroute-preset-import-", suffix=".zip", delete=False) as temp_file:
-        temp_zip_path = Path(temp_file.name)
-        temp_file.write(await file.read())
-
+    temp_zip_path = None
     try:
+        with tempfile.NamedTemporaryFile(prefix="fxroute-preset-import-", suffix=".zip", delete=False) as temp_file:
+            temp_zip_path = Path(temp_file.name)
+            temp_file.write(await file.read())
+
         with zipfile.ZipFile(temp_zip_path) as archive:
             if archive.testzip() is not None:
                 raise HTTPException(status_code=400, detail="Invalid ZIP archive")
@@ -8490,7 +8494,11 @@ async def import_easyeffects_preset_bundle(
     except (ValueError, RuntimeError) as e:
         _raise_easyeffects_http_error(e)
     finally:
-        temp_zip_path.unlink(missing_ok=True)
+        if temp_zip_path is not None:
+            try:
+                temp_zip_path.unlink(missing_ok=True)
+            except Exception:
+                logger.exception("Failed to remove imported preset bundle temp file %s", temp_zip_path)
 
 @app.post("/api/easyeffects/presets/create-with-ir")
 async def create_convolver_preset_with_ir(
@@ -8532,8 +8540,8 @@ async def create_convolver_preset_with_ir(
         suffix = Path(file.filename or "upload.ir").suffix
         import tempfile
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-            tmp.write(await file.read())
             tmp_path = Path(tmp.name)
+            tmp.write(await file.read())
 
         created = await _run_locked_worker(
             _easyeffects_mutation_lock(),
@@ -8561,8 +8569,11 @@ async def create_convolver_preset_with_ir(
         logger.error(f"EasyEffects create-with-ir failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        if tmp_path and tmp_path.exists():
-            tmp_path.unlink(missing_ok=True)
+        if tmp_path is not None:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except Exception:
+                logger.exception("Failed to remove create-with-ir temp file %s", tmp_path)
 
 @app.post("/api/easyeffects/presets/create-peq")
 async def create_peq_preset(request: Request):
@@ -8729,12 +8740,15 @@ async def import_dual_filter_preset(
             async def _save_temp(upload: UploadFile) -> Path:
                 suffix = Path(upload.filename or "upload.ir").suffix or ".ir"
                 with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                    tmp_path = Path(tmp.name)
+                    # Register before writing so a read/write failure still
+                    # cleans up the partial file in the outer finally.
+                    tmp_paths.append(tmp_path)
                     tmp.write(await upload.read())
-                    return Path(tmp.name)
+                    return tmp_path
 
             left_tmp = await _save_temp(left_file)
             right_tmp = await _save_temp(right_file)
-            tmp_paths.extend([left_tmp, right_tmp])
 
             created = await _run_locked_worker(
                 _easyeffects_mutation_lock(),
@@ -8787,7 +8801,10 @@ async def import_dual_filter_preset(
         _raise_easyeffects_http_error(e)
     finally:
         for tmp_path in tmp_paths:
-            tmp_path.unlink(missing_ok=True)
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except Exception:
+                logger.exception("Failed to remove dual import temp file %s", tmp_path)
 
 @app.post("/api/easyeffects/presets/delete")
 async def delete_easyeffects_preset(request: Request):

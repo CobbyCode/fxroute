@@ -467,6 +467,8 @@ class Subwoofer21Runtime:
                 os.rmdir(directory)
             except FileNotFoundError:
                 pass
+            except OSError:
+                logger.debug("Subwoofer helper ack directory %s left behind", directory)
 
     async def sync(self, config: SubwooferRuntimeConfig) -> None:
         self._pending_config = config

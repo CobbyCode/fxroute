@@ -16,7 +16,7 @@ import threading
 import time
 import wave
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -188,6 +188,11 @@ MEASUREMENT_SCOPE_NOTE = (
     "The result is a practical response trace for comparison and PEQ drafting, independent of the active EasyEffects preset."
 )
 
+TERMINAL_JOB_STATUSES = frozenset({"completed", "failed", "cancelled"})
+
+JOB_RECORD_RETENTION_DAYS = 30
+IR_DEBUG_SEGMENT_RETENTION_SEGMENTS = 10
+
 
 def _detailed_measurement_diagnostics_enabled() -> bool:
     return logger.isEnabledFor(logging.DEBUG)
@@ -321,6 +326,7 @@ class MeasurementStore:
         # active-job guard, otherwise a stale cancelling/running record could
         # block every future measurement forever.
         self._normalize_stale_jobs()
+        self._retain_job_history()
         # Guard against concurrent measurement jobs
         active_job = self._find_active_or_cancelling_job()
         if active_job is not None:
@@ -436,6 +442,7 @@ class MeasurementStore:
         # active-job guard, otherwise a stale cancelling/running record could
         # block every future measurement forever.
         self._normalize_stale_jobs()
+        self._retain_job_history()
         active_job = self._find_active_or_cancelling_job()
         if active_job is not None:
             active_id = active_job["id"]
@@ -1015,20 +1022,21 @@ class MeasurementStore:
                 )
 
             with self._job_process_lock:
-                if job_id in self._cancelled_jobs:
-                    job["status"] = "cancelled"
-                    job["updated_at"] = self._utc_now()
-                    job["message"] = "Measurement cancelled."
-                    job["result"] = None
-                    job["error"] = None
-                else:
-                    job["status"] = "completed"
-                    job["updated_at"] = self._utc_now()
-                    job["message"] = result.get("message") or "Measurement finished."
-                    job["result"] = self._public_job_result(result)
-                    if isinstance(result.get("calibration"), dict):
-                        job["calibration"] = deepcopy(result["calibration"])
-                    job["error"] = None
+                if not self._is_terminal_job_status(job.get("status")):
+                    if job_id in self._cancelled_jobs:
+                        job["status"] = "cancelled"
+                        job["updated_at"] = self._utc_now()
+                        job["message"] = "Measurement cancelled."
+                        job["result"] = None
+                        job["error"] = None
+                    else:
+                        job["status"] = "completed"
+                        job["updated_at"] = self._utc_now()
+                        job["message"] = result.get("message") or "Measurement finished."
+                        job["result"] = self._public_measurement_job_result(result)
+                        if isinstance(result.get("calibration"), dict):
+                            job["calibration"] = deepcopy(result["calibration"])
+                        job["error"] = None
         except asyncio.CancelledError:
             logger.warning(
                 "MEASUREMENT-CANCEL-DIAG job terminal cleanup (CancelledError): job_id=%s",
@@ -1036,33 +1044,42 @@ class MeasurementStore:
             )
             with self._job_process_lock:
                 self._cancelled_jobs.add(job_id)
-                job["status"] = "cancelled"
-                job["updated_at"] = self._utc_now()
-                job["message"] = "Measurement cancelled."
-                job["result"] = None
-                job["error"] = None
-        except Exception as exc:
-            with self._job_process_lock:
-                if job_id in self._cancelled_jobs:
-                    logger.warning(
-                        "MEASUREMENT-CANCEL-DIAG job terminal cleanup (exception+cancelled): job_id=%s exc=%s",
-                        job_id, exc,
-                    )
+                if not self._is_terminal_job_status(job.get("status")):
                     job["status"] = "cancelled"
                     job["updated_at"] = self._utc_now()
                     job["message"] = "Measurement cancelled."
                     job["result"] = None
                     job["error"] = None
-                else:
-                    job["status"] = "failed"
-                    job["updated_at"] = self._utc_now()
-                    job["message"] = str(exc) or "Measurement failed"
-                    job["result"] = None
-                    job["error"] = {"detail": str(exc)}
+        except Exception as exc:
+            with self._job_process_lock:
+                if not self._is_terminal_job_status(job.get("status")):
+                    if job_id in self._cancelled_jobs:
+                        logger.warning(
+                            "MEASUREMENT-CANCEL-DIAG job terminal cleanup (exception+cancelled): job_id=%s exc=%s",
+                            job_id, exc,
+                        )
+                        job["status"] = "cancelled"
+                        job["updated_at"] = self._utc_now()
+                        job["message"] = "Measurement cancelled."
+                        job["result"] = None
+                        job["error"] = None
+                    else:
+                        job["status"] = "failed"
+                        job["updated_at"] = self._utc_now()
+                        job["message"] = str(exc) or "Measurement failed"
+                        job["result"] = None
+                        job["error"] = {"detail": str(exc)}
         finally:
             with self._job_process_lock:
                 self._job_processes.pop(job_id, None)
-            self._persist_job(job)
+            try:
+                self._persist_job(job)
+            except Exception:
+                logger.exception("Failed to persist terminal measurement job %s", job_id)
+            # Temporary WAV cleanup is guaranteed even when persistence
+            # fails; cleanup failures are logged, never raised.
+            self._cleanup_job_wav_files(job_id)
+            self._retain_job_history()
             logger.warning(
                 "MEASUREMENT-CANCEL-DIAG job terminal cleanup complete: job_id=%s final_status=%s",
                 job_id, job.get("status"),
@@ -1255,75 +1272,75 @@ class MeasurementStore:
         # Write stereo WAV: ch0 = mic, ch1 = ER (so _analyze_sweep_capture
         # retains access to the ER timing reference)
         averaged_path = self.captures_dir / f"preavg-{uuid4().hex[:12]}.wav"
-        stereo = np.column_stack([
-            averaged_mic,
-            averaged_er,
-        ])
-        self._write_stereo_wav(averaged_path, sample_rate, stereo)
-
-        # Run standard analysis — mic on ch0, ER on ch1
         try:
-            analysis = self._analyze_sweep_capture(
-                averaged_path,
-                expected_sample_rate=sample_rate,
-                channel="",
-                reference_sweep=reference_sweep,
-                inverse_sweep=inverse_sweep,
-                calibration_curve=calibration_curve,
-                capture_label="ER pre-averaged",
-                reference_channel_index=1,
-                analysis_channel_index=0,
-                reference_channel_label="reference",
-                timing_override=timing_override,
-            )
-        except Exception as exc:
-            raise RuntimeError(
-                f"ER pre-averaged QC failed after valid-overlap average "
-                f"(overlap {overlap_start}..{overlap_end}, "
-                f"{overlap_len} samples; shifts: {alignment_shifts}; "
-                f"residual shifts: {residual_shifts}; timing override: "
-                f"{override_start}+{override_sweep_samples}; adjusted starts: "
-                f"{adjusted_timing_starts}): {exc}"
-            ) from exc
+            stereo = np.column_stack([
+                averaged_mic,
+                averaged_er,
+            ])
+            self._write_stereo_wav(averaged_path, sample_rate, stereo)
 
-        shifts_ms = [round(s / sample_rate * 1000.0, 4) for s in alignment_shifts]
-        sample_spread = max(alignment_shifts) - min(alignment_shifts) if len(alignment_shifts) > 1 else 0
-        clock = analysis.get("clock") if isinstance(analysis.get("clock"), dict) else {}
-        debug = {
-            "alignment_shifts_samples": alignment_shifts,
-            "alignment_shifts_ms": shifts_ms,
-            "alignment_spread_samples": sample_spread,
-            "alignment_spread_ms": round(sample_spread / sample_rate * 1000.0, 4),
-            "residual_alignment_shifts_samples": residual_shifts,
-            "residual_alignment_shifts_ms": [round(s / sample_rate * 1000.0, 4) for s in residual_shifts],
-            "residual_alignment_spread_samples": residual_spread,
-            "residual_alignment_spread_ms": round(residual_spread / sample_rate * 1000.0, 4),
-            "alignment_spread_gate": "post-shift-residual",
-            "valid_ranges_samples": [[int(start), int(end)] for start, end in valid_ranges],
-            "valid_overlap_start_sample": int(overlap_start),
-            "valid_overlap_end_sample": int(overlap_end),
-            "valid_overlap_length_samples": int(overlap_len),
-            "valid_overlap_start_ms": round(overlap_start / sample_rate * 1000.0, 4),
-            "valid_overlap_end_ms": round(overlap_end / sample_rate * 1000.0, 4),
-            "valid_overlap_length_ms": round(overlap_len / sample_rate * 1000.0, 4),
-            "pre_average_timing_override_start_sample": int(override_start),
-            "pre_average_timing_override_sweep_samples": int(override_sweep_samples),
-            "pre_average_adjusted_timing_starts_samples": [int(item) for item in adjusted_timing_starts],
-            "pre_average_adjusted_timing_ends_samples": [int(item) for item in adjusted_timing_ends],
-            "pre_average_per_capture_start_scores": [round(item, 6) for item in per_capture_start_scores],
-            "pre_average_per_capture_end_scores": [round(item, 6) for item in per_capture_end_scores],
-            "pre_average_start_score": round(float(clock.get("start_score") or 0.0), 6),
-            "pre_average_end_score": round(float(clock.get("end_score") or 0.0), 6),
-            "capture_count": len(capture_paths),
-            "pre_average_applied": True,
-        }
+            # Run standard analysis — mic on ch0, ER on ch1
+            try:
+                analysis = self._analyze_sweep_capture(
+                    averaged_path,
+                    expected_sample_rate=sample_rate,
+                    channel="",
+                    reference_sweep=reference_sweep,
+                    inverse_sweep=inverse_sweep,
+                    calibration_curve=calibration_curve,
+                    capture_label="ER pre-averaged",
+                    reference_channel_index=1,
+                    analysis_channel_index=0,
+                    reference_channel_label="reference",
+                    timing_override=timing_override,
+                )
+            except Exception as exc:
+                raise RuntimeError(
+                    f"ER pre-averaged QC failed after valid-overlap average "
+                    f"(overlap {overlap_start}..{overlap_end}, "
+                    f"{overlap_len} samples; shifts: {alignment_shifts}; "
+                    f"residual shifts: {residual_shifts}; timing override: "
+                    f"{override_start}+{override_sweep_samples}; adjusted starts: "
+                    f"{adjusted_timing_starts}): {exc}"
+                ) from exc
 
-        try:
+            shifts_ms = [round(s / sample_rate * 1000.0, 4) for s in alignment_shifts]
+            sample_spread = max(alignment_shifts) - min(alignment_shifts) if len(alignment_shifts) > 1 else 0
+            clock = analysis.get("clock") if isinstance(analysis.get("clock"), dict) else {}
+            debug = {
+                "alignment_shifts_samples": alignment_shifts,
+                "alignment_shifts_ms": shifts_ms,
+                "alignment_spread_samples": sample_spread,
+                "alignment_spread_ms": round(sample_spread / sample_rate * 1000.0, 4),
+                "residual_alignment_shifts_samples": residual_shifts,
+                "residual_alignment_shifts_ms": [round(s / sample_rate * 1000.0, 4) for s in residual_shifts],
+                "residual_alignment_spread_samples": residual_spread,
+                "residual_alignment_spread_ms": round(residual_spread / sample_rate * 1000.0, 4),
+                "alignment_spread_gate": "post-shift-residual",
+                "valid_ranges_samples": [[int(start), int(end)] for start, end in valid_ranges],
+                "valid_overlap_start_sample": int(overlap_start),
+                "valid_overlap_end_sample": int(overlap_end),
+                "valid_overlap_length_samples": int(overlap_len),
+                "valid_overlap_start_ms": round(overlap_start / sample_rate * 1000.0, 4),
+                "valid_overlap_end_ms": round(overlap_end / sample_rate * 1000.0, 4),
+                "valid_overlap_length_ms": round(overlap_len / sample_rate * 1000.0, 4),
+                "pre_average_timing_override_start_sample": int(override_start),
+                "pre_average_timing_override_sweep_samples": int(override_sweep_samples),
+                "pre_average_adjusted_timing_starts_samples": [int(item) for item in adjusted_timing_starts],
+                "pre_average_adjusted_timing_ends_samples": [int(item) for item in adjusted_timing_ends],
+                "pre_average_per_capture_start_scores": [round(item, 6) for item in per_capture_start_scores],
+                "pre_average_per_capture_end_scores": [round(item, 6) for item in per_capture_end_scores],
+                "pre_average_start_score": round(float(clock.get("start_score") or 0.0), 6),
+                "pre_average_end_score": round(float(clock.get("end_score") or 0.0), 6),
+                "capture_count": len(capture_paths),
+                "pre_average_applied": True,
+            }
             return analysis, debug
         finally:
-            # Always clean up temp file
+            # The pre-average WAV is a temporary artifact: remove it on every
+            # exit path, including write and analysis failures.
             try:
-                averaged_path.unlink()
+                averaged_path.unlink(missing_ok=True)
             except Exception:
                 pass
 
@@ -1341,6 +1358,26 @@ class MeasurementStore:
         if isinstance(value, tuple):
             return [cls._public_job_result(item) for item in value]
         return value
+
+    @classmethod
+    def _public_measurement_job_result(cls, value: Any) -> Any:
+        """Public job result without the temporary capture WAV paths.
+
+        capture.path / capture.reference_path / playback.path point at WAV
+        files that are deleted when the job reaches a terminal state, so they
+        are removed from the published and persisted result.  All other
+        capture/playback metadata is kept, and measurement.analysis
+        reference metadata (a separate structure) is untouched.
+        """
+        public = cls._public_job_result(value)
+        if isinstance(public, dict):
+            for section_name in ("capture", "playback"):
+                section = public.get(section_name)
+                if isinstance(section, dict):
+                    for path_key in ("path", "reference_path"):
+                        if path_key in section:
+                            section.pop(path_key)
+        return public
 
     @staticmethod
     def _write_stereo_wav(path: Path, sample_rate: int, data: np.ndarray) -> None:
@@ -1404,17 +1441,34 @@ class MeasurementStore:
         # Track raw capture metadata for ER pre-averaging
         raw_meta: dict[str, list[dict[str, Any]]] = {"left": [], "right": []}
         total_sweeps = repeat_count * 2
+        try:
+            return self._execute_lr_repeat_sweeps(
+                job, job_id, repeat_count, captures, raw_meta, total_sweeps
+            )
+        finally:
+            self._cleanup_lr_repeat_sweep_wavs(job_id)
+
+    def _execute_lr_repeat_sweeps(
+        self,
+        job: dict[str, Any],
+        job_id: str,
+        repeat_count: int,
+        captures: dict[str, list[dict[str, Any]]],
+        raw_meta: dict[str, list[dict[str, Any]]],
+        total_sweeps: int,
+    ) -> dict[str, Any]:
         sweep_number = 0
         for repeat_index in range(repeat_count):
             for channel in ("left", "right"):
                 if job_id in self._cancelled_jobs:
                     raise RuntimeError("Measurement cancelled.")
                 sweep_number += 1
-                live_job = self._jobs.get(job_id)
-                if live_job is not None:
-                    live_job["message"] = f"L/R repeat {sweep_number}/{total_sweeps}: {channel.upper()}{repeat_index + 1}…"
-                    live_job["updated_at"] = self._utc_now()
-                    self._persist_job(live_job)
+                with self._job_process_lock:
+                    live_job = self._jobs.get(job_id)
+                    if live_job is not None and not self._is_terminal_job_status(live_job.get("status")):
+                        live_job["message"] = f"L/R repeat {sweep_number}/{total_sweeps}: {channel.upper()}{repeat_index + 1}…"
+                        live_job["updated_at"] = self._utc_now()
+                        self._persist_job(live_job)
                 capture_job = deepcopy(job)
                 # Unique ID per sweep so each capture gets its own WAV file
                 sweep_id = f"{job_id}-repeat{repeat_index + 1}-{channel}"
@@ -1574,24 +1628,27 @@ class MeasurementStore:
                         f"shifts: {dbg.get('alignment_shifts_samples', [])} samples)"
                     )
 
-        # Clean up capture WAV files (they are either consumed by pre-average
-        # or no longer needed after standard per-sweep analysis)
-        for side_channel in ("left", "right"):
-            for m in raw_meta[side_channel]:
-                for key in ("capture_path", "playback_path"):
-                    path_str = m.get(key)
-                    if path_str:
-                        try:
-                            Path(path_str).unlink()
-                        except Exception:
-                            pass
-
         return {
             "measurements": [l_summary, r_summary],
             "base_name": str(job.get("base_name") or "L/R Repeat"),
             "message": "L/R repeat finished. Review the combined L and R results, then save them together.",
             "scope_note": MEASUREMENT_SCOPE_NOTE,
         }
+
+    def _cleanup_lr_repeat_sweep_wavs(self, job_id: str) -> None:
+        """Delete the per-sweep capture/playback WAVs of an L/R repeat job.
+
+        Runs on every exit path (success, failure, cancel). The glob is
+        anchored on the unique job id, so it can never touch another job's
+        files; sweeps that failed before their metadata was recorded are
+        still covered by the name pattern.
+        """
+        for directory in (self.captures_dir, self.playbacks_dir):
+            for path in directory.glob(f"{job_id}-repeat*.wav"):
+                try:
+                    path.unlink(missing_ok=True)
+                except Exception:
+                    logger.warning("Failed to remove measurement sweep WAV %s", path)
 
     def summarize_repeat_measurements(
         self,
@@ -3275,10 +3332,9 @@ class MeasurementStore:
 
     def _find_active_or_cancelling_job(self):
         """Return any job that is still active (running/queued/cancelling)."""
-        terminal_statuses = {"completed", "failed", "cancelled"}
         for _job_id, job in list(self._jobs.items()):
             status = str(job.get("status") or "")
-            if status not in terminal_statuses:
+            if status not in TERMINAL_JOB_STATUSES:
                 return job
         return None
 
@@ -3291,7 +3347,7 @@ class MeasurementStore:
         future measurements forever; genuinely running jobs are untouched.
         """
         for job_id, job in list(self._jobs.items()):
-            if str(job.get("status") or "") in {"completed", "failed", "cancelled"}:
+            if str(job.get("status") or "") in TERMINAL_JOB_STATUSES:
                 continue
             task = self._job_tasks.get(job_id)
             if task is not None and not task.done():
@@ -3300,6 +3356,8 @@ class MeasurementStore:
 
     def _promote_stale_job_to_terminal(self, job_id: str, job: dict[str, Any]) -> None:
         """Normalize a stale non-terminal job to cancelled and persist it."""
+        if self._is_terminal_job_status(job.get("status")):
+            return
         previous_status = str(job.get("status") or "")
         self._cancelled_jobs.add(job_id)
         job["status"] = "cancelled"
@@ -3451,40 +3509,42 @@ class MeasurementStore:
         *,
         channel_index: int | None = None,
     ) -> None:
-        job = self._jobs.get(job_id)
-        parent_repeat_job = None
-        if not job:
-            match = re.match(r"^(measurement-repeat-job-[0-9a-f]+)-repeat\d+-(left|right)$", str(job_id or ""))
-            parent_repeat_job = self._jobs.get(match.group(1)) if match else None
-            job = parent_repeat_job
-        if not job or str(job.get("status") or "") != "running":
-            return
-        now = self._utc_now()
-        if parent_repeat_job is None:
-            job["message"] = self._format_capture_input_level_message(peak_dbfs, clipped)
-        job["updated_at"] = now
-        job["input_level"] = {
-            "peak_dbfs": round(max(CAPTURE_LEVEL_STATUS_MIN_DBFS, peak_dbfs), 1),
-            "clipped": bool(clipped),
-            "channel_index": int(channel_index) if channel_index is not None else None,
-            "channel_number": int(channel_index) + 1 if channel_index is not None else None,
-            "updated_at": now,
-        }
-        try:
-            self._persist_job(job)
-        except Exception:
-            logger.debug("Failed to persist measurement input level status for %s", job_id, exc_info=True)
+        with self._job_process_lock:
+            job = self._jobs.get(job_id)
+            parent_repeat_job = None
+            if not job:
+                match = re.match(r"^(measurement-repeat-job-[0-9a-f]+)-repeat\d+-(left|right)$", str(job_id or ""))
+                parent_repeat_job = self._jobs.get(match.group(1)) if match else None
+                job = parent_repeat_job
+            if not job or str(job.get("status") or "") != "running":
+                return
+            now = self._utc_now()
+            if parent_repeat_job is None:
+                job["message"] = self._format_capture_input_level_message(peak_dbfs, clipped)
+            job["updated_at"] = now
+            job["input_level"] = {
+                "peak_dbfs": round(max(CAPTURE_LEVEL_STATUS_MIN_DBFS, peak_dbfs), 1),
+                "clipped": bool(clipped),
+                "channel_index": int(channel_index) if channel_index is not None else None,
+                "channel_number": int(channel_index) + 1 if channel_index is not None else None,
+                "updated_at": now,
+            }
+            try:
+                self._persist_job(job)
+            except Exception:
+                logger.debug("Failed to persist measurement input level status for %s", job_id, exc_info=True)
 
     def _update_measurement_job_message(self, job_id: str, message: str) -> None:
-        job = self._jobs.get(job_id)
-        if not job or str(job.get("status") or "") != "running":
-            return
-        job["message"] = message
-        job["updated_at"] = self._utc_now()
-        try:
-            self._persist_job(job)
-        except Exception:
-            logger.debug("Failed to persist measurement job message for %s", job_id, exc_info=True)
+        with self._job_process_lock:
+            job = self._jobs.get(job_id)
+            if not job or str(job.get("status") or "") != "running":
+                return
+            job["message"] = message
+            job["updated_at"] = self._utc_now()
+            try:
+                self._persist_job(job)
+            except Exception:
+                logger.debug("Failed to persist measurement job message for %s", job_id, exc_info=True)
 
     def _monitor_capture_input_level(
         self,
@@ -3715,6 +3775,8 @@ class MeasurementStore:
                         }
                     )
 
+            self._prune_ir_debug_segments(output_dir)
+
             return {
                 "enabled": True,
                 "schema": payload.get("schema"),
@@ -3732,6 +3794,65 @@ class MeasurementStore:
                 "enabled": True,
                 "error": str(exc),
             }
+
+    def _prune_ir_debug_segments(self, output_dir: Path) -> None:
+        """Bound impulse-response debug segments to the newest segments.
+
+        Segments are kept as {base}.json/{base}.csv pairs; the pair beyond
+        the newest N segments is removed together.  Only the FXRoute-owned
+        diagnostics directory is touched; failures are logged and never
+        break measurement processing.  Symlinks are skipped (never statted
+        or read), and a failed CSV removal leaves the pair intact so a
+        later run can retry it instead of leaving an invisible orphan.
+        """
+        try:
+            jsons = sorted(
+                (path for path in output_dir.glob("*.json") if not path.is_symlink()),
+                key=lambda path: path.stat().st_mtime,
+                reverse=True,
+            )
+        except OSError:
+            logger.warning("Unable to list IR debug segments in %s", output_dir)
+            return
+        try:
+            for json_path in jsons[IR_DEBUG_SEGMENT_RETENTION_SEGMENTS:]:
+                csv_path = json_path.with_suffix(".csv")
+                # A symlinked CSV is not an owned artifact: keep the whole
+                # pair untouched and never unlink the link.
+                if csv_path.is_symlink():
+                    continue
+                # Remove the CSV first: if its removal fails, the JSON is
+                # still present and a later retention run retries the pair.
+                try:
+                    csv_path.unlink(missing_ok=True)
+                except Exception:
+                    logger.warning("Failed to prune IR debug segment CSV %s", csv_path)
+                    continue
+                try:
+                    json_path.unlink(missing_ok=True)
+                except Exception:
+                    logger.warning("Failed to prune IR debug segment %s", json_path)
+            # Orphan CSVs (their JSON pair is gone or was never written) are
+            # garbage from a previously interrupted prune; remove them too.
+            for csv_path in output_dir.glob("*.csv"):
+                if csv_path.is_symlink():
+                    continue
+                json_partner = csv_path.with_suffix(".json")
+                # A symlinked JSON partner is never statted or followed.
+                if json_partner.is_symlink():
+                    continue
+                try:
+                    orphan = not json_partner.exists()
+                except OSError:
+                    continue
+                if not orphan:
+                    continue
+                try:
+                    csv_path.unlink(missing_ok=True)
+                except Exception:
+                    logger.warning("Failed to prune orphan IR debug CSV %s", csv_path)
+        except Exception:
+            logger.exception("IR debug segment pruning failed")
 
 
 
@@ -7596,6 +7717,93 @@ class MeasurementStore:
             "min_hz": round(min(frequencies), 2) if frequencies else None,
             "max_hz": round(max(frequencies), 2) if frequencies else None,
         }
+
+    @staticmethod
+    def _is_terminal_job_status(status: Any) -> bool:
+        return str(status or "") in TERMINAL_JOB_STATUSES
+
+    def _cleanup_job_wav_files(self, job_id: str) -> None:
+        """Delete the temporary single-sweep capture/playback WAVs of a job.
+
+        The files are only consumed while the capture worker runs; the public
+        job result strips their paths (_public_job_result), so nothing reads
+        them after the job reaches a terminal state.  L/R repeat sweeps use
+        per-sweep file names and are cleaned by _cleanup_lr_repeat_sweep_wavs.
+        """
+        for path in (
+            self.captures_dir / f"{job_id}.wav",
+            self.playbacks_dir / f"{job_id}.wav",
+        ):
+            try:
+                path.unlink(missing_ok=True)
+            except Exception:
+                logger.warning("Failed to remove measurement temporary WAV %s", path)
+
+    @staticmethod
+    def _parse_job_timestamp(value: Any) -> datetime | None:
+        if not isinstance(value, str):
+            return None
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            return None
+        if parsed.tzinfo is None:
+            # Naive timestamps are never produced by this store; treat them
+            # as UTC so the age comparison below never raises.
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed
+
+    def _retain_job_history(self) -> None:
+        """Bound runtime job history: drop terminal job records that are
+        older than the retention window from memory and from the jobs dir.
+
+        Only FXRoute-owned runtime records in jobs_dir are touched.  Active
+        jobs, saved measurements, calibrations and house curves are never
+        removed, and no files outside the jobs directory are deleted.
+        Symlinks are never followed, and malformed records/timestamps are
+        skipped conservatively.  A failure here is logged and must never
+        break job finalization or a measurement start.
+        """
+        try:
+            cutoff = datetime.now(timezone.utc) - timedelta(days=JOB_RECORD_RETENTION_DAYS)
+            with self._job_process_lock:
+                stale_ids: set[str] = set()
+                for job_id, job in list(self._jobs.items()):
+                    if str(job.get("status") or "") not in TERMINAL_JOB_STATUSES:
+                        continue
+                    updated = self._parse_job_timestamp(job.get("updated_at"))
+                    if updated is None or updated >= cutoff:
+                        continue
+                    stale_ids.add(job_id)
+                # Records resurrected from disk after a restart are not in
+                # _jobs; scan the owned records dir for them as well.
+                for path in self.job_records_dir.glob("*.json"):
+                    job_id = path.stem
+                    if job_id in self._jobs:
+                        continue
+                    if path.is_symlink():
+                        continue
+                    try:
+                        record = json.loads(path.read_text(encoding="utf-8"))
+                    except Exception:
+                        continue
+                    if str(record.get("status") or "") not in TERMINAL_JOB_STATUSES:
+                        continue
+                    updated = self._parse_job_timestamp(record.get("updated_at"))
+                    if updated is None or updated >= cutoff:
+                        continue
+                    stale_ids.add(job_id)
+                for job_id in stale_ids:
+                    self._jobs.pop(job_id, None)
+                    self._job_tasks.pop(job_id, None)
+                    self._cancelled_jobs.discard(job_id)
+            for job_id in stale_ids:
+                try:
+                    (self.job_records_dir / f"{job_id}.json").unlink(missing_ok=True)
+                except Exception:
+                    logger.warning("Failed to remove retained-out measurement job record %s", job_id)
+        except Exception:
+            logger.exception("Measurement job history retention failed")
 
     def _persist_job(self, job: dict[str, Any]) -> None:
         path = self.job_records_dir / f"{job['id']}.json"
