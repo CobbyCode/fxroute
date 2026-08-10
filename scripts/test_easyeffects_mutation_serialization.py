@@ -16,7 +16,13 @@ import main
 class FakeUploadFile:
     filename = "test.wav"
 
-    async def read(self):
+    def __init__(self):
+        self._read = False
+
+    async def read(self, size=-1):
+        if self._read:
+            return b""
+        self._read = True
         return b"RIFFxxxx"
 
 

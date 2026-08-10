@@ -17,6 +17,7 @@ import numpy as np
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 from measurement import score_sub_alignment_candidates
+from uploads import UploadTooLargeError, read_upload
 from samplerate import (
     OUTPUT_MODE_SUBWOOFER_21,
     OUTPUT_MODE_SUBWOOFER_22,
@@ -1239,8 +1240,9 @@ async def start_auto_sub_optimize(
             content_type = str(calibration_file.content_type or "").lower()
             if "text" not in content_type and "plain" not in content_type and content_type not in ("", "application/octet-stream"):
                 raise HTTPException(status_code=400, detail="Calibration file must be a text file")
-            raw_bytes = await calibration_file.read()
-            if len(raw_bytes) > _AUTO_SUB_MAX_CALIBRATION_BYTES:
+            try:
+                raw_bytes = await read_upload(calibration_file, _AUTO_SUB_MAX_CALIBRATION_BYTES)
+            except UploadTooLargeError:
                 raise HTTPException(status_code=400, detail=f"Calibration file too large (max {_AUTO_SUB_MAX_CALIBRATION_BYTES // (1024*1024)} MiB)")
             calibration_bytes = raw_bytes
 

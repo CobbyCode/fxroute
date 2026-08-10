@@ -2,6 +2,7 @@
 
 """FastAPI routes for the local music library: tracks, albums, playlists, covers."""
 
+import asyncio
 import hashlib
 import logging
 import shutil
@@ -19,6 +20,13 @@ from starlette.background import BackgroundTask
 import playlist_io
 import zip_album
 from library import cleanup_track_parent_folder, path_within_root
+from uploads import (
+    LIBRARY_UPLOAD_MAX_BYTES,
+    TEXT_UPLOAD_MAX_BYTES,
+    UploadTooLargeError,
+    read_upload,
+    save_upload_to_file,
+)
 from models import (
     DeleteFolderRequest,
     DeleteTracksRequest,
@@ -578,7 +586,7 @@ async def upload_track(file: UploadFile = File(...)):
         if suffix == ".zip":
             temp_zip_path = zip_album.choose_unique_path(target_dir / filename)
             with temp_zip_path.open("wb") as buffer:
-                shutil.copyfileobj(file.file, buffer)
+                await save_upload_to_file(file, buffer, LIBRARY_UPLOAD_MAX_BYTES)
 
             album_dir = zip_album.choose_unique_dir(target_dir / Path(filename).stem)
             album_dir.mkdir(parents=True, exist_ok=False)
@@ -627,7 +635,7 @@ async def upload_track(file: UploadFile = File(...)):
             }
 
         if suffix in PLAYLIST_FILE_EXTENSIONS:
-            content = (await file.read()).decode("utf-8", errors="replace")
+            content = (await read_upload(file, TEXT_UPLOAD_MAX_BYTES)).decode("utf-8", errors="replace")
             tracks = library_scanner.get_tracks(refresh=True)
             imported = playlist_io.import_m3u_playlist(
                 filename, content, settings.MUSIC_ROOT, tracks=tracks
@@ -649,7 +657,7 @@ async def upload_track(file: UploadFile = File(...)):
             raise HTTPException(status_code=409, detail="A file with that name already exists")
 
         with target_path.open("wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+            await save_upload_to_file(file, buffer, LIBRARY_UPLOAD_MAX_BYTES)
         tracks = library_scanner.refresh(force=True)
         return {
             "status": "uploaded",
@@ -659,6 +667,32 @@ async def upload_track(file: UploadFile = File(...)):
             "track_count": len(tracks),
             "message": f"Uploaded {filename}",
         }
+    except asyncio.CancelledError:
+        # A cancelled request must not leave partial files created by this
+        # request behind; the cancellation itself propagates unchanged.
+        if temp_zip_path and temp_zip_path.exists():
+            temp_zip_path.unlink(missing_ok=True)
+        if target_path and target_path.exists():
+            target_path.unlink(missing_ok=True)
+        if album_dir and album_dir.exists():
+            shutil.rmtree(album_dir, ignore_errors=True)
+        raise
+    except UploadTooLargeError as e:
+        logger.warning("Upload rejected: %s", e)
+        if temp_zip_path and temp_zip_path.exists():
+            temp_zip_path.unlink(missing_ok=True)
+        if target_path and target_path.exists():
+            target_path.unlink(missing_ok=True)
+        if album_dir and album_dir.exists():
+            shutil.rmtree(album_dir, ignore_errors=True)
+        raise HTTPException(status_code=413, detail=str(e))
+    except zip_album.ZipLimitError as e:
+        logger.warning("ZIP upload rejected: %s", e)
+        if temp_zip_path and temp_zip_path.exists():
+            temp_zip_path.unlink(missing_ok=True)
+        if album_dir and album_dir.exists():
+            shutil.rmtree(album_dir, ignore_errors=True)
+        raise HTTPException(status_code=400, detail=str(e))
     except HTTPException:
         if temp_zip_path and temp_zip_path.exists():
             temp_zip_path.unlink(missing_ok=True)

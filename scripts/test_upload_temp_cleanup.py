@@ -20,13 +20,19 @@ class FakeUpload:
         self._payload = payload
         self._fail = fail
         self._cancel = cancel
+        self._pos = 0
 
-    async def read(self):
+    async def read(self, size=-1):
         if self._cancel:
             raise asyncio.CancelledError()
         if self._fail:
             raise OSError("client disconnected")
-        return self._payload
+        if size is None or size < 0:
+            chunk = self._payload[self._pos:]
+        else:
+            chunk = self._payload[self._pos:self._pos + size]
+        self._pos += len(chunk)
+        return chunk
 
 
 class DummyManager:

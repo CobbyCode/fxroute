@@ -296,8 +296,12 @@ class PlaylistIOApiTests(unittest.IsolatedAsyncioTestCase):
 
             def __init__(self, content: bytes):
                 self.content = content
+                self._read = False
 
-            async def read(self):
+            async def read(self, size=-1):
+                if self._read:
+                    return b""
+                self._read = True
                 return self.content
 
             async def close(self):
@@ -327,7 +331,13 @@ class PlaylistIOApiTests(unittest.IsolatedAsyncioTestCase):
         class FakeUpload:
             filename = "empty.m3u"
 
-            async def read(self):
+            def __init__(self):
+                self._read = False
+
+            async def read(self, size=-1):
+                if self._read:
+                    return b""
+                self._read = True
                 return b"#EXTM3U\nunknown.flac\n"
 
             async def close(self):

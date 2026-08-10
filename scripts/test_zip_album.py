@@ -137,13 +137,18 @@ class IsSafeRelativeZipPathTests(unittest.TestCase):
         # pathlib normalisiert "."-Segmente -> erlaubt als a/b (bleibt unter Ziel)
         self.assertEqual(is_safe_relative_zip_path("a/./b"), Path("a/b"))
 
-    def test_leading_slashes_stripped(self):
-        # Original strippt führende Slashes vor der Prüfung -> relativ unter Ziel
-        self.assertEqual(is_safe_relative_zip_path("/etc/passwd"), Path("etc/passwd"))
+    def test_leading_slashes_rejected(self):
+        # Hardening: absolute paths are never treated as relative; an
+        # archive with leading-slash members is refused outright.
+        self.assertIsNone(is_safe_relative_zip_path("/etc/passwd"))
+        self.assertIsNone(is_safe_relative_zip_path("//server/share/x"))
 
-    def test_drive_style_path_relative_on_posix(self):
-        # "C:/..." ist auf POSIX nicht absolut -> bleibt relativ unter Ziel
-        self.assertEqual(is_safe_relative_zip_path("C:/evil.mp3"), Path("C:/evil.mp3"))
+    def test_drive_style_path_rejected(self):
+        # Hardening: Windows drive-letter paths are rejected even though
+        # they are not absolute on POSIX.
+        self.assertIsNone(is_safe_relative_zip_path("C:/evil.mp3"))
+        self.assertIsNone(is_safe_relative_zip_path("C:\\evil.mp3"))
+        self.assertIsNone(is_safe_relative_zip_path("Z:/album/x.flac"))
 
     def test_macosx_metadata_rejected(self):
         self.assertIsNone(is_safe_relative_zip_path("__MACOSX/album/cover.jpg"))
@@ -210,8 +215,9 @@ class ExtractZipAlbumTests(unittest.TestCase):
             self.assertFalse((base / "evil.mp3").exists())
             self.assertTrue((target / "safe.mp3").is_file())
 
-    def test_leading_slash_entry_extracted_under_target(self):
-        # Führender Slash wird abgestrippt -> Datei landet relativ unter dem Ziel
+    def test_leading_slash_entry_skipped(self):
+        # Hardening: absolute-path members are refused and skipped, never
+        # stripped down to a relative path under the target.
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)
             zip_path = base / "album.zip"
@@ -221,10 +227,11 @@ class ExtractZipAlbumTests(unittest.TestCase):
                 ("/abs.mp3", b"evil"),
             ])
             result = extract_zip_album(zip_path, target)
-            self.assertEqual(len(result["extracted_files"]), 2)
-            self.assertEqual(result["skipped_entries"], [])
+            self.assertEqual(len(result["extracted_files"]), 1)
+            self.assertEqual(result["skipped_entries"], ["/abs.mp3"])
             self.assertFalse((base / "abs.mp3").exists())
-            self.assertTrue((target / "abs.mp3").is_file())
+            self.assertFalse((target / "abs.mp3").exists())
+            self.assertTrue((target / "safe.mp3").is_file())
 
     def test_name_collision_deduplicated(self):
         with tempfile.TemporaryDirectory() as td:

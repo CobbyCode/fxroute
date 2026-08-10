@@ -29,6 +29,11 @@ from measurement import (
     measurement_setup_settings_from_payload,
     normalize_measurement_optional_input_channel,
 )
+from uploads import (
+    MEASUREMENT_TEXT_MAX_BYTES,
+    UploadTooLargeError,
+    read_upload,
+)
 from playback_transition import TransitionRequest
 from samplerate import (
     OUTPUT_MODE_SUBWOOFER_22,
@@ -1038,7 +1043,10 @@ async def upload_measurement_calibration(calibration_file: UploadFile = File(...
     if not measurement_store:
         raise HTTPException(status_code=503, detail="Measurement store not available")
     filename = calibration_file.filename or "calibration.txt"
-    data = await calibration_file.read()
+    try:
+        data = await read_upload(calibration_file, MEASUREMENT_TEXT_MAX_BYTES)
+    except UploadTooLargeError as e:
+        raise HTTPException(status_code=413, detail=str(e))
     try:
         return measurement_store.upload_calibration_file(filename, data)
     except ValueError as exc:
@@ -1093,7 +1101,10 @@ async def upload_measurement_house_curve(house_curve_file: UploadFile = File(...
     if not measurement_store:
         raise HTTPException(status_code=503, detail="Measurement store not available")
     filename = house_curve_file.filename or "house-curve.txt"
-    data = await house_curve_file.read()
+    try:
+        data = await read_upload(house_curve_file, MEASUREMENT_TEXT_MAX_BYTES)
+    except UploadTooLargeError as e:
+        raise HTTPException(status_code=413, detail=str(e))
     try:
         return measurement_store.upload_house_curve_file(filename, data)
     except ValueError as exc:
@@ -1229,7 +1240,10 @@ async def start_measurement(
     calibration_filename = None
     if calibration_file is not None:
         calibration_filename = calibration_file.filename or "calibration.txt"
-        calibration_bytes = await calibration_file.read()
+        try:
+            calibration_bytes = await read_upload(calibration_file, MEASUREMENT_TEXT_MAX_BYTES)
+        except UploadTooLargeError as e:
+            raise HTTPException(status_code=413, detail=str(e))
 
     measurement_rate = _resolve_measurement_start_sample_rate()
     try:
@@ -1274,7 +1288,10 @@ async def start_lr_repeat_measurement(
     calibration_filename = None
     if calibration_file is not None:
         calibration_filename = calibration_file.filename or "calibration.txt"
-        calibration_bytes = await calibration_file.read()
+        try:
+            calibration_bytes = await read_upload(calibration_file, MEASUREMENT_TEXT_MAX_BYTES)
+        except UploadTooLargeError as e:
+            raise HTTPException(status_code=413, detail=str(e))
 
     measurement_rate = _resolve_measurement_start_sample_rate()
     try:

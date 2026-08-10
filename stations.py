@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import List, Optional
 from urllib.parse import urljoin, urlparse
 
+from safe_http import safe_get
+
 import requests
 
 from models import Track
@@ -416,7 +418,7 @@ def _download_somafm_art(slug: str) -> Optional[Path]:
 
     page_url = f"https://somafm.com/{slug}/"
     try:
-        resp = requests.get(page_url, timeout=5)
+        resp = safe_get(page_url, timeout=5)
         if not resp.ok:
             return None
         html = resp.text
@@ -437,7 +439,7 @@ def _download_somafm_art(slug: str) -> Optional[Path]:
 
     for url in candidates:
         try:
-            img_resp = requests.get(url, timeout=8)
+            img_resp = safe_get(url, timeout=8)
             if not img_resp.ok:
                 continue
             content_type = (img_resp.headers.get("content-type") or "").split(";")[0].strip().lower()
@@ -516,7 +518,7 @@ def _resolve_somafm_url(url: str) -> Optional[str]:
     ]
     for candidate in variants:
         try:
-            resp = requests.get(candidate, timeout=5)
+            resp = safe_get(candidate, timeout=5)
             if resp.ok:
                 resolved = _parse_pls(resp.text)
                 if resolved:
@@ -536,7 +538,7 @@ def resolve_stream_url(url: str) -> str:
     lower = normalized.lower()
     if lower.endswith(".pls"):
         try:
-            resp = requests.get(normalized, timeout=5)
+            resp = safe_get(normalized, timeout=5)
             if not resp.ok:
                 raise ValueError(f"Playlist URL returned {resp.status_code}")
             resolved = _parse_pls(resp.text)
@@ -548,7 +550,7 @@ def resolve_stream_url(url: str) -> str:
 
     if lower.endswith(".m3u") or lower.endswith(".m3u8"):
         try:
-            resp = requests.get(normalized, timeout=5)
+            resp = safe_get(normalized, timeout=5)
             if not resp.ok:
                 raise ValueError(f"Playlist URL returned {resp.status_code}")
             resolved = _parse_m3u(resp.text)

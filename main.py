@@ -33,6 +33,14 @@ from starlette.background import BackgroundTask
 
 from config import get_settings
 from radio_metadata import RadioMetadataService
+from uploads import (
+    EASYEEFFECTS_BUNDLE_MAX_BYTES,
+    EASYEEFFECTS_IR_MAX_BYTES,
+    EASYEEFFECTS_PRESET_TEXT_MAX_BYTES,
+    UploadTooLargeError,
+    read_upload,
+    save_upload_to_file,
+)
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
@@ -8311,7 +8319,7 @@ async def upload_easyeffects_ir(file: UploadFile = File(...)):
         import tempfile
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
             tmp_path = Path(tmp.name)
-            tmp.write(await file.read())
+            await save_upload_to_file(file, tmp, EASYEEFFECTS_IR_MAX_BYTES)
 
         uploaded = await _run_locked_worker(
             _easyeffects_mutation_lock(),
@@ -8323,6 +8331,8 @@ async def upload_easyeffects_ir(file: UploadFile = File(...)):
         await manager.broadcast({"type": "easyeffects", "data": status})
         schedule_peak_monitor_refresh_after_effects_change("ir-upload")
         return {"status": "ok", "ir": uploaded}
+    except UploadTooLargeError as e:
+        raise HTTPException(status_code=413, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -8391,7 +8401,7 @@ async def import_easyeffects_preset_json(
     ee_manager = _require_easyeffects_manager()
 
     try:
-        content = (await file.read()).decode("utf-8-sig")
+        content = (await read_upload(file, EASYEEFFECTS_PRESET_TEXT_MAX_BYTES)).decode("utf-8-sig")
         async with _easyeffects_mutation_lock():
             created = ee_manager.import_preset_json(file.filename or "preset.json", content)
         status = await _finish_easyeffects_preset_mutation(
@@ -8405,10 +8415,20 @@ async def import_easyeffects_preset_json(
             "loaded": bool(load_after_create),
             "active_preset": status.get("active_preset"),
         }
+    except UploadTooLargeError as e:
+        raise HTTPException(status_code=413, detail=str(e))
     except UnicodeDecodeError as e:
         raise HTTPException(status_code=400, detail=f"Preset JSON is not valid UTF-8 text: {e}")
     except (ValueError, RuntimeError) as e:
         _raise_easyeffects_http_error(e)
+
+# Preset bundle ZIP hardening limits (FXRoute bundles: manifest + preset
+# JSON + a few IR files, each IR stored twice by name variant).
+PRESET_BUNDLE_MAX_MEMBERS = 512
+PRESET_BUNDLE_MAX_TOTAL_UNCOMPRESSED_BYTES = 512 * 1024 * 1024
+PRESET_BUNDLE_MAX_MEMBER_BYTES = 256 * 1024 * 1024
+PRESET_BUNDLE_MAX_JSON_BYTES = 16 * 1024 * 1024
+PRESET_BUNDLE_MAX_CENTRAL_DIRECTORY_BYTES = 8 * 1024 * 1024
 
 @app.post("/api/easyeffects/presets/import-bundle")
 async def import_easyeffects_preset_bundle(
@@ -8418,20 +8438,45 @@ async def import_easyeffects_preset_bundle(
     ee_manager = _require_easyeffects_manager()
 
     temp_zip_path = None
+    import_succeeded = False
+    staged_irs = []
+    ir_backups = []
+    new_ir_destinations = []
     try:
         with tempfile.NamedTemporaryFile(prefix="fxroute-preset-import-", suffix=".zip", delete=False) as temp_file:
             temp_zip_path = Path(temp_file.name)
-            temp_file.write(await file.read())
+            await save_upload_to_file(file, temp_file, EASYEEFFECTS_BUNDLE_MAX_BYTES)
 
+        zip_album.check_zip_file_before_open(
+            temp_zip_path,
+            max_members=PRESET_BUNDLE_MAX_MEMBERS,
+            max_central_directory_bytes=PRESET_BUNDLE_MAX_CENTRAL_DIRECTORY_BYTES,
+        )
         with zipfile.ZipFile(temp_zip_path) as archive:
-            if archive.testzip() is not None:
-                raise HTTPException(status_code=400, detail="Invalid ZIP archive")
+            zip_album.check_zip_limits(
+                archive,
+                max_members=PRESET_BUNDLE_MAX_MEMBERS,
+                max_total_uncompressed_bytes=PRESET_BUNDLE_MAX_TOTAL_UNCOMPRESSED_BYTES,
+                max_member_bytes=PRESET_BUNDLE_MAX_MEMBER_BYTES,
+            )
             safe_members = []
             for member in archive.infolist():
-                safe_relative = _is_safe_relative_zip_path(member.filename)
-                if safe_relative is None or member.is_dir():
+                if member.is_dir():
                     continue
+                safe_relative = _is_safe_relative_zip_path(member.filename)
+                if safe_relative is None:
+                    raise zip_album.ZipLimitError(
+                        f"Unsafe ZIP member path: {member.filename!r}"
+                    )
+                reason = zip_album.zip_member_hardening_reason(member)
+                if reason:
+                    raise zip_album.ZipLimitError(
+                        f"Unsafe ZIP member {member.filename!r}: {reason}"
+                    )
                 safe_members.append((member, safe_relative))
+
+            if archive.testzip() is not None:
+                raise HTTPException(status_code=400, detail="Invalid ZIP archive")
 
             json_members = [(member, rel) for member, rel in safe_members if rel.suffix.lower() == ".json" and rel.name.lower() != "manifest.json"]
             preferred_json = next(((member, rel) for member, rel in json_members if rel.name.lower() == "preset.json"), None)
@@ -8441,7 +8486,9 @@ async def import_easyeffects_preset_bundle(
                 raise HTTPException(status_code=400, detail="Preset bundle must contain exactly one preset JSON")
 
             preset_member, preset_rel = preferred_json
-            preset_text = archive.read(preset_member).decode("utf-8-sig")
+            preset_text = zip_album.read_member_bounded(
+                archive, preset_member, PRESET_BUNDLE_MAX_JSON_BYTES
+            ).decode("utf-8-sig")
             try:
                 preset_payload = json.loads(preset_text)
             except Exception as e:
@@ -8463,10 +8510,38 @@ async def import_easyeffects_preset_bundle(
                     if existing is None or rel.suffix.lower() == ".irs":
                         ir_members_by_stem[stem] = (member, clean_ir_name)
 
+                extracted_total = 0
                 for _, (member, clean_ir_name) in sorted(ir_members_by_stem.items()):
                     destination = ee_manager.irs_dir / clean_ir_name
-                    with archive.open(member) as source, destination.open("wb") as target:
-                        shutil.copyfileobj(source, target)
+                    if destination.is_symlink():
+                        raise ValueError(
+                            f"Import blocked: existing IR path is a symlink: {clean_ir_name}"
+                        )
+                    if destination.is_dir():
+                        raise ValueError(
+                            f"Import blocked: existing IR path is a directory: {clean_ir_name}"
+                        )
+                    stage_path = ee_manager.irs_dir / f".fxroute-bundle-stage-{uuid4().hex}"
+                    try:
+                        remaining = min(
+                            PRESET_BUNDLE_MAX_TOTAL_UNCOMPRESSED_BYTES - extracted_total,
+                            PRESET_BUNDLE_MAX_MEMBER_BYTES,
+                        )
+                        written = zip_album.copy_member_bounded(
+                            archive, member, stage_path, remaining_bytes=remaining
+                        )
+                    except BaseException:
+                        stage_path.unlink(missing_ok=True)
+                        raise
+                    extracted_total += written
+                    staged_irs.append(stage_path)
+                    if destination.exists():
+                        backup_path = ee_manager.irs_dir / f".fxroute-bundle-backup-{uuid4().hex}"
+                        os.replace(destination, backup_path)
+                        ir_backups.append((destination, backup_path))
+                    else:
+                        new_ir_destinations.append(destination)
+                    os.replace(stage_path, destination)
                     imported_irs.append(destination.name)
 
                 missing_kernels = [name for name in sorted(kernel_names) if not ee_manager._find_ir_paths_for_kernel_name(name)]
@@ -8475,6 +8550,7 @@ async def import_easyeffects_preset_bundle(
 
                 preset_filename = preset_rel.name if preset_rel.name.lower() != "preset.json" else (Path(file.filename or "preset.json").stem + ".json")
                 created = ee_manager.import_preset_json(preset_filename, preset_text)
+            import_succeeded = True
             status = await _finish_easyeffects_preset_mutation(
                 load_after_create=load_after_create,
                 preset_name=created["name"],
@@ -8487,6 +8563,10 @@ async def import_easyeffects_preset_bundle(
                 "loaded": bool(load_after_create),
                 "active_preset": status.get("active_preset"),
             }
+    except UploadTooLargeError as e:
+        raise HTTPException(status_code=413, detail=str(e))
+    except zip_album.ZipLimitError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except zipfile.BadZipFile:
         raise HTTPException(status_code=400, detail="Invalid ZIP archive")
     except UnicodeDecodeError as e:
@@ -8494,6 +8574,28 @@ async def import_easyeffects_preset_bundle(
     except (ValueError, RuntimeError) as e:
         _raise_easyeffects_http_error(e)
     finally:
+        if import_succeeded:
+            for _, backup_path in ir_backups:
+                try:
+                    backup_path.unlink(missing_ok=True)
+                except Exception:
+                    logger.exception("Failed to remove bundle IR backup %s", backup_path)
+        else:
+            for destination in new_ir_destinations:
+                try:
+                    destination.unlink(missing_ok=True)
+                except Exception:
+                    logger.exception("Failed to remove partially imported bundle IR %s", destination)
+            for destination, backup_path in ir_backups:
+                try:
+                    os.replace(backup_path, destination)
+                except Exception:
+                    logger.exception("Failed to restore bundle IR backup %s", backup_path)
+        for stage_path in staged_irs:
+            try:
+                stage_path.unlink(missing_ok=True)
+            except Exception:
+                logger.exception("Failed to remove staged bundle IR %s", stage_path)
         if temp_zip_path is not None:
             try:
                 temp_zip_path.unlink(missing_ok=True)
@@ -8541,7 +8643,7 @@ async def create_convolver_preset_with_ir(
         import tempfile
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
             tmp_path = Path(tmp.name)
-            tmp.write(await file.read())
+            await save_upload_to_file(file, tmp, EASYEEFFECTS_IR_MAX_BYTES)
 
         created = await _run_locked_worker(
             _easyeffects_mutation_lock(),
@@ -8563,6 +8665,8 @@ async def create_convolver_preset_with_ir(
             "loaded": bool(load_after_create),
             "active_preset": status.get("active_preset"),
         }
+    except UploadTooLargeError as e:
+        raise HTTPException(status_code=413, detail=str(e))
     except (FileNotFoundError, ValueError, RuntimeError) as e:
         _raise_easyeffects_http_error(e)
     except Exception as e:
@@ -8635,8 +8739,10 @@ async def import_rew_peq_preset(
     ee_manager = _require_easyeffects_manager()
 
     try:
-        content = await file.read()
+        content = await read_upload(file, EASYEEFFECTS_PRESET_TEXT_MAX_BYTES)
         rew_text = content.decode("utf-8-sig")
+    except UploadTooLargeError as e:
+        raise HTTPException(status_code=413, detail=str(e))
     except UnicodeDecodeError:
         raise HTTPException(status_code=400, detail="REW import file must be UTF-8 text")
 
@@ -8744,7 +8850,7 @@ async def import_dual_filter_preset(
                     # Register before writing so a read/write failure still
                     # cleans up the partial file in the outer finally.
                     tmp_paths.append(tmp_path)
-                    tmp.write(await upload.read())
+                    await save_upload_to_file(upload, tmp, EASYEEFFECTS_IR_MAX_BYTES)
                     return tmp_path
 
             left_tmp = await _save_temp(left_file)
@@ -8764,8 +8870,8 @@ async def import_dual_filter_preset(
         else:
             if left_kind == "rew-text" and right_kind == "rew-text":
                 try:
-                    left_text = (await left_file.read()).decode("utf-8-sig")
-                    right_text = (await right_file.read()).decode("utf-8-sig")
+                    left_text = (await read_upload(left_file, EASYEEFFECTS_PRESET_TEXT_MAX_BYTES)).decode("utf-8-sig")
+                    right_text = (await read_upload(right_file, EASYEEFFECTS_PRESET_TEXT_MAX_BYTES)).decode("utf-8-sig")
                 except UnicodeDecodeError:
                     raise HTTPException(status_code=400, detail="Dual REW import files must be UTF-8 text")
 
@@ -8797,6 +8903,8 @@ async def import_dual_filter_preset(
             "loaded": bool(load_after_create),
             "active_preset": status.get("active_preset"),
         }
+    except UploadTooLargeError as e:
+        raise HTTPException(status_code=413, detail=str(e))
     except (ValueError, RuntimeError) as e:
         _raise_easyeffects_http_error(e)
     finally:
