@@ -300,9 +300,11 @@ class EasyEffectsPeakMonitor:
                     if peak >= PEAK_THRESHOLD:
                         self._consecutive_hits += 1
                         if self._consecutive_hits >= CONSECUTIVE_HITS_REQUIRED:
+                            was_detected = now < self._hold_until
                             self._hold_until = now + HOLD_SECONDS
-                            self._last_over_at = time.time()
-                            await self._emit_if_changed(force=True)
+                            if not was_detected:
+                                self._last_over_at = time.time()
+                                await self._emit_if_changed(force=True)
                     else:
                         self._consecutive_hits = 0
                 elif self._proc.returncode is not None:
