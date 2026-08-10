@@ -45,10 +45,31 @@ def fake_dns_unresolvable(host, port=None, **kwargs):
 class FakeResponse:
     def __init__(self, *, status_code=200, text="", headers=None, is_redirect=False):
         self.status_code = status_code
-        self.text = text
         self.headers = headers or {}
         self.is_redirect = is_redirect
         self.ok = 200 <= status_code < 400
+        self.closed = False
+        self.encoding = "utf-8"
+        self._content = False
+        self._content_consumed = False
+        self._body = text.encode("utf-8")
+
+    def iter_content(self, chunk_size=1):
+        pos = 0
+        while pos < len(self._body):
+            yield self._body[pos:pos + chunk_size]
+            pos += chunk_size
+
+    def close(self):
+        self.closed = True
+
+    @property
+    def text(self):
+        return self._body.decode("utf-8", errors="replace")
+
+    @property
+    def content(self):
+        return self._body
 
     def raise_for_status(self):
         if self.status_code >= 400:
@@ -175,7 +196,7 @@ class SafeGetTests(unittest.TestCase):
         with patch.object(safe_http.socket, "getaddrinfo", side_effect=fake_dns_public), \
                 patch("safe_http.requests.get", side_effect=side_effect) as mock_get:
             with self.assertRaises(safe_http.BlockedUrlError):
-                safe_http.safe_get("https://public.example/a.pls", timeout=5)
+                safe_http.safe_get("https://public.example/a.pls", timeout=5, max_bytes=1024)
         mock_get.assert_called_once()
 
     def test_redirect_to_private_dns_target_is_blocked(self):
@@ -195,7 +216,7 @@ class SafeGetTests(unittest.TestCase):
         with patch.object(safe_http.socket, "getaddrinfo", side_effect=dns), \
                 patch("safe_http.requests.get", side_effect=side_effect) as mock_get:
             with self.assertRaises(safe_http.BlockedUrlError):
-                safe_http.safe_get("https://public.example/a.pls", timeout=5)
+                safe_http.safe_get("https://public.example/a.pls", timeout=5, max_bytes=1024)
         mock_get.assert_called_once()
 
     def test_redirect_chain_to_public_target_succeeds(self):
@@ -212,7 +233,7 @@ class SafeGetTests(unittest.TestCase):
 
         with patch.object(safe_http.socket, "getaddrinfo", side_effect=fake_dns_public), \
                 patch("safe_http.requests.get", side_effect=side_effect):
-            response = safe_http.safe_get("https://public.example/a.pls", timeout=5)
+            response = safe_http.safe_get("https://public.example/a.pls", timeout=5, max_bytes=1024)
         self.assertEqual(calls, ["https://public.example/a.pls", "https://cdn.example/b.pls"])
         self.assertEqual(response.text, "File1=https://ice.example/stream")
 
@@ -226,7 +247,7 @@ class SafeGetTests(unittest.TestCase):
         with patch.object(safe_http.socket, "getaddrinfo", side_effect=fake_dns_public), \
                 patch("safe_http.requests.get", side_effect=side_effect):
             with self.assertRaises(requests.TooManyRedirects):
-                safe_http.safe_get("https://public.example/a.pls", timeout=5)
+                safe_http.safe_get("https://public.example/a.pls", timeout=5, max_bytes=1024)
 
 
 class ResolveStreamUrlTests(unittest.TestCase):

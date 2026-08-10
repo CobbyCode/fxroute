@@ -6,6 +6,10 @@ https://, must carry no userinfo, and must resolve to publicly routable
 addresses.  Every redirect hop is re-validated with the same rules before
 it is followed, so a redirect cannot bypass the initial check.
 
+Response bodies are read with a counted, chunked read bounded by a
+per-content-class limit, so a malicious or broken server cannot make the
+process load an unbounded body into memory.
+
 IPv4, IPv6 (including IPv4-mapped IPv6), NAT64 and 6to4 embedded IPv4
 addresses are all checked.  An address must actually be globally routable
 (ipaddress ``is_global`` semantics), with the conservative deny lists
@@ -25,6 +29,13 @@ from urllib.parse import urljoin, urlparse
 import requests
 
 DEFAULT_MAX_REDIRECTS = 5
+DEFAULT_FETCH_READ_CHUNK_BYTES = 64 * 1024
+
+# Named, generous per-content-class response-body limits (legit responses
+# stay far below; the limits only stop unbounded body loading).
+RADIO_PLAYLIST_FETCH_MAX_BYTES = 1 * 1024 * 1024   # .pls / .m3u / .m3u8 playlist resolution
+SOMAFM_PAGE_FETCH_MAX_BYTES = 2 * 1024 * 1024      # somafm.com metadata page (HTML)
+SOMAFM_ARTWORK_FETCH_MAX_BYTES = 8 * 1024 * 1024   # station artwork image
 
 _PRIVATE_V4_NETWORKS = [
     ipaddress.ip_network("0.0.0.0/8"),        # "this network"
@@ -68,6 +79,10 @@ _SIX_TO_FOUR_PREFIX = ipaddress.ip_network("2002::/16")
 
 class BlockedUrlError(ValueError):
     """URL rejected by the public-internet fetch policy."""
+
+
+class ResponseTooLargeError(ValueError):
+    """Server response body exceeded the configured fetch limit."""
 
 
 def _ipv4_is_public(address: ipaddress.IPv4Address) -> bool:
@@ -148,6 +163,41 @@ def validate_public_url(url: str) -> str:
     return value
 
 
+def _read_bounded(response: requests.Response, max_bytes: int) -> requests.Response:
+    """Read the response body with a counted, chunked read.
+
+    Content-Length is only used as an optional fast reject; the actual
+    read counts bytes and aborts immediately once ``max_bytes`` is
+    exceeded.  The response is closed on any error path.  On success the
+    body is stored on the real ``requests.Response`` (``_content``), so
+    ``.text`` / ``.content`` behave exactly like a normal response.
+    """
+    try:
+        content_length = response.headers.get("content-length")
+        if content_length is not None and content_length.isdigit():
+            if int(content_length) > max_bytes:
+                raise ResponseTooLargeError(
+                    f"Response body too large (Content-Length {content_length} > {max_bytes} bytes)"
+                )
+        chunks = []
+        total = 0
+        for chunk in response.iter_content(DEFAULT_FETCH_READ_CHUNK_BYTES):
+            if not chunk:
+                continue
+            total += len(chunk)
+            if total > max_bytes:
+                raise ResponseTooLargeError(
+                    f"Response body exceeded {max_bytes} bytes"
+                )
+            chunks.append(chunk)
+    except BaseException:
+        response.close()
+        raise
+    response._content = b"".join(chunks)
+    response._content_consumed = True
+    return response
+
+
 def safe_get(
     url: str,
     *,
@@ -155,6 +205,7 @@ def safe_get(
     headers: Optional[dict] = None,
     timeout=None,
     max_redirects: int = DEFAULT_MAX_REDIRECTS,
+    max_bytes: int,
 ) -> requests.Response:
     """GET ``url`` following redirects, validating every target.
 
@@ -164,6 +215,11 @@ def safe_get(
     requests exception semantics are unchanged; ``requests.Timeout`` and
     ``requests.RequestException`` propagate exactly like a plain
     ``requests.get`` call.
+
+    The response body is read with a counted, chunked read bounded by
+    ``max_bytes`` (see :func:`_read_bounded`); an oversized body raises
+    :class:`ResponseTooLargeError`.  Redirect responses are closed
+    without reading their bodies.
     """
     current = url
     for _ in range(max_redirects + 1):
@@ -174,11 +230,18 @@ def safe_get(
             headers=headers,
             timeout=timeout,
             allow_redirects=False,
+            stream=True,
         )
-        if not response.is_redirect:
-            return response
-        location = response.headers.get("Location")
-        if not location:
-            return response
-        current = urljoin(current, location)
+        if response.is_redirect:
+            location = response.headers.get("Location")
+            if not location:
+                try:
+                    return _read_bounded(response, max_bytes)
+                except BaseException:
+                    response.close()
+                    raise
+            response.close()
+            current = urljoin(current, location)
+            continue
+        return _read_bounded(response, max_bytes)
     raise requests.TooManyRedirects(f"Exceeded {max_redirects} redirects for {url}")
