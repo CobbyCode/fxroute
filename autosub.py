@@ -1128,7 +1128,7 @@ async def start_auto_sub_optimize(
     target_curve_snapshot: str = Form(""),
     calibration_file: UploadFile | None = File(None),
 ):
-    from main import measurement_store, subwoofer_runtime
+    from main import measurement_store, measurement_sr_session, subwoofer_runtime
     global _auto_sub_lock
     if not measurement_store:
         raise HTTPException(status_code=503, detail="Measurement store not available")
@@ -1138,6 +1138,15 @@ async def start_auto_sub_optimize(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not _auto_sub_lock:
         _auto_sub_lock = asyncio.Lock()
+
+    # Capture the session entry epoch before any await can interleave a
+    # measurement-window close: an entry invalidated by a close must never
+    # register as a running Auto-Sub job afterwards.
+    entry_epoch = (
+        measurement_sr_session.capture_entry_epoch()
+        if measurement_sr_session is not None
+        else None
+    )
 
     from samplerate import _load_audio_output_mode, set_audio_output_mode
 
@@ -1280,6 +1289,7 @@ async def start_auto_sub_optimize(
                     right_scan_delays=right_scan_delays,
                     fc=fc,
                     original_config_snapshot=original_config_snapshot,
+                    entry_epoch=entry_epoch,
                 )
             )
         elif output_mode == OUTPUT_MODE_SUBWOOFER_22:
@@ -1309,6 +1319,7 @@ async def start_auto_sub_optimize(
                     fc=fc,
                     original_config_snapshot=original_config_snapshot,
                     fine_step_ms=fine_step_ms,
+                    entry_epoch=entry_epoch,
                 )
             )
         else:
@@ -1329,6 +1340,7 @@ async def start_auto_sub_optimize(
                     original_level=original_level,
                     original_highpass=original_highpass,
                     original_config_snapshot=original_config_snapshot,
+                    entry_epoch=entry_epoch,
                 )
             )
         return {"status": "ok", "job": job}
@@ -2925,13 +2937,17 @@ async def _run_auto_sub_22_optimize(
     fc: int,
     original_config_snapshot: dict[str, Any],
     fine_step_ms: float,
+    entry_epoch: int | None = None,
 ) -> None:
     from main import (
         measurement_sr_session,
         measurement_store,
         subwoofer_runtime,
     )
-    from measurement_session import _resolve_measurement_start_sample_rate
+    from measurement_session import (
+        MeasurementEntryInvalidated,
+        _resolve_measurement_start_sample_rate,
+    )
     global _auto_sub_lock
     from samplerate import _load_audio_output_mode, set_audio_output_mode
 
@@ -2959,7 +2975,16 @@ async def _run_auto_sub_22_optimize(
 
     try:
         if measurement_sr_session is not None:
-            await measurement_sr_session.register_auto_sub(job_id)
+            try:
+                await measurement_sr_session.register_auto_sub(job_id, entry_epoch=entry_epoch)
+            except MeasurementEntryInvalidated:
+                logger.info(
+                    "AUTOSUB job=%s entry invalidated by measurement window close",
+                    job_id,
+                )
+                job["status"] = "cancelled"
+                job["message"] = "Auto Sub Optimize cancelled because the measurement window was closed."
+                return
         if _auto_sub_cancel_requested(job):
             logger.info("AUTOSUB job=%s cancel observed (before sweeps)", job_id)
             job["message"] = "Auto Sub Optimize cancelled."
@@ -3600,13 +3625,17 @@ async def _run_auto_sub_22_stereo_optimize(
     right_scan_delays: list[float],
     fc: int,
     original_config_snapshot: dict[str, Any],
+    entry_epoch: int | None = None,
 ) -> None:
     from main import (
         measurement_sr_session,
         measurement_store,
         subwoofer_runtime,
     )
-    from measurement_session import _resolve_measurement_start_sample_rate
+    from measurement_session import (
+        MeasurementEntryInvalidated,
+        _resolve_measurement_start_sample_rate,
+    )
     global _auto_sub_lock
     from samplerate import _load_audio_output_mode, set_audio_output_mode
 
@@ -3636,7 +3665,16 @@ async def _run_auto_sub_22_stereo_optimize(
 
     try:
         if measurement_sr_session is not None:
-            await measurement_sr_session.register_auto_sub(job_id)
+            try:
+                await measurement_sr_session.register_auto_sub(job_id, entry_epoch=entry_epoch)
+            except MeasurementEntryInvalidated:
+                logger.info(
+                    "AUTOSUB job=%s entry invalidated by measurement window close",
+                    job_id,
+                )
+                job["status"] = "cancelled"
+                job["message"] = "Auto Sub Optimize cancelled because the measurement window was closed."
+                return
         if _auto_sub_cancel_requested(job):
             logger.info("AUTOSUB job=%s cancel observed (before sweeps)", job_id)
             job["message"] = "Auto Sub Optimize cancelled."
@@ -4703,13 +4741,17 @@ async def _run_auto_sub_optimize(
     original_level: float,
     original_highpass: bool,
     original_config_snapshot: dict[str, Any],
+    entry_epoch: int | None = None,
 ) -> None:
     from main import (
         measurement_sr_session,
         measurement_store,
         subwoofer_runtime,
     )
-    from measurement_session import _resolve_measurement_start_sample_rate
+    from measurement_session import (
+        MeasurementEntryInvalidated,
+        _resolve_measurement_start_sample_rate,
+    )
     global _auto_sub_lock
     from samplerate import _load_audio_output_mode, set_audio_output_mode
 
@@ -4724,7 +4766,16 @@ async def _run_auto_sub_optimize(
 
     try:
         if measurement_sr_session is not None:
-            await measurement_sr_session.register_auto_sub(job_id)
+            try:
+                await measurement_sr_session.register_auto_sub(job_id, entry_epoch=entry_epoch)
+            except MeasurementEntryInvalidated:
+                logger.info(
+                    "AUTOSUB job=%s entry invalidated by measurement window close",
+                    job_id,
+                )
+                job["status"] = "cancelled"
+                job["message"] = "Auto Sub Optimize cancelled because the measurement window was closed."
+                return
         if _auto_sub_cancel_requested(job):
             logger.info("AUTOSUB job=%s cancel observed (before sweeps)", job_id)
             job["message"] = "Auto Sub Optimize cancelled."

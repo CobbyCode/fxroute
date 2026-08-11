@@ -18,6 +18,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Request
 
+from measurement_session import MeasurementEntryInvalidated
 from samplerate import get_audio_output_overview
 
 logger = logging.getLogger(__name__)
@@ -39,6 +40,7 @@ class _SplCalibrationOperation:
     session: Any = None
     registration_attempted: bool = False
     cancel_requested: bool = False
+    entry_epoch: int | None = None
     worker_task: asyncio.Task[Any] | None = None
     cleanup_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     completed: asyncio.Event = field(default_factory=asyncio.Event)
@@ -781,6 +783,9 @@ async def _acquire_operation(kind: str) -> _SplCalibrationOperation:
             kind=kind,
             session_job_id=f"spl-calibration:{operation_id}",
         )
+        session = _dependencies().get_measurement_session()
+        if session is not None and hasattr(session, "capture_entry_epoch"):
+            operation.entry_epoch = session.capture_entry_epoch()
         operation.worker_task = asyncio.current_task()
         _runtime.operation = operation
         return operation
@@ -793,7 +798,9 @@ async def _register_operation(operation: _SplCalibrationOperation) -> None:
         return
     operation.session = measurement_sr_session
     operation.registration_attempted = True
-    await operation.session.register_spl_job(operation.session_job_id)
+    await operation.session.register_spl_job(
+        operation.session_job_id, entry_epoch=operation.entry_epoch
+    )
     if operation.cancel_requested:
         raise RuntimeError("SPL calibration was stopped")
     await dependencies.measurement_entry_preflight(48_000)
@@ -1035,6 +1042,12 @@ async def set_spl_calibration_noise(request: Request):
         )
         operation.worker_task = watcher
         return result
+    except MeasurementEntryInvalidated:
+        await _cleanup_operation_shielded(operation)
+        raise HTTPException(
+            status_code=409,
+            detail="SPL calibration was cancelled because the measurement window was closed",
+        )
     except BaseException:
         await _cleanup_operation_shielded(operation)
         raise
@@ -1181,6 +1194,11 @@ async def measure_spl_automatically():
             "microphone_model": microphone_model,
             "serial_number": capability["serial_number"],
         }
+    except MeasurementEntryInvalidated:
+        raise HTTPException(
+            status_code=409,
+            detail="SPL calibration was cancelled because the measurement window was closed",
+        )
     except (subprocess.CalledProcessError, RuntimeError) as exc:
         raise HTTPException(status_code=409, detail=f"{type(exc).__name__}: {exc}") from exc
     finally:

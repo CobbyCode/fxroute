@@ -48,6 +48,15 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+class MeasurementEntryInvalidated(Exception):
+    """A measurement start request was invalidated by a session close before commit.
+
+    request_close() increments the session's entry epoch, so any start request
+    that captured the previous epoch is rejected at registration time, before
+    any 48 kHz / playback / ownership side effects occur.
+    """
+
+
 @dataclass(frozen=True)
 class MeasurementServices:
     get_store: Callable[[], Any]
@@ -86,6 +95,7 @@ class MeasurementSampleRateSession:
         self.close_requested = False
         self.deferred_release_pending = False
         self.generation = 0
+        self._entry_epoch = 0
         self.lock = asyncio.Lock()
         self._playback_captured = False
         self._rate_changed = False
@@ -107,6 +117,26 @@ class MeasurementSampleRateSession:
             or self.active_spl_job_ids
             or self.active_auto_sub_job_id is not None
         )
+
+    def capture_entry_epoch(self) -> int:
+        """Return the current measurement entry-invalidation epoch.
+
+        Start requests capture this token at their earliest point (before any
+        await that could let a close interleave) and pass it to the session
+        registration API.  request_close() increments the epoch, so an entry
+        captured before a close is rejected at registration time.
+        """
+        return self._entry_epoch
+
+    def _validate_entry_epoch(self, captured: int | None) -> int:
+        """Reject an entry captured in a superseded epoch; return its token."""
+        if captured is None:
+            return self._entry_epoch
+        if captured != self._entry_epoch:
+            raise MeasurementEntryInvalidated(
+                "Measurement start was cancelled because the measurement window was closed"
+            )
+        return captured
 
     async def _start_locked(self, measurement_rate: int) -> int:
         from main import (
@@ -178,12 +208,14 @@ class MeasurementSampleRateSession:
         )
         return self.generation
 
-    async def start(self, measurement_rate: int) -> int:
+    async def start(self, measurement_rate: int, entry_epoch: int | None = None) -> int:
         async with self.lock:
+            self._validate_entry_epoch(entry_epoch)
             return await self._start_locked(measurement_rate)
 
-    async def register_manual_job(self, job_id: str) -> int:
+    async def register_manual_job(self, job_id: str, entry_epoch: int | None = None) -> int:
         async with self.lock:
+            self._validate_entry_epoch(entry_epoch)
             if not self.active:
                 logger.info("Measurement sample-rate session start requested: caller=manual-sweep job_id=%s", job_id)
                 await self._start_locked(_resolve_measurement_start_sample_rate())
@@ -200,16 +232,18 @@ class MeasurementSampleRateSession:
             self.active_manual_job_ids.discard(job_id)
             await self._check_release()
 
-    async def register_auto_sub(self, job_id: str) -> int:
+    async def register_auto_sub(self, job_id: str, entry_epoch: int | None = None) -> int:
         async with self.lock:
+            self._validate_entry_epoch(entry_epoch)
             if not self.active:
                 logger.info("Measurement sample-rate session start requested: caller=auto-sub job_id=%s", job_id)
                 await self._start_locked(_resolve_measurement_start_sample_rate())
             self.active_auto_sub_job_id = job_id
             return self.generation
 
-    async def register_spl_job(self, job_id: str) -> int:
+    async def register_spl_job(self, job_id: str, entry_epoch: int | None = None) -> int:
         async with self.lock:
+            self._validate_entry_epoch(entry_epoch)
             if not self.active:
                 logger.info("Measurement sample-rate session start requested: caller=spl-meter job_id=%s", job_id)
                 await self._start_locked(_resolve_measurement_start_sample_rate())
@@ -240,6 +274,10 @@ class MeasurementSampleRateSession:
 
     async def request_close(self) -> None:
         async with self.lock:
+            # Invalidate every start request that captured the epoch before
+            # this close: a later registration of such an entry must abort
+            # before it can commit or touch the audio graph.
+            self._entry_epoch += 1
             self.close_requested = True
             released = await self._check_release()
             if not released:
@@ -1193,6 +1231,7 @@ async def download_local_root_certificate():
 async def _start_registered_manual_measurement(
     sample_rate: int,
     start_job: Callable[[], Awaitable[dict]],
+    entry_epoch: int | None = None,
 ) -> dict:
     """Own pending session registration until a concrete job takes its place."""
     measurement_sr_session = _measurement_services().get_session()
@@ -1201,7 +1240,9 @@ async def _start_registered_manual_measurement(
     pending_registered = False
     try:
         if measurement_sr_session is not None:
-            sweep_gen = await measurement_sr_session.register_manual_job(pending_job_id)
+            sweep_gen = await measurement_sr_session.register_manual_job(
+                pending_job_id, entry_epoch=entry_epoch
+            )
             pending_registered = True
         await _measurement_entry_preflight(sample_rate)
         job = await start_job()
@@ -1262,6 +1303,13 @@ async def start_measurement(
     if services.auto_sub_active():
         raise HTTPException(status_code=423, detail="Auto Sub Optimize is in progress")
 
+    measurement_sr_session = services.get_session()
+    entry_epoch = (
+        measurement_sr_session.capture_entry_epoch()
+        if measurement_sr_session is not None
+        else None
+    )
+
     calibration_bytes = None
     calibration_filename = None
     if calibration_file is not None:
@@ -1286,6 +1334,12 @@ async def start_measurement(
                 calibration_ref=calibration_ref,
                 measurement_role=measurement_role,
             ),
+            entry_epoch=entry_epoch,
+        )
+    except MeasurementEntryInvalidated:
+        raise HTTPException(
+            status_code=409,
+            detail="Measurement start was cancelled because the measurement window was closed",
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -1310,6 +1364,13 @@ async def start_lr_repeat_measurement(
     if services.auto_sub_active():
         raise HTTPException(status_code=423, detail="Auto Sub Optimize is in progress")
 
+    measurement_sr_session = services.get_session()
+    entry_epoch = (
+        measurement_sr_session.capture_entry_epoch()
+        if measurement_sr_session is not None
+        else None
+    )
+
     calibration_bytes = None
     calibration_filename = None
     if calibration_file is not None:
@@ -1333,6 +1394,12 @@ async def start_lr_repeat_measurement(
                 calibration_bytes=calibration_bytes,
                 calibration_ref=calibration_ref,
             ),
+            entry_epoch=entry_epoch,
+        )
+    except MeasurementEntryInvalidated:
+        raise HTTPException(
+            status_code=409,
+            detail="Measurement start was cancelled because the measurement window was closed",
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))

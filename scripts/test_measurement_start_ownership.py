@@ -19,7 +19,7 @@ class _Session:
     def __init__(self):
         self.active = set()
 
-    async def register_manual_job(self, job_id):
+    async def register_manual_job(self, job_id, entry_epoch=None):
         self.active.add(job_id)
         return self.generation
 

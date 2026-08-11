@@ -21,7 +21,7 @@ class FakeSession:
         self.active_ids = set()
         self.unregistered = []
 
-    async def register_spl_job(self, job_id):
+    async def register_spl_job(self, job_id, entry_epoch=None):
         self.active_ids.add(job_id)
 
     async def unregister_spl_job(self, job_id):
@@ -160,7 +160,7 @@ class SplCalibrationLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_registration_cancellation_cannot_leave_stale_session_id(self):
         class CancellingSession(FakeSession):
-            async def register_spl_job(self, job_id):
+            async def register_spl_job(self, job_id, entry_epoch=None):
                 self.active_ids.add(job_id)
                 raise asyncio.CancelledError
 
