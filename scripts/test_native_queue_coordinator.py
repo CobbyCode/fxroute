@@ -500,11 +500,13 @@ class NativeQueueShuffleParityTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(main.playback_queue_index, 1)
             self.assertEqual(fake.playlist[fake.state["playlist_pos"]], "/music/d.flac")
 
-            self.assertTrue(await main._advance_playback_queue(transition_reason="manual queue next"))
+            self.assertEqual(
+                await main._advance_playback_queue(transition_reason="manual queue next"),
+                "advanced",
+            )
             self.assertEqual(main.current_track_info["id"], "c")
             self.assertEqual(main.playback_queue_index, 2)
             self.assertEqual(fake.playlist[fake.state["playlist_pos"]], "/music/c.flac")
-
             self.assertTrue(await main._rewind_playback_queue(transition_reason="manual queue previous"))
             self.assertEqual(main.current_track_info["id"], "d")
             self.assertEqual(main.playback_queue_index, 1)

@@ -102,6 +102,13 @@ class QueueNavigationTransactionalTests(unittest.IsolatedAsyncioTestCase):
             stack.enter_context(patch.object(main.random, "shuffle", side_effect=lambda values: values.reverse()))
         return stack
 
+    def _payload_shim(self, state):
+        return {
+            "playing": bool(state.get("playing")),
+            "current_file": state.get("current_file"),
+            "queue": main._queue_payload(),
+        }
+
     async def test_load_queue_track_uncommitted_keeps_index_and_track(self):
         queue_a = [_track("a"), _track("b"), _track("c")]
         originals = self._install(queue_a, index=0)
@@ -279,7 +286,10 @@ class QueueNavigationTransactionalTests(unittest.IsolatedAsyncioTestCase):
                     patch.object(main, "_commit_queue_state", side_effect=recording_commit),
                 ):
                     stack.enter_context(patcher)
-                self.assertTrue(await main._advance_playback_queue(transition_reason="manual queue next"))
+                self.assertEqual(
+                    await main._advance_playback_queue(transition_reason="manual queue next"),
+                    "advanced",
+                )
 
             self.assertEqual(len(commits), 1, "the prepared wrap queue is committed exactly once")
             self.assertEqual(
@@ -290,6 +300,204 @@ class QueueNavigationTransactionalTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(main.playback_queue_shuffle)
             self.assertEqual(main.current_track_info, _track("c"))
             self.assertEqual(main.last_track_info, _track("c"))
+        finally:
+            self._restore(originals)
+
+    # -- Queue-Ende: terminaler Erfolgszustand statt clear-then-409 -------------
+
+    async def test_manual_next_at_queue_end_commits_terminal_ended_state(self):
+        queue_a = [_track("a"), _track("b")]
+        originals = self._install(queue_a, index=1)
+        try:
+            main.player_instance.state.update({
+                "current_file": "/music/b.flac",
+                "paused": False,
+                "playing": True,
+                "ended": False,
+                "position": 10.0,
+            })
+            state_before = dict(main.player_instance.state)
+
+            async def unreachable(_request):
+                self.fail("queue end must not start a transition")
+
+            with self._patch_context(unreachable), patch.object(
+                main, "build_playback_payload", self._payload_shim
+            ):
+                result = await main.next_playback()
+
+            self.assertEqual(result["status"], "ok")
+            self.assertIs(result["advanced"], False)
+            self.assertIs(result["queue_ended"], True)
+            self.assertEqual(main.playback_queue, [], "queue must be cleared")
+            self.assertEqual(main.playback_queue_index, -1)
+            self.assertEqual(
+                main.current_track_info, _track("b"),
+                "track context must survive the terminal end state",
+            )
+            self.assertEqual(
+                main.player_instance.state, state_before,
+                "the player must keep playing the last track",
+            )
+            self.assertEqual(
+                result["playback"]["queue"]["index"], -1,
+                "HTTP payload must expose the committed cleared queue state",
+            )
+            self.assertEqual(result["playback"]["queue"]["count"], 0)
+            self.assertFalse(result["playback"]["queue"]["active"])
+        finally:
+            self._restore(originals)
+
+    async def test_previous_at_queue_start_without_loop_is_409_without_mutation(self):
+        queue_a = [_track("a"), _track("b")]
+        originals = self._install(queue_a, index=0)
+        try:
+            async def unreachable(_request):
+                self.fail("previous at queue start must not start a transition")
+
+            with self._patch_context(unreachable):
+                with self.assertRaises(main.HTTPException) as ctx:
+                    await main.previous_playback()
+
+            self.assertEqual(ctx.exception.status_code, 409)
+            self.assertEqual(main.playback_queue, queue_a)
+            self.assertEqual(main.playback_queue_index, 0)
+            self.assertEqual(main.current_track_info, _track("a"))
+        finally:
+            self._restore(originals)
+
+    async def test_previous_at_queue_start_with_loop_stays_409_without_mutation(self):
+        queue_a = [_track("a"), _track("b")]
+        originals = self._install(queue_a, index=0, loop=True)
+        try:
+            async def unreachable(_request):
+                self.fail("previous at queue start must not start a transition")
+
+            with self._patch_context(unreachable):
+                with self.assertRaises(main.HTTPException) as ctx:
+                    await main.previous_playback()
+
+            self.assertEqual(ctx.exception.status_code, 409)
+            self.assertEqual(main.playback_queue, queue_a)
+            self.assertEqual(main.playback_queue_index, 0)
+            self.assertEqual(main.current_track_info, _track("a"))
+            self.assertTrue(main.playback_queue_loop)
+        finally:
+            self._restore(originals)
+
+    async def test_next_at_queue_end_with_loop_wraps_to_first_track(self):
+        queue_a = [_track("a"), _track("b")]
+        originals = self._install(queue_a, index=1, loop=True)
+        try:
+            async def succeed(request):
+                main.player_instance.state.update({
+                    "current_file": request.target_url,
+                    "paused": False,
+                    "playing": True,
+                    "ended": False,
+                    "position": 1.0,
+                })
+                return SimpleNamespace(target_rate=request.target_rate, committed=True)
+
+            with self._patch_context(succeed), patch.object(
+                main, "build_playback_payload", self._payload_shim
+            ):
+                result = await main.next_playback()
+
+            self.assertEqual(result["status"], "playing")
+            self.assertNotIn("queue_ended", result)
+            self.assertEqual(main.playback_queue, queue_a)
+            self.assertEqual(main.playback_queue_index, 0)
+            self.assertEqual(main.current_track_info, _track("a"))
+        finally:
+            self._restore(originals)
+
+    async def test_manual_next_shuffle_wrap_api_contract(self):
+        queue_a = [_track(track_id) for track_id in ("a", "b", "c", "d")]
+        originals = self._install(queue_a, index=3, shuffle=True)
+        try:
+            async def succeed(request):
+                main.player_instance.state.update({
+                    "current_file": request.target_url,
+                    "paused": False,
+                    "playing": True,
+                    "ended": False,
+                    "position": 1.0,
+                })
+                return SimpleNamespace(target_rate=request.target_rate, committed=True)
+
+            with self._patch_context(succeed, reverse_shuffle=True), patch.object(
+                main, "build_playback_payload", self._payload_shim
+            ):
+                result = await main.next_playback()
+
+            self.assertEqual(result["status"], "playing")
+            self.assertNotIn("queue_ended", result)
+            self.assertEqual(
+                [item["id"] for item in main.playback_queue],
+                ["d", "c", "b", "a"],
+            )
+            self.assertEqual(main.playback_queue_index, 1)
+            self.assertTrue(main.playback_queue_shuffle)
+            self.assertEqual(main.current_track_info, _track("c"))
+        finally:
+            self._restore(originals)
+
+    async def test_native_next_at_queue_end_without_loop_is_409_without_mutation(self):
+        queue_a = [_track(track_id, rate=48000) for track_id in ("a", "b", "c")]
+        originals = self._install(queue_a, index=2, mode="native_mpv")
+        try:
+            async def unreachable(_request):
+                self.fail("native queue end must not start a transition")
+
+            with self._patch_context(unreachable):
+                with self.assertRaises(main.HTTPException) as ctx:
+                    await main.next_playback()
+
+            self.assertEqual(ctx.exception.status_code, 409)
+            self.assertEqual(main.playback_queue, queue_a)
+            self.assertEqual(main.playback_queue_index, 2)
+            self.assertEqual(main.playback_queue_mode, "native_mpv")
+            self.assertEqual(main.current_track_info, _track("c", rate=48000))
+        finally:
+            self._restore(originals)
+
+    async def test_native_previous_at_queue_start_is_409_without_mutation(self):
+        queue_a = [_track(track_id, rate=48000) for track_id in ("a", "b", "c")]
+        originals = self._install(queue_a, index=0, mode="native_mpv")
+        try:
+            async def unreachable(_request):
+                self.fail("native previous at queue start must not start a transition")
+
+            with self._patch_context(unreachable):
+                with self.assertRaises(main.HTTPException) as ctx:
+                    await main.previous_playback()
+
+            self.assertEqual(ctx.exception.status_code, 409)
+            self.assertEqual(main.playback_queue, queue_a)
+            self.assertEqual(main.playback_queue_index, 0)
+            self.assertEqual(main.playback_queue_mode, "native_mpv")
+            self.assertEqual(main.current_track_info, _track("a", rate=48000))
+        finally:
+            self._restore(originals)
+
+    async def test_next_coordinator_failure_is_500_and_never_ended(self):
+        queue_a = [_track("a"), _track("b")]
+        originals = self._install(queue_a, index=0)
+        try:
+            async def fail(_request):
+                raise PlaybackTransitionFailure(
+                    "navigation failed", transition_id="tr-test", stage="target-source-start"
+                )
+
+            with self._patch_context(fail):
+                with self.assertRaises(main.HTTPException) as ctx:
+                    await main.next_playback()
+
+            self.assertEqual(ctx.exception.status_code, 500)
+            self.assertEqual(main.playback_queue, queue_a)
+            self.assertEqual(main.playback_queue_index, 0)
+            self.assertEqual(main.current_track_info, _track("a"))
         finally:
             self._restore(originals)
 

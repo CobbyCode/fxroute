@@ -5622,17 +5622,34 @@ async def _load_queue_track(index: int, *, transition_reason: str = "queue navig
     return True
 
 
-async def _advance_playback_queue(*, transition_reason: str = "queue advance") -> bool:
+async def _advance_playback_queue(*, transition_reason: str = "queue advance") -> str:
+    """Advance the committed queue.
+
+    Returns an explicit tri-state outcome instead of a plain bool so the
+    API can distinguish a successful terminal queue end from a navigation
+    that was not possible at all:
+
+    ``"advanced"``
+        Another queue track was committed successfully.
+    ``"ended"``
+        The terminal queue end state was committed successfully (the
+        queue is cleared, matching the auto-EOF end semantics).  The
+        queue mutation happened before this value is returned; the API
+        must represent it as a successful response, never as an error.
+    ``"unavailable"``
+        No navigation was possible and no authoritative queue state was
+        changed.
+    """
     global playback_queue_index
     if len(playback_queue) <= 1:
-        return False
+        return "unavailable"
     next_index = playback_queue_index + 1
     if next_index >= len(playback_queue):
         if playback_queue_mode == "native_mpv":
             if playback_queue_loop:
                 next_index = 0
             else:
-                return False
+                return "unavailable"
         else:
             manual_shuffle_wrap = playback_queue_shuffle and transition_reason.startswith("manual queue next")
             if playback_queue_loop or manual_shuffle_wrap:
@@ -5654,17 +5671,25 @@ async def _advance_playback_queue(*, transition_reason: str = "queue advance") -
                         single_track_loop=False,
                         track=dict(shuffled[next_index]),
                     )
-                    return await _load_queue_track(
-                        next_index,
-                        transition_reason=transition_reason,
-                        queue_candidate=candidate,
+                    return (
+                        "advanced"
+                        if await _load_queue_track(
+                            next_index,
+                            transition_reason=transition_reason,
+                            queue_candidate=candidate,
+                        )
+                        else "unavailable"
                     )
                 else:
                     next_index = 0
             else:
                 _clear_playback_queue()
-                return False
-    return await _load_queue_track(next_index, transition_reason=transition_reason)
+                return "ended"
+    return (
+        "advanced"
+        if await _load_queue_track(next_index, transition_reason=transition_reason)
+        else "unavailable"
+    )
 
 
 async def _rewind_playback_queue(*, transition_reason: str = "queue rewind") -> bool:
@@ -6407,7 +6432,7 @@ async def on_player_state_change(state: dict, event_commit_id: str | None = None
     ):
         queue_advancing = True
         try:
-            if len(playback_queue) > 1 and await _advance_playback_queue(transition_reason="queue auto-advance"):
+            if len(playback_queue) > 1 and await _advance_playback_queue(transition_reason="queue auto-advance") == "advanced":
                 return
             if single_track_loop and current_track_info and current_track_info.get("url"):
                 loop_track = dict(current_track_info)
@@ -7888,8 +7913,20 @@ async def next_playback():
         raise HTTPException(status_code=503, detail="Player not available")
     if len(playback_queue) <= 1:
         raise HTTPException(status_code=409, detail="No queue is active")
-    if not await _advance_playback_queue(transition_reason="manual queue next"):
+    result = await _advance_playback_queue(transition_reason="manual queue next")
+    if result == "unavailable":
         raise HTTPException(status_code=409, detail="Already at the end of the queue")
+    if result == "ended":
+        # The terminal queue end state was committed (queue cleared, index
+        # reset).  Building the payload after the clear exposes the cleared
+        # queue to the client instead of reporting a failure for a state
+        # that was already changed.
+        return {
+            "status": "ok",
+            "advanced": False,
+            "queue_ended": True,
+            "playback": build_playback_payload(player_instance.state),
+        }
     return {"status": "playing", "playback": build_playback_payload(player_instance.state)}
 
 

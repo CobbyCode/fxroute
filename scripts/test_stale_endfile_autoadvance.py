@@ -399,6 +399,29 @@ class StaleEndfileOwnershipTests(unittest.IsolatedAsyncioTestCase):
                          "current EOF advances to the next queue track")
         self.assertEqual(main.playback_queue_index, 1)
 
+    async def test_current_eof_at_queue_end_clears_queue_and_broadcasts(self):
+        self._install()
+        main.playback_queue_index = 1
+        main.current_track_info = dict(main.playback_queue[1])
+        main.last_track_info = dict(main.playback_queue[1])
+
+        await main.on_player_state_change(
+            _ended_snapshot(), event_commit_id=COMMIT_A
+        )
+
+        self.assertEqual(main.playback_queue, [],
+                         "EOF at the queue end commits the terminal end state")
+        self.assertEqual(main.playback_queue_index, -1)
+        self.assertEqual(main.current_track_info.get("id"), "a2",
+                         "track context must survive the terminal end state")
+        self.assertEqual(self._request_targets(), [],
+                         "queue end must not start a transition")
+        self.assertEqual(
+            [message.get("type") for message in self.manager.broadcasts],
+            ["playback"],
+            "the cleared end state must be broadcast",
+        )
+
     # -- G. Native MPV ------------------------------------------------------------
 
     async def test_native_queue_guard_unchanged(self):
