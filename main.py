@@ -6662,30 +6662,96 @@ async def _run_pactl_command(*args: str) -> str:
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    stdout, stderr = await proc.communicate()
+    try:
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(), timeout=_PACTL_COMMAND_TIMEOUT_SECONDS
+        )
+    except asyncio.TimeoutError:
+        # A hanging PulseAudio/PipeWire daemon must not block a source-mode
+        # change (startup or /api/audio/source-mode) forever.  Report the
+        # timeout as a controlled command failure, exactly like the
+        # nonzero-exit path below.  If the caller is cancelled while the
+        # cleanup drains, the cancellation wins over the timeout failure.
+        if await _stop_command_child_cancellation_safe(
+            proc, _PACTL_TERMINATE_GRACE_SECONDS
+        ):
+            raise asyncio.CancelledError
+        raise RuntimeError(
+            f"pactl {' '.join(args)} timed out after {_PACTL_COMMAND_TIMEOUT_SECONDS}s"
+        )
+    except asyncio.CancelledError:
+        # Caller cancellation must not leave the child behind; the shielded
+        # cleanup terminates/kills/drains it even under further cancellation,
+        # then the original cancellation is re-raised.
+        await _stop_command_child_cancellation_safe(proc, _PACTL_TERMINATE_GRACE_SECONDS)
+        raise
     if proc.returncode != 0:
         raise RuntimeError(stderr.decode(errors="ignore").strip() or f"pactl {' '.join(args)} failed")
     return stdout.decode(errors="ignore").strip()
 
 
+_PACTL_COMMAND_TIMEOUT_SECONDS = 3
+_PACTL_TERMINATE_GRACE_SECONDS = 1
 _PW_LINK_COMMAND_TIMEOUT_SECONDS = 10
 _PW_LINK_TERMINATE_GRACE_SECONDS = 3
 
 
-async def _stop_pw_link_process(proc) -> None:
-    """Terminate and fully reap a pw-link child (no zombie/pipe left behind).
+async def _stop_command_child(proc, grace_seconds: float) -> None:
+    """Terminate a still-running command child and drain it terminally.
 
-    Matches the project subprocess-stop convention: terminate first, allow a
-    bounded grace period, then kill and wait for the final exit.
+    terminate -> bounded communicate() (drains stdout+stderr) -> if the
+    child ignores SIGTERM: kill -> bounded communicate().  Process and both
+    pipes are thereby always worked off terminally; a final wait() guards
+    against a pathological case where even the killed child's pipes never
+    close.  Already-exited processes are handled cheaply.
     """
-    if proc.returncode is not None:
+    if proc is None or proc.returncode is not None:
         return
     proc.terminate()
     try:
-        await asyncio.wait_for(proc.wait(), timeout=_PW_LINK_TERMINATE_GRACE_SECONDS)
+        await asyncio.wait_for(proc.communicate(), timeout=grace_seconds)
     except asyncio.TimeoutError:
         proc.kill()
-        await proc.wait()
+        try:
+            await asyncio.wait_for(proc.communicate(), timeout=grace_seconds)
+        except asyncio.TimeoutError:
+            await proc.wait()
+
+
+async def _stop_command_child_cancellation_safe(proc, grace_seconds: float) -> bool:
+    """Stop and drain a command child shielded from caller cancellation.
+
+    Runs the actual stop in its own task behind ``asyncio.shield``: even a
+    second cancellation during the grace period cannot interrupt the
+    terminate/grace/kill/pipe-drain sequence, so no child can be orphaned by
+    caller cancellation.  Returns True when the caller was cancelled while
+    draining; the caller must then propagate CancelledError (it wins over
+    any timeout failure).  Cleanup errors are best-effort and swallowed.
+    """
+    if proc is None or proc.returncode is not None:
+        return False
+    cleanup_task = asyncio.create_task(_stop_command_child(proc, grace_seconds))
+    cancelled = False
+    while not cleanup_task.done():
+        try:
+            await asyncio.shield(cleanup_task)
+        except asyncio.CancelledError:
+            cancelled = True
+    try:
+        cleanup_task.result()
+    except Exception:
+        logger.debug("FXRoute command child cleanup failed", exc_info=True)
+    return cancelled
+
+
+async def _stop_pw_link_process(proc) -> None:
+    """Terminate and fully reap a pw-link child (no zombie/pipe left behind)."""
+    await _stop_command_child(proc, _PW_LINK_TERMINATE_GRACE_SECONDS)
+
+
+async def _stop_pactl_process(proc) -> None:
+    """Terminate and fully reap a pactl child (no zombie/pipe left behind)."""
+    await _stop_command_child(proc, _PACTL_TERMINATE_GRACE_SECONDS)
 
 
 async def _run_pw_link_command(*args: str) -> str:

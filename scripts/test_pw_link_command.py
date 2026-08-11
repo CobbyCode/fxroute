@@ -33,14 +33,17 @@ class FakeProc:
         self.wait_calls = 0
 
     async def communicate(self):
-        if self._hang:
+        # A hanging child models one that ignores SIGTERM: communicate only
+        # returns after the child is killed (like real killed pipes reaching
+        # EOF); until then it never completes.
+        if self._hang and not self.killed:
             await asyncio.Event().wait()
-        self.returncode = self._returncode
+        self.returncode = self.returncode if self.killed else self._returncode
         return self._stdout, self._stderr
 
     async def wait(self):
         self.wait_calls += 1
-        self.returncode = self._returncode
+        self.returncode = self.returncode if self.killed else self._returncode
         return self.returncode
 
     def terminate(self):
@@ -48,6 +51,7 @@ class FakeProc:
 
     def kill(self):
         self.killed = True
+        self.returncode = -9
 
 
 class RunPwLinkCommandTests(unittest.IsolatedAsyncioTestCase):
@@ -78,15 +82,21 @@ class RunPwLinkCommandTests(unittest.IsolatedAsyncioTestCase):
         proc = FakeProc(hang=True)
         started = asyncio.get_event_loop().time()
         with patch.object(main.asyncio, "create_subprocess_exec", return_value=proc), \
-                patch.object(main, "_PW_LINK_COMMAND_TIMEOUT_SECONDS", 0.2):
+                patch.object(main, "_PW_LINK_COMMAND_TIMEOUT_SECONDS", 0.2), \
+                patch.object(main, "_PW_LINK_TERMINATE_GRACE_SECONDS", 0.2):
             with self.assertRaises(RuntimeError) as ctx:
                 await main._run_pw_link_command("-l")
         elapsed = asyncio.get_event_loop().time() - started
         self.assertIn("timed out", str(ctx.exception))
         self.assertLess(elapsed, 2.0, "timeout must fire within the defined bound")
         self.assertTrue(proc.terminated, "timed-out child must be terminated")
-        self.assertGreaterEqual(proc.wait_calls, 1, "timed-out child must be reaped")
-        self.assertFalse(proc.killed, "graceful terminate suffices for a cooperative fake")
+        self.assertTrue(
+            proc.killed,
+            "a child that ignores terminate must be escalated to kill",
+        )
+        self.assertIsNotNone(
+            proc.returncode, "timed-out child must be reaped after kill"
+        )
 
     async def test_timeout_with_real_process_terminates_and_reaps(self):
         real_exec = asyncio.create_subprocess_exec

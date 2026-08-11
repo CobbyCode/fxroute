@@ -44,6 +44,20 @@ EASYEFFECTS_SINK_NAME = "easyeffects_sink"
 PIPEWIRE_LINK_RETRY_ATTEMPTS = 8
 PIPEWIRE_LINK_RETRY_DELAY_SECONDS = 0.15
 
+# Hard bound for every short-lived pw-link/pgrep/pkill command spawned by
+# the runtime controller: a wedged PipeWire/BlueZ daemon must never hold
+# ``_sync_lock``/``_reclean_lock`` (and through them playback transitions and
+# output-mode changes) indefinitely.  Matches samplerate._run_command's
+# project-wide 5 s query bound.
+RUNTIME_COMMAND_TIMEOUT_SECONDS = 5.0
+# Grace between terminate and kill when a bounded command child ignores
+# SIGTERM; matches the project subprocess-stop convention.
+RUNTIME_COMMAND_TERMINATE_GRACE_SECONDS = 2.0
+# Synthetic returncode for a timed-out command: every caller treats a
+# nonzero returncode as failure, so the timeout degrades exactly like a
+# normal command failure instead of success.
+RUNTIME_COMMAND_TIMEOUT_RETURNCODE = -1
+
 
 @dataclass(frozen=True)
 class CommandResult:
@@ -234,6 +248,56 @@ def _contains_link(text: str, source: str, target: str) -> bool:
     reverse_pw_link_io = f"{target}\n  |<- {source}"
     forward_pw_link_io = f"{source}\n  |-> {target}"
     return direct in text or reverse_pw_link_io in text or forward_pw_link_io in text
+
+
+async def _stop_command_child(process: Any, *, grace_seconds: float) -> None:
+    """Terminate a still-running command child and drain it terminally.
+
+    terminate -> bounded communicate() (drains stdout+stderr) -> if the
+    child ignores SIGTERM: kill -> bounded communicate().  Process and both
+    pipes are thereby always worked off terminally; a final wait() guards
+    against a pathological case where even the killed child's pipes never
+    close.  Already-exited processes are handled cheaply.
+    """
+    if process is None or process.returncode is not None:
+        return
+    process.terminate()
+    try:
+        await asyncio.wait_for(process.communicate(), timeout=grace_seconds)
+    except asyncio.TimeoutError:
+        process.kill()
+        try:
+            await asyncio.wait_for(process.communicate(), timeout=grace_seconds)
+        except asyncio.TimeoutError:
+            await process.wait()
+
+
+async def _stop_command_child_cancellation_safe(process: Any, *, grace_seconds: float) -> bool:
+    """Stop and drain a command child shielded from caller cancellation.
+
+    Runs the actual stop in its own task behind ``asyncio.shield``: even a
+    second cancellation during the grace period cannot interrupt the
+    terminate/grace/kill/pipe-drain sequence, so no child can be orphaned by
+    caller cancellation.  Returns True when the caller was cancelled while
+    draining; the caller must then propagate CancelledError (it wins over
+    any timeout failure).  Cleanup errors are best-effort and swallowed.
+    """
+    if process is None or process.returncode is not None:
+        return False
+    cleanup_task = asyncio.create_task(
+        _stop_command_child(process, grace_seconds=grace_seconds)
+    )
+    cancelled = False
+    while not cleanup_task.done():
+        try:
+            await asyncio.shield(cleanup_task)
+        except asyncio.CancelledError:
+            cancelled = True
+    try:
+        cleanup_task.result()
+    except Exception:
+        logger.debug("Subwoofer command child cleanup failed", exc_info=True)
+    return cancelled
 
 
 class Subwoofer21Runtime:
@@ -1281,7 +1345,36 @@ class Subwoofer21Runtime:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await process.communicate()
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(),
+                timeout=RUNTIME_COMMAND_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            # A wedged PipeWire registry must not hold the runtime locks
+            # forever.  Terminate, allow a short grace, then kill and fully
+            # reap the child so no command survives the call; report the
+            # timeout as a command failure exactly like a nonzero exit.
+            # If the caller is cancelled while the cleanup drains, the
+            # cancellation wins over the timeout failure.
+            if await _stop_command_child_cancellation_safe(
+                process, grace_seconds=RUNTIME_COMMAND_TERMINATE_GRACE_SECONDS
+            ):
+                raise asyncio.CancelledError
+            return CommandResult(
+                RUNTIME_COMMAND_TIMEOUT_RETURNCODE,
+                "",
+                f"Command timed out after {RUNTIME_COMMAND_TIMEOUT_SECONDS}s: {' '.join(args)}",
+            )
+        except asyncio.CancelledError:
+            # Caller cancellation must not leave the child behind; the
+            # shielded cleanup terminates/kills/drains it even under further
+            # cancellation, then the original cancellation is re-raised so
+            # the lock holders release ownership.
+            await _stop_command_child_cancellation_safe(
+                process, grace_seconds=RUNTIME_COMMAND_TERMINATE_GRACE_SECONDS
+            )
+            raise
         return CommandResult(
             process.returncode,
             stdout.decode("utf-8", "replace"),

@@ -23,6 +23,13 @@ LINK_DISCOVERY_TIMEOUT = 3.0
 PORT_DISCOVERY_POLL_INTERVAL = 0.1
 LINK_RETRY_ATTEMPTS = 12
 LINK_RETRY_INTERVAL = 0.12
+# Hard bound for every short-lived pw-cli/pw-link command: one hanging call
+# must never beat the LINK_DISCOVERY_TIMEOUT deadline or stall the monitor
+# task / relink path (which runs under peak_monitor_transition_lock).
+PEAK_MONITOR_COMMAND_TIMEOUT_SECONDS = 3.0
+# Grace between terminate and kill when a bounded command child ignores
+# SIGTERM; matches the project subprocess-stop convention.
+PEAK_MONITOR_COMMAND_TERMINATE_GRACE_SECONDS = 1.0
 ERROR_RETRY_INTERVAL = 0.35
 RESTART_SETTLE_SECONDS = 0.1
 CONSECUTIVE_HITS_REQUIRED = 2
@@ -52,6 +59,89 @@ def _resolve_capture_rate() -> int:
     if isinstance(clock_rate, int) and clock_rate > 0:
         return clock_rate
     return FALLBACK_CAPTURE_RATE
+
+
+async def _stop_bounded_command_child(proc) -> None:
+    """Terminate a still-running command child and drain it terminally.
+
+    terminate -> bounded communicate() (drains stdout+stderr) -> if the
+    child ignores SIGTERM: kill -> bounded communicate().  Process and both
+    pipes are thereby always worked off terminally; a final wait() guards
+    against a pathological case where even the killed child's pipes never
+    close.  Already-exited processes are handled cheaply.
+    """
+    if proc is None or proc.returncode is not None:
+        return
+    proc.terminate()
+    try:
+        await asyncio.wait_for(
+            proc.communicate(), timeout=PEAK_MONITOR_COMMAND_TERMINATE_GRACE_SECONDS
+        )
+    except asyncio.TimeoutError:
+        proc.kill()
+        try:
+            await asyncio.wait_for(
+                proc.communicate(), timeout=PEAK_MONITOR_COMMAND_TERMINATE_GRACE_SECONDS
+            )
+        except asyncio.TimeoutError:
+            await proc.wait()
+
+
+async def _stop_bounded_command_child_cancellation_safe(proc) -> bool:
+    """Stop and drain a command child shielded from caller cancellation.
+
+    Runs the actual stop in its own task behind ``asyncio.shield``: even a
+    second cancellation during the grace period cannot interrupt the
+    terminate/grace/kill/pipe-drain sequence, so no child can be orphaned by
+    caller cancellation.  Returns True when the caller was cancelled while
+    draining; the caller must then propagate CancelledError (it wins over
+    any timeout failure).  Cleanup errors are best-effort and swallowed.
+    """
+    if proc is None or proc.returncode is not None:
+        return False
+    cleanup_task = asyncio.create_task(_stop_bounded_command_child(proc))
+    cancelled = False
+    while not cleanup_task.done():
+        try:
+            await asyncio.shield(cleanup_task)
+        except asyncio.CancelledError:
+            cancelled = True
+    try:
+        cleanup_task.result()
+    except Exception:
+        logger.debug("Peak monitor command child cleanup failed", exc_info=True)
+    return cancelled
+
+
+async def _run_bounded_command(
+    args: list[str],
+    *,
+    timeout: float | None = None,
+) -> tuple[int, bytes, bytes]:
+    """Run one short-lived pw-cli/pw-link command under a hard bound.
+
+    On timeout the child is terminated, allowed a short grace period, then
+    killed and fully reaped before the failure is raised.  Caller
+    cancellation cleans up the child the same way and re-raises, so no
+    command child can outlive the call.
+    """
+    if timeout is None:
+        timeout = PEAK_MONITOR_COMMAND_TIMEOUT_SECONDS
+    proc = await asyncio.create_subprocess_exec(
+        *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        if await _stop_bounded_command_child_cancellation_safe(proc):
+            raise asyncio.CancelledError
+        raise RuntimeError(f"{' '.join(args)} timed out after {timeout:g}s")
+    except asyncio.CancelledError:
+        await _stop_bounded_command_child_cancellation_safe(proc)
+        raise
+    return proc.returncode, stdout, stderr
 
 
 @dataclass
@@ -361,15 +451,10 @@ class EasyEffectsPeakMonitor:
                     except Exception:
                         stderr = b""
                 raise RuntimeError(stderr.decode(errors="ignore").strip() or f"pw-record exited with {self._proc.returncode}")
-            proc = await asyncio.create_subprocess_exec(
-                "pw-cli",
-                "ls",
-                "Port",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+            returncode, stdout, stderr = await _run_bounded_command(
+                ["pw-cli", "ls", "Port"]
             )
-            stdout, stderr = await proc.communicate()
-            if proc.returncode != 0:
+            if returncode != 0:
                 raise RuntimeError(stderr.decode(errors="ignore").strip() or "pw-cli ls Port failed")
             text = stdout.decode(errors="ignore")
             for port in self._iter_ports(text):
@@ -479,15 +564,10 @@ class EasyEffectsPeakMonitor:
             yield port
 
     async def _run_link(self, output_port: str, input_port: str):
-        proc = await asyncio.create_subprocess_exec(
-            "pw-link",
-            output_port,
-            input_port,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        returncode, _, stderr = await _run_bounded_command(
+            ["pw-link", output_port, input_port]
         )
-        _, stderr = await proc.communicate()
-        if proc.returncode != 0:
+        if returncode != 0:
             message = stderr.decode(errors="ignore").strip() or f"pw-link failed: {output_port} -> {input_port}"
             lower = message.lower()
             if "file exists" in lower or "already linked" in lower:
@@ -496,15 +576,10 @@ class EasyEffectsPeakMonitor:
 
     async def _discover_target(self) -> Optional[MonitorTarget]:
         discover_started_at = time.monotonic()
-        proc = await asyncio.create_subprocess_exec(
-            "pw-cli",
-            "ls",
-            "Node",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        returncode, stdout, stderr = await _run_bounded_command(
+            ["pw-cli", "ls", "Node"]
         )
-        stdout, stderr = await proc.communicate()
-        if proc.returncode != 0:
+        if returncode != 0:
             raise RuntimeError(stderr.decode(errors="ignore").strip() or "pw-cli ls Node failed")
 
         text = stdout.decode(errors="ignore")
