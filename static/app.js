@@ -2437,11 +2437,7 @@ async function toggleLibraryShuffle() {
         });
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) {
-            const detail = data.detail;
-            const message = detail && typeof detail === 'object'
-                ? (detail.message || detail.detail || detail.error)
-                : detail;
-            throw new Error(message || 'Shuffle update failed');
+            throw new Error(formatTransitionErrorDetail(data.detail, 'Shuffle update failed'));
         }
         if (data.playback) {
             mergePlaybackState(data.playback);
@@ -2467,7 +2463,7 @@ async function toggleLibraryLoop() {
             body: JSON.stringify({ enabled: !state.library.loop }),
         });
         const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(data.detail || 'Loop update failed');
+        if (!resp.ok) throw new Error(formatTransitionErrorDetail(data.detail, 'Loop update failed'));
         if (data.playback) {
             mergePlaybackState(data.playback);
             syncLibraryStateFromPlaybackContext(true);
@@ -2512,7 +2508,7 @@ async function togglePlayback() {
         const resp = await fetch('/api/playback/toggle', { method: 'POST' });
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) {
-            throw new Error(data.detail || 'Playback toggle failed');
+            throw new Error(formatTransitionErrorDetail(data.detail, 'Playback toggle failed'));
         }
         if (requestId !== pauseActionRequestId) return;
         playbackActionInFlight = false;
@@ -3392,7 +3388,7 @@ async function playCoverQueueIndex(index) {
             body: JSON.stringify(payload),
         });
         const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(data.detail || 'Play command failed');
+        if (!resp.ok) throw new Error(formatTransitionErrorDetail(data.detail, 'Play command failed'));
         if (data.playback) {
             mergePlaybackState(data.playback);
             syncLibraryStateFromPlaybackContext(true);
@@ -3734,7 +3730,7 @@ async function previousInQueue() {
     try {
         const resp = await fetch('/api/playback/previous', { method: 'POST' });
         const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(data.detail || 'Previous failed');
+        if (!resp.ok) throw new Error(formatTransitionErrorDetail(data.detail, 'Previous failed'));
         if (data.playback) mergePlaybackState(data.playback);
         updatePlaybackUI();
         triggerSamplerateBurstPolling();
@@ -3753,7 +3749,7 @@ async function nextInQueue() {
     try {
         const resp = await fetch('/api/playback/next', { method: 'POST' });
         const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(data.detail || 'Next failed');
+        if (!resp.ok) throw new Error(formatTransitionErrorDetail(data.detail, 'Next failed'));
         if (data.playback) mergePlaybackState(data.playback);
         updatePlaybackUI();
         triggerSamplerateBurstPolling();
@@ -5116,7 +5112,7 @@ async function playRadio(stationId) {
             body: JSON.stringify({ source: 'radio', track_id: station.id, url: station.stream_url }),
         });
         const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(data.detail || 'Play command failed');
+        if (!resp.ok) throw new Error(formatTransitionErrorDetail(data.detail, 'Play command failed'));
         if (requestId !== pendingPlaybackRequestId) return;
         playbackActionInFlight = false;
         if (data.playback) {
@@ -5204,7 +5200,7 @@ async function playLocal(trackId) {
             }),
         });
         const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(data.detail || 'Play command failed');
+        if (!resp.ok) throw new Error(formatTransitionErrorDetail(data.detail, 'Play command failed'));
         if (requestId !== pendingPlaybackRequestId) return;
         playbackActionInFlight = false;
         let playedTrack = track;

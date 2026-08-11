@@ -187,6 +187,21 @@ class QueueNavigationTransactionalTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(main.current_track_info, _track("b"))
             self._restore(originals)
 
+    async def test_native_shuffle_during_transition_is_rejected(self):
+        queue_a = [_track(track_id) for track_id in ("a", "b", "c")]
+        originals = self._install(queue_a, index=1, mode="native_mpv")
+        coordinator = main.playback_transition_coordinator
+        try:
+            main.playback_transition_coordinator = SimpleNamespace(transition_active=True)
+            with self.assertRaises(main.HTTPException) as ctx:
+                await main._set_queue_shuffle(True)
+            self.assertEqual(ctx.exception.status_code, 409)
+            self.assertEqual(main.playback_queue, queue_a)
+            self.assertEqual(main.playback_queue_index, 1)
+        finally:
+            main.playback_transition_coordinator = coordinator
+            self._restore(originals)
+
     async def test_native_shuffle_failure_keeps_queue(self):
         queue_a = [_track(track_id) for track_id in ("a", "b", "c", "d")]
         originals = self._install(queue_a, index=1, mode="native_mpv")

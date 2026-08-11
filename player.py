@@ -530,6 +530,11 @@ class MPVWrapper:
             self._notify_callbacks()
             return result
 
+    def move_playlist_entry(self, old_index: int, new_index: int):
+        """Move an entry without reloading the currently playing source."""
+        with self.lock:
+            return self._send_command("playlist-move", old_index, new_index)
+
     def clear_playlist(self):
         """Remove queued entries while keeping the currently played file."""
         with self.lock:

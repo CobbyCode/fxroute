@@ -91,6 +91,12 @@ class _QueuePlayer:
         if 0 <= index < len(self.playlist):
             self.state["current_file"] = self.playlist[index]
 
+    def move_playlist_entry(self, old_index, new_index):
+        self.calls.append(("playlist-move", old_index, new_index))
+        entry = self.playlist.pop(old_index)
+        self.playlist.insert(new_index, entry)
+        self.state["playlist_pos"] = new_index
+
     def clear_playlist(self):
         self.calls.append(("playlist-clear",))
         current_file = self.state.get("current_file")
@@ -512,6 +518,7 @@ class NativeQueueShuffleParityTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(main.playback_queue_index, 1)
             self.assertEqual(fake.playlist[fake.state["playlist_pos"]], "/music/d.flac")
 
+            fake.state["position"] = 37.5
             self.assertTrue(await main._set_queue_shuffle(False))
             self.assertEqual(
                 [track["id"] for track in main.playback_queue],
@@ -522,6 +529,7 @@ class NativeQueueShuffleParityTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(fake.playlist, [track["url"] for track in original_queue])
             self.assertEqual(fake.state["playlist_pos"], 3)
             self.assertEqual(fake.playlist[fake.state["playlist_pos"]], "/music/d.flac")
+            self.assertEqual(fake.state["position"], 37.5)
         finally:
             for name, value in originals.items():
                 setattr(main, name, value)

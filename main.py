@@ -3000,6 +3000,7 @@ async def _transition_sample_rate_policy(policy: Mapping[str, Any], *, detail: s
         and context.get("target_url")
     )
 
+    native_queue_fields = _native_queue_request_fields() if source == "local" else {}
     await _run_coordinated_transition(TransitionRequest(
         operation="sample-rate-policy",
         source=source,
@@ -3012,6 +3013,7 @@ async def _transition_sample_rate_policy(policy: Mapping[str, Any], *, detail: s
         detail=detail,
         output_mode_target=dict(overview),
         sample_rate_policy=dict(policy),
+        **native_queue_fields,
     ))
 
 
@@ -3343,6 +3345,7 @@ async def _request_coordinated_recovery(
     recovery_track = dict(track)
     if source == "spotify" and observed_url:
         recovery_track.setdefault("url", observed_url)
+    native_queue_fields = _native_queue_request_fields() if source == "local" else {}
     request = TransitionRequest(
         operation=operation,
         source=source,
@@ -3357,6 +3360,7 @@ async def _request_coordinated_recovery(
         recovery_commit_context_id=attempt_commit_context_id,
         recovery_source=source,
         recovery_url=observed_url,
+        **native_queue_fields,
     )
 
     async def validate_recovery() -> bool:
@@ -5958,9 +5962,88 @@ async def _rewind_playback_queue(*, transition_reason: str = "queue rewind") -> 
     return await _load_queue_track(prev_index, transition_reason=transition_reason)
 
 
+async def _reorder_native_mpv_playlist(
+    target_queue: list[dict],
+    target_index: int,
+    enabled: bool,
+    was_paused: bool,
+) -> bool:
+    """Reorder MPV without committing app state until every IPC call succeeds."""
+    global playback_queue, playback_queue_original, playback_queue_index
+    global playback_queue_mode, playback_queue_loop, playback_queue_shuffle, single_track_loop
+    clear_playlist = getattr(player_instance, "clear_playlist", None)
+    loadfile = getattr(player_instance, "loadfile", None)
+    set_playlist_pos = getattr(player_instance, "set_playlist_pos", None)
+    move_playlist_entry = getattr(player_instance, "move_playlist_entry", None)
+    set_loop_playlist = getattr(player_instance, "set_loop_playlist", None)
+    if not all(callable(method) for method in (clear_playlist, loadfile, set_playlist_pos)):
+        return False
+
+    try:
+        current_url = str((player_instance.state if player_instance else {}).get("current_file") or "")
+        current_position = float((player_instance.state if player_instance else {}).get("position") or 0.0)
+        clear_playlist()
+        if not enabled and not callable(move_playlist_entry):
+            first_url = str(target_queue[0].get("url") or "")
+            if not first_url:
+                return False
+            loadfile(first_url, mode="replace", start_paused=True)
+        queue_tail = (
+            target_queue[1:]
+            if enabled or not callable(move_playlist_entry)
+            else target_queue[:target_index] + target_queue[target_index + 1:]
+        )
+        for track in queue_tail:
+            url = str(track.get("url") or "")
+            if not url:
+                raise RuntimeError("Native MPV queue contains an empty URL")
+            loadfile(url, mode="append")
+        if callable(set_loop_playlist):
+            set_loop_playlist(bool(playback_queue_loop))
+        if enabled:
+            set_playlist_pos(0)
+        elif callable(move_playlist_entry):
+            move_playlist_entry(0, target_index)
+            if current_url and not await _wait_for_player_current_file(current_url, timeout_ms=600):
+                raise RuntimeError("Native MPV current entry did not settle after playlist move")
+            if current_position > 0:
+                seek = getattr(player_instance, "seek", None)
+                if callable(seek):
+                    seek(current_position)
+        else:
+            set_playlist_pos(target_index)
+        if not enabled:
+            set_pause = getattr(player_instance, "set_pause", None)
+            if callable(set_pause):
+                set_pause(was_paused)
+        return True
+    except Exception:
+        logger.warning(
+            "Native queue reorder failed; reducing MPV to its current entry",
+            exc_info=True,
+        )
+        try:
+            _reduce_native_mpv_playlist_to_current()
+            _reset_mpv_loop_state()
+            # MPV is now intentionally current-entry-only, so discard the old
+            # committed queue rather than reporting an app/MPV mismatch.
+            playback_queue = []
+            playback_queue_original = []
+            playback_queue_index = -1
+            playback_queue_mode = "app_replace"
+            playback_queue_loop = False
+            playback_queue_shuffle = False
+            single_track_loop = False
+        except Exception:
+            logger.warning("Failed to normalize MPV after native queue reorder failure", exc_info=True)
+        raise
+
+
 async def _set_queue_shuffle(enabled: bool) -> bool:
     global playback_queue, playback_queue_original, playback_queue_index
     global playback_queue_shuffle, current_track_info, last_track_info
+    if _playback_transition_is_active():
+        raise HTTPException(status_code=409, detail="A playback transition is in progress")
     if len(playback_queue) <= 1:
         playback_queue_shuffle = False
         return False
@@ -5998,34 +6081,9 @@ async def _set_queue_shuffle(enabled: bool) -> bool:
         # Shuffle ON keeps the current entry at position zero.  Rebuild the
         # native playlist directly so changing order does not enter the full
         # output-graph transition path.
-        clear_playlist = getattr(player_instance, "clear_playlist", None)
-        loadfile = getattr(player_instance, "loadfile", None)
-        set_playlist_pos = getattr(player_instance, "set_playlist_pos", None)
-        set_loop_playlist = getattr(player_instance, "set_loop_playlist", None)
-        if all(callable(method) for method in (clear_playlist, loadfile, set_playlist_pos)):
-            player_state = player_instance.state if player_instance else {}
-            was_paused = bool(player_state.get("paused"))
-            if enabled:
-                clear_playlist()
-                queue_tail = target_queue[1:]
-            else:
-                first_url = str(target_queue[0].get("url") or "")
-                if not first_url:
-                    return False
-                loadfile(first_url, mode="replace", start_paused=True)
-                queue_tail = target_queue[1:]
-            for track in queue_tail:
-                url = str(track.get("url") or "")
-                if not url:
-                    return False
-                loadfile(url, mode="append")
-            if callable(set_loop_playlist):
-                set_loop_playlist(bool(playback_queue_loop))
-            set_playlist_pos(0 if enabled else target_index)
-            if not enabled:
-                set_pause = getattr(player_instance, "set_pause", None)
-                if callable(set_pause):
-                    set_pause(was_paused)
+        player_state = player_instance.state if player_instance else {}
+        was_paused = bool(player_state.get("paused"))
+        if await _reorder_native_mpv_playlist(target_queue, target_index, enabled, was_paused):
             playback_queue = target_queue
             playback_queue_index = 0 if enabled else target_index
             playback_queue_shuffle = bool(enabled)
@@ -6270,7 +6328,11 @@ def _playback_track_with_artwork_fields(track_info: Optional[dict]) -> Optional[
     return track
 
 
-def build_playback_payload(state: Optional[dict] = None) -> dict:
+def build_playback_payload(
+    state: Optional[dict] = None,
+    *,
+    include_live_metadata: bool = True,
+) -> dict:
     global current_track_info, easyeffects_manager, player_instance, peak_monitor
     playback_state = dict(state or (player_instance.state if player_instance else {}))
     source_volume = playback_state.get("volume") if isinstance(playback_state.get("volume"), (int, float)) else None
@@ -6292,7 +6354,7 @@ def build_playback_payload(state: Optional[dict] = None) -> dict:
     playback_state["footer_owner"] = _get_authoritative_footer_owner(playback_state=playback_state)
 
     live_title = None
-    if player_instance and current_track_info and current_track_info.get("source") == "radio":
+    if include_live_metadata and player_instance and current_track_info and current_track_info.get("source") == "radio":
         metadata = player_instance.get_metadata() if playback_state.get("current_file") else {}
         title = (metadata.get("icy-title") or metadata.get("title") or "").strip()
         if title:
@@ -6334,6 +6396,15 @@ def build_playback_payload(state: Optional[dict] = None) -> dict:
     # endpoints and websocket updates, and pulling full EasyEffects status here
     # can stall frequent /api/status polling during playback.
     return playback_state
+
+
+async def _read_status_player_detail(reader: Callable[[], Any], default: Any) -> Any:
+    """Keep optional MPV telemetry off the asyncio event loop and bounded."""
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(reader), timeout=1.0)
+    except Exception as exc:
+        logger.debug("Status MPV telemetry read failed: %s", exc)
+        return default
 
 
 async def on_peak_monitor_change(snapshot: dict):
@@ -8174,6 +8245,7 @@ async def toggle_playback():
             rate_change=_coordinator_rate_change(target_rate),
             reload_source=(target_rate is None or _coordinator_rate_change(target_rate)),
             detail="toggle-resume",
+            **(_native_queue_request_fields() if source == "local" else {}),
         )
         try:
             result = await _run_coordinated_transition(request)
@@ -8207,6 +8279,7 @@ async def toggle_playback():
         rate_change=_coordinator_rate_change(target_rate),
         reload_source=True,
         detail="replay",
+        **(_native_queue_request_fields() if source == "local" else {}),
     )
     try:
         result = await _run_coordinated_transition(request)
@@ -8359,6 +8432,13 @@ async def set_playback_shuffle(request: Request):
             raise HTTPException(status_code=409, detail="Shuffle requires an active local queue")
     except PlaybackTransitionFailure as exc:
         raise _transition_error_http(exc) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={"message": "Native queue reorder failed", "error": str(exc)},
+        ) from exc
 
     playback = build_playback_payload(player_instance.state)
     await manager.broadcast({"type": "playback", "data": playback})
@@ -8412,8 +8492,18 @@ async def seek_playback(request: Request):
 @app.get("/api/status")
 async def get_status():
     if player_instance:
-        state = build_playback_payload(player_instance.state)
-        state["metadata"] = player_instance.get_metadata() if state.get("current_file") else {}
+        state = build_playback_payload(player_instance.state, include_live_metadata=False)
+        state["metadata"] = (
+            await _read_status_player_detail(player_instance.get_metadata, {})
+            if state.get("current_file") else {}
+        )
+        if track := (state.get("current_track") or {}):
+            if track.get("source") == "radio":
+                state["live_title"] = (
+                    state["metadata"].get("icy-title")
+                    or state["metadata"].get("title")
+                    or None
+                )
         track = state.get("current_track") or {}
         if track.get("source") == "radio":
             station_id = str(track.get("id") or "").removeprefix("radio_")
@@ -8450,7 +8540,7 @@ async def get_status():
         # tech line.  Read-only; never derived from URLs or catalog fields.
         if track.get("source") in ("radio", "local") and state.get("current_file"):
             state["stream_info"] = normalize_stream_info(
-                player_instance.get_stream_audio_info()
+                await _read_status_player_detail(player_instance.get_stream_audio_info, {})
             )
         else:
             state["stream_info"] = None
