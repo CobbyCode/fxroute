@@ -12,6 +12,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import stations
+import radio_api
 from radio_api import add_station_catalog_selection, list_station_catalog
 
 
@@ -21,9 +22,11 @@ class StationCatalogTests(unittest.TestCase):
         self.previous_config_home = os.environ.get("XDG_CONFIG_HOME")
         os.environ["XDG_CONFIG_HOME"] = self.temp_dir.name
         stations._cached_stations = None
+        radio_api._station_mutation_lock = None
 
     def tearDown(self):
         stations._cached_stations = None
+        radio_api._station_mutation_lock = None
         if self.previous_config_home is None:
             os.environ.pop("XDG_CONFIG_HOME", None)
         else:

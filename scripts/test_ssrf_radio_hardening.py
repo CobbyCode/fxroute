@@ -320,9 +320,11 @@ class StationApiTests(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("[]\n", encoding="utf-8")
         stations._cached_stations = None
+        radio_api._station_mutation_lock = None
 
     def tearDown(self):
         stations._cached_stations = None
+        radio_api._station_mutation_lock = None
         if self.previous_config_home is None:
             os.environ.pop("XDG_CONFIG_HOME", None)
         else:

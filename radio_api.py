@@ -4,6 +4,7 @@
 
 import asyncio
 import json
+import logging
 import os
 import time
 from pathlib import Path
@@ -24,6 +25,8 @@ from stations import (
     update_station,
 )
 
+logger = logging.getLogger(__name__)
+
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 RADIO_BROWSER_BASE_URL = os.environ.get("FXROUTE_RADIO_BROWSER_URL", "https://de1.api.radio-browser.info").rstrip("/")
@@ -39,6 +42,56 @@ RADIO_BROWSER_RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 RADIO_BROWSER_RESULT_LIMIT = 30
 RADIO_BROWSER_QUERY_LIMIT = 12
 router = APIRouter()
+
+# App-wide ownership for station store mutations (stations.json writes,
+# _cached_stations invalidation and lazy artwork persistence).  Every async
+# station-mutating path must run under this lock with the synchronous store
+# operation offloaded to a worker; reads stay lock-free and side-effect-free.
+_station_mutation_lock: Optional[asyncio.Lock] = None
+
+
+def _get_station_mutation_lock() -> asyncio.Lock:
+    global _station_mutation_lock
+    if _station_mutation_lock is None:
+        _station_mutation_lock = asyncio.Lock()
+    return _station_mutation_lock
+
+
+async def _drain_worker(func, *args, **kwargs):
+    """Run a sync station worker off the event loop, surviving caller cancellation.
+
+    Mirrors main._drain_worker semantics; it cannot be imported from main.py
+    because main.py imports this module (import cycle).  A cancelled caller
+    must not release the surrounding critical section while the worker thread
+    is still running: threads cannot be cancelled, so this helper waits until
+    the worker actually finished, then re-raises CancelledError.  Worker
+    exceptions are re-raised in the normal path and logged on the
+    cancellation path (the cancellation takes precedence).
+    """
+    worker = asyncio.create_task(asyncio.to_thread(func, *args, **kwargs))
+    cancelled = False
+    while not worker.done():
+        try:
+            await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            cancelled = True
+    if cancelled:
+        try:
+            worker.result()
+        except BaseException:
+            logger.exception("Station worker failed while its caller was cancelled")
+        raise asyncio.CancelledError
+    return worker.result()
+
+
+async def _run_locked_station_worker(func, *args, **kwargs):
+    """Run a sync station store operation inside the app-wide mutation lock.
+
+    The lock is only released after the worker actually finished, even when
+    the caller is cancelled.
+    """
+    async with _get_station_mutation_lock():
+        return await _drain_worker(func, *args, **kwargs)
 
 
 class StationUpsertRequest(BaseModel):
@@ -228,7 +281,8 @@ def _radio_browser_payload(item: dict) -> Optional[dict]:
 
 @router.get("/api/stations")
 async def list_stations():
-    return [_station_api_payload(station) for station in get_stations()]
+    loaded = await _run_locked_station_worker(get_stations, enrich_missing_art=True)
+    return [_station_api_payload(station) for station in loaded]
 
 
 @router.get("/api/station-catalog")
@@ -248,7 +302,7 @@ async def list_station_catalog():
 @router.post("/api/station-catalog/{catalog_id}/selection")
 async def add_station_catalog_selection(catalog_id: str):
     try:
-        station = add_catalog_station(catalog_id)
+        station = await _run_locked_station_worker(add_catalog_station, catalog_id)
         return {"status": "ok", "station": _station_api_payload(station)}
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -310,6 +364,19 @@ async def search_station_browser(
     return [payload for _, _, payload in ranked[:RADIO_BROWSER_RESULT_LIMIT]]
 
 
+def _browser_find_or_create_station_sync(item: dict, payload: dict) -> object:
+    """Authoritative find-or-create inside the station mutation ownership.
+
+    Runs as a sync worker under _station_mutation_lock: the saved-station
+    lookup is re-executed here, so two concurrent selections of the same
+    UUID cannot both miss and create duplicate stations.
+    """
+    saved_station = _saved_station_for_browser_item(item)
+    if saved_station is not None:
+        return saved_station
+    return add_station(payload["title"], payload["url"], payload["favicon"])
+
+
 @router.post("/api/station-browser/{station_uuid}/selection")
 async def add_station_browser_selection(station_uuid: str):
     items = await asyncio.to_thread(
@@ -329,24 +396,21 @@ async def add_station_browser_selection(station_uuid: str):
     payload = _radio_browser_payload(item) if item else None
     if payload is None:
         raise HTTPException(status_code=404, detail="Radio Browser station not found")
-    saved_station = _saved_station_for_browser_item(item)
-    if saved_station is None:
-        try:
-            saved_station = await asyncio.to_thread(
-                add_station,
-                payload["title"],
-                payload["url"],
-                payload["favicon"],
-            )
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
+    try:
+        saved_station = await _run_locked_station_worker(
+            _browser_find_or_create_station_sync, item, payload
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     return {"status": "ok", "station": _station_api_payload(saved_station)}
 
 
 @router.post("/api/stations")
 async def create_station(req: StationUpsertRequest):
     try:
-        station = add_station(req.name, req.stream_url, req.custom_image_url)
+        station = await _run_locked_station_worker(
+            add_station, req.name, req.stream_url, req.custom_image_url
+        )
         return {"status": "ok", "station": _station_api_payload(station)}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -355,7 +419,9 @@ async def create_station(req: StationUpsertRequest):
 @router.put("/api/stations/{station_id}")
 async def edit_station(station_id: str, req: StationUpsertRequest):
     try:
-        station = update_station(station_id, req.name, req.stream_url, req.custom_image_url)
+        station = await _run_locked_station_worker(
+            update_station, station_id, req.name, req.stream_url, req.custom_image_url
+        )
         return {"status": "ok", "station": _station_api_payload(station)}
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -366,14 +432,13 @@ async def edit_station(station_id: str, req: StationUpsertRequest):
 @router.delete("/api/stations/{station_id}")
 async def remove_station(station_id: str):
     try:
-        delete_station(station_id)
+        await _run_locked_station_worker(delete_station, station_id)
         return {"status": "ok", "deleted": station_id}
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
 
-@router.post("/api/stations/import")
-async def import_stations(items: list[StationImportItem]):
+def _import_stations_sync(items: list[StationImportItem]) -> dict:
     results = []
     for item in items:
         name = (item.name or "").strip()
@@ -391,3 +456,8 @@ async def import_stations(items: list[StationImportItem]):
         except ValueError as e:
             results.append({"status": "error", "name": name, "reason": str(e)})
     return {"results": results}
+
+
+@router.post("/api/stations/import")
+async def import_stations(items: list[StationImportItem]):
+    return await _run_locked_station_worker(_import_stations_sync, items)
