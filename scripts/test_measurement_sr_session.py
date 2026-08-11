@@ -392,6 +392,32 @@ class TestCentralCapture:
         finally:
             ts.cleanup()
 
+    def test_spotify_target_track_builder_preserves_contract(self) -> None:
+        import main
+
+        state = {
+            "trackId": "spotify:track:A",
+            "url": "https://open.spotify.com/track/A",
+            "title": "Track A",
+            "artist": "Artist A",
+        }
+        assert main._spotify_target_track_from_state(state) == {
+            "source": "spotify",
+            "id": "spotify:track:A",
+            "url": "spotify:track:A",
+            "title": "Track A",
+            "artist": "Artist A",
+            "sample_rate_hz": main.SPOTIFY_PREARM_SAMPLE_RATE_HZ,
+        }
+        assert main._spotify_target_track_from_state({"url": "spotify:track:B"}) == {
+            "source": "spotify",
+            "id": None,
+            "url": "spotify:track:B",
+            "title": None,
+            "artist": None,
+            "sample_rate_hz": main.SPOTIFY_PREARM_SAMPLE_RATE_HZ,
+        }
+
     def test_spotify_snapshot_is_discarded_after_external_track_change(self) -> None:
         """A snapshot for Spotify A must not resurrect Spotify after an external switch to B."""
         ts = _TestSession()
@@ -488,6 +514,86 @@ class TestCentralCapture:
                 runtime.validate_measurement_restore_intent(request, {})
             ) is False
             assert main.current_track_info == local_track_before
+        finally:
+            ts.cleanup()
+
+    def test_restore_validator_call_site_fallbacks_remain_distinct(self) -> None:
+        ts = _TestSession()
+        try:
+            import main
+            from playback_transition import TransitionRequest
+
+            ts.set_track_playing(source="local", sample_rate=44100)
+            runtime = main.FxrouteTransitionRuntime()
+
+            def validate_runtime(intent, *, source="local", target_url="file:///test.flac", track=None):
+                request = TransitionRequest(
+                    operation="measurement-restore",
+                    source=source,
+                    target_rate=44100,
+                    target_url=target_url,
+                    target_track=track or dict(main.current_track_info or {}),
+                    should_play=True,
+                    restore_intent=intent,
+                )
+                return asyncio.get_event_loop().run_until_complete(
+                    runtime.validate_measurement_restore_intent(request, {})
+                )
+
+            precheck = measurement_session._measurement_restore_snapshot_matches_current_intent
+            run_precheck = lambda snapshot: asyncio.get_event_loop().run_until_complete(precheck(snapshot))
+
+            assert run_precheck(None) is False
+            assert validate_runtime({}) is True
+
+            base = {
+                "source": "local",
+                "track_info": dict(main.current_track_info),
+                "url": "file:///test.flac",
+                "current_file": "file:///test.flac",
+                "id": "track1",
+                "intent_generation": main.playback_intent_generation,
+            }
+            assert run_precheck(base) is True
+            assert validate_runtime(base) is True
+
+            main.player_instance.state["current_file"] = "file:///different-player-file.flac"
+            no_current_file = {key: value for key, value in base.items() if key != "current_file"}
+            assert run_precheck(no_current_file) is False
+            assert validate_runtime(no_current_file) is True
+            main.player_instance.state["current_file"] = "file:///test.flac"
+
+            no_source = {key: value for key, value in base.items() if key != "source"}
+            assert run_precheck(no_source) is False
+            assert validate_runtime(no_source) is True
+
+            for missing_id in (None, ""):
+                identity_fallback = dict(base, track_info=dict(base["track_info"], id="other"))
+                if missing_id is None:
+                    identity_fallback.pop("id")
+                else:
+                    identity_fallback["id"] = missing_id
+                assert run_precheck(identity_fallback) is False
+                assert validate_runtime(identity_fallback) is True
+
+            changed_generation = dict(base, intent_generation=main.playback_intent_generation + 1)
+            assert run_precheck(changed_generation) is False
+            assert validate_runtime(changed_generation) is False
+
+            ts.set_spotify_playing("spotify:track:A")
+            spotify_without_identity = {
+                "source": "spotify",
+                "intent_generation": main.playback_intent_generation,
+            }
+            spotify_track = {"source": "spotify", "id": "spotify:track:A", "url": "spotify:track:A"}
+            assert run_precheck(dict(spotify_without_identity, track_info="invalid")) is False
+            assert run_precheck(spotify_without_identity) is False
+            assert validate_runtime(
+                spotify_without_identity,
+                source="spotify",
+                target_url="spotify:track:A",
+                track=spotify_track,
+            ) is True
         finally:
             ts.cleanup()
 

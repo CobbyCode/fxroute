@@ -508,6 +508,7 @@ def _capture_playback_state_before_measurement(
     from main import (
         playback_intent_generation,
         _get_player_audio_samplerate,
+        _spotify_target_track_from_state,
         current_track_info,
         player_instance,
         SPOTIFY_PREARM_SAMPLE_RATE_HZ,
@@ -531,16 +532,17 @@ def _capture_playback_state_before_measurement(
         ).strip()
         if not spotify_identity:
             return
-        track_id = target_track.get("id") or spotify_state.get("trackId")
+        state_track = _spotify_target_track_from_state(spotify_state)
+        track_id = target_track.get("id") or state_track.get("id")
         was_playing = bool(context.get("should_play"))
         track_info = dict(target_track)
         track_info.update({
             "source": "spotify",
             "id": track_id,
             "url": spotify_identity,
-            "title": track_info.get("title") or spotify_state.get("title"),
-            "artist": track_info.get("artist") or spotify_state.get("artist"),
-            "sample_rate_hz": SPOTIFY_PREARM_SAMPLE_RATE_HZ,
+            "title": track_info.get("title") or state_track.get("title"),
+            "artist": track_info.get("artist") or state_track.get("artist"),
+            "sample_rate_hz": state_track.get("sample_rate_hz"),
         })
         effective_rate = samplerate.effective_playback_rate(SPOTIFY_PREARM_SAMPLE_RATE_HZ)
         _playback_state_before_measurement = {
@@ -728,32 +730,31 @@ async def _measurement_restore_snapshot_matches_current_intent(
 ) -> bool:
     """Return whether a captured playback snapshot is still user-intended."""
     from main import (
-        _spotify_intent_matches_live_state,
+        _measurement_restore_intent_matches_live_state,
         _spotify_snapshot_identity_values,
-        _local_intent_matches_live_state,
     )
     if not snapshot:
         return False
     expected_source = str(snapshot.get("source") or "")
-    if expected_source == "spotify":
-        return await _spotify_intent_matches_live_state(
-            _spotify_snapshot_identity_values(snapshot),
-            snapshot.get("intent_generation"),
+    expected_id = None
+    expected_url = None
+    expected_file = None
+    if expected_source != "spotify":
+        expected_track = snapshot.get("track_info") or {}
+        expected_id = snapshot.get("id") or expected_track.get("id")
+        expected_url = (
+            snapshot.get("url")
+            or snapshot.get("path")
+            or expected_track.get("url")
+            or expected_track.get("path")
         )
-
-    expected_track = snapshot.get("track_info") or {}
-    expected_id = snapshot.get("id") or expected_track.get("id")
-    expected_url = (
-        snapshot.get("url")
-        or snapshot.get("path")
-        or expected_track.get("url")
-        or expected_track.get("path")
-    )
-    return _local_intent_matches_live_state(
+        expected_file = snapshot.get("current_file") or expected_url
+    return await _measurement_restore_intent_matches_live_state(
         expected_source=expected_source,
         expected_id=expected_id,
         expected_url=expected_url,
-        expected_file=snapshot.get("current_file") or expected_url,
+        expected_file=expected_file,
+        expected_spotify_identities=_spotify_snapshot_identity_values(snapshot),
         intent_generation=snapshot.get("intent_generation"),
     )
 

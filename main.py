@@ -1845,26 +1845,24 @@ class FxrouteTransitionRuntime(TransitionRuntime):
             return True
 
         expected_source = str(intent.get("source") or request.source)
+        expected_spotify_identities: set[str] = set()
         if expected_source == "spotify":
-            expected_identities = _spotify_snapshot_identity_values(intent)
-            if not expected_identities:
-                expected_identities = _spotify_snapshot_identity_values({
+            expected_spotify_identities = _spotify_snapshot_identity_values(intent)
+            if not expected_spotify_identities:
+                expected_spotify_identities = _spotify_snapshot_identity_values({
                     "target_url": request.target_url,
                     "track_info": request.target_track,
                 })
-            return await _spotify_intent_matches_live_state(
-                expected_identities,
-                intent.get("intent_generation"),
-            )
 
         expected_id = intent.get("id")
         if expected_id in {None, ""}:
             expected_id = None
-        return _local_intent_matches_live_state(
+        return await _measurement_restore_intent_matches_live_state(
             expected_source=expected_source,
             expected_id=expected_id,
             expected_url=intent.get("url") or intent.get("path") or request.target_url,
             expected_file=intent.get("current_file"),
+            expected_spotify_identities=expected_spotify_identities,
             intent_generation=intent.get("intent_generation"),
         )
 
@@ -3077,6 +3075,18 @@ def _spotify_snapshot_identity_values(snapshot: Mapping[str, Any] | None) -> set
     return identities
 
 
+def _spotify_target_track_from_state(state: Mapping[str, Any]) -> dict[str, Any]:
+    track_id = state.get("trackId")
+    return {
+        "source": "spotify",
+        "id": track_id,
+        "url": track_id or state.get("url"),
+        "title": state.get("title"),
+        "artist": state.get("artist"),
+        "sample_rate_hz": SPOTIFY_PREARM_SAMPLE_RATE_HZ,
+    }
+
+
 async def _coordinator_current_playback_context() -> dict[str, Any]:
     """Read the currently owned source without mutating either transport."""
     local_state = dict(player_instance.state if player_instance else {})
@@ -3098,14 +3108,7 @@ async def _coordinator_current_playback_context() -> dict[str, Any]:
         return {
             "source": "spotify",
             "target_url": str(track_id or "") or None,
-            "target_track": {
-                "source": "spotify",
-                "id": spotify_state.get("trackId"),
-                "url": track_id,
-                "title": spotify_state.get("title"),
-                "artist": spotify_state.get("artist"),
-                "sample_rate_hz": SPOTIFY_PREARM_SAMPLE_RATE_HZ,
-            },
+            "target_track": _spotify_target_track_from_state(spotify_state),
             "should_play": True,
             "spotify": spotify_state,
         }
@@ -3121,14 +3124,7 @@ async def _coordinator_current_playback_context() -> dict[str, Any]:
         return {
             "source": "spotify",
             "target_url": str(spotify_state.get("trackId")),
-            "target_track": {
-                "source": "spotify",
-                "id": spotify_state.get("trackId"),
-                "url": spotify_state.get("trackId"),
-                "title": spotify_state.get("title"),
-                "artist": spotify_state.get("artist"),
-                "sample_rate_hz": SPOTIFY_PREARM_SAMPLE_RATE_HZ,
-            },
+            "target_track": _spotify_target_track_from_state(spotify_state),
             "should_play": False,
             "spotify": spotify_state,
         }
@@ -4977,10 +4973,7 @@ async def _spotify_intent_matches_live_state(
         return False
     if not expected_identities or not live_identities.intersection(expected_identities):
         return False
-    return not (
-        isinstance(intent_generation, int)
-        and intent_generation != playback_intent_generation
-    )
+    return _measurement_restore_intent_generation_matches(intent_generation)
 
 
 def _local_intent_matches_live_state(
@@ -5006,12 +4999,37 @@ def _local_intent_matches_live_state(
         return False
     if expected_file and current_file != expected_file:
         return False
-    if (
+    return _measurement_restore_intent_generation_matches(intent_generation)
+
+
+def _measurement_restore_intent_generation_matches(intent_generation: Any) -> bool:
+    return not (
         isinstance(intent_generation, int)
         and intent_generation != playback_intent_generation
-    ):
-        return False
-    return True
+    )
+
+
+async def _measurement_restore_intent_matches_live_state(
+    *,
+    expected_source: str,
+    expected_id: Any,
+    expected_url: str | None,
+    expected_file: str | None,
+    expected_spotify_identities: set[str],
+    intent_generation: Any,
+) -> bool:
+    if expected_source == "spotify":
+        return await _spotify_intent_matches_live_state(
+            expected_spotify_identities,
+            intent_generation,
+        )
+    return _local_intent_matches_live_state(
+        expected_source=expected_source,
+        expected_id=expected_id,
+        expected_url=expected_url,
+        expected_file=expected_file,
+        intent_generation=intent_generation,
+    )
 
 
 
