@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Behavior tests for M3U/M3U8 playlist I/O (playlist_io + main.py wrappers).
+"""Behavior tests for M3U/M3U8 playlist I/O (playlist_io).
 
-Covers REFACTOR-002 parity: parsing (BOM/comments), path resolution
+Covers REFACTOR-002: parsing (BOM/comments), path resolution
 (relative/absolute, Windows/POSIX, file://), unknown/duplicate entries,
 ordering, export content, download filename, import without match, and the
 existing API responses for playlist import and export.
@@ -240,22 +240,6 @@ class PlaylistIOImportTests(unittest.TestCase):
             "matched_track_count": 1,
             "entry_count": 2,
         })
-
-    def test_main_wrappers_delegate_to_playlist_io(self):
-        # Thin wrappers in main.py must stay behavior-identical.
-        self.assertEqual(
-            main._parse_m3u_entries("\ufeff#EXTM3U\ntrack.mp3\n"),
-            playlist_io.parse_m3u_entries("\ufeff#EXTM3U\ntrack.mp3\n"),
-        )
-        self.assertEqual(
-            main._playlist_download_filename("My Playlist"),
-            playlist_io.playlist_download_filename("My Playlist"),
-        )
-        with patch.object(main, "settings", self.settings), patch.object(main, "library_scanner", SimpleNamespace(get_tracks=lambda refresh=True, **kwargs: [])):
-            self.assertEqual(
-                main._resolve_m3u_track_ids(["album/song.flac"], tracks=[]),
-                playlist_io.resolve_m3u_track_ids(["album/song.flac"], self.music_root, tracks=[]),
-            )
 
 
 class PlaylistIOApiTests(unittest.IsolatedAsyncioTestCase):

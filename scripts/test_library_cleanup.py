@@ -8,9 +8,7 @@
 - library.folder_has_audio_files
 - library.cleanup_track_parent_folder
 
-sowie Wrapper-Parität gegen main._path_within_root, main._is_removable_artwork_file,
-main._is_removable_metadata_sidecar, main._is_cleanup_only_file,
-main._folder_has_audio_files und main._cleanup_track_parent_folder.
+sowie Wrapper-Parität gegen main._path_within_root.
 """
 import sys
 import unittest
@@ -313,107 +311,6 @@ class WrapperParityTests(unittest.TestCase):
                 path_within_root(path, base),
                 f"mismatch for {path} in {base}",
             )
-
-    def test_is_removable_artwork_parity(self):
-        import tempfile
-
-        with tempfile.TemporaryDirectory() as td:
-            folder = _make_folder(Path(td), "album", {"cover.jpg": b"x", "notes.jpg": b"y", "track.mp3": b"z"})
-            for name in ("cover.jpg", "notes.jpg", "track.mp3", "missing.jpg"):
-                p = folder / name
-                self.assertEqual(
-                    main._is_removable_artwork_file(p),
-                    is_removable_artwork_file(p),
-                    f"mismatch for {name}",
-                )
-
-    def test_is_removable_metadata_sidecar_parity(self):
-        import tempfile
-
-        with tempfile.TemporaryDirectory() as td:
-            folder = _make_folder(Path(td), "album", {"a.txt": b"x", "b.cue": b"", "c.flac": b"y"})
-            for name in ("a.txt", "b.cue", "c.flac", "missing.nfo"):
-                p = folder / name
-                self.assertEqual(
-                    main._is_removable_metadata_sidecar(p),
-                    is_removable_metadata_sidecar(p),
-                    f"mismatch for {name}",
-                )
-
-    def test_is_cleanup_only_parity(self):
-        import tempfile
-
-        with tempfile.TemporaryDirectory() as td:
-            folder = _make_folder(Path(td), "album", {"x.jpg": b"a", "y.txt": b"b", "z.wav": b"c"})
-            for name in ("x.jpg", "y.txt", "z.wav", "missing.png"):
-                p = folder / name
-                self.assertEqual(
-                    main._is_cleanup_only_file(p),
-                    is_cleanup_only_file(p),
-                    f"mismatch for {name}",
-                )
-
-    def test_folder_has_audio_parity(self):
-        import tempfile
-
-        with tempfile.TemporaryDirectory() as td:
-            base = Path(td)
-            music = _make_folder(base, "music", {"album/track.mp3": b"x"})
-            (music / "empty").mkdir()
-            album = music / "album"
-            empty = music / "empty"
-            for folder in (album, empty, music / "missing"):
-                self.assertEqual(
-                    main._folder_has_audio_files(folder),
-                    folder_has_audio_files(folder),
-                    f"mismatch for {folder}",
-                )
-
-    def test_cleanup_track_parent_folder_parity(self):
-        import tempfile
-
-        def normalize(result, root):
-            return {
-                "folder": str(Path(result["folder"]).relative_to(root)),
-                "removed_files": [str(Path(p).relative_to(root)) for p in result["removed_files"]],
-                "removed_folder": result["removed_folder"],
-                "kept": result["kept"],
-            }
-
-        with tempfile.TemporaryDirectory() as td:
-            base = Path(td)
-            music_w = _make_folder(base, "music_w", {"album/cover.jpg": b"x", "album/scan.pdf": b"y"})
-            music_m = _make_folder(base, "music_m", {"album/cover.jpg": b"x", "album/scan.pdf": b"y"})
-            folder_w = music_w / "album"
-            folder_m = music_m / "album"
-            result_w = main._cleanup_track_parent_folder(folder_w, music_w)
-            result_m = cleanup_track_parent_folder(folder_m, music_m)
-            self.assertEqual(normalize(result_w, music_w), normalize(result_m, music_m))
-            self.assertEqual(
-                normalize(result_w, music_w),
-                {"folder": "album", "removed_files": ["album/cover.jpg"], "removed_folder": False, "kept": []},
-            )
-
-    def test_cleanup_track_parent_folder_parity_removed(self):
-        import tempfile
-
-        with tempfile.TemporaryDirectory() as td:
-            base = Path(td)
-            music_w = _make_folder(base, "music_w", {"album/cover.jpg": b"x"})
-            music_m = _make_folder(base, "music_m", {"album/cover.jpg": b"x"})
-            folder_w = music_w / "album"
-            folder_m = music_m / "album"
-            result_w = main._cleanup_track_parent_folder(folder_w, music_w)
-            result_m = cleanup_track_parent_folder(folder_m, music_m)
-            self.assertEqual(result_w["removed_folder"], result_m["removed_folder"])
-            self.assertEqual(result_w["kept"], result_m["kept"])
-            self.assertEqual(
-                [str(Path(p).relative_to(music_w)) for p in result_w["removed_files"]],
-                [str(Path(p).relative_to(music_m)) for p in result_m["removed_files"]],
-            )
-            self.assertTrue(result_w["removed_folder"])
-            self.assertFalse(folder_w.exists())
-            self.assertFalse(folder_m.exists())
 
 
 if __name__ == "__main__":

@@ -120,11 +120,6 @@ def _read_build_id() -> str:
     return install_info.read_build_id()
 
 
-def _read_install_config() -> dict:
-    """Thin wrapper: install-config parsing lives in install_info (REFACTOR-009)."""
-    return install_info.read_install_config()
-
-
 def _configured_service_name() -> str:
     """Thin wrapper: service-name resolution lives in install_info (REFACTOR-009)."""
     return install_info.configured_service_name()
@@ -904,17 +899,11 @@ from models import (
 from player import get_player, MPVNotInstalledError, normalize_stream_info
 from radio_api import _station_api_payload, router as radio_api_router
 from stations import get_stations
-import playlist_io
 import sink_inputs
 import playback_state
 import samplerate
 from library import (
     LibraryScanner,
-    cleanup_track_parent_folder,
-    folder_has_audio_files,
-    is_cleanup_only_file,
-    is_removable_artwork_file,
-    is_removable_metadata_sidecar,
     path_within_root,
 )
 from downloader import Downloader
@@ -938,31 +927,6 @@ from playback_transition import (
     TransitionRequest,
     TransitionRuntime,
 )
-
-
-def _is_removable_artwork_file(path: Path) -> bool:
-    """Thin wrapper: artwork detection lives in library (REFACTOR-007)."""
-    return is_removable_artwork_file(path)
-
-
-def _is_removable_metadata_sidecar(path: Path) -> bool:
-    """Thin wrapper: sidecar detection lives in library (REFACTOR-007)."""
-    return is_removable_metadata_sidecar(path)
-
-
-def _is_cleanup_only_file(path: Path) -> bool:
-    """Thin wrapper: cleanup-only classification lives in library (REFACTOR-007)."""
-    return is_cleanup_only_file(path)
-
-
-def _folder_has_audio_files(folder: Path) -> bool:
-    """Thin wrapper: audio presence check lives in library (REFACTOR-007)."""
-    return folder_has_audio_files(folder)
-
-
-def _cleanup_track_parent_folder(folder: Path, music_root: Path, protected_folders: Optional[set[Path]] = None) -> dict:
-    """Thin wrapper: track-parent cleanup lives in library (REFACTOR-007)."""
-    return cleanup_track_parent_folder(folder, music_root, protected_folders=protected_folders)
 
 
 from samplerate import (
@@ -3654,73 +3618,9 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
-def _choose_unique_path(path: Path) -> Path:
-    """Thin wrapper: unique path selection lives in zip_album (REFACTOR-008)."""
-    return zip_album.choose_unique_path(path)
-
-
-def _choose_unique_dir(path: Path) -> Path:
-    """Thin wrapper: unique dir selection lives in zip_album (REFACTOR-008)."""
-    return zip_album.choose_unique_dir(path)
-
-
 def _is_safe_relative_zip_path(name: str) -> Optional[Path]:
     """Thin wrapper: ZIP traversal protection lives in zip_album (REFACTOR-008)."""
     return zip_album.is_safe_relative_zip_path(name)
-
-
-def _extract_zip_album(zip_path: Path, target_root: Path) -> dict:
-    """Thin wrapper: ZIP album extraction lives in zip_album (REFACTOR-008)."""
-    return zip_album.extract_zip_album(zip_path, target_root)
-
-
-def _parse_m3u_entries(content: str) -> List[str]:
-    """Thin wrapper: M3U parsing lives in playlist_io (REFACTOR-002)."""
-    return playlist_io.parse_m3u_entries(content)
-
-
-def _playlist_download_filename(name: str) -> str:
-    """Thin wrapper: download filename logic lives in playlist_io (REFACTOR-002)."""
-    return playlist_io.playlist_download_filename(name)
-
-
-def _track_relative_m3u_path(track) -> str:
-    """Thin wrapper: M3U path rendering lives in playlist_io (REFACTOR-002)."""
-    return playlist_io.track_relative_m3u_path(track, settings.MUSIC_ROOT)
-
-
-def _build_m3u_for_playlist(playlist) -> str:
-    """Thin wrapper: M3U export content lives in playlist_io (REFACTOR-002)."""
-    return playlist_io.build_m3u_for_playlist(
-        playlist,
-        library_scanner.get_tracks(refresh=True),
-        settings.MUSIC_ROOT,
-    )
-
-
-def _resolve_m3u_track_ids(entries: List[str], base_dir: Optional[Path] = None, tracks=None) -> List[str]:
-    """Thin wrapper: M3U entry resolution lives in playlist_io (REFACTOR-002)."""
-    if tracks is None:
-        tracks = library_scanner.get_tracks(refresh=True)
-    return playlist_io.resolve_m3u_track_ids(
-        entries,
-        settings.MUSIC_ROOT,
-        base_dir=base_dir,
-        tracks=tracks,
-    )
-
-
-def _import_m3u_playlist(name: str, content: str, base_dir: Optional[Path] = None, tracks=None) -> Optional[dict]:
-    """Thin wrapper: M3U playlist import lives in playlist_io (REFACTOR-002)."""
-    if tracks is None:
-        tracks = library_scanner.get_tracks(refresh=True)
-    return playlist_io.import_m3u_playlist(
-        name,
-        content,
-        settings.MUSIC_ROOT,
-        base_dir=base_dir,
-        tracks=tracks,
-    )
 
 
 def _native_mpv_playlist_is_effectively_current_only() -> bool:
@@ -3815,17 +3715,6 @@ def _queue_payload() -> dict:
         "loop": playback_queue_loop or single_track_loop,
         "shuffle": playback_queue_shuffle,
     }
-
-
-def _sync_track_context_from_queue_index(index: int) -> Optional[dict]:
-    global current_track_info, last_track_info, playback_queue_index
-    if index < 0 or index >= len(playback_queue):
-        return None
-    playback_queue_index = index
-    track = dict(playback_queue[index])
-    current_track_info = track
-    last_track_info = track
-    return track
 
 
 def _reset_mpv_loop_state() -> None:
@@ -7114,11 +7003,6 @@ async def _stop_command_child_cancellation_safe(proc, grace_seconds: float) -> b
 async def _stop_pw_link_process(proc) -> None:
     """Terminate and fully reap a pw-link child (no zombie/pipe left behind)."""
     await _stop_command_child(proc, _PW_LINK_TERMINATE_GRACE_SECONDS)
-
-
-async def _stop_pactl_process(proc) -> None:
-    """Terminate and fully reap a pactl child (no zombie/pipe left behind)."""
-    await _stop_command_child(proc, _PACTL_TERMINATE_GRACE_SECONDS)
 
 
 async def _run_pw_link_command(*args: str) -> str:

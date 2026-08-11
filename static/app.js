@@ -386,7 +386,6 @@ const elements = {
     albumFavoriteToggle: document.getElementById('album-favorite-toggle'),
     albumDetailTracks: document.getElementById('album-detail-tracks'),
     albumDiscover: document.getElementById('album-discover'),
-    playSelectedTracksBtn: document.getElementById('play-selected-tracks'),
     albumFavoritesToggleBtn: document.getElementById('album-favorites-toggle'),
     selectAllTracksBtn: document.getElementById('select-all-tracks'),
     playlistName: document.getElementById('playlist-name'),
@@ -4797,10 +4796,6 @@ function updateLibrarySelectionUI() {
         elements.deleteSelectedTracksBtn.classList.toggle('hidden', totalSelectedCount === 0);
     }
 
-    // Play: visible when tracks selected
-    if (elements.playSelectedTracksBtn) {
-        elements.playSelectedTracksBtn.disabled = totalSelectedCount === 0;
-    }
     if (elements.libraryInfo) {
         const playlistText = filteredPlaylists.length > 0
             ? `, ${filteredPlaylists.length} playlist${filteredPlaylists.length === 1 ? '' : 's'}`
@@ -11941,8 +11936,6 @@ async function importRewPeqPreset() {
     } catch (e) {
         elements.effectsStatus.innerHTML = `<div style="color: var(--danger);">REW PEQ import failed: ${escapeHtml(e.message)}</div>`;
         showToast(e.message || 'REW PEQ import failed', 'error');
-    } finally {
-        // no-op: submit button removed
     }
 }
 function renderEffects() {
@@ -11977,13 +11970,8 @@ function renderEffects() {
     if (elements.effectsPeqModeSelect) elements.effectsPeqModeSelect.disabled = false;
     if (elements.effectsPeqCreatePresetBtn) elements.effectsPeqCreatePresetBtn.disabled = false;
     renderPeqBands();
-    renderEffectsPresetStatus();
     renderEffectsCompare();
     renderEffectsCombine();
-}
-function renderEffectsPresetStatus() {
-    // The preset status is now shown inside the compare row via effectsCompareActive.
-    // This function is kept for backwards compatibility but is a no-op.
 }
 function getEmptyEffectsCompareState() {
     return { presetA: '', presetB: '', activeSide: null };
@@ -13393,9 +13381,6 @@ function setupLibraryActions() {
         } else if (searchPlaceholderQuery.addListener) {
             searchPlaceholderQuery.addListener(updateLibrarySearchPlaceholder);
         }
-    }
-    if (elements.playSelectedTracksBtn) {
-        // Legacy button removed from markup, keep null-safe no-op path only.
     }
     if (elements.selectAllTracksBtn) {
         elements.selectAllTracksBtn.addEventListener('click', toggleVisibleTrackSelection);

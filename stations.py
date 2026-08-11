@@ -8,7 +8,7 @@ import re
 import stat
 import tempfile
 import threading
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
 from urllib.parse import urljoin, urlparse
@@ -21,8 +21,6 @@ from safe_http import (
 )
 
 import requests
-
-from models import Track
 
 logger = logging.getLogger(__name__)
 
@@ -793,14 +791,3 @@ def delete_station(station_id: str) -> None:
     if len(filtered) == len(raw):
         raise FileNotFoundError(f"Station not found: {station_id}")
     _save_raw_stations(filtered)
-
-
-def station_to_track(station: Station) -> Track:
-    return Track(
-        id=f"radio_{station.id}",
-        title=station.name,
-        artist="Radio",
-        source="radio",
-        url=station.stream_url,
-        duration=None,
-    )

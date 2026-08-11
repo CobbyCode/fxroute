@@ -562,15 +562,6 @@ def _humanize_sink_name(name: str | None) -> str:
     return cleaned or (name or "Unknown output")
 
 
-def _normalize_output_label(label: str | None) -> str:
-    cleaned = (label or '').lower()
-    cleaned = cleaned.replace('displayport', 'display port')
-    cleaned = re.sub(r'\boutput\b', ' ', cleaned)
-    cleaned = re.sub(r'\bdevice\b', ' ', cleaned)
-    cleaned = re.sub(r'[^a-z0-9]+', ' ', cleaned)
-    return re.sub(r'\s+', ' ', cleaned).strip()
-
-
 def _prefer_output_port_label(port_label: str | None, fallback_label: str | None) -> str | None:
     cleaned_port = (port_label or '').strip()
     if not cleaned_port:

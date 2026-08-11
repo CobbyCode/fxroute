@@ -6,8 +6,8 @@
 - install_info.read_install_config
 - install_info.configured_service_name
 
-sowie Wrapper-Parität gegen main._read_version_file, main._read_build_id,
-main._read_install_config und main._configured_service_name.
+sowie Wrapper-Parität gegen main._read_version_file, main._read_build_id
+und main._configured_service_name.
 """
 import subprocess
 import sys
@@ -254,13 +254,6 @@ class WrapperParityTests(unittest.TestCase):
                 install_info.subprocess, "run", return_value=_git_result(0, "deadbeef\n")
             ):
                 self.assertEqual(main._read_build_id(), install_info.read_build_id())
-
-    def test_read_install_config_parity(self):
-        with tempfile.TemporaryDirectory() as td:
-            config = Path(td) / "install-config.env"
-            config.write_text("# c\nKEY=a=b\nKEY=last\n\n", encoding="utf-8")
-            with patch.object(install_info, "INSTALL_CONFIG_FILE", config):
-                self.assertEqual(main._read_install_config(), install_info.read_install_config())
 
     def test_configured_service_name_parity(self):
         with tempfile.TemporaryDirectory() as td:

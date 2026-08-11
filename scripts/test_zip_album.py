@@ -7,9 +7,8 @@
 - zip_album.is_safe_relative_zip_path
 - zip_album.extract_zip_album
 
-sowie Wrapper-Parität gegen main._dedupe_archive_name,
-main._choose_unique_path, main._choose_unique_dir,
-main._is_safe_relative_zip_path und main._extract_zip_album.
+sowie Wrapper-Parität gegen main._dedupe_archive_name und
+main._is_safe_relative_zip_path.
 Tests nutzen echte temporäre ZIP-Dateien (zipfile, tmp-Verzeichnisse).
 """
 import sys
@@ -283,26 +282,6 @@ class WrapperParityTests(unittest.TestCase):
             )
         self.assertEqual(used_w, used_m)
 
-    def test_choose_unique_path_parity(self):
-        with tempfile.TemporaryDirectory() as td:
-            base = Path(td)
-            (base / "track.mp3").write_bytes(b"x")
-            (base / "track-2.mp3").write_bytes(b"x")
-            target = base / "track.mp3"
-            self.assertEqual(main._choose_unique_path(target), choose_unique_path(target))
-            free = base / "free.mp3"
-            self.assertEqual(main._choose_unique_path(free), choose_unique_path(free))
-
-    def test_choose_unique_dir_parity(self):
-        with tempfile.TemporaryDirectory() as td:
-            base = Path(td)
-            (base / "album").mkdir()
-            (base / "album-2").mkdir()
-            target = base / "album"
-            self.assertEqual(main._choose_unique_dir(target), choose_unique_dir(target))
-            free = base / "free"
-            self.assertEqual(main._choose_unique_dir(free), choose_unique_dir(free))
-
     def test_is_safe_relative_zip_path_parity(self):
         cases = [
             "album/track.mp3",
@@ -323,37 +302,6 @@ class WrapperParityTests(unittest.TestCase):
                 main._is_safe_relative_zip_path(case),
                 is_safe_relative_zip_path(case),
                 f"mismatch for {case!r}",
-            )
-
-    def test_extract_zip_album_parity(self):
-        with tempfile.TemporaryDirectory() as td:
-            base = Path(td)
-            zip_w = base / "w.zip"
-            zip_m = base / "m.zip"
-            target_w = base / "out_w"
-            target_m = base / "out_m"
-            members = [
-                ("track.mp3", b"audio"),
-                ("cover.jpg", b"image"),
-                ("__MACOSX/track.mp3", b"meta"),
-                ("../evil.mp3", b"evil"),
-            ]
-            _write_zip(zip_w, members)
-            _write_zip(zip_m, members)
-            result_w = main._extract_zip_album(zip_w, target_w)
-            result_m = extract_zip_album(zip_m, target_m)
-            self.assertEqual(
-                [str(p.relative_to(target_w)) for p in result_w["extracted_files"]],
-                [str(p.relative_to(target_m)) for p in result_m["extracted_files"]],
-            )
-            self.assertEqual(result_w["skipped_entries"], result_m["skipped_entries"])
-            self.assertEqual(
-                [str(p.relative_to(target_w)) for p in result_w["audio_files"]],
-                [str(p.relative_to(target_m)) for p in result_m["audio_files"]],
-            )
-            self.assertEqual(
-                [str(p.relative_to(target_w)) for p in result_w["playlist_files"]],
-                [str(p.relative_to(target_m)) for p in result_m["playlist_files"]],
             )
 
 
