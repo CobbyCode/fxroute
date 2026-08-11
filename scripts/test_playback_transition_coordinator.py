@@ -459,8 +459,8 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
         runtime.target_source_staged = lambda _request: True
         abort_calls = []
 
-        async def abort(_request, snapshot, *, target_staged):
-            abort_calls.append((snapshot, target_staged))
+        async def abort(_request, snapshot, *, target_staged, ensure_gate_closed=None):
+            abort_calls.append((snapshot, target_staged, ensure_gate_closed))
 
         runtime.abort_failed_transition = abort
         coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
@@ -469,9 +469,10 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
             await coordinator.execute(request())
 
         self.assertEqual(len(abort_calls), 1)
-        snapshot, target_staged = abort_calls[0]
+        snapshot, target_staged, gate_guard = abort_calls[0]
         self.assertEqual(snapshot["player"]["current_file"], "/music/current.flac")
         self.assertTrue(target_staged)
+        self.assertIsNotNone(gate_guard)
         self.assertTrue(coordinator.gate.failure_latched)
 
     async def test_same_rate_pause_does_not_change_hardware_gate(self):

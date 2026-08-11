@@ -21,7 +21,7 @@ import samplerate_orchestration
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Callable, List, Mapping, Optional
+from typing import Any, Awaitable, Callable, List, Mapping, Optional
 from urllib.parse import quote, unquote, urlparse
 from uuid import uuid4
 
@@ -1228,7 +1228,8 @@ class FxrouteTransitionRuntime(TransitionRuntime):
         snapshot: Mapping[str, Any] | None,
         *,
         target_staged: bool,
-    ) -> None:
+        ensure_gate_closed: Callable[..., Awaitable[None]] | None = None,
+    ) -> bool | None:
         """Finish a failed MPV handoff without mixing old and new context.
 
         The Coordinator has already attenuated and paused the source before it
@@ -1242,6 +1243,54 @@ class FxrouteTransitionRuntime(TransitionRuntime):
         global current_track_info, current_footer_owner, playback_queue_mode
 
         if request.source not in {"local", "radio"}:
+            if request.source != "spotify":
+                return
+            # A failed Spotify handoff already quieted and stopped the
+            # previously committed Local/Radio source and cleared its track
+            # context before the Spotify start was verified (quiet_old_source
+            # -> pause_local_playback_for_spotify_broadcast).  Restore the
+            # pre-transition committed source physically (sample rate, MPV
+            # load, pause/play state, volume) from the Coordinator snapshot
+            # so a failed Spotify start never loses both sources.  The
+            # committed queue, last_track_info and radio-reconnect state were
+            # never touched by the handoff and stay as they are.  On success
+            # this returns True so the Coordinator restores the output gate
+            # instead of latching a failure; on restore failure the existing
+            # failure latch keeps the safe state.
+            previous_state = dict((snapshot or {}).get("player") or {})
+            snapshot_track = dict((snapshot or {}).get("current_track") or {})
+            if snapshot_track.get("source") in {"local", "radio"} and bool(
+                previous_state.get("current_file")
+                or previous_state.get("playing")
+                or previous_state.get("paused")
+                or previous_state.get("ended")
+            ):
+                restored = await self._restore_committed_source_after_failed_spotify(
+                    request,
+                    snapshot,
+                    previous_state,
+                    snapshot_track,
+                    ensure_gate_closed=ensure_gate_closed,
+                )
+                if restored:
+                    current_track_info = dict(snapshot_track)
+                    current_footer_owner = "local"
+                    _mark_player_state_authoritative(player_instance.state if player_instance else {})
+                    logger.warning(
+                        "Spotify handoff failed; restored committed %s source for retry: "
+                        "track_id=%s url=%s",
+                        snapshot_track.get("source"),
+                        snapshot_track.get("id"),
+                        snapshot_track.get("url"),
+                    )
+                    return True
+                logger.warning(
+                    "Spotify handoff failed and the committed %s source could not be "
+                    "restored; keeping the failure gate latched: track_id=%s url=%s",
+                    snapshot_track.get("source"),
+                    snapshot_track.get("id"),
+                    snapshot_track.get("url"),
+                )
             return
 
         previous_state = dict((snapshot or {}).get("player") or {})
@@ -1315,6 +1364,221 @@ class FxrouteTransitionRuntime(TransitionRuntime):
         current_track_info = None
         current_footer_owner = "local"
         _mark_player_state_authoritative(player_instance.state if player_instance else {})
+
+    async def _restore_committed_source_after_failed_spotify(
+        self,
+        request: TransitionRequest,
+        snapshot: Mapping[str, Any],
+        previous_state: Mapping[str, Any],
+        track: Mapping[str, Any],
+        *,
+        ensure_gate_closed: Callable[..., Awaitable[None]] | None = None,
+    ) -> bool:
+        """Physically restore the previously committed Local/Radio source and
+        its full playback graph after a failed Spotify handoff.
+
+        Runs the same bounded low-level Coordinator stage primitives that a
+        normal Local/Radio transition executes under the still-closed output
+        gate (never a nested Coordinator transition): old rate, effects and
+        helper for the old rate, source/queue transport (including a
+        committed native MPV playlist), post-start graph reconcile, staged
+        graph readback, DSP stabilization when the failed Spotify transition
+        reinitialized the DSP, and a final commit readback.  Between the
+        critical stages the Coordinator-bound ``ensure_gate_closed`` boundary
+        check re-confirms the physical output gate.  Returns True only when
+        the old source is confirmed in its previous transport state on the
+        complete old graph; any stage failure keeps the failure latch.
+        """
+        source = str(track.get("source") or "")
+        target_url = str(track.get("url") or previous_state.get("current_file") or "")
+        if source not in {"local", "radio"} or not target_url:
+            return False
+        global playback_queue_mode
+        native_committed = bool(
+            playback_queue_mode == "native_mpv" and len(playback_queue) > 1
+        )
+        # The authoritative restore rate comes from the previously committed
+        # snapshot, not from the failed request: preferred positive
+        # active_rate (the actually committed hardware rate), then positive
+        # force_rate, then the track-derived Coordinator rate.
+        snapshot_active = int((snapshot or {}).get("active_rate") or 0)
+        snapshot_force = int((snapshot or {}).get("force_rate") or 0)
+        restore_target_rate = (
+            snapshot_active if snapshot_active > 0 else (snapshot_force if snapshot_force > 0 else 0)
+        )
+        if restore_target_rate <= 0:
+            derived = _coordinator_target_rate(source, track)
+            restore_target_rate = int(derived) if isinstance(derived, int) and derived > 0 else 0
+        if restore_target_rate <= 0:
+            logger.warning(
+                "Spotify handoff source restore aborted: no authoritative committed "
+                "sample rate for %s source url=%s",
+                source,
+                target_url,
+            )
+            return False
+        # rate_change is not a blind copy of the failed request: it must
+        # cover both a real rate/DSP switch performed by the failed Spotify
+        # handoff and a live state that currently differs from the committed
+        # restore rate.  Unknown or missing live rate state counts as a
+        # possible rate change (conservative), so effects/helper are
+        # validated/reinitialized; establish_target_rate stays idempotent
+        # when the hardware already stands correctly.
+        try:
+            live_status = dict(get_samplerate_status())
+        except Exception:
+            live_status = {}
+        live_active = int(live_status.get("active_rate") or 0)
+        live_aligned = bool(live_active > 0 and live_active == restore_target_rate)
+        restore_rate_change = bool(request.rate_change or not live_aligned)
+        was_playing = bool(
+            previous_state.get("playing")
+            and not previous_state.get("paused")
+            and not previous_state.get("ended")
+        )
+        previous_position = previous_state.get("position")
+        restore_position = (
+            max(0.0, float(previous_position))
+            if source == "local"
+            and isinstance(previous_position, (int, float))
+            and previous_position > 0
+            else None
+        )
+        restore_request = TransitionRequest(
+            operation="replay",
+            source=source,
+            target_rate=restore_target_rate,
+            target_url=target_url,
+            target_track=dict(track),
+            should_play=was_playing,
+            rate_change=restore_rate_change,
+            reload_source=True,
+            restore_position=restore_position,
+            native_queue=(
+                tuple(dict(item) for item in playback_queue) if native_committed else None
+            ),
+            native_queue_index=playback_queue_index if native_committed else None,
+            native_queue_jump=None,
+            native_queue_loop=(
+                bool(playback_queue_loop or single_track_loop) if native_committed else False
+            ),
+            detail="spotify-abort-restore",
+        )
+        restored = False
+        try:
+            # A verify failure after a successful Spotify start can leave the
+            # Spotify sink input active while the old rate and graph are
+            # restored.  Quiesce it through the existing bounded release
+            # helper before any old-graph stage touches the graph; if the
+            # active Spotify source does not release within the existing
+            # bound, the restore fails and the failure latch stays.
+            if not await _wait_for_pipewire_spotify_release():
+                logger.warning(
+                    "Spotify handoff source restore aborted: active Spotify sink "
+                    "input did not quiesce before the old source restore"
+                )
+                return False
+            # The Coordinator-owned hardware gate must be physically closed
+            # before ANY mutating restore stage (rate, effects/helper, MPV,
+            # graph, volume) runs: the original Spotify transition may itself
+            # have failed at output-gate-close, leaving the gate unverified.
+            if ensure_gate_closed is not None:
+                await ensure_gate_closed(stage="spotify-abort-restore-before-rate")
+            await self.establish_target_rate(restore_request)
+            if ensure_gate_closed is not None:
+                await ensure_gate_closed(stage="spotify-abort-restore-after-rate")
+            effects_state: dict[str, Any] = {}
+            effects_result = await self.establish_effects_and_helper(restore_request)
+            if isinstance(effects_result, Mapping):
+                effects_state = dict(effects_result)
+            dsp_reinitialized = bool(effects_state.get("dsp_reinitialized"))
+            if ensure_gate_closed is not None:
+                await ensure_gate_closed(stage="spotify-abort-restore-after-effects-helper")
+            await self.prepare_target_source(restore_request)
+            if ensure_gate_closed is not None:
+                await ensure_gate_closed(stage="spotify-abort-restore-before-start")
+            await self.start_target_source(restore_request)
+            reconciler = getattr(self, "reconcile_post_start_graph", None)
+            if callable(reconciler):
+                post_state = await reconciler(restore_request)
+                if not isinstance(post_state, Mapping) or not post_state.get(
+                    "graph_complete", False
+                ):
+                    logger.warning(
+                        "Spotify handoff source restore aborted: post-start graph "
+                        "reconciliation did not confirm a complete graph"
+                    )
+                    return False
+            graph_state = await self.verify_transition_graph(restore_request)
+            if not bool(graph_state.get("committed", True)):
+                logger.warning(
+                    "Spotify handoff source restore aborted: staged graph readback "
+                    "did not satisfy the graph contract"
+                )
+                return False
+            # The source-volume invariant holds for Local/Radio regardless of
+            # the pre-transition transport state: after a successful restore
+            # MPV source volume is always 100 (also for a previously paused
+            # source, which the failed handoff left at volume 0).  The volume
+            # restore happens only under a confirmed closed gate.  After the
+            # volume and the optional DSP stabilization the gate is confirmed
+            # again (same sequence as the normal Coordinator: before-volume
+            # gate -> volume 100 -> optional DSP -> gate re-check -> final
+            # commit readback).
+            if ensure_gate_closed is not None:
+                await ensure_gate_closed(stage="spotify-abort-restore-before-volume")
+            await self.set_source_volume(100, "spotify-abort-restore")
+            # DSP stabilization is not artificially forced for paused
+            # restores; it keeps its existing rate/DSP-reinit condition.
+            if restore_request.should_play and (restore_rate_change or dsp_reinitialized):
+                dsp_state = await self.stabilize_effects_after_rate_change(
+                    restore_request, dsp_reinitialized=dsp_reinitialized
+                )
+                if not isinstance(dsp_state, Mapping) or not dsp_state.get(
+                    "stabilized", False
+                ):
+                    logger.warning(
+                        "Spotify handoff source restore aborted: DSP stabilization "
+                        "was not confirmed"
+                    )
+                    return False
+            if ensure_gate_closed is not None:
+                await ensure_gate_closed(stage="spotify-abort-restore-after-dsp")
+            final_state = await self.verify_committed_transition(restore_request)
+            if not bool(final_state.get("committed", True)):
+                logger.warning(
+                    "Spotify handoff source restore aborted: final commit readback "
+                    "did not satisfy the commit contract"
+                )
+                return False
+            try:
+                source_volume = int(final_state.get("source_volume"))
+            except (TypeError, ValueError):
+                source_volume = None
+            if source_volume != 100:
+                logger.warning(
+                    "Spotify handoff source restore aborted: final commit readback "
+                    "did not positively confirm source volume 100: volume=%s",
+                    final_state.get("source_volume"),
+                )
+                return False
+            restored = True
+        except Exception as exc:
+            logger.warning("Spotify handoff source restore failed: %s", exc)
+        if not restored and native_committed:
+            # The native playlist could not be reconstructed; normalize to
+            # the existing app-owned navigation so no later jump targets a
+            # phantom MPV playlist (same contract as the staged abort path).
+            try:
+                _reduce_native_mpv_playlist_to_current()
+                _reset_mpv_loop_state()
+            except Exception:
+                logger.warning(
+                    "Failed to normalize native queue after failed Spotify restore",
+                    exc_info=True,
+                )
+            playback_queue_mode = "app_replace"
+        return restored
 
     async def validate_measurement_restore_intent(
         self,
@@ -1606,7 +1870,7 @@ class FxrouteTransitionRuntime(TransitionRuntime):
                 player_instance.set_pause(True)
 
         if (
-            request.operation == "measurement-restore"
+            request.operation in {"measurement-restore", "replay"}
             and request.source == "local"
             and request.restore_position is not None
         ):
@@ -1630,7 +1894,7 @@ class FxrouteTransitionRuntime(TransitionRuntime):
                         f"expected={position} actual={readback}"
                     )
             logger.info(
-                "Measurement local playback position restored under output gate: "
+                "Local playback position restored under output gate: "
                 "url=%s position=%.3f",
                 request.target_url,
                 position,

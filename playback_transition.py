@@ -32,18 +32,25 @@ RecoveryExecutor = Callable[[], Awaitable[Any]]
 class PlaybackTransitionFailure(RuntimeError):
     """A transition failed before its readback contract was committed."""
 
-    def __init__(self, message: str, *, transition_id: str, stage: str) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        transition_id: str,
+        stage: str,
+        failure_latched: bool = True,
+    ) -> None:
         super().__init__(message)
         self.transition_id = transition_id
         self.stage = stage
-        self.failure_latched = True
+        self.failure_latched = failure_latched
 
     def as_status(self) -> dict[str, Any]:
         return {
             "ok": False,
             "transition_id": self.transition_id,
             "stage": self.stage,
-            "failure_latched": True,
+            "failure_latched": self.failure_latched,
             "message": str(self),
         }
 
@@ -187,7 +194,14 @@ class TransitionRuntime(Protocol):
         snapshot: Mapping[str, Any] | None,
         *,
         target_staged: bool,
-    ) -> None: ...
+        ensure_gate_closed: Callable[..., Awaitable[None]] | None = None,
+    ) -> bool | None:
+        """Finish a failed handoff; return True only when the previously
+        committed source was fully restored (Coordinator then restores the
+        output gate instead of latching a failure).  ``ensure_gate_closed``
+        is the Coordinator-bound output-gate boundary check that a restoring
+        abort must call between its critical stages."""
+        ...
 
     async def verify_measurement_entry(
         self, request: TransitionRequest
@@ -1393,24 +1407,64 @@ class PlaybackTransitionCoordinator:
                     # started, prefer invalidation over old/new metadata mix.
                     target_staged = True
                 aborter = getattr(self.runtime, "abort_failed_transition", None)
+                abort_recovered_source = False
                 if callable(aborter):
                     try:
-                        await aborter(
-                            active_request,
-                            snapshot,
-                            target_staged=target_staged,
+                        # Strict identity: only an explicit True from the
+                        # abort hook means the previously committed source
+                        # was physically restored (test adapters and None
+                        # returns must keep the failure latch).
+                        gate_guard = (
+                            lambda stage: self.ensure_output_gate_closed(
+                                transition_id, stage=stage
+                            )
                         )
+                        abort_recovered_source = (
+                            await aborter(
+                                active_request,
+                                snapshot,
+                                target_staged=target_staged,
+                                ensure_gate_closed=gate_guard,
+                            )
+                        ) is True
                     except Exception:
                         logger.warning(
                             "Playback transition abort cleanup failed",
                             exc_info=True,
                         )
-                if gate_required:
+                failure_latched = True
+                if gate_required and not abort_recovered_source:
                     await self._latch_failure(transition_id)
+                elif gate_required:
+                    # The abort fully restored the previously committed
+                    # source (e.g. after a failed Spotify handoff).  Open the
+                    # output gate so the restored source is audible instead
+                    # of latching a failure for a working source, using the
+                    # same final gate sequence as a normal commit: confirm
+                    # the gate is still physically closed, hold the settled
+                    # state, then restore.  If the gate itself cannot be
+                    # restored, fall back to the failure latch as the safe
+                    # state and report it latched.
+                    try:
+                        await self.ensure_output_gate_closed(
+                            transition_id,
+                            stage="before-recovered-gate-restore",
+                        )
+                        await self._hold_gate_after_verification()
+                        await self._restore_gate(transition_id, audible_output=True)
+                        failure_latched = False
+                    except Exception:
+                        logger.warning(
+                            "Playback transition gate restore after recovered abort "
+                            "failed; latching failure",
+                            exc_info=True,
+                        )
+                        await self._latch_failure(transition_id)
                 error = PlaybackTransitionFailure(
                     f"Playback transition failed at {stage}: {exc}",
                     transition_id=transition_id,
                     stage=stage,
+                    failure_latched=failure_latched,
                 )
                 self.last_error = error.as_status()
                 log_timing("failed")
