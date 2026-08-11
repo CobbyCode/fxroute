@@ -639,68 +639,210 @@ class PlaybackTransitionCoordinator:
             # structured status still records the output gate as latched.
             pass
 
-    async def _cancel_cleanup(
+    async def _cleanup_uncommitted_transition(
         self,
         request: TransitionRequest,
-        transition_id: str,
+        snapshot: Mapping[str, Any] | None,
         *,
+        transition_id: str,
         gate_required: bool,
-    ) -> None:
-        """Best-effort safety cleanup executed outside the cancelled task."""
-        # Latch first: the synchronous gate state and persistence happen
-        # before the hardware write, so even a second cancellation leaves the
-        # Coordinator in an explicitly unsafe/closed state.
-        if gate_required:
-            try:
-                await self._latch_failure(transition_id)
-            except BaseException as exc:
-                logger.warning(
-                    "Playback transition cancellation could not fully latch the output gate: %s",
-                    exc,
-                )
+        target_prepare_started: bool,
+    ) -> bool:
+        """Run the authoritative uncommitted-transition cleanup contract.
+
+        Shared by the stage-failure and cancellation paths so both leave the
+        same terminal state: attenuate and pause the source, roll back the
+        output-mode runtime, restore the pre-transition local/radio volume,
+        detect a staged target, abort the failed handoff (the adapter may
+        physically restore the previously committed source), and finally
+        either restore the output gate (recovered source) or latch a failure.
+        Returns the actual final failure_latched state.
+        """
         try:
             await self.runtime.set_source_volume(0, transition_id)
-        except BaseException as exc:
-            logger.warning(
-                "Playback transition cancellation could not attenuate the source: %s",
-                exc,
-            )
+        except Exception:
+            pass
         try:
             await self.runtime.pause_source_after_failure(request)
-        except BaseException as exc:
-            logger.warning(
-                "Playback transition cancellation could not pause the source: %s",
-                exc,
+        except Exception:
+            pass
+        if request.operation == "output-mode-switch":
+            rollback = getattr(self.runtime, "rollback_output_mode_runtime", None)
+            if callable(rollback):
+                try:
+                    await rollback(request, snapshot)
+                except Exception:
+                    logger.warning(
+                        "Output-mode runtime rollback failed; keeping the failure gate latched",
+                        exc_info=True,
+                    )
+        if request.source in {"local", "radio"}:
+            # The source was attenuated to 0 during the quiet stage.
+            # A failed transition must not leave it muted forever:
+            # restore the pre-transition source volume from the snapshot.
+            previous_player = dict((snapshot or {}).get("player") or {})
+            previous_volume = previous_player.get("volume")
+            if isinstance(previous_volume, (int, float)):
+                try:
+                    await self.runtime.set_source_volume(int(round(previous_volume)), transition_id)
+                except Exception:
+                    pass
+        target_staged = False
+        staged_detector = getattr(self.runtime, "target_source_staged", None)
+        if callable(staged_detector):
+            try:
+                target_staged = bool(staged_detector(request))
+            except Exception:
+                target_staged = False
+        elif (
+            target_prepare_started
+            and request.source in {"local", "radio"}
+            and request.reload_source
+        ):
+            # A minimal test/runtime adapter may not expose the concrete
+            # staging marker. Once its mutating prepare stage started,
+            # prefer invalidation over old/new metadata mix.
+            target_staged = True
+        aborter = getattr(self.runtime, "abort_failed_transition", None)
+        abort_recovered_source = False
+        if callable(aborter):
+            try:
+                # Strict identity: only an explicit True from the abort hook
+                # means the previously committed source was physically
+                # restored (test adapters and None returns must keep the
+                # failure latch).
+                gate_guard = (
+                    lambda stage: self.ensure_output_gate_closed(
+                        transition_id, stage=stage
+                    )
+                )
+                abort_recovered_source = (
+                    await aborter(
+                        request,
+                        snapshot,
+                        target_staged=target_staged,
+                        ensure_gate_closed=gate_guard,
+                    )
+                ) is True
+            except Exception:
+                logger.warning(
+                    "Playback transition abort cleanup failed",
+                    exc_info=True,
+                )
+        if not gate_required:
+            # No output gate was ever closed by this transition; nothing is
+            # latched and the reported failure state reflects that.
+            return False
+        if not abort_recovered_source:
+            await self._latch_failure(transition_id)
+            return True
+        # The abort fully restored the previously committed source (e.g.
+        # after a failed Spotify handoff).  Open the output gate so the
+        # restored source is audible instead of latching a failure for a
+        # working source, using the same final gate sequence as a normal
+        # commit: confirm the gate is still physically closed, hold the
+        # settled state, then restore.  If the gate itself cannot be
+        # restored, fall back to the failure latch as the safe state and
+        # report it latched.
+        try:
+            await self.ensure_output_gate_closed(
+                transition_id,
+                stage="before-recovered-gate-restore",
             )
+            await self._hold_gate_after_verification()
+            await self._restore_gate(transition_id, audible_output=True)
+            return False
+        except Exception:
+            logger.warning(
+                "Playback transition gate restore after recovered abort "
+                "failed; latching failure",
+                exc_info=True,
+            )
+            await self._latch_failure(transition_id)
+            return True
 
-    async def _finish_cancel_cleanup(
+    def _start_cleanup_task(
         self,
         request: TransitionRequest,
-        transition_id: str,
+        snapshot: Mapping[str, Any] | None,
         *,
+        transition_id: str,
         gate_required: bool,
-    ) -> None:
-        """Drain cancellation cleanup before releasing the transition lock."""
-        cleanup_task = asyncio.create_task(
-            self._cancel_cleanup(
+        target_prepare_started: bool,
+    ) -> asyncio.Task:
+        """Start the shared cleanup contract as an independently cancellable task."""
+        return asyncio.create_task(
+            self._cleanup_uncommitted_transition(
                 request,
-                transition_id,
+                snapshot,
+                transition_id=transition_id,
                 gate_required=gate_required,
+                target_prepare_started=target_prepare_started,
             ),
-            name="playback-transition-cancel-cleanup",
+            name="playback-transition-cleanup",
         )
+
+    async def _drain_cleanup_task(
+        self,
+        cleanup_task: asyncio.Task,
+        *,
+        transition_id: str,
+        gate_required: bool,
+    ) -> tuple[bool, BaseException | None]:
+        """Drain a cleanup task to its terminal state, surviving cancellation.
+
+        The caller owns the transition lock; a cancelled caller must not
+        release that section while cleanup is still mutating state.  Every
+        delivered CancelledError is recorded and the drain continues until the
+        cleanup task actually finished; the caller then decides whether the
+        cancellation wins over the original failure.  ``task.result()`` is
+        read only after the task is done, so no additional cancellation
+        boundary exists after the state cleanup already completed.  A failed
+        cleanup task falls back to the output gate failure latch.  Returns
+        (final failure_latched, caught CancelledError or None).
+        """
+        cancelled_exc: BaseException | None = None
         while not cleanup_task.done():
             try:
                 await asyncio.shield(cleanup_task)
-            except asyncio.CancelledError:
-                # A second cancellation must not interrupt the safety drain.
-                # The original cancellation is re-raised by execute() after
-                # this method returns.
+            except asyncio.CancelledError as exc:
+                if cancelled_exc is None:
+                    cancelled_exc = exc
                 continue
         try:
-            await cleanup_task
-        except BaseException as exc:
-            logger.warning("Playback transition cancellation cleanup failed: %s", exc)
+            failure_latched = bool(cleanup_task.result())
+        except asyncio.CancelledError:
+            logger.warning(
+                "Playback transition cleanup task was cancelled before "
+                "finishing; latching the output gate"
+            )
+            failure_latched = await self._latch_cleanup_fallback(
+                transition_id, gate_required=gate_required
+            )
+        except Exception as exc:
+            logger.warning(
+                "Playback transition cleanup failed; latching the output gate: %s",
+                exc,
+            )
+            failure_latched = await self._latch_cleanup_fallback(
+                transition_id, gate_required=gate_required
+            )
+        return failure_latched, cancelled_exc
+
+    async def _latch_cleanup_fallback(
+        self, transition_id: str, *, gate_required: bool
+    ) -> bool:
+        """Best-effort failure latch after a broken cleanup task."""
+        if not gate_required:
+            return False
+        try:
+            await self._latch_failure(transition_id)
+        except Exception:
+            logger.warning(
+                "Playback transition cleanup latch fallback failed",
+                exc_info=True,
+            )
+        return True
 
     async def reconcile_measurement_session(
         self,
@@ -1344,127 +1486,64 @@ class PlaybackTransitionCoordinator:
                 log_timing("committed")
                 return result
             except asyncio.CancelledError:
-                await self._finish_cancel_cleanup(
+                cleanup_task = self._start_cleanup_task(
                     active_request,
-                    transition_id,
+                    snapshot,
+                    transition_id=transition_id,
+                    gate_required=gate_required,
+                    target_prepare_started=target_prepare_started,
+                )
+                failure_latched, cancelled_exc = await self._drain_cleanup_task(
+                    cleanup_task,
+                    transition_id=transition_id,
                     gate_required=gate_required,
                 )
                 self.last_error = {
                     "ok": False,
                     "transition_id": transition_id,
                     "stage": stage,
-                    "failure_latched": bool(gate_required),
+                    "failure_latched": bool(failure_latched),
                     "cancelled": True,
                     "message": f"Playback transition cancelled at {stage}",
                 }
                 log_timing("cancelled")
                 raise
             except Exception as exc:
-                try:
-                    await self.runtime.set_source_volume(0, transition_id)
-                except Exception:
-                    pass
-                try:
-                    await self.runtime.pause_source_after_failure(active_request)
-                except Exception:
-                    pass
-                if active_request.operation == "output-mode-switch":
-                    rollback = getattr(self.runtime, "rollback_output_mode_runtime", None)
-                    if callable(rollback):
-                        try:
-                            await rollback(active_request, snapshot)
-                        except Exception:
-                            logger.warning(
-                                "Output-mode runtime rollback failed; keeping the failure gate latched",
-                                exc_info=True,
-                            )
-                if active_request.source in {"local", "radio"}:
-                    # The source was attenuated to 0 during the quiet stage.
-                    # A failed transition must not leave it muted forever:
-                    # restore the pre-transition source volume from the
-                    # snapshot.
-                    previous_player = dict((snapshot or {}).get("player") or {})
-                    previous_volume = previous_player.get("volume")
-                    if isinstance(previous_volume, (int, float)):
-                        try:
-                            await self.runtime.set_source_volume(int(round(previous_volume)), transition_id)
-                        except Exception:
-                            pass
-                target_staged = False
-                staged_detector = getattr(self.runtime, "target_source_staged", None)
-                if callable(staged_detector):
-                    try:
-                        target_staged = bool(staged_detector(active_request))
-                    except Exception:
-                        target_staged = False
-                elif (
-                    target_prepare_started
-                    and active_request.source in {"local", "radio"}
-                    and active_request.reload_source
-                ):
-                    # A minimal test/runtime adapter may not expose the
-                    # concrete staging marker. Once its mutating prepare stage
-                    # started, prefer invalidation over old/new metadata mix.
-                    target_staged = True
-                aborter = getattr(self.runtime, "abort_failed_transition", None)
-                abort_recovered_source = False
-                if callable(aborter):
-                    try:
-                        # Strict identity: only an explicit True from the
-                        # abort hook means the previously committed source
-                        # was physically restored (test adapters and None
-                        # returns must keep the failure latch).
-                        gate_guard = (
-                            lambda stage: self.ensure_output_gate_closed(
-                                transition_id, stage=stage
-                            )
-                        )
-                        abort_recovered_source = (
-                            await aborter(
-                                active_request,
-                                snapshot,
-                                target_staged=target_staged,
-                                ensure_gate_closed=gate_guard,
-                            )
-                        ) is True
-                    except Exception:
-                        logger.warning(
-                            "Playback transition abort cleanup failed",
-                            exc_info=True,
-                        )
-                failure_latched = True
-                if gate_required and not abort_recovered_source:
-                    await self._latch_failure(transition_id)
-                elif gate_required:
-                    # The abort fully restored the previously committed
-                    # source (e.g. after a failed Spotify handoff).  Open the
-                    # output gate so the restored source is audible instead
-                    # of latching a failure for a working source, using the
-                    # same final gate sequence as a normal commit: confirm
-                    # the gate is still physically closed, hold the settled
-                    # state, then restore.  If the gate itself cannot be
-                    # restored, fall back to the failure latch as the safe
-                    # state and report it latched.
-                    try:
-                        await self.ensure_output_gate_closed(
-                            transition_id,
-                            stage="before-recovered-gate-restore",
-                        )
-                        await self._hold_gate_after_verification()
-                        await self._restore_gate(transition_id, audible_output=True)
-                        failure_latched = False
-                    except Exception:
-                        logger.warning(
-                            "Playback transition gate restore after recovered abort "
-                            "failed; latching failure",
-                            exc_info=True,
-                        )
-                        await self._latch_failure(transition_id)
+                cleanup_task = self._start_cleanup_task(
+                    active_request,
+                    snapshot,
+                    transition_id=transition_id,
+                    gate_required=gate_required,
+                    target_prepare_started=target_prepare_started,
+                )
+                failure_latched, cancelled_exc = await self._drain_cleanup_task(
+                    cleanup_task,
+                    transition_id=transition_id,
+                    gate_required=gate_required,
+                )
+                if cancelled_exc is not None:
+                    # A cancellation arrived while the failure cleanup was
+                    # still draining.  The cleanup ran to its terminal state;
+                    # the cancellation wins over the original stage failure
+                    # as the caller control flow, never a rewritten failure.
+                    self.last_error = {
+                        "ok": False,
+                        "transition_id": transition_id,
+                        "stage": stage,
+                        "failure_latched": bool(failure_latched),
+                        "cancelled": True,
+                        "message": (
+                            "Playback transition cancelled during failure "
+                            f"cleanup at {stage}"
+                        ),
+                    }
+                    log_timing("cancelled")
+                    raise cancelled_exc
                 error = PlaybackTransitionFailure(
                     f"Playback transition failed at {stage}: {exc}",
                     transition_id=transition_id,
                     stage=stage,
-                    failure_latched=failure_latched,
+                    failure_latched=bool(failure_latched),
                 )
                 self.last_error = error.as_status()
                 log_timing("failed")
