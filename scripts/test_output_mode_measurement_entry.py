@@ -35,7 +35,9 @@ class TransactionRuntime:
         self.easyeffects_muted = initially_easyeffects_muted
         self.fail_output_verify = fail_output_verify
         self.rate = 44100
+        self.helper_rate = 44100
         self.volume = 72
+        self.position = 123.5
         self.paused = False
         self.playing = True
         self.spotify_status = "Playing"
@@ -71,6 +73,7 @@ class TransactionRuntime:
                 "playing": self.playing,
                 "paused": self.paused,
                 "volume": self.volume,
+                "position": self.position,
             },
             "output_mode_overview": {"output_mode": {"mode": "stereo"}},
             "output_mode_config": {"mode": "stereo"},
@@ -92,6 +95,8 @@ class TransactionRuntime:
 
     async def establish_effects_and_helper(self, _request):
         self.events.append("effects-helper-links")
+        if _request.rate_change:
+            self.helper_rate = _request.target_rate
         return {"dsp_reinitialized": self.dsp_reinitialized}
 
     async def verify_measurement_entry(self, _request):
@@ -109,6 +114,10 @@ class TransactionRuntime:
     async def commit_output_mode_runtime(self, _request):
         self.events.append("persist-output-mode")
         return {"output_mode_persisted": True}
+
+    async def commit_sample_rate_policy(self, _request):
+        self.events.append("persist-sample-rate-policy")
+        return {"sample_rate_policy": dict(_request.sample_rate_policy)}
 
     async def rollback_output_mode_runtime(self, _request, _snapshot):
         self.events.append("rollback-output-mode")
@@ -148,9 +157,14 @@ class TransactionRuntime:
 
     async def prepare_target_source(self, _request):
         self.events.append("prepare")
+        if _request.restore_position is not None:
+            self.position = float(_request.restore_position)
+            self.events.append(f"seek:{self.position}")
 
     async def start_target_source(self, _request):
         self.events.append("start")
+        self.playing = bool(_request.should_play)
+        self.paused = not self.playing
 
     async def reconcile_post_start_graph(self, _request):
         if self.real_reconcile:
@@ -192,6 +206,89 @@ def _request(
 
 
 class CoordinatorTransactionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_sample_rate_policy_real_local_changes_use_full_handoff(self):
+        for initial_rate, target_rate in ((44100, 48000), (48000, 44100)):
+            with self.subTest(initial_rate=initial_rate, target_rate=target_rate):
+                runtime = TransactionRuntime()
+                runtime.rate = initial_rate
+                runtime.helper_rate = initial_rate
+                coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
+                request = TransitionRequest(
+                    operation="sample-rate-policy",
+                    source="local",
+                    target_rate=target_rate,
+                    target_url="/music/current.flac",
+                    target_track={"source": "local", "url": "/music/current.flac"},
+                    should_play=True,
+                    rate_change=True,
+                    reload_source=True,
+                    sample_rate_policy={"mode": "fixed", "rate": target_rate},
+                )
+
+                result = await coordinator.execute(request)
+
+                self.assertTrue(result.committed)
+                self.assertEqual(runtime.rate, target_rate)
+                self.assertEqual(runtime.helper_rate, target_rate)
+                self.assertTrue(runtime.playing)
+                self.assertFalse(runtime.paused)
+                self.assertFalse(runtime.muted)
+                self.assertEqual(runtime.position, 123.5)
+                expected = [
+                    "quiet", "target-rate", "effects-helper-links", "prepare",
+                    "seek:123.5", "start", "verify-graph", "commit-readback",
+                    "persist-sample-rate-policy",
+                ]
+                indices = [runtime.events.index(event) for event in expected]
+                self.assertEqual(indices, sorted(indices))
+
+    async def test_sample_rate_policy_same_rate_keeps_non_reload_path(self):
+        runtime = TransactionRuntime()
+        runtime.rate = 48000
+        runtime.helper_rate = 48000
+        coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
+        request = TransitionRequest(
+            operation="sample-rate-policy",
+            source="local",
+            target_rate=48000,
+            target_url="/music/current.flac",
+            target_track={"source": "local", "url": "/music/current.flac"},
+            should_play=True,
+            rate_change=False,
+            reload_source=False,
+            sample_rate_policy={"mode": "fixed", "rate": 48000},
+        )
+
+        result = await coordinator.execute(request)
+
+        self.assertTrue(result.committed)
+        self.assertNotIn("prepare", runtime.events)
+        self.assertNotIn("start", runtime.events)
+        self.assertNotIn("seek:123.5", runtime.events)
+        self.assertEqual(runtime.helper_rate, 48000)
+        self.assertIn("persist-sample-rate-policy", runtime.events)
+
+    async def test_spotify_sample_rate_policy_keeps_existing_non_reload_path(self):
+        runtime = TransactionRuntime()
+        coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
+        request = TransitionRequest(
+            operation="sample-rate-policy",
+            source="spotify",
+            target_rate=48000,
+            target_url="spotify-track-1",
+            should_play=True,
+            rate_change=True,
+            reload_source=False,
+            sample_rate_policy={"mode": "fixed", "rate": 48000},
+        )
+
+        result = await coordinator.execute(request)
+
+        self.assertTrue(result.committed)
+        self.assertNotIn("prepare", runtime.events)
+        self.assertNotIn("start", runtime.events)
+        self.assertIn("restore-transport", runtime.events)
+
     async def test_spotify_play_clears_stale_hardware_and_internal_mutes(self):
         runtime = TransactionRuntime(
             initially_muted=True,

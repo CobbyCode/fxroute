@@ -834,6 +834,41 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
         player.set_pause.assert_called_once_with(True)
         player.stop_playback.assert_not_called()
 
+    async def test_sample_rate_policy_reload_releases_local_and_radio_mpv_stream(self):
+        for source in ("local", "radio"):
+            with self.subTest(source=source):
+                player = SimpleNamespace(
+                    state={"current_file": "/music/current.flac"},
+                    set_volume=Mock(),
+                    set_pause=Mock(),
+                    stop_playback=Mock(),
+                )
+                request = TransitionRequest(
+                    operation="sample-rate-policy",
+                    source=source,
+                    target_rate=48000,
+                    target_url="/music/current.flac",
+                    should_play=True,
+                    rate_change=True,
+                    reload_source=True,
+                )
+                release = AsyncMock(return_value=True)
+                with patch.object(main, "player_instance", player), patch.object(
+                    main, "_player_is_running", return_value=True
+                ), patch.object(
+                    main, "get_spotify_ui_state",
+                    new=AsyncMock(return_value={"available": True, "status": "Paused"}),
+                ), patch.object(
+                    main, "_wait_for_pipewire_mpv_release", release
+                ):
+                    await main.FxrouteTransitionRuntime().quiet_old_source(request)
+
+                player.set_volume.assert_called_once_with(0)
+                player.set_pause.assert_called_once_with(True)
+                player.stop_playback.assert_called_once_with()
+                release.assert_awaited_once_with()
+
+
     async def test_same_rate_22_graph_does_not_reclean_or_rebuild_helper(self):
         helper = HelperDouble(active=True, rate=48000)
         overview = {

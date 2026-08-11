@@ -1933,7 +1933,11 @@ class FxrouteTransitionRuntime(TransitionRuntime):
         player_instance.set_pause(True)
         should_release = bool(
             request.rate_change
-            and request.operation not in {"measurement-entry", "output-mode-switch", "sample-rate-policy"}
+            and request.operation not in {"measurement-entry", "output-mode-switch"}
+            and (
+                request.operation != "sample-rate-policy"
+                or request.reload_source
+            )
             and state.get("current_file")
         )
         if should_release:
@@ -2124,7 +2128,7 @@ class FxrouteTransitionRuntime(TransitionRuntime):
                 player_instance.set_pause(True)
 
         if (
-            request.operation in {"measurement-restore", "replay"}
+            request.operation in {"measurement-restore", "replay", "sample-rate-policy"}
             and request.source == "local"
             and request.restore_position is not None
         ):
@@ -2991,6 +2995,13 @@ async def _transition_sample_rate_policy(policy: Mapping[str, Any], *, detail: s
     if not isinstance(target_rate, int) or target_rate <= 0:
         raise RuntimeError("current hardware sample rate is unavailable")
 
+    rate_change = _coordinator_rate_change(target_rate)
+    reload_source = bool(
+        rate_change
+        and source in {"local", "radio"}
+        and context.get("target_url")
+    )
+
     await _run_coordinated_transition(TransitionRequest(
         operation="sample-rate-policy",
         source=source,
@@ -2998,8 +3009,8 @@ async def _transition_sample_rate_policy(policy: Mapping[str, Any], *, detail: s
         target_url=context.get("target_url"),
         target_track=dict(context.get("target_track") or {}),
         should_play=bool(context.get("should_play")),
-        rate_change=_coordinator_rate_change(target_rate),
-        reload_source=False,
+        rate_change=rate_change,
+        reload_source=reload_source,
         detail=detail,
         output_mode_target=dict(overview),
         sample_rate_policy=dict(policy),

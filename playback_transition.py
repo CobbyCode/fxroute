@@ -1124,6 +1124,18 @@ class PlaybackTransitionCoordinator:
                         f"stale output gate could not be reconciled: {self._startup_gate_error or 'unknown error'}"
                     )
                 snapshot = await self.runtime.read_transition_snapshot(request)
+                if (
+                    active_request.operation == "sample-rate-policy"
+                    and active_request.reload_source
+                    and active_request.source == "local"
+                    and active_request.restore_position is None
+                ):
+                    previous_position = (snapshot.get("player") or {}).get("position")
+                    if isinstance(previous_position, (int, float)) and previous_position > 0:
+                        active_request = replace(
+                            active_request,
+                            restore_position=float(previous_position),
+                        )
                 restore_validator = getattr(
                     self.runtime, "validate_measurement_restore_intent", None
                 )
@@ -1208,7 +1220,10 @@ class PlaybackTransitionCoordinator:
                         stage="after-effects-helper-links",
                     )
 
-                if active_request.operation in {"measurement-entry", "output-mode-switch", "sample-rate-policy"}:
+                if active_request.operation in {"measurement-entry", "output-mode-switch"} or (
+                    active_request.operation == "sample-rate-policy"
+                    and not active_request.reload_source
+                ):
                     if active_request.operation == "measurement-entry":
                         enter_stage("measurement-entry-graph-readback")
                         verifier = getattr(self.runtime, "verify_measurement_entry", None)
@@ -1453,6 +1468,15 @@ class PlaybackTransitionCoordinator:
                     state = await self.runtime.verify_committed_transition(active_request)
                 if not bool(state.get("committed", True)):
                     raise RuntimeError("transition readback did not satisfy commit contract")
+
+                if active_request.operation == "sample-rate-policy":
+                    enter_stage("sample-rate-policy-persist")
+                    committer = getattr(self.runtime, "commit_sample_rate_policy", None)
+                    if not callable(committer):
+                        raise RuntimeError("Sample-rate policy persistence is unavailable")
+                    committed_policy = await committer(active_request)
+                    if isinstance(committed_policy, Mapping):
+                        state = {**dict(state), **dict(committed_policy)}
 
                 if gate_required:
                     enter_stage("before-output-gate-restore")

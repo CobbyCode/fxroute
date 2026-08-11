@@ -13,7 +13,8 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -261,6 +262,61 @@ class MainWrapperParityTests(unittest.TestCase):
             return_value={"mode": "auto", "rate": None},
         ):
             self.assertEqual(main._coordinator_target_rate("local", track), 44100)
+
+
+class SampleRatePolicyTransitionTests(unittest.IsolatedAsyncioTestCase):
+    async def _capture_request(self, *, active_rate, target_rate, source="local"):
+        captured = []
+
+        async def run(request):
+            captured.append(request)
+            return SimpleNamespace(committed=True)
+
+        context = {
+            "source": source,
+            "target_url": "/music/current.flac" if source != "spotify" else "spotify-track-1",
+            "target_track": {
+                "source": source,
+                "url": "/music/current.flac" if source != "spotify" else "spotify-track-1",
+                "sample_rate_hz": active_rate,
+            },
+            "should_play": True,
+        }
+        overview = {"selected_output": {"supported_rates": [44100, 48000]}}
+        with patch.object(main, "get_audio_output_overview", return_value=overview), patch.object(
+            main, "_coordinator_current_playback_context", new=AsyncMock(return_value=context)
+        ), patch.object(
+            main, "_get_player_audio_samplerate", return_value=active_rate
+        ), patch.object(
+            main, "get_samplerate_status", return_value={
+                "active_rate": active_rate,
+                "force_rate": active_rate,
+            }
+        ), patch.object(main, "_run_coordinated_transition", new=run):
+            await main._transition_sample_rate_policy(
+                {"mode": "fixed", "rate": target_rate}, detail="test-policy"
+            )
+        return captured[0]
+
+    async def test_real_local_policy_changes_request_reload_in_both_directions(self):
+        for active_rate, target_rate in ((44100, 48000), (48000, 44100)):
+            request = await self._capture_request(
+                active_rate=active_rate, target_rate=target_rate
+            )
+            self.assertTrue(request.rate_change)
+            self.assertTrue(request.reload_source)
+
+    async def test_same_rate_policy_does_not_request_reload(self):
+        request = await self._capture_request(active_rate=48000, target_rate=48000)
+        self.assertFalse(request.rate_change)
+        self.assertFalse(request.reload_source)
+
+    async def test_spotify_policy_does_not_enter_local_radio_reload_path(self):
+        request = await self._capture_request(
+            active_rate=44100, target_rate=48000, source="spotify"
+        )
+        self.assertTrue(request.rate_change)
+        self.assertFalse(request.reload_source)
 
     def test_overview_sample_rate_wrapper_matches(self):
         cases = [
