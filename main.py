@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import shutil
+import signal
 import time
 import weakref
 import asyncio
@@ -120,22 +121,153 @@ def _configured_service_name() -> str:
     return install_info.configured_service_name()
 
 
-async def _run_update_script(*args: str) -> dict:
+_UPDATE_CHECK_TIMEOUT_SECONDS = 90
+_UPDATE_APPLY_TIMEOUT_SECONDS = 15 * 60
+_UPDATE_TERMINATE_GRACE_SECONDS = 5
+
+
+async def _run_update_script(timeout: float, *args: str) -> dict:
+    """Run scripts/update_fxroute.sh in its own process group, bounded.
+
+    The script and every git/pip/npm child it spawns live in a dedicated
+    session (start_new_session=True), so the whole child tree can be
+    signalled as a group via killpg(proc.pid).  stdout/stderr are drained
+    by exactly one communicate() task; on timeout the group is
+    TERM->grace->KILLed and that same task is drained terminally.  Caller
+    cancellation runs the identical cleanup and re-raises CancelledError
+    afterwards.  A timeout is reported through the existing result shape
+    (returncode -1 plus a stderr note), never as a new exception.
+    """
     if not UPDATE_SCRIPT.exists():
         raise HTTPException(status_code=500, detail=f"Update script missing: {UPDATE_SCRIPT}")
     proc = await asyncio.create_subprocess_exec(
         str(UPDATE_SCRIPT),
         *args,
         cwd=str(BASE_DIR),
+        start_new_session=True,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    stdout, stderr = await proc.communicate()
+    communicate_task = asyncio.create_task(proc.communicate())
+    try:
+        stdout, stderr = await asyncio.wait_for(
+            asyncio.shield(communicate_task), timeout=timeout
+        )
+    except asyncio.TimeoutError:
+        if await _stop_update_process_group_cancellation_safe(
+            proc, communicate_task, grace_seconds=_UPDATE_TERMINATE_GRACE_SECONDS
+        ):
+            raise asyncio.CancelledError
+        try:
+            stdout, stderr = communicate_task.result()
+        except Exception:
+            stdout, stderr = b"", b""
+        return {
+            "returncode": -1,
+            "stdout": stdout.decode(errors="replace"),
+            "stderr": stderr.decode(errors="replace")
+            + f"\nUpdate command timed out after {int(timeout)} seconds",
+        }
+    except asyncio.CancelledError:
+        await _stop_update_process_group_cancellation_safe(
+            proc, communicate_task, grace_seconds=_UPDATE_TERMINATE_GRACE_SECONDS
+        )
+        raise
     return {
         "returncode": proc.returncode,
         "stdout": stdout.decode(errors="replace"),
         "stderr": stderr.decode(errors="replace"),
     }
+
+
+async def _stop_update_process_group(proc, communicate_task, *, grace_seconds: float) -> None:
+    """Terminally stop the update process group.
+
+    SIGTERM to the whole group -> fixed grace period -> SIGKILL to the
+    whole group -> drain the single communicate() task -> reap the shell.
+
+    The group SIGKILL runs unconditionally after the grace period, even
+    when the shell itself already exited: a descendant that ignores
+    SIGTERM can outlive its parent while still belonging to the group
+    (proven by the update lifecycle diagnosis).  ProcessLookupError from
+    killpg simply means the group is already completely gone.
+    """
+    if proc is None:
+        return
+    pgid = proc.pid
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    await asyncio.sleep(grace_seconds)
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    try:
+        await asyncio.wait_for(communicate_task, timeout=grace_seconds)
+    except asyncio.TimeoutError:
+        logger.warning("Update process-group pipes did not close after SIGKILL; reaping shell directly")
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=grace_seconds)
+        except asyncio.TimeoutError:
+            pass
+
+
+async def _stop_update_process_group_cancellation_safe(proc, communicate_task, *, grace_seconds: float) -> bool:
+    """Run the update process-group cleanup shielded from caller cancellation.
+
+    A second cancellation during the grace period cannot interrupt the
+    TERM/grace/KILL/pipe-drain sequence, so no update child can be
+    orphaned by caller cancellation.  Returns True when the caller was
+    cancelled while draining; the caller must then propagate
+    CancelledError (it wins over any timeout failure).  Cleanup errors are
+    best-effort and swallowed.
+    """
+    if proc is None:
+        return False
+    cleanup_task = asyncio.create_task(
+        _stop_update_process_group(proc, communicate_task, grace_seconds=grace_seconds)
+    )
+    cancelled = False
+    while not cleanup_task.done():
+        try:
+            await asyncio.shield(cleanup_task)
+        except asyncio.CancelledError:
+            cancelled = True
+    try:
+        cleanup_task.result()
+    except Exception:
+        logger.debug("FXRoute update process-group cleanup failed", exc_info=True)
+    return cancelled
+
+
+_update_operation_lock: Optional[asyncio.Lock] = None
+
+
+def _get_update_operation_lock() -> asyncio.Lock:
+    global _update_operation_lock
+    if _update_operation_lock is None:
+        _update_operation_lock = asyncio.Lock()
+    return _update_operation_lock
+
+
+async def _run_update_operation(timeout: float, *args: str) -> dict:
+    """Run an update-script invocation under the exclusive update guard.
+
+    Only one update/check/restore may use update_fxroute.sh at a time; a
+    second operation is rejected immediately with HTTP 409 instead of
+    silently waiting behind the first one.  The guard is released in a
+    finally, so success, timeout, cancellation and ordinary exceptions all
+    free it again.
+    """
+    lock = _get_update_operation_lock()
+    if lock.locked():
+        raise HTTPException(
+            status_code=409, detail="An update operation is already in progress"
+        )
+    async with lock:
+        return await _run_update_script(timeout, *args)
 
 
 async def _restart_fxroute_service_after_response(service_name: str) -> None:
@@ -8191,7 +8323,7 @@ async def measurement_window_heartbeat(request: Request):
 
 @app.get("/api/system/update")
 async def system_update_status():
-    result = await _run_update_script("--check")
+    result = await _run_update_operation(_UPDATE_CHECK_TIMEOUT_SECONDS, "--check")
     return {
         "ok": result["returncode"] == 0,
         "installed_version": _read_version_file(),
@@ -8202,7 +8334,7 @@ async def system_update_status():
 @app.post("/api/system/update")
 async def system_update():
     service_name = _configured_service_name()
-    result = await _run_update_script("--defer-restart")
+    result = await _run_update_operation(_UPDATE_APPLY_TIMEOUT_SECONDS, "--defer-restart")
     ok = result["returncode"] == 0
     stdout = result.get("stdout", "")
     update_applied = ok and any(
@@ -8234,7 +8366,7 @@ async def system_restore():
     User data, music, config, and runtime cache files are not affected.
     """
     service_name = _configured_service_name()
-    result = await _run_update_script("--restore", "--defer-restart")
+    result = await _run_update_operation(_UPDATE_APPLY_TIMEOUT_SECONDS, "--restore", "--defer-restart")
     ok = result["returncode"] == 0
     if ok:
         asyncio.create_task(_restart_fxroute_service_after_response(service_name))
