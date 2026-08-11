@@ -5995,6 +5995,45 @@ async def _set_queue_shuffle(enabled: bool) -> bool:
         target_index = current_index
 
     if playback_queue_mode == "native_mpv":
+        # Shuffle ON keeps the current entry at position zero.  Rebuild the
+        # native playlist directly so changing order does not enter the full
+        # output-graph transition path.
+        clear_playlist = getattr(player_instance, "clear_playlist", None)
+        loadfile = getattr(player_instance, "loadfile", None)
+        set_playlist_pos = getattr(player_instance, "set_playlist_pos", None)
+        set_loop_playlist = getattr(player_instance, "set_loop_playlist", None)
+        if all(callable(method) for method in (clear_playlist, loadfile, set_playlist_pos)):
+            player_state = player_instance.state if player_instance else {}
+            was_paused = bool(player_state.get("paused"))
+            if enabled:
+                clear_playlist()
+                queue_tail = target_queue[1:]
+            else:
+                first_url = str(target_queue[0].get("url") or "")
+                if not first_url:
+                    return False
+                loadfile(first_url, mode="replace", start_paused=True)
+                queue_tail = target_queue[1:]
+            for track in queue_tail:
+                url = str(track.get("url") or "")
+                if not url:
+                    return False
+                loadfile(url, mode="append")
+            if callable(set_loop_playlist):
+                set_loop_playlist(bool(playback_queue_loop))
+            set_playlist_pos(0 if enabled else target_index)
+            if not enabled:
+                set_pause = getattr(player_instance, "set_pause", None)
+                if callable(set_pause):
+                    set_pause(was_paused)
+            playback_queue = target_queue
+            playback_queue_index = 0 if enabled else target_index
+            playback_queue_shuffle = bool(enabled)
+            current_track_info = dict(target_queue[playback_queue_index])
+            last_track_info = dict(target_queue[playback_queue_index])
+            return True
+
+    if playback_queue_mode == "native_mpv":
         # Replacing a native playlist changes the source staging boundary and
         # therefore belongs to the Coordinator.  Keep the old queue visible
         # until this gated replacement commits successfully.

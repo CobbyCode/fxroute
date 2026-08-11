@@ -2436,7 +2436,13 @@ async function toggleLibraryShuffle() {
             body: JSON.stringify({ enabled: !state.library.shuffle }),
         });
         const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(data.detail || 'Shuffle update failed');
+        if (!resp.ok) {
+            const detail = data.detail;
+            const message = detail && typeof detail === 'object'
+                ? (detail.message || detail.detail || detail.error)
+                : detail;
+            throw new Error(message || 'Shuffle update failed');
+        }
         if (data.playback) {
             mergePlaybackState(data.playback);
             syncLibraryStateFromPlaybackContext(true);
