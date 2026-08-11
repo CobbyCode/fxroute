@@ -124,6 +124,8 @@ def _configured_service_name() -> str:
 _UPDATE_CHECK_TIMEOUT_SECONDS = 90
 _UPDATE_APPLY_TIMEOUT_SECONDS = 15 * 60
 _UPDATE_TERMINATE_GRACE_SECONDS = 5
+_SERVICE_RESTART_TIMEOUT_SECONDS = 15
+_SERVICE_RESTART_TERMINATE_GRACE_SECONDS = 3
 
 
 async def _run_update_script(timeout: float, *args: str) -> dict:
@@ -271,19 +273,54 @@ async def _run_update_operation(timeout: float, *args: str) -> dict:
 
 
 async def _restart_fxroute_service_after_response(service_name: str) -> None:
+    """Hand the FXRoute service restart to systemd, bounded.
+
+    The restart job itself is executed by systemd --user; this process only
+    enqueues it (--no-block) and must not wait for its own stop+start,
+    because the response was already sent and this process is expected to be
+    stopped by systemd as part of the job.  The systemctl client is bounded:
+    a timeout means "restart outcome unknown" and is only logged; the
+    already sent update/restore response stays unchanged.  Cancellation runs
+    the same shielded terminal cleanup (no orphan even under a second
+    cancellation) and re-raises CancelledError afterwards.  A nonzero
+    systemctl exit already proves the job enqueue failed and is logged.
+    """
     await asyncio.sleep(0.8)
     try:
         proc = await asyncio.create_subprocess_exec(
             "systemctl",
             "--user",
+            "--no-block",
             "restart",
             f"{service_name}.service",
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
         )
-        await proc.wait()
     except Exception as exc:
         logger.warning("Deferred FXRoute service restart failed: %s", exc)
+        return
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=_SERVICE_RESTART_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError:
+        if await _stop_command_child_cancellation_safe(
+            proc, _SERVICE_RESTART_TERMINATE_GRACE_SECONDS
+        ):
+            raise asyncio.CancelledError
+        logger.warning(
+            "Deferred FXRoute service restart timed out after %s s; restart outcome unknown",
+            _SERVICE_RESTART_TIMEOUT_SECONDS,
+        )
+    except asyncio.CancelledError:
+        await _stop_command_child_cancellation_safe(
+            proc, _SERVICE_RESTART_TERMINATE_GRACE_SECONDS
+        )
+        raise
+    else:
+        if proc.returncode != 0:
+            logger.warning(
+                "Deferred FXRoute service restart exited with code %s",
+                proc.returncode,
+            )
 
 
 def _list_sink_inputs() -> list[dict]:
