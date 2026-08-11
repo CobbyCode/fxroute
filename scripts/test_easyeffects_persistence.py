@@ -2,13 +2,17 @@
 """Regression tests for EasyEffects preset filesystem ownership."""
 
 import json
+import os
+import stat
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import easyeffects_persistence
 from easyeffects import EasyEffectsManager
 from easyeffects_persistence import EasyEffectsPresetStore
 
@@ -79,6 +83,57 @@ class EasyEffectsPresetStoreTests(unittest.TestCase):
         )
         manager.get_active_preset = lambda: "Convolver"
         self.assertTrue(manager.active_preset_requires_samplerate_reload())
+
+    def _fd_count(self) -> int:
+        return len(os.listdir("/proc/self/fd"))
+
+    def test_atomic_write_never_touches_process_umask(self):
+        path = self.store.write_preset("Umask", {"output": {}})
+        with mock.patch.object(
+            easyeffects_persistence.os,
+            "umask",
+            side_effect=AssertionError("os.umask must not be used"),
+        ):
+            self.store.write_preset("Umask", {"output": {"v": 2}})
+        self.assertEqual(json.loads(path.read_text())["output"]["v"], 2)
+
+    def test_atomic_write_preserves_existing_file_mode(self):
+        self.store.write_preset("Mode", {"output": {"v": 1}})
+        path = self.output_dir / "Mode.json"
+        os.chmod(path, 0o640)
+        self.store.write_preset("Mode", {"output": {"v": 2}})
+        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o640)
+        self.assertEqual(json.loads(path.read_text())["output"]["v"], 2)
+
+    def test_atomic_write_new_file_gets_no_permissive_mode(self):
+        path = self.store.write_preset("New", {"output": {}})
+        self.assertEqual(stat.S_IMODE(path.stat().st_mode) & 0o077, 0)
+
+    def test_atomic_write_fchmod_failure_leaves_no_temp_or_open_fd(self):
+        self.store.write_preset("Fail", {"output": {"v": 1}})
+        before = self._fd_count()
+        with mock.patch.object(
+            easyeffects_persistence.os,
+            "fchmod",
+            side_effect=OSError("simulated fchmod failure"),
+        ):
+            with self.assertRaises(OSError):
+                self.store.write_preset("Fail", {"output": {"v": 2}})
+        # The old target survives untouched; no temp file and no fd remains.
+        self.assertEqual(
+            [path.name for path in self.output_dir.iterdir()], ["Fail.json"]
+        )
+        self.assertEqual(self._fd_count(), before)
+
+    def test_atomic_write_replace_failure_removes_temp_file(self):
+        with mock.patch.object(
+            easyeffects_persistence.os,
+            "replace",
+            side_effect=OSError("simulated replace failure"),
+        ):
+            with self.assertRaises(OSError):
+                self.store.write_preset("Fail", {"output": {"v": 2}})
+        self.assertEqual(list(self.output_dir.iterdir()), [])
 
 
 if __name__ == "__main__":

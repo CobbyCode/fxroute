@@ -986,6 +986,9 @@ spl_calibration.configure_runtime(spl_calibration.SplCalibrationDependencies(
     set_output_volume=lambda value: set_output_volume(value),
     read_measurement_settings=lambda: measurement_session._read_measurement_setup_settings(),
     measurement_entry_preflight=lambda rate: measurement_session._measurement_entry_preflight(rate),
+    run_easyeffects_mutation=lambda func: _run_locked_worker(
+        _easyeffects_mutation_lock(), func
+    ),
 ))
 measurement_session.configure_services(MeasurementServices(
     get_store=lambda: measurement_store,
@@ -2134,33 +2137,45 @@ class FxrouteTransitionRuntime(TransitionRuntime):
         if manager is None:
             return {"stabilized": True, "no_op": True}
 
-        extras = manager.load_global_extras()
-        loudness_enabled = bool((extras.get("loudness") or {}).get("enabled"))
-        autogain_enabled = bool((extras.get("autogain") or {}).get("enabled"))
-        if not loudness_enabled and not autogain_enabled:
-            return {"stabilized": True, "no_op": True}
+        # The whole guarded re-apply runs under the central EasyEffects
+        # mutation ownership, and the canonical extras are (re)read after
+        # acquiring it: a parallel volume/extras/SPL mutation must never be
+        # clobbered by a stale pre-lock snapshot.  The ownership is held
+        # through the settle and the runtime readback/validation so the
+        # coordinator validates the live DSP against the very extras it
+        # applied, never against a snapshot made stale by a mutation that
+        # landed between apply and verify.
+        async with _easyeffects_mutation_lock():
+            extras = manager.load_global_extras()
+            loudness_enabled = bool((extras.get("loudness") or {}).get("enabled"))
+            autogain_enabled = bool((extras.get("autogain") or {}).get("enabled"))
+            if not loudness_enabled and not autogain_enabled:
+                return {"stabilized": True, "no_op": True}
 
-        apply_runtime = getattr(manager, "apply_autogain_loudness_runtime", None)
-        if not callable(apply_runtime):
-            raise RuntimeError("guarded Auto Gain/Loudness runtime is unavailable")
+            apply_runtime = getattr(manager, "apply_autogain_loudness_runtime", None)
+            if not callable(apply_runtime):
+                raise RuntimeError("guarded Auto Gain/Loudness runtime is unavailable")
 
-        # Passing the same canonical extras on both sides deliberately uses the
-        # existing guarded order without reloading the preset.  The helper
-        # method keeps the outputGain guard in place while the LSP volume port
-        # settles, then ramps back to the canonical work point.
-        await asyncio.to_thread(
-            apply_runtime,
-            extras,
-            extras,
-            persist_all_presets=False,
-        )
-        settle_seconds = float(
-            getattr(manager, "LOUDNESS_STRENGTH_VOLUME_SETTLE_SECONDS", 0.0)
-        )
-        if settle_seconds > 0:
-            await asyncio.sleep(settle_seconds)
+            # Passing the same canonical extras on both sides deliberately uses the
+            # existing guarded order without reloading the preset.  The helper
+            # method keeps the outputGain guard in place while the LSP volume port
+            # settles, then ramps back to the canonical work point.  The blocking
+            # manager call runs off the event loop; the caller owns the mutation
+            # lock until the worker actually finished (cancellation-safe).
+            await _drain_worker(
+                apply_runtime,
+                extras,
+                extras,
+                persist_all_presets=False,
+            )
+            settle_seconds = float(
+                getattr(manager, "LOUDNESS_STRENGTH_VOLUME_SETTLE_SECONDS", 0.0)
+            )
+            if settle_seconds > 0:
+                await asyncio.sleep(settle_seconds)
 
-        effects_runtime = await self._read_and_validate_effects_runtime(extras)
+            effects_runtime = await self._read_and_validate_effects_runtime(extras)
+
         rate = dict(get_samplerate_status())
         if rate.get("active_rate") != request.target_rate:
             raise RuntimeError(
@@ -2358,10 +2373,20 @@ class FxrouteTransitionRuntime(TransitionRuntime):
                     "runtime: operation=%s",
                     request.operation,
                 )
-                await asyncio.to_thread(
-                    apply_runtime, extras, extras, persist_all_presets=False
-                )
-                effects_runtime = await self._read_and_validate_effects_runtime(extras)
+                # Re-acquire the mutation ownership and re-read the canonical
+                # extras under it before re-applying: the runtime drift may be
+                # observed while a volume/extras/SPL mutation is in flight.
+                # The ownership stays held through the re-validation so the
+                # re-applied runtime is verified against the very extras that
+                # were re-read, not a snapshot a parallel mutation made stale.
+                async with _easyeffects_mutation_lock():
+                    extras = easyeffects_manager.load_global_extras()
+                    await _drain_worker(
+                        apply_runtime, extras, extras, persist_all_presets=False
+                    )
+                    effects_runtime = await self._read_and_validate_effects_runtime(
+                        extras
+                    )
         return {
             "committed": True,
             "player": state,
@@ -5742,26 +5767,32 @@ async def _set_canonical_output_volume(volume: float | int) -> dict[str, Any]:
 
     The whole write is serialized against other canonical volume writes so
     set -> verified get -> cache publish sequences never interleave.  The
-    blocking wpctl operations run off the event loop; EasyEffects manager
-    state stays on the loop (the manager is not thread-safe) and is
-    serialized against other EasyEffects mutations.
+    loudness.enabled decision and the Loudness read-modify-write both run
+    under the central EasyEffects mutation ownership, so no other EE mutation
+    can interleave between the extras read and the write.  Blocking manager
+    and wpctl operations run off the event loop via cancellation-safe
+    workers; the caller owns the locks until the workers actually finished.
+    Lock order: canonical volume write lock first, then EasyEffects mutation
+    lock.
     """
     async with _canonical_volume_write_lock():
         requested = max(0, min(100, int(round(float(volume)))))
-        extras = easyeffects_manager.load_global_extras() if easyeffects_manager else {}
-        loudness = extras.get("loudness") if isinstance(extras, dict) else {}
-        if isinstance(loudness, dict) and loudness.get("enabled") and easyeffects_manager:
-            volume_db = easyeffects_manager.loudness_db_from_percent(requested)
-            async with _easyeffects_mutation_lock():
-                volume_result = easyeffects_manager.set_loudness_volume_db(volume_db)
-            await _drain_worker(set_output_volume, 100)
-            return {
-                "volume": requested,
-                "loudnessVolumeDb": float(
-                    volume_result["extras"]["loudness"]["params"]["volumeDb"]
-                ),
-                "loudness_enabled": True,
-            }
+        async with _easyeffects_mutation_lock():
+            extras = easyeffects_manager.load_global_extras() if easyeffects_manager else {}
+            loudness = extras.get("loudness") if isinstance(extras, dict) else {}
+            if isinstance(loudness, dict) and loudness.get("enabled") and easyeffects_manager:
+                volume_db = easyeffects_manager.loudness_db_from_percent(requested)
+                volume_result = await _drain_worker(
+                    easyeffects_manager.set_loudness_volume_db, volume_db
+                )
+                await _drain_worker(set_output_volume, 100)
+                return {
+                    "volume": requested,
+                    "loudnessVolumeDb": float(
+                        volume_result["extras"]["loudness"]["params"]["volumeDb"]
+                    ),
+                    "loudness_enabled": True,
+                }
         return {
             "volume": await _drain_worker(set_output_volume, requested),
             "loudnessVolumeDb": None,
@@ -8279,12 +8310,16 @@ async def _load_easyeffects_preset(
     load_preset() also synchronizes global extras into the preset and is
     therefore not read-only: it must never run concurrently with a threaded
     IR/preset mutation.  Lock order: the mutation lock is always acquired
-    after (never before) any preset-load lock held by the caller.
+    after (never before) any preset-load lock held by the caller.  The
+    blocking manager call runs off the event loop under the caller-owned
+    mutation lock (no double acquisition).
     """
     async with _easyeffects_mutation_lock():
         manager = _require_easyeffects_manager()
-        manager.load_preset(
-            preset_name, convolver_sample_rate_hz=convolver_sample_rate_hz
+        await _drain_worker(
+            manager.load_preset,
+            preset_name,
+            convolver_sample_rate_hz=convolver_sample_rate_hz,
         )
 
 
@@ -8372,6 +8407,12 @@ async def save_easyeffects_extras(request: Request):
     # master=100, so a parallel /api/volume or /api/spotify/volume request
     # can never interleave.  All transferred values are (re)read under the
     # lock.  Non-Loudness extras updates never take this lock.
+    #
+    # The full read-modify-write (extras read, JSON merge, resolution, manager
+    # mutation/persistence) runs under the central EasyEffects mutation
+    # ownership so a parallel coordinator/volume/SPL mutation can never
+    # interleave between the read and the write.  Lock order: canonical
+    # volume write lock first, then EasyEffects mutation lock.
     canonical_transition = any(
         key in body for key in ("loudness_enabled", "loudnessEnabled")
     )
@@ -8380,58 +8421,64 @@ async def save_easyeffects_extras(request: Request):
         canonical_lock = _canonical_volume_write_lock()
         await canonical_lock.acquire()
     try:
-        previous = ee_manager.load_global_extras()
-        parsed = _merge_effects_extras_from_json(previous, body)
-        was_loudness = bool(previous.get("loudness", {}).get("enabled"))
-        enabling_loudness = bool(parsed.get("loudness", {}).get("enabled")) and not was_loudness
-        disabling_loudness = was_loudness and not bool(parsed.get("loudness", {}).get("enabled"))
-        if enabling_loudness:
-            raw_volume = await _drain_worker(get_output_volume)
-            parsed["loudness"]["params"]["volumeDb"] = ee_manager.loudness_db_from_percent(raw_volume)
-        try:
-            extras = _resolve_effects_extras(parsed)
-        except ValueError as exc:
-            raise HTTPException(
-                status_code=400,
-                detail={"code": "invalid_effects_extras", "message": str(exc)},
-            ) from exc
-        if extras == previous:
-            logger.info("Ignored unchanged EasyEffects extras update")
-            return {
-                "status": "ok",
-                "extras": extras,
-                "updated_presets": 0,
-                "skipped_presets": [],
-            }
-        runtime_strength_change = _is_pure_loudness_strength_change(previous, extras)
-        runtime_autogain_loudness_change = _is_runtime_autogain_loudness_change(
-            previous, extras
-        )
-        disabling_master_percent = None
-        if disabling_loudness:
-            volume_db = float(extras["loudness"]["params"]["volumeDb"])
-            disabling_master_percent = ee_manager.loudness_percent_from_db(volume_db)
-            # Move the canonical attenuation back to the system master while the
-            # Loudness block is still active and guarded.  Bypassing first leaves
-            # a short 100%-master window and produces a positive transient.
-            await _drain_worker(set_output_volume, disabling_master_percent)
-        try:
-            async with _easyeffects_mutation_lock():
+        async with _easyeffects_mutation_lock():
+            previous = ee_manager.load_global_extras()
+            parsed = _merge_effects_extras_from_json(previous, body)
+            was_loudness = bool(previous.get("loudness", {}).get("enabled"))
+            enabling_loudness = bool(parsed.get("loudness", {}).get("enabled")) and not was_loudness
+            disabling_loudness = was_loudness and not bool(parsed.get("loudness", {}).get("enabled"))
+            if enabling_loudness:
+                raw_volume = await _drain_worker(get_output_volume)
+                parsed["loudness"]["params"]["volumeDb"] = ee_manager.loudness_db_from_percent(raw_volume)
+            try:
+                extras = _resolve_effects_extras(parsed)
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=400,
+                    detail={"code": "invalid_effects_extras", "message": str(exc)},
+                ) from exc
+            if extras == previous:
+                logger.info("Ignored unchanged EasyEffects extras update")
+                return {
+                    "status": "ok",
+                    "extras": extras,
+                    "updated_presets": 0,
+                    "skipped_presets": [],
+                }
+            runtime_strength_change = _is_pure_loudness_strength_change(previous, extras)
+            runtime_autogain_loudness_change = _is_runtime_autogain_loudness_change(
+                previous, extras
+            )
+            disabling_master_percent = None
+            if disabling_loudness:
+                volume_db = float(extras["loudness"]["params"]["volumeDb"])
+                disabling_master_percent = ee_manager.loudness_percent_from_db(volume_db)
+                # Move the canonical attenuation back to the system master while the
+                # Loudness block is still active and guarded.  Bypassing first leaves
+                # a short 100%-master window and produces a positive transient.
+                await _drain_worker(set_output_volume, disabling_master_percent)
+            try:
                 if runtime_strength_change:
-                    result = ee_manager.apply_loudness_strength_runtime(previous, extras)
-                elif runtime_autogain_loudness_change:
-                    result = ee_manager.apply_autogain_loudness_runtime(previous, extras)
-                else:
-                    result = ee_manager.apply_global_extras_to_all_presets(extras)
-        except Exception:
-            if disabling_master_percent is not None:
-                try:
-                    await _drain_worker(set_output_volume, 100)
-                except Exception:
-                    logger.exception(
-                        "Failed to restore system master after Loudness disable failure"
+                    result = await _drain_worker(
+                        ee_manager.apply_loudness_strength_runtime, previous, extras
                     )
-            raise
+                elif runtime_autogain_loudness_change:
+                    result = await _drain_worker(
+                        ee_manager.apply_autogain_loudness_runtime, previous, extras
+                    )
+                else:
+                    result = await _drain_worker(
+                        ee_manager.apply_global_extras_to_all_presets, extras
+                    )
+            except Exception:
+                if disabling_master_percent is not None:
+                    try:
+                        await _drain_worker(set_output_volume, 100)
+                    except Exception:
+                        logger.exception(
+                            "Failed to restore system master after Loudness disable failure"
+                        )
+                raise
 
         active_preset = ee_manager.get_active_preset()
         if (
@@ -8670,21 +8717,24 @@ async def create_convolver_preset(
 ):
     ee_manager = _require_easyeffects_manager()
 
-    extras = _effects_extras_from_form(
-        limiter_enabled=limiter_enabled,
-        headroom_enabled=headroom_enabled,
-        headroom_gain_db=headroom_gain_db,
-        autogain_enabled=autogain_enabled,
-        autogain_target_db=autogain_target_db,
-        delay_enabled=delay_enabled,
-        delay_left_ms=delay_left_ms,
-        delay_right_ms=delay_right_ms,
-        tone_effect_enabled=tone_effect_enabled,
-        tone_effect_mode=tone_effect_mode,
-    )
-
     try:
+        # The canonical loudness read inside _effects_extras_from_form must
+        # happen under the same mutation ownership as the preset creation:
+        # a parallel extras mutation may never be frozen into the new preset
+        # from a stale pre-lock snapshot.
         async with _easyeffects_mutation_lock():
+            extras = _effects_extras_from_form(
+                limiter_enabled=limiter_enabled,
+                headroom_enabled=headroom_enabled,
+                headroom_gain_db=headroom_gain_db,
+                autogain_enabled=autogain_enabled,
+                autogain_target_db=autogain_target_db,
+                delay_enabled=delay_enabled,
+                delay_left_ms=delay_left_ms,
+                delay_right_ms=delay_right_ms,
+                tone_effect_enabled=tone_effect_enabled,
+                tone_effect_mode=tone_effect_mode,
+            )
             created = ee_manager.create_convolver_preset(preset_name, ir_filename, extras=extras)
         status = await _finish_easyeffects_preset_mutation(
             load_after_create=load_after_create,
@@ -8929,21 +8979,6 @@ async def create_convolver_preset_with_ir(
 ):
     ee_manager = _require_easyeffects_manager()
 
-    extras = _effects_extras_from_form(
-        limiter_enabled=limiter_enabled,
-        headroom_enabled=headroom_enabled,
-        headroom_gain_db=headroom_gain_db,
-        autogain_enabled=autogain_enabled,
-        autogain_target_db=autogain_target_db,
-        delay_enabled=delay_enabled,
-        delay_left_ms=delay_left_ms,
-        delay_right_ms=delay_right_ms,
-        bass_enabled=bass_enabled,
-        bass_amount=bass_amount,
-        tone_effect_enabled=tone_effect_enabled,
-        tone_effect_mode=tone_effect_mode,
-    )
-
     tmp_path = None
     try:
         suffix = Path(file.filename or "upload.ir").suffix
@@ -8952,14 +8987,35 @@ async def create_convolver_preset_with_ir(
             tmp_path = Path(tmp.name)
             await save_upload_to_file(file, tmp, EASYEEFFECTS_IR_MAX_BYTES)
 
-        created = await _run_locked_worker(
-            _easyeffects_mutation_lock(),
-            ee_manager.create_convolver_preset_with_upload,
-            preset_name,
-            tmp_path,
-            file.filename or tmp_path.name,
-            extras=extras,
-        )
+        # The canonical loudness read inside _effects_extras_from_form must
+        # happen under the same mutation ownership as the preset creation:
+        # a parallel extras mutation during the (potentially slow) upload
+        # staging may never be frozen into the new preset from a stale
+        # pre-lock snapshot.  The lock is acquired here (not via
+        # _run_locked_worker, which would re-acquire) and the blocking
+        # manager call runs through the cancellation-safe worker.
+        async with _easyeffects_mutation_lock():
+            extras = _effects_extras_from_form(
+                limiter_enabled=limiter_enabled,
+                headroom_enabled=headroom_enabled,
+                headroom_gain_db=headroom_gain_db,
+                autogain_enabled=autogain_enabled,
+                autogain_target_db=autogain_target_db,
+                delay_enabled=delay_enabled,
+                delay_left_ms=delay_left_ms,
+                delay_right_ms=delay_right_ms,
+                bass_enabled=bass_enabled,
+                bass_amount=bass_amount,
+                tone_effect_enabled=tone_effect_enabled,
+                tone_effect_mode=tone_effect_mode,
+            )
+            created = await _drain_worker(
+                ee_manager.create_convolver_preset_with_upload,
+                preset_name,
+                tmp_path,
+                file.filename or tmp_path.name,
+                extras=extras,
+            )
         status = await _finish_easyeffects_preset_mutation(
             load_after_create=load_after_create,
             preset_name=created["preset"]["name"],
@@ -9056,23 +9112,25 @@ async def import_rew_peq_preset(
     if not preset_name.strip():
         raise HTTPException(status_code=400, detail="preset_name is required")
 
-    extras = _effects_extras_from_form(
-        limiter_enabled=limiter_enabled,
-        headroom_enabled=headroom_enabled,
-        headroom_gain_db=headroom_gain_db,
-        autogain_enabled=autogain_enabled,
-        autogain_target_db=autogain_target_db,
-        delay_enabled=delay_enabled,
-        delay_left_ms=delay_left_ms,
-        delay_right_ms=delay_right_ms,
-        bass_enabled=bass_enabled,
-        bass_amount=bass_amount,
-        tone_effect_enabled=tone_effect_enabled,
-        tone_effect_mode=tone_effect_mode,
-    )
-
     try:
+        # Canonical extras resolution under the same mutation ownership as
+        # the import: never freeze a stale pre-lock loudness snapshot into
+        # the new preset.
         async with _easyeffects_mutation_lock():
+            extras = _effects_extras_from_form(
+                limiter_enabled=limiter_enabled,
+                headroom_enabled=headroom_enabled,
+                headroom_gain_db=headroom_gain_db,
+                autogain_enabled=autogain_enabled,
+                autogain_target_db=autogain_target_db,
+                delay_enabled=delay_enabled,
+                delay_left_ms=delay_left_ms,
+                delay_right_ms=delay_right_ms,
+                bass_enabled=bass_enabled,
+                bass_amount=bass_amount,
+                tone_effect_enabled=tone_effect_enabled,
+                tone_effect_mode=tone_effect_mode,
+            )
             created = ee_manager.create_peq_preset_from_rew_text(preset_name, rew_text, extras=extras)
         status = await _finish_easyeffects_preset_mutation(
             load_after_create=load_after_create,
@@ -9114,20 +9172,23 @@ async def import_dual_filter_preset(
     if not preset_name.strip():
         raise HTTPException(status_code=400, detail="preset_name is required")
 
-    extras = _effects_extras_from_form(
-        limiter_enabled=limiter_enabled,
-        headroom_enabled=headroom_enabled,
-        headroom_gain_db=headroom_gain_db,
-        autogain_enabled=autogain_enabled,
-        autogain_target_db=autogain_target_db,
-        delay_enabled=delay_enabled,
-        delay_left_ms=delay_left_ms,
-        delay_right_ms=delay_right_ms,
-        bass_enabled=bass_enabled,
-        bass_amount=bass_amount,
-        tone_effect_enabled=tone_effect_enabled,
-        tone_effect_mode=tone_effect_mode,
-    )
+    # Shared form values; the canonical loudness read itself happens only
+    # inside the mutation ownership below, per import branch.
+    def _form_extras_kwargs() -> dict:
+        return dict(
+            limiter_enabled=limiter_enabled,
+            headroom_enabled=headroom_enabled,
+            headroom_gain_db=headroom_gain_db,
+            autogain_enabled=autogain_enabled,
+            autogain_target_db=autogain_target_db,
+            delay_enabled=delay_enabled,
+            delay_left_ms=delay_left_ms,
+            delay_right_ms=delay_right_ms,
+            bass_enabled=bass_enabled,
+            bass_amount=bass_amount,
+            tone_effect_enabled=tone_effect_enabled,
+            tone_effect_mode=tone_effect_mode,
+        )
 
     def _detect_upload_kind(upload: Optional[UploadFile]) -> Optional[str]:
         if not upload or not (upload.filename or "").strip():
@@ -9163,16 +9224,21 @@ async def import_dual_filter_preset(
             left_tmp = await _save_temp(left_file)
             right_tmp = await _save_temp(right_file)
 
-            created = await _run_locked_worker(
-                _easyeffects_mutation_lock(),
-                ee_manager.create_convolver_preset_with_dual_uploads,
-                preset_name,
-                left_tmp,
-                left_file.filename or left_tmp.name,
-                right_tmp,
-                right_file.filename or right_tmp.name,
-                extras=extras,
-            )
+            # Canonical extras resolution under the same mutation ownership
+            # as the creation; the blocking manager call runs through the
+            # cancellation-safe worker (the lock is acquired here, not via
+            # _run_locked_worker).
+            async with _easyeffects_mutation_lock():
+                extras = _effects_extras_from_form(**_form_extras_kwargs())
+                created = await _drain_worker(
+                    ee_manager.create_convolver_preset_with_dual_uploads,
+                    preset_name,
+                    left_tmp,
+                    left_file.filename or left_tmp.name,
+                    right_tmp,
+                    right_file.filename or right_tmp.name,
+                    extras=extras,
+                )
             import_kind = "dual-convolver"
         else:
             if left_kind == "rew-text" and right_kind == "rew-text":
@@ -9188,6 +9254,7 @@ async def import_dual_filter_preset(
                 raise HTTPException(status_code=400, detail="Provide Left and Right REW text, or Left and Right .irs/.wav files")
 
             async with _easyeffects_mutation_lock():
+                extras = _effects_extras_from_form(**_form_extras_kwargs())
                 created = ee_manager.create_dual_peq_preset_from_rew_texts(
                     preset_name,
                     left_text,

@@ -54,6 +54,7 @@ class SplCalibrationDependencies:
     set_output_volume: Callable[[float], None]
     read_measurement_settings: Callable[[], dict[str, Any]]
     measurement_entry_preflight: Callable[[int], Any]
+    run_easyeffects_mutation: Callable[[Callable[[], Any]], Any]
 
 
 @dataclass
@@ -1196,28 +1197,36 @@ async def apply_spl_calibration(request: Request):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     await _stop_active_operation()
     ee_manager = _dependencies().require_easyeffects_manager()
-    extras = ee_manager.load_global_extras()
+    run_mutation = _dependencies().run_easyeffects_mutation
     profile = _spl_output_profile()
     automatic = _spl_auto_capability()
-    extras["loudness"]["params"]["calibration"] = {
-        "outputProfileId": profile["id"],
-        "outputProfileLabel": profile["label"],
-        "targetSplDb": 83.0,
-        "measuredSplDb": measured,
-        "requiredAdjustmentDb": adjustment,
-        "calibrated": abs(adjustment) <= 1.0,
-        "method": "automatic" if automatic["available"] else "manual",
-        "microphoneModel": automatic["microphone_model"],
-        "calibrationFileId": automatic["calibration_file_id"],
-        "calibrationFilename": automatic["calibration_filename"],
-        "createdAt": datetime.now(timezone.utc).isoformat(),
-    }
-    profiles = dict(extras["loudness"]["params"].get("calibrationProfiles") or {})
-    profiles[profile["id"]] = dict(extras["loudness"]["params"]["calibration"])
-    extras["loudness"]["params"]["calibrationProfiles"] = profiles
-    saved = ee_manager.apply_autogain_loudness_runtime(
-        ee_manager.load_global_extras(), extras, persist_all_presets=False
-    )["extras"]
+
+    def _apply_calibration_serialized() -> dict:
+        # Runs under the central EasyEffects mutation ownership: the extras
+        # read, the calibration merge and the runtime apply/persist form one
+        # atomic read-modify-write against other EE mutations.
+        extras = ee_manager.load_global_extras()
+        extras["loudness"]["params"]["calibration"] = {
+            "outputProfileId": profile["id"],
+            "outputProfileLabel": profile["label"],
+            "targetSplDb": 83.0,
+            "measuredSplDb": measured,
+            "requiredAdjustmentDb": adjustment,
+            "calibrated": abs(adjustment) <= 1.0,
+            "method": "automatic" if automatic["available"] else "manual",
+            "microphoneModel": automatic["microphone_model"],
+            "calibrationFileId": automatic["calibration_file_id"],
+            "calibrationFilename": automatic["calibration_filename"],
+            "createdAt": datetime.now(timezone.utc).isoformat(),
+        }
+        profiles = dict(extras["loudness"]["params"].get("calibrationProfiles") or {})
+        profiles[profile["id"]] = dict(extras["loudness"]["params"]["calibration"])
+        extras["loudness"]["params"]["calibrationProfiles"] = profiles
+        return ee_manager.apply_autogain_loudness_runtime(
+            ee_manager.load_global_extras(), extras, persist_all_presets=False
+        )["extras"]
+
+    saved = await run_mutation(_apply_calibration_serialized)
     return {
         "status": "ok",
         "required_adjustment_db": adjustment,

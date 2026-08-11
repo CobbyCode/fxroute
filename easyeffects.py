@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Set
 
-from easyeffects_persistence import EasyEffectsPresetStore
+from easyeffects_persistence import EasyEffectsPresetStore, _atomic_write_text
 
 logger = logging.getLogger(__name__)
 
@@ -1230,8 +1230,9 @@ class EasyEffectsManager:
 
     def save_global_extras(self, extras: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         normalized = self.normalize_effects_extras(extras)
-        self.global_extras_file.parent.mkdir(parents=True, exist_ok=True)
-        self.global_extras_file.write_text(json.dumps(normalized, indent=2) + "\n")
+        _atomic_write_text(
+            self.global_extras_file, json.dumps(normalized, indent=2) + "\n"
+        )
         return normalized
 
     def normalize_compare_state(self, compare: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:

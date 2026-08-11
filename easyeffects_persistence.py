@@ -4,10 +4,61 @@
 
 import json
 import logging
+import os
+import stat
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Replace ``path`` with ``text`` without exposing partial content.
+
+    The text is written to a temp file in the same directory, flushed and
+    closed, then atomically renamed over the target.  Readers observe either
+    the old or the new complete JSON, never a truncated/partial file.
+
+    An existing regular target keeps its permission mode (fchmod, no symlink
+    following); a new target keeps the safe mkstemp default (0600).  The
+    process umask is never modified.  The descriptor is closed on every error
+    path, including failures before os.fdopen(), and the temp file is removed
+    best-effort.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = None
+    try:
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=f"{path.name}.", suffix=".tmp", dir=str(path.parent)
+        )
+        tmp_path = Path(tmp_name)
+        try:
+            try:
+                existing_mode = os.lstat(path).st_mode
+            except OSError:
+                existing_mode = None
+            if existing_mode is not None and stat.S_ISREG(existing_mode):
+                os.fchmod(fd, stat.S_IMODE(existing_mode))
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                fd = None
+                handle.write(text)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp_path, path)
+        except BaseException:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
+    except BaseException:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        raise
 
 
 class EasyEffectsPresetStore:
@@ -72,9 +123,8 @@ class EasyEffectsPresetStore:
         clean_name = self.clean_preset_name(preset_name)
         if not clean_name:
             raise ValueError("Invalid preset name")
-        self.output_dir.mkdir(parents=True, exist_ok=True)
         preset_path = self.output_dir / f"{clean_name}.json"
-        preset_path.write_text(json.dumps(payload, indent=2) + "\n")
+        _atomic_write_text(preset_path, json.dumps(payload, indent=2) + "\n")
         return preset_path
 
     def list_presets(self, *, pinned_names: List[str]) -> List[dict]:
