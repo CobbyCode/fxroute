@@ -177,7 +177,7 @@ def _reason(context: str, name: str) -> str | None:
         return "Coordinator-only link reconciliation; no helper/process restart"
     if leaf == "reconcile_measurement_session_graph":
         return "Coordinator measurement-session link-only reconciliation"
-    if leaf in {"_easyeffects_output_ports_present", "_playback_graph_diagnosis"}:
+    if leaf in {"_easyeffects_output_ports_present", "_mpv_source_ports_present", "_playback_graph_diagnosis"}:
         return "read-only graph diagnosis/readback"
     if leaf in {
         "_start_locked", "_release", "_sync_subwoofer_runtime_for_measurement_sweep",

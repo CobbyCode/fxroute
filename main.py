@@ -56,6 +56,9 @@ LOCAL_TRACK_SWITCH_SETTLE_MS = 260
 SOURCE_HANDOFF_SETTLE_MS = 260
 PIPEWIRE_HANDOFF_RELEASE_TIMEOUT_MS = 1800
 PIPEWIRE_HANDOFF_POLL_INTERVAL_MS = 50
+# Bounded window for the idempotent MPV->EasyEffects link reconciliation
+# after the source ports appeared (link creation plus readback confirm).
+MPV_LINK_REPAIR_TIMEOUT_MS = 1500
 SPOTIFY_SINK_INPUT_RATE_TIMEOUT_MS = 1800
 SPOTIFY_SINK_INPUT_RATE_STABILITY_POLLS = 2
 PEAK_MONITOR_INACTIVE_GRACE_MS = 450
@@ -64,6 +67,12 @@ PEAK_MONITOR_RATE_MATCH_TIMEOUT_MS = 900
 RADIO_EXPECTED_SAMPLE_RATE_HZ = 44100
 RADIO_POST_LOAD_RATE_TIMEOUT_MS = 3000
 RADIO_POST_LOAD_RATE_STABILITY_POLLS = 3
+# Bounded read-only budget for the MPV stream's PipeWire output ports to
+# appear after a staged cold radio loadfile: mpv publishes mpv:output_FL/FR
+# only once the network stream actually opened (observed ~4 s cold start).
+# The MPV->EasyEffects link repair must never run while the ports are
+# absent; this is source-startup readiness, not a fixed sleep.
+RADIO_SOURCE_PORT_READINESS_TIMEOUT_MS = 4500
 # Bounded readback wait for the EasyEffects output ports after a rate switch
 # or a missing-graph repair. No fixed sleeps: the handoff polls pw-link until
 # ee_soe_output_level:output_FL/FR are exposed, then starts/syncs the helper.
@@ -5041,18 +5050,68 @@ def _run_debug_command(args: list[str], timeout: float = 2.0) -> dict:
         return {"returncode": -1, "stdout": "", "stderr": str(exc)}
 
 
-async def _ensure_mpv_to_easyeffects_links(timeout_ms: int = 1500) -> bool:
+async def _mpv_source_ports_present() -> bool:
+    """Read-only check: are the MPV stream ports and EE sink ports exposed?
+
+    The mpv PipeWire stream (and with it mpv:output_FL/FR) is published only
+    once the stream actually opened after a staged ``loadfile``.  This check
+    is the source-startup readiness predicate: while it is false, no link
+    mutation may run.
+    """
+    try:
+        links_text = await _run_pw_link_command("-io")
+    except Exception:
+        return False
+    return all(
+        port in links_text
+        for port in (
+            "mpv:output_FL",
+            "mpv:output_FR",
+            "easyeffects_sink:playback_FL",
+            "easyeffects_sink:playback_FR",
+        )
+    )
+
+
+async def _ensure_mpv_to_easyeffects_links(
+    timeout_ms: int = RADIO_SOURCE_PORT_READINESS_TIMEOUT_MS,
+) -> bool:
     """Ensure only the newly-created MPV stream is connected to EasyEffects.
 
-    Radio-to-radio switches keep the existing EasyEffects output graph. MPV's
-    PipeWire stream is the part that is recreated by ``loadfile`` and may need
-    an idempotent direct link while mpv is still paused.
+    Two-phase, read-back driven contract (no fixed sleeps):
+
+    1. Source port readiness: after a staged ``loadfile`` the mpv PipeWire
+       stream -- and with it mpv:output_FL/FR -- appears only once the
+       stream actually opened; a cold radio stream can take ~4 s.  While
+       the ports are absent we only poll read-only (``pw-link -io``); no
+       link mutation runs against ports that do not exist yet.  That wait
+       is bounded by ``timeout_ms`` as a source-readiness budget.
+    2. Link reconciliation: once the ports exist, existing links are
+       detected read-only and only the missing MPV->EE edges are created
+       idempotently, then confirmed read-only (bounded by
+       ``MPV_LINK_REPAIR_TIMEOUT_MS``).
+
+    Radio-to-radio switches keep the existing EasyEffects output graph; the
+    same contract applies to local playback, which shares this exact path.
+    A missing port set within the bounded budget still fails the transition
+    cleanly at target-source-prepare with the gate/fault safety unchanged.
     """
     expected = (
         ("mpv:output_FL", "easyeffects_sink:playback_FL"),
         ("mpv:output_FR", "easyeffects_sink:playback_FR"),
     )
-    deadline = time.monotonic() + max(timeout_ms, 0) / 1000
+    readiness_deadline = time.monotonic() + max(timeout_ms, 0) / 1000
+    while not await _mpv_source_ports_present():
+        if time.monotonic() >= readiness_deadline:
+            logger.warning(
+                "Radio handoff MPV source ports did not appear within %s ms; "
+                "skipping link repair",
+                timeout_ms,
+            )
+            return False
+        await asyncio.sleep(PIPEWIRE_HANDOFF_POLL_INTERVAL_MS / 1000)
+
+    repair_deadline = time.monotonic() + MPV_LINK_REPAIR_TIMEOUT_MS / 1000
     while True:
         try:
             links_text = await _run_pw_link_command("-l")
@@ -5064,10 +5123,10 @@ async def _ensure_mpv_to_easyeffects_links(timeout_ms: int = 1500) -> bool:
                 logger.info("Radio handoff repairing MPV->EasyEffects link: %s -> %s", source, target)
                 await _connect_ports((source,), target)
         except Exception as exc:
-            if time.monotonic() >= deadline:
+            if time.monotonic() >= repair_deadline:
                 logger.warning("Radio handoff MPV->EasyEffects link repair failed: %s", exc)
                 return False
-        if time.monotonic() >= deadline:
+        if time.monotonic() >= repair_deadline:
             break
         await asyncio.sleep(PIPEWIRE_HANDOFF_POLL_INTERVAL_MS / 1000)
     try:
