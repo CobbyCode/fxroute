@@ -10,7 +10,7 @@ import tempfile
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, Response
@@ -51,6 +51,7 @@ router = APIRouter()
 class LibraryApiRuntime:
     get_scanner: Callable[[], Any]
     get_settings: Callable[[], Any]
+    run_blocking: Optional[Callable[..., Any]] = None
 
 
 _runtime: LibraryApiRuntime | None = None
@@ -65,6 +66,23 @@ def _library_runtime() -> tuple[Any, Any]:
     if _runtime is None:
         raise RuntimeError("Library API runtime is not configured")
     return _runtime.get_scanner(), _runtime.get_settings()
+
+
+async def _run_blocking(func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    """Offload a scan-capable library call to a worker thread.
+
+    Uses the runtime's blocking runner (``main._drain_worker`` in
+    production), which lets a cancelled caller wait for the real worker to
+    finish before propagating ``CancelledError``.  Test runtimes that do
+    not configure a runner fall back to plain ``asyncio.to_thread``.
+    """
+    runtime = _runtime
+    runner = None
+    if runtime is not None:
+        runner = getattr(runtime, "run_blocking", None)
+    if runner is None:
+        return await asyncio.to_thread(func, *args, **kwargs)
+    return await runner(func, *args, **kwargs)
 
 
 def _cover_media_type(path: Path) -> str:
@@ -201,10 +219,12 @@ def _cached_embedded_cover(track_id: str, track_path: Path) -> tuple[Optional[Pa
     return cached, mime or _cover_media_type(cached)
 
 
-def _track_cover_available(track_id: str) -> bool:
+def _track_cover_available(track_id: str, *, tracks: Optional[list] = None) -> bool:
     library_scanner, settings = _library_runtime()
 
-    tracks_by_id = {track.id: track for track in library_scanner.get_tracks(refresh=False)}
+    if tracks is None:
+        tracks = library_scanner.get_tracks(refresh=False)
+    tracks_by_id = {track.id: track for track in tracks}
     track = tracks_by_id.get(track_id)
     if not track or not track.path:
         return False
@@ -255,14 +275,14 @@ def _resolve_library_folder(folder: str, music_root: Path) -> Path:
 @router.get("/api/tracks")
 async def list_tracks():
     library_scanner, _settings = _library_runtime()
-    tracks = library_scanner.get_tracks()
+    tracks = await _run_blocking(library_scanner.get_tracks)
     return [t.to_dict() for t in tracks]
 
 
 @router.get("/api/tracks/file/{track_id:path}")
 async def download_track_file(track_id: str):
     library_scanner, settings = _library_runtime()
-    tracks_by_id = {track.id: track for track in library_scanner.get_tracks(refresh=True)}
+    tracks_by_id = {track.id: track for track in await _run_blocking(library_scanner.get_tracks, authoritative=True)}
     track = tracks_by_id.get(track_id)
     if not track or not track.path:
         raise HTTPException(status_code=404, detail="Track not found")
@@ -277,7 +297,7 @@ async def download_track_file(track_id: str):
 @router.get("/api/tracks/cover/{track_id:path}")
 async def get_track_cover(track_id: str):
     library_scanner, settings = _library_runtime()
-    tracks_by_id = {track.id: track for track in library_scanner.get_tracks(refresh=False)}
+    tracks_by_id = {track.id: track for track in await _run_blocking(library_scanner.get_tracks, authoritative=True)}
     track = tracks_by_id.get(track_id)
     if not track or not track.path:
         raise HTTPException(status_code=404, detail="Track not found")
@@ -302,7 +322,9 @@ async def get_track_cover(track_id: str):
 
 @router.get("/api/tracks/cover-info/{track_id:path}")
 async def get_track_cover_info(track_id: str):
-    return {"available": _track_cover_available(track_id)}
+    library_scanner, _settings = _library_runtime()
+    tracks = await _run_blocking(library_scanner.get_tracks, authoritative=True)
+    return {"available": _track_cover_available(track_id, tracks=tracks)}
 
 
 @router.get("/api/smart/top-tracks")
@@ -310,7 +332,7 @@ async def get_smart_top_tracks(limit: int = 40):
     library_scanner, _settings = _library_runtime()
     if not library_scanner:
         raise HTTPException(status_code=503, detail="Library not available")
-    return library_scanner.get_top_played_tracks(limit=limit)
+    return await _run_blocking(library_scanner.get_top_played_tracks, limit=limit)
 
 
 @router.get("/api/smart/top40/cover")
@@ -320,12 +342,8 @@ async def get_smart_top40_cover():
     return FileResponse(TOP40_COVER_IMAGE, media_type="image/png")
 
 
-@router.get("/api/albums")
-async def list_albums(query: Optional[str] = None):
-    """List albums grouped from the local library, optionally filtered by search query."""
-    library_scanner, _settings = _library_runtime()
-    if not library_scanner:
-        raise HTTPException(status_code=503, detail="Library not available")
+def _list_albums_filtered(library_scanner, query: Optional[str]) -> List[Dict[str, Any]]:
+    """Sync album listing + optional search filter (scan-capable via get_albums)."""
     albums = library_scanner.get_albums()
     if query:
         q = query.strip().lower()
@@ -361,13 +379,22 @@ async def list_albums(query: Optional[str] = None):
     return albums
 
 
+@router.get("/api/albums")
+async def list_albums(query: Optional[str] = None):
+    """List albums grouped from the local library, optionally filtered by search query."""
+    library_scanner, _settings = _library_runtime()
+    if not library_scanner:
+        raise HTTPException(status_code=503, detail="Library not available")
+    return await _run_blocking(_list_albums_filtered, library_scanner, query)
+
+
 @router.get("/api/albums/{album_id}/tracks")
 async def get_album_tracks(album_id: str):
     """Return tracks for a specific album, sorted by disc/track number."""
     library_scanner, _settings = _library_runtime()
     if not library_scanner:
         raise HTTPException(status_code=503, detail="Library not available")
-    tracks = library_scanner.get_album_tracks(album_id)
+    tracks = await _run_blocking(library_scanner.get_album_tracks, album_id, authoritative=True)
     if not tracks:
         raise HTTPException(status_code=404, detail="Album not found")
     return [t.to_dict() for t in tracks]
@@ -379,7 +406,7 @@ async def set_album_favorite(album_id: str, request: Request):
     library_scanner, _settings = _library_runtime()
     if not library_scanner:
         raise HTTPException(status_code=503, detail="Library not available")
-    tracks = library_scanner.get_album_tracks(album_id)
+    tracks = await _run_blocking(library_scanner.get_album_tracks, album_id, authoritative=True)
     if not tracks:
         raise HTTPException(status_code=404, detail="Album not found")
     body = await request.json()
@@ -394,7 +421,7 @@ async def get_album_discover(album_id: str, refresh: bool = False):
     library_scanner, _settings = _library_runtime()
     if not library_scanner:
         raise HTTPException(status_code=503, detail="Library not available")
-    tracks = library_scanner.get_album_tracks(album_id)
+    tracks = await _run_blocking(library_scanner.get_album_tracks, album_id, authoritative=True)
     if not tracks:
         raise HTTPException(status_code=404, detail="Album not found")
     result = library_scanner.get_album_discover(album_id, force=refresh)
@@ -415,7 +442,7 @@ async def get_album_cover(album_id: str, size: int = 256):
     library_scanner, _settings = _library_runtime()
     if not library_scanner:
         raise HTTPException(status_code=503, detail="Library not available")
-    tracks = library_scanner.get_album_tracks(album_id)
+    tracks = await _run_blocking(library_scanner.get_album_tracks, album_id, authoritative=True)
     if not tracks:
         raise HTTPException(status_code=404, detail="Album not found")
 
@@ -459,7 +486,7 @@ async def download_tracks(req: DownloadTracksRequest):
     if not req.track_ids:
         raise HTTPException(status_code=400, detail="track_ids is required")
 
-    tracks_by_id = {track.id: track for track in library_scanner.get_tracks(refresh=True)}
+    tracks_by_id = {track.id: track for track in await _run_blocking(library_scanner.get_tracks, authoritative=True)}
     selected_tracks = []
     seen_ids = set()
     for track_id in req.track_ids:
@@ -542,7 +569,7 @@ async def export_playlist(playlist_id: str):
         raise HTTPException(status_code=404, detail="Playlist not found")
     content = playlist_io.build_m3u_for_playlist(
         playlist,
-        library_scanner.get_tracks(refresh=True),
+        await _run_blocking(library_scanner.get_tracks, authoritative=True),
         settings.MUSIC_ROOT,
     )
     filename = playlist_io.playlist_download_filename(playlist.name)
@@ -604,7 +631,7 @@ async def upload_track(file: UploadFile = File(...)):
             finally:
                 temp_zip_path.unlink(missing_ok=True)
 
-            tracks = library_scanner.refresh(force=True)
+            tracks = await _run_blocking(library_scanner.refresh, True, wait_if_running=True)
             imported_playlists = []
             for playlist_path in playlist_files:
                 imported = playlist_io.import_m3u_playlist(
@@ -636,7 +663,7 @@ async def upload_track(file: UploadFile = File(...)):
 
         if suffix in PLAYLIST_FILE_EXTENSIONS:
             content = (await read_upload(file, TEXT_UPLOAD_MAX_BYTES)).decode("utf-8", errors="replace")
-            tracks = library_scanner.get_tracks(refresh=True)
+            tracks = await _run_blocking(library_scanner.get_tracks, authoritative=True)
             imported = playlist_io.import_m3u_playlist(
                 filename, content, settings.MUSIC_ROOT, tracks=tracks
             )
@@ -658,7 +685,7 @@ async def upload_track(file: UploadFile = File(...)):
 
         with target_path.open("wb") as buffer:
             await save_upload_to_file(file, buffer, LIBRARY_UPLOAD_MAX_BYTES)
-        tracks = library_scanner.refresh(force=True)
+        tracks = await _run_blocking(library_scanner.refresh, True, wait_if_running=True)
         return {
             "status": "uploaded",
             "kind": "audio",
@@ -721,7 +748,7 @@ async def delete_tracks(req: DeleteTracksRequest):
     if not req.track_ids:
         raise HTTPException(status_code=400, detail="track_ids is required")
 
-    tracks_by_id = {track.id: track for track in library_scanner.get_tracks(refresh=True)}
+    tracks_by_id = {track.id: track for track in await _run_blocking(library_scanner.get_tracks, authoritative=True)}
     deleted = []
     errors = []
     affected_folders = set()
@@ -749,7 +776,7 @@ async def delete_tracks(req: DeleteTracksRequest):
         cleanup_track_parent_folder(folder, music_root, {settings.download_dir.resolve()})
         for folder in sorted(affected_folders)
     ]
-    tracks = library_scanner.refresh(force=True)
+    tracks = await _run_blocking(library_scanner.refresh, True, wait_if_running=True)
     return {
         "status": "ok",
         "deleted": deleted,
@@ -772,7 +799,7 @@ async def delete_library_folder(req: DeleteFolderRequest):
     rel_folder = folder_path.relative_to(music_root).as_posix()
 
     deleted_track_ids = []
-    for track in library_scanner.get_tracks(refresh=True):
+    for track in await _run_blocking(library_scanner.get_tracks, authoritative=True):
         if not track.path:
             continue
         try:
@@ -786,7 +813,7 @@ async def delete_library_folder(req: DeleteFolderRequest):
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to delete folder: {exc}") from exc
 
-    tracks = library_scanner.refresh(force=True)
+    tracks = await _run_blocking(library_scanner.refresh, True, wait_if_running=True)
     return {
         "status": "ok",
         "folder": rel_folder,

@@ -215,7 +215,12 @@ class LibraryScanner:
         self.settings = get_settings()
         self.music_root: Path = self.settings.MUSIC_ROOT
         self._track_cache: List[Track] = []
+        self._scan_lock = threading.Lock()
+        self._scan_state_lock = threading.Lock()
+        self._scan_state_cond = threading.Condition(self._scan_state_lock)
         self._scan_in_progress = False
+        self._scan_pending = 0
+        self._scan_scheduled = False
         self._last_scan: Optional[datetime] = None
         self._scan_error: Optional[str] = None
         self._scan_started_at: Optional[datetime] = None
@@ -229,8 +234,18 @@ class LibraryScanner:
         self._refresh_cancel = threading.Event()
 
     def prepare_scan_status(self):
-        """Mark a scan as active before scanner work starts."""
-        self._scan_in_progress = True
+        """Pre-mark a scan as scheduled (startup / manual refresh).
+
+        Status preparation only: it never grants or bypasses scan ownership.
+        The real ownership is acquired by the scan worker inside ``refresh``
+        and this scheduled mark is cleared when the worker takes over (or
+        defers) the scan.
+        """
+        with self._scan_state_lock:
+            self._scan_scheduled = True
+            self._reset_scan_status_locked()
+
+    def _reset_scan_status_locked(self) -> None:
         self._scan_error = None
         self._scan_started_at = datetime.now()
         self._scan_current_dir = None
@@ -265,16 +280,96 @@ class LibraryScanner:
             sqlite_count,
         )
 
-    def refresh(self, force: bool = False) -> List[Track]:
-        """
-        Scan the music directory and build track list.
-        Returns list of Track objects.
-        """
-        if self._scan_in_progress and not force:
-            logger.warning("Scan already in progress, returning cached")
-            return self._track_cache
+    def refresh(self, force: bool = False, *, wait_if_running: bool = False, rescan_after_wait: bool = True) -> List[Track]:
+        """Run a library scan under single-scan ownership.
 
-        self.prepare_scan_status()
+        Semantics (force only ever means freshness, never a concurrency
+        bypass):
+
+        * ``wait_if_running=True`` (mandatory scan, used after mutations):
+          register a pending scan, wait for the currently running scan to
+          finish, then run a fresh scan so the mutation is definitely
+          included.  ``scanning`` stays true from registration until the
+          real scan finished.
+        * ``wait_if_running=True, rescan_after_wait=False`` (authoritative
+          read): wait for the running/queued scans to settle and return
+          their result without starting a second scan; a scan only runs
+          when the cache is empty and nothing is queued.
+        * ``force=True`` (freshness bypass): always re-scan when idle, but
+          never start while another scan is running or pending; in that
+          case the current cache is returned without waiting.
+        * plain calls (``force=False``): use the populated cache; with a
+          scan running or pending the current cache is returned without
+          waiting.
+
+        The scan ownership lock must only be acquired from a worker thread
+        in async contexts (``asyncio.to_thread`` / ``_drain_worker``); it
+        blocks and must never be reached from the event loop.
+        """
+        authoritative = wait_if_running and not rescan_after_wait
+        if authoritative:
+            tracks = self._authoritative_wait()
+            if tracks is not None:
+                return tracks
+        with self._scan_state_lock:
+            if wait_if_running and not authoritative:
+                self._scan_pending += 1
+            else:
+                if not force and self._track_cache:
+                    return self._track_cache
+                if self._scan_in_progress or self._scan_pending > 0:
+                    logger.warning("Scan already in progress, returning cached")
+                    return self._track_cache
+                self._scan_scheduled = True
+        try:
+            with self._scan_lock:
+                with self._scan_state_lock:
+                    if wait_if_running and not authoritative:
+                        defer = False
+                    else:
+                        self._scan_scheduled = False
+                        defer = self._scan_pending > 0
+                if defer:
+                    logger.info("Library scan deferred: mandatory scan already queued")
+                    return self._track_cache
+                return self._run_scan_locked()
+        finally:
+            with self._scan_state_cond:
+                if wait_if_running and not authoritative:
+                    self._scan_pending -= 1
+                self._scan_state_cond.notify_all()
+
+    def _authoritative_wait(self) -> Optional[List[Track]]:
+        """Wait (worker thread only) for queued scans to settle.
+
+        Returns the settled cache, or None when the cache is empty and no
+        scan is running, queued, or scheduled (the caller then runs a scan,
+        because an authoritative read needs data).  Never starts a scan,
+        never takes scan ownership away from a queued mandatory scan, and
+        never extends ``scanning`` beyond the real scan lifecycle.
+        """
+        with self._scan_state_cond:
+            while True:
+                lock_acquired = self._scan_lock.acquire(blocking=False)
+                lock_held = not lock_acquired
+                if lock_acquired:
+                    self._scan_lock.release()
+                busy = (
+                    self._scan_in_progress
+                    or self._scan_pending > 0
+                    or (self._scan_scheduled and not self._track_cache)
+                )
+                if not busy and not lock_held:
+                    break
+                self._scan_state_cond.wait()
+            return self._track_cache if self._track_cache else None
+
+    def _run_scan_locked(self) -> List[Track]:
+        """Run exactly one full scan. Caller must hold ``self._scan_lock``."""
+        with self._scan_state_lock:
+            self._scan_scheduled = False
+            self._scan_in_progress = True
+            self._reset_scan_status_locked()
         tracks = []
         active_track_paths: List[str] = []
         self._log_metadata_fd_counts("before-scan")
@@ -350,7 +445,8 @@ class LibraryScanner:
             self._scan_error = str(e)
         finally:
             self._scan_current_dir = None
-            self._scan_in_progress = False
+            with self._scan_state_lock:
+                self._scan_in_progress = False
 
         return self._track_cache
 
@@ -511,16 +607,26 @@ class LibraryScanner:
 
         return _infer_album_from_folder_name(folder.name, track_artist)
 
-    def get_tracks(self, refresh: bool = False) -> List[Track]:
-        """Get tracks list, optionally forcing a refresh."""
+    def get_tracks(self, refresh: bool = False, *, authoritative: bool = False) -> List[Track]:
+        """Get tracks list.
+
+        ``refresh`` forces a fresh scan when idle (freshness bypass only).
+        ``authoritative`` waits for a running/queued scan to settle and
+        returns its result without starting a second scan; a scan only
+        runs when the cache is empty and nothing is queued.
+        """
+        if authoritative:
+            return self.refresh(force=False, wait_if_running=True, rescan_after_wait=False)
         if refresh or not self._track_cache:
             return self.refresh(force=refresh)
         return self._track_cache
 
     def status(self) -> Dict[str, Any]:
         """Return lightweight scan status for UI polling."""
+        with self._scan_state_lock:
+            scanning = self._scan_in_progress or self._scan_pending > 0 or self._scan_scheduled
         return {
-            "scanning": self._scan_in_progress,
+            "scanning": scanning,
             "track_count": len(self._track_cache),
             "files_seen": self._scan_files_seen,
             "audio_seen": self._scan_audio_seen,
@@ -535,8 +641,9 @@ class LibraryScanner:
 
     @property
     def scanning(self) -> bool:
-        """Whether a scan is currently in progress."""
-        return self._scan_in_progress
+        """Whether a scan is running, waiting for ownership, or scheduled."""
+        with self._scan_state_lock:
+            return self._scan_in_progress or self._scan_pending > 0 or self._scan_scheduled
 
     @property
     def last_scan(self) -> Optional[datetime]:
@@ -671,9 +778,13 @@ class LibraryScanner:
 
         return result
 
-    def get_album_tracks(self, album_id: str) -> List[Track]:
-        """Return the track list for a given album id."""
-        tracks = self.get_tracks()
+    def get_album_tracks(self, album_id: str, *, authoritative: bool = False) -> List[Track]:
+        """Return the track list for a given album id.
+
+        ``authoritative`` waits for a running/queued scan to settle before
+        resolving the album (see ``get_tracks``).
+        """
+        tracks = self.get_tracks(authoritative=authoritative)
 
         # Same compilation detection as get_albums()
         _album_artists: Dict[str, set] = {}

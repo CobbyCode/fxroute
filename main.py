@@ -976,6 +976,7 @@ single_track_loop = False
 configure_library_api_runtime(LibraryApiRuntime(
     get_scanner=lambda: library_scanner,
     get_settings=lambda: settings,
+    run_blocking=_drain_worker,
 ))
 spl_calibration.configure_runtime(spl_calibration.SplCalibrationDependencies(
     get_measurement_store=lambda: measurement_store,
@@ -5416,14 +5417,18 @@ def _shuffled_around_current(tracks: list[dict], current_track: dict | None) -> 
     return [current] + remaining
 
 
-def _prepare_local_queue(track_id: str, queue_track_ids: Optional[list[str]] = None, shuffle: bool = False, loop: bool = False, *, reshuffle: bool = True) -> _QueueCandidate:
+def _prepare_local_queue(track_id: str, queue_track_ids: Optional[list[str]] = None, shuffle: bool = False, loop: bool = False, *, reshuffle: bool = True, tracks: Optional[list] = None) -> _QueueCandidate:
     """Build the requested queue as an uncommitted candidate.
 
     Metadata-only preparation: the committed queue globals are untouched
     until ``_commit_queue_state`` publishes the candidate after a successful
     playback transition.
+
+    ``tracks`` may be passed in from async callers that already offloaded
+    the scan-capable ``library_scanner.get_tracks()`` read to a worker.
     """
-    tracks = library_scanner.get_tracks()
+    if tracks is None:
+        tracks = library_scanner.get_tracks()
     tracks_by_id = {track.id: track for track in tracks}
 
     selected_ids = []
@@ -5698,7 +5703,7 @@ def _set_queue_loop(enabled: bool) -> bool:
     return True
 
 
-def _sync_active_local_queue_selection(queue_track_ids: Optional[list[str]] = None, shuffle: bool = False, loop: bool = False) -> dict:
+def _sync_active_local_queue_selection(queue_track_ids: Optional[list[str]] = None, shuffle: bool = False, loop: bool = False, *, tracks: Optional[list] = None) -> dict:
     global current_track_info, last_track_info, playback_queue_mode
     current_track = dict(current_track_info or {})
     if current_track.get("source") != "local" or not current_track.get("id"):
@@ -5721,6 +5726,7 @@ def _sync_active_local_queue_selection(queue_track_ids: Optional[list[str]] = No
         shuffle=shuffle,
         loop=loop,
         reshuffle=False,
+        tracks=tracks,
     )
     _commit_queue_state(candidate)
     track_info = candidate.track
@@ -6340,7 +6346,7 @@ async def on_download_progress(progress):
     if status == "complete":
         global library_scanner
         if library_scanner:
-            library_scanner.refresh(force=True)
+            await _drain_worker(library_scanner.refresh, True, wait_if_running=True)
         await manager.broadcast({"type": "download_complete", "data": data})
     elif status == "error":
         await manager.broadcast({"type": "download_error", "data": data})
@@ -7527,12 +7533,14 @@ async def play_track(req: PlayRequest):
     else:
         active_queue_ids = [item.get("id") for item in playback_queue]
         preserve_queue_order = bool(req.queue_track_ids) and list(req.queue_track_ids) == active_queue_ids
+        tracks = await _drain_worker(library_scanner.get_tracks) if library_scanner is not None else None
         queue_candidate = _prepare_local_queue(
             req.track_id,
             req.queue_track_ids,
             shuffle=req.shuffle,
             loop=req.loop,
             reshuffle=not preserve_queue_order,
+            tracks=tracks,
         )
         track_info = queue_candidate.track
     if not track_info or not track_info.get("url"):
@@ -7801,10 +7809,12 @@ async def sync_playback_selection(request: Request):
     if not isinstance(queue_track_ids, list):
         raise HTTPException(status_code=400, detail="Invalid JSON, expected {\"queue_track_ids\": <list>}")
 
+    tracks = await _drain_worker(library_scanner.get_tracks) if library_scanner is not None else None
     playback = _sync_active_local_queue_selection(
         queue_track_ids=queue_track_ids,
         shuffle=bool(body.get("shuffle", False)),
         loop=bool(body.get("loop", False)),
+        tracks=tracks,
     )
     await manager.broadcast({"type": "playback", "data": playback})
     return {"status": "ok", "playback": playback}

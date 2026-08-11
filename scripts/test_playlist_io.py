@@ -110,7 +110,7 @@ class PlaylistIOExportTests(unittest.TestCase):
             make_track("t2", self.music_root / "album" / "second.flac", title="Second", duration=0),
             make_track("t3", self.music_root / "single" / "one.flac", title="One", duration=-1),
         ]
-        scanner = SimpleNamespace(get_tracks=lambda refresh=True: tracks)
+        scanner = SimpleNamespace(get_tracks=lambda refresh=True, **kwargs: tracks)
         playlist = SimpleNamespace(id="p1", name="My Mix", track_ids=["t3", "t1", "missing", "t2"])
         with patch.object(main, "settings", self.settings), patch.object(main, "library_scanner", scanner):
             content = playlist_io.build_m3u_for_playlist(playlist, tracks, self.music_root)
@@ -124,7 +124,7 @@ class PlaylistIOExportTests(unittest.TestCase):
 
     def test_build_m3u_for_playlist_label_fallback_to_stem(self):
         tracks = [make_track("t1", self.music_root / "album" / "untitled.flac", title=None, duration=5)]
-        scanner = SimpleNamespace(get_tracks=lambda refresh=True: tracks)
+        scanner = SimpleNamespace(get_tracks=lambda refresh=True, **kwargs: tracks)
         playlist = SimpleNamespace(id="p1", name="P", track_ids=["t1"])
         with patch.object(main, "settings", self.settings), patch.object(main, "library_scanner", scanner):
             content = playlist_io.build_m3u_for_playlist(playlist, tracks, self.music_root)
@@ -251,7 +251,7 @@ class PlaylistIOImportTests(unittest.TestCase):
             main._playlist_download_filename("My Playlist"),
             playlist_io.playlist_download_filename("My Playlist"),
         )
-        with patch.object(main, "settings", self.settings), patch.object(main, "library_scanner", SimpleNamespace(get_tracks=lambda refresh=True: [])):
+        with patch.object(main, "settings", self.settings), patch.object(main, "library_scanner", SimpleNamespace(get_tracks=lambda refresh=True, **kwargs: [])):
             self.assertEqual(
                 main._resolve_m3u_track_ids(["album/song.flac"], tracks=[]),
                 playlist_io.resolve_m3u_track_ids(["album/song.flac"], self.music_root, tracks=[]),
@@ -267,7 +267,7 @@ class PlaylistIOApiTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_export_api_response_unchanged(self):
         tracks = [make_track("t1", self.music_root / "album" / "song.flac", title="Song", artist="Artist", duration=240)]
-        scanner = SimpleNamespace(get_tracks=lambda refresh=True: tracks)
+        scanner = SimpleNamespace(get_tracks=lambda refresh=True, **kwargs: tracks)
         playlist = SimpleNamespace(id="p1", name="My Mix", track_ids=["t1"])
         with (
             patch.object(main, "settings", self.settings),
@@ -281,14 +281,14 @@ class PlaylistIOApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.body.decode(), "#EXTM3U\n#EXTINF:240,Artist - Song\nalbum/song.flac\n")
 
     async def test_export_api_404_for_unknown_playlist(self):
-        with patch.object(main, "settings", self.settings), patch.object(main, "library_scanner", SimpleNamespace(get_tracks=lambda refresh=True: [])), patch.object(library_api, "get_playlists", return_value=[]):
+        with patch.object(main, "settings", self.settings), patch.object(main, "library_scanner", SimpleNamespace(get_tracks=lambda refresh=True, **kwargs: [])), patch.object(library_api, "get_playlists", return_value=[]):
             with self.assertRaises(library_api.HTTPException) as ctx:
                 await library_api.export_playlist("missing")
         self.assertEqual(ctx.exception.status_code, 404)
 
     async def test_upload_playlist_api_response_unchanged(self):
         tracks = [make_track("t1", self.music_root / "album" / "song.flac", title="Song", duration=240)]
-        scanner = SimpleNamespace(get_tracks=lambda refresh=True: tracks)
+        scanner = SimpleNamespace(get_tracks=lambda refresh=True, **kwargs: tracks)
         saved = SimpleNamespace(id="p9", name="mix", track_ids=["t1"])
 
         class FakeUpload:
@@ -326,7 +326,7 @@ class PlaylistIOApiTests(unittest.IsolatedAsyncioTestCase):
         save.assert_called_once_with("mix", ["t1"])
 
     async def test_upload_playlist_without_match_raises_400(self):
-        scanner = SimpleNamespace(get_tracks=lambda refresh=True: [])
+        scanner = SimpleNamespace(get_tracks=lambda refresh=True, **kwargs: [])
 
         class FakeUpload:
             filename = "empty.m3u"
