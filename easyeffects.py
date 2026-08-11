@@ -191,11 +191,16 @@ class EasyEffectsManager:
     def _has_flatpak_install(self) -> bool:
         if not shutil.which("flatpak"):
             return False
-        result = subprocess.run(
-            ["flatpak", "info", "com.github.wwmm.easyeffects"],
-            capture_output=True,
-            text=True,
-        )
+        try:
+            result = subprocess.run(
+                ["flatpak", "info", "com.github.wwmm.easyeffects"],
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+        except subprocess.TimeoutExpired:
+            logger.debug("Flatpak capability probe timed out; treating Flatpak as unavailable")
+            return False
         return result.returncode == 0
 
     def _build_runtime(

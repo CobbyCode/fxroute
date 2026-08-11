@@ -7407,7 +7407,7 @@ async def lifespan(app: FastAPI):
 
         player_instance = get_player()
         try:
-            player_instance.start()
+            await _drain_worker(player_instance.start)
             logger.info("MPV player started")
             ensure_local_source_volume()
         except MPVNotInstalledError as exc:
@@ -7424,7 +7424,7 @@ async def lifespan(app: FastAPI):
         downloader = Downloader()
         logger.info("Downloader initialized")
 
-        easyeffects_manager = EasyEffectsManager()
+        easyeffects_manager = await _drain_worker(EasyEffectsManager)
         if easyeffects_manager.load_global_extras().get("loudness", {}).get("enabled"):
             set_output_volume(100)
         volume_read_monitor_task = start_volume_read_monitor()

@@ -134,7 +134,9 @@ class MPVWrapper:
             pass
 
         try:
-            subprocess.run(["mpv", "--version"], capture_output=True, check=True)
+            subprocess.run(["mpv", "--version"], capture_output=True, check=True, timeout=2)
+        except subprocess.TimeoutExpired as e:
+            raise MPVNotInstalledError("mpv version probe timed out") from e
         except (subprocess.CalledProcessError, FileNotFoundError) as e:
             raise MPVNotInstalledError("mpv is not installed or not in PATH") from e
 
