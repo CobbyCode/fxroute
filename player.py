@@ -98,12 +98,15 @@ class MPVWrapper:
             "playlist_pos": None,
             "ended": False,
             "error": None,
+            "end_reason": None,
+            "end_entry_id": None,
             "_seq": 0,
         }
         self._callbacks = []
         self._callback_tasks: set[asyncio.Task] = set()
         self._next_callback_token = 0
         self._last_end_reason: Optional[str] = None
+        self._last_end_entry_id: Optional[int] = None
         self._last_position_notify_at = 0.0
         self._last_position_notify_position = 0.0
         self._listener_socket: Optional[socket.socket] = None
@@ -374,9 +377,13 @@ class MPVWrapper:
                     self._state["duration"] = 0.0
                     if current_file is None:
                         self._state["ended"] = self._last_end_reason in {"eof", "error"}
+                        self._state["end_reason"] = self._last_end_reason
+                        self._state["end_entry_id"] = self._last_end_entry_id
                         self._state["playing"] = False
                     else:
                         self._state["ended"] = False
+                        self._state["end_reason"] = None
+                        self._state["end_entry_id"] = None
                         self._state["playing"] = not self._state.get("paused")
                     changed = True
 
@@ -396,7 +403,10 @@ class MPVWrapper:
                     self._state["current_file"] = None
                     self._state["playlist_pos"] = None
                     self._state["ended"] = self._last_end_reason in {"eof", "error"}
+                    self._state["end_reason"] = self._last_end_reason
+                    self._state["end_entry_id"] = self._last_end_entry_id
                     self._last_end_reason = None
+                    self._last_end_entry_id = None
                     changed = True
                 elif not idle_active and self._state.get("current_file") is not None:
                     next_playing = not self._state.get("paused") and not self._state.get("ended")
@@ -405,7 +415,13 @@ class MPVWrapper:
                         changed = True
 
         elif event_name == "end-file":
+            # MPV liefert laut IPC-Vertrag reason und playlist_entry_id
+            # (seit mpv 0.33); das File/Filename-Feld existiert dort nicht.
+            # Die Entry-ID ist die einzige MPV-seitige Track-Identität und
+            # wird hier als Diagnose-/Logging-Identität erhalten.
             self._last_end_reason = event.get("reason")
+            entry_id = event.get("playlist_entry_id")
+            self._last_end_entry_id = entry_id if isinstance(entry_id, int) else None
 
         if changed:
             self._notify_callbacks()
@@ -432,12 +448,15 @@ class MPVWrapper:
             if start_paused is None:
                 start_paused = bool(self._state.get("paused"))
             self._last_end_reason = None
+            self._last_end_entry_id = None
             self._state["playing"] = not bool(start_paused)
             self._state["paused"] = bool(start_paused)
             self._state["current_file"] = path
             self._state["position"] = 0.0
             self._state["duration"] = 0.0
             self._state["ended"] = False
+            self._state["end_reason"] = None
+            self._state["end_entry_id"] = None
             self._notify_callbacks()
             return result
 
@@ -447,6 +466,8 @@ class MPVWrapper:
             result = self.set_property("pause", paused)
             self._state["paused"] = paused
             self._state["ended"] = False
+            self._state["end_reason"] = None
+            self._state["end_entry_id"] = None
             self._state["playing"] = not paused and self._state.get("current_file") is not None
             self._notify_callbacks()
             return result
@@ -462,6 +483,7 @@ class MPVWrapper:
         with self.lock:
             self._send_command("stop")
             self._last_end_reason = None
+            self._last_end_entry_id = None
             self._state["playing"] = False
             self._state["paused"] = False
             self._state["position"] = 0.0
@@ -469,6 +491,8 @@ class MPVWrapper:
             self._state["current_file"] = None
             self._state["playlist_pos"] = None
             self._state["ended"] = False
+            self._state["end_reason"] = None
+            self._state["end_entry_id"] = None
             self._notify_callbacks()
 
     def set_volume(self, volume: int):
@@ -499,6 +523,8 @@ class MPVWrapper:
             result = self.set_property("playlist-pos", index)
             self._state["playlist_pos"] = index
             self._state["ended"] = False
+            self._state["end_reason"] = None
+            self._state["end_entry_id"] = None
             self._notify_callbacks()
             return result
 
@@ -539,12 +565,21 @@ class MPVWrapper:
             return result
 
     def register_callbacks(self, callback):
-        """Register a callback for state changes."""
+        """Register a callback for state changes.
+
+        Coroutine functions are invoked through a scheduled task.  A plain
+        (sync) callback is invoked synchronously at notify time; if it
+        returns an awaitable, that awaitable is scheduled as a task on the
+        captured loop, exactly like a coroutine-function callback.  This
+        lets a sync dispatcher capture context (e.g. a playback ownership
+        token) at the moment the state change is observed, before the
+        coroutine task is queued.
+        """
         callback_loop = None
-        if inspect.iscoroutinefunction(callback):
-            try:
-                callback_loop = asyncio.get_running_loop()
-            except RuntimeError:
+        try:
+            callback_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            if inspect.iscoroutinefunction(callback):
                 logger.warning("Registered async callback without a running event loop")
         self._next_callback_token += 1
         self._callbacks.append((callback, callback_loop, self._next_callback_token))
@@ -570,6 +605,16 @@ class MPVWrapper:
         self._callback_tasks.add(task)
         task.add_done_callback(self._callback_tasks.discard)
 
+    def _schedule_awaitable_task(self, awaitable, token):
+        if not any(item[2] == token for item in self._callbacks):
+            close = getattr(awaitable, "close", None)
+            if callable(close):
+                close()
+            return
+        task = asyncio.create_task(awaitable)
+        self._callback_tasks.add(task)
+        task.add_done_callback(self._callback_tasks.discard)
+
     def _notify_callbacks(self):
         """Notify all callbacks with current state."""
         self._state["_seq"] = int(self._state.get("_seq") or 0) + 1
@@ -587,7 +632,19 @@ class MPVWrapper:
                         token,
                     )
                 else:
-                    callback(snapshot.copy())
+                    result = callback(snapshot.copy())
+                    if inspect.isawaitable(result):
+                        if not callback_loop or not callback_loop.is_running():
+                            logger.warning("Skipping awaitable callback result because no running loop is available")
+                            close = getattr(result, "close", None)
+                            if callable(close):
+                                close()
+                            continue
+                        callback_loop.call_soon_threadsafe(
+                            self._schedule_awaitable_task,
+                            result,
+                            token,
+                        )
             except Exception as e:
                 logger.error(f"Callback error: {e}")
 

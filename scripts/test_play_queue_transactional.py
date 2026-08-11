@@ -75,7 +75,7 @@ class PlayQueueTransactionalTests(unittest.IsolatedAsyncioTestCase):
         "last_track_info", "last_radio_track_info", "current_footer_owner",
         "playback_queue", "playback_queue_original", "playback_queue_index",
         "playback_queue_mode", "playback_queue_loop", "playback_queue_shuffle",
-        "single_track_loop", "queue_transition_target_url",
+        "single_track_loop",
     )
 
     def _install(self, queue_a: list[dict], *, index: int, mode: str = "app_replace",
@@ -94,7 +94,6 @@ class PlayQueueTransactionalTests(unittest.IsolatedAsyncioTestCase):
         main.playback_queue_loop = loop
         main.playback_queue_shuffle = shuffle
         main.single_track_loop = False
-        main.queue_transition_target_url = None
         return originals
 
     def _restore(self, originals: dict) -> None:
@@ -380,7 +379,7 @@ class QueueSelectionTransactionalTests(unittest.IsolatedAsyncioTestCase):
         "last_track_info", "current_footer_owner",
         "playback_queue", "playback_queue_original", "playback_queue_index",
         "playback_queue_mode", "playback_queue_loop", "playback_queue_shuffle",
-        "single_track_loop", "queue_transition_target_url",
+        "single_track_loop",
     )
 
     def _install(self, queue_a: list[dict], *, index: int, mode: str = "app_replace",
@@ -399,7 +398,6 @@ class QueueSelectionTransactionalTests(unittest.IsolatedAsyncioTestCase):
         main.playback_queue_loop = False
         main.playback_queue_shuffle = shuffle
         main.single_track_loop = False
-        main.queue_transition_target_url = None
         return originals
 
     def _restore(self, originals: dict) -> None:

@@ -232,7 +232,7 @@ class NativeQueueCallbackTests(unittest.IsolatedAsyncioTestCase):
     async def test_path_and_playlist_pos_update_context_without_transition(self):
         names = (
             "playback_queue", "playback_queue_mode", "playback_queue_index",
-            "current_track_info", "last_track_info", "queue_transition_target_url",
+            "current_track_info", "last_track_info",
             "latest_player_state_seq_seen", "queue_advancing", "manager",
             "peak_monitor", "source_transition_lock", "playback_transition_coordinator",
             "sync_peak_monitor_for_playback_state", "_schedule_radio_reconnect_if_needed",
@@ -245,7 +245,6 @@ class NativeQueueCallbackTests(unittest.IsolatedAsyncioTestCase):
             main.playback_queue_index = 0
             main.current_track_info = dict(main.playback_queue[0])
             main.last_track_info = dict(main.playback_queue[0])
-            main.queue_transition_target_url = None
             main.latest_player_state_seq_seen = 0
             main.queue_advancing = False
             main.manager = SimpleNamespace(broadcast=_noop_async)
@@ -419,7 +418,7 @@ class NativeQueueShuffleParityTests(unittest.IsolatedAsyncioTestCase):
             "player_instance", "playback_queue", "playback_queue_original",
             "playback_queue_index", "playback_queue_mode", "playback_queue_loop",
             "playback_queue_shuffle", "current_track_info", "last_track_info",
-            "queue_transition_target_url", "queue_advancing", "latest_player_state_seq_seen",
+            "queue_advancing", "latest_player_state_seq_seen",
             "playback_transition_coordinator", "get_samplerate_status",
             "_run_coordinated_transition", "random", "manager", "peak_monitor",
             "source_transition_lock", "sync_peak_monitor_for_playback_state",
@@ -444,7 +443,6 @@ class NativeQueueShuffleParityTests(unittest.IsolatedAsyncioTestCase):
                 "paused": False,
                 "playing": True,
             })
-            main.queue_transition_target_url = None
             main.queue_advancing = False
             main.latest_player_state_seq_seen = 0
             main.playback_transition_coordinator = SimpleNamespace(transition_active=False)

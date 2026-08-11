@@ -234,7 +234,7 @@ class InactiveTransitionSemanticsTests(unittest.IsolatedAsyncioTestCase):
             main, "playback_queue_loop", False
         ), patch.object(main, "playback_queue_shuffle", False), patch.object(
             main, "single_track_loop", False
-        ), patch.object(main, "queue_transition_target_url", None), patch.object(
+        ), patch.object(
             main, "radio_reconnect_attempts", 0
         ), patch.object(main, "radio_reconnect_url", None), patch.object(
             main, "radio_reconnect_active_since", 0.0
@@ -297,7 +297,7 @@ class TransitionEndRecoveryTests(unittest.IsolatedAsyncioTestCase):
             main, "playback_queue_loop", False
         ), patch.object(main, "playback_queue_shuffle", False), patch.object(
             main, "single_track_loop", False
-        ), patch.object(main, "queue_transition_target_url", None), patch.object(
+        ), patch.object(
             main, "radio_reconnect_attempts", 0
         ), patch.object(main, "radio_reconnect_url", None), patch.object(
             main, "radio_reconnect_active_since", 0.0

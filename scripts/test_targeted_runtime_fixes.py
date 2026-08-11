@@ -156,7 +156,7 @@ class QueueCallbackOwnershipTests(unittest.IsolatedAsyncioTestCase):
     async def test_callback_does_not_commit_queue_track_from_playlist_events(self):
         names = (
             "playback_queue", "playback_queue_mode", "playback_queue_index",
-            "queue_transition_target_url", "current_track_info", "last_track_info",
+            "current_track_info", "last_track_info",
             "queue_advancing", "single_track_loop", "playback_transition_epoch",
             "latest_player_state_seq_seen", "source_transition_lock", "manager",
             "peak_monitor", "build_playback_payload", "_schedule_radio_reconnect_if_needed",
@@ -170,7 +170,6 @@ class QueueCallbackOwnershipTests(unittest.IsolatedAsyncioTestCase):
             ]
             main.playback_queue_mode = "app_replace"
             main.playback_queue_index = 0
-            main.queue_transition_target_url = "/music/b.flac"
             main.current_track_info = dict(main.playback_queue[0])
             main.last_track_info = dict(main.playback_queue[0])
             main.queue_advancing = False
@@ -192,7 +191,6 @@ class QueueCallbackOwnershipTests(unittest.IsolatedAsyncioTestCase):
                 "_seq": 1, "current_file": "/music/a.flac", "playlist_pos": 1,
                 "paused": True, "ended": False,
             })
-            self.assertEqual(main.queue_transition_target_url, "/music/b.flac")
             self.assertEqual(main.current_track_info["url"], "/music/a.flac")
             self.assertEqual(main.playback_queue_index, 0)
 
@@ -201,9 +199,8 @@ class QueueCallbackOwnershipTests(unittest.IsolatedAsyncioTestCase):
                 "paused": False, "ended": False,
             })
             # The Coordinator endpoint owns the queue-track commit.  A player
-            # callback may clear the transition marker, but stale MPV
-            # playlist metadata must not commit a different queue item.
-            self.assertIsNone(main.queue_transition_target_url)
+            # callback must not commit a different queue item from stale MPV
+            # playlist metadata.
             self.assertEqual(main.current_track_info["url"], "/music/a.flac")
             self.assertEqual(main.playback_queue_index, 0)
         finally:
@@ -296,7 +293,7 @@ class ApiPlayQueueOrderTests(unittest.IsolatedAsyncioTestCase):
                 "last_track_info", "last_radio_track_info", "current_footer_owner",
                 "playback_queue", "playback_queue_original", "playback_queue_index",
                 "playback_queue_mode", "playback_queue_loop", "playback_queue_shuffle",
-                "single_track_loop", "queue_transition_target_url", "peak_monitor",
+                "single_track_loop", "peak_monitor",
                 "source_transition_lock",
                 "playback_transition_epoch",
                 "radio_reconnect_attempts", "radio_reconnect_url",
@@ -318,7 +315,6 @@ class ApiPlayQueueOrderTests(unittest.IsolatedAsyncioTestCase):
         main.playback_queue_loop = False
         main.playback_queue_shuffle = False
         main.single_track_loop = False
-        main.queue_transition_target_url = None
         main.peak_monitor = None
         main.source_transition_lock = None
         measurement_session._playback_state_before_measurement = None

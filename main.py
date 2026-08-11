@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import time
+import weakref
 import asyncio
 import hashlib
 import inspect
@@ -952,7 +953,31 @@ library_refresh_tasks: set[asyncio.Task] = set()
 latest_player_state_seq_seen = 0
 playback_transition_epoch = 0
 playback_transition_pending_attempts = 0
+# Warte-Primitiv fuer Ended-Callbacks: gesetzt, sobald keine
+# Playback-Transition-Instanz mehr in flight ist.  asyncio.Event bindet sich
+# an den ersten benutzten Event-Loop; Tests nutzen pro Test einen frischen
+# Loop, daher wird das Signal pro Loop gehalten (Produktion: genau ein Loop).
+# Kein zweites Transition-Lock.
+_playback_settled_events: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Event]" = weakref.WeakKeyDictionary()
+
+
+def _playback_settled_event() -> asyncio.Event:
+    """Return the settle signal for the running event loop (create if new)."""
+    loop = asyncio.get_running_loop()
+    event = _playback_settled_events.get(loop)
+    if event is None:
+        event = asyncio.Event()
+        event.set()
+        _playback_settled_events[loop] = event
+    return event
 playback_intent_generation = 0
+# Publizierter Playback-Kontext-Token: wechselt NUR, wenn ein neuer
+# autoritativer Playback-Kontext (Local/Radio/Spotify/Queue-Track) an der
+# App-Commit-Boundary vollstaendig publiziert wurde.  Coordinator-
+# Operationen ohne Source-/Track-Wechsel (output-mode, measurement-entry/
+# restore, sample-rate-policy, recovery, graph-reconcile) lassen ihn
+# unveraendert; fehlgeschlagene Attempts ebenso.
+playback_context_commit_id: str | None = None
 current_track_info = None
 last_track_info = None
 last_radio_track_info = None
@@ -968,7 +993,6 @@ playback_queue_original = []
 playback_queue_index = -1
 playback_queue_mode = "app_replace"
 queue_advancing = False
-queue_transition_target_url = None
 playback_queue_loop = False
 playback_queue_shuffle = False
 single_track_loop = False
@@ -1002,6 +1026,7 @@ def _begin_playback_transition_attempt() -> int:
     global playback_transition_epoch, playback_transition_pending_attempts
     playback_transition_epoch += 1
     playback_transition_pending_attempts += 1
+    _playback_settled_event().clear()
     return playback_transition_epoch
 
 
@@ -1011,6 +1036,8 @@ def _end_playback_transition_attempt() -> None:
     if playback_transition_pending_attempts < 0:
         playback_transition_pending_attempts = 0
         logger.critical("playback transition attempt accounting underflow")
+    if playback_transition_pending_attempts == 0:
+        _playback_settled_event().set()
 
 
 def _capture_playback_transition_epoch() -> int | None:
@@ -1023,6 +1050,51 @@ def _capture_playback_transition_epoch() -> int | None:
     if playback_transition_pending_attempts > 0:
         return None
     return playback_transition_epoch
+
+
+def _current_playback_commit_id() -> str | None:
+    """Return the published playback-context token.
+
+    Unlike the Coordinator's ``last_successful_commit_id`` (which advances on
+    every committed Coordinator operation, including output-mode-switch,
+    measurement-entry/restore, sample-rate-policy and recovery), this token
+    is only published at the application commit boundary together with the
+    authoritative playback globals.  It stays unchanged while an attempt is
+    running, after it failed, and after non-source-changing commits.
+    """
+    return playback_context_commit_id
+
+
+def _publish_playback_context_commit(commit_token: str | None) -> None:
+    """Publish the playback-context token exactly once at the app boundary.
+
+    Synchronous: callers invoke this immediately after all globals of the new
+    authoritative playback context were committed and before any further
+    await, so the Ended-Waiter can never observe a window with a new token
+    but old playback globals (or vice versa).
+    """
+    global playback_context_commit_id
+    if commit_token:
+        playback_context_commit_id = str(commit_token)
+
+
+async def _wait_playback_transition_settled() -> None:
+    """Wait until no playback-transition attempt is pending (terminal state).
+
+    Waits on the settled event which is cleared on every attempt start and
+    set when the last attempt finished.  Multiple queued attempts (nested or
+    serialized behind the Coordinator lock) are all covered, because the
+    counter only reaches zero after the final attempt drained.  Never holds
+    the Coordinator lock and never blocks the event loop.
+    """
+    while playback_transition_pending_attempts > 0:
+        event = _playback_settled_event()
+        if not event.is_set():
+            await event.wait()
+        else:
+            # Defensive yield: a set event with pending attempts violates the
+            # begin/end invariant; re-check after yielding instead of spinning.
+            await asyncio.sleep(0)
 
 
 def _hardware_sink_for_transition() -> str:
@@ -3166,7 +3238,12 @@ def _mark_playback_intent_changed() -> None:
     playback_intent_generation += 1
 
 
-def _commit_coordinated_track(track_info: Mapping[str, Any], *, source: str) -> None:
+def _commit_coordinated_track(
+    track_info: Mapping[str, Any],
+    *,
+    source: str,
+    commit_token: str | None = None,
+) -> None:
     global current_track_info, last_track_info, last_radio_track_info, current_footer_owner
     track = dict(track_info)
     _mark_playback_intent_changed()
@@ -3178,6 +3255,11 @@ def _commit_coordinated_track(track_info: Mapping[str, Any], *, source: str) -> 
     if source == "local":
         _record_local_track_started(track)
     _mark_player_state_authoritative(player_instance.state if player_instance else {})
+    # Publiziere den neuen Playback-Kontext-Token erst hier, nachdem alle
+    # zum Kontext gehoerenden Globals committed wurden: der Ended-Waiter
+    # kann zwischen Coordinator-Commit und dieser Boundary nie laufen (die
+    # Boundary wird synchron im selben Caller-Step publiziert).
+    _publish_playback_context_commit(commit_token)
 
 # WebSocket connection manager
 class _ClientSender:
@@ -3520,7 +3602,7 @@ def _reduce_native_mpv_playlist_to_current() -> None:
 
 
 def _clear_playback_queue():
-    global playback_queue, playback_queue_original, playback_queue_index, playback_queue_mode, queue_transition_target_url, playback_queue_loop, playback_queue_shuffle, single_track_loop
+    global playback_queue, playback_queue_original, playback_queue_index, playback_queue_mode, playback_queue_loop, playback_queue_shuffle, single_track_loop
     was_native = playback_queue_mode == "native_mpv"
     if was_native:
         _reduce_native_mpv_playlist_to_current()
@@ -3529,7 +3611,6 @@ def _clear_playback_queue():
     playback_queue_original = []
     playback_queue_index = -1
     playback_queue_mode = "app_replace"
-    queue_transition_target_url = None
     playback_queue_loop = False
     playback_queue_shuffle = False
     single_track_loop = False
@@ -5356,13 +5437,12 @@ def _cleared_queue_candidate(track: dict | None = None) -> _QueueCandidate:
 def _commit_queue_state(candidate: _QueueCandidate) -> None:
     """Publish a prepared queue candidate to the committed globals."""
     global playback_queue, playback_queue_original, playback_queue_index
-    global playback_queue_mode, queue_transition_target_url
+    global playback_queue_mode
     global playback_queue_loop, playback_queue_shuffle, single_track_loop
     playback_queue = [dict(item) for item in candidate.queue]
     playback_queue_original = [dict(item) for item in candidate.original]
     playback_queue_index = candidate.index
     playback_queue_mode = candidate.mode
-    queue_transition_target_url = None
     playback_queue_loop = candidate.loop
     playback_queue_shuffle = candidate.shuffle
     single_track_loop = candidate.single_track_loop
@@ -5536,7 +5616,9 @@ async def _load_queue_track(index: int, *, transition_reason: str = "queue navig
         playback_queue[index]["sample_rate_hz"] = result.target_rate
     if queue_candidate is None:
         playback_queue_index = index
-    _commit_coordinated_track(next_track, source=source)
+    _commit_coordinated_track(
+        next_track, source=source, commit_token=getattr(result, "transition_id", None)
+    )
     return True
 
 
@@ -6229,8 +6311,24 @@ def _mark_player_state_authoritative(state: dict | None) -> None:
         latest_player_state_seq_seen = max(latest_player_state_seq_seen, seq)
 
 
-async def on_player_state_change(state: dict):
-    global queue_advancing, playback_queue_index, current_track_info, last_track_info, queue_transition_target_url, latest_player_state_seq_seen
+def _dispatch_player_state_change(state: dict):
+    """Synchronous player-state dispatcher.
+
+    player.py invokes this at notify time (before any coroutine task is
+    queued) and schedules the returned coroutine as a task.  Capturing the
+    committed playback token here instead of inside the async callback binds
+    the state event to the playback context that was committed when the
+    event was observed: a stale end-file event keeps its original token even
+    when its callback task runs after a newer commit.
+    """
+    return on_player_state_change(
+        state,
+        event_commit_id=_current_playback_commit_id(),
+    )
+
+
+async def on_player_state_change(state: dict, event_commit_id: str | None = None):
+    global queue_advancing, playback_queue_index, current_track_info, last_track_info, latest_player_state_seq_seen
     callback_generation = _capture_playback_transition_epoch()
     seq = state.get("_seq")
     if isinstance(seq, int):
@@ -6238,10 +6336,25 @@ async def on_player_state_change(state: dict):
             return
         latest_player_state_seq_seen = seq
 
-    if queue_transition_target_url:
-        current_file = state.get("current_file")
-        if current_file == queue_transition_target_url and not state.get("ended"):
-            queue_transition_target_url = None
+    # Ended ownership: an end-file event may only mutate queue or playback
+    # while it still belongs to the currently committed playback context.
+    # The event's captured commit token must equal the current successful
+    # Coordinator commit.  While a transition attempt is in flight the
+    # callback waits for it to settle first: a failed attempt leaves the
+    # committed token unchanged and this EOF stays legitimate; a committed
+    # attempt replaces the token and the stale EOF becomes a no-op.
+    if state.get("ended") and not state.get("current_file"):
+        await _wait_playback_transition_settled()
+        current_commit_id = _current_playback_commit_id()
+        if event_commit_id != current_commit_id:
+            logger.debug(
+                "Stale ended player event discarded: seq=%s entry_id=%s event_commit_id=%s current_commit_id=%s",
+                seq,
+                state.get("end_entry_id"),
+                event_commit_id,
+                current_commit_id,
+            )
+            return
 
     # Once a homogeneous queue has been committed, MPV owns natural playlist
     # boundaries.  A path/playlist-pos event only updates application context;
@@ -6286,7 +6399,6 @@ async def on_player_state_change(state: dict):
 
     if (
         not queue_advancing
-        and not queue_transition_target_url
         and state.get("ended")
         and not state.get("current_file")
         and current_track_info
@@ -6314,6 +6426,12 @@ async def on_player_state_change(state: dict):
                     ))
                     if _sample_rate_policy_is_auto() and isinstance(result.target_rate, int) and result.target_rate > 0:
                         current_track_info["sample_rate_hz"] = result.target_rate
+                    # Eine neue physische Playback-Instanz wurde committed:
+                    # publiziere ausschliesslich den Playback-Instance-Token
+                    # (kein _commit_coordinated_track: dessen Side Effects wie
+                    # Intent/History sind fuer automatisches Single-Track-Loop
+                    # unerwuenscht).
+                    _publish_playback_context_commit(getattr(result, "transition_id", None))
                 except PlaybackTransitionFailure as exc:
                     logger.warning("Single-track loop transition failed: %s", exc.as_status())
                 return
@@ -7321,7 +7439,7 @@ async def lifespan(app: FastAPI):
             name="spotify-state-poll",
         )
 
-        player_instance.register_callbacks(on_player_state_change)
+        player_instance.register_callbacks(_dispatch_player_state_change)
         downloader.register_callback(on_download_progress, asyncio.get_running_loop())
         logger.info("Application startup complete build_id=%s", _read_build_id())
         yield
@@ -7387,7 +7505,7 @@ async def _shutdown_lifespan_resources() -> None:
     if player_instance is not None:
         await cleanup(
             "player-callbacks",
-            lambda: player_instance.shutdown_callbacks(on_player_state_change),
+            lambda: player_instance.shutdown_callbacks(_dispatch_player_state_change),
         )
     await cleanup("autosub", autosub.shutdown)
     if measurement_store is not None:
@@ -7598,7 +7716,9 @@ async def play_track(req: PlayRequest):
         track_info["sample_rate_hz"] = result.target_rate
 
     _commit_queue_state(queue_candidate)
-    _commit_coordinated_track(track_info, source=source)
+    _commit_coordinated_track(
+        track_info, source=source, commit_token=getattr(result, "transition_id", None)
+    )
     return {
         "status": "playing",
         "url": target_url,
@@ -7675,7 +7795,9 @@ async def toggle_playback():
         if was_paused:
             if _sample_rate_policy_is_auto() and source in {"local", "radio"} and isinstance(result.target_rate, int) and result.target_rate > 0:
                 active_track["sample_rate_hz"] = result.target_rate
-            _commit_coordinated_track(active_track, source=source)
+            _commit_coordinated_track(
+                active_track, source=source, commit_token=getattr(result, "transition_id", None)
+            )
         new_state = player_instance.state
         return {
             "status": "playing" if not new_state.get("paused") else "paused",
@@ -7705,7 +7827,9 @@ async def toggle_playback():
         raise _transition_error_http(exc) from exc
     if _sample_rate_policy_is_auto() and source in {"local", "radio"} and isinstance(result.target_rate, int) and result.target_rate > 0:
         replay_track["sample_rate_hz"] = result.target_rate
-    _commit_coordinated_track(replay_track, source=source)
+    _commit_coordinated_track(
+        replay_track, source=source, commit_token=getattr(result, "transition_id", None)
+    )
     return {
         "status": "playing",
         "replayed": True,
@@ -9402,11 +9526,17 @@ async def api_spotify_play():
         detail="api-spotify-play",
     )
     try:
-        await _run_coordinated_transition(request)
+        result = await _run_coordinated_transition(request)
     except PlaybackTransitionFailure as exc:
         raise _transition_error_http(exc) from exc
     global current_footer_owner, latest_spotify_state
+    # Nach dem Coordinator-Commit ist die Spotify-Source bereits der committed
+    # Playback-Kontext; der anschliessende State-Read ist Telemetry/UI-Refresh
+    # und kein Teil der Ownership-Boundary.  Publiziere synchron vor jedem
+    # weiteren await, damit der Ended-Waiter nie ein Fenster mit neuem Token
+    # und altem Footer sieht.
     current_footer_owner = "spotify"
+    _publish_playback_context_commit(getattr(result, "transition_id", None))
     latest_spotify_state = await get_spotify_ui_state()
     return await broadcast_spotify_state(latest_spotify_state)
 
@@ -9438,9 +9568,15 @@ async def api_spotify_toggle():
         detail="api-spotify-toggle",
     )
     try:
-        await _run_coordinated_transition(request)
+        result = await _run_coordinated_transition(request)
     except PlaybackTransitionFailure as exc:
         raise _transition_error_http(exc) from exc
+    global current_footer_owner
+    # Derselbe Ownership-Vertrag wie api_spotify_play: Footer und Token
+    # werden synchron nach dem Commit publiziert, bevor der Spotify-State
+    # gelesen oder gebroadcastet wird.
+    current_footer_owner = "spotify"
+    _publish_playback_context_commit(getattr(result, "transition_id", None))
     data = await get_spotify_ui_state()
     return await broadcast_spotify_state(data)
 
