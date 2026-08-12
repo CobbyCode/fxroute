@@ -64,7 +64,6 @@ MUTATION_CALL_NAMES = {
     "_ensure_mpv_to_easyeffects_links",
     "_repair_stereo_output_links_once",
     "_set_hardware_sink_mute",
-    "ensure_stereo_output_graph",
     "load_preset",
     "set_exact_sub_mute",
     "_load_easyeffects_preset",
@@ -72,10 +71,7 @@ MUTATION_CALL_NAMES = {
 
 # Mutations delegated through worker wrappers (asyncio.to_thread and the
 # cancellation-safe _run_locked_worker) instead of being called directly.
-DELEGATED_MUTATION_CALL_NAMES = {
-    "_set_hardware_sink_mute",
-    "ensure_stereo_output_graph",
-}
+DELEGATED_MUTATION_CALL_NAMES = {"_set_hardware_sink_mute"}
 
 PLAYBACK_ENTRYPOINTS = {
     "play_track",
@@ -215,7 +211,7 @@ def _reason(context: str, name: str) -> str | None:
     if leaf == "stabilize_effects_after_rate_change":
         return "Coordinator adapter/core: bounded link-only repair under the closed gate"
     if leaf == "_ensure_stereo_easyeffects_output_graph":
-        return "central output-graph adapter; reached from helper sync in Coordinator or startup/config sync"
+        return "targeted stereo link repair after helper sync; no preset or service restart"
     if leaf == "_reconcile_transition_sink_rate":
         return "rate reconciliation primitive invoked by Coordinator adapter/verifier or measurement entry"
     if leaf == "_coordinator_reconcile_subwoofer_links_only":

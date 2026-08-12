@@ -408,52 +408,5 @@ class EasyEffectsMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(order, ["upload-entered", "load-entered"])
 
 
-    async def test_stereo_graph_recovery_waits_for_threaded_mutation(self):
-        entered = threading.Event()
-        release = threading.Event()
-        order = []
-
-        class FakeManager:
-            def upload_ir(self, source_path, filename, stored_name=None):
-                order.append("upload-entered")
-                entered.set()
-                release.wait(timeout=5)
-                return {
-                    "name": "x.irs",
-                    "basename": "x",
-                    "path": "/tmp/x.irs",
-                    "size": 4,
-                    "format": "irs",
-                }
-
-            def ensure_stereo_output_graph(self, output_key):
-                order.append("graph-recovery-entered")
-                return {"recovered": True, "recovery": "relink"}
-
-            def get_status(self):
-                return {"status": "ok"}
-
-        fake = FakeManager()
-        with mock.patch.object(main, "_require_easyeffects_manager", return_value=fake), mock.patch.object(
-            main, "easyeffects_manager", fake
-        ), mock.patch.object(
-            main.manager, "broadcast", mock.AsyncMock()
-        ), mock.patch.object(main, "schedule_peak_monitor_refresh_after_effects_change"):
-            upload_task = asyncio.create_task(main.upload_easyeffects_ir(FakeUploadFile()))
-            self.assertTrue(await asyncio.to_thread(entered.wait, 5))
-
-            graph_task = asyncio.create_task(main._ensure_stereo_easyeffects_output_graph(
-                {"output_mode": {"mode": "stereo", "effective_output_key": "sink"}}
-            ))
-            await asyncio.sleep(0.05)
-            # Stereo graph recovery must not enter the manager while the
-            # threaded mutation holds the mutation lock.
-            self.assertEqual(order, ["upload-entered"])
-
-            release.set()
-            await asyncio.gather(upload_task, graph_task)
-            self.assertEqual(order, ["upload-entered", "graph-recovery-entered"])
-
-
 if __name__ == "__main__":
     unittest.main(verbosity=2)

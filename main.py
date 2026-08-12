@@ -3044,9 +3044,8 @@ async def _coordinator_establish_effects_and_helper(
                         compare_target_preset
                         and easyeffects_manager.get_active_preset() != compare_target_preset
                     ):
-                        # Stereo graph recovery may restart EasyEffects after
-                        # the first reconciliation, resurrecting EE's own last
-                        # preset and stale filter gain work point.
+                        # Runtime synchronization may overlap an A/B change;
+                        # restore the side selected after synchronization.
                         await _load_easyeffects_preset(
                             compare_target_preset,
                             convolver_sample_rate_hz=target_rate,
@@ -5105,8 +5104,6 @@ def _with_subwoofer_derived_delays(overview: dict) -> dict:
 
 
 async def _ensure_stereo_easyeffects_output_graph(audio_overview: dict | None = None) -> None:
-    if easyeffects_manager is None:
-        return
     overview = audio_overview or get_audio_output_overview()
     output_mode = overview.get("output_mode") or {}
     if output_mode.get("mode") != OUTPUT_MODE_STEREO:
@@ -5115,19 +5112,9 @@ async def _ensure_stereo_easyeffects_output_graph(audio_overview: dict | None = 
     if not output_key or output_key == "easyeffects_sink":
         return
     try:
-        result = await _run_locked_worker(
-            _easyeffects_mutation_lock(),
-            easyeffects_manager.ensure_stereo_output_graph,
-            output_key,
-        )
-        if result.get("recovered"):
-            logger.warning(
-                "Recovered Stereo EasyEffects output graph for %s via %s",
-                output_key,
-                result.get("recovery"),
-            )
+        await _repair_stereo_output_links_once({"output_key": output_key})
     except Exception as exc:
-        logger.warning("Stereo EasyEffects output graph guard failed for %s: %s", output_key, exc)
+        logger.warning("Stereo EasyEffects output link repair failed for %s: %s", output_key, exc)
 
 
 async def _bluetooth_input_monitor_loop() -> None:
