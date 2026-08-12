@@ -2978,8 +2978,7 @@ function renderSamplerateUI() {
     }
     // The footer badge always shows the resolved/active hardware rate only;
     // the policy mode (Auto/Fixed) never belongs into this badge.
-    const khz = (samplerate.active_rate / 1000).toFixed(1).replace(/\.0$/, '');
-    elements.samplerateStatus.textContent = `${khz} kHz`;
+    elements.samplerateStatus.textContent = formatRateKhz(samplerate.active_rate);
     elements.samplerateStatus.classList.remove('hidden');
 }
 
@@ -14121,7 +14120,7 @@ function updateFooterForSpotify(data) {
         // active hardware rate only (no radio stream line, no policy label).
         const samplerate = state.samplerate || {};
         const samplerateLine = samplerate.available && samplerate.active_rate
-            ? `${(samplerate.active_rate / 1000).toFixed(1).replace(/\.0$/, '')} kHz`
+            ? formatRateKhz(samplerate.active_rate)
             : '';
         elements.samplerateStatus.textContent = samplerateLine;
         elements.samplerateStatus.classList.toggle('hidden', !samplerateLine);
