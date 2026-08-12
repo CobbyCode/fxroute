@@ -9259,6 +9259,10 @@ function syncAutoSubButton() {
     const measurementState = state.measurement || {};
     const outputMode = state.settings?.audioOutputs?.output_mode;
     const isSubwooferMode = isSubwooferModeName(outputMode?.mode || '');
+    if (elements.splCalibrationOpen) {
+        elements.splCalibrationOpen.classList.toggle('btn-primary', isSubwooferMode);
+        elements.splCalibrationOpen.classList.toggle('btn-secondary', !isSubwooferMode);
+    }
 
     if (!isSubwooferMode) {
         elements.measurementAutoSubGroup.classList.add('hidden');
