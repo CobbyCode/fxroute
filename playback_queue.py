@@ -679,6 +679,7 @@ class PlaybackQueue:
             or len(self.tracks) <= 1
             or self._deps.transition_is_active()
             or state.get("ended")
+            or state.get("paused")
             or not state.get("current_file")
         ):
             return None

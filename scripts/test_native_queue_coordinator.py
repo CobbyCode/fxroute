@@ -238,6 +238,52 @@ class NativeQueueRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
 
 class NativeQueueCallbackTests(unittest.IsolatedAsyncioTestCase):
+    async def test_initial_paused_native_staging_does_not_reset_selected_index(self):
+        names = (
+            "current_track_info", "last_track_info", "latest_player_state_seq_seen",
+            "queue_advancing", "manager", "peak_monitor", "source_transition_lock",
+            "playback_transition_coordinator", "sync_peak_monitor_for_playback_state",
+            "_schedule_radio_reconnect_if_needed", "build_playback_payload",
+            "playback_intent_generation",
+        )
+        originals = {name: getattr(main, name) for name in names}
+        saved_queue = queue_state()
+        try:
+            tracks = [_track("a", 48000), _track("b", 48000), _track("c", 48000), _track("d", 48000), _track("e", 48000)]
+            playback_queue.queue.tracks = tracks
+            playback_queue.queue.original = [dict(track) for track in tracks]
+            playback_queue.queue.mode = "native_mpv"
+            playback_queue.queue.index = 3
+            main.current_track_info = dict(tracks[3])
+            main.last_track_info = dict(tracks[3])
+            main.latest_player_state_seq_seen = 0
+            main.queue_advancing = False
+            main.manager = SimpleNamespace(broadcast=_noop_async)
+            main.peak_monitor = None
+            main.source_transition_lock = None
+            main.playback_transition_coordinator = SimpleNamespace(transition_active=False)
+            main.sync_peak_monitor_for_playback_state = _noop_async
+            main._schedule_radio_reconnect_if_needed = lambda _state: None
+            main.build_playback_payload = lambda state: state
+
+            await main.on_player_state_change({
+                "_seq": 1, "current_file": "/music/a.flac", "playlist_pos": 0,
+                "paused": True, "playing": False, "ended": False,
+            })
+            self.assertEqual(playback_queue.queue.index, 3)
+            self.assertEqual(main.current_track_info["id"], "d")
+
+            await main.on_player_state_change({
+                "_seq": 2, "current_file": "/music/e.flac", "playlist_pos": 4,
+                "paused": False, "playing": True, "ended": False,
+            })
+            self.assertEqual(playback_queue.queue.index, 4)
+            self.assertEqual(main.current_track_info["id"], "e")
+        finally:
+            restore_queue_state(saved_queue)
+            for name, value in originals.items():
+                setattr(main, name, value)
+
     async def test_path_and_playlist_pos_update_context_without_transition(self):
         names = (
             "current_track_info", "last_track_info",
