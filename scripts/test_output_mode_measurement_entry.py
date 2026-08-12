@@ -531,6 +531,7 @@ class CoordinatorTransactionTests(unittest.IsolatedAsyncioTestCase):
             main, "_wait_for_easyeffects_output_ports", new=AsyncMock(return_value=True)
         ), patch.object(main, "_reconcile_transition_sink_rate", new=AsyncMock(return_value=True)), patch.object(
             main, "_coordinator_reconcile_subwoofer_links_only", new=AsyncMock()
+        ), patch.object(main, "_connect_ports", new=AsyncMock()
         ), patch.object(main.asyncio, "sleep", new=AsyncMock()):
             result = await main._coordinator_establish_effects_and_helper(request)
 
@@ -594,7 +595,7 @@ class CoordinatorTransactionTests(unittest.IsolatedAsyncioTestCase):
         ), patch.object(main, "_sync_subwoofer_runtime", new=AsyncMock()), patch.object(
             main, "_wait_for_easyeffects_output_ports", new=AsyncMock(return_value=True)
         ), patch.object(main, "_reconcile_transition_sink_rate", new=AsyncMock(return_value=True)), patch.object(
-            main, "_repair_stereo_output_links_once", new=AsyncMock()
+            main, "_connect_ports", new=AsyncMock()
         ), patch.object(main.asyncio, "sleep", new=AsyncMock()):
             result = await main._coordinator_establish_effects_and_helper(request)
 

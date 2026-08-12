@@ -2728,6 +2728,7 @@ def _post_start_graph_links_are_repairable(
     diagnosis: Mapping[str, Any],
     *,
     include_source: bool = False,
+    require_source: bool = True,
 ) -> bool:
     """Return true only when a diagnosis contains stable ports and link-only drift.
 
@@ -2738,7 +2739,7 @@ def _post_start_graph_links_are_repairable(
     """
     if not diagnosis.get("output_key") or not diagnosis.get("ee_ports"):
         return False
-    if diagnosis.get("source_links_complete") is not True and not include_source:
+    if require_source and diagnosis.get("source_links_complete") is not True and not include_source:
         return False
     if diagnosis.get("direct_ee_to_hw_present"):
         return False
@@ -2769,10 +2770,11 @@ def _post_start_graph_links_are_repairable(
     return True
 
 
-async def _relink_post_start_missing_production_links(
+async def _relink_missing_production_links(
     diagnosis: Mapping[str, Any],
     *,
     include_source: bool = False,
+    require_source: bool = True,
 ) -> bool:
     """Relink only the missing production edges from the current readback.
 
@@ -2789,14 +2791,15 @@ async def _relink_post_start_missing_production_links(
     if not _post_start_graph_links_are_repairable(
         diagnosis,
         include_source=include_source,
+        require_source=require_source,
     ):
         raise RuntimeError(
-            "post-start graph was not link-only drift with stable current ports"
+            "production graph was not link-only drift with stable current ports"
         )
     for link in missing:
         source, target = link.split(" -> ", 1)
         logger.info(
-            "Coordinator post-start graph relinking current production edge: %s -> %s",
+            "Coordinator relinking current production edge: %s -> %s",
             source,
             target,
         )
@@ -2862,7 +2865,7 @@ async def _coordinator_reconcile_post_start_graph(
             raise RuntimeError(
                 "post-start graph readback was incomplete without link-only drift"
             )
-    relinked = await _relink_post_start_missing_production_links(
+    relinked = await _relink_missing_production_links(
         initial,
         include_source=include_source,
     )
@@ -3115,18 +3118,14 @@ async def _coordinator_establish_effects_and_helper(
         require_source=False,
     )
     if not final.get("links_complete"):
-        # The production edges were just (re-)created by the SUB-STOP/helper
-        # sync above, and EasyEffects can recreate its output nodes during
-        # the transition, dropping the fresh links again.  A pw-link read
-        # taken in such an unstable instant can transiently miss a single
-        # edge (observed live: one missing helper input link right after the
-        # sync verified the full graph).  Repair idempotently per mode and
-        # re-read after a short settle before declaring the switch failed.
+        # EasyEffects can recreate its output nodes during the transition and
+        # drop a freshly established edge. Reuse the canonical link-only
+        # repairability contract before declaring the switch failed.
         for _ in range(3):
-            if mode not in OUTPUT_MODE_SUBWOOFER_MODES:
-                await _repair_stereo_output_links_once(final)
-            elif subwoofer_runtime is not None:
+            if final.get("bypass_only"):
                 await _coordinator_reconcile_subwoofer_links_only()
+            else:
+                await _relink_missing_production_links(final, require_source=False)
             await asyncio.sleep(PIPEWIRE_HANDOFF_POLL_INTERVAL_MS * 5 / 1000)
             final = await _playback_graph_diagnosis(
                 overview,
