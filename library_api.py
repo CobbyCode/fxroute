@@ -68,6 +68,10 @@ def _library_runtime() -> tuple[Any, Any]:
     return _runtime.get_scanner(), _runtime.get_settings()
 
 
+def _active_music_root(scanner: Any, settings: Any) -> Path:
+    return Path(getattr(scanner, "music_root", settings.MUSIC_ROOT)).resolve()
+
+
 async def _run_blocking(func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
     """Offload a scan-capable library call to a worker thread.
 
@@ -229,10 +233,11 @@ def _track_cover_available(track_id: str, *, tracks: Optional[list] = None) -> b
     if not track or not track.path:
         return False
     track_path = track.path.resolve()
-    if not path_within_root(track_path, settings.MUSIC_ROOT) or not track_path.is_file():
+    music_root = _active_music_root(library_scanner, settings)
+    if not path_within_root(track_path, music_root) or not track_path.is_file():
         return False
     folder_cover = _folder_cover_for_track(track_path)
-    if folder_cover and path_within_root(folder_cover.resolve(), settings.MUSIC_ROOT):
+    if folder_cover and path_within_root(folder_cover.resolve(), music_root):
         return True
     cached_cover, _media_type = _cached_embedded_cover(track_id, track_path)
     return bool(cached_cover and cached_cover.is_file())
@@ -287,7 +292,7 @@ async def download_track_file(track_id: str):
     if not track or not track.path:
         raise HTTPException(status_code=404, detail="Track not found")
     track_path = track.path.resolve()
-    if not path_within_root(track_path, settings.MUSIC_ROOT):
+    if not path_within_root(track_path, _active_music_root(library_scanner, settings)):
         raise HTTPException(status_code=403, detail="Track path outside music root")
     if not track_path.is_file():
         raise HTTPException(status_code=404, detail="Track file missing")
@@ -302,7 +307,8 @@ async def get_track_cover(track_id: str):
     if not track or not track.path:
         raise HTTPException(status_code=404, detail="Track not found")
     track_path = track.path.resolve()
-    if not path_within_root(track_path, settings.MUSIC_ROOT):
+    music_root = _active_music_root(library_scanner, settings)
+    if not path_within_root(track_path, music_root):
         raise HTTPException(status_code=403, detail="Track path outside music root")
     if not track_path.is_file():
         raise HTTPException(status_code=404, detail="Track file missing")
@@ -310,7 +316,7 @@ async def get_track_cover(track_id: str):
     folder_cover = _folder_cover_for_track(track_path)
     if folder_cover:
         cover_path = folder_cover.resolve()
-        if path_within_root(cover_path, settings.MUSIC_ROOT):
+        if path_within_root(cover_path, music_root):
             return FileResponse(cover_path, media_type=_cover_media_type(cover_path))
 
     cached_cover, media_type = _cached_embedded_cover(track_id, track_path)
@@ -497,7 +503,7 @@ async def download_tracks(req: DownloadTracksRequest):
         if not track or not track.path:
             raise HTTPException(status_code=404, detail=f"Track not found: {track_id}")
         track_path = track.path.resolve()
-        if not path_within_root(track_path, settings.MUSIC_ROOT):
+        if not path_within_root(track_path, _active_music_root(library_scanner, settings)):
             raise HTTPException(status_code=403, detail="Track path outside music root")
         if not track_path.is_file():
             raise HTTPException(status_code=404, detail=f"Track file missing: {track_path.name}")
@@ -570,7 +576,7 @@ async def export_playlist(playlist_id: str):
     content = playlist_io.build_m3u_for_playlist(
         playlist,
         await _run_blocking(library_scanner.get_tracks, authoritative=True),
-        settings.MUSIC_ROOT,
+        _active_music_root(library_scanner, settings),
     )
     filename = playlist_io.playlist_download_filename(playlist.name)
     return Response(
@@ -637,7 +643,7 @@ async def upload_track(file: UploadFile = File(...)):
                 imported = playlist_io.import_m3u_playlist(
                     playlist_path.name,
                     playlist_path.read_text(encoding="utf-8", errors="replace"),
-                    settings.MUSIC_ROOT,
+                    _active_music_root(library_scanner, settings),
                     base_dir=playlist_path.parent,
                     tracks=tracks,
                 )
@@ -665,7 +671,7 @@ async def upload_track(file: UploadFile = File(...)):
             content = (await read_upload(file, TEXT_UPLOAD_MAX_BYTES)).decode("utf-8", errors="replace")
             tracks = await _run_blocking(library_scanner.get_tracks, authoritative=True)
             imported = playlist_io.import_m3u_playlist(
-                filename, content, settings.MUSIC_ROOT, tracks=tracks
+                filename, content, _active_music_root(library_scanner, settings), tracks=tracks
             )
             if not imported:
                 raise HTTPException(status_code=400, detail="Playlist did not match any library tracks")
@@ -752,7 +758,7 @@ async def delete_tracks(req: DeleteTracksRequest):
     deleted = []
     errors = []
     affected_folders = set()
-    music_root = settings.MUSIC_ROOT.resolve()
+    music_root = _active_music_root(library_scanner, settings)
 
     for track_id in req.track_ids:
         track = tracks_by_id.get(track_id)
@@ -792,7 +798,7 @@ async def delete_library_folder(req: DeleteFolderRequest):
     if not library_scanner or not settings:
         raise HTTPException(status_code=503, detail="Library not available")
 
-    music_root = settings.MUSIC_ROOT.resolve()
+    music_root = _active_music_root(library_scanner, settings)
     folder_path = _resolve_library_folder(req.folder, music_root)
     if folder_path == settings.download_dir.resolve():
         raise HTTPException(status_code=400, detail="Cannot delete the managed imports container")
@@ -821,4 +827,3 @@ async def delete_library_folder(req: DeleteFolderRequest):
         "folder_removed": not folder_path.exists(),
         "track_count": len(tracks),
     }
-

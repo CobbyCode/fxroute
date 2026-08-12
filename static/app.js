@@ -229,6 +229,12 @@ let state = {
             notes: [],
             pending: false,
         },
+        musicLibrary: {
+            active_id: 'local',
+            active_type: 'local',
+            libraries: [],
+            pending: false,
+        },
         hardware: {
             available: true,
             connected: false,
@@ -344,6 +350,7 @@ const elements = {
     settingsSourceSelect: document.getElementById('settings-source-select'),
     settingsSourceModeHint: document.getElementById('settings-source-mode-hint'),
     settingsBluetoothStatus: document.getElementById('settings-bluetooth-status'),
+    settingsMusicLibrarySelect: document.getElementById('settings-music-library-select'),
     settingsHardwareSummary: document.getElementById('settings-hardware-summary'),
     settingsHardwareDetail: document.getElementById('settings-hardware-detail'),
     settingsHardwareRcaBtn: document.getElementById('settings-hardware-rca'),
@@ -1026,6 +1033,18 @@ function setupSettingsActions() {
             }
         });
     }
+    if (elements.settingsMusicLibrarySelect) {
+        elements.settingsMusicLibrarySelect.addEventListener('change', (event) => {
+            const libraryId = event.target.value;
+            if (libraryId === 'manual') {
+                const url = prompt('SMB share URL', 'smb://server/share');
+                if (url) void addManualMusicLibrary(url);
+                else renderSettingsPanel();
+            } else if (libraryId) {
+                void selectMusicLibrary(libraryId);
+            }
+        });
+    }
     elements.settingsHardwareRcaBtn?.addEventListener('click', () => runHardwareCommand('/api/hardware/input/rca', 'RCA selected'));
     elements.settingsHardwareXlrBtn?.addEventListener('click', () => runHardwareCommand('/api/hardware/input/xlr', 'XLR selected'));
     elements.settingsHardwarePressBtn?.addEventListener('click', () => runHardwareCommand('/api/hardware/input/press', 'Input button pressed'));
@@ -1411,7 +1430,7 @@ function startSettingsStatusPolling() {
             stopSettingsStatusPolling();
             return;
         }
-        void Promise.all([fetchAudioSourceOverview(), fetchHardwareStatus()]);
+        void Promise.all([fetchAudioSourceOverview(), fetchHardwareStatus(), fetchMusicLibraries()]);
     }, 2500);
 }
 
@@ -1427,7 +1446,7 @@ function toggleSettingsPanel(forceOpen = null) {
     if (shouldOpen) {
         settingsOutputScanOnFocusDone = false;
         renderSettingsPanel();
-        void Promise.all([fetchAudioOutputOverview(), fetchAudioSourceOverview(), fetchHardwareStatus(), checkFxrouteUpdate({ silent: true })]);
+        void Promise.all([fetchAudioOutputOverview(), fetchAudioSourceOverview(), fetchHardwareStatus(), fetchMusicLibraries(), checkFxrouteUpdate({ silent: true })]);
         startSettingsStatusPolling();
         elements.settingsCloseBtn?.focus();
     } else {
@@ -1928,10 +1947,80 @@ function renderSettingsPanel() {
         const bluetoothNote = Array.isArray(bluetooth.notes) && bluetooth.notes.length ? ` · ${bluetooth.notes[0]}` : '';
         elements.settingsBluetoothStatus.textContent = `Bluetooth: ${formatBluetoothModeStatus(bluetooth)}${bluetoothNote}`;
     }
+    const musicLibrary = state.settings?.musicLibrary || {};
+    if (elements.settingsMusicLibrarySelect && !isSelectFocused(elements.settingsMusicLibrarySelect)) {
+        const libraries = Array.isArray(musicLibrary.libraries) ? musicLibrary.libraries : [];
+        elements.settingsMusicLibrarySelect.innerHTML = libraries
+            .map((library) => `<option value="${escapeHtml(library.id || '')}">${escapeHtml(library.label || '')}</option>`)
+            .join('') || '<option value="local">Local</option>';
+        elements.settingsMusicLibrarySelect.value = musicLibrary.active_id || 'local';
+        elements.settingsMusicLibrarySelect.disabled = !!musicLibrary.pending;
+    }
     renderHardwareController();
     renderMaintenancePanel();
     renderSubwooferPanel();
     applySourceModeUiState();
+}
+
+async function fetchMusicLibraries() {
+    try {
+        const resp = await fetch('/api/music-libraries');
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || 'Failed to discover music libraries');
+        state.settings.musicLibrary = { ...data, pending: false };
+        renderSettingsPanel();
+    } catch (error) {
+        console.debug('Failed to discover music libraries', error);
+    }
+}
+
+async function selectMusicLibrary(libraryId) {
+    const previousId = state.settings.musicLibrary.active_id;
+    state.settings.musicLibrary.pending = true;
+    renderSettingsPanel();
+    try {
+        const resp = await fetch('/api/music-libraries/select', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: libraryId }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || 'Failed to switch music library');
+        state.settings.musicLibrary = { ...data, pending: false };
+        state.library.tracks = [];
+        state.library.selectedTrackIds = [];
+        state.library.currentFolder = '';
+        state.library.albums = [];
+        state.library.albumsLoaded = false;
+        state.library.albumDetail = null;
+        state.library.scanning = true;
+        renderSettingsPanel();
+        renderLibraryView();
+        await fetchLibraryStatus();
+        showToast('Music library switched', 'success');
+    } catch (error) {
+        state.settings.musicLibrary.active_id = previousId;
+        state.settings.musicLibrary.pending = false;
+        renderSettingsPanel();
+        showToast(error.message || 'Failed to switch music library', 'error');
+    }
+}
+
+async function addManualMusicLibrary(url) {
+    try {
+        const resp = await fetch('/api/music-libraries/manual', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || 'Failed to add network share');
+        state.settings.musicLibrary = { ...data, pending: false };
+        renderSettingsPanel();
+        await selectMusicLibrary(data.entry.id);
+    } catch (error) {
+        showToast(error.message || 'Failed to add network share', 'error');
+    }
 }
 
 function externalInputModeActive() {

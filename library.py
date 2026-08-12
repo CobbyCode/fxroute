@@ -211,9 +211,9 @@ AUDIO_EXTENSIONS = {".mp3", ".flac", ".ogg", ".oga", ".opus", ".m4a", ".aac", ".
 class LibraryScanner:
     """Scans the music directory and provides track listings."""
 
-    def __init__(self):
+    def __init__(self, music_root: Path | None = None, metadata_store: LibraryMetadataStore | None = None):
         self.settings = get_settings()
-        self.music_root: Path = self.settings.MUSIC_ROOT
+        self.music_root: Path = music_root or self.settings.MUSIC_ROOT
         self._track_cache: List[Track] = []
         self._scan_lock = threading.Lock()
         self._scan_state_lock = threading.Lock()
@@ -230,7 +230,7 @@ class LibraryScanner:
         self._scan_tracks_found = 0
         self._scan_track_cache_hits = 0
         self._scan_track_cache_misses = 0
-        self.metadata_store = LibraryMetadataStore()
+        self.metadata_store = metadata_store or LibraryMetadataStore()
         self._refresh_cancel = threading.Event()
 
     def prepare_scan_status(self):

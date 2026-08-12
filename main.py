@@ -34,6 +34,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 
 from config import get_settings
+from music_libraries import MusicLibraryManager
 from radio_metadata import RadioMetadataService
 from uploads import (
     EASYEEFFECTS_BUNDLE_MAX_BYTES,
@@ -980,12 +981,15 @@ from library_api import (
     configure_runtime as configure_library_api_runtime,
     router as library_api_router,
 )
+from library_metadata import LibraryMetadataStore
 
 
 # Global instances (initialized on startup)
 settings = None
 player_instance = None
 library_scanner = None
+music_library_manager = None
+music_library_switch_lock = None
 downloader = None
 easyeffects_manager = None
 measurement_store = None
@@ -2250,6 +2254,25 @@ def _create_library_refresh_task(scanner: LibraryScanner, *, name: str) -> async
     library_refresh_tasks.add(task)
     task.add_done_callback(library_refresh_tasks.discard)
     return task
+
+
+def _music_library_lock() -> asyncio.Lock:
+    global music_library_switch_lock
+    if music_library_switch_lock is None:
+        music_library_switch_lock = asyncio.Lock()
+    return music_library_switch_lock
+
+
+def _library_scanner_for(root: Path, library_id: str = "local") -> LibraryScanner:
+    if library_id == "local":
+        return LibraryScanner(root)
+    cache_key = hashlib.sha256(library_id.encode()).hexdigest()[:12]
+    config_dir = Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config")) / "fxroute"
+    store = LibraryMetadataStore(
+        config_dir / f"library-metadata-{cache_key}.sqlite",
+        config_dir / f"library-metadata-covers-{cache_key}",
+    )
+    return LibraryScanner(root, metadata_store=store)
 
 
 async def _silent_active_watch_after_settle(
@@ -5367,7 +5390,7 @@ async def _spotify_playerctl_watch_loop() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan: startup and shutdown."""
-    global settings, player_instance, library_scanner, library_scan_task, downloader, easyeffects_manager, measurement_store, measurement_sr_session, measurement_watchdog_task, peak_monitor, subwoofer_runtime, subwoofer_runtime_link_watch_task, hardware_controller, peak_monitor_playback_armed, peak_monitor_transition_lock, peak_monitor_context_signature, easyeffects_preset_load_lock, easyeffects_mutation_lock, canonical_volume_write_lock, source_transition_lock, playback_transition_coordinator, coordinator_last_successful_commit_id, external_input_loopback_module_id, external_input_loopback_source_name, bluetooth_input_source_name, bluetooth_monitor_task, bluetooth_agent_process, spotify_playerctl_watch_task, spotify_playerctl_detect_task, spotify_state_refresh_task, spotify_state_poll_task, spotify_playerctl_last_trigger_at, current_source_mode, latest_spotify_state, radio_reconnect_task
+    global settings, player_instance, library_scanner, music_library_manager, library_scan_task, downloader, easyeffects_manager, measurement_store, measurement_sr_session, measurement_watchdog_task, peak_monitor, subwoofer_runtime, subwoofer_runtime_link_watch_task, hardware_controller, peak_monitor_playback_armed, peak_monitor_transition_lock, peak_monitor_context_signature, easyeffects_preset_load_lock, easyeffects_mutation_lock, canonical_volume_write_lock, source_transition_lock, playback_transition_coordinator, coordinator_last_successful_commit_id, external_input_loopback_module_id, external_input_loopback_source_name, bluetooth_input_source_name, bluetooth_monitor_task, bluetooth_agent_process, spotify_playerctl_watch_task, spotify_playerctl_detect_task, spotify_state_refresh_task, spotify_state_poll_task, spotify_playerctl_last_trigger_at, current_source_mode, latest_spotify_state, radio_reconnect_task
 
     logger.info("Starting FXRoute... build_id=%s", _read_build_id())
     try:
@@ -5383,7 +5406,8 @@ async def lifespan(app: FastAPI):
         except MPVNotInstalledError as exc:
             logger.error("Failed to start MPV: %s", exc)
 
-        library_scanner = LibraryScanner()
+        music_library_manager = MusicLibraryManager(settings.MUSIC_ROOT)
+        library_scanner = _library_scanner_for(music_library_manager.active_root)
         library_scanner.prepare_scan_status()
         library_scan_task = _create_library_refresh_task(
             library_scanner,
@@ -7561,6 +7585,60 @@ async def library_status():
     if library_scanner:
         return library_scanner.status()
     return {"scanning": False, "track_count": 0, "error": "Library scanner not initialized"}
+
+
+@app.get("/api/music-libraries")
+async def list_music_libraries():
+    if music_library_manager is None:
+        raise HTTPException(status_code=503, detail="Music libraries are not initialized")
+    return await asyncio.to_thread(music_library_manager.status)
+
+
+@app.post("/api/music-libraries/manual")
+async def add_manual_music_library(request: Request):
+    if music_library_manager is None:
+        raise HTTPException(status_code=503, detail="Music libraries are not initialized")
+    try:
+        body = await request.json()
+        entry = music_library_manager.add_manual_url(str(body.get("url") or ""))
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"entry": entry, **await asyncio.to_thread(music_library_manager.status)}
+
+
+@app.post("/api/music-libraries/select")
+async def select_music_library(request: Request):
+    global library_scanner, library_scan_task, current_track_info, last_track_info
+    if music_library_manager is None or library_scanner is None:
+        raise HTTPException(status_code=503, detail="Music libraries are not initialized")
+    try:
+        body = await request.json()
+        library_id = str(body.get("id") or "")
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid JSON body") from exc
+    async with _music_library_lock():
+        if _playback_transition_is_active():
+            raise HTTPException(status_code=409, detail="A playback transition is in progress")
+        try:
+            root = await asyncio.to_thread(music_library_manager.activate, library_id)
+        except (ValueError, FileNotFoundError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if root == library_scanner.music_root:
+            return music_library_manager.status()
+        library_scanner.cancel_refresh()
+        active_refreshes = [task for task in library_refresh_tasks if not task.done()]
+        if active_refreshes:
+            await asyncio.gather(*active_refreshes, return_exceptions=True)
+        if player_instance is not None and player_instance._running:
+            _mark_playback_intent_changed()
+            player_instance.stop_playback()
+            current_track_info = None
+            last_track_info = None
+        playback_queue.queue.reset()
+        library_scanner = _library_scanner_for(root, library_id)
+        library_scanner.prepare_scan_status()
+        library_scan_task = _create_library_refresh_task(library_scanner, name="selected-library-scan")
+        return music_library_manager.status()
 
 
 @app.post("/api/library/refresh")
