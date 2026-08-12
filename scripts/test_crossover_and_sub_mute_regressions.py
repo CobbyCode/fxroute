@@ -301,8 +301,8 @@ class VolumeSwitchRuntime:
 
     The audible volume (``volume``) mirrors the canonical user volume
     (``canonical_volume``) unless a mode switch resurrects a stale preset
-    work point (mimicking the EasyEffects graph rebuild / service restart
-    re-applying its own preset loudness state).  The Coordinator's DSP
+    work point (mimicking the EasyEffects graph rebuild re-applying its own
+    preset loudness state).  The Coordinator's DSP
     stabilization must repair that by re-applying the canonical volume.
     """
 
@@ -423,10 +423,10 @@ def _mode_request(mode: str, *, operation: str = "output-mode-switch") -> Transi
 async def _mode_switch_volume_preserved() -> None:
     """Volume X in A -> B -> volume Y -> back to A: Y must survive.
 
-    The EasyEffects preset reload / graph rebuild (up to a service restart)
-    re-applies a stale preset loudness work point over the canonical user
-    volume; the output-mode switch must always re-apply the canonical
-    volume instead of resurrecting the older value.
+    The EasyEffects preset reload / graph rebuild re-applies a stale preset
+    loudness work point over the canonical user volume; the output-mode
+    switch must always re-apply the canonical volume instead of resurrecting
+    the older value.
     """
     runtime = VolumeSwitchRuntime(canonical_volume=40, stale_volume=20)
     coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
