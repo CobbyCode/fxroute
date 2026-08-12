@@ -693,19 +693,6 @@ async def _ensure_playback_samplerate_force(
                 "Radio samplerate sink suspend/resume did not change rate: reason=%s expected_rate=%s",
                 reason, expected_rate,
             )
-    elif policy is samplerate_orchestration.STATUS_DRIFT_REPAIR_POLICY and not aligned:
-        try:
-            post_attempt_status = get_samplerate_status()
-        except Exception:
-            post_attempt_status = {}
-        logger.warning(
-            "Playback samplerate drift repair aborted: sink did not align "
-            "source=%s expected_rate=%s active_rate=%s suspended=%s",
-            reason.removeprefix("status-drift-repair:") or "unknown",
-            expected_rate,
-            post_attempt_status.get("active_rate"),
-            pulse_succeeded,
-        )
     return aligned
 
 

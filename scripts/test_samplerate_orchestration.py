@@ -65,20 +65,6 @@ class PolicyReconcileTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(events, [("read", {"active_rate": None, "force_rate": 0}),
                                   ("force", 44100), ("align", 44100, 400)])
 
-    async def test_status_repair_policy_pulses_after_failed_initial_alignment(self):
-        result, events = await self._run(orchestration.STATUS_DRIFT_REPAIR_POLICY, waits=(False, True))
-        self.assertTrue(result)
-        self.assertEqual(events, [("read", {"active_rate": 48000, "force_rate": 0}),
-                                  ("force", 44100), ("align", 44100, 400),
-                                  ("pulse", "contract"), ("align", 44100, 1500)])
-
-    async def test_status_repair_pulse_failure_returns_false_without_second_wait(self):
-        result, events = await self._run(orchestration.STATUS_DRIFT_REPAIR_POLICY, waits=(False,), pulse=False)
-        self.assertFalse(result)
-        self.assertEqual(events, [("read", {"active_rate": 48000, "force_rate": 0}),
-                                  ("force", 44100), ("align", 44100, 400),
-                                  ("pulse", "contract")])
-
     async def test_already_aligned_is_noop(self):
         result, events = await self._run(orchestration.RADIO_POLICY, active=44100, force=44100, waits=())
         self.assertTrue(result)

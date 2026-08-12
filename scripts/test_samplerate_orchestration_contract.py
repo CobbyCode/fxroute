@@ -196,26 +196,6 @@ class SamplerateOrchestrationContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertLess(ledger.events.index("commit-readback"), ledger.events.index("gate.set:False"))
         self.assertFalse(runtime.muted)
 
-    async def test_status_repair_wrapper_logs_post_attempt_active_rate(self):
-        statuses = iter((
-            {"active_rate": 48000, "force_rate": 0},
-            {"active_rate": 44100, "force_rate": 44100},
-        ))
-
-        with patch.object(main, "get_samplerate_status", side_effect=lambda: next(statuses)), patch.object(
-            main, "_set_pipewire_force_rate"
-        ), patch.object(main, "_wait_for_samplerate_alignment", return_value=False), patch.object(
-            main, "_suspend_resume_playback_sink", return_value=False
-        ), self.assertLogs("main", level="WARNING") as captured:
-            result = await main._ensure_playback_samplerate_force(
-                44100,
-                "status-drift-repair:radio",
-                policy=samplerate_orchestration.STATUS_DRIFT_REPAIR_POLICY,
-            )
-
-        self.assertFalse(result)
-        self.assertTrue(any("active_rate=44100" in line for line in captured.output))
-
     async def test_status_recovery_submits_only_to_coordinator(self):
         calls = []
 

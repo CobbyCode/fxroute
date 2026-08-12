@@ -43,15 +43,6 @@ RADIO_POLICY = PlaybackRateReconcilePolicy(
     post_pulse_alignment_timeout_ms=1200,
 )
 
-STATUS_DRIFT_REPAIR_POLICY = PlaybackRateReconcilePolicy(
-    name="status-drift-repair",
-    initial_alignment_timeout_ms=400,
-    pulse_if_initial_active_rate_differs=False,
-    pulse_if_initial_alignment_fails=True,
-    post_pulse_alignment_timeout_ms=1500,
-)
-
-
 async def reconcile_playback_samplerate(
     *,
     expected_rate: int,
