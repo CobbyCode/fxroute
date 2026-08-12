@@ -2976,9 +2976,10 @@ function renderSamplerateUI() {
         elements.samplerateStatus.classList.add('hidden');
         return;
     }
+    // The footer badge always shows the resolved/active hardware rate only;
+    // the policy mode (Auto/Fixed) never belongs into this badge.
     const khz = (samplerate.active_rate / 1000).toFixed(1).replace(/\.0$/, '');
-    const modePrefix = samplerate.policy?.mode === 'auto' ? 'Auto · ' : '';
-    elements.samplerateStatus.textContent = `${modePrefix}${khz} kHz`;
+    elements.samplerateStatus.textContent = `${khz} kHz`;
     elements.samplerateStatus.classList.remove('hidden');
 }
 
@@ -14116,13 +14117,14 @@ function updateFooterForSpotify(data) {
         }
     }
     if (elements.samplerateStatus) {
-        const streamLine = formatRadioStreamLine(data.stream_info, state.samplerate?.active_rate);
+        // Spotify has no stream_info; the footer badge shows the resolved
+        // active hardware rate only (no radio stream line, no policy label).
         const samplerate = state.samplerate || {};
         const samplerateLine = samplerate.available && samplerate.active_rate
-            ? `${samplerate.policy?.mode === 'auto' ? 'Auto · ' : ''}${(samplerate.active_rate / 1000).toFixed(1).replace(/\.0$/, '')} kHz`
+            ? `${(samplerate.active_rate / 1000).toFixed(1).replace(/\.0$/, '')} kHz`
             : '';
-        elements.samplerateStatus.textContent = streamLine || samplerateLine;
-        elements.samplerateStatus.classList.toggle('hidden', !(streamLine || samplerateLine));
+        elements.samplerateStatus.textContent = samplerateLine;
+        elements.samplerateStatus.classList.toggle('hidden', !samplerateLine);
     }
     renderPeakWarningBadge(data.status === 'Playing');
 }
