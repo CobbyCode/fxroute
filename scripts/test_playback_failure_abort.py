@@ -12,6 +12,7 @@ from unittest.mock import Mock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
+from playback_transition_test_support import make_transition_runtime
 from playback_transition import TransitionRequest
 
 
@@ -88,7 +89,7 @@ class FailedTransitionAbortTests(unittest.IsolatedAsyncioTestCase):
         ), patch.object(main, "playback_queue_index", 0), patch.object(
             main, "playback_queue_mode", "app_replace"
         ), patch.object(main, "_mark_player_state_authoritative"):
-            await main.FxrouteTransitionRuntime().abort_failed_transition(
+            await make_transition_runtime().abort_failed_transition(
                 local_request("/music/new.flac"),
                 {
                     "player": {"current_file": "/music/old.flac"},
@@ -124,7 +125,7 @@ class FailedTransitionAbortTests(unittest.IsolatedAsyncioTestCase):
         ), patch.object(main, "_reduce_native_mpv_playlist_to_current"), patch.object(
             main, "_reset_mpv_loop_state"
         ), patch.object(main, "_mark_player_state_authoritative"):
-            await main.FxrouteTransitionRuntime().abort_failed_transition(
+            await make_transition_runtime().abort_failed_transition(
                 local_request("/music/new.flac"),
                 {
                     "player": {"current_file": "/music/old.flac"},
@@ -160,7 +161,7 @@ class FailedTransitionAbortTests(unittest.IsolatedAsyncioTestCase):
         ), patch.object(
             main, "_reset_mpv_loop_state"
         ), patch.object(main, "_mark_player_state_authoritative"):
-            await main.FxrouteTransitionRuntime().abort_failed_transition(
+            await make_transition_runtime().abort_failed_transition(
                 local_request("/music/new.flac"),
                 {
                     "player": {"current_file": "/music/old.flac"},
@@ -212,7 +213,7 @@ class FailedTransitionAbortTests(unittest.IsolatedAsyncioTestCase):
                 rate_change=True,
                 reload_source=True,
             )
-            await main.FxrouteTransitionRuntime().abort_failed_transition(
+            await make_transition_runtime().abort_failed_transition(
                 request,
                 {
                     "player": {"current_file": "/music/old.flac"},
@@ -245,7 +246,7 @@ class FailedTransitionAbortTests(unittest.IsolatedAsyncioTestCase):
                 rate_change=False,
                 reload_source=False,
             )
-            await main.FxrouteTransitionRuntime().abort_failed_transition(
+            await make_transition_runtime().abort_failed_transition(
                 request,
                 {
                     "player": {"current_file": "/music/old.flac"},

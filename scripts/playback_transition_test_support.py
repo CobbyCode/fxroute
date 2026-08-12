@@ -10,7 +10,13 @@ from __future__ import annotations
 from typing import Any
 
 import main
+from playback_runtime import FxrouteTransitionRuntime
 from playback_transition import PlaybackTransitionCoordinator, TransitionRequest
+
+
+def make_transition_runtime() -> FxrouteTransitionRuntime:
+    """Build the production runtime adapter against main's late-bound wiring."""
+    return FxrouteTransitionRuntime(main.make_playback_runtime_deps())
 
 
 class MainCoreTransitionRuntime:

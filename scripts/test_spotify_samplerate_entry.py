@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
+from playback_transition_test_support import make_transition_runtime
 from playback_transition import TransitionRequest
 
 
@@ -56,7 +57,7 @@ class SpotifyEntrySamplerateTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_entry_commit_reads_stable_spotify_input_and_returns_it(self):
-        runtime = main.FxrouteTransitionRuntime()
+        runtime = make_transition_runtime()
         patchers = self._patches(spotify_rate=44100)
         with patchers[0], patchers[1], patchers[2], patchers[3], patchers[4], patchers[5], patchers[6]:
             result = await runtime._verify_transition(
@@ -70,7 +71,7 @@ class SpotifyEntrySamplerateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["active_rate"], 44100)
 
     async def test_fixed_graph_rate_accepts_native_spotify_source_rate(self):
-        runtime = main.FxrouteTransitionRuntime()
+        runtime = make_transition_runtime()
         request = self._request()
         request = TransitionRequest(**{**request.__dict__, "target_rate": 48000})
         patchers = self._patches(spotify_rate=44100, hardware_rate=48000)
@@ -85,7 +86,7 @@ class SpotifyEntrySamplerateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["active_rate"], 48000)
 
     async def test_entry_commit_rejects_stream_rate_different_from_target(self):
-        runtime = main.FxrouteTransitionRuntime()
+        runtime = make_transition_runtime()
         patchers = self._patches(spotify_rate=48000)
         with patchers[0], patchers[1], patchers[2], patchers[3], patchers[4], patchers[5], patchers[6]:
             with self.assertRaisesRegex(RuntimeError, "at the expected rate"):
@@ -226,7 +227,7 @@ class SpotifyEntrySamplerateTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_entry_commit_rejects_stream_and_hardware_rate_disagreement(self):
-        runtime = main.FxrouteTransitionRuntime()
+        runtime = make_transition_runtime()
         patchers = self._patches(spotify_rate=44100, hardware_rate=48000)
         with patchers[0], patchers[1], patchers[2], patchers[3], patchers[4], patchers[5], patchers[6]:
             with self.assertRaisesRegex(RuntimeError, "hardware rate mismatch"):
@@ -245,7 +246,7 @@ class SpotifyEntrySamplerateTests(unittest.IsolatedAsyncioTestCase):
                 )
 
     async def test_spotify_recovery_releases_old_sink_before_restart(self):
-        runtime = main.FxrouteTransitionRuntime()
+        runtime = make_transition_runtime()
         pause = AsyncMock()
         release = AsyncMock(return_value=True)
         request = TransitionRequest(

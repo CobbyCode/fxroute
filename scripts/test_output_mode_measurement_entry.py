@@ -15,6 +15,7 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 import main
+from playback_transition_test_support import make_transition_runtime
 import measurement_session
 import samplerate
 from playback_transition import PlaybackTransitionCoordinator, PlaybackTransitionFailure, TransitionRequest
@@ -799,7 +800,7 @@ class EntryBoundaryTests(unittest.IsolatedAsyncioTestCase):
 
 class MeasurementSessionRuntimeReadbackTests(unittest.IsolatedAsyncioTestCase):
     async def test_runtime_marks_only_healthy_subwoofer_input_loss_repairable(self):
-        runtime = main.FxrouteTransitionRuntime()
+        runtime = make_transition_runtime()
         diagnosis = {
             "mode": "subwoofer-2.2",
             "output_key": "alsa_output.test",

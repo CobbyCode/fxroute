@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, Mock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
+from playback_transition_test_support import make_transition_runtime
 from playback_transition import TransitionRequest
 
 
@@ -237,7 +238,7 @@ class QuietSourceContractTests(unittest.IsolatedAsyncioTestCase):
         ), patch.object(main, "_player_is_running", return_value=True), patch.object(
             main, "_wait_for_pipewire_mpv_release", new=AsyncMock(return_value=True)
         ):
-            await main.FxrouteTransitionRuntime().quiet_old_source(request)
+            await make_transition_runtime().quiet_old_source(request)
 
         pause_spotify.assert_not_awaited()
         player.set_volume.assert_called_once_with(0)
@@ -267,7 +268,7 @@ class QuietSourceContractTests(unittest.IsolatedAsyncioTestCase):
             main, "_wait_for_pipewire_spotify_release", new=AsyncMock(return_value=True)
         ) as release, patch.object(main, "_player_is_running", return_value=True
         ):
-            await main.FxrouteTransitionRuntime().quiet_old_source(request)
+            await make_transition_runtime().quiet_old_source(request)
 
         pause_spotify.assert_awaited_once()
         release.assert_awaited_once()
@@ -324,7 +325,7 @@ class QuietSourceContractTests(unittest.IsolatedAsyncioTestCase):
         ), patch.object(main, "_player_is_running", return_value=True
         ):
             with self.assertRaisesRegex(RuntimeError, "did not quiesce"):
-                await main.FxrouteTransitionRuntime().quiet_old_source(request)
+                await make_transition_runtime().quiet_old_source(request)
 
         pause_spotify.assert_awaited_once()
         player.set_volume.assert_not_called()

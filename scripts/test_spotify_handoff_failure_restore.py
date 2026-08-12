@@ -22,6 +22,7 @@ from unittest.mock import AsyncMock, Mock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
+from playback_transition_test_support import make_transition_runtime
 from playback_transition import TransitionRequest
 
 
@@ -103,7 +104,7 @@ class SpotifyHandoffFailureRestoreTests(unittest.IsolatedAsyncioTestCase):
         ), patch.object(main, "playback_queue_index", 0), patch.object(
             main, "playback_queue_mode", "app_replace"
         ), patch.object(main, "_mark_player_state_authoritative", mark_authoritative):
-            await main.FxrouteTransitionRuntime().abort_failed_transition(
+            await make_transition_runtime().abort_failed_transition(
                 spotify_request(),
                 snapshot_with(track, current_file="/music/old.flac"),
                 target_staged=False,
@@ -134,7 +135,7 @@ class SpotifyHandoffFailureRestoreTests(unittest.IsolatedAsyncioTestCase):
         ), patch.object(main, "radio_reconnect_active_since", 5.0), patch.object(
             main, "_mark_player_state_authoritative"
         ):
-            await main.FxrouteTransitionRuntime().abort_failed_transition(
+            await make_transition_runtime().abort_failed_transition(
                 spotify_request(),
                 snapshot_with(track, current_file=None, playing=False),
                 target_staged=False,
@@ -158,7 +159,7 @@ class SpotifyHandoffFailureRestoreTests(unittest.IsolatedAsyncioTestCase):
         ), patch.object(main, "current_footer_owner", "spotify"), patch.object(
             main, "_mark_player_state_authoritative"
         ):
-            await main.FxrouteTransitionRuntime().abort_failed_transition(
+            await make_transition_runtime().abort_failed_transition(
                 spotify_request(),
                 snapshot_with(track, current_file="/music/old.flac", playing=False),
                 target_staged=False,
@@ -176,7 +177,7 @@ class SpotifyHandoffFailureRestoreTests(unittest.IsolatedAsyncioTestCase):
         ), patch.object(main, "current_footer_owner", "spotify"), patch.object(
             main, "_mark_player_state_authoritative"
         ):
-            await main.FxrouteTransitionRuntime().abort_failed_transition(
+            await make_transition_runtime().abort_failed_transition(
                 spotify_request(),
                 {"player": {}, "current_track": {"source": "spotify"}},
                 target_staged=False,
@@ -196,7 +197,7 @@ class SpotifyHandoffFailureRestoreTests(unittest.IsolatedAsyncioTestCase):
         ), patch.object(main, "current_footer_owner", "spotify"), patch.object(
             main, "_mark_player_state_authoritative"
         ):
-            await main.FxrouteTransitionRuntime().abort_failed_transition(
+            await make_transition_runtime().abort_failed_transition(
                 spotify_request(),
                 snapshot_with(track, current_file="/music/old.flac"),
                 target_staged=False,
@@ -223,7 +224,7 @@ class SpotifyHandoffFailureRestoreTests(unittest.IsolatedAsyncioTestCase):
         ), patch.object(main, "_run_coordinated_transition", run_mock), patch.object(
             main, "_commit_coordinated_track", commit
         ), patch.object(main, "build_playback_payload", side_effect=dict):
-            await main.FxrouteTransitionRuntime().abort_failed_transition(
+            await make_transition_runtime().abort_failed_transition(
                 spotify_request(),
                 snapshot_with(track, current_file="/music/old.flac"),
                 target_staged=False,

@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
 from playback_transition import PlaybackTransitionCoordinator, PlaybackTransitionFailure, TransitionRequest
-from playback_transition_test_support import MainCoreTransitionRuntime
+from playback_transition_test_support import MainCoreTransitionRuntime, make_transition_runtime
 
 
 OUTPUT_KEY = "alsa_output.pci-0000_00_1f.3.analog-stereo"
@@ -410,7 +410,7 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_output_mode_rollback_reconciles_subwoofer_links_before_verify(self):
         """Rollback repairs the old subwoofer links before evaluating the graph."""
-        runtime = main.FxrouteTransitionRuntime()
+        runtime = make_transition_runtime()
         old_overview = {
             "output_mode": {
                 "mode": "subwoofer-2.2",
@@ -828,7 +828,7 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
             main, "get_spotify_ui_state",
             new=AsyncMock(return_value={"available": True, "status": "Paused"}),
         ):
-            await main.FxrouteTransitionRuntime().quiet_old_source(request)
+            await make_transition_runtime().quiet_old_source(request)
 
         player.set_volume.assert_called_once_with(0)
         player.set_pause.assert_called_once_with(True)
@@ -861,7 +861,7 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
                 ), patch.object(
                     main, "_wait_for_pipewire_mpv_release", release
                 ):
-                    await main.FxrouteTransitionRuntime().quiet_old_source(request)
+                    await make_transition_runtime().quiet_old_source(request)
 
                 player.set_volume.assert_called_once_with(0)
                 player.set_pause.assert_called_once_with(True)

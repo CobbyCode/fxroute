@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, patch
 _project_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_project_root))
 import measurement_session
+from playback_transition_test_support import make_transition_runtime
 
 
 # ── Mocks ────────────────────────────────────────────────────────────────────
@@ -498,7 +499,7 @@ class TestCentralCapture:
                 reload_source=True,
                 restore_intent=intent,
             )
-            runtime = main.FxrouteTransitionRuntime()
+            runtime = make_transition_runtime()
 
             ts._spotify_state["status"] = "Paused"
             assert asyncio.get_event_loop().run_until_complete(
@@ -524,7 +525,7 @@ class TestCentralCapture:
             from playback_transition import TransitionRequest
 
             ts.set_track_playing(source="local", sample_rate=44100)
-            runtime = main.FxrouteTransitionRuntime()
+            runtime = make_transition_runtime()
 
             def validate_runtime(intent, *, source="local", target_url="file:///test.flac", track=None):
                 request = TransitionRequest(

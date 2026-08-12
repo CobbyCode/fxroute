@@ -23,6 +23,7 @@ from unittest.mock import AsyncMock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
+from playback_transition_test_support import make_transition_runtime
 
 
 def _io_text(*, mpv: bool) -> str:
@@ -214,7 +215,7 @@ class SharedPreparePathTests(unittest.IsolatedAsyncioTestCase):
     async def _prepare(self, source: str, url: str):
         fake = self.FakePlayer()
         ensure = AsyncMock(return_value=True)
-        runtime = main.FxrouteTransitionRuntime()
+        runtime = make_transition_runtime()
         request = main.TransitionRequest(
             operation="play",
             source=source,

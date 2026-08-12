@@ -29,6 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import main
+from playback_transition_test_support import make_transition_runtime
 from playback_transition import (
     PlaybackTransitionCoordinator,
     PlaybackTransitionFailure,
@@ -177,7 +178,7 @@ class FullGraphRestoreTests(RestoreTestBase):
     """The abort restore runs the complete stage sequence before True."""
 
     async def test_local_44100_to_48000_failure_restores_full_graph(self):
-        runtime = main.FxrouteTransitionRuntime()
+        runtime = make_transition_runtime()
         recorder = StageRecorder(runtime)
         with patch.object(main, "current_track_info", None), patch.object(
             main, "current_footer_owner", "spotify"
@@ -211,7 +212,7 @@ class FullGraphRestoreTests(RestoreTestBase):
         # Local 48 kHz committed; Spotify also targets 48 kHz, so the failed
         # request carried rate_change=False.  The restore must still use the
         # authoritative committed active_rate and validate the full graph.
-        runtime = main.FxrouteTransitionRuntime()
+        runtime = make_transition_runtime()
         recorder = StageRecorder(
             runtime,
             effects_result={"dsp_reinitialized": False, "helper_rebuilt": False},
@@ -240,7 +241,7 @@ class FullGraphRestoreTests(RestoreTestBase):
     async def test_fixed_policy_track_rate_is_not_trusted_over_committed_active_rate(self):
         # Track metadata says 44.1 kHz but the committed hardware state was
         # 48 kHz (fixed policy): the restore must take the committed rate.
-        runtime = main.FxrouteTransitionRuntime()
+        runtime = make_transition_runtime()
         recorder = StageRecorder(
             runtime,
             effects_result={"dsp_reinitialized": False, "helper_rebuilt": False},
@@ -265,7 +266,7 @@ class FullGraphRestoreTests(RestoreTestBase):
         # must be conservative True so effects/helper are validated, while
         # establish_target_rate remains an idempotent no-op if the hardware
         # already stands at the committed rate.
-        runtime = main.FxrouteTransitionRuntime()
+        runtime = make_transition_runtime()
         recorder = StageRecorder(runtime)
         snapshot = local_snapshot(force_rate=None, active_rate=48_000)
         with patch.object(main, "current_track_info", None), patch.object(
@@ -285,7 +286,7 @@ class FullGraphRestoreTests(RestoreTestBase):
         self.assertIn("establish_effects_and_helper", recorder.events)
 
     async def test_local_position_restored_for_playing_and_paused(self):
-        runtime = main.FxrouteTransitionRuntime()
+        runtime = make_transition_runtime()
         recorder = StageRecorder(runtime)
         with patch.object(main, "current_track_info", None), patch.object(
             main, "current_footer_owner", "spotify"
@@ -300,7 +301,7 @@ class FullGraphRestoreTests(RestoreTestBase):
             recorder.requests["prepare_target_source"].restore_position, 37.25
         )
 
-        runtime = main.FxrouteTransitionRuntime()
+        runtime = make_transition_runtime()
         recorder = StageRecorder(runtime)
         with patch.object(main, "current_track_info", None), patch.object(
             main, "current_footer_owner", "spotify"
@@ -317,7 +318,7 @@ class FullGraphRestoreTests(RestoreTestBase):
         self.assertFalse(recorder.requests["start_target_source"].should_play)
 
     async def test_radio_gets_no_position_restore(self):
-        runtime = main.FxrouteTransitionRuntime()
+        runtime = make_transition_runtime()
         recorder = StageRecorder(runtime)
         with patch.object(main, "current_track_info", None), patch.object(
             main, "current_footer_owner", "spotify"
@@ -330,7 +331,7 @@ class FullGraphRestoreTests(RestoreTestBase):
     async def test_spotify_sink_not_quiesced_aborts_restore_before_any_stage(self):
         # A verify failure after a successful Spotify start can leave the
         # sink active; without a confirmed release no old-graph stage runs.
-        runtime = main.FxrouteTransitionRuntime()
+        runtime = make_transition_runtime()
         recorder = StageRecorder(runtime)
         release_mock = AsyncMock(return_value=False)
         with patch.object(main, "current_track_info", None), patch.object(
@@ -348,7 +349,7 @@ class FullGraphRestoreTests(RestoreTestBase):
     async def test_spotify_release_confirmed_before_restore_stages(self):
         # Early start failure without an active sink: the bounded release
         # helper confirms quickly and the normal rollback runs afterwards.
-        runtime = main.FxrouteTransitionRuntime()
+        runtime = make_transition_runtime()
         recorder = StageRecorder(runtime)
 
         def record_release():
@@ -369,7 +370,7 @@ class FullGraphRestoreTests(RestoreTestBase):
         self.assertEqual(recorder.events[1], "establish_target_rate")
 
     async def test_final_readback_without_volume_100_aborts_restore(self):
-        runtime = main.FxrouteTransitionRuntime()
+        runtime = make_transition_runtime()
         StageRecorder(runtime, final_result={"committed": True, "source_volume": 0})
         with patch.object(main, "current_track_info", None), patch.object(
             main, "current_footer_owner", "spotify"
@@ -381,7 +382,7 @@ class FullGraphRestoreTests(RestoreTestBase):
     async def test_final_readback_without_volume_confirmation_aborts_restore(self):
         # source_volume missing/unusable is not a successful confirmation:
         # no recovery, no committed track metadata, failure latch stays.
-        runtime = main.FxrouteTransitionRuntime()
+        runtime = make_transition_runtime()
         StageRecorder(runtime, final_result={"committed": True, "source_volume": None})
         with patch.object(main, "current_track_info", None), patch.object(
             main, "current_footer_owner", "spotify"
@@ -392,7 +393,7 @@ class FullGraphRestoreTests(RestoreTestBase):
             self.assertEqual(main.current_footer_owner, "spotify")
 
     async def test_radio_restore_runs_same_sequence_with_radio_request(self):
-        runtime = main.FxrouteTransitionRuntime()
+        runtime = make_transition_runtime()
         recorder = StageRecorder(runtime)
         with patch.object(main, "current_track_info", None), patch.object(
             main, "current_footer_owner", "spotify"
@@ -410,7 +411,7 @@ class FullGraphRestoreTests(RestoreTestBase):
         )
 
     async def test_paused_restore_keeps_paused_with_volume_but_without_dsp_stage(self):
-        runtime = main.FxrouteTransitionRuntime()
+        runtime = make_transition_runtime()
         recorder = StageRecorder(runtime)
         with patch.object(main, "current_track_info", None), patch.object(
             main, "current_footer_owner", "spotify"
@@ -429,7 +430,7 @@ class FullGraphRestoreTests(RestoreTestBase):
         self.assertEqual(recorder.events[-1], "verify_committed_transition")
 
     async def test_no_rate_change_skips_unnecessary_dsp_stabilization(self):
-        runtime = main.FxrouteTransitionRuntime()
+        runtime = make_transition_runtime()
         recorder = StageRecorder(
             runtime, effects_result={"dsp_reinitialized": False, "helper_rebuilt": False}
         )
@@ -450,7 +451,7 @@ class FullGraphRestoreTests(RestoreTestBase):
         self.assertFalse(recorder.requests["start_target_source"].rate_change)
 
     async def test_stage_failure_keeps_latch_semantics(self):
-        runtime = main.FxrouteTransitionRuntime()
+        runtime = make_transition_runtime()
         StageRecorder(runtime, fail_stage="prepare_target_source")
         with patch.object(main, "current_track_info", None), patch.object(
             main, "current_footer_owner", "spotify"
@@ -461,7 +462,7 @@ class FullGraphRestoreTests(RestoreTestBase):
             self.assertEqual(main.current_footer_owner, "spotify")
 
     async def test_final_readback_failure_keeps_latch(self):
-        runtime = main.FxrouteTransitionRuntime()
+        runtime = make_transition_runtime()
         StageRecorder(runtime, final_result={"committed": False})
         with patch.object(main, "current_track_info", None), patch.object(
             main, "current_footer_owner", "spotify"
@@ -515,7 +516,7 @@ class RestoreGateBoundaryTests(RestoreTestBase):
     """The restore re-confirms the physical gate at every critical boundary."""
 
     async def test_gate_guard_runs_at_all_critical_boundaries(self):
-        runtime = main.FxrouteTransitionRuntime()
+        runtime = make_transition_runtime()
         recorder = StageRecorder(runtime)
         guard_calls: list[str] = []
 
@@ -540,7 +541,7 @@ class RestoreGateBoundaryTests(RestoreTestBase):
         ])
 
     async def test_initial_gate_guard_failure_aborts_before_any_mutating_stage(self):
-        runtime = main.FxrouteTransitionRuntime()
+        runtime = make_transition_runtime()
         recorder = StageRecorder(runtime)
 
         async def failing_guard(*, stage):
@@ -561,7 +562,7 @@ class RestoreGateBoundaryTests(RestoreTestBase):
         self.assertIsNone(main.current_track_info)
 
     async def test_gate_loss_before_volume_aborts_restore_without_volume_change(self):
-        runtime = main.FxrouteTransitionRuntime()
+        runtime = make_transition_runtime()
         recorder = StageRecorder(runtime)
 
         async def failing_guard(*, stage):
@@ -583,7 +584,7 @@ class RestoreGateBoundaryTests(RestoreTestBase):
     async def test_gate_guard_after_volume_runs_in_no_dsp_and_paused_paths(self):
         # Same-rate/no-DSP: the after-volume gate re-check still runs, like
         # the normal Coordinator after-dsp-stabilization boundary.
-        runtime = main.FxrouteTransitionRuntime()
+        runtime = make_transition_runtime()
         recorder = StageRecorder(
             runtime,
             effects_result={"dsp_reinitialized": False, "helper_rebuilt": False},
@@ -608,7 +609,7 @@ class RestoreGateBoundaryTests(RestoreTestBase):
         self.assertNotIn("stabilize_effects_after_rate_change", recorder.events)
 
         # Paused/no-DSP: same gate re-check after the volume restore.
-        runtime = main.FxrouteTransitionRuntime()
+        runtime = make_transition_runtime()
         recorder = StageRecorder(
             runtime,
             effects_result={"dsp_reinitialized": False, "helper_rebuilt": False},
@@ -627,7 +628,7 @@ class RestoreGateBoundaryTests(RestoreTestBase):
         self.assertNotIn("stabilize_effects_after_rate_change", recorder.events)
 
     async def test_gate_loss_after_volume_aborts_restore_before_final_readback(self):
-        runtime = main.FxrouteTransitionRuntime()
+        runtime = make_transition_runtime()
         recorder = StageRecorder(runtime)
 
         async def failing_guard(*, stage):
@@ -652,7 +653,7 @@ class PositionRestoreOrderTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_position_restore_orders_load_paused_seek_then_start(self):
         player = RecordingPlayer()
-        runtime = main.FxrouteTransitionRuntime()
+        runtime = make_transition_runtime()
         with patch.object(main, "player_instance", player), patch.object(
             main, "_load_player_paused",
             side_effect=lambda path: player.set_pause(True) or player._state.update(current_file=path),
@@ -691,7 +692,7 @@ class PositionRestoreOrderTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_paused_restore_volume_100_then_resume_starts_from_100(self):
         player = RecordingPlayer()
-        runtime = main.FxrouteTransitionRuntime()
+        runtime = make_transition_runtime()
         with patch.object(main, "player_instance", player), patch.object(
             main, "_load_player_paused",
             side_effect=lambda path: player.set_pause(True) or player._state.update(current_file=path),
@@ -757,7 +758,7 @@ class NativeQueueRestoreTests(RestoreTestBase):
 
     async def test_native_queue_restore_rebuilds_full_playlist_with_index(self):
         queue = self._queue_state()
-        runtime = main.FxrouteTransitionRuntime()
+        runtime = make_transition_runtime()
         recorder = StageRecorder(runtime)
         with patch.object(main, "current_track_info", None), patch.object(
             main, "current_footer_owner", "spotify"
@@ -782,7 +783,7 @@ class NativeQueueRestoreTests(RestoreTestBase):
 
     async def test_native_queue_restore_failure_normalizes_to_app_replace(self):
         queue = self._queue_state()
-        runtime = main.FxrouteTransitionRuntime()
+        runtime = make_transition_runtime()
         recorder = StageRecorder(runtime, fail_stage="verify_transition_graph")
         with patch.object(main, "current_track_info", None), patch.object(
             main, "current_footer_owner", "spotify"

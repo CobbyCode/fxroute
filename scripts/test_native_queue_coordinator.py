@@ -14,6 +14,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
+from playback_transition_test_support import make_transition_runtime
 from playback_transition import TransitionRequest
 
 
@@ -157,7 +158,7 @@ class NativeQueueRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
         with patch.object(main, "player_instance", fake), \
              patch.object(main, "_ensure_mpv_to_easyeffects_links", new=_true_async):
-            runtime = main.FxrouteTransitionRuntime()
+            runtime = make_transition_runtime()
             await runtime.prepare_target_source(request)
 
         load_calls = [call for call in fake.calls if call[0] == "loadfile"]
@@ -190,7 +191,7 @@ class NativeQueueRuntimeTests(unittest.IsolatedAsyncioTestCase):
             reload_source=False,
         )
         with patch.object(main, "player_instance", fake):
-            runtime = main.FxrouteTransitionRuntime()
+            runtime = make_transition_runtime()
             await runtime.start_target_source(request)
 
     async def test_missing_local_metadata_rate_is_resolved_from_paused_mpv(self):
@@ -204,7 +205,7 @@ class NativeQueueRuntimeTests(unittest.IsolatedAsyncioTestCase):
             reload_source=True,
         )
         with patch.object(main, "player_instance", fake):
-            runtime = main.FxrouteTransitionRuntime()
+            runtime = make_transition_runtime()
             rate = await runtime.resolve_target_rate(request)
 
         self.assertEqual(rate, 48000)
@@ -229,7 +230,7 @@ class NativeQueueRuntimeTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(main, "player_instance", fake), patch.object(
             main, "_wait_for_player_audio_samplerate", new=AsyncMock(return_value=None)
         ):
-            runtime = main.FxrouteTransitionRuntime()
+            runtime = make_transition_runtime()
             with self.assertRaisesRegex(RuntimeError, "audio-params"):
                 await runtime.resolve_target_rate(request)
 

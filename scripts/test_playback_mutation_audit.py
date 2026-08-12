@@ -18,11 +18,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
-# Application callsite scope: main.py plus the extracted AutoSub module.
-# Playback entrypoints and single-owner paths live only in main.py; both
-# files are parsed for direct mutation calls so the extraction cannot
-# create an audit coverage gap.
-AUDIT_FILES = ("main.py", "autosub.py", "measurement_session.py")
+# Application callsite scope: main.py, the extracted playback runtime and the
+# extracted AutoSub module.  Playback entrypoints and single-owner paths live
+# only in main.py; all files are parsed for direct mutation calls so the
+# extraction cannot create an audit coverage gap.
+AUDIT_FILES = ("main.py", "playback_runtime.py", "autosub.py", "measurement_session.py")
 SOURCES = {name: (ROOT / name).read_text() for name in AUDIT_FILES}
 TREES = {name: ast.parse(source) for name, source in SOURCES.items()}
 MAIN_SOURCE = SOURCES["main.py"]
@@ -150,6 +150,8 @@ def _calls() -> list[tuple[str, int, str, str]]:
 
 def _reason(context: str, name: str) -> str | None:
     leaf = context.rsplit("/", 1)[-1]
+    if leaf == "make_playback_runtime_deps":
+        return "late-bound runtime wiring factory; the referenced mutations are never executed here"
     if leaf in PLAYBACK_ENTRYPOINTS:
         return None
     if (
