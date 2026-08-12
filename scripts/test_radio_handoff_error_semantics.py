@@ -25,7 +25,10 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import playback_queue
 import main
+from playback_queue import QueueCandidate
+from playback_queue_test_support import queue_state, restore_queue_state
 import measurement_session
 import stations as stations_module
 from playback_transition import PlaybackTransitionCoordinator
@@ -509,10 +512,11 @@ class RadioPlayErrorSemanticsTests(unittest.IsolatedAsyncioTestCase):
             "playback_transition_epoch", "current_footer_owner",
             "radio_reconnect_attempts", "radio_reconnect_url",
             "radio_reconnect_active_since",
-            "playback_queue_mode", "playback_queue", "subwoofer_runtime",
+            "subwoofer_runtime",
             "playback_transition_coordinator",
         )
         self.originals = {name: getattr(main, name) for name in names}
+        self._saved_queue = queue_state()
         main.player_instance = None
         main.current_track_info = None
         main.last_track_info = None
@@ -524,11 +528,12 @@ class RadioPlayErrorSemanticsTests(unittest.IsolatedAsyncioTestCase):
         main.radio_reconnect_url = None
         main.radio_reconnect_active_since = 0.0
         measurement_session._playback_state_before_measurement = None
-        main.playback_queue_mode = "app_replace"
-        main.playback_queue = []
+        playback_queue.queue.mode = "app_replace"
+        playback_queue.queue.tracks = []
         main.subwoofer_runtime = None
 
     async def asyncTearDown(self):
+        restore_queue_state(self._saved_queue)
         for name, value in self.originals.items():
             setattr(main, name, value)
 
@@ -710,8 +715,8 @@ class RadioPlayErrorSemanticsTests(unittest.IsolatedAsyncioTestCase):
                 else [stations_module.Station(id="s1", name="Test Radio", stream_url=STATION_URL)],
             ),
             patch.object(
-                main, "_prepare_local_queue",
-                return_value=main._QueueCandidate(
+                playback_queue.queue, "prepare_local_queue",
+                return_value=QueueCandidate(
                     queue=[],
                     original=[],
                     index=-1,
@@ -724,8 +729,7 @@ class RadioPlayErrorSemanticsTests(unittest.IsolatedAsyncioTestCase):
             ),
             patch.object(main, "_can_send_play_command", lambda: True),
             patch.object(main, "pause_spotify_for_local_playback_broadcast", _noop),
-            patch.object(main, "_clear_playback_queue", lambda: None),
-            patch.object(main, "_reset_mpv_loop_state", lambda: None),
+            patch.object(playback_queue.queue, "reset_mpv_loop_state", lambda: None),
             patch.object(
                 main, "get_samplerate_status", side_effect=lambda: dict(status)
             ),

@@ -16,7 +16,10 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import playback_queue
 import main
+from playback_queue import QueueCandidate
+from playback_queue_test_support import queue_state, restore_queue_state
 from playback_transition import PlaybackTransitionFailure
 
 
@@ -73,30 +76,29 @@ class PlayQueueTransactionalTests(unittest.IsolatedAsyncioTestCase):
     GLOBALS = (
         "player_instance", "library_scanner", "current_track_info",
         "last_track_info", "last_radio_track_info", "current_footer_owner",
-        "playback_queue", "playback_queue_original", "playback_queue_index",
-        "playback_queue_mode", "playback_queue_loop", "playback_queue_shuffle",
-        "single_track_loop",
     )
 
     def _install(self, queue_a: list[dict], *, index: int, mode: str = "app_replace",
                  loop: bool = False, shuffle: bool = False) -> dict:
         originals = {name: getattr(main, name) for name in self.GLOBALS}
+        self._saved_queue = queue_state()
         main.player_instance = _FakePlayer()
         main.library_scanner = _Scanner(["a", "b", "c", "d"])
         main.current_track_info = dict(queue_a[index]) if queue_a and index >= 0 else None
         main.last_track_info = dict(queue_a[index]) if queue_a and index >= 0 else None
         main.last_radio_track_info = None
         main.current_footer_owner = "local"
-        main.playback_queue = [dict(track) for track in queue_a]
-        main.playback_queue_original = [dict(track) for track in queue_a]
-        main.playback_queue_index = index
-        main.playback_queue_mode = mode
-        main.playback_queue_loop = loop
-        main.playback_queue_shuffle = shuffle
-        main.single_track_loop = False
+        playback_queue.queue.tracks = [dict(track) for track in queue_a]
+        playback_queue.queue.original = [dict(track) for track in queue_a]
+        playback_queue.queue.index = index
+        playback_queue.queue.mode = mode
+        playback_queue.queue.loop = loop
+        playback_queue.queue.shuffle = shuffle
+        playback_queue.queue.single_track_loop = False
         return originals
 
     def _restore(self, originals: dict) -> None:
+        restore_queue_state(self._saved_queue)
         for name, value in originals.items():
             setattr(main, name, value)
 
@@ -126,12 +128,12 @@ class PlayQueueTransactionalTests(unittest.IsolatedAsyncioTestCase):
 
     def _assert_queue_a_intact(self, queue_a: list[dict], *, index: int, mode: str,
                                loop: bool, shuffle: bool) -> None:
-        self.assertEqual(main.playback_queue, queue_a)
-        self.assertEqual(main.playback_queue_original, queue_a)
-        self.assertEqual(main.playback_queue_index, index)
-        self.assertEqual(main.playback_queue_mode, mode)
-        self.assertEqual(main.playback_queue_loop, loop)
-        self.assertEqual(main.playback_queue_shuffle, shuffle)
+        self.assertEqual(playback_queue.queue.tracks, queue_a)
+        self.assertEqual(playback_queue.queue.original, queue_a)
+        self.assertEqual(playback_queue.queue.index, index)
+        self.assertEqual(playback_queue.queue.mode, mode)
+        self.assertEqual(playback_queue.queue.loop, loop)
+        self.assertEqual(playback_queue.queue.shuffle, shuffle)
 
     def _failure(self, message: str = "transition failed", *, stage: str = "target-source-start"):
         async def fail(_request):
@@ -144,7 +146,7 @@ class PlayQueueTransactionalTests(unittest.IsolatedAsyncioTestCase):
         queue_a = [_track("a"), _track("b"), _track("c")]
         originals = self._install(queue_a, index=1, mode="app_replace", loop=True)
         try:
-            with patch.object(main.random, "shuffle", side_effect=lambda values: values.reverse()):
+            with patch.object(playback_queue.random, "shuffle", side_effect=lambda values: values.reverse()):
                 with self._patch_context(self._failure()):
                     with self.assertRaises(main.HTTPException) as ctx:
                         await self._play(track_id="d", queue_track_ids=["c", "d", "a"])
@@ -159,13 +161,13 @@ class PlayQueueTransactionalTests(unittest.IsolatedAsyncioTestCase):
         queue_a = [_track("a"), _track("b"), _track("c"), _track("d")]
         originals = self._install(queue_a, index=2, mode="app_replace", shuffle=True)
         try:
-            with patch.object(main.random, "shuffle", side_effect=lambda values: values.reverse()):
+            with patch.object(playback_queue.random, "shuffle", side_effect=lambda values: values.reverse()):
                 with self._patch_context(self._failure(stage="commit-readback")):
                     with self.assertRaises(main.HTTPException):
                         await self._play(track_id="b", queue_track_ids=["c", "a", "b"], shuffle=True)
         finally:
             self._assert_queue_a_intact(queue_a, index=2, mode="app_replace", loop=False, shuffle=True)
-            self.assertEqual(main.playback_queue_index, 2)
+            self.assertEqual(playback_queue.queue.index, 2)
             self._restore(originals)
 
     async def test_failed_play_from_native_queue_keeps_transport_queue_navigable(self):
@@ -192,8 +194,8 @@ class PlayQueueTransactionalTests(unittest.IsolatedAsyncioTestCase):
                 })
                 return SimpleNamespace(target_rate=request.target_rate, committed=True)
 
-            with patch.object(main, "_reduce_native_mpv_playlist_to_current", side_effect=reduce), \
-                 patch.object(main, "_reset_mpv_loop_state", side_effect=reset), \
+            with patch.object(playback_queue.queue, "reduce_native_playlist_to_current", side_effect=reduce), \
+                 patch.object(playback_queue.queue, "reset_mpv_loop_state", side_effect=reset), \
                  patch.object(main, "_sample_rate_policy_is_auto", return_value=False), \
                  self._patch_context(self._failure()):
                 with self.assertRaises(main.HTTPException):
@@ -208,8 +210,8 @@ class PlayQueueTransactionalTests(unittest.IsolatedAsyncioTestCase):
             # The retained queue must remain functionally navigable: a native
             # queue jump still commits and updates the index.
             with self._patch_context(navigate):
-                self.assertTrue(await main._load_queue_track(2, transition_reason="queue navigation"))
-            self.assertEqual(main.playback_queue_index, 2)
+                self.assertTrue(await playback_queue.queue.load_track(2, transition_reason="queue navigation"))
+            self.assertEqual(playback_queue.queue.index, 2)
             self.assertEqual(len(navigation_requests), 1)
             self.assertTrue(navigation_requests[0].native_queue)
             self.assertEqual(navigation_requests[0].native_queue_jump, 2)
@@ -220,7 +222,7 @@ class PlayQueueTransactionalTests(unittest.IsolatedAsyncioTestCase):
         queue_a = [_track("a"), _track("b"), _track("c")]
         originals = self._install(queue_a, index=0)
         commits = []
-        real_commit = main._commit_queue_state
+        real_commit = playback_queue.queue.commit
         try:
             async def succeed(request):
                 main.player_instance.state.update({
@@ -237,18 +239,18 @@ class PlayQueueTransactionalTests(unittest.IsolatedAsyncioTestCase):
                 real_commit(candidate)
 
             with self._patch_context(succeed), patch.object(
-                main, "_commit_queue_state", side_effect=recording_commit
+                playback_queue.queue, "commit", side_effect=recording_commit
             ):
                 result = await self._play(track_id="b", queue_track_ids=["d", "b", "a"])
 
             self.assertEqual(result["status"], "playing")
             self.assertEqual(len(commits), 1, "the candidate must be committed exactly once")
             self.assertEqual(
-                [item["id"] for item in main.playback_queue],
+                [item["id"] for item in playback_queue.queue.tracks],
                 ["d", "b", "a"],
             )
-            self.assertEqual(main.playback_queue_index, 1)
-            self.assertEqual(main.playback_queue_original, [_track("d"), _track("b"), _track("a")])
+            self.assertEqual(playback_queue.queue.index, 1)
+            self.assertEqual(playback_queue.queue.original, [_track("d"), _track("b"), _track("a")])
             self.assertEqual(main.current_track_info["id"], "b")
         finally:
             self._restore(originals)
@@ -258,7 +260,7 @@ class PlayQueueTransactionalTests(unittest.IsolatedAsyncioTestCase):
         originals = self._install(queue_a, index=0, mode="app_replace")
         requests = []
         commits = []
-        real_commit = main._commit_queue_state
+        real_commit = playback_queue.queue.commit
         try:
             async def succeed(request):
                 requests.append(request)
@@ -276,7 +278,7 @@ class PlayQueueTransactionalTests(unittest.IsolatedAsyncioTestCase):
                 real_commit(candidate)
 
             with self._patch_context(succeed), patch.object(
-                main, "_commit_queue_state", side_effect=recording_commit
+                playback_queue.queue, "commit", side_effect=recording_commit
             ):
                 await self._play(track_id="c", queue_track_ids=["c", "d"])
 
@@ -287,9 +289,9 @@ class PlayQueueTransactionalTests(unittest.IsolatedAsyncioTestCase):
                 "the prepared candidate snapshot is carried by the request",
             )
             self.assertEqual(len(commits), 1)
-            self.assertEqual(main.playback_queue_mode, "native_mpv")
-            self.assertEqual([item["id"] for item in main.playback_queue], ["c", "d"])
-            self.assertEqual(main.playback_queue_index, 0)
+            self.assertEqual(playback_queue.queue.mode, "native_mpv")
+            self.assertEqual([item["id"] for item in playback_queue.queue.tracks], ["c", "d"])
+            self.assertEqual(playback_queue.queue.index, 0)
         finally:
             self._restore(originals)
 
@@ -352,12 +354,12 @@ class PlayQueueTransactionalTests(unittest.IsolatedAsyncioTestCase):
                 result = await self._play(track_id="s1", source="radio")
 
             self.assertEqual(result["status"], "playing")
-            self.assertEqual(main.playback_queue, [])
-            self.assertEqual(main.playback_queue_original, [])
-            self.assertEqual(main.playback_queue_index, -1)
-            self.assertEqual(main.playback_queue_mode, "app_replace")
-            self.assertFalse(main.playback_queue_shuffle)
-            self.assertFalse(main.playback_queue_loop)
+            self.assertEqual(playback_queue.queue.tracks, [])
+            self.assertEqual(playback_queue.queue.original, [])
+            self.assertEqual(playback_queue.queue.index, -1)
+            self.assertEqual(playback_queue.queue.mode, "app_replace")
+            self.assertFalse(playback_queue.queue.shuffle)
+            self.assertFalse(playback_queue.queue.loop)
             self.assertEqual(main.current_track_info["id"], "radio_s1")
         finally:
             self._restore(originals)
@@ -377,30 +379,29 @@ class QueueSelectionTransactionalTests(unittest.IsolatedAsyncioTestCase):
     GLOBALS = (
         "player_instance", "library_scanner", "current_track_info",
         "last_track_info", "current_footer_owner",
-        "playback_queue", "playback_queue_original", "playback_queue_index",
-        "playback_queue_mode", "playback_queue_loop", "playback_queue_shuffle",
-        "single_track_loop",
     )
 
     def _install(self, queue_a: list[dict], *, index: int, mode: str = "app_replace",
                  shuffle: bool = False) -> dict:
         originals = {name: getattr(main, name) for name in self.GLOBALS}
+        self._saved_queue = queue_state()
         main.player_instance = _FakePlayer()
         main.library_scanner = _Scanner(["a", "b", "c", "d"])
         main.player_instance.state["current_file"] = queue_a[index]["url"]
         main.current_track_info = dict(queue_a[index])
         main.last_track_info = dict(queue_a[index])
         main.current_footer_owner = "local"
-        main.playback_queue = [dict(track) for track in queue_a]
-        main.playback_queue_original = [dict(track) for track in queue_a]
-        main.playback_queue_index = index
-        main.playback_queue_mode = mode
-        main.playback_queue_loop = False
-        main.playback_queue_shuffle = shuffle
-        main.single_track_loop = False
+        playback_queue.queue.tracks = [dict(track) for track in queue_a]
+        playback_queue.queue.original = [dict(track) for track in queue_a]
+        playback_queue.queue.index = index
+        playback_queue.queue.mode = mode
+        playback_queue.queue.loop = False
+        playback_queue.queue.shuffle = shuffle
+        playback_queue.queue.single_track_loop = False
         return originals
 
     def _restore(self, originals: dict) -> None:
+        restore_queue_state(self._saved_queue)
         for name, value in originals.items():
             setattr(main, name, value)
 
@@ -408,29 +409,29 @@ class QueueSelectionTransactionalTests(unittest.IsolatedAsyncioTestCase):
         queue_a = [_track("a"), _track("b"), _track("c")]
         originals = self._install(queue_a, index=1)
         try:
-            payload = main._sync_active_local_queue_selection(
+            payload = playback_queue.queue.sync_active_local_queue_selection(
                 ["c", "b", "a"], shuffle=True, loop=True
             )
 
             self.assertEqual(
-                [item["id"] for item in main.playback_queue],
+                [item["id"] for item in playback_queue.queue.tracks],
                 ["c", "b", "a"],
                 "the prepared selection becomes the committed queue",
             )
             self.assertEqual(
-                main.playback_queue_original,
+                playback_queue.queue.original,
                 [_track("c"), _track("b"), _track("a")],
             )
-            self.assertEqual(main.playback_queue_index, 1)
-            self.assertEqual(main.playback_queue_mode, "app_replace")
-            self.assertTrue(main.playback_queue_shuffle)
-            self.assertTrue(main.playback_queue_loop)
-            self.assertFalse(main.single_track_loop)
+            self.assertEqual(playback_queue.queue.index, 1)
+            self.assertEqual(playback_queue.queue.mode, "app_replace")
+            self.assertTrue(playback_queue.queue.shuffle)
+            self.assertTrue(playback_queue.queue.loop)
+            self.assertFalse(playback_queue.queue.single_track_loop)
 
             self.assertEqual(main.current_track_info["id"], "b")
             self.assertEqual(main.last_track_info["id"], "b")
             self.assertIsInstance(main.current_track_info, dict)
-            self.assertNotIsInstance(main.current_track_info, main._QueueCandidate)
+            self.assertNotIsInstance(main.current_track_info, QueueCandidate)
             self.assertEqual(main.current_track_info.get("url"), "/music/b.flac")
             self.assertEqual(payload["queue"]["index"], 1)
             self.assertEqual(payload["queue"]["mode"], "app_replace")
@@ -452,17 +453,17 @@ class QueueSelectionTransactionalTests(unittest.IsolatedAsyncioTestCase):
             def reset():
                 reset_calls.append(True)
 
-            with patch.object(main, "_reduce_native_mpv_playlist_to_current", side_effect=reduce), \
-                 patch.object(main, "_reset_mpv_loop_state", side_effect=reset):
-                payload = main._sync_active_local_queue_selection(
+            with patch.object(playback_queue.queue, "reduce_native_playlist_to_current", side_effect=reduce), \
+                 patch.object(playback_queue.queue, "reset_mpv_loop_state", side_effect=reset):
+                payload = playback_queue.queue.sync_active_local_queue_selection(
                     ["b", "a"], shuffle=False, loop=False
                 )
 
             self.assertEqual(reduce_calls, [True], "old native future entries are trimmed")
             self.assertGreaterEqual(len(reset_calls), 1)
-            self.assertEqual(main.playback_queue_mode, "app_replace")
-            self.assertEqual([item["id"] for item in main.playback_queue], ["b", "a"])
-            self.assertEqual(main.playback_queue_index, 1)
+            self.assertEqual(playback_queue.queue.mode, "app_replace")
+            self.assertEqual([item["id"] for item in playback_queue.queue.tracks], ["b", "a"])
+            self.assertEqual(playback_queue.queue.index, 1)
             self.assertEqual(main.current_track_info["id"], "a")
             self.assertIsInstance(main.current_track_info, dict)
         finally:

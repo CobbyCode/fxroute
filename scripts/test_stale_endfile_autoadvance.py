@@ -21,8 +21,10 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import playback_queue
 import main
 import player
+from playback_queue_test_support import queue_state, restore_queue_state
 
 
 TARGET_RATE = 48000
@@ -114,16 +116,17 @@ class StaleEndfileOwnershipTests(unittest.IsolatedAsyncioTestCase):
             patcher.start()
         self.addCleanup(self._restore)
 
-        main.playback_queue = [_local("a1", 44100), _local("a2", 96000)]
-        main.playback_queue_original = [dict(t) for t in main.playback_queue]
-        main.playback_queue_index = 0
-        main.playback_queue_mode = "app_replace"
-        main.playback_queue_loop = False
-        main.playback_queue_shuffle = False
-        main.single_track_loop = False
+        self._saved_queue = queue_state()
+        playback_queue.queue.tracks = [_local("a1", 44100), _local("a2", 96000)]
+        playback_queue.queue.original = [dict(t) for t in playback_queue.queue.tracks]
+        playback_queue.queue.index = 0
+        playback_queue.queue.mode = "app_replace"
+        playback_queue.queue.loop = False
+        playback_queue.queue.shuffle = False
+        playback_queue.queue.single_track_loop = False
         main.queue_advancing = False
-        main.current_track_info = dict(main.playback_queue[0])
-        main.last_track_info = dict(main.playback_queue[0])
+        main.current_track_info = dict(playback_queue.queue.tracks[0])
+        main.last_track_info = dict(playback_queue.queue.tracks[0])
         main.current_footer_owner = "local"
         main.latest_player_state_seq_seen = 0
         main.playback_transition_epoch = 0
@@ -132,18 +135,19 @@ class StaleEndfileOwnershipTests(unittest.IsolatedAsyncioTestCase):
         main._playback_settled_event().set()
 
     def _restore(self) -> None:
+        restore_queue_state(self._saved_queue)
         for patcher in self._patchers:
             patcher.stop()
 
     def _commit_queue_b(self) -> None:
         """Simuliert den erfolgreichen User-Play-Commit von Queue B=[b1,b2]
         inkl. neuem Coordinator-Token (wie execute() -> _record_result)."""
-        candidate = main._cleared_queue_candidate(_local("b1", 96000))
+        candidate = playback_queue.cleared_queue_candidate(_local("b1", 96000))
         candidate.queue = [_local("b1", 96000), _local("b2", 96000)]
         candidate.original = [dict(t) for t in candidate.queue]
         candidate.index = 0
         candidate.mode = "app_replace"
-        main._commit_queue_state(candidate)
+        playback_queue.queue.commit(candidate)
         main._commit_coordinated_track(
             candidate.queue[0], source="local", commit_token=COMMIT_B
         )
@@ -156,14 +160,14 @@ class StaleEndfileOwnershipTests(unittest.IsolatedAsyncioTestCase):
     async def test_stale_eof_after_new_local_queue_commit_is_noop(self):
         self._install()
         self._commit_queue_b()
-        before = (list(main.playback_queue), main.playback_queue_index,
+        before = (list(playback_queue.queue.tracks), playback_queue.queue.index,
                   main.current_track_info and main.current_track_info.get("id"))
 
         await main.on_player_state_change(
             _ended_snapshot(), event_commit_id=COMMIT_A
         )
 
-        after = (list(main.playback_queue), main.playback_queue_index,
+        after = (list(playback_queue.queue.tracks), playback_queue.queue.index,
                  main.current_track_info and main.current_track_info.get("id"))
         self.assertEqual(before, after, "stale EOF must not mutate queue B")
         self.assertEqual(self._request_targets(), [],
@@ -175,12 +179,12 @@ class StaleEndfileOwnershipTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_stale_eof_at_queue_end_does_not_clear_queue(self):
         self._install()
-        candidate = main._cleared_queue_candidate(_local("b1", 96000))
+        candidate = playback_queue.cleared_queue_candidate(_local("b1", 96000))
         candidate.queue = [_local("b1", 96000), _local("b2", 96000)]
         candidate.original = [dict(t) for t in candidate.queue]
         candidate.index = 1
         candidate.mode = "app_replace"
-        main._commit_queue_state(candidate)
+        playback_queue.queue.commit(candidate)
         main._commit_coordinated_track(
             candidate.queue[1], source="local", commit_token=COMMIT_B
         )
@@ -190,21 +194,21 @@ class StaleEndfileOwnershipTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(
-            [t.get("id") for t in main.playback_queue], ["b1", "b2"],
+            [t.get("id") for t in playback_queue.queue.tracks], ["b1", "b2"],
             "stale EOF must not clear the committed queue",
         )
-        self.assertEqual(main.playback_queue_index, 1)
+        self.assertEqual(playback_queue.queue.index, 1)
         self.assertEqual(self._request_targets(), [])
 
     async def test_stale_eof_with_loop_does_not_wrap(self):
         self._install()
-        candidate = main._cleared_queue_candidate(_local("b1", 96000))
+        candidate = playback_queue.cleared_queue_candidate(_local("b1", 96000))
         candidate.queue = [_local("b1", 96000), _local("b2", 96000)]
         candidate.original = [dict(t) for t in candidate.queue]
         candidate.index = 1
         candidate.mode = "app_replace"
         candidate.loop = True
-        main._commit_queue_state(candidate)
+        playback_queue.queue.commit(candidate)
         main._commit_coordinated_track(
             candidate.queue[1], source="local", commit_token=COMMIT_B
         )
@@ -213,7 +217,7 @@ class StaleEndfileOwnershipTests(unittest.IsolatedAsyncioTestCase):
             _ended_snapshot(), event_commit_id=COMMIT_A
         )
 
-        self.assertEqual(main.playback_queue_index, 1,
+        self.assertEqual(playback_queue.queue.index, 1,
                          "stale EOF must not wrap the looped queue")
         self.assertEqual(self._request_targets(), [])
 
@@ -237,7 +241,7 @@ class StaleEndfileOwnershipTests(unittest.IsolatedAsyncioTestCase):
             main.current_track_info and main.current_track_info.get("id"), "a1",
             "spotify context must stay untouched",
         )
-        self.assertEqual(main.playback_queue_index, 0)
+        self.assertEqual(playback_queue.queue.index, 0)
 
     # -- D. Event waehrend erfolgreichem Attempt ------------------------------
 
@@ -256,7 +260,7 @@ class StaleEndfileOwnershipTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(self._request_targets(), [],
                          "EOF(A) must be stale after B committed")
-        self.assertEqual(main.playback_queue_index, 0)
+        self.assertEqual(playback_queue.queue.index, 0)
         self.assertEqual(self.manager.broadcasts, [])
 
     # -- E. Event waehrend fehlgeschlagenem Attempt ----------------------------
@@ -276,7 +280,7 @@ class StaleEndfileOwnershipTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(self._request_targets(), ["a2"],
                          "EOF(A) stays legit after a failed attempt")
-        self.assertEqual(main.playback_queue_index, 1)
+        self.assertEqual(playback_queue.queue.index, 1)
 
     async def test_queued_attempt_after_failed_one_still_guards(self):
         self._install()
@@ -318,7 +322,7 @@ class StaleEndfileOwnershipTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(self._request_targets(), ["a2"],
                          "non-source-changing commit must not invalidate EOF(A)")
-        self.assertEqual(main.playback_queue_index, 1)
+        self.assertEqual(playback_queue.queue.index, 1)
 
     async def test_eof_waiter_cannot_enter_between_coordinator_commit_and_app_publish(self):
         self._install()
@@ -340,12 +344,12 @@ class StaleEndfileOwnershipTests(unittest.IsolatedAsyncioTestCase):
 
         # Vollstaendiger App-State-Commit (Queue B, Track B, Token B) und
         # erst danach endet die Attempt-Phase.
-        candidate = main._cleared_queue_candidate(_local("b1", 96000))
+        candidate = playback_queue.cleared_queue_candidate(_local("b1", 96000))
         candidate.queue = [_local("b1", 96000), _local("b2", 96000)]
         candidate.original = [dict(t) for t in candidate.queue]
         candidate.index = 0
         candidate.mode = "app_replace"
-        main._commit_queue_state(candidate)
+        playback_queue.queue.commit(candidate)
         main._commit_coordinated_track(
             candidate.queue[0], source="local", commit_token=COMMIT_B
         )
@@ -358,7 +362,7 @@ class StaleEndfileOwnershipTests(unittest.IsolatedAsyncioTestCase):
             main.current_track_info and main.current_track_info.get("id"), "b1",
             "the committed B context must stay untouched",
         )
-        self.assertEqual(main.playback_queue_index, 0)
+        self.assertEqual(playback_queue.queue.index, 0)
 
     # -- E2. erfolgreicher Source-Wechsel B entwertet EOF(A) -------------------
 
@@ -371,12 +375,12 @@ class StaleEndfileOwnershipTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0)
         self.assertFalse(task.done())
 
-        candidate = main._cleared_queue_candidate(_local("b1", 96000))
+        candidate = playback_queue.cleared_queue_candidate(_local("b1", 96000))
         candidate.queue = [_local("b1", 96000), _local("b2", 96000)]
         candidate.original = [dict(t) for t in candidate.queue]
         candidate.index = 0
         candidate.mode = "app_replace"
-        main._commit_queue_state(candidate)
+        playback_queue.queue.commit(candidate)
         main._commit_coordinated_track(
             candidate.queue[0], source="local", commit_token=COMMIT_B
         )
@@ -385,7 +389,7 @@ class StaleEndfileOwnershipTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(self._request_targets(), [],
                          "successful source switch B invalidates EOF(A)")
-        self.assertEqual(main.playback_queue_index, 0)
+        self.assertEqual(playback_queue.queue.index, 0)
 
     # -- F. Normales aktuelles EOF ----------------------------------------------
 
@@ -397,21 +401,21 @@ class StaleEndfileOwnershipTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(self._request_targets(), ["a2"],
                          "current EOF advances to the next queue track")
-        self.assertEqual(main.playback_queue_index, 1)
+        self.assertEqual(playback_queue.queue.index, 1)
 
     async def test_current_eof_at_queue_end_clears_queue_and_broadcasts(self):
         self._install()
-        main.playback_queue_index = 1
-        main.current_track_info = dict(main.playback_queue[1])
-        main.last_track_info = dict(main.playback_queue[1])
+        playback_queue.queue.index = 1
+        main.current_track_info = dict(playback_queue.queue.tracks[1])
+        main.last_track_info = dict(playback_queue.queue.tracks[1])
 
         await main.on_player_state_change(
             _ended_snapshot(), event_commit_id=COMMIT_A
         )
 
-        self.assertEqual(main.playback_queue, [],
+        self.assertEqual(playback_queue.queue.tracks, [],
                          "EOF at the queue end commits the terminal end state")
-        self.assertEqual(main.playback_queue_index, -1)
+        self.assertEqual(playback_queue.queue.index, -1)
         self.assertEqual(main.current_track_info.get("id"), "a2",
                          "track context must survive the terminal end state")
         self.assertEqual(self._request_targets(), [],
@@ -426,10 +430,10 @@ class StaleEndfileOwnershipTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_native_queue_guard_unchanged(self):
         self._install()
-        main.playback_queue = [_local("a1", 48000), _local("a2", 48000)]
-        main.playback_queue_original = [dict(t) for t in main.playback_queue]
-        main.playback_queue_index = 0
-        main.playback_queue_mode = "native_mpv"
+        playback_queue.queue.tracks = [_local("a1", 48000), _local("a2", 48000)]
+        playback_queue.queue.original = [dict(t) for t in playback_queue.queue.tracks]
+        playback_queue.queue.index = 0
+        playback_queue.queue.mode = "native_mpv"
 
         await main.on_player_state_change(
             _ended_snapshot(), event_commit_id=COMMIT_A
@@ -437,16 +441,16 @@ class StaleEndfileOwnershipTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(self._request_targets(), [],
                          "native MPV owns playlist boundaries; no app advance")
-        self.assertEqual(main.playback_queue_index, 0)
+        self.assertEqual(playback_queue.queue.index, 0)
 
     # -- H. Loop / Shuffle ---------------------------------------------------------
 
     async def test_current_eof_loop_wrap_still_works(self):
         self._install()
-        main.playback_queue = [_local("a1", 44100), _local("a2", 96000)]
-        main.playback_queue_original = [dict(t) for t in main.playback_queue]
-        main.playback_queue_index = 1
-        main.playback_queue_loop = True
+        playback_queue.queue.tracks = [_local("a1", 44100), _local("a2", 96000)]
+        playback_queue.queue.original = [dict(t) for t in playback_queue.queue.tracks]
+        playback_queue.queue.index = 1
+        playback_queue.queue.loop = True
 
         await main.on_player_state_change(
             _ended_snapshot(), event_commit_id=COMMIT_A
@@ -454,15 +458,15 @@ class StaleEndfileOwnershipTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(self._request_targets(), ["a1"],
                          "current EOF wraps a looped queue")
-        self.assertEqual(main.playback_queue_index, 0)
+        self.assertEqual(playback_queue.queue.index, 0)
 
     async def test_current_eof_shuffle_wrap_still_works(self):
         self._install()
-        main.playback_queue = [_local("a1", 44100), _local("a2", 96000)]
-        main.playback_queue_original = [dict(t) for t in main.playback_queue]
-        main.playback_queue_index = 1
-        main.playback_queue_shuffle = True
-        main.playback_queue_loop = True
+        playback_queue.queue.tracks = [_local("a1", 44100), _local("a2", 96000)]
+        playback_queue.queue.original = [dict(t) for t in playback_queue.queue.tracks]
+        playback_queue.queue.index = 1
+        playback_queue.queue.shuffle = True
+        playback_queue.queue.loop = True
 
         await main.on_player_state_change(
             _ended_snapshot(), event_commit_id=COMMIT_A
@@ -473,19 +477,19 @@ class StaleEndfileOwnershipTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self._request_targets()), 1,
                          "current EOF reshuffles the looped queue once")
         self.assertEqual(self._request_targets(), ["a1"])
-        self.assertEqual([t.get("id") for t in main.playback_queue], ["a2", "a1"])
-        self.assertEqual(main.playback_queue_index, 1)
+        self.assertEqual([t.get("id") for t in playback_queue.queue.tracks], ["a2", "a1"])
+        self.assertEqual(playback_queue.queue.index, 1)
 
     async def test_stale_eof_shuffle_wrap_is_noop(self):
         self._install()
-        candidate = main._cleared_queue_candidate(_local("b1", 96000))
+        candidate = playback_queue.cleared_queue_candidate(_local("b1", 96000))
         candidate.queue = [_local("b1", 96000), _local("b2", 96000)]
         candidate.original = [dict(t) for t in candidate.queue]
         candidate.index = 1
         candidate.mode = "app_replace"
         candidate.loop = True
         candidate.shuffle = True
-        main._commit_queue_state(candidate)
+        playback_queue.queue.commit(candidate)
         main._commit_coordinated_track(
             candidate.queue[1], source="local", commit_token=COMMIT_B
         )
@@ -495,7 +499,7 @@ class StaleEndfileOwnershipTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(self._request_targets(), [])
-        self.assertEqual(main.playback_queue_index, 1)
+        self.assertEqual(playback_queue.queue.index, 1)
 
     async def test_spotify_play_publishes_token_before_state_read(self):
         self._install()
@@ -535,7 +539,7 @@ class StaleEndfileOwnershipTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.gather(play_task, eof_task)
 
         self.assertNotIn("a2", self._request_targets())
-        self.assertEqual(main.playback_queue_index, 0)
+        self.assertEqual(playback_queue.queue.index, 0)
 
     async def test_spotify_toggle_play_publishes_token_before_state_read(self):
         self._install()
@@ -579,11 +583,11 @@ class StaleEndfileOwnershipTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.gather(toggle_task, eof_task)
 
         self.assertNotIn("a2", self._request_targets())
-        self.assertEqual(main.playback_queue_index, 0)
+        self.assertEqual(playback_queue.queue.index, 0)
 
     async def test_single_track_loop_replay_publishes_new_instance_token(self):
         self._install()
-        main.single_track_loop = True
+        playback_queue.queue.single_track_loop = True
         replay_requests = []
 
         async def replay_transition(request):

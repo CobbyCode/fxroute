@@ -11,7 +11,9 @@ from unittest.mock import AsyncMock, Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import playback_queue
 import main
+from playback_queue_test_support import queue_state, restore_queue_state
 from playback_transition_test_support import make_transition_runtime
 from playback_transition import TransitionRequest
 
@@ -117,27 +119,32 @@ class TransportContractTests(unittest.IsolatedAsyncioTestCase):
             (main.api_spotify_next, "spotify_next", {"status": "Playing", "title": "next"}),
             (main.api_spotify_previous, "spotify_previous", {"status": "Playing", "title": "previous"}),
         )
-        for endpoint, action, response in actions:
-            with self.subTest(action=action):
-                transport = AsyncMock(return_value=response)
-                with patch.object(main, "player_instance", player), patch.object(
-                    main, "current_track_info", local_track
-                ), patch.object(main, "playback_queue", queue), patch.object(
-                    main, action, transport
-                ), patch.object(main, "_run_coordinated_transition", coordinator), patch.object(
-                    main, "broadcast_spotify_state", broadcast
-                ):
-                    before_track = dict(main.current_track_info)
-                    before_queue = list(main.playback_queue)
-                    await endpoint()
-                    after_track = dict(main.current_track_info)
-                    after_queue = list(main.playback_queue)
+        saved_queue = queue_state()
+        try:
+            playback_queue.queue.tracks = [dict(item) for item in queue]
+            for endpoint, action, response in actions:
+                with self.subTest(action=action):
+                    transport = AsyncMock(return_value=response)
+                    with patch.object(main, "player_instance", player), patch.object(
+                        main, "current_track_info", local_track
+                    ), patch.object(
+                        main, action, transport
+                    ), patch.object(main, "_run_coordinated_transition", coordinator), patch.object(
+                        main, "broadcast_spotify_state", broadcast
+                    ):
+                        before_track = dict(main.current_track_info)
+                        before_queue = [dict(item) for item in playback_queue.queue.tracks]
+                        await endpoint()
+                        after_track = dict(main.current_track_info)
+                        after_queue = [dict(item) for item in playback_queue.queue.tracks]
 
-                transport.assert_awaited_once()
-                self.assertEqual(after_track, before_track)
-                self.assertEqual(after_queue, before_queue)
-                player.stop_playback.assert_not_called()
-        coordinator.assert_not_awaited()
+                    transport.assert_awaited_once()
+                    self.assertEqual(after_track, before_track)
+                    self.assertEqual(after_queue, before_queue)
+                    player.stop_playback.assert_not_called()
+            coordinator.assert_not_awaited()
+        finally:
+            restore_queue_state(saved_queue)
 
     async def test_spotify_toggle_playing_only_pauses_spotify(self):
         player = PlayerDouble()

@@ -21,7 +21,9 @@ from unittest.mock import AsyncMock, Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import playback_queue
 import main
+from playback_queue_test_support import queue_state, restore_queue_state
 from playback_transition_test_support import make_transition_runtime
 from playback_transition import TransitionRequest
 
@@ -91,31 +93,35 @@ class SpotifyHandoffFailureRestoreTests(unittest.IsolatedAsyncioTestCase):
         retry = {"source": "local", "url": "/music/retry.flac", "id": "retry"}
         queue = [dict(track), {"source": "local", "url": "/music/next.flac", "id": "next"}]
         mark_authoritative = Mock()
-        with patch.object(
-            main.FxrouteTransitionRuntime,
-            "_restore_committed_source_after_failed_spotify",
-            AsyncMock(return_value=True),
-        ), patch.object(main, "player_instance", player), patch.object(
-            main, "current_track_info", None
-        ), patch.object(main, "last_track_info", dict(retry)), patch.object(
-            main, "current_footer_owner", "spotify"
-        ), patch.object(main, "playback_queue", [dict(item) for item in queue]), patch.object(
-            main, "playback_queue_original", [dict(item) for item in queue]
-        ), patch.object(main, "playback_queue_index", 0), patch.object(
-            main, "playback_queue_mode", "app_replace"
-        ), patch.object(main, "_mark_player_state_authoritative", mark_authoritative):
-            await make_transition_runtime().abort_failed_transition(
-                spotify_request(),
-                snapshot_with(track, current_file="/music/old.flac"),
-                target_staged=False,
-            )
+        saved_queue = queue_state()
+        try:
+            playback_queue.queue.tracks = [dict(item) for item in queue]
+            playback_queue.queue.original = [dict(item) for item in queue]
+            playback_queue.queue.index = 0
+            playback_queue.queue.mode = "app_replace"
+            with patch.object(
+                main.FxrouteTransitionRuntime,
+                "_restore_committed_source_after_failed_spotify",
+                AsyncMock(return_value=True),
+            ), patch.object(main, "player_instance", player), patch.object(
+                main, "current_track_info", None
+            ), patch.object(main, "last_track_info", dict(retry)), patch.object(
+                main, "current_footer_owner", "spotify"
+            ), patch.object(main, "_mark_player_state_authoritative", mark_authoritative):
+                await make_transition_runtime().abort_failed_transition(
+                    spotify_request(),
+                    snapshot_with(track, current_file="/music/old.flac"),
+                    target_staged=False,
+                )
 
-            self.assertEqual(main.current_track_info, track)
-            self.assertEqual(main.current_footer_owner, "local")
-            self.assertEqual(main.last_track_info, retry)
-            self.assertEqual(main.playback_queue, queue)
-            self.assertEqual(main.playback_queue_index, 0)
-            self.assertEqual(main.playback_queue_mode, "app_replace")
+                self.assertEqual(main.current_track_info, track)
+                self.assertEqual(main.current_footer_owner, "local")
+                self.assertEqual(main.last_track_info, retry)
+                self.assertEqual(playback_queue.queue.tracks, queue)
+                self.assertEqual(playback_queue.queue.index, 0)
+                self.assertEqual(playback_queue.queue.mode, "app_replace")
+        finally:
+            restore_queue_state(saved_queue)
 
         mark_authoritative.assert_called_once()
 

@@ -28,7 +28,9 @@ from unittest.mock import AsyncMock, Mock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import playback_queue
 import main
+from playback_queue_test_support import queue_state, restore_queue_state
 from playback_transition_test_support import make_transition_runtime
 from playback_transition import (
     PlaybackTransitionCoordinator,
@@ -749,10 +751,12 @@ class NativeQueueRestoreTests(RestoreTestBase):
     """A committed native MPV queue is rebuilt before the restore is confirmed."""
 
     def _queue_state(self):
+        # A committed native queue is homogeneous (validated by the queue
+        # owner at commit time), so every entry carries its sample rate.
         queue = [
-            {"source": "local", "url": "/music/a.flac", "id": "a"},
-            {"source": "local", "url": "/music/b.flac", "id": "b"},
-            {"source": "local", "url": "/music/c.flac", "id": "c"},
+            {"source": "local", "url": "/music/a.flac", "id": "a", "sample_rate_hz": 44100},
+            {"source": "local", "url": "/music/b.flac", "id": "b", "sample_rate_hz": 44100},
+            {"source": "local", "url": "/music/c.flac", "id": "c", "sample_rate_hz": 44100},
         ]
         return queue
 
@@ -760,18 +764,23 @@ class NativeQueueRestoreTests(RestoreTestBase):
         queue = self._queue_state()
         runtime = make_transition_runtime()
         recorder = StageRecorder(runtime)
-        with patch.object(main, "current_track_info", None), patch.object(
-            main, "current_footer_owner", "spotify"
-        ), patch.object(main, "_mark_player_state_authoritative"), patch.object(
-            main, "playback_queue", [dict(item) for item in queue]
-        ), patch.object(main, "playback_queue_index", 1), patch.object(
-            main, "playback_queue_mode", "native_mpv"
-        ), patch.object(main, "playback_queue_loop", True), patch.object(
-            main, "playback_queue_shuffle", False
-        ), patch.object(main, "single_track_loop", False):
-            restored = await _abort(runtime, local_snapshot())
-            self.assertTrue(restored)
-            self.assertEqual(main.playback_queue_mode, "native_mpv")
+        saved_queue = queue_state()
+        try:
+            playback_queue.queue.tracks = [dict(item) for item in queue]
+            playback_queue.queue.original = [dict(item) for item in queue]
+            playback_queue.queue.index = 1
+            playback_queue.queue.mode = "native_mpv"
+            playback_queue.queue.loop = True
+            playback_queue.queue.shuffle = False
+            playback_queue.queue.single_track_loop = False
+            with patch.object(main, "current_track_info", None), patch.object(
+                main, "current_footer_owner", "spotify"
+            ), patch.object(main, "_mark_player_state_authoritative"):
+                restored = await _abort(runtime, local_snapshot())
+                self.assertTrue(restored)
+                self.assertEqual(playback_queue.queue.mode, "native_mpv")
+        finally:
+            restore_queue_state(saved_queue)
 
         prepare_request = recorder.requests["prepare_target_source"]
         self.assertEqual(len(prepare_request.native_queue), 3)
@@ -785,22 +794,27 @@ class NativeQueueRestoreTests(RestoreTestBase):
         queue = self._queue_state()
         runtime = make_transition_runtime()
         recorder = StageRecorder(runtime, fail_stage="verify_transition_graph")
-        with patch.object(main, "current_track_info", None), patch.object(
-            main, "current_footer_owner", "spotify"
-        ), patch.object(main, "_mark_player_state_authoritative"), patch.object(
-            main, "playback_queue", [dict(item) for item in queue]
-        ), patch.object(main, "playback_queue_index", 1), patch.object(
-            main, "playback_queue_mode", "native_mpv"
-        ), patch.object(main, "playback_queue_loop", False), patch.object(
-            main, "playback_queue_shuffle", False
-        ), patch.object(main, "single_track_loop", False), patch.object(
-            main, "_reduce_native_mpv_playlist_to_current"
-        ), patch.object(main, "_reset_mpv_loop_state"):
-            restored = await _abort(runtime, local_snapshot())
-            self.assertIsNone(restored)
-            self.assertEqual(main.playback_queue_mode, "app_replace")
-            main._reduce_native_mpv_playlist_to_current.assert_called_once()
-            main._reset_mpv_loop_state.assert_called_once()
+        saved_queue = queue_state()
+        try:
+            playback_queue.queue.tracks = [dict(item) for item in queue]
+            playback_queue.queue.original = [dict(item) for item in queue]
+            playback_queue.queue.index = 1
+            playback_queue.queue.mode = "native_mpv"
+            playback_queue.queue.loop = False
+            playback_queue.queue.shuffle = False
+            playback_queue.queue.single_track_loop = False
+            with patch.object(main, "current_track_info", None), patch.object(
+                main, "current_footer_owner", "spotify"
+            ), patch.object(main, "_mark_player_state_authoritative"), patch.object(
+                playback_queue.queue, "reduce_native_playlist_to_current"
+            ), patch.object(playback_queue.queue, "reset_mpv_loop_state"):
+                restored = await _abort(runtime, local_snapshot())
+                self.assertIsNone(restored)
+                self.assertEqual(playback_queue.queue.mode, "app_replace")
+                playback_queue.queue.reduce_native_playlist_to_current.assert_called_once()
+                playback_queue.queue.reset_mpv_loop_state.assert_called_once()
+        finally:
+            restore_queue_state(saved_queue)
 
 
 class CoordinatorGateRestoreTests(unittest.IsolatedAsyncioTestCase):

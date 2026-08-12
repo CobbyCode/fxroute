@@ -10,7 +10,7 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SOURCES = {
     file_name: (ROOT / file_name).read_text()
-    for file_name in ("main.py", "measurement_session.py")
+    for file_name in ("main.py", "playback_queue.py", "measurement_session.py")
 }
 TREES = {
     file_name: ast.parse(source)
@@ -38,14 +38,19 @@ class OwnershipStructureTests(unittest.TestCase):
         for name in (
             "play_track",
             "toggle_playback",
-            "_load_queue_track",
+            "load_track",
             "api_spotify_play",
             "api_spotify_toggle",
         ):
             body = function_source(name)
             self.assertNotIn("_prearm_known_local_samplerate", body, name)
             self.assertNotIn("_prearm_spotify_samplerate", body, name)
-            self.assertIn("_run_coordinated_transition", body, name)
+            if name == "load_track":
+                # The queue module reaches the Coordinator exclusively through
+                # the injected run_transition boundary.
+                self.assertIn("run_transition", body, name)
+            else:
+                self.assertIn("_run_coordinated_transition", body, name)
 
     def test_same_source_transport_paths_do_not_enter_coordinator_or_mutate_graph(self):
         forbidden = (

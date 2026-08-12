@@ -30,6 +30,7 @@ from urllib.parse import unquote
 
 import samplerate
 import samplerate_orchestration
+from playback_queue import PlaybackQueue
 from playback_transition import TransitionRequest, TransitionRuntime
 from samplerate import (
     OUTPUT_MODE_STEREO,
@@ -135,12 +136,7 @@ class PlaybackRuntimeDependencies:
     get_playback_intent_generation: Callable[[], int]
     get_transition_epoch: Callable[[], int]
     set_footer_owner: Callable[[str], None]
-    get_queue_mode: Callable[[], str]
-    set_queue_mode: Callable[[str], None]
-    get_queue: Callable[[], list]
-    get_queue_index: Callable[[], int]
-    get_queue_loop: Callable[[], bool]
-    get_single_track_loop: Callable[[], bool]
+    queue: Callable[[], PlaybackQueue]
 
     # Player / transport primitives (main.py)
     player_is_running: Callable[..., bool]
@@ -149,8 +145,6 @@ class PlaybackRuntimeDependencies:
     wait_for_player_audio_samplerate: Callable[..., Awaitable[Any]]
     get_player_audio_samplerate: Callable[[], int | None]
     wait_for_radio_live_rate_after_load: Callable[..., Awaitable[Any]]
-    reduce_native_mpv_playlist_to_current: Callable[[], None]
-    reset_mpv_loop_state: Callable[[], None]
     wait_for_pipewire_mpv_release: Callable[..., Awaitable[bool]]
     wait_for_pipewire_spotify_release: Callable[..., Awaitable[bool]]
     wait_for_spotify_sink_input_samplerate: Callable[..., Awaitable[Any]]
@@ -438,23 +432,11 @@ class FxrouteTransitionRuntime(TransitionRuntime):
                     "Failed to stop staged MPV target during transition abort",
                     exc_info=True,
                 )
-            if self._deps.get_queue_mode() == "native_mpv":
-                try:
-                    # MPV may hold a partially staged replacement playlist
-                    # (or the committed playlist was already replaced by the
-                    # staging).  Trim the transport to the current file.
-                    self._deps.reduce_native_mpv_playlist_to_current()
-                    self._deps.reset_mpv_loop_state()
-                except Exception:
-                    logger.warning(
-                        "Failed to trim native playlist during transition abort",
-                        exc_info=True,
-                    )
-                # After a staged failure the retained committed queue can no
-                # longer be trusted as a complete MPV-native playlist, even
-                # when the transport cleanup itself failed.  Normalize it to
-                # app-owned navigation so the queue data stays usable.
-                self._deps.set_queue_mode("app_replace")
+            # After a staged failure the retained committed queue can no
+            # longer be trusted as a complete MPV-native playlist, even
+            # when the transport cleanup itself failed.  Normalize it to
+            # app-owned navigation so the queue data stays usable.
+            self._deps.queue().normalize_after_native_loss()
 
         self._deps.set_current_track_info(None)
         self._deps.set_footer_owner("local")
@@ -488,9 +470,12 @@ class FxrouteTransitionRuntime(TransitionRuntime):
         target_url = str(track.get("url") or previous_state.get("current_file") or "")
         if source not in {"local", "radio"} or not target_url:
             return False
-        native_committed = bool(
-            self._deps.get_queue_mode() == "native_mpv" and len(self._deps.get_queue()) > 1
-        )
+        # The committed native-queue request fields are the single canonical
+        # source for both the restore decision and the carried playlist: a
+        # committed native queue was already validated for homogeneity at
+        # commit time, so the canonical gate is equivalent here.
+        native_fields = self._deps.queue().native_request_fields()
+        native_committed = bool(native_fields)
         # The authoritative restore rate comes from the previously committed
         # snapshot, not from the failed request: preferred positive
         # active_rate (the actually committed hardware rate), then positive
@@ -549,13 +534,11 @@ class FxrouteTransitionRuntime(TransitionRuntime):
             reload_source=True,
             restore_position=restore_position,
             native_queue=(
-                tuple(dict(item) for item in self._deps.get_queue()) if native_committed else None
+                tuple(native_fields["native_queue"]) if native_committed else None
             ),
-            native_queue_index=self._deps.get_queue_index() if native_committed else None,
+            native_queue_index=native_fields.get("native_queue_index") if native_committed else None,
             native_queue_jump=None,
-            native_queue_loop=(
-                bool(self._deps.get_queue_loop() or self._deps.get_single_track_loop()) if native_committed else False
-            ),
+            native_queue_loop=bool(native_fields.get("native_queue_loop")) if native_committed else False,
             detail="spotify-abort-restore",
         )
         restored = False
@@ -663,15 +646,7 @@ class FxrouteTransitionRuntime(TransitionRuntime):
             # The native playlist could not be reconstructed; normalize to
             # the existing app-owned navigation so no later jump targets a
             # phantom MPV playlist (same contract as the staged abort path).
-            try:
-                self._deps.reduce_native_mpv_playlist_to_current()
-                self._deps.reset_mpv_loop_state()
-            except Exception:
-                logger.warning(
-                    "Failed to normalize native queue after failed Spotify restore",
-                    exc_info=True,
-                )
-            self._deps.set_queue_mode("app_replace")
+            self._deps.queue().normalize_after_native_loss()
         return restored
 
     async def validate_measurement_restore_intent(

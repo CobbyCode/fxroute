@@ -15,13 +15,13 @@ import asyncio
 import hashlib
 import inspect
 import math
-import random
 import subprocess
 import tempfile
 import zipfile
+import playback_queue
 import samplerate_orchestration
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable, List, Mapping, Optional
 from urllib.parse import quote, unquote, urlparse
@@ -1133,14 +1133,11 @@ radio_reconnect_active_since = 0.0
 radio_metadata_service = RadioMetadataService()
 samplerate_drift_signature: tuple[Any, ...] | None = None
 samplerate_drift_readbacks = 0
-playback_queue = []
-playback_queue_original = []
-playback_queue_index = -1
-playback_queue_mode = "app_replace"
+# queue_advancing ist ein Reentrancy-/Dispatch-Guard von
+# on_player_state_change und bewusst kein Queue-State: der Queue-Zustand
+# (Liste, Original-Reihenfolge, Index, Mode, Loop, Shuffle, Single-Track-Loop)
+# lebt ausschliesslich in playback_queue.PlaybackQueue.
 queue_advancing = False
-playback_queue_loop = False
-playback_queue_shuffle = False
-single_track_loop = False
 
 configure_library_api_runtime(LibraryApiRuntime(
     get_scanner=lambda: library_scanner,
@@ -1176,9 +1173,10 @@ def _set_runtime_current_footer_owner(value: str) -> None:
     current_footer_owner = value
 
 
-def _set_runtime_queue_mode(value: str) -> None:
-    global playback_queue_mode
-    playback_queue_mode = value
+def _set_runtime_track_context(current: dict, last: dict) -> None:
+    global current_track_info, last_track_info
+    current_track_info = current
+    last_track_info = last
 
 
 def make_playback_runtime_deps() -> PlaybackRuntimeDependencies:
@@ -1197,20 +1195,13 @@ def make_playback_runtime_deps() -> PlaybackRuntimeDependencies:
         get_playback_intent_generation=lambda: playback_intent_generation,
         get_transition_epoch=lambda: playback_transition_epoch,
         set_footer_owner=_set_runtime_current_footer_owner,
-        get_queue_mode=lambda: playback_queue_mode,
-        set_queue_mode=_set_runtime_queue_mode,
-        get_queue=lambda: playback_queue,
-        get_queue_index=lambda: playback_queue_index,
-        get_queue_loop=lambda: playback_queue_loop,
-        get_single_track_loop=lambda: single_track_loop,
+        queue=lambda: playback_queue.queue,
         player_is_running=lambda *a, **k: _player_is_running(*a, **k),
         load_player_paused=lambda *a, **k: _load_player_paused(*a, **k),
         wait_for_player_current_file=lambda *a, **k: _wait_for_player_current_file(*a, **k),
         wait_for_player_audio_samplerate=lambda *a, **k: _wait_for_player_audio_samplerate(*a, **k),
         get_player_audio_samplerate=lambda *a, **k: _get_player_audio_samplerate(*a, **k),
         wait_for_radio_live_rate_after_load=lambda *a, **k: _wait_for_radio_live_rate_after_load(*a, **k),
-        reduce_native_mpv_playlist_to_current=lambda *a, **k: _reduce_native_mpv_playlist_to_current(*a, **k),
-        reset_mpv_loop_state=lambda *a, **k: _reset_mpv_loop_state(*a, **k),
         wait_for_pipewire_mpv_release=lambda *a, **k: _wait_for_pipewire_mpv_release(*a, **k),
         wait_for_pipewire_spotify_release=lambda *a, **k: _wait_for_pipewire_spotify_release(*a, **k),
         wait_for_spotify_sink_input_samplerate=lambda *a, **k: _wait_for_spotify_sink_input_samplerate(*a, **k),
@@ -1248,6 +1239,22 @@ def make_playback_runtime_deps() -> PlaybackRuntimeDependencies:
     )
 
 
+playback_queue.configure_playback_queue(playback_queue.PlaybackQueueDependencies(
+    player=lambda: player_instance,
+    run_transition=lambda *a, **k: _run_coordinated_transition(*a, **k),
+    commit_coordinated_track=lambda *a, **k: _commit_coordinated_track(*a, **k),
+    get_current_track_info=lambda: current_track_info,
+    set_track_context=_set_runtime_track_context,
+    transition_is_active=lambda: _playback_transition_is_active(),
+    player_is_running=lambda *a, **k: _player_is_running(*a, **k),
+    wait_for_player_current_file=lambda *a, **k: _wait_for_player_current_file(*a, **k),
+    coordinator_target_rate=lambda *a, **k: _coordinator_target_rate(*a, **k),
+    coordinator_rate_change=lambda *a, **k: _coordinator_rate_change(*a, **k),
+    sample_rate_policy_is_auto=lambda: _sample_rate_policy_is_auto(),
+    transition_error_http=lambda exc: _transition_error_http(exc),
+    get_tracks=lambda: library_scanner.get_tracks(),
+    build_playback_payload=lambda *a, **k: build_playback_payload(*a, **k),
+))
 
 
 def _begin_playback_transition_attempt() -> int:
@@ -1404,7 +1411,7 @@ async def _transition_sample_rate_policy(policy: Mapping[str, Any], *, detail: s
         and context.get("target_url")
     )
 
-    native_queue_fields = _native_queue_request_fields() if source == "local" else {}
+    native_queue_fields = playback_queue.queue.native_request_fields() if source == "local" else {}
     await _run_coordinated_transition(TransitionRequest(
         operation="sample-rate-policy",
         source=source,
@@ -1749,7 +1756,7 @@ async def _request_coordinated_recovery(
     recovery_track = dict(track)
     if source == "spotify" and observed_url:
         recovery_track.setdefault("url", observed_url)
-    native_queue_fields = _native_queue_request_fields() if source == "local" else {}
+    native_queue_fields = playback_queue.queue.native_request_fields() if source == "local" else {}
     request = TransitionRequest(
         operation=operation,
         source=source,
@@ -2061,114 +2068,6 @@ manager = ConnectionManager()
 def _is_safe_relative_zip_path(name: str) -> Optional[Path]:
     """Thin wrapper: ZIP traversal protection lives in zip_album (REFACTOR-008)."""
     return zip_album.is_safe_relative_zip_path(name)
-
-
-def _native_mpv_playlist_is_effectively_current_only() -> bool:
-    """Confirm that MPV already has no queued entry beyond the current file."""
-    if not _player_is_running():
-        return False
-    state = dict(getattr(player_instance, "state", {}) or {})
-    if not state.get("current_file"):
-        return False
-    get_property = getattr(player_instance, "get_property", None)
-    if not callable(get_property):
-        return False
-    try:
-        playlist_count = get_property("playlist-count")
-    except Exception:
-        return False
-    return isinstance(playlist_count, int) and playlist_count <= 1
-
-
-def _native_mpv_playlist_error_is_stale(exc: Exception) -> bool:
-    """Recognize only errors caused by an already-gone playlist entry."""
-    message = str(exc).lower()
-    command_error = "playlist-remove" in message or "playlist-clear" in message
-    stale_state = any(
-        marker in message
-        for marker in (
-            "already gone",
-            "already removed",
-            "playlist entry",
-            "playlist index",
-            "no such entry",
-            "out of range",
-            "is empty",
-        )
-    )
-    return command_error and stale_state
-
-
-def _reduce_native_mpv_playlist_to_current() -> None:
-    """Keep MPV's current file and atomically drop all queued entries.
-
-    ``playlist-clear`` is explicitly idempotent with respect to the currently
-    played entry.  The former index loop was vulnerable to a concurrent MPV
-    playlist change: a stale ``playlist-remove`` then aborted ``/api/play``
-    before the Coordinator could receive the new request.
-    """
-    if not _player_is_running():
-        return
-    clear_playlist = getattr(player_instance, "clear_playlist", None)
-    if not callable(clear_playlist):
-        # Keep small adapters used by maintenance/test contexts compatible;
-        # production MPVWrapper exposes clear_playlist explicitly.
-        send_command = getattr(player_instance, "_send_command", None)
-        if callable(send_command):
-            clear_playlist = lambda: send_command("playlist-clear")
-    if not callable(clear_playlist):
-        raise RuntimeError("MPV adapter cannot clear its native playlist")
-    try:
-        clear_playlist()
-    except Exception as exc:
-        # A shortened playlist can race the clear command.  Only suppress this
-        # narrow stale-entry case after a read-only proof that MPV is already
-        # reduced to its current file; genuine IPC failures remain fatal.
-        if _native_mpv_playlist_error_is_stale(exc) and _native_mpv_playlist_is_effectively_current_only():
-            logger.info("Native MPV playlist was already reduced while clearing stale entries: %s", exc)
-            return
-        raise
-
-
-def _clear_playback_queue():
-    global playback_queue, playback_queue_original, playback_queue_index, playback_queue_mode, playback_queue_loop, playback_queue_shuffle, single_track_loop
-    was_native = playback_queue_mode == "native_mpv"
-    if was_native:
-        _reduce_native_mpv_playlist_to_current()
-        _reset_mpv_loop_state()
-    playback_queue = []
-    playback_queue_original = []
-    playback_queue_index = -1
-    playback_queue_mode = "app_replace"
-    playback_queue_loop = False
-    playback_queue_shuffle = False
-    single_track_loop = False
-
-
-def _queue_payload() -> dict:
-    return {
-        "active": len(playback_queue) > 1,
-        "index": playback_queue_index,
-        "count": len(playback_queue),
-        "mode": playback_queue_mode,
-        "tracks": [dict(item) for item in playback_queue],
-        "loop": playback_queue_loop or single_track_loop,
-        "shuffle": playback_queue_shuffle,
-    }
-
-
-def _reset_mpv_loop_state() -> None:
-    if not player_instance or not player_instance._running:
-        return
-    set_loop_playlist = getattr(player_instance, "set_loop_playlist", None)
-    if callable(set_loop_playlist):
-        set_loop_playlist(False)
-    set_loop_file = getattr(player_instance, "set_loop_file", None)
-    if callable(set_loop_file):
-        set_loop_file(False)
-    set_shuffle = getattr(player_instance, "set_shuffle", None)
-    if callable(set_shuffle):
-        set_shuffle(False)
 
 
 def _current_track_matches(expected_track: dict | None) -> bool:
@@ -3976,562 +3875,6 @@ async def _sync_easyeffects_preset_for_playback_samplerate(
 
 
 
-def _can_use_native_local_queue(tracks: list[dict]) -> bool:
-    """Return whether MPV can own one already-safe homogeneous playlist."""
-    if len(tracks) <= 1:
-        return False
-    rates = []
-    for track in tracks:
-        if track.get("source", "local") != "local" or not str(track.get("url") or "").strip():
-            return False
-        rate = track.get("sample_rate_hz")
-        if not isinstance(rate, int) or rate <= 0:
-            return False
-        rates.append(rate)
-    return len(set(rates)) == 1
-
-
-@dataclass
-class _QueueCandidate:
-    """Prepared queue state that is not yet committed to the globals.
-
-    ``/api/play`` builds one of these, hands the immutable snapshot to the
-    Coordinator, and publishes it only after the playback transition
-    committed.  The committed globals stay untouched until then.
-    """
-
-    queue: list
-    original: list
-    index: int
-    mode: str
-    loop: bool
-    shuffle: bool
-    single_track_loop: bool
-    track: dict
-
-
-def _cleared_queue_candidate(track: dict | None = None) -> _QueueCandidate:
-    """Candidate for a play request that intentionally replaces any queue."""
-    return _QueueCandidate(
-        queue=[],
-        original=[],
-        index=-1,
-        mode="app_replace",
-        loop=False,
-        shuffle=False,
-        single_track_loop=False,
-        track=dict(track) if track else {},
-    )
-
-
-def _commit_queue_state(candidate: _QueueCandidate) -> None:
-    """Publish a prepared queue candidate to the committed globals."""
-    global playback_queue, playback_queue_original, playback_queue_index
-    global playback_queue_mode
-    global playback_queue_loop, playback_queue_shuffle, single_track_loop
-    playback_queue = [dict(item) for item in candidate.queue]
-    playback_queue_original = [dict(item) for item in candidate.original]
-    playback_queue_index = candidate.index
-    playback_queue_mode = candidate.mode
-    playback_queue_loop = candidate.loop
-    playback_queue_shuffle = candidate.shuffle
-    single_track_loop = candidate.single_track_loop
-
-
-def _native_queue_request_fields(queue_state: _QueueCandidate | None = None) -> dict[str, Any]:
-    """Snapshot native-queue metadata for a Coordinator request.
-
-    Reads the committed globals by default; callers staging a not-yet-
-    committed queue state pass that candidate instead.
-    """
-    if queue_state is None:
-        mode = playback_queue_mode
-        queue = playback_queue
-        index = playback_queue_index
-        loop = playback_queue_loop
-    else:
-        mode = queue_state.mode
-        queue = queue_state.queue
-        index = queue_state.index
-        loop = queue_state.loop
-    if mode != "native_mpv" or not _can_use_native_local_queue(queue):
-        return {}
-    start_index = index if index >= 0 else 0
-    return {
-        "native_queue": tuple(dict(item) for item in queue),
-        "native_queue_index": start_index,
-        "native_queue_loop": bool(loop),
-        # Queue order is already concrete in the prepared state.  Keep the
-        # field explicit for request compatibility, but never ask MPV to
-        # reshuffle it.
-        "native_queue_shuffle": False,
-    }
-
-
-def _shuffled_around_current(tracks: list[dict], current_track: dict | None) -> list[dict]:
-    """Return dict copies with the current track first and the rest shuffled.
-
-    The current track is identified by its id so duplicate copies of the same
-    track stay together at the front.  With ``current_track`` omitted, only
-    the shuffled copies are returned.
-    """
-    current = dict(current_track) if current_track is not None else None
-    remaining = [
-        dict(track)
-        for track in tracks
-        if current is None or track.get("id") != current.get("id")
-    ]
-    random.shuffle(remaining)
-    if current is None:
-        return remaining
-    return [current] + remaining
-
-
-def _prepare_local_queue(track_id: str, queue_track_ids: Optional[list[str]] = None, shuffle: bool = False, loop: bool = False, *, reshuffle: bool = True, tracks: Optional[list] = None) -> _QueueCandidate:
-    """Build the requested queue as an uncommitted candidate.
-
-    Metadata-only preparation: the committed queue globals are untouched
-    until ``_commit_queue_state`` publishes the candidate after a successful
-    playback transition.
-
-    ``tracks`` may be passed in from async callers that already offloaded
-    the scan-capable ``library_scanner.get_tracks()`` read to a worker.
-    """
-    if tracks is None:
-        tracks = library_scanner.get_tracks()
-    tracks_by_id = {track.id: track for track in tracks}
-
-    selected_ids = []
-    requested_ids = queue_track_ids if queue_track_ids else [track_id]
-    for candidate in requested_ids:
-        if candidate in tracks_by_id and candidate not in selected_ids:
-            selected_ids.append(candidate)
-    if track_id in tracks_by_id and track_id not in selected_ids:
-        selected_ids.insert(0, track_id)
-
-    ordered_tracks = [tracks_by_id[selected_id].to_dict() for selected_id in selected_ids]
-    if not ordered_tracks:
-        raise HTTPException(status_code=404, detail="Track not found")
-
-    original_tracks = [dict(track) for track in ordered_tracks]
-
-    if shuffle and reshuffle and len(ordered_tracks) > 1:
-        current_track = next((track for track in ordered_tracks if track.get("id") == track_id), ordered_tracks[0])
-        ordered_tracks = _shuffled_around_current(ordered_tracks, current_track)
-
-    queue = ordered_tracks if len(ordered_tracks) > 1 else []
-    original = original_tracks if len(original_tracks) > 1 else []
-    # A homogeneous local queue is safe to hand to MPV only after the
-    # Coordinator has committed the common rate/DSP/graph/gate state.  The
-    # request carries the immutable queue snapshot; the mode becomes visible
-    # as native only after that transition commits.
-    mode = "native_mpv" if _can_use_native_local_queue(ordered_tracks) else "app_replace"
-    if queue:
-        track_index = next(
-            (index for index, item in enumerate(queue) if item.get("id") == track_id),
-            0,
-        )
-        track = dict(queue[track_index])
-    else:
-        track_index = -1
-        track = dict(ordered_tracks[0])
-
-    return _QueueCandidate(
-        queue=queue,
-        original=original,
-        index=track_index,
-        mode=mode,
-        loop=bool(loop and len(ordered_tracks) > 1),
-        shuffle=bool(shuffle and len(ordered_tracks) > 1),
-        single_track_loop=bool(loop and len(ordered_tracks) == 1),
-        track=track,
-    )
-
-
-
-
-async def _load_queue_track(index: int, *, transition_reason: str = "queue navigation", queue_candidate: _QueueCandidate | None = None) -> bool:
-    """Navigate to ``index`` of the committed queue.
-
-    ``queue_candidate`` allows queue navigation that first replaces the
-    committed queue (manual shuffle wrap): the prepared queue is published
-    only after the transition committed, and failure keeps the old
-    order/index/track context intact.
-    """
-    global playback_queue_index
-    if queue_candidate is not None:
-        if index < 0 or index >= len(queue_candidate.queue):
-            return False
-        next_track = dict(queue_candidate.queue[index])
-        native_fields = {}
-        native_jump = False
-    else:
-        if len(playback_queue) <= 1 or index < 0 or index >= len(playback_queue):
-            return False
-        next_track = dict(playback_queue[index])
-        native_fields = _native_queue_request_fields()
-        native_jump = playback_queue_mode == "native_mpv"
-    target_url = str(next_track.get("url") or "")
-    if not target_url:
-        _clear_playback_queue()
-        return False
-    source = str(next_track.get("source") or "local")
-    target_rate = _coordinator_target_rate(source, next_track)
-    request = TransitionRequest(
-        operation="queue",
-        source=source,
-        target_rate=target_rate,
-        target_url=target_url,
-        target_track=next_track,
-        should_play=True,
-        rate_change=_coordinator_rate_change(target_rate),
-        reload_source=not native_jump,
-        detail=transition_reason,
-        **native_fields,
-        native_queue_jump=index if native_jump else None,
-    )
-    try:
-        result = await _run_coordinated_transition(request)
-    except PlaybackTransitionFailure as exc:
-        raise _transition_error_http(exc) from exc
-    if not getattr(result, "committed", False):
-        raise HTTPException(status_code=500, detail="Playback transition was not committed")
-    rate_updated = False
-    if _sample_rate_policy_is_auto() and source in {"local", "radio"} and isinstance(result.target_rate, int) and result.target_rate > 0:
-        next_track["sample_rate_hz"] = result.target_rate
-        rate_updated = True
-    if queue_candidate is not None:
-        _commit_queue_state(queue_candidate)
-    if rate_updated and 0 <= index < len(playback_queue):
-        playback_queue[index]["sample_rate_hz"] = result.target_rate
-    if queue_candidate is None:
-        playback_queue_index = index
-    _commit_coordinated_track(
-        next_track, source=source, commit_token=getattr(result, "transition_id", None)
-    )
-    return True
-
-
-async def _advance_playback_queue(*, transition_reason: str = "queue advance") -> str:
-    """Advance the committed queue.
-
-    Returns an explicit tri-state outcome instead of a plain bool so the
-    API can distinguish a successful terminal queue end from a navigation
-    that was not possible at all:
-
-    ``"advanced"``
-        Another queue track was committed successfully.
-    ``"ended"``
-        The terminal queue end state was committed successfully (the
-        queue is cleared, matching the auto-EOF end semantics).  The
-        queue mutation happened before this value is returned; the API
-        must represent it as a successful response, never as an error.
-    ``"unavailable"``
-        No navigation was possible and no authoritative queue state was
-        changed.
-    """
-    global playback_queue_index
-    if len(playback_queue) <= 1:
-        return "unavailable"
-    next_index = playback_queue_index + 1
-    if next_index >= len(playback_queue):
-        if playback_queue_mode == "native_mpv":
-            if playback_queue_loop:
-                next_index = 0
-            else:
-                return "unavailable"
-        else:
-            manual_shuffle_wrap = playback_queue_shuffle and transition_reason.startswith("manual queue next")
-            if playback_queue_loop or manual_shuffle_wrap:
-                if playback_queue_shuffle:
-                    current_index = playback_queue_index if 0 <= playback_queue_index < len(playback_queue) else 0
-                    current_track = dict(playback_queue[current_index])
-                    # Prepare the reshuffled wrap without touching the
-                    # committed queue: it is published only after the
-                    # navigation transition committed.
-                    shuffled = _shuffled_around_current(playback_queue, current_track)
-                    next_index = 1 if len(shuffled) > 1 else 0
-                    candidate = _QueueCandidate(
-                        queue=shuffled,
-                        original=[dict(track) for track in playback_queue_original],
-                        index=next_index,
-                        mode="app_replace",
-                        loop=playback_queue_loop,
-                        shuffle=True,
-                        single_track_loop=False,
-                        track=dict(shuffled[next_index]),
-                    )
-                    return (
-                        "advanced"
-                        if await _load_queue_track(
-                            next_index,
-                            transition_reason=transition_reason,
-                            queue_candidate=candidate,
-                        )
-                        else "unavailable"
-                    )
-                else:
-                    next_index = 0
-            else:
-                _clear_playback_queue()
-                return "ended"
-    return (
-        "advanced"
-        if await _load_queue_track(next_index, transition_reason=transition_reason)
-        else "unavailable"
-    )
-
-
-async def _rewind_playback_queue(*, transition_reason: str = "queue rewind") -> bool:
-    if len(playback_queue) <= 1:
-        return False
-    prev_index = playback_queue_index - 1
-    if prev_index < 0:
-        return False
-    return await _load_queue_track(prev_index, transition_reason=transition_reason)
-
-
-async def _reorder_native_mpv_playlist(
-    target_queue: list[dict],
-    target_index: int,
-    enabled: bool,
-    was_paused: bool,
-) -> bool:
-    """Reorder MPV without committing app state until every IPC call succeeds."""
-    global playback_queue, playback_queue_original, playback_queue_index
-    global playback_queue_mode, playback_queue_loop, playback_queue_shuffle, single_track_loop
-    clear_playlist = getattr(player_instance, "clear_playlist", None)
-    loadfile = getattr(player_instance, "loadfile", None)
-    set_playlist_pos = getattr(player_instance, "set_playlist_pos", None)
-    move_playlist_entry = getattr(player_instance, "move_playlist_entry", None)
-    set_loop_playlist = getattr(player_instance, "set_loop_playlist", None)
-    if not all(callable(method) for method in (clear_playlist, loadfile, set_playlist_pos)):
-        return False
-
-    try:
-        current_url = str((player_instance.state if player_instance else {}).get("current_file") or "")
-        current_position = float((player_instance.state if player_instance else {}).get("position") or 0.0)
-        clear_playlist()
-        if not enabled and not callable(move_playlist_entry):
-            first_url = str(target_queue[0].get("url") or "")
-            if not first_url:
-                return False
-            loadfile(first_url, mode="replace", start_paused=True)
-        queue_tail = (
-            target_queue[1:]
-            if enabled or not callable(move_playlist_entry)
-            else target_queue[:target_index] + target_queue[target_index + 1:]
-        )
-        for track in queue_tail:
-            url = str(track.get("url") or "")
-            if not url:
-                raise RuntimeError("Native MPV queue contains an empty URL")
-            loadfile(url, mode="append")
-        if callable(set_loop_playlist):
-            set_loop_playlist(bool(playback_queue_loop))
-        if enabled:
-            set_playlist_pos(0)
-        elif callable(move_playlist_entry):
-            move_playlist_entry(0, target_index)
-            if current_url and not await _wait_for_player_current_file(current_url, timeout_ms=600):
-                raise RuntimeError("Native MPV current entry did not settle after playlist move")
-            if current_position > 0:
-                seek = getattr(player_instance, "seek", None)
-                if callable(seek):
-                    seek(current_position)
-        else:
-            set_playlist_pos(target_index)
-        if not enabled:
-            set_pause = getattr(player_instance, "set_pause", None)
-            if callable(set_pause):
-                set_pause(was_paused)
-        return True
-    except Exception:
-        logger.warning(
-            "Native queue reorder failed; reducing MPV to its current entry",
-            exc_info=True,
-        )
-        try:
-            _reduce_native_mpv_playlist_to_current()
-            _reset_mpv_loop_state()
-            # MPV is now intentionally current-entry-only, so discard the old
-            # committed queue rather than reporting an app/MPV mismatch.
-            playback_queue = []
-            playback_queue_original = []
-            playback_queue_index = -1
-            playback_queue_mode = "app_replace"
-            playback_queue_loop = False
-            playback_queue_shuffle = False
-            single_track_loop = False
-        except Exception:
-            logger.warning("Failed to normalize MPV after native queue reorder failure", exc_info=True)
-        raise
-
-
-async def _set_queue_shuffle(enabled: bool) -> bool:
-    global playback_queue, playback_queue_original, playback_queue_index
-    global playback_queue_shuffle, current_track_info, last_track_info
-    if _playback_transition_is_active():
-        raise HTTPException(status_code=409, detail="A playback transition is in progress")
-    if len(playback_queue) <= 1:
-        playback_queue_shuffle = False
-        return False
-    current_index = playback_queue_index if 0 <= playback_queue_index < len(playback_queue) else 0
-    current_track = dict(playback_queue[current_index])
-    current_track_id = current_track.get("id")
-    current_track_url = current_track.get("url")
-
-    if enabled:
-        target_queue = _shuffled_around_current(playback_queue, current_track)
-        target_index = 0
-    elif playback_queue_original:
-        target_queue = [dict(track) for track in playback_queue_original]
-        target_index = next(
-            (
-                index
-                for index, track in enumerate(target_queue)
-                if (
-                    current_track_id is not None
-                    and track.get("id") == current_track_id
-                )
-                or (
-                    current_track_id is None
-                    and current_track_url
-                    and track.get("url") == current_track_url
-                )
-            ),
-            min(current_index, len(target_queue) - 1),
-        )
-    else:
-        target_queue = [dict(track) for track in playback_queue]
-        target_index = current_index
-
-    if playback_queue_mode == "native_mpv":
-        # Shuffle ON keeps the current entry at position zero.  Rebuild the
-        # native playlist directly so changing order does not enter the full
-        # output-graph transition path.
-        player_state = player_instance.state if player_instance else {}
-        was_paused = bool(player_state.get("paused"))
-        if await _reorder_native_mpv_playlist(target_queue, target_index, enabled, was_paused):
-            playback_queue = target_queue
-            playback_queue_index = 0 if enabled else target_index
-            playback_queue_shuffle = bool(enabled)
-            current_track_info = dict(target_queue[playback_queue_index])
-            last_track_info = dict(target_queue[playback_queue_index])
-            return True
-
-    if playback_queue_mode == "native_mpv":
-        # Replacing a native playlist changes the source staging boundary and
-        # therefore belongs to the Coordinator.  Keep the old queue visible
-        # until this gated replacement commits successfully.
-        target_track = dict(target_queue[target_index])
-        target_url = str(target_track.get("url") or "")
-        if not target_url:
-            return False
-        player_state = player_instance.state if player_instance else {}
-        should_play = bool(
-            player_state.get("playing")
-            and not player_state.get("paused")
-            and not player_state.get("ended")
-        )
-        target_rate = _coordinator_target_rate("local", target_track)
-        try:
-            result = await _run_coordinated_transition(TransitionRequest(
-                operation="queue",
-                source="local",
-                target_rate=target_rate,
-                target_url=target_url,
-                target_track=target_track,
-                should_play=should_play,
-                rate_change=_coordinator_rate_change(target_rate),
-                reload_source=True,
-                detail="queue-shuffle-on" if enabled else "queue-shuffle-off",
-                native_queue=tuple(target_queue),
-                native_queue_index=target_index,
-                native_queue_loop=bool(playback_queue_loop),
-                native_queue_shuffle=False,
-            ))
-        except PlaybackTransitionFailure:
-            raise
-        if not getattr(result, "committed", False):
-            raise HTTPException(status_code=500, detail="Playback transition was not committed")
-
-        committed_rate = getattr(result, "target_rate", None)
-        if isinstance(committed_rate, int) and committed_rate > 0:
-            for track in target_queue:
-                track["sample_rate_hz"] = committed_rate
-        playback_queue = target_queue
-        playback_queue_index = target_index
-        playback_queue_shuffle = bool(enabled)
-        current_track_info = dict(target_queue[target_index])
-        last_track_info = dict(target_queue[target_index])
-        return True
-
-    playback_queue = target_queue
-    playback_queue_index = target_index
-    playback_queue_shuffle = bool(enabled)
-    return True
-
-
-def _set_queue_loop(enabled: bool) -> bool:
-    global playback_queue_loop, single_track_loop
-    has_local_track = bool(current_track_info and current_track_info.get("source") == "local")
-    if not has_local_track:
-        playback_queue_loop = False
-        single_track_loop = False
-        return False
-    if len(playback_queue) > 1:
-        playback_queue_loop = bool(enabled)
-        single_track_loop = False
-        if playback_queue_mode == "native_mpv" and _player_is_running():
-            set_loop_playlist = getattr(player_instance, "set_loop_playlist", None)
-            if callable(set_loop_playlist):
-                set_loop_playlist(playback_queue_loop)
-        return True
-    single_track_loop = bool(enabled)
-    playback_queue_loop = False
-    return True
-
-
-def _sync_active_local_queue_selection(queue_track_ids: Optional[list[str]] = None, shuffle: bool = False, loop: bool = False, *, tracks: Optional[list] = None) -> dict:
-    global current_track_info, last_track_info, playback_queue_mode
-    current_track = dict(current_track_info or {})
-    if current_track.get("source") != "local" or not current_track.get("id"):
-        raise HTTPException(status_code=409, detail="Local playback is not active")
-
-    player_state = player_instance.state if player_instance else {}
-    if not player_state.get("current_file") or player_state.get("ended"):
-        raise HTTPException(status_code=409, detail="Nothing is currently loaded to update")
-
-    # A queue-selection change must not leave MPV's old native future entries
-    # alive behind the new app-side queue metadata. Keep the current source,
-    # then explicitly return to app-owned queue navigation below.
-    if playback_queue_mode == "native_mpv":
-        _reduce_native_mpv_playlist_to_current()
-        _reset_mpv_loop_state()
-
-    candidate = _prepare_local_queue(
-        current_track["id"],
-        queue_track_ids,
-        shuffle=shuffle,
-        loop=loop,
-        reshuffle=False,
-        tracks=tracks,
-    )
-    _commit_queue_state(candidate)
-    track_info = candidate.track
-    current_track_info = track_info
-    last_track_info = track_info
-
-    if len(playback_queue) > 1:
-        playback_queue_mode = "app_replace"
-
-    if player_instance and player_instance._running:
-        _reset_mpv_loop_state()
-
-    return build_playback_payload(player_state)
-
-
 def ensure_local_source_volume() -> None:
     global player_instance
     if not player_instance or not player_instance._running:
@@ -4679,7 +4022,7 @@ def build_playback_payload(
         if not cur_file or playback_state.get("ended"):
             _effective_track = None
     playback_state["current_track"] = _playback_track_with_artwork_fields(_effective_track)
-    playback_state["queue"] = _queue_payload()
+    playback_state["queue"] = playback_queue.queue.payload()
     playback_state["footer_owner"] = _get_authoritative_footer_owner(playback_state=playback_state)
 
     live_title = None
@@ -5049,7 +4392,7 @@ def _dispatch_player_state_change(state: dict):
 
 
 async def on_player_state_change(state: dict, event_commit_id: str | None = None):
-    global queue_advancing, playback_queue_index, current_track_info, last_track_info, latest_player_state_seq_seen
+    global queue_advancing, current_track_info, last_track_info, latest_player_state_seq_seen
     callback_generation = _capture_playback_transition_epoch()
     seq = state.get("_seq")
     if isinstance(seq, int):
@@ -5078,45 +4421,21 @@ async def on_player_state_change(state: dict, event_commit_id: str | None = None
             return
 
     # Once a homogeneous queue has been committed, MPV owns natural playlist
-    # boundaries.  A path/playlist-pos event only updates application context;
-    # it must never start another rate, DSP, graph or gate transition.
-    if (
-        playback_queue_mode == "native_mpv"
-        and len(playback_queue) > 1
-        and not _playback_transition_is_active()
-        and not state.get("ended")
-        and state.get("current_file")
-    ):
-        # MPV's playlist-pos is the native (possibly shuffled) playlist
-        # position, not FXRoute's stable queue index. The current URL is the
-        # authoritative cross-context identity; only use playlist-pos when it
-        # also names that same app-side track.
-        queue_index = next(
-            (
-                index
-                for index, track in enumerate(playback_queue)
-                if track.get("url") == state.get("current_file")
-            ),
-            None,
-        )
-        if queue_index is None:
-            native_index = state.get("playlist_pos")
-            if isinstance(native_index, int) and 0 <= native_index < len(playback_queue):
-                candidate = playback_queue[native_index]
-                if candidate.get("url") == state.get("current_file"):
-                    queue_index = native_index
-        if queue_index is not None:
-            track = dict(playback_queue[queue_index])
-            previous_track = current_track_info or {}
-            playback_queue_index = queue_index
-            current_track_info = track
-            last_track_info = track
-            if (
-                previous_track.get("source") != track.get("source")
-                or previous_track.get("id") != track.get("id")
-                or previous_track.get("url") != track.get("url")
-            ):
-                _mark_playback_intent_changed()
+    # boundaries.  The queue module mirrors MPV's position into the committed
+    # queue index; this callback only applies the app-side track context and
+    # must never start another rate, DSP, graph or gate transition.
+    synced = playback_queue.queue.sync_index_from_mpv(state)
+    if synced is not None:
+        queue_index, track = synced
+        previous_track = current_track_info or {}
+        current_track_info = track
+        last_track_info = track
+        if (
+            previous_track.get("source") != track.get("source")
+            or previous_track.get("id") != track.get("id")
+            or previous_track.get("url") != track.get("url")
+        ):
+            _mark_playback_intent_changed()
 
     if (
         not queue_advancing
@@ -5124,13 +4443,13 @@ async def on_player_state_change(state: dict, event_commit_id: str | None = None
         and not state.get("current_file")
         and current_track_info
         and current_track_info.get("source") == "local"
-        and playback_queue_mode != "native_mpv"
+        and playback_queue.queue.mode != "native_mpv"
     ):
         queue_advancing = True
         try:
-            if len(playback_queue) > 1 and await _advance_playback_queue(transition_reason="queue auto-advance") == "advanced":
+            if len(playback_queue.queue.tracks) > 1 and await playback_queue.queue.advance(transition_reason="queue auto-advance") == "advanced":
                 return
-            if single_track_loop and current_track_info and current_track_info.get("url"):
+            if playback_queue.queue.single_track_loop and current_track_info and current_track_info.get("url"):
                 loop_track = dict(current_track_info)
                 loop_rate = _coordinator_target_rate("local", loop_track)
                 try:
@@ -6429,12 +5748,12 @@ async def play_track(req: PlayRequest):
                 break
         if not track_info:
             raise HTTPException(status_code=404, detail="Radio station not found")
-        queue_candidate = _cleared_queue_candidate(track_info)
+        queue_candidate = playback_queue.cleared_queue_candidate(track_info)
     else:
-        active_queue_ids = [item.get("id") for item in playback_queue]
+        active_queue_ids = [item.get("id") for item in playback_queue.queue.tracks]
         preserve_queue_order = bool(req.queue_track_ids) and list(req.queue_track_ids) == active_queue_ids
         tracks = await _drain_worker(library_scanner.get_tracks) if library_scanner is not None else None
-        queue_candidate = _prepare_local_queue(
+        queue_candidate = playback_queue.queue.prepare_local_queue(
             req.track_id,
             req.queue_track_ids,
             shuffle=req.shuffle,
@@ -6447,8 +5766,8 @@ async def play_track(req: PlayRequest):
         raise HTTPException(status_code=404, detail="Track not found")
 
     target_url = str(track_info.get("url") or "")
-    native_queue_fields = _native_queue_request_fields(queue_candidate) if source == "local" else {}
-    native_trim_required = playback_queue_mode == "native_mpv" and queue_candidate.mode != "native_mpv"
+    native_queue_fields = playback_queue.queue.native_request_fields(queue_candidate) if source == "local" else {}
+    native_trim_required = playback_queue.queue.mode == "native_mpv" and queue_candidate.mode != "native_mpv"
     same_target = previous_state.get("current_file") == target_url and not previous_state.get("ended")
     target_rate = _coordinator_target_rate(source, track_info)
     rate_change = _coordinator_rate_change(target_rate)
@@ -6487,8 +5806,8 @@ async def play_track(req: PlayRequest):
         # committed-queue entries and a failed play leaves the native
         # transport queue intact.
         try:
-            _reduce_native_mpv_playlist_to_current()
-            _reset_mpv_loop_state()
+            playback_queue.queue.reduce_native_playlist_to_current()
+            playback_queue.queue.reset_mpv_loop_state()
         except Exception:
             logger.warning(
                 "Failed to trim native playlist after committed play transition",
@@ -6497,7 +5816,7 @@ async def play_track(req: PlayRequest):
     if source in {"local", "radio"} and isinstance(result.target_rate, int) and result.target_rate > 0:
         track_info["sample_rate_hz"] = result.target_rate
 
-    _commit_queue_state(queue_candidate)
+    playback_queue.queue.commit(queue_candidate)
     _commit_coordinated_track(
         track_info, source=source, commit_token=getattr(result, "transition_id", None)
     )
@@ -6569,7 +5888,7 @@ async def toggle_playback():
             rate_change=_coordinator_rate_change(target_rate),
             reload_source=(target_rate is None or _coordinator_rate_change(target_rate)),
             detail="toggle-resume",
-            **(_native_queue_request_fields() if source == "local" else {}),
+            **((playback_queue.queue.native_request_fields()) if source == "local" else {}),
         )
         try:
             result = await _run_coordinated_transition(request)
@@ -6603,7 +5922,7 @@ async def toggle_playback():
         rate_change=_coordinator_rate_change(target_rate),
         reload_source=True,
         detail="replay",
-        **(_native_queue_request_fields() if source == "local" else {}),
+        **((playback_queue.queue.native_request_fields()) if source == "local" else {}),
     )
     try:
         result = await _run_coordinated_transition(request)
@@ -6634,8 +5953,8 @@ async def stop_playback():
     radio_reconnect_attempts = 0
     radio_reconnect_url = None
     radio_reconnect_active_since = 0.0
-    _clear_playback_queue()
-    _reset_mpv_loop_state()
+    playback_queue.queue.reset()
+    playback_queue.queue.reset_mpv_loop_state()
     player_instance.stop_playback()
     _mark_player_state_authoritative(player_instance.state)
     return {"status": "stopped"}
@@ -6670,9 +5989,9 @@ async def next_playback():
     global player_instance
     if not player_instance or not player_instance._running:
         raise HTTPException(status_code=503, detail="Player not available")
-    if len(playback_queue) <= 1:
+    if len(playback_queue.queue.tracks) <= 1:
         raise HTTPException(status_code=409, detail="No queue is active")
-    result = await _advance_playback_queue(transition_reason="manual queue next")
+    result = await playback_queue.queue.advance(transition_reason="manual queue next")
     if result == "unavailable":
         raise HTTPException(status_code=409, detail="Already at the end of the queue")
     if result == "ended":
@@ -6694,9 +6013,9 @@ async def previous_playback():
     global player_instance
     if not player_instance or not player_instance._running:
         raise HTTPException(status_code=503, detail="Player not available")
-    if len(playback_queue) <= 1:
+    if len(playback_queue.queue.tracks) <= 1:
         raise HTTPException(status_code=409, detail="No queue is active")
-    if not await _rewind_playback_queue(transition_reason="manual queue previous"):
+    if not await playback_queue.queue.rewind(transition_reason="manual queue previous"):
         raise HTTPException(status_code=409, detail="Already at the start of the queue")
     return {"status": "playing", "playback": build_playback_payload(player_instance.state)}
 
@@ -6707,8 +6026,8 @@ async def clear_playback_queue():
     if not player_instance or not player_instance._running:
         raise HTTPException(status_code=503, detail="Player not available")
 
-    had_queue = len(playback_queue) > 1
-    _clear_playback_queue()
+    had_queue = len(playback_queue.queue.tracks) > 1
+    playback_queue.queue.reset()
     playback = build_playback_payload(player_instance.state)
     await manager.broadcast({"type": "playback", "data": playback})
     return {"status": "cleared" if had_queue else "idle", "playback": playback}
@@ -6730,7 +6049,7 @@ async def sync_playback_selection(request: Request):
         raise HTTPException(status_code=400, detail="Invalid JSON, expected {\"queue_track_ids\": <list>}")
 
     tracks = await _drain_worker(library_scanner.get_tracks) if library_scanner is not None else None
-    playback = _sync_active_local_queue_selection(
+    playback = playback_queue.queue.sync_active_local_queue_selection(
         queue_track_ids=queue_track_ids,
         shuffle=bool(body.get("shuffle", False)),
         loop=bool(body.get("loop", False)),
@@ -6752,7 +6071,7 @@ async def set_playback_shuffle(request: Request):
         raise HTTPException(status_code=400, detail="Invalid JSON, expected {\"enabled\": <bool>}")
 
     try:
-        if not await _set_queue_shuffle(enabled):
+        if not await playback_queue.queue.set_shuffle(enabled):
             raise HTTPException(status_code=409, detail="Shuffle requires an active local queue")
     except PlaybackTransitionFailure as exc:
         raise _transition_error_http(exc) from exc
@@ -6780,7 +6099,7 @@ async def set_playback_loop(request: Request):
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON, expected {\"enabled\": <bool>}")
 
-    if not _set_queue_loop(enabled):
+    if not playback_queue.queue.set_loop(enabled):
         raise HTTPException(status_code=409, detail="Loop requires active local playback")
 
     playback = build_playback_payload(player_instance.state)

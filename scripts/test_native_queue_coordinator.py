@@ -13,7 +13,9 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import playback_queue
 import main
+from playback_queue_test_support import queue_state, restore_queue_state
 from playback_transition_test_support import make_transition_runtime
 from playback_transition import TransitionRequest
 
@@ -30,11 +32,11 @@ def _track(track_id: str, rate: int | None, *, source: str = "local") -> dict:
 class NativeQueueSelectionTests(unittest.TestCase):
     def test_homogeneous_44100_and_48000_queues_are_native(self):
         for rate in (44100, 48000):
-            self.assertTrue(main._can_use_native_local_queue([_track("a", rate), _track("b", rate)]))
+            self.assertTrue(playback_queue.can_use_native_local_queue([_track("a", rate), _track("b", rate)]))
 
     def test_mixed_or_unknown_queue_stays_app_replace(self):
-        self.assertFalse(main._can_use_native_local_queue([_track("a", 44100), _track("b", 48000)]))
-        self.assertFalse(main._can_use_native_local_queue([_track("a", 44100), _track("b", None)]))
+        self.assertFalse(playback_queue.can_use_native_local_queue([_track("a", 44100), _track("b", 48000)]))
+        self.assertFalse(playback_queue.can_use_native_local_queue([_track("a", 44100), _track("b", None)]))
 
     def test_loudness_volume_uses_canonical_curve_and_master_100(self):
         class LoudnessManager:
@@ -238,7 +240,6 @@ class NativeQueueRuntimeTests(unittest.IsolatedAsyncioTestCase):
 class NativeQueueCallbackTests(unittest.IsolatedAsyncioTestCase):
     async def test_path_and_playlist_pos_update_context_without_transition(self):
         names = (
-            "playback_queue", "playback_queue_mode", "playback_queue_index",
             "current_track_info", "last_track_info",
             "latest_player_state_seq_seen", "queue_advancing", "manager",
             "peak_monitor", "source_transition_lock", "playback_transition_coordinator",
@@ -246,12 +247,14 @@ class NativeQueueCallbackTests(unittest.IsolatedAsyncioTestCase):
             "build_playback_payload", "playback_intent_generation",
         )
         originals = {name: getattr(main, name) for name in names}
+        saved_queue = queue_state()
         try:
-            main.playback_queue = [_track("a", 48000), _track("b", 48000), _track("c", 48000)]
-            main.playback_queue_mode = "native_mpv"
-            main.playback_queue_index = 0
-            main.current_track_info = dict(main.playback_queue[0])
-            main.last_track_info = dict(main.playback_queue[0])
+            playback_queue.queue.tracks = [_track("a", 48000), _track("b", 48000), _track("c", 48000)]
+            playback_queue.queue.original = [dict(track) for track in playback_queue.queue.tracks]
+            playback_queue.queue.mode = "native_mpv"
+            playback_queue.queue.index = 0
+            main.current_track_info = dict(playback_queue.queue.tracks[0])
+            main.last_track_info = dict(playback_queue.queue.tracks[0])
             main.latest_player_state_seq_seen = 0
             main.queue_advancing = False
             main.manager = SimpleNamespace(broadcast=_noop_async)
@@ -274,9 +277,10 @@ class NativeQueueCallbackTests(unittest.IsolatedAsyncioTestCase):
                     "ended": False,
                 })
                 expected_index = 1 if track_id == "b" else 2
-                self.assertEqual(main.playback_queue_index, expected_index)
+                self.assertEqual(playback_queue.queue.index, expected_index)
                 self.assertEqual(main.current_track_info["id"], track_id)
         finally:
+            restore_queue_state(saved_queue)
             for name, value in originals.items():
                 setattr(main, name, value)
 
@@ -291,33 +295,31 @@ class NativeQueueMutationTests(unittest.TestCase):
             "paused": False,
             "playing": True,
         })
-        names = (
-            "player_instance", "playback_queue", "playback_queue_original",
-            "playback_queue_index", "playback_queue_mode", "playback_queue_loop",
-            "playback_queue_shuffle", "single_track_loop",
-        )
+        names = ("player_instance",)
         originals = {name: getattr(main, name) for name in names}
+        saved_queue = queue_state()
         try:
             main.player_instance = fake
-            main.playback_queue = [_track("a", 48000), _track("b", 48000), _track("c", 48000)]
-            main.playback_queue_original = list(main.playback_queue)
-            main.playback_queue_index = 1
-            main.playback_queue_mode = "native_mpv"
-            main.playback_queue_loop = True
-            main.playback_queue_shuffle = True
-            main.single_track_loop = False
+            playback_queue.queue.tracks = [_track("a", 48000), _track("b", 48000), _track("c", 48000)]
+            playback_queue.queue.original = [dict(track) for track in playback_queue.queue.tracks]
+            playback_queue.queue.index = 1
+            playback_queue.queue.mode = "native_mpv"
+            playback_queue.queue.loop = True
+            playback_queue.queue.shuffle = True
+            playback_queue.queue.single_track_loop = False
 
-            main._clear_playback_queue()
+            playback_queue.queue.reset()
 
             self.assertEqual(fake.playlist, ["/music/b.flac"])
             self.assertEqual(fake.state["current_file"], "/music/b.flac")
-            self.assertEqual(main.playback_queue, [])
-            self.assertFalse(main.playback_queue_loop)
-            self.assertFalse(main.playback_queue_shuffle)
+            self.assertEqual(playback_queue.queue.tracks, [])
+            self.assertFalse(playback_queue.queue.loop)
+            self.assertFalse(playback_queue.queue.shuffle)
             self.assertIn(("playlist-clear",), fake.calls)
             self.assertIn(("loop-playlist", False), fake.calls)
             self.assertIn(("shuffle", False), fake.calls)
         finally:
+            restore_queue_state(saved_queue)
             for name, value in originals.items():
                 setattr(main, name, value)
 
@@ -335,28 +337,26 @@ class NativeQueueMutationTests(unittest.TestCase):
             "paused": False,
             "playing": True,
         })
-        names = (
-            "player_instance", "playback_queue", "playback_queue_original",
-            "playback_queue_index", "playback_queue_mode", "playback_queue_loop",
-            "playback_queue_shuffle", "single_track_loop",
-        )
+        names = ("player_instance",)
         originals = {name: getattr(main, name) for name in names}
+        saved_queue = queue_state()
         try:
             main.player_instance = fake
-            main.playback_queue = [_track("a", 48000), _track("b", 48000)]
-            main.playback_queue_original = list(main.playback_queue)
-            main.playback_queue_index = 1
-            main.playback_queue_mode = "native_mpv"
-            main.playback_queue_loop = True
-            main.playback_queue_shuffle = True
-            main.single_track_loop = False
+            playback_queue.queue.tracks = [_track("a", 48000), _track("b", 48000)]
+            playback_queue.queue.original = [dict(track) for track in playback_queue.queue.tracks]
+            playback_queue.queue.index = 1
+            playback_queue.queue.mode = "native_mpv"
+            playback_queue.queue.loop = True
+            playback_queue.queue.shuffle = True
+            playback_queue.queue.single_track_loop = False
 
-            main._clear_playback_queue()
+            playback_queue.queue.reset()
 
             self.assertEqual(fake.playlist, ["/music/b.flac"])
-            self.assertEqual(main.playback_queue, [])
-            self.assertEqual(main.playback_queue_mode, "app_replace")
+            self.assertEqual(playback_queue.queue.tracks, [])
+            self.assertEqual(playback_queue.queue.mode, "app_replace")
         finally:
+            restore_queue_state(saved_queue)
             for name, value in originals.items():
                 setattr(main, name, value)
 
@@ -374,44 +374,44 @@ class NativeQueueMutationTests(unittest.TestCase):
             "paused": False,
             "playing": True,
         })
-        names = (
-            "player_instance", "playback_queue", "playback_queue_original",
-            "playback_queue_index", "playback_queue_mode", "playback_queue_loop",
-            "playback_queue_shuffle", "single_track_loop",
-        )
+        names = ("player_instance",)
         originals = {name: getattr(main, name) for name in names}
+        saved_queue = queue_state()
         try:
             main.player_instance = fake
-            main.playback_queue = [_track("a", 48000), _track("b", 48000)]
-            main.playback_queue_original = list(main.playback_queue)
-            main.playback_queue_index = 0
-            main.playback_queue_mode = "native_mpv"
+            playback_queue.queue.tracks = [_track("a", 48000), _track("b", 48000)]
+            playback_queue.queue.original = [dict(track) for track in playback_queue.queue.tracks]
+            playback_queue.queue.index = 0
+            playback_queue.queue.mode = "native_mpv"
             with self.assertRaisesRegex(RuntimeError, "IPC communication failed"):
-                main._clear_playback_queue()
-            self.assertEqual(main.playback_queue_mode, "native_mpv")
-            self.assertEqual(len(main.playback_queue), 2)
+                playback_queue.queue.reset()
+            self.assertEqual(playback_queue.queue.mode, "native_mpv")
+            self.assertEqual(len(playback_queue.queue.tracks), 2)
         finally:
+            restore_queue_state(saved_queue)
             for name, value in originals.items():
                 setattr(main, name, value)
 
     def test_native_loop_updates_mpv_playlist_loop(self):
         fake = _QueuePlayer()
-        names = "player_instance", "current_track_info", "playback_queue", "playback_queue_mode", "playback_queue_loop", "single_track_loop"
+        names = "player_instance", "current_track_info"
         originals = {name: getattr(main, name) for name in names}
+        saved_queue = queue_state()
         try:
             main.player_instance = fake
             main.current_track_info = _track("a", 48000)
-            main.playback_queue = [_track("a", 48000), _track("b", 48000)]
-            main.playback_queue_mode = "native_mpv"
-            main.playback_queue_loop = False
-            main.single_track_loop = False
+            playback_queue.queue.tracks = [_track("a", 48000), _track("b", 48000)]
+            playback_queue.queue.mode = "native_mpv"
+            playback_queue.queue.loop = False
+            playback_queue.queue.single_track_loop = False
 
-            self.assertTrue(main._set_queue_loop(True))
-            self.assertTrue(main.playback_queue_loop)
+            self.assertTrue(playback_queue.queue.set_loop(True))
+            self.assertTrue(playback_queue.queue.loop)
             self.assertIn(("loop-playlist", True), fake.calls)
-            self.assertTrue(main._set_queue_loop(False))
+            self.assertTrue(playback_queue.queue.set_loop(False))
             self.assertIn(("loop-playlist", False), fake.calls)
         finally:
+            restore_queue_state(saved_queue)
             for name, value in originals.items():
                 setattr(main, name, value)
 
@@ -422,25 +422,24 @@ class NativeQueueShuffleParityTests(unittest.IsolatedAsyncioTestCase):
         fake = _QueuePlayer()
         original_queue = [_track(track_id, 48000) for track_id in ("a", "b", "c", "d")]
         names = (
-            "player_instance", "playback_queue", "playback_queue_original",
-            "playback_queue_index", "playback_queue_mode", "playback_queue_loop",
-            "playback_queue_shuffle", "current_track_info", "last_track_info",
+            "player_instance", "current_track_info", "last_track_info",
             "queue_advancing", "latest_player_state_seq_seen",
             "playback_transition_coordinator", "get_samplerate_status",
-            "_run_coordinated_transition", "random", "manager", "peak_monitor",
+            "_run_coordinated_transition", "manager", "peak_monitor",
             "source_transition_lock", "sync_peak_monitor_for_playback_state",
             "_schedule_radio_reconnect_if_needed", "build_playback_payload",
             "playback_intent_generation",
         )
         originals = {name: getattr(main, name) for name in names}
+        saved_queue = queue_state()
         try:
             main.player_instance = fake
-            main.playback_queue = [dict(track) for track in original_queue]
-            main.playback_queue_original = [dict(track) for track in original_queue]
-            main.playback_queue_index = 1
-            main.playback_queue_mode = "native_mpv"
-            main.playback_queue_loop = False
-            main.playback_queue_shuffle = False
+            playback_queue.queue.tracks = [dict(track) for track in original_queue]
+            playback_queue.queue.original = [dict(track) for track in original_queue]
+            playback_queue.queue.index = 1
+            playback_queue.queue.mode = "native_mpv"
+            playback_queue.queue.loop = False
+            playback_queue.queue.shuffle = False
             main.current_track_info = dict(original_queue[1])
             main.last_track_info = dict(original_queue[1])
             fake.playlist = [track["url"] for track in original_queue]
@@ -467,7 +466,7 @@ class NativeQueueShuffleParityTests(unittest.IsolatedAsyncioTestCase):
                 if request.native_queue_jump is not None:
                     self.assertEqual(
                         [track["url"] for track in request.native_queue],
-                        [track["url"] for track in main.playback_queue],
+                        [track["url"] for track in playback_queue.queue.tracks],
                     )
                 if request.native_queue_jump is None:
                     fake.playlist = [track["url"] for track in request.native_queue]
@@ -480,14 +479,14 @@ class NativeQueueShuffleParityTests(unittest.IsolatedAsyncioTestCase):
                 return SimpleNamespace(target_rate=request.target_rate, committed=True)
 
             main._run_coordinated_transition = apply_transition
-            with patch.object(main.random, "shuffle", side_effect=lambda values: values.reverse()):
-                self.assertTrue(await main._set_queue_shuffle(True))
+            with patch.object(playback_queue.random, "shuffle", side_effect=lambda values: values.reverse()):
+                self.assertTrue(await playback_queue.queue.set_shuffle(True))
 
-            shuffled_ids = [track["id"] for track in main.playback_queue]
+            shuffled_ids = [track["id"] for track in playback_queue.queue.tracks]
             self.assertEqual(shuffled_ids, ["b", "d", "c", "a"])
             self.assertEqual(
                 fake.playlist,
-                [track["url"] for track in main.playback_queue],
+                [track["url"] for track in playback_queue.queue.tracks],
             )
             self.assertNotIn(("shuffle", True), fake.calls)
 
@@ -504,34 +503,35 @@ class NativeQueueShuffleParityTests(unittest.IsolatedAsyncioTestCase):
                 "ended": False,
             })
             self.assertEqual(main.current_track_info["id"], "d")
-            self.assertEqual(main.playback_queue_index, 1)
+            self.assertEqual(playback_queue.queue.index, 1)
             self.assertEqual(fake.playlist[fake.state["playlist_pos"]], "/music/d.flac")
 
             self.assertEqual(
-                await main._advance_playback_queue(transition_reason="manual queue next"),
+                await playback_queue.queue.advance(transition_reason="manual queue next"),
                 "advanced",
             )
             self.assertEqual(main.current_track_info["id"], "c")
-            self.assertEqual(main.playback_queue_index, 2)
+            self.assertEqual(playback_queue.queue.index, 2)
             self.assertEqual(fake.playlist[fake.state["playlist_pos"]], "/music/c.flac")
-            self.assertTrue(await main._rewind_playback_queue(transition_reason="manual queue previous"))
+            self.assertTrue(await playback_queue.queue.rewind(transition_reason="manual queue previous"))
             self.assertEqual(main.current_track_info["id"], "d")
-            self.assertEqual(main.playback_queue_index, 1)
+            self.assertEqual(playback_queue.queue.index, 1)
             self.assertEqual(fake.playlist[fake.state["playlist_pos"]], "/music/d.flac")
 
             fake.state["position"] = 37.5
-            self.assertTrue(await main._set_queue_shuffle(False))
+            self.assertTrue(await playback_queue.queue.set_shuffle(False))
             self.assertEqual(
-                [track["id"] for track in main.playback_queue],
+                [track["id"] for track in playback_queue.queue.tracks],
                 ["a", "b", "c", "d"],
             )
-            self.assertFalse(main.playback_queue_shuffle)
-            self.assertEqual(main.playback_queue_index, 3)
+            self.assertFalse(playback_queue.queue.shuffle)
+            self.assertEqual(playback_queue.queue.index, 3)
             self.assertEqual(fake.playlist, [track["url"] for track in original_queue])
             self.assertEqual(fake.state["playlist_pos"], 3)
             self.assertEqual(fake.playlist[fake.state["playlist_pos"]], "/music/d.flac")
             self.assertEqual(fake.state["position"], 37.5)
         finally:
+            restore_queue_state(saved_queue)
             for name, value in originals.items():
                 setattr(main, name, value)
 

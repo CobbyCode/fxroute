@@ -21,8 +21,10 @@ from unittest.mock import AsyncMock, Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import playback_queue
 import main
 from fastapi import HTTPException
+from playback_queue_test_support import queue_state, restore_queue_state
 
 
 class PlayerDouble:
@@ -130,26 +132,29 @@ class ActiveTransitionGuardTests(unittest.IsolatedAsyncioTestCase):
         track = {"source": "radio", "id": "radio_1", "url": "https://radio.example/live"}
         previous_radio = {"source": "radio", "id": "radio_0", "url": "https://radio.example/old"}
         queue = [{"id": "a"}, {"id": "b"}]
-        with patch.object(main, "player_instance", player), patch.object(
-            main, "playback_transition_coordinator", coordinator
-        ), patch.object(main, "current_track_info", track), patch.object(
-            main, "last_radio_track_info", previous_radio
-        ), patch.object(main, "radio_reconnect_attempts", 3), patch.object(
-            main, "radio_reconnect_url", "https://radio.example/reconnect"
-        ), patch.object(main, "radio_reconnect_active_since", 5.0), patch.object(
-            main, "playback_queue", list(queue)
-        ):
-            with self.assertRaises(HTTPException) as cm:
-                await main.stop_playback()
-            self.assertEqual(cm.exception.status_code, 409)
-            player.stop_playback.assert_not_called()
-            self.assertEqual(len(main.playback_queue), 2)
-            self.assertEqual(main.playback_queue[0]["id"], "a")
-            self.assertEqual(main.current_track_info, track)
-            self.assertEqual(main.last_radio_track_info, previous_radio)
-            self.assertEqual(main.radio_reconnect_attempts, 3)
-            self.assertEqual(main.radio_reconnect_url, "https://radio.example/reconnect")
-            self.assertEqual(main.radio_reconnect_active_since, 5.0)
+        saved_queue = queue_state()
+        try:
+            playback_queue.queue.tracks = [dict(item) for item in queue]
+            with patch.object(main, "player_instance", player), patch.object(
+                main, "playback_transition_coordinator", coordinator
+            ), patch.object(main, "current_track_info", track), patch.object(
+                main, "last_radio_track_info", previous_radio
+            ), patch.object(main, "radio_reconnect_attempts", 3), patch.object(
+                main, "radio_reconnect_url", "https://radio.example/reconnect"
+            ), patch.object(main, "radio_reconnect_active_since", 5.0):
+                with self.assertRaises(HTTPException) as cm:
+                    await main.stop_playback()
+                self.assertEqual(cm.exception.status_code, 409)
+                player.stop_playback.assert_not_called()
+                self.assertEqual(len(playback_queue.queue.tracks), 2)
+                self.assertEqual(playback_queue.queue.tracks[0]["id"], "a")
+                self.assertEqual(main.current_track_info, track)
+                self.assertEqual(main.last_radio_track_info, previous_radio)
+                self.assertEqual(main.radio_reconnect_attempts, 3)
+                self.assertEqual(main.radio_reconnect_url, "https://radio.example/reconnect")
+                self.assertEqual(main.radio_reconnect_active_since, 5.0)
+        finally:
+            restore_queue_state(saved_queue)
 
     async def test_seek_during_active_transition_is_conflict_before_body_read(self):
         player = PlayerDouble()
@@ -224,28 +229,31 @@ class InactiveTransitionSemanticsTests(unittest.IsolatedAsyncioTestCase):
         player = PlayerDouble()
         track = {"source": "radio", "id": "radio_1", "url": "https://radio.example/live"}
         queue = [{"id": "a"}, {"id": "b"}]
-        with patch.object(main, "player_instance", player), patch.object(
-            main, "current_track_info", track
-        ), patch.object(main, "last_radio_track_info", {}), patch.object(
-            main, "playback_queue", list(queue)
-        ), patch.object(main, "playback_queue_original", list(queue)), patch.object(
-            main, "playback_queue_index", 0
-        ), patch.object(main, "playback_queue_mode", "app_replace"), patch.object(
-            main, "playback_queue_loop", False
-        ), patch.object(main, "playback_queue_shuffle", False), patch.object(
-            main, "single_track_loop", False
-        ), patch.object(
-            main, "radio_reconnect_attempts", 0
-        ), patch.object(main, "radio_reconnect_url", None), patch.object(
-            main, "radio_reconnect_active_since", 0.0
-        ), patch.object(main, "_mark_player_state_authoritative"), patch.object(
-            main, "_mark_playback_intent_changed"
-        ):
-            result = await main.stop_playback()
-            self.assertEqual(result["status"], "stopped")
-            player.stop_playback.assert_called_once_with()
-            self.assertEqual(main.playback_queue, [])
-            self.assertIsNone(main.current_track_info)
+        saved_queue = queue_state()
+        try:
+            playback_queue.queue.tracks = [dict(item) for item in queue]
+            playback_queue.queue.original = [dict(item) for item in queue]
+            playback_queue.queue.index = 0
+            playback_queue.queue.mode = "app_replace"
+            playback_queue.queue.loop = False
+            playback_queue.queue.shuffle = False
+            playback_queue.queue.single_track_loop = False
+            with patch.object(main, "player_instance", player), patch.object(
+                main, "current_track_info", track
+            ), patch.object(main, "last_radio_track_info", {}), patch.object(
+                main, "radio_reconnect_attempts", 0
+            ), patch.object(main, "radio_reconnect_url", None), patch.object(
+                main, "radio_reconnect_active_since", 0.0
+            ), patch.object(main, "_mark_player_state_authoritative"), patch.object(
+                main, "_mark_playback_intent_changed"
+            ):
+                result = await main.stop_playback()
+                self.assertEqual(result["status"], "stopped")
+                player.stop_playback.assert_called_once_with()
+                self.assertEqual(playback_queue.queue.tracks, [])
+                self.assertIsNone(main.current_track_info)
+        finally:
+            restore_queue_state(saved_queue)
 
     async def test_seek_works_when_transition_inactive(self):
         player = PlayerDouble()
@@ -287,35 +295,38 @@ class TransitionEndRecoveryTests(unittest.IsolatedAsyncioTestCase):
         coordinator = _transition_coordinator(True)
         track = {"source": "local", "url": "/music/current.flac"}
         queue = [{"id": "a"}]
-        with patch.object(main, "player_instance", player), patch.object(
-            main, "playback_transition_coordinator", coordinator
-        ), patch.object(main, "current_track_info", track), patch.object(
-            main, "playback_queue", list(queue)
-        ), patch.object(main, "playback_queue_original", list(queue)), patch.object(
-            main, "playback_queue_index", 0
-        ), patch.object(main, "playback_queue_mode", "app_replace"), patch.object(
-            main, "playback_queue_loop", False
-        ), patch.object(main, "playback_queue_shuffle", False), patch.object(
-            main, "single_track_loop", False
-        ), patch.object(
-            main, "radio_reconnect_attempts", 0
-        ), patch.object(main, "radio_reconnect_url", None), patch.object(
-            main, "radio_reconnect_active_since", 0.0
-        ), patch.object(main, "_mark_player_state_authoritative"), patch.object(
-            main, "_mark_playback_intent_changed"
-        ):
-            with self.assertRaises(HTTPException) as cm:
-                await main.stop_playback()
-            self.assertEqual(cm.exception.status_code, 409)
-            player.stop_playback.assert_not_called()
-            self.assertEqual(len(main.playback_queue), 1)
+        saved_queue = queue_state()
+        try:
+            playback_queue.queue.tracks = [dict(item) for item in queue]
+            playback_queue.queue.original = [dict(item) for item in queue]
+            playback_queue.queue.index = 0
+            playback_queue.queue.mode = "app_replace"
+            playback_queue.queue.loop = False
+            playback_queue.queue.shuffle = False
+            playback_queue.queue.single_track_loop = False
+            with patch.object(main, "player_instance", player), patch.object(
+                main, "playback_transition_coordinator", coordinator
+            ), patch.object(main, "current_track_info", track), patch.object(
+                main, "radio_reconnect_attempts", 0
+            ), patch.object(main, "radio_reconnect_url", None), patch.object(
+                main, "radio_reconnect_active_since", 0.0
+            ), patch.object(main, "_mark_player_state_authoritative"), patch.object(
+                main, "_mark_playback_intent_changed"
+            ):
+                with self.assertRaises(HTTPException) as cm:
+                    await main.stop_playback()
+                self.assertEqual(cm.exception.status_code, 409)
+                player.stop_playback.assert_not_called()
+                self.assertEqual(len(playback_queue.queue.tracks), 1)
 
-            coordinator.transition_active = False
+                coordinator.transition_active = False
 
-            result = await main.stop_playback()
-            self.assertEqual(result["status"], "stopped")
-            player.stop_playback.assert_called_once_with()
-            self.assertEqual(main.playback_queue, [])
+                result = await main.stop_playback()
+                self.assertEqual(result["status"], "stopped")
+                player.stop_playback.assert_called_once_with()
+                self.assertEqual(playback_queue.queue.tracks, [])
+        finally:
+            restore_queue_state(saved_queue)
 
 
 if __name__ == "__main__":
