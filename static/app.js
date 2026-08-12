@@ -2392,12 +2392,8 @@ async function stopPlayback() {
     }
 }
 function getTrackIdsInLibraryOrder(trackIds = []) {
-    const wanted = new Set((trackIds || []).filter(Boolean));
-    if (wanted.size === 0) return [];
-    const ordered = (state.library.tracks || [])
-        .map(track => track?.id)
-        .filter(id => id && wanted.has(id));
-    return [...new Set(ordered)];
+    const known = new Set((state.library.tracks || []).map(track => track?.id).filter(Boolean));
+    return [...new Set((trackIds || []).filter(id => id && known.has(id)))];
 }
 function getSelectedPlayableTrackIds() {
     return getTrackIdsInLibraryOrder(state.library.selectedTrackIds || []);

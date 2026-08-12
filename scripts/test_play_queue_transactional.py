@@ -255,6 +255,40 @@ class PlayQueueTransactionalTests(unittest.IsolatedAsyncioTestCase):
         finally:
             self._restore(originals)
 
+    async def test_local_album_play_keeps_full_queue_and_selected_native_index(self):
+        originals = self._install([_track("a"), _track("b"), _track("c")], index=0)
+        requests = []
+        try:
+            main.library_scanner = _Scanner(["a", "b", "c", "d", "e", "f"])
+
+            async def succeed(request):
+                requests.append(request)
+                main.player_instance.state.update({
+                    "current_file": request.target_url,
+                    "paused": False,
+                    "playing": True,
+                    "ended": False,
+                    "position": 1.0,
+                })
+                return SimpleNamespace(target_rate=request.target_rate, committed=True)
+
+            with self._patch_context(succeed):
+                await self._play(
+                    track_id="d",
+                    queue_track_ids=["a", "b", "c", "d", "e", "f"],
+                )
+
+            self.assertEqual([item["id"] for item in playback_queue.queue.tracks],
+                             ["a", "b", "c", "d", "e", "f"])
+            self.assertEqual(playback_queue.queue.index, 3)
+            self.assertEqual(main.current_track_info["id"], "d")
+            self.assertEqual([item["id"] for item in requests[0].native_queue],
+                             ["a", "b", "c", "d", "e", "f"])
+            self.assertEqual(requests[0].native_queue_index, 3)
+            self.assertEqual(requests[0].target_url, "/music/d.flac")
+        finally:
+            self._restore(originals)
+
     async def test_native_candidate_b_commits_once_with_mpv_mode(self):
         queue_a = [_track("a", rate=44100), _track("b", rate=44100)]
         originals = self._install(queue_a, index=0, mode="app_replace")
