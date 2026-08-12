@@ -4224,7 +4224,7 @@ class MeasurementStore:
                     magnitude=direct_magnitude,
                     calibration_curve=calibration_curve,
                 )
-                direct_lower_hz = float(direct_window["lower_reliable_hz"])
+                direct_lower_hz = float(direct_window["gated_direct_lower_limit_hz"])
                 direct_window["points"] = [
                     point for point in direct_display["review_points"]
                     if float(point[0]) >= direct_lower_hz

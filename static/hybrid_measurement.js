@@ -8,9 +8,6 @@
 
     const CONFIG = Object.freeze({
         listeningWeights: Object.freeze({ mlp: 0.70, left: 0.15, right: 0.15 }),
-        roomResidualAtHighFrequency: 0.15,
-        transitionStartFactor: 0.80,
-        transitionEndFactor: 2.20,
         spatialConsistencyDb: 6.0,
         bassNullVetoHz: 300,
         bassNullVetoStartDb: 2.5,
@@ -123,13 +120,12 @@
         return { points, constraints, timingMeasurement: mlp };
     }
 
-    function getHybridDirectWeight(frequency, lowerReliableHz) {
-        const start = Math.max(20, lowerReliableHz * CONFIG.transitionStartFactor);
-        const end = Math.max(start * 1.15, lowerReliableHz * CONFIG.transitionEndFactor);
-        if (frequency <= start) return 0;
-        if (frequency >= end) return 1 - CONFIG.roomResidualAtHighFrequency;
-        const ratio = (Math.log(frequency) - Math.log(start)) / (Math.log(end) - Math.log(start));
-        return (1 - CONFIG.roomResidualAtHighFrequency) * (0.5 - (0.5 * Math.cos(Math.PI * ratio)));
+    function getDirectModelWeight(frequency, gatedDirectLowerLimitHz, directConfidence, disagreementDb, spatialSpreadDb) {
+        if (frequency < gatedDirectLowerLimitHz) return 0;
+        const confidence = Math.min(1, Math.max(0, Number(directConfidence) || 0));
+        const agreement = Math.exp(-Math.abs(Number(disagreementDb) || 0) / CONFIG.spatialConsistencyDb);
+        const spatialConsistency = Math.exp(-Math.max(0, Number(spatialSpreadDb) || 0) / CONFIG.spatialConsistencyDb);
+        return confidence * (agreement + ((1 - agreement) * (1 - spatialConsistency)));
     }
 
     function buildHybridSide(captures, channel) {
@@ -140,24 +136,37 @@
             throw new Error(`${channel} direct response has no usable reflection-free window`);
         }
         const room = buildListeningModel(captures, channel);
-        const lowerReliableHz = Number(directResponse.lower_reliable_hz) || 500;
-        const transitionStartHz = Math.max(20, lowerReliableHz * CONFIG.transitionStartFactor);
-        const transitionEndHz = Math.max(transitionStartHz * 1.15, lowerReliableHz * CONFIG.transitionEndFactor);
+        const gatedDirectLowerLimitHz = Number(directResponse.gated_direct_lower_limit_hz);
+        const directConfidence = Number(directResponse.direct_confidence) || 0;
         const overlapOffsets = room.points
-            .filter(([frequency]) => frequency >= transitionStartHz && frequency <= transitionEndHz)
+            .filter(([frequency]) => frequency >= gatedDirectLowerLimitHz)
             .map(([frequency, roomDb]) => roomDb - interpolate(directResponse.points, frequency))
             .sort((left, right) => left - right);
         const middle = Math.floor(overlapOffsets.length / 2);
         const directLevelOffsetDb = overlapOffsets.length
             ? (overlapOffsets.length % 2 ? overlapOffsets[middle] : (overlapOffsets[middle - 1] + overlapOffsets[middle]) / 2)
             : 0;
-        const points = room.points.map(([frequency, roomDb]) => {
-            const directWeight = getHybridDirectWeight(frequency, lowerReliableHz);
+        const points = room.points.map(([frequency, roomDb], index) => {
             const directDb = interpolate(directResponse.points, frequency) + directLevelOffsetDb;
+            const directWeight = getDirectModelWeight(
+                frequency,
+                gatedDirectLowerLimitHz,
+                directConfidence,
+                roomDb - directDb,
+                room.constraints[index].spatialSpreadDb,
+            );
             return [frequency, (roomDb * (1 - directWeight)) + (directDb * directWeight)];
         });
         const constraints = room.constraints.map(constraint => {
-            const directWeight = getHybridDirectWeight(constraint.frequency, lowerReliableHz);
+            const roomDb = interpolate(room.points, constraint.frequency);
+            const directDb = interpolate(directResponse.points, constraint.frequency) + directLevelOffsetDb;
+            const directWeight = getDirectModelWeight(
+                constraint.frequency,
+                gatedDirectLowerLimitHz,
+                directConfidence,
+                roomDb - directDb,
+                constraint.spatialSpreadDb,
+            );
             const roomWeight = 1 - directWeight;
             return {
                 ...constraint,
@@ -172,12 +181,11 @@
             points,
             constraints,
             timingMeasurement: room.timingMeasurement,
-            transition: {
-                lowerReliableHz,
-                startHz: transitionStartHz,
-                endHz: transitionEndHz,
+            modelBlend: {
+                gatedDirectLowerLimitHz,
+                directConfidence,
                 directLevelOffsetDb,
-                highFrequencyRoomWeight: CONFIG.roomResidualAtHighFrequency,
+                method: 'direct-confidence-agreement-spatial-consistency',
             },
         };
     }
@@ -314,12 +322,18 @@
     }
 
     function buildProfile(captures, mode = 'stereo') {
-        const left = buildHybridSide(captures, 'left');
-        const right = buildHybridSide(captures, 'right');
         const mlpLeft = findCapture(captures, 'mlp', 'mlp', 'left');
         const mlpRight = findCapture(captures, 'mlp', 'mlp', 'right');
-        const integration = findCapture(captures, 'integration', 'mlp', 'stereo');
-        return { mode, left, right, integration: validateComplexSum(mlpLeft, mlpRight, integration) };
+        const integrationMeasurement = findCapture(captures, 'integration', 'mlp', 'stereo');
+        const integration = validateComplexSum(mlpLeft, mlpRight, integrationMeasurement);
+        if (mode !== 'stereo' && integration.status === 'poor') {
+            const error = new Error('System integration check failed. Verify routing and microphone position, then repeat the integration measurement.');
+            error.retryRole = 'integration';
+            throw error;
+        }
+        const left = buildHybridSide(captures, 'left');
+        const right = buildHybridSide(captures, 'right');
+        return { mode, left, right, integration };
     }
 
     return {
@@ -329,7 +343,7 @@
         getPositionSeriesEnd,
         getPreviousPositionIndex,
         buildListeningModel,
-        getHybridDirectWeight,
+        getDirectModelWeight,
         buildHybridSide,
         isUsableDirectMeasurement,
         validateDirectMicrophonePosition,

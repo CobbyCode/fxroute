@@ -97,7 +97,7 @@ class HybridMeasurementAnalysisTests(unittest.TestCase):
         self.assertGreaterEqual(result["first_reflection_index"], reflection - 10)
         self.assertGreater(result["usable_window_ms"], 9.0)
         self.assertLess(result["usable_window_ms"], 10.0)
-        self.assertGreater(result["lower_reliable_hz"], 150)
+        self.assertGreater(result["gated_direct_lower_limit_hz"], 150)
         frequencies, magnitude = build_gated_response(impulse, sample_rate, result)
         self.assertEqual(frequencies.shape, magnitude.shape)
         self.assertTrue(np.all(np.isfinite(magnitude)))
@@ -114,8 +114,8 @@ class HybridMeasurementAnalysisTests(unittest.TestCase):
         short_result = analyze_direct_window(short, sample_rate, direct)
         long_result = analyze_direct_window(long, sample_rate, direct)
 
-        self.assertGreater(short_result["lower_reliable_hz"], long_result["lower_reliable_hz"])
-        self.assertNotEqual(short_result["lower_reliable_hz"], 500)
+        self.assertGreater(short_result["gated_direct_lower_limit_hz"], long_result["gated_direct_lower_limit_hz"])
+        self.assertNotEqual(short_result["gated_direct_lower_limit_hz"], 500)
 
     def test_missing_reflection_is_rejected_conservatively(self):
         sample_rate = 48_000
@@ -128,7 +128,7 @@ class HybridMeasurementAnalysisTests(unittest.TestCase):
         self.assertFalse(result["usable"])
         self.assertEqual(result["status"], "reflection-not-identifiable")
         self.assertEqual(result["usable_window_ms"], 3.0)
-        self.assertEqual(result["lower_reliable_hz"], 500.0)
+        self.assertEqual(result["gated_direct_lower_limit_hz"], 500.0)
         self.assertIn("No trustworthy reflection-free interval", result["retry_reason"])
 
     def test_sub_millisecond_reflection_is_not_hidden_in_fallback_gate(self):

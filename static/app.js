@@ -9847,8 +9847,8 @@ function renderHybridMeasurementWizard() {
     if (elements.measurementHybridSummary) {
         elements.measurementHybridSummary.classList.toggle('hidden', !complete);
         if (complete) {
-            const left = wizard.profile.left.transition;
-            const right = wizard.profile.right.transition;
+            const left = wizard.profile.left.modelBlend;
+            const right = wizard.profile.right.modelBlend;
             const integration = wizard.profile.integration;
             elements.measurementHybridSummary.innerHTML = [
                 'Left and right speaker response captured',
@@ -9856,7 +9856,7 @@ function renderHybridMeasurementWizard() {
                 'Nearby listening positions analysed',
                 'Speaker and room responses combined',
                 wizard.mode === 'stereo' ? 'Left and right response model completed' : 'L/R system consistency checked',
-                `<strong>Speaker/room transition:</strong><br>Left: ${Math.round(left.startHz)}–${Math.round(left.endHz)} Hz<br>Right: ${Math.round(right.startHz)}–${Math.round(right.endHz)} Hz`,
+                `<strong>Gated direct lower limit:</strong><br>Left: ${Math.round(left.gatedDirectLowerLimitHz)} Hz<br>Right: ${Math.round(right.gatedDirectLowerLimitHz)} Hz`,
             ].map(item => `<div class="hybrid-summary-item">${item}</div>`).join('') + `
                 <details class="hybrid-advanced-details">
                     <summary>Advanced details</summary>
@@ -10011,6 +10011,10 @@ async function runHybridWizardSweep() {
             wizard.status = 'Position measured successfully. Move the microphone as shown for the next measurement.';
         }
     } catch (error) {
+        if (error.retryRole === 'integration') {
+            const integrationIndex = wizard.sequence.findIndex(step => step.role === 'integration');
+            if (integrationIndex >= 0) wizard.stepIndex = integrationIndex;
+        }
         wizard.status = wizard.cancelRequested
             ? 'Measurement cancelled. The microphone position is ready to measure again.'
             : (error.message || 'Advanced measurement failed.');
@@ -10048,7 +10052,7 @@ function openHybridProfileInConvolver() {
             analysis: {
                 ...timing.analysis,
                 hybrid_constraints: model.constraints,
-                hybrid_transition: model.transition,
+                hybrid_model_blend: model.modelBlend,
                 hybrid_source_roles: ['direct', 'mlp', 'secondary', 'integration'],
                 integration_validation: wizard.profile.integration,
             },

@@ -138,7 +138,7 @@ def analyze_direct_window(
         ),
         "gate_end_index": int(gate_end),
         "usable_window_ms": round(usable_seconds * 1000.0, 3),
-        "lower_reliable_hz": round(lower_hz, 1),
+        "gated_direct_lower_limit_hz": round(lower_hz, 1),
         "direct_confidence": round(confidence, 4),
         "direct_detection": {
             "selection_rule": str((timing_metadata or {}).get("selection_rule") or ""),

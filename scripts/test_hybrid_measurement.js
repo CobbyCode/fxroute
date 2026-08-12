@@ -96,12 +96,14 @@ const peakAnalysis = Dsp.analyzeMeasurementConvolverCorrections(
 assert(peakAnalysis.corrections[0].correctionDb < -7, 'stable peak must remain cuttable');
 
 const lower = 300;
-assert.equal(Hybrid.getHybridDirectWeight(100, lower), 0);
-const middleWeight = Hybrid.getHybridDirectWeight(400, lower);
-assert(middleWeight > 0 && middleWeight < 0.85, 'transition must crossfade smoothly');
-assert.equal(Hybrid.getHybridDirectWeight(1000, lower), 0.85);
+assert.equal(Hybrid.getDirectModelWeight(299, lower, 1, 0, 0), 0, 'direct model must stop below its gate limit');
+assert.equal(Hybrid.getDirectModelWeight(300, lower, 0.8, 0, 0), 0.8, 'direct confidence must cap its model weight');
+const stableDisagreementWeight = Hybrid.getDirectModelWeight(400, lower, 1, 6, 0);
+const variableDisagreementWeight = Hybrid.getDirectModelWeight(400, lower, 1, 6, 6);
+assert(variableDisagreementWeight > stableDisagreementWeight, 'spatially unstable area data must favor the direct model');
+assert.equal(Hybrid.getDirectModelWeight(400, lower, 1, 0, 6), 1, 'agreement must make the model choice neutral');
 
-const directResponse = { usable: true, lower_reliable_hz: 300, points: points(2) };
+const directResponse = { usable: true, gated_direct_lower_limit_hz: 300, direct_confidence: 1, points: points(2) };
 assert(Hybrid.isUsableDirectMeasurement(measurement('left', 0, { directResponse })), 'good direct measurement must be accepted');
 const leftDirectCapture = capture('direct', 'direct-left', 'left', directTimingMeasurement('left', 84.0));
 const wrongRightPosition = Hybrid.validateDirectMicrophonePosition(
@@ -128,8 +130,9 @@ for (const channel of ['left', 'right']) {
 const profile = Hybrid.buildProfile(profileCaptures, 'stereo');
 assert.strictEqual(profile.left.timingMeasurement, profileCaptures[1].measurement);
 assert.strictEqual(profile.right.timingMeasurement, profileCaptures[5].measurement);
-assert.equal(profile.left.transition.highFrequencyRoomWeight, 0.15);
-assert(profile.left.transition.endHz > profile.left.transition.startHz);
+assert.equal(profile.left.modelBlend.gatedDirectLowerLimitHz, 300);
+assert(!('startHz' in profile.left.modelBlend));
+assert(!('endHz' in profile.left.modelBlend));
 
 const spatialTransitionCaptures = [];
 for (const channel of ['left', 'right']) {
@@ -170,6 +173,28 @@ assert.deepEqual(phaseInverted.validationBandHz, [20, 500]);
 assert(appSource.includes('complex residual'));
 assert(appSource.includes('no separate integration sweep was performed'));
 assert(appSource.includes('integration.limitation'));
+
+const poorIntegrationCaptures = profileCaptures.map(item => {
+    if (item.role !== 'mlp') return item;
+    return capture(item.role, item.position, item.channel, measurement(item.channel, 0, {
+        complexResponse: { points: [[40, item.channel === 'left' ? 1 : 0, 0]] },
+    }));
+});
+poorIntegrationCaptures.push(capture(
+    'integration',
+    'mlp',
+    'stereo',
+    measurement('stereo', 0, { complexResponse: { points: [[40, -1, 0]] } }),
+));
+let integrationError = null;
+try {
+    Hybrid.buildProfile(poorIntegrationCaptures, 'subwoofer-2.1');
+} catch (error) {
+    integrationError = error;
+}
+assert.match(integrationError?.message || '', /integration check failed/i, 'poor integration must prevent profile generation');
+assert.equal(integrationError?.retryRole, 'integration', 'quality gate must identify the measurement to repeat');
+assert(appSource.includes("error.retryRole === 'integration'"));
 
 const stereoDiagram = Hybrid.getDiagramState('stereo', 'left');
 assert(!stereoDiagram.subs.left.visible && !stereoDiagram.subs.right.visible);
