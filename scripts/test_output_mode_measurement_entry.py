@@ -269,7 +269,7 @@ class CoordinatorTransactionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(runtime.helper_rate, 48000)
         self.assertIn("persist-sample-rate-policy", runtime.events)
 
-    async def test_spotify_sample_rate_policy_keeps_existing_non_reload_path(self):
+    async def test_spotify_sample_rate_policy_uses_full_replay_path(self):
         runtime = TransactionRuntime()
         coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
         request = TransitionRequest(
@@ -279,16 +279,21 @@ class CoordinatorTransactionTests(unittest.IsolatedAsyncioTestCase):
             target_url="spotify-track-1",
             should_play=True,
             rate_change=True,
-            reload_source=False,
+            reload_source=True,
             sample_rate_policy={"mode": "fixed", "rate": 48000},
         )
 
         result = await coordinator.execute(request)
 
         self.assertTrue(result.committed)
-        self.assertNotIn("prepare", runtime.events)
-        self.assertNotIn("start", runtime.events)
-        self.assertIn("restore-transport", runtime.events)
+        expected = [
+            "quiet", "target-rate", "effects-helper-links", "prepare", "start",
+            "post-start-source-link", "verify-graph", "dsp-stabilize",
+            "commit-readback", "persist-sample-rate-policy",
+        ]
+        indices = [runtime.events.index(event) for event in expected]
+        self.assertEqual(indices, sorted(indices))
+        self.assertNotIn("restore-transport", runtime.events)
 
     async def test_spotify_play_clears_stale_hardware_and_internal_mutes(self):
         runtime = TransactionRuntime(

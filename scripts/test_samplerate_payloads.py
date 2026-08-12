@@ -311,12 +311,12 @@ class SampleRatePolicyTransitionTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(request.rate_change)
         self.assertFalse(request.reload_source)
 
-    async def test_spotify_policy_does_not_enter_local_radio_reload_path(self):
+    async def test_spotify_rate_change_requests_full_replay(self):
         request = await self._capture_request(
             active_rate=44100, target_rate=48000, source="spotify"
         )
         self.assertTrue(request.rate_change)
-        self.assertFalse(request.reload_source)
+        self.assertTrue(request.reload_source)
 
     def test_overview_sample_rate_wrapper_matches(self):
         cases = [

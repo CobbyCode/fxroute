@@ -1405,7 +1405,7 @@ async def _transition_sample_rate_policy(policy: Mapping[str, Any], *, detail: s
     rate_change = _coordinator_rate_change(target_rate)
     reload_source = bool(
         rate_change
-        and source in {"local", "radio"}
+        and source in {"local", "radio", "spotify"}
         and context.get("target_url")
     )
 
