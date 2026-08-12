@@ -100,7 +100,6 @@ class TransitionRequest:
     attempt_epoch: int | None = None
     native_queue: tuple[Mapping[str, Any], ...] = field(default_factory=tuple)
     native_queue_index: int | None = None
-    native_queue_jump: int | None = None
     native_queue_loop: bool = False
     native_queue_shuffle: bool = False
     # Output-mode changes are staged as one Coordinator transaction.  The

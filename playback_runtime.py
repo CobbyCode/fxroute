@@ -551,7 +551,6 @@ class FxrouteTransitionRuntime(TransitionRuntime):
                 tuple(native_fields["native_queue"]) if native_committed else None
             ),
             native_queue_index=native_fields.get("native_queue_index") if native_committed else None,
-            native_queue_jump=None,
             native_queue_loop=bool(native_fields.get("native_queue_loop")) if native_committed else False,
             detail="failed-transition-restore",
         )
@@ -902,14 +901,7 @@ class FxrouteTransitionRuntime(TransitionRuntime):
                 # jumping within the explicit FXRoute queue order.
                 set_shuffle(False)
             queue_tracks = tuple(request.native_queue)
-            jump_index = request.native_queue_jump
-            if jump_index is not None:
-                if jump_index < 0 or jump_index >= len(queue_tracks):
-                    raise RuntimeError(f"native MPV queue index is out of range: {jump_index}")
-                self._player.set_pause(True)
-                self._player.set_playlist_pos(jump_index)
-                self._staged_target_url = request.target_url
-            elif request.reload_source:
+            if request.reload_source:
                 start_index = request.native_queue_index
                 if start_index is None:
                     start_index = 0

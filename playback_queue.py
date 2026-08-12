@@ -302,8 +302,15 @@ class PlaybackQueue:
             if len(self.tracks) <= 1 or index < 0 or index >= len(self.tracks):
                 return False
             next_track = dict(self.tracks[index])
-            native_fields = self.native_request_fields()
-            native_jump = self.mode == "native_mpv"
+            if self.mode == "native_mpv":
+                player = self._player
+                set_playlist_pos = getattr(player, "set_playlist_pos", None)
+                if not callable(set_playlist_pos):
+                    return False
+                set_playlist_pos(index)
+                self.index = index
+                self._deps.set_track_context(next_track, next_track)
+                return True
         target_url = str(next_track.get("url") or "")
         if not target_url:
             self.reset()
@@ -318,10 +325,8 @@ class PlaybackQueue:
             target_track=next_track,
             should_play=True,
             rate_change=self._deps.coordinator_rate_change(target_rate),
-            reload_source=not native_jump,
+            reload_source=True,
             detail=transition_reason,
-            **native_fields,
-            native_queue_jump=index if native_jump else None,
         )
         try:
             result = await self._deps.run_transition(request)
@@ -399,7 +404,6 @@ class PlaybackQueue:
         target_queue: list[dict],
         target_index: int,
         enabled: bool,
-        was_paused: bool,
     ) -> bool:
         """Reorder MPV without committing app state until every IPC call succeeds."""
         player = self._player
@@ -501,9 +505,7 @@ class PlaybackQueue:
             # Shuffle ON keeps the current entry at position zero.  Rebuild the
             # native playlist directly so changing order does not enter the full
             # output-graph transition path.
-            player_state = self._player.state if self._player else {}
-            was_paused = bool(player_state.get("paused"))
-            if await self._reorder_native_mpv_playlist(target_queue, target_index, enabled, was_paused):
+            if await self._reorder_native_mpv_playlist(target_queue, target_index, enabled):
                 self.tracks = target_queue
                 self.index = target_index
                 self.shuffle = bool(enabled)
@@ -588,9 +590,6 @@ class PlaybackQueue:
         if not player_state.get("current_file") or player_state.get("ended"):
             raise HTTPException(status_code=409, detail="Nothing is currently loaded to update")
 
-        # A queue-selection change must not leave MPV's old native future entries
-        # alive behind the new app-side queue metadata. Keep the current source,
-        # then explicitly return to app-owned queue navigation below.
         if self.mode == "native_mpv":
             self.reduce_native_playlist_to_current()
             self.reset_mpv_loop_state()

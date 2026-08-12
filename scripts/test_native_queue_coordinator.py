@@ -510,16 +510,11 @@ class NativeQueueShuffleParityTests(unittest.IsolatedAsyncioTestCase):
             async def apply_transition(request):
                 self.assertEqual(request.source, "local")
                 self.assertFalse(request.native_queue_shuffle)
-                if request.native_queue_jump is not None:
-                    self.assertEqual(
-                        [track["url"] for track in request.native_queue],
-                        [track["url"] for track in playback_queue.queue.tracks],
-                    )
-                if request.native_queue_jump is None:
+                if request.reload_source:
                     fake.playlist = [track["url"] for track in request.native_queue]
                     fake.state["playlist_pos"] = request.native_queue_index
                 else:
-                    fake.state["playlist_pos"] = request.native_queue_jump
+                    fake.state["playlist_pos"] = fake.playlist.index(request.target_url)
                 fake.state["current_file"] = fake.playlist[fake.state["playlist_pos"]]
                 fake.state["paused"] = False
                 fake.state["playing"] = True

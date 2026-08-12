@@ -64,6 +64,10 @@ class _FakePlayer:
             "volume": 100,
         }
 
+    def set_playlist_pos(self, index: int):
+        self.state["playlist_pos"] = index
+        self.state["current_file"] = f"/music/{chr(ord('a') + index)}.flac"
+
 
 class _Station:
     def __init__(self, station_id: str) -> None:
@@ -207,14 +211,12 @@ class PlayQueueTransactionalTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(reset_calls, [])
             self._assert_queue_a_intact(queue_a, index=1, mode="native_mpv", loop=False, shuffle=False)
 
-            # The retained queue must remain functionally navigable: a native
-            # queue jump still commits and updates the index.
+            # The retained queue is navigated directly by MPV.
             with self._patch_context(navigate):
                 self.assertTrue(await playback_queue.queue.load_track(2, transition_reason="queue navigation"))
             self.assertEqual(playback_queue.queue.index, 2)
-            self.assertEqual(len(navigation_requests), 1)
-            self.assertTrue(navigation_requests[0].native_queue)
-            self.assertEqual(navigation_requests[0].native_queue_jump, 2)
+            self.assertEqual(len(navigation_requests), 0)
+            self.assertEqual(main.player_instance.state["playlist_pos"], 2)
         finally:
             self._restore(originals)
 
@@ -493,7 +495,7 @@ class QueueSelectionTransactionalTests(unittest.IsolatedAsyncioTestCase):
                     ["b", "a"], shuffle=False, loop=False
                 )
 
-            self.assertEqual(reduce_calls, [True], "old native future entries are trimmed")
+            self.assertEqual(reduce_calls, [True])
             self.assertGreaterEqual(len(reset_calls), 1)
             self.assertEqual(playback_queue.queue.mode, "app_replace")
             self.assertEqual([item["id"] for item in playback_queue.queue.tracks], ["b", "a"])

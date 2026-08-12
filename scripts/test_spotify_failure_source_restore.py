@@ -788,7 +788,6 @@ class NativeQueueRestoreTests(RestoreTestBase):
         self.assertEqual(prepare_request.native_queue[2]["url"], "/music/c.flac")
         self.assertEqual(prepare_request.native_queue_index, 1)
         self.assertTrue(prepare_request.native_queue_loop)
-        self.assertIsNone(prepare_request.native_queue_jump)
 
     async def test_native_queue_restore_failure_normalizes_to_app_replace(self):
         queue = self._queue_state()

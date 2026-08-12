@@ -265,7 +265,6 @@ class FailedTransitionAbortTests(unittest.IsolatedAsyncioTestCase):
                     self.assertTrue(await playback_queue.queue.load_track(2, transition_reason="queue navigation"))
                 self.assertEqual(len(navigation_requests), 1)
                 request = navigation_requests[0]
-                self.assertIsNone(request.native_queue_jump, "no MPV-native jump may be issued")
                 self.assertTrue(request.reload_source)
                 self.assertEqual(playback_queue.queue.index, 2)
         finally:
