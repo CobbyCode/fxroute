@@ -99,7 +99,7 @@ def _run_samplerate_roundtrip() -> None:
             assert migrated_21["subwoofer"]["crossover_frequency_hz"] == 150, migrated_21
 
             # 2.1 round-trip must stay unaffected.
-            samplerate._save_audio_output_mode(
+            built_21 = samplerate._build_audio_output_mode_payload(
                 "subwoofer-2.1",
                 {
                     "crossover_frequency_hz": 120,
@@ -110,6 +110,7 @@ def _run_samplerate_roundtrip() -> None:
                 },
                 None,
             )
+            samplerate.persist_audio_output_mode(built_21)
             loaded = samplerate._load_audio_output_mode()
             assert loaded["subwoofer"]["crossover_frequency_hz"] == 120, loaded
         finally:

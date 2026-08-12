@@ -1000,19 +1000,6 @@ def _build_audio_output_mode_payload(
     return payload
 
 
-def _save_audio_output_mode(
-    mode: str,
-    subwoofer: dict[str, Any] | None = None,
-    subwoofers: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Persist one already-normalized output-mode payload."""
-    payload = _build_audio_output_mode_payload(mode, subwoofer, subwoofers)
-    path = _audio_output_mode_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2) + "\n")
-    return payload
-
-
 def _save_audio_source_selection(mode: str, selected_input_key: str | None) -> None:
     path = _audio_source_selection_path()
     path.parent.mkdir(parents=True, exist_ok=True)
