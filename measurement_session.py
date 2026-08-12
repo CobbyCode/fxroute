@@ -213,13 +213,23 @@ class MeasurementSampleRateSession:
             self._validate_entry_epoch(entry_epoch)
             return await self._start_locked(measurement_rate)
 
-    async def register_manual_job(self, job_id: str, entry_epoch: int | None = None) -> int:
+    async def register_manual_job(
+        self,
+        job_id: str,
+        entry_epoch: int | None = None,
+        *,
+        report_entry: bool = False,
+    ) -> int | tuple[int, bool]:
         async with self.lock:
             self._validate_entry_epoch(entry_epoch)
+            entry_established = False
             if not self.active:
                 logger.info("Measurement sample-rate session start requested: caller=manual-sweep job_id=%s", job_id)
                 await self._start_locked(_resolve_measurement_start_sample_rate())
+                entry_established = True
             self.active_manual_job_ids.add(job_id)
+            if report_entry:
+                return self.generation, entry_established
             return self.generation
 
     async def replace_manual_job(self, old_job_id: str, job_id: str) -> None:
@@ -626,7 +636,11 @@ def _capture_playback_state_before_measurement(
         measurement_sr_session._playback_captured = True
 
 
-async def _measurement_entry_preflight(measurement_rate: int = MEASUREMENT_DEFAULT_SAMPLE_RATE) -> None:
+async def _measurement_entry_preflight(
+    measurement_rate: int = MEASUREMENT_DEFAULT_SAMPLE_RATE,
+    *,
+    graph_already_verified: bool = False,
+) -> None:
     """Validate the guarded measurement state before creating a sweep job."""
     from main import (
         playback_transition_coordinator,
@@ -663,41 +677,42 @@ async def _measurement_entry_preflight(measurement_rate: int = MEASUREMENT_DEFAU
         )
 
     overview = await asyncio.to_thread(get_audio_output_overview)
-    diagnosis = await _playback_graph_diagnosis(
-        audio_overview=overview,
-        target_rate=measurement_rate,
-        require_source=False,
-    )
-    if not diagnosis.get("links_complete"):
-        session_active = bool(
-            measurement_sr_session is not None
-            and getattr(measurement_sr_session, "active", False)
+    if not graph_already_verified:
+        diagnosis = await _playback_graph_diagnosis(
+            audio_overview=overview,
+            target_rate=measurement_rate,
+            require_source=False,
         )
-        reconciler = getattr(
-            coordinator,
-            "reconcile_measurement_session",
-            None,
-        )
-        if session_active and callable(reconciler):
-            reconciled_state = await reconciler(
-                target_rate=measurement_rate,
-                initial_graph=diagnosis,
+        if not diagnosis.get("links_complete"):
+            session_active = bool(
+                measurement_sr_session is not None
+                and getattr(measurement_sr_session, "active", False)
             )
-            if not isinstance(reconciled_state, Mapping) or not (
-                reconciled_state.get("graph_complete") is True
-                or reconciled_state.get("links_complete") is True
-            ):
-                raise RuntimeError(
-                    "measurement session reconcile did not confirm a complete canonical graph"
+            reconciler = getattr(
+                coordinator,
+                "reconcile_measurement_session",
+                None,
+            )
+            if session_active and callable(reconciler):
+                reconciled_state = await reconciler(
+                    target_rate=measurement_rate,
+                    initial_graph=diagnosis,
                 )
-        else:
-            _log_playback_graph_diagnosis(
-                diagnosis,
-                target_rate=measurement_rate,
-                reason="measurement-entry-preflight",
-                detail="before-sweep",
-            )
-            raise RuntimeError("measurement entry preflight found an incomplete canonical graph")
+                if not isinstance(reconciled_state, Mapping) or not (
+                    reconciled_state.get("graph_complete") is True
+                    or reconciled_state.get("links_complete") is True
+                ):
+                    raise RuntimeError(
+                        "measurement session reconcile did not confirm a complete canonical graph"
+                    )
+            else:
+                _log_playback_graph_diagnosis(
+                    diagnosis,
+                    target_rate=measurement_rate,
+                    reason="measurement-entry-preflight",
+                    detail="before-sweep",
+                )
+                raise RuntimeError("measurement entry preflight found an incomplete canonical graph")
 
     if measurement_store is not None:
         playback_target = measurement_store._resolve_playback_target(overview=overview)
@@ -1245,11 +1260,17 @@ async def _start_registered_manual_measurement(
     pending_registered = False
     try:
         if measurement_sr_session is not None:
-            sweep_gen = await measurement_sr_session.register_manual_job(
-                pending_job_id, entry_epoch=entry_epoch
+            registration = await measurement_sr_session.register_manual_job(
+                pending_job_id, entry_epoch=entry_epoch, report_entry=True
             )
+            sweep_gen, graph_already_verified = registration
             pending_registered = True
-        await _measurement_entry_preflight(sample_rate)
+        else:
+            graph_already_verified = False
+        await _measurement_entry_preflight(
+            sample_rate,
+            graph_already_verified=graph_already_verified,
+        )
         job = await start_job()
         if measurement_sr_session is not None:
             replacement = asyncio.create_task(

@@ -713,6 +713,44 @@ class EntryBoundaryTests(unittest.IsolatedAsyncioTestCase):
             await measurement_session._measurement_entry_preflight(48000)
         reconcile.assert_not_awaited()
 
+    async def test_fresh_entry_preflight_keeps_rate_and_route_checks(self):
+        class Store:
+            ports_checked = False
+
+            def _resolve_playback_target(self, *, overview=None):
+                return {"target_name": "alsa_output.test"}
+
+            def _build_measurement_playback_route(self, _node, target, *, overview=None):
+                return {
+                    "route": "direct-sink",
+                    "playback_target_name": target["target_name"],
+                }
+
+            def _list_pw_ports(self, target):
+                self.ports_checked = True
+                return [f"{target}:playback_FL", f"{target}:playback_FR"]
+
+        store = Store()
+        diagnosis = AsyncMock()
+        coordinator = SimpleNamespace(transition_blocked=False)
+        with patch.object(main, "playback_transition_coordinator", coordinator), patch.object(
+            main, "measurement_sr_session", SimpleNamespace(active=True)
+        ), patch.object(main, "measurement_store", store), patch.object(
+            main, "get_samplerate_status", return_value={
+                "active_rate": 48000,
+                "force_rate": 48000,
+            }
+        ), patch.object(
+            main, "_playback_graph_diagnosis", new=diagnosis
+        ), patch.object(main, "get_audio_output_overview", return_value={"output_mode": {}}):
+            await measurement_session._measurement_entry_preflight(
+                48000,
+                graph_already_verified=True,
+            )
+
+        diagnosis.assert_not_awaited()
+        self.assertTrue(store.ports_checked)
+
     async def test_active_measurement_preflight_reconciles_only_link_loss_before_sweep(self):
         class Store:
             def _resolve_playback_target(self, *, overview=None):

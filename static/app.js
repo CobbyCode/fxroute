@@ -9684,7 +9684,7 @@ async function startHostMeasurement() {
     state.measurement.currentMeasurementSaved = false;
     state.measurement.statusText = 'Starting host-local sweep…';
     renderMeasurementPanel();
-    await postRuntimeDebugSnapshot('ui-before-measurement-start', { measurementKind: 'single' });
+    void postRuntimeDebugSnapshot('ui-before-measurement-start', { measurementKind: 'single' });
 
     const resp = await fetch('/api/measurements/start', { method: 'POST', body: formData });
     const data = await resp.json().catch(() => ({}));
@@ -9725,7 +9725,7 @@ async function startLrRepeatMeasurement() {
     state.measurement.repeatJobActive = true;
     state.measurement.statusText = 'Starting L/R repeat…';
     renderMeasurementPanel();
-    await postRuntimeDebugSnapshot('ui-before-measurement-start', { measurementKind: 'lr-repeat' });
+    void postRuntimeDebugSnapshot('ui-before-measurement-start', { measurementKind: 'lr-repeat' });
     const resp = await fetch('/api/measurements/lr-repeat/start', { method: 'POST', body: formData });
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok) throw new Error(formatTransitionErrorDetail(data.detail, 'Failed to start L/R repeat measurement'));

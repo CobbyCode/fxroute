@@ -19,9 +19,9 @@ class _Session:
     def __init__(self):
         self.active = set()
 
-    async def register_manual_job(self, job_id, entry_epoch=None):
+    async def register_manual_job(self, job_id, entry_epoch=None, *, report_entry=False):
         self.active.add(job_id)
-        return self.generation
+        return (self.generation, False) if report_entry else self.generation
 
     async def replace_manual_job(self, old_job_id, new_job_id):
         self.active.remove(old_job_id)
@@ -43,6 +43,33 @@ class _BlockingReplacementSession(_Session):
         await super().replace_manual_job(old_job_id, new_job_id)
 
 
+class _EntryStateSession(_Session):
+    def __init__(self, active):
+        super().__init__()
+        self.was_active = bool(active)
+
+    @property
+    def active(self):
+        return self.was_active
+
+    @active.setter
+    def active(self, value):
+        self.jobs = value if isinstance(value, set) else set()
+
+    async def register_manual_job(self, job_id, entry_epoch=None, *, report_entry=False):
+        self.jobs.add(job_id)
+        entry_established = not self.was_active
+        self.was_active = True
+        return (self.generation, entry_established) if report_entry else self.generation
+
+    async def replace_manual_job(self, old_job_id, new_job_id):
+        self.jobs.remove(old_job_id)
+        self.jobs.add(new_job_id)
+
+    async def unregister_manual_job(self, job_id):
+        self.jobs.discard(job_id)
+
+
 class MeasurementStartOwnershipTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.session = _Session()
@@ -60,6 +87,30 @@ class MeasurementStartOwnershipTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(OSError, "disk full"):
                 await measurement_session._start_registered_manual_measurement(48000, fail_start)
         self.assertEqual(self.session.active, set())
+
+    async def test_new_session_entry_uses_fresh_preflight(self):
+        self.session = _EntryStateSession(active=False)
+        main.measurement_sr_session = self.session
+        preflight = AsyncMock()
+
+        with patch.object(measurement_session, "_measurement_entry_preflight", preflight):
+            await measurement_session._start_registered_manual_measurement(
+                48000, lambda: asyncio.sleep(0, result={"id": "job-1"})
+            )
+
+        preflight.assert_awaited_once_with(48000, graph_already_verified=True)
+
+    async def test_active_session_keeps_full_preflight(self):
+        self.session = _EntryStateSession(active=True)
+        main.measurement_sr_session = self.session
+        preflight = AsyncMock()
+
+        with patch.object(measurement_session, "_measurement_entry_preflight", preflight):
+            await measurement_session._start_registered_manual_measurement(
+                48000, lambda: asyncio.sleep(0, result={"id": "job-1"})
+            )
+
+        preflight.assert_awaited_once_with(48000, graph_already_verified=False)
 
     async def test_request_cancellation_releases_pending_owner(self):
         entered = asyncio.Event()

@@ -45,6 +45,7 @@ function extractFunction(name) {
 function makeMeasurementContext({ pendingSave = null, fetchResponse = null } = {}) {
     const fetchCalls = [];
     const saveCalls = [];
+    let releaseDebugSnapshot = null;
     const state = {
         settings: {
             audioOutputs: {
@@ -97,12 +98,16 @@ function makeMeasurementContext({ pendingSave = null, fetchResponse = null } = {
         function getMeasurementReferenceWarning() { return false; }
         function formatMeasurementJobStatusText() { return 'Preparing sweep…'; }
         function normalizeMeasurementKind(value) { return value; }
-        async function postRuntimeDebugSnapshot() {}
+        function postRuntimeDebugSnapshot() {
+            return new Promise(resolve => { releaseDebugSnapshot = resolve; });
+        }
+        function releaseSnapshot() { if (releaseDebugSnapshot) releaseDebugSnapshot(); }
         function renderMeasurementPanel() {}
         async function pollMeasurementJob() {}
         ${extractFunction('formatTransitionErrorDetail')}
         ${extractFunction('flushSubwooferSettingsBeforeMeasurement')}
         ${extractFunction('startHostMeasurement')}
+        ${extractFunction('startLrRepeatMeasurement')}
     `, context);
     context.setPendingSave(pendingSave);
     return { context, fetchCalls, saveCalls, state };
@@ -134,8 +139,18 @@ async function main() {
     // A committed 2.2 mode must go straight to measurement start; preflush is
     // a no-op and must not issue an identical output-mode POST.
     const committed = makeMeasurementContext();
-    await committed.context.startHostMeasurement();
+    const committedStart = committed.context.startHostMeasurement();
+    await new Promise(resolve => setImmediate(resolve));
     assert.deepEqual(committed.fetchCalls, ['/api/measurements/start']);
+    committed.context.releaseSnapshot();
+    await committedStart;
+
+    const repeat = makeMeasurementContext();
+    const repeatStart = repeat.context.startLrRepeatMeasurement();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(repeat.fetchCalls, ['/api/measurements/lr-repeat/start']);
+    repeat.context.releaseSnapshot();
+    await repeatStart;
 
     // A still-debounced subwoofer edit is started exactly once and awaited
     // before the measurement endpoint is reached.
@@ -174,7 +189,7 @@ async function main() {
         },
     );
 
-    assert.match(indexSource, /app\.js\?v=0\.9\.9-release14/);
+    assert.match(indexSource, /app\.js\?v=0\.9\.9-release16/);
     console.log('measurement output-mode frontend tests: ok');
 }
 

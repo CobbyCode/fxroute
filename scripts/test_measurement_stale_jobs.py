@@ -8,7 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -104,6 +104,36 @@ class MeasurementStaleJobTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(store.has_active_measurement_job())
             blocker.cancel()
             await asyncio.gather(blocker, return_exceptions=True)
+
+    async def test_single_measurement_start_does_not_run_history_retention(self):
+        with tempfile.TemporaryDirectory() as tempdir, patch.dict(
+            "os.environ", {"XDG_CONFIG_HOME": tempdir, "XDG_STATE_HOME": tempdir}
+        ):
+            store = self._store(tempdir)
+            retention = Mock()
+            store._retain_job_history = retention
+
+            job = await store.start_measurement(input_id="mic", channel="left")
+
+            retention.assert_not_called()
+            task = store._job_tasks[job["id"]]
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def test_lr_repeat_start_does_not_run_history_retention(self):
+        with tempfile.TemporaryDirectory() as tempdir, patch.dict(
+            "os.environ", {"XDG_CONFIG_HOME": tempdir, "XDG_STATE_HOME": tempdir}
+        ):
+            store = self._store(tempdir)
+            retention = Mock()
+            store._retain_job_history = retention
+
+            job = await store.start_lr_repeat_measurement(input_id="mic")
+
+            retention.assert_not_called()
+            task = store._job_tasks[job["id"]]
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
     async def test_persisted_running_job_is_normalized_after_reload(self):
         with tempfile.TemporaryDirectory() as tempdir, patch.dict(

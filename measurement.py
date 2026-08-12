@@ -326,7 +326,6 @@ class MeasurementStore:
         # active-job guard, otherwise a stale cancelling/running record could
         # block every future measurement forever.
         self._normalize_stale_jobs()
-        self._retain_job_history()
         # Guard against concurrent measurement jobs
         active_job = self._find_active_or_cancelling_job()
         if active_job is not None:
@@ -444,7 +443,6 @@ class MeasurementStore:
         # active-job guard, otherwise a stale cancelling/running record could
         # block every future measurement forever.
         self._normalize_stale_jobs()
-        self._retain_job_history()
         active_job = self._find_active_or_cancelling_job()
         if active_job is not None:
             active_id = active_job["id"]
