@@ -3509,57 +3509,6 @@ async def _sync_subwoofer_runtime_at_rate(target_rate: int, *, _rate_lock_held: 
         runtime_snapshot.get("helper_pid"),
         _helper_argument_sample_rate(runtime_snapshot),
     )
-    _create_lifecycle_background_task(
-        _repair_subwoofer_runtime_inputs_after_measurement_release(target_rate),
-        name="measurement-release-input-repair",
-    )
-
-
-async def _repair_subwoofer_runtime_inputs_after_measurement_release(target_rate: int) -> None:
-    """Repair delayed EasyEffects -> helper input loss after measurement release.
-
-    The UI path can briefly restore the helper graph successfully and then lose
-    only the EasyEffects output_FL/FR -> helper input_L/R links a few seconds
-    later. This repair is intentionally narrow: it does not change mode,
-    sample-rate policy, helper output links, QC, or measurement analysis.
-    """
-    if subwoofer_runtime is None:
-        return
-    for delay in (2.0, 5.0, 9.0):
-        await asyncio.sleep(delay)
-        overview = get_audio_output_overview()
-        output_mode = overview.get("output_mode") or {}
-        if output_mode.get("mode") not in OUTPUT_MODE_SUBWOOFER_MODES:
-            logger.info(
-                "Measurement release input repair skipped: api_mode=%s target_rate=%s",
-                output_mode.get("mode"),
-                target_rate,
-            )
-            return
-        state = await _dump_21_runtime_state(
-            "backend-release-input-repair-check",
-            {"target_rate": target_rate, "delay_s": delay},
-        )
-        links = state.get("links") or {}
-        if links.get("ee_to_helper_present") and not links.get("direct_ee_to_hw_present"):
-            continue
-        logger.info(
-            "Measurement release input repair applying: target_rate=%s delay_s=%.1f links=%s",
-            target_rate,
-            delay,
-            json.dumps(links, sort_keys=True),
-        )
-        track = dict(current_track_info or {})
-        if track:
-            await _request_coordinated_recovery(track, "measurement-release-delayed-link-repair")
-        else:
-            logger.info("Measurement release input repair skipped: no active track")
-        await _dump_21_runtime_state(
-            "backend-release-input-repair-after",
-            {"target_rate": target_rate, "delay_s": delay},
-        )
-
-
 def _reset_samplerate_drift_observation() -> None:
     global samplerate_drift_signature, samplerate_drift_readbacks
     samplerate_drift_signature = None
