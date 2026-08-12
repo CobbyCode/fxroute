@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Verhaltenstests für die REFACTOR-010-Extraktion:
+"""Behavior tests for the REFACTOR-010 extraction:
 
 - effects_extras.parse_effects_extras_from_json
 - effects_extras.merge_effects_extras_from_json
 - effects_extras.is_pure_loudness_strength_change
 - effects_extras.is_runtime_autogain_loudness_change
 
-sowie Wrapper-Parität gegen main._parse_effects_extras_from_json,
+plus wrapper parity against main._parse_effects_extras_from_json,
 main._merge_effects_extras_from_json, main._is_pure_loudness_strength_change
-und main._is_runtime_autogain_loudness_change.
+and main._is_runtime_autogain_loudness_change.
 """
 import sys
 import unittest
@@ -131,7 +131,7 @@ class ParseDefaultsAndNullTests(unittest.TestCase):
         self.assertEqual(parsed["tone_effect"]["mode"], "crystalizer")
 
     def test_zero_values_fall_back_to_defaults(self):
-        # 0.0 / 0 sind falsy -> das bestehende `or`-Fallback greift
+        # 0.0 / 0 are falsy -> the existing `or` fallback applies
         body = {
             "headroomGainDb": 0.0,
             "autogainTargetDb": 0,
@@ -149,7 +149,7 @@ class ParseDefaultsAndNullTests(unittest.TestCase):
         self.assertEqual(parsed["bass_enhancer"]["params"]["amount"], 0.0)
 
     def test_strength_kept_as_is_no_or_fallback(self):
-        # strength hat KEIN `or`-Fallback: 0 bleibt 0
+        # strength has NO `or` fallback: 0 stays 0
         parsed = effects_extras.parse_effects_extras_from_json({"loudnessStrength": 0})
         self.assertEqual(parsed["loudness"]["params"]["strength"], 0)
         parsed = effects_extras.parse_effects_extras_from_json({"loudness_strength": None})
@@ -159,7 +159,7 @@ class ParseDefaultsAndNullTests(unittest.TestCase):
         parsed = effects_extras.parse_effects_extras_from_json(
             {"loudnessEnabled": "false", "autogainEnabled": 1, "delayEnabled": "yes"}
         )
-        # Nicht-leere Strings sind truthy -> bool() ergibt True
+        # Non-empty strings are truthy -> bool() yields True
         self.assertIs(parsed["loudness"]["enabled"], True)
         self.assertIs(parsed["autogain"]["enabled"], True)
         self.assertIs(parsed["delay"]["enabled"], True)
@@ -183,7 +183,7 @@ class ParseInvalidConversionTests(unittest.TestCase):
             effects_extras.parse_effects_extras_from_json({"loudnessFftSize": "abc"})
 
     def test_none_value_falls_back_to_default(self):
-        # None ist falsy -> das bestehende `or`-Fallback greift, kein TypeError
+        # None is falsy -> the existing `or` fallback applies, no TypeError
         parsed = effects_extras.parse_effects_extras_from_json({"headroomGainDb": None})
         self.assertEqual(parsed["headroom"]["params"]["gainDb"], -3.0)
 
@@ -232,7 +232,7 @@ class MergeBehaviorTests(unittest.TestCase):
         )
         merged = effects_extras.merge_effects_extras_from_json(previous, {"loudnessStrength": "14"})
         self.assertEqual(merged["loudness"]["params"]["strength"], "14")
-        # Nicht gelieferte Felder bleiben unverändert
+        # Fields not provided stay unchanged
         self.assertEqual(merged["loudness"]["params"]["fftSize"], 4096)
         self.assertEqual(merged["bass_enhancer"]["params"]["amount"], 5.0)
         self.assertIs(merged["bass_enhancer"]["enabled"], True)
@@ -249,12 +249,12 @@ class MergeBehaviorTests(unittest.TestCase):
         merged = effects_extras.merge_effects_extras_from_json(previous, {"loudnessStrength": 14})
         self.assertIsInstance(merged["loudness"]["params"]["strength"], str)
         self.assertEqual(merged["loudness"]["params"]["strength"], "14")
-        # str() wirft bei None keinen ValueError, ergibt "None" - Verhalten exakt bewahren
+        # str(None) yields "None" without ValueError - preserve exact behavior
         merged = effects_extras.merge_effects_extras_from_json(previous, {"loudnessStrength": None})
         self.assertEqual(merged["loudness"]["params"]["strength"], "None")
 
     def test_tone_mode_not_normalized_on_merge(self):
-        # Beim Merge wird NUR str() angewendet, kein strip/lower
+        # Merge applies only str(), no strip/lower
         previous = full_extras()
         merged = effects_extras.merge_effects_extras_from_json(
             previous, {"toneEffectMode": "  BASS_BOOST  "}
@@ -306,7 +306,7 @@ class MergeCalibrationValidationTests(unittest.TestCase):
         cal = {"points": [{"freq": 60, "gain": 2.0}]}
         merged = effects_extras.merge_effects_extras_from_json(previous, {"calibration": cal})
         self.assertEqual(merged["loudness"]["params"]["calibration"], cal)
-        # Nachträgliche Mutation des Inputs darf merged nicht verändern (Deepcopy)
+        # Later mutation of the input must not change merged (deepcopy)
         cal["points"][0]["gain"] = 99.0
         self.assertEqual(merged["loudness"]["params"]["calibration"]["points"][0]["gain"], 2.0)
 
@@ -443,8 +443,8 @@ class RuntimeAutogainLoudnessChangeTests(unittest.TestCase):
         )
 
     def test_strength_only_change_returns_true(self):
-        # Der Vergleich umfasst den gesamten autogain-/loudness-Block inkl. params
-        # (strength liegt in loudness.params) -> strength-only-Aenderung wird erkannt
+        # Comparison covers the whole autogain/loudness block incl. params
+        # (strength lives in loudness.params) -> a strength-only change is detected
         self.assertTrue(
             effects_extras.is_runtime_autogain_loudness_change(
                 self._state(strength="10"), self._state(strength="11")

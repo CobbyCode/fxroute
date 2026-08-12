@@ -534,12 +534,12 @@ class RestoreGateBoundaryTests(RestoreTestBase):
             self.assertTrue(restored)
 
         self.assertEqual(guard_calls, [
-            "spotify-abort-restore-before-rate",
-            "spotify-abort-restore-after-rate",
-            "spotify-abort-restore-after-effects-helper",
-            "spotify-abort-restore-before-start",
-            "spotify-abort-restore-before-volume",
-            "spotify-abort-restore-after-dsp",
+                "failed-transition-restore-before-rate",
+                "failed-transition-restore-after-rate",
+                "failed-transition-restore-after-effects-helper",
+                "failed-transition-restore-before-start",
+                "failed-transition-restore-before-volume",
+                "failed-transition-restore-after-dsp",
         ])
 
     async def test_initial_gate_guard_failure_aborts_before_any_mutating_stage(self):
@@ -547,7 +547,7 @@ class RestoreGateBoundaryTests(RestoreTestBase):
         recorder = StageRecorder(runtime)
 
         async def failing_guard(*, stage):
-            if stage == "spotify-abort-restore-before-rate":
+            if stage == "failed-transition-restore-before-rate":
                 raise RuntimeError("output gate could not be confirmed closed")
 
         with patch.object(main, "current_track_info", None), patch.object(
@@ -568,7 +568,7 @@ class RestoreGateBoundaryTests(RestoreTestBase):
         recorder = StageRecorder(runtime)
 
         async def failing_guard(*, stage):
-            if stage == "spotify-abort-restore-before-volume":
+            if stage == "failed-transition-restore-before-volume":
                 raise RuntimeError("output gate lost before volume restore")
 
         with patch.object(main, "current_track_info", None), patch.object(
@@ -607,7 +607,7 @@ class RestoreGateBoundaryTests(RestoreTestBase):
             )
             self.assertTrue(restored)
 
-        self.assertEqual(guard_calls[-1], "spotify-abort-restore-after-dsp")
+        self.assertEqual(guard_calls[-1], "failed-transition-restore-after-dsp")
         self.assertNotIn("stabilize_effects_after_rate_change", recorder.events)
 
         # Paused/no-DSP: same gate re-check after the volume restore.
@@ -626,7 +626,7 @@ class RestoreGateBoundaryTests(RestoreTestBase):
             )
             self.assertTrue(restored)
 
-        self.assertEqual(guard_calls[-1], "spotify-abort-restore-after-dsp")
+        self.assertEqual(guard_calls[-1], "failed-transition-restore-after-dsp")
         self.assertNotIn("stabilize_effects_after_rate_change", recorder.events)
 
     async def test_gate_loss_after_volume_aborts_restore_before_final_readback(self):
@@ -634,7 +634,7 @@ class RestoreGateBoundaryTests(RestoreTestBase):
         recorder = StageRecorder(runtime)
 
         async def failing_guard(*, stage):
-            if stage == "spotify-abort-restore-after-dsp":
+            if stage == "failed-transition-restore-after-dsp":
                 raise RuntimeError("output gate lost after volume restore")
 
         with patch.object(main, "current_track_info", None), patch.object(
@@ -672,7 +672,7 @@ class PositionRestoreOrderTests(unittest.IsolatedAsyncioTestCase):
                 rate_change=False,
                 reload_source=True,
                 restore_position=37.25,
-                detail="spotify-abort-restore",
+                detail="failed-transition-restore",
             )
             await runtime.prepare_target_source(request)
             await runtime.start_target_source(request)
@@ -711,13 +711,13 @@ class PositionRestoreOrderTests(unittest.IsolatedAsyncioTestCase):
                 rate_change=False,
                 reload_source=True,
                 restore_position=37.25,
-                detail="spotify-abort-restore",
+                detail="failed-transition-restore",
             )
             await runtime.prepare_target_source(request)
             await runtime.start_target_source(request)
             # The source-volume invariant applies to the paused restore too:
             # MPV volume 100 under the confirmed closed gate.
-            await runtime.set_source_volume(100, "spotify-abort-restore")
+            await runtime.set_source_volume(100, "failed-transition-restore")
 
             self.assertTrue(player.state["paused"])
             self.assertFalse(player.state["playing"])
@@ -944,7 +944,7 @@ class CoordinatorGateRestoreTests(unittest.IsolatedAsyncioTestCase):
                 self, request, snapshot, *, target_staged, ensure_gate_closed=None
             ):
                 try:
-                    await ensure_gate_closed(stage="spotify-abort-restore-before-rate")
+                    await ensure_gate_closed(stage="failed-transition-restore-before-rate")
                 except Exception:
                     return False
                 self.events.append("restore-stages-ran")

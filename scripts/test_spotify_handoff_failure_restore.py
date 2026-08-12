@@ -101,7 +101,7 @@ class SpotifyHandoffFailureRestoreTests(unittest.IsolatedAsyncioTestCase):
             playback_queue.queue.mode = "app_replace"
             with patch.object(
                 main.FxrouteTransitionRuntime,
-                "_restore_committed_source_after_failed_spotify",
+                "_restore_committed_source_after_failed_transition",
                 AsyncMock(return_value=True),
             ), patch.object(main, "player_instance", player), patch.object(
                 main, "current_track_info", None
@@ -130,7 +130,7 @@ class SpotifyHandoffFailureRestoreTests(unittest.IsolatedAsyncioTestCase):
         track = radio_track()
         with patch.object(
             main.FxrouteTransitionRuntime,
-            "_restore_committed_source_after_failed_spotify",
+                "_restore_committed_source_after_failed_transition",
             AsyncMock(return_value=True),
         ), patch.object(main, "player_instance", player), patch.object(
             main, "current_track_info", None
@@ -158,7 +158,7 @@ class SpotifyHandoffFailureRestoreTests(unittest.IsolatedAsyncioTestCase):
         track = local_track()
         with patch.object(
             main.FxrouteTransitionRuntime,
-            "_restore_committed_source_after_failed_spotify",
+                "_restore_committed_source_after_failed_transition",
             AsyncMock(return_value=True),
         ), patch.object(main, "player_instance", player), patch.object(
             main, "current_track_info", None
@@ -196,7 +196,7 @@ class SpotifyHandoffFailureRestoreTests(unittest.IsolatedAsyncioTestCase):
         track = local_track()
         with patch.object(
             main.FxrouteTransitionRuntime,
-            "_restore_committed_source_after_failed_spotify",
+                "_restore_committed_source_after_failed_transition",
             AsyncMock(return_value=True),
         ), patch.object(main, "player_instance", None), patch.object(
             main, "current_track_info", None
@@ -219,7 +219,7 @@ class SpotifyHandoffFailureRestoreTests(unittest.IsolatedAsyncioTestCase):
         commit = Mock()
         with patch.object(
             main.FxrouteTransitionRuntime,
-            "_restore_committed_source_after_failed_spotify",
+                "_restore_committed_source_after_failed_transition",
             restore_ready,
         ), patch.object(main, "player_instance", player), patch.object(
             main, "current_track_info", None

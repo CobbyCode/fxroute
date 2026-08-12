@@ -81,7 +81,7 @@ def _ended_snapshot(seq: int = 11, entry_id: int | None = 7) -> dict:
 
 
 class StaleEndfileOwnershipTests(unittest.IsolatedAsyncioTestCase):
-    """Gemeinsames Setup: committed Queue A=[a1,a2] unter Token COMMIT_A."""
+    """Shared setup: committed Queue A=[a1,a2] under token COMMIT_A."""
 
     def _install(self, coordinator_token: str | None = COMMIT_A) -> None:
         self.transition_requests = []
@@ -140,8 +140,8 @@ class StaleEndfileOwnershipTests(unittest.IsolatedAsyncioTestCase):
             patcher.stop()
 
     def _commit_queue_b(self) -> None:
-        """Simuliert den erfolgreichen User-Play-Commit von Queue B=[b1,b2]
-        inkl. neuem Coordinator-Token (wie execute() -> _record_result)."""
+        """Simulates the successful user play-commit of Queue B=[b1,b2]
+        incl. new coordinator token (like execute() -> _record_result)."""
         candidate = playback_queue.cleared_queue_candidate(_local("b1", 96000))
         candidate.queue = [_local("b1", 96000), _local("b2", 96000)]
         candidate.original = [dict(t) for t in candidate.queue]
@@ -175,7 +175,7 @@ class StaleEndfileOwnershipTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.manager.broadcasts, [],
                          "stale ended state must not be broadcast")
 
-    # -- B. Queue-Ende ------------------------------------------------------
+    # -- B. Queue end --------------------------------------------------------
 
     async def test_stale_eof_at_queue_end_does_not_clear_queue(self):
         self._install()
@@ -225,9 +225,9 @@ class StaleEndfileOwnershipTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_stale_local_eof_cannot_displace_spotify(self):
         self._install()
-        # Spotify-Handoff committet keine Track-Info: current_track_info
-        # bleibt der alte Local-Track, die Queue bleibt committed.  Nur der
-        # Commit-Token wechselt.
+        # Spotify handoff commits no track info: current_track_info stays
+        # the old local track, the queue stays committed.  Only the
+        # commit token changes.
         main.playback_context_commit_id = "commit-spotify"
         main.current_footer_owner = "spotify"
 
@@ -243,15 +243,15 @@ class StaleEndfileOwnershipTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(playback_queue.queue.index, 0)
 
-    # -- D. Event waehrend erfolgreichem Attempt ------------------------------
+    # -- D. Event during successful attempt -----------------------------------
 
     async def test_eof_waits_for_successful_attempt_then_noop(self):
         self._install()
-        main._begin_playback_transition_attempt()  # B in flight, Token noch A
+        main._begin_playback_transition_attempt()  # B in flight, token still A
         task = asyncio.create_task(
             main.on_player_state_change(_ended_snapshot(), event_commit_id=COMMIT_A)
         )
-        await asyncio.sleep(0)  # Task erreicht den Settle-Wait
+        await asyncio.sleep(0)  # task reached the settle wait
         self.assertFalse(task.done(), "ended callback must wait for the attempt")
 
         main.playback_context_commit_id = COMMIT_B  # B boundary published
@@ -263,7 +263,7 @@ class StaleEndfileOwnershipTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(playback_queue.queue.index, 0)
         self.assertEqual(self.manager.broadcasts, [])
 
-    # -- E. Event waehrend fehlgeschlagenem Attempt ----------------------------
+    # -- E. Event during failed attempt ---------------------------------------
 
     async def test_eof_survives_failed_attempt_and_advances_once(self):
         self._install()
@@ -274,7 +274,7 @@ class StaleEndfileOwnershipTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0)
         self.assertFalse(task.done())
 
-        # B scheitert: Token bleibt COMMIT_A.
+        # B fails: token stays COMMIT_A.
         main._end_playback_transition_attempt()
         await asyncio.wait_for(task, timeout=5)
 
@@ -302,9 +302,9 @@ class StaleEndfileOwnershipTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_non_source_changing_commit_does_not_invalidate_eof(self):
         self._install()
-        # Nicht-source-changing Coordinator-Transition (z. B. output-mode-
-        # switch, measurement-entry oder sample-rate-policy) laeuft, waehrend
-        # ein EOF(A) captured ist.
+        # A non-source-changing coordinator transition (e.g. output-mode
+        # switch, measurement-entry or sample-rate-policy) runs while
+        # an EOF(A) is captured.
         main._begin_playback_transition_attempt()
         task = asyncio.create_task(
             main.on_player_state_change(_ended_snapshot(), event_commit_id=COMMIT_A)
@@ -312,10 +312,10 @@ class StaleEndfileOwnershipTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0)
         self.assertFalse(task.done(), "ended callback must wait for the attempt")
 
-        # Der Coordinator-commit des output-mode-switch setzt nur seine
-        # interne last_successful_commit_id; der publizierte Playback-Kontext
-        # (COMMIT_A) bleibt unveraendert, weil keine App-Playback-Globals
-        # publiziert wurden.
+        # The output-mode switch coordinator commit only sets its internal
+        # last_successful_commit_id; the published playback context
+        # (COMMIT_A) stays unchanged because no app playback globals
+        # were published.
         self.coordinator.last_successful_commit_id = COMMIT_B
         main._end_playback_transition_attempt()
         await asyncio.wait_for(task, timeout=5)
@@ -326,8 +326,8 @@ class StaleEndfileOwnershipTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_eof_waiter_cannot_enter_between_coordinator_commit_and_app_publish(self):
         self._install()
-        # Transition B: Coordinator-commit erfolgt, aber die App-Playback-
-        # Globals (Queue B + Track B + Token B) sind noch nicht publiziert.
+        # Transition B: coordinator commit done, but the app playback
+        # globals (Queue B + Track B + Token B) are not published yet.
         main._begin_playback_transition_attempt()
         task = asyncio.create_task(
             main.on_player_state_change(_ended_snapshot(), event_commit_id=COMMIT_A)
@@ -335,15 +335,15 @@ class StaleEndfileOwnershipTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0)
         self.assertFalse(task.done(), "ended callback must wait for the attempt")
 
-        # Boundary-Fenster: der publizierte Token ist noch COMMIT_A, aber die
-        # Transition ist noch in flight - der Waiter darf nicht mutieren.
+        # Boundary window: the published token is still COMMIT_A, but the
+        # transition is still in flight - the waiter must not mutate.
         await asyncio.sleep(0.02)
         self.assertFalse(task.done())
         self.assertEqual(self._request_targets(), [],
                          "waiter must not mutate between coordinator commit and app publish")
 
-        # Vollstaendiger App-State-Commit (Queue B, Track B, Token B) und
-        # erst danach endet die Attempt-Phase.
+        # Full app-state commit (Queue B, Track B, Token B) and only
+        # then the attempt phase ends.
         candidate = playback_queue.cleared_queue_candidate(_local("b1", 96000))
         candidate.queue = [_local("b1", 96000), _local("b2", 96000)]
         candidate.original = [dict(t) for t in candidate.queue]
@@ -472,8 +472,8 @@ class StaleEndfileOwnershipTests(unittest.IsolatedAsyncioTestCase):
             _ended_snapshot(), event_commit_id=COMMIT_A
         )
 
-        # Shuffle-Wrap: die neu gemischte Queue beginnt mit dem bisherigen
-        # Track (a2), der neue Ziel-Track a1 steht an Index 1.
+        # Shuffle wrap: the reshuffled queue starts with the previous
+        # track (a2), the new target track a1 is at index 1.
         self.assertEqual(len(self._request_targets()), 1,
                          "current EOF reshuffles the looped queue once")
         self.assertEqual(self._request_targets(), ["a1"])
@@ -620,8 +620,8 @@ class StaleEndfileOwnershipTests(unittest.IsolatedAsyncioTestCase):
 
         with patch.object(main, "on_player_state_change", fake_callback):
             coroutine = main._dispatch_player_state_change({"ended": True})
-            # Ein neuerer Commit darf die Erfassung nicht mehr aendern: der
-            # Token wird beim Dispatch gelesen, nicht beim Task-Start.
+            # A newer commit must not change the captured value: the
+            # token is read at dispatch, not at task start.
             main.playback_context_commit_id = COMMIT_B
             await coroutine
 
@@ -630,7 +630,7 @@ class StaleEndfileOwnershipTests(unittest.IsolatedAsyncioTestCase):
 
 
 class PlayerDispatchContractTests(unittest.IsolatedAsyncioTestCase):
-    """player.py: sync Callback mit Awaitable-Rückgabe wird als Task geplant."""
+    """player.py: sync callback with awaitable result is scheduled as a task."""
 
     async def test_sync_callback_awaitable_result_is_scheduled(self):
         wrapper = player.MPVWrapper()
@@ -674,7 +674,7 @@ class PlayerDispatchContractTests(unittest.IsolatedAsyncioTestCase):
 
 
 class MarkerRemovalTests(unittest.TestCase):
-    """Der tote queue_transition_target_url-Marker ist vollständig entfernt."""
+    """The dead queue_transition_target_url marker is fully removed."""
 
     def test_marker_no_longer_exists(self):
         self.assertFalse(hasattr(main, "queue_transition_target_url"))

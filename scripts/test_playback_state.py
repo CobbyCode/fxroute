@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Verhaltenstests für die REFACTOR-006-Extraktion:
+"""Behavior tests for the REFACTOR-006 extraction:
 
 - playback_state.is_local_playback_active
 - playback_state.is_spotify_playback_active
 - playback_state.playback_state_matches_track
 
-sowie Wrapper-Parität gegen main._is_local_playback_active,
-main._is_spotify_playback_active und main._playback_state_matches_track.
+plus wrapper parity against main._is_local_playback_active,
+main._is_spotify_playback_active and main._playback_state_matches_track.
 """
 import sys
 import unittest
@@ -103,7 +103,7 @@ class PlaybackStateMatchesTrackTests(unittest.TestCase):
         )
 
     def test_missing_url_or_current_file_still_match(self):
-        # Sonderfälle: fehlende URL bzw. fehlendes current_file -> kein Mismatch
+        # Special cases: missing URL or current_file -> no mismatch
         self.assertTrue(playback_state_matches_track({"current_file": "/a.mp3"}, {"source": "local"}))
         self.assertTrue(
             playback_state_matches_track({"current_file": "/a.mp3"}, {"source": "local", "url": None})
@@ -112,7 +112,7 @@ class PlaybackStateMatchesTrackTests(unittest.TestCase):
         self.assertTrue(
             playback_state_matches_track({"current_file": None}, {"source": "radio", "url": "/b.mp3"})
         )
-        # leerer String ist falsy -> ebenfalls kein Mismatch
+        # empty string is falsy -> also no mismatch
         self.assertTrue(
             playback_state_matches_track({"current_file": ""}, {"source": "local", "url": "/b.mp3"})
         )

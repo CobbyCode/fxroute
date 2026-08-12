@@ -1098,11 +1098,10 @@ library_refresh_tasks: set[asyncio.Task] = set()
 latest_player_state_seq_seen = 0
 playback_transition_epoch = 0
 playback_transition_pending_attempts = 0
-# Warte-Primitiv fuer Ended-Callbacks: gesetzt, sobald keine
-# Playback-Transition-Instanz mehr in flight ist.  asyncio.Event bindet sich
-# an den ersten benutzten Event-Loop; Tests nutzen pro Test einen frischen
-# Loop, daher wird das Signal pro Loop gehalten (Produktion: genau ein Loop).
-# Kein zweites Transition-Lock.
+# Wait primitive for ended callbacks: set once no playback transition
+# is in flight.  asyncio.Event binds to the first used event loop; tests
+# use a fresh loop per test, so the signal is kept per loop (production:
+# exactly one loop).  No second transition lock.
 _playback_settled_events: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Event]" = weakref.WeakKeyDictionary()
 
 
@@ -1116,12 +1115,11 @@ def _playback_settled_event() -> asyncio.Event:
         _playback_settled_events[loop] = event
     return event
 playback_intent_generation = 0
-# Publizierter Playback-Kontext-Token: wechselt NUR, wenn ein neuer
-# autoritativer Playback-Kontext (Local/Radio/Spotify/Queue-Track) an der
-# App-Commit-Boundary vollstaendig publiziert wurde.  Coordinator-
-# Operationen ohne Source-/Track-Wechsel (output-mode, measurement-entry/
-# restore, sample-rate-policy, recovery, graph-reconcile) lassen ihn
-# unveraendert; fehlgeschlagene Attempts ebenso.
+# Published playback context token: changes ONLY when a new authoritative
+# playback context (local/radio/spotify/queue track) was fully published at
+# the app commit boundary.  Coordinator operations without a source/track
+# change (output-mode, measurement-entry/restore, sample-rate-policy,
+# recovery, graph-reconcile) leave it unchanged; failed attempts too.
 playback_context_commit_id: str | None = None
 current_track_info = None
 last_track_info = None
@@ -1133,10 +1131,10 @@ radio_reconnect_active_since = 0.0
 radio_metadata_service = RadioMetadataService()
 samplerate_drift_signature: tuple[Any, ...] | None = None
 samplerate_drift_readbacks = 0
-# queue_advancing ist ein Reentrancy-/Dispatch-Guard von
-# on_player_state_change und bewusst kein Queue-State: der Queue-Zustand
-# (Liste, Original-Reihenfolge, Index, Mode, Loop, Shuffle, Single-Track-Loop)
-# lebt ausschliesslich in playback_queue.PlaybackQueue.
+# queue_advancing is a reentrancy/dispatch guard for
+# on_player_state_change and deliberately not queue state: the queue
+# state (list, original order, index, mode, loop, shuffle, single-track-
+# loop) lives exclusively in playback_queue.PlaybackQueue.
 queue_advancing = False
 
 configure_library_api_runtime(LibraryApiRuntime(
@@ -1855,10 +1853,10 @@ def _commit_coordinated_track(
     if source == "local":
         _record_local_track_started(track)
     _mark_player_state_authoritative(player_instance.state if player_instance else {})
-    # Publiziere den neuen Playback-Kontext-Token erst hier, nachdem alle
-    # zum Kontext gehoerenden Globals committed wurden: der Ended-Waiter
-    # kann zwischen Coordinator-Commit und dieser Boundary nie laufen (die
-    # Boundary wird synchron im selben Caller-Step publiziert).
+    # Publish the new playback context token only here, after all globals
+    # belonging to the context were committed: the ended waiter can never
+    # run between the coordinator commit and this boundary (the boundary
+    # is published synchronously in the same caller step).
     _publish_playback_context_commit(commit_token)
 
 # WebSocket connection manager
@@ -4466,11 +4464,11 @@ async def on_player_state_change(state: dict, event_commit_id: str | None = None
                     ))
                     if _sample_rate_policy_is_auto() and isinstance(result.target_rate, int) and result.target_rate > 0:
                         current_track_info["sample_rate_hz"] = result.target_rate
-                    # Eine neue physische Playback-Instanz wurde committed:
-                    # publiziere ausschliesslich den Playback-Instance-Token
-                    # (kein _commit_coordinated_track: dessen Side Effects wie
-                    # Intent/History sind fuer automatisches Single-Track-Loop
-                    # unerwuenscht).
+                    # A new physical playback instance was committed:
+                    # publish only the playback instance token (no
+                    # _commit_coordinated_track: its side effects like
+                    # intent/history are unwanted for automatic single-track
+                    # loop).
                     _publish_playback_context_commit(getattr(result, "transition_id", None))
                 except PlaybackTransitionFailure as exc:
                     logger.warning("Single-track loop transition failed: %s", exc.as_status())
@@ -7662,11 +7660,11 @@ async def api_spotify_play():
     except PlaybackTransitionFailure as exc:
         raise _transition_error_http(exc) from exc
     global current_footer_owner, latest_spotify_state
-    # Nach dem Coordinator-Commit ist die Spotify-Source bereits der committed
-    # Playback-Kontext; der anschliessende State-Read ist Telemetry/UI-Refresh
-    # und kein Teil der Ownership-Boundary.  Publiziere synchron vor jedem
-    # weiteren await, damit der Ended-Waiter nie ein Fenster mit neuem Token
-    # und altem Footer sieht.
+    # After the coordinator commit the Spotify source is already the
+    # committed playback context; the subsequent state read is
+    # telemetry/UI refresh and not part of the ownership boundary.
+    # Publish synchronously before any further await so the ended waiter
+    # never sees a window with a new token and an old footer.
     current_footer_owner = "spotify"
     _publish_playback_context_commit(getattr(result, "transition_id", None))
     latest_spotify_state = await get_spotify_ui_state()
@@ -7704,9 +7702,9 @@ async def api_spotify_toggle():
     except PlaybackTransitionFailure as exc:
         raise _transition_error_http(exc) from exc
     global current_footer_owner
-    # Derselbe Ownership-Vertrag wie api_spotify_play: Footer und Token
-    # werden synchron nach dem Commit publiziert, bevor der Spotify-State
-    # gelesen oder gebroadcastet wird.
+    # Same ownership contract as api_spotify_play: footer and token are
+    # published synchronously after the commit, before the Spotify state
+    # is read or broadcast.
     current_footer_owner = "spotify"
     _publish_playback_context_commit(getattr(result, "transition_id", None))
     data = await get_spotify_ui_state()

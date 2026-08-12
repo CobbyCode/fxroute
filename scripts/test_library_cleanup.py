@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verhaltenstests für die REFACTOR-007-Extraktion:
+"""Behavior tests for the REFACTOR-007 extraction:
 
 - library.path_within_root
 - library.is_removable_artwork_file
@@ -8,7 +8,7 @@
 - library.folder_has_audio_files
 - library.cleanup_track_parent_folder
 
-sowie Wrapper-Parität gegen main._path_within_root.
+plus wrapper parity against main._path_within_root.
 """
 import sys
 import unittest
@@ -53,7 +53,7 @@ class PathWithinRootTests(unittest.TestCase):
         self.assertFalse(path_within_root(Path("/musicary"), root))
 
     def test_resolve_error_returns_false(self):
-        # Resolve-Exception -> Funktion muss False liefern (deterministisch via Mock)
+        # Resolve exception -> function must return False (deterministic via mock)
         from unittest.mock import patch
 
         root = Path("/music")
@@ -129,7 +129,7 @@ class CleanupOnlyFileTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as td:
             folder = _make_folder(Path(td), "album", {"random.jpg": b"x"})
-            # beliebige Datei mit Artwork-Endung zählt für cleanup_only_folder
+            # any file with an artwork suffix counts for cleanup_only_folder
             self.assertTrue(is_cleanup_only_file(folder / "random.jpg"))
 
     def test_sidecar_counts(self):
@@ -292,7 +292,7 @@ class CleanupTrackParentFolderTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)
-            # beliebige .jpg (nicht als Artwork erkannt) + .png: cleanup_only_folder -> alle entfernt
+            # arbitrary .jpg (not recognized as artwork) + .png: cleanup_only_folder -> all removed
             music = _make_folder(base, "music", {"album/random.jpg": b"x", "album/other.png": b"y"})
             folder = music / "album"
             result = cleanup_track_parent_folder(folder, music)

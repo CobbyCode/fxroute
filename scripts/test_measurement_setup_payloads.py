@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Verhaltenstests für die REFACTOR-004-Extraktion:
+"""Behavior tests for the REFACTOR-004 extraction:
 
 - measurement.normalize_measurement_optional_input_channel
 - measurement.measurement_setup_settings_from_payload
 
-sowie Wrapper-Parität gegen measurement_session._normalize_measurement_optional_input_channel
-und measurement_session._measurement_setup_settings_from_payload.
+plus wrapper parity against measurement_session._normalize_measurement_optional_input_channel
+and measurement_session._measurement_setup_settings_from_payload.
 """
 import copy
 import sys
@@ -94,8 +94,8 @@ class SetupSettingsFromPayloadTests(unittest.TestCase):
         )
 
     def test_snake_case_reference_key_fallback(self):
-        # reference_input_channel wird nur als Fallback genutzt, wenn
-        # selectedReferenceInputChannel fehlt bzw. None ist.
+        # reference_input_channel is only a fallback when
+        # selectedReferenceInputChannel is missing or None.
         payload = {"measure": {"selectedReferenceInputChannel": "4", "reference_input_channel": "9"}}
         result = measurement_setup_settings_from_payload(payload)
         self.assertEqual(result["selectedReferenceInputChannel"], "4")
@@ -116,7 +116,7 @@ class SetupSettingsFromPayloadTests(unittest.TestCase):
             }
         }
         result = measurement_setup_settings_from_payload(payload)
-        self.assertEqual(result["selectedMicInputChannel"], "1")  # Default-Fallback
+        self.assertEqual(result["selectedMicInputChannel"], "1")  # default fallback
         self.assertEqual(result["selectedReferenceInputChannel"], "")
 
     def test_input_payload_not_mutated(self):

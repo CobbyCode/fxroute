@@ -354,7 +354,7 @@ class FxrouteTransitionRuntime(TransitionRuntime):
                 or previous_state.get("paused")
                 or previous_state.get("ended")
             ):
-                restored = await self._restore_committed_source_after_failed_spotify(
+                restored = await self._restore_committed_source_after_failed_transition(
                     request,
                     snapshot,
                     previous_state,
@@ -407,7 +407,7 @@ class FxrouteTransitionRuntime(TransitionRuntime):
                 return
 
         if snapshot_track.get("source") in {"local", "radio"} and previous_state.get("current_file"):
-            restored = await self._restore_committed_source_after_failed_spotify(
+            restored = await self._restore_committed_source_after_failed_transition(
                 request,
                 snapshot,
                 previous_state,
@@ -456,7 +456,7 @@ class FxrouteTransitionRuntime(TransitionRuntime):
         self._deps.set_footer_owner("local")
         self._deps.mark_player_state_authoritative(self._player.state if self._player else {})
 
-    async def _restore_committed_source_after_failed_spotify(
+    async def _restore_committed_source_after_failed_transition(
         self,
         request: TransitionRequest,
         snapshot: Mapping[str, Any],
@@ -466,7 +466,7 @@ class FxrouteTransitionRuntime(TransitionRuntime):
         ensure_gate_closed: Callable[..., Awaitable[None]] | None = None,
     ) -> bool:
         """Physically restore the previously committed Local/Radio source and
-        its full playback graph after a failed Spotify handoff.
+        its full playback graph after a failed source transition.
 
         Runs the same bounded low-level Coordinator stage primitives that a
         normal Local/Radio transition executes under the still-closed output
@@ -504,7 +504,7 @@ class FxrouteTransitionRuntime(TransitionRuntime):
             restore_target_rate = int(derived) if isinstance(derived, int) and derived > 0 else 0
         if restore_target_rate <= 0:
             logger.warning(
-                "Spotify handoff source restore aborted: no authoritative committed "
+                "Failed-transition source restore aborted: no authoritative committed "
                 "sample rate for %s source url=%s",
                 source,
                 target_url,
@@ -553,7 +553,7 @@ class FxrouteTransitionRuntime(TransitionRuntime):
             native_queue_index=native_fields.get("native_queue_index") if native_committed else None,
             native_queue_jump=None,
             native_queue_loop=bool(native_fields.get("native_queue_loop")) if native_committed else False,
-            detail="spotify-abort-restore",
+            detail="failed-transition-restore",
         )
         restored = False
         try:
@@ -565,7 +565,7 @@ class FxrouteTransitionRuntime(TransitionRuntime):
             # bound, the restore fails and the failure latch stays.
             if request.source == "spotify" and not await self._deps.wait_for_pipewire_spotify_release():
                 logger.warning(
-                    "Spotify handoff source restore aborted: active Spotify sink "
+                    "Failed-transition source restore aborted: active Spotify sink "
                     "input did not quiesce before the old source restore"
                 )
                 return False
@@ -574,20 +574,20 @@ class FxrouteTransitionRuntime(TransitionRuntime):
             # graph, volume) runs: the original Spotify transition may itself
             # have failed at output-gate-close, leaving the gate unverified.
             if ensure_gate_closed is not None:
-                await ensure_gate_closed(stage="spotify-abort-restore-before-rate")
+                await ensure_gate_closed(stage="failed-transition-restore-before-rate")
             await self.establish_target_rate(restore_request)
             if ensure_gate_closed is not None:
-                await ensure_gate_closed(stage="spotify-abort-restore-after-rate")
+                await ensure_gate_closed(stage="failed-transition-restore-after-rate")
             effects_state: dict[str, Any] = {}
             effects_result = await self.establish_effects_and_helper(restore_request)
             if isinstance(effects_result, Mapping):
                 effects_state = dict(effects_result)
             dsp_reinitialized = bool(effects_state.get("dsp_reinitialized"))
             if ensure_gate_closed is not None:
-                await ensure_gate_closed(stage="spotify-abort-restore-after-effects-helper")
+                await ensure_gate_closed(stage="failed-transition-restore-after-effects-helper")
             await self.prepare_target_source(restore_request)
             if ensure_gate_closed is not None:
-                await ensure_gate_closed(stage="spotify-abort-restore-before-start")
+                await ensure_gate_closed(stage="failed-transition-restore-before-start")
             await self.start_target_source(restore_request)
             reconciler = getattr(self, "reconcile_post_start_graph", None)
             if callable(reconciler):
@@ -596,14 +596,14 @@ class FxrouteTransitionRuntime(TransitionRuntime):
                     "graph_complete", False
                 ):
                     logger.warning(
-                        "Spotify handoff source restore aborted: post-start graph "
+                        "Failed-transition source restore aborted: post-start graph "
                         "reconciliation did not confirm a complete graph"
                     )
                     return False
             graph_state = await self.verify_transition_graph(restore_request)
             if not bool(graph_state.get("committed", True)):
                 logger.warning(
-                    "Spotify handoff source restore aborted: staged graph readback "
+                    "Failed-transition source restore aborted: staged graph readback "
                     "did not satisfy the graph contract"
                 )
                 return False
@@ -617,8 +617,8 @@ class FxrouteTransitionRuntime(TransitionRuntime):
             # gate -> volume 100 -> optional DSP -> gate re-check -> final
             # commit readback).
             if ensure_gate_closed is not None:
-                await ensure_gate_closed(stage="spotify-abort-restore-before-volume")
-            await self.set_source_volume(100, "spotify-abort-restore")
+                await ensure_gate_closed(stage="failed-transition-restore-before-volume")
+            await self.set_source_volume(100, "failed-transition-restore")
             # DSP stabilization is not artificially forced for paused
             # restores; it keeps its existing rate/DSP-reinit condition.
             if restore_request.should_play and (restore_rate_change or dsp_reinitialized):
@@ -629,16 +629,16 @@ class FxrouteTransitionRuntime(TransitionRuntime):
                     "stabilized", False
                 ):
                     logger.warning(
-                        "Spotify handoff source restore aborted: DSP stabilization "
+                        "Failed-transition source restore aborted: DSP stabilization "
                         "was not confirmed"
                     )
                     return False
             if ensure_gate_closed is not None:
-                await ensure_gate_closed(stage="spotify-abort-restore-after-dsp")
+                await ensure_gate_closed(stage="failed-transition-restore-after-dsp")
             final_state = await self.verify_committed_transition(restore_request)
             if not bool(final_state.get("committed", True)):
                 logger.warning(
-                    "Spotify handoff source restore aborted: final commit readback "
+                    "Failed-transition source restore aborted: final commit readback "
                     "did not satisfy the commit contract"
                 )
                 return False
@@ -648,14 +648,14 @@ class FxrouteTransitionRuntime(TransitionRuntime):
                 source_volume = None
             if source_volume != 100:
                 logger.warning(
-                    "Spotify handoff source restore aborted: final commit readback "
+                    "Failed-transition source restore aborted: final commit readback "
                     "did not positively confirm source volume 100: volume=%s",
                     final_state.get("source_volume"),
                 )
                 return False
             restored = True
         except Exception as exc:
-            logger.warning("Spotify handoff source restore failed: %s", exc)
+            logger.warning("Failed-transition source restore failed: %s", exc)
         if not restored and native_committed:
             # The native playlist could not be reconstructed; normalize to
             # the existing app-owned navigation so no later jump targets a

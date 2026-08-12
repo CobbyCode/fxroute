@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Verhaltenstests für die REFACTOR-005-Extraktion:
+"""Behavior tests for the REFACTOR-005 extraction:
 
 - sink_inputs.brief_sink_inputs
 - sink_inputs.active_unmuted_sink_inputs
 
-sowie Wrapper-Parität gegen main._brief_sink_inputs und
+plus wrapper parity against main._brief_sink_inputs and
 main._active_unmuted_sink_inputs.
 """
 import copy
@@ -91,7 +91,7 @@ class ActiveUnmutedSinkInputsTests(unittest.TestCase):
         self.assertEqual([e["id"] for e in active_unmuted_sink_inputs(entries)], [1])
 
     def test_missing_and_none_use_fallback_100_numeric_zero_is_muted(self):
-        # fehlend / None -> Fallback 100 -> aktiv; numerisch 0 -> stumm
+        # missing / None -> fallback 100 -> active; numeric 0 -> muted
         for entry in ({}, {"volume_percent": None}):
             self.assertEqual(active_unmuted_sink_inputs([entry]), [entry])
         self.assertEqual(active_unmuted_sink_inputs([{"volume_percent": 0}]), [])
@@ -101,7 +101,7 @@ class ActiveUnmutedSinkInputsTests(unittest.TestCase):
             self.assertEqual(active_unmuted_sink_inputs([entry]), [])
 
     def test_invalid_truthy_volume_raises(self):
-        # "abc" ist truthy -> int("abc") wirft ValueError (bisheriges Verhalten)
+        # "abc" is truthy -> int("abc") raises ValueError (previous behavior)
         with self.assertRaises(ValueError):
             active_unmuted_sink_inputs([{"volume_percent": "abc"}])
 

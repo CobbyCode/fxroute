@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Verhaltenstests für die REFACTOR-009-Extraktion:
+"""Behavior tests for the REFACTOR-009 extraction:
 
 - install_info.read_version_file
 - install_info.read_build_id
 - install_info.read_install_config
 - install_info.configured_service_name
 
-sowie Wrapper-Parität gegen main._read_version_file, main._read_build_id
-und main._configured_service_name.
+plus wrapper parity against main._read_version_file, main._read_build_id
+and main._configured_service_name.
 """
 import subprocess
 import sys

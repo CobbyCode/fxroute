@@ -34,8 +34,8 @@ done
 
 PYTHON="python3"
 NODE="node"
-# Node-basierte Tests (test_*.js / check_*.js) sind nur ausführbar, wenn
-# ein node-Binary auf dem Host vorhanden ist; sonst sauber überspringen.
+# Node-based tests (test_*.js / check_*.js) only run if node is
+# installed; otherwise skip them cleanly.
 NODE_SKIP_REASON=""
 if ! command -v node >/dev/null 2>&1; then
     NODE_SKIP_REASON="node binary not installed on this host"

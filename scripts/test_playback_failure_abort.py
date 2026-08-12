@@ -97,7 +97,7 @@ class FailedTransitionAbortTests(unittest.IsolatedAsyncioTestCase):
                 main, "current_footer_owner", "local"
             ), patch.object(main, "_mark_player_state_authoritative"), patch.object(
                 main.FxrouteTransitionRuntime,
-                "_restore_committed_source_after_failed_spotify",
+                "_restore_committed_source_after_failed_transition",
                 side_effect=restore_source,
             ) as restore:
                 restored = await make_transition_runtime().abort_failed_transition(

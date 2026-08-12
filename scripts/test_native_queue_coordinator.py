@@ -96,9 +96,10 @@ class _QueuePlayer:
 
     def move_playlist_entry(self, old_index, new_index):
         self.calls.append(("playlist-move", old_index, new_index))
+        current_file = self.state.get("current_file")
         entry = self.playlist.pop(old_index)
         self.playlist.insert(new_index, entry)
-        self.state["playlist_pos"] = new_index
+        self.state["playlist_pos"] = self.playlist.index(current_file) if current_file in self.playlist else new_index
 
     def clear_playlist(self):
         self.calls.append(("playlist-clear",))

@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
-"""Regressionstests für die Paketmanager-Unterstützung des Installers.
+"""Regression tests for the installer's package-manager support.
 
-Deckt die 0.7.1-Regression ab (Arch/Manjaro-Support wurde entfernt) und
-prüft die vereinheitlichte Paketmanager-Vorbereitung:
+Covers the 0.7.1 regression (Arch/Manjaro support was removed) and
+checks the unified package-manager preparation:
 
-- pacman-Erkennung in confirm_supported_distro()
-- pkg_install()-Zweige für apt, dnf, zypper und pacman
-- Refresh-/Upgrade-Vorbereitung pro Installerlauf höchstens EINMAL:
+- pacman detection in confirm_supported_distro()
+- pkg_install() branches for apt, dnf, zypper and pacman
+- refresh/upgrade preparation at most ONCE per installer run:
   apt-get update, dnf install --refresh, zypper refresh, pacman -Syu
-- keine automatischen System-Upgrades im Installer
+- no automatic system upgrades in the installer
   (apt upgrade, dist-upgrade, dnf upgrade, zypper update)
-- aktuelle Manjaro-Paketlisten (core, audio), stage-1-Abhängigkeiten
-  (gcc pkgconf libpipewire), venv-Behandlung, Avahi, LAN-IP-Fallback
-- pacman-Zweig in scripts/system-package-update.sh
+- current Manjaro package lists (core, audio), stage-1 dependencies
+  (gcc pkgconf libpipewire), venv handling, Avahi, LAN-IP fallback
+- pacman branch in scripts/system-package-update.sh
 
-Der Verhaltensteil führt pkg_install() in einer Subshell mit gemocktem
-run_cmd aus und zählt, wie oft Refresh-/Upgrade-Befehle bei mehreren
-pkg_install-Aufrufen tatsächlich ausgeführt werden.
+The behavior part runs pkg_install() in a subshell with a mocked
+run_cmd and counts how often refresh/upgrade commands actually run
+across multiple pkg_install calls.
 """
 import re
 import subprocess
@@ -40,7 +40,7 @@ def _extract_function(text: str, name: str) -> str:
 
 
 class InstallerPkgManagerStaticTests(unittest.TestCase):
-    """Statische Prüfungen auf dem install.sh-Quelltext."""
+    """Static checks on the install.sh source text."""
 
     @classmethod
     def setUpClass(cls):
@@ -57,7 +57,7 @@ class InstallerPkgManagerStaticTests(unittest.TestCase):
             self.assertIn(f"\n    {branch}\n", self.pkg_body)
 
     def test_apt_prep_once(self):
-        # apt-get update darf nur einmal (im Guard) vorkommen; keine Upgrades.
+        # apt-get update may appear only once (in the guard); no upgrades.
         self.assertEqual(self.pkg_body.count("apt-get update"), 1)
         for forbidden in ("apt-get upgrade", "apt-get dist-upgrade", "dist-upgrade"):
             self.assertNotIn(forbidden, self.text)
@@ -74,15 +74,15 @@ class InstallerPkgManagerStaticTests(unittest.TestCase):
     def test_pacman_syu_once_and_no_bare_sy(self):
         self.assertEqual(self.pkg_body.count("pacman -Syu --needed --noconfirm"), 1)
         self.assertEqual(self.pkg_body.count("pacman -S --needed --noconfirm"), 1)
-        # Kein separates `pacman -Sy` (ohne -u) als eigenständiger Befehl.
+        # No separate `pacman -Sy` (without -u) as a standalone command.
         for line in self.pkg_body.splitlines():
             stripped = line.strip()
             if stripped.startswith("pacman -Sy") and not stripped.startswith("pacman -Syu"):
-                self.fail(f"separate 'pacman -Sy' gefunden: {stripped}")
+                self.fail(f"separate 'pacman -Sy' found: {stripped}")
 
     def test_guard_variable_used(self):
         self.assertIn("PKG_REFRESH_DONE=0", self.text)
-        # Guard wird in jedem der vier Zweige nach dem Refresh/Upgrade gesetzt.
+        # Guard is set in each of the four branches after refresh/upgrade.
         self.assertGreaterEqual(self.pkg_body.count("PKG_REFRESH_DONE=1"), 4)
 
     def test_manjaro_package_lists(self):
@@ -111,10 +111,10 @@ class InstallerPkgManagerStaticTests(unittest.TestCase):
 
 
 class InstallerPkgManagerBehaviorTests(unittest.TestCase):
-    """Verhaltenstest: Refresh/Upgrade-Vorbereitung max. einmal pro Lauf.
+    """Behavior test: refresh/upgrade preparation at most once per run.
 
-    Führt pkg_install() mehrfach in einer Subshell aus (run_cmd gemockt)
-    und zählt die tatsächlich ausgeführten Refresh-/Upgrade-Befehle.
+    Runs pkg_install() repeatedly in a subshell (run_cmd mocked) and
+    counts the refresh/upgrade commands actually executed.
     """
 
     def _count_log_lines(self, log_text: str, needle: str) -> int:

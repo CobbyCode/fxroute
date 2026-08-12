@@ -417,10 +417,9 @@ class MPVWrapper:
                         changed = True
 
         elif event_name == "end-file":
-            # MPV liefert laut IPC-Vertrag reason und playlist_entry_id
-            # (seit mpv 0.33); das File/Filename-Feld existiert dort nicht.
-            # Die Entry-ID ist die einzige MPV-seitige Track-Identität und
-            # wird hier als Diagnose-/Logging-Identität erhalten.
+            # MPV IPC provides reason and playlist_entry_id (since mpv 0.33);
+            # there is no file/filename field. The entry ID is the only
+            # track identity MPV exposes and is kept for diagnostics/logging.
             self._last_end_reason = event.get("reason")
             entry_id = event.get("playlist_entry_id")
             self._last_end_entry_id = entry_id if isinstance(entry_id, int) else None

@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""Verhaltenstests für die REFACTOR-011-Extraktion:
+"""Behavior tests for the REFACTOR-011 extraction:
 
-- sink_inputs.list_sink_inputs (pactl sink-inputs Parser)
+- sink_inputs.list_sink_inputs (pactl sink-inputs parser)
 
-sowie Wrapper-Parität gegen main._list_sink_inputs einschließlich
-Fehlerpfaden. Alle Tests mocken subprocess.run mit realistischen pactl-
-Ausgaben.
+plus wrapper parity against main._list_sink_inputs including error
+paths. All tests mock subprocess.run with realistic pactl output.
 """
 import sys
 import unittest
@@ -169,8 +168,8 @@ Sink Input #4
         self.assertEqual(entries[0]["volume_percent"], 100)
         self.assertEqual(entries[1]["volume_percent"], 50)
         self.assertEqual(entries[2]["volume_percent"], 100)
-        # Original-RegEx (kein \\s* zwischen Ziffern und %) matcht `/ 50 % /`
-        # nicht -> kein volume_percent gesetzt (1:1-Verhalten vor Extraktion)
+        # Original regex (no \\s* between digits and %) does not match `/ 50 % /`
+        # -> no volume_percent set (1:1 behavior before extraction)
         self.assertNotIn("volume_percent", entries[3])
 
     def test_volume_without_percent_marker_skipped(self):
@@ -213,7 +212,7 @@ Sink Input #4
             self.assertEqual(sink_inputs.list_sink_inputs(), [])
 
     def test_trailing_input_appended(self):
-        # Kein Abschluss-Header nach dem letzten Block — wird trotzdem angehängt
+        # No trailing header after the last block - still appended
         with patch("sink_inputs.subprocess.run", return_value=_completed(0, FULL_SINGLE)):
             entries = sink_inputs.list_sink_inputs()
         self.assertEqual(len(entries), 1)

@@ -207,7 +207,7 @@ def _reason(context: str, name: str) -> str | None:
             "rollback_output_mode_runtime",
             "_ensure_mpv_to_easyeffects_links",
             "_sync_easyeffects_preset_for_playback_samplerate",
-            "_restore_committed_source_after_failed_spotify",
+            "_restore_committed_source_after_failed_transition",
         }
         or "_sync_locked" in context
     ):

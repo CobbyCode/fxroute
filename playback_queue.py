@@ -288,9 +288,9 @@ class PlaybackQueue:
         """Navigate to ``index`` of the committed queue.
 
         ``queue_candidate`` allows queue navigation that first replaces the
-        committed queue (manual shuffle wrap): the prepared queue is published
-        only after the transition committed, and failure keeps the old
-        order/index/track context intact.
+        committed queue. The prepared queue is published only after the
+        transition committed, and failure keeps the old order/index/track
+        context intact.
         """
         if queue_candidate is not None:
             if index < 0 or index >= len(queue_candidate.queue):
@@ -372,37 +372,9 @@ class PlaybackQueue:
                 else:
                     return "unavailable"
             else:
-                manual_shuffle_wrap = self.shuffle and transition_reason.startswith("manual queue next")
-                if self.loop or manual_shuffle_wrap:
+                if self.loop:
                     if self.shuffle:
-                        current_index = self.index if 0 <= self.index < len(self.tracks) else 0
-                        # Prepare the reshuffled wrap without touching the
-                        # committed queue: it is published only after the
-                        # navigation transition committed.
-                        shuffled = [dict(track) for track in self.tracks]
-                        future = [dict(track) for track in shuffled[current_index + 1:]]
-                        random.shuffle(future)
-                        shuffled = shuffled[:current_index + 1] + future
                         next_index = 0
-                        candidate = QueueCandidate(
-                            queue=shuffled,
-                            original=[dict(track) for track in self.original],
-                            index=next_index,
-                            mode="app_replace",
-                            loop=self.loop,
-                            shuffle=True,
-                            single_track_loop=False,
-                            track=dict(shuffled[next_index]),
-                        )
-                        return (
-                            "advanced"
-                            if await self.load_track(
-                                next_index,
-                                transition_reason=transition_reason,
-                                queue_candidate=candidate,
-                            )
-                            else "unavailable"
-                        )
                     else:
                         next_index = 0
                 else:
@@ -431,51 +403,39 @@ class PlaybackQueue:
     ) -> bool:
         """Reorder MPV without committing app state until every IPC call succeeds."""
         player = self._player
-        clear_playlist = getattr(player, "clear_playlist", None)
-        loadfile = getattr(player, "loadfile", None)
         set_playlist_pos = getattr(player, "set_playlist_pos", None)
         move_playlist_entry = getattr(player, "move_playlist_entry", None)
         set_loop_playlist = getattr(player, "set_loop_playlist", None)
-        if not all(callable(method) for method in (clear_playlist, loadfile, set_playlist_pos)):
+        if not callable(move_playlist_entry) or not callable(set_playlist_pos):
             return False
 
         try:
-            current_url = str((player.state if player else {}).get("current_file") or "")
-            current_position = float((player.state if player else {}).get("position") or 0.0)
-            clear_playlist()
-            if enabled or not callable(move_playlist_entry):
-                first_url = str(target_queue[0].get("url") or "")
-                if not first_url:
-                    return False
-                loadfile(first_url, mode="replace", start_paused=True)
-            queue_tail = (
-                target_queue[1:]
-                if enabled or not callable(move_playlist_entry)
-                else target_queue[:target_index] + target_queue[target_index + 1:]
-            )
-            for track in queue_tail:
-                url = str(track.get("url") or "")
-                if not url:
-                    raise RuntimeError("Native MPV queue contains an empty URL")
-                loadfile(url, mode="append")
+            current_order = [dict(track) for track in self.tracks]
+            for desired_index, desired_track in enumerate(target_queue):
+                match_index = next(
+                    (
+                        index
+                        for index in range(desired_index, len(current_order))
+                        if current_order[index].get("id") == desired_track.get("id")
+                        or (
+                            not desired_track.get("id")
+                            and current_order[index].get("url") == desired_track.get("url")
+                        )
+                    ),
+                    None,
+                )
+                if match_index is None:
+                    raise RuntimeError("Native MPV queue entry is missing")
+                if match_index != desired_index:
+                    move_playlist_entry(match_index, desired_index)
+                    entry = current_order.pop(match_index)
+                    current_order.insert(desired_index, entry)
             if callable(set_loop_playlist):
                 set_loop_playlist(bool(self.loop))
-            if enabled:
+            if target_index < 0 or target_index >= len(current_order):
+                raise RuntimeError("Native MPV queue index is invalid")
+            if current_order[target_index].get("url") != (player.state if player else {}).get("current_file"):
                 set_playlist_pos(target_index)
-            elif callable(move_playlist_entry):
-                move_playlist_entry(0, target_index)
-                if current_url and not await self._deps.wait_for_player_current_file(current_url, timeout_ms=600):
-                    raise RuntimeError("Native MPV current entry did not settle after playlist move")
-                if current_position > 0:
-                    seek = getattr(player, "seek", None)
-                    if callable(seek):
-                        seek(current_position)
-            else:
-                set_playlist_pos(target_index)
-            if not enabled:
-                set_pause = getattr(player, "set_pause", None)
-                if callable(set_pause):
-                    set_pause(was_paused)
             return True
         except Exception:
             logger.warning(

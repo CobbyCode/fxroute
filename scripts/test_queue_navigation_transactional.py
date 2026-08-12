@@ -248,78 +248,40 @@ class QueueNavigationTransactionalTests(unittest.IsolatedAsyncioTestCase):
         finally:
             self._restore(originals)
 
-    async def test_manual_shuffle_wrap_failure_keeps_queue_order_and_index(self):
+    async def test_shuffle_at_queue_end_without_loop_commits_terminal_end(self):
         queue_a = [_track(track_id) for track_id in ("a", "b", "c", "d")]
         originals = self._install(queue_a, index=3, shuffle=True)
         try:
-            async def fail(_request):
-                raise PlaybackTransitionFailure(
-                    "wrap transition failed", transition_id="tr-test", stage="target-source-start"
+            with patch.object(main, "_run_coordinated_transition") as transition:
+                self.assertEqual(
+                    await playback_queue.queue.advance(transition_reason="manual queue next"),
+                    "ended",
                 )
-
-            with self._patch_context(fail, reverse_shuffle=True):
-                with self.assertRaises(main.HTTPException):
-                    await playback_queue.queue.advance(transition_reason="manual queue next")
+            transition.assert_not_called()
         finally:
-            self.assertEqual(
-                [item["id"] for item in playback_queue.queue.tracks],
-                ["a", "b", "c", "d"],
-                "the committed queue order must survive a failed wrap",
-            )
-            self.assertEqual(playback_queue.queue.index, 3)
-            self.assertTrue(playback_queue.queue.shuffle)
+            self.assertEqual(playback_queue.queue.tracks, [])
+            self.assertEqual(playback_queue.queue.index, -1)
+            self.assertFalse(playback_queue.queue.shuffle)
             self.assertEqual(main.current_track_info, _track("d"))
             self._restore(originals)
 
-    async def test_manual_shuffle_wrap_success_commits_shuffled_queue_once(self):
+    async def test_shuffle_at_queue_end_with_loop_wraps(self):
         queue_a = [_track(track_id) for track_id in ("a", "b", "c", "d")]
-        originals = self._install(queue_a, index=3, shuffle=True)
-        commits = []
-        real_commit = playback_queue.queue.commit
+        originals = self._install(queue_a, index=3, shuffle=True, loop=True)
         try:
             async def succeed(request):
-                main.player_instance.state.update({
-                    "current_file": request.target_url,
-                    "paused": False,
-                    "playing": True,
-                    "ended": False,
-                    "position": 1.0,
-                })
                 return SimpleNamespace(target_rate=request.target_rate, committed=True)
-
-            def recording_commit(candidate):
-                commits.append(candidate)
-                real_commit(candidate)
-
-            from contextlib import ExitStack
-
-            with ExitStack() as stack:
-                for patcher in (
-                    patch.object(main, "_run_coordinated_transition", succeed),
-                    patch.object(main, "_record_local_track_started", lambda *_a, **_k: None),
-                    patch.object(main, "_sample_rate_policy_is_auto", return_value=False),
-                    patch.object(playback_queue.random, "shuffle", side_effect=lambda values: values.reverse()),
-                    patch.object(playback_queue.queue, "commit", side_effect=recording_commit),
-                ):
-                    stack.enter_context(patcher)
+            with self._patch_context(succeed):
                 self.assertEqual(
                     await playback_queue.queue.advance(transition_reason="manual queue next"),
                     "advanced",
                 )
-
-            self.assertEqual(len(commits), 1, "the prepared wrap queue is committed exactly once")
-            self.assertEqual(
-                [item["id"] for item in playback_queue.queue.tracks],
-                ["a", "b", "c", "d"],
-            )
             self.assertEqual(playback_queue.queue.index, 0)
             self.assertTrue(playback_queue.queue.shuffle)
-            self.assertEqual(main.current_track_info, _track("a"))
-            self.assertEqual(main.last_track_info, _track("a"))
         finally:
             self._restore(originals)
 
-    # -- Queue-Ende: terminaler Erfolgszustand statt clear-then-409 -------------
+    # -- Queue end: terminal success state instead of clear-then-409 ----------
 
     async def test_manual_next_at_queue_end_commits_terminal_ended_state(self):
         queue_a = [_track("a"), _track("b")]
@@ -428,7 +390,7 @@ class QueueNavigationTransactionalTests(unittest.IsolatedAsyncioTestCase):
         finally:
             self._restore(originals)
 
-    async def test_manual_next_shuffle_wrap_api_contract(self):
+    async def test_manual_next_shuffle_end_api_contract(self):
         queue_a = [_track(track_id) for track_id in ("a", "b", "c", "d")]
         originals = self._install(queue_a, index=3, shuffle=True)
         try:
@@ -447,15 +409,12 @@ class QueueNavigationTransactionalTests(unittest.IsolatedAsyncioTestCase):
             ):
                 result = await main.next_playback()
 
-            self.assertEqual(result["status"], "playing")
-            self.assertNotIn("queue_ended", result)
-            self.assertEqual(
-                [item["id"] for item in playback_queue.queue.tracks],
-                ["a", "b", "c", "d"],
-            )
-            self.assertEqual(playback_queue.queue.index, 0)
-            self.assertTrue(playback_queue.queue.shuffle)
-            self.assertEqual(main.current_track_info, _track("a"))
+            self.assertEqual(result["status"], "ok")
+            self.assertTrue(result["queue_ended"])
+            self.assertEqual(playback_queue.queue.tracks, [])
+            self.assertEqual(playback_queue.queue.index, -1)
+            self.assertFalse(playback_queue.queue.shuffle)
+            self.assertEqual(main.current_track_info, _track("d"))
         finally:
             self._restore(originals)
 

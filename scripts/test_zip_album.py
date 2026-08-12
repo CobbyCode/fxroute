@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verhaltenstests für die REFACTOR-008-Extraktion:
+"""Behavior tests for the REFACTOR-008 extraction:
 
 - zip_album.dedupe_archive_name
 - zip_album.choose_unique_path
@@ -7,9 +7,9 @@
 - zip_album.is_safe_relative_zip_path
 - zip_album.extract_zip_album
 
-sowie Wrapper-Parität gegen main._dedupe_archive_name und
+plus wrapper parity against main._dedupe_archive_name and
 main._is_safe_relative_zip_path.
-Tests nutzen echte temporäre ZIP-Dateien (zipfile, tmp-Verzeichnisse).
+Tests use real temporary ZIP files (zipfile, tmp dirs).
 """
 import sys
 import tempfile
@@ -39,9 +39,9 @@ def _write_zip(zip_path: Path, members: list[tuple[str, bytes]]) -> None:
 
 
 def _corrupt_zip_data(zip_path: Path, member_name: str) -> None:
-    """Korrumpiert die Daten eines STORED-Members, sodass testzip() fehlschlägt."""
+    """Corrupt the data of a STORED member so that testzip() fails."""
     data = bytearray(zip_path.read_bytes())
-    # lokaler Header: 30 Bytes + Filename + (Extra-Feld, hier leer)
+    # local header: 30 bytes + filename + (extra field, empty here)
     offset = 30 + len(member_name.encode())
     data[offset] ^= 0xFF
     zip_path.write_bytes(bytes(data))
@@ -133,7 +133,7 @@ class IsSafeRelativeZipPathTests(unittest.TestCase):
         self.assertIsNone(is_safe_relative_zip_path("../a/../evil.mp3"))
 
     def test_dot_segment_normalized_by_pathlib(self):
-        # pathlib normalisiert "."-Segmente -> erlaubt als a/b (bleibt unter Ziel)
+        # pathlib normalizes "." segments -> allowed as a/b (stays under target)
         self.assertEqual(is_safe_relative_zip_path("a/./b"), Path("a/b"))
 
     def test_leading_slashes_rejected(self):

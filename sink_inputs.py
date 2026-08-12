@@ -1,8 +1,8 @@
-"""Sink-Input-Kurzfassung und Aktivitätsfilter (REFACTOR-005-Extrakt).
+"""Sink-input summary and activity filter (REFACTOR-005 extraction).
 
-Zustandsfreie Helfer rund um PipeWire-Sink-Input-Einträge, 1:1 aus
-``main.py`` extrahiert. Keine Imports aus ``main`` oder anderen
-Projektmodulen — nur stdlib.
+Stateless helpers around PipeWire sink-input entries, extracted 1:1
+from ``main.py``. No imports from ``main`` or other project modules,
+stdlib only.
 """
 
 import re
