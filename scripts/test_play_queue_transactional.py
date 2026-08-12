@@ -220,6 +220,25 @@ class PlayQueueTransactionalTests(unittest.IsolatedAsyncioTestCase):
         finally:
             self._restore(originals)
 
+    async def test_play_click_in_same_native_queue_uses_direct_mpv_navigation(self):
+        queue_a = [_track("a", rate=48000), _track("b", rate=48000), _track("c", rate=48000)]
+        originals = self._install(queue_a, index=0, mode="native_mpv")
+        try:
+            main.player_instance.state["current_file"] = "/music/a.flac"
+            main.player_instance.state["playing"] = True
+            main.player_instance.state["paused"] = False
+            with self._patch_context(lambda _request: self.fail("Coordinator must not run")), patch.object(
+                main.library_scanner, "get_tracks"
+            ) as scan:
+                result = await self._play(track_id="c", queue_track_ids=["a", "b", "c"])
+
+            scan.assert_not_called()
+            self.assertEqual(result["track"]["id"], "c")
+            self.assertEqual(playback_queue.queue.index, 2)
+            self.assertEqual(main.player_instance.state["playlist_pos"], 2)
+        finally:
+            self._restore(originals)
+
     async def test_successful_play_commits_queue_b_exactly_once(self):
         queue_a = [_track("a"), _track("b"), _track("c")]
         originals = self._install(queue_a, index=0)

@@ -5730,6 +5730,25 @@ async def play_track(req: PlayRequest):
     if source not in {"local", "radio"}:
         raise HTTPException(status_code=400, detail=f"Unsupported playback source: {source}")
 
+    active_queue_ids = [item.get("id") for item in playback_queue.queue.tracks]
+    if (
+        source == "local"
+        and playback_queue.queue.mode == "native_mpv"
+        and req.queue_track_ids
+        and list(req.queue_track_ids) == active_queue_ids
+        and req.track_id in active_queue_ids
+    ):
+        target_index = active_queue_ids.index(req.track_id)
+        if not await playback_queue.queue.load_track(target_index, transition_reason="direct queue selection"):
+            raise HTTPException(status_code=409, detail="Native queue navigation failed")
+        track_info = dict(playback_queue.queue.tracks[target_index])
+        return {
+            "status": "playing",
+            "url": str(track_info.get("url") or ""),
+            "track": track_info,
+            "playback": build_playback_payload(player_instance.state),
+        }
+
     previous_state = dict(player_instance.state)
     if source == "radio":
         track_info = None
@@ -5748,7 +5767,6 @@ async def play_track(req: PlayRequest):
             raise HTTPException(status_code=404, detail="Radio station not found")
         queue_candidate = playback_queue.cleared_queue_candidate(track_info)
     else:
-        active_queue_ids = [item.get("id") for item in playback_queue.queue.tracks]
         preserve_queue_order = bool(req.queue_track_ids) and list(req.queue_track_ids) == active_queue_ids
         tracks = await _drain_worker(library_scanner.get_tracks) if library_scanner is not None else None
         queue_candidate = playback_queue.queue.prepare_local_queue(
