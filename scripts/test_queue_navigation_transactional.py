@@ -227,7 +227,7 @@ class QueueNavigationTransactionalTests(unittest.IsolatedAsyncioTestCase):
         originals = self._install(queue_a, index=1, mode="native_mpv")
         try:
             async def succeed(request):
-                self.assertEqual([item["id"] for item in request.native_queue], ["b", "d", "c", "a"])
+                self.assertEqual([item["id"] for item in request.native_queue], ["a", "b", "d", "c"])
                 main.player_instance.state.update({
                     "current_file": request.target_url,
                     "paused": False,
@@ -240,8 +240,8 @@ class QueueNavigationTransactionalTests(unittest.IsolatedAsyncioTestCase):
             with self._patch_context(succeed, reverse_shuffle=True):
                 self.assertTrue(await playback_queue.queue.set_shuffle(True))
 
-            self.assertEqual([item["id"] for item in playback_queue.queue.tracks], ["b", "d", "c", "a"])
-            self.assertEqual(playback_queue.queue.index, 0)
+            self.assertEqual([item["id"] for item in playback_queue.queue.tracks], ["a", "b", "d", "c"])
+            self.assertEqual(playback_queue.queue.index, 1)
             self.assertTrue(playback_queue.queue.shuffle)
             self.assertEqual(main.current_track_info["id"], "b")
             self.assertEqual(main.last_track_info["id"], "b")
@@ -310,12 +310,12 @@ class QueueNavigationTransactionalTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(commits), 1, "the prepared wrap queue is committed exactly once")
             self.assertEqual(
                 [item["id"] for item in playback_queue.queue.tracks],
-                ["d", "c", "b", "a"],
+                ["a", "b", "c", "d"],
             )
-            self.assertEqual(playback_queue.queue.index, 1)
+            self.assertEqual(playback_queue.queue.index, 0)
             self.assertTrue(playback_queue.queue.shuffle)
-            self.assertEqual(main.current_track_info, _track("c"))
-            self.assertEqual(main.last_track_info, _track("c"))
+            self.assertEqual(main.current_track_info, _track("a"))
+            self.assertEqual(main.last_track_info, _track("a"))
         finally:
             self._restore(originals)
 
@@ -451,11 +451,11 @@ class QueueNavigationTransactionalTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("queue_ended", result)
             self.assertEqual(
                 [item["id"] for item in playback_queue.queue.tracks],
-                ["d", "c", "b", "a"],
+                ["a", "b", "c", "d"],
             )
-            self.assertEqual(playback_queue.queue.index, 1)
+            self.assertEqual(playback_queue.queue.index, 0)
             self.assertTrue(playback_queue.queue.shuffle)
-            self.assertEqual(main.current_track_info, _track("c"))
+            self.assertEqual(main.current_track_info, _track("a"))
         finally:
             self._restore(originals)
 

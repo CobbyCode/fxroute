@@ -107,25 +107,6 @@ def can_use_native_local_queue(tracks: list[dict]) -> bool:
     return len(set(rates)) == 1
 
 
-def _shuffled_around_current(tracks: list[dict], current_track: dict | None) -> list[dict]:
-    """Return dict copies with the current track first and the rest shuffled.
-
-    The current track is identified by its id so duplicate copies of the same
-    track stay together at the front.  With ``current_track`` omitted, only
-    the shuffled copies are returned.
-    """
-    current = dict(current_track) if current_track is not None else None
-    remaining = [
-        dict(track)
-        for track in tracks
-        if current is None or track.get("id") != current.get("id")
-    ]
-    random.shuffle(remaining)
-    if current is None:
-        return remaining
-    return [current] + remaining
-
-
 def cleared_queue_candidate(track: dict | None = None) -> QueueCandidate:
     """Candidate for a play request that intentionally replaces any queue."""
     return QueueCandidate(
@@ -267,8 +248,13 @@ class PlaybackQueue:
         original_tracks = [dict(track) for track in ordered_tracks]
 
         if shuffle and reshuffle and len(ordered_tracks) > 1:
-            current_track = next((track for track in ordered_tracks if track.get("id") == track_id), ordered_tracks[0])
-            ordered_tracks = _shuffled_around_current(ordered_tracks, current_track)
+            current_index = next(
+                (index for index, track in enumerate(ordered_tracks) if track.get("id") == track_id),
+                0,
+            )
+            future = [dict(track) for track in ordered_tracks[current_index + 1:]]
+            random.shuffle(future)
+            ordered_tracks = [dict(track) for track in ordered_tracks[:current_index + 1]] + future
 
         queue = ordered_tracks if len(ordered_tracks) > 1 else []
         original = original_tracks if len(original_tracks) > 1 else []
@@ -390,12 +376,14 @@ class PlaybackQueue:
                 if self.loop or manual_shuffle_wrap:
                     if self.shuffle:
                         current_index = self.index if 0 <= self.index < len(self.tracks) else 0
-                        current_track = dict(self.tracks[current_index])
                         # Prepare the reshuffled wrap without touching the
                         # committed queue: it is published only after the
                         # navigation transition committed.
-                        shuffled = _shuffled_around_current(self.tracks, current_track)
-                        next_index = 1 if len(shuffled) > 1 else 0
+                        shuffled = [dict(track) for track in self.tracks]
+                        future = [dict(track) for track in shuffled[current_index + 1:]]
+                        random.shuffle(future)
+                        shuffled = shuffled[:current_index + 1] + future
+                        next_index = 0
                         candidate = QueueCandidate(
                             queue=shuffled,
                             original=[dict(track) for track in self.original],
@@ -455,7 +443,7 @@ class PlaybackQueue:
             current_url = str((player.state if player else {}).get("current_file") or "")
             current_position = float((player.state if player else {}).get("position") or 0.0)
             clear_playlist()
-            if not enabled and not callable(move_playlist_entry):
+            if enabled or not callable(move_playlist_entry):
                 first_url = str(target_queue[0].get("url") or "")
                 if not first_url:
                     return False
@@ -473,7 +461,7 @@ class PlaybackQueue:
             if callable(set_loop_playlist):
                 set_loop_playlist(bool(self.loop))
             if enabled:
-                set_playlist_pos(0)
+                set_playlist_pos(target_index)
             elif callable(move_playlist_entry):
                 move_playlist_entry(0, target_index)
                 if current_url and not await self._deps.wait_for_player_current_file(current_url, timeout_ms=600):
@@ -522,8 +510,11 @@ class PlaybackQueue:
         current_track_url = current_track.get("url")
 
         if enabled:
-            target_queue = _shuffled_around_current(self.tracks, current_track)
-            target_index = 0
+            target_queue = [dict(track) for track in self.tracks[:current_index + 1]]
+            future = [dict(track) for track in self.tracks[current_index + 1:]]
+            random.shuffle(future)
+            target_queue.extend(future)
+            target_index = current_index
         elif self.original:
             target_queue = [dict(track) for track in self.original]
             target_index = next(
@@ -554,7 +545,7 @@ class PlaybackQueue:
             was_paused = bool(player_state.get("paused"))
             if await self._reorder_native_mpv_playlist(target_queue, target_index, enabled, was_paused):
                 self.tracks = target_queue
-                self.index = 0 if enabled else target_index
+                self.index = target_index
                 self.shuffle = bool(enabled)
                 self._deps.set_track_context(dict(target_queue[self.index]), dict(target_queue[self.index]))
                 return True

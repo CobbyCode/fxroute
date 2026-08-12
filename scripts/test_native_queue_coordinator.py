@@ -529,7 +529,7 @@ class NativeQueueShuffleParityTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(await playback_queue.queue.set_shuffle(True))
 
             shuffled_ids = [track["id"] for track in playback_queue.queue.tracks]
-            self.assertEqual(shuffled_ids, ["b", "d", "c", "a"])
+            self.assertEqual(shuffled_ids, ["a", "b", "d", "c"])
             self.assertEqual(
                 fake.playlist,
                 [track["url"] for track in playback_queue.queue.tracks],
@@ -538,18 +538,18 @@ class NativeQueueShuffleParityTests(unittest.IsolatedAsyncioTestCase):
 
             # A natural native boundary is an MPV callback only.  It updates
             # the same concrete queue index that Manual Next/Previous use.
-            fake.state["playlist_pos"] = 1
+            fake.state["playlist_pos"] = 2
             fake.state["current_file"] = "/music/d.flac"
             await main.on_player_state_change({
                 "_seq": 1,
                 "current_file": "/music/d.flac",
-                "playlist_pos": 1,
+                "playlist_pos": 2,
                 "paused": False,
                 "playing": True,
                 "ended": False,
             })
             self.assertEqual(main.current_track_info["id"], "d")
-            self.assertEqual(playback_queue.queue.index, 1)
+            self.assertEqual(playback_queue.queue.index, 2)
             self.assertEqual(fake.playlist[fake.state["playlist_pos"]], "/music/d.flac")
 
             self.assertEqual(
@@ -557,11 +557,11 @@ class NativeQueueShuffleParityTests(unittest.IsolatedAsyncioTestCase):
                 "advanced",
             )
             self.assertEqual(main.current_track_info["id"], "c")
-            self.assertEqual(playback_queue.queue.index, 2)
+            self.assertEqual(playback_queue.queue.index, 3)
             self.assertEqual(fake.playlist[fake.state["playlist_pos"]], "/music/c.flac")
             self.assertTrue(await playback_queue.queue.rewind(transition_reason="manual queue previous"))
             self.assertEqual(main.current_track_info["id"], "d")
-            self.assertEqual(playback_queue.queue.index, 1)
+            self.assertEqual(playback_queue.queue.index, 2)
             self.assertEqual(fake.playlist[fake.state["playlist_pos"]], "/music/d.flac")
 
             fake.state["position"] = 37.5
