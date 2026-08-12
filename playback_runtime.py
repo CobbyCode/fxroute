@@ -1746,6 +1746,31 @@ class FxrouteTransitionRuntime(TransitionRuntime):
         """Run the bounded final graph reconciliation before staged commit."""
         return await self._deps.coordinator_reconcile_post_start_graph(request)
 
+    async def finalize_output_mode_graph_after_gate_open(
+        self, request: TransitionRequest
+    ) -> dict[str, Any]:
+        """Remove links recreated when the newly opened hardware sink activates."""
+        overview = request.output_mode_target
+        if not isinstance(overview, Mapping):
+            raise RuntimeError("output-mode transition has no target overview")
+        mode = (overview.get("output_mode") or {}).get("mode")
+        if mode in OUTPUT_MODE_SUBWOOFER_MODES:
+            await self._deps.coordinator_reconcile_subwoofer_links_only()
+
+        source_required = bool(request.should_play or request.target_url)
+        diagnosis = await self._deps.playback_graph_diagnosis(
+            overview,
+            source=request.source if source_required else None,
+            target_rate=request.target_rate,
+            require_source=source_required,
+        )
+        if not diagnosis.get("links_complete"):
+            raise RuntimeError(
+                "post-gate output-mode graph is incomplete: "
+                f"{diagnosis.get('signature')}"
+            )
+        return {"graph_complete": True, "diagnosis": diagnosis}
+
     async def verify_committed_transition(self, request: TransitionRequest) -> dict[str, Any]:
         return await self._verify_transition(request, require_source_volume=True)
 

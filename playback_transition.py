@@ -214,6 +214,10 @@ class TransitionRuntime(Protocol):
         self, request: TransitionRequest
     ) -> Mapping[str, Any]: ...
 
+    async def finalize_output_mode_graph_after_gate_open(
+        self, request: TransitionRequest
+    ) -> Mapping[str, Any]: ...
+
     async def rollback_output_mode_runtime(
         self, request: TransitionRequest, snapshot: Mapping[str, Any] | None
     ) -> None: ...
@@ -593,7 +597,11 @@ class PlaybackTransitionCoordinator:
             await asyncio.sleep(self.gate_settle_seconds)
 
     async def _restore_gate(
-        self, transition_id: str, *, audible_output: bool = False
+        self,
+        transition_id: str,
+        *,
+        audible_output: bool = False,
+        after_physical_restore: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         if not self.gate.closed:
             return
@@ -605,6 +613,8 @@ class PlaybackTransitionCoordinator:
         await self.runtime.set_hardware_mute(restore_muted, transition_id)
         if (await self.runtime.read_hardware_mute()) != restore_muted:
             raise RuntimeError("hardware output gate restoration was not confirmed")
+        if after_physical_restore is not None:
+            await after_physical_restore()
         if audible_output:
             await self._verify_audible_output_readback("before-gate-open")
         self.gate.closed = False
@@ -1325,6 +1335,26 @@ class PlaybackTransitionCoordinator:
                             state = {**dict(state), **dict(committed_policy)}
 
                     if gate_required:
+                        after_physical_restore = None
+                        if active_request.operation == "output-mode-switch":
+                            finalizer = getattr(
+                                self.runtime,
+                                "finalize_output_mode_graph_after_gate_open",
+                                None,
+                            )
+                            if callable(finalizer):
+                                async def finalize_graph() -> None:
+                                    enter_stage("post-gate-output-mode-graph")
+                                    final_graph = await finalizer(active_request)
+                                    if (
+                                        not isinstance(final_graph, Mapping)
+                                        or not final_graph.get("graph_complete", False)
+                                    ):
+                                        raise RuntimeError(
+                                            "output-mode graph changed when the output gate opened"
+                                        )
+
+                                after_physical_restore = finalize_graph
                         enter_stage("before-output-gate-restore")
                         await self.ensure_output_gate_closed(
                             transition_id,
@@ -1335,6 +1365,7 @@ class PlaybackTransitionCoordinator:
                         await self._restore_gate(
                             transition_id,
                             audible_output=audible_output,
+                            after_physical_restore=after_physical_restore,
                         )
 
                     result_state = dict(state)

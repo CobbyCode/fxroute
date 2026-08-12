@@ -313,6 +313,7 @@ class VolumeSwitchRuntime:
         self.muted = False
         self.ee_muted = False
         self.events: list[str] = []
+        self.direct_bypass = False
 
     def set_volume(self, volume: int) -> None:
         self.canonical_volume = volume
@@ -326,6 +327,8 @@ class VolumeSwitchRuntime:
 
     async def set_hardware_mute(self, muted: bool, _transition_id: str) -> None:
         self.muted = bool(muted)
+        if not muted:
+            self.direct_bypass = True
 
     async def read_sink_mute(self, _sink_name: str) -> bool:
         return self.ee_muted
@@ -372,6 +375,13 @@ class VolumeSwitchRuntime:
     async def commit_output_mode_runtime(self, _request) -> dict:
         self.events.append("persist")
         return {"output_mode_persisted": True}
+
+    async def finalize_output_mode_graph_after_gate_open(self, _request) -> dict:
+        self.events.append("post-gate-graph")
+        assert not self.muted, "final graph cleanup must run after gate open"
+        assert self.direct_bypass, "test must reproduce gate-open direct bypass"
+        self.direct_bypass = False
+        return {"graph_complete": True}
 
     async def stabilize_effects_after_rate_change(
         self, _request, *, dsp_reinitialized: bool = False
@@ -438,6 +448,8 @@ async def _mode_switch_volume_preserved() -> None:
     assert result.committed, result
     assert runtime.volume == 40, runtime.volume
     assert "dsp-stabilize" in runtime.events
+    assert not runtime.direct_bypass
+    assert runtime.events[-1] == "post-gate-graph"
 
     # Volume changed to Y=75 while in mode B.
     runtime.set_volume(75)
@@ -447,12 +459,14 @@ async def _mode_switch_volume_preserved() -> None:
     result = await coordinator.execute(_mode_request("stereo"))
     assert result.committed, result
     assert runtime.volume == 75, runtime.volume
+    assert not runtime.direct_bypass
 
     # Reverse direction: A -> B keeps Y as well.
     result = await coordinator.execute(_mode_request("subwoofer-2.2"))
     assert result.committed, result
     assert runtime.volume == 75, runtime.volume
     assert runtime.events.count("dsp-stabilize") == 3, runtime.events
+    assert runtime.events.count("post-gate-graph") == 3, runtime.events
 
     # Control: a plain play transition without DSP reinit keeps the old
     # no-stabilize behavior (the fix must not widen the gate).
