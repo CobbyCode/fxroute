@@ -3013,7 +3013,19 @@ function renderPeakWarningBadge(activeOverride = null) {
             : !!activeOverride;
         const showVu = !!warning.available && warning.vu_fresh === true
             && playbackActive && vuDb !== null;
-        elements.outputLevelBadge.classList.toggle('hidden', !showVu);
+        if (playbackActive) {
+            // A peak monitor restart briefly emits snapshots without a target
+            // or a fresh sample (available=false / vu_db=null /
+            // vu_fresh=false).  Keep the badge slot geometrically stable in
+            // that window instead of collapsing the footer layout, but never
+            // display a stale numeric value: the badge is hidden visually and
+            // its text is emptied until a fresh sample arrives.
+            elements.outputLevelBadge.classList.toggle('hidden', false);
+            elements.outputLevelBadge.style.visibility = showVu ? '' : 'hidden';
+        } else {
+            elements.outputLevelBadge.classList.toggle('hidden', !showVu);
+            elements.outputLevelBadge.style.visibility = '';
+        }
         elements.outputLevelBadge.textContent = showVu ? formatOutputLevelBadgeDb(vuDb) : '';
         elements.outputLevelBadge.title = showVu ? `Post-EasyEffects output level (slow VU) on ${title}` : '';
     }

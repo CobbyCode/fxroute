@@ -4484,6 +4484,9 @@ input[type="number"]::-webkit-outer-spin-button {
     color: #a7f3d0;
     border: 1px solid rgba(16, 185, 129, 0.18);
     font-variant-numeric: tabular-nums;
+    /* Keep the badge slot width stable while the peak monitor restarts and
+       the badge is temporarily hidden via visibility (widest value -00 dB). */
+    min-width: 4.4ch;
 }
 .peak-warning-badge {
     background: rgba(239, 68, 68, 0.14);
