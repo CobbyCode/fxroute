@@ -211,7 +211,8 @@ class ConnectionManagerBackpressureTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(sender.enqueue(json.dumps({"type": "held"})))
         self.assertEqual(sender.queue.qsize(), 1)
 
-        await manager.broadcast({"type": "second"})
+        with self.assertLogs("main", level="INFO") as captured:
+            await manager.broadcast({"type": "second"})
         removed = await _wait_until(lambda: hanging not in manager.active_connections, timeout=3.0)
         self.assertTrue(
             removed,
@@ -220,6 +221,44 @@ class ConnectionManagerBackpressureTests(unittest.IsolatedAsyncioTestCase):
         closed = await _wait_until(lambda: hanging.close_calls == 1)
         self.assertTrue(closed, "an overloaded client must have its transport closed")
         self.assertEqual(hanging.sent, [], "stuck client never received a message")
+        self.assertTrue(any("reason=send-queue-full" in line for line in captured.output))
+
+    async def test_repeated_state_snapshots_coalesce_to_latest_pending_value(self):
+        manager = ConnectionManager(max_pending_sends=1, send_timeout=1.0)
+        slow = _FakeWebSocket(hang=True)
+        await _connect(manager, slow)
+
+        await manager.broadcast({"type": "playback", "n": 1})
+        in_send = await _wait_until(lambda: slow.active_sends == 1)
+        self.assertTrue(in_send, "first snapshot must enter the send worker")
+
+        for index in range(2, 20):
+            await manager.broadcast({"type": "playback", "n": index})
+
+        self.assertIn(slow, manager.active_connections)
+        self.assertEqual(manager._senders[slow].queue.qsize(), 1)
+        slow.hang = False
+        slow.release()
+        delivered = await _wait_until(lambda: len(slow.sent) == 2)
+        self.assertTrue(delivered)
+        self.assertEqual(
+            [json.loads(raw)["n"] for raw in slow.sent],
+            [1, 19],
+            "only the newest pending snapshot should follow the in-flight one",
+        )
+
+    async def test_distinct_events_still_disconnect_when_queue_is_full(self):
+        manager = ConnectionManager(max_pending_sends=1, send_timeout=1.0)
+        hanging = _FakeWebSocket(hang=True)
+        await _connect(manager, hanging)
+
+        await manager.broadcast({"type": "event-a"})
+        self.assertTrue(await _wait_until(lambda: hanging.active_sends == 1))
+        await manager.broadcast({"type": "event-b"})
+        await manager.broadcast({"type": "event-c"})
+
+        removed = await _wait_until(lambda: hanging not in manager.active_connections)
+        self.assertTrue(removed)
 
 
     async def test_peer_disconnect_is_idempotent(self):

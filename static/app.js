@@ -6,6 +6,7 @@
 const CONFIG = {
     wsUrl: null, // will be set dynamically
     reconnectInterval: 3000,
+    offlineIndicatorDelay: 1500,
     maxReconnectAttempts: 10,
 };
 const MeasurementDsp = window.FXRouteMeasurementDsp || {};
@@ -263,6 +264,7 @@ let state = {
 let ws = null;
 let reconnectAttempts = 0;
 let reconnectTimer = null;
+let offlineIndicatorTimer = null;
 let wsConnectSerial = 0;
 let wsReconnectSyncGeneration = 0;
 let playbackActionInFlight = false;
@@ -742,6 +744,10 @@ function connectWebSocket() {
         console.log('WebSocket connected');
         state.wsConnected = true;
         reconnectAttempts = 0;
+        if (offlineIndicatorTimer) {
+            clearTimeout(offlineIndicatorTimer);
+            offlineIndicatorTimer = null;
+        }
         updateConnectionBadge(true);
         elements.offlineIndicator.classList.add('hidden');
         stopMetadataPolling();
@@ -753,8 +759,7 @@ function connectWebSocket() {
         console.log('WebSocket disconnected', { code: event.code, reason: event.reason, wasClean: event.wasClean, serial });
         if (serial !== wsConnectSerial) return;
         state.wsConnected = false;
-        updateConnectionBadge(false);
-        elements.offlineIndicator.classList.remove('hidden');
+        scheduleOfflineIndicator();
         stopPeakStatusPolling();
         startMetadataPolling();
         scheduleReconnect();
@@ -775,12 +780,22 @@ function connectWebSocket() {
 }
 function scheduleReconnect() {
     if (reconnectTimer) return;
+    const delay = reconnectAttempts === 0 ? 0 : CONFIG.reconnectInterval;
     reconnectAttempts++;
-    console.log(`Reconnecting in ${CONFIG.reconnectInterval}ms (attempt ${reconnectAttempts})`);
+    console.log(`Reconnecting in ${delay}ms (attempt ${reconnectAttempts})`);
     reconnectTimer = setTimeout(() => {
         reconnectTimer = null;
         connectWebSocket();
-    }, CONFIG.reconnectInterval);
+    }, delay);
+}
+function scheduleOfflineIndicator() {
+    if (offlineIndicatorTimer) return;
+    offlineIndicatorTimer = setTimeout(() => {
+        offlineIndicatorTimer = null;
+        if (state.wsConnected) return;
+        updateConnectionBadge(false);
+        elements.offlineIndicator.classList.remove('hidden');
+    }, CONFIG.offlineIndicatorDelay);
 }
 async function resyncPlaybackAfterReconnect() {
     const generation = ++wsReconnectSyncGeneration;
