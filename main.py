@@ -5906,7 +5906,7 @@ async def toggle_playback():
             "playback": build_playback_payload(new_state),
         }
 
-    replay_track = dict(current_track_info or last_radio_track_info or {})
+    replay_track = dict(current_track_info or last_track_info or {})
     replay_url = str(replay_track.get("url") or "")
     if not replay_url:
         raise HTTPException(status_code=409, detail="Nothing is available to replay")

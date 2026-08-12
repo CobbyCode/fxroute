@@ -331,6 +331,8 @@ class FxrouteTransitionRuntime(TransitionRuntime):
         transition must never discard the previously working queue.
         """
 
+        snapshot_track = dict((snapshot or {}).get("current_track") or {})
+        previous_state = dict((snapshot or {}).get("player") or {})
         if request.source not in {"local", "radio"}:
             if request.source != "spotify":
                 return
@@ -346,8 +348,6 @@ class FxrouteTransitionRuntime(TransitionRuntime):
             # this returns True so the Coordinator restores the output gate
             # instead of latching a failure; on restore failure the existing
             # failure latch keeps the safe state.
-            previous_state = dict((snapshot or {}).get("player") or {})
-            snapshot_track = dict((snapshot or {}).get("current_track") or {})
             if snapshot_track.get("source") in {"local", "radio"} and bool(
                 previous_state.get("current_file")
                 or previous_state.get("playing")
@@ -405,6 +405,20 @@ class FxrouteTransitionRuntime(TransitionRuntime):
                 # exposes the exact pre-transition file and a staged queue
                 # candidate was never published.  Nothing to invalidate.
                 return
+
+        if snapshot_track.get("source") in {"local", "radio"} and previous_state.get("current_file"):
+            restored = await self._restore_committed_source_after_failed_spotify(
+                request,
+                snapshot,
+                previous_state,
+                snapshot_track,
+                ensure_gate_closed=ensure_gate_closed,
+            )
+            if restored:
+                self._deps.set_current_track_info(snapshot_track)
+                self._deps.set_footer_owner("local")
+                self._deps.mark_player_state_authoritative(self._player.state if self._player else {})
+                return True
 
         # The target was staged, the old file disappeared, or the active
         # metadata no longer matches MPV. Stop the physical target first and
@@ -549,7 +563,7 @@ class FxrouteTransitionRuntime(TransitionRuntime):
             # helper before any old-graph stage touches the graph; if the
             # active Spotify source does not release within the existing
             # bound, the restore fails and the failure latch stays.
-            if not await self._deps.wait_for_pipewire_spotify_release():
+            if request.source == "spotify" and not await self._deps.wait_for_pipewire_spotify_release():
                 logger.warning(
                     "Spotify handoff source restore aborted: active Spotify sink "
                     "input did not quiesce before the old source restore"
@@ -1765,5 +1779,3 @@ class FxrouteTransitionRuntime(TransitionRuntime):
                 self._player.set_pause(True)
             except Exception:
                 logger.warning("Failed to pause MPV after transition failure", exc_info=True)
-
-

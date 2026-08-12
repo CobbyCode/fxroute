@@ -7,7 +7,7 @@ import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -77,6 +77,67 @@ def _track_entry(track_id: str) -> dict:
 
 
 class FailedTransitionAbortTests(unittest.IsolatedAsyncioTestCase):
+    async def test_failed_local_rate_transition_restores_committed_local_context(self):
+        player = PlayerDouble("/music/failed.flac", playing=True)
+        committed = _track_entry("old")
+        queue = [committed, _track_entry("next")]
+        saved_queue = queue_state()
+        try:
+            playback_queue.queue.tracks = [dict(track) for track in queue]
+            playback_queue.queue.original = [dict(track) for track in queue]
+            playback_queue.queue.index = 0
+            playback_queue.queue.mode = "app_replace"
+            async def restore_source(*_args, **_kwargs):
+                main.current_track_info = dict(committed)
+                return True
+
+            with patch.object(main, "player_instance", player), patch.object(
+                main, "current_track_info", None
+            ), patch.object(main, "last_radio_track_info", {"source": "radio", "id": "old-radio"}), patch.object(
+                main, "current_footer_owner", "local"
+            ), patch.object(main, "_mark_player_state_authoritative"), patch.object(
+                main.FxrouteTransitionRuntime,
+                "_restore_committed_source_after_failed_spotify",
+                side_effect=restore_source,
+            ) as restore:
+                restored = await make_transition_runtime().abort_failed_transition(
+                    local_request("/music/failed.flac"),
+                    {
+                        "player": {
+                            "current_file": "/music/old.flac",
+                            "playing": True,
+                            "paused": False,
+                            "position": 42.0,
+                            "volume": 73,
+                        },
+                        "active_rate": 44100,
+                        "current_track": dict(committed),
+                    },
+                    target_staged=True,
+                )
+                self.assertTrue(restored)
+                restore.assert_awaited_once()
+                self.assertEqual(main.current_track_info, committed)
+                self.assertEqual(playback_queue.queue.tracks, queue)
+                self.assertEqual(playback_queue.queue.index, 0)
+        finally:
+            restore_queue_state(saved_queue)
+
+    async def test_replay_never_uses_stale_radio_for_lost_local_context(self):
+        player = PlayerDouble("/music/old.flac", playing=True)
+        saved_queue = queue_state()
+        try:
+            main.player_instance = player
+            main.current_track_info = None
+            main.last_track_info = _track_entry("old")
+            main.last_radio_track_info = {"source": "radio", "id": "old-radio", "url": "https://radio.example/live"}
+            with patch.object(main, "_run_coordinated_transition", AsyncMock()) as transition:
+                transition.return_value = SimpleNamespace(committed=True, target_rate=44100)
+                await main.toggle_playback()
+            self.assertEqual(transition.await_args.args[0].source, "local")
+        finally:
+            restore_queue_state(saved_queue)
+
     async def test_staged_target_is_stopped_but_committed_queue_preserved(self):
         player = PlayerDouble("/music/new.flac", playing=True)
         current = {"source": "local", "url": "/music/new.flac", "id": "new"}
