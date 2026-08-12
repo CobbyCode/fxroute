@@ -631,6 +631,7 @@ async def _measurement_entry_preflight(measurement_rate: int = MEASUREMENT_DEFAU
     from main import (
         playback_transition_coordinator,
         get_samplerate_status,
+        get_audio_output_overview,
         _reconcile_transition_sink_rate,
         _playback_graph_diagnosis,
         _log_playback_graph_diagnosis,
@@ -644,12 +645,12 @@ async def _measurement_entry_preflight(measurement_rate: int = MEASUREMENT_DEFAU
     if coordinator.transition_blocked:
         raise RuntimeError("measurement entry is blocked by an active or latched playback transition")
 
-    status = dict(get_samplerate_status())
+    status = dict(await asyncio.to_thread(get_samplerate_status))
     if not samplerate.playback_rate_aligned(status, measurement_rate):
         await _reconcile_transition_sink_rate(
             measurement_rate, reason="measurement-entry-preflight"
         )
-        status = dict(get_samplerate_status())
+        status = dict(await asyncio.to_thread(get_samplerate_status))
     if status.get("active_rate") != measurement_rate:
         raise RuntimeError(
             "measurement entry preflight rate mismatch: "
@@ -661,7 +662,9 @@ async def _measurement_entry_preflight(measurement_rate: int = MEASUREMENT_DEFAU
             f"expected={measurement_rate} actual={status.get('force_rate')}"
         )
 
+    overview = await asyncio.to_thread(get_audio_output_overview)
     diagnosis = await _playback_graph_diagnosis(
+        audio_overview=overview,
         target_rate=measurement_rate,
         require_source=False,
     )
@@ -697,12 +700,13 @@ async def _measurement_entry_preflight(measurement_rate: int = MEASUREMENT_DEFAU
             raise RuntimeError("measurement entry preflight found an incomplete canonical graph")
 
     if measurement_store is not None:
-        playback_target = measurement_store._resolve_playback_target()
+        playback_target = measurement_store._resolve_playback_target(overview=overview)
         if not isinstance(playback_target, Mapping) or not playback_target.get("target_name"):
             raise RuntimeError("measurement entry preflight found no playback target")
         playback_route = measurement_store._build_measurement_playback_route(
             "fxroute-measure-preflight",
             playback_target,
+            overview=overview,
         )
         if not isinstance(playback_route, Mapping) or not playback_route.get("route"):
             raise RuntimeError("measurement entry preflight found no playback route")
@@ -711,7 +715,7 @@ async def _measurement_entry_preflight(measurement_rate: int = MEASUREMENT_DEFAU
         if not target_name or not callable(list_ports):
             raise RuntimeError("measurement entry preflight could not inspect playback route ports")
         try:
-            ports = set(str(port) for port in list_ports(target_name))
+            ports = set(str(port) for port in await asyncio.to_thread(list_ports, target_name))
         except Exception as exc:
             raise RuntimeError(f"measurement entry preflight could not read playback route ports: {exc}") from exc
         required_ports = {

@@ -162,7 +162,8 @@ async def main_async() -> None:
     with mock.patch.object(main, "get_samplerate_status", return_value=status_10), \
          mock.patch.object(main, "playback_transition_coordinator", mock.Mock(transition_blocked=False)), \
          mock.patch.object(main, "_playback_graph_diagnosis", new=mock.AsyncMock(return_value={"links_complete": True, "signature": "sig"})), \
-         mock.patch.object(main, "_reconcile_transition_sink_rate", new=reconcile_10_mock) as reconcile:
+         mock.patch.object(main, "_reconcile_transition_sink_rate", new=reconcile_10_mock) as reconcile, \
+         mock.patch.object(main, "get_audio_output_overview", return_value={"output_mode": {}}):
         await measurement_session._measurement_entry_preflight(48000)
         reconcile.assert_awaited_once_with(48000, reason="measurement-entry-preflight")
 
@@ -170,7 +171,8 @@ async def main_async() -> None:
     with mock.patch.object(main, "get_samplerate_status", return_value=stuck_status(44100, 48000)), \
          mock.patch.object(main, "playback_transition_coordinator", mock.Mock(transition_blocked=False)), \
          mock.patch.object(main, "_playback_graph_diagnosis", new=mock.AsyncMock(return_value={"links_complete": True, "signature": "sig"})), \
-         mock.patch.object(main, "_reconcile_transition_sink_rate", new=mock.AsyncMock(return_value=False)):
+         mock.patch.object(main, "_reconcile_transition_sink_rate", new=mock.AsyncMock(return_value=False)), \
+         mock.patch.object(main, "get_audio_output_overview", return_value={"output_mode": {}}):
         try:
             await measurement_session._measurement_entry_preflight(48000)
         except RuntimeError as exc:

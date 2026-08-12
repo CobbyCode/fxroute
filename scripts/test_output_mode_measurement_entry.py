@@ -674,10 +674,10 @@ class EntryBoundaryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_measurement_preflight_requires_route_ports_and_complete_graph(self):
         class Store:
-            def _resolve_playback_target(self):
+            def _resolve_playback_target(self, *, overview=None):
                 return {"target_name": "alsa_output.test"}
 
-            def _build_measurement_playback_route(self, _node, target):
+            def _build_measurement_playback_route(self, _node, target, *, overview=None):
                 return {
                     "route": "direct-sink",
                     "playback_target_name": target["target_name"],
@@ -703,16 +703,16 @@ class EntryBoundaryTests(unittest.IsolatedAsyncioTestCase):
         }), patch.object(main, "_playback_graph_diagnosis", new=AsyncMock(return_value={
             "links_complete": True,
             "signature": "stable",
-        })):
+        })), patch.object(main, "get_audio_output_overview", return_value={"output_mode": {}}):
             await measurement_session._measurement_entry_preflight(48000)
         reconcile.assert_not_awaited()
 
     async def test_active_measurement_preflight_reconciles_only_link_loss_before_sweep(self):
         class Store:
-            def _resolve_playback_target(self):
+            def _resolve_playback_target(self, *, overview=None):
                 return {"target_name": "alsa_output.test"}
 
-            def _build_measurement_playback_route(self, _node, target):
+            def _build_measurement_playback_route(self, _node, target, *, overview=None):
                 return {
                     "route": "direct-sink",
                     "playback_target_name": target["target_name"],
@@ -753,7 +753,7 @@ class EntryBoundaryTests(unittest.IsolatedAsyncioTestCase):
             }
         ), patch.object(
             main, "_playback_graph_diagnosis", new=AsyncMock(return_value=diagnosis)
-        ):
+        ), patch.object(main, "get_audio_output_overview", return_value={"output_mode": {}}):
             await measurement_session._measurement_entry_preflight(48000)
 
         reconcile.assert_awaited_once_with(

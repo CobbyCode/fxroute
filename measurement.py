@@ -340,7 +340,9 @@ class MeasurementStore:
                 f"Another measurement is still active ({active_id}, status={active_status}). "
                 "Wait for it to finish or cancel it first."
             )
-        inputs = self._measurement_inputs_with_sample_rate(self._discover_capture_inputs())
+        inputs = self._measurement_inputs_with_sample_rate(
+            await asyncio.to_thread(self._discover_capture_inputs)
+        )
         selected_input = self._resolve_capture_input(inputs, input_id=input_id, input_key=input_key)
         if not selected_input.get("available"):
             raise ValueError("Selected capture input is not available")
@@ -455,7 +457,9 @@ class MeasurementStore:
                 f"Another measurement is still active ({active_id}, status={active_status}). "
                 "Wait for it to finish or cancel it first."
             )
-        inputs = self._measurement_inputs_with_sample_rate(self._discover_capture_inputs())
+        inputs = self._measurement_inputs_with_sample_rate(
+            await asyncio.to_thread(self._discover_capture_inputs)
+        )
         selected_input = self._resolve_capture_input(inputs, input_id=input_id, input_key=input_key)
         if not selected_input.get("available"):
             raise ValueError("Selected capture input is not available")
@@ -5591,8 +5595,13 @@ class MeasurementStore:
             raise ValueError(f"measurement_scope must be one of: {', '.join(sorted(MEASUREMENT_SCOPES))}")
         return normalized
 
-    def _resolve_playback_target(self, *, measurement_scope: str = MEASUREMENT_SCOPE_ACTIVE_CHAIN) -> dict[str, Any]:
-        overview = get_audio_output_overview()
+    def _resolve_playback_target(
+        self,
+        *,
+        measurement_scope: str = MEASUREMENT_SCOPE_ACTIVE_CHAIN,
+        overview: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        overview = overview or get_audio_output_overview()
         current_output = overview.get("current_output") or {}
         selected_output = overview.get("selected_output") or {}
         default_output = overview.get("default_output") or {}
@@ -6503,9 +6512,10 @@ class MeasurementStore:
         playback_target: dict[str, Any],
         *,
         measurement_scope: str = MEASUREMENT_SCOPE_ACTIVE_CHAIN,
+        overview: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         measurement_scope = self._normalize_measurement_scope(measurement_scope)
-        overview = get_audio_output_overview()
+        overview = overview or get_audio_output_overview()
         output_mode = overview.get("output_mode") if isinstance(overview.get("output_mode"), dict) else {}
         mode = str(output_mode.get("mode") or "")
         if mode not in OUTPUT_MODE_SUBWOOFER_MODES:

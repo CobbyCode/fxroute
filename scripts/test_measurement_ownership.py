@@ -171,6 +171,8 @@ class MeasurementOwnershipTests(unittest.IsolatedAsyncioTestCase):
             main, "get_samplerate_status", return_value={"active_rate": 48000, "force_rate": 48000}
         ), patch.object(main, "_playback_graph_diagnosis", diagnosis), patch.object(
             main, "measurement_store", None
+        ), patch.object(
+            main, "get_audio_output_overview", return_value={"output_mode": {}}
         ):
             await measurement_session._measurement_entry_preflight(48000)
             await measurement_session._measurement_entry_preflight(48000)
