@@ -30,6 +30,7 @@ manual_backup.zip
 
 # Generated 2.1 native helper binary
 pipewire_stage1/build/
+native_dsp/build/
 
 # Optional local test/media clutter
 test-inputs/
