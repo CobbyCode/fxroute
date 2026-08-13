@@ -145,6 +145,17 @@ static int load_wav(const char *path, unsigned wanted_channel, float **samples, 
             free(resampled); free(result); goto bad;
         }
         free(result); result = resampled; frames = (size_t)conversion.output_frames_gen;
+        /* libsamplerate's SINC converters scale the resampled signal by
+         * approximately the conversion ratio (measured: |H(997 Hz)| x1.99 at
+         * 96 kHz, x3.98 at 192 kHz, x0.916 at 44.1 kHz against a 48 kHz
+         * source).  Without compensation the same convolver configuration
+         * changes level by about +6 dB per rate doubling when the playback
+         * rate changes.  The EasyEffects-era engine compensated the same
+         * libsamplerate behavior with hidden output-gain anchors; the native
+         * engine fixes the cause by normalizing the resampled IR by the
+         * ratio, making the convolution level-stable across rates.
+         * (test_native_dsp_convolver_sr_level.py verifies this.) */
+        for (size_t i = 0; i < frames; i++) result[i] = (float)(result[i] / ratio);
     }
     *samples = result; *count = frames; return 0;
 bad:
@@ -310,7 +321,7 @@ static int set_native_param(dsp_stage *stage, const char *key, char *raw) {
         if (parse_float_value(value, &number)) return -1;
         if (!strcmp(key, "target_db")) stage->target_db = number;
         else if (!strcmp(key, "silence_threshold_db")) stage->silence_db = number;
-        else if (!strcmp(key, "maximum_history_seconds") && number >= 1.0f && number <= 3600.0f && number == floorf(number)) stage->history_seconds = (unsigned)number;
+        else if (!strcmp(key, "maximum_history_seconds") && number >= 6.0f && number <= 3600.0f && number == floorf(number)) stage->history_seconds = (unsigned)number;
         else return -1;
         return 0;
     }

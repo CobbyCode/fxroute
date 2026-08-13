@@ -38,12 +38,6 @@ from system_volume import SystemVolumeError, get_node_volume, get_output_volume,
 
 logger = logging.getLogger(__name__)
 
-MEASUREMENT_SUBWOOFER_HELPER_ROUTE = "subwoofer-helper-input"
-MEASUREMENT_LEGACY_21_HELPER_ROUTE = "subwoofer-2.1-helper-input"
-MEASUREMENT_SUBWOOFER_HELPER_ROUTES = {
-    MEASUREMENT_SUBWOOFER_HELPER_ROUTE,
-    MEASUREMENT_LEGACY_21_HELPER_ROUTE,
-}
 MEASUREMENT_SCOPE_ACTIVE_CHAIN = "active_chain"
 MEASUREMENT_SCOPE_RAW_HELPER = "raw_helper"
 MEASUREMENT_SCOPES = {
@@ -2783,9 +2777,6 @@ class MeasurementStore:
         play_timed_out = False
         record_stdout = ""
         record_stderr = ""
-        direct_bypass_monitor_stop = threading.Event()
-        direct_bypass_monitor_violations: list[dict[str, Any]] = []
-        direct_bypass_monitor_thread: threading.Thread | None = None
         helper_process_snapshots: list[dict[str, Any]] = []
         detailed_diagnostics_enabled = _detailed_measurement_diagnostics_enabled()
         routing_snapshots: list[dict[str, Any]] = []
@@ -2861,13 +2852,7 @@ class MeasurementStore:
                 )
 
             play_process = self._start_job_process(owner_job_id, play_command)
-            if playback_route["route"] in MEASUREMENT_SUBWOOFER_HELPER_ROUTES:
-                playback_route_diagnostics = self._link_measurement_playback_to_21_helper(
-                    play_node_name=play_node_name,
-                    playback_target=playback_target,
-                    playback_route=playback_route,
-                )
-            elif playback_route["route"] == "direct-sink":
+            if playback_route["route"] == "direct-sink":
                 playback_route_diagnostics = self._link_measurement_playback_to_direct_sink(
                     play_node_name=play_node_name,
                     playback_target=playback_target,
@@ -2924,9 +2909,6 @@ class MeasurementStore:
                 pass
             raise
         finally:
-            direct_bypass_monitor_stop.set()
-            if direct_bypass_monitor_thread is not None and direct_bypass_monitor_thread.is_alive():
-                direct_bypass_monitor_thread.join(timeout=1.0)
             level_monitor_stop.set()
             if level_monitor_thread.is_alive():
                 level_monitor_thread.join(timeout=1.0)
@@ -2949,12 +2931,6 @@ class MeasurementStore:
                         play_node_name=play_node_name,
                     )
                 )
-
-        if direct_bypass_monitor_violations:
-            raise RuntimeError(
-                "Subwoofer active-chain measurement aborted: direct EasyEffects hardware bypass remained during playback: "
-                f"{direct_bypass_monitor_violations[:4]}"
-            )
 
         if owner_job_id in self._cancelled_jobs:
             raise RuntimeError("Measurement cancelled.")
@@ -3275,13 +3251,7 @@ class MeasurementStore:
             )
             time.sleep(record_preroll_seconds)
             play_proc = subprocess.Popen(play_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            if playback_route["route"] in MEASUREMENT_SUBWOOFER_HELPER_ROUTES:
-                playback_route_diagnostics = self._link_measurement_playback_to_21_helper(
-                    play_node_name=play_node,
-                    playback_target=playback_target,
-                    playback_route=playback_route,
-                )
-            elif playback_route["route"] == "direct-sink":
+            if playback_route["route"] == "direct-sink":
                 playback_route_diagnostics = self._link_measurement_playback_to_direct_sink(
                     play_node_name=play_node,
                     playback_target=playback_target,
@@ -6518,8 +6488,6 @@ class MeasurementStore:
             "output_mode": mode or "stereo",
             "play_node_name": play_node_name,
             "playback_target_name": str(playback_target.get("target_name") or ""),
-            "helper_node_name": "",
-            "helper_input_ports": {},
             "expected_native_layout": [dict(channel) for channel in DSPRuntimeConfig.from_overview(overview).layout],
         }
 
@@ -6574,21 +6542,6 @@ class MeasurementStore:
             "play_node_links_after_manual_link": [],
         }
 
-    def _wait_for_21_helper_input_ports(self, helper_node_name: str) -> dict[str, str]:
-        deadline = time.monotonic() + 3.0
-        helper_ports: list[str] = []
-        while time.monotonic() < deadline:
-            helper_ports = self._list_pw_ports(helper_node_name)
-            input_l = f"{helper_node_name}:input_1"
-            input_r = f"{helper_node_name}:input_2"
-            if input_l in helper_ports and input_r in helper_ports:
-                return {"left": input_l, "right": input_r}
-            time.sleep(0.1)
-        raise RuntimeError(
-            "Subwoofer measurement playback route unavailable: helper inputs missing "
-            f"for {helper_node_name} (ports={helper_ports})"
-        )
-
     def _wait_for_measurement_play_ports(self, play_node_name: str) -> dict[str, str]:
         deadline = time.monotonic() + 4.0
         play_ports: list[str] = []
@@ -6603,191 +6556,6 @@ class MeasurementStore:
             "Subwoofer measurement playback route unavailable: measurement play FL/FR outputs missing "
             f"for {play_node_name} (ports={play_ports})"
         )
-
-    def _link_measurement_playback_to_21_helper(
-        self,
-        *,
-        play_node_name: str,
-        playback_target: dict[str, Any],
-        playback_route: dict[str, Any],
-    ) -> dict[str, Any]:
-        diagnostics = self._new_measurement_playback_route_diagnostics(playback_route)
-        play_ports = self._wait_for_measurement_play_ports(play_node_name)
-        helper_ports = playback_route.get("helper_input_ports")
-        if not isinstance(helper_ports, dict) or not helper_ports.get("left") or not helper_ports.get("right"):
-            helper_ports = self._wait_for_21_helper_input_ports(str(playback_route.get("helper_node_name") or "fxroute_dsp"))
-
-        diagnostics["direct_hardware_links_removed"] = self._remove_measurement_direct_hardware_links(
-            play_ports=play_ports,
-            playback_target=playback_target,
-        )
-        temporary_links = [
-            {"source_port": play_ports["left"], "target_port": str(helper_ports["left"]), "role": "measurement-play-left-to-helper-input"},
-            {"source_port": play_ports["right"], "target_port": str(helper_ports["right"]), "role": "measurement-play-right-to-helper-input"},
-        ]
-        created_links: list[dict[str, str]] = []
-        try:
-            for link in temporary_links:
-                self._create_pipewire_link(str(link["source_port"]), str(link["target_port"]))
-                created_links.append(link)
-        except Exception:
-            self._cleanup_measurement_playback_links(
-                play_node_name=play_node_name,
-                temporary_links=created_links,
-            )
-            raise
-
-        diagnostics["temporary_playback_links"] = temporary_links
-        diagnostics["play_node_helper_links"] = list(temporary_links)
-        diagnostics["play_node_links_after_manual_link"] = self._list_relevant_pw_links(
-            [play_node_name, str(playback_route.get("helper_node_name") or "fxroute_dsp")]
-        )
-        diagnostics["direct_hardware_links_remaining"] = self._find_measurement_direct_hardware_links(
-            play_ports=play_ports,
-            playback_target=playback_target,
-        )
-        if diagnostics["direct_hardware_links_remaining"]:
-            raise RuntimeError(
-                "Subwoofer measurement playback route still has direct hardware links after cleanup: "
-                f"{diagnostics['direct_hardware_links_remaining']}"
-            )
-        logger.info(
-            "Subwoofer measurement playback manually linked: output_mode=%s play_node=%s helper_links=%s removed_direct=%s",
-            playback_route.get("output_mode") or "",
-            play_node_name,
-            diagnostics["play_node_helper_links"],
-            diagnostics["direct_hardware_links_removed"],
-        )
-        return diagnostics
-
-    def _link_measurement_playback_to_active_chain(
-        self,
-        *,
-        play_node_name: str,
-        playback_target: dict[str, Any],
-        playback_route: dict[str, Any],
-    ) -> dict[str, Any]:
-        diagnostics = self._new_measurement_playback_route_diagnostics(playback_route)
-        play_ports = self._wait_for_measurement_play_ports(play_node_name)
-        input_sink_name = str(playback_route.get("playback_target_name") or playback_target.get("target_name") or "").strip()
-        input_ports = self._list_pw_ports(input_sink_name)
-        input_left = f"{input_sink_name}:playback_FL"
-        input_right = f"{input_sink_name}:playback_FR"
-        if input_left not in input_ports or input_right not in input_ports:
-            raise RuntimeError(
-                "Subwoofer active-chain measurement playback route unavailable: input sink ports missing "
-                f"for {input_sink_name} (ports={input_ports})"
-            )
-
-        temporary_links = [
-            {"source_port": play_ports["left"], "target_port": input_left, "role": "measurement-play-left-to-active-chain"},
-            {"source_port": play_ports["right"], "target_port": input_right, "role": "measurement-play-right-to-active-chain"},
-        ]
-        helper_node_name = str(playback_route.get("helper_node_name") or "fxroute_dsp")
-        diagnostics["direct_hardware_links_removed"] = self._remove_subwoofer_direct_easyeffects_hardware_links(playback_target)
-        diagnostics["active_chain_output_links"] = self._ensure_subwoofer_active_chain_output_links(helper_node_name)
-        diagnostics["direct_hardware_links_remaining"] = self._find_subwoofer_direct_easyeffects_hardware_links(playback_target)
-        if diagnostics["direct_hardware_links_remaining"]:
-            raise RuntimeError(
-                "Subwoofer active-chain measurement still has direct EasyEffects hardware links after cleanup: "
-                f"{diagnostics['direct_hardware_links_remaining']}"
-            )
-
-        created_links: list[dict[str, str]] = []
-        try:
-            for link in temporary_links:
-                self._create_pipewire_link(str(link["source_port"]), str(link["target_port"]))
-                created_links.append(link)
-        except Exception:
-            self._cleanup_measurement_playback_links(
-                play_node_name=play_node_name,
-                temporary_links=created_links,
-            )
-            raise
-
-        try:
-            diagnostics["direct_hardware_links_removed"].extend(
-                self._remove_subwoofer_direct_easyeffects_hardware_links(playback_target)
-            )
-            diagnostics["active_chain_output_links"] = self._ensure_subwoofer_active_chain_output_links(
-                helper_node_name
-            )
-        except Exception:
-            self._cleanup_measurement_playback_links(
-                play_node_name=play_node_name,
-                temporary_links=created_links,
-            )
-            raise
-
-        helper_links = [
-            {"source_port": source_port, "target_port": target_port, "role": "measurement-play-direct-helper"}
-            for source_port, target_port in (
-                (play_ports["left"], f"{helper_node_name}:input_L"),
-                (play_ports["right"], f"{helper_node_name}:input_R"),
-            )
-            if self._pipewire_link_exists(source_port, target_port)
-        ]
-        if helper_links:
-            self._cleanup_measurement_playback_links(
-                play_node_name=play_node_name,
-                temporary_links=created_links,
-            )
-            raise RuntimeError(
-                "Subwoofer active-chain measurement playback has forbidden direct helper links: "
-                f"{helper_links}"
-            )
-
-        diagnostics["temporary_playback_links"] = temporary_links
-        diagnostics["active_chain_input_links"] = list(temporary_links)
-        diagnostics["play_node_links_after_manual_link"] = self._list_relevant_pw_links(
-            [play_node_name, input_sink_name, helper_node_name]
-        )
-        diagnostics["direct_hardware_links_remaining"] = self._find_subwoofer_direct_easyeffects_hardware_links(playback_target)
-        if diagnostics["direct_hardware_links_remaining"]:
-            self._cleanup_measurement_playback_links(
-                play_node_name=play_node_name,
-                temporary_links=created_links,
-            )
-            raise RuntimeError(
-                "Subwoofer active-chain measurement has direct EasyEffects hardware links after manual playback link: "
-                f"{diagnostics['direct_hardware_links_remaining']}"
-            )
-        logger.info(
-            "Subwoofer active-chain measurement playback manually linked: output_mode=%s play_node=%s input_links=%s",
-            playback_route.get("output_mode") or "",
-            play_node_name,
-            diagnostics["active_chain_input_links"],
-        )
-        return diagnostics
-
-    def _ensure_subwoofer_active_chain_output_links(self, helper_node_name: str) -> list[dict[str, str]]:
-        links = [
-            {
-                "source_port": "fxroute_dsp:output_FL",
-                "target_port": f"{helper_node_name}:input_L",
-                "role": "active-chain-left-to-helper-input",
-            },
-            {
-                "source_port": "fxroute_dsp:output_FR",
-                "target_port": f"{helper_node_name}:input_R",
-                "role": "active-chain-right-to-helper-input",
-            },
-        ]
-        repaired: list[str] = []
-        for link in links:
-            source_port = link["source_port"]
-            target_port = link["target_port"]
-            if not self._pipewire_link_exists(source_port, target_port):
-                self._create_pipewire_link(source_port, target_port)
-                repaired.append(f"{source_port} -> {target_port}")
-            if not self._pipewire_link_exists(source_port, target_port):
-                raise RuntimeError(
-                    "Subwoofer active-chain measurement playback route unavailable: "
-                    f"required EasyEffects helper link missing ({source_port} -> {target_port})"
-                )
-        if repaired:
-            logger.info("Repaired subwoofer active-chain measurement output links: %s", repaired)
-        return links
 
     def _link_measurement_playback_to_direct_sink(
         self,
@@ -6846,134 +6614,8 @@ class MeasurementStore:
         return diagnostics
 
     @staticmethod
-    def _parse_pw_link_id_links(text: str) -> list[dict[str, str]]:
-        links: list[dict[str, str]] = []
-        current_port = ""
-        port_line = re.compile(r"^\s*(\d+)\s+(\S.*)$")
-        link_line = re.compile(r"^\s*(\d+)\s+\|(<-|->)\s+(\d+)\s+(\S.*)$")
-        for raw_line in (text or "").splitlines():
-            match = link_line.match(raw_line)
-            if match and current_port:
-                link_id, direction, _other_id, other_port = match.groups()
-                other_port = other_port.strip()
-                if direction == "->":
-                    source_port, target_port = current_port, other_port
-                else:
-                    source_port, target_port = other_port, current_port
-                links.append(
-                    {
-                        "link_id": link_id,
-                        "source_port": source_port,
-                        "target_port": target_port,
-                    }
-                )
-                continue
-            match = port_line.match(raw_line)
-            if match and "|" not in raw_line:
-                current_port = match.group(2).strip()
-        return links
-
-    def _find_subwoofer_direct_easyeffects_hardware_links(self, playback_target: dict[str, Any]) -> list[dict[str, str]]:
-        target_name = self._resolve_subwoofer_hardware_output_key(playback_target)
-        if not target_name:
-            return []
-        expected = {
-            ("fxroute_dsp:output_FL", f"{target_name}:playback_FL"),
-            ("fxroute_dsp:output_FR", f"{target_name}:playback_FR"),
-        }
-        try:
-            completed = subprocess.run(["pw-link", "-lI"], capture_output=True, text=True, timeout=3)
-        except Exception as exc:
-            logger.warning("Could not list PipeWire link ids for subwoofer direct-bypass check: %s", exc)
-            return []
-        if completed.returncode != 0:
-            logger.warning(
-                "Could not list PipeWire link ids for subwoofer direct-bypass check: %s",
-                (completed.stderr or completed.stdout or "").strip(),
-            )
-            return []
-        matches: list[dict[str, str]] = []
-        for item in self._parse_pw_link_id_links(completed.stdout or ""):
-            if (item.get("source_port"), item.get("target_port")) in expected:
-                matches.append({**item, "role": "direct-easyeffects-to-hardware"})
-        return matches
-
     @staticmethod
-    def _resolve_subwoofer_hardware_output_key(playback_target: dict[str, Any]) -> str:
-        try:
-            overview = get_audio_output_overview()
-            output_mode = overview.get("output_mode") if isinstance(overview.get("output_mode"), dict) else {}
-            output_key = str(output_mode.get("effective_output_key") or "").strip()
-            if output_key:
-                return output_key
-        except Exception:
-            pass
-        return str(playback_target.get("target_name") or "").strip()
-
-    def _remove_subwoofer_direct_easyeffects_hardware_links(self, playback_target: dict[str, Any]) -> list[dict[str, str]]:
-        removed: list[dict[str, str]] = []
-        for link in self._find_subwoofer_direct_easyeffects_hardware_links(playback_target):
-            link_id = str(link.get("link_id") or "").strip()
-            if not link_id:
-                continue
-            try:
-                completed = subprocess.run(["pw-link", "-d", link_id], capture_output=True, text=True, timeout=3)
-            except Exception as exc:
-                logger.warning("Could not remove subwoofer direct-bypass link id=%s: %s", link_id, exc)
-                continue
-            if completed.returncode == 0:
-                removed.append(link)
-            elif self._disconnect_link(str(link.get("source_port") or ""), str(link.get("target_port") or "")):
-                removed.append(link)
-            else:
-                message = (completed.stderr or completed.stdout or "").strip()
-                if "No such file or directory" in message:
-                    continue
-                logger.warning(
-                    "Could not remove subwoofer direct-bypass link id=%s (%s -> %s): %s",
-                    link_id,
-                    link.get("source_port"),
-                    link.get("target_port"),
-                    message,
-                )
-        return removed
-
-    def _monitor_subwoofer_active_chain_direct_bypass(
-        self,
-        playback_target: dict[str, Any],
-        stop_event: threading.Event,
-        violations: list[dict[str, Any]],
-    ) -> None:
-        while not stop_event.is_set():
-            removed = self._remove_subwoofer_direct_easyeffects_hardware_links(playback_target)
-            remaining = self._find_subwoofer_direct_easyeffects_hardware_links(playback_target)
-            if removed:
-                logger.info("Subwoofer active-chain direct-bypass links removed during playback: %s", removed)
-            if remaining:
-                violations.append(
-                    {
-                        "removed": removed,
-                        "remaining": remaining,
-                        "checked_at": self._utc_now(),
-                    }
-                )
-                return
-            stop_event.wait(0.05)
-
     @staticmethod
-    def _pipewire_link_exists(source_port: str, target_port: str) -> bool:
-        try:
-            completed = subprocess.run(["pw-link", "-l"], capture_output=True, text=True, timeout=3)
-        except Exception:
-            return False
-        if completed.returncode != 0:
-            return False
-        text = completed.stdout or ""
-        direct = f"{source_port} -> {target_port}"
-        reverse_pw_link_io = f"{target_port}\n  |<- {source_port}"
-        forward_pw_link_io = f"{source_port}\n  |-> {target_port}"
-        return direct in text or reverse_pw_link_io in text or forward_pw_link_io in text
-
     @staticmethod
     def _create_pipewire_link(source_port: str, target_port: str) -> None:
         try:
@@ -6986,40 +6628,6 @@ class MeasurementStore:
                 logger.info("Measurement playback link already exists (%s -> %s), skipping", source_port, target_port)
                 return
             raise RuntimeError(f"Could not create measurement playback link ({source_port} -> {target_port}): {message or exc}") from exc
-
-    def _find_measurement_direct_hardware_links(
-        self,
-        *,
-        play_ports: dict[str, str],
-        playback_target: dict[str, Any],
-    ) -> list[dict[str, str]]:
-        target_name = str(playback_target.get("target_name") or "").strip()
-        if not target_name:
-            return []
-        candidates = [
-            (play_ports["left"], f"{target_name}:playback_FL"),
-            (play_ports["right"], f"{target_name}:playback_FR"),
-        ]
-        return [
-            {"source_port": source_port, "target_port": target_port, "role": "measurement-play-direct-hardware"}
-            for source_port, target_port in candidates
-            if self._pipewire_link_exists(source_port, target_port)
-        ]
-
-    def _remove_measurement_direct_hardware_links(
-        self,
-        *,
-        play_ports: dict[str, str],
-        playback_target: dict[str, Any],
-    ) -> list[dict[str, str]]:
-        removed: list[dict[str, str]] = []
-        direct_links = self._find_measurement_direct_hardware_links(play_ports=play_ports, playback_target=playback_target)
-        for link in direct_links:
-            source_port = link["source_port"]
-            target_port = link["target_port"]
-            if self._disconnect_link(source_port, target_port):
-                removed.append(link)
-        return removed
 
     def _cleanup_measurement_playback_links(
         self,

@@ -59,7 +59,27 @@ for f in scripts/check_*.py scripts/check_*.js; do
 done
 
 NATIVE_HELPER_BIN=""
-NATIVE_HELPER_TESTS=()
+NATIVE_HELPER_TESTS=(
+    "scripts/test_native_dsp_control.py"
+    "scripts/test_native_dsp_convolver_sr_level.py"
+    "scripts/test_native_dsp_effects.py"
+    "scripts/test_native_dsp_filters.py"
+    "scripts/test_native_dsp_ir_limiter.py"
+    "scripts/test_native_dsp_matrix.py"
+    "scripts/test_native_dsp_stages.py"
+)
+NATIVE_C_TESTS=(
+    "native_dsp/test_lv2_host.sh"
+)
+
+# Native DSP suites build and run the C engine; they need the dev packages
+# for the LV2 host and DSP libraries.  Without them the tests must be
+# skipped with an explicit reason, never counted as passed.
+NATIVE_DEPS_PKGS="libebur128 lilv-0 samplerate speexdsp"
+NATIVE_DEPS_SKIP_REASON=""
+if ! pkg-config --exists $NATIVE_DEPS_PKGS; then
+    NATIVE_DEPS_SKIP_REASON="missing native DSP build dependencies (pkg-config: $NATIVE_DEPS_PKGS); build on .104"
+fi
 
 # Tests that need live PipeWire graph / audio hardware on .104.
 # (Kept as a category for future hardware-bound suites; currently empty
@@ -84,12 +104,16 @@ if [ "$MODE" = "list" ]; then
     for f in "${JS_TESTS[@]}"; do
         echo "  [local] $f"
     done
+    echo "== C tests (native DSP) =="
+    for f in "${NATIVE_C_TESTS[@]}"; do
+        echo "  [.104]  $f"
+    done
     echo "== Regression checks (local) =="
     for f in "${CHECK_TESTS[@]}"; do
         echo "  [local] $f"
     done
     echo
-    echo "Legend: [local] läuft lokal mit installierten Projektabhängigkeiten (z. B. uvicorn, requests), [.104] benötigt native Helper-Binary oder Live-PipeWire/Hardware."
+    echo "Legend: [local] läuft lokal mit installierten Projektabhängigkeiten (z. B. uvicorn, requests), [.104] benötigt native Helper-Binary (Build-Deps: $NATIVE_DEPS_PKGS) oder Live-PipeWire/Hardware."
     exit 0
 fi
 
@@ -114,18 +138,27 @@ run_one() {
             echo "PASS  $name"
             PASS=$((PASS + 1))
         else
-            echo "FAIL  $name"
-            cat /tmp/fxroute-test-$$.log
-            FAILED_TESTS+=("$name")
-            FAIL=$((FAIL + 1))
+            if [ $? -eq 77 ]; then
+                echo "SKIP  $name (prerequisite unavailable on this host)"
+                SKIP=$((SKIP + 1))
+            else
+                echo "FAIL  $name"
+                cat /tmp/fxroute-test-$$.log
+                FAILED_TESTS+=("$name")
+                FAIL=$((FAIL + 1))
+            fi
         fi
         rm -f /tmp/fxroute-test-$$.log
     else
         local out
         out=$("$runner" "$name" 2>&1)
-        if [ $? -eq 0 ]; then
+        local status=$?
+        if [ "$status" -eq 0 ]; then
             echo "PASS  $name"
             PASS=$((PASS + 1))
+        elif [ "$status" -eq 77 ]; then
+            echo "SKIP  $name (prerequisite unavailable on this host)"
+            SKIP=$((SKIP + 1))
         else
             echo "FAIL  $name"
             echo "$out" | tail -20 | sed 's/^/      /'
@@ -146,13 +179,17 @@ for f in "${PY_TESTS[@]}"; do
     reason=""
     if [ "$MODE" != "all" ]; then
         case " ${NATIVE_HELPER_TESTS[*]} " in
-            *" $f "*) reason="needs native helper binary $NATIVE_HELPER_BIN (build on .104)" ;;
+            *" $f "*) reason="$NATIVE_DEPS_SKIP_REASON" ;;
         esac
         case " ${HARDWARE_TESTS[*]} " in
             *" $f "*) reason="needs live PipeWire/measurement host on .104" ;;
         esac
     fi
     run_one "$f" "$PYTHON" "$reason"
+done
+
+for f in "${NATIVE_C_TESTS[@]}"; do
+    run_one "$f" "sh" "$NATIVE_DEPS_SKIP_REASON"
 done
 
 for f in "${JS_TESTS[@]}"; do

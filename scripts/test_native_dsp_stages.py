@@ -46,13 +46,18 @@ def stereo_constant(value, frames):
     return [value for _ in range(frames) for _ in range(2)]
 
 
+def stereo_sine(amplitude, frames, frequency=997.0, rate=48000):
+    return [amplitude * math.sin(2 * math.pi * frequency * index / rate)
+            for index in range(frames) for _ in range(2)]
+
+
 def test_stage_order_is_noncommutative_for_headroom_and_autogain(tmp_path):
     subprocess.run([str(ROOT / "native_dsp/build.sh")], check=True)
     gain = stage(0, "gain", "headroom", "param gain_db -30")
     auto = stage(1, "auto", "autogain", "\n".join((
         "param target_db -12", 'param reference "Momentary"',
-        "param silence_threshold_db -50", "param maximum_history_seconds 1")))
-    samples = stereo_constant(.2, 48000)
+        "param silence_threshold_db -50", "param maximum_history_seconds 6")))
+    samples = stereo_sine(.2, 48000)
     gain_then_auto, _ = run(tmp_path, gain + "\n" + auto, samples)
     auto = auto.replace("stage_begin 1", "stage_begin 0")
     gain = gain.replace("stage_begin 0", "stage_begin 1")
@@ -113,10 +118,22 @@ def test_native_convolver_delay_and_crystalizer_integration(tmp_path):
     assert right_peak == left_peak + 3
 
 
-def test_lv2_requires_an_even_output_count_before_instantiation(tmp_path):
+def test_lv2_requires_an_even_input_count_before_instantiation(tmp_path):
     subprocess.run([str(ROOT / "native_dsp/build.sh")], check=True)
     text = "stage_begin 0 plugin lv2 urn:missing:test\nstage_end"
-    _, result = run(tmp_path, text, [0., 0.], outputs=3, check=False)
+    config = tmp_path / "odd.conf"
+    source = tmp_path / "odd-in.f32"
+    target = tmp_path / "odd-out.f32"
+    config.write_text(
+        f"rate 48000\ninputs 3\noutputs 3\n"
+        "matrix 0 0 1\nmatrix 1 1 1\nmatrix 2 2 1\n"
+        f"{text}\n"
+    )
+    array.array("f", [0.0, 0.0, 0.0]).tofile(source.open("wb"))
+    result = subprocess.run(
+        [str(DSP), str(config), str(source), str(target)],
+        text=True, capture_output=True, check=False,
+    )
     assert result.returncode == 1
     assert "even" in result.stderr.lower() or "stereo" in result.stderr.lower()
 
@@ -149,3 +166,9 @@ def test_parser_loads_manager_generated_maximum_dual_peq(tmp_path):
     equalizer_stage = config.read_text().split("stage_end", 1)[0]
     assert equalizer_stage.count("control ") == 268
     assert result.returncode == 0, result.stderr
+
+
+from native_test_runner import run_pytest_style_module
+
+if __name__ == "__main__":
+    sys.exit(run_pytest_style_module(globals()))

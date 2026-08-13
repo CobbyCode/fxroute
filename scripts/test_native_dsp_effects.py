@@ -133,7 +133,13 @@ class NativeEffectsTests(unittest.TestCase):
         self.assertTrue(all(math.isfinite(value) for value in max_output))
         self.assertLess(max(abs(value) for value in max_output), 1.05)
 
-    def test_direct_and_neutral_protection_limiter_are_unity_after_latency(self):
+    def test_direct_and_neutral_protection_limiter_match_after_latency_and_boost(self):
+        # The protection limiter runs with gain-boost enabled like the old
+        # EasyEffects default: the LSP limiter applies a constant makeup gain
+        # equal to |threshold| dB to the output signal (verified against the
+        # installed sc_limiter_stereo metadata and the LSP manual).  With
+        # threshold -1 dB the Neutral chain therefore differs from the Direct
+        # chain by exactly +1.0023 dB after the limiter latency.
         manager = DSPManager(home=self.root / "home")
         manager.save_global_extras({"limiter": {"enabled": True, "params": {
             "thresholdDb": -1, "attackMs": 5, "releaseMs": 50,
@@ -149,13 +155,14 @@ class NativeEffectsTests(unittest.TestCase):
             count = min(len(direct_left), len(neutral_left) - latency) - 2048
             if count <= 0:
                 continue
-            error = rms([neutral_left[latency + 2048 + i] - direct_left[2048 + i]
+            gain = rms([neutral_left[latency + 2048 + i] / (direct_left[2048 + i] or 1e-9)
+                        for i in range(count)])
+            error = rms([neutral_left[latency + 2048 + i] / (direct_left[2048 + i] or 1e-9) - 10.0 ** (1.0 / 20.0)
                          for i in range(count)])
             if best is None or error < best[0]:
                 best = (error, latency, count)
         error, latency, count = best
-        reference = rms(direct_left[2048:2048 + count])
-        self.assertLess(error / reference, 2e-4)
+        self.assertLess(error, 2e-4)
         self.assertLessEqual(latency, 1024)
 
 

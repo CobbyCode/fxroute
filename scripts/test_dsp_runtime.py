@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 import asyncio
+import os
+import signal
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -10,7 +13,8 @@ sys.path.insert(0, str(ROOT))
 
 from dsp_manager import DSPManager
 from dsp_runtime import (CommandResult, DSPRuntime, DSPRuntimeConfig, PipeWireLink,
-                         DSP_INGRESS_MONITOR_NODE)
+                         DSP_INGRESS_MONITOR_NODE, RUNTIME_COMMAND_TIMEOUT_RETURNCODE,
+                         RUNTIME_COMMAND_TIMEOUT_SECONDS)
 
 
 class FakeProcess:
@@ -218,7 +222,7 @@ class DSPRuntimeConfigTests(unittest.TestCase):
         for expected in ("control g_in 0.707945784", "control g_out 1.25892541",
                           "control th 0.794328235", "control at 4", "control rt 20",
                           "control lk 6", "control slink 80", "control alr 0",
-                          "control boost 0", "control extsc 0", "control mode 0",
+                          "control boost 1", "control extsc 0", "control mode 0",
                           "control ovs 0", "control dith 0", "control scp 1",
                           "control in2lk 0", "control sc2lk 0"):
             self.assertIn(expected, text)
@@ -544,6 +548,186 @@ class DSPRuntimeConfigTests(unittest.TestCase):
         asyncio.run(exercise())
         self.assertTrue(candidate_paths)
         self.assertTrue(all(not path.exists() for path in candidate_paths))
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+class DSPRuntimeLifecycleTests(unittest.TestCase):
+    """Process lifecycle: bounded commands, stderr drain, orphan cleanup."""
+
+    def setUp(self):
+        self.manager = DSPManager(home=Path(tempfile.mkdtemp()))
+        self.manager.save_global_extras({"limiter": {"enabled": False}})
+
+    def test_run_command_timeout_terminates_kills_and_reaps_child(self):
+        import dsp_runtime as runtime_module
+
+        original_timeout = runtime_module.RUNTIME_COMMAND_TIMEOUT_SECONDS
+        runtime_module.RUNTIME_COMMAND_TIMEOUT_SECONDS = 0.4
+        try:
+            result = asyncio.run(
+                runtime_module.DSPRuntime._run_command(
+                    [sys.executable, "-c", "import time; time.sleep(30)"]))
+        finally:
+            runtime_module.RUNTIME_COMMAND_TIMEOUT_SECONDS = original_timeout
+        return result
+
+        result = run()
+        self.assertEqual(result.returncode, RUNTIME_COMMAND_TIMEOUT_RETURNCODE)
+        self.assertIn("timed out", result.stderr)
+
+    def test_run_command_caller_cancellation_reaps_child(self):
+        import unittest.mock as mock
+        created = []
+
+        original = asyncio.create_subprocess_exec
+
+        async def capturing_exec(*args, **kwargs):
+            process = await original(*args, **kwargs)
+            created.append(process)
+            return process
+
+        async def exercise():
+            with mock.patch.object(asyncio, "create_subprocess_exec", new=capturing_exec):
+                task = asyncio.create_task(
+                    DSPRuntime._run_command(
+                        [sys.executable, "-c", "import time; time.sleep(30)"]))
+                await asyncio.sleep(0.2)
+                task.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await task
+
+        asyncio.run(exercise())
+        self.assertEqual(len(created), 1)
+        self.assertIsNotNone(created[0].returncode, "cancelled command child was not reaped")
+
+    def test_orphan_cleanup_terminates_stale_engines_and_spares_own(self):
+        commands = []
+
+        async def run(command):
+            commands.append(tuple(command))
+            if command == ("pgrep", "-f", pattern):
+                return CommandResult(0, "123\n456\n")
+            return CommandResult(0, "")
+
+        async def exercise():
+            runtime = DSPRuntime(self.manager, binary=Path("/usr/bin/fxroute-dsp"),
+                                 command_runner=run)
+            own = FakeProcess()
+            own.pid = 123
+            runtime._process = own
+            await runtime._stop_orphan_helpers()
+
+        pattern = r"/usr/bin/fxroute\-dsp\s"
+        asyncio.run(exercise())
+        self.assertEqual(commands[0], ("pgrep", "-f", pattern))
+        self.assertTrue(all("123" not in str(command) for command in commands[1:]),
+                        "own process must never be signalled")
+
+    def test_orphan_cleanup_skips_when_no_orphans(self):
+        commands = []
+
+        async def run(command):
+            commands.append(tuple(command))
+            return CommandResult(0, "")
+
+        async def exercise():
+            runtime = DSPRuntime(self.manager, binary=Path("/usr/bin/fxroute-dsp"),
+                                 command_runner=run)
+            await runtime._stop_orphan_helpers()
+
+        asyncio.run(exercise())
+        self.assertEqual(len(commands), 1)
+
+    def test_orphan_cleanup_kills_survivors_of_sigterm(self):
+        commands = []
+
+        async def run(command):
+            commands.append(tuple(command))
+            if len(commands) == 1:
+                return CommandResult(0, "999\n")
+            return CommandResult(0, "999\n")
+
+        async def exercise():
+            runtime = DSPRuntime(self.manager, binary=Path("/usr/bin/fxroute-dsp"),
+                                 command_runner=run)
+            await runtime._stop_orphan_helpers()
+
+        asyncio.run(exercise())
+        self.assertEqual(len(commands), 3)
+
+    def test_engine_stderr_drain_keeps_bounded_tail(self):
+        async def exercise():
+            runtime = DSPRuntime(self.manager)
+            process = await asyncio.create_subprocess_exec(
+                sys.executable, "-c",
+                "import sys; sys.stderr.write('x' * 200000); sys.stderr.flush()")
+            runtime._process = process
+            runtime._start_stderr_drain(process)
+            await asyncio.wait_for(process.wait(), 10)
+            for _ in range(100):
+                if not runtime._stderr_drain_task or runtime._stderr_drain_task.done():
+                    break
+                await asyncio.sleep(0.05)
+            await runtime._stop_stderr_drain()
+            tail = runtime.stderr_tail()
+            self.assertTrue(tail)
+            self.assertLessEqual(len(tail.encode("utf-8")), 64 * 1024 + 4096)
+            self.assertIsNone(runtime._stderr_drain_task)
+
+    def test_engine_stderr_drain_is_stopped_by_stop(self):
+        async def exercise():
+            with tempfile.TemporaryDirectory() as directory:
+                binary = Path(directory) / "fxroute-dsp"
+                binary.touch()
+                runtime = DSPRuntime(self.manager, binary=binary)
+                process = await asyncio.create_subprocess_exec(
+                    sys.executable, "-c",
+                    "import sys; sys.stderr.write('y' * 4096); sys.stderr.flush(); "
+                    "import time; time.sleep(30)")
+                runtime._process = process
+                runtime._start_stderr_drain(process)
+                await asyncio.sleep(0.2)
+                self.assertIsNotNone(runtime._stderr_drain_task)
+                await runtime.stop()
+                self.assertIsNone(runtime._stderr_drain_task)
+                self.assertIsNone(runtime._process)
+
+    def test_stop_after_launch_failure_has_no_stderr_task(self):
+        async def exercise():
+            runtime = DSPRuntime(self.manager)
+            self.assertIsNone(runtime._stderr_drain_task)
+            await runtime._stop_stderr_drain()
+            self.assertIsNone(runtime._stderr_drain_task)
+
+    def test_orphan_cleanup_spares_own_pid_and_signals_only_others(self):
+        signalled = []
+
+        async def run(command):
+            if command == ("pgrep", "-f", pattern):
+                return CommandResult(0, "123\n456\n")
+            return CommandResult(0, "")
+
+        original_kill = os.kill
+
+        def recording_kill(pid, sig):
+            signalled.append((pid, sig))
+            if pid == 456:
+                raise ProcessLookupError(pid)
+
+        async def exercise():
+            runtime = DSPRuntime(self.manager, binary=Path("/usr/bin/fxroute-dsp"),
+                                 command_runner=run)
+            own = FakeProcess()
+            own.pid = 123
+            runtime._process = own
+            with unittest.mock.patch.object(os, "kill", new=recording_kill):
+                await runtime._stop_orphan_helpers()
+
+        pattern = r"/usr/bin/fxroute\-dsp\s"
+        asyncio.run(exercise())
+        self.assertEqual(signalled, [(456, signal.SIGTERM)])
 
 
 if __name__ == "__main__":

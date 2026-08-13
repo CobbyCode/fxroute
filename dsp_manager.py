@@ -3,6 +3,7 @@
 
 import copy
 import json
+import logging
 import math
 import re
 import shutil
@@ -12,6 +13,8 @@ from typing import Any, Callable, Dict, List, Optional
 
 from dsp_persistence import DSPPresetStore, DSPStateStore, clean_name
 from system_volume import volume_db_to_percent, volume_percent_to_db
+
+logger = logging.getLogger(__name__)
 
 
 class UnsupportedPluginError(ValueError):
@@ -33,10 +36,33 @@ class DSPManager:
         "bass_enhancer", "autogain", "loudness", "crystalizer", "maximizer",
     }
     LIMITER_DEFAULTS = {"enabled": True, "params": {"thresholdDb": -1.0, "attackMs": 5.0, "releaseMs": 50.0, "lookaheadMs": 5.0, "stereoLinkPercent": 100.0}}
+    LIMITER_THRESHOLD_MIN_DB = -24.0
+    LIMITER_THRESHOLD_MAX_DB = 0.0
+    LIMITER_ATTACK_MIN_MS = 0.1
+    LIMITER_ATTACK_MAX_MS = 100.0
+    LIMITER_RELEASE_MIN_MS = 1.0
+    LIMITER_RELEASE_MAX_MS = 1000.0
+    LIMITER_LOOKAHEAD_MAX_MS = 20.0
     HEADROOM_DEFAULTS = {"enabled": False, "params": {"gainDb": -3.0}}
     DELAY_DEFAULTS = {"enabled": False, "params": {"leftMs": 0.0, "rightMs": 0.0}}
+    DELAY_MAX_MS = 500.0
     BASS_ENHANCER_DEFAULTS = {"enabled": False, "params": {"amount": 0.0, "harmonics": 8.5, "scope": 100.0, "blend": 0.0}}
+    BASS_AMOUNT_MIN_DB = -20.0
+    BASS_AMOUNT_MAX_DB = 20.0
+    BASS_HARMONICS_MIN = 1.0
+    BASS_HARMONICS_MAX = 20.0
+    BASS_SCOPE_MIN_HZ = 20.0
+    BASS_SCOPE_MAX_HZ = 500.0
+    BASS_BLEND_MIN_PERCENT = -100.0
+    BASS_BLEND_MAX_PERCENT = 100.0
     AUTOGAIN_DEFAULTS = {"enabled": False, "params": {"targetDb": -12.0, "reference": "Geometric Mean (MSI)", "silenceThresholdDb": -70.0, "maximumHistorySeconds": 15}}
+    AUTOGAIN_REFERENCES = ("Momentary", "Shortterm", "Integrated",
+                           "Geometric Mean (MSI)", "Geometric Mean (MS)",
+                           "Geometric Mean (MI)", "Geometric Mean (SI)")
+    AUTOGAIN_SILENCE_THRESHOLD_MIN_DB = -100.0
+    AUTOGAIN_SILENCE_THRESHOLD_MAX_DB = 0.0
+    AUTOGAIN_HISTORY_MIN_SECONDS = 6
+    AUTOGAIN_HISTORY_MAX_SECONDS = 3600
     LOUDNESS_DEFAULTS = {"enabled": False, "params": {"fftSize": 4096, "strength": 10, "volumeDb": 0.0, "calibration": {}, "calibrationProfiles": {}}}
     LOUDNESS_PLUGIN_VOLUME_MIN_DB = -83.0
     LOUDNESS_PLUGIN_VOLUME_MAX_DB = 7.0
@@ -58,6 +84,9 @@ class DSPManager:
         })
         for key in result:
             value = source.get(key)
+            if isinstance(value, str) and key == "tone_effect":
+                result[key] = {"mode": value}
+                continue
             if isinstance(value, dict):
                 result[key].update({name: copy.deepcopy(item) for name, item in value.items() if name != "params"})
                 if isinstance(value.get("params"), dict):
@@ -65,9 +94,65 @@ class DSPManager:
         headroom = float(result["headroom"]["params"]["gainDb"])
         if not headroom.is_integer() or not -9 <= headroom <= 0:
             raise ValueError("headroom.params.gainDb must be a whole dB value between -9 and 0")
-        target = float(result["autogain"]["params"]["targetDb"])
+        tone = result["tone_effect"]
+        raw_mode = str(tone.get("mode", self.TONE_EFFECT_DEFAULTS["mode"]) or self.TONE_EFFECT_DEFAULTS["mode"]).strip().lower()
+        enabled = bool(tone.get("enabled", raw_mode != "off"))
+        if raw_mode == "off":
+            mode = self.TONE_EFFECT_DEFAULTS["mode"]
+            enabled = False
+        else:
+            mode = raw_mode
+        if mode not in {"crystalizer", "maximizer"}:
+            raise ValueError("tone_effect.mode must be one of: crystalizer, maximizer")
+        result["tone_effect"] = {"enabled": enabled, "mode": mode}
+        limiter = result["limiter"]["params"]
+        threshold_db = float(limiter["thresholdDb"])
+        if not self.LIMITER_THRESHOLD_MIN_DB <= threshold_db <= self.LIMITER_THRESHOLD_MAX_DB:
+            raise ValueError("limiter.params.thresholdDb must be between -24 and 0")
+        attack_ms = float(limiter["attackMs"])
+        if not self.LIMITER_ATTACK_MIN_MS <= attack_ms <= self.LIMITER_ATTACK_MAX_MS:
+            raise ValueError("limiter.params.attackMs must be between 0.1 and 100")
+        release_ms = float(limiter["releaseMs"])
+        if not self.LIMITER_RELEASE_MIN_MS <= release_ms <= self.LIMITER_RELEASE_MAX_MS:
+            raise ValueError("limiter.params.releaseMs must be between 1 and 1000")
+        lookahead_ms = float(limiter["lookaheadMs"])
+        if not 0.0 <= lookahead_ms <= self.LIMITER_LOOKAHEAD_MAX_MS:
+            raise ValueError("limiter.params.lookaheadMs must be between 0 and 20")
+        stereo_link = float(limiter["stereoLinkPercent"])
+        if not 0.0 <= stereo_link <= 100.0:
+            raise ValueError("limiter.params.stereoLinkPercent must be between 0 and 100")
+        bass = result["bass_enhancer"]["params"]
+        amount = float(bass["amount"])
+        if not self.BASS_AMOUNT_MIN_DB <= amount <= self.BASS_AMOUNT_MAX_DB:
+            raise ValueError("bass_enhancer.params.amount must be between -20 and 20")
+        harmonics = float(bass["harmonics"])
+        if not self.BASS_HARMONICS_MIN <= harmonics <= self.BASS_HARMONICS_MAX:
+            raise ValueError("bass_enhancer.params.harmonics must be between 1 and 20")
+        scope = float(bass["scope"])
+        if not self.BASS_SCOPE_MIN_HZ <= scope <= self.BASS_SCOPE_MAX_HZ:
+            raise ValueError("bass_enhancer.params.scope must be between 20 and 500")
+        blend = float(bass["blend"])
+        if not self.BASS_BLEND_MIN_PERCENT <= blend <= self.BASS_BLEND_MAX_PERCENT:
+            raise ValueError("bass_enhancer.params.blend must be between -100 and 100")
+        autogain = result["autogain"]["params"]
+        target = float(autogain["targetDb"])
         if target not in {-12.0, -15.0, -18.0, -23.0}:
             raise ValueError("autogain.params.targetDb must be one of -12, -15, -18, or -23")
+        reference = str(autogain.get("reference") or self.AUTOGAIN_DEFAULTS["params"]["reference"]).strip() or self.AUTOGAIN_DEFAULTS["params"]["reference"]
+        if reference not in self.AUTOGAIN_REFERENCES:
+            raise ValueError(f"autogain.params.reference is not supported: {reference}")
+        silence_threshold = float(autogain["silenceThresholdDb"])
+        if not self.AUTOGAIN_SILENCE_THRESHOLD_MIN_DB <= silence_threshold <= self.AUTOGAIN_SILENCE_THRESHOLD_MAX_DB:
+            raise ValueError("autogain.params.silenceThresholdDb must be between -100 and 0")
+        history = float(autogain["maximumHistorySeconds"])
+        if not history.is_integer():
+            raise ValueError("autogain.params.maximumHistorySeconds must be a whole number of seconds")
+        history = int(history)
+        if not self.AUTOGAIN_HISTORY_MIN_SECONDS <= history <= self.AUTOGAIN_HISTORY_MAX_SECONDS:
+            raise ValueError("autogain.params.maximumHistorySeconds must be between 6 and 3600")
+        autogain["reference"] = reference
+        autogain["silenceThresholdDb"] = silence_threshold
+        autogain["maximumHistorySeconds"] = history
         loudness = result["loudness"]["params"]
         if int(loudness["fftSize"]) not in {256, 512, 1024, 2048, 4096, 8192, 16384}:
             raise ValueError("loudness.params.fftSize is not supported")
@@ -78,11 +163,27 @@ class DSPManager:
         loudness["volumeDb"] = float(loudness["volumeDb"])
         if not -80 <= loudness["volumeDb"] <= 0:
             raise ValueError("loudness.params.volumeDb must be between -80 and 0")
+
+        def normalize_calibration(value: Any) -> Dict[str, Any]:
+            calibration = dict(value) if isinstance(value, dict) else {}
+            adjustment = calibration.get("requiredAdjustmentDb")
+            if isinstance(adjustment, (int, float)):
+                calibration["requiredAdjustmentDb"] = float(adjustment)
+                calibration["calibrated"] = abs(float(adjustment)) <= 1.0
+            return calibration
+
+        loudness["calibration"] = normalize_calibration(loudness.get("calibration"))
+        raw_profiles = loudness.get("calibrationProfiles") if isinstance(loudness.get("calibrationProfiles"), dict) else {}
+        loudness["calibrationProfiles"] = {
+            str(profile_id): normalize_calibration(profile)
+            for profile_id, profile in raw_profiles.items()
+            if isinstance(profile, dict)
+        }
         delay = result["delay"]["params"]
         delay["leftMs"] = float(delay["leftMs"])
         delay["rightMs"] = float(delay["rightMs"])
-        if not all(0 <= delay[channel] <= 1000 for channel in ("leftMs", "rightMs")):
-            raise ValueError("delay.params leftMs/rightMs must be between 0 and 1000")
+        if not all(0 <= delay[channel] <= self.DELAY_MAX_MS for channel in ("leftMs", "rightMs")):
+            raise ValueError("delay.params leftMs/rightMs must be between 0 and 500")
         return result
 
     @staticmethod
@@ -124,11 +225,66 @@ class DSPManager:
         self.apply_callback = apply_callback
         self.runtime_transition_callback = None
         self.temporary_runtime_transition_callback = None
+        self.legacy_extras_candidates = (
+            self.home / ".var/app/com.github.wwmm.easyeffects/config/easyeffects/agent-output-extras.json",
+            self.home / ".config/easyeffects/agent-output-extras.json",
+        )
         self._bootstrap()
+        self._migrate_legacy_extras()
         self._runtime_properties = self.state_store.read("runtime.json", {})
         if not isinstance(self._runtime_properties, dict):
             self._runtime_properties = {}
         self._seed_runtime_properties()
+
+    def _migrate_legacy_extras(self) -> None:
+        """Import EasyEffects-era global extras once, before any extras.json exists.
+
+        Preserves SPL/Loudness calibration profiles and global AutoGain/Bass
+        settings from the previous system.  Presets and convolver IRs are not
+        migrated; those are recreated through the normal import path.
+        """
+        if self.global_extras_file.exists():
+            return
+        migration = self.state_store.read("migration.json", {})
+        if isinstance(migration, dict) and migration.get("extras_migrated"):
+            return
+        for candidate in self.legacy_extras_candidates:
+            if not candidate.is_file():
+                continue
+            try:
+                payload = json.loads(candidate.read_text(encoding="utf-8"))
+                normalized = self._lenient_legacy_extras(payload)
+            except Exception as exc:
+                logger.warning("Legacy EasyEffects extras migration skipped (%s): %s", candidate, exc)
+                continue
+            self.save_global_extras(normalized)
+            self.state_store.write("migration.json", {
+                "schema": "fxroute.dsp.migration", "version": 1,
+                "extras_migrated": True, "source": str(candidate),
+            })
+            logger.info("Migrated EasyEffects-era global extras (incl. SPL calibration profiles) from %s", candidate)
+            return
+
+    def _lenient_legacy_extras(self, payload: Any) -> Dict[str, Any]:
+        """Merge legacy extras section by section, defaulting invalid sections.
+
+        A single legacy value outside the current manager contract (for
+        example an old AutoGain history below the engine minimum) must not
+        block the migration of the rest, especially the SPL calibration
+        profiles.
+        """
+        sections = {}
+        if isinstance(payload, dict):
+            for key in ("limiter", "headroom", "delay", "bass_enhancer",
+                        "autogain", "loudness", "tone_effect"):
+                section = payload.get(key)
+                if not isinstance(section, dict):
+                    continue
+                try:
+                    sections[key] = self.normalize_effects_extras({key: section})[key]
+                except ValueError:
+                    logger.warning("Legacy extras section %s is outside the current contract; using defaults", key)
+        return self.normalize_effects_extras(sections)
 
     @staticmethod
     def _clean_preset_name(value: Any, fallback: str = "") -> str:
@@ -237,6 +393,23 @@ class DSPManager:
         normalized = self.normalize_effects_extras(extras)
         if self.runtime_transition_callback:
             return self.runtime_transition_callback(previous, normalized, persist_all_presets)
+        self.apply_runtime_properties_from_extras(normalized)
+        return (self.apply_global_extras_to_all_presets(normalized) if persist_all_presets
+                else self.apply_global_extras_to_active_preset(normalized))
+
+    def apply_loudness_strength_runtime(self, previous_extras: Dict[str, Any],
+                                        extras: Dict[str, Any]) -> Dict[str, Any]:
+        return self.apply_autogain_loudness_runtime(previous_extras, extras)
+
+    def apply_runtime_properties_from_extras(self, extras: Dict[str, Any]) -> None:
+        """Write the live AutoGain/Loudness work point into the runtime readback.
+
+        Called after a guarded transition has confirmed the candidate engine
+        state (and by the rollback path with the previous extras), so
+        read_loudness_runtime()/read_autogain_runtime() always report the
+        confirmed state instead of stale seeded values.
+        """
+        normalized = self.normalize_effects_extras(extras)
         autogain = self._autogain_plugin_payload(normalized["autogain"])
         loudness = self._loudness_plugin_payload(normalized["loudness"], normalized["autogain"])
         for plugin, values in (("autogain", autogain), ("loudness", loudness)):
@@ -244,12 +417,22 @@ class DSPManager:
                 if name in {"bypass", "target", "fft", "volume", "output-gain"}:
                     runtime_name = "outputGain" if name == "output-gain" else name
                     self.set_active_plugin_property(plugin, 0, runtime_name, value)
-        return (self.apply_global_extras_to_all_presets(normalized) if persist_all_presets
-                else self.apply_global_extras_to_active_preset(normalized))
 
-    def apply_loudness_strength_runtime(self, previous_extras: Dict[str, Any],
-                                        extras: Dict[str, Any]) -> Dict[str, Any]:
-        return self.apply_autogain_loudness_runtime(previous_extras, extras)
+    def loudness_transition_guard_db(self, previous_extras: Dict[str, Any],
+                                     candidate_extras: Dict[str, Any]) -> float:
+        """Guard gain for a Loudness runtime transition, with no positive jump.
+
+        The transition first ramps the engine output gain down to
+        min(old, new) work-point minus the guard margin, then applies the new
+        work point and ramps back to unity; the total attenuation is preserved.
+        """
+        previous = self.normalize_effects_extras(previous_extras)
+        candidate = self.normalize_effects_extras(candidate_extras)
+        old_payload = self._loudness_plugin_payload(previous["loudness"], previous["autogain"])
+        new_payload = self._loudness_plugin_payload(candidate["loudness"], candidate["autogain"])
+        return max(self.LOUDNESS_OUTPUT_GAIN_MIN_DB,
+                   min(float(old_payload["output-gain"]), float(new_payload["output-gain"]))
+                   - self.LOUDNESS_STRENGTH_GUARD_DB)
 
     def apply_temporary_effects_runtime(self, previous_extras: Dict[str, Any],
                                         extras: Dict[str, Any]) -> None:
@@ -486,6 +669,12 @@ class DSPManager:
                 paths = self.preset_store.find_ir_paths(str(params.get("kernel", "")))
                 if not paths:
                     raise FileNotFoundError(f"IR file not found: {params.get('kernel', '')}")
+                # The EasyEffects-era engine needed hidden per-rate output-gain
+                # compensation (44100 +1 dB ... 768000 -24 dB).  The native
+                # convolver resamples the IR and convolves at the stream rate
+                # and is level-stable across rates (verified by
+                # test_native_dsp_convolver_sr_level.py at 44.1/48/96/192 kHz),
+                # so no compensation is applied.
                 lines.append(f"param path {json.dumps(str(paths[0]))}")
                 for name, default in (("wet_db", 0.0), ("dry_db", -100.0),
                                       ("input_gain_db", 0.0), ("output_gain_db", 0.0)):
@@ -513,6 +702,9 @@ class DSPManager:
             elif plugin_type == "loudness":
                 definition = {"enabled": True, "params": params}
                 payload = self._loudness_plugin_payload(definition, autogain_definition)
+                # Enum values verified against the installed lsp-plugins
+                # metadata (loud_comp_stereo.ttl): mode 0=FFT, std 4=ISO226-2023,
+                # approx 2=Normal, fft map 256..16384 -> 0..6.
                 control("input", 1)
                 control("mode", 0)
                 control("std", 4)
@@ -524,6 +716,13 @@ class DSPManager:
                 control("hcrange", 6)
                 lines.append(f"param output_gain_db {number(payload['output-gain'])}")
             elif plugin_type == "limiter":
+                # Control values verified against the installed lsp-plugins
+                # metadata (sc_limiter_stereo.ttl): mode 0=Herm Thin (matches
+                # the old EasyEffects "Herm Thin"), boost 1 = the old
+                # gain-boost enabled default (plugin default is 1).  The
+                # plugin ports cap at/rt/lk (0.25..20 / 0.25..20 / 0.1..20 ms);
+                # the clamps below match those port bounds, so the old 50 ms
+                # release is clamped to 20 ms exactly as the plugin itself did.
                 control("g_in", 10.0 ** (float(params.get("inputGainDb", 0.0)) / 20.0))
                 control("g_out", 10.0 ** (float(params.get("outputGainDb", 0.0)) / 20.0))
                 control("scp", 1)
@@ -534,7 +733,7 @@ class DSPManager:
                 control("th", 10.0 ** (float(params.get("thresholdDb", -1.0)) / 20.0))
                 control("knee", 1)
                 control("smooth", -5)
-                control("boost", 0)
+                control("boost", 1)
                 control("lk", max(0.1, min(20.0, float(params.get("lookaheadMs", 5.0)))))
                 control("at", max(0.25, min(20.0, float(params.get("attackMs", 5.0)))))
                 control("rt", max(0.25, min(20.0, float(params.get("releaseMs", 5.0)))))

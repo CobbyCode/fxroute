@@ -2,6 +2,7 @@
 import array
 import math
 import subprocess
+import sys
 from pathlib import Path
 
 
@@ -41,3 +42,9 @@ peq 1 highpass 1000 0.70710678 0
         text = cfg.read_text() + f"peq 0 {kind} 2000 0.8 3\n"
         cfg.write_text(text)
         subprocess.run([str(DSP), str(cfg), str(source), str(target)], check=True)
+
+
+from native_test_runner import run_pytest_style_module
+
+if __name__ == "__main__":
+    sys.exit(run_pytest_style_module(globals()))

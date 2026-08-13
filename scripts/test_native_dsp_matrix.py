@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import array
 import subprocess
+import sys
 from pathlib import Path
 
 
@@ -161,3 +162,9 @@ stage_end
     assert list(out[1][:4]) == [0.0, 0.0, 0.0, 1.0]
     assert list(out[2][:4]) == [0.0, 0.5, 0.0, 0.5]
     assert list(out[3][:4]) == [0.0, 0.5, 0.0, 0.5]
+
+
+from native_test_runner import run_pytest_style_module
+
+if __name__ == "__main__":
+    sys.exit(run_pytest_style_module(globals()))

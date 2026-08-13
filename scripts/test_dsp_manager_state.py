@@ -18,11 +18,11 @@ class DSPManagerStateTests(unittest.TestCase):
         self.assertEqual(DSPManager.LOUDNESS_PLUGIN_VOLUME_MIN_DB, -83.0)
         self.assertEqual(DSPManager.LOUDNESS_PLUGIN_VOLUME_MAX_DB, 7.0)
 
-    def test_delay_is_bounded_to_one_second(self):
+    def test_delay_is_bounded_to_old_contract_of_500_ms(self):
         manager = DSPManager(home=self.home)
-        with self.assertRaisesRegex(ValueError, "between 0 and 1000"):
+        with self.assertRaisesRegex(ValueError, "between 0 and 500"):
             manager.normalize_effects_extras({
-                "delay": {"enabled": True, "params": {"leftMs": 1001, "rightMs": 0}}
+                "delay": {"enabled": True, "params": {"leftMs": 501, "rightMs": 0}}
             })
 
     def setUp(self):

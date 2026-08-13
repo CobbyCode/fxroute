@@ -5492,16 +5492,7 @@ async def lifespan(app: FastAPI):
         runtime_loop = asyncio.get_running_loop()
 
         def guarded_effects_transition(previous, candidate, persist_all_presets):
-            old_loudness = easyeffects_manager._loudness_plugin_payload(
-                previous["loudness"], previous["autogain"])
-            new_loudness = easyeffects_manager._loudness_plugin_payload(
-                candidate["loudness"], candidate["autogain"])
-            guard_db = max(
-                easyeffects_manager.LOUDNESS_OUTPUT_GAIN_MIN_DB,
-                min(float(old_loudness["output-gain"]),
-                    float(new_loudness["output-gain"]))
-                - easyeffects_manager.LOUDNESS_STRENGTH_GUARD_DB,
-            )
+            guard_db = easyeffects_manager.loudness_transition_guard_db(previous, candidate)
 
             async def transition():
                 overview = get_audio_output_overview()
@@ -5515,12 +5506,16 @@ async def lifespan(app: FastAPI):
                         easyeffects_manager.apply_global_extras_to_all_presets(candidate)
                         if persist_all_presets else
                         easyeffects_manager.apply_global_extras_to_active_preset(candidate))
+                    easyeffects_manager.apply_runtime_properties_from_extras(candidate)
 
                 await subwoofer_runtime.guarded_rebuild(
                     overview,
                     guard_db=guard_db,
                     apply_candidate=persist_candidate,
-                    apply_previous=lambda: easyeffects_manager.save_global_extras(previous),
+                    apply_previous=lambda: (
+                        easyeffects_manager.save_global_extras(previous),
+                        easyeffects_manager.apply_runtime_properties_from_extras(previous),
+                    ),
                     settle_seconds=easyeffects_manager.LOUDNESS_STRENGTH_VOLUME_SETTLE_SECONDS,
                     candidate_extras=candidate,
                     previous_extras=previous,

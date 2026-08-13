@@ -6,6 +6,8 @@ from __future__ import annotations
 import asyncio
 import math
 import os
+import re
+import signal
 import tempfile
 import time
 import json
@@ -21,6 +23,11 @@ DSP_INGRESS_PORTS = ("monitor_FL", "monitor_FR")
 DSP_INPUT_PORTS = ("input_1", "input_2")
 DSP_POST_EFFECT_PORTS = ("post_effect_FL", "post_effect_FR")
 DEFAULT_SAMPLE_RATE = 48_000
+RUNTIME_COMMAND_TIMEOUT_SECONDS = 5.0
+RUNTIME_COMMAND_TERMINATE_GRACE_SECONDS = 2.0
+RUNTIME_COMMAND_TIMEOUT_RETURNCODE = -1
+RUNTIME_ORPHAN_KILL_GRACE_SECONDS = 0.5
+HELPER_STDERR_TAIL_LIMIT = 64 * 1024
 logger = logging.getLogger(__name__)
 
 
@@ -53,6 +60,54 @@ def _finite_number(value: Any, default: float = 0.0) -> float:
     except (TypeError, ValueError):
         return default
     return parsed if math.isfinite(parsed) else default
+
+
+async def _stop_command_child(proc, grace_seconds: float) -> None:
+    """Terminate a still-running command child and drain it terminally.
+
+    terminate -> bounded communicate() (drains stdout+stderr) -> if the
+    child ignores SIGTERM: kill -> bounded communicate().  Process and both
+    pipes are thereby always worked off terminally; a final wait() guards
+    against a pathological case where even the killed child's pipes never
+    close.  Already-exited processes are handled cheaply.
+    """
+    if proc is None or proc.returncode is not None:
+        return
+    proc.terminate()
+    try:
+        await asyncio.wait_for(proc.communicate(), timeout=grace_seconds)
+    except asyncio.TimeoutError:
+        proc.kill()
+        try:
+            await asyncio.wait_for(proc.communicate(), timeout=grace_seconds)
+        except asyncio.TimeoutError:
+            await proc.wait()
+
+
+async def _stop_command_child_cancellation_safe(proc, grace_seconds: float) -> bool:
+    """Stop and drain a command child shielded from caller cancellation.
+
+    Runs the actual stop in its own task behind ``asyncio.shield``: even a
+    second cancellation during the grace period cannot interrupt the
+    terminate/grace/kill/pipe-drain sequence, so no child can be orphaned by
+    caller cancellation.  Returns True when the caller was cancelled while
+    draining; the caller must then propagate CancelledError (it wins over
+    any timeout failure).
+    """
+    if proc is None or proc.returncode is not None:
+        return False
+    cleanup_task = asyncio.create_task(_stop_command_child(proc, grace_seconds))
+    cancelled = False
+    while not cleanup_task.done():
+        try:
+            await asyncio.shield(cleanup_task)
+        except asyncio.CancelledError:
+            cancelled = True
+    try:
+        cleanup_task.result()
+    except Exception:
+        logger.debug("DSP runtime command child cleanup failed", exc_info=True)
+    return cancelled
 
 
 @dataclass(frozen=True)
@@ -210,6 +265,8 @@ class DSPRuntime:
         self._exact_sub_mute = False
         self._effect_bypass = False
         self._output_gain_db = 0.0
+        self._stderr_drain_task: asyncio.Task | None = None
+        self._stderr_tail = b""
 
     @property
     def sync_in_progress(self) -> bool:
@@ -251,7 +308,8 @@ class DSPRuntime:
                             "layout": [dict(channel) for channel in getattr(self._config, "layout", ())]} if self._config else None,
                 "last_error": self._error, "last_started_at": self._started_at,
                 "links_configured": bool(self._links), "exact_sub_mute": self._exact_sub_mute,
-                "effect_bypass": self._effect_bypass, "output_gain_db": self._output_gain_db}
+                "effect_bypass": self._effect_bypass, "output_gain_db": self._output_gain_db,
+                "stderr_tail": self.stderr_tail()[:2048]}
 
     async def set_exact_sub_mute(self, enabled: bool) -> bool:
         previous = self._exact_sub_mute
@@ -394,6 +452,7 @@ class DSPRuntime:
             if not self.binary.is_file():
                 self._error = f"Native DSP binary is not available: {self.binary}"
                 raise RuntimeError(self._error)
+            await self._stop_orphan_helpers()
             text = self.manager.compile_engine_text(
                 list(config.layout), sample_rate_hz=config.sample_rate,
                 extras_override=extras_override)
@@ -426,6 +485,7 @@ class DSPRuntime:
                 self._process = await self._launch((str(self.binary), config_name, str(self._control_path)))
                 self._config = config
                 self._started_at = time.time()
+                self._start_stderr_drain(self._process)
                 await self._wait_for_ports(config)
                 await self.set_output_gain_db(initial_output_gain_db)
                 self._effect_bypass = bool(int(
@@ -461,9 +521,14 @@ class DSPRuntime:
             if self._process is not None and getattr(self._process, "returncode", None) is not None:
                 break
             await asyncio.sleep(.1)
-        raise RuntimeError("Native DSP did not expose expected PipeWire ports")
+        detail = self.stderr_tail().strip()
+        raise RuntimeError(
+            "Native DSP did not expose expected PipeWire ports"
+            + (f"; engine stderr: {detail}" if detail else "")
+        )
 
     async def stop(self) -> None:
+        await self._stop_stderr_drain()
         for link in self._links:
             await self._run(("pw-link", "-d", link.source, link.target))
         self._links = []
@@ -500,10 +565,122 @@ class DSPRuntime:
         result = await self._run(("pw-link", "-l"))
         return result.returncode == 0 and all(_contains_link(result.stdout, link.source, link.target) for link in self._links)
 
+    def stderr_tail(self) -> str:
+        """Bounded engine stderr tail kept by the drain task, for diagnostics."""
+        return self._stderr_tail.decode("utf-8", "replace")
+
+    def _start_stderr_drain(self, process: Any) -> None:
+        """Own a continuous stderr drain for the running engine process.
+
+        Without a continuous reader a sufficiently large stderr output can
+        fill the kernel pipe buffer and block the real-time engine.  Only a
+        bounded tail is retained, so the pipe never stalls and RAM stays
+        limited.
+        """
+        stderr = getattr(process, "stderr", None)
+        if stderr is None:
+            return
+        self._stderr_tail = b""
+        self._stderr_drain_task = asyncio.create_task(
+            self._drain_engine_stderr(),
+            name="fxroute-dsp-stderr-drain",
+        )
+
+    async def _drain_engine_stderr(self) -> None:
+        process = self._process
+        stderr = getattr(process, "stderr", None)
+        if stderr is None:
+            return
+        try:
+            while True:
+                chunk = await stderr.read(4096)
+                if not chunk:
+                    break
+                self._stderr_tail = (self._stderr_tail + chunk)[-HELPER_STDERR_TAIL_LIMIT:]
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Failed to drain native DSP engine stderr")
+
+    async def _stop_stderr_drain(self) -> None:
+        task = self._stderr_drain_task
+        self._stderr_drain_task = None
+        if task is None:
+            return
+        task.cancel()
+        try:
+            await asyncio.gather(task, return_exceptions=True)
+        except asyncio.CancelledError:
+            pass
+
+    async def _stop_orphan_helpers(self) -> None:
+        """Terminate stale fxroute-dsp engine processes left by a killed service.
+
+        A hard service kill leaves the engine process behind; on restart the
+        stale engine would keep its PipeWire ports, so a fresh engine could
+        not claim them.  The running runtime's own process (if any) is never
+        touched; the caller stops it through the normal stop() path.
+        """
+        binary = str(self.binary)
+        pattern = re.escape(binary) + r"\s"
+        own_pids = set()
+        process = self._process
+        if process is not None and getattr(process, "returncode", None) is None:
+            own_pids.add(int(getattr(process, "pid", 0) or 0))
+        result = await self._run(("pgrep", "-f", pattern))
+        orphan_pids = [int(pid) for pid in result.stdout.split()
+                       if pid.isdigit() and int(pid) not in own_pids]
+        if not orphan_pids:
+            return
+        logger.info("Found orphan native DSP processes (pids: %s), cleaning up", ", ".join(map(str, orphan_pids)))
+        for pid in orphan_pids:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                pass
+        await asyncio.sleep(RUNTIME_ORPHAN_KILL_GRACE_SECONDS)
+        result = await self._run(("pgrep", "-f", pattern))
+        remaining = [int(pid) for pid in result.stdout.split()
+                     if pid.isdigit() and int(pid) not in own_pids]
+        if remaining:
+            logger.warning("Orphan native DSP processes ignored SIGTERM (pids: %s), killing", ", ".join(map(str, remaining)))
+            for pid in remaining:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
+            await asyncio.sleep(RUNTIME_ORPHAN_KILL_GRACE_SECONDS)
+
     @staticmethod
     async def _run_command(args: Sequence[str]) -> CommandResult:
         process = await asyncio.create_subprocess_exec(*args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-        stdout, stderr = await asyncio.wait_for(process.communicate(), 5)
+        try:
+            stdout, stderr = await asyncio.wait_for(process.communicate(), RUNTIME_COMMAND_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            # A wedged PipeWire registry must not hold the runtime locks
+            # forever.  Terminate, allow a short grace, then kill and fully
+            # reap the child so no command survives the call; report the
+            # timeout as a command failure exactly like a nonzero exit.
+            # If the caller is cancelled while the cleanup drains, the
+            # cancellation wins over the timeout failure.
+            if await _stop_command_child_cancellation_safe(
+                process, grace_seconds=RUNTIME_COMMAND_TERMINATE_GRACE_SECONDS
+            ):
+                raise asyncio.CancelledError
+            return CommandResult(
+                RUNTIME_COMMAND_TIMEOUT_RETURNCODE,
+                "",
+                f"Command timed out after {RUNTIME_COMMAND_TIMEOUT_SECONDS}s: {' '.join(args)}",
+            )
+        except asyncio.CancelledError:
+            # Caller cancellation must not leave the child behind; the
+            # shielded cleanup terminates/kills/drains it even under further
+            # cancellation, then the original cancellation is re-raised so
+            # the lock holders release ownership.
+            await _stop_command_child_cancellation_safe(
+                process, grace_seconds=RUNTIME_COMMAND_TERMINATE_GRACE_SECONDS
+            )
+            raise
         return CommandResult(process.returncode, stdout.decode(errors="replace"), stderr.decode(errors="replace"))
 
     @staticmethod
