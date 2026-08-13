@@ -32,12 +32,12 @@ It runs on mini PCs, desktops, ARM boards, and dedicated stereo systems. It comb
   <tr>
     <td width="33%"><img src="media/screenshots/07-spotify.png" alt="FXRoute Spotify control view"></td>
     <td width="33%"><img src="media/screenshots/08-spl-calibration.png" alt="FXRoute SPL calibration view"></td>
-    <td width="33%"><img src="media/screenshots/09-mobile-library.png" alt="FXRoute mobile library album grid"></td>
+    <td width="33%"><img src="media/screenshots/09-advanced-measurement.png" alt="FXRoute Advanced Measurement workflow"></td>
   </tr>
   <tr>
     <td align="center"><strong>Spotify</strong></td>
     <td align="center"><strong>SPL Calibration</strong></td>
-    <td align="center"><strong>Mobile library</strong></td>
+    <td align="center"><strong>Advanced Measurement</strong></td>
   </tr>
 </table>
 
@@ -53,7 +53,7 @@ It runs on mini PCs, desktops, ARM boards, and dedicated stereo systems. It comb
 - EasyEffects preset switching, PEQ, convolver import/generation, output helpers, and A/B compare
 - stereo, 2.1 subwoofer, and 2.2 subwoofer output modes
 - global DSP helpers for protection, gain management, loudness contouring, bass enhancement, and tone shaping; Loudness provides a calibrated contour that follows the playback level and also accounts for the Auto Gain target when both are active
-- room and speaker measurements with host microphone capture, including a guided Advanced Measurement workflow for direct response, listening-area stability, and system integration,
+- room and speaker measurements with host microphone capture, including Advanced Measurement to measure speakers, room response, and microphone position,
   calibration files, calibration-file export, smoothing, saved runs, a
   twelve-filter PEQ editor, custom House Curve editing and export, PEQ filter
   transfer, and stereo FIR/convolver preset creation with linear, minimum-

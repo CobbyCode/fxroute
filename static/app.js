@@ -9941,10 +9941,10 @@ function renderHybridMeasurementWizard() {
             const integration = wizard.profile.integration;
             elements.measurementHybridSummary.innerHTML = [
                 'Left and right speaker response captured',
-                'Main listening position measured and aligned',
-                'Nearby listening positions analysed',
-                'Speaker and room responses combined',
-                wizard.mode === 'stereo' ? 'Left and right response model completed' : 'L/R system consistency checked',
+                'Main listening position measured',
+                'Left and right listening positions measured',
+                'Speaker and room measurements combined',
+                wizard.mode === 'stereo' ? 'Left and right responses compared' : 'L/R response and subwoofer routing checked',
                 `<strong>Gated direct lower limit:</strong><br>Left: ${Math.round(left.gatedDirectLowerLimitHz)} Hz<br>Right: ${Math.round(right.gatedDirectLowerLimitHz)} Hz`,
             ].map(item => `<div class="hybrid-summary-item">${item}</div>`).join('') + `
                 <details class="hybrid-advanced-details">

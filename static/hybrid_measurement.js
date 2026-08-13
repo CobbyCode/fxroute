@@ -43,7 +43,7 @@
             step('area-right-r', 'secondary', 'right', 'right', 'Right listening position', 'Keep the microphone here.', 'Right speaker', false),
         ];
         if (normalized !== 'stereo') {
-            steps.push(step('integration', 'integration', 'mlp', 'stereo', 'System integration check', 'Move the microphone back to the primary listening position.', 'L + R with configured subwoofer routing', true));
+            steps.push(step('integration', 'integration', 'mlp', 'stereo', 'Subwoofer alignment check', 'Move the microphone back to the main listening position.', 'L + R with subwoofer routing', true));
         }
         return { mode: normalized, modeLabel: MODE_LABELS[normalized], steps };
     }

@@ -228,17 +228,17 @@ target curves are not exportable files.
 
 ### Advanced Measurement
 
-**Advanced Measurement** is a guided multi-position workflow for speaker characterisation and system integration. It combines direct speaker measurements with measurements at the main listening position and two nearby listening positions.
+**Advanced Measurement** measures speakers and room response at close range and at three listening positions.
 
-The workflow guides you through:
+The workflow runs these measurements:
 
 - a direct measurement about 1 m from the left speaker
 - a direct measurement about 1 m from the right speaker
 - left and right measurements at the main listening position
 - left and right measurements 20–30 cm to either side of the main position
-- a final stereo system-integration check at the main position when subwoofer routing is active
+- a final L/R check at the main position when subwoofer routing is active
 
-Follow the on-screen instructions and move the microphone only when the current step asks for a new position. Keep the microphone at ear height for listening-position measurements. The workflow checks direct-response quality, spatial consistency, L/R timing, and the summed system response. It can reject a result when the microphone position, routing, or timing is inconsistent; repeat the affected step after correcting the setup.
+Follow the on-screen instructions and move the microphone only when a step asks for a new position. Keep it at ear height for listening-position measurements. FXRoute checks the direct response, compares the three listening positions, checks L/R timing, and verifies the summed response. If the position, routing, or timing is wrong, repeat that step after correcting it.
 
 Use the electrical reference input in **Setup** when available. It gives the timing analysis a line-level playback reference alongside the acoustic microphone signal. Acoustic-only measurements remain supported but provide less precise timing information.
 
