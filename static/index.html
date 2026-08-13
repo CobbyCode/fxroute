@@ -12,7 +12,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=0.9.11">
     <link rel="manifest" href="/static/site.webmanifest?v=0.9.11">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/static/style.css?v=0.9.11">
+    <link rel="stylesheet" href="/static/style.css?v=0.9.12">
 </head>
 <body>
     <!-- Offline indicator -->
@@ -1207,8 +1207,11 @@
         <div class="track-info">
             <div class="playback-visual">
                 <img id="playback-cover" class="playback-cover hidden" alt="" />
-                <span id="playback-eq" class="playback-eq" style="display:none;">
-                    <span class="bar"></span><span class="bar"></span><span class="bar"></span><span class="bar"></span>
+                <span id="playback-eq" class="playback-eq">
+                    <span class="peak-wave" aria-hidden="true">
+                        <span class="wave-bar"></span><span class="wave-bar"></span><span class="wave-bar"></span><span class="wave-bar"></span><span class="wave-bar"></span>
+                    </span>
+                    <span class="peak-label" aria-hidden="true">PEAK</span>
                 </span>
             </div>
             <div class="track-fallback">
@@ -1298,6 +1301,6 @@
     <script src="/static/measurement_dsp.js?v=0.9.11"></script>
     <script src="/static/hybrid_measurement.js?v=0.9.11"></script>
     <script src="/static/radio.js?v=0.9.11"></script>
-    <script src="/static/app.js?v=0.9.11"></script>
+    <script src="/static/app.js?v=0.9.12"></script>
 </body>
 </html>

@@ -3137,11 +3137,6 @@ function renderPeakWarningBadge(activeOverride = null) {
     if (elements.playbackEq) {
         elements.playbackEq.classList.toggle('peak-alert', showPeak);
         elements.playbackEq.title = showPeak ? `Post-EasyEffects output peak detected on ${title}` : '';
-        if (showPeak) {
-            elements.playbackEq.innerHTML = '<span class="peak-alert-label">PEAK</span>';
-        } else if (!elements.playbackEq.querySelector('.bar')) {
-            elements.playbackEq.innerHTML = '<span class="bar"></span><span class="bar"></span><span class="bar"></span><span class="bar"></span>';
-        }
     }
 }
 function renderQueueUI() {
@@ -3698,11 +3693,7 @@ function updatePlaybackUI() {
     } else if (paused) {
         document.body.classList.add('is-paused');
     }
-    // EQ bar & bar glow
-    if (elements.playbackEq) {
-        const showPeak = !!state.playback.output_peak_warning?.detected;
-        elements.playbackEq.style.display = (playing || showPeak) ? 'inline-flex' : 'none';
-    }
+    // Bar glow
     if (elements.playbackBar) {
         elements.playbackBar.classList.toggle('is-playing', !!playing);
         elements.playbackBar.classList.toggle('is-paused', !!paused && !playing);
@@ -14134,9 +14125,6 @@ function updateFooterForSpotify(data) {
     if (elements.playbackEq) {
         elements.playbackEq.classList.remove('peak-alert');
         elements.playbackEq.title = '';
-        if (!elements.playbackEq.querySelector('.bar')) {
-            elements.playbackEq.innerHTML = '<span class="bar"></span><span class="bar"></span><span class="bar"></span><span class="bar"></span>';
-        }
     }
     if (typeof data.volume === 'number' && !volumeGestureActive && !spotifyVolumeRequestInFlight && pendingSpotifyVolume === null) {
         state.playback.volume = data.volume;
@@ -14153,7 +14141,6 @@ function updateFooterForSpotify(data) {
         if (elements.btnClearQueue) elements.btnClearQueue.classList.add('hidden');
         if (elements.queueStatus) elements.queueStatus.classList.add('hidden');
         if (elements.samplerateStatus) elements.samplerateStatus.classList.add('hidden');
-        if (elements.playbackEq) elements.playbackEq.style.display = 'none';
         renderPeakWarningBadge(false);
         const titleEl = document.getElementById('track-title');
         const artistEl = document.getElementById('track-artist');
@@ -14182,9 +14169,6 @@ function updateFooterForSpotify(data) {
     if (elements.btnPlayPause) {
         elements.btnPlayPause.disabled = false;
         elements.btnPlayPause.textContent = data.status === 'Playing' ? '⏸' : '▶';
-    }
-    if (elements.playbackEq) {
-        elements.playbackEq.style.display = data.status === 'Playing' ? 'inline-flex' : 'none';
     }
     if (elements.btnPrevious) { elements.btnPrevious.classList.remove('hidden'); elements.btnPrevious.disabled = false; }
     if (elements.btnNext) { elements.btnNext.classList.remove('hidden'); elements.btnNext.disabled = false; }

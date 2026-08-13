@@ -189,7 +189,7 @@ async function main() {
         },
     );
 
-    assert.match(indexSource, /app\.js\?v=0\.9\.11/);
+    assert.match(indexSource, /app\.js\?v=0\.9\.12/);
     console.log('measurement output-mode frontend tests: ok');
 }
 
