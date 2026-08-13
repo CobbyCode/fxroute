@@ -28,6 +28,7 @@ from samplerate import (
     set_audio_output_mode,
 )
 from dsp_runtime import SubwooferRuntimeConfig
+import volume_contract
 
 logger = logging.getLogger(__name__)
 
@@ -1090,7 +1091,13 @@ def _capture_auto_sub_playback_gain() -> dict[str, Any]:
             extras = manager.load_global_extras()
             loudness = extras.get("loudness") if isinstance(extras, dict) else {}
             loudness = loudness if isinstance(loudness, dict) else {}
-            loudness_enabled = bool(loudness.get("enabled"))
+            get_active = getattr(manager, "get_active_preset", None)
+            if callable(get_active):
+                loudness_enabled = volume_contract.loudness_in_path(
+                    get_active() or "", bool(loudness.get("enabled"))
+                )
+            else:
+                loudness_enabled = bool(loudness.get("enabled"))
             if loudness_enabled:
                 volume_db = float(loudness.get("params", {}).get("volumeDb", 0.0))
         except Exception as exc:

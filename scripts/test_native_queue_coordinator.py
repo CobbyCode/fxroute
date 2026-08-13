@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import playback_queue
 import main
+import system_volume
 from playback_queue_test_support import queue_state, restore_queue_state
 from playback_transition_test_support import make_transition_runtime
 from playback_transition import TransitionRequest
@@ -49,7 +50,7 @@ class NativeQueueSelectionTests(unittest.TestCase):
                 return "Neutral"
 
             def loudness_db_from_percent(self, percent):
-                return -float(percent)
+                return system_volume.volume_percent_to_db(percent)
 
             def set_loudness_volume_db(self, volume_db):
                 return {"extras": {"loudness": {"params": {"volumeDb": volume_db}}}}
@@ -58,7 +59,7 @@ class NativeQueueSelectionTests(unittest.TestCase):
              patch.object(main, "set_output_volume", return_value=100) as set_master:
             result = asyncio.run(main._set_canonical_output_volume(32))
         self.assertEqual(result["volume"], 32)
-        self.assertEqual(result["loudnessVolumeDb"], -32.0)
+        self.assertEqual(result["loudnessVolumeDb"], system_volume.volume_percent_to_db(32))
         set_master.assert_called_once_with(100)
 
 

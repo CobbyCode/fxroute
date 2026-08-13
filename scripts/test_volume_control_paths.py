@@ -303,7 +303,7 @@ class CanonicalVolumeSerializationTests(unittest.IsolatedAsyncioTestCase):
 
             def apply_autogain_loudness_runtime(self, previous, extras):
                 self.extras = copy.deepcopy(extras)
-                return {"extras": extras, "updated": 1, "skipped": []}
+                return {"extras": extras, "updated": 1, "skipped": [], "runtime_applied": True}
 
             def set_loudness_volume_db(self, volume_db):
                 self.extras["loudness"]["params"]["volumeDb"] = float(volume_db)
@@ -369,7 +369,7 @@ class CanonicalVolumeSerializationTests(unittest.IsolatedAsyncioTestCase):
                 return {"loudness": {"enabled": True, "params": {"volumeDb": -10.0}}}
 
             def loudness_percent_from_db(self, volume_db):
-                return 44
+                return system_volume.volume_db_to_percent(volume_db)
 
             def loudness_db_from_percent(self, percent):
                 return -float(percent)
@@ -378,7 +378,10 @@ class CanonicalVolumeSerializationTests(unittest.IsolatedAsyncioTestCase):
                 return {"extras": {"loudness": {"params": {"volumeDb": volume_db}}}}
 
             def apply_autogain_loudness_runtime(self, previous, extras):
-                return {"extras": extras, "updated": 1, "skipped": []}
+                return {"extras": extras, "updated": 1, "skipped": [], "runtime_applied": True}
+
+            def apply_global_extras_to_all_presets(self, extras):
+                return {"extras": extras, "updated": 1, "skipped": [], "runtime_applied": True}
 
             def normalize_effects_extras(self, extras):
                 return extras
@@ -434,7 +437,7 @@ class CanonicalVolumeSerializationTests(unittest.IsolatedAsyncioTestCase):
 
             def apply_autogain_loudness_runtime(self, previous, extras):
                 self.extras = copy.deepcopy(extras)
-                return {"extras": extras, "updated": 1, "skipped": []}
+                return {"extras": extras, "updated": 1, "skipped": [], "runtime_applied": True}
 
             def set_loudness_volume_db(self, volume_db):
                 self.extras["loudness"]["params"]["volumeDb"] = float(volume_db)
@@ -526,19 +529,19 @@ class EasyEffectsExtrasVolumeTests(unittest.IsolatedAsyncioTestCase):
                 return {"loudness": {"enabled": True, "params": {"volumeDb": -10.0}}}
 
             def loudness_percent_from_db(self, volume_db):
-                return 44
+                return system_volume.volume_db_to_percent(volume_db)
 
             def apply_global_extras_to_all_presets(self, extras):
                 order.append("apply")
-                return {"extras": extras, "updated": 1, "skipped": []}
+                return {"extras": extras, "updated": 1, "skipped": [], "runtime_applied": True}
 
             def apply_autogain_loudness_runtime(self, previous, extras):
                 order.append("apply")
-                return {"extras": extras, "updated": 1, "skipped": []}
+                return {"extras": extras, "updated": 1, "skipped": [], "runtime_applied": True}
 
             def apply_loudness_strength_runtime(self, previous, extras):
                 order.append("apply")
-                return {"extras": extras, "updated": 1, "skipped": []}
+                return {"extras": extras, "updated": 1, "skipped": [], "runtime_applied": True}
 
             def normalize_effects_extras(self, extras):
                 return extras
@@ -565,8 +568,8 @@ class EasyEffectsExtrasVolumeTests(unittest.IsolatedAsyncioTestCase):
         ), mock.patch.object(main, "schedule_peak_monitor_refresh_after_effects_change"):
             await main.save_easyeffects_extras(FakeExtrasRequest())
 
-        # System master transfer happens before the manager mutation.
-        self.assertEqual(order, ["set-44", "apply"])
+        expected = system_volume.volume_db_to_percent(-10.0)
+        self.assertEqual(order, [f"set-{expected}", "apply"])
 
     async def test_autogain_change_reloads_active_native_preset(self):
         class FakeManager:
@@ -613,7 +616,7 @@ class EasyEffectsExtrasVolumeTests(unittest.IsolatedAsyncioTestCase):
                 return {"loudness": {"enabled": True, "params": {"volumeDb": -10.0}}}
 
             def loudness_percent_from_db(self, volume_db):
-                return 44
+                return system_volume.volume_db_to_percent(volume_db)
 
             def get_active_preset(self):
                 return "Neutral"
@@ -625,6 +628,12 @@ class EasyEffectsExtrasVolumeTests(unittest.IsolatedAsyncioTestCase):
             def apply_autogain_loudness_runtime(self, previous, extras):
                 order.append("apply")
                 raise RuntimeError("preset write failed")
+
+            def apply_runtime_properties_from_extras(self, extras):
+                return extras
+
+            def save_global_extras(self, extras):
+                return extras
 
             def normalize_effects_extras(self, extras):
                 return extras
@@ -642,7 +651,8 @@ class EasyEffectsExtrasVolumeTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(RuntimeError):
                 await main.save_easyeffects_extras(FakeExtrasRequest())
 
-        self.assertEqual(order, ["set-44", "apply", "set-100"])
+        expected = system_volume.volume_db_to_percent(-10.0)
+        self.assertEqual(order, [f"set-{expected}", "apply", "set-100"])
 
     async def test_blocking_wpctl_does_not_stop_event_loop(self):
         entered = threading.Event()
@@ -668,10 +678,10 @@ class EasyEffectsExtrasVolumeTests(unittest.IsolatedAsyncioTestCase):
                 return -float(percent)
 
             def apply_global_extras_to_all_presets(self, extras):
-                return {"extras": extras, "updated": 1, "skipped": []}
+                return {"extras": extras, "updated": 1, "skipped": [], "runtime_applied": True}
 
             def apply_autogain_loudness_runtime(self, previous, extras):
-                return {"extras": extras, "updated": 1, "skipped": []}
+                return {"extras": extras, "updated": 1, "skipped": [], "runtime_applied": True}
 
             def normalize_effects_extras(self, extras):
                 return extras
@@ -783,15 +793,6 @@ class SilentActiveSourceLinkTests(unittest.TestCase):
             {"mode": "subwoofer-2.1", "effective_output_key": "alsa_output.hw"}))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
-
-
-if __name__ == "__main__":
-    unittest.main()
-
 class _FakeVolumeManager:
     """Minimal DSPManager stand-in for volume-ownership tests."""
 
@@ -819,7 +820,7 @@ class _FakeVolumeManager:
     def loudness_percent_from_db(self, db):
         return system_volume.volume_db_to_percent(db)
 
-    async def set_loudness_volume_db(self, volume_db):
+    def set_loudness_volume_db(self, volume_db):
         self.loudness_volume_writes.append(float(volume_db))
         self.extras["loudness"]["params"]["volumeDb"] = float(volume_db)
         return {"extras": copy.deepcopy(self.extras), "runtime_applied": True,
@@ -832,7 +833,7 @@ class _FakeVolumeManager:
     def apply_runtime_properties_from_extras(self, extras):
         pass
 
-    async def load_preset(self, preset_name, **_kwargs):
+    def load_preset(self, preset_name, **_kwargs):
         self.active_preset = preset_name
 
 
@@ -845,10 +846,15 @@ class VolumeOwnershipDirectTests(unittest.IsolatedAsyncioTestCase):
 
         def recording_set_volume(value):
             self.volume_writes.append(int(round(float(value))))
+            self.live_master = int(round(float(value)))
 
+        self.live_master = 100
         patcher = mock.patch.object(main, "set_output_volume", new=recording_set_volume)
         patcher.start()
         self.addCleanup(patcher.stop)
+        patcher_get = mock.patch.object(main, "get_output_volume", new=lambda: self.live_master)
+        patcher_get.start()
+        self.addCleanup(patcher_get.stop)
         patcher2 = mock.patch.object(main, "easyeffects_manager", self.manager)
         patcher2.start()
         self.addCleanup(patcher2.stop)
@@ -893,30 +899,16 @@ class VolumeOwnershipDirectTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(100, self.volume_writes)
         self.assertEqual(manager.loudness_volume_writes, [])
 
-    async def test_leave_direct_moves_attenuation_back_to_loudness_guarded(self):
-        # Direct (system master at 30%) -> Neutral: volumeDb mirrors 30% and
-        # the engine output gain is held at the guard before the master is
-        # restored to 100%, so the restore cannot expose 100% exposure.
+    async def test_leave_direct_mirrors_master_into_loudness_before_path_change(self):
+        # Transfer alone must not raise the master while Direct still bypasses
+        # Loudness.  volumeDb mirrors the live master; master=100 happens after
+        # the preset load puts Loudness in the path.
         manager = self.use_manager(loudness_enabled=True, active_preset="Direct")
-        gain_calls = []
-
-        class FakeRuntime:
-            def snapshot(self):
-                return {"active": True}
-
-            async def set_output_gain_db(self, value):
-                gain_calls.append(float(value))
-
-        main.subwoofer_runtime = FakeRuntime()
-        try:
-            with mock.patch.object(main, "get_output_volume", return_value=30):
-                await main._transfer_volume_ownership_for_preset(manager, "Neutral")
-        finally:
-            main.subwoofer_runtime = None
+        with mock.patch.object(main, "get_output_volume", return_value=30):
+            await main._transfer_volume_ownership_for_preset(manager, "Neutral")
         expected_db = manager.loudness_db_from_percent(30)
         self.assertTrue(abs(float(manager.extras["loudness"]["params"]["volumeDb"]) - expected_db) < 1e-9)
-        self.assertEqual(gain_calls, [-18.0])
-        self.assertEqual(self.volume_writes, [100])
+        self.assertEqual(self.volume_writes, [])
         self.assertTrue(manager.saved)
 
     async def test_direct_with_loudness_disabled_untouched(self):

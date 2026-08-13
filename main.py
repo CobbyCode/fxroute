@@ -953,7 +953,8 @@ from spotify import (
     loop_cycle as spotify_loop_cycle,
     seek_to as spotify_seek_to,
 )
-from system_volume import SystemVolumeError, get_output_volume, set_output_volume, get_status_volume, start_volume_read_monitor
+from system_volume import SystemVolumeError, get_output_volume, set_output_volume, get_status_volume, start_volume_read_monitor, volume_percent_to_db
+import volume_contract
 
 logger = logging.getLogger(__name__)
 
@@ -3815,49 +3816,102 @@ def get_output_volume_safe(default: int = 100) -> int:
 def _loudness_owns_volume() -> bool:
     """Return whether Loudness owns the canonical attenuation.
 
-    The persisted ``loudness.enabled`` flag alone is not enough: the Direct
-    preset bypasses every global helper, so with Direct active the
-    attenuation lives in the system master even while Loudness stays
-    enabled in state.  Volume ownership must follow the actually active
-    signal path, not the persisted flag.
+    Ownership follows the active signal path: Direct bypasses every global
+    helper, so the persisted ``loudness.enabled`` flag is not enough.
     """
     if not easyeffects_manager:
         return False
     try:
         extras = easyeffects_manager.load_global_extras()
-        if not extras.get("loudness", {}).get("enabled"):
-            return False
-        active = easyeffects_manager.get_active_preset()
-        return bool(active) and active not in easyeffects_manager.EXCLUDED_GLOBAL_EXTRAS_PRESETS
+        active = easyeffects_manager.get_active_preset() or ""
+        return volume_contract.loudness_in_path(
+            active, bool((extras.get("loudness") or {}).get("enabled"))
+        )
     except Exception:
         return False
+
+
+async def _volume_state_for_manager(
+    manager, *, live_master: int | None = None
+) -> volume_contract.VolumeState:
+    extras = {}
+    preset = ""
+    if manager:
+        load_extras = getattr(manager, "load_global_extras", None)
+        if callable(load_extras):
+            extras = load_extras() or {}
+        get_active = getattr(manager, "get_active_preset", None)
+        if callable(get_active):
+            preset = get_active() or ""
+    loudness = extras.get("loudness") if isinstance(extras, dict) else {}
+    loudness = loudness if isinstance(loudness, dict) else {}
+    params = loudness.get("params") if isinstance(loudness.get("params"), dict) else {}
+    enabled = bool(loudness.get("enabled"))
+    if live_master is None:
+        if volume_contract.loudness_in_path(preset, enabled):
+            live_master = 100
+        else:
+            live_master = int(await _drain_worker(get_output_volume))
+    guard = 0.0
+    if subwoofer_runtime is not None:
+        try:
+            guard = float(subwoofer_runtime.snapshot().get("output_gain_db") or 0.0)
+        except Exception:
+            guard = 0.0
+    return volume_contract.VolumeState(
+        preset=preset,
+        loudness_enabled=enabled,
+        volume_db=float(params.get("volumeDb") or 0.0),
+        master_percent=int(live_master),
+        dsp_guard_db=guard,
+    )
+
+
+async def _apply_volume_actions(
+    actions, extras=None, *, persist_extras: bool = True
+):
+    """Apply planned master/Loudness/guard writes. Caller holds the volume locks."""
+    if extras is None and easyeffects_manager:
+        extras = easyeffects_manager.load_global_extras()
+    extras_dirty = False
+    for action in actions:
+        if action.op == "set_volume_db":
+            if extras is None:
+                extras = {"loudness": {"enabled": False, "params": {}}}
+            extras.setdefault("loudness", {}).setdefault("params", {})["volumeDb"] = float(action.value)
+            extras_dirty = True
+        elif action.op == "set_loudness_enabled":
+            if extras is None:
+                extras = {"loudness": {"params": {}}}
+            extras.setdefault("loudness", {})["enabled"] = bool(action.value)
+            extras_dirty = True
+        elif action.op == "set_master":
+            await _drain_worker(set_output_volume, int(round(float(action.value))))
+        elif action.op == "set_guard":
+            if subwoofer_runtime is not None and subwoofer_runtime.snapshot().get("active"):
+                await subwoofer_runtime.set_output_gain_db(float(action.value))
+    if extras_dirty and persist_extras and easyeffects_manager and extras is not None:
+        easyeffects_manager.save_global_extras(extras)
+        easyeffects_manager.apply_runtime_properties_from_extras(extras)
+    return extras
 
 
 async def _set_canonical_output_volume(volume: float | int) -> dict[str, Any]:
     """Apply the one UI-volume contract for local, radio and Spotify.
 
-    Loudness owns the attenuation when enabled, therefore the physical system
-    master remains at 100%.  Without Loudness the existing FXRoute system
-    volume curve remains authoritative.
-
-    The whole write is serialized against other canonical volume writes so
-    set -> verified get -> cache publish sequences never interleave.  The
-    loudness.enabled decision and the Loudness read-modify-write both run
-    under the central EasyEffects mutation ownership, so no other EE mutation
-    can interleave between the extras read and the write.  Blocking manager
-    and wpctl operations run off the event loop via cancellation-safe
-    workers; the caller owns the locks until the workers actually finished.
-    Lock order: canonical volume write lock first, then EasyEffects mutation
-    lock.
+    One canonical perceived volume.  Loudness owns it only while it is in
+    the active path; otherwise the system master does.  The write is
+    serialized against other canonical volume writes.  Lock order:
+    canonical volume write lock first, then EasyEffects mutation lock.
     """
     async with _canonical_volume_write_lock():
         requested = max(0, min(100, int(round(float(volume)))))
-        loudness_owns = _loudness_owns_volume()
         async with _easyeffects_mutation_lock():
-            if loudness_owns and easyeffects_manager:
-                volume_db = easyeffects_manager.loudness_db_from_percent(requested)
+            start = await _volume_state_for_manager(easyeffects_manager, live_master=0)
+            target = volume_contract.target_for(current=start, percent=requested)
+            if target.loudness_in_path and easyeffects_manager:
                 volume_result = await _drain_worker(
-                    easyeffects_manager.set_loudness_volume_db, volume_db
+                    easyeffects_manager.set_loudness_volume_db, target.volume_db
                 )
                 if not volume_result.get("runtime_applied"):
                     await _sync_subwoofer_runtime(reason="native-dsp-loudness-volume")
@@ -3869,11 +3923,64 @@ async def _set_canonical_output_volume(volume: float | int) -> dict[str, Any]:
                     ),
                     "loudness_enabled": True,
                 }
-        return {
-            "volume": await _drain_worker(set_output_volume, requested),
-            "loudnessVolumeDb": None,
-            "loudness_enabled": False,
-        }
+            await _drain_worker(set_output_volume, requested)
+            extras = easyeffects_manager.load_global_extras() if easyeffects_manager else None
+            remaining = [
+                action for action in volume_contract.plan_transition(start, target)
+                if action.op not in {"set_master", "set_volume_db"}
+            ]
+            if remaining:
+                await _apply_volume_actions(remaining, extras)
+            return {
+                "volume": requested,
+                "loudnessVolumeDb": None,
+                "loudness_enabled": False,
+            }
+
+
+async def _guarded_effects_transition(previous, candidate, persist_all_presets):
+    """Apply extras through a guarded DSP rebuild. Master is pinned only if Loudness is in path."""
+    overview = get_audio_output_overview()
+    result_holder = {}
+    start = await _volume_state_for_manager(easyeffects_manager)
+    candidate_loudness = (candidate.get("loudness") or {})
+    target = volume_contract.target_for(
+        current=start,
+        loudness_enabled=bool(candidate_loudness.get("enabled")),
+    )
+    if start.loudness_in_path or target.loudness_in_path:
+        guard_db = easyeffects_manager.loudness_transition_guard_db(previous, candidate)
+    else:
+        guard_db = min(0.0, start.dsp_guard_db, volume_percent_to_db(start.master_percent))
+    pin_master = target.loudness_in_path and int(start.master_percent) != 100
+    restore_master = start.master_percent if pin_master else None
+    settle = float(getattr(easyeffects_manager, "LOUDNESS_STRENGTH_VOLUME_SETTLE_SECONDS", 0.0) or 0.0)
+
+    def persist_candidate():
+        result_holder["result"] = (
+            easyeffects_manager.apply_global_extras_to_all_presets(candidate)
+            if persist_all_presets else
+            easyeffects_manager.apply_global_extras_to_active_preset(candidate))
+        easyeffects_manager.apply_runtime_properties_from_extras(candidate)
+
+    await subwoofer_runtime.guarded_rebuild(
+        overview,
+        guard_db=guard_db,
+        apply_candidate=persist_candidate,
+        apply_previous=lambda: (
+            easyeffects_manager.save_global_extras(previous),
+            easyeffects_manager.apply_runtime_properties_from_extras(previous),
+        ),
+        settle_seconds=settle,
+        candidate_extras=candidate,
+        previous_extras=previous,
+        before_ramp=(lambda: _drain_worker(set_output_volume, 100)) if pin_master else None,
+        before_rollback_ramp=(lambda: _drain_worker(
+            set_output_volume, restore_master)) if pin_master else None,
+    )
+    result = result_holder["result"]
+    result["runtime_applied"] = True
+    return result
 
 
 async def get_spotify_ui_state(data: Optional[dict] = None) -> dict:
@@ -5371,42 +5478,10 @@ async def lifespan(app: FastAPI):
         runtime_loop = asyncio.get_running_loop()
 
         def guarded_effects_transition(previous, candidate, persist_all_presets):
-            guard_db = easyeffects_manager.loudness_transition_guard_db(previous, candidate)
-
-            async def transition():
-                overview = get_audio_output_overview()
-                result_holder = {}
-                enabling = (not previous["loudness"]["enabled"]
-                            and candidate["loudness"]["enabled"])
-                system_volume_before = await _drain_worker(get_output_volume) if enabling else None
-
-                def persist_candidate():
-                    result_holder["result"] = (
-                        easyeffects_manager.apply_global_extras_to_all_presets(candidate)
-                        if persist_all_presets else
-                        easyeffects_manager.apply_global_extras_to_active_preset(candidate))
-                    easyeffects_manager.apply_runtime_properties_from_extras(candidate)
-
-                await subwoofer_runtime.guarded_rebuild(
-                    overview,
-                    guard_db=guard_db,
-                    apply_candidate=persist_candidate,
-                    apply_previous=lambda: (
-                        easyeffects_manager.save_global_extras(previous),
-                        easyeffects_manager.apply_runtime_properties_from_extras(previous),
-                    ),
-                    settle_seconds=easyeffects_manager.LOUDNESS_STRENGTH_VOLUME_SETTLE_SECONDS,
-                    candidate_extras=candidate,
-                    previous_extras=previous,
-                    before_ramp=(lambda: _drain_worker(set_output_volume, 100)) if enabling else None,
-                    before_rollback_ramp=(lambda: _drain_worker(
-                        set_output_volume, system_volume_before)) if enabling else None,
-                )
-                result = result_holder["result"]
-                result["runtime_applied"] = True
-                return result
-
-            return asyncio.run_coroutine_threadsafe(transition(), runtime_loop).result()
+            return asyncio.run_coroutine_threadsafe(
+                _guarded_effects_transition(previous, candidate, persist_all_presets),
+                runtime_loop,
+            ).result()
 
         easyeffects_manager.runtime_transition_callback = guarded_effects_transition
 
@@ -6564,75 +6639,68 @@ async def _load_easyeffects_preset(
             volume_lock.release()
 
 
+async def _restore_volume_state(manager, start: volume_contract.VolumeState) -> None:
+    await _drain_worker(set_output_volume, int(start.master_percent))
+    if subwoofer_runtime is not None and subwoofer_runtime.snapshot().get("active"):
+        await subwoofer_runtime.set_output_gain_db(float(start.dsp_guard_db))
+    if not manager:
+        return
+    extras = copy.deepcopy(manager.load_global_extras())
+    extras.setdefault("loudness", {}).setdefault("params", {})["volumeDb"] = float(start.volume_db)
+    extras.setdefault("loudness", {})["enabled"] = bool(start.loudness_enabled)
+    save = getattr(manager, "save_global_extras", None)
+    apply_runtime = getattr(manager, "apply_runtime_properties_from_extras", None)
+    if callable(save):
+        save(extras)
+    if callable(apply_runtime):
+        apply_runtime(extras)
+    if (manager.get_active_preset() or "") != start.preset:
+        if hasattr(manager, "active_preset"):
+            manager.active_preset = start.preset
+        elif getattr(manager, "state_store", None) is not None:
+            manager.state_store.write(
+                "active.json",
+                {"schema": "fxroute.dsp.active", "version": 1, "preset": start.preset},
+            )
+
+
 async def _load_preset_locked(
     preset_name: str, *, convolver_sample_rate_hz: int | None = None
 ) -> None:
     manager = _require_easyeffects_manager()
-    await _transfer_volume_ownership_for_preset(manager, preset_name)
-    await _drain_worker(
-        manager.load_preset,
-        preset_name,
-        convolver_sample_rate_hz=convolver_sample_rate_hz,
-    )
-    await _sync_subwoofer_runtime(reason="native-dsp-preset-load")
+    start = await _volume_state_for_manager(manager)
+    target = volume_contract.target_for(current=start, preset=preset_name)
+    actions = volume_contract.plan_transition(start, target)
+    pre, post = volume_contract.partition_actions(actions, ("set_preset",))
+    try:
+        await _apply_volume_actions(pre)
+        await _drain_worker(
+            manager.load_preset,
+            preset_name,
+            convolver_sample_rate_hz=convolver_sample_rate_hz,
+        )
+        await _apply_volume_actions(post)
+        await _sync_subwoofer_runtime(reason="native-dsp-preset-load")
+    except Exception:
+        try:
+            await _restore_volume_state(manager, start)
+        except Exception:
+            logger.exception("Failed to restore volume state after preset load failure")
+        raise
 
 
 async def _transfer_volume_ownership_for_preset(manager, preset_name: str) -> None:
     """Move the canonical attenuation across the Direct bypass boundary.
 
-    Direct bypasses every global helper including Loudness, so while Direct
-    is active the attenuation lives in the system master.  Entering Direct
-    moves it there before the bypass takes effect; leaving Direct moves it
-    back into the Loudness volumeDb before the bypass is removed.  Both
-    transfers run while the old path still controls the output and the
-    engine output gain is held at a guard while the master is restored, so
-    there is no temporary 100% exposure and no positive level jump.  The
-    caller holds the canonical volume write lock and the mutation lock.
+    The planner owns the order: raise the master only after Loudness is in
+    the live path, and lower it before Loudness leaves the path.
     """
-    extras = manager.load_global_extras()
-    loudness = extras.get("loudness") or {}
-    if not loudness.get("enabled"):
-        return
-    active = manager.get_active_preset()
-    entering_direct = preset_name == manager.PURE_PRESET and active != manager.PURE_PRESET
-    leaving_direct = active == manager.PURE_PRESET and preset_name != manager.PURE_PRESET
-    if not entering_direct and not leaving_direct:
-        return
-    if entering_direct:
-        volume_db = float(loudness.get("params", {}).get("volumeDb", 0.0))
-        # Loudness still attenuates while the preset switch runs; moving the
-        # attenuation into the master first only deepens the guard briefly.
-        await _drain_worker(set_output_volume, manager.loudness_percent_from_db(volume_db))
-        return
-    current_percent = await _drain_worker(get_output_volume)
-    previous_extras = copy.deepcopy(extras)
-    guard_applied = False
-    try:
-        # Mirror the current system attenuation into volumeDb while the
-        # bypass is still active (ineffective there, correct for the path
-        # the preset switch is about to activate).
-        extras["loudness"]["params"]["volumeDb"] = manager.loudness_db_from_percent(current_percent)
-        manager.save_global_extras(extras)
-        manager.apply_runtime_properties_from_extras(extras)
-        # Hold the engine output gain at a guard while the master returns to
-        # 100%: the restored master cannot expose the un-attenuated path.
-        if subwoofer_runtime is not None and subwoofer_runtime.snapshot().get("active"):
-            await subwoofer_runtime.set_output_gain_db(-18.0)
-            guard_applied = True
-        await _drain_worker(set_output_volume, 100)
-    except Exception:
-        if guard_applied:
-            try:
-                await subwoofer_runtime.set_output_gain_db(0.0)
-            except Exception:
-                logger.debug("Failed to release Direct-leave volume guard", exc_info=True)
-        try:
-            manager.save_global_extras(previous_extras)
-            manager.apply_runtime_properties_from_extras(previous_extras)
-            await _drain_worker(set_output_volume, current_percent)
-        except Exception:
-            logger.exception("Failed to restore volume state after Direct leave failure")
-        raise
+    start = await _volume_state_for_manager(manager)
+    target = volume_contract.target_for(current=start, preset=preset_name)
+    pre, _post = volume_contract.partition_actions(
+        volume_contract.plan_transition(start, target), ("set_preset",)
+    )
+    await _apply_volume_actions(pre)
 
 
 def _effects_extras_from_form(
@@ -6736,12 +6804,6 @@ async def save_easyeffects_extras(request: Request):
         async with _easyeffects_mutation_lock():
             previous = ee_manager.load_global_extras()
             parsed = _merge_effects_extras_from_json(previous, body)
-            was_loudness = bool(previous.get("loudness", {}).get("enabled"))
-            enabling_loudness = bool(parsed.get("loudness", {}).get("enabled")) and not was_loudness
-            disabling_loudness = was_loudness and not bool(parsed.get("loudness", {}).get("enabled"))
-            if enabling_loudness:
-                raw_volume = await _drain_worker(get_output_volume)
-                parsed["loudness"]["params"]["volumeDb"] = ee_manager.loudness_db_from_percent(raw_volume)
             try:
                 extras = _resolve_effects_extras(parsed)
             except ValueError as exc:
@@ -6749,6 +6811,13 @@ async def save_easyeffects_extras(request: Request):
                     status_code=400,
                     detail={"code": "invalid_effects_extras", "message": str(exc)},
                 ) from exc
+            start = await _volume_state_for_manager(ee_manager)
+            target = volume_contract.target_for(
+                current=start,
+                loudness_enabled=bool((extras.get("loudness") or {}).get("enabled")),
+            )
+            extras.setdefault("loudness", {}).setdefault("params", {})["volumeDb"] = target.volume_db
+            extras.setdefault("loudness", {})["enabled"] = target.loudness_enabled
             if extras == previous:
                 logger.info("Ignored unchanged EasyEffects extras update")
                 return {
@@ -6761,22 +6830,12 @@ async def save_easyeffects_extras(request: Request):
             runtime_autogain_loudness_change = _is_runtime_autogain_loudness_change(
                 previous, extras
             )
-            disabling_master_percent = None
-            if disabling_loudness and _loudness_owns_volume():
-                volume_db = float(extras["loudness"]["params"]["volumeDb"])
-                disabling_master_percent = ee_manager.loudness_percent_from_db(volume_db)
-                # Move the canonical attenuation back to the system master while the
-                # Loudness block is still active and guarded.  Bypassing first leaves
-                # a short 100%-master window and produces a positive transient.
-                await _drain_worker(set_output_volume, disabling_master_percent)
-            elif disabling_loudness:
-                # With Direct active the attenuation already lives in the
-                # system master; the persisted volumeDb is not the live path
-                # and must not overwrite the master.
-                logger.info(
-                    "Loudness disabled while Direct bypasses it; system master keeps the attenuation"
-                )
+            actions = volume_contract.plan_transition(start, target)
+            pre, post = volume_contract.partition_actions(
+                actions, ("set_loudness_enabled",)
+            )
             try:
+                await _apply_volume_actions(pre, extras, persist_extras=False)
                 if runtime_strength_change:
                     result = await _drain_worker(
                         ee_manager.apply_loudness_strength_runtime, previous, extras
@@ -6789,29 +6848,21 @@ async def save_easyeffects_extras(request: Request):
                     result = await _drain_worker(
                         ee_manager.apply_global_extras_to_all_presets, extras
                     )
+                await _apply_volume_actions(post, extras, persist_extras=False)
             except Exception:
-                if disabling_master_percent is not None:
-                    try:
-                        await _drain_worker(set_output_volume, 100)
-                    except Exception:
-                        logger.exception(
-                            "Failed to restore system master after Loudness disable failure"
-                        )
+                try:
+                    await _restore_volume_state(ee_manager, start)
+                except Exception:
+                    logger.exception("Failed to restore volume state after extras update failure")
                 raise
 
         active_preset = ee_manager.get_active_preset()
         if (not result.get("runtime_applied") and active_preset
                 and active_preset not in ee_manager.EXCLUDED_GLOBAL_EXTRAS_PRESETS):
             try:
-                # The caller holds the volume write lock (when this is a
-                # canonical transition) and the mutation lock; the reload
-                # target is never Direct here (EXCLUDED above), so the
-                # Direct volume transfer is guaranteed to be a no-op.
                 await _load_easyeffects_preset(active_preset, _locks_held=True)
             except Exception as e:
                 logger.warning("Failed to reload active preset after extras update: %s", e)
-        if enabling_loudness and not result.get("runtime_applied") and _loudness_owns_volume():
-            await _drain_worker(set_output_volume, 100)
     finally:
         if canonical_lock is not None:
             canonical_lock.release()
