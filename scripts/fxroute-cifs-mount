@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+set -euo pipefail
+PATH="/usr/sbin:/usr/bin:/sbin:/bin"
+export PATH
+
+server="${1:-}"
+share="${2:-}"
+user="${SUDO_USER:-}"
+
+[[ $EUID -eq 0 && -n "$user" && "$user" != root ]] || {
+  echo "fxroute-cifs-mount must be run through sudo" >&2
+  exit 2
+}
+uid="$(id -u "$user")"
+mount_root="/var/lib/fxroute/music-libraries/$uid"
+
+if [[ "$server" == "--remove-all" ]]; then
+  exec 9>/run/lock/fxroute-cifs-mount.lock
+  flock 9
+  while read -r mount_point; do
+    [[ -n "$mount_point" ]] || continue
+    unit="$(systemd-escape --path "$mount_point")"
+    systemctl stop "$unit.automount" "$unit.mount" >/dev/null 2>&1 || true
+  done < <(awk -v prefix="$mount_root/" '$2 ~ ("^" prefix) && $3 == "cifs" { gsub(/\\040/, " ", $2); print $2 }' /etc/fstab)
+  tmp_fstab="$(mktemp /etc/fstab.fxroute.XXXXXX)"
+  awk -v prefix="$mount_root/" '!($2 ~ ("^" prefix) && $3 == "cifs")' /etc/fstab > "$tmp_fstab"
+  chmod --reference=/etc/fstab "$tmp_fstab"
+  chown --reference=/etc/fstab "$tmp_fstab"
+  mv "$tmp_fstab" /etc/fstab
+  systemctl daemon-reload
+  exit 0
+fi
+[[ "$server" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "Invalid SMB server" >&2; exit 2; }
+[[ "$share" =~ ^[A-Za-z0-9._()\ $-]+$ && "$share" != "." && "$share" != ".." ]] || {
+  echo "Invalid SMB share" >&2
+  exit 2
+}
+
+user_entry="$(getent passwd "$user")"
+[[ -n "$user_entry" ]] || { echo "Unknown user" >&2; exit 2; }
+gid="$(id -g "$user")"
+mount_point="$mount_root/$server/$share"
+source="//$server/$share"
+
+install -d -o root -g root -m 755 /var/lib/fxroute /var/lib/fxroute/music-libraries "$mount_root"
+case "$(realpath -m "$mount_point")" in
+  "$mount_root"/*) ;;
+  *) echo "Invalid mount path" >&2; exit 2 ;;
+esac
+
+install -d -o root -g root -m 755 "$mount_root/$server" "$mount_point"
+fstab_source="${source// /\\040}"
+fstab_mount="${mount_point// /\\040}"
+options="guest,ro,uid=$uid,gid=$gid,_netdev,nofail,x-systemd.automount,x-systemd.mount-timeout=10s,x-systemd.idle-timeout=5min"
+entry="$fstab_source $fstab_mount cifs $options 0 0"
+
+exec 9>/run/lock/fxroute-cifs-mount.lock
+flock 9
+tmp_fstab="$(mktemp /etc/fstab.fxroute.XXXXXX)"
+trap 'rm -f "$tmp_fstab"' EXIT
+FXROUTE_FSTAB_SOURCE="$fstab_source" FXROUTE_FSTAB_MOUNT="$fstab_mount" FXROUTE_FSTAB_ENTRY="$entry" awk '
+  BEGIN {
+    source = ENVIRON["FXROUTE_FSTAB_SOURCE"]
+    mount = ENVIRON["FXROUTE_FSTAB_MOUNT"]
+    entry = ENVIRON["FXROUTE_FSTAB_ENTRY"]
+  }
+  $1 == source && $2 == mount && $3 == "cifs" {
+    if (!replaced) print entry
+    replaced = 1
+    next
+  }
+  { print }
+  END { if (!replaced) print entry }
+' /etc/fstab > "$tmp_fstab"
+chmod --reference=/etc/fstab "$tmp_fstab"
+chown --reference=/etc/fstab "$tmp_fstab"
+mv "$tmp_fstab" /etc/fstab
+trap - EXIT
+
+systemctl daemon-reload
+unit="$(systemd-escape --path "$mount_point")"
+systemctl start "$unit.automount"

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-only
 set -euo pipefail
+PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export PATH
 
 APP_NAME="FXRoute"
 SERVICE_NAME="fxroute"
@@ -176,6 +178,19 @@ remove_helpers() {
   remove_file_if_exists "$HOME/.local/bin/fxroute-restart"
   remove_file_if_exists "$HOME/.local/bin/fxroute-update"
   remove_file_if_exists "$HOME/.local/bin/fxroute-update-ytdlp"
+}
+
+remove_network_library_helper() {
+  if command -v sudo >/dev/null 2>&1; then
+    sudo /usr/local/sbin/fxroute-cifs-mount --remove-all 2>/dev/null || true
+    sudo rm -f /usr/local/sbin/fxroute-cifs-mount /etc/sudoers.d/fxroute-cifs-mount \
+      || warn "Could not remove the network library mount helper"
+  elif [[ $EUID -eq 0 ]]; then
+    SUDO_USER="${SUDO_USER:-$(logname 2>/dev/null || true)}" /usr/local/sbin/fxroute-cifs-mount --remove-all 2>/dev/null || true
+    rm -f /usr/local/sbin/fxroute-cifs-mount /etc/sudoers.d/fxroute-cifs-mount
+  else
+    warn "Could not remove the network library mount helper because sudo is unavailable"
+  fi
 }
 
 remove_autostart() {
@@ -567,6 +582,9 @@ main() {
 
   log "Removing helper scripts"
   remove_helpers
+
+  log "Removing network library mount helper"
+  remove_network_library_helper
 
   log "Removing EasyEffects / Spotify autostart entries"
   remove_autostart

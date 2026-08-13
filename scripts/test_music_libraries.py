@@ -17,7 +17,6 @@ class MusicLibraryDiscoveryTests(unittest.TestCase):
         with patch("music_libraries.subprocess.run", return_value=result):
             hosts = default_discovery_hosts()
 
-        self.assertIn("openclaw", hosts)
         self.assertIn("192.168.178.100", hosts)
 
     def test_configured_discovery_hosts_skip_neighbor_scan(self):
@@ -38,7 +37,7 @@ class MusicLibraryDiscoveryTests(unittest.TestCase):
 
         self.assertEqual(len(shares), 1)
         self.assertEqual(shares[0]["type"], "smb")
-        self.assertEqual(shares[0]["label"], "SMB — OpenClaw / Music-Demo")
+        self.assertEqual(shares[0]["label"], "SMB — openclaw / Music-Demo")
         self.assertEqual(shares[0]["server"], "openclaw")
         self.assertEqual(shares[0]["share"], "Music-Demo")
 
@@ -62,6 +61,17 @@ class MusicLibraryDiscoveryTests(unittest.TestCase):
         denied = subprocess.CompletedProcess([], 1, "", "NT_STATUS_ACCESS_DENIED")
         with patch("music_libraries.subprocess.run", side_effect=[listing, denied]):
             self.assertEqual(discover_smb_shares(["server"]), [])
+
+    def test_discovery_rejects_path_like_share_names(self):
+        listing = subprocess.CompletedProcess([], 0, "Disk|../escape|\n", "")
+        with patch("music_libraries.subprocess.run", return_value=listing) as run:
+            self.assertEqual(discover_smb_shares(["server"]), [])
+        self.assertEqual(run.call_count, 1)
+
+    def test_reserved_helper_command_cannot_be_a_server(self):
+        manager = MusicLibraryManager(Path("/tmp/Music"), discovery_hosts=[])
+        with self.assertRaisesRegex(ValueError, "Invalid SMB"):
+            manager.add_manual_share("--remove-all", "Music")
 
 
 class MusicLibraryManagerTests(unittest.TestCase):
@@ -98,12 +108,60 @@ class MusicLibraryManagerTests(unittest.TestCase):
             manager = MusicLibraryManager(local, mount_root=base / "mounts", discovery_hosts=[])
             manager.add_manual_share("openclaw", "Music-Demo")
 
-            smb_root = manager.activate("smb:openclaw:Music-Demo")
-            local_root = manager.activate("local")
+            with patch("music_libraries.os.path.ismount", return_value=True):
+                smb_root = manager.activate("smb:openclaw:Music-Demo")
+                local_root = manager.activate("local")
 
             self.assertEqual(smb_root, mounted.resolve())
             self.assertEqual(manager.active_type, "local")
             self.assertEqual(local_root, local.resolve())
+
+    def test_activation_requests_persistent_cifs_mount_when_not_present(self):
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            mounted = base / "mounts" / "server" / "Music"
+            manager = MusicLibraryManager(base / "Music", mount_root=base / "mounts", discovery_hosts=[])
+            manager.add_manual_share("server", "Music")
+
+            def run(command, **kwargs):
+                if command[0] == "sudo":
+                    mounted.mkdir(parents=True)
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            with patch("music_libraries.subprocess.run", side_effect=run) as mocked, patch(
+                "music_libraries.os.path.ismount", side_effect=lambda path: Path(path) == mounted
+            ):
+                root = manager.activate("smb:server:Music")
+
+            helper_call = next(call for call in mocked.call_args_list if call.args[0][0] == "sudo")
+            self.assertEqual(helper_call.args[0][:4], ["sudo", "-n", "/usr/local/sbin/fxroute-cifs-mount", "server"])
+            self.assertEqual(root, mounted.resolve())
+
+    def test_plain_empty_mount_directory_is_not_accepted(self):
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            mounted = base / "mounts" / "server" / "Music"
+            mounted.mkdir(parents=True)
+            manager = MusicLibraryManager(base / "Music", mount_root=base / "mounts", discovery_hosts=[])
+            manager.add_manual_share("server", "Music")
+
+            with patch("music_libraries.os.path.ismount", return_value=False), patch(
+                "music_libraries.subprocess.run",
+                return_value=subprocess.CompletedProcess([], 1, "", "failed"),
+            ):
+                with self.assertRaises(FileNotFoundError):
+                    manager.activate("smb:server:Music")
+
+    def test_plain_gvfs_directory_is_not_accepted(self):
+        with tempfile.TemporaryDirectory() as td:
+            runtime = Path(td)
+            candidate = runtime / "gvfs" / "smb-share:server=server,share=Music"
+            candidate.mkdir(parents=True)
+            manager = MusicLibraryManager(runtime / "Music", mount_root=runtime / "mounts", discovery_hosts=[])
+            with patch.dict("os.environ", {"XDG_RUNTIME_DIR": str(runtime)}), patch(
+                "music_libraries.os.path.ismount", return_value=False
+            ):
+                self.assertIsNone(manager._mounted_share_path("server", "Music"))
 
     def test_manual_entry_accepts_smb_url(self):
         with tempfile.TemporaryDirectory() as td:

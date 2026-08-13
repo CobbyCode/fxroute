@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-only
 set -Eeuo pipefail
+PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export PATH
 
 APP_NAME="FXRoute"
 SERVICE_NAME="fxroute"
@@ -527,6 +529,37 @@ pkg_install() {
   esac
 }
 
+package_installed() {
+  local package="$1"
+  case "$PACKAGE_MANAGER" in
+    apt) dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q 'ok installed' ;;
+    dnf|zypper) rpm -q "$package" >/dev/null 2>&1 ;;
+    pacman) pacman -Q "$package" >/dev/null 2>&1 ;;
+    *) return 1 ;;
+  esac
+}
+
+smb_packages_for_manager() {
+  case "$1" in
+    apt) echo "smbclient cifs-utils libglib2.0-bin gvfs gvfs-backends gvfs-fuse" ;;
+    dnf) echo "samba-client cifs-utils glib2 gvfs gvfs-smb gvfs-fuse" ;;
+    zypper) echo "samba-client cifs-utils glib2-tools gvfs gvfs-backend-samba gvfs-fuse" ;;
+    pacman) echo "smbclient cifs-utils glib2 gvfs gvfs-smb" ;;
+    *) return 1 ;;
+  esac
+}
+
+ensure_smb_packages() {
+  local packages=()
+  local missing=()
+  local pkg=""
+  read -r -a packages <<<"$(smb_packages_for_manager "$PACKAGE_MANAGER")"
+  for pkg in "${packages[@]}"; do
+    package_installed "$pkg" || missing+=("$pkg")
+  done
+  [[ ${#missing[@]} -eq 0 ]] || pkg_install "${missing[@]}"
+}
+
 ensure_native_packages() {
   local core_packages=()
   local support_packages=(curl git socat)
@@ -574,6 +607,7 @@ ensure_native_packages() {
       missing_audio_stack+=("$cmd")
     fi
   done
+  ensure_smb_packages
 
   if ! bt_plugin_present; then
     need_bt_plugin_pkg=1
@@ -635,6 +669,26 @@ ensure_native_packages() {
     warn "PipeWire BlueZ SPA plugin is still missing; Bluetooth input mode will not be available until the host provides libspa-bluez5.so"
   fi
   pass "native packages installed"
+}
+
+install_network_library_helper() {
+  local helper_src="$INSTALL_ROOT/scripts/fxroute-cifs-mount"
+  local helper_path="/usr/local/sbin/fxroute-cifs-mount"
+  local sudoers_path="/etc/sudoers.d/fxroute-cifs-mount"
+  local tmp_sudoers=""
+
+  [[ -f "$helper_src" ]] || die "Missing network library mount helper: $helper_src"
+  "${SUDO_CMD[@]}" install -m 755 "$helper_src" "$helper_path"
+  tmp_sudoers="$(mktemp)"
+  local install_user="${SUDO_USER:-$(id -un)}"
+  [[ "$install_user" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]] || die "Invalid install user for CIFS helper"
+  printf '%s ALL=(root) NOPASSWD: %s *\n' "$install_user" "$helper_path" > "$tmp_sudoers"
+  if command -v visudo >/dev/null 2>&1; then
+    "${SUDO_CMD[@]}" visudo -cf "$tmp_sudoers" >/dev/null
+  fi
+  "${SUDO_CMD[@]}" install -m 440 "$tmp_sudoers" "$sudoers_path"
+  rm -f "$tmp_sudoers"
+  pass "network library CIFS helper installed"
 }
 
 sync_project_tree() {
@@ -1373,6 +1427,9 @@ validate_tools() {
   command -v wpctl >/dev/null 2>&1 && pass "wpctl available" || fail "wpctl available"
   command -v pw-cli >/dev/null 2>&1 && pass "pw-cli available" || fail "pw-cli available"
   command -v bluetoothctl >/dev/null 2>&1 && pass "bluetoothctl available" || fail "bluetoothctl available"
+  for cmd in smbclient mount.cifs gio; do
+    command -v "$cmd" >/dev/null 2>&1 && pass "$cmd available" || fail "$cmd available"
+  done
   "$INSTALL_ROOT/.venv/bin/yt-dlp" --version >/dev/null 2>&1 && pass "yt-dlp available from venv" || fail "yt-dlp available from venv"
 
   detect_easyeffects_mode
@@ -1914,11 +1971,13 @@ EOF
 
 main() {
   require_cmd python3
+  require_cmd systemctl
   choose_sudo
   confirm_supported_distro
   capture_lan_comfort_baseline
   ensure_native_packages
   sync_project_tree
+  install_network_library_helper
   create_env_if_missing
   ensure_easyeffects
   ensure_bootstrap_easyeffects_presets

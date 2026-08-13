@@ -27,6 +27,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 INSTALL_SH = ROOT / "install.sh"
 UPDATE_SH = ROOT / "scripts" / "system-package-update.sh"
+UNINSTALL_SH = ROOT / "uninstall.sh"
 
 
 def _extract_function(text: str, name: str) -> str:
@@ -46,6 +47,7 @@ class InstallerPkgManagerStaticTests(unittest.TestCase):
     def setUpClass(cls):
         cls.text = INSTALL_SH.read_text()
         cls.update_text = UPDATE_SH.read_text()
+        cls.uninstall_text = UNINSTALL_SH.read_text()
         cls.pkg_body = _extract_function(cls.text, "pkg_install")
 
     def test_pacman_distro_detection(self):
@@ -91,6 +93,77 @@ class InstallerPkgManagerStaticTests(unittest.TestCase):
             "audio_stack_packages=(bluez bluez-utils wireplumber pipewire pipewire-pulse libpulse)",
             self.text,
         )
+
+    def test_smb_runtime_packages_for_all_supported_distros(self):
+        expected = (
+            'apt) echo "smbclient cifs-utils libglib2.0-bin gvfs gvfs-backends gvfs-fuse"',
+            'dnf) echo "samba-client cifs-utils glib2 gvfs gvfs-smb gvfs-fuse"',
+            'zypper) echo "samba-client cifs-utils glib2-tools gvfs gvfs-backend-samba gvfs-fuse"',
+            'pacman) echo "smbclient cifs-utils glib2 gvfs gvfs-smb"',
+        )
+        for package_list in expected:
+            self.assertIn(package_list, self.text)
+        self.assertIn('for cmd in smbclient mount.cifs gio; do', self.text)
+        self.assertIn('package_installed "$pkg" || missing+=("$pkg")', self.text)
+
+    def test_smb_package_matrix_behavior(self):
+        body = _extract_function(self.text, "smb_packages_for_manager")
+        expected = {
+            "apt": "smbclient cifs-utils libglib2.0-bin gvfs gvfs-backends gvfs-fuse",
+            "dnf": "samba-client cifs-utils glib2 gvfs gvfs-smb gvfs-fuse",
+            "zypper": "samba-client cifs-utils glib2-tools gvfs gvfs-backend-samba gvfs-fuse",
+            "pacman": "smbclient cifs-utils glib2 gvfs gvfs-smb",
+        }
+        for manager, packages in expected.items():
+            result = subprocess.run(
+                ["bash", "-c", f'{body}\nsmb_packages_for_manager {manager}'],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            self.assertEqual(result.stdout.strip(), packages)
+
+    def test_smb_missing_package_dry_run_for_all_managers(self):
+        matrix = _extract_function(self.text, "smb_packages_for_manager")
+        ensure = _extract_function(self.text, "ensure_smb_packages")
+        for manager in ("apt", "dnf", "zypper", "pacman"):
+            code = f'''\n{matrix}\n{ensure}\nPACKAGE_MANAGER={manager}\npackage_installed() {{ [ "$1" = gvfs ]; }}\npkg_install() {{ printf "%s\\n" "$*"; }}\nensure_smb_packages\n'''
+            result = subprocess.run(["bash", "-c", code], capture_output=True, text=True, check=True)
+            planned = result.stdout.strip().split()
+            self.assertNotIn("gvfs", planned)
+            self.assertIn("cifs-utils", planned)
+            self.assertTrue("smbclient" in planned or "samba-client" in planned)
+
+    def test_installer_installs_restricted_cifs_helper(self):
+        self.assertIn("install_network_library_helper()", self.text)
+        self.assertIn("/usr/local/sbin/fxroute-cifs-mount", self.text)
+        self.assertIn("/etc/sudoers.d/fxroute-cifs-mount", self.text)
+        self.assertIn("install_network_library_helper\n", self.text)
+        self.assertIn("remove_network_library_helper()", self.uninstall_text)
+        self.assertIn("/etc/sudoers.d/fxroute-cifs-mount", self.uninstall_text)
+        self.assertIn("fxroute-cifs-mount --remove-all", self.uninstall_text)
+        safe_path = 'PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"'
+        self.assertIn(safe_path, self.text)
+        self.assertIn(safe_path, self.uninstall_text)
+
+    def test_cifs_helper_has_safe_automount_options(self):
+        helper = (ROOT / "scripts" / "fxroute-cifs-mount").read_text()
+        for option in (
+            "_netdev",
+            "nofail",
+            "x-systemd.automount",
+            "x-systemd.mount-timeout=10s",
+        ):
+            self.assertIn(option, helper)
+        self.assertNotIn("192.168.", helper)
+        self.assertNotIn("Music-Demo", helper)
+        self.assertIn('mount_root="/var/lib/fxroute/music-libraries/$uid"', helper)
+        self.assertNotIn('mount_root="$home/', helper)
+        self.assertIn('if (!replaced) print entry', helper)
+        self.assertIn('mv "$tmp_fstab" /etc/fstab', helper)
+        self.assertIn("require_cmd systemctl", self.text)
+        self.assertIn('PATH="/usr/sbin:/usr/bin:/sbin:/bin"', helper)
+        self.assertIn('install -d -o root -g root -m 755 /var/lib/fxroute', helper)
 
     def test_stage1_pacman_deps(self):
         self.assertIn("stage1_packages=(gcc pkgconf libpipewire)", self.text)

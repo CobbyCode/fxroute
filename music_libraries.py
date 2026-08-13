@@ -11,9 +11,14 @@ from urllib.parse import unquote, urlparse
 _SYSTEM_SHARES = {"admin$", "ipc$", "print$", "profiles", "users"}
 
 
+def _valid_smb_name(value: str, *, allow_spaces: bool = False) -> bool:
+    pattern = r"[A-Za-z0-9 ._()$-]+" if allow_spaces else r"[A-Za-z0-9._-]+"
+    return bool(re.fullmatch(pattern, value or "")) and value not in {".", "..", "--remove-all"}
+
+
 def default_discovery_hosts() -> list[str]:
     configured_hosts = os.environ.get("MUSIC_LIBRARY_SMB_HOSTS")
-    raw_hosts = configured_hosts or "openclaw,openclaw.local"
+    raw_hosts = configured_hosts or ""
     hosts = [host.strip() for host in raw_hosts.split(",") if host.strip()]
     if configured_hosts:
         return hosts
@@ -32,7 +37,7 @@ def default_discovery_hosts() -> list[str]:
 
 def _server_label(server: str) -> str:
     name = server.split(".", 1)[0]
-    return "OpenClaw" if name.lower() == "openclaw" else name
+    return name
 
 
 def _smb_entry(server: str, share: str, display_server: str | None = None) -> dict[str, str]:
@@ -76,7 +81,15 @@ def discover_smb_shares(hosts: list[str]) -> list[dict[str, str]]:
             kind, separator, rest = line.partition("|")
             share, separator2, _comment = rest.partition("|")
             key = (server.lower(), share.lower())
-            if kind != "Disk" or not separator or not separator2 or share.lower() in _SYSTEM_SHARES or key in seen:
+            if (
+                kind != "Disk"
+                or not separator
+                or not separator2
+                or not _valid_smb_name(server)
+                or not _valid_smb_name(share, allow_spaces=True)
+                or share.lower() in _SYSTEM_SHARES
+                or key in seen
+            ):
                 continue
             try:
                 access = subprocess.run(
@@ -107,7 +120,7 @@ class MusicLibraryManager:
         discovery_hosts: list[str] | None = None,
     ):
         self.local_root = local_root.expanduser().resolve(strict=False)
-        self.mount_root = mount_root or (Path.home() / ".cache" / "fxroute" / "music-libraries")
+        self.mount_root = mount_root or (Path("/var/lib/fxroute/music-libraries") / str(os.getuid()))
         if discovery_hosts is None:
             discovery_hosts = default_discovery_hosts()
         self.discovery_hosts = discovery_hosts
@@ -143,9 +156,8 @@ class MusicLibraryManager:
 
     def add_manual_share(self, server: str, share: str) -> dict[str, str]:
         if (
-            not re.fullmatch(r"[A-Za-z0-9._-]+", server or "")
-            or not re.fullmatch(r"[A-Za-z0-9 ._()$-]+", share or "")
-            or share in {".", ".."}
+            not _valid_smb_name(server)
+            or not _valid_smb_name(share, allow_spaces=True)
         ):
             raise ValueError("Invalid SMB server or share")
         entry = _smb_entry(server, share)
@@ -153,15 +165,18 @@ class MusicLibraryManager:
         return entry
 
     def _mounted_share_path(self, server: str, share: str) -> Path | None:
+        if not _valid_smb_name(server) or not _valid_smb_name(share, allow_spaces=True):
+            return None
         configured = self.mount_root / server / share
-        if configured.is_dir():
+        mount_root = self.mount_root.resolve(strict=False)
+        if configured.resolve(strict=False).is_relative_to(mount_root) and configured.is_dir() and os.path.ismount(configured):
             return configured.resolve()
         gvfs = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")) / "gvfs"
         for candidate in (
             gvfs / f"smb-share:server={server},share={share}",
             gvfs / f"smb-share:server={server.lower()},share={share.lower()}",
         ):
-            if candidate.is_dir():
+            if os.path.ismount(gvfs) and candidate.is_dir() and candidate.resolve(strict=False).is_relative_to(gvfs.resolve()):
                 return candidate.resolve()
         return None
 
@@ -178,6 +193,19 @@ class MusicLibraryManager:
             raise ValueError("Unknown music library")
         _kind, server, share = library_id.split(":", 2)
         root = self._mounted_share_path(server, share)
+        if root is None:
+            try:
+                subprocess.run(
+                    ["sudo", "-n", "/usr/local/sbin/fxroute-cifs-mount", server, share],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=15,
+                    check=False,
+                )
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                pass
+            root = self._mounted_share_path(server, share)
         if root is None:
             try:
                 subprocess.run(
