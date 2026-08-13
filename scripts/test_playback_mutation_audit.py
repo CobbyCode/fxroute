@@ -233,6 +233,7 @@ def _reason(context: str, name: str) -> str | None:
         return "AutoSub sweep workflow, outside playback transitions"
     if leaf in {
         "lifespan", "save_audio_output_selection_route", "save_audio_output_mode_route",
+        "_set_canonical_output_volume",
         "_finish_easyeffects_preset_mutation", "save_easyeffects_extras",
         "load_easyeffects_preset", "_load_easyeffects_preset",
     }:

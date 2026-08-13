@@ -23,6 +23,42 @@ class DspPackagingTests(unittest.TestCase):
         self.assertIn("-std=gnu11", pipewire_command)
         self.assertNotIn("-pedantic", pipewire_command)
 
+    def test_installer_provisions_native_dsp_plugin_dependencies(self):
+        script = (ROOT / "install.sh").read_text()
+        for dependency in ("liblilv-0-devel", "lv2-lsp-plugins",
+                           "lv2-zam-plugins", "libebur128-devel",
+                           "libsamplerate0-dev", "libsamplerate-devel",
+                           "libspeexdsp-dev", "speexdsp-devel",
+                           "libebur128 libsamplerate speexdsp", "calf-plugins",
+                           "lv2-calf-plugins", "zam-plugins calf"):
+            self.assertIn(dependency, script)
+
+    def test_opensuse_builds_pinned_calf_lv2_when_package_is_unavailable(self):
+        script = (ROOT / "install.sh").read_text()
+        self.assertIn('install_calf_lv2_from_source()', script)
+        self.assertIn('version="0.90.9"', script)
+        self.assertIn('2d304eed88e87438b2b8857a2f4480046bf4003bce2e17a042abdbbf7d59122f', script)
+        self.assertIn('-DWANT_GUI=OFF', script)
+        self.assertIn('-DWANT_JACK=OFF', script)
+        self.assertIn('"$HOME/.lv2/calf.lv2"', script)
+        self.assertIn('mv "$candidate" "$HOME/.lv2/calf.lv2"', script)
+
+    def test_native_dsp_links_libsamplerate(self):
+        script = (ROOT / "native_dsp/build.sh").read_text()
+        self.assertIn("pkg-config --cflags samplerate", script)
+        self.assertIn("pkg-config --libs samplerate", script)
+
+    def test_native_dsp_links_speexdsp_for_crystalizer(self):
+        script = (ROOT / "native_dsp/build.sh").read_text()
+        self.assertIn("pkg-config --cflags speexdsp", script)
+        self.assertIn("pkg-config --libs speexdsp", script)
+        crystalizer_commands = [line for line in script.splitlines()
+                                if "crystalizer.c" in line]
+        self.assertTrue(crystalizer_commands)
+        for command in crystalizer_commands:
+            self.assertIn("$SPEEXDSP_CFLAGS", command)
+            self.assertIn("$SPEEXDSP_LIBS", command)
+
     def test_updater_rebuilds_native_dsp_from_all_engine_sources(self):
         script = (ROOT / "scripts/update_fxroute.sh").read_text()
         self.assertIn('build_native_dsp_if_needed()', script)

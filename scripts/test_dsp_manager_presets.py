@@ -35,6 +35,18 @@ class DSPManagerPresetTests(unittest.TestCase):
         self.assertEqual(config["sample_rate_hz"], 96000)
         self.assertEqual(config["chain"][0]["type"], "equalizer")
 
+    def test_peq_rejects_filter_types_not_supported_by_lsp(self):
+        for filter_type in ("gain", "delay"):
+            with self.subTest(filter_type=filter_type), self.assertRaisesRegex(
+                    ValueError, "filterType is not supported"):
+                self.manager.create_peq_preset("Unsupported", {
+                    "enabled": True,
+                    "params": {"channelMode": "stereo-linked", "bands": [{
+                        "filterType": filter_type, "frequencyHz": 1000,
+                        "gainDb": 0, "q": 1,
+                    }]},
+                })
+
     def test_manager_has_no_easyeffects_runtime_import(self):
         tree = ast.parse((ROOT / "dsp_manager.py").read_text())
         imported = {
@@ -90,14 +102,43 @@ class DSPManagerPresetTests(unittest.TestCase):
             "autogain#0": {"bypass": False, "target": -18},
             "loudness#0": {"bypass": False, "fft": "4096", "volume": -3,
                            "output-gain": -1},
-            "limiter#0": {"bypass": False, "threshold": -2, "attack": 5,
-                          "release": 50, "lookahead": 5, "stereo-link": 100},
+            "limiter#0": {"bypass": False, "input-gain": -3, "output-gain": 2,
+                          "threshold": -2, "attack": 5, "release": 50,
+                          "lookahead": 5, "stereo-link": 100},
         }}
         result = self.manager.import_preset_json("Helpers.json", json.dumps(legacy))
         chain = json.loads(Path(result["path"]).read_text())["chain"]
         self.assertEqual([plugin["type"] for plugin in chain],
                          ["convolver", "autogain", "loudness", "limiter"])
         self.assertEqual(chain[0]["params"]["kernel"], "room")
+        self.assertEqual(chain[3]["params"]["inputGainDb"], -3)
+        self.assertEqual(chain[3]["params"]["outputGainDb"], 2)
+        self.assertEqual(chain[3]["params"]["releaseMs"], 50)
+
+    def test_maximizer_compilation_emits_input_gain_control(self):
+        chain = [{"id": "maximizer#0", "type": "maximizer", "enabled": True,
+                  "params": {"inputGainDb": 3, "thresholdDb": -0.5, "releaseMs": 30}}]
+        self.manager.preset_store.write("Maximizer", self.manager._native_preset(chain))
+
+        text = self.manager.compile_engine_text(
+            [{"name": "FL", "source": 0}, {"name": "FR", "source": 1}],
+            preset_name="Maximizer",
+        )
+
+        self.assertIn("stage_begin 0 maximizer#0 lv2 urn:zamaudio:ZaMaximX2", text)
+        self.assertIn("control gain 3", text)
+
+    def test_legacy_maximizer_import_preserves_input_gain(self):
+        legacy = {"output": {
+            "plugins_order": ["maximizer#0"],
+            "maximizer#0": {"bypass": False, "input-gain": 4.5,
+                            "threshold": -0.5, "release": 30},
+        }}
+
+        result = self.manager.import_preset_json("Maximizer.json", json.dumps(legacy))
+        params = json.loads(Path(result["path"]).read_text())["chain"][0]["params"]
+
+        self.assertEqual(params["inputGainDb"], 4.5)
 
     def test_native_import_rejects_unsupported_plugin(self):
         payload = {"schema": "fxroute.dsp.preset", "version": 1, "metadata": {},

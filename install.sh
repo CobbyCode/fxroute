@@ -1041,17 +1041,65 @@ build_native_dsp_engine() {
 
   [[ -f "$build_script" ]] || die "Missing FXRoute native DSP build script: $build_script"
   case "$PACKAGE_MANAGER" in
-    apt) dsp_packages=(gcc pkg-config libpipewire-0.3-dev libspa-0.2-dev) ;;
-    dnf) dsp_packages=(gcc pkgconf-pkg-config pipewire-devel) ;;
-    zypper) dsp_packages=(gcc pkgconf-pkg-config pipewire-devel) ;;
-    pacman) dsp_packages=(gcc pkgconf libpipewire) ;;
+    apt) dsp_packages=(gcc pkg-config libpipewire-0.3-dev libspa-0.2-dev liblilv-dev lv2-dev lsp-plugins-lv2 zam-plugins calf-plugins libebur128-dev libsamplerate0-dev libspeexdsp-dev) ;;
+    dnf) dsp_packages=(gcc pkgconf-pkg-config pipewire-devel lilv-devel lv2-devel lsp-plugins-lv2 zam-plugins-lv2 lv2-calf-plugins libebur128-devel libsamplerate-devel speexdsp-devel) ;;
+    zypper) dsp_packages=(gcc gcc-c++ cmake pkgconf-pkg-config pipewire-devel liblilv-0-devel lv2-devel lv2-lsp-plugins lv2-zam-plugins libebur128-devel libsamplerate-devel speexdsp-devel libexpat-devel fluidsynth-devel) ;;
+    pacman) dsp_packages=(gcc pkgconf libpipewire lilv lv2 lsp-plugins zam-plugins calf libebur128 libsamplerate speexdsp) ;;
   esac
   [[ ${#dsp_packages[@]} -eq 0 ]] || pkg_install "${dsp_packages[@]}"
+
+  if [[ "$PACKAGE_MANAGER" == "zypper" ]] && ! lv2ls 2>/dev/null | grep -Fxq 'http://calf.sourceforge.net/plugins/BassEnhancer'; then
+    install_calf_lv2_from_source
+  fi
 
   log "Building FXRoute native DSP engine"
   bash "$build_script"
   [[ -x "$binary" ]] || die "Native DSP build did not produce $binary"
   pass "FXRoute native DSP engine built"
+}
+
+install_calf_lv2_from_source() {
+  local version="0.90.9"
+  local checksum="2d304eed88e87438b2b8857a2f4480046bf4003bce2e17a042abdbbf7d59122f"
+  local work archive source build stage bundle binary candidate previous
+  work="$(mktemp -d -t fxroute-calf.XXXXXX)"
+  archive="$work/calf.tar.gz"
+  source="$work/calf-$version"
+  build="$work/build"
+  stage="$work/stage"
+  trap 'rm -rf "$work"' RETURN
+
+  run_cmd curl -fL --retry 3 -o "$archive" "https://github.com/calf-studio-gear/calf/archive/$version.tar.gz"
+  printf '%s  %s\n' "$checksum" "$archive" | sha256sum -c -
+  run_cmd tar -xzf "$archive" -C "$work"
+  run_cmd cmake -S "$source" -B "$build" \
+    -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr \
+    -DLV2DIR=/usr/lib64/lv2 -DWANT_GUI=OFF -DWANT_JACK=OFF \
+    -DWANT_LASH=OFF -DWANT_SORDI=OFF
+  run_cmd cmake --build "$build" --parallel
+  run_cmd env DESTDIR="$stage" cmake --install "$build"
+  bundle="$stage/usr/lib64/lv2/calf.lv2"
+  binary="$stage/usr/lib64/calf/libcalf.so"
+  [[ -d "$bundle" && -f "$binary" ]] || die "Calf LV2 source build did not produce the expected bundle"
+  rm -f "$bundle/calf.so"
+  cp "$binary" "$bundle/calf.so"
+  mkdir -p "$HOME/.lv2"
+  candidate="$HOME/.lv2/.calf.lv2.new.$$"
+  previous="$HOME/.lv2/.calf.lv2.old.$$"
+  rm -rf "$candidate" "$previous"
+  cp -a "$bundle" "$candidate"
+  if [[ -e "$HOME/.lv2/calf.lv2" ]]; then
+    mv "$HOME/.lv2/calf.lv2" "$previous"
+  fi
+  if mv "$candidate" "$HOME/.lv2/calf.lv2"; then
+    rm -rf "$previous"
+  else
+    [[ ! -e "$previous" ]] || mv "$previous" "$HOME/.lv2/calf.lv2"
+    die "Failed to install the staged Calf LV2 bundle"
+  fi
+  lv2ls 2>/dev/null | grep -Fxq 'http://calf.sourceforge.net/plugins/BassEnhancer' \
+    || die "Calf Bass Enhancer is unavailable after source installation"
+  pass "Calf Bass Enhancer LV2 installed"
 }
 
 configure_spotify_cache_cleanup_helper() {

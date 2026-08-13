@@ -280,37 +280,59 @@ class DSPRuntime:
         if not config.output_key:
             raise RuntimeError("Native DSP requires a selected hardware output")
         async with self._lock:
-            await self.stop()
             if not self.binary.is_file():
                 self._error = f"Native DSP binary is not available: {self.binary}"
                 raise RuntimeError(self._error)
             text = self.manager.compile_engine_text(list(config.layout), sample_rate_hz=config.sample_rate)
             fd, config_name = tempfile.mkstemp(prefix="fxroute-dsp-", suffix=".conf")
             os.write(fd, text.encode("utf-8")); os.close(fd)
+            input_fd, input_name = tempfile.mkstemp(prefix="fxroute-dsp-input-", suffix=".f32")
+            output_fd, output_name = tempfile.mkstemp(prefix="fxroute-dsp-output-", suffix=".f32")
+            os.close(input_fd); os.close(output_fd)
+            try:
+                offline_binary = self.binary.with_name(f"{self.binary.name}-offline")
+                result = await self._run((str(offline_binary), config_name, input_name, output_name))
+                if result.returncode:
+                    raise RuntimeError(result.stderr or result.stdout or "Native DSP preflight failed")
+            except Exception:
+                Path(config_name).unlink(missing_ok=True)
+                raise
+            finally:
+                Path(input_name).unlink(missing_ok=True)
+                Path(output_name).unlink(missing_ok=True)
+
+            await self.stop()
             self._config_path = Path(config_name)
-            control_dir = Path(tempfile.mkdtemp(prefix="fxroute-dsp-control-"))
-            self._control_path = control_dir / "engine.sock"
-            self._control_client_path = control_dir / "client.sock"
-            self._control_socket = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-            self._control_socket.setblocking(False)
-            self._control_socket.bind(str(self._control_client_path))
-            self._process = await self._launch((str(self.binary), config_name, str(self._control_path)))
-            self._config = config
-            self._started_at = time.time()
-            await self._wait_for_ports(config)
-            await self._remove_direct_source_links()
-            links = [
-                PipeWireLink(f"{DSP_INGRESS_MONITOR_NODE}:{DSP_INGRESS_PORTS[0]}", f"{DSP_NODE_NAME}:{DSP_INPUT_PORTS[0]}"),
-                PipeWireLink(f"{DSP_INGRESS_MONITOR_NODE}:{DSP_INGRESS_PORTS[1]}", f"{DSP_NODE_NAME}:{DSP_INPUT_PORTS[1]}"),
-            ]
-            links.extend(PipeWireLink(f"{DSP_NODE_NAME}:output_{index + 1}", f"{config.output_key}:{port}")
-                         for index, port in enumerate(config.hardware_ports))
-            for link in links:
-                result = await self._run(("pw-link", link.source, link.target))
-                if result.returncode and "exists" not in (result.stderr or "").lower():
-                    raise RuntimeError(result.stderr or f"Failed to link {link.source} -> {link.target}")
-            self._links = links
-            self._error = None
+            try:
+                control_dir = Path(tempfile.mkdtemp(prefix="fxroute-dsp-control-"))
+                self._control_path = control_dir / "engine.sock"
+                self._control_client_path = control_dir / "client.sock"
+                self._control_socket = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+                self._control_socket.setblocking(False)
+                self._control_socket.bind(str(self._control_client_path))
+                self._process = await self._launch((str(self.binary), config_name, str(self._control_path)))
+                self._config = config
+                self._started_at = time.time()
+                await self._wait_for_ports(config)
+                await self._remove_direct_source_links()
+                links = [
+                    PipeWireLink(f"{DSP_INGRESS_MONITOR_NODE}:{DSP_INGRESS_PORTS[0]}", f"{DSP_NODE_NAME}:{DSP_INPUT_PORTS[0]}"),
+                    PipeWireLink(f"{DSP_INGRESS_MONITOR_NODE}:{DSP_INGRESS_PORTS[1]}", f"{DSP_NODE_NAME}:{DSP_INPUT_PORTS[1]}"),
+                ]
+                links.extend(PipeWireLink(f"{DSP_NODE_NAME}:output_{index + 1}", f"{config.output_key}:{port}")
+                             for index, port in enumerate(config.hardware_ports))
+                self._links = links
+                for link in links:
+                    result = await self._run(("pw-link", link.source, link.target))
+                    if result.returncode and "exists" not in (result.stderr or "").lower():
+                        raise RuntimeError(result.stderr or f"Failed to link {link.source} -> {link.target}")
+                self._error = None
+            except Exception as exc:
+                try:
+                    await self.stop()
+                finally:
+                    self._error = str(exc)
+                raise
 
     async def _wait_for_ports(self, config: DSPRuntimeConfig) -> None:
         expected = [f"{DSP_NODE_NAME}:input_1", f"{DSP_NODE_NAME}:input_2"]

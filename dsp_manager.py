@@ -38,8 +38,8 @@ class DSPManager:
     BASS_ENHANCER_DEFAULTS = {"enabled": False, "params": {"amount": 0.0, "harmonics": 8.5, "scope": 100.0, "blend": 0.0}}
     AUTOGAIN_DEFAULTS = {"enabled": False, "params": {"targetDb": -12.0, "reference": "Geometric Mean (MSI)", "silenceThresholdDb": -70.0, "maximumHistorySeconds": 15}}
     LOUDNESS_DEFAULTS = {"enabled": False, "params": {"fftSize": 4096, "strength": 10, "volumeDb": 0.0, "calibration": {}, "calibrationProfiles": {}}}
-    LOUDNESS_PLUGIN_VOLUME_MIN_DB = -80.0
-    LOUDNESS_PLUGIN_VOLUME_MAX_DB = 0.0
+    LOUDNESS_PLUGIN_VOLUME_MIN_DB = -83.0
+    LOUDNESS_PLUGIN_VOLUME_MAX_DB = 7.0
     TONE_EFFECT_DEFAULTS = {"enabled": False, "mode": "crystalizer"}
 
     loudness_db_from_percent = staticmethod(volume_percent_to_db)
@@ -87,12 +87,22 @@ class DSPManager:
         params = definition["params"]
         return {"bypass": not definition["enabled"], "target": params["targetDb"]}
 
-    @staticmethod
-    def _loudness_plugin_payload(definition: Dict[str, Any], autogain: Dict[str, Any]) -> Dict[str, Any]:
-        del autogain
+    @classmethod
+    def _loudness_plugin_payload(cls, definition: Dict[str, Any], autogain: Dict[str, Any]) -> Dict[str, Any]:
         params = definition["params"]
-        return {"bypass": not definition["enabled"], "fft": str(params["fftSize"]),
-                "volume": params["volumeDb"], "output-gain": 0.0}
+        calibration = params.get("calibration")
+        adjustment = calibration.get("requiredAdjustmentDb") if isinstance(calibration, dict) else 0.0
+        calibration_db = float(adjustment) if isinstance(adjustment, (int, float)) else 0.0
+        master_db = float(params.get("volumeDb", 0.0))
+        strength_db = (10 - int(params.get("strength", 10))) * (30.0 / 9.0)
+        autogain_db = (float(autogain.get("params", {}).get("targetDb", -23.0)) + 23.0
+                       if autogain.get("enabled") else 0.0)
+        raw_volume_db = master_db - calibration_db + strength_db + autogain_db
+        plugin_volume_db = max(cls.LOUDNESS_PLUGIN_VOLUME_MIN_DB,
+                               min(cls.LOUDNESS_PLUGIN_VOLUME_MAX_DB, raw_volume_db))
+        return {"bypass": not definition["enabled"], "fft": str(params.get("fftSize", 4096)),
+                "volume": plugin_volume_db,
+                "output-gain": master_db - plugin_volume_db if definition["enabled"] else 0.0}
 
     def __init__(self, home: Optional[Path] = None,
                  apply_callback: Optional[Callable[[Dict[str, Any]], Any]] = None):
@@ -354,64 +364,137 @@ class DSPManager:
         for output_index, output in enumerate(config["outputs"]):
             for route in output["routes"]:
                 lines.append(f"matrix {output_index} {route['input']} {route['gain']:.9g}")
-            polarity = "invert" if output["invert"] else "normal"
-            lines.append(f"output {output_index} {output['gain_db']:.9g} {output['delay_ms']:.9g} {polarity}")
             for filter_def in output.get("filters", []):
                 for _ in range(int(filter_def.get("stages", 1))):
                     lines.append("peq %d %s %.9g %.9g %.9g" % (
                         output_index, filter_def["type"], float(filter_def["frequency_hz"]),
                         float(filter_def.get("q", 0.70710678)), float(filter_def.get("gain_db", 0.0))))
-        headroom_db = 0.0
-        limiter = None
+
+        def number(value: Any) -> str:
+            return format(float(value), ".9g")
+
+        def control(name: str, value: Any) -> None:
+            lines.append(f"control {name} {number(value)}")
+
+        enabled_autogain = next((item for item in config["chain"]
+                                 if item.get("enabled", True) and item["type"] == "autogain"), None)
+        autogain_definition = ({"enabled": True, "params": enabled_autogain.get("params", {})}
+                               if enabled_autogain else {"enabled": False, "params": {}})
+        ordinal = 0
+        lv2_uris = {
+            "equalizer": "http://lsp-plug.in/plugins/lv2/para_equalizer_x32_lr",
+            "bass_enhancer": "http://calf.sourceforge.net/plugins/BassEnhancer",
+            "loudness": "http://lsp-plug.in/plugins/lv2/loud_comp_stereo",
+            "limiter": "http://lsp-plug.in/plugins/lv2/sc_limiter_stereo",
+            "maximizer": "urn:zamaudio:ZaMaximX2",
+        }
+        filter_types = {"bell": 1, "high_pass": 2, "high_shelf": 3,
+                        "low_pass": 4, "low_shelf": 5, "notch": 6}
+        eq_modes = {"IIR": 0, "FIR": 1, "FFT": 2, "SPM": 3}
         for plugin in config["chain"]:
             if not plugin.get("enabled", True):
                 continue
             params = plugin.get("params", {})
-            if plugin["type"] == "headroom":
-                headroom_db += float(params.get("gainDb", 0.0))
-            elif plugin["type"] == "limiter":
-                limiter = params
-            elif plugin["type"] == "equalizer":
-                bands = params.get("bands") or params.get("leftBands") or []
-                for output_index in range(len(config["outputs"])):
-                    for band in bands:
-                        if not band.get("enabled", True):
+            plugin_type = plugin["type"]
+            backend = f"lv2 {lv2_uris[plugin_type]}" if plugin_type in lv2_uris else f"native {plugin_type}"
+            lines.append(f"stage_begin {ordinal} {plugin.get('id', plugin_type)} {backend}")
+            ordinal += 1
+            if plugin_type == "equalizer":
+                mix = plugin.get("mix") if isinstance(plugin.get("mix"), dict) else {}
+                input_db = mix.get("inputGainDb", params.get("inputGainDb", 0.0))
+                output_db = mix.get("outputGainDb", params.get("outputGainDb", 0.0))
+                control("g_in", 10.0 ** (float(input_db) / 20.0))
+                control("g_out", 10.0 ** (float(output_db) / 20.0))
+                control("mode", eq_modes.get(str(params.get("eqMode", "IIR")).upper(), 0))
+                dual = params.get("channelMode") == "dual"
+                control("clink", 0 if dual else 1)
+                left = params.get("leftBands", []) if dual else params.get("bands", [])
+                right = params.get("rightBands", []) if dual else left
+                for side, bands in (("l", left), ("r", right)):
+                    for index in range(32):
+                        band = bands[index] if index < len(bands) else None
+                        if band is None:
+                            control(f"ft{side}_{index}", 0)
                             continue
-                        filter_type = str(band.get("filterType", "bell")).replace("_", "")
-                        lines.append("peq %d %s %.9g %.9g %.9g" % (
-                            output_index, filter_type, float(band["frequencyHz"]),
-                            float(band.get("q", 0.70710678)), float(band.get("gainDb", 0.0))))
-            elif plugin["type"] == "convolver":
+                        kind = str(band.get("filterType", "bell"))
+                        control(f"ft{side}_{index}", filter_types.get(kind, 0)
+                                if band.get("enabled", True) else 0)
+                        control(f"fm{side}_{index}", 0)
+                        control(f"s{side}_{index}", 0)
+                        control(f"f{side}_{index}", band.get("frequencyHz", 1000.0))
+                        control(f"g{side}_{index}", 10.0 ** (float(band.get("gainDb", 0.0)) / 20.0))
+                        control(f"q{side}_{index}", band.get("q", 1.0))
+            elif plugin_type == "convolver":
                 paths = self.preset_store.find_ir_paths(str(params.get("kernel", "")))
                 if not paths:
                     raise FileNotFoundError(f"IR file not found: {params.get('kernel', '')}")
-                for output_index in range(len(config["outputs"])):
-                    lines.append(f"ir {output_index} {paths[0]} {output_index % 2}")
-            elif plugin["type"] == "delay":
-                left = float(params.get("leftMs", 0.0))
-                right = float(params.get("rightMs", 0.0))
-                for output_index in range(len(config["outputs"])):
-                    delay = left if output_index % 2 == 0 else right
-                    lines.append(f"delay_add {output_index} {delay:.9g}")
-            elif plugin["type"] == "autogain":
-                lines.append("autogain %.9g %.9g %d" % (
-                    float(params.get("targetDb", -12)), float(params.get("silenceThresholdDb", -70)),
-                    int(params.get("maximumHistorySeconds", 15))))
-            elif plugin["type"] == "loudness":
-                lines.append("loudness %.9g %d" % (
-                    float(params.get("volumeDb", 0)), int(params.get("strength", 10))))
-            elif plugin["type"] == "bass_enhancer":
-                lines.append("bass_enhancer %.9g %.9g %.9g %.9g" % (
-                    float(params.get("amount", 0)), float(params.get("harmonics", 8.5)),
-                    float(params.get("scope", 100)), float(params.get("blend", 0))))
-            elif plugin["type"] == "crystalizer":
-                lines.append("crystalizer")
-            elif plugin["type"] == "maximizer":
-                lines.append("maximizer -0.1")
-        lines.append(f"headroom_db {headroom_db:.9g}")
-        if limiter:
-            lines.append("limiter %.9g %.9g" % (
-                float(limiter.get("thresholdDb", -1.0)), float(limiter.get("releaseMs", 50.0))))
+                lines.append(f"param path {json.dumps(str(paths[0]))}")
+                for name, default in (("wet_db", 0.0), ("dry_db", -100.0),
+                                      ("input_gain_db", 0.0), ("output_gain_db", 0.0)):
+                    lines.append(f"param {name} {number(params.get(name, default))}")
+            elif plugin_type == "delay":
+                lines.append(f"param left_ms {number(params.get('leftMs', 0.0))}")
+                lines.append(f"param right_ms {number(params.get('rightMs', 0.0))}")
+            elif plugin_type == "headroom":
+                lines.append(f"param gain_db {number(params.get('gainDb', 0.0))}")
+            elif plugin_type == "autogain":
+                lines.append(f"param target_db {number(params.get('targetDb', -12.0))}")
+                lines.append(f"param reference {json.dumps(str(params.get('reference', 'Geometric Mean (MSI)')))}")
+                lines.append(f"param silence_threshold_db {number(params.get('silenceThresholdDb', -70.0))}")
+                lines.append(f"param maximum_history_seconds {number(params.get('maximumHistorySeconds', 15))}")
+            elif plugin_type == "crystalizer":
+                lines.append(f"param intensity_band2_db {number(params.get('intensityBand2Db', -2.0))}")
+            elif plugin_type == "bass_enhancer":
+                control("listen", 0)
+                control("amount", 10.0 ** (float(params.get("amount", 0.0)) / 20.0))
+                control("drive", params.get("harmonics", 8.5))
+                control("freq", params.get("scope", 100.0))
+                control("blend", params.get("blend", 0.0))
+                control("floor_active", 0)
+                control("floor", 20)
+            elif plugin_type == "loudness":
+                definition = {"enabled": True, "params": params}
+                payload = self._loudness_plugin_payload(definition, autogain_definition)
+                control("input", 1)
+                control("mode", 0)
+                control("std", 4)
+                control("fft", {256: 0, 512: 1, 1024: 2, 2048: 3, 4096: 4,
+                                8192: 5, 16384: 6}.get(int(params.get("fftSize", 4096)), 4))
+                control("approx", 2)
+                control("volume", payload["volume"])
+                control("hclip", 0)
+                control("hcrange", 6)
+                lines.append(f"param output_gain_db {number(payload['output-gain'])}")
+            elif plugin_type == "limiter":
+                control("g_in", 10.0 ** (float(params.get("inputGainDb", 0.0)) / 20.0))
+                control("g_out", 10.0 ** (float(params.get("outputGainDb", 0.0)) / 20.0))
+                control("scp", 1)
+                control("alr", 0)
+                control("alr_at", 5)
+                control("alr_rt", 50)
+                control("mode", 0)
+                control("th", 10.0 ** (float(params.get("thresholdDb", -1.0)) / 20.0))
+                control("knee", 1)
+                control("smooth", -5)
+                control("boost", 1)
+                control("lk", max(0.1, min(20.0, float(params.get("lookaheadMs", 5.0)))))
+                control("at", max(0.25, min(20.0, float(params.get("attackMs", 5.0)))))
+                control("rt", max(0.25, min(20.0, float(params.get("releaseMs", 5.0)))))
+                control("ovs", 0)
+                control("dith", 0)
+                control("extsc", 0)
+                control("slink", params.get("stereoLinkPercent", 100.0))
+                for name in ("in2lk", "in2sc", "lk2in", "lk2sc", "sc2in", "sc2lk"):
+                    control(name, 0)
+            elif plugin_type == "maximizer":
+                control("gain", params.get("inputGainDb", 0.0))
+                control("thresh", params.get("thresholdDb", params.get("threshold", 0.0)))
+                control("rel", params.get("releaseMs", params.get("release", 25.0)))
+            lines.append("stage_end")
+
+        for output_index, output in enumerate(config["outputs"]):
+            polarity = "invert" if output["invert"] else "normal"
+            lines.append(f"output {output_index} {output['gain_db']:.9g} {output['delay_ms']:.9g} {polarity}")
         lines.append(f"bypass {1 if config['preset'] == self.PURE_PRESET else 0}")
         return "\n".join(lines) + "\n"
 
@@ -446,8 +529,7 @@ class DSPManager:
             result = []
             aliases = {"pk": "bell", "bell": "bell", "notch": "notch",
                        "low_shelf": "low_shelf", "high_shelf": "high_shelf",
-                       "low_pass": "low_pass", "high_pass": "high_pass",
-                       "gain": "gain", "delay": "delay"}
+                       "low_pass": "low_pass", "high_pass": "high_pass"}
             for index, raw in enumerate(value):
                 if not isinstance(raw, dict):
                     raise ValueError(f"{field}[{index}] must be an object")
@@ -457,7 +539,7 @@ class DSPManager:
                 frequency = float(raw.get("frequencyHz", 1000.0))
                 gain = float(raw.get("gainDb", 0.0))
                 q = float(raw.get("q", 1.0))
-                if kind not in {"gain", "delay"} and not 20 <= frequency <= 20000:
+                if not 20 <= frequency <= 20000:
                     raise ValueError(f"{field}[{index}].frequencyHz must be between 20 and 20000")
                 if not -24 <= gain <= 24 or not 0.1 <= q <= 20:
                     raise ValueError(f"{field}[{index}] gain or Q is outside the supported range")
@@ -616,8 +698,16 @@ class DSPManager:
                    "target": "targetDb", "maximum-history": "maximumHistorySeconds",
                    "silence-threshold": "silenceThresholdDb", "fft": "fftSize",
                    "volume": "volumeDb", "output-gain": "outputGainDb"}
-        return {aliases.get(key, key): copy.deepcopy(value) for key, value in raw.items()
-                if key not in {"bypass", "input-gain"}}
+        translated = {aliases.get(key, key): copy.deepcopy(value) for key, value in raw.items()
+                      if key not in {"bypass", "input-gain"}}
+        if plugin_type == "limiter":
+            translated["inputGainDb"] = float(raw.get("input-gain", 0.0))
+            translated["outputGainDb"] = float(raw.get("output-gain", 0.0))
+            translated["lookaheadMs"] = max(0.1, min(20.0, float(translated.get("lookaheadMs", 5.0))))
+            translated["attackMs"] = max(0.25, min(20.0, float(translated.get("attackMs", 5.0))))
+        elif plugin_type == "maximizer":
+            translated["inputGainDb"] = float(raw.get("input-gain", 0.0))
+        return translated
 
     @staticmethod
     def _legacy_eq_bands(channel: Any, count: Any) -> List[dict]:

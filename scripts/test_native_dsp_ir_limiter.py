@@ -38,9 +38,16 @@ def test_pcm_wav_ir_convolution_limiter_bypass_and_metering(tmp_path):
 inputs 1
 outputs 1
 matrix 0 0 1
-ir 0 {ir}
-headroom_db -6.020599913
-limiter -6.020599913 50
+stage_begin 0 convolver native convolver
+param path "{ir}"
+param wet_db 0
+param dry_db -100
+param input_gain_db 0
+param output_gain_db 0
+stage_end
+stage_begin 1 headroom native headroom
+param gain_db -6.020599913
+stage_end
 """
     output, meters = run(tmp_path, base, [1, 0, 0, 0])
     assert abs(output[0] - 0.5) < 2e-4
@@ -64,8 +71,13 @@ inputs 1
 outputs 2
 matrix 0 0 1
 matrix 1 0 1
-ir 0 {ir} 0
-ir 1 {ir} 1
+stage_begin 0 convolver native convolver
+param path "{ir}"
+param wet_db 0
+param dry_db -100
+param input_gain_db 0
+param output_gain_db 0
+stage_end
 """
     output, _ = run(tmp_path, config, [1, 0, 0, 0], quantum=3)
     left = output[0::2]
@@ -74,6 +86,37 @@ ir 1 {ir} 1
     assert abs(left[2] - 0.25) < 1e-6
     assert abs(right[1] - 0.5) < 1e-6
     assert abs(right[2] + 0.25) < 1e-6
+
+
+def test_44100_hz_ir_is_resampled_for_48000_hz_engine(tmp_path):
+    subprocess.run([str(ROOT / "native_dsp" / "build.sh")], check=True)
+    ir = tmp_path / "different-rate.wav"
+    taps = array.array("h", [0]) * 442
+    taps[0] = 16384
+    taps[-1] = 16384
+    with wave.open(str(ir), "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(44100)
+        wav.writeframes(taps.tobytes())
+    config = f"""rate 48000
+inputs 1
+outputs 1
+matrix 0 0 1
+stage_begin 0 convolver native convolver
+param path "{ir}"
+param wet_db 0
+param dry_db -100
+param input_gain_db 0
+param output_gain_db 0
+stage_end
+"""
+    samples = array.array("f", [0]) * 600
+    samples[0] = 1
+    output, _ = run(tmp_path, config, samples)
+    significant = [index for index, value in enumerate(output) if abs(value) > 0.01]
+    assert significant[-1] in range(478, 483)
+    assert abs(sum(output) - 1.0) < 0.03
 
 
 def test_32768_tap_ir_scales_for_realtime_use(tmp_path):
@@ -91,7 +134,13 @@ def test_32768_tap_ir_scales_for_realtime_use(tmp_path):
 inputs 1
 outputs 1
 matrix 0 0 1
-ir 0 {ir}
+stage_begin 0 convolver native convolver
+param path "{ir}"
+param wet_db 0
+param dry_db -100
+param input_gain_db 0
+param output_gain_db 0
+stage_end
 """
     samples = array.array("f", [0]) * 32768
     samples[0] = 1

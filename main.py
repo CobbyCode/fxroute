@@ -3980,6 +3980,7 @@ async def _set_canonical_output_volume(volume: float | int) -> dict[str, Any]:
                 volume_result = await _drain_worker(
                     easyeffects_manager.set_loudness_volume_db, volume_db
                 )
+                await _sync_subwoofer_runtime(reason="native-dsp-loudness-volume")
                 await _drain_worker(set_output_volume, 100)
                 return {
                     "volume": requested,
@@ -6771,11 +6772,7 @@ async def save_easyeffects_extras(request: Request):
                 raise
 
         active_preset = ee_manager.get_active_preset()
-        if (
-            not runtime_autogain_loudness_change
-            and active_preset
-            and active_preset not in ee_manager.EXCLUDED_GLOBAL_EXTRAS_PRESETS
-        ):
+        if active_preset and active_preset not in ee_manager.EXCLUDED_GLOBAL_EXTRAS_PRESETS:
             try:
                 await _load_easyeffects_preset(active_preset)
             except Exception as e:
@@ -6788,8 +6785,7 @@ async def save_easyeffects_extras(request: Request):
 
     status = ee_manager.get_status()
     await manager.broadcast({"type": "easyeffects", "data": status})
-    if not runtime_autogain_loudness_change:
-        schedule_peak_monitor_refresh_after_effects_change("global-extras-update")
+    schedule_peak_monitor_refresh_after_effects_change("global-extras-update")
     return {
         "status": "ok",
         "extras": result["extras"],

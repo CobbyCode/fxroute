@@ -1,8 +1,13 @@
 #define _POSIX_C_SOURCE 200809L
 #include "dsp.h"
+#include "autogain.h"
+#include "crystalizer.h"
+#include "lv2_host.h"
 
 #include <errno.h>
 #include <math.h>
+#include <limits.h>
+#include <samplerate.h>
 #include <stdint.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -13,6 +18,9 @@
 #define MAX_BIQUADS 32
 #define MAX_LINE 4096
 #define CONV_BLOCK 256
+#define PROCESS_BLOCK 1024
+#define MAX_STAGES 128
+#define MAX_CONTROLS 268
 #define PI 3.14159265358979323846
 
 typedef struct { unsigned in, out; float gain; } route;
@@ -29,25 +37,39 @@ typedef struct {
     float *delay_line;
     biquad filters[MAX_BIQUADS];
     unsigned filter_count;
-    convolution conv;
-    float limiter_gain;
-    float autogain_square, autogain_gain;
-    biquad loudness_low, loudness_high;
-    float bass_low, bass_low2, crystal_smooth;
     float peak, square_sum;
     uint64_t meter_frames;
 } output_state;
+
+typedef enum { STAGE_CONVOLVER, STAGE_DELAY, STAGE_HEADROOM, STAGE_AUTOGAIN,
+               STAGE_CRYSTALIZER, STAGE_LV2 } stage_kind;
+typedef struct { char symbol[128]; float value; } stage_control;
+typedef struct {
+    stage_kind kind;
+    char id[256], argument[1024];
+    stage_control controls[MAX_CONTROLS];
+    unsigned control_count;
+    float wet, dry, input_gain, output_gain, gain;
+    float left_ms, right_ms, target_db, silence_db, intensity_db;
+    unsigned history_seconds;
+    fx_autogain_reference reference;
+    convolution conv[FXDSP_MAX_CHANNELS];
+    float *delay_line[FXDSP_MAX_CHANNELS];
+    size_t delay[FXDSP_MAX_CHANNELS], delay_size[FXDSP_MAX_CHANNELS], delay_pos[FXDSP_MAX_CHANNELS];
+    fx_autogain *autogain[FXDSP_MAX_CHANNELS / 2];
+    fx_crystalizer *crystalizer[FXDSP_MAX_CHANNELS];
+    fx_lv2_host *lv2[FXDSP_MAX_CHANNELS / 2];
+} dsp_stage;
 
 struct fxdsp {
     unsigned rate, inputs, outputs;
     route routes[MAX_ROUTES];
     unsigned route_count;
     output_state out[FXDSP_MAX_CHANNELS];
-    float headroom, limiter_threshold, limiter_release;
-    float autogain_target, autogain_silence, autogain_history, autogain_smooth;
-    float bass_gain, bass_harmonics, bass_alpha, bass_mix;
-    float maximizer_ceiling;
-    int limiter, autogain, loudness, bass_enhancer, crystalizer, maximizer, bypass;
+    dsp_stage stages[MAX_STAGES];
+    unsigned stage_count;
+    int bypass;
+    float *scratch[2][FXDSP_MAX_CHANNELS];
     unsigned *fft_reverse;
     complex_value *fft_roots;
     _Atomic uint32_t mute_mask;
@@ -86,7 +108,7 @@ static int load_wav(const char *path, unsigned wanted_channel, float **samples, 
             if (fseek(file, size + (size & 1), SEEK_CUR)) goto bad;
         } else if (fseek(file, size + (size & 1), SEEK_CUR)) goto bad;
     }
-    if (!data_offset || !channels || wanted_channel >= channels || rate != wanted_rate || !((format == 1 && (bits == 16 || bits == 24 || bits == 32)) || (format == 3 && bits == 32))) goto bad;
+    if (!data_offset || !channels || !rate || !wanted_rate || wanted_channel >= channels || !((format == 1 && (bits == 16 || bits == 24 || bits == 32)) || (format == 3 && bits == 32))) goto bad;
     size_t bytes = bits / 8, frames = data_size / (bytes * channels);
     float *result = calloc(frames, sizeof *result);
     unsigned char raw[4];
@@ -101,7 +123,29 @@ static int load_wav(const char *path, unsigned wanted_channel, float **samples, 
             else result[i] = (int32_t)u32le(raw) / 2147483648.0f;
         }
     }
-    fclose(file); *samples = result; *count = frames; return 0;
+    fclose(file); file = NULL;
+    if (rate != wanted_rate) {
+        double ratio = (double)wanted_rate / rate;
+        double converted_frames = ceil(frames * ratio);
+        size_t output_frames;
+        float *resampled;
+        SRC_DATA conversion = {0};
+        if (frames > LONG_MAX || !isfinite(converted_frames) || converted_frames < 1.0 ||
+            converted_frames >= (double)LONG_MAX || converted_frames >= (double)(SIZE_MAX / sizeof *resampled)) {
+            free(result); goto bad;
+        }
+        output_frames = (size_t)converted_frames + 1U;
+        resampled = calloc(output_frames, sizeof *resampled);
+        if (!resampled) { free(result); goto bad; }
+        conversion.data_in = result; conversion.input_frames = (long)frames;
+        conversion.data_out = resampled; conversion.output_frames = (long)output_frames;
+        conversion.src_ratio = ratio; conversion.end_of_input = 1;
+        if (src_simple(&conversion, SRC_SINC_BEST_QUALITY, 1) || conversion.output_frames_gen <= 0) {
+            free(resampled); free(result); goto bad;
+        }
+        free(result); result = resampled; frames = (size_t)conversion.output_frames_gen;
+    }
+    *samples = result; *count = frames; return 0;
 bad:
     if (file) fclose(file);
     return -1;
@@ -200,38 +244,187 @@ static float run_biquad(biquad *b, float value) {
     return output;
 }
 
+static char *trim_value(char *value) {
+    char *end;
+    while (*value == ' ' || *value == '\t') value++;
+    end = value + strlen(value);
+    while (end > value && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\r' || end[-1] == '\n')) end--;
+    *end = '\0';
+    if (*value == '"' && end > value + 1 && end[-1] == '"') { value++; end[-1] = '\0'; }
+    return value;
+}
+
+static int parse_float_value(char *text, float *result) {
+    char *end;
+    float value = strtof(text, &end);
+    while (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n') end++;
+    if (!*text || *end || !isfinite(value)) return -1;
+    *result = value;
+    return 0;
+}
+
+static int set_native_param(dsp_stage *stage, const char *key, char *raw) {
+    char *value = trim_value(raw);
+    float number;
+    if (stage->kind == STAGE_CONVOLVER) {
+        if (!strcmp(key, "path") && *value) { snprintf(stage->argument, sizeof stage->argument, "%s", value); return 0; }
+        if (parse_float_value(value, &number)) return -1;
+        if (!strcmp(key, "wet_db")) stage->wet = powf(10.0f, number / 20.0f);
+        else if (!strcmp(key, "dry_db")) stage->dry = powf(10.0f, number / 20.0f);
+        else if (!strcmp(key, "input_gain_db")) stage->input_gain = powf(10.0f, number / 20.0f);
+        else if (!strcmp(key, "output_gain_db")) stage->output_gain = powf(10.0f, number / 20.0f);
+        else return -1;
+        return 0;
+    }
+    if (stage->kind == STAGE_DELAY) {
+        if (parse_float_value(value, &number) || number < 0.0f || number > 1000.0f) return -1;
+        if (!strcmp(key, "left_ms")) stage->left_ms = number;
+        else if (!strcmp(key, "right_ms")) stage->right_ms = number;
+        else return -1;
+        return 0;
+    }
+    if (stage->kind == STAGE_HEADROOM) {
+        if (strcmp(key, "gain_db") || parse_float_value(value, &number)) return -1;
+        stage->gain = powf(10.0f, number / 20.0f); return 0;
+    }
+    if (stage->kind == STAGE_CRYSTALIZER) {
+        if (strcmp(key, "intensity_band2_db") || parse_float_value(value, &number)) return -1;
+        stage->intensity_db = number; return 0;
+    }
+    if (stage->kind == STAGE_AUTOGAIN) {
+        if (!strcmp(key, "reference")) {
+            if (!strcmp(value, "Momentary")) stage->reference = FX_AUTOGAIN_MOMENTARY;
+            else if (!strcmp(value, "Shortterm")) stage->reference = FX_AUTOGAIN_SHORTTERM;
+            else if (!strcmp(value, "Integrated")) stage->reference = FX_AUTOGAIN_INTEGRATED;
+            else if (!strcmp(value, "Geometric Mean (MSI)")) stage->reference = FX_AUTOGAIN_GEOMETRIC_MEAN_MSI;
+            else if (!strcmp(value, "Geometric Mean (MS)")) stage->reference = FX_AUTOGAIN_GEOMETRIC_MEAN_MS;
+            else if (!strcmp(value, "Geometric Mean (MI)")) stage->reference = FX_AUTOGAIN_GEOMETRIC_MEAN_MI;
+            else if (!strcmp(value, "Geometric Mean (SI)")) stage->reference = FX_AUTOGAIN_GEOMETRIC_MEAN_SI;
+            else return -1;
+            return 0;
+        }
+        if (parse_float_value(value, &number)) return -1;
+        if (!strcmp(key, "target_db")) stage->target_db = number;
+        else if (!strcmp(key, "silence_threshold_db")) stage->silence_db = number;
+        else if (!strcmp(key, "maximum_history_seconds") && number >= 1.0f && number <= 3600.0f && number == floorf(number)) stage->history_seconds = (unsigned)number;
+        else return -1;
+        return 0;
+    }
+    return -1;
+}
+
+static int initialize_stage(fxdsp *d, dsp_stage *stage, char *error, size_t error_size) {
+    unsigned channel;
+    if (stage->kind == STAGE_CONVOLVER) {
+        if (!stage->argument[0]) { fail(error, error_size, "convolver stage requires path"); return -1; }
+        for (channel = 0; channel < d->outputs; channel++) {
+            float *taps = NULL; size_t count = 0;
+            if (load_wav(stage->argument, channel & 1U, &taps, &count, d->rate) &&
+                load_wav(stage->argument, 0, &taps, &count, d->rate)) {
+                fail(error, error_size, "cannot load convolver path"); return -1;
+            }
+            if (prepare_convolution(d, &stage->conv[channel], taps, count)) {
+                free(taps); fail(error, error_size, "out of memory"); return -1;
+            }
+            free(taps);
+        }
+    } else if (stage->kind == STAGE_DELAY) {
+        for (channel = 0; channel < d->outputs; channel++) {
+            float milliseconds = channel & 1U ? stage->right_ms : stage->left_ms;
+            stage->delay[channel] = (size_t)llround(milliseconds * d->rate / 1000.0f);
+            stage->delay_size[channel] = stage->delay[channel] + 1U;
+            stage->delay_line[channel] = calloc(stage->delay_size[channel], sizeof(float));
+            if (!stage->delay_line[channel]) { fail(error, error_size, "out of memory"); return -1; }
+        }
+    } else if (stage->kind == STAGE_AUTOGAIN) {
+        fx_autogain_config config = fx_autogain_default_config();
+        config.reference = stage->reference; config.target_lufs = stage->target_db;
+        config.silence_threshold_lufs = stage->silence_db;
+        config.maximum_history_seconds = stage->history_seconds;
+        if (d->outputs & 1U) { fail(error, error_size, "autogain requires an even stereo output count"); return -1; }
+        for (channel = 0; channel < d->outputs / 2U; channel++) {
+            stage->autogain[channel] = fx_autogain_init(d->rate, PROCESS_BLOCK, &config);
+            if (!stage->autogain[channel]) { fail(error, error_size, "cannot initialize autogain"); return -1; }
+        }
+    } else if (stage->kind == STAGE_CRYSTALIZER) {
+        for (channel = 0; channel < d->outputs; channel++) {
+            stage->crystalizer[channel] = fx_crystalizer_create(d->rate);
+            if (!stage->crystalizer[channel]) { fail(error, error_size, "cannot initialize crystalizer"); return -1; }
+            fx_crystalizer_set_band_intensity_db(stage->crystalizer[channel], 2U,
+                                                  stage->intensity_db);
+        }
+    } else if (stage->kind == STAGE_LV2) {
+        if (d->outputs & 1U) { fail(error, error_size, "LV2 stages require an even stereo output count"); return -1; }
+        for (channel = 0; channel < d->outputs / 2U; channel++) {
+            stage->lv2[channel] = fx_lv2_host_new(stage->argument, d->rate, PROCESS_BLOCK, error, error_size);
+            if (!stage->lv2[channel]) return -1;
+            for (unsigned control = 0; control < stage->control_count; control++)
+                if (!fx_lv2_host_set_control(stage->lv2[channel], stage->controls[control].symbol,
+                                             stage->controls[control].value)) {
+                    fail(error, error_size, "unknown LV2 control symbol"); return -1;
+                }
+            fx_lv2_host_activate(stage->lv2[channel]);
+        }
+    }
+    return 0;
+}
+
 fxdsp *fxdsp_load(const char *path, char *error, size_t error_size) {
     FILE *file = fopen(path, "r");
     fxdsp *d = calloc(1, sizeof *d);
-    char line[MAX_LINE], arg[1024], type[32], extra;
-    unsigned line_no = 0, out, in, channel;
+    char line[MAX_LINE], arg[256], backend[1024], type[32], extra;
+    unsigned line_no = 0, out, in;
+    dsp_stage *current = NULL;
+    int stage_section = 0, post_section = 0;
     if (!file || !d) { fail(error,error_size,"cannot open config"); if(file)fclose(file); free(d); return NULL; }
-    d->rate=48000; d->headroom=1; d->limiter_threshold=1; d->maximizer_ceiling=1;
-    for (unsigned i=0;i<FXDSP_MAX_CHANNELS;i++) { d->out[i].gain=1; d->out[i].polarity=1; d->out[i].limiter_gain=1; d->out[i].autogain_gain=1; }
+    d->rate=48000;
+    for (unsigned i=0;i<FXDSP_MAX_CHANNELS;i++) { d->out[i].gain=1; d->out[i].polarity=1; }
     while (fgets(line,sizeof line,file)) {
         line_no++; char *p=line; while(*p==' '||*p=='\t')p++; if(*p=='#'||*p=='\n'||!*p)continue;
-        if (sscanf(p,"rate %u %c",&d->rate,&extra)==1) {}
-        else if (sscanf(p,"inputs %u %c",&d->inputs,&extra)==1) {}
-        else if (sscanf(p,"outputs %u %c",&d->outputs,&extra)==1) {}
-        else { float route_gain;
-        if (sscanf(p,"matrix %u %u %f %c",&out,&in,&route_gain,&extra)==3 && d->route_count<MAX_ROUTES) { d->routes[d->route_count].out=out; d->routes[d->route_count].in=in; d->routes[d->route_count++].gain=route_gain; }
-        else { float x,y,z; int enabled;
-            if (sscanf(p,"output %u %f %f %31s %c",&out,&x,&y,arg,&extra)==4 && out<FXDSP_MAX_CHANNELS) { d->out[out].gain=powf(10,x/20); d->out[out].delay=(size_t)llround(y*d->rate/1000); d->out[out].polarity=!strcmp(arg,"invert")?-1:1; }
-            else if (sscanf(p,"delay_add %u %f %c",&out,&x,&extra)==2 && out<FXDSP_MAX_CHANNELS && isfinite(x) && x>=0 && x<=1000) d->out[out].delay+=(size_t)llround(x*d->rate/1000);
-            else if (sscanf(p,"peq %u %31s %f %f %f %c",&out,type,&x,&y,&z,&extra)==5 && out<FXDSP_MAX_CHANNELS && d->out[out].filter_count<MAX_BIQUADS && !design(&d->out[out].filters[d->out[out].filter_count],type,d->rate,x,y,z)) d->out[out].filter_count++;
-            else if (sscanf(p,"ir %u %1023s %u %c",&out,arg,&channel,&extra)==3 && out<FXDSP_MAX_CHANNELS && !d->out[out].conv.head && !load_wav(arg,channel,&d->out[out].conv.head,&d->out[out].conv.tap_count,d->rate)) {}
-            else if (sscanf(p,"ir %u %1023s %c",&out,arg,&extra)==2 && out<FXDSP_MAX_CHANNELS && !d->out[out].conv.head && !load_wav(arg,0,&d->out[out].conv.head,&d->out[out].conv.tap_count,d->rate)) {}
-            else if (sscanf(p,"headroom_db %f %c",&x,&extra)==1) d->headroom=powf(10,x/20);
-            else if (sscanf(p,"limiter %f %f %c",&x,&y,&extra)==2 && y>0) { d->limiter=1; d->limiter_threshold=powf(10,x/20); d->limiter_release=expf(-1/(y*.001f*d->rate)); }
-            else if (sscanf(p,"autogain %f %f %f %c",&x,&y,&z,&extra)==3 && !d->autogain && isfinite(x) && isfinite(y) && isfinite(z) && x>=-60 && x<=0 && y>=-100 && y<x && z>=.05f && z<=60) { d->autogain=1; d->autogain_target=powf(10,x/20); d->autogain_silence=powf(10,y/20); d->autogain_history=expf(-1/(z*d->rate)); d->autogain_smooth=expf(-1/(.05f*d->rate)); }
-            else if (sscanf(p,"loudness %f %f %c",&x,&y,&extra)==2 && !d->loudness && isfinite(x) && isfinite(y) && x>=-80 && x<=0 && y>=1 && y<=10) { float depth=(-x/80)*(y/10); d->loudness=1; for(unsigned i=0;i<FXDSP_MAX_CHANNELS;i++) if(design(&d->out[i].loudness_low,"lowshelf",d->rate,180,.70710678f,12*depth)||design(&d->out[i].loudness_high,"highshelf",d->rate,5000,.70710678f,5*depth)) goto invalid; }
-            else if (sscanf(p,"bass_enhancer %f %f %f %f %c",&x,&y,&z,&route_gain,&extra)==4 && !d->bass_enhancer && isfinite(x) && isfinite(y) && isfinite(z) && isfinite(route_gain) && x>=-20 && x<=20 && y>=1 && y<=20 && z>=20 && z<=500 && route_gain>=-100 && route_gain<=100) { d->bass_enhancer=1; d->bass_gain=powf(10,x/20); d->bass_harmonics=y; d->bass_alpha=1-expf(-2*PI*z/d->rate); d->bass_mix=(route_gain+100)/200; }
-            else if (sscanf(p,"crystalizer %c",&extra)==EOF && !d->crystalizer) d->crystalizer=1;
-            else if (sscanf(p,"maximizer %f %c",&x,&extra)==1 && !d->maximizer && isfinite(x) && x>=-20 && x<=0) { d->maximizer=1; d->maximizer_ceiling=powf(10,x/20); }
-            else if (sscanf(p,"bypass %d %c",&enabled,&extra)==1) d->bypass=!!enabled;
+        if (current) {
+            char key[128], raw[MAX_LINE]; float value;
+            if (sscanf(p, "stage_end %c", &extra) == EOF) current = NULL;
+            else if (current->kind == STAGE_LV2 && sscanf(p, "control %127s %f %c", key, &value, &extra) == 2 &&
+                     current->control_count < MAX_CONTROLS && isfinite(value)) {
+                stage_control *control = &current->controls[current->control_count++];
+                snprintf(control->symbol, sizeof control->symbol, "%s", key); control->value = value;
+            } else if (current->kind == STAGE_LV2 && sscanf(p, "param %127s %4095[^\n]", key, raw) == 2 &&
+                       !strcmp(key, "output_gain_db") && !parse_float_value(trim_value(raw), &value)) {
+                current->output_gain = powf(10.0f, value / 20.0f);
+            } else if (current->kind != STAGE_LV2 && sscanf(p, "param %127s %4095[^\n]", key, raw) == 2 &&
+                       !set_native_param(current, key, raw)) {}
+            else goto invalid;
+            continue;
+        }
+        if (!post_section && sscanf(p, "stage_begin %u %255s %31s %1023s %c", &out, arg, type,
+                                    backend, &extra) == 4) {
+            char *kind = backend;
+            if (out != d->stage_count || d->stage_count >= MAX_STAGES) goto invalid;
+            stage_section = 1; current = &d->stages[d->stage_count++];
+            snprintf(current->id, sizeof current->id, "%s", arg);
+            current->wet = current->input_gain = current->output_gain = current->gain = 1.0f;
+            current->dry = powf(10.0f, -5.0f); current->target_db = -12.0f;
+            current->silence_db = -70.0f; current->history_seconds = 15U;
+            current->reference = FX_AUTOGAIN_GEOMETRIC_MEAN_MSI; current->intensity_db = -2.0f;
+            if (!strcmp(type, "lv2")) { current->kind = STAGE_LV2; snprintf(current->argument, sizeof current->argument, "%s", kind); }
+            else if (!strcmp(type, "native") && !strcmp(kind, "convolver")) current->kind = STAGE_CONVOLVER;
+            else if (!strcmp(type, "native") && !strcmp(kind, "delay")) current->kind = STAGE_DELAY;
+            else if (!strcmp(type, "native") && !strcmp(kind, "headroom")) current->kind = STAGE_HEADROOM;
+            else if (!strcmp(type, "native") && !strcmp(kind, "autogain")) current->kind = STAGE_AUTOGAIN;
+            else if (!strcmp(type, "native") && !strcmp(kind, "crystalizer")) current->kind = STAGE_CRYSTALIZER;
+            else goto invalid;
+        } else { float x,y,z,route_gain; int enabled;
+            if (!stage_section && !post_section && sscanf(p,"rate %u %c",&d->rate,&extra)==1) {}
+            else if (!stage_section && !post_section && sscanf(p,"inputs %u %c",&d->inputs,&extra)==1) {}
+            else if (!stage_section && !post_section && sscanf(p,"outputs %u %c",&d->outputs,&extra)==1) {}
+            else if (!stage_section && !post_section && sscanf(p,"matrix %u %u %f %c",&out,&in,&route_gain,&extra)==3 && d->route_count<MAX_ROUTES) { d->routes[d->route_count].out=out; d->routes[d->route_count].in=in; d->routes[d->route_count++].gain=route_gain; }
+            else if (!stage_section && !post_section && sscanf(p,"peq %u %31s %f %f %f %c",&out,type,&x,&y,&z,&extra)==5 && out<FXDSP_MAX_CHANNELS && d->out[out].filter_count<MAX_BIQUADS && !design(&d->out[out].filters[d->out[out].filter_count],type,d->rate,x,y,z)) d->out[out].filter_count++;
+            else if (sscanf(p,"output %u %f %f %31s %c",&out,&x,&y,arg,&extra)==4 && out<FXDSP_MAX_CHANNELS && y>=0.0f && (!strcmp(arg,"normal") || !strcmp(arg,"invert"))) { post_section=1; d->out[out].gain=powf(10,x/20); d->out[out].delay=(size_t)llround(y*d->rate/1000); d->out[out].polarity=!strcmp(arg,"invert")?-1:1; }
+            else if (post_section && sscanf(p,"bypass %d %c",&enabled,&extra)==1) d->bypass=!!enabled;
             else { invalid: snprintf(line,sizeof line,"invalid config line %u",line_no); fail(error,error_size,line); goto bad; }
-        }}
+        }
     }
+    if (current) goto invalid;
     fclose(file); file=NULL;
     if (!d->rate || d->inputs<1 || d->inputs>32 || d->outputs<1 || d->outputs>32) { fail(error,error_size,"inputs/outputs must be 1..32"); goto bad; }
     for(unsigned r=0;r<d->route_count;r++) if(d->routes[r].in>=d->inputs||d->routes[r].out>=d->outputs){fail(error,error_size,"matrix index out of range");goto bad;}
@@ -239,7 +432,8 @@ fxdsp *fxdsp_load(const char *path, char *error, size_t error_size) {
     if(!d->fft_reverse||!d->fft_roots){fail(error,error_size,"out of memory");goto bad;}
     for(unsigned i=0;i<CONV_BLOCK*2;i++){unsigned value=i,reversed=0;for(unsigned bit=0;bit<9;bit++){reversed=(reversed<<1)|(value&1);value>>=1;}d->fft_reverse[i]=reversed;}
     for(unsigned i=0;i<CONV_BLOCK;i++){double angle=-2*PI*i/(CONV_BLOCK*2);d->fft_roots[i].re=cos(angle);d->fft_roots[i].im=sin(angle);}
-    for(out=0;out<d->outputs;out++) { output_state *s=&d->out[out]; s->delay_size=s->delay+1; s->delay_line=calloc(s->delay_size,sizeof(float)); if(s->conv.tap_count){float*taps=s->conv.head;size_t count=s->conv.tap_count;memset(&s->conv,0,sizeof s->conv);if(prepare_convolution(d,&s->conv,taps,count)){free(taps);fail(error,error_size,"out of memory");goto bad;}free(taps);} if(!s->delay_line){fail(error,error_size,"out of memory");goto bad;} }
+    for(out=0;out<d->outputs;out++) { output_state *s=&d->out[out]; s->delay_size=s->delay+1; s->delay_line=calloc(s->delay_size,sizeof(float)); if(!s->delay_line){fail(error,error_size,"out of memory");goto bad;} for(unsigned b=0;b<2;b++){d->scratch[b][out]=calloc(PROCESS_BLOCK,sizeof(float));if(!d->scratch[b][out]){fail(error,error_size,"out of memory");goto bad;}} }
+    for (unsigned stage = 0; stage < d->stage_count; stage++) if (initialize_stage(d, &d->stages[stage], error, error_size)) goto bad;
     return d;
 bad:
     if (file) fclose(file);
@@ -247,31 +441,93 @@ bad:
     return NULL;
 }
 
-void fxdsp_free(fxdsp *d) { if(!d)return; for(unsigned i=0;i<32;i++){convolution*c=&d->out[i].conv;free(d->out[i].delay_line);free(c->head);free(c->head_history);free(c->input_block);free(c->tail_output);free(c->overlap);free(c->ir_spectra);free(c->input_spectra);free(c->work);}free(d->fft_reverse);free(d->fft_roots);free(d); }
+static void free_convolution(convolution *c) {
+    free(c->head); free(c->head_history); free(c->input_block); free(c->tail_output);
+    free(c->overlap); free(c->ir_spectra); free(c->input_spectra); free(c->work);
+}
+
+void fxdsp_free(fxdsp *d) {
+    if(!d)return;
+    for(unsigned i=0;i<FXDSP_MAX_CHANNELS;i++) {
+        free(d->out[i].delay_line); free(d->scratch[0][i]); free(d->scratch[1][i]);
+    }
+    for(unsigned index=0;index<d->stage_count;index++) {
+        dsp_stage *stage=&d->stages[index];
+        for(unsigned channel=0;channel<FXDSP_MAX_CHANNELS;channel++) {
+            free_convolution(&stage->conv[channel]); free(stage->delay_line[channel]);
+            fx_crystalizer_destroy(stage->crystalizer[channel]);
+        }
+        for(unsigned pair=0;pair<FXDSP_MAX_CHANNELS/2;pair++) {
+            fx_autogain_free(stage->autogain[pair]); fx_lv2_host_free(stage->lv2[pair]);
+        }
+    }
+    free(d->fft_reverse);free(d->fft_roots);free(d);
+}
 unsigned fxdsp_inputs(const fxdsp*d){return d->inputs;} unsigned fxdsp_outputs(const fxdsp*d){return d->outputs;} unsigned fxdsp_rate(const fxdsp*d){return d->rate;}
 
 void fxdsp_process(fxdsp *d, const float *const *input, float *const *output, size_t frames) {
-    for(size_t n=0;n<frames;n++) { uint32_t mute_mask=atomic_load_explicit(&d->mute_mask,memory_order_relaxed); for(unsigned o=0;o<d->outputs;o++) {
-        output_state *s=&d->out[o]; float value=0;
-        if(d->bypass) value=o<d->inputs?input[o][n]:0;
-        else {
-            for(unsigned r=0;r<d->route_count;r++) if(d->routes[r].out==o)value+=input[d->routes[r].in][n]*d->routes[r].gain;
-            for(unsigned f=0;f<s->filter_count;f++) value=run_biquad(&s->filters[f],value);
-            if(s->conv.tap_count)value=convolve(d,&s->conv,value);
-            s->delay_line[s->delay_pos]=value;size_t rp=(s->delay_pos+s->delay_size-s->delay)%s->delay_size;value=s->delay_line[rp];s->delay_pos=(s->delay_pos+1)%s->delay_size;
-            value*=s->gain*s->polarity*d->headroom;
-            if(!isfinite(value)) value=0;
-            if(d->bass_enhancer){s->bass_low+=d->bass_alpha*(value-s->bass_low);s->bass_low2+=d->bass_alpha*(s->bass_low-s->bass_low2);float harmonic=(tanhf(s->bass_low2*d->bass_harmonics)-s->bass_low2)*.25f;float wet=value+s->bass_low2*(d->bass_gain-1)+harmonic*(d->bass_gain-1);value+=d->bass_mix*(wet-value);}
-            if(d->autogain){float magnitude=fabsf(value);if(magnitude>=d->autogain_silence){s->autogain_square=d->autogain_history*s->autogain_square+(1-d->autogain_history)*value*value;float level=sqrtf(s->autogain_square);float wanted=level>1e-12f?d->autogain_target/level:1;wanted=fminf(4,fmaxf(.25f,wanted));s->autogain_gain=d->autogain_smooth*s->autogain_gain+(1-d->autogain_smooth)*wanted;}value*=s->autogain_gain;value=fminf(.4f,fmaxf(-.4f,value));}
-            if(d->loudness){value=run_biquad(&s->loudness_low,value);value=run_biquad(&s->loudness_high,value);}
-            if(d->crystalizer){s->crystal_smooth+=.08f*(value-s->crystal_smooth);value+=.25f*(value-s->crystal_smooth);}
-            if(d->maximizer)value=d->maximizer_ceiling*tanhf(value/d->maximizer_ceiling);
-            if(d->limiter){float magnitude=fabsf(value),wanted=magnitude>d->limiter_threshold?d->limiter_threshold/magnitude:1;if(wanted<s->limiter_gain)s->limiter_gain=wanted;else s->limiter_gain=1-(1-s->limiter_gain)*d->limiter_release;value*=s->limiter_gain;}
-            if(!isfinite(value)) value=0;
+    for(size_t offset=0;offset<frames;offset+=PROCESS_BLOCK) {
+        size_t count=frames-offset<PROCESS_BLOCK?frames-offset:PROCESS_BLOCK;
+        uint32_t mute_mask=atomic_load_explicit(&d->mute_mask,memory_order_relaxed);
+        if(d->bypass) {
+            for(unsigned channel=0;channel<d->outputs;channel++) for(size_t n=0;n<count;n++)
+                d->scratch[0][channel][n]=channel<d->inputs?input[channel][offset+n]:0.0f;
+        } else {
+            for(unsigned channel=0;channel<d->outputs;channel++) for(size_t n=0;n<count;n++) {
+                float value=0.0f;
+                for(unsigned route_index=0;route_index<d->route_count;route_index++)
+                    if(d->routes[route_index].out==channel)value+=input[d->routes[route_index].in][offset+n]*d->routes[route_index].gain;
+                for(unsigned filter=0;filter<d->out[channel].filter_count;filter++) value=run_biquad(&d->out[channel].filters[filter],value);
+                d->scratch[0][channel][n]=isfinite(value)?value:0.0f;
+            }
+            unsigned source=0;
+            for(unsigned index=0;index<d->stage_count;index++) {
+                dsp_stage *stage=&d->stages[index]; unsigned target=1U-source;
+                if(stage->kind==STAGE_AUTOGAIN || stage->kind==STAGE_LV2) {
+                    for(unsigned pair=0;pair<d->outputs/2U;pair++) {
+                        unsigned left=pair*2U,right=left+1U;
+                        if(stage->kind==STAGE_AUTOGAIN)
+                            (void)fx_autogain_process(stage->autogain[pair],d->scratch[source][left],d->scratch[source][right],d->scratch[target][left],d->scratch[target][right],count);
+                        else
+                            (void)fx_lv2_host_run(stage->lv2[pair],d->scratch[source][left],d->scratch[source][right],d->scratch[target][left],d->scratch[target][right],(uint32_t)count,NULL,0);
+                        if(stage->kind==STAGE_LV2 && stage->output_gain!=1.0f) for(size_t n=0;n<count;n++) {
+                            d->scratch[target][left][n]*=stage->output_gain;
+                            d->scratch[target][right][n]*=stage->output_gain;
+                        }
+                    }
+                } else for(unsigned channel=0;channel<d->outputs;channel++) {
+                    float *src=d->scratch[source][channel],*dst=d->scratch[target][channel];
+                    if(stage->kind==STAGE_CRYSTALIZER) fx_crystalizer_process(stage->crystalizer[channel],src,dst,count);
+                    else for(size_t n=0;n<count;n++) {
+                        float value=src[n];
+                        if(stage->kind==STAGE_HEADROOM) value*=stage->gain;
+                        else if(stage->kind==STAGE_CONVOLVER) { float driven=value*stage->input_gain; value=stage->output_gain*(stage->dry*driven+stage->wet*convolve(d,&stage->conv[channel],driven)); }
+                        else if(stage->kind==STAGE_DELAY) {
+                            stage->delay_line[channel][stage->delay_pos[channel]]=value;
+                            size_t read=(stage->delay_pos[channel]+stage->delay_size[channel]-stage->delay[channel])%stage->delay_size[channel];
+                            value=stage->delay_line[channel][read]; stage->delay_pos[channel]=(stage->delay_pos[channel]+1U)%stage->delay_size[channel];
+                        }
+                        dst[n]=isfinite(value)?value:0.0f;
+                    }
+                }
+                source=target;
+            }
+            if(source) for(unsigned channel=0;channel<d->outputs;channel++)
+                memcpy(d->scratch[0][channel],d->scratch[source][channel],count*sizeof(float));
         }
-        if(mute_mask&(UINT32_C(1)<<o))value=0;
-        output[o][n]=value;float magnitude=fabsf(value);if(magnitude>s->peak)s->peak=magnitude;update_peak(&d->peak_bits[o],magnitude);s->square_sum+=value*value;s->meter_frames++;
-    }}
+        for(unsigned channel=0;channel<d->outputs;channel++) for(size_t n=0;n<count;n++) {
+            output_state *state=&d->out[channel]; float value=d->scratch[0][channel][n];
+            if(!d->bypass) {
+                state->delay_line[state->delay_pos]=value;
+                size_t read=(state->delay_pos+state->delay_size-state->delay)%state->delay_size;
+                value=state->delay_line[read]*state->gain*state->polarity;
+                state->delay_pos=(state->delay_pos+1U)%state->delay_size;
+            }
+            if(!isfinite(value)||(mute_mask&(UINT32_C(1)<<channel)))value=0.0f;
+            output[channel][offset+n]=value;float magnitude=fabsf(value);if(magnitude>state->peak)state->peak=magnitude;
+            update_peak(&d->peak_bits[channel],magnitude);state->square_sum+=value*value;state->meter_frames++;
+        }
+    }
 }
 void fxdsp_meter(const fxdsp*d,unsigned o,float*p,float*r){if(o>=d->outputs){*p=*r=0;return;}*p=d->out[o].peak;*r=d->out[o].meter_frames?sqrtf(d->out[o].square_sum/d->out[o].meter_frames):0;}
 void fxdsp_set_mute(fxdsp*d,uint32_t mask,int muted){if(muted)atomic_fetch_or_explicit(&d->mute_mask,mask,memory_order_relaxed);else atomic_fetch_and_explicit(&d->mute_mask,~mask,memory_order_relaxed);}

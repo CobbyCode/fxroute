@@ -65,8 +65,11 @@ def test_global_delay_adds_to_output_alignment(tmp_path):
 inputs 1
 outputs 1
 matrix 0 0 1
+stage_begin 0 delay native delay
+param left_ms 3
+param right_ms 3
+stage_end
 output 0 0 2 normal
-delay_add 0 3
 """
     out = process(tmp_path, config, [1.0] + [0.0] * 6, 1)
     assert list(out[0][:5]) == [0.0] * 5
@@ -79,7 +82,10 @@ def test_global_delay_rejects_more_than_one_second(tmp_path):
 inputs 1
 outputs 1
 matrix 0 0 1
-delay_add 0 1001
+stage_begin 0 delay native delay
+param left_ms 1001
+param right_ms 0
+stage_end
 """
     cfg = tmp_path / "dsp.conf"
     source = tmp_path / "in.f32"

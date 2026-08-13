@@ -180,6 +180,26 @@ class CanonicalVolumeSerializationTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.gather(first, second)
             self.assertEqual(order, ["set-50", "set-60"])
 
+    async def test_loudness_volume_write_rebuilds_native_engine(self):
+        class FakeManager:
+            def load_global_extras(self):
+                return {"loudness": {"enabled": True, "params": {"volumeDb": -10.0}}}
+
+            def loudness_db_from_percent(self, percent):
+                return -float(percent)
+
+            def set_loudness_volume_db(self, volume_db):
+                return {"extras": {"loudness": {"params": {"volumeDb": volume_db}}}}
+
+        fake = FakeManager()
+        sync = mock.AsyncMock()
+        with mock.patch.object(main, "easyeffects_manager", fake), mock.patch.object(
+            main, "_sync_subwoofer_runtime", sync
+        ), mock.patch.object(main, "set_output_volume", return_value=100):
+            await main._set_canonical_output_volume(60)
+
+        sync.assert_awaited_once_with(reason="native-dsp-loudness-volume")
+
     async def test_set_readback_sequence_never_interleaves(self):
         entered = threading.Event()
         release = threading.Event()
@@ -283,7 +303,9 @@ class CanonicalVolumeSerializationTests(unittest.IsolatedAsyncioTestCase):
             main, "easyeffects_manager", fake
         ), mock.patch.object(
             main.manager, "broadcast", mock.AsyncMock()
-        ), mock.patch.object(main, "schedule_peak_monitor_refresh_after_effects_change"), mock.patch(
+        ), mock.patch.object(main, "schedule_peak_monitor_refresh_after_effects_change"), mock.patch.object(
+            main, "_sync_subwoofer_runtime", mock.AsyncMock()
+        ), mock.patch(
             "system_volume.subprocess.run", side_effect=blocking_run
         ):
             extras_task = asyncio.create_task(main.save_easyeffects_extras(FakeExtrasRequest()))
@@ -350,7 +372,9 @@ class CanonicalVolumeSerializationTests(unittest.IsolatedAsyncioTestCase):
             main, "easyeffects_manager", fake
         ), mock.patch.object(
             main.manager, "broadcast", mock.AsyncMock()
-        ), mock.patch.object(main, "schedule_peak_monitor_refresh_after_effects_change"), mock.patch(
+        ), mock.patch.object(main, "schedule_peak_monitor_refresh_after_effects_change"), mock.patch.object(
+            main, "_sync_subwoofer_runtime", mock.AsyncMock()
+        ), mock.patch(
             "system_volume.subprocess.run", side_effect=blocking_run
         ):
             extras_task = asyncio.create_task(main.save_easyeffects_extras(FakeExtrasRequest()))
@@ -504,6 +528,41 @@ class EasyEffectsExtrasVolumeTests(unittest.IsolatedAsyncioTestCase):
 
         # System master transfer happens before the manager mutation.
         self.assertEqual(order, ["set-44", "apply"])
+
+    async def test_autogain_change_reloads_active_native_preset(self):
+        class FakeManager:
+            EXCLUDED_GLOBAL_EXTRAS_PRESETS = {"Direct"}
+
+            def load_global_extras(self):
+                return {"autogain": {"enabled": False, "params": {"targetDb": -12.0}},
+                        "loudness": {"enabled": False, "params": {}}}
+
+            def normalize_effects_extras(self, extras):
+                return extras
+
+            def apply_autogain_loudness_runtime(self, previous, extras):
+                return {"extras": extras, "updated": 1, "skipped": []}
+
+            def get_active_preset(self):
+                return "Neutral"
+
+            def get_status(self):
+                return {"status": "ok"}
+
+        class FakeRequest:
+            async def json(self):
+                return {"autogain_enabled": True}
+
+        fake = FakeManager()
+        reload_preset = mock.AsyncMock()
+        with mock.patch.object(main, "_require_easyeffects_manager", return_value=fake), mock.patch.object(
+            main, "easyeffects_manager", fake
+        ), mock.patch.object(main, "_load_easyeffects_preset", reload_preset), mock.patch.object(
+            main.manager, "broadcast", mock.AsyncMock()
+        ), mock.patch.object(main, "schedule_peak_monitor_refresh_after_effects_change"):
+            await main.save_easyeffects_extras(FakeRequest())
+
+        reload_preset.assert_awaited_once_with("Neutral")
 
     async def test_loudness_disable_failure_rolls_back_to_100(self):
         order = []

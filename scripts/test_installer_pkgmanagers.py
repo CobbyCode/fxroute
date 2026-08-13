@@ -166,7 +166,12 @@ class InstallerPkgManagerStaticTests(unittest.TestCase):
         self.assertIn('install -d -o root -g root -m 755 /var/lib/fxroute', helper)
 
     def test_stage1_pacman_deps(self):
-        self.assertIn("pacman) dsp_packages=(gcc pkgconf libpipewire)", self.text)
+        match = re.search(r"pacman\) dsp_packages=\(([^)]*)\)", self.text)
+        self.assertIsNotNone(match)
+        packages = set(match.group(1).split())
+        self.assertTrue({"gcc", "pkgconf", "libpipewire", "lilv", "lv2",
+                         "lsp-plugins", "zam-plugins", "calf", "libebur128",
+                         "libsamplerate", "speexdsp"}.issubset(packages))
 
     def test_venv_pacman_branch(self):
         self.assertIn("pacman)\n        # python on Arch/Manjaro ships the venv module", self.text)
