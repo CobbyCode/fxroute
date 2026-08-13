@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import peak_monitor
 from peak_monitor import EasyEffectsPeakMonitor, MonitorTarget
 
-TARGET = MonitorTarget("ee_soe_output_level", 42, "Output Level")
+TARGET = MonitorTarget("fxroute_dsp", 42, "Output Level")
 
 
 class _FakeProc:

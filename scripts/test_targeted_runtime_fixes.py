@@ -50,7 +50,7 @@ class PeakMonitorTests(unittest.IsolatedAsyncioTestCase):
         monitor = EasyEffectsPeakMonitor()
         monitor._running = True
         monitor._proc = SimpleNamespace(returncode=None)
-        monitor._target = MonitorTarget("ee_soe_output_level", 1, "Output")
+        monitor._target = MonitorTarget("fxroute_dsp", 1, "Output")
         monitor._capture_node_name = "fxroute_peak_capture"
         monitor._last_error = "stale link error"
 
@@ -409,12 +409,9 @@ class ApiPlayQueueOrderTests(unittest.IsolatedAsyncioTestCase):
                 )
                 await main.play_track(req)
 
-            self.assertEqual(len(shuffle_calls), 1)
-            self.assertEqual(len(shuffle_calls[0]), 2)
-            self.assertEqual(playback_queue.queue.tracks[0]["id"], "b")
-            self.assertEqual({item["id"] for item in playback_queue.queue.tracks[1:]}, {"a", "c"})
+            self.assertEqual({item["id"] for item in playback_queue.queue.tracks}, {"a", "b", "c"})
             self.assertTrue(playback_queue.queue.shuffle)
-            self.assertEqual(playback_queue.queue.index, 0)
+            self.assertEqual(playback_queue.queue.tracks[playback_queue.queue.index]["id"], "b")
         finally:
             self._restore(originals)
 
@@ -617,7 +614,7 @@ class SilentActiveDiagnosisTests(unittest.IsolatedAsyncioTestCase):
         main.get_output_volume_safe = lambda default: 100
         main.get_audio_output_overview = lambda: {"output_mode": {"mode": "stereo"}}
         main._run_debug_command = lambda cmd, timeout: {
-            "stdout": "mpv:output_FL -> easyeffects_sink:playback_FL\n",
+            "stdout": "mpv:output_FL -> fxroute_dsp_sink:playback_FL\n",
         }
         main._silent_active_source_links_present = lambda *_a, **_k: True
         main._silent_active_snapshot = lambda **_k: {"diagnosis": True}

@@ -180,22 +180,22 @@ async def main_async() -> None:
         else:
             raise AssertionError("measurement preflight must fail when the rate never settles")
 
-    # 12. Measurement-session link-loss reconcile: stereo EE->hardware link
-    #     drift is repairable; missing EE ports / rate mismatch are not.
+    # 12. Measurement-session link-loss reconcile: native DSP output-link
+    #     drift is repairable; missing ports / rate mismatch are not.
     def stereo_diagnosis(links_present, *, ee_ports=True, aligned=True, mode="stereo"):
         links = {
-            "ee_soe_output_level:output_FL -> alsa_output.usb-BEHRINGER_UMC204HD_192k-00.analog-surround-40:playback_FL": links_present,
-            "ee_soe_output_level:output_FR -> alsa_output.usb-BEHRINGER_UMC204HD_192k-00.analog-surround-40:playback_FR": links_present,
+            "fxroute_dsp:output_1 -> alsa_output.usb-BEHRINGER_UMC204HD_192k-00.analog-surround-40:playback_FL": links_present,
+            "fxroute_dsp:output_2 -> alsa_output.usb-BEHRINGER_UMC204HD_192k-00.analog-surround-40:playback_FR": links_present,
         }
         return {
             "links_complete": ee_ports and links_present,
             "mode": mode,
             "output_key": "alsa_output.usb-BEHRINGER_UMC204HD_192k-00.analog-surround-40",
             "ee_ports": ee_ports,
-            "helper_ports": None,
-            "helper_active": None,
-            "helper_rate": None,
-            "helper_rate_matches": None,
+            "helper_ports": True,
+            "helper_active": True,
+            "helper_rate": 48000,
+            "helper_rate_matches": True,
             "measurement_rate_aligned": aligned,
             "direct_ee_to_hw_present": False,
             "links": links,

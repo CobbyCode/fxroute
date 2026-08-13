@@ -22,7 +22,7 @@ class MeasurementCapturePortDiagnosticTests(unittest.TestCase):
 
     def _link(self, process):
         return self.store._link_host_reference_capture(
-            reference_source_node_name="easyeffects_sink.monitor",
+            reference_source_node_name="fxroute_dsp_sink.monitor",
             mic_source_node_name="mic",
             record_node_name="record",
             requested_channel="left",
@@ -46,7 +46,7 @@ class MeasurementCapturePortDiagnosticTests(unittest.TestCase):
         message = str(caught.exception)
         self.assertIn("missing port groups: record_inputs", message)
         self.assertIn("pw-record=running", message)
-        self.assertIn("easyeffects_sink.monitor:monitor_FL", message)
+        self.assertIn("fxroute_dsp_sink.monitor:monitor_FL", message)
         self.assertIn("mic:capture_FL", message)
 
     def test_reports_early_process_exit_with_stderr(self):

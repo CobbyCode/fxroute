@@ -277,20 +277,15 @@ async def _recovery_deferred_during_subwoofer_sync() -> None:
 
 
 async def _runtime_sync_in_progress_flag() -> None:
-    """Subwoofer21Runtime.sync_in_progress tracks the active reconfig lock."""
-    from subwoofer_runtime import Subwoofer21Runtime
-
-    runtime = Subwoofer21Runtime()
+    """DSPRuntime.sync_in_progress tracks the active reconfig lock."""
+    runtime = main.DSPRuntime(mock.MagicMock())
     assert runtime.sync_in_progress is False
-    runtime._pending_config = object()
-    assert runtime.sync_in_progress is True
-    runtime._pending_config = None
     lock = asyncio.Lock()
-    runtime._sync_lock = lock
+    runtime._lock = lock
     async with lock:
         assert runtime.sync_in_progress is True
     assert runtime.sync_in_progress is False
-    print("Subwoofer21Runtime.sync_in_progress flag: ok")
+    print("DSPRuntime.sync_in_progress flag: ok")
 
 
 
@@ -488,6 +483,7 @@ async def _preset_load_reclean_skipped_during_sync() -> None:
     active_runtime = mock.MagicMock(
         snapshot=mock.MagicMock(return_value={"active": True}),
         sync_in_progress=True,
+        sync=mock.AsyncMock(),
         _reclean_guarded=mock.AsyncMock(),
     )
     ee_manager = mock.MagicMock()
@@ -509,6 +505,7 @@ async def _preset_load_reclean_skipped_during_sync() -> None:
     idle_runtime = mock.MagicMock(
         snapshot=mock.MagicMock(return_value={"active": True}),
         sync_in_progress=False,
+        sync=mock.AsyncMock(),
         _reclean_guarded=mock.AsyncMock(),
     )
     stack2 = mock.patch.multiple(
@@ -546,7 +543,8 @@ async def _mode_switch_reapplies_compare_after_runtime_sync() -> None:
     async def sync_runtime(**_kwargs):
         nonlocal active_preset
         events.append(("runtime-sync",))
-        active_preset = "stale-ee-restart-preset"
+        if len(events) == 1:
+            active_preset = "stale-ee-restart-preset"
 
     wait_for_ports = mock.AsyncMock(return_value=True)
     complete_graph = {
@@ -580,6 +578,7 @@ async def _mode_switch_reapplies_compare_after_runtime_sync() -> None:
     assert events == [
         ("runtime-sync",),
         ("load", "B", 44100),
+        ("runtime-sync",),
     ], events
     assert active_preset == "B"
     assert wait_for_ports.await_count == 2
@@ -588,15 +587,13 @@ async def _mode_switch_reapplies_compare_after_runtime_sync() -> None:
 
 async def _runtime_sync_in_progress_covers_link_repair() -> None:
     """sync_in_progress must cover the preset-load link repair lock."""
-    from subwoofer_runtime import Subwoofer21Runtime
-
-    runtime = Subwoofer21Runtime()
+    runtime = main.DSPRuntime(mock.MagicMock())
     lock = asyncio.Lock()
-    runtime._reclean_lock = lock
+    runtime._lock = lock
     async with lock:
         assert runtime.sync_in_progress is True
     assert runtime.sync_in_progress is False
-    print("Subwoofer21Runtime.sync_in_progress covers link repair: ok")
+    print("DSPRuntime.sync_in_progress covers link repair: ok")
 
 
 async def main_async() -> None:

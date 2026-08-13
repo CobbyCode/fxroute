@@ -177,29 +177,29 @@ run_production_build() {
   "$REPO_PATH/.venv/bin/python3" -m py_compile main.py config.py measurement.py
 }
 
-build_pipewire_stage1_if_needed() {
-  local build_script="$REPO_PATH/pipewire_stage1/build.sh"
-  local binary="$REPO_PATH/pipewire_stage1/build/fxroute_21_passthrough"
-  local source_file="$REPO_PATH/pipewire_stage1/fxroute_21_passthrough.c"
+build_native_dsp_if_needed() {
+  local source_dir="$REPO_PATH/native_dsp"
+  local build_script="$source_dir/build.sh"
+  local binary="$REPO_PATH/native_dsp/build/fxroute-dsp"
 
-  [[ -f "$build_script" ]] || return 0
+  [[ -f "$build_script" ]] || {
+    NATIVE_HELPER_BUILD_OK=0
+    log "FXRoute native DSP build script is missing."
+    return 0
+  }
 
-  if [[ -f "$binary" ]]; then
-    if [[ "$build_script" -nt "$binary" || "$source_file" -nt "$binary" ]]; then
-      log "PipeWire 2.1 helper source changed; rebuilding."
-    else
-      log "PipeWire 2.1 helper binary is up to date."
-      return 0
-    fi
-  else
-    log "PipeWire 2.1 helper binary missing; building."
+  if [[ -x "$binary" ]] && ! find "$source_dir" -type f -newer "$binary" \
+      ! -path "$source_dir/build/*" -print -quit | grep -q .; then
+    log "FXRoute native DSP engine is up to date."
+    return 0
   fi
 
-  if ! bash "$build_script"; then
+  log "Building FXRoute native DSP engine."
+  if ! bash "$build_script" || [[ ! -x "$binary" ]]; then
     NATIVE_HELPER_BUILD_OK=0
-    log "PipeWire 2.1 helper build failed — 2.1 output mode will not be available until this is resolved."
+    log "FXRoute native DSP engine build failed."
   else
-    log "PipeWire 2.1 helper built successfully."
+    log "FXRoute native DSP engine built successfully."
   fi
 }
 
@@ -233,12 +233,12 @@ restart_service_if_needed() {
 reconcile_checkout() {
   install_dependencies_if_needed
   run_production_build
-  build_pipewire_stage1_if_needed
+  build_native_dsp_if_needed
   restart_service_if_needed
   if [[ "$NATIVE_HELPER_BUILD_OK" == "1" ]]; then
     mark_reconciliation_complete
   else
-    log "Reconciliation remains incomplete because the PipeWire 2.1 helper build failed."
+    log "Reconciliation remains incomplete because a native build failed."
   fi
 }
 

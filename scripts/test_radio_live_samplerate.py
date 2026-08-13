@@ -161,7 +161,12 @@ class RadioPostLoadHandoffTests(unittest.IsolatedAsyncioTestCase):
             )
         }
         main.playback_transition_epoch = 100
-        main.subwoofer_runtime = object()
+        main.subwoofer_runtime = type("NativeRuntime", (), {
+            "snapshot": lambda self: {
+                "active": True,
+                "config": {"sample_rate": 48000},
+            }
+        })()
 
     async def asyncTearDown(self):
         for name, value in self.originals.items():
@@ -186,7 +191,7 @@ class RadioPostLoadHandoffTests(unittest.IsolatedAsyncioTestCase):
         """
         calls = {"force": [], "preset": [], "subwoofer": []}
         logs = []
-        status = {"active_rate": active_rate}
+        status = {"active_rate": active_rate, "force_rate": active_rate}
 
         async def force(rate, reason, *, policy=None):
             calls["force"].append((rate, reason))
@@ -205,10 +210,17 @@ class RadioPostLoadHandoffTests(unittest.IsolatedAsyncioTestCase):
 
         async def ee_ports_present(*_args):
             return (
-                "ee_soe_output_level:output_FL\n"
-                "ee_soe_output_level:output_FR\n"
-                "ee_soe_output_level:output_FL -> alsa_output.pci-0000_00_1f.3.analog-stereo:playback_FL\n"
-                "ee_soe_output_level:output_FR -> alsa_output.pci-0000_00_1f.3.analog-stereo:playback_FR\n"
+                "mpv:output_FL\nmpv:output_FR\n"
+                "fxroute_dsp_sink:playback_FL\nfxroute_dsp_sink:playback_FR\n"
+                "mpv:output_FL -> fxroute_dsp_sink:playback_FL\n"
+                "mpv:output_FR -> fxroute_dsp_sink:playback_FR\n"
+                "fxroute_dsp_sink.monitor:monitor_FL\nfxroute_dsp_sink.monitor:monitor_FR\n"
+                "fxroute_dsp:input_1\nfxroute_dsp:input_2\n"
+                "fxroute_dsp:output_1\nfxroute_dsp:output_2\n"
+                "fxroute_dsp_sink.monitor:monitor_FL -> fxroute_dsp:input_1\n"
+                "fxroute_dsp_sink.monitor:monitor_FR -> fxroute_dsp:input_2\n"
+                "fxroute_dsp:output_1 -> alsa_output.pci-0000_00_1f.3.analog-stereo:playback_FL\n"
+                "fxroute_dsp:output_2 -> alsa_output.pci-0000_00_1f.3.analog-stereo:playback_FR\n"
             )
 
         rate_mock = (
@@ -236,6 +248,13 @@ class RadioPostLoadHandoffTests(unittest.IsolatedAsyncioTestCase):
         ), patch.object(main, "_ensure_playback_samplerate_force", force), patch.object(
             main, "_sync_easyeffects_preset_for_playback_samplerate", preset_sync
         ), patch.object(main, "_sync_subwoofer_runtime", helper_sync), patch.object(
+            main, "subwoofer_runtime", type("NativeRuntime", (), {
+                "snapshot": lambda self: {
+                    "active": True,
+                    "config": {"sample_rate": status["force_rate"]},
+                }
+            })()
+        ), patch.object(
             main, "_get_current_pipewire_force_rate", lambda: 0
         ), patch.object(main, "_run_pw_link_command", ee_ports_present), patch.object(
             main, "get_audio_output_overview",

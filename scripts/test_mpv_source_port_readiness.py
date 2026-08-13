@@ -28,10 +28,10 @@ from playback_transition_test_support import make_transition_runtime
 
 def _io_text(*, mpv: bool) -> str:
     lines = [
-        "ee_soe_output_level:output_FL",
-        "ee_soe_output_level:output_FR",
-        "easyeffects_sink:playback_FL",
-        "easyeffects_sink:playback_FR",
+        "fxroute_dsp:output_FL",
+        "fxroute_dsp:output_FR",
+        "fxroute_dsp_sink:playback_FL",
+        "fxroute_dsp_sink:playback_FR",
     ]
     if mpv:
         lines.extend(["mpv:output_FL", "mpv:output_FR"])
@@ -40,13 +40,13 @@ def _io_text(*, mpv: bool) -> str:
 
 def _link_text(*, fl: bool = True, fr: bool = True) -> str:
     lines = [
-        "ee_soe_output_level:output_FL -> fxroute_21_stage1:input_L",
-        "ee_soe_output_level:output_FR -> fxroute_21_stage1:input_R",
+        "fxroute_dsp:output_FL -> fxroute_21_stage1:input_L",
+        "fxroute_dsp:output_FR -> fxroute_21_stage1:input_R",
     ]
     if fl:
-        lines.append("mpv:output_FL -> easyeffects_sink:playback_FL")
+        lines.append("mpv:output_FL -> fxroute_dsp_sink:playback_FL")
     if fr:
-        lines.append("mpv:output_FR -> easyeffects_sink:playback_FR")
+        lines.append("mpv:output_FR -> fxroute_dsp_sink:playback_FR")
     return "\n".join(lines)
 
 
@@ -68,9 +68,9 @@ class MpvSourcePortReadinessTests(unittest.IsolatedAsyncioTestCase):
                 return _link_text(fl=state["fl_linked"], fr=state["fr_linked"])
             if args[0].startswith("mpv:") and not state["mpv_ports"]:
                 premature["count"] += 1
-            if args[1] == "easyeffects_sink:playback_FL":
+            if args[1] == "fxroute_dsp_sink:playback_FL":
                 state["fl_linked"] = True
-            elif args[1] == "easyeffects_sink:playback_FR":
+            elif args[1] == "fxroute_dsp_sink:playback_FR":
                 state["fr_linked"] = True
             return ""
 
@@ -93,8 +93,8 @@ class MpvSourcePortReadinessTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             connects,
             [
-                ("mpv:output_FL", "easyeffects_sink:playback_FL"),
-                ("mpv:output_FR", "easyeffects_sink:playback_FR"),
+                ("mpv:output_FL", "fxroute_dsp_sink:playback_FL"),
+                ("mpv:output_FR", "fxroute_dsp_sink:playback_FR"),
             ],
             "exactly the two missing edges were created, once each",
         )
@@ -159,7 +159,7 @@ class MpvSourcePortReadinessTests(unittest.IsolatedAsyncioTestCase):
             if args == ("-l",):
                 return _link_text(fl=state["fl_linked"], fr=state["fr_linked"])
             connects.append(args)
-            if args == ("mpv:output_FR", "easyeffects_sink:playback_FR"):
+            if args == ("mpv:output_FR", "fxroute_dsp_sink:playback_FR"):
                 state["fr_linked"] = True
             return ""
 
@@ -169,7 +169,7 @@ class MpvSourcePortReadinessTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result)
         self.assertEqual(
             connects,
-            [("mpv:output_FR", "easyeffects_sink:playback_FR")],
+            [("mpv:output_FR", "fxroute_dsp_sink:playback_FR")],
             "only the missing FR edge is created, the existing FL edge stays untouched",
         )
 

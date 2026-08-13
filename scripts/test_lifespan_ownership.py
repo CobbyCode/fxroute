@@ -25,7 +25,7 @@ class FakePlayer:
 
 
 class FakeScanner:
-    def __init__(self):
+    def __init__(self, *_args):
         self.prepare_scan_status = MagicMock()
 
     def refresh(self, _force):
@@ -58,7 +58,7 @@ class FakeMeasurementSession:
 class LifespanOwnershipTests(unittest.IsolatedAsyncioTestCase):
     async def test_startup_failure_is_raised_and_prior_player_is_stopped(self):
         player = FakePlayer()
-        settings = SimpleNamespace(MUSIC_ROOT="/music", download_dir=pathlib.Path("/downloads"))
+        settings = SimpleNamespace(MUSIC_ROOT=pathlib.Path("/music"), download_dir=pathlib.Path("/downloads"))
         with patch.object(main, "get_settings", return_value=settings), patch.object(
             main, "get_player", return_value=player
         ), patch.object(main, "LibraryScanner", FakeScanner), patch.object(
@@ -87,13 +87,13 @@ class LifespanOwnershipTests(unittest.IsolatedAsyncioTestCase):
             def status(self):
                 return {}
 
-        settings = SimpleNamespace(MUSIC_ROOT="/music", download_dir=pathlib.Path("/downloads"))
+        settings = SimpleNamespace(MUSIC_ROOT=pathlib.Path("/music"), download_dir=pathlib.Path("/downloads"))
         effects = SimpleNamespace(load_global_extras=lambda: {})
         with patch.object(main, "get_settings", return_value=settings), patch.object(
             main, "get_player", return_value=player
         ), patch.object(main, "LibraryScanner", FakeScanner), patch.object(
             main, "Downloader", return_value=downloader
-        ), patch.object(main, "EasyEffectsManager", return_value=effects), patch.object(
+        ), patch.object(main, "DSPManager", return_value=effects), patch.object(
             main, "MeasurementStore", return_value=store
         ), patch.object(main, "MeasurementSampleRateSession", return_value=session), patch.object(
             main, "PlaybackTransitionCoordinator", return_value=Coordinator()

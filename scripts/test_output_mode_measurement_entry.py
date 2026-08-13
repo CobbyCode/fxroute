@@ -55,13 +55,13 @@ class TransactionRuntime:
         self.events.append(f"mute:{self.muted}")
 
     async def read_sink_mute(self, sink_name):
-        if sink_name != "easyeffects_sink":
+        if sink_name != "fxroute_dsp_sink":
             raise AssertionError(f"unexpected explicit sink: {sink_name}")
         self.events.append(f"read-sink-mute:{self.easyeffects_muted}")
         return self.easyeffects_muted
 
     async def set_sink_mute(self, sink_name, muted, _transition_id):
-        if sink_name != "easyeffects_sink":
+        if sink_name != "fxroute_dsp_sink":
             raise AssertionError(f"unexpected explicit sink: {sink_name}")
         self.easyeffects_muted = bool(muted)
         self.events.append(f"sink-mute:{self.easyeffects_muted}")
@@ -411,23 +411,23 @@ class CoordinatorTransactionTests(unittest.IsolatedAsyncioTestCase):
             "helper_rate": None,
             "helper_rate_matches": None,
             "source_links": {
-                "spotify:output_FL -> easyeffects_sink:playback_FL": False,
-                "spotify:output_FR -> easyeffects_sink:playback_FR": False,
+                "spotify:output_FL -> fxroute_dsp_sink:playback_FL": False,
+                "spotify:output_FR -> fxroute_dsp_sink:playback_FR": False,
             },
             "source_links_complete": False,
             "direct_ee_to_hw_present": False,
             "links": {
-                "ee_soe_output_level:output_FL -> alsa_output.test:playback_FL": True,
-                "ee_soe_output_level:output_FR -> alsa_output.test:playback_FR": True,
+                "fxroute_dsp:output_FL -> alsa_output.test:playback_FL": True,
+                "fxroute_dsp:output_FR -> alsa_output.test:playback_FR": True,
             },
             "links_complete": False,
             "port_identities": {
                 "source": ("spotify:output_FL", "spotify:output_FR"),
                 "source_target": (
-                    "easyeffects_sink:playback_FL",
-                    "easyeffects_sink:playback_FR",
+                    "fxroute_dsp_sink:playback_FL",
+                    "fxroute_dsp_sink:playback_FR",
                 ),
-                "ee": ("ee_soe_output_level:output_FL", "ee_soe_output_level:output_FR"),
+                "ee": ("fxroute_dsp:output_FL", "fxroute_dsp:output_FR"),
                 "helper": (),
                 "output": (
                     "alsa_output.test:playback_FL",
@@ -453,8 +453,8 @@ class CoordinatorTransactionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             relink.await_args_list,
             [
-                call(("spotify:output_FL",), "easyeffects_sink:playback_FL"),
-                call(("spotify:output_FR",), "easyeffects_sink:playback_FR"),
+                call(("spotify:output_FL",), "fxroute_dsp_sink:playback_FL"),
+                call(("spotify:output_FR",), "fxroute_dsp_sink:playback_FR"),
             ],
         )
         self.assertLess(runtime.events.index("restore-transport"), runtime.events.index("relink-spotify-source"))
@@ -485,8 +485,8 @@ class CoordinatorTransactionTests(unittest.IsolatedAsyncioTestCase):
             "source_links_complete": None,
             "direct_ee_to_hw_present": False,
             "links": {
-                "ee_soe_output_level:output_FL -> fxroute_21_stage1:input_L": False,
-                "ee_soe_output_level:output_FR -> fxroute_21_stage1:input_R": True,
+                "fxroute_dsp:output_FL -> fxroute_21_stage1:input_L": False,
+                "fxroute_dsp:output_FR -> fxroute_21_stage1:input_R": True,
                 "fxroute_21_stage1:output_1 -> alsa_output.test:playback_FL": True,
                 "fxroute_21_stage1:output_2 -> alsa_output.test:playback_FR": True,
                 "fxroute_21_stage1:output_3 -> alsa_output.test:playback_RL": True,
@@ -497,7 +497,7 @@ class CoordinatorTransactionTests(unittest.IsolatedAsyncioTestCase):
             "port_identities": {
                 "source": (),
                 "source_target": (),
-                "ee": ("ee_soe_output_level:output_FL", "ee_soe_output_level:output_FR"),
+                "ee": ("fxroute_dsp:output_FL", "fxroute_dsp:output_FR"),
                 "helper": (
                     "fxroute_21_stage1:input_L", "fxroute_21_stage1:input_R",
                     "fxroute_21_stage1:output_1", "fxroute_21_stage1:output_2",
@@ -558,15 +558,15 @@ class CoordinatorTransactionTests(unittest.IsolatedAsyncioTestCase):
             "source_links_complete": None,
             "direct_ee_to_hw_present": False,
             "links": {
-                "ee_soe_output_level:output_FL -> alsa_output.test:playback_FL": False,
-                "ee_soe_output_level:output_FR -> alsa_output.test:playback_FR": False,
+                "fxroute_dsp:output_FL -> alsa_output.test:playback_FL": False,
+                "fxroute_dsp:output_FR -> alsa_output.test:playback_FR": False,
             },
             "links_complete": False,
             "bypass_only": False,
             "port_identities": {
                 "source": (),
                 "source_target": (),
-                "ee": ("ee_soe_output_level:output_FL", "ee_soe_output_level:output_FR"),
+                "ee": ("fxroute_dsp:output_FL", "fxroute_dsp:output_FR"),
                 "helper": (),
                 "output": ("alsa_output.test:playback_FL", "alsa_output.test:playback_FR"),
             },
@@ -855,12 +855,12 @@ class MeasurementSessionRuntimeReadbackTests(unittest.IsolatedAsyncioTestCase):
             "helper_rate_matches": True,
             "direct_ee_to_hw_present": False,
             "links": {
-                "ee_soe_output_level:output_FL -> fxroute_21_stage1:input_L": False,
-                "ee_soe_output_level:output_FR -> fxroute_21_stage1:input_R": False,
-                "fxroute_21_stage1:output_1 -> alsa_output.test:playback_FL": True,
-                "fxroute_21_stage1:output_2 -> alsa_output.test:playback_FR": True,
-                "fxroute_21_stage1:output_3 -> alsa_output.test:playback_RL": True,
-                "fxroute_21_stage1:output_4 -> alsa_output.test:playback_RR": True,
+                "fxroute_dsp_sink.monitor:monitor_FL -> fxroute_dsp:input_1": False,
+                "fxroute_dsp_sink.monitor:monitor_FR -> fxroute_dsp:input_2": False,
+                "fxroute_dsp:output_1 -> alsa_output.test:playback_FL": True,
+                "fxroute_dsp:output_2 -> alsa_output.test:playback_FR": True,
+                "fxroute_dsp:output_3 -> alsa_output.test:playback_RL": True,
+                "fxroute_dsp:output_4 -> alsa_output.test:playback_RR": True,
             },
             "links_complete": False,
             "signature": "missing-ee-helper",
@@ -889,9 +889,7 @@ class MeasurementSessionRuntimeReadbackTests(unittest.IsolatedAsyncioTestCase):
 
         invalid_helper_link = dict(readback)
         invalid_helper_link["links"] = dict(readback["links"])
-        invalid_helper_link["links"][
-            "fxroute_21_stage1:output_1 -> alsa_output.test:playback_FL"
-        ] = False
+        invalid_helper_link["links"]["unknown:output -> unknown:input"] = False
         self.assertFalse(
             main._measurement_session_link_loss_is_repairable(
                 invalid_helper_link,

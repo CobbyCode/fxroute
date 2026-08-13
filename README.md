@@ -2,7 +2,7 @@
 
 FXRoute is a browser-based control surface for Linux audio systems.
 
-It runs on mini PCs, desktops, ARM boards, and dedicated stereo systems. It combines local playback, EasyEffects DSP, radio, library playback, measurement tools, and optional Spotify desktop control in one interface for phones, tablets, and laptops on the local network.
+It runs on mini PCs, desktops, ARM boards, and dedicated stereo systems. It combines local playback, FXRoute's native DSP engine, radio, library playback, measurement tools, and optional Spotify desktop control in one interface for phones, tablets, and laptops on the local network.
 
 <p align="center">
   <strong>Measure, compare, and sketch PEQ/convolver corrections directly in the browser.</strong>
@@ -50,7 +50,7 @@ It runs on mini PCs, desktops, ARM boards, and dedicated stereo systems. It comb
   and enriched metadata and artwork for Radio Paradise, FIP, SomaFM, and KEXP
 - Spotify desktop control through `playerctl` / MPRIS, including passive metadata refresh for automatic track changes
 - Spotify Lossless playback through a current local Spotify desktop client for eligible Premium accounts, when Lossless is enabled in Spotify (up to 24-bit/44.1 kHz FLAC); FXRoute provides remote client control, not the Spotify stream
-- EasyEffects preset switching, PEQ, convolver import/generation, output helpers, and A/B compare
+- native DSP preset switching, PEQ, convolver import/generation, output helpers, and A/B compare
 - stereo, 2.1 subwoofer, and 2.2 subwoofer output modes
 - global DSP helpers for protection, gain management, loudness contouring, bass enhancement, and tone shaping; Loudness provides a calibrated contour that follows the playback level and also accounts for the Auto Gain target when both are active
 - room and speaker measurements with host microphone capture, including Advanced Measurement to measure speakers, room response, and microphone position,
@@ -72,7 +72,7 @@ It runs on mini PCs, desktops, ARM boards, and dedicated stereo systems. It comb
 - Bluetooth input visibility/control when the host audio stack supports it
 - optional local HTTPS/Caddy setup with downloadable local certificate for trusted LAN clients
 - selectable local and SMB music libraries, with SMB share discovery and manual `smb://` share entry
-- installer support for systemd user service, Flatpak EasyEffects, PipeWire/BlueZ dependencies, firewall comfort rules, and `.local` LAN naming
+- installer support for the native DSP build, systemd user service, PipeWire/BlueZ dependencies, firewall comfort rules, and `.local` LAN naming
 - installer package-manager support for apt (Debian/Ubuntu), dnf (Fedora),
   zypper (openSUSE), and pacman (Arch/Manjaro); package-manager preparation
   runs at most once per installer run
@@ -85,17 +85,17 @@ Typical setup:
 
 - small PC or ARM board near DAC, amp, active speakers, headphones, or TV
 - PipeWire-based Linux desktop session
-- EasyEffects running in the same local user session
+- FXRoute's native DSP engine in the same local PipeWire session
 - optional Spotify desktop client in the same session
 - control from any browser on the LAN
 
-FXRoute coordinates local audio applications, EasyEffects, MPRIS/playerctl, and PipeWire routes through that user session. In socket mode, EasyEffects runs as a background service in the same session.
+FXRoute coordinates local audio applications, its DSP engine, MPRIS/playerctl, and PipeWire routes through that user session. Playback applications enter the processing graph through the FXRoute-owned `fxroute_dsp_sink` Pulse/PipeWire sink.
 
 ## Requirements
 
 On supported distributions, `install.sh` installs and configures the runtime tools: Python dependencies, `mpv`, `ffmpeg`, `playerctl`, Bluetooth/PipeWire helpers, and service files.
 
-EasyEffects is handled separately: fresh installs can use the installer-managed Flatpak path, while existing native/package-manager EasyEffects installs are accepted when already present.
+The installer builds the native DSP engine from the source shipped with FXRoute. A C compiler, `pkg-config`, and PipeWire development headers are installed on supported distributions.
 
 Tested installer targets so far include:
 
@@ -105,11 +105,9 @@ Tested installer targets so far include:
 - Fedora-family x86_64 systems
 - Armbian 26.2.1 / Ubuntu 24.04 Noble on ARM64 (`aarch64`, Khadas VIM1S; PipeWire setup may be needed depending on the image)
 
-## EasyEffects mode
+## Native DSP engine
 
-When the installer installs EasyEffects, it prefers **Flatpak EasyEffects**. This path is reproducible and normally provides the control socket FXRoute uses for preset switching and recovery.
-
-If EasyEffects is already installed through the system package manager or managed manually by the user, FXRoute can use that installation instead. Older native EasyEffects builds may not expose the control socket; in that case FXRoute falls back to EasyEffects CLI control where possible.
+FXRoute builds and runs its own PipeWire-native DSP engine. The stable ingress sink is `fxroute_dsp_sink`; the processing node is `fxroute_dsp`. EasyEffects is not a runtime dependency and FXRoute does not install, start, or monitor it.
 
 Fresh installs default Spotify autostart to enabled when a local Spotify desktop client is available, so the player can return after a desktop/session restart. Existing `.env` files are preserved on installer reruns.
 
@@ -182,7 +180,7 @@ Typical URLs:
 
 - **Radio** — curated station catalog, personal stations, Radio Browser search, live metadata and artwork for Radio Paradise, FIP, SomaFM, and KEXP
 - **Library** — local files, album browsing, cached metadata, artist info, similar-artist discovery, playlists, uploads, imports, downloads, and deletion
-- **DSP** — EasyEffects presets, PEQ, convolver, helpers, A/B compare, and preset creation
+- **DSP** — native DSP presets, PEQ, convolver, helpers, A/B compare, and preset creation
 - **Measure** — host-mic measurement, Advanced Measurement, subwoofer optimization, and tuning workflow
 - **Spotify** — control a local Spotify desktop client
 - **Technical settings** — output selection, Stereo/2.1/2.2 modes, Auto or fixed sample rate, music libraries, source state, Bluetooth status, Maintenance updates, and local certificate access
@@ -195,7 +193,7 @@ Metadata is cached locally so normal library scans stay fast and unchanged track
 
 ## Measurement and convolver presets
 
-The Measure workflow creates EasyEffects-ready FIR/convolver presets from
+The Measure workflow creates native DSP FIR/convolver presets from
 saved measurements. For stereo correction, measure and save left and right
 separately, assign them in the Convolver assistant, then choose the target
 curve, correction range, phase mode, sample rate, and tap length.
@@ -226,11 +224,11 @@ systemctl --user restart fxroute
 journalctl --user -u fxroute -f
 ```
 
-Useful EasyEffects checks:
+Useful DSP graph checks:
 
 ```bash
-flatpak list --app | grep easyeffects
-pgrep -af easyeffects
+wpctl status
+pw-cli ls Node | grep fxroute_dsp
 ```
 
 ## Manual

@@ -80,7 +80,7 @@ class FakeRuntime:
 
     @staticmethod
     def assert_sink_name(sink_name):
-        if sink_name != "easyeffects_sink":
+        if sink_name != "fxroute_dsp_sink":
             raise AssertionError(f"unexpected explicit sink: {sink_name}")
 
     async def read_transition_snapshot(self, request):
@@ -199,7 +199,7 @@ class MeasurementSessionRuntime:
 
     @staticmethod
     def assert_sink_name(sink_name):
-        if sink_name != "easyeffects_sink":
+        if sink_name != "fxroute_dsp_sink":
             raise AssertionError(f"unexpected explicit sink: {sink_name}")
 
     async def read_measurement_session_graph(self, _target_rate):

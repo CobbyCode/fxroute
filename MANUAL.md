@@ -2,7 +2,7 @@
 
 FXRoute turns a small Linux audio PC into a browser-controlled music and DSP system.
 
-Use a phone, tablet, or laptop on the local network to control playback, switch EasyEffects presets, compare DSP profiles, import filters, measure the room, and tune the result without using the desktop.
+Use a phone, tablet, or laptop on the local network to control playback, switch native DSP presets, compare profiles, import filters, measure the room, and tune the result without using the desktop.
 
 ## 1. What FXRoute is for
 
@@ -11,7 +11,7 @@ FXRoute puts these tasks on one local hi-fi control system:
 - play internet radio, Spotify, and local music
 - browse local albums with artwork, artist context, and discovery hints
 - control volume, queue, play/pause, and track position from the browser
-- route audio through EasyEffects for live DSP
+- route audio through FXRoute's native engine for live DSP
 - switch room-correction, PEQ, convolver, and tone presets
 - compare DSP presets quickly with A/B switching
 - measure the room/speaker response and use it as a tuning guide
@@ -44,7 +44,7 @@ A typical listening session:
 4. If you want to tune the room, open **Measure** from the DSP page.
 5. Save useful measurements, transfer correction ideas into a new PEQ preset, or use the visible measurements to create a Convolver preset.
 
-EasyEffects handles the live audio processing. FXRoute controls, organizes, compares, and edits the presets.
+FXRoute's native engine handles live audio processing and FXRoute controls, organizes, compares, and edits its presets.
 
 ## 4. Radio
 
@@ -129,19 +129,11 @@ smb://server/share
 
 FXRoute checks guest access when discovering shares, mounts the selected share when needed, and then scans it like the local library. The host needs `smbclient`, CIFS/GVFS support, and permission to mount the share. The installer provides the required packages and the CIFS mount helper on supported distributions. A share must expose one disk share; administrative and printer shares are ignored.
 
-## 7. EasyEffects installation
+## 7. Native DSP installation
 
-The installer prefers Flatpak EasyEffects when it installs EasyEffects. Recent Flatpak versions expose the control socket FXRoute uses for fast preset switching and recovery.
+The installer installs compiler and PipeWire development dependencies on supported distributions, then builds the DSP engine shipped with FXRoute. Audio applications connect through `fxroute_dsp_sink`; processing runs in the `fxroute_dsp` node. EasyEffects is not required.
 
-If EasyEffects already exists on the system, FXRoute can use that installation. Native/package-manager versions use the CLI fallback when no control socket is available. Preset switching can still work, but socket-based control and recovery may be limited.
-
-For a manual Flatpak installation:
-
-```bash
-flatpak install --user flathub com.github.wwmm.easyeffects
-```
-
-## 8. DSP and EasyEffects
+## 8. DSP
 
 Use **DSP** to shape and correct the sound.
 
@@ -158,7 +150,7 @@ Main tools:
 
 Typical DSP files:
 
-- EasyEffects preset JSON
+- FXRoute preset JSON
 - convolver `.irs` files
 - WAV impulse responses
 - REW text filters for left/right PEQ-style correction
@@ -415,7 +407,7 @@ If playback fails:
 1. Try **Radio** first. It is the simplest playback source.
 2. Check the bottom playback bar: does it show a track?
 3. Open **Technical settings** and confirm the output device.
-4. Check that EasyEffects is running if DSP presets are missing.
+4. Restart FXRoute and inspect its log if DSP presets are missing.
 5. Restart FXRoute if the browser says it is disconnected.
 
 Useful host commands:
@@ -426,11 +418,11 @@ systemctl --user restart fxroute
 journalctl --user -u fxroute -f
 ```
 
-If EasyEffects is the suspected problem, also check:
+If the native DSP graph is the suspected problem, also check:
 
 ```bash
-flatpak list --app | grep easyeffects
-pgrep -af easyeffects
+wpctl status
+pw-cli ls Node | grep fxroute_dsp
 ```
 
 ## 13. What FXRoute expects
@@ -439,7 +431,7 @@ FXRoute is designed for:
 
 - a Linux desktop-session audio machine
 - PipeWire
-- EasyEffects in the same user session
+- the FXRoute native DSP engine in the same PipeWire user session
 - local network browser control
 - a DAC, amp, active speakers, headphones, or similar listening setup
 

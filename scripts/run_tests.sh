@@ -58,14 +58,8 @@ for f in scripts/check_*.py scripts/check_*.js; do
     [ -e "$f" ] && CHECK_TESTS+=("$f")
 done
 
-# Tests that require the native 2.1 helper binary built from
-# pipewire_stage1/ (built on .104; not available in this repo checkout).
-NATIVE_HELPER_BIN="pipewire_stage1/build/fxroute_21_passthrough"
-NATIVE_HELPER_TESTS=(
-    "scripts/test_native_helper_alignment.py"
-    "scripts/test_native_helper_bass_routing.py"
-    "scripts/test_native_helper_sub_gain.py"
-)
+NATIVE_HELPER_BIN=""
+NATIVE_HELPER_TESTS=()
 
 # Tests that need live PipeWire graph / audio hardware on .104.
 # (Kept as a category for future hardware-bound suites; currently empty

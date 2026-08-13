@@ -10,8 +10,8 @@ from pathlib import Path
 from typing import Any, Mapping
 
 
-NON_SELECTABLE_OUTPUT_KEYS = {"easyeffects_sink"}
-NON_SELECTABLE_INPUT_KEYS = {"easyeffects_source"}
+NON_SELECTABLE_OUTPUT_KEYS = {"fxroute_dsp_sink"}
+NON_SELECTABLE_INPUT_KEYS: set[str] = set()
 SOURCE_MODE_APP_PLAYBACK = "app-playback"
 SOURCE_MODE_EXTERNAL_INPUT = "external-input"
 SOURCE_MODE_BLUETOOTH_INPUT = "bluetooth-input"
@@ -1830,7 +1830,7 @@ def _select_relevant_sink(default_sink: dict[str, Any], sinks: list[dict[str, An
                 return sink
 
     for sink in running:
-        if sink.get("name") == "easyeffects_sink":
+        if sink.get("name") == "fxroute_dsp_sink":
             return sink
 
     if running:
@@ -1911,12 +1911,12 @@ def get_samplerate_status() -> dict[str, Any]:
         active_rate = (relevant_sink or {}).get("active_rate")
         if active_rate is None and relevant_sink:
             notes.append(f"No parsed active rate for sink {relevant_sink.get('name')}")
-        easyeffects_sink = next((item for item in pactl_sinks if item.get("name") == "easyeffects_sink"), None)
-        if relevant_sink and easyeffects_sink and relevant_sink.get("name") != easyeffects_sink.get("name"):
+        dsp_sink = next((item for item in pactl_sinks if item.get("name") == "fxroute_dsp_sink"), None)
+        if relevant_sink and dsp_sink and relevant_sink.get("name") != dsp_sink.get("name"):
             relevant_rate = relevant_sink.get("active_rate")
-            ee_rate = easyeffects_sink.get("active_rate")
-            if relevant_rate and ee_rate and relevant_rate != ee_rate:
-                notes.append(f"Hardware sink {relevant_sink.get('name')} at {relevant_rate} Hz differs from easyeffects_sink at {ee_rate} Hz")
+            dsp_rate = dsp_sink.get("active_rate")
+            if relevant_rate and dsp_rate and relevant_rate != dsp_rate:
+                notes.append(f"Hardware sink {relevant_sink.get('name')} at {relevant_rate} Hz differs from fxroute_dsp_sink at {dsp_rate} Hz")
     except Exception as exc:
         notes.append(f"pactl sink rate unavailable: {exc}")
 

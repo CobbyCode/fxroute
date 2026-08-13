@@ -4,9 +4,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
-import signal
-import socket
 import sys
 import unittest
 from pathlib import Path
@@ -18,7 +15,7 @@ sys.path.insert(0, str(ROOT))
 import main
 import measurement_session
 import autosub
-from subwoofer_runtime import Subwoofer21Runtime, SubwooferRuntimeConfig
+from dsp_runtime import DSPRuntime, SubwooferRuntimeConfig
 
 
 class FakeProcess:
@@ -57,51 +54,22 @@ def original_snapshot(mode: str) -> dict:
 
 
 class ExactMuteRuntimeTests(unittest.IsolatedAsyncioTestCase):
-    def attach_ack_socket(self, runtime):
-        ack_dir = __import__("tempfile").mkdtemp(prefix="fxroute-test-ack-")
-        ack_path = str(Path(ack_dir) / "ack.sock")
-        ack_socket = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-        ack_socket.setblocking(False)
-        ack_socket.bind(ack_path)
-        runtime._exact_sub_mute_ack_socket = ack_socket
-        runtime._exact_sub_mute_ack_path = ack_path
-        runtime._exact_sub_mute_ack_dir = ack_dir
-        return ack_path
-
-    async def test_runtime_signal_changes_only_atomic_mute_state(self):
-        runtime = Subwoofer21Runtime()
-        runtime._process = FakeProcess()
-        runtime._config = runtime_config()
-        runtime._links_configured = True
-        ack_path = self.attach_ack_socket(runtime)
-        sender = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-
-        def acknowledge(_pid, sent_signal):
-            sender.sendto(b"1" if sent_signal == signal.SIGUSR1 else b"0", ack_path)
-
-        with patch.object(os, "kill", side_effect=acknowledge) as kill:
-            previous = await runtime.set_exact_sub_mute(True)
-            self.assertFalse(previous)
-            self.assertTrue(runtime.snapshot()["exact_sub_mute"])
-            kill.assert_called_once_with(4242, signal.SIGUSR1)
-            previous = await runtime.set_exact_sub_mute(False)
-            self.assertTrue(previous)
-            self.assertFalse(runtime.snapshot()["exact_sub_mute"])
-            self.assertEqual(kill.call_args_list[-1].args, (4242, signal.SIGUSR2))
-        sender.close()
-        runtime._close_exact_sub_mute_ack_socket()
-
-    async def test_helper_change_clears_mute_state(self):
-        runtime = Subwoofer21Runtime()
-        process = FakeProcess()
-        runtime._process = process
-        runtime._config = runtime_config()
-        self.attach_ack_socket(runtime)
-        with patch.object(os, "kill"):
-            with self.assertRaisesRegex(RuntimeError, "not acknowledged"):
-                await runtime.set_exact_sub_mute(True)
+    async def test_runtime_control_changes_only_atomic_mute_state(self):
+        runtime = DSPRuntime(object())
+        runtime._config = type("Config", (), {
+            "hardware_ports": ("FL", "FR", "RL", "RR"),
+            "sample_rate": 48000,
+            "output_mode": "subwoofer-2.1",
+            "output_key": "mock",
+        })()
+        control = AsyncMock(return_value="ok")
+        runtime._control = control
+        self.assertFalse(await runtime.set_exact_sub_mute(True))
+        self.assertTrue(runtime.snapshot()["exact_sub_mute"])
+        self.assertTrue(await runtime.set_exact_sub_mute(False))
         self.assertFalse(runtime.snapshot()["exact_sub_mute"])
-        self.assertIsNone(runtime._process)
+        self.assertEqual(control.await_args_list[0].args, ("mute 12 1",))
+        self.assertEqual(control.await_args_list[1].args, ("mute 12 0",))
 
 
 class MainReferenceSnapshotTests(unittest.IsolatedAsyncioTestCase):
@@ -272,15 +240,6 @@ class MainReferenceSnapshotTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(runtime.muted, outcome)
             self.assertEqual(runtime.calls, [True, False], outcome)
             self.assertIn(result["status"], {"completed", "error", "cancelled"})
-
-    def test_helper_dsp_zeroes_only_sub_outputs_without_graph_operations(self):
-        source = (ROOT / "pipewire_stage1" / "fxroute_21_passthrough.c").read_text(encoding="utf-8")
-        self.assertIn("output_3[frame] = exact_sub_mute ? 0.0f : sub1;", source)
-        self.assertIn("output_4[frame] = exact_sub_mute ? 0.0f : sub2;", source)
-        self.assertIn("output_1[frame] = delay_line_process", source)
-        self.assertIn("output_2[frame] = delay_line_process", source)
-        self.assertNotIn("pw_link", source)
-
 
 if __name__ == "__main__":
     unittest.main()

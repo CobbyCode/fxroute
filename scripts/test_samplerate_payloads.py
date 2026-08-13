@@ -67,11 +67,11 @@ id 55, type PipeWire:Interface:Node/3
     node.description = "DAC"
     node.name = "alsa_output.usb-DAC"
 id 56, type PipeWire:Interface:Node/3
-    node.name = "easyeffects_sink"
+    node.name = "fxroute_dsp_sink"
 '''
         self.assertEqual(
             samplerate._parse_pw_node_ids(payload),
-            {"alsa_output.usb-DAC": 55, "easyeffects_sink": 56},
+            {"alsa_output.usb-DAC": 55, "fxroute_dsp_sink": 56},
         )
 
 

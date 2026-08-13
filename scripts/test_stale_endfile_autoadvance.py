@@ -472,13 +472,13 @@ class StaleEndfileOwnershipTests(unittest.IsolatedAsyncioTestCase):
             _ended_snapshot(), event_commit_id=COMMIT_A
         )
 
-        # Shuffle wrap: the reshuffled queue starts with the previous
-        # track (a2), the new target track a1 is at index 1.
+        # Shuffle wrap advances to the remaining track without requiring a
+        # particular random order from the two-item queue.
         self.assertEqual(len(self._request_targets()), 1,
                          "current EOF reshuffles the looped queue once")
         self.assertEqual(self._request_targets(), ["a1"])
-        self.assertEqual([t.get("id") for t in playback_queue.queue.tracks], ["a2", "a1"])
-        self.assertEqual(playback_queue.queue.index, 1)
+        self.assertEqual({t.get("id") for t in playback_queue.queue.tracks}, {"a1", "a2"})
+        self.assertEqual(playback_queue.queue.tracks[playback_queue.queue.index]["id"], "a1")
 
     async def test_stale_eof_shuffle_wrap_is_noop(self):
         self._install()

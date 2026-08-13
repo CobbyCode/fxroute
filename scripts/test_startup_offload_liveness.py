@@ -95,6 +95,9 @@ SLOW_EFFECTS_EVENTS = []
 
 
 class FakeScanner:
+    def __init__(self, *_args):
+        pass
+
     def prepare_scan_status(self):
         pass
 
@@ -149,6 +152,9 @@ class FakePeakMonitor:
 
 
 class FakeSubwooferRuntime:
+    def __init__(self, *_args, **_kwargs):
+        pass
+
     async def _stop_orphan_helpers(self):
         pass
 
@@ -163,18 +169,18 @@ async def _done_loop():
 def _lifespan_patches(slow_player, slow_effects):
     return [
         mock.patch.object(main, "get_settings", return_value=SimpleNamespace(
-            MUSIC_ROOT="/music", download_dir=pathlib.Path("/downloads")
+            MUSIC_ROOT=pathlib.Path("/music"), download_dir=pathlib.Path("/downloads")
         )),
         mock.patch.object(main, "get_player", return_value=slow_player),
         mock.patch.object(main, "LibraryScanner", FakeScanner),
         mock.patch.object(main, "Downloader", FakeDownloader),
-        mock.patch.object(main, "EasyEffectsManager", slow_effects),
+        mock.patch.object(main, "DSPManager", slow_effects),
         mock.patch.object(main, "MeasurementStore", FakeMeasurementStore),
         mock.patch.object(main, "MeasurementSampleRateSession", FakeMeasurementSession),
         mock.patch.object(main, "PlaybackTransitionCoordinator", FakeCoordinator),
         mock.patch.object(main, "HardwareController", None),
         mock.patch.object(main, "EasyEffectsPeakMonitor", FakePeakMonitor),
-        mock.patch.object(main, "Subwoofer21Runtime", FakeSubwooferRuntime),
+        mock.patch.object(main, "DSPRuntime", FakeSubwooferRuntime),
         mock.patch.object(main, "start_volume_read_monitor", lambda: asyncio.create_task(asyncio.sleep(0.01))),
         mock.patch.object(main, "get_spotify_ui_state", mock.AsyncMock(return_value={})),
         mock.patch.object(main, "sync_peak_monitor_for_spotify_state", mock.AsyncMock()),

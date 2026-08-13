@@ -17,8 +17,8 @@ from playback_transition_test_support import MainCoreTransitionRuntime
 
 
 OUTPUT_KEY = "alsa_output.pci-0000_00_1f.3.analog-stereo"
-EE_LEFT = "ee_soe_output_level:output_FL"
-EE_RIGHT = "ee_soe_output_level:output_FR"
+EE_LEFT = "fxroute_dsp:output_FL"
+EE_RIGHT = "fxroute_dsp:output_FR"
 HELPER_LEFT = "fxroute_21_stage1:input_L"
 HELPER_RIGHT = "fxroute_21_stage1:input_R"
 
@@ -41,8 +41,8 @@ def _graph_snapshot(*, missing: tuple[str, ...] = (), signature: str = "complete
         "helper_rate": 48000,
         "helper_rate_matches": True,
         "source_links": {
-            "mpv:output_FL -> easyeffects_sink:playback_FL": True,
-            "mpv:output_FR -> easyeffects_sink:playback_FR": True,
+            "mpv:output_FL -> fxroute_dsp_sink:playback_FL": True,
+            "mpv:output_FR -> fxroute_dsp_sink:playback_FR": True,
         },
         "source_links_complete": True,
         "direct_ee_to_hw_present": False,

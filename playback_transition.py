@@ -6,7 +6,7 @@ This module deliberately contains no FXRoute imports.  The application supplies
 the runtime adapter, while this class owns transition serialization, the
 hardware-output gate contract, commit ordering, and failure latching.  Keeping
 the state machine independent makes the safety rules testable without MPV,
-PipeWire, EasyEffects, or a live hardware sink.
+PipeWire, the FXRoute DSP engine, or a live hardware sink.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from uuid import uuid4
 
 logger = logging.getLogger(__name__)
 
-EASYEFFECTS_TRANSPORT_SINK = "easyeffects_sink"
+DSP_TRANSPORT_SINK = "fxroute_dsp_sink"
 
 RecoveryValidator = Callable[[], Awaitable[bool]]
 RecoveryExecutor = Callable[[], Awaitable[Any]]
@@ -400,7 +400,7 @@ class PlaybackTransitionCoordinator:
         if not persisted or persisted.get("owner") != "fxroute" or not persisted.get("closed"):
             self._clear_gate_state()
             try:
-                await self._ensure_easyeffects_sink_unmuted(
+                await self._ensure_dsp_sink_unmuted(
                     "startup-stale-mute-reconcile"
                 )
                 observed_muted = await self.runtime.read_hardware_mute()
@@ -465,7 +465,7 @@ class PlaybackTransitionCoordinator:
         """Return whether a committed request must leave the output audible."""
         return bool(request.should_play or request.operation == "measurement-entry")
 
-    async def _read_easyeffects_sink_mute(self) -> bool | None:
+    async def _read_dsp_sink_mute(self) -> bool | None:
         reader = getattr(self.runtime, "read_sink_mute", None)
         if not callable(reader):
             # Minimal test adapters predating the explicit internal-sink
@@ -473,39 +473,39 @@ class PlaybackTransitionCoordinator:
             # always implements this readback.
             return None
         try:
-            return bool(await reader(EASYEFFECTS_TRANSPORT_SINK))
+            return bool(await reader(DSP_TRANSPORT_SINK))
         except Exception as exc:
             raise RuntimeError(
-                "EasyEffects sink mute readback failed: "
+                "DSP ingress sink mute readback failed: "
                 f"{exc}"
             ) from exc
 
-    async def _set_easyeffects_sink_mute(
+    async def _set_dsp_sink_mute(
         self, muted: bool, transition_id: str
     ) -> None:
         setter = getattr(self.runtime, "set_sink_mute", None)
         if not callable(setter):
             raise RuntimeError(
-                "EasyEffects sink mute control is unavailable for an audible transition"
+                "DSP ingress sink mute control is unavailable for an audible transition"
             )
         try:
-            await setter(EASYEFFECTS_TRANSPORT_SINK, muted, transition_id)
+            await setter(DSP_TRANSPORT_SINK, muted, transition_id)
         except Exception as exc:
             raise RuntimeError(
-                "EasyEffects sink mute write failed: "
+                "DSP ingress sink mute write failed: "
                 f"{exc}"
             ) from exc
 
-    async def _ensure_easyeffects_sink_unmuted(self, transition_id: str) -> None:
-        observed_muted = await self._read_easyeffects_sink_mute()
+    async def _ensure_dsp_sink_unmuted(self, transition_id: str) -> None:
+        observed_muted = await self._read_dsp_sink_mute()
         if observed_muted is None:
             return
         if observed_muted:
-            await self._set_easyeffects_sink_mute(False, transition_id)
-        readback = await self._read_easyeffects_sink_mute()
+            await self._set_dsp_sink_mute(False, transition_id)
+        readback = await self._read_dsp_sink_mute()
         if readback is not False:
             raise RuntimeError(
-                "EasyEffects sink mute could not be confirmed unmuted"
+                "DSP ingress sink mute could not be confirmed unmuted"
             )
 
     async def _verify_audible_output_readback(self, stage: str) -> None:
@@ -514,10 +514,10 @@ class PlaybackTransitionCoordinator:
             raise RuntimeError(
                 f"hardware output remained muted at audible commit boundary: {stage}"
             )
-        easyeffects_muted = await self._read_easyeffects_sink_mute()
-        if easyeffects_muted is True:
+        dsp_sink_muted = await self._read_dsp_sink_mute()
+        if dsp_sink_muted is True:
             raise RuntimeError(
-                f"EasyEffects sink remained muted at audible commit boundary: {stage}"
+                f"DSP ingress sink remained muted at audible commit boundary: {stage}"
             )
 
     async def _close_gate(
@@ -548,7 +548,7 @@ class PlaybackTransitionCoordinator:
         if not await self.runtime.read_hardware_mute():
             raise RuntimeError("hardware output gate could not be confirmed closed")
         if audible_output:
-            await self._ensure_easyeffects_sink_unmuted(transition_id)
+            await self._ensure_dsp_sink_unmuted(transition_id)
 
     async def ensure_output_gate_closed(
         self,
@@ -609,7 +609,7 @@ class PlaybackTransitionCoordinator:
             raise RuntimeError("hardware output gate ownership changed during transition")
         restore_muted = False if audible_output else bool(self.gate.original_user_muted)
         if audible_output:
-            await self._ensure_easyeffects_sink_unmuted(transition_id)
+            await self._ensure_dsp_sink_unmuted(transition_id)
         await self.runtime.set_hardware_mute(restore_muted, transition_id)
         if (await self.runtime.read_hardware_mute()) != restore_muted:
             raise RuntimeError("hardware output gate restoration was not confirmed")
@@ -627,7 +627,7 @@ class PlaybackTransitionCoordinator:
         if audible_output:
             await self._verify_audible_output_readback("after-gate-open")
             logger.info(
-                "Playback transition audible sink readback: easyeffects_sink_muted=False "
+                "Playback transition audible sink readback: fxroute_dsp_sink_muted=False "
                 "hardware_muted=False gate.closed=%s",
                 self.gate.closed,
             )

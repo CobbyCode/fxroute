@@ -16,8 +16,6 @@ ASSUME_YES=0
 
 VALIDATION_RESULTS=()
 WARNINGS=()
-EASYEFFECTS_MODE="missing"
-EASYEFFECTS_SOCKET=""
 PACKAGE_MANAGER=""
 PACKAGE_INSTALL_CMD=()
 PKG_REFRESH_DONE=0
@@ -25,11 +23,6 @@ SUDO_CMD=()
 INSTALL_STATE_FILE="$HOME/.config/fxroute/install-state.json"
 INSTALL_CONFIG_FILE="$HOME/.config/fxroute/install-config.env"
 FXROUTE_BACKUP_DIR="$HOME/.config/fxroute/backups"
-EASYEFFECTS_INSTALLED_BY_FXROUTE=0
-EASYEFFECTS_INSTALL_METHOD=""
-EASYEFFECTS_AUTOSTART_BACKED_UP=0
-EASYEFFECTS_WATCHDOG_SERVICE_BACKED_UP=0
-EASYEFFECTS_WATCHDOG_TIMER_BACKED_UP=0
 MDNS_HOSTNAME=""
 LAN_HOSTNAME_BEFORE=""
 LAN_HOSTNAME_AFTER=""
@@ -64,7 +57,7 @@ Options:
   --target <dir>        Install or refresh into this directory (default: $DEFAULT_INSTALL_ROOT)
   --local-project       Install in-place from the current project directory
   --source <dir>        Use a different local project source directory
-  -y, --yes             Assume yes for package / Flatpak install prompts
+  -y, --yes             Assume yes for package install prompts
   -h, --help            Show this help
 
 Pass 1 is a pragmatic local installer. It installs dependencies, prepares the venv,
@@ -564,35 +557,32 @@ ensure_native_packages() {
   local core_packages=()
   local support_packages=(curl git socat)
   local audio_stack_packages=()
-  local flatpak_runtime_packages=()
   local missing_packages=()
   local missing_support=()
   local missing_audio_stack=()
-  local missing_flatpak_runtime=()
   local need_venv_pkg=0
   local need_bt_plugin_pkg=0
 
   case "$PACKAGE_MANAGER" in
     apt)
-      core_packages=(python3 python3-pip python3-venv mpv ffmpeg playerctl flatpak)
+      core_packages=(python3 python3-pip python3-venv mpv ffmpeg playerctl)
       audio_stack_packages=(bluez wireplumber pipewire-bin pipewire-pulse pulseaudio-utils libspa-0.2-bluetooth)
-      flatpak_runtime_packages=(libxcb-cursor0)
       ;;
     dnf)
-      core_packages=(python3 python3-pip mpv ffmpeg playerctl flatpak)
+      core_packages=(python3 python3-pip mpv ffmpeg playerctl)
       audio_stack_packages=(bluez wireplumber pipewire-utils pipewire-pulseaudio pulseaudio-utils)
       ;;
     zypper)
-      core_packages=(python3 python3-pip mpv ffmpeg playerctl flatpak)
+      core_packages=(python3 python3-pip mpv ffmpeg playerctl)
       audio_stack_packages=(bluez wireplumber pipewire-tools pipewire-pulseaudio pulseaudio-utils pipewire-spa-plugins-0_2)
       ;;
     pacman)
-      core_packages=(python python-pip mpv ffmpeg playerctl flatpak)
+      core_packages=(python python-pip mpv ffmpeg playerctl)
       audio_stack_packages=(bluez bluez-utils wireplumber pipewire pipewire-pulse libpulse)
       ;;
   esac
 
-  for cmd in python3 mpv ffmpeg playerctl flatpak; do
+  for cmd in python3 mpv ffmpeg playerctl; do
     if ! command -v "$cmd" >/dev/null 2>&1; then
       missing_packages+=("$cmd")
     fi
@@ -617,17 +607,7 @@ ensure_native_packages() {
     need_venv_pkg=1
   fi
 
-  if [[ ${#flatpak_runtime_packages[@]} -gt 0 ]]; then
-    case "$PACKAGE_MANAGER" in
-      apt)
-        for pkg in "${flatpak_runtime_packages[@]}"; do
-          dpkg -s "$pkg" >/dev/null 2>&1 || missing_flatpak_runtime+=("$pkg")
-        done
-        ;;
-    esac
-  fi
-
-  if [[ ${#missing_packages[@]} -eq 0 && ${#missing_support[@]} -eq 0 && ${#missing_audio_stack[@]} -eq 0 && ${#missing_flatpak_runtime[@]} -eq 0 && $need_venv_pkg -eq 0 && $need_bt_plugin_pkg -eq 0 ]]; then
+  if [[ ${#missing_packages[@]} -eq 0 && ${#missing_support[@]} -eq 0 && ${#missing_audio_stack[@]} -eq 0 && $need_venv_pkg -eq 0 && $need_bt_plugin_pkg -eq 0 ]]; then
     pass "native packages already available"
     return
   fi
@@ -640,9 +620,6 @@ ensure_native_packages() {
   fi
   if [[ ${#missing_audio_stack[@]} -gt 0 || $need_bt_plugin_pkg -eq 1 ]]; then
     pkg_install "${audio_stack_packages[@]}"
-  fi
-  if [[ ${#missing_flatpak_runtime[@]} -gt 0 ]]; then
-    pkg_install "${missing_flatpak_runtime[@]}"
   fi
 
   if [[ $need_venv_pkg -eq 1 ]] && ! python3 -m venv --help >/dev/null 2>&1; then
@@ -662,7 +639,7 @@ ensure_native_packages() {
     esac
   fi
 
-  for cmd in python3 mpv ffmpeg playerctl flatpak curl git socat bluetoothctl wpctl pw-cli pactl; do
+  for cmd in python3 mpv ffmpeg playerctl curl git socat bluetoothctl wpctl pw-cli pactl; do
     command -v "$cmd" >/dev/null 2>&1 || die "Expected command missing after package install: $cmd"
   done
   if ! bt_plugin_present; then
@@ -824,74 +801,6 @@ flatpak_app_installed() {
   return 1
 }
 
-detect_easyeffects_mode() {
-  local runtime_dir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
-  local native_socket="$runtime_dir/EasyEffectsServer"
-  local flatpak_socket="$runtime_dir/.flatpak/com.github.wwmm.easyeffects/xdg-run/EasyEffectsServer"
-  local flatpak_tmp_socket="$runtime_dir/.flatpak/com.github.wwmm.easyeffects/tmp/EasyEffectsServer"
-  local native_available=0
-  local flatpak_available=0
-
-  command -v easyeffects >/dev/null 2>&1 && native_available=1 || true
-  if flatpak_app_installed "com.github.wwmm.easyeffects"; then
-    flatpak_available=1
-  fi
-
-  if [[ -S "$flatpak_socket" && ! -S "$native_socket" ]]; then
-    EASYEFFECTS_MODE="flatpak"
-    EASYEFFECTS_SOCKET="$flatpak_socket"
-  elif [[ -S "$flatpak_tmp_socket" && ! -S "$native_socket" ]]; then
-    EASYEFFECTS_MODE="flatpak"
-    EASYEFFECTS_SOCKET="$flatpak_tmp_socket"
-  elif [[ -S "$native_socket" ]]; then
-    EASYEFFECTS_MODE="native"
-    EASYEFFECTS_SOCKET="$native_socket"
-  elif [[ $native_available -eq 1 ]]; then
-    EASYEFFECTS_MODE="native"
-    EASYEFFECTS_SOCKET="$native_socket"
-  elif [[ $flatpak_available -eq 1 ]]; then
-    EASYEFFECTS_MODE="flatpak"
-    EASYEFFECTS_SOCKET="$flatpak_socket"
-  else
-    EASYEFFECTS_MODE="missing"
-    EASYEFFECTS_SOCKET="$flatpak_socket"
-  fi
-
-  log "EasyEffects mode detected: $EASYEFFECTS_MODE"
-}
-
-ensure_flathub_remote() {
-  if flatpak remote-list --columns=name --user | grep -qx 'flathub'; then
-    return
-  fi
-  if flatpak remote-list --columns=name | grep -qx 'flathub'; then
-    pass "Flathub remote detected (system), adding user remote for user-scoped install"
-  fi
-  run_cmd flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
-}
-
-ensure_easyeffects() {
-  detect_easyeffects_mode
-  if [[ "$EASYEFFECTS_MODE" != "missing" ]]; then
-    EASYEFFECTS_INSTALLED_BY_FXROUTE=0
-    EASYEFFECTS_INSTALL_METHOD="$EASYEFFECTS_MODE"
-    pass "EasyEffects detected ($EASYEFFECTS_MODE)"
-    return
-  fi
-
-  ensure_flathub_remote
-  if [[ $ASSUME_YES -eq 1 ]]; then
-    run_cmd flatpak install --user -y flathub com.github.wwmm.easyeffects
-  else
-    run_cmd flatpak install --user flathub com.github.wwmm.easyeffects
-  fi
-  detect_easyeffects_mode
-  EASYEFFECTS_INSTALLED_BY_FXROUTE=1
-  EASYEFFECTS_INSTALL_METHOD="flatpak"
-  [[ "$EASYEFFECTS_MODE" == "flatpak" ]] || warn "EasyEffects install finished but mode is $EASYEFFECTS_MODE"
-  pass "EasyEffects installed or refreshed via Flatpak"
-}
-
 setup_python_env() {
   local venv_dir="$INSTALL_ROOT/.venv"
   local marker="$venv_dir/.fxroute-requirements.sha256"
@@ -910,7 +819,7 @@ write_service_unit() {
   cat > "$service_dir/$SERVICE_NAME.service" <<EOF
 [Unit]
 Description=FXRoute
-After=default.target
+After=default.target pipewire.service pipewire-pulse.service
 
 [Service]
 Type=simple
@@ -936,43 +845,20 @@ EOF
   fi
 }
 
-install_watchdog_if_needed() {
-  local user_systemd_dir="$HOME/.config/systemd/user"
-  local watchdog_timer_src="$INSTALL_ROOT/systemd-user/easyeffects-stale-watchdog.timer"
-  local watchdog_script="$INSTALL_ROOT/scripts/easyeffects-stale-watchdog.sh"
-  local watchdog_service_path="$user_systemd_dir/easyeffects-stale-watchdog.service"
-  local watchdog_timer_path="$user_systemd_dir/easyeffects-stale-watchdog.timer"
+configure_dsp_ingress_sink() {
+  local config_dir="$HOME/.config/pipewire/pipewire-pulse.conf.d"
+  local config_file="$config_dir/50-fxroute-dsp-sink.conf"
 
-  [[ -f "$watchdog_timer_src" && -f "$watchdog_script" ]] || return
-  chmod +x "$watchdog_script"
-
-  if [[ "$EASYEFFECTS_MODE" == "flatpak" ]]; then
-    mkdir -p "$user_systemd_dir"
-    if backup_user_file_once "$watchdog_service_path" "easyeffects-stale-watchdog.service.pre-fxroute"; then
-      EASYEFFECTS_WATCHDOG_SERVICE_BACKED_UP=1
-    fi
-    if backup_user_file_once "$watchdog_timer_path" "easyeffects-stale-watchdog.timer.pre-fxroute"; then
-      EASYEFFECTS_WATCHDOG_TIMER_BACKED_UP=1
-    fi
-    cat > "$watchdog_service_path" <<EOF
-[Unit]
-Description=Recover EasyEffects from a stale Flatpak runtime socket
-After=default.target
-
-[Service]
-Type=oneshot
-ExecStart=$watchdog_script
+  mkdir -p "$config_dir"
+  cat > "$config_file" <<'EOF'
+pulse.cmd = [
+  { cmd = "load-module" args = "module-null-sink sink_name=fxroute_dsp_sink sink_properties=device.description=FXRoute_DSP_Ingress" flags = [ ] }
+]
 EOF
-    cp "$watchdog_timer_src" "$watchdog_timer_path"
-    if systemctl --user daemon-reload && systemctl --user enable --now easyeffects-stale-watchdog.timer; then
-      pass "Flatpak EasyEffects watchdog timer enabled"
-    else
-      warn "Flatpak EasyEffects watchdog files were installed, but the timer could not be enabled in this shell"
-    fi
+  if systemctl --user restart pipewire-pulse.service; then
+    pass "FXRoute DSP ingress sink configured"
   else
-    warn "EasyEffects watchdog parity is only wired for Flatpak mode in pass 1"
-    systemctl --user disable --now easyeffects-stale-watchdog.timer >/dev/null 2>&1 || true
-    rm -f "$user_systemd_dir/easyeffects-stale-watchdog.service" "$user_systemd_dir/easyeffects-stale-watchdog.timer"
+    warn "FXRoute DSP ingress sink config was written, but pipewire-pulse could not be restarted in this shell"
   fi
 }
 
@@ -996,59 +882,6 @@ configure_pipewire_samplerates_if_available() {
   else
     fail "PipeWire samplerate allowed-rates configured"
     warn "PipeWire samplerate setup could not be applied automatically in this shell"
-  fi
-}
-
-ensure_bootstrap_easyeffects_presets() {
-  local bootstrap_dir="$INSTALL_ROOT/assets/easyeffects-bootstrap"
-  local home_output_dir="$HOME/.var/app/com.github.wwmm.easyeffects/data/easyeffects/output"
-
-  [[ -f "$bootstrap_dir/Direct.json" && -f "$bootstrap_dir/Neutral.json" ]] || return
-
-  mkdir -p "$home_output_dir"
-  [[ -f "$home_output_dir/Direct.json" ]] || cp "$bootstrap_dir/Direct.json" "$home_output_dir/Direct.json"
-  [[ -f "$home_output_dir/Neutral.json" ]] || cp "$bootstrap_dir/Neutral.json" "$home_output_dir/Neutral.json"
-  pass "EasyEffects bootstrap presets ensured"
-}
-
-setup_easyeffects_autostart() {
-  local autostart_dir="$HOME/.config/autostart"
-  local desktop_file="$autostart_dir/easyeffects.desktop"
-  local exec_cmd="flatpak run com.github.wwmm.easyeffects --gapplication-service"
-  mkdir -p "$autostart_dir"
-
-  if [[ "$EASYEFFECTS_MODE" == "native" ]]; then
-    exec_cmd="easyeffects --gapplication-service"
-  fi
-
-  if backup_user_file_once "$desktop_file" "easyeffects.desktop.pre-fxroute"; then
-    EASYEFFECTS_AUTOSTART_BACKED_UP=1
-  fi
-
-  cat > "$desktop_file" <<EOF
-[Desktop Entry]
-Type=Application
-Exec=$exec_cmd
-Hidden=false
-NoDisplay=false
-X-GNOME-Autostart-enabled=true
-Name=EasyEffects Service
-Comment=Start EasyEffects in background for FXRoute
-EOF
-
-  pass "EasyEffects autostart configured ($EASYEFFECTS_MODE)"
-
-  if systemctl --user daemon-reload >/dev/null 2>&1; then
-    if systemctl --user start app-easyeffects@autostart.service >/dev/null 2>&1; then
-      pass "EasyEffects background service started"
-      return
-    fi
-  fi
-
-  if nohup bash -lc "$exec_cmd" >/tmp/fxroute-easyeffects-start.log 2>&1 & then
-    pass "EasyEffects background service launch requested"
-  else
-    warn "EasyEffects autostart was configured, but the background service could not be started in this shell"
   fi
 }
 
@@ -1120,13 +953,9 @@ write_install_state() {
   mkdir -p "$(dirname "$state_file")"
   cat > "$state_file" <<EOF
 {
-  "easyeffects": {
-    "installed_by_fxroute": $( [[ $EASYEFFECTS_INSTALLED_BY_FXROUTE -eq 1 ]] && echo true || echo false ),
-    "install_method": "${EASYEFFECTS_INSTALL_METHOD:-$EASYEFFECTS_MODE}",
-    "detected_mode": "$EASYEFFECTS_MODE",
-    "autostart_backed_up": $( [[ $EASYEFFECTS_AUTOSTART_BACKED_UP -eq 1 ]] && echo true || echo false ),
-    "watchdog_service_backed_up": $( [[ $EASYEFFECTS_WATCHDOG_SERVICE_BACKED_UP -eq 1 ]] && echo true || echo false ),
-    "watchdog_timer_backed_up": $( [[ $EASYEFFECTS_WATCHDOG_TIMER_BACKED_UP -eq 1 ]] && echo true || echo false )
+  "dsp": {
+    "engine": "native",
+    "ingress_sink": "fxroute_dsp_sink"
   },
   "lan_comfort": {
     "hostname_before": "$LAN_HOSTNAME_BEFORE",
@@ -1205,36 +1034,24 @@ EOF
   pass "helper commands installed in $bin_dir"
 }
 
-build_pipewire_stage1_helper() {
-  local build_script="$INSTALL_ROOT/pipewire_stage1/build.sh"
-  [[ -f "$build_script" ]] || return 0
+build_native_dsp_engine() {
+  local build_script="$INSTALL_ROOT/native_dsp/build.sh"
+  local binary="$INSTALL_ROOT/native_dsp/build/fxroute-dsp"
+  local dsp_packages=()
 
-  log "Installing PipeWire 2.1 native helper build dependencies"
-  local stage1_packages=()
+  [[ -f "$build_script" ]] || die "Missing FXRoute native DSP build script: $build_script"
   case "$PACKAGE_MANAGER" in
-    apt)
-      stage1_packages=(gcc pkg-config libpipewire-0.3-dev libspa-0.2-dev)
-      ;;
-    dnf)
-      stage1_packages=(gcc pkgconf-pkg-config pipewire-devel)
-      ;;
-    zypper)
-      stage1_packages=(gcc pkgconf-pkg-config pipewire-devel)
-      ;;
-    pacman)
-      stage1_packages=(gcc pkgconf libpipewire)
-      ;;
+    apt) dsp_packages=(gcc pkg-config libpipewire-0.3-dev libspa-0.2-dev) ;;
+    dnf) dsp_packages=(gcc pkgconf-pkg-config pipewire-devel) ;;
+    zypper) dsp_packages=(gcc pkgconf-pkg-config pipewire-devel) ;;
+    pacman) dsp_packages=(gcc pkgconf libpipewire) ;;
   esac
-  if [[ ${#stage1_packages[@]} -gt 0 ]]; then
-    pkg_install "${stage1_packages[@]}"
-  fi
+  [[ ${#dsp_packages[@]} -eq 0 ]] || pkg_install "${dsp_packages[@]}"
 
-  log "Building PipeWire 2.1 native helper"
-  if ! bash "$build_script"; then
-    warn "PipeWire 2.1 native helper build failed — 2.1 output mode will not be available"
-    return 0
-  fi
-  pass "PipeWire 2.1 native helper built"
+  log "Building FXRoute native DSP engine"
+  bash "$build_script"
+  [[ -x "$binary" ]] || die "Native DSP build did not produce $binary"
+  pass "FXRoute native DSP engine built"
 }
 
 configure_spotify_cache_cleanup_helper() {
@@ -1432,19 +1249,12 @@ validate_tools() {
   done
   "$INSTALL_ROOT/.venv/bin/yt-dlp" --version >/dev/null 2>&1 && pass "yt-dlp available from venv" || fail "yt-dlp available from venv"
 
-  detect_easyeffects_mode
-  if [[ "$EASYEFFECTS_MODE" == "missing" ]]; then
-    fail "EasyEffects mode detected"
-  else
-    pass "EasyEffects mode detected ($EASYEFFECTS_MODE)"
-  fi
-
-  if [[ -S "$EASYEFFECTS_SOCKET" ]]; then
-    pass "EasyEffects socket found"
-  else
-    fail "EasyEffects socket found"
-    warn "EasyEffects socket is not present yet. This can be normal until EasyEffects has been launched in the user session."
-  fi
+  [[ -x "$INSTALL_ROOT/native_dsp/build/fxroute-dsp" ]] \
+    && pass "FXRoute native DSP engine available" \
+    || fail "FXRoute native DSP engine available"
+  pactl list sinks short 2>/dev/null | awk '{print $2}' | grep -Fxq fxroute_dsp_sink \
+    && pass "FXRoute DSP ingress sink available" \
+    || fail "FXRoute DSP ingress sink available"
 
   if bt_plugin_present; then
     pass "PipeWire BlueZ SPA plugin found"
@@ -1470,15 +1280,8 @@ print_summary() {
   local env_file="$INSTALL_ROOT/.env"
   local port="8000"
   local lan_ip=""
-  local ee_launch_cmd=""
   [[ -f "$env_file" ]] && port="$(grep '^PORT=' "$env_file" | cut -d= -f2- | tr -d '[:space:]')"
   lan_ip="$(primary_lan_ip)"
-
-  case "$EASYEFFECTS_MODE" in
-    flatpak) ee_launch_cmd="flatpak run com.github.wwmm.easyeffects" ;;
-    native) ee_launch_cmd="easyeffects" ;;
-    *) ee_launch_cmd="flatpak run com.github.wwmm.easyeffects" ;;
-  esac
 
   echo
   if [[ ${#WARNINGS[@]} -eq 0 ]] && ! printf '%s\n' "${VALIDATION_RESULTS[@]}" | grep -q '^FAIL:'; then
@@ -1490,7 +1293,7 @@ print_summary() {
   fi
 
   echo "Install path: $INSTALL_ROOT"
-  echo "EasyEffects mode: $EASYEFFECTS_MODE"
+  echo "DSP engine: FXRoute native (ingress: fxroute_dsp_sink)"
   echo "Music folder: $HOME/Music"
   echo
   echo "Open FXRoute:"
@@ -1514,14 +1317,6 @@ print_summary() {
   echo "Service: systemctl --user status $SERVICE_NAME"
   echo "Logs: journalctl --user -u $SERVICE_NAME -f"
   echo "Helpers: fxroute-status, fxroute-logs, fxroute-restart, fxroute-update, fxroute-update-ytdlp"
-
-  if ! printf '%s\n' "${VALIDATION_RESULTS[@]}" | grep -q '^PASS: EasyEffects socket found'; then
-    echo
-    echo "EasyEffects next step:"
-    echo " - Launch EasyEffects once in the graphical user session so its socket appears."
-    echo " - If you do not see a tray/app icon yet, open your desktop app launcher and search for EasyEffects."
-    echo " - Manual launch command: ${ee_launch_cmd}"
-  fi
 
   if [[ $MDNS_GUARD_ENABLED -eq 1 ]]; then
     echo "mDNS guard: installed (keeps Spotify user-space mDNS from overriding Avahi host advertisement)"
@@ -1979,17 +1774,14 @@ main() {
   sync_project_tree
   install_network_library_helper
   create_env_if_missing
-  ensure_easyeffects
-  ensure_bootstrap_easyeffects_presets
   setup_python_env
+  build_native_dsp_engine
   configure_pipewire_samplerates_if_available
+  configure_dsp_ingress_sink
   write_service_unit
-  install_watchdog_if_needed
-  setup_easyeffects_autostart
   setup_spotify_autostart
   chmod +x "$INSTALL_ROOT/scripts/update_fxroute.sh"
   install_helpers
-  build_pipewire_stage1_helper
   configure_optional_maintenance_helpers
   validate_http
   validate_tools

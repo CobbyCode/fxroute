@@ -57,10 +57,17 @@ class SamplerateOrchestrationContractTests(unittest.IsolatedAsyncioTestCase):
 
         async def pw_link(*_args: str) -> str:
             return (
-                "ee_soe_output_level:output_FL\n"
-                "ee_soe_output_level:output_FR\n"
-                "ee_soe_output_level:output_FL -> alsa_output.pci-0000_00_1f.3.analog-stereo:playback_FL\n"
-                "ee_soe_output_level:output_FR -> alsa_output.pci-0000_00_1f.3.analog-stereo:playback_FR\n"
+                "mpv:output_FL\nmpv:output_FR\n"
+                "fxroute_dsp_sink:playback_FL\nfxroute_dsp_sink:playback_FR\n"
+                "mpv:output_FL -> fxroute_dsp_sink:playback_FL\n"
+                "mpv:output_FR -> fxroute_dsp_sink:playback_FR\n"
+                "fxroute_dsp_sink.monitor:monitor_FL\nfxroute_dsp_sink.monitor:monitor_FR\n"
+                "fxroute_dsp:input_1\nfxroute_dsp:input_2\n"
+                "fxroute_dsp:output_1\nfxroute_dsp:output_2\n"
+                "fxroute_dsp_sink.monitor:monitor_FL -> fxroute_dsp:input_1\n"
+                "fxroute_dsp_sink.monitor:monitor_FR -> fxroute_dsp:input_2\n"
+                "fxroute_dsp:output_1 -> alsa_output.pci-0000_00_1f.3.analog-stereo:playback_FL\n"
+                "fxroute_dsp:output_2 -> alsa_output.pci-0000_00_1f.3.analog-stereo:playback_FR\n"
             )
 
         main.playback_transition_epoch = 40
@@ -74,7 +81,11 @@ class SamplerateOrchestrationContractTests(unittest.IsolatedAsyncioTestCase):
             main,
             "get_audio_output_overview",
             return_value={"output_mode": {"mode": "stereo", "effective_output_key": "alsa_output.pci-0000_00_1f.3.analog-stereo"}},
-        ), patch.object(main.asyncio, "sleep", sleep), patch.object(main, "subwoofer_runtime", object()):
+        ), patch.object(main.asyncio, "sleep", sleep), patch.object(
+            main, "subwoofer_runtime", type("NativeRuntime", (), {
+                "snapshot": lambda self: {"active": True, "config": {"sample_rate": status["force_rate"]}}
+            })()
+        ):
             result, runtime = await run_main_handoff_through_coordinator(
                 target_rate=target_rate,
                 generation=40,

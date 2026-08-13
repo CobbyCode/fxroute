@@ -893,7 +893,8 @@ from library import (
     path_within_root,
 )
 from downloader import Downloader
-from easyeffects import EasyEffectsManager
+from dsp_manager import DSPManager
+from dsp_runtime import DSPRuntime, SubwooferRuntimeConfig, _contains_link
 try:
     from hardware_controller import HardwareController
 except ImportError:
@@ -902,11 +903,6 @@ from measurement import (
     MeasurementStore,
 )
 from peak_monitor import EasyEffectsPeakMonitor
-from subwoofer_runtime import (
-    Subwoofer21Runtime,
-    SubwooferRuntimeConfig,
-    _contains_link,
-)
 from playback_transition import (
     PlaybackTransitionCoordinator,
     PlaybackTransitionFailure,
@@ -2142,9 +2138,9 @@ def _active_unmuted_sink_inputs(entries: list[dict]) -> list[dict]:
 
 def _silent_active_source_links_present(source: str, links_text: str, output_mode: dict) -> bool:
     if source == "spotify":
-        source_link_ok = "spotify:output_FL" in links_text and "easyeffects_sink:playback_FL" in links_text
+        source_link_ok = "spotify:output_FL" in links_text and "fxroute_dsp_sink:playback_FL" in links_text
     else:
-        source_link_ok = "mpv:output_FL" in links_text and "easyeffects_sink:playback_FL" in links_text
+        source_link_ok = "mpv:output_FL" in links_text and "fxroute_dsp_sink:playback_FL" in links_text
     if not source_link_ok:
         return False
 
@@ -2208,7 +2204,7 @@ def _silent_active_snapshot(
                 for token in (
                     "mpv",
                     "spotify",
-                    "easyeffects_sink",
+                    "fxroute_dsp_sink",
                     "ee_soe_output_level",
                     str(output_mode.get("effective_output_key") or "").strip(),
                 )
@@ -2436,14 +2432,16 @@ def _playback_transition_context_is_current(generation: int | None) -> bool:
 
 
 async def _easyeffects_output_ports_present() -> bool:
-    """Readback: are ee_soe_output_level:output_FL/FR exposed right now?"""
+    """Read back the native DSP stereo ingress and output ports."""
     try:
         links_text = await _run_pw_link_command("-io")
     except Exception:
         return False
     return (
-        "ee_soe_output_level:output_FL" in links_text
-        and "ee_soe_output_level:output_FR" in links_text
+        "fxroute_dsp:input_1" in links_text
+        and "fxroute_dsp:input_2" in links_text
+        and "fxroute_dsp:output_1" in links_text
+        and "fxroute_dsp:output_2" in links_text
     )
 
 
@@ -2514,6 +2512,44 @@ async def _playback_graph_diagnosis(
     except Exception:
         return result
 
+    if subwoofer_runtime is not None:
+        source_node = "spotify" if source == "spotify" else "mpv" if source in {"local", "radio"} else None
+        source_targets = ("fxroute_dsp_sink:playback_FL", "fxroute_dsp_sink:playback_FR")
+        source_ports = ((f"{source_node}:output_FL", f"{source_node}:output_FR") if source_node else ())
+        runtime = subwoofer_runtime.snapshot()
+        output_count = 4 if mode in OUTPUT_MODE_SUBWOOFER_MODES else 2
+        hardware_channels = ("FL", "FR", "RL", "RR")[:output_count]
+        dsp_ports = tuple(f"fxroute_dsp:output_{index + 1}" for index in range(output_count))
+        ingress_sources = ("fxroute_dsp_sink.monitor:monitor_FL", "fxroute_dsp_sink.monitor:monitor_FR")
+        ingress_targets = ("fxroute_dsp:input_1", "fxroute_dsp:input_2")
+        result["ee_ports"] = all(port in io_text for port in (*ingress_targets, *dsp_ports))
+        result["helper_ports"] = result["ee_ports"]
+        result["helper_active"] = bool(runtime.get("active"))
+        result["helper_rate"] = _helper_argument_sample_rate(runtime)
+        result["helper_rate_matches"] = bool(result["helper_active"] and (target_rate is None or result["helper_rate"] == target_rate))
+        result["source_links"] = {
+            f"{port} -> {target}": _contains_link(link_text, port, target)
+            for port, target in zip(source_ports, source_targets)
+        }
+        result["source_links_complete"] = all(result["source_links"].values()) if source_node else (False if require_source else None)
+        result["links"] = {
+            **{f"{source_port} -> {target_port}": _contains_link(link_text, source_port, target_port)
+               for source_port, target_port in zip(ingress_sources, ingress_targets)},
+            **{f"{dsp_port} -> {output_key}:playback_{channel}": _contains_link(link_text, dsp_port, f"{output_key}:playback_{channel}")
+               for dsp_port, channel in zip(dsp_ports, hardware_channels)},
+        }
+        result["port_identities"] = {
+            "source": tuple(port for port in source_ports if port in io_text),
+            "source_target": tuple(port for port in source_targets if port in io_text),
+            "ee": tuple(port for port in ingress_targets if port in io_text),
+            "helper": tuple(port for port in dsp_ports if port in io_text),
+            "output": tuple(f"{output_key}:playback_{channel}" for channel in hardware_channels if f"{output_key}:playback_{channel}" in io_text),
+        }
+        source_ok = result["source_links_complete"] is not False
+        result["links_complete"] = bool(source_ok and result["ee_ports"] and result["helper_rate_matches"] and all(result["links"].values()))
+        result["signature"] = json.dumps(result, sort_keys=True, default=list)
+        return result
+
     ee_fl = "ee_soe_output_level:output_FL"
     ee_fr = "ee_soe_output_level:output_FR"
     helper = "fxroute_21_stage1"
@@ -2537,8 +2573,8 @@ async def _playback_graph_diagnosis(
         f"{source_node}:output_FR",
     ) if source_node else ()
     source_target_port_names = (
-        "easyeffects_sink:playback_FL",
-        "easyeffects_sink:playback_FR",
+        "fxroute_dsp_sink:playback_FL",
+        "fxroute_dsp_sink:playback_FR",
     )
     result["port_identities"] = {
         "source": tuple(port for port in source_port_names if port in io_text),
@@ -2551,11 +2587,11 @@ async def _playback_graph_diagnosis(
     }
     if source_node:
         result["source_links"] = {
-            f"{source_node}:output_FL -> easyeffects_sink:playback_FL": _contains_link(
-                link_text, f"{source_node}:output_FL", "easyeffects_sink:playback_FL"
+            f"{source_node}:output_FL -> fxroute_dsp_sink:playback_FL": _contains_link(
+                link_text, f"{source_node}:output_FL", "fxroute_dsp_sink:playback_FL"
             ),
-            f"{source_node}:output_FR -> easyeffects_sink:playback_FR": _contains_link(
-                link_text, f"{source_node}:output_FR", "easyeffects_sink:playback_FR"
+            f"{source_node}:output_FR -> fxroute_dsp_sink:playback_FR": _contains_link(
+                link_text, f"{source_node}:output_FR", "fxroute_dsp_sink:playback_FR"
             ),
         }
         result["source_links_complete"] = all(result["source_links"].values())
@@ -2693,8 +2729,7 @@ def _measurement_session_link_loss_is_repairable(
 ) -> bool:
     """Allow only the known production-link drift during measurement.
 
-    Subwoofer modes: EE->helper input-link drift.  Stereo: EE->hardware
-    link drift with the EE output ports still present.
+    Native DSP ingress or hardware-output link drift with the engine healthy.
     """
     if diagnosis.get("links_complete"):
         return False
@@ -2705,14 +2740,7 @@ def _measurement_session_link_loss_is_repairable(
     output_key = str(diagnosis.get("output_key") or "").strip()
     if not output_key:
         return False
-    if diagnosis.get("mode") == OUTPUT_MODE_STEREO:
-        missing = set(_missing_playback_graph_links(diagnosis))
-        repairable = {
-            f"ee_soe_output_level:output_FL -> {output_key}:playback_FL",
-            f"ee_soe_output_level:output_FR -> {output_key}:playback_FR",
-        }
-        return bool(missing) and missing.issubset(repairable)
-    if diagnosis.get("mode") not in OUTPUT_MODE_SUBWOOFER_MODES:
+    if diagnosis.get("mode") not in {OUTPUT_MODE_STEREO, *OUTPUT_MODE_SUBWOOFER_MODES}:
         return False
     if diagnosis.get("helper_ports") is not True:
         return False
@@ -2720,14 +2748,16 @@ def _measurement_session_link_loss_is_repairable(
         return False
     if diagnosis.get("helper_rate_matches") is not True:
         return False
-    if diagnosis.get("direct_ee_to_hw_present"):
-        return False
     if diagnosis.get("helper_rate") != target_rate:
         return False
     missing = set(_missing_playback_graph_links(diagnosis))
+    output_count = 4 if diagnosis.get("mode") in OUTPUT_MODE_SUBWOOFER_MODES else 2
+    channels = ("FL", "FR", "RL", "RR")[:output_count]
     repairable = {
-        "ee_soe_output_level:output_FL -> fxroute_21_stage1:input_L",
-        "ee_soe_output_level:output_FR -> fxroute_21_stage1:input_R",
+        "fxroute_dsp_sink.monitor:monitor_FL -> fxroute_dsp:input_1",
+        "fxroute_dsp_sink.monitor:monitor_FR -> fxroute_dsp:input_2",
+        *(f"fxroute_dsp:output_{index + 1} -> {output_key}:playback_{channel}"
+          for index, channel in enumerate(channels)),
     }
     return bool(missing) and missing.issubset(repairable)
 
@@ -2761,19 +2791,19 @@ def _log_playback_graph_diagnosis(
 
 
 async def _repair_stereo_output_links_once(diagnosis: dict) -> None:
-    """Repair only missing stereo EE->hardware links, without reloading EE."""
+    """Repair only missing native DSP stereo hardware links."""
     output_key = str(diagnosis.get("output_key") or "").strip()
     if not output_key:
         raise RuntimeError("Playback handoff repair failed: missing stereo output target")
     expected = (
-        ("ee_soe_output_level:output_FL", f"{output_key}:playback_FL"),
-        ("ee_soe_output_level:output_FR", f"{output_key}:playback_FR"),
+        ("fxroute_dsp:output_1", f"{output_key}:playback_FL"),
+        ("fxroute_dsp:output_2", f"{output_key}:playback_FR"),
     )
     links_text = await _run_pw_link_command("-l")
     for source, target in expected:
         if _contains_link(links_text, source, target):
             continue
-        logger.info("Radio handoff repairing EE->hardware link: %s -> %s", source, target)
+        logger.info("Repairing native DSP hardware link: %s -> %s", source, target)
         await _connect_ports((source,), target)
 
 
@@ -3374,8 +3404,8 @@ async def _mpv_source_ports_present() -> bool:
         for port in (
             "mpv:output_FL",
             "mpv:output_FR",
-            "easyeffects_sink:playback_FL",
-            "easyeffects_sink:playback_FR",
+            "fxroute_dsp_sink:playback_FL",
+            "fxroute_dsp_sink:playback_FR",
         )
     )
 
@@ -3404,8 +3434,8 @@ async def _ensure_mpv_to_easyeffects_links(
     cleanly at target-source-prepare with the gate/fault safety unchanged.
     """
     expected = (
-        ("mpv:output_FL", "easyeffects_sink:playback_FL"),
-        ("mpv:output_FR", "easyeffects_sink:playback_FR"),
+        ("mpv:output_FL", "fxroute_dsp_sink:playback_FL"),
+        ("mpv:output_FR", "fxroute_dsp_sink:playback_FR"),
     )
     readiness_deadline = time.monotonic() + max(timeout_ms, 0) / 1000
     while not await _mpv_source_ports_present():
@@ -3457,7 +3487,7 @@ async def _dump_21_runtime_state(label: str, ui_state: dict | None = None) -> di
         helper_alive = ps_result.get("returncode") == 0 and bool(ps_result.get("stdout", "").strip())
         helper_cmdline = ps_result.get("stdout", "").strip()
     else:
-        pgrep_result = await asyncio.to_thread(_run_debug_command, ["pgrep", "-af", "fxroute_21_passthrough"], 1.5)
+        pgrep_result = await asyncio.to_thread(_run_debug_command, ["pgrep", "-af", "native_dsp/build/fxroute-dsp"], 1.5)
         helper_cmdline = pgrep_result.get("stdout", "").strip()
 
     pw_links = await asyncio.to_thread(_run_debug_command, ["pw-link", "-l"], 2.0)
@@ -4811,7 +4841,7 @@ async def _disconnect_external_input_source(source_name: str | None) -> None:
     if not normalized:
         return
     for channel in ("FL", "FR"):
-        sink_port = f"easyeffects_sink:playback_{channel}"
+        sink_port = f"fxroute_dsp_sink:playback_{channel}"
         await _disconnect_ports((f"{normalized}:capture_{channel}",), sink_port)
 
 
@@ -4840,14 +4870,14 @@ async def _ensure_external_input_loopback(source_name: str) -> None:
     try:
         for channel in ("FL", "FR"):
             source_port = f"{normalized}:capture_{channel}"
-            sink_port = f"easyeffects_sink:playback_{channel}"
+            sink_port = f"fxroute_dsp_sink:playback_{channel}"
             await _connect_ports((source_port,), sink_port)
     except BaseException:
         await _disconnect_external_input_source(normalized)
         raise
     external_input_loopback_module_id = None
     external_input_loopback_source_name = normalized
-    logger.info("Enabled direct external-input monitoring from %s to easyeffects_sink", normalized)
+    logger.info("Enabled direct external-input monitoring from %s to fxroute_dsp_sink", normalized)
 
 
 async def _sync_external_input_monitoring(source_overview: dict | None = None) -> dict:
@@ -4932,7 +4962,7 @@ async def _link_bluetooth_source_to_easyeffects(source_name: str, disconnect: bo
         return
     failures: list[str] = []
     for channel in ("FL", "FR"):
-        sink_port = f"easyeffects_sink:playback_{channel}"
+        sink_port = f"fxroute_dsp_sink:playback_{channel}"
         source_ports = (f"{normalized}:capture_{channel}", f"{normalized}:output_{channel}")
         try:
             if disconnect:
@@ -4971,7 +5001,7 @@ async def _ensure_bluetooth_input_loopback(source_name: str) -> None:
         await _disconnect_bluetooth_input_source(normalized)
         raise
     bluetooth_input_source_name = normalized
-    logger.info("Enabled Bluetooth input monitoring from %s to easyeffects_sink", normalized)
+    logger.info("Enabled Bluetooth input monitoring from %s to fxroute_dsp_sink", normalized)
 
 
 async def _sync_bluetooth_input_monitoring(source_overview: dict | None = None) -> dict:
@@ -5013,7 +5043,10 @@ def _authoritative_sample_rate(status: dict | None) -> int | None:
 
 
 def _helper_argument_sample_rate(snapshot: dict | None) -> int | None:
-    """Thin wrapper: helper --rate argument extraction lives in samplerate (REFACTOR-003)."""
+    """Extract the native DSP rate, with legacy argument parsing as fallback."""
+    config = (snapshot or {}).get("config")
+    if isinstance(config, dict) and isinstance(config.get("sample_rate"), int):
+        return config["sample_rate"]
     return samplerate.helper_argument_sample_rate(snapshot)
 
 
@@ -5067,25 +5100,9 @@ async def _sync_subwoofer_runtime(
             return overview
 
         current_overview = target_overview or audio_overview or get_audio_output_overview()
-        current_mode = current_overview.get("output_mode") or {}
-        if current_mode.get("mode") == OUTPUT_MODE_STEREO:
-            # Leave the subwoofer graph in the same ordered transition path as
-            # every other runtime mode change.  The helper owns removal of its
-            # links, stopping the process, and restoration of the direct
-            # EasyEffects -> hardware front links.  Checking the stereo graph
-            # before this sync mistakes the expected subwoofer graph for a
-            # broken stereo graph and can trigger a needless EE restart while
-            # the system master is intentionally at 100% for Loudness.
-            stereo_config = SubwooferRuntimeConfig.from_overview(current_overview)
-            await subwoofer_runtime.sync(stereo_config)
-            await _ensure_stereo_easyeffects_output_graph(current_overview)
-            logger.info("Subwoofer runtime sync: output_mode=%s; stereo path restored", OUTPUT_MODE_STEREO)
-            return current_overview
-        if current_mode.get("mode") not in OUTPUT_MODE_SUBWOOFER_MODES:
-            return current_overview
         if requested_rate is not None and requested_rate != authoritative_rate:
             logger.info(
-                "Subwoofer runtime sync stale; helper restart suppressed: reason=%s requested_rate=%s authoritative_rate=%s",
+                "Native DSP sync stale; restart suppressed: reason=%s requested_rate=%s authoritative_rate=%s",
                 reason, requested_rate, authoritative_rate,
             )
             return overview
@@ -5105,45 +5122,16 @@ async def _sync_subwoofer_runtime(
         current_overview = _audio_output_overview_with_effective_rate(
             current_overview, pre_start_rate,
         )
-        config = SubwooferRuntimeConfig.from_overview(current_overview)
-        # This is the final rate check in the existing sample-rate critical
-        # section, immediately before runtime.sync can launch the helper.
         final_status = get_samplerate_status()
         final_rate = _authoritative_sample_rate(final_status)
-        if final_rate != config.sample_rate:
+        if final_rate != authoritative_rate:
             logger.info(
-                "Subwoofer runtime sync stale at helper-start gate; restart suppressed: "
-                "reason=%s requested_rate=%s config_rate=%s final_rate=%s",
-                reason, requested_rate, config.sample_rate, final_rate,
+                "Native DSP sync stale at start gate; restart suppressed: "
+                "reason=%s requested_rate=%s expected_rate=%s final_rate=%s",
+                reason, requested_rate, authoritative_rate, final_rate,
             )
             return current_overview
-        await subwoofer_runtime.sync(config)
-
-        runtime_snapshot = subwoofer_runtime.snapshot()
-        helper_rate = _helper_argument_sample_rate(runtime_snapshot)
-        try:
-            samplerate_after = get_samplerate_status()
-        except Exception:
-            samplerate_after = {}
-        sink_rate = samplerate_after.get("active_rate") if isinstance(samplerate_after, dict) else None
-        mode_num = "2.2 Stereo Bass" if config.output_mode == OUTPUT_MODE_SUBWOOFER_22_STEREO else "2.2" if config.output_mode == OUTPUT_MODE_SUBWOOFER_22 else "2.1"
-        if sink_rate == authoritative_rate and helper_rate == authoritative_rate and runtime_snapshot.get("active"):
-            logger.info(
-                "%s runtime sync verified: reason=%s requested_rate=%s authoritative_rate=%s "
-                "hardware_sink_rate=%s helper_pid=%s helper_rate=%s runtime_active=%s output_mode=%s",
-                mode_num, reason, requested_rate, authoritative_rate, sink_rate,
-                runtime_snapshot.get("helper_pid"), helper_rate,
-                runtime_snapshot.get("active"), config.output_mode,
-            )
-        else:
-            logger.warning(
-                "%s runtime sync not verified; triple-rate match missing: reason=%s "
-                "requested_rate=%s authoritative_rate=%s hardware_sink_rate=%s helper_pid=%s "
-                "helper_rate=%s runtime_active=%s output_mode=%s",
-                mode_num, reason, requested_rate, authoritative_rate, sink_rate,
-                runtime_snapshot.get("helper_pid"), helper_rate,
-                runtime_snapshot.get("active"), config.output_mode,
-            )
+        await subwoofer_runtime.sync(current_overview)
         return current_overview
 
     if _rate_lock_held or measurement_sr_session is None:
@@ -5171,7 +5159,7 @@ async def _ensure_stereo_easyeffects_output_graph(audio_overview: dict | None = 
     if output_mode.get("mode") != OUTPUT_MODE_STEREO:
         return
     output_key = str(output_mode.get("effective_output_key") or "").strip()
-    if not output_key or output_key == "easyeffects_sink":
+    if not output_key or output_key == "fxroute_dsp_sink":
         return
     try:
         await _repair_stereo_output_links_once({"output_key": output_key})
@@ -5418,13 +5406,13 @@ async def lifespan(app: FastAPI):
         downloader = Downloader()
         logger.info("Downloader initialized")
 
-        easyeffects_manager = await _drain_worker(EasyEffectsManager)
+        easyeffects_manager = await _drain_worker(DSPManager)
         if easyeffects_manager.load_global_extras().get("loudness", {}).get("enabled"):
             set_output_volume(100)
         volume_read_monitor_task = start_volume_read_monitor()
         lifecycle_background_tasks.add(volume_read_monitor_task)
         volume_read_monitor_task.add_done_callback(lifecycle_background_tasks.discard)
-        logger.info("EasyEffects manager initialized")
+        logger.info("FXRoute DSP manager initialized")
 
         measurement_store = MeasurementStore()
         logger.info("Measurement store initialized: %s", measurement_store.measurements_dir)
@@ -5460,9 +5448,11 @@ async def lifespan(app: FastAPI):
                 hardware_controller = None
 
         peak_monitor = EasyEffectsPeakMonitor(on_change=on_peak_monitor_change)
-        subwoofer_runtime = Subwoofer21Runtime()
+        subwoofer_runtime = DSPRuntime(easyeffects_manager)
         try:
-            await subwoofer_runtime._stop_orphan_helpers()
+            stop_orphans = getattr(subwoofer_runtime, "_stop_orphan_helpers", None)
+            if callable(stop_orphans):
+                await stop_orphans()
         except Exception:
             pass
         peak_monitor_playback_armed = False
@@ -6589,6 +6579,7 @@ async def _load_easyeffects_preset(
             preset_name,
             convolver_sample_rate_hz=convolver_sample_rate_hz,
         )
+        await _sync_subwoofer_runtime(reason="native-dsp-preset-load")
 
 
 def _effects_extras_from_form(

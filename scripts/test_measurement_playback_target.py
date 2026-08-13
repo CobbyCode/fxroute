@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """ACTIVE_CHAIN measurement playback-target resolution contracts.
 
-ACTIVE_CHAIN must resolve to the active EasyEffects chain (easyeffects_sink)
+ACTIVE_CHAIN must resolve to the active EasyEffects chain (fxroute_dsp_sink)
 in every output mode and fail closed when that chain is unavailable.  The
 explicit raw/helper scope keeps resolving to the hardware sink.
 """
@@ -50,24 +50,24 @@ class MeasurementPlaybackTargetTests(unittest.TestCase):
     def _resolve(self, overview, scope=MEASUREMENT_SCOPE_ACTIVE_CHAIN, ports_present=True):
         with patch("measurement.get_audio_output_overview", return_value=overview), patch.object(
             self.store, "_list_pw_ports", return_value=(
-                ["easyeffects_sink:playback_FL", "easyeffects_sink:playback_FR"]
+                ["fxroute_dsp_sink:playback_FL", "fxroute_dsp_sink:playback_FR"]
                 if ports_present else []
             )
         ):
             return self.store._resolve_playback_target(measurement_scope=scope)
 
-    def test_active_chain_resolves_to_easyeffects_sink_in_stereo(self):
+    def test_active_chain_resolves_to_fxroute_dsp_sink_in_stereo(self):
         target = self._resolve(stereo_overview())
-        self.assertEqual(target["target_name"], "easyeffects_sink")
+        self.assertEqual(target["target_name"], "fxroute_dsp_sink")
 
-    def test_active_chain_resolves_to_easyeffects_sink_in_subwoofer(self):
+    def test_active_chain_resolves_to_fxroute_dsp_sink_in_subwoofer(self):
         target = self._resolve(subwoofer_overview())
-        self.assertEqual(target["target_name"], "easyeffects_sink")
+        self.assertEqual(target["target_name"], "fxroute_dsp_sink")
 
-    def test_active_chain_fails_closed_when_easyeffects_sink_ports_missing(self):
+    def test_active_chain_fails_closed_when_fxroute_dsp_sink_ports_missing(self):
         with self.assertRaises(RuntimeError) as caught:
             self._resolve(stereo_overview(), ports_present=False)
-        self.assertIn("easyeffects_sink", str(caught.exception))
+        self.assertIn("fxroute_dsp_sink", str(caught.exception))
         self.assertNotIn("alsa_output.hw", str(caught.exception))
 
     def test_raw_helper_scope_keeps_hardware_sink(self):
@@ -75,11 +75,11 @@ class MeasurementPlaybackTargetTests(unittest.TestCase):
         self.assertEqual(target["target_name"], "alsa_output.hw")
 
     def test_subwoofer_active_chain_repairs_missing_easyeffects_helper_links(self):
-        playback_target = {"target_name": "easyeffects_sink"}
+        playback_target = {"target_name": "fxroute_dsp_sink"}
         playback_route = {
             "route": "subwoofer-active-chain",
             "output_mode": "subwoofer-2.2",
-            "playback_target_name": "easyeffects_sink",
+            "playback_target_name": "fxroute_dsp_sink",
             "helper_node_name": "fxroute_21_stage1",
         }
         existing_links = set()
@@ -96,7 +96,7 @@ class MeasurementPlaybackTargetTests(unittest.TestCase):
         ), patch.object(
             self.store,
             "_list_pw_ports",
-            return_value=["easyeffects_sink:playback_FL", "easyeffects_sink:playback_FR"],
+            return_value=["fxroute_dsp_sink:playback_FL", "fxroute_dsp_sink:playback_FR"],
         ), patch.object(
             self.store, "_create_pipewire_link", side_effect=create_link
         ) as create, patch.object(
@@ -117,12 +117,12 @@ class MeasurementPlaybackTargetTests(unittest.TestCase):
             )
 
         created_links = [call.args for call in create.call_args_list]
-        self.assertIn(("ee_soe_output_level:output_FL", "fxroute_21_stage1:input_L"), created_links)
-        self.assertIn(("ee_soe_output_level:output_FR", "fxroute_21_stage1:input_R"), created_links)
+        self.assertIn(("fxroute_dsp:output_FL", "fxroute_21_stage1:input_L"), created_links)
+        self.assertIn(("fxroute_dsp:output_FR", "fxroute_21_stage1:input_R"), created_links)
         self.assertNotIn(("measure:output_FL", "alsa_output.hw:playback_FL"), created_links)
         self.assertLess(
-            creation_order.index(("ee_soe_output_level:output_FR", "fxroute_21_stage1:input_R")),
-            creation_order.index(("measure:output_FL", "easyeffects_sink:playback_FL")),
+            creation_order.index(("fxroute_dsp:output_FR", "fxroute_21_stage1:input_R")),
+            creation_order.index(("measure:output_FL", "fxroute_dsp_sink:playback_FL")),
         )
         self.assertEqual(
             remove_direct.call_count,
@@ -134,11 +134,11 @@ class MeasurementPlaybackTargetTests(unittest.TestCase):
         temporary_links = [
             {
                 "source_port": "measure:output_FL",
-                "target_port": "easyeffects_sink:playback_FL",
+                "target_port": "fxroute_dsp_sink:playback_FL",
             },
             {
                 "source_port": "measure:output_FR",
-                "target_port": "easyeffects_sink:playback_FR",
+                "target_port": "fxroute_dsp_sink:playback_FR",
             },
         ]
         with patch.object(self.store, "_disconnect_link", return_value=True) as disconnect, patch(
@@ -155,12 +155,12 @@ class MeasurementPlaybackTargetTests(unittest.TestCase):
         self.assertEqual(
             removed_links,
             [
-                ("measure:output_FL", "easyeffects_sink:playback_FL"),
-                ("measure:output_FR", "easyeffects_sink:playback_FR"),
+                ("measure:output_FL", "fxroute_dsp_sink:playback_FL"),
+                ("measure:output_FR", "fxroute_dsp_sink:playback_FR"),
             ],
         )
         self.assertNotIn(
-            ("ee_soe_output_level:output_FL", "fxroute_21_stage1:input_L"),
+            ("fxroute_dsp:output_FL", "fxroute_21_stage1:input_L"),
             removed_links,
         )
 

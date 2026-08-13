@@ -88,7 +88,7 @@ class InstallerPkgManagerStaticTests(unittest.TestCase):
         self.assertGreaterEqual(self.pkg_body.count("PKG_REFRESH_DONE=1"), 4)
 
     def test_manjaro_package_lists(self):
-        self.assertIn("core_packages=(python python-pip mpv ffmpeg playerctl flatpak)", self.text)
+        self.assertIn("core_packages=(python python-pip mpv ffmpeg playerctl)", self.text)
         self.assertIn(
             "audio_stack_packages=(bluez bluez-utils wireplumber pipewire pipewire-pulse libpulse)",
             self.text,
@@ -166,7 +166,7 @@ class InstallerPkgManagerStaticTests(unittest.TestCase):
         self.assertIn('install -d -o root -g root -m 755 /var/lib/fxroute', helper)
 
     def test_stage1_pacman_deps(self):
-        self.assertIn("stage1_packages=(gcc pkgconf libpipewire)", self.text)
+        self.assertIn("pacman) dsp_packages=(gcc pkgconf libpipewire)", self.text)
 
     def test_venv_pacman_branch(self):
         self.assertIn("pacman)\n        # python on Arch/Manjaro ships the venv module", self.text)

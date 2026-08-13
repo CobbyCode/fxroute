@@ -5606,7 +5606,7 @@ class MeasurementStore:
         if self._normalize_measurement_scope(measurement_scope) == MEASUREMENT_SCOPE_ACTIVE_CHAIN:
             # ACTIVE_CHAIN measures through the active EasyEffects chain in
             # every output mode.  _resolve_active_chain_playback_target fails
-            # closed when easyeffects_sink or its playback ports are missing;
+            # closed when fxroute_dsp_sink or its playback ports are missing;
             # it must never silently fall back to the direct hardware sink,
             # which would bypass the FXRoute/EasyEffects gain structure.
             return self._resolve_active_chain_playback_target(overview)
@@ -5634,7 +5634,7 @@ class MeasurementStore:
         }
 
     def _resolve_active_chain_playback_target(self, overview: dict[str, Any]) -> dict[str, Any]:
-        target_name = "easyeffects_sink"
+        target_name = "fxroute_dsp_sink"
         ports = self._list_pw_ports(target_name)
         if f"{target_name}:playback_FL" not in ports or f"{target_name}:playback_FR" not in ports:
             raise RuntimeError(
@@ -6516,7 +6516,7 @@ class MeasurementStore:
         overview = overview or get_audio_output_overview()
         output_mode = overview.get("output_mode") if isinstance(overview.get("output_mode"), dict) else {}
         mode = str(output_mode.get("mode") or "")
-        if mode not in OUTPUT_MODE_SUBWOOFER_MODES:
+        if measurement_scope == MEASUREMENT_SCOPE_ACTIVE_CHAIN:
             return {
                 "route": "direct-sink",
                 "measurement_scope": measurement_scope,
@@ -6527,19 +6527,8 @@ class MeasurementStore:
                 "helper_input_ports": {},
             }
 
-        helper_node_name = "fxroute_21_stage1"
-        if measurement_scope == MEASUREMENT_SCOPE_ACTIVE_CHAIN:
-            return {
-                "route": "subwoofer-active-chain",
-                "measurement_scope": measurement_scope,
-                "output_mode": mode,
-                "play_node_name": play_node_name,
-                "playback_target_name": str(playback_target.get("target_name") or ""),
-                "helper_node_name": helper_node_name,
-                "helper_input_ports": {},
-            }
-
-        helper_input_ports = self._wait_for_21_helper_input_ports(helper_node_name)
+        helper_node_name = "fxroute_dsp"
+        helper_input_ports = {"left": "fxroute_dsp:input_1", "right": "fxroute_dsp:input_2"}
         return {
             "route": MEASUREMENT_SUBWOOFER_HELPER_ROUTE,
             "measurement_scope": measurement_scope,
@@ -6617,8 +6606,8 @@ class MeasurementStore:
         helper_ports: list[str] = []
         while time.monotonic() < deadline:
             helper_ports = self._list_pw_ports(helper_node_name)
-            input_l = f"{helper_node_name}:input_L"
-            input_r = f"{helper_node_name}:input_R"
+            input_l = f"{helper_node_name}:input_1"
+            input_r = f"{helper_node_name}:input_2"
             if input_l in helper_ports and input_r in helper_ports:
                 return {"left": input_l, "right": input_r}
             time.sleep(0.1)
@@ -6653,7 +6642,7 @@ class MeasurementStore:
         play_ports = self._wait_for_measurement_play_ports(play_node_name)
         helper_ports = playback_route.get("helper_input_ports")
         if not isinstance(helper_ports, dict) or not helper_ports.get("left") or not helper_ports.get("right"):
-            helper_ports = self._wait_for_21_helper_input_ports(str(playback_route.get("helper_node_name") or "fxroute_21_stage1"))
+            helper_ports = self._wait_for_21_helper_input_ports(str(playback_route.get("helper_node_name") or "fxroute_dsp"))
 
         diagnostics["direct_hardware_links_removed"] = self._remove_measurement_direct_hardware_links(
             play_ports=play_ports,
@@ -6678,7 +6667,7 @@ class MeasurementStore:
         diagnostics["temporary_playback_links"] = temporary_links
         diagnostics["play_node_helper_links"] = list(temporary_links)
         diagnostics["play_node_links_after_manual_link"] = self._list_relevant_pw_links(
-            [play_node_name, str(playback_route.get("helper_node_name") or "fxroute_21_stage1")]
+            [play_node_name, str(playback_route.get("helper_node_name") or "fxroute_dsp")]
         )
         diagnostics["direct_hardware_links_remaining"] = self._find_measurement_direct_hardware_links(
             play_ports=play_ports,
@@ -6721,7 +6710,7 @@ class MeasurementStore:
             {"source_port": play_ports["left"], "target_port": input_left, "role": "measurement-play-left-to-active-chain"},
             {"source_port": play_ports["right"], "target_port": input_right, "role": "measurement-play-right-to-active-chain"},
         ]
-        helper_node_name = str(playback_route.get("helper_node_name") or "fxroute_21_stage1")
+        helper_node_name = str(playback_route.get("helper_node_name") or "fxroute_dsp")
         diagnostics["direct_hardware_links_removed"] = self._remove_subwoofer_direct_easyeffects_hardware_links(playback_target)
         diagnostics["active_chain_output_links"] = self._ensure_subwoofer_active_chain_output_links(helper_node_name)
         diagnostics["direct_hardware_links_remaining"] = self._find_subwoofer_direct_easyeffects_hardware_links(playback_target)
@@ -6801,12 +6790,12 @@ class MeasurementStore:
     def _ensure_subwoofer_active_chain_output_links(self, helper_node_name: str) -> list[dict[str, str]]:
         links = [
             {
-                "source_port": "ee_soe_output_level:output_FL",
+                "source_port": "fxroute_dsp:output_FL",
                 "target_port": f"{helper_node_name}:input_L",
                 "role": "active-chain-left-to-helper-input",
             },
             {
-                "source_port": "ee_soe_output_level:output_FR",
+                "source_port": "fxroute_dsp:output_FR",
                 "target_port": f"{helper_node_name}:input_R",
                 "role": "active-chain-right-to-helper-input",
             },
@@ -6842,7 +6831,7 @@ class MeasurementStore:
         output_FR to an EasyEffects internal output port).  Mirror the
         subwoofer routes: disable autoconnect, wait for the play node ports
         and link explicitly to the resolved playback target.  With
-        ACTIVE_CHAIN that target is easyeffects_sink, so the sweep passes
+        ACTIVE_CHAIN that target is fxroute_dsp_sink, so the sweep passes
         through the full FXRoute/EasyEffects gain chain.
         """
         diagnostics = self._new_measurement_playback_route_diagnostics(playback_route)
@@ -6916,8 +6905,8 @@ class MeasurementStore:
         if not target_name:
             return []
         expected = {
-            ("ee_soe_output_level:output_FL", f"{target_name}:playback_FL"),
-            ("ee_soe_output_level:output_FR", f"{target_name}:playback_FR"),
+            ("fxroute_dsp:output_FL", f"{target_name}:playback_FL"),
+            ("fxroute_dsp:output_FR", f"{target_name}:playback_FR"),
         }
         try:
             completed = subprocess.run(["pw-link", "-lI"], capture_output=True, text=True, timeout=3)
@@ -7115,8 +7104,8 @@ class MeasurementStore:
             str(reference_capture.get("sink_node_name") or ""),
             record_node_name,
             play_node_name,
-            "fxroute_21_stage1",
-            "easyeffects_sink",
+            "fxroute_dsp",
+            "fxroute_dsp_sink",
             "easyeffects_source",
         ]
         relevant_nodes = [node for node in relevant_nodes if node]
@@ -7135,10 +7124,10 @@ class MeasurementStore:
             for node in relevant_nodes
             if node.endswith(".monitor") or any(".monitor" in port for port in snapshot["ports"].get(node, []))
         ]
-        snapshot["easyeffects_sink_inputs"] = [
+        snapshot["fxroute_dsp_sink_inputs"] = [
             line
             for line in snapshot["links"]
-            if "easyeffects_sink:playback_" in line and ("|<-" in line or "|->" in line)
+            if "fxroute_dsp_sink:playback_" in line and ("|<-" in line or "|->" in line)
         ]
         return snapshot
 
@@ -7187,7 +7176,7 @@ class MeasurementStore:
         # Helper process check
         try:
             pgrep = subprocess.run(
-                ["pgrep", "-af", "fxroute_21_passthrough"],
+                ["pgrep", "-af", "native_dsp/build/fxroute-dsp"],
                 capture_output=True, text=True, timeout=2,
             )
             processes = [l.strip() for l in (pgrep.stdout or "").splitlines() if l.strip()]
@@ -7339,7 +7328,7 @@ class MeasurementStore:
     def _snapshot_fxroute_21_helper_processes(label: str) -> dict[str, Any]:
         try:
             completed = subprocess.run(
-                ["pgrep", "-af", "fxroute_21_passthrough"],
+                ["pgrep", "-af", "native_dsp/build/fxroute-dsp"],
                 capture_output=True,
                 text=True,
                 timeout=2,

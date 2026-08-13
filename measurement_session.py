@@ -41,7 +41,7 @@ from samplerate import (
     OUTPUT_MODE_SUBWOOFER_22_MODES,
     OUTPUT_MODE_SUBWOOFER_MODES,
 )
-from subwoofer_runtime import DEFAULT_SAMPLE_RATE, SubwooferRuntimeConfig
+from dsp_runtime import DEFAULT_SAMPLE_RATE, SubwooferRuntimeConfig
 
 logger = logging.getLogger(__name__)
 

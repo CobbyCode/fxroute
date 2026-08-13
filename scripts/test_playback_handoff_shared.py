@@ -28,45 +28,45 @@ OUTPUT_KEY = "alsa_output.pci-0000_00_1f.3.analog-stereo"
 
 def _links_text(mode: str, *, direct: bool = False, source: bool = True, complete: bool = True) -> str:
     lines = [
-        "ee_soe_output_level:output_FL",
-        "ee_soe_output_level:output_FR",
+        "fxroute_dsp_sink.monitor:monitor_FL",
+        "fxroute_dsp_sink.monitor:monitor_FR",
+        "fxroute_dsp:input_1",
+        "fxroute_dsp:input_2",
+        "fxroute_dsp:output_1",
+        "fxroute_dsp:output_2",
+        "fxroute_dsp_sink.monitor:monitor_FL -> fxroute_dsp:input_1",
+        "fxroute_dsp_sink.monitor:monitor_FR -> fxroute_dsp:input_2",
     ]
     if source:
         lines.extend([
-            "mpv:output_FL -> easyeffects_sink:playback_FL",
-            "mpv:output_FR -> easyeffects_sink:playback_FR",
+            "mpv:output_FL -> fxroute_dsp_sink:playback_FL",
+            "mpv:output_FR -> fxroute_dsp_sink:playback_FR",
         ])
     if mode == "stereo":
         lines.append(
-            f"ee_soe_output_level:output_FL -> {OUTPUT_KEY}:playback_FL"
+            f"fxroute_dsp:output_1 -> {OUTPUT_KEY}:playback_FL"
         )
         if complete:
             lines.append(
-                f"ee_soe_output_level:output_FR -> {OUTPUT_KEY}:playback_FR"
+                f"fxroute_dsp:output_2 -> {OUTPUT_KEY}:playback_FR"
             )
         return "\n".join(lines)
 
     lines.extend([
-        "fxroute_21_stage1:input_L",
-        "fxroute_21_stage1:input_R",
-        "fxroute_21_stage1:output_1",
-        "fxroute_21_stage1:output_2",
-        "fxroute_21_stage1:output_3",
-        "fxroute_21_stage1:output_4",
-        "ee_soe_output_level:output_FL -> fxroute_21_stage1:input_L",
-        "ee_soe_output_level:output_FR -> fxroute_21_stage1:input_R",
-        f"fxroute_21_stage1:output_1 -> {OUTPUT_KEY}:playback_FL",
-        f"fxroute_21_stage1:output_2 -> {OUTPUT_KEY}:playback_FR",
+        "fxroute_dsp:output_3",
+        "fxroute_dsp:output_4",
+        f"fxroute_dsp:output_1 -> {OUTPUT_KEY}:playback_FL",
+        f"fxroute_dsp:output_2 -> {OUTPUT_KEY}:playback_FR",
     ])
     if mode != "subwoofer-2.1":
         lines.extend([
-            f"fxroute_21_stage1:output_3 -> {OUTPUT_KEY}:playback_RL",
-            f"fxroute_21_stage1:output_4 -> {OUTPUT_KEY}:playback_RR",
+            f"fxroute_dsp:output_3 -> {OUTPUT_KEY}:playback_RL",
+            f"fxroute_dsp:output_4 -> {OUTPUT_KEY}:playback_RR",
         ])
     if direct:
         lines.extend([
-            f"ee_soe_output_level:output_FL -> {OUTPUT_KEY}:playback_FL",
-            f"ee_soe_output_level:output_FR -> {OUTPUT_KEY}:playback_FR",
+            f"legacy_dsp:output_FL -> {OUTPUT_KEY}:playback_FL",
+            f"legacy_dsp:output_FR -> {OUTPUT_KEY}:playback_FR",
         ])
     return "\n".join(lines)
 
@@ -118,7 +118,16 @@ class CanonicalGraphTests(unittest.IsolatedAsyncioTestCase):
         async def pw_link(*_args):
             return io_text
 
-        with patch.object(main, "subwoofer_runtime", helper), patch.object(
+        runtime = main.DSPRuntime(Mock())
+        runtime._process = SimpleNamespace(returncode=None, pid=42) if helper is None or helper.active else None
+        runtime._config = SimpleNamespace(
+            sample_rate=helper.rate if helper else target_rate,
+            output_mode=mode,
+            output_key=OUTPUT_KEY,
+            hardware_ports=("playback_FL", "playback_FR"),
+        )
+        runtime._links = [SimpleNamespace(source="source", target="target")] if runtime._process else []
+        with patch.object(main, "subwoofer_runtime", runtime), patch.object(
             main, "_run_pw_link_command", side_effect=pw_link
         ), patch.object(main, "get_audio_output_overview", return_value=overview):
             return await main._playback_graph_diagnosis(
@@ -136,14 +145,14 @@ class CanonicalGraphTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertFalse(missing_source["links_complete"])
 
-    async def test_22_direct_bypass_is_invalid_but_classified_as_link_only(self):
+    async def test_22_ignores_obsolete_legacy_direct_links(self):
         helper = HelperDouble(active=True, rate=48000, direct=True)
         diagnosis = await self._diagnose(
             mode="subwoofer-2.2", helper=helper, direct=True
         )
-        self.assertTrue(diagnosis["bypass_only"])
-        self.assertTrue(diagnosis["direct_ee_to_hw_present"])
-        self.assertFalse(diagnosis["links_complete"])
+        self.assertFalse(diagnosis["bypass_only"])
+        self.assertFalse(diagnosis["direct_ee_to_hw_present"])
+        self.assertTrue(diagnosis["links_complete"])
 
     async def test_22_helper_rate_is_part_of_commit_predicate(self):
         helper = HelperDouble(active=True, rate=44100)
@@ -163,7 +172,7 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
             }
         }
 
-    async def test_bypass_only_recovery_reconciles_links_without_full_handoff(self):
+    async def test_graph_only_rejects_obsolete_bypass_request(self):
         helper = HelperDouble(active=True, rate=48000, direct=True)
         calls = {"preset": 0, "sync": 0}
         link_state = {"direct": True}
@@ -195,10 +204,11 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
             main, "_sync_subwoofer_runtime",
             side_effect=lambda **_kwargs: calls.__setitem__("sync", calls["sync"] + 1),
         ):
-            await main._coordinator_establish_effects_and_helper(request)
-        self.assertEqual(helper.reconcile_calls, 1)
+            with self.assertRaisesRegex(RuntimeError, "graph-only reconciliation"):
+                await main._coordinator_establish_effects_and_helper(request)
+        self.assertEqual(helper.reconcile_calls, 0)
         self.assertEqual(calls, {"preset": 0, "sync": 0})
-        self.assertFalse(link_state["direct"])
+        self.assertTrue(link_state["direct"])
 
     async def test_rate_change_syncs_helper_once_and_reaches_canonical_graph(self):
         helper = HelperDouble(active=False, rate=None)
@@ -246,8 +256,8 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
             "ee_ports": True,
             "helper_ports": True,
             "links": {
-                "ee_soe_output_level:output_FL -> fxroute_21_stage1:input_L": False,
-                "ee_soe_output_level:output_FR -> fxroute_21_stage1:input_R": False,
+                "fxroute_dsp:output_FL -> fxroute_21_stage1:input_L": False,
+                "fxroute_dsp:output_FR -> fxroute_21_stage1:input_R": False,
             },
             "links_complete": False,
         }
@@ -255,8 +265,8 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
             "ee_ports": True,
             "helper_ports": True,
             "links": {
-                "ee_soe_output_level:output_FL -> fxroute_21_stage1:input_L": True,
-                "ee_soe_output_level:output_FR -> fxroute_21_stage1:input_R": True,
+                "fxroute_dsp:output_FL -> fxroute_21_stage1:input_L": True,
+                "fxroute_dsp:output_FR -> fxroute_21_stage1:input_R": True,
             },
             "links_complete": True,
             "signature": "stable-measurement-restore",
@@ -366,8 +376,8 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
                 "helper_active": True,
                 "helper_rate_matches": True,
                 "links": {
-                    "ee_soe_output_level:output_FL -> fxroute_21_stage1:input_L": complete,
-                    "ee_soe_output_level:output_FR -> fxroute_21_stage1:input_R": complete,
+                    "fxroute_dsp:output_FL -> fxroute_21_stage1:input_L": complete,
+                    "fxroute_dsp:output_FR -> fxroute_21_stage1:input_R": complete,
                 },
                 "links_complete": complete,
                 "signature": "subwoofer-2.2|complete" if complete else "subwoofer-2.2|missing",
@@ -792,8 +802,19 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
             rate_change=False,
             reload_source=False,
         )
+        runtime = main.DSPRuntime(Mock())
+        runtime._process = SimpleNamespace(returncode=None, pid=42)
+        runtime._config = SimpleNamespace(
+            sample_rate=48000,
+            output_mode="stereo",
+            output_key=OUTPUT_KEY,
+            hardware_ports=("playback_FL", "playback_FR"),
+        )
+        runtime._links = [SimpleNamespace(source="source", target="target")]
         with patch.object(main, "get_audio_output_overview", return_value=overview), patch.object(
             main, "_run_pw_link_command", side_effect=pw_link
+        ), patch.object(
+            main, "subwoofer_runtime", runtime
         ), patch.object(
             main, "_sync_easyeffects_preset_for_playback_samplerate",
             side_effect=lambda **_kwargs: calls.__setitem__("preset", calls["preset"] + 1),
@@ -976,9 +997,7 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
 
 
 
-    async def test_post_start_bypass_reconciles_second_generation_direct_links(self):
-        """Post-start readback must heal a re-created direct-link bypass
-        instead of failing the committed output-mode switch."""
+    async def test_post_start_ignores_obsolete_legacy_direct_links(self):
         helper = HelperDouble(active=True, rate=48000, direct=True)
         request = TransitionRequest(
             operation="output-mode-switch",
@@ -1008,8 +1027,7 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
             result = await main._coordinator_reconcile_post_start_graph(request)
 
         self.assertTrue(result["graph_complete"])
-        self.assertEqual(helper.reconcile_calls, 1)
-        self.assertFalse(helper.direct)
+        self.assertEqual(helper.reconcile_calls, 0)
 
 
 

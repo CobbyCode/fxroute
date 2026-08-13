@@ -10,7 +10,6 @@ PROJECT_DIRNAME="fxroute"
 INSTALL_ROOT_DEFAULT="$HOME/$PROJECT_DIRNAME"
 INSTALL_ROOT="$INSTALL_ROOT_DEFAULT"
 REMOVE_PROJECT_DIR=0
-REMOVE_EASYEFFECTS_BOOTSTRAP=0
 ASSUME_YES=0
 INSTALL_STATE_FILE="$HOME/.config/fxroute/install-state.json"
 FXROUTE_BACKUP_DIR="$HOME/.config/fxroute/backups"
@@ -22,24 +21,22 @@ Usage: ./uninstall.sh [options]
 Options:
   --target <dir>                Uninstall from this directory (default: $INSTALL_ROOT_DEFAULT)
   --remove-project-dir          Remove the project directory after uninstall
-  --remove-easyeffects-bootstrap Remove Direct/Neutral bootstrap presets created for FXRoute (asks unless -y)
   -y, --yes                     Assume yes for optional removals
   -h, --help                    Show this help
 
 Safe by default:
 - removes FXRoute user service
-- removes watchdog timer/service
+- removes legacy EasyEffects watchdog files from older FXRoute installations
 - removes optional Spotify cache cleanup timer/service
 - removes optional system package update timer/service
 - removes FXRoute helper scripts
-- removes EasyEffects and optional Spotify autostart entries created by installer
+- restores legacy EasyEffects autostart backups and removes Spotify autostart
 - removes the optional FXRoute Caddy reverse proxy service/config if present
 - restores the previous default `caddy.service` when FXRoute had disabled it to take over port 80
 
 Cautious by default:
 - does NOT remove the project directory unless requested
-- does NOT remove EasyEffects presets unless explicitly requested
-- only offers to uninstall EasyEffects itself if FXRoute originally installed it
+- only offers to uninstall EasyEffects when legacy install state proves FXRoute installed it
 EOF
 }
 
@@ -79,10 +76,6 @@ while [[ $# -gt 0 ]]; do
       ;;
     --remove-project-dir)
       REMOVE_PROJECT_DIR=1
-      shift
-      ;;
-    --remove-easyeffects-bootstrap)
-      REMOVE_EASYEFFECTS_BOOTSTRAP=1
       shift
       ;;
     -y|--yes)
@@ -136,6 +129,13 @@ restore_backed_up_file_or_remove() {
 remove_service() {
   systemctl --user disable --now "$SERVICE_NAME" >/dev/null 2>&1 || true
   remove_file_if_exists "$HOME/.config/systemd/user/$SERVICE_NAME.service"
+}
+
+remove_dsp_ingress_sink() {
+  local config_file="$HOME/.config/pipewire/pipewire-pulse.conf.d/50-fxroute-dsp-sink.conf"
+  remove_file_if_exists "$config_file"
+  rmdir "$(dirname "$config_file")" >/dev/null 2>&1 || true
+  systemctl --user restart pipewire-pulse.service >/dev/null 2>&1 || true
 }
 
 remove_watchdog() {
@@ -473,21 +473,6 @@ remove_avahi_if_requested() {
   fi
 }
 
-remove_bootstrap_presets_if_requested() {
-  [[ $REMOVE_EASYEFFECTS_BOOTSTRAP -eq 1 ]] || return 0
-  local output_dir="$HOME/.var/app/com.github.wwmm.easyeffects/data/easyeffects/output"
-  local direct="$output_dir/Direct.json"
-  local neutral="$output_dir/Neutral.json"
-
-  if ! confirm "Remove EasyEffects bootstrap presets Direct.json and Neutral.json?"; then
-    warn "Skipping EasyEffects preset removal"
-    return 0
-  fi
-
-  remove_file_if_exists "$direct"
-  remove_file_if_exists "$neutral"
-}
-
 read_install_state_field() {
   local field="$1"
   local state_file="$INSTALL_STATE_FILE"
@@ -571,7 +556,10 @@ main() {
   log "Stopping and removing FXRoute user service"
   remove_service
 
-  log "Removing EasyEffects watchdog units"
+  log "Removing FXRoute DSP ingress sink"
+  remove_dsp_ingress_sink
+
+  log "Removing legacy EasyEffects watchdog units"
   remove_watchdog
 
   log "Removing optional Spotify cache cleanup helper"
@@ -586,7 +574,7 @@ main() {
   log "Removing network library mount helper"
   remove_network_library_helper
 
-  log "Removing EasyEffects / Spotify autostart entries"
+  log "Restoring legacy EasyEffects autostart backup and removing Spotify autostart"
   remove_autostart
 
   log "Removing optional FXRoute mDNS guard"
@@ -607,7 +595,6 @@ main() {
   remove_firewalld_service_if_requested mdns ".local LAN access"
   remove_firewalld_service_if_requested http "port-80 LAN access"
   remove_firewalld_service_if_requested https "port-443 LAN access"
-  remove_bootstrap_presets_if_requested
   remove_easyeffects_if_requested
   remove_project_dir_if_requested
   remove_file_if_exists "$INSTALL_STATE_FILE"

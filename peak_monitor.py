@@ -1,4 +1,4 @@
-"""Post-EasyEffects output peak monitor using the EasyEffects output-level node."""
+"""Post-DSP peak monitor using the FXRoute native engine output node."""
 
 from __future__ import annotations
 
@@ -34,6 +34,7 @@ ERROR_RETRY_INTERVAL = 0.35
 RESTART_SETTLE_SECONDS = 0.1
 CONSECUTIVE_HITS_REQUIRED = 2
 CAPTURE_NODE_NAME = "fxroute_peak_capture"
+DSP_OUTPUT_NODE_NAME = "fxroute_dsp"
 CAPTURE_NODE_SEQUENCE = count(1)
 VU_FLOOR_DB = -60.0
 VU_ATTACK_SECONDS = 0.18
@@ -174,7 +175,7 @@ class EasyEffectsPeakMonitor:
             logger.info("Peak monitor start skipped because task is already running")
             return
         self._running = True
-        self._task = asyncio.create_task(self._run(), name="easyeffects-peak-monitor")
+        self._task = asyncio.create_task(self._run(), name="fxroute-dsp-peak-monitor")
         logger.info("Peak monitor start armed: task_created=true")
 
     async def restart(self):
@@ -296,7 +297,7 @@ class EasyEffectsPeakMonitor:
                 raise
             except Exception as exc:
                 self._last_error = str(exc)
-                logger.warning("EasyEffects peak monitor target discovery failed: %s", exc)
+                logger.warning("FXRoute DSP peak monitor target discovery failed: %s", exc)
                 await self._emit_if_changed(force=True)
                 await asyncio.sleep(ERROR_RETRY_INTERVAL)
                 continue
@@ -320,7 +321,7 @@ class EasyEffectsPeakMonitor:
                 raise
             except Exception as exc:
                 self._last_error = str(exc)
-                logger.warning("EasyEffects peak monitor capture failed: %s", exc)
+                logger.warning("FXRoute DSP peak monitor capture failed: %s", exc)
                 await self._emit_if_changed(force=True)
                 await asyncio.sleep(ERROR_RETRY_INTERVAL)
 
@@ -347,7 +348,7 @@ class EasyEffectsPeakMonitor:
             "-",
         ]
         logger.info(
-            "Starting EasyEffects peak monitor on node %s (%s) at %s Hz",
+            "Starting FXRoute DSP peak monitor on node %s (%s) at %s Hz",
             target.source_name,
             target.description,
             capture_rate,
@@ -593,17 +594,9 @@ class EasyEffectsPeakMonitor:
             node_name = current_name.strip()
             if not node_name:
                 return
-            haystack = node_name.lower()
-            score = 0
-            if haystack == "ee_soe_output_level":
-                score += 100
-            elif haystack == "ee_sie_output_level":
-                score += 50
-            elif "output_level" in haystack and "ee_" in haystack:
-                score += 20
-            else:
+            if node_name != DSP_OUTPUT_NODE_NAME:
                 return
-            candidates.append((score, MonitorTarget(
+            candidates.append((100, MonitorTarget(
                 source_name=node_name,
                 source_id=current_id,
                 description=(current_description.strip() or node_name),
@@ -629,7 +622,7 @@ class EasyEffectsPeakMonitor:
         flush_current()
 
         if not candidates:
-            logger.info("Peak monitor target discovery found no matching EasyEffects node in %.3fs", time.monotonic() - discover_started_at)
+            logger.info("Peak monitor target discovery found no FXRoute DSP output node in %.3fs", time.monotonic() - discover_started_at)
             return None
         candidates.sort(key=lambda item: (-item[0], item[1].source_id))
         selected = candidates[0][1]
