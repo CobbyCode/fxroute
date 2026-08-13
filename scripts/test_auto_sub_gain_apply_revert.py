@@ -185,6 +185,15 @@ class AutoGainApplyRevertTests(unittest.TestCase):
         self.assertIn('Retained improved Stereo side; restored regressed side', source)
         self.assertIn('"accepted_step1" if step1_retained else "restored"', source)
 
+    def test_22_stereo_gain_rollback_preserves_selected_polarities(self):
+        source = inspect.getsource(autosub._run_auto_sub_22_stereo_optimize)
+        rollback = source.split('if not step1_retained:', 1)[1].split(
+            'elif not all(accepted_step1_sides.values()):', 1
+        )[0]
+        self.assertIn('_auto_sub_22_global_config(polarity_snapshot)', rollback)
+        self.assertIn('_auto_sub_22_candidate_subwoofers(\n                    polarity_snapshot,', rollback)
+        self.assertNotIn('_auto_sub_22_global_config(original_config_snapshot)', rollback)
+
     def test_22_stereo_probe_requires_broad_third_octave_violation(self):
         target = {"points": self._curve(lambda _index: 0.0)}
         anchor = {"status": "ready", "target_vertical_offset_db": 0.0}

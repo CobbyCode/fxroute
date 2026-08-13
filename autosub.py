@@ -36,6 +36,7 @@ _auto_sub_lock: asyncio.Lock = asyncio.Lock()
 _AUTO_SUB_WORKER_TASKS: set[asyncio.Task[Any]] = set()
 _AUTO_SUB_CLEANUP_TASKS: set[asyncio.Task[Any]] = set()
 _AUTO_SUB_MAX_CALIBRATION_BYTES: int = 2 * 1024 * 1024  # 2 MiB
+_AUTO_SUB_MIN_ALIGNMENT_SCORE_GAIN: float = 0.01
 
 router = APIRouter()
 # ---------------------------------------------------------------------------
@@ -498,7 +499,7 @@ def _auto_sub_select_accepted_winner(
     coarse_winner: dict[str, Any],
     fine_winner: dict[str, Any] | None,
     incumbent_winner: dict[str, Any] | None,
-    score_epsilon: float = 0.001,
+    score_epsilon: float = _AUTO_SUB_MIN_ALIGNMENT_SCORE_GAIN,
 ) -> dict[str, Any]:
     protected_winner = coarse_winner
     if incumbent_winner is not None and (
@@ -823,10 +824,14 @@ def _score_auto_sub_matrix_candidates(
         if incumbent_winner is not None:
             incumbent_score = _auto_sub_score_value(incumbent_winner)
             matrix_score = _auto_sub_score_value(matrix_winner)
-            if matrix_score <= incumbent_score:
+            if matrix_score <= incumbent_score + _AUTO_SUB_MIN_ALIGNMENT_SCORE_GAIN:
                 accepted_winner = incumbent_winner
                 incumbent_accepted = True
-                reject_reason = "incumbent_better"
+                reject_reason = (
+                    "incumbent_better"
+                    if matrix_score <= incumbent_score
+                    else "incumbent_gain_below_minimum"
+                )
 
         return {
             "winner": accepted_winner,
@@ -4294,9 +4299,9 @@ async def _run_auto_sub_22_stereo_optimize(
         stereo_probe_plan = None
         if not step1_retained:
             set_audio_output_mode(
-                OUTPUT_MODE_SUBWOOFER_22_STEREO, _auto_sub_22_global_config(original_config_snapshot),
+                OUTPUT_MODE_SUBWOOFER_22_STEREO, _auto_sub_22_global_config(polarity_snapshot),
                 _auto_sub_22_candidate_subwoofers(
-                    original_config_snapshot, sub1_alignment_ms=best_left, sub2_alignment_ms=best_right,
+                    polarity_snapshot, sub1_alignment_ms=best_left, sub2_alignment_ms=best_right,
                     active_subs=("sub1", "sub2"),
                 ),
             )
@@ -5028,6 +5033,7 @@ async def _run_auto_sub_optimize(
             coarse_winner=final_coarse_winner,
             fine_winner=final_fine_winner if fine_scan.get("status") == "completed" else None,
             incumbent_winner=incumbent_winner,
+            score_epsilon=0.001,
         )
         fine_scan["coarse_winner"] = final_coarse_winner
         fine_scan["fine_winner"] = final_fine_winner
