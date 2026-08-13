@@ -143,6 +143,46 @@ class DSPRuntimeConfigTests(unittest.TestCase):
             self.assertIn(f"control ftl_{index} {value}", text)
             self.assertIn(f"control ftr_{index} {value}", text)
 
+    def test_peq_gain_and_delay_keep_legacy_semantics(self):
+        chain = [{"id": "equalizer#0", "type": "equalizer", "enabled": True,
+                  "mix": {"inputGainDb": -1, "outputGainDb": 2},
+                  "params": {"channelMode": "dual", "eqMode": "IIR",
+                             "leftBands": [
+                                 {"enabled": True, "filterType": "gain", "gainDb": 3},
+                                 {"enabled": True, "filterType": "delay", "delayMs": 4},
+                                 {"enabled": True, "filterType": "bell", "frequencyHz": 100,
+                                  "gainDb": -2, "q": 1}],
+                             "rightBands": [
+                                 {"enabled": True, "filterType": "gain", "gainDb": 3},
+                                 {"enabled": True, "filterType": "delay", "delayMs": 7},
+                                 {"enabled": True, "filterType": "notch", "frequencyHz": 200,
+                                  "gainDb": 0, "q": 2}]}}]
+        self.manager.preset_store.write("Legacy PEQ", self.manager._native_preset(chain))
+        text = self.manager.compile_engine_text(
+            [{"name": "FL", "source": 0}, {"name": "FR", "source": 1}],
+            preset_name="Legacy PEQ")
+        self.assertIn("control g_in 1.25892541", text)
+        self.assertIn("control ftl_0 1", text)
+        self.assertIn("control ftr_0 6", text)
+        self.assertIn("control ftl_1 0", text)
+        self.assertIn("stage_begin 1 equalizer#0-delay native delay", text)
+        self.assertIn("param left_ms 4", text)
+        self.assertIn("param right_ms 7", text)
+
+    def test_peq_delay_entries_accumulate_beyond_global_delay_limit(self):
+        chain = [{"id": "equalizer#0", "type": "equalizer", "enabled": True,
+                  "params": {"channelMode": "stereo-linked", "bands": [
+                      {"enabled": True, "filterType": "delay", "delayMs": 500},
+                      {"enabled": True, "filterType": "delay", "delayMs": 500},
+                      {"enabled": True, "filterType": "delay", "delayMs": 500},
+                  ]}}]
+        self.manager.preset_store.write("Long PEQ Delay", self.manager._native_preset(chain))
+        text = self.manager.compile_engine_text(
+            [{"name": "FL", "source": 0}, {"name": "FR", "source": 1}],
+            preset_name="Long PEQ Delay")
+        self.assertIn("param left_ms 1500", text)
+        self.assertIn("param right_ms 1500", text)
+
     def test_lv2_effect_mappings_include_complete_controls_and_loudness_coupling(self):
         chain = [
             {"id": "bass_enhancer#0", "type": "bass_enhancer", "enabled": True,
@@ -186,7 +226,7 @@ class DSPRuntimeConfigTests(unittest.TestCase):
         self.assertIn("control thresh -0.5", text)
         self.assertIn("control rel 30", text)
 
-    def test_crossovers_precede_chain_and_output_alignment_follows_chain(self):
+    def test_output_alignment_follows_chain(self):
         chain = [{"id": "delay#0", "type": "delay", "enabled": True,
                   "params": {"leftMs": 1, "rightMs": 2}}]
         self.manager.preset_store.write("Placement", self.manager._native_preset(chain))
@@ -194,7 +234,6 @@ class DSPRuntimeConfigTests(unittest.TestCase):
             "name": "FL", "source": 0, "gain_db": -3, "delay_ms": 4, "invert": True,
             "filters": [{"type": "highpass", "frequency_hz": 80, "q": .707, "stages": 1}],
         }], preset_name="Placement")
-        self.assertLess(text.index("peq 0 highpass"), text.index("stage_begin"))
         self.assertLess(text.index("stage_end"), text.index("output 0 -3 4 invert"))
 
     def test_ingress_links_use_exported_null_sink_monitor_ports(self):

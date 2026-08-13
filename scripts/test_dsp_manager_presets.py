@@ -35,17 +35,20 @@ class DSPManagerPresetTests(unittest.TestCase):
         self.assertEqual(config["sample_rate_hz"], 96000)
         self.assertEqual(config["chain"][0]["type"], "equalizer")
 
-    def test_peq_rejects_filter_types_not_supported_by_lsp(self):
-        for filter_type in ("gain", "delay"):
-            with self.subTest(filter_type=filter_type), self.assertRaisesRegex(
-                    ValueError, "filterType is not supported"):
-                self.manager.create_peq_preset("Unsupported", {
-                    "enabled": True,
-                    "params": {"channelMode": "stereo-linked", "bands": [{
-                        "filterType": filter_type, "frequencyHz": 1000,
-                        "gainDb": 0, "q": 1,
-                    }]},
-                })
+    def test_peq_accepts_gain_and_delay_outside_lsp(self):
+        self.manager.create_peq_preset("Special", {
+            "enabled": True,
+            "params": {"channelMode": "stereo-linked", "bands": [
+                {"filterType": "gain", "frequencyHz": 1000, "gainDb": 2, "q": 1},
+                {"filterType": "delay", "frequencyHz": 1000, "gainDb": 0, "q": 1,
+                 "delayMs": 5},
+            ]},
+        })
+        text = self.manager.compile_engine_text(
+            [{"name": "FL", "source": 0}, {"name": "FR", "source": 1}],
+            preset_name="Special")
+        self.assertIn("control g_in 1.25892541", text)
+        self.assertIn("native delay", text)
 
     def test_manager_has_no_easyeffects_runtime_import(self):
         tree = ast.parse((ROOT / "dsp_manager.py").read_text())

@@ -396,6 +396,44 @@ class DSPManager:
                 continue
             params = plugin.get("params", {})
             plugin_type = plugin["type"]
+            peq_delay = None
+            peq_gain_db = 0.0
+            if plugin_type == "equalizer":
+                dual = params.get("channelMode") == "dual"
+                left_source = params.get("leftBands", []) if dual else params.get("bands", [])
+                right_source = params.get("rightBands", []) if dual else left_source
+
+                def split_special_bands(bands):
+                    ordinary, gain_db, delay_ms = [], 0.0, 0.0
+                    for band in bands:
+                        if band.get("filterType") == "gain":
+                            if band.get("enabled", True):
+                                gain_db += float(band.get("gainDb", 0.0))
+                        elif band.get("filterType") == "delay":
+                            if band.get("enabled", True):
+                                delay_ms += float(band.get("delayMs", 0.0))
+                        else:
+                            ordinary.append(band)
+                    return ordinary, gain_db, delay_ms
+
+                left, left_gain, left_delay = split_special_bands(left_source)
+                right, right_gain, right_delay = split_special_bands(right_source)
+                if dual and abs(left_gain - right_gain) > 1e-9:
+                    if abs(left_gain) <= 1e-9:
+                        peq_gain_db = right_gain
+                    elif abs(right_gain) <= 1e-9:
+                        peq_gain_db = left_gain
+                    else:
+                        raise ValueError("Gain filter supports only shared stereo trim in dual mode")
+                else:
+                    peq_gain_db = left_gain
+                params = copy.deepcopy(params)
+                if dual:
+                    params["leftBands"], params["rightBands"] = left, right
+                else:
+                    params["bands"] = left
+                if abs(left_delay) > 1e-9 or abs(right_delay) > 1e-9:
+                    peq_delay = (left_delay, right_delay)
             backend = f"lv2 {lv2_uris[plugin_type]}" if plugin_type in lv2_uris else f"native {plugin_type}"
             lines.append(f"stage_begin {ordinal} {plugin.get('id', plugin_type)} {backend}")
             ordinal += 1
@@ -403,7 +441,7 @@ class DSPManager:
                 mix = plugin.get("mix") if isinstance(plugin.get("mix"), dict) else {}
                 input_db = mix.get("inputGainDb", params.get("inputGainDb", 0.0))
                 output_db = mix.get("outputGainDb", params.get("outputGainDb", 0.0))
-                control("g_in", 10.0 ** (float(input_db) / 20.0))
+                control("g_in", 10.0 ** ((float(input_db) + peq_gain_db) / 20.0))
                 control("g_out", 10.0 ** (float(output_db) / 20.0))
                 control("mode", eq_modes.get(str(params.get("eqMode", "IIR")).upper(), 0))
                 dual = params.get("channelMode") == "dual"
@@ -491,6 +529,12 @@ class DSPManager:
                 control("thresh", params.get("thresholdDb", params.get("threshold", 0.0)))
                 control("rel", params.get("releaseMs", params.get("release", 25.0)))
             lines.append("stage_end")
+            if peq_delay is not None:
+                lines.append(f"stage_begin {ordinal} {plugin.get('id', plugin_type)}-delay native delay")
+                ordinal += 1
+                lines.append(f"param left_ms {number(peq_delay[0])}")
+                lines.append(f"param right_ms {number(peq_delay[1])}")
+                lines.append("stage_end")
 
         for output_index, output in enumerate(config["outputs"]):
             polarity = "invert" if output["invert"] else "normal"
@@ -528,6 +572,7 @@ class DSPManager:
                 raise ValueError(f"{field} must be an array with at most 20 bands")
             result = []
             aliases = {"pk": "bell", "bell": "bell", "notch": "notch",
+                       "gain": "gain", "delay": "delay",
                        "low_shelf": "low_shelf", "high_shelf": "high_shelf",
                        "low_pass": "low_pass", "high_pass": "high_pass"}
             for index, raw in enumerate(value):
@@ -539,13 +584,16 @@ class DSPManager:
                 frequency = float(raw.get("frequencyHz", 1000.0))
                 gain = float(raw.get("gainDb", 0.0))
                 q = float(raw.get("q", 1.0))
+                delay = float(raw.get("delayMs", 0.0))
                 if not 20 <= frequency <= 20000:
                     raise ValueError(f"{field}[{index}].frequencyHz must be between 20 and 20000")
                 if not -24 <= gain <= 24 or not 0.1 <= q <= 20:
                     raise ValueError(f"{field}[{index}] gain or Q is outside the supported range")
+                if kind == "delay" and not 0 <= delay <= 500:
+                    raise ValueError(f"{field}[{index}].delayMs must be between 0 and 500")
                 result.append({"enabled": bool(raw.get("enabled", True)), "filterType": kind,
                                "frequencyHz": frequency, "gainDb": gain, "q": q,
-                               "delayMs": float(raw.get("delayMs", 0.0))})
+                               "delayMs": delay})
             return result
 
         if mode == "dual":
