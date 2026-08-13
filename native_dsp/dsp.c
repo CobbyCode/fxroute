@@ -68,7 +68,8 @@ struct fxdsp {
     output_state out[FXDSP_MAX_CHANNELS];
     dsp_stage stages[MAX_STAGES];
     unsigned stage_count;
-    int bypass;
+    _Atomic int effect_bypass;
+    _Atomic uint32_t output_gain_bits;
     float *scratch[2][FXDSP_MAX_CHANNELS];
     unsigned *fft_reverse;
     complex_value *fft_roots;
@@ -381,6 +382,7 @@ fxdsp *fxdsp_load(const char *path, char *error, size_t error_size) {
     int stage_section = 0, post_section = 0;
     if (!file || !d) { fail(error,error_size,"cannot open config"); if(file)fclose(file); free(d); return NULL; }
     d->rate=48000;
+    atomic_store_explicit(&d->output_gain_bits,float_bits(1.0f),memory_order_relaxed);
     for (unsigned i=0;i<FXDSP_MAX_CHANNELS;i++) { d->out[i].gain=1; d->out[i].polarity=1; }
     while (fgets(line,sizeof line,file)) {
         line_no++; char *p=line; while(*p==' '||*p=='\t')p++; if(*p=='#'||*p=='\n'||!*p)continue;
@@ -423,7 +425,7 @@ fxdsp *fxdsp_load(const char *path, char *error, size_t error_size) {
             else if (!stage_section && !post_section && sscanf(p,"matrix %u %u %f %c",&out,&in,&route_gain,&extra)==3 && d->route_count<MAX_ROUTES) { d->routes[d->route_count].out=out; d->routes[d->route_count].in=in; d->routes[d->route_count++].gain=route_gain; }
             else if (!stage_section && !post_section && sscanf(p,"peq %u %31s %f %f %f %c",&out,type,&x,&y,&z,&extra)==5 && out<FXDSP_MAX_CHANNELS && d->out[out].filter_count<MAX_BIQUADS && !design(&d->out[out].filters[d->out[out].filter_count],type,d->rate,x,y,z)) d->out[out].filter_count++;
             else if (sscanf(p,"output %u %f %f %31s %c",&out,&x,&y,arg,&extra)==4 && out<FXDSP_MAX_CHANNELS && y>=0.0f && (!strcmp(arg,"normal") || !strcmp(arg,"invert"))) { post_section=1; d->out[out].gain=powf(10,x/20); d->out[out].delay=(size_t)llround(y*d->rate/1000); d->out[out].polarity=!strcmp(arg,"invert")?-1:1; }
-            else if (post_section && sscanf(p,"bypass %d %c",&enabled,&extra)==1) d->bypass=!!enabled;
+            else if (post_section && sscanf(p,"bypass %d %c",&enabled,&extra)==1) atomic_store_explicit(&d->effect_bypass,!!enabled,memory_order_relaxed);
             else { invalid: snprintf(line,sizeof line,"invalid config line %u",line_no); fail(error,error_size,line); goto bad; }
         }
     }
@@ -469,14 +471,15 @@ void fxdsp_free(fxdsp *d) {
 }
 unsigned fxdsp_inputs(const fxdsp*d){return d->inputs;} unsigned fxdsp_outputs(const fxdsp*d){return d->outputs;} unsigned fxdsp_rate(const fxdsp*d){return d->rate;}
 
-void fxdsp_process(fxdsp *d, const float *const *input, float *const *output, size_t frames) {
+void fxdsp_process_tapped(fxdsp *d, const float *const *input, float *const *output,
+                          float *const *post_effect, size_t frames) {
     for(size_t offset=0;offset<frames;offset+=PROCESS_BLOCK) {
         size_t count=frames-offset<PROCESS_BLOCK?frames-offset:PROCESS_BLOCK;
         uint32_t mute_mask=atomic_load_explicit(&d->mute_mask,memory_order_relaxed);
         for(unsigned channel=0;channel<d->inputs;channel++)
             memcpy(d->scratch[0][channel],input[channel]+offset,count*sizeof(float));
         unsigned source=0;
-        if(!d->bypass) {
+        if(!atomic_load_explicit(&d->effect_bypass,memory_order_relaxed)) {
             for(unsigned index=0;index<d->stage_count;index++) {
                 dsp_stage *stage=&d->stages[index]; unsigned target=1U-source;
                 if(stage->kind==STAGE_AUTOGAIN || stage->kind==STAGE_LV2) {
@@ -509,6 +512,10 @@ void fxdsp_process(fxdsp *d, const float *const *input, float *const *output, si
                 source=target;
             }
         }
+        if(post_effect) for(unsigned channel=0;channel<2U;channel++) {
+            if(channel<d->inputs) memcpy(post_effect[channel]+offset,d->scratch[source][channel],count*sizeof(float));
+            else memset(post_effect[channel]+offset,0,count*sizeof(float));
+        }
         unsigned routed=1U-source;
         for(unsigned channel=0;channel<d->outputs;channel++) for(size_t n=0;n<count;n++) {
             float value=0.0f;
@@ -523,13 +530,19 @@ void fxdsp_process(fxdsp *d, const float *const *input, float *const *output, si
             size_t read=(state->delay_pos+state->delay_size-state->delay)%state->delay_size;
             value=state->delay_line[read]*state->gain*state->polarity;
             state->delay_pos=(state->delay_pos+1U)%state->delay_size;
+            value*=bits_float(atomic_load_explicit(&d->output_gain_bits,memory_order_relaxed));
             if(!isfinite(value)||(mute_mask&(UINT32_C(1)<<channel)))value=0.0f;
             output[channel][offset+n]=value;float magnitude=fabsf(value);if(magnitude>state->peak)state->peak=magnitude;
             update_peak(&d->peak_bits[channel],magnitude);state->square_sum+=value*value;state->meter_frames++;
         }
     }
 }
+void fxdsp_process(fxdsp*d,const float*const*input,float*const*output,size_t frames){fxdsp_process_tapped(d,input,output,NULL,frames);}
 void fxdsp_meter(const fxdsp*d,unsigned o,float*p,float*r){if(o>=d->outputs){*p=*r=0;return;}*p=d->out[o].peak;*r=d->out[o].meter_frames?sqrtf(d->out[o].square_sum/d->out[o].meter_frames):0;}
 void fxdsp_set_mute(fxdsp*d,uint32_t mask,int muted){if(muted)atomic_fetch_or_explicit(&d->mute_mask,mask,memory_order_relaxed);else atomic_fetch_and_explicit(&d->mute_mask,~mask,memory_order_relaxed);}
+void fxdsp_set_effect_bypass(fxdsp*d,int bypassed){atomic_store_explicit(&d->effect_bypass,!!bypassed,memory_order_relaxed);}
+int fxdsp_effect_bypass(const fxdsp*d){return atomic_load_explicit(&d->effect_bypass,memory_order_relaxed);}
+void fxdsp_set_output_gain_db(fxdsp*d,float gain_db){float gain=isfinite(gain_db)?powf(10.0f,gain_db/20.0f):0.0f;atomic_store_explicit(&d->output_gain_bits,float_bits(gain),memory_order_relaxed);}
+float fxdsp_output_gain_db(const fxdsp*d){float gain=bits_float(atomic_load_explicit(&d->output_gain_bits,memory_order_relaxed));return gain>0.0f?20.0f*log10f(gain):-INFINITY;}
 unsigned fxdsp_peaks(const fxdsp*d,float*peaks,unsigned count){unsigned total=d->outputs,limit=count<total?count:total;for(unsigned o=0;o<limit;o++)peaks[o]=bits_float(atomic_load_explicit(&d->peak_bits[o],memory_order_relaxed));return total;}
 void fxdsp_reset_peaks(fxdsp*d){for(unsigned o=0;o<d->outputs;o++)atomic_store_explicit(&d->peak_bits[o],0,memory_order_relaxed);}

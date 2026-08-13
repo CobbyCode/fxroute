@@ -134,24 +134,6 @@ class AuthoritativeSampleRateTests(unittest.TestCase):
         self.assertIsNone(samplerate.authoritative_sample_rate("nope"))
 
 
-class HelperArgumentSampleRateTests(unittest.TestCase):
-    def test_parses_rate_argument(self):
-        snapshot = {"helper_args": ["--foo", "--rate", "48000", "--bar"]}
-        self.assertEqual(samplerate.helper_argument_sample_rate(snapshot), 48000)
-
-    def test_zero_and_negative_rates_are_invalid(self):
-        for value in ("0", "-1"):
-            snapshot = {"helper_args": ["--rate", value]}
-            self.assertIsNone(samplerate.helper_argument_sample_rate(snapshot), value)
-
-    def test_missing_or_invalid_argument_returns_none(self):
-        self.assertIsNone(samplerate.helper_argument_sample_rate({"helper_args": ["--rate"]}))
-        self.assertIsNone(samplerate.helper_argument_sample_rate({"helper_args": ["--rate", "abc"]}))
-        self.assertIsNone(samplerate.helper_argument_sample_rate({"helper_args": ["--foo"]}))
-        self.assertIsNone(samplerate.helper_argument_sample_rate({}))
-        self.assertIsNone(samplerate.helper_argument_sample_rate(None))
-
-
 class AudioOutputOverviewWithEffectiveRateTests(unittest.TestCase):
     def test_sets_rate_in_all_matching_levels(self):
         overview = {
@@ -340,18 +322,16 @@ class SampleRatePolicyTransitionTests(unittest.IsolatedAsyncioTestCase):
                 samplerate.authoritative_sample_rate(status),
             )
 
-    def test_helper_argument_sample_rate_wrapper_matches(self):
+    def test_native_runtime_sample_rate_uses_config_only(self):
         for snapshot in (
+            {"config": {"sample_rate": 48000}, "helper_args": ["--rate", "44100"]},
             {"helper_args": ["--rate", "48000"]},
             {"helper_args": ["--rate"]},
-            {"helper_args": ["--rate", "abc"]},
             {},
             None,
         ):
-            self.assertEqual(
-                main._helper_argument_sample_rate(snapshot),
-                samplerate.helper_argument_sample_rate(snapshot),
-            )
+            expected = 48000 if snapshot and snapshot.get("config") else None
+            self.assertEqual(main._helper_argument_sample_rate(snapshot), expected)
 
     def test_overview_with_rate_wrapper_matches(self):
         overview = {"selected_output": {"key": "out1"}, "current_output": {"key": "out1"}}

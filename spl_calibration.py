@@ -3,6 +3,7 @@
 """SPL calibration: UMIK profiles, C-weighted capture, calibration noise."""
 
 import asyncio
+import copy
 import logging
 import math
 import re
@@ -606,6 +607,15 @@ def _restore_spl_calibration_audio(operation: _SplCalibrationOperation) -> None:
     if easyeffects_manager is None:
         return
 
+    if restore.get("native_effects_extras") is not None:
+        try:
+            current_extras = easyeffects_manager.load_global_extras()
+            easyeffects_manager.apply_temporary_effects_runtime(
+                restore["neutral_effects_extras"], current_extras)
+        except Exception:
+            logger.exception("Failed to restore native DSP after SPL calibration")
+        return
+
     def restore_property(
         plugin: str,
         name: str,
@@ -661,6 +671,8 @@ def _restore_spl_calibration_audio(operation: _SplCalibrationOperation) -> None:
 def _start_spl_calibration_noise(operation: _SplCalibrationOperation) -> dict[str, Any]:
     dependencies = _dependencies()
     ee_manager = dependencies.require_easyeffects_manager()
+    native_transition = callable(getattr(ee_manager, "apply_temporary_effects_runtime", None)) and bool(
+        getattr(ee_manager, "temporary_runtime_transition_callback", None))
     operation.restore_state = {
         "autogain_bypass": (
             ee_manager.get_active_plugin_property("autogain", 0, "bypass").lower()
@@ -676,10 +688,19 @@ def _start_spl_calibration_noise(operation: _SplCalibrationOperation) -> dict[st
         "system_volume_percent": dependencies.get_output_volume(),
     }
     try:
-        ee_manager.set_active_plugin_property("autogain", 0, "bypass", True)
-        ee_manager.set_active_plugin_property("loudness", 0, "bypass", True)
-        ee_manager.set_active_plugin_property("loudness", 0, "outputGain", 0.0)
-        time.sleep(0.10)
+        if native_transition:
+            previous_extras = ee_manager.load_global_extras()
+            neutral_extras = copy.deepcopy(previous_extras)
+            neutral_extras["autogain"]["enabled"] = False
+            neutral_extras["loudness"]["enabled"] = False
+            operation.restore_state["native_effects_extras"] = previous_extras
+            operation.restore_state["neutral_effects_extras"] = neutral_extras
+            ee_manager.apply_temporary_effects_runtime(previous_extras, neutral_extras)
+        else:
+            ee_manager.set_active_plugin_property("autogain", 0, "bypass", True)
+            ee_manager.set_active_plugin_property("loudness", 0, "bypass", True)
+            ee_manager.set_active_plugin_property("loudness", 0, "outputGain", 0.0)
+            time.sleep(0.10)
         dependencies.set_output_volume(100)
         if operation.cancel_requested:
             raise RuntimeError("SPL calibration was stopped")

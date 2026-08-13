@@ -58,11 +58,10 @@ def _links_text(mode: str, *, direct: bool = False, source: bool = True, complet
         f"fxroute_dsp:output_1 -> {OUTPUT_KEY}:playback_FL",
         f"fxroute_dsp:output_2 -> {OUTPUT_KEY}:playback_FR",
     ])
-    if mode != "subwoofer-2.1":
-        lines.extend([
-            f"fxroute_dsp:output_3 -> {OUTPUT_KEY}:playback_RL",
-            f"fxroute_dsp:output_4 -> {OUTPUT_KEY}:playback_RR",
-        ])
+    lines.extend([
+        f"fxroute_dsp:output_3 -> {OUTPUT_KEY}:playback_RL",
+        f"fxroute_dsp:output_4 -> {OUTPUT_KEY}:playback_RR",
+    ])
     if direct:
         lines.extend([
             f"legacy_dsp:output_FL -> {OUTPUT_KEY}:playback_FL",
@@ -83,7 +82,7 @@ class HelperDouble:
         return {
             "active": self.active,
             "helper_pid": 42 if self.active else None,
-            "helper_args": ["--rate", str(self.rate)] if self.rate else None,
+            "config": {"sample_rate": self.rate} if self.rate else None,
         }
 
     async def reclean_direct_easyeffects_links(self):
@@ -256,8 +255,8 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
             "ee_ports": True,
             "helper_ports": True,
             "links": {
-                "fxroute_dsp:output_FL -> fxroute_21_stage1:input_L": False,
-                "fxroute_dsp:output_FR -> fxroute_21_stage1:input_R": False,
+                "fxroute_dsp_sink:monitor_FL -> fxroute_dsp:input_1": False,
+                "fxroute_dsp_sink:monitor_FR -> fxroute_dsp:input_2": False,
             },
             "links_complete": False,
         }
@@ -265,8 +264,8 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
             "ee_ports": True,
             "helper_ports": True,
             "links": {
-                "fxroute_dsp:output_FL -> fxroute_21_stage1:input_L": True,
-                "fxroute_dsp:output_FR -> fxroute_21_stage1:input_R": True,
+                "fxroute_dsp_sink:monitor_FL -> fxroute_dsp:input_1": True,
+                "fxroute_dsp_sink:monitor_FR -> fxroute_dsp:input_2": True,
             },
             "links_complete": True,
             "signature": "stable-measurement-restore",
@@ -376,8 +375,8 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
                 "helper_active": True,
                 "helper_rate_matches": True,
                 "links": {
-                    "fxroute_dsp:output_FL -> fxroute_21_stage1:input_L": complete,
-                    "fxroute_dsp:output_FR -> fxroute_21_stage1:input_R": complete,
+                    "fxroute_dsp_sink:monitor_FL -> fxroute_dsp:input_1": complete,
+                    "fxroute_dsp_sink:monitor_FR -> fxroute_dsp:input_2": complete,
                 },
                 "links_complete": complete,
                 "signature": "subwoofer-2.2|complete" if complete else "subwoofer-2.2|missing",

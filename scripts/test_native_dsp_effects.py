@@ -4,9 +4,12 @@ import math
 import subprocess
 import tempfile
 import unittest
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from dsp_manager import DSPManager
 DSP = ROOT / "native_dsp/build/fxroute-dsp-offline"
 
 
@@ -44,6 +47,20 @@ class NativeEffectsTests(unittest.TestCase):
             f"{stages}\n"
             "output 0 0 0 normal\noutput 1 0 0 normal\nbypass 0\n"
         )
+        with source.open("wb") as handle:
+            array.array("f", samples).tofile(handle)
+        subprocess.run([str(DSP), str(config), str(source), str(target), str(quantum)], check=True)
+        values = array.array("f")
+        with target.open("rb") as handle:
+            values.fromfile(handle, target.stat().st_size // 4)
+        return values
+
+    def process_config(self, config_text, samples, quantum=127):
+        case = self.root / str(self.case_number)
+        self.case_number += 1
+        case.mkdir()
+        config, source, target = case / "dsp.conf", case / "input.f32", case / "output.f32"
+        config.write_text(config_text)
         with source.open("wb") as handle:
             array.array("f", samples).tofile(handle)
         subprocess.run([str(DSP), str(config), str(source), str(target), str(quantum)], check=True)
@@ -115,6 +132,31 @@ class NativeEffectsTests(unittest.TestCase):
         max_output = self.process(maximizer, stereo_sine(440, .8, .8))
         self.assertTrue(all(math.isfinite(value) for value in max_output))
         self.assertLess(max(abs(value) for value in max_output), 1.05)
+
+    def test_direct_and_neutral_protection_limiter_are_unity_after_latency(self):
+        manager = DSPManager(home=self.root / "home")
+        manager.save_global_extras({"limiter": {"enabled": True, "params": {
+            "thresholdDb": -1, "attackMs": 5, "releaseMs": 50,
+            "lookaheadMs": 5, "stereoLinkPercent": 100,
+        }}})
+        layout = [{"name": "FL", "source": 0}, {"name": "FR", "source": 1}]
+        source = stereo_sine(997, .05, .04, 1)
+        direct = self.process_config(manager.compile_engine_text(layout, preset_name="Direct"), source)
+        neutral = self.process_config(manager.compile_engine_text(layout, preset_name="Neutral"), source)
+        direct_left, neutral_left = direct[::2], neutral[::2]
+        best = None
+        for latency in range(1025):
+            count = min(len(direct_left), len(neutral_left) - latency) - 2048
+            if count <= 0:
+                continue
+            error = rms([neutral_left[latency + 2048 + i] - direct_left[2048 + i]
+                         for i in range(count)])
+            if best is None or error < best[0]:
+                best = (error, latency, count)
+        error, latency, count = best
+        reference = rms(direct_left[2048:2048 + count])
+        self.assertLess(error / reference, 2e-4)
+        self.assertLessEqual(latency, 1024)
 
 
 if __name__ == "__main__":

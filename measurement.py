@@ -18,10 +18,11 @@ import wave
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 import numpy as np
+from dsp_runtime import DSPRuntimeConfig
 
 from hybrid_measurement import analyze_direct_window, build_complex_response, build_gated_response
 from samplerate import (
@@ -210,8 +211,20 @@ class CaptureQualityError(RuntimeError):
 class MeasurementStore:
     """Persist measurement JSON and run conservative real sweep measurement jobs."""
 
-    def __init__(self, home: Path | None = None):
+    def __init__(self, home: Path | None = None, *,
+                 runtime_snapshot_provider: Callable[[], dict[str, Any]] | None = None,
+                 effect_bypass_setter: Callable[[bool], Any] | None = None,
+                 raw_scope_enter: Callable[[], Any] | None = None,
+                 raw_scope_exit: Callable[[bool], Any] | None = None,
+                 active_scope_enter: Callable[[], Any] | None = None,
+                 active_scope_exit: Callable[[bool], Any] | None = None):
         self.home = Path(home or Path.home())
+        self.runtime_snapshot_provider = runtime_snapshot_provider
+        self.effect_bypass_setter = effect_bypass_setter
+        self.raw_scope_enter = raw_scope_enter
+        self.raw_scope_exit = raw_scope_exit
+        self.active_scope_enter = active_scope_enter
+        self.active_scope_exit = active_scope_exit
         self.config_root = Path(os.environ.get("XDG_CONFIG_HOME") or (self.home / ".config"))
         self.state_root = Path(os.environ.get("XDG_STATE_HOME") or (self.home / ".local" / "state"))
         self.measurements_dir = self.config_root / "fxroute" / "measurements"
@@ -991,9 +1004,22 @@ class MeasurementStore:
                 job["updated_at"] = self._utc_now()
                 job["message"] = "Running L/R repeat…" if job.get("job_kind") == "lr-repeat" else "Running sweep…"
                 self._persist_job(job)
+        previous_effect_bypass = None
+        measurement_scope_owned = False
         try:
             if was_cancelling_before:
                 raise RuntimeError("Measurement cancelled.")
+            if job.get("measurement_scope") == MEASUREMENT_SCOPE_RAW_HELPER:
+                enter = self.raw_scope_enter or (
+                    (lambda: self.effect_bypass_setter(True))
+                    if callable(self.effect_bypass_setter) else None)
+                if not callable(enter):
+                    raise RuntimeError("Native DSP effect-bypass control is unavailable")
+                previous_effect_bypass = await enter()
+                measurement_scope_owned = True
+            elif callable(self.active_scope_enter):
+                previous_effect_bypass = await self.active_scope_enter()
+                measurement_scope_owned = True
             executor = self._execute_lr_repeat_job if job.get("job_kind") == "lr-repeat" else self._execute_capture_job
             worker_task = asyncio.create_task(asyncio.to_thread(executor, deepcopy(job)))
             try:
@@ -1072,6 +1098,15 @@ class MeasurementStore:
                         job["result"] = None
                         job["error"] = {"detail": str(exc)}
         finally:
+            if measurement_scope_owned:
+                try:
+                    if job.get("measurement_scope") == MEASUREMENT_SCOPE_RAW_HELPER:
+                        exit_scope = self.raw_scope_exit or self.effect_bypass_setter
+                    else:
+                        exit_scope = self.active_scope_exit
+                    await exit_scope(bool(previous_effect_bypass))
+                except Exception:
+                    logger.exception("Failed to restore native DSP effect bypass after measurement")
             with self._job_process_lock:
                 self._job_processes.pop(job_id, None)
             try:
@@ -2832,18 +2867,6 @@ class MeasurementStore:
                     playback_target=playback_target,
                     playback_route=playback_route,
                 )
-            elif playback_route["route"] == "subwoofer-active-chain":
-                playback_route_diagnostics = self._link_measurement_playback_to_active_chain(
-                    play_node_name=play_node_name,
-                    playback_target=playback_target,
-                    playback_route=playback_route,
-                )
-                direct_bypass_monitor_thread = threading.Thread(
-                    target=self._monitor_subwoofer_active_chain_direct_bypass,
-                    args=(playback_target, direct_bypass_monitor_stop, direct_bypass_monitor_violations),
-                    daemon=True,
-                )
-                direct_bypass_monitor_thread.start()
             elif playback_route["route"] == "direct-sink":
                 playback_route_diagnostics = self._link_measurement_playback_to_direct_sink(
                     play_node_name=play_node_name,
@@ -5603,35 +5626,8 @@ class MeasurementStore:
         current_output = overview.get("current_output") or {}
         selected_output = overview.get("selected_output") or {}
         default_output = overview.get("default_output") or {}
-        if self._normalize_measurement_scope(measurement_scope) == MEASUREMENT_SCOPE_ACTIVE_CHAIN:
-            # ACTIVE_CHAIN measures through the active EasyEffects chain in
-            # every output mode.  _resolve_active_chain_playback_target fails
-            # closed when fxroute_dsp_sink or its playback ports are missing;
-            # it must never silently fall back to the direct hardware sink,
-            # which would bypass the FXRoute/EasyEffects gain structure.
-            return self._resolve_active_chain_playback_target(overview)
-        target_name = str(
-            current_output.get("name")
-            or current_output.get("target_name")
-            or selected_output.get("target_name")
-            or default_output.get("target_name")
-            or ""
-        ).strip()
-        if not target_name:
-            raise RuntimeError("No active output target is available for sweep playback")
-        return {
-            "target_name": target_name,
-            "target_label": str(
-                current_output.get("label")
-                or current_output.get("target_label")
-                or selected_output.get("label")
-                or selected_output.get("target_label")
-                or default_output.get("label")
-                or default_output.get("target_label")
-                or target_name
-            ),
-            "active_rate": current_output.get("active_rate") or selected_output.get("active_rate") or default_output.get("active_rate"),
-        }
+        self._normalize_measurement_scope(measurement_scope)
+        return self._resolve_active_chain_playback_target(overview)
 
     def _resolve_active_chain_playback_target(self, overview: dict[str, Any]) -> dict[str, Any]:
         target_name = "fxroute_dsp_sink"
@@ -6516,27 +6512,15 @@ class MeasurementStore:
         overview = overview or get_audio_output_overview()
         output_mode = overview.get("output_mode") if isinstance(overview.get("output_mode"), dict) else {}
         mode = str(output_mode.get("mode") or "")
-        if measurement_scope == MEASUREMENT_SCOPE_ACTIVE_CHAIN:
-            return {
-                "route": "direct-sink",
-                "measurement_scope": measurement_scope,
-                "output_mode": mode or "stereo",
-                "play_node_name": play_node_name,
-                "playback_target_name": str(playback_target.get("target_name") or ""),
-                "helper_node_name": "",
-                "helper_input_ports": {},
-            }
-
-        helper_node_name = "fxroute_dsp"
-        helper_input_ports = {"left": "fxroute_dsp:input_1", "right": "fxroute_dsp:input_2"}
         return {
-            "route": MEASUREMENT_SUBWOOFER_HELPER_ROUTE,
+            "route": "direct-sink",
             "measurement_scope": measurement_scope,
-            "output_mode": mode,
+            "output_mode": mode or "stereo",
             "play_node_name": play_node_name,
             "playback_target_name": str(playback_target.get("target_name") or ""),
-            "helper_node_name": helper_node_name,
-            "helper_input_ports": helper_input_ports,
+            "helper_node_name": "",
+            "helper_input_ports": {},
+            "expected_native_layout": [dict(channel) for channel in DSPRuntimeConfig.from_overview(overview).layout],
         }
 
     @staticmethod
@@ -6548,34 +6532,14 @@ class MeasurementStore:
         playback_route: dict[str, Any],
         playback_gain: float | None = None,
     ) -> list[str]:
-        if playback_route.get("route") in MEASUREMENT_SUBWOOFER_HELPER_ROUTES or playback_route.get("route") == "subwoofer-active-chain":
-            command = [
-                "pw-play",
-                "-P",
-                "node.autoconnect=false",
-                "-P",
-                f"node.name={play_node_name}",
-                "--target",
-                "0",
-                str(playback_path),
-            ]
-            if playback_route.get("route") in MEASUREMENT_SUBWOOFER_HELPER_ROUTES and playback_gain is not None:
-                try:
-                    normalized_gain = float(playback_gain)
-                except (TypeError, ValueError) as exc:
-                    raise ValueError("playback_gain must be a finite non-negative number") from exc
-                if not math.isfinite(normalized_gain) or normalized_gain < 0.0:
-                    raise ValueError("playback_gain must be a finite non-negative number")
-                command.insert(-1, f"--volume={normalized_gain:.9g}")
-            return command
-        # Direct-sink (stereo) playback must not rely on pw-play --target
+        # Measurement playback must not rely on pw-play --target
         # autoconnect: PipeWire resolves it non-deterministically (observed
         # live: the sweep node linked output_FL to the sink FR input and
         # output_FR to an EasyEffects internal output port, producing a
         # silent/wrong sweep).  Mirror the subwoofer routes: disable
         # autoconnect and link the play node explicitly after its ports
         # exist.
-        return [
+        command = [
             "pw-play",
             "-P",
             "node.autoconnect=false",
@@ -6585,6 +6549,15 @@ class MeasurementStore:
             "0",
             str(playback_path),
         ]
+        if playback_route.get("measurement_scope") == MEASUREMENT_SCOPE_RAW_HELPER and playback_gain is not None:
+            try:
+                normalized_gain = float(playback_gain)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("playback_gain must be a finite non-negative number") from exc
+            if not math.isfinite(normalized_gain) or normalized_gain < 0.0:
+                raise ValueError("playback_gain must be a finite non-negative number")
+            command.insert(-1, f"--volume={normalized_gain:.9g}")
+        return command
 
     @staticmethod
     def _new_measurement_playback_route_diagnostics(playback_route: dict[str, Any]) -> dict[str, Any]:
@@ -7141,8 +7114,8 @@ class MeasurementStore:
                 return item
         return {"name": node_name}
 
-    @staticmethod
     def _build_pre_sweep_state_snapshot(
+        self,
         *,
         job_id: str,
         sample_rate: int,
@@ -7157,10 +7130,7 @@ class MeasurementStore:
         """
         route_name = str(playback_route.get("route") or "")
         output_mode = str(playback_route.get("output_mode") or "unknown")
-        route_needs_helper = (
-            route_name in MEASUREMENT_SUBWOOFER_HELPER_ROUTES
-            or route_name == "subwoofer-active-chain"
-        )
+        route_needs_helper = True
 
         now = time.monotonic()
         snapshot = {
@@ -7173,91 +7143,30 @@ class MeasurementStore:
             "validation_failure": None,
         }
 
-        # Helper process check
-        try:
-            pgrep = subprocess.run(
-                ["pgrep", "-af", "native_dsp/build/fxroute-dsp"],
-                capture_output=True, text=True, timeout=2,
-            )
-            processes = [l.strip() for l in (pgrep.stdout or "").splitlines() if l.strip()]
-            snapshot["helper_process_count"] = len(processes)
-            snapshot["helper_processes"] = processes[:4]
-        except Exception as exc:
-            snapshot["helper_process_error"] = str(exc)
-            snapshot["helper_process_count"] = 0
-            snapshot["helper_processes"] = []
-            if route_needs_helper:
-                snapshot["validation_failure"] = f"helper pgrep failed: {exc}"
-                return snapshot
-
-        # Parse argv from first helper process
-        helper_argv = []
-        helper_pid = None
-        if processes:
-            first = processes[0]
-            parts = first.split(None, 1)
-            if len(parts) >= 1:
-                try:
-                    helper_pid = int(parts[0].strip())
-                except (ValueError, TypeError):
-                    pass
-            if len(parts) >= 2:
-                helper_argv = shlex.split(parts[1])
-            snapshot["helper_pid"] = helper_pid
-            snapshot["helper_argv"] = helper_argv
-
-            # Extract key parameters from argv
-            argv_parsed = {}
-            i = 0
-            while i < len(helper_argv) - 1:
-                key = helper_argv[i]
-                val = helper_argv[i + 1]
-                if key.startswith("--"):
-                    argv_parsed[key[2:]] = val
-                    i += 2
-                else:
-                    i += 1
-
-            snapshot["parsed"] = {
-                "rate": int(argv_parsed.get("rate", 0)),
-                "lowpass_hz": int(argv_parsed.get("lowpass-hz", 0)),
-                "highpass_hz": int(argv_parsed.get("highpass-hz", 0)),
-                "bass_routing": argv_parsed.get("bass-routing", ""),
-                "sub_level_db": float(argv_parsed.get("sub-level-db", 0)),
-                "sub_polarity": argv_parsed.get("sub-polarity", "normal"),
-                "main_delay_ms": float(argv_parsed.get("main-delay-ms", 0)),
-                "sub_delay_ms": float(argv_parsed.get("sub-delay-ms", 0)),
-                "sub2_level_db": float(argv_parsed.get("sub2-level-db", 0)),
-                "sub2_polarity": argv_parsed.get("sub2-polarity", "normal"),
-                "sub2_delay_ms": float(argv_parsed.get("sub2-delay-ms", 0)),
-                "node_name": argv_parsed.get("node-name", ""),
-                "quantum": int(argv_parsed.get("quantum", 0)),
-            }
-
-            # Critical consistency checks - only when helper is required
-            if route_needs_helper:
-                failures = []
-                if len(processes) != 1:
-                    failures.append(f"expected 1 helper process, found {len(processes)}")
-
-                helper_rate = int(argv_parsed.get("rate", 0))
-                if helper_rate <= 0:
-                    failures.append(f"helper rate not parseable: '{argv_parsed.get('rate', '')}'")
-                elif helper_rate != sample_rate:
-                    failures.append(f"helper rate {helper_rate} != measurement rate {sample_rate}")
-
-                highpass = int(argv_parsed.get("highpass-hz", 0))
-                lowpass = int(argv_parsed.get("lowpass-hz", 0))
-                if highpass > 0 and lowpass > 0 and highpass != lowpass:
-                    failures.append(f"highpass {highpass}Hz != lowpass {lowpass}Hz (crossover mismatch)")
-
-                if failures:
-                    snapshot["validation_failure"] = "; ".join(failures)
+        runtime = self.runtime_snapshot_provider() if callable(self.runtime_snapshot_provider) else {}
+        snapshot["native_runtime"] = runtime
+        config = runtime.get("config") if isinstance(runtime, dict) else None
+        failures = []
+        if not runtime.get("active"):
+            failures.append("native DSP runtime is inactive")
+        if not isinstance(config, dict):
+            failures.append("native DSP runtime config is unavailable")
         else:
-            snapshot["helper_pid"] = None
-            snapshot["helper_argv"] = []
-            if route_needs_helper:
-                snapshot["validation_failure"] = "no helper process found"
+            if int(config.get("sample_rate") or 0) != sample_rate:
+                failures.append(f"native DSP rate {config.get('sample_rate')} != measurement rate {sample_rate}")
+            if str(config.get("output_mode") or "") != output_mode:
+                failures.append(f"native DSP output mode {config.get('output_mode')} != measurement mode {output_mode}")
+            expected_outputs = 4 if output_mode.startswith("subwoofer-2.") else 2
+            runtime_layout = config.get("layout") or []
+            expected_layout = playback_route.get("expected_native_layout") or []
+            if len(runtime_layout) != expected_outputs:
+                failures.append(f"native DSP layout does not expose {expected_outputs} outputs")
+            if expected_layout and runtime_layout != expected_layout:
+                failures.append("native DSP routing/crossover/alignment layout does not match measurement output mode")
+        if playback_route.get("measurement_scope") == MEASUREMENT_SCOPE_RAW_HELPER and not runtime.get("effect_bypass"):
+            failures.append("native DSP effects are not bypassed for raw-helper measurement")
+        if failures:
+            snapshot["validation_failure"] = "; ".join(failures)
 
         # Sink suspend/resume history
         try:

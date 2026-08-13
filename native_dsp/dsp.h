@@ -14,8 +14,14 @@ unsigned fxdsp_inputs(const fxdsp *dsp);
 unsigned fxdsp_outputs(const fxdsp *dsp);
 unsigned fxdsp_rate(const fxdsp *dsp);
 void fxdsp_process(fxdsp *dsp, const float *const *input, float *const *output, size_t frames);
+void fxdsp_process_tapped(fxdsp *dsp, const float *const *input, float *const *output,
+                          float *const *post_effect, size_t frames);
 void fxdsp_meter(const fxdsp *dsp, unsigned output, float *peak, float *rms);
 void fxdsp_set_mute(fxdsp *dsp, uint32_t mask, int muted);
+void fxdsp_set_effect_bypass(fxdsp *dsp, int bypassed);
+int fxdsp_effect_bypass(const fxdsp *dsp);
+void fxdsp_set_output_gain_db(fxdsp *dsp, float gain_db);
+float fxdsp_output_gain_db(const fxdsp *dsp);
 unsigned fxdsp_peaks(const fxdsp *dsp, float *peaks, unsigned count);
 void fxdsp_reset_peaks(fxdsp *dsp);
 

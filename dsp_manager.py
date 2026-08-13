@@ -40,6 +40,9 @@ class DSPManager:
     LOUDNESS_DEFAULTS = {"enabled": False, "params": {"fftSize": 4096, "strength": 10, "volumeDb": 0.0, "calibration": {}, "calibrationProfiles": {}}}
     LOUDNESS_PLUGIN_VOLUME_MIN_DB = -83.0
     LOUDNESS_PLUGIN_VOLUME_MAX_DB = 7.0
+    LOUDNESS_STRENGTH_GUARD_DB = 18.0
+    LOUDNESS_OUTPUT_GAIN_MIN_DB = -36.0
+    LOUDNESS_STRENGTH_VOLUME_SETTLE_SECONDS = 0.35
     TONE_EFFECT_DEFAULTS = {"enabled": False, "mode": "crystalizer"}
 
     loudness_db_from_percent = staticmethod(volume_percent_to_db)
@@ -105,7 +108,7 @@ class DSPManager:
                 "output-gain": master_db - plugin_volume_db if definition["enabled"] else 0.0}
 
     def __init__(self, home: Optional[Path] = None,
-                 apply_callback: Optional[Callable[[Dict[str, Any]], Any]] = None):
+                  apply_callback: Optional[Callable[[Dict[str, Any]], Any]] = None):
         self.home = Path(home or Path.home())
         self.base_dir = self.home / ".config/fxroute/dsp"
         self.output_dir = self.base_dir / "presets"
@@ -119,6 +122,8 @@ class DSPManager:
         self.preset_store = DSPPresetStore(self.output_dir, self.irs_dir)
         self.state_store = DSPStateStore(self.state_dir)
         self.apply_callback = apply_callback
+        self.runtime_transition_callback = None
+        self.temporary_runtime_transition_callback = None
         self._bootstrap()
         self._runtime_properties = self.state_store.read("runtime.json", {})
         if not isinstance(self._runtime_properties, dict):
@@ -226,10 +231,12 @@ class DSPManager:
         return {"extras": normalized, "updated": 0 if skipped else 1, "skipped": skipped}
 
     def apply_autogain_loudness_runtime(self, previous_extras: Dict[str, Any],
-                                        extras: Dict[str, Any], *,
-                                        persist_all_presets: bool = True) -> Dict[str, Any]:
-        del previous_extras
+                                         extras: Dict[str, Any], *,
+                                         persist_all_presets: bool = True) -> Dict[str, Any]:
+        previous = self.normalize_effects_extras(previous_extras)
         normalized = self.normalize_effects_extras(extras)
+        if self.runtime_transition_callback:
+            return self.runtime_transition_callback(previous, normalized, persist_all_presets)
         autogain = self._autogain_plugin_payload(normalized["autogain"])
         loudness = self._loudness_plugin_payload(normalized["loudness"], normalized["autogain"])
         for plugin, values in (("autogain", autogain), ("loudness", loudness)):
@@ -243,6 +250,14 @@ class DSPManager:
     def apply_loudness_strength_runtime(self, previous_extras: Dict[str, Any],
                                         extras: Dict[str, Any]) -> Dict[str, Any]:
         return self.apply_autogain_loudness_runtime(previous_extras, extras)
+
+    def apply_temporary_effects_runtime(self, previous_extras: Dict[str, Any],
+                                        extras: Dict[str, Any]) -> None:
+        if not self.temporary_runtime_transition_callback:
+            raise RuntimeError("Temporary native DSP transition is unavailable")
+        self.temporary_runtime_transition_callback(
+            self.normalize_effects_extras(previous_extras),
+            self.normalize_effects_extras(extras))
 
     def set_loudness_volume_db(self, volume_db: float) -> Dict[str, Any]:
         previous = self.load_global_extras()
@@ -309,8 +324,9 @@ class DSPManager:
                 raise UnsupportedPluginError(f"Unsupported DSP plugin: {plugin.get('type')}")
 
     def compile_engine_config(self, output_layout: List[Dict[str, Any]], *,
-                              preset_name: Optional[str] = None,
-                              sample_rate_hz: int = 48000) -> Dict[str, Any]:
+                               preset_name: Optional[str] = None,
+                               sample_rate_hz: int = 48000,
+                               extras_override: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         if not isinstance(sample_rate_hz, int) or sample_rate_hz <= 0:
             raise ValueError("sample_rate_hz must be a positive integer")
         if not isinstance(output_layout, list) or not output_layout:
@@ -348,7 +364,9 @@ class DSPManager:
         chain = copy.deepcopy(payload["chain"])
         self._validate_supported_chain(chain)
         if active not in self.EXCLUDED_GLOBAL_EXTRAS_PRESETS:
-            chain.extend(self._extras_chain(self.load_global_extras()))
+            chain.extend(self._extras_chain(
+                self.normalize_effects_extras(extras_override)
+                if extras_override is not None else self.load_global_extras()))
         self._validate_supported_chain(chain)
         return {"schema": self.ENGINE_SCHEMA, "version": self.ENGINE_VERSION,
                 "sample_rate_hz": sample_rate_hz, "preset": active,
@@ -356,9 +374,11 @@ class DSPManager:
 
     def compile_engine_text(self, output_layout: List[Dict[str, Any]], *,
                             preset_name: Optional[str] = None,
-                            sample_rate_hz: int = 48000) -> str:
+                            sample_rate_hz: int = 48000,
+                            extras_override: Optional[Dict[str, Any]] = None) -> str:
         config = self.compile_engine_config(
-            output_layout, preset_name=preset_name, sample_rate_hz=sample_rate_hz)
+            output_layout, preset_name=preset_name, sample_rate_hz=sample_rate_hz,
+            extras_override=extras_override)
         max_input = max(route["input"] for output in config["outputs"] for route in output["routes"])
         lines = [f"rate {sample_rate_hz}", f"inputs {max_input + 1}", f"outputs {len(config['outputs'])}"]
         for output_index, output in enumerate(config["outputs"]):
@@ -514,7 +534,7 @@ class DSPManager:
                 control("th", 10.0 ** (float(params.get("thresholdDb", -1.0)) / 20.0))
                 control("knee", 1)
                 control("smooth", -5)
-                control("boost", 1)
+                control("boost", 0)
                 control("lk", max(0.1, min(20.0, float(params.get("lookaheadMs", 5.0)))))
                 control("at", max(0.25, min(20.0, float(params.get("attackMs", 5.0)))))
                 control("rt", max(0.25, min(20.0, float(params.get("releaseMs", 5.0)))))
@@ -545,7 +565,7 @@ class DSPManager:
     def _extras_chain(self, extras: Dict[str, Any]) -> List[dict]:
         normalized = self.normalize_effects_extras(extras)
         result = []
-        for plugin_type in ("headroom", "delay", "bass_enhancer", "autogain", "loudness", "limiter"):
+        for plugin_type in ("headroom", "delay"):
             definition = normalized[plugin_type]
             if definition.get("enabled"):
                 result.append({"id": f"global-{plugin_type}", "type": plugin_type,
@@ -554,6 +574,11 @@ class DSPManager:
         if tone.get("enabled"):
             result.append({"id": f"global-{tone['mode']}", "type": tone["mode"],
                            "enabled": True, "params": {}})
+        for plugin_type in ("bass_enhancer", "autogain", "loudness", "limiter"):
+            definition = normalized[plugin_type]
+            if definition.get("enabled"):
+                result.append({"id": f"global-{plugin_type}", "type": plugin_type,
+                               "enabled": True, "params": copy.deepcopy(definition.get("params", {}))})
         return result
 
     def validate_peq_v1(self, definition: Dict[str, Any]) -> Dict[str, Any]:

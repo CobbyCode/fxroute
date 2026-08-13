@@ -34,22 +34,29 @@ class _FakeProc:
 
 
 class PeakMonitorEmitFlowTests(unittest.IsolatedAsyncioTestCase):
-    def test_native_front_output_ports_are_capture_targets(self):
+    def test_native_post_effect_ports_are_capture_targets(self):
         text = '''
 id 1, type PipeWire:Interface:Port/3
     node.id = 42
-    port.name = "output_1"
-    port.alias = "fxroute_dsp:output_1"
+    port.name = "post_effect_FL"
+    port.alias = "fxroute_dsp:post_effect_FL"
 id 2, type PipeWire:Interface:Port/3
     node.id = 42
-    port.name = "output_2"
-    port.alias = "fxroute_dsp:output_2"
+    port.name = "post_effect_FR"
+    port.alias = "fxroute_dsp:post_effect_FR"
 '''
         ports = list(EasyEffectsPeakMonitor._iter_ports(text))
         self.assertEqual(
             EasyEffectsPeakMonitor._target_output_ports(TARGET, ports),
-            ("fxroute_dsp:output_1", "fxroute_dsp:output_2"),
+            ("fxroute_dsp:post_effect_FL", "fxroute_dsp:post_effect_FR"),
         )
+
+    def test_final_main_outputs_are_not_peak_capture_fallbacks(self):
+        ports = [
+            {"node_id": 42, "port_name": "output_1"},
+            {"node_id": 42, "port_name": "output_2"},
+        ]
+        self.assertEqual(EasyEffectsPeakMonitor._target_output_ports(TARGET, ports), (None, None))
 
     async def asyncSetUp(self):
         self.emits = []

@@ -60,6 +60,20 @@ class DSPManagerPresetTests(unittest.TestCase):
         }
         self.assertFalse(any(name.startswith("easyeffects") for name in imported))
 
+    def test_global_helpers_keep_legacy_tone_position(self):
+        extras = self.manager.normalize_effects_extras({
+            "headroom": {"enabled": True}, "delay": {"enabled": True},
+            "tone_effect": {"enabled": True, "mode": "crystalizer"},
+            "bass_enhancer": {"enabled": True}, "autogain": {"enabled": True},
+            "loudness": {"enabled": True}, "limiter": {"enabled": True},
+        })
+        self.assertEqual([item["type"] for item in self.manager._extras_chain(extras)], [
+            "headroom", "delay", "crystalizer", "bass_enhancer",
+            "autogain", "loudness", "limiter",
+        ])
+        extras["tone_effect"]["mode"] = "maximizer"
+        self.assertEqual([item["type"] for item in self.manager._extras_chain(extras)][2], "maximizer")
+
     def test_engine_text_uses_sparse_routes_for_stereo_and_subwoofers(self):
         stereo = self.manager.compile_engine_text(
             [{"name": "FL", "routes": [{"input": 0, "gain": 1.0}]},

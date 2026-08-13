@@ -522,10 +522,9 @@ class EasyEffectsPeakMonitor:
             for port in ports
             if port["node_id"] == target.source_id
         }
-        if {"output_1", "output_2"}.issubset(names):
-            return f"{target.source_name}:output_1", f"{target.source_name}:output_2"
-        if {"output_FL", "output_FR"}.issubset(names):
-            return f"{target.source_name}:output_FL", f"{target.source_name}:output_FR"
+        if {"post_effect_FL", "post_effect_FR"}.issubset(names):
+            return (f"{target.source_name}:post_effect_FL",
+                    f"{target.source_name}:post_effect_FR")
         return None, None
 
     @staticmethod

@@ -7,6 +7,7 @@ explicit raw/helper scope keeps resolving to the hardware sink.
 """
 
 import pathlib
+import asyncio
 import sys
 import tempfile
 import unittest
@@ -70,65 +71,64 @@ class MeasurementPlaybackTargetTests(unittest.TestCase):
         self.assertIn("fxroute_dsp_sink", str(caught.exception))
         self.assertNotIn("alsa_output.hw", str(caught.exception))
 
-    def test_raw_helper_scope_keeps_hardware_sink(self):
+    def test_raw_helper_scope_uses_native_ingress_sink(self):
         target = self._resolve(stereo_overview(), scope=MEASUREMENT_SCOPE_RAW_HELPER)
-        self.assertEqual(target["target_name"], "alsa_output.hw")
+        self.assertEqual(target["target_name"], "fxroute_dsp_sink")
 
-    def test_subwoofer_active_chain_repairs_missing_easyeffects_helper_links(self):
-        playback_target = {"target_name": "fxroute_dsp_sink"}
-        playback_route = {
-            "route": "subwoofer-active-chain",
-            "output_mode": "subwoofer-2.2",
-            "playback_target_name": "fxroute_dsp_sink",
-            "helper_node_name": "fxroute_21_stage1",
+    def test_both_scopes_use_real_native_ingress_topology(self):
+        target = {"target_name": "fxroute_dsp_sink"}
+        for scope in (MEASUREMENT_SCOPE_ACTIVE_CHAIN, MEASUREMENT_SCOPE_RAW_HELPER):
+            route = self.store._build_measurement_playback_route(
+                "measure", target, measurement_scope=scope, overview=subwoofer_overview())
+            self.assertEqual(route["route"], "direct-sink")
+            self.assertEqual(route["playback_target_name"], "fxroute_dsp_sink")
+
+    def test_pre_sweep_validation_uses_native_runtime_config_not_stage1_argv(self):
+        self.store.runtime_snapshot_provider = lambda: {
+            "active": True,
+            "config": {"sample_rate": 48000, "output_mode": "subwoofer-2.2", "layout": [{}, {}, {}, {}]},
+            "effect_bypass": True,
         }
-        existing_links = set()
-        creation_order = []
+        snapshot = self.store._build_pre_sweep_state_snapshot(
+            job_id="job", sample_rate=48000,
+            playback_route={"route": "direct-sink", "measurement_scope": MEASUREMENT_SCOPE_RAW_HELPER,
+                            "output_mode": "subwoofer-2.2"})
+        self.assertIsNone(snapshot["validation_failure"])
+        self.assertNotIn("parsed", snapshot)
 
-        def create_link(source_port, target_port):
-            creation_order.append((source_port, target_port))
-            existing_links.add((source_port, target_port))
+    def test_raw_helper_bypass_is_restored_after_worker_failure(self):
+        calls = []
 
-        with patch.object(
-            self.store,
-            "_wait_for_measurement_play_ports",
-            return_value={"left": "measure:output_FL", "right": "measure:output_FR"},
-        ), patch.object(
-            self.store,
-            "_list_pw_ports",
-            return_value=["fxroute_dsp_sink:playback_FL", "fxroute_dsp_sink:playback_FR"],
-        ), patch.object(
-            self.store, "_create_pipewire_link", side_effect=create_link
-        ) as create, patch.object(
-            self.store,
-            "_pipewire_link_exists",
-            side_effect=lambda source, target: (source, target) in existing_links,
-        ), patch.object(
-            self.store, "_remove_subwoofer_direct_easyeffects_hardware_links", return_value=[]
-        ) as remove_direct, patch.object(
-            self.store, "_find_subwoofer_direct_easyeffects_hardware_links", return_value=[]
-        ), patch.object(
-            self.store, "_list_relevant_pw_links", return_value=[]
-        ):
-            diagnostics = self.store._link_measurement_playback_to_active_chain(
-                play_node_name="measure",
-                playback_target=playback_target,
-                playback_route=playback_route,
-            )
+        async def set_bypass(value):
+            calls.append(value)
+            return False
 
-        created_links = [call.args for call in create.call_args_list]
-        self.assertIn(("fxroute_dsp:output_FL", "fxroute_21_stage1:input_L"), created_links)
-        self.assertIn(("fxroute_dsp:output_FR", "fxroute_21_stage1:input_R"), created_links)
-        self.assertNotIn(("measure:output_FL", "alsa_output.hw:playback_FL"), created_links)
-        self.assertLess(
-            creation_order.index(("fxroute_dsp:output_FR", "fxroute_21_stage1:input_R")),
-            creation_order.index(("measure:output_FL", "fxroute_dsp_sink:playback_FL")),
-        )
-        self.assertEqual(
-            remove_direct.call_count,
-            2,
-        )
-        self.assertEqual(len(diagnostics["active_chain_output_links"]), 2)
+        self.store.effect_bypass_setter = set_bypass
+        self.store._jobs["job"] = {
+            "id": "job", "status": "queued", "measurement_scope": MEASUREMENT_SCOPE_RAW_HELPER,
+            "created_at": "2026-01-01T00:00:00+00:00",
+        }
+        self.store._execute_capture_job = lambda _job: (_ for _ in ()).throw(RuntimeError("capture failed"))
+        asyncio.run(self.store._run_measurement_job("job"))
+        self.assertEqual(calls, [True, False])
+        self.assertEqual(self.store._jobs["job"]["status"], "failed")
+
+    def test_active_chain_does_not_change_effect_bypass(self):
+        calls = []
+
+        async def set_bypass(value):
+            calls.append(value)
+            return False
+
+        self.store.effect_bypass_setter = set_bypass
+        self.store._jobs["job"] = {
+            "id": "job", "status": "queued", "measurement_scope": MEASUREMENT_SCOPE_ACTIVE_CHAIN,
+            "created_at": "2026-01-01T00:00:00+00:00",
+        }
+        self.store._execute_capture_job = lambda _job: {"message": "ok"}
+        asyncio.run(self.store._run_measurement_job("job"))
+        self.assertEqual(calls, [])
+        self.assertEqual(self.store._jobs["job"]["status"], "completed")
 
     def test_measurement_cleanup_does_not_remove_active_chain_output_links(self):
         temporary_links = [
@@ -159,10 +159,7 @@ class MeasurementPlaybackTargetTests(unittest.TestCase):
                 ("measure:output_FR", "fxroute_dsp_sink:playback_FR"),
             ],
         )
-        self.assertNotIn(
-            ("fxroute_dsp:output_FL", "fxroute_21_stage1:input_L"),
-            removed_links,
-        )
+        self.assertNotIn(("fxroute_dsp_sink:monitor_FL", "fxroute_dsp:input_1"), removed_links)
 
 
 if __name__ == "__main__":

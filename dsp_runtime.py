@@ -9,6 +9,7 @@ import os
 import tempfile
 import time
 import json
+import logging
 import socket
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,7 +19,9 @@ DSP_NODE_NAME = "fxroute_dsp"
 DSP_INGRESS_MONITOR_NODE = "fxroute_dsp_sink"
 DSP_INGRESS_PORTS = ("monitor_FL", "monitor_FR")
 DSP_INPUT_PORTS = ("input_1", "input_2")
+DSP_POST_EFFECT_PORTS = ("post_effect_FL", "post_effect_FR")
 DEFAULT_SAMPLE_RATE = 48_000
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -197,12 +200,16 @@ class DSPRuntime:
         self._config_path: Path | None = None
         self._links: list[PipeWireLink] = []
         self._lock = asyncio.Lock()
+        self._measurement_scope_lock = asyncio.Lock()
+        self._control_lock = asyncio.Lock()
         self._error: str | None = None
         self._started_at: float | None = None
         self._control_socket: socket.socket | None = None
         self._control_path: Path | None = None
         self._control_client_path: Path | None = None
         self._exact_sub_mute = False
+        self._effect_bypass = False
+        self._output_gain_db = 0.0
 
     @property
     def sync_in_progress(self) -> bool:
@@ -240,9 +247,11 @@ class DSPRuntime:
                 "helper_pid": getattr(self._process, "pid", None) if running else None,
                 "helper_args": [str(self.binary), str(self._config_path)] if self._config_path else None,
                 "config": {"sample_rate": self._config.sample_rate, "output_mode": self._config.output_mode,
-                           "output_key": self._config.output_key} if self._config else None,
+                            "output_key": self._config.output_key,
+                            "layout": [dict(channel) for channel in getattr(self._config, "layout", ())]} if self._config else None,
                 "last_error": self._error, "last_started_at": self._started_at,
-                "links_configured": bool(self._links), "exact_sub_mute": self._exact_sub_mute}
+                "links_configured": bool(self._links), "exact_sub_mute": self._exact_sub_mute,
+                "effect_bypass": self._effect_bypass, "output_gain_db": self._output_gain_db}
 
     async def set_exact_sub_mute(self, enabled: bool) -> bool:
         previous = self._exact_sub_mute
@@ -262,7 +271,68 @@ class DSPRuntime:
             raise RuntimeError("Native DSP returned invalid peak data")
         return {f"output_{index + 1}": float(value) for index, value in enumerate(values)}
 
+    async def set_effect_bypass(self, enabled: bool) -> bool:
+        async with self._control_lock:
+            previous = bool(int((await self._control_unlocked(
+                "effects bypass get", reply=True)).strip()))
+            await self._control_unlocked(
+                f"effects bypass {1 if enabled else 0}", reply=True)
+        self._effect_bypass = bool(enabled)
+        return previous
+
+    async def enter_raw_measurement(self) -> bool:
+        await self._measurement_scope_lock.acquire()
+        transition = asyncio.create_task(self.set_effect_bypass(True))
+        try:
+            return await asyncio.shield(transition)
+        except BaseException:
+            try:
+                previous = await transition
+                await asyncio.shield(self.set_effect_bypass(previous))
+            finally:
+                self._measurement_scope_lock.release()
+            raise
+
+    async def exit_raw_measurement(self, previous: bool) -> None:
+        restoration = asyncio.create_task(self.set_effect_bypass(previous))
+        try:
+            await asyncio.shield(restoration)
+        except BaseException:
+            await restoration
+            raise
+        finally:
+            self._measurement_scope_lock.release()
+
+    async def enter_active_measurement(self) -> bool:
+        await self._measurement_scope_lock.acquire()
+        return self._effect_bypass
+
+    async def exit_active_measurement(self, _previous: bool) -> None:
+        self._measurement_scope_lock.release()
+
+    async def set_output_gain_db(self, gain_db: float) -> float:
+        value = max(-80.0, min(0.0, float(gain_db)))
+        await self._control(f"gain db {value:.9g}", reply=True)
+        self._output_gain_db = value
+        return value
+
+    async def ramp_output_gain_db(self, start_db: float, target_db: float, *,
+                                  step_db: float = 3.0,
+                                  interval_seconds: float = 0.006) -> None:
+        current = max(-80.0, min(0.0, float(start_db)))
+        target = max(-80.0, min(0.0, float(target_db)))
+        await self.set_output_gain_db(current)
+        while current < target:
+            current = min(target, current + max(0.1, float(step_db)))
+            if interval_seconds > 0:
+                await asyncio.sleep(interval_seconds)
+            await self.set_output_gain_db(current)
+
     async def _control(self, command: str, *, reply: bool) -> str:
+        async with self._control_lock:
+            return await self._control_unlocked(command, reply=reply)
+
+    async def _control_unlocked(self, command: str, *, reply: bool) -> str:
         if self._control_socket is None or self._control_path is None:
             raise RuntimeError("Native DSP control is unavailable")
         self._control_socket.sendto(command.encode(), str(self._control_path))
@@ -275,7 +345,48 @@ class DSPRuntime:
             raise RuntimeError(response)
         return response
 
-    async def sync(self, overview: dict[str, Any]) -> None:
+    async def guarded_rebuild(self, overview: dict[str, Any], *, guard_db: float,
+                              apply_candidate: Callable[[], Any],
+                              apply_previous: Callable[[], Any],
+                              settle_seconds: float = 0.35,
+                              candidate_extras: dict[str, Any] | None = None,
+                              previous_extras: dict[str, Any] | None = None,
+                              before_ramp: Callable[[], Awaitable[Any]] | None = None,
+                              before_rollback_ramp: Callable[[], Awaitable[Any]] | None = None) -> None:
+        guard = max(-80.0, min(0.0, float(guard_db)))
+        async with self._measurement_scope_lock:
+            await self.set_output_gain_db(guard)
+            try:
+                await self._sync(overview, initial_output_gain_db=guard,
+                                 extras_override=candidate_extras)
+                if settle_seconds > 0:
+                    await asyncio.sleep(settle_seconds)
+                if before_ramp:
+                    await before_ramp()
+                await self.ramp_output_gain_db(guard, 0.0)
+                apply_candidate()
+            except BaseException:
+                try:
+                    apply_previous()
+                    await self._sync(overview, initial_output_gain_db=guard,
+                                     extras_override=previous_extras)
+                    if settle_seconds > 0:
+                        await asyncio.sleep(settle_seconds)
+                    if before_rollback_ramp:
+                        await before_rollback_ramp()
+                    await self.ramp_output_gain_db(guard, 0.0)
+                except BaseException:
+                    logger.exception("Native DSP guarded transition rollback failed")
+                raise
+
+    async def sync(self, overview: dict[str, Any], *, initial_output_gain_db: float = 0.0,
+                   extras_override: dict[str, Any] | None = None) -> None:
+        async with self._measurement_scope_lock:
+            await self._sync(overview, initial_output_gain_db=initial_output_gain_db,
+                             extras_override=extras_override)
+
+    async def _sync(self, overview: dict[str, Any], *, initial_output_gain_db: float = 0.0,
+                    extras_override: dict[str, Any] | None = None) -> None:
         config = DSPRuntimeConfig.from_overview(overview)
         if not config.output_key:
             raise RuntimeError("Native DSP requires a selected hardware output")
@@ -283,7 +394,9 @@ class DSPRuntime:
             if not self.binary.is_file():
                 self._error = f"Native DSP binary is not available: {self.binary}"
                 raise RuntimeError(self._error)
-            text = self.manager.compile_engine_text(list(config.layout), sample_rate_hz=config.sample_rate)
+            text = self.manager.compile_engine_text(
+                list(config.layout), sample_rate_hz=config.sample_rate,
+                extras_override=extras_override)
             fd, config_name = tempfile.mkstemp(prefix="fxroute-dsp-", suffix=".conf")
             os.write(fd, text.encode("utf-8")); os.close(fd)
             input_fd, input_name = tempfile.mkstemp(prefix="fxroute-dsp-input-", suffix=".f32")
@@ -314,6 +427,9 @@ class DSPRuntime:
                 self._config = config
                 self._started_at = time.time()
                 await self._wait_for_ports(config)
+                await self.set_output_gain_db(initial_output_gain_db)
+                self._effect_bypass = bool(int(
+                    (await self._control("effects bypass get", reply=True)).strip()))
                 await self._remove_direct_source_links()
                 links = [
                     PipeWireLink(f"{DSP_INGRESS_MONITOR_NODE}:{DSP_INGRESS_PORTS[0]}", f"{DSP_NODE_NAME}:{DSP_INPUT_PORTS[0]}"),
@@ -337,6 +453,7 @@ class DSPRuntime:
     async def _wait_for_ports(self, config: DSPRuntimeConfig) -> None:
         expected = [f"{DSP_NODE_NAME}:input_1", f"{DSP_NODE_NAME}:input_2"]
         expected.extend(f"{DSP_NODE_NAME}:output_{index + 1}" for index in range(len(config.hardware_ports)))
+        expected.extend(f"{DSP_NODE_NAME}:{port}" for port in DSP_POST_EFFECT_PORTS)
         for _ in range(50):
             result = await self._run(("pw-link", "-io"))
             if result.returncode == 0 and all(port in result.stdout for port in expected):
@@ -374,6 +491,8 @@ class DSPRuntime:
                 pass
         self._control_path = self._control_client_path = None
         self._exact_sub_mute = False
+        self._effect_bypass = False
+        self._output_gain_db = 0.0
 
     async def verify(self) -> bool:
         if not self._links:

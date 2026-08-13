@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
 import autosub
-from measurement import MEASUREMENT_SUBWOOFER_HELPER_ROUTE, MeasurementStore
+from measurement import MEASUREMENT_SCOPE_ACTIVE_CHAIN, MEASUREMENT_SCOPE_RAW_HELPER, MeasurementStore
 
 
 def runtime_config() -> main.SubwooferRuntimeConfig:
@@ -48,7 +48,7 @@ class AutoSubPlaybackGainTests(unittest.TestCase):
             play_node_name="fxroute-measure-play-test",
             playback_path=Path("/tmp/sweep.wav"),
             playback_target={"target_name": "alsa_output.test"},
-            playback_route={"route": MEASUREMENT_SUBWOOFER_HELPER_ROUTE},
+            playback_route={"route": "direct-sink", "measurement_scope": MEASUREMENT_SCOPE_RAW_HELPER},
             playback_gain=captured["linear"],
         )
         self.assertIn("--volume=1", command)
@@ -68,7 +68,7 @@ class AutoSubPlaybackGainTests(unittest.TestCase):
             play_node_name="fxroute-measure-play-test",
             playback_path=Path("/tmp/sweep.wav"),
             playback_target={"target_name": "alsa_output.test"},
-            playback_route={"route": MEASUREMENT_SUBWOOFER_HELPER_ROUTE},
+            playback_route={"route": "direct-sink", "measurement_scope": MEASUREMENT_SCOPE_RAW_HELPER},
             playback_gain=captured["linear"],
         )
         self.assertIn("--volume=0.1", command)
@@ -105,7 +105,7 @@ class AutoSubPlaybackGainTests(unittest.TestCase):
             "play_node_name": "fxroute-measure-play-test",
             "playback_path": Path("/tmp/sweep.wav"),
             "playback_target": {"target_name": "alsa_output.test"},
-            "playback_route": {"route": "subwoofer-active-chain"},
+            "playback_route": {"route": "direct-sink", "measurement_scope": MEASUREMENT_SCOPE_ACTIVE_CHAIN},
         }
         without_gain = MeasurementStore._build_measurement_play_command(**kwargs)
         with_gain = MeasurementStore._build_measurement_play_command(

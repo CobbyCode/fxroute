@@ -218,7 +218,7 @@ class DSPRuntimeConfigTests(unittest.TestCase):
         for expected in ("control g_in 0.707945784", "control g_out 1.25892541",
                           "control th 0.794328235", "control at 4", "control rt 20",
                           "control lk 6", "control slink 80", "control alr 0",
-                          "control boost 1", "control extsc 0", "control mode 0",
+                          "control boost 0", "control extsc 0", "control mode 0",
                           "control ovs 0", "control dith 0", "control scp 1",
                           "control in2lk 0", "control sc2lk 0"):
             self.assertIn(expected, text)
@@ -238,6 +238,182 @@ class DSPRuntimeConfigTests(unittest.TestCase):
 
     def test_ingress_links_use_exported_null_sink_monitor_ports(self):
         self.assertEqual(DSP_INGRESS_MONITOR_NODE, "fxroute_dsp_sink")
+
+    def test_runtime_controls_effect_bypass_and_output_gain(self):
+        commands = []
+
+        async def exercise():
+            runtime = DSPRuntime(self.manager)
+            async def control(command, *, reply):
+                commands.append((command, reply))
+                return "0\n" if command.endswith("get") else "ok\n"
+            runtime._control_unlocked = control
+            previous = await runtime.set_effect_bypass(True)
+            self.assertFalse(previous)
+            await runtime.set_output_gain_db(-18)
+            await runtime.ramp_output_gain_db(-18, 0, step_db=3, interval_seconds=0)
+
+        asyncio.run(exercise())
+        self.assertEqual(commands[0][0], "effects bypass get")
+        self.assertIn(("effects bypass 1", True), commands)
+        self.assertEqual(commands[-1][0], "gain db 0")
+
+    def test_runtime_snapshot_reports_actual_layout_and_effect_bypass(self):
+        runtime = DSPRuntime(self.manager)
+        runtime._config = DSPRuntimeConfig.from_overview(self.overview("subwoofer-2.1"))
+        runtime._effect_bypass = True
+        snapshot = runtime.snapshot()
+        self.assertEqual(snapshot["config"]["sample_rate"], 48000)
+        self.assertEqual(snapshot["config"]["output_mode"], "subwoofer-2.1")
+        self.assertEqual(len(snapshot["config"]["layout"]), 4)
+        self.assertTrue(snapshot["effect_bypass"])
+
+    def test_effect_bypass_restore_uses_engine_readback_not_shadow_state(self):
+        commands = []
+
+        async def exercise():
+            runtime = DSPRuntime(self.manager)
+            runtime._effect_bypass = False
+            async def control(command, *, reply):
+                commands.append(command)
+                return "1\n" if command == "effects bypass get" else "ok\n"
+            runtime._control_unlocked = control
+            previous = await runtime.set_effect_bypass(True)
+            self.assertTrue(previous)
+
+        asyncio.run(exercise())
+        self.assertEqual(commands, ["effects bypass get", "effects bypass 1"])
+
+    def test_control_requests_are_serialized(self):
+        active = 0
+        maximum = 0
+
+        async def exercise():
+            runtime = DSPRuntime(self.manager)
+
+            async def control(_command, *, reply):
+                nonlocal active, maximum
+                active += 1
+                maximum = max(maximum, active)
+                await asyncio.sleep(0.01)
+                active -= 1
+                return "ok\n" if reply else ""
+
+            runtime._control_unlocked = control
+            await asyncio.gather(
+                runtime._control("first", reply=True),
+                runtime._control("second", reply=True),
+            )
+
+        asyncio.run(exercise())
+        self.assertEqual(maximum, 1)
+
+    def test_cancelled_raw_scope_entry_restores_bypass_before_unlocking(self):
+        state = False
+        bypass_started = asyncio.Event()
+        release_bypass = asyncio.Event()
+
+        async def exercise():
+            nonlocal state
+            runtime = DSPRuntime(self.manager)
+
+            async def control(command, *, reply):
+                nonlocal state
+                if command == "effects bypass get":
+                    return f"{int(state)}\n"
+                if command == "effects bypass 1":
+                    state = True
+                    bypass_started.set()
+                    await release_bypass.wait()
+                elif command == "effects bypass 0":
+                    state = False
+                return "ok\n" if reply else ""
+
+            runtime._control_unlocked = control
+            task = asyncio.create_task(runtime.enter_raw_measurement())
+            await bypass_started.wait()
+            task.cancel()
+            release_bypass.set()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            self.assertFalse(state)
+            self.assertFalse(runtime._measurement_scope_lock.locked())
+
+        asyncio.run(exercise())
+
+    def test_guarded_rebuild_starts_candidate_at_guard_and_ramps(self):
+        events = []
+
+        async def exercise():
+            runtime = DSPRuntime(self.manager)
+            runtime.set_output_gain_db = lambda value: record_async(events, ("gain", value))
+            runtime._sync = lambda overview, **kwargs: record_async(
+                events, ("sync", kwargs["initial_output_gain_db"]))
+            runtime.ramp_output_gain_db = lambda start, target, **kwargs: record_async(
+                events, ("ramp", start, target))
+            await runtime.guarded_rebuild(
+                self.overview("stereo"), guard_db=-18,
+                apply_candidate=lambda: events.append(("apply", "new")),
+                apply_previous=lambda: events.append(("apply", "old")),
+                settle_seconds=0)
+
+        async def record_async(target, event):
+            target.append(event)
+
+        asyncio.run(exercise())
+        self.assertEqual(events, [
+            ("gain", -18), ("sync", -18), ("ramp", -18, 0.0), ("apply", "new"),
+        ])
+
+    def test_guarded_rebuild_rolls_back_previous_state_on_failure(self):
+        events = []
+
+        async def exercise():
+            runtime = DSPRuntime(self.manager)
+            runtime.set_output_gain_db = lambda value: record(("gain", value))
+            sync_count = 0
+            async def sync(_overview, **kwargs):
+                nonlocal sync_count
+                sync_count += 1
+                events.append(("sync", sync_count, kwargs["initial_output_gain_db"]))
+                if sync_count == 1:
+                    raise RuntimeError("candidate failed")
+            runtime._sync = sync
+            runtime.ramp_output_gain_db = lambda start, target, **kwargs: record(("ramp", start, target))
+            with self.assertRaisesRegex(RuntimeError, "candidate failed"):
+                await runtime.guarded_rebuild(
+                    self.overview("stereo"), guard_db=-24,
+                    apply_candidate=lambda: events.append(("apply", "new")),
+                    apply_previous=lambda: events.append(("apply", "old")),
+                    settle_seconds=0)
+
+        async def record(event):
+            events.append(event)
+
+        asyncio.run(exercise())
+        self.assertEqual(events, [
+            ("gain", -24), ("sync", 1, -24),
+            ("apply", "old"), ("sync", 2, -24), ("ramp", -24, 0.0),
+        ])
+
+    def test_guarded_rebuild_preserves_original_error_when_rollback_fails(self):
+        async def exercise():
+            runtime = DSPRuntime(self.manager)
+            runtime.set_output_gain_db = lambda _value: complete()
+            async def sync(_overview, **_kwargs):
+                raise RuntimeError("candidate failed")
+            runtime._sync = sync
+            with self.assertRaisesRegex(RuntimeError, "candidate failed"):
+                await runtime.guarded_rebuild(
+                    self.overview("stereo"), guard_db=-18,
+                    apply_candidate=lambda: None,
+                    apply_previous=lambda: (_ for _ in ()).throw(RuntimeError("rollback failed")),
+                    settle_seconds=0)
+
+        async def complete():
+            return None
+
+        asyncio.run(exercise())
 
     def test_reclean_removes_direct_player_hardware_links(self):
         commands = []

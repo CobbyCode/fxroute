@@ -3980,7 +3980,8 @@ async def _set_canonical_output_volume(volume: float | int) -> dict[str, Any]:
                 volume_result = await _drain_worker(
                     easyeffects_manager.set_loudness_volume_db, volume_db
                 )
-                await _sync_subwoofer_runtime(reason="native-dsp-loudness-volume")
+                if not volume_result.get("runtime_applied"):
+                    await _sync_subwoofer_runtime(reason="native-dsp-loudness-volume")
                 await _drain_worker(set_output_volume, 100)
                 return {
                     "volume": requested,
@@ -5075,11 +5076,11 @@ def _authoritative_sample_rate(status: dict | None) -> int | None:
 
 
 def _helper_argument_sample_rate(snapshot: dict | None) -> int | None:
-    """Extract the native DSP rate, with legacy argument parsing as fallback."""
+    """Extract the native DSP rate from its runtime config."""
     config = (snapshot or {}).get("config")
     if isinstance(config, dict) and isinstance(config.get("sample_rate"), int):
         return config["sample_rate"]
-    return samplerate.helper_argument_sample_rate(snapshot)
+    return None
 
 
 async def _sync_subwoofer_runtime(
@@ -5481,6 +5482,75 @@ async def lifespan(app: FastAPI):
 
         peak_monitor = EasyEffectsPeakMonitor(on_change=on_peak_monitor_change)
         subwoofer_runtime = DSPRuntime(easyeffects_manager)
+        if hasattr(measurement_store, "runtime_snapshot_provider"):
+            measurement_store.runtime_snapshot_provider = getattr(subwoofer_runtime, "snapshot", None)
+            measurement_store.effect_bypass_setter = getattr(subwoofer_runtime, "set_effect_bypass", None)
+            measurement_store.raw_scope_enter = getattr(subwoofer_runtime, "enter_raw_measurement", None)
+            measurement_store.raw_scope_exit = getattr(subwoofer_runtime, "exit_raw_measurement", None)
+            measurement_store.active_scope_enter = getattr(subwoofer_runtime, "enter_active_measurement", None)
+            measurement_store.active_scope_exit = getattr(subwoofer_runtime, "exit_active_measurement", None)
+        runtime_loop = asyncio.get_running_loop()
+
+        def guarded_effects_transition(previous, candidate, persist_all_presets):
+            old_loudness = easyeffects_manager._loudness_plugin_payload(
+                previous["loudness"], previous["autogain"])
+            new_loudness = easyeffects_manager._loudness_plugin_payload(
+                candidate["loudness"], candidate["autogain"])
+            guard_db = max(
+                easyeffects_manager.LOUDNESS_OUTPUT_GAIN_MIN_DB,
+                min(float(old_loudness["output-gain"]),
+                    float(new_loudness["output-gain"]))
+                - easyeffects_manager.LOUDNESS_STRENGTH_GUARD_DB,
+            )
+
+            async def transition():
+                overview = get_audio_output_overview()
+                result_holder = {}
+                enabling = (not previous["loudness"]["enabled"]
+                            and candidate["loudness"]["enabled"])
+                system_volume_before = await _drain_worker(get_output_volume) if enabling else None
+
+                def persist_candidate():
+                    result_holder["result"] = (
+                        easyeffects_manager.apply_global_extras_to_all_presets(candidate)
+                        if persist_all_presets else
+                        easyeffects_manager.apply_global_extras_to_active_preset(candidate))
+
+                await subwoofer_runtime.guarded_rebuild(
+                    overview,
+                    guard_db=guard_db,
+                    apply_candidate=persist_candidate,
+                    apply_previous=lambda: easyeffects_manager.save_global_extras(previous),
+                    settle_seconds=easyeffects_manager.LOUDNESS_STRENGTH_VOLUME_SETTLE_SECONDS,
+                    candidate_extras=candidate,
+                    previous_extras=previous,
+                    before_ramp=(lambda: _drain_worker(set_output_volume, 100)) if enabling else None,
+                    before_rollback_ramp=(lambda: _drain_worker(
+                        set_output_volume, system_volume_before)) if enabling else None,
+                )
+                result = result_holder["result"]
+                result["runtime_applied"] = True
+                return result
+
+            return asyncio.run_coroutine_threadsafe(transition(), runtime_loop).result()
+
+        easyeffects_manager.runtime_transition_callback = guarded_effects_transition
+
+        def temporary_effects_transition(previous, candidate):
+            async def transition():
+                async with _easyeffects_mutation_lock():
+                    await subwoofer_runtime.guarded_rebuild(
+                        get_audio_output_overview(),
+                        guard_db=-18.0,
+                        apply_candidate=lambda: None,
+                        apply_previous=lambda: None,
+                        settle_seconds=easyeffects_manager.LOUDNESS_STRENGTH_VOLUME_SETTLE_SECONDS,
+                        candidate_extras=candidate,
+                        previous_extras=previous,
+                    )
+            asyncio.run_coroutine_threadsafe(transition(), runtime_loop).result()
+
+        easyeffects_manager.temporary_runtime_transition_callback = temporary_effects_transition
         try:
             stop_orphans = getattr(subwoofer_runtime, "_stop_orphan_helpers", None)
             if callable(stop_orphans):
@@ -6772,12 +6842,13 @@ async def save_easyeffects_extras(request: Request):
                 raise
 
         active_preset = ee_manager.get_active_preset()
-        if active_preset and active_preset not in ee_manager.EXCLUDED_GLOBAL_EXTRAS_PRESETS:
+        if (not result.get("runtime_applied") and active_preset
+                and active_preset not in ee_manager.EXCLUDED_GLOBAL_EXTRAS_PRESETS):
             try:
                 await _load_easyeffects_preset(active_preset)
             except Exception as e:
                 logger.warning("Failed to reload active preset after extras update: %s", e)
-        if enabling_loudness:
+        if enabling_loudness and not result.get("runtime_applied"):
             await _drain_worker(set_output_volume, 100)
     finally:
         if canonical_lock is not None:

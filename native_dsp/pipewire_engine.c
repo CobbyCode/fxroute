@@ -2,6 +2,7 @@
 
 #include <pipewire/pipewire.h>
 #include <errno.h>
+#include <math.h>
 #include <poll.h>
 #include <pthread.h>
 #include <signal.h>
@@ -19,6 +20,7 @@ struct engine {
     fxdsp *dsp;
     void *input[FXDSP_MAX_CHANNELS];
     void *output[FXDSP_MAX_CHANNELS];
+    void *post_effect[2];
     int control_fd;
     const char *control_path;
     pthread_t control_thread;
@@ -41,6 +43,8 @@ static void handle_control(struct engine *engine, char *command, const struct so
     static const char mute_command[]="mute";
     static const char peaks_reset_command[]="peaks reset";
     static const char peaks_get_command[]="peaks get";
+    static const char effects_bypass_command[]="effects bypass";
+    static const char gain_db_command[]="gain db";
     long mask;
     int value;
     char extra;
@@ -53,6 +57,23 @@ static void handle_control(struct engine *engine, char *command, const struct so
         (void)sendto(engine->control_fd,"ok\n",3,0,(const struct sockaddr *)client,client_size);
     }
     else if(!strcmp(command,peaks_get_command))reply_peaks(engine,client,client_size);
+    else if(sscanf(command,"effects bypass %d %c",&value,&extra)==1&&!strncmp(command,effects_bypass_command,sizeof effects_bypass_command-1)&&(value==0||value==1)) {
+        fxdsp_set_effect_bypass(engine->dsp,value);
+        (void)sendto(engine->control_fd,"ok\n",3,0,(const struct sockaddr *)client,client_size);
+    }
+    else if(!strcmp(command,"effects bypass get")) {
+        char reply[16]; int size=snprintf(reply,sizeof reply,"%d\n",fxdsp_effect_bypass(engine->dsp));
+        (void)sendto(engine->control_fd,reply,(size_t)size,0,(const struct sockaddr *)client,client_size);
+    }
+    else { float gain_db;
+        if(sscanf(command,"gain db %f %c",&gain_db,&extra)==1&&!strncmp(command,gain_db_command,sizeof gain_db_command-1)&&isfinite(gain_db)&&gain_db>=-80.0f&&gain_db<=0.0f) {
+            fxdsp_set_output_gain_db(engine->dsp,gain_db);
+            (void)sendto(engine->control_fd,"ok\n",3,0,(const struct sockaddr *)client,client_size);
+        } else if(!strcmp(command,"gain db get")) {
+            char reply[32]; int size=snprintf(reply,sizeof reply,"%.9g\n",fxdsp_output_gain_db(engine->dsp));
+            (void)sendto(engine->control_fd,reply,(size_t)size,0,(const struct sockaddr *)client,client_size);
+        } else (void)sendto(engine->control_fd,"error invalid command\n",22,0,(const struct sockaddr *)client,client_size);
+    }
 }
 
 static void *control_main(void *data) {
@@ -98,6 +119,7 @@ static void on_process(void *data, struct spa_io_position *position) {
     uint32_t frames = position && position->clock.duration ? position->clock.duration : 1024;
     const float *input[FXDSP_MAX_CHANNELS];
     float *output[FXDSP_MAX_CHANNELS];
+    float *post_effect[2];
     int complete = 1;
     for (unsigned i = 0; i < fxdsp_inputs(engine->dsp); i++) {
         input[i] = pw_filter_get_dsp_buffer(engine->input[i], frames);
@@ -107,12 +129,18 @@ static void on_process(void *data, struct spa_io_position *position) {
         output[i] = pw_filter_get_dsp_buffer(engine->output[i], frames);
         if (!output[i]) complete = 0;
     }
+    for (unsigned i = 0; i < 2; i++) {
+        post_effect[i] = pw_filter_get_dsp_buffer(engine->post_effect[i], frames);
+    }
     if (!complete) {
         for (unsigned i = 0; i < fxdsp_outputs(engine->dsp); i++)
             if (output[i]) memset(output[i], 0, frames * sizeof *output[i]);
+        for (unsigned i = 0; i < 2; i++)
+            if (post_effect[i]) memset(post_effect[i], 0, frames * sizeof *post_effect[i]);
         return;
     }
-    fxdsp_process(engine->dsp, input, output, frames);
+    fxdsp_process_tapped(engine->dsp, input, output,
+                         post_effect[0] && post_effect[1] ? post_effect : NULL, frames);
 }
 
 static const struct pw_filter_events filter_events = {
@@ -167,6 +195,12 @@ int main(int argc, char **argv) {
             PW_FILTER_PORT_FLAG_MAP_BUFFERS, 0,
             pw_properties_new(PW_KEY_FORMAT_DSP, "32 bit float mono audio", PW_KEY_PORT_NAME, name, NULL), NULL, 0);
     }
+    engine.post_effect[0] = pw_filter_add_port(engine.filter, PW_DIRECTION_OUTPUT,
+        PW_FILTER_PORT_FLAG_MAP_BUFFERS, 0,
+        pw_properties_new(PW_KEY_FORMAT_DSP, "32 bit float mono audio", PW_KEY_PORT_NAME, "post_effect_FL", NULL), NULL, 0);
+    engine.post_effect[1] = pw_filter_add_port(engine.filter, PW_DIRECTION_OUTPUT,
+        PW_FILTER_PORT_FLAG_MAP_BUFFERS, 0,
+        pw_properties_new(PW_KEY_FORMAT_DSP, "32 bit float mono audio", PW_KEY_PORT_NAME, "post_effect_FR", NULL), NULL, 0);
     if (pw_filter_connect(engine.filter, PW_FILTER_FLAG_RT_PROCESS, NULL, 0) < 0) {
         fprintf(stderr, "cannot connect PipeWire filter\n");
         pw_filter_destroy(engine.filter); pw_main_loop_destroy(engine.loop);

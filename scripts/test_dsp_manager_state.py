@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 import json
+import copy
+import math
 import sys
 import tempfile
 import unittest
@@ -69,6 +71,52 @@ class DSPManagerStateTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "engine rejected"):
             manager.load_preset("Direct")
         self.assertEqual(manager.get_active_preset(), "Neutral")
+
+    def test_loudness_and_autogain_offsets_preserve_canonical_level(self):
+        manager = DSPManager(home=self.home)
+        for strength in (1, 4, 7, 10):
+            for target in (-12, -15, -18, -23):
+                extras = manager.normalize_effects_extras({
+                    "autogain": {"enabled": True, "params": {"targetDb": target}},
+                    "loudness": {"enabled": True, "params": {
+                        "strength": strength, "volumeDb": -26.5,
+                        "calibration": {"requiredAdjustmentDb": 4.25},
+                    }},
+                })
+                payload = manager._loudness_plugin_payload(
+                    extras["loudness"], extras["autogain"])
+                self.assertTrue(math.isclose(
+                    payload["volume"] + payload["output-gain"], -26.5, abs_tol=1e-9))
+
+    def test_runtime_transition_receives_previous_and_persists_only_in_callback(self):
+        manager = DSPManager(home=self.home)
+        previous = manager.load_global_extras()
+        candidate = copy.deepcopy(previous)
+        candidate["loudness"]["enabled"] = True
+        candidate["loudness"]["params"]["volumeDb"] = -20
+        calls = []
+
+        def transition(old, new, persist_all):
+            calls.append((old, new, persist_all))
+            return manager.apply_global_extras_to_all_presets(new)
+
+        manager.runtime_transition_callback = transition
+        result = manager.apply_autogain_loudness_runtime(previous, candidate)
+        self.assertEqual(calls[0][0], previous)
+        self.assertEqual(calls[0][1], manager.normalize_effects_extras(candidate))
+        self.assertTrue(calls[0][2])
+        self.assertEqual(result["extras"], manager.load_global_extras())
+
+    def test_failed_runtime_transition_does_not_persist_candidate(self):
+        manager = DSPManager(home=self.home)
+        previous = manager.load_global_extras()
+        candidate = copy.deepcopy(previous)
+        candidate["autogain"]["enabled"] = True
+        manager.runtime_transition_callback = lambda *_args: (_ for _ in ()).throw(
+            RuntimeError("transition failed"))
+        with self.assertRaisesRegex(RuntimeError, "transition failed"):
+            manager.apply_autogain_loudness_runtime(previous, candidate)
+        self.assertEqual(manager.load_global_extras(), previous)
 
 
 if __name__ == "__main__":

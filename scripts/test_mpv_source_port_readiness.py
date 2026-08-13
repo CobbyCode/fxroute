@@ -40,8 +40,8 @@ def _io_text(*, mpv: bool) -> str:
 
 def _link_text(*, fl: bool = True, fr: bool = True) -> str:
     lines = [
-        "fxroute_dsp:output_FL -> fxroute_21_stage1:input_L",
-        "fxroute_dsp:output_FR -> fxroute_21_stage1:input_R",
+        "fxroute_dsp_sink:monitor_FL -> fxroute_dsp:input_1",
+        "fxroute_dsp_sink:monitor_FR -> fxroute_dsp:input_2",
     ]
     if fl:
         lines.append("mpv:output_FL -> fxroute_dsp_sink:playback_FL")

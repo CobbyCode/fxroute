@@ -17,20 +17,20 @@ from playback_transition_test_support import MainCoreTransitionRuntime
 
 
 OUTPUT_KEY = "alsa_output.pci-0000_00_1f.3.analog-stereo"
-EE_LEFT = "fxroute_dsp:output_FL"
-EE_RIGHT = "fxroute_dsp:output_FR"
-HELPER_LEFT = "fxroute_21_stage1:input_L"
-HELPER_RIGHT = "fxroute_21_stage1:input_R"
+EE_LEFT = "fxroute_dsp_sink:monitor_FL"
+EE_RIGHT = "fxroute_dsp_sink:monitor_FR"
+HELPER_LEFT = "fxroute_dsp:input_1"
+HELPER_RIGHT = "fxroute_dsp:input_2"
 
 
 def _graph_snapshot(*, missing: tuple[str, ...] = (), signature: str = "complete") -> dict:
     links = {
         f"{EE_LEFT} -> {HELPER_LEFT}": f"{EE_LEFT} -> {HELPER_LEFT}" not in missing,
         f"{EE_RIGHT} -> {HELPER_RIGHT}": f"{EE_RIGHT} -> {HELPER_RIGHT}" not in missing,
-        f"fxroute_21_stage1:output_1 -> {OUTPUT_KEY}:playback_FL": True,
-        f"fxroute_21_stage1:output_2 -> {OUTPUT_KEY}:playback_FR": True,
-        f"fxroute_21_stage1:output_3 -> {OUTPUT_KEY}:playback_RL": True,
-        f"fxroute_21_stage1:output_4 -> {OUTPUT_KEY}:playback_RR": True,
+        f"fxroute_dsp:output_1 -> {OUTPUT_KEY}:playback_FL": True,
+        f"fxroute_dsp:output_2 -> {OUTPUT_KEY}:playback_FR": True,
+        f"fxroute_dsp:output_3 -> {OUTPUT_KEY}:playback_RL": True,
+        f"fxroute_dsp:output_4 -> {OUTPUT_KEY}:playback_RR": True,
     }
     return {
         "mode": "subwoofer-2.2",
@@ -55,10 +55,10 @@ def _graph_snapshot(*, missing: tuple[str, ...] = (), signature: str = "complete
             "helper": (
                 HELPER_LEFT,
                 HELPER_RIGHT,
-                "fxroute_21_stage1:output_1",
-                "fxroute_21_stage1:output_2",
-                "fxroute_21_stage1:output_3",
-                "fxroute_21_stage1:output_4",
+                "fxroute_dsp:output_1",
+                "fxroute_dsp:output_2",
+                "fxroute_dsp:output_3",
+                "fxroute_dsp:output_4",
             ),
             "output": (
                 f"{OUTPUT_KEY}:playback_FL",
