@@ -413,6 +413,80 @@ class VolumeTransitionIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(final.volume_db, start, places=6)
         self.assertLessEqual(self.peak(), start + 1e-9)
 
+    async def test_direct_neutral_direct_neutral_syncs_before_master_restore(self):
+        events = []
+        self.manager.active_preset = "Direct"
+        self.manager.extras["loudness"]["enabled"] = True
+        self.manager.extras["loudness"]["params"]["volumeDb"] = 0.0
+        self.recorder.master = 25
+        self.recorder.capture()
+
+        original_set_master = self.recorder.set_master
+
+        def record_master(value):
+            events.append(("master", int(round(float(value)))))
+            return original_set_master(value)
+
+        self.manager.load_preset = lambda preset_name, **_kwargs: (
+            setattr(self.manager, "active_preset", preset_name),
+            events.append(("preset", preset_name)),
+        )[-1]
+
+        async def confirm_sync(*_args, **_kwargs):
+            events.append(("sync", self.manager.get_active_preset()))
+
+        with mock.patch.object(main, "set_output_volume", record_master), \
+                mock.patch.object(main, "_sync_subwoofer_runtime", side_effect=confirm_sync):
+            start = self.recorder.capture()
+            await main._load_easyeffects_preset("Neutral")
+            await main._load_easyeffects_preset("Direct")
+            await main._load_easyeffects_preset("Neutral")
+
+        self.assertEqual([event for event in events if event == ("master", 100)],
+                         [("master", 100), ("master", 100)])
+        for index, event in enumerate(events):
+            if event == ("master", 100):
+                self.assertEqual(events[index - 1][0], "sync")
+                self.assertEqual(events[index - 1][1], "Neutral")
+        self.assertLessEqual(self.peak(), volume_contract.effective_db(start) + 1e-9)
+        final = self.recorder.capture()
+        self.assertEqual(final.preset, "Neutral")
+        self.assertEqual(final.master_percent, 100)
+        self.assertAlmostEqual(volume_contract.effective_db(final), volume_contract.effective_db(start), places=6)
+
+    async def test_direct_preset_a_b_transition_syncs_before_master_restore(self):
+        events = []
+        self.manager.active_preset = "Direct"
+        self.manager.extras["loudness"]["enabled"] = True
+        self.manager.extras["loudness"]["params"]["volumeDb"] = 0.0
+        self.recorder.master = 25
+        self.recorder.capture()
+
+        original_set_master = self.recorder.set_master
+
+        def record_master(value):
+            events.append(("master", int(round(float(value)))))
+            return original_set_master(value)
+
+        def load(preset_name, **_kwargs):
+            self.manager.active_preset = preset_name
+            events.append(("preset", preset_name))
+
+        async def confirm_sync(*_args, **_kwargs):
+            events.append(("sync", self.manager.get_active_preset()))
+
+        self.manager.load_preset = load
+        with mock.patch.object(main, "set_output_volume", record_master), \
+                mock.patch.object(main, "_sync_subwoofer_runtime", side_effect=confirm_sync):
+            await main._load_easyeffects_preset("Room")
+            await main._load_easyeffects_preset("Direct")
+
+        room_sync = events.index(("sync", "Room"))
+        room_master = events.index(("master", 100))
+        self.assertLess(room_sync, room_master)
+        self.assertEqual(self.manager.get_active_preset(), "Direct")
+        self.assertEqual(self.recorder.master, 25)
+
     async def test_enter_direct_from_neutral_loudness_preserves_volume(self):
         self.manager.active_preset = "Neutral"
         self.manager.extras["loudness"]["enabled"] = True

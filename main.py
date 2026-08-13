@@ -6672,6 +6672,12 @@ async def _load_preset_locked(
     target = volume_contract.target_for(current=start, preset=preset_name)
     actions = volume_contract.plan_transition(start, target)
     pre, post = volume_contract.partition_actions(actions, ("set_preset",))
+    # The target DSP must be live before restoring a master level that was
+    # previously owned by Loudness.  Keep that write on the post-sync side of
+    # the preset transition, but prepare volumeDb while Direct still owns the
+    # output.
+    deferred_master = [action for action in post if action.op == "set_master"]
+    post = [action for action in post if action.op != "set_master"]
     try:
         await _apply_volume_actions(pre)
         await _drain_worker(
@@ -6679,11 +6685,20 @@ async def _load_preset_locked(
             preset_name,
             convolver_sample_rate_hz=convolver_sample_rate_hz,
         )
-        await _apply_volume_actions(post)
         await _sync_subwoofer_runtime(reason="native-dsp-preset-load")
+        await _apply_volume_actions(post)
+        await _apply_volume_actions(deferred_master)
     except Exception:
         try:
+            if (manager.get_active_preset() or "") != start.preset:
+                try:
+                    await _drain_worker(manager.load_preset, start.preset)
+                except Exception:
+                    logger.exception("Failed to reload previous preset after preset load failure")
+                    if hasattr(manager, "active_preset"):
+                        manager.active_preset = start.preset
             await _restore_volume_state(manager, start)
+            await _sync_subwoofer_runtime(reason="native-dsp-preset-load-rollback")
         except Exception:
             logger.exception("Failed to restore volume state after preset load failure")
         raise
