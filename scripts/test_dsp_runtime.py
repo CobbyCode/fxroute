@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import asyncio
 import sys
 import tempfile
 import unittest
@@ -8,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from dsp_manager import DSPManager
-from dsp_runtime import DSPRuntimeConfig
+from dsp_runtime import CommandResult, DSPRuntime, DSPRuntimeConfig, DSP_INGRESS_MONITOR_NODE
 
 
 class DSPRuntimeConfigTests(unittest.TestCase):
@@ -50,6 +51,41 @@ class DSPRuntimeConfigTests(unittest.TestCase):
         text = self.manager.compile_engine_text(list(config.layout), sample_rate_hz=config.sample_rate)
         self.assertEqual(text.count("peq 0 highpass 80"), 2)
         self.assertEqual(text.count("peq 2 lowpass 80"), 2)
+
+    def test_ingress_links_use_exported_null_sink_monitor_ports(self):
+        self.assertEqual(DSP_INGRESS_MONITOR_NODE, "fxroute_dsp_sink")
+
+    def test_reclean_removes_direct_player_hardware_links(self):
+        commands = []
+
+        async def run(command):
+            commands.append(tuple(command))
+            return CommandResult(0)
+
+        runtime = DSPRuntime(self.manager, command_runner=run)
+        runtime._config = DSPRuntimeConfig.from_overview(self.overview("stereo"))
+        asyncio.run(runtime._remove_direct_source_links())
+        self.assertIn(("pw-link", "-d", "mpv:output_FL", "hw:playback_FL"), commands)
+        self.assertIn(("pw-link", "-d", "spotify:output_RR", "hw:playback_RR"), commands)
+
+    def test_reclean_waits_for_runtime_lock(self):
+        events = []
+
+        async def run(command):
+            events.append(tuple(command))
+            return CommandResult(0, "")
+
+        async def exercise():
+            runtime = DSPRuntime(self.manager, command_runner=run)
+            runtime._config = DSPRuntimeConfig.from_overview(self.overview("stereo"))
+            await runtime._lock.acquire()
+            task = asyncio.create_task(runtime._reclean_guarded())
+            await asyncio.sleep(0)
+            self.assertEqual(events, [])
+            runtime._lock.release()
+            await task
+
+        asyncio.run(exercise())
 
 
 if __name__ == "__main__":

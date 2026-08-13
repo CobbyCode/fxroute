@@ -87,9 +87,19 @@ def test_pipewire_process_callback_has_no_non_rt_operations():
     assert all(call not in body for call in forbidden)
 
 
+def test_pipewire_process_callback_silences_partial_port_cycles():
+    source = (NATIVE / "pipewire_engine.c").read_text()
+    start = source.index("static void on_process")
+    body = source[start:source.index("\n}", start)]
+    assert "if (!input[i]) complete = 0;" in body
+    assert "if (!output[i]) complete = 0;" in body
+    assert "memset(output[i], 0, frames * sizeof *output[i])" in body
+
+
 if __name__ == "__main__":
     with tempfile.TemporaryDirectory() as directory:
         test_atomic_mutes_and_peak_snapshots_work_offline(Path(directory))
     test_pipewire_engine_exposes_non_rt_datagram_control_protocol()
     test_pipewire_process_callback_has_no_non_rt_operations()
+    test_pipewire_process_callback_silences_partial_port_cycles()
     print("native DSP control tests passed")

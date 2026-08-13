@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Sequence
 
 DSP_NODE_NAME = "fxroute_dsp"
-DSP_INGRESS_MONITOR_NODE = "fxroute_dsp_sink.monitor"
+DSP_INGRESS_MONITOR_NODE = "fxroute_dsp_sink"
 DSP_INGRESS_PORTS = ("monitor_FL", "monitor_FR")
 DSP_INPUT_PORTS = ("input_1", "input_2")
 DEFAULT_SAMPLE_RATE = 48_000
@@ -211,13 +211,25 @@ class DSPRuntime:
     async def _reclean_guarded(self, skip_if_locked: bool = False) -> bool:
         if skip_if_locked and self._lock.locked():
             return False
-        if await self.verify():
-            return True
+        async with self._lock:
+            await self._remove_direct_source_links()
+            if await self.verify():
+                return True
+            if self._config is None:
+                return False
+            for link in self._links:
+                await self._run(("pw-link", link.source, link.target))
+            return await self.verify()
+
+    async def _remove_direct_source_links(self) -> None:
         if self._config is None:
-            return False
-        for link in self._links:
-            await self._run(("pw-link", link.source, link.target))
-        return await self.verify()
+            return
+        for node in ("mpv", "spotify"):
+            for channel in ("FL", "FR", "RL", "RR"):
+                await self._run((
+                    "pw-link", "-d", f"{node}:output_{channel}",
+                    f"{self._config.output_key}:playback_{channel}",
+                ))
 
     async def reclean_direct_easyeffects_links(self) -> None:
         await self._reclean_guarded()
@@ -286,6 +298,7 @@ class DSPRuntime:
             self._config = config
             self._started_at = time.time()
             await self._wait_for_ports(config)
+            await self._remove_direct_source_links()
             links = [
                 PipeWireLink(f"{DSP_INGRESS_MONITOR_NODE}:{DSP_INGRESS_PORTS[0]}", f"{DSP_NODE_NAME}:{DSP_INPUT_PORTS[0]}"),
                 PipeWireLink(f"{DSP_INGRESS_MONITOR_NODE}:{DSP_INGRESS_PORTS[1]}", f"{DSP_NODE_NAME}:{DSP_INPUT_PORTS[1]}"),

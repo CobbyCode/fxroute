@@ -12,6 +12,17 @@ from dsp_manager import DSPManager
 
 
 class DSPManagerStateTests(unittest.TestCase):
+    def test_loudness_runtime_bounds_match_native_validation(self):
+        self.assertEqual(DSPManager.LOUDNESS_PLUGIN_VOLUME_MIN_DB, -80.0)
+        self.assertEqual(DSPManager.LOUDNESS_PLUGIN_VOLUME_MAX_DB, 0.0)
+
+    def test_delay_is_bounded_to_one_second(self):
+        manager = DSPManager(home=self.home)
+        with self.assertRaisesRegex(ValueError, "between 0 and 1000"):
+            manager.normalize_effects_extras({
+                "delay": {"enabled": True, "params": {"leftMs": 1001, "rightMs": 0}}
+            })
+
     def setUp(self):
         self.home = Path(tempfile.mkdtemp())
 

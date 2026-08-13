@@ -2487,6 +2487,7 @@ async def _playback_graph_diagnosis(
         "source_links": {},
         "source_links_complete": None,
         "direct_ee_to_hw_present": False,
+        "direct_source_to_hw_present": False,
         "links_complete": False,
         "bypass_only": False,
         "port_identities": {
@@ -2520,7 +2521,7 @@ async def _playback_graph_diagnosis(
         output_count = 4 if mode in OUTPUT_MODE_SUBWOOFER_MODES else 2
         hardware_channels = ("FL", "FR", "RL", "RR")[:output_count]
         dsp_ports = tuple(f"fxroute_dsp:output_{index + 1}" for index in range(output_count))
-        ingress_sources = ("fxroute_dsp_sink.monitor:monitor_FL", "fxroute_dsp_sink.monitor:monitor_FR")
+        ingress_sources = ("fxroute_dsp_sink:monitor_FL", "fxroute_dsp_sink:monitor_FR")
         ingress_targets = ("fxroute_dsp:input_1", "fxroute_dsp:input_2")
         result["ee_ports"] = all(port in io_text for port in (*ingress_targets, *dsp_ports))
         result["helper_ports"] = result["ee_ports"]
@@ -2532,6 +2533,12 @@ async def _playback_graph_diagnosis(
             for port, target in zip(source_ports, source_targets)
         }
         result["source_links_complete"] = all(result["source_links"].values()) if source_node else (False if require_source else None)
+        direct_source_links = (
+            _contains_link(link_text, f"{node}:output_{channel}", f"{output_key}:playback_{channel}")
+            for node in ("mpv", "spotify")
+            for channel in ("FL", "FR", "RL", "RR")
+        )
+        result["direct_source_to_hw_present"] = any(direct_source_links)
         result["links"] = {
             **{f"{source_port} -> {target_port}": _contains_link(link_text, source_port, target_port)
                for source_port, target_port in zip(ingress_sources, ingress_targets)},
@@ -2546,7 +2553,19 @@ async def _playback_graph_diagnosis(
             "output": tuple(f"{output_key}:playback_{channel}" for channel in hardware_channels if f"{output_key}:playback_{channel}" in io_text),
         }
         source_ok = result["source_links_complete"] is not False
-        result["links_complete"] = bool(source_ok and result["ee_ports"] and result["helper_rate_matches"] and all(result["links"].values()))
+        native_topology_complete = bool(
+            source_ok
+            and result["ee_ports"]
+            and result["helper_rate_matches"]
+            and all(result["links"].values())
+        )
+        result["bypass_only"] = bool(
+            native_topology_complete and result["direct_source_to_hw_present"]
+        )
+        result["links_complete"] = bool(
+            native_topology_complete
+            and not result["direct_source_to_hw_present"]
+        )
         result["signature"] = json.dumps(result, sort_keys=True, default=list)
         return result
 
@@ -2754,8 +2773,8 @@ def _measurement_session_link_loss_is_repairable(
     output_count = 4 if diagnosis.get("mode") in OUTPUT_MODE_SUBWOOFER_MODES else 2
     channels = ("FL", "FR", "RL", "RR")[:output_count]
     repairable = {
-        "fxroute_dsp_sink.monitor:monitor_FL -> fxroute_dsp:input_1",
-        "fxroute_dsp_sink.monitor:monitor_FR -> fxroute_dsp:input_2",
+        "fxroute_dsp_sink:monitor_FL -> fxroute_dsp:input_1",
+        "fxroute_dsp_sink:monitor_FR -> fxroute_dsp:input_2",
         *(f"fxroute_dsp:output_{index + 1} -> {output_key}:playback_{channel}"
           for index, channel in enumerate(channels)),
     }
@@ -2934,11 +2953,23 @@ async def _coordinator_reconcile_post_start_graph(
         target_rate=target_rate,
         require_source=graph_source is not None,
     )
-    include_source = request.operation == "output-mode-switch"
+    include_source = graph_source is not None
     initial_missing = _missing_playback_graph_links(
         initial,
         include_source=include_source,
     )
+    if initial.get("direct_source_to_hw_present"):
+        await _coordinator_reconcile_subwoofer_links_only()
+        initial = await _playback_graph_diagnosis(
+            target_overview,
+            source=graph_source,
+            target_rate=target_rate,
+            require_source=graph_source is not None,
+        )
+        initial_missing = _missing_playback_graph_links(
+            initial,
+            include_source=include_source,
+        )
     if not initial.get("links_complete") and not initial_missing:
         if initial.get("bypass_only"):
             # EasyEffects can recreate its direct EE -> hardware front links

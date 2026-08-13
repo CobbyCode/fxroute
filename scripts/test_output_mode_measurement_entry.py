@@ -855,8 +855,8 @@ class MeasurementSessionRuntimeReadbackTests(unittest.IsolatedAsyncioTestCase):
             "helper_rate_matches": True,
             "direct_ee_to_hw_present": False,
             "links": {
-                "fxroute_dsp_sink.monitor:monitor_FL -> fxroute_dsp:input_1": False,
-                "fxroute_dsp_sink.monitor:monitor_FR -> fxroute_dsp:input_2": False,
+                "fxroute_dsp_sink:monitor_FL -> fxroute_dsp:input_1": False,
+                "fxroute_dsp_sink:monitor_FR -> fxroute_dsp:input_2": False,
                 "fxroute_dsp:output_1 -> alsa_output.test:playback_FL": True,
                 "fxroute_dsp:output_2 -> alsa_output.test:playback_FR": True,
                 "fxroute_dsp:output_3 -> alsa_output.test:playback_RL": True,

@@ -458,7 +458,8 @@ class EasyEffectsPeakMonitor:
             if returncode != 0:
                 raise RuntimeError(stderr.decode(errors="ignore").strip() or "pw-cli ls Port failed")
             text = stdout.decode(errors="ignore")
-            for port in self._iter_ports(text):
+            ports = list(self._iter_ports(text))
+            for port in ports:
                 alias = port["alias"]
                 port_name = port["port_name"]
                 node_id = port["node_id"]
@@ -468,11 +469,7 @@ class EasyEffectsPeakMonitor:
                 elif alias == f"{capture_node_name}:input_FR":
                     capture_fr = alias
 
-                if node_id == target.source_id:
-                    if port_name == "output_FL":
-                        target_fl = f"{target.source_name}:output_FL"
-                    elif port_name == "output_FR":
-                        target_fr = f"{target.source_name}:output_FR"
+            target_fl, target_fr = self._target_output_ports(target, ports)
 
             if capture_fl and capture_fr and target_fl and target_fr:
                 logger.info(
@@ -517,6 +514,19 @@ class EasyEffectsPeakMonitor:
                 await asyncio.sleep(LINK_RETRY_INTERVAL)
 
         raise RuntimeError(str(last_error) if last_error else "Peak capture link failed")
+
+    @staticmethod
+    def _target_output_ports(target: MonitorTarget, ports) -> tuple[str | None, str | None]:
+        names = {
+            port["port_name"]
+            for port in ports
+            if port["node_id"] == target.source_id
+        }
+        if {"output_1", "output_2"}.issubset(names):
+            return f"{target.source_name}:output_1", f"{target.source_name}:output_2"
+        if {"output_FL", "output_FR"}.issubset(names):
+            return f"{target.source_name}:output_FL", f"{target.source_name}:output_FR"
+        return None, None
 
     @staticmethod
     def _iter_ports(text: str):

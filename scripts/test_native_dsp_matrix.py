@@ -57,3 +57,34 @@ output 31 -6.020599913 2 invert
     out = process(tmp_path, config, frame * 4, 32)
     assert list(out[31][:2]) == [0, 0]
     assert abs(out[31][2] + 0.5) < 1e-5
+
+
+def test_global_delay_adds_to_output_alignment(tmp_path):
+    build()
+    config = """rate 1000
+inputs 1
+outputs 1
+matrix 0 0 1
+output 0 0 2 normal
+delay_add 0 3
+"""
+    out = process(tmp_path, config, [1.0] + [0.0] * 6, 1)
+    assert list(out[0][:5]) == [0.0] * 5
+    assert out[0][5] == 1.0
+
+
+def test_global_delay_rejects_more_than_one_second(tmp_path):
+    build()
+    config = """rate 1000
+inputs 1
+outputs 1
+matrix 0 0 1
+delay_add 0 1001
+"""
+    cfg = tmp_path / "dsp.conf"
+    source = tmp_path / "in.f32"
+    target = tmp_path / "out.f32"
+    cfg.write_text(config)
+    array.array("f", [1.0]).tofile(source.open("wb"))
+    result = subprocess.run([str(DSP), str(cfg), str(source), str(target)])
+    assert result.returncode != 0

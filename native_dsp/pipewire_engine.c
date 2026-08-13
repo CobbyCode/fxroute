@@ -98,10 +98,20 @@ static void on_process(void *data, struct spa_io_position *position) {
     uint32_t frames = position && position->clock.duration ? position->clock.duration : 1024;
     const float *input[FXDSP_MAX_CHANNELS];
     float *output[FXDSP_MAX_CHANNELS];
-    for (unsigned i = 0; i < fxdsp_inputs(engine->dsp); i++)
+    int complete = 1;
+    for (unsigned i = 0; i < fxdsp_inputs(engine->dsp); i++) {
         input[i] = pw_filter_get_dsp_buffer(engine->input[i], frames);
-    for (unsigned i = 0; i < fxdsp_outputs(engine->dsp); i++)
+        if (!input[i]) complete = 0;
+    }
+    for (unsigned i = 0; i < fxdsp_outputs(engine->dsp); i++) {
         output[i] = pw_filter_get_dsp_buffer(engine->output[i], frames);
+        if (!output[i]) complete = 0;
+    }
+    if (!complete) {
+        for (unsigned i = 0; i < fxdsp_outputs(engine->dsp); i++)
+            if (output[i]) memset(output[i], 0, frames * sizeof *output[i]);
+        return;
+    }
     fxdsp_process(engine->dsp, input, output, frames);
 }
 

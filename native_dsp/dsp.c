@@ -217,6 +217,7 @@ fxdsp *fxdsp_load(const char *path, char *error, size_t error_size) {
         if (sscanf(p,"matrix %u %u %f %c",&out,&in,&route_gain,&extra)==3 && d->route_count<MAX_ROUTES) { d->routes[d->route_count].out=out; d->routes[d->route_count].in=in; d->routes[d->route_count++].gain=route_gain; }
         else { float x,y,z; int enabled;
             if (sscanf(p,"output %u %f %f %31s %c",&out,&x,&y,arg,&extra)==4 && out<FXDSP_MAX_CHANNELS) { d->out[out].gain=powf(10,x/20); d->out[out].delay=(size_t)llround(y*d->rate/1000); d->out[out].polarity=!strcmp(arg,"invert")?-1:1; }
+            else if (sscanf(p,"delay_add %u %f %c",&out,&x,&extra)==2 && out<FXDSP_MAX_CHANNELS && isfinite(x) && x>=0 && x<=1000) d->out[out].delay+=(size_t)llround(x*d->rate/1000);
             else if (sscanf(p,"peq %u %31s %f %f %f %c",&out,type,&x,&y,&z,&extra)==5 && out<FXDSP_MAX_CHANNELS && d->out[out].filter_count<MAX_BIQUADS && !design(&d->out[out].filters[d->out[out].filter_count],type,d->rate,x,y,z)) d->out[out].filter_count++;
             else if (sscanf(p,"ir %u %1023s %u %c",&out,arg,&channel,&extra)==3 && out<FXDSP_MAX_CHANNELS && !d->out[out].conv.head && !load_wav(arg,channel,&d->out[out].conv.head,&d->out[out].conv.tap_count,d->rate)) {}
             else if (sscanf(p,"ir %u %1023s %c",&out,arg,&extra)==2 && out<FXDSP_MAX_CHANNELS && !d->out[out].conv.head && !load_wav(arg,0,&d->out[out].conv.head,&d->out[out].conv.tap_count,d->rate)) {}

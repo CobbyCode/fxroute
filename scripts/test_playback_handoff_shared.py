@@ -28,14 +28,14 @@ OUTPUT_KEY = "alsa_output.pci-0000_00_1f.3.analog-stereo"
 
 def _links_text(mode: str, *, direct: bool = False, source: bool = True, complete: bool = True) -> str:
     lines = [
-        "fxroute_dsp_sink.monitor:monitor_FL",
-        "fxroute_dsp_sink.monitor:monitor_FR",
+        "fxroute_dsp_sink:monitor_FL",
+        "fxroute_dsp_sink:monitor_FR",
         "fxroute_dsp:input_1",
         "fxroute_dsp:input_2",
         "fxroute_dsp:output_1",
         "fxroute_dsp:output_2",
-        "fxroute_dsp_sink.monitor:monitor_FL -> fxroute_dsp:input_1",
-        "fxroute_dsp_sink.monitor:monitor_FR -> fxroute_dsp:input_2",
+        "fxroute_dsp_sink:monitor_FL -> fxroute_dsp:input_1",
+        "fxroute_dsp_sink:monitor_FR -> fxroute_dsp:input_2",
     ]
     if source:
         lines.extend([

@@ -38,6 +38,8 @@ class DSPManager:
     BASS_ENHANCER_DEFAULTS = {"enabled": False, "params": {"amount": 0.0, "harmonics": 8.5, "scope": 100.0, "blend": 0.0}}
     AUTOGAIN_DEFAULTS = {"enabled": False, "params": {"targetDb": -12.0, "reference": "Geometric Mean (MSI)", "silenceThresholdDb": -70.0, "maximumHistorySeconds": 15}}
     LOUDNESS_DEFAULTS = {"enabled": False, "params": {"fftSize": 4096, "strength": 10, "volumeDb": 0.0, "calibration": {}, "calibrationProfiles": {}}}
+    LOUDNESS_PLUGIN_VOLUME_MIN_DB = -80.0
+    LOUDNESS_PLUGIN_VOLUME_MAX_DB = 0.0
     TONE_EFFECT_DEFAULTS = {"enabled": False, "mode": "crystalizer"}
 
     loudness_db_from_percent = staticmethod(volume_percent_to_db)
@@ -73,6 +75,11 @@ class DSPManager:
         loudness["volumeDb"] = float(loudness["volumeDb"])
         if not -80 <= loudness["volumeDb"] <= 0:
             raise ValueError("loudness.params.volumeDb must be between -80 and 0")
+        delay = result["delay"]["params"]
+        delay["leftMs"] = float(delay["leftMs"])
+        delay["rightMs"] = float(delay["rightMs"])
+        if not all(0 <= delay[channel] <= 1000 for channel in ("leftMs", "rightMs")):
+            raise ValueError("delay.params leftMs/rightMs must be between 0 and 1000")
         return result
 
     @staticmethod

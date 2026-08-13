@@ -17,6 +17,12 @@ class DspPackagingTests(unittest.TestCase):
         self.assertNotIn('install_watchdog_if_needed', script)
         self.assertNotIn('setup_easyeffects_autostart', script)
 
+    def test_pipewire_build_does_not_apply_pedantic_to_system_headers(self):
+        script = (ROOT / "native_dsp/build.sh").read_text().splitlines()
+        pipewire_command = next(line for line in script if "pipewire_engine.c" in line)
+        self.assertIn("-std=gnu11", pipewire_command)
+        self.assertNotIn("-pedantic", pipewire_command)
+
     def test_updater_rebuilds_native_dsp_from_all_engine_sources(self):
         script = (ROOT / "scripts/update_fxroute.sh").read_text()
         self.assertIn('build_native_dsp_if_needed()', script)
