@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.9.10 (2026-08-13)
+
+### Advanced Measurement
+- Added a guided multi-position Advanced Measurement workflow for direct
+  speaker response, listening-area consistency, timing, and system integration.
+- Improved measurement confidence handling, startup latency, stale-job cleanup,
+  link recovery, and the Hybrid aligned correction workflow.
+- Corrected the recommended Auto Sub Optimize workflow: optimize the alignment
+  first, verify it with a normal measurement, then create correction filters and
+  run a final verification measurement.
+
+### Fixed Sample Rate
+- Added an Auto or Fixed Sample Rate policy for local files, radio, Spotify,
+  and Bluetooth playback, with output capability validation and stable source
+  recovery when the rate changes.
+
+### Playback and mode stability
+- Improved Local, Radio, and Spotify handoffs, native queue and shuffle
+  transitions, output-mode switching, graph recovery, and cleanup of failed or
+  cancelled transitions.
+
+### Network music libraries
+- Added selectable local and SMB music libraries, including share discovery,
+  manual `smb://` entries, and installer support for CIFS mounting.
+
 ## 0.9.9 (2026-08-09)
 
 ### Measurement & runtime stability

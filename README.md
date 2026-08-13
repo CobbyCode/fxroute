@@ -1,8 +1,8 @@
 # FXRoute
 
-FXRoute is a browser-based audio control surface for Linux listening machines.
+FXRoute is a browser-based control surface for Linux audio systems.
 
-It is built for mini PCs, desktops, ARM boards, and dedicated stereo boxes that run local playback, EasyEffects DSP, radio, library playback, measurement tools, and optional Spotify desktop control — all remote-controlled from a phone, tablet, or laptop on the local network.
+It runs on mini PCs, desktops, ARM boards, and dedicated stereo systems. It combines local playback, EasyEffects DSP, radio, library playback, measurement tools, and optional Spotify desktop control in one interface for phones, tablets, and laptops on the local network.
 
 <p align="center">
   <strong>Measure, compare, and sketch PEQ/convolver corrections directly in the browser.</strong>
@@ -43,7 +43,7 @@ It is built for mini PCs, desktops, ARM boards, and dedicated stereo boxes that 
 
 ## What it does
 
-- browser UI for desktop and mobile control
+- browser interface for desktop and mobile control
 - local music playback with queue, playlists, uploads, ZIP album imports, album browsing, cached album metadata, artist info, similar-artist discovery, and media URL imports
 - internet radio with a curated station catalog, personal station management
   (add/edit/delete streams with custom artwork), Radio Browser station search,
@@ -51,8 +51,9 @@ It is built for mini PCs, desktops, ARM boards, and dedicated stereo boxes that 
 - Spotify desktop control through `playerctl` / MPRIS, including passive metadata refresh for automatic track changes
 - Spotify Lossless playback through a current local Spotify desktop client for eligible Premium accounts, when Lossless is enabled in Spotify (up to 24-bit/44.1 kHz FLAC); FXRoute provides remote client control, not the Spotify stream
 - EasyEffects preset switching, PEQ, convolver import/generation, output helpers, and A/B compare
+- stereo, 2.1 subwoofer, and 2.2 subwoofer output modes
 - global DSP helpers for protection, gain management, loudness contouring, bass enhancement, and tone shaping; Loudness provides a calibrated contour that follows the playback level and also accounts for the Auto Gain target when both are active
-- practical room/speaker measurement workflow with host microphone capture,
+- room and speaker measurements with host microphone capture, including a guided Advanced Measurement workflow for direct response, listening-area stability, and system integration,
   calibration files, calibration-file export, smoothing, saved runs, a
   twelve-filter PEQ editor, custom House Curve editing and export, PEQ filter
   transfer, and stereo FIR/convolver preset creation with linear, minimum-
@@ -64,12 +65,13 @@ It is built for mini PCs, desktops, ARM boards, and dedicated stereo boxes that 
   gain verification for 2.1 and 2.2 output modes; confirmed AutoGain searches
   can use up to ±6 dB while four final Stage outputs are checked against
   −1 dBFS
-- sample-rate-aware playback handling for local files, radio, Spotify, and Bluetooth handoff cases
+- automatic or fixed sample-rate playback handling for local files, radio, Spotify, and Bluetooth handoff cases
 - rich now-playing and cover detail views for local, radio, and Spotify
   playback, including stream tech lines (codec/bitrate/sample rate) and
   tag-info blocks
 - Bluetooth input visibility/control when the host audio stack supports it
 - optional local HTTPS/Caddy setup with downloadable local certificate for trusted LAN clients
+- selectable local and SMB music libraries, with SMB share discovery and manual `smb://` share entry
 - installer support for systemd user service, Flatpak EasyEffects, PipeWire/BlueZ dependencies, firewall comfort rules, and `.local` LAN naming
 - installer package-manager support for apt (Debian/Ubuntu), dnf (Fedora),
   zypper (openSUSE), and pacman (Arch/Manjaro); package-manager preparation
@@ -77,7 +79,7 @@ It is built for mini PCs, desktops, ARM boards, and dedicated stereo boxes that 
 
 ## Intended setup
 
-FXRoute is meant for a **Linux desktop-session audio box**, not a fully headless rack server.
+FXRoute runs in a **Linux desktop audio session**. It is not intended as a fully headless rack server.
 
 Typical setup:
 
@@ -87,11 +89,11 @@ Typical setup:
 - optional Spotify desktop client in the same session
 - control from any browser on the LAN
 
-The user session matters because FXRoute coordinates local audio applications, EasyEffects, MPRIS/playerctl, and PipeWire audio routes. In socket mode, EasyEffects runs as a background service in that session.
+FXRoute coordinates local audio applications, EasyEffects, MPRIS/playerctl, and PipeWire routes through that user session. In socket mode, EasyEffects runs as a background service in the same session.
 
 ## Requirements
 
-On supported distros, `install.sh` installs and configures the required runtime tools such as Python dependencies, `mpv`, `ffmpeg`, `playerctl`, Bluetooth/PipeWire helpers, and service files.
+On supported distributions, `install.sh` installs and configures the runtime tools: Python dependencies, `mpv`, `ffmpeg`, `playerctl`, Bluetooth/PipeWire helpers, and service files.
 
 EasyEffects is handled separately: fresh installs can use the installer-managed Flatpak path, while existing native/package-manager EasyEffects installs are accepted when already present.
 
@@ -105,7 +107,7 @@ Tested installer targets so far include:
 
 ## EasyEffects mode
 
-The installer prefers **Flatpak EasyEffects** when it installs EasyEffects itself. This is the most reproducible path and normally provides the EasyEffects control socket used by FXRoute for faster preset switching and recovery.
+When the installer installs EasyEffects, it prefers **Flatpak EasyEffects**. This path is reproducible and normally provides the control socket FXRoute uses for preset switching and recovery.
 
 If EasyEffects is already installed through the system package manager or managed manually by the user, FXRoute can use that installation instead. Older native EasyEffects builds may not expose the control socket; in that case FXRoute falls back to EasyEffects CLI control where possible.
 
@@ -163,7 +165,7 @@ chmod +x install.sh
 ./install.sh
 ```
 
-The installer creates `.env` automatically and preserves it on reruns. For manual setup, copy `.env.example` to `.env` and adjust at least `MUSIC_ROOT` when needed. A NAS library can be used by mounting its SMB/Samba share locally, for example under `/mnt/music`, and setting `MUSIC_ROOT=/mnt/music`.
+The installer creates `.env` automatically and preserves it on reruns. For manual setup, copy `.env.example` to `.env` and adjust at least `MUSIC_ROOT` when needed. Network libraries can be selected in **Technical settings**. FXRoute discovers accessible SMB shares and also accepts a manual `smb://server/share` entry.
 
 Default user service:
 
@@ -181,9 +183,9 @@ Typical URLs:
 - **Radio** — curated station catalog, personal stations, Radio Browser search, live metadata and artwork for Radio Paradise, FIP, SomaFM, and KEXP
 - **Library** — local files, album browsing, cached metadata, artist info, similar-artist discovery, playlists, uploads, imports, downloads, and deletion
 - **DSP** — EasyEffects presets, PEQ, convolver, helpers, A/B compare, and preset creation
-- **Measure** — practical host-mic measurement and tuning workflow
+- **Measure** — host-mic measurement, Advanced Measurement, subwoofer optimization, and tuning workflow
 - **Spotify** — control a local Spotify desktop client
-- **Technical settings** — output selection, source state, Bluetooth status, Maintenance updates, and local certificate access
+- **Technical settings** — output selection, Stereo/2.1/2.2 modes, Auto or fixed sample rate, music libraries, source state, Bluetooth status, Maintenance updates, and local certificate access
 
 ## Library metadata
 
@@ -193,7 +195,7 @@ Metadata is cached locally so normal library scans stay fast and unchanged track
 
 ## Measurement and convolver presets
 
-The Measure workflow can create EasyEffects-ready FIR/convolver presets from
+The Measure workflow creates EasyEffects-ready FIR/convolver presets from
 saved measurements. For stereo correction, measure and save left and right
 separately, assign them in the Convolver assistant, then choose the target
 curve, correction range, phase mode, sample rate, and tap length.
@@ -204,15 +206,15 @@ The Measurement assistant also includes:
 - a Custom House Curve editor with up to 8 frequency/gain points
 - export of managed microphone calibration files and House Curve files
 
-Custom House Curves can be created from the graph or edited numerically, then
-saved in the same target-file format used by the existing House Curve workflow.
+Create Custom House Curves on the graph or edit them numerically. FXRoute saves
+them in the target-file format used by the existing House Curve workflow.
 Calibration and House Curve files can be exported again from the Measurement
 setup after they have been imported or created.
 
 Available phase modes:
 
 - **Linear phase** — symmetric FIR correction.
-- **Minimum phase** — practical default for broad room/speaker correction.
+- **Minimum phase** — default for broad room/speaker correction.
 - **Minimum phase aligned** — minimum-phase correction with measured L/R direct-arrival alignment for separately saved stereo measurements.
 - **Hybrid aligned** — minimum-phase bass correction blended into zero-delay linear-style upper correction, using the same L/R timing safety gate as Minimum phase aligned for stereo filters.
 

@@ -1,12 +1,12 @@
 # FXRoute Manual
 
-FXRoute turns a small Linux audio PC into a browser-controlled music and DSP box.
+FXRoute turns a small Linux audio PC into a browser-controlled music and DSP system.
 
-Use it from a phone, tablet, or laptop on the local network to control playback, switch EasyEffects presets, compare DSP profiles, import filters, run practical room measurements, and tune the result without touching the desktop.
+Use a phone, tablet, or laptop on the local network to control playback, switch EasyEffects presets, compare DSP profiles, import filters, measure the room, and tune the result without using the desktop.
 
 ## 1. What FXRoute is for
 
-FXRoute is useful when one local machine should act as a practical hi-fi control hub:
+FXRoute puts these tasks on one local hi-fi control system:
 
 - play internet radio, Spotify, and local music
 - browse local albums with artwork, artist context, and discovery hints
@@ -17,7 +17,7 @@ FXRoute is useful when one local machine should act as a practical hi-fi control
 - measure the room/speaker response and use it as a tuning guide
 - expose the setup safely on the local network
 
-FXRoute is designed for a Linux desktop-session audio box, not for a fully headless server.
+FXRoute runs in a Linux desktop audio session. It is not intended for a fully headless server.
 
 ## 2. Opening FXRoute
 
@@ -36,7 +36,7 @@ The top-left FXRoute logo opens **Technical settings**.
 
 ## 3. Basic listening workflow
 
-A normal listening session looks like this:
+A typical listening session:
 
 1. Start music from **Radio**, **Spotify**, or **Library**.
 2. Use the bottom playback bar for play/pause, volume, seek, and queue control.
@@ -44,7 +44,7 @@ A normal listening session looks like this:
 4. If you want to tune the room, open **Measure** from the DSP page.
 5. Save useful measurements, transfer correction ideas into a new PEQ preset, or use the visible measurements to create a Convolver preset.
 
-EasyEffects does the live audio processing. FXRoute makes it easier to control, organize, compare, and edit presets.
+EasyEffects handles the live audio processing. FXRoute controls, organizes, compares, and edits the presets.
 
 ## 4. Radio
 
@@ -64,11 +64,11 @@ You can:
   and artwork when the station provides them (Radio Paradise, FIP, SomaFM,
   and KEXP are enriched with dedicated providers)
 
-Radio is the quickest way to check that playback, output selection, and DSP routing are working.
+Radio is a quick way to check playback, output selection, and DSP routing.
 
 ## 5. Spotify
 
-Use **Spotify** to control the Spotify desktop app running in the same Linux user session as FXRoute.
+Use **Spotify** to control the Spotify desktop app in the same Linux user session as FXRoute.
 
 You can:
 
@@ -81,7 +81,7 @@ You can:
 
 FXRoute refreshes Spotify metadata from local desktop events and lightweight polling, so automatic next-track changes should update title, artist, cover, duration, and position without needing a manual browser action.
 
-FXRoute does not replace Spotify Connect. It controls the local Spotify client through the desktop session, so Spotify must be installed and reachable on the audio PC.
+FXRoute does not replace Spotify Connect. It controls the local Spotify client through the desktop session, so Spotify must be installed on and reachable from the audio PC.
 
 The regular Spotify desktop client also supports Spotify Lossless for eligible Premium accounts. Enable **Lossless** in a current Spotify desktop client (version 1.2.67 or newer) to stream available music at up to 24-bit/44.1 kHz FLAC while FXRoute continues to provide remote playback control. FXRoute controls the client; it does not provide the Spotify stream itself.
 
@@ -94,11 +94,11 @@ sudo apt install seahorse
 seahorse
 ```
 
-In Passwords and Keys / Passwörter und Schlüssel, open Passwords / Passwörter → Login. Then change the password of the Login keyring and set a blank password by leaving the new password fields empty.
+In Passwords and Keys, open Passwords → Login. Then change the password of the Login keyring and set a blank password by leaving the new password fields empty.
 
-## 6. Library
+## 6. Library and network shares
 
-Use **Library** for local files and imported music.
+Use **Library** for local and imported music.
 
 You can:
 
@@ -117,13 +117,33 @@ You can:
 
 Typical supported formats include MP3, FLAC, WAV, OGG/Opus/WebM, M4A, M3U/M3U8 playlists, and ZIP album imports. Exact support depends on the host tools installed by the installer.
 
-FXRoute keeps local tags and local cover files first. It can enrich albums with cached MusicBrainz IDs, Cover Art Archive fallback covers, compact album facts, Wikipedia/Wikidata artist summaries, and ListenBrainz discovery suggestions. Unchanged tracks are cached by relative path, modification time, and size so rescans stay fast.
+FXRoute treats local tags and cover files as authoritative. It can add cached MusicBrainz IDs, Cover Art Archive fallback covers, album facts, Wikipedia/Wikidata artist summaries, and ListenBrainz suggestions. It caches unchanged tracks by relative path, modification time, and size, which keeps rescans fast.
 
-A NAS can be used as the library by mounting its SMB/Samba share locally, then setting `MUSIC_ROOT` in `.env` to that mount path, for example `/mnt/music`.
+The **Library** selector in **Technical settings** switches between the local music folder and network libraries. FXRoute discovers accessible disk shares on configured or nearby SMB hosts. Select a discovered share to use it as the active library.
 
-## 7. DSP and EasyEffects
+To add a share that was not discovered, choose **Add network share manually…** and enter one share URL, for example:
 
-Use **DSP** for sound shaping and correction.
+```text
+smb://server/share
+```
+
+FXRoute checks guest access when discovering shares, mounts the selected share when needed, and then scans it like the local library. The host needs `smbclient`, CIFS/GVFS support, and permission to mount the share. The installer provides the required packages and the CIFS mount helper on supported distributions. A share must expose one disk share; administrative and printer shares are ignored.
+
+## 7. EasyEffects installation
+
+The installer prefers Flatpak EasyEffects when it installs EasyEffects. Recent Flatpak versions expose the control socket FXRoute uses for fast preset switching and recovery.
+
+If EasyEffects already exists on the system, FXRoute can use that installation. Native/package-manager versions use the CLI fallback when no control socket is available. Preset switching can still work, but socket-based control and recovery may be limited.
+
+For a manual Flatpak installation:
+
+```bash
+flatpak install --user flathub com.github.wwmm.easyeffects
+```
+
+## 8. DSP and EasyEffects
+
+Use **DSP** to shape and correct the sound.
 
 Main tools:
 
@@ -143,11 +163,11 @@ Typical DSP files:
 - WAV impulse responses
 - REW text filters for left/right PEQ-style correction
 
-Tip: use A/B compare while real music is playing. It is usually easier to judge a preset by switching quickly than by staring at numbers.
+Use A/B compare while music is playing. Switching between presets is usually more useful than comparing their numbers.
 
 ### Global helpers
 
-Global helpers apply consistently across the active DSP setup:
+Global helpers affect the active DSP setup:
 
 - **Protection Limiter** protects the final output from peaks.
 - **Headroom** adds a controlled safety margin before the output stage.
@@ -160,23 +180,11 @@ Each helper can be enabled or adjusted from **Output extras**. Auto Gain and
 Loudness can be used independently or together, while the Protection Limiter
 remains the final stage.
 
-### EasyEffects installation mode
-
-The installer prefers Flatpak EasyEffects when it installs EasyEffects itself. Flatpak is usually the best-supported path because recent EasyEffects versions expose the control socket FXRoute can use for faster preset switching.
-
-If EasyEffects is already installed by the user, FXRoute may use that existing installation instead. Native/package-manager EasyEffects can still work through the CLI fallback, but older native versions may not expose the EasyEffects control socket. In that case preset switching can still work, but socket-based control and recovery may be less capable than with the Flatpak version.
-
-For the most reproducible setup, use the Flatpak package:
-
-```bash
-flatpak install --user flathub com.github.wwmm.easyeffects
-```
-
-## 8. Measurement assistant
+## 9. Measurement assistant
 
 Open **Measure** from the DSP page.
 
-The measurement assistant is meant for practical room-tuning work:
+Use the measurement assistant to tune the room and speakers:
 
 - choose left, right, or stereo measurement
 - run a same-position L/R Repeat when you want a more reliable stereo pair
@@ -194,7 +202,7 @@ The measurement assistant is meant for practical room-tuning work:
 - turn the result into a PEQ or FIR/Convolver preset
 - export imported or created calibration and House Curve files
 
-Use it as a practical measurement and correction workspace: inspect room and speaker response, compare channels, identify correction needs, and turn visible measurements directly into PEQ or Convolver filters. Review the result before applying it; measurement conditions and correction choices still matter.
+Inspect the room and speaker response, compare channels, identify correction needs, and turn visible measurements into PEQ or Convolver filters. Review the result before applying it. Measurement conditions and correction choices affect the result.
 
 ### PEQ and Custom House Curve editing
 
@@ -217,6 +225,22 @@ custom draft available for later editing.
 In **Setup**, select an imported calibration or House Curve file and press
 **Export** to download the managed file with its original content. Built-in
 target curves are not exportable files.
+
+### Advanced Measurement
+
+**Advanced Measurement** is a guided multi-position workflow for speaker characterisation and system integration. It combines direct speaker measurements with measurements at the main listening position and two nearby listening positions.
+
+The workflow guides you through:
+
+- a direct measurement about 1 m from the left speaker
+- a direct measurement about 1 m from the right speaker
+- left and right measurements at the main listening position
+- left and right measurements 20–30 cm to either side of the main position
+- a final stereo system-integration check at the main position when subwoofer routing is active
+
+Follow the on-screen instructions and move the microphone only when the current step asks for a new position. Keep the microphone at ear height for listening-position measurements. The workflow checks direct-response quality, spatial consistency, L/R timing, and the summed system response. It can reject a result when the microphone position, routing, or timing is inconsistent; repeat the affected step after correcting the setup.
+
+Use the electrical reference input in **Setup** when available. It gives the timing analysis a line-level playback reference alongside the acoustic microphone signal. Acoustic-only measurements remain supported but provide less precise timing information.
 
 ### SPL Calibration
 
@@ -265,7 +289,7 @@ Keep the microphone fixed during the whole repeat. Moving the microphone between
 
 #### Auto Sub Optimize
 
-Auto Sub Optimize measures candidates around the selected crossover frequency and applies the best verified delay, polarity, and subwoofer gain configuration for the active mode:
+Auto Sub Optimize tests candidates around the selected crossover frequency and applies the verified delay, polarity, and subwoofer gain for the active mode:
 
 - **2.1** — optimizes one mono subwoofer. One shared alignment is evaluated against both main channels.
 - **2.2 Mono** — optimizes two mono subwoofers as one dual-sub system. A matrix scan evaluates the Sub 1/Sub 2 alignment combinations against both main channels.
@@ -273,27 +297,27 @@ Auto Sub Optimize measures candidates around the selected crossover frequency an
 
 The scan is centered around the alignment values currently configured for the active mode. If you already know or suspect useful starting delays — for example from a subwoofer manual that lists internal DSP latency — enter them first. Auto Sub Optimize then scans around those starting values instead of assuming 0 ms.
 
-The optimizer does not directly measure the subwoofer’s internal latency. It optimizes the practical sub/main integration at the microphone position, including the subwoofer, crossover, room, and listening position.
+The optimizer does not measure the subwoofer's internal latency directly. It optimizes sub/main integration at the microphone position, including the subwoofer, crossover, room, and listening position.
 
-Where the active mode uses a fine scan, FXRoute checks additional candidates around the best coarse delay region. In 2.2 Mono, the matrix scan evaluates the combined dual-sub result. Treat the selected values as a practical optimum for the measured crossover, room, and microphone position rather than as universally exact latency figures.
+Where the active mode uses a fine scan, FXRoute checks additional candidates around the best coarse delay region. In 2.2 Mono, the matrix scan evaluates the combined dual-sub result. The selected values apply to the measured crossover, room, and microphone position; they are not universal latency figures.
 
 In **2.1** and **2.2 Mono**, candidates are evaluated against both left and right main channels so a weak result on one side affects the combined choice. In **2.2 Stereo**, the left and right sub/main branches are evaluated and optimized separately. The active polarity is protected unless another measured setting is clearly better. AutoGain then makes measured gain steps of up to ±6 dB against the selected target curve, verifies them with fresh sweeps, and restores gain changes that do not improve the result. Before and during those gain sweeps, FXRoute checks all four final Stage outputs and stops an unsafe candidate before it can exceed −1 dBFS. PEQ, target curves, and room-correction filters are not changed.
 
 **Recommended order with EQ or Convolver:**
 
 1. Set the crossover, sub levels, polarity, and initial alignment values roughly as desired for the active mode.
-2. Create and enable the EQ or Convolver preset you intend to use.
-3. Run **Auto Sub Optimize** once with that preset active.
-4. Check the result with a normal measurement in the same output mode.
+2. Run **Auto Sub Optimize**.
+3. Run a normal measurement with the optimized alignment.
+4. Create and enable the EQ or Convolver correction from that state.
+5. Verify the result with a final normal measurement.
 
-There is no routine need to run Auto Sub Optimize both before and after creating the correction preset. Run it again only after a relevant change to the crossover, routing, polarity, or active correction setup—not as part of an adjustment loop.
+Repeat **Auto Sub Optimize** only if the active correction materially changes phase or delay around the crossover.
 
 For best results:
 
 - keep the microphone fixed during the scan
 - avoid moving around the room during the measurements
-- set crossover, sub level, polarity, and an initial alignment roughly before starting
-- check the result with a normal measurement in the same output mode afterwards
+- run the final verification measurement in the same output mode
 
 ### Frequency and IR graph views
 
@@ -317,7 +341,7 @@ Measurements are independent from the Convolver settings. The Convolver assistan
 ### Phase modes
 
 - **Linear Phase** creates symmetric FIR correction.
-- **Minimum Phase** is the practical default for normal room and speaker correction.
+- **Minimum Phase** is the default for normal room and speaker correction.
 - **Minimum Phase aligned** is a stereo variant of **Minimum Phase**. It uses the measured L/R direct-arrival timing from separate saved left/right measurements and delays the earlier FIR channel for better time alignment.
 - **Hybrid aligned** blends minimum-phase bass correction into zero-delay linear-style upper correction. In stereo mode it uses the same L/R direct-arrival timing safety gate as **Minimum Phase aligned**.
 
@@ -325,18 +349,32 @@ The aligned modes require single saved L/R measurements with valid direct-arriva
 
 FXRoute blocks aligned filter creation when the measured signed L/R timing offset exceeds the safety limit in either direction. The timing summary is shown as one arrival relation, for example `L arrives 5.27 ms later than R`.
 
-## 9. Technical settings
+## 10. Technical settings
 
 Click the FXRoute logo to open **Technical settings**.
 
 Useful settings:
 
 - choose the audio output device
+- choose Stereo, 2.1 Subwoofer, or 2.2 Subwoofer output mode
+- follow the playback sample rate or use a fixed sample rate
 - check the current source mode
 - see Bluetooth input status when the host supports it
 - download the local HTTPS certificate when the optional HTTPS proxy is enabled
 
-Use this area when audio comes from the wrong output, the source mode looks wrong, Bluetooth input needs checking, or a client device needs the local HTTPS certificate.
+Use this area to fix the output device, check the source mode or Bluetooth input, or download the local HTTPS certificate for a client device.
+
+### Output modes
+
+Select **Stereo**, **2.1 Subwoofer**, or **2.2 Subwoofer** under **Output Mode**. The available subwoofer controls and measurement workflows depend on the selected mode. Set the crossover, levels, polarity, and alignment in the DSP output controls before running **Auto Sub Optimize**.
+
+### Fixed Sample Rate
+
+**Sample Rate** is set to **Auto** by default. In Auto mode, FXRoute follows the effective playback rate of the current source and output path. Local files, radio streams, Spotify, and Bluetooth can therefore use different rates.
+
+Select a supported rate instead of **Auto** to fix the PipeWire playback graph and hardware output to that rate. The current rate appears in the playback bar. FXRoute rejects a fixed rate that the selected output does not support. Changing the policy can restart the audio path, so stop playback first when possible and check the output after the change.
+
+Use a fixed rate when the DAC, DSP chain, or external hardware needs one clock. Use Auto when sources with different native rates should play without forcing conversion to one rate.
 
 ### Maintenance updates
 
@@ -364,15 +402,15 @@ rest:
         value_template: "{{ value_json.amp_should_be_on }}"
 ```
 
-## 10. Local HTTPS certificate
+## 11. Local HTTPS certificate
 
 When the optional local HTTPS proxy is enabled, FXRoute creates a local certificate authority for the audio PC.
 
 Install the downloaded certificate only on devices you trust on your own LAN. Import it into the operating system or browser trust store as a trusted certificate authority. If the FXRoute Caddy certificate authority is regenerated, client devices may need the new certificate again.
 
-## 11. Good first checks
+## 12. Good first checks
 
-If something does not play:
+If playback fails:
 
 1. Try **Radio** first. It is the simplest playback source.
 2. Check the bottom playback bar: does it show a track?
@@ -395,7 +433,7 @@ flatpak list --app | grep easyeffects
 pgrep -af easyeffects
 ```
 
-## 12. What FXRoute expects
+## 13. What FXRoute expects
 
 FXRoute is designed for:
 
@@ -405,4 +443,4 @@ FXRoute is designed for:
 - local network browser control
 - a DAC, amp, active speakers, headphones, or similar listening setup
 
-The audio desktop session is part of the design. Fully headless operation is not the primary target.
+FXRoute depends on the audio desktop session and does not target fully headless operation.
