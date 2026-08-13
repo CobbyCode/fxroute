@@ -690,6 +690,28 @@ class DSPRuntimeLifecycleTests(unittest.TestCase):
                 self.assertIsNone(runtime._stderr_drain_task)
                 self.assertIsNone(runtime._process)
 
+    def test_stderr_drain_keeps_capturing_while_process_terminates(self):
+        async def exercise():
+            runtime = DSPRuntime(self.manager)
+            process = await asyncio.create_subprocess_exec(
+                sys.executable, "-c",
+                "import signal, sys, time; "
+                "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+                "sys.stderr.write('start\n'); sys.stderr.flush(); "
+                "time.sleep(1.0); "
+                "sys.stderr.write('during-shutdown\n'); sys.stderr.flush(); "
+                "time.sleep(1.0)")
+            runtime._process = process
+            runtime._start_stderr_drain(process)
+            await asyncio.sleep(0.2)
+            await runtime.stop()
+            self.assertIsNone(runtime._stderr_drain_task)
+            self.assertIsNone(runtime._process)
+            self.assertIsNotNone(process.returncode, "engine was not reaped")
+            tail = runtime.stderr_tail()
+            self.assertIn("start", tail)
+            self.assertIn("during-shutdown", tail)
+
     def test_stop_after_launch_failure_has_no_stderr_task(self):
         async def exercise():
             runtime = DSPRuntime(self.manager)

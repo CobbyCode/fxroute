@@ -549,17 +549,25 @@ class DSPRuntime:
         )
 
     async def stop(self) -> None:
-        await self._stop_stderr_drain()
         for link in self._links:
             await self._run(("pw-link", "-d", link.source, link.target))
         self._links = []
         process, self._process = self._process, None
+        # Keep the stderr drain running while the process is terminating: a
+        # cancelled drain could let the engine fill the pipe during shutdown.
+        # The drain is stopped/joined only after the process exited or was
+        # killed and reaped.
         if process is not None and getattr(process, "returncode", None) is None:
             process.terminate()
             try:
                 await asyncio.wait_for(process.wait(), 2)
             except asyncio.TimeoutError:
-                process.kill(); await process.wait()
+                process.kill()
+                try:
+                    await asyncio.wait_for(process.wait(), 2)
+                except asyncio.TimeoutError:
+                    logger.warning("Native DSP process did not exit after SIGKILL; drain stopped without reap")
+        await self._stop_stderr_drain()
         if self._config_path:
             self._config_path.unlink(missing_ok=True)
             self._config_path = None

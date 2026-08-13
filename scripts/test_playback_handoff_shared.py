@@ -1032,3 +1032,86 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class RuntimeStateDumpTests(unittest.IsolatedAsyncioTestCase):
+    """The debug runtime dump reports the native DSP topology."""
+
+    def _dump(self, mode: str, link_text: str, *, direct_bypass: bool = False):
+        overview = {
+            "output_mode": {
+                "mode": mode,
+                "effective_output_key": OUTPUT_KEY,
+                "effective_output_rate": 48000,
+            }
+        }
+        if direct_bypass:
+            link_text = link_text + f"\nmpv:output_FL -> {OUTPUT_KEY}:playback_FL\n"
+
+        def debug_command(args, _timeout_ms):
+            if args[0] == "ps":
+                return {"returncode": 0, "stdout": "42 /usr/bin/fxroute-dsp conf sock"}
+            if args[0] == "pgrep":
+                return {"returncode": 0, "stdout": ""}
+            return {"returncode": 0, "stdout": link_text}
+
+        class FakeRuntime:
+            def snapshot(self):
+                return {"helper_pid": 42, "config": {"sample_rate": 48000}}
+
+        with patch.object(main, "get_audio_output_overview", return_value=overview), \
+             patch.object(main, "get_samplerate_status", return_value={"active_rate": 48000, "force_rate": 48000}), \
+             patch.object(main, "subwoofer_runtime", FakeRuntime()), \
+             patch.object(main, "_run_debug_command", side_effect=debug_command), \
+             patch.object(main, "_read_build_id", return_value="test"), \
+             patch.object(main, "_measurement_helper_snapshot_summary", return_value={}):
+            return asyncio.run(main._dump_21_runtime_state("test"))
+
+    def test_21_dump_reports_native_sink_dsp_hardware_chain(self):
+        link_text = (
+            "fxroute_dsp_sink:monitor_FL -> fxroute_dsp:input_1\n"
+            "fxroute_dsp_sink:monitor_FR -> fxroute_dsp:input_2\n"
+            f"fxroute_dsp:output_1 -> {OUTPUT_KEY}:playback_FL\n"
+            f"fxroute_dsp:output_2 -> {OUTPUT_KEY}:playback_FR\n"
+            f"fxroute_dsp:output_3 -> {OUTPUT_KEY}:playback_RL\n"
+            f"fxroute_dsp:output_4 -> {OUTPUT_KEY}:playback_RR\n"
+        )
+        state = self._dump("subwoofer-2.1", link_text)
+        links = state["links"]
+        self.assertTrue(links["sink_to_dsp_present"])
+        self.assertTrue(links["dsp_main_to_hw_present"])
+        self.assertTrue(links["dsp_sub_to_hw_present"])
+        self.assertTrue(links["sub_output_channel_linked"])
+        self.assertFalse(links["direct_source_to_hw_present"])
+        self.assertNotIn("ee_to_helper_left", links)
+        self.assertNotIn("helper_main_left_to_hw", links)
+        self.assertNotIn("direct_ee_to_hw_present", links)
+        self.assertEqual(state["api_mode"], "subwoofer-2.1")
+        self.assertEqual(state["hardware_output"], OUTPUT_KEY)
+
+    def test_stereo_dump_reports_main_chain_without_sub_links(self):
+        link_text = (
+            "fxroute_dsp_sink:monitor_FL -> fxroute_dsp:input_1\n"
+            "fxroute_dsp_sink:monitor_FR -> fxroute_dsp:input_2\n"
+            f"fxroute_dsp:output_1 -> {OUTPUT_KEY}:playback_FL\n"
+            f"fxroute_dsp:output_2 -> {OUTPUT_KEY}:playback_FR\n"
+        )
+        state = self._dump("stereo", link_text)
+        links = state["links"]
+        self.assertTrue(links["sink_to_dsp_present"])
+        self.assertTrue(links["dsp_main_to_hw_present"])
+        self.assertFalse(links["dsp_sub_to_hw_present"])
+
+    def test_dump_flags_direct_source_to_hardware_bypass(self):
+        link_text = (
+            "fxroute_dsp_sink:monitor_FL -> fxroute_dsp:input_1\n"
+            "fxroute_dsp_sink:monitor_FR -> fxroute_dsp:input_2\n"
+            f"fxroute_dsp:output_1 -> {OUTPUT_KEY}:playback_FL\n"
+            f"fxroute_dsp:output_2 -> {OUTPUT_KEY}:playback_FR\n"
+        )
+        state = self._dump("stereo", link_text, direct_bypass=True)
+        self.assertTrue(state["links"]["direct_source_to_hw_present"])
+
+
+
+if __name__ == "__main__":
+    unittest.main()

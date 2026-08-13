@@ -668,5 +668,82 @@ class EasyEffectsExtrasVolumeTests(unittest.IsolatedAsyncioTestCase):
             await extras_task
 
 
+NATIVE_STEREO_LINKS = (
+    "\tmpv:output_FL\n"
+    "  |-> fxroute_dsp_sink:playback_FL\n"
+    "\tmpv:output_FR\n"
+    "  |-> fxroute_dsp_sink:playback_FR\n"
+    "\tfxroute_dsp_sink:monitor_FL\n"
+    "  |-> fxroute_dsp:input_1\n"
+    "\tfxroute_dsp_sink:monitor_FR\n"
+    "  |-> fxroute_dsp:input_2\n"
+    "\tfxroute_dsp:output_1\n"
+    "  |-> alsa_output.hw:playback_FL\n"
+    "\tfxroute_dsp:output_2\n"
+    "  |-> alsa_output.hw:playback_FR\n"
+)
+
+
+class SilentActiveSourceLinkTests(unittest.TestCase):
+    """Stereo silent-active link check uses the native DSP topology."""
+
+    def stereo(self, **overrides):
+        return {"mode": "stereo", "effective_output_key": "alsa_output.hw", **overrides}
+
+    def test_stereo_native_topology_is_recognized(self):
+        self.assertTrue(main._silent_active_source_links_present(
+            "local", NATIVE_STEREO_LINKS, self.stereo()))
+
+    def test_stereo_spotify_source_is_recognized(self):
+        text = NATIVE_STEREO_LINKS.replace("mpv:output_FL", "spotify:output_FL") \
+                                  .replace("mpv:output_FR", "spotify:output_FR")
+        self.assertTrue(main._silent_active_source_links_present(
+            "spotify", text, self.stereo()))
+
+    def test_stereo_without_dsp_to_hardware_link_is_not_recognized(self):
+        text = NATIVE_STEREO_LINKS.replace(
+            "\tfxroute_dsp:output_1\n  |-> alsa_output.hw:playback_FL\n", "")
+        self.assertFalse(main._silent_active_source_links_present(
+            "local", text, self.stereo()))
+
+    def test_stereo_without_source_to_sink_link_is_not_recognized(self):
+        text = NATIVE_STEREO_LINKS.replace(
+            "\tmpv:output_FL\n  |-> fxroute_dsp_sink:playback_FL\n", "")
+        self.assertFalse(main._silent_active_source_links_present(
+            "local", text, self.stereo()))
+
+    def test_stereo_obsolete_easyeffects_ports_are_not_recognized(self):
+        # The old EE stereo check would have passed on these ports; the
+        # native check must not.
+        text = (
+            "\tmpv:output_FL\n"
+            "  |-> fxroute_dsp_sink:playback_FL\n"
+            "\tee_soe_output_level:output_FL\n"
+            "  |-> alsa_output.hw:playback_FL\n"
+            "\tee_soe_output_level:output_FR\n"
+            "  |-> alsa_output.hw:playback_FR\n"
+        )
+        self.assertFalse(main._silent_active_source_links_present(
+            "local", text, self.stereo()))
+
+    def test_stereo_interleaved_links_are_recognized(self):
+        text = (
+            "\tfxroute_dsp_sink:playback_FL\n"
+            "  |<- spotify:output_FL\n"
+            "  |<- mpv:output_FL\n"
+            "\tfxroute_dsp:output_1\n"
+            "  |-> alsa_output.hw:playback_FL\n"
+            "\tfxroute_dsp:output_2\n"
+            "  |-> alsa_output.hw:playback_FR\n"
+        )
+        self.assertTrue(main._silent_active_source_links_present(
+            "local", text, self.stereo()))
+
+    def test_subwoofer_mode_only_requires_source_link(self):
+        self.assertTrue(main._silent_active_source_links_present(
+            "local", "\tmpv:output_FL\n  |-> fxroute_dsp_sink:playback_FL\n",
+            {"mode": "subwoofer-2.1", "effective_output_key": "alsa_output.hw"}))
+
+
 if __name__ == "__main__":
-    unittest.main(verbosity=2)
+    unittest.main()

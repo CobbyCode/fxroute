@@ -56,7 +56,7 @@ PLAY_COMMAND_COOLDOWN_MS = 400
 LOCAL_TRACK_SWITCH_SETTLE_MS = 260
 PIPEWIRE_HANDOFF_RELEASE_TIMEOUT_MS = 1800
 PIPEWIRE_HANDOFF_POLL_INTERVAL_MS = 50
-# Bounded window for the idempotent MPV->EasyEffects link reconciliation
+# Bounded window for the idempotent MPV->DSP ingress link reconciliation
 # after the source ports appeared (link creation plus readback confirm).
 MPV_LINK_REPAIR_TIMEOUT_MS = 1500
 SPOTIFY_SINK_INPUT_RATE_TIMEOUT_MS = 1800
@@ -69,12 +69,12 @@ RADIO_POST_LOAD_RATE_STABILITY_POLLS = 3
 # Bounded read-only budget for the MPV stream's PipeWire output ports to
 # appear after a staged cold radio loadfile: mpv publishes mpv:output_FL/FR
 # only once the network stream actually opened (observed ~4 s cold start).
-# The MPV->EasyEffects link repair must never run while the ports are
+# The MPV->DSP ingress link repair must never run while the ports are
 # absent; this is source-startup readiness, not a fixed sleep.
 RADIO_SOURCE_PORT_READINESS_TIMEOUT_MS = 4500
-# Bounded readback wait for the EasyEffects output ports after a rate switch
-# or a missing-graph repair. No fixed sleeps: the handoff polls pw-link until
-# ee_soe_output_level:output_FL/FR are exposed, then starts/syncs the helper.
+# Bounded readback wait for the native DSP ports after a rate switch or a
+# missing-graph repair. No fixed sleeps: the handoff polls pw-link until the
+# fxroute_dsp input/output ports are exposed, then starts/syncs the helper.
 PLAYBACK_HANDOFF_EE_PORT_TIMEOUT_MS = 5000
 # A post-source-start graph repair is deliberately a short, deterministic
 # readback window.  It is not a second watcher or a general graph recovery.
@@ -2138,9 +2138,9 @@ def _active_unmuted_sink_inputs(entries: list[dict]) -> list[dict]:
 
 def _silent_active_source_links_present(source: str, links_text: str, output_mode: dict) -> bool:
     if source == "spotify":
-        source_link_ok = "spotify:output_FL" in links_text and "fxroute_dsp_sink:playback_FL" in links_text
+        source_link_ok = _contains_link(links_text, "spotify:output_FL", "fxroute_dsp_sink:playback_FL")
     else:
-        source_link_ok = "mpv:output_FL" in links_text and "fxroute_dsp_sink:playback_FL" in links_text
+        source_link_ok = _contains_link(links_text, "mpv:output_FL", "fxroute_dsp_sink:playback_FL")
     if not source_link_ok:
         return False
 
@@ -2150,7 +2150,12 @@ def _silent_active_source_links_present(source: str, links_text: str, output_mod
     output_key = str(output_mode.get("effective_output_key") or "").strip()
     if not output_key:
         return True
-    return output_key in links_text and "ee_soe_output_level:output_FL" in links_text
+    # Native stereo topology: the source reaches the DSP ingress sink and
+    # the DSP output reaches the selected hardware output.
+    return (
+        _contains_link(links_text, "fxroute_dsp:output_1", f"{output_key}:playback_FL")
+        and _contains_link(links_text, "fxroute_dsp:output_2", f"{output_key}:playback_FR")
+    )
 
 
 def _silent_active_snapshot(
@@ -2205,7 +2210,7 @@ def _silent_active_snapshot(
                     "mpv",
                     "spotify",
                     "fxroute_dsp_sink",
-                    "ee_soe_output_level",
+                    "fxroute_dsp",
                     str(output_mode.get("effective_output_key") or "").strip(),
                 )
                 if token
@@ -2446,11 +2451,11 @@ async def _easyeffects_output_ports_present() -> bool:
 
 
 async def _wait_for_easyeffects_output_ports(timeout_ms: int) -> bool:
-    """Poll pw-link -io until the EasyEffects output ports are exposed.
+    """Poll pw-link -io until the native DSP ports are exposed.
 
     Readback-driven replacement for fixed sleeps: the handoff only proceeds
-    to the helper sync once the EE output ports actually exist. The EE
-    preset sync (step 3) triggers the port recreation; this wait observes it.
+    to the helper sync once the fxroute_dsp input/output ports actually
+    exist; this wait observes the engine startup port creation.
     """
     deadline = time.monotonic() + max(timeout_ms, 0) / 1000
     while True:
@@ -2470,10 +2475,11 @@ async def _playback_graph_diagnosis(
 ) -> dict:
     """Return the one canonical, read-only production-graph snapshot.
 
-    The Coordinator and every watcher use this function unchanged.  In
-    stereo the valid output is EE -> hardware.  In 2.1/2.2 the helper owns
-    every hardware output and direct EE -> hardware links are explicitly
-    invalid, even when the helper links are also present.
+    The Coordinator and every watcher use this function unchanged.  The
+    production graph is native: source -> fxroute_dsp_sink ingress ->
+    fxroute_dsp -> hardware.  In 2.1/2.2 the DSP owns every hardware output
+    and direct source -> hardware links are explicitly invalid, even when
+    the canonical links are also present.
     """
     result = {
         "mode": None,
@@ -2513,209 +2519,59 @@ async def _playback_graph_diagnosis(
     except Exception:
         return result
 
-    if subwoofer_runtime is not None:
-        source_node = "spotify" if source == "spotify" else "mpv" if source in {"local", "radio"} else None
-        source_targets = ("fxroute_dsp_sink:playback_FL", "fxroute_dsp_sink:playback_FR")
-        source_ports = ((f"{source_node}:output_FL", f"{source_node}:output_FR") if source_node else ())
-        runtime = subwoofer_runtime.snapshot()
-        output_count = 4 if mode in OUTPUT_MODE_SUBWOOFER_MODES else 2
-        hardware_channels = ("FL", "FR", "RL", "RR")[:output_count]
-        dsp_ports = tuple(f"fxroute_dsp:output_{index + 1}" for index in range(output_count))
-        ingress_sources = ("fxroute_dsp_sink:monitor_FL", "fxroute_dsp_sink:monitor_FR")
-        ingress_targets = ("fxroute_dsp:input_1", "fxroute_dsp:input_2")
-        result["ee_ports"] = all(port in io_text for port in (*ingress_targets, *dsp_ports))
-        result["helper_ports"] = result["ee_ports"]
-        result["helper_active"] = bool(runtime.get("active"))
-        result["helper_rate"] = _helper_argument_sample_rate(runtime)
-        result["helper_rate_matches"] = bool(result["helper_active"] and (target_rate is None or result["helper_rate"] == target_rate))
-        result["source_links"] = {
-            f"{port} -> {target}": _contains_link(link_text, port, target)
-            for port, target in zip(source_ports, source_targets)
-        }
-        result["source_links_complete"] = all(result["source_links"].values()) if source_node else (False if require_source else None)
-        direct_source_links = (
-            _contains_link(link_text, f"{node}:output_{channel}", f"{output_key}:playback_{channel}")
-            for node in ("mpv", "spotify")
-            for channel in ("FL", "FR", "RL", "RR")
-        )
-        result["direct_source_to_hw_present"] = any(direct_source_links)
-        result["links"] = {
-            **{f"{source_port} -> {target_port}": _contains_link(link_text, source_port, target_port)
-               for source_port, target_port in zip(ingress_sources, ingress_targets)},
-            **{f"{dsp_port} -> {output_key}:playback_{channel}": _contains_link(link_text, dsp_port, f"{output_key}:playback_{channel}")
-               for dsp_port, channel in zip(dsp_ports, hardware_channels)},
-        }
-        result["port_identities"] = {
-            "source": tuple(port for port in source_ports if port in io_text),
-            "source_target": tuple(port for port in source_targets if port in io_text),
-            "ee": tuple(port for port in ingress_targets if port in io_text),
-            "helper": tuple(port for port in dsp_ports if port in io_text),
-            "output": tuple(f"{output_key}:playback_{channel}" for channel in hardware_channels if f"{output_key}:playback_{channel}" in io_text),
-        }
-        source_ok = result["source_links_complete"] is not False
-        native_topology_complete = bool(
-            source_ok
-            and result["ee_ports"]
-            and result["helper_rate_matches"]
-            and all(result["links"].values())
-        )
-        result["bypass_only"] = bool(
-            native_topology_complete and result["direct_source_to_hw_present"]
-        )
-        result["links_complete"] = bool(
-            native_topology_complete
-            and not result["direct_source_to_hw_present"]
-        )
-        result["signature"] = json.dumps(result, sort_keys=True, default=list)
-        return result
-
-    ee_fl = "ee_soe_output_level:output_FL"
-    ee_fr = "ee_soe_output_level:output_FR"
-    helper = "fxroute_21_stage1"
-    helper_port_names = tuple(
-        f"{helper}:{port}"
-        for port in ("input_L", "input_R", "output_1", "output_2", "output_3", "output_4")
-    )
-    output_port_names = tuple(
-        f"{output_key}:playback_{channel}"
-        for channel in (
-            "FL",
-            "FR",
-            *(("RL", "RR") if mode in OUTPUT_MODE_SUBWOOFER_MODES and mode != OUTPUT_MODE_SUBWOOFER_21 else ()),
-        )
-    )
-    result["ee_ports"] = ee_fl in io_text and ee_fr in io_text
-
     source_node = "spotify" if source == "spotify" else "mpv" if source in {"local", "radio"} else None
-    source_port_names = (
-        f"{source_node}:output_FL",
-        f"{source_node}:output_FR",
-    ) if source_node else ()
-    source_target_port_names = (
-        "fxroute_dsp_sink:playback_FL",
-        "fxroute_dsp_sink:playback_FR",
-    )
-    result["port_identities"] = {
-        "source": tuple(port for port in source_port_names if port in io_text),
-        "source_target": tuple(
-            port for port in source_target_port_names if port in io_text
-        ),
-        "ee": tuple(port for port in (ee_fl, ee_fr) if port in io_text),
-        "helper": tuple(port for port in helper_port_names if port in io_text),
-        "output": tuple(port for port in output_port_names if port in io_text),
+    source_targets = ("fxroute_dsp_sink:playback_FL", "fxroute_dsp_sink:playback_FR")
+    source_ports = ((f"{source_node}:output_FL", f"{source_node}:output_FR") if source_node else ())
+    runtime = subwoofer_runtime.snapshot() if subwoofer_runtime is not None else {}
+    output_count = 4 if mode in OUTPUT_MODE_SUBWOOFER_MODES else 2
+    hardware_channels = ("FL", "FR", "RL", "RR")[:output_count]
+    dsp_ports = tuple(f"fxroute_dsp:output_{index + 1}" for index in range(output_count))
+    ingress_sources = ("fxroute_dsp_sink:monitor_FL", "fxroute_dsp_sink:monitor_FR")
+    ingress_targets = ("fxroute_dsp:input_1", "fxroute_dsp:input_2")
+    result["ee_ports"] = all(port in io_text for port in (*ingress_targets, *dsp_ports))
+    result["helper_ports"] = result["ee_ports"]
+    result["helper_active"] = bool(runtime.get("active"))
+    result["helper_rate"] = _helper_argument_sample_rate(runtime)
+    result["helper_rate_matches"] = bool(result["helper_active"] and (target_rate is None or result["helper_rate"] == target_rate))
+    result["source_links"] = {
+        f"{port} -> {target}": _contains_link(link_text, port, target)
+        for port, target in zip(source_ports, source_targets)
     }
-    if source_node:
-        result["source_links"] = {
-            f"{source_node}:output_FL -> fxroute_dsp_sink:playback_FL": _contains_link(
-                link_text, f"{source_node}:output_FL", "fxroute_dsp_sink:playback_FL"
-            ),
-            f"{source_node}:output_FR -> fxroute_dsp_sink:playback_FR": _contains_link(
-                link_text, f"{source_node}:output_FR", "fxroute_dsp_sink:playback_FR"
-            ),
-        }
-        result["source_links_complete"] = all(result["source_links"].values())
-    elif require_source:
-        result["source_links_complete"] = False
-
-    source_ok = result["source_links_complete"] is not False
-    if mode not in OUTPUT_MODE_SUBWOOFER_MODES:
-        result["links"] = {
-            f"{ee_fl} -> {output_key}:playback_FL": _contains_link(
-                link_text, ee_fl, f"{output_key}:playback_FL"
-            ),
-            f"{ee_fr} -> {output_key}:playback_FR": _contains_link(
-                link_text, ee_fr, f"{output_key}:playback_FR"
-            ),
-        }
-        result["links_complete"] = (
-            source_ok and result["ee_ports"] and all(result["links"].values())
-        )
-    else:
-        result["helper_ports"] = all(
-            port in io_text for port in helper_port_names
-        )
-        result["links"] = {
-            f"{ee_fl} -> {helper}:input_L": _contains_link(link_text, ee_fl, f"{helper}:input_L"),
-            f"{ee_fr} -> {helper}:input_R": _contains_link(link_text, ee_fr, f"{helper}:input_R"),
-            f"{helper}:output_1 -> {output_key}:playback_FL": _contains_link(
-                link_text, f"{helper}:output_1", f"{output_key}:playback_FL"
-            ),
-            f"{helper}:output_2 -> {output_key}:playback_FR": _contains_link(
-                link_text, f"{helper}:output_2", f"{output_key}:playback_FR"
-            ),
-        }
-        if mode != OUTPUT_MODE_SUBWOOFER_21:
-            result["links"][f"{helper}:output_3 -> {output_key}:playback_RL"] = _contains_link(
-                link_text, f"{helper}:output_3", f"{output_key}:playback_RL"
-            )
-            result["links"][f"{helper}:output_4 -> {output_key}:playback_RR"] = _contains_link(
-                link_text, f"{helper}:output_4", f"{output_key}:playback_RR"
-            )
-
-        direct_links = {
-            f"{ee_fl} -> {output_key}:playback_FL": _contains_link(
-                link_text, ee_fl, f"{output_key}:playback_FL"
-            ),
-            f"{ee_fr} -> {output_key}:playback_FR": _contains_link(
-                link_text, ee_fr, f"{output_key}:playback_FR"
-            ),
-        }
-        result["direct_ee_to_hw_present"] = any(direct_links.values())
-        helper_topology_complete = (
-            result["ee_ports"]
-            and result["helper_ports"]
-            and all(result["links"].values())
-        )
-        try:
-            helper_snapshot = subwoofer_runtime.snapshot() if subwoofer_runtime is not None else {}
-            result["helper_active"] = bool(helper_snapshot.get("active"))
-            result["helper_rate"] = _helper_argument_sample_rate(helper_snapshot)
-        except Exception:
-            result["helper_active"] = False
-        result["helper_rate_matches"] = (
-            bool(result["helper_active"])
-            and (
-                target_rate is None
-                or result["helper_rate"] == target_rate
-            )
-        )
-        helper_valid = bool(result["helper_rate_matches"])
-        result["bypass_only"] = bool(
-            source_ok and helper_topology_complete and helper_valid and result["direct_ee_to_hw_present"]
-        )
-        # Direct EE -> hardware links are part of the invalid state, not an
-        # optional extra.  This is the key invariant shared by commit and
-        # watcher readback.
-        result["links_complete"] = bool(
-            source_ok
-            and helper_topology_complete
-            and helper_valid
-            and not result["direct_ee_to_hw_present"]
-        )
-
-    result["signature"] = "|".join(
-        (
-            str(result.get("mode")),
-            str(result.get("output_key")),
-            str(result.get("ee_ports")),
-            str(result.get("helper_ports")),
-            str(result.get("helper_active")),
-            str(result.get("helper_rate")),
-            str(result.get("helper_rate_matches")),
-            str(result.get("source_links_complete")),
-            str(result.get("direct_ee_to_hw_present")),
-            str(result.get("links_complete")),
-            ";".join(
-                f"{key}={value}"
-                for key, value in sorted(result.get("source_links", {}).items())
-            ),
-            ";".join(f"{key}={value}" for key, value in sorted(result.get("links", {}).items())),
-            ";".join(
-                f"{key}={','.join(str(port) for port in ports)}"
-                for key, ports in sorted(result.get("port_identities", {}).items())
-            ),
-        )
+    result["source_links_complete"] = all(result["source_links"].values()) if source_node else (False if require_source else None)
+    direct_source_links = (
+        _contains_link(link_text, f"{node}:output_{channel}", f"{output_key}:playback_{channel}")
+        for node in ("mpv", "spotify")
+        for channel in ("FL", "FR", "RL", "RR")
     )
+    result["direct_source_to_hw_present"] = any(direct_source_links)
+    result["links"] = {
+        **{f"{source_port} -> {target_port}": _contains_link(link_text, source_port, target_port)
+           for source_port, target_port in zip(ingress_sources, ingress_targets)},
+        **{f"{dsp_port} -> {output_key}:playback_{channel}": _contains_link(link_text, dsp_port, f"{output_key}:playback_{channel}")
+           for dsp_port, channel in zip(dsp_ports, hardware_channels)},
+    }
+    result["port_identities"] = {
+        "source": tuple(port for port in source_ports if port in io_text),
+        "source_target": tuple(port for port in source_targets if port in io_text),
+        "ee": tuple(port for port in ingress_targets if port in io_text),
+        "helper": tuple(port for port in dsp_ports if port in io_text),
+        "output": tuple(f"{output_key}:playback_{channel}" for channel in hardware_channels if f"{output_key}:playback_{channel}" in io_text),
+    }
+    source_ok = result["source_links_complete"] is not False
+    native_topology_complete = bool(
+        source_ok
+        and result["ee_ports"]
+        and result["helper_rate_matches"]
+        and all(result["links"].values())
+    )
+    result["bypass_only"] = bool(
+        native_topology_complete and result["direct_source_to_hw_present"]
+    )
+    result["links_complete"] = bool(
+        native_topology_complete
+        and not result["direct_source_to_hw_present"]
+    )
+    result["signature"] = json.dumps(result, sort_keys=True, default=list)
     return result
 
 
@@ -3129,7 +2985,7 @@ async def _coordinator_establish_effects_and_helper(
             preset_reloaded = True
         if not await _wait_for_easyeffects_output_ports(ee_port_timeout_ms):
             raise RuntimeError(
-                "Coordinator effects stage failed: EasyEffects output ports were not confirmed"
+                "Coordinator effects stage failed: native DSP output ports were not confirmed"
             )
 
         if request.operation in {"measurement-entry", "output-mode-switch"}:
@@ -3180,7 +3036,7 @@ async def _coordinator_establish_effects_and_helper(
                         if not await _wait_for_easyeffects_output_ports(ee_port_timeout_ms):
                             raise RuntimeError(
                                 "Coordinator compare preset restore did not recreate "
-                                "EasyEffects output ports"
+                                "native DSP output ports"
                             )
                         preset_reloaded = True
                         logger.info(
@@ -3485,14 +3341,14 @@ async def _ensure_mpv_to_easyeffects_links(
             links_text = await _run_pw_link_command("-l")
             missing = [(source, target) for source, target in expected if not _contains_link(links_text, source, target)]
             if not missing:
-                logger.info("Radio handoff MPV->EasyEffects links complete")
+                logger.info("Radio handoff MPV->DSP ingress links complete")
                 return True
             for source, target in missing:
-                logger.info("Radio handoff repairing MPV->EasyEffects link: %s -> %s", source, target)
+                logger.info("Radio handoff repairing MPV->DSP ingress link: %s -> %s", source, target)
                 await _connect_ports((source,), target)
         except Exception as exc:
             if time.monotonic() >= repair_deadline:
-                logger.warning("Radio handoff MPV->EasyEffects link repair failed: %s", exc)
+                logger.warning("Radio handoff MPV->DSP ingress link repair failed: %s", exc)
                 return False
         if time.monotonic() >= repair_deadline:
             break
@@ -3523,33 +3379,37 @@ async def _dump_21_runtime_state(label: str, ui_state: dict | None = None) -> di
 
     pw_links = await asyncio.to_thread(_run_debug_command, ["pw-link", "-l"], 2.0)
     link_text = pw_links.get("stdout", "")
-    ee_left = "ee_soe_output_level:output_FL"
-    ee_right = "ee_soe_output_level:output_FR"
-    helper_in_left = "fxroute_21_stage1:input_L"
-    helper_in_right = "fxroute_21_stage1:input_R"
-    helper_out_1 = "fxroute_21_stage1:output_1"
-    helper_out_2 = "fxroute_21_stage1:output_2"
-    helper_out_3 = "fxroute_21_stage1:output_3"
-    helper_out_4 = "fxroute_21_stage1:output_4"
+    sink_monitor_left = "fxroute_dsp_sink:monitor_FL"
+    sink_monitor_right = "fxroute_dsp_sink:monitor_FR"
+    dsp_in_left = "fxroute_dsp:input_1"
+    dsp_in_right = "fxroute_dsp:input_2"
+    dsp_out_1 = "fxroute_dsp:output_1"
+    dsp_out_2 = "fxroute_dsp:output_2"
+    dsp_out_3 = "fxroute_dsp:output_3"
+    dsp_out_4 = "fxroute_dsp:output_4"
     hw_fl = f"{output_key}:playback_FL" if output_key else ""
     hw_fr = f"{output_key}:playback_FR" if output_key else ""
     hw_rl = f"{output_key}:playback_RL" if output_key else ""
     hw_rr = f"{output_key}:playback_RR" if output_key else ""
     links = {
-        "ee_to_helper_left": _contains_link(link_text, ee_left, helper_in_left),
-        "ee_to_helper_right": _contains_link(link_text, ee_right, helper_in_right),
-        "helper_main_left_to_hw": bool(hw_fl) and _contains_link(link_text, helper_out_1, hw_fl),
-        "helper_main_right_to_hw": bool(hw_fr) and _contains_link(link_text, helper_out_2, hw_fr),
-        "helper_sub_left_to_hw": bool(hw_rl) and _contains_link(link_text, helper_out_3, hw_rl),
-        "helper_sub_right_to_hw": bool(hw_rr) and _contains_link(link_text, helper_out_4, hw_rr),
-        "direct_ee_left_to_hw": bool(hw_fl) and _contains_link(link_text, ee_left, hw_fl),
-        "direct_ee_right_to_hw": bool(hw_fr) and _contains_link(link_text, ee_right, hw_fr),
+        "sink_to_dsp_left": _contains_link(link_text, sink_monitor_left, dsp_in_left),
+        "sink_to_dsp_right": _contains_link(link_text, sink_monitor_right, dsp_in_right),
+        "dsp_main_left_to_hw": bool(hw_fl) and _contains_link(link_text, dsp_out_1, hw_fl),
+        "dsp_main_right_to_hw": bool(hw_fr) and _contains_link(link_text, dsp_out_2, hw_fr),
+        "dsp_sub_left_to_hw": bool(hw_rl) and _contains_link(link_text, dsp_out_3, hw_rl),
+        "dsp_sub_right_to_hw": bool(hw_rr) and _contains_link(link_text, dsp_out_4, hw_rr),
+        "direct_source_left_to_hw": bool(hw_fl) and any(
+            _contains_link(link_text, f"{node}:output_FL", hw_fl) for node in ("mpv", "spotify")
+        ),
+        "direct_source_right_to_hw": bool(hw_fr) and any(
+            _contains_link(link_text, f"{node}:output_FR", hw_fr) for node in ("mpv", "spotify")
+        ),
     }
-    links["sub_output_channel_linked"] = links["helper_sub_left_to_hw"] or links["helper_sub_right_to_hw"]
-    links["ee_to_helper_present"] = links["ee_to_helper_left"] and links["ee_to_helper_right"]
-    links["helper_main_to_hw_present"] = links["helper_main_left_to_hw"] and links["helper_main_right_to_hw"]
-    links["helper_sub_to_hw_present"] = links["helper_sub_left_to_hw"] and links["helper_sub_right_to_hw"]
-    links["direct_ee_to_hw_present"] = links["direct_ee_left_to_hw"] or links["direct_ee_right_to_hw"]
+    links["sink_to_dsp_present"] = links["sink_to_dsp_left"] and links["sink_to_dsp_right"]
+    links["dsp_main_to_hw_present"] = links["dsp_main_left_to_hw"] and links["dsp_main_right_to_hw"]
+    links["dsp_sub_to_hw_present"] = links["dsp_sub_left_to_hw"] and links["dsp_sub_right_to_hw"]
+    links["sub_output_channel_linked"] = links["dsp_sub_left_to_hw"] or links["dsp_sub_right_to_hw"]
+    links["direct_source_to_hw_present"] = links["direct_source_left_to_hw"] or links["direct_source_right_to_hw"]
 
     config = snapshot.get("config") or {}
     state = {
