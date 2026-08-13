@@ -179,6 +179,9 @@ class EasyEffectsMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
                 order.append("convolver-entered")
                 return {"name": preset_name}
 
+            def load_global_extras(self):
+                return {"loudness": {"enabled": False, "params": {}}}
+
             def load_preset(self, preset_name, convolver_sample_rate_hz=None):
                 pass
 
@@ -258,8 +261,13 @@ class EasyEffectsMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
         order = []
 
         class FakeManager:
+            EXCLUDED_GLOBAL_EXTRAS_PRESETS = {"Direct"}
+
             def load_global_extras(self):
                 return {"loudness": {"enabled": True, "params": {}}}
+
+            def get_active_preset(self):
+                return "Neutral"
 
             def loudness_db_from_percent(self, percent):
                 return -float(percent)
@@ -362,6 +370,9 @@ class EasyEffectsMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
         order = []
 
         class FakeManager:
+            def load_global_extras(self):
+                return {"loudness": {"enabled": False, "params": {}}}
+
             def upload_ir(self, source_path, filename, stored_name=None):
                 order.append("upload-entered")
                 entered.set()

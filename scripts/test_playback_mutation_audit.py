@@ -235,7 +235,8 @@ def _reason(context: str, name: str) -> str | None:
         "lifespan", "save_audio_output_selection_route", "save_audio_output_mode_route",
         "_set_canonical_output_volume",
         "_finish_easyeffects_preset_mutation", "save_easyeffects_extras",
-        "load_easyeffects_preset", "_load_easyeffects_preset",
+        "load_easyeffects_preset", "_load_easyeffects_preset", "_load_preset_locked",
+        "_transfer_volume_ownership_for_preset",
     }:
         return "startup or explicit user configuration workflow"
     if leaf.startswith("sync_peak_monitor_for_"):

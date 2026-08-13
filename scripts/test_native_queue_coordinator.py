@@ -40,8 +40,13 @@ class NativeQueueSelectionTests(unittest.TestCase):
 
     def test_loudness_volume_uses_canonical_curve_and_master_100(self):
         class LoudnessManager:
+            EXCLUDED_GLOBAL_EXTRAS_PRESETS = {"Direct"}
+
             def load_global_extras(self):
                 return {"loudness": {"enabled": True}}
+
+            def get_active_preset(self):
+                return "Neutral"
 
             def loudness_db_from_percent(self, percent):
                 return -float(percent)

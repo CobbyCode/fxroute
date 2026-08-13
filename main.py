@@ -3802,15 +3802,35 @@ def ensure_local_source_volume() -> None:
 
 
 def get_output_volume_safe(default: int = 100) -> int:
-    if easyeffects_manager:
+    if _loudness_owns_volume():
         try:
             loudness = easyeffects_manager.load_global_extras().get("loudness", {})
-            if loudness.get("enabled"):
-                volume_db = float(loudness.get("params", {}).get("volumeDb", 0.0))
-                return easyeffects_manager.loudness_percent_from_db(volume_db)
+            volume_db = float(loudness.get("params", {}).get("volumeDb", 0.0))
+            return easyeffects_manager.loudness_percent_from_db(volume_db)
         except Exception:
             logger.warning("Failed to read Loudness volume, falling back to system volume", exc_info=True)
     return get_status_volume(default)
+
+
+def _loudness_owns_volume() -> bool:
+    """Return whether Loudness owns the canonical attenuation.
+
+    The persisted ``loudness.enabled`` flag alone is not enough: the Direct
+    preset bypasses every global helper, so with Direct active the
+    attenuation lives in the system master even while Loudness stays
+    enabled in state.  Volume ownership must follow the actually active
+    signal path, not the persisted flag.
+    """
+    if not easyeffects_manager:
+        return False
+    try:
+        extras = easyeffects_manager.load_global_extras()
+        if not extras.get("loudness", {}).get("enabled"):
+            return False
+        active = easyeffects_manager.get_active_preset()
+        return bool(active) and active not in easyeffects_manager.EXCLUDED_GLOBAL_EXTRAS_PRESETS
+    except Exception:
+        return False
 
 
 async def _set_canonical_output_volume(volume: float | int) -> dict[str, Any]:
@@ -3832,10 +3852,9 @@ async def _set_canonical_output_volume(volume: float | int) -> dict[str, Any]:
     """
     async with _canonical_volume_write_lock():
         requested = max(0, min(100, int(round(float(volume)))))
+        loudness_owns = _loudness_owns_volume()
         async with _easyeffects_mutation_lock():
-            extras = easyeffects_manager.load_global_extras() if easyeffects_manager else {}
-            loudness = extras.get("loudness") if isinstance(extras, dict) else {}
-            if isinstance(loudness, dict) and loudness.get("enabled") and easyeffects_manager:
+            if loudness_owns and easyeffects_manager:
                 volume_db = easyeffects_manager.loudness_db_from_percent(requested)
                 volume_result = await _drain_worker(
                     easyeffects_manager.set_loudness_volume_db, volume_db
@@ -5300,7 +5319,7 @@ async def lifespan(app: FastAPI):
         logger.info("Downloader initialized")
 
         easyeffects_manager = await _drain_worker(DSPManager)
-        if easyeffects_manager.load_global_extras().get("loudness", {}).get("enabled"):
+        if _loudness_owns_volume():
             set_output_volume(100)
         volume_read_monitor_task = start_volume_read_monitor()
         lifecycle_background_tasks.add(volume_read_monitor_task)
@@ -6518,25 +6537,102 @@ def _require_easyeffects_manager():
 
 
 async def _load_easyeffects_preset(
-    preset_name: str, *, convolver_sample_rate_hz: int | None = None
+    preset_name: str, *, convolver_sample_rate_hz: int | None = None,
+    _locks_held: bool = False,
 ) -> None:
     """Serialize preset loads against threaded EasyEffects mutations.
 
     load_preset() also synchronizes global extras into the preset and is
     therefore not read-only: it must never run concurrently with a threaded
-    IR/preset mutation.  Lock order: the mutation lock is always acquired
-    after (never before) any preset-load lock held by the caller.  The
-    blocking manager call runs off the event loop under the caller-owned
-    mutation lock (no double acquisition).
+    IR/preset mutation.  Lock order: the canonical volume write lock is
+    acquired first (so the Direct volume-ownership transfer serializes
+    against volume writes), then the EasyEffects mutation lock.  Callers
+    that already hold both locks pass ``_locks_held=True``.
     """
-    async with _easyeffects_mutation_lock():
-        manager = _require_easyeffects_manager()
-        await _drain_worker(
-            manager.load_preset,
-            preset_name,
-            convolver_sample_rate_hz=convolver_sample_rate_hz,
-        )
-        await _sync_subwoofer_runtime(reason="native-dsp-preset-load")
+    volume_lock = None
+    if not _locks_held:
+        volume_lock = _canonical_volume_write_lock()
+        await volume_lock.acquire()
+    try:
+        if _locks_held:
+            await _load_preset_locked(preset_name, convolver_sample_rate_hz=convolver_sample_rate_hz)
+        else:
+            async with _easyeffects_mutation_lock():
+                await _load_preset_locked(preset_name, convolver_sample_rate_hz=convolver_sample_rate_hz)
+    finally:
+        if volume_lock is not None:
+            volume_lock.release()
+
+
+async def _load_preset_locked(
+    preset_name: str, *, convolver_sample_rate_hz: int | None = None
+) -> None:
+    manager = _require_easyeffects_manager()
+    await _transfer_volume_ownership_for_preset(manager, preset_name)
+    await _drain_worker(
+        manager.load_preset,
+        preset_name,
+        convolver_sample_rate_hz=convolver_sample_rate_hz,
+    )
+    await _sync_subwoofer_runtime(reason="native-dsp-preset-load")
+
+
+async def _transfer_volume_ownership_for_preset(manager, preset_name: str) -> None:
+    """Move the canonical attenuation across the Direct bypass boundary.
+
+    Direct bypasses every global helper including Loudness, so while Direct
+    is active the attenuation lives in the system master.  Entering Direct
+    moves it there before the bypass takes effect; leaving Direct moves it
+    back into the Loudness volumeDb before the bypass is removed.  Both
+    transfers run while the old path still controls the output and the
+    engine output gain is held at a guard while the master is restored, so
+    there is no temporary 100% exposure and no positive level jump.  The
+    caller holds the canonical volume write lock and the mutation lock.
+    """
+    extras = manager.load_global_extras()
+    loudness = extras.get("loudness") or {}
+    if not loudness.get("enabled"):
+        return
+    active = manager.get_active_preset()
+    entering_direct = preset_name == manager.PURE_PRESET and active != manager.PURE_PRESET
+    leaving_direct = active == manager.PURE_PRESET and preset_name != manager.PURE_PRESET
+    if not entering_direct and not leaving_direct:
+        return
+    if entering_direct:
+        volume_db = float(loudness.get("params", {}).get("volumeDb", 0.0))
+        # Loudness still attenuates while the preset switch runs; moving the
+        # attenuation into the master first only deepens the guard briefly.
+        await _drain_worker(set_output_volume, manager.loudness_percent_from_db(volume_db))
+        return
+    current_percent = await _drain_worker(get_output_volume)
+    previous_extras = copy.deepcopy(extras)
+    guard_applied = False
+    try:
+        # Mirror the current system attenuation into volumeDb while the
+        # bypass is still active (ineffective there, correct for the path
+        # the preset switch is about to activate).
+        extras["loudness"]["params"]["volumeDb"] = manager.loudness_db_from_percent(current_percent)
+        manager.save_global_extras(extras)
+        manager.apply_runtime_properties_from_extras(extras)
+        # Hold the engine output gain at a guard while the master returns to
+        # 100%: the restored master cannot expose the un-attenuated path.
+        if subwoofer_runtime is not None and subwoofer_runtime.snapshot().get("active"):
+            await subwoofer_runtime.set_output_gain_db(-18.0)
+            guard_applied = True
+        await _drain_worker(set_output_volume, 100)
+    except Exception:
+        if guard_applied:
+            try:
+                await subwoofer_runtime.set_output_gain_db(0.0)
+            except Exception:
+                logger.debug("Failed to release Direct-leave volume guard", exc_info=True)
+        try:
+            manager.save_global_extras(previous_extras)
+            manager.apply_runtime_properties_from_extras(previous_extras)
+            await _drain_worker(set_output_volume, current_percent)
+        except Exception:
+            logger.exception("Failed to restore volume state after Direct leave failure")
+        raise
 
 
 def _effects_extras_from_form(
@@ -6666,13 +6762,20 @@ async def save_easyeffects_extras(request: Request):
                 previous, extras
             )
             disabling_master_percent = None
-            if disabling_loudness:
+            if disabling_loudness and _loudness_owns_volume():
                 volume_db = float(extras["loudness"]["params"]["volumeDb"])
                 disabling_master_percent = ee_manager.loudness_percent_from_db(volume_db)
                 # Move the canonical attenuation back to the system master while the
                 # Loudness block is still active and guarded.  Bypassing first leaves
                 # a short 100%-master window and produces a positive transient.
                 await _drain_worker(set_output_volume, disabling_master_percent)
+            elif disabling_loudness:
+                # With Direct active the attenuation already lives in the
+                # system master; the persisted volumeDb is not the live path
+                # and must not overwrite the master.
+                logger.info(
+                    "Loudness disabled while Direct bypasses it; system master keeps the attenuation"
+                )
             try:
                 if runtime_strength_change:
                     result = await _drain_worker(
@@ -6700,10 +6803,14 @@ async def save_easyeffects_extras(request: Request):
         if (not result.get("runtime_applied") and active_preset
                 and active_preset not in ee_manager.EXCLUDED_GLOBAL_EXTRAS_PRESETS):
             try:
-                await _load_easyeffects_preset(active_preset)
+                # The caller holds the volume write lock (when this is a
+                # canonical transition) and the mutation lock; the reload
+                # target is never Direct here (EXCLUDED above), so the
+                # Direct volume transfer is guaranteed to be a no-op.
+                await _load_easyeffects_preset(active_preset, _locks_held=True)
             except Exception as e:
                 logger.warning("Failed to reload active preset after extras update: %s", e)
-        if enabling_loudness and not result.get("runtime_applied"):
+        if enabling_loudness and not result.get("runtime_applied") and _loudness_owns_volume():
             await _drain_worker(set_output_volume, 100)
     finally:
         if canonical_lock is not None:
