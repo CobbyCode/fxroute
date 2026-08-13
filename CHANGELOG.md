@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.11 (2026-08-13)
+
+- Refined Advanced Measurement UI wording and documentation.
+
 ## 0.9.10 (2026-08-13)
 
 ### Advanced Measurement
