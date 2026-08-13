@@ -45,13 +45,34 @@ class PipeWireLink:
 
 
 def _contains_link(text: str, source: str, target: str) -> bool:
-    if source not in text or target not in text:
+    """Return whether ``source`` is linked to ``target`` in ``pw-link -l`` text.
+
+    The classic three fixed patterns fail when another link to the same
+    target port is listed before the searched one (e.g. Spotify connected to
+    fxroute_dsp_sink before mpv): the ``|<- source`` line is then not
+    adjacent to the target header.  Parse the port blocks line-wise instead:
+    each non-link line is the current port header, each ``|<-``/``|->`` line
+    is a link of that port.  Link order within a port block is irrelevant.
+    """
+    if not text or source not in text or target not in text:
         return False
-    return any(candidate in text for candidate in (
-        f"{source} -> {target}",
-        f"{target}\n  |<- {source}",
-        f"{source}\n  |-> {target}",
-    ))
+    if f"{source} -> {target}" in text:
+        return True
+    current_port: str | None = None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith("|"):
+            if current_port is None:
+                continue
+            if f"|<- {source}" in raw and current_port == target:
+                return True
+            if f"|-> {target}" in raw and current_port == source:
+                return True
+        else:
+            current_port = line
+    return False
 
 
 def _finite_number(value: Any, default: float = 0.0) -> float:

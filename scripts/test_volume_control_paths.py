@@ -29,6 +29,11 @@ class _FakePlayer:
         }
 
 
+class _FakePeakMonitor:
+    def snapshot(self):
+        return {"vu_db": -60.0, "vu_fresh": False}
+
+
 class SilentActiveLiveVolumeTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.original_silent_attempts = dict(main.silent_active_recovery_attempts)
@@ -42,7 +47,7 @@ class SilentActiveLiveVolumeTests(unittest.IsolatedAsyncioTestCase):
 
     def _patches(self):
         return [
-            mock.patch.object(main, "peak_monitor", object()),
+            mock.patch.object(main, "peak_monitor", _FakePeakMonitor()),
             mock.patch.object(main, "player_instance", _FakePlayer()),
             mock.patch.object(main, "_current_track_matches", return_value=True),
             mock.patch.object(main, "_is_local_playback_active", return_value=True),
@@ -87,7 +92,9 @@ class SilentActiveLiveVolumeTests(unittest.IsolatedAsyncioTestCase):
             main, "get_output_volume", side_effect=RuntimeError("wpctl wedged")
         ), mock.patch.object(
             main, "get_audio_output_overview", return_value={}
-        ) as overview, ExitStack() as stack:
+        ) as overview, mock.patch.object(
+            main, "_silent_active_source_links_present", return_value=True
+        ), ExitStack() as stack:
             for patch in self._patches():
                 stack.enter_context(patch)
             await main._check_and_recover_silent_active(

@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import re
+import signal
 import socket
 import subprocess
 import threading
@@ -80,6 +81,69 @@ class MPVNotInstalledError(MPVError):
     """MPV is not installed on the system."""
 
 
+def _is_fxroute_mpv_cmdline(cmdline: str, socket_path: str) -> bool:
+    """True only for FXRoute-owned mpv processes.
+
+    FXRoute starts mpv with an exact argument pattern; any other mpv
+    invocation (user players, different IPC socket) must never match, so a
+    cleanup can never kill an unrelated mpv process.
+    """
+    marker = f"mpv --idle=yes --input-ipc-server={socket_path} "
+    return cmdline.startswith(marker)
+
+
+def _fxroute_mpv_pids(socket_path: str) -> list[int]:
+    """Return PIDs of running FXRoute-owned mpv processes via /proc scan."""
+    pids: list[int] = []
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return pids
+    for entry in entries:
+        if not entry.isdigit():
+            continue
+        try:
+            with open(f"/proc/{entry}/cmdline", "rb") as handle:
+                raw = handle.read()
+        except OSError:
+            continue
+        cmdline = raw.replace(b"\x00", b" ").decode("utf-8", "replace").strip()
+        if _is_fxroute_mpv_cmdline(cmdline, socket_path):
+            pids.append(int(entry))
+    return sorted(pids)
+
+
+def _stop_orphan_mpv_processes(socket_path: str, own_pid: int | None = None) -> None:
+    """Terminate FXRoute-owned mpv processes left behind by killed service runs.
+
+    A hard service kill (or a crashed Python) leaves the mpv child alive;
+    on the next start those orphans compete for the same IPC socket and
+    PipeWire node name.  Only processes whose cmdline matches the exact
+    FXRoute mpv pattern are touched, never unrelated user mpv processes.
+    """
+    remaining = [pid for pid in _fxroute_mpv_pids(socket_path) if pid != own_pid]
+    if not remaining:
+        return
+    logger.info("Found orphan FXRoute mpv processes (pids: %s), cleaning up", ", ".join(map(str, remaining)))
+    for pid in remaining:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            pass
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        remaining = [pid for pid in _fxroute_mpv_pids(socket_path) if pid != own_pid]
+        if not remaining:
+            return
+        time.sleep(0.1)
+    logger.warning("Orphan FXRoute mpv processes ignored SIGTERM (pids: %s), killing", ", ".join(map(str, remaining)))
+    for pid in remaining:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+
 class MPVWrapper:
     """Thread-safe wrapper around a single mpv instance using JSON IPC."""
 
@@ -128,6 +192,11 @@ class MPVWrapper:
             logger.warning("MPV already running")
             return
 
+        # A previous killed service run may have left FXRoute-owned mpv
+        # processes behind; they would compete for the same IPC socket and
+        # PipeWire node.  Clean them up before spawning the new instance.
+        _stop_orphan_mpv_processes(self.socket_path, own_pid=None)
+
         try:
             os.unlink(self.socket_path)
         except FileNotFoundError:
@@ -140,15 +209,7 @@ class MPVWrapper:
         except (subprocess.CalledProcessError, FileNotFoundError) as e:
             raise MPVNotInstalledError("mpv is not installed or not in PATH") from e
 
-        cmd = [
-            "mpv",
-            "--idle=yes",
-            "--input-ipc-server=" + self.socket_path,
-            "--no-video",
-            "--quiet",
-            "--network-timeout=15",
-            "--stream-lavf-o=reconnect=1,reconnect_streamed=1,reconnect_at_eof=1,reconnect_delay_max=5",
-        ]
+        cmd = self._mpv_command()
         logger.info(f"Starting mpv: {' '.join(cmd)}")
         self.process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
@@ -166,6 +227,26 @@ class MPVWrapper:
 
         self._listener_thread = threading.Thread(target=self._event_listener_loop, daemon=True)
         self._listener_thread.start()
+
+    @staticmethod
+    def _mpv_command(socket_path: str = "/tmp/mpv.sock") -> list[str]:
+        """The exact FXRoute mpv invocation (also the orphan-match pattern).
+
+        mpv 0.41 removed an autoconnect switch, so the direct hardware link
+        (DSP bypass) is prevented by pinning the audio device to the
+        FXRoute ingress sink: the mpv stream can then only ever connect to
+        ``fxroute_dsp_sink``, never to the hardware sink on its own.
+        """
+        return [
+            "mpv",
+            "--idle=yes",
+            "--input-ipc-server=" + socket_path,
+            "--no-video",
+            "--quiet",
+            "--network-timeout=15",
+            "--audio-device=pipewire/fxroute_dsp_sink",
+            "--stream-lavf-o=reconnect=1,reconnect_streamed=1,reconnect_at_eof=1,reconnect_delay_max=5",
+        ]
 
     def stop(self):
         """Stop the mpv subprocess."""
@@ -185,7 +266,10 @@ class MPVWrapper:
                 self.process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 self.process.kill()
-                self.process.wait(timeout=5)
+                try:
+                    self.process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    logger.warning("MPV process did not exit after SIGKILL; leaving it to the startup orphan cleanup")
         listener_thread = self._listener_thread
         if listener_thread and listener_thread is not threading.current_thread():
             listener_thread.join(timeout=2)

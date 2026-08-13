@@ -14,8 +14,7 @@ sys.path.insert(0, str(ROOT))
 from dsp_manager import DSPManager
 from dsp_runtime import (CommandResult, DSPRuntime, DSPRuntimeConfig, PipeWireLink,
                          DSP_INGRESS_MONITOR_NODE, RUNTIME_COMMAND_TIMEOUT_RETURNCODE,
-                         RUNTIME_COMMAND_TIMEOUT_SECONDS)
-
+                         RUNTIME_COMMAND_TIMEOUT_SECONDS, _contains_link)
 
 class FakeProcess:
     def __init__(self):
@@ -29,7 +28,6 @@ class FakeProcess:
 
     async def wait(self):
         return self.returncode
-
 
 class DSPRuntimeConfigTests(unittest.TestCase):
     def setUp(self):
@@ -550,8 +548,6 @@ class DSPRuntimeConfigTests(unittest.TestCase):
         self.assertTrue(all(not path.exists() for path in candidate_paths))
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 class DSPRuntimeLifecycleTests(unittest.TestCase):
     """Process lifecycle: bounded commands, stderr drain, orphan cleanup."""
@@ -655,7 +651,7 @@ class DSPRuntimeLifecycleTests(unittest.TestCase):
             await runtime._stop_orphan_helpers()
 
         asyncio.run(exercise())
-        self.assertEqual(len(commands), 3)
+        self.assertEqual([command[0] for command in commands], ["pgrep", "pgrep"])
 
     def test_engine_stderr_drain_keeps_bounded_tail(self):
         async def exercise():
@@ -703,10 +699,14 @@ class DSPRuntimeLifecycleTests(unittest.TestCase):
 
     def test_orphan_cleanup_spares_own_pid_and_signals_only_others(self):
         signalled = []
+        pgrep_calls = []
 
         async def run(command):
             if command == ("pgrep", "-f", pattern):
-                return CommandResult(0, "123\n456\n")
+                pgrep_calls.append(command)
+                if len(pgrep_calls) == 1:
+                    return CommandResult(0, "123\n456\n")
+                return CommandResult(0, "")
             return CommandResult(0, "")
 
         original_kill = os.kill
@@ -729,6 +729,54 @@ class DSPRuntimeLifecycleTests(unittest.TestCase):
         asyncio.run(exercise())
         self.assertEqual(signalled, [(456, signal.SIGTERM)])
 
+
+
+class ContainsLinkTests(unittest.TestCase):
+    """Link recognition must be independent of link ordering within a port."""
+
+    def test_link_is_recognized_as_first_entry_under_target(self):
+        text = (
+            "\tfxroute_dsp_sink:playback_FL\n"
+            "  |<- mpv:output_FL\n"
+            "\tfxroute_dsp_sink:playback_FR\n"
+            "  |<- mpv:output_FR\n"
+        )
+        self.assertTrue(_contains_link(text, "mpv:output_FL", "fxroute_dsp_sink:playback_FL"))
+        self.assertTrue(_contains_link(text, "mpv:output_FR", "fxroute_dsp_sink:playback_FR"))
+
+    def test_link_is_recognized_behind_other_links_to_same_target(self):
+        # Spotify is connected to the sink before mpv; the old fixed-pattern
+        # check could not see the mpv link behind the interleaved line.
+        text = (
+            "\tfxroute_dsp_sink:playback_FL\n"
+            "  |<- spotify:output_FL\n"
+            "  |<- mpv:output_FL\n"
+            "\tfxroute_dsp_sink:playback_FR\n"
+            "  |<- spotify:output_FR\n"
+            "  |<- mpv:output_FR\n"
+        )
+        self.assertTrue(_contains_link(text, "mpv:output_FL", "fxroute_dsp_sink:playback_FL"))
+        self.assertTrue(_contains_link(text, "mpv:output_FR", "fxroute_dsp_sink:playback_FR"))
+
+    def test_link_is_recognized_via_source_arrow_form(self):
+        text = (
+            "\tmpv:output_FL\n"
+            "  |-> fxroute_dsp_sink:playback_FL\n"
+            "  |-> alsa_output.hw:playback_FL\n"
+        )
+        self.assertTrue(_contains_link(text, "mpv:output_FL", "fxroute_dsp_sink:playback_FL"))
+
+    def test_missing_link_is_not_reported(self):
+        text = (
+            "\tfxroute_dsp_sink:playback_FL\n"
+            "  |<- spotify:output_FL\n"
+        )
+        self.assertFalse(_contains_link(text, "mpv:output_FL", "fxroute_dsp_sink:playback_FL"))
+        self.assertFalse(_contains_link(text, "mpv:output_FL", "fxroute_dsp_sink:playback_FR"))
+
+    def test_arrow_text_form_is_still_recognized(self):
+        self.assertTrue(_contains_link("mpv:output_FL -> fxroute_dsp_sink:playback_FL",
+                                       "mpv:output_FL", "fxroute_dsp_sink:playback_FL"))
 
 if __name__ == "__main__":
     unittest.main()
