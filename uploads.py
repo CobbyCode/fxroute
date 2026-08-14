@@ -15,9 +15,9 @@ from typing import BinaryIO, Union
 UPLOAD_READ_CHUNK_BYTES = 1024 * 1024
 
 # Named, generous per-class limits (legit FXRoute usage stays far below).
-EASYEEFFECTS_IR_MAX_BYTES = 64 * 1024 * 1024          # single/dual convolver IR (.irs/.wav)
-EASYEEFFECTS_PRESET_TEXT_MAX_BYTES = 8 * 1024 * 1024  # preset JSON / REW text import
-EASYEEFFECTS_BUNDLE_MAX_BYTES = 256 * 1024 * 1024     # preset bundle ZIP upload
+DSP_IR_MAX_BYTES = 64 * 1024 * 1024          # single/dual convolver IR (.irs/.wav)
+DSP_PRESET_TEXT_MAX_BYTES = 8 * 1024 * 1024  # preset JSON / REW text import
+DSP_BUNDLE_MAX_BYTES = 256 * 1024 * 1024     # preset bundle ZIP upload
 LIBRARY_UPLOAD_MAX_BYTES = 2 * 1024 ** 3              # library audio file / album ZIP upload
 TEXT_UPLOAD_MAX_BYTES = 8 * 1024 * 1024               # playlist (m3u/m3u8) upload
 MEASUREMENT_TEXT_MAX_BYTES = 2 * 1024 * 1024          # calibration / house-curve text

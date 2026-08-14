@@ -28,6 +28,9 @@ from fastapi import HTTPException
 
 import library_api
 import main
+import dsp_api
+
+dsp_api.configure_dsp_api(main._make_dsp_api_deps())
 import zip_album
 
 
@@ -160,9 +163,9 @@ class PresetBundleEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.irs_dir = Path(self.temp_dir.name) / "irs"
         self.original_manager = main.dsp_manager
-        self.original_finish = main._finish_dsp_preset_mutation
+        self.original_finish = dsp_api._finish_dsp_preset_mutation
         self.original_limits = {
-            name: getattr(main, name)
+            name: getattr(dsp_api, name)
             for name in (
                 "PRESET_BUNDLE_MAX_MEMBERS",
                 "PRESET_BUNDLE_MAX_TOTAL_UNCOMPRESSED_BYTES",
@@ -172,7 +175,7 @@ class PresetBundleEndpointTests(unittest.IsolatedAsyncioTestCase):
             )
         }
         main.dsp_manager = FakeEEManager(self.irs_dir)
-        main._finish_dsp_preset_mutation = self._fake_finish
+        dsp_api._finish_dsp_preset_mutation = self._fake_finish
         self.created_temps = []
         real_tempfile = tempfile.NamedTemporaryFile
 
@@ -181,7 +184,7 @@ class PresetBundleEndpointTests(unittest.IsolatedAsyncioTestCase):
             self.created_temps.append(handle.name)
             return handle
 
-        self.tempfile_patch = patch("main.tempfile.NamedTemporaryFile", recording_tempfile)
+        self.tempfile_patch = patch("dsp_api.tempfile.NamedTemporaryFile", recording_tempfile)
         self.tempfile_patch.start()
 
     async def _fake_finish(self, **kwargs):
@@ -190,9 +193,9 @@ class PresetBundleEndpointTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         self.tempfile_patch.stop()
         main.dsp_manager = self.original_manager
-        main._finish_dsp_preset_mutation = self.original_finish
+        dsp_api._finish_dsp_preset_mutation = self.original_finish
         for name, value in self.original_limits.items():
-            setattr(main, name, value)
+            setattr(dsp_api, name, value)
         self.temp_dir.cleanup()
 
     def _assert_clean(self):
@@ -208,7 +211,7 @@ class PresetBundleEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(leftovers, [])
 
     async def _import(self, zip_bytes: bytes, *, filename="bundle.zip"):
-        return await main.import_dsp_preset_bundle(
+        return await dsp_api.import_dsp_preset_bundle(
             FakeUpload(zip_bytes, filename=filename)
         )
 
@@ -289,7 +292,7 @@ class PresetBundleEndpointTests(unittest.IsolatedAsyncioTestCase):
         self._assert_clean()
 
     async def test_too_many_members_rejected(self):
-        main.PRESET_BUNDLE_MAX_MEMBERS = 4
+        dsp_api.PRESET_BUNDLE_MAX_MEMBERS = 4
         entries = [("preset.json", "{}")]
         entries += [(f"dummy-{index}.bin", b"x") for index in range(5)]
         with self.assertRaises(HTTPException) as ctx:
@@ -299,7 +302,7 @@ class PresetBundleEndpointTests(unittest.IsolatedAsyncioTestCase):
         self._assert_clean()
 
     async def test_total_uncompressed_limit_rejected(self):
-        main.PRESET_BUNDLE_MAX_TOTAL_UNCOMPRESSED_BYTES = 64
+        dsp_api.PRESET_BUNDLE_MAX_TOTAL_UNCOMPRESSED_BYTES = 64
         with self.assertRaises(HTTPException) as ctx:
             await self._import(standard_bundle_bytes())
         self.assertEqual(ctx.exception.status_code, 400)
@@ -307,7 +310,7 @@ class PresetBundleEndpointTests(unittest.IsolatedAsyncioTestCase):
         self._assert_clean()
 
     async def test_single_member_too_large_rejected(self):
-        main.PRESET_BUNDLE_MAX_MEMBER_BYTES = 64
+        dsp_api.PRESET_BUNDLE_MAX_MEMBER_BYTES = 64
         evil = write_zip([("preset.json", "{}"), ("big.irs", b"X" * 128)])
         with self.assertRaises(HTTPException) as ctx:
             await self._import(evil)
@@ -316,7 +319,7 @@ class PresetBundleEndpointTests(unittest.IsolatedAsyncioTestCase):
         self._assert_clean()
 
     async def test_preset_json_read_budget_enforced(self):
-        main.PRESET_BUNDLE_MAX_JSON_BYTES = 8
+        dsp_api.PRESET_BUNDLE_MAX_JSON_BYTES = 8
         evil = write_zip([("preset.json", '{"output": "' + "x" * 64 + '"}')])
         with self.assertRaises(HTTPException) as ctx:
             await self._import(evil)
@@ -338,10 +341,10 @@ class PresetBundleEndpointTests(unittest.IsolatedAsyncioTestCase):
         upload = FakeUpload(
             b"x" * 1024,
             filename="bundle.zip",
-            content_length=main.EASYEEFFECTS_BUNDLE_MAX_BYTES + 1,
+            content_length=dsp_api.DSP_BUNDLE_MAX_BYTES + 1,
         )
         with self.assertRaises(HTTPException) as ctx:
-            await main.import_dsp_preset_bundle(upload)
+            await dsp_api.import_dsp_preset_bundle(upload)
         self.assertEqual(ctx.exception.status_code, 413)
         self._assert_clean()
 

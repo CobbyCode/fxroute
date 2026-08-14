@@ -6,9 +6,9 @@
 - effects_extras.is_pure_loudness_strength_change
 - effects_extras.is_runtime_autogain_loudness_change
 
-plus wrapper parity against main._parse_effects_extras_from_json,
-main._merge_effects_extras_from_json, main._is_pure_loudness_strength_change
-and main._is_runtime_autogain_loudness_change.
+plus wrapper parity against dsp_api._parse_effects_extras_from_json,
+dsp_api._merge_effects_extras_from_json, dsp_api._is_pure_loudness_strength_change
+and dsp_api._is_runtime_autogain_loudness_change.
 """
 import sys
 import unittest
@@ -471,8 +471,8 @@ class RuntimeAutogainLoudnessChangeTests(unittest.TestCase):
 
 class WrapperParityTests(unittest.TestCase):
     def setUp(self):
-        import main
-        self.main = main
+        import dsp_api
+        self.dsp_api = dsp_api
 
     def test_parse_parity(self):
         bodies = [
@@ -485,14 +485,14 @@ class WrapperParityTests(unittest.TestCase):
         ]
         for body in bodies:
             self.assertEqual(
-                self.main._parse_effects_extras_from_json(body),
+                self.dsp_api._parse_effects_extras_from_json(body),
                 effects_extras.parse_effects_extras_from_json(body),
             )
 
     def test_parse_parity_invalid_conversions(self):
         for body in ({"headroomGainDb": "abc"}, {"loudnessFftSize": "abc"}, {"delayRightMs": None}):
             try:
-                self.main._parse_effects_extras_from_json(body)
+                self.dsp_api._parse_effects_extras_from_json(body)
                 main_exc = None
             except Exception as exc:
                 main_exc = (type(exc), str(exc))
@@ -517,7 +517,7 @@ class WrapperParityTests(unittest.TestCase):
         ]
         for body in bodies:
             self.assertEqual(
-                self.main._merge_effects_extras_from_json(previous, body),
+                self.dsp_api._merge_effects_extras_from_json(previous, body),
                 effects_extras.merge_effects_extras_from_json(previous, body),
             )
 
@@ -525,7 +525,7 @@ class WrapperParityTests(unittest.TestCase):
         previous = full_extras()
         for body in ({"calibration": "x"}, {"calibrationProfiles": 7}):
             try:
-                self.main._merge_effects_extras_from_json(previous, body)
+                self.dsp_api._merge_effects_extras_from_json(previous, body)
                 main_exc = None
             except Exception as exc:
                 main_exc = (type(exc), str(exc))
@@ -540,7 +540,7 @@ class WrapperParityTests(unittest.TestCase):
         previous = full_extras()
         body = {"headroomGainDb": "abc"}
         try:
-            self.main._merge_effects_extras_from_json(previous, body)
+            self.dsp_api._merge_effects_extras_from_json(previous, body)
             main_exc = None
         except Exception as exc:
             main_exc = (type(exc), str(exc))
@@ -559,7 +559,7 @@ class WrapperParityTests(unittest.TestCase):
         ]
         for prev, curr in states:
             self.assertEqual(
-                self.main._is_pure_loudness_strength_change(prev, curr),
+                self.dsp_api._is_pure_loudness_strength_change(prev, curr),
                 effects_extras.is_pure_loudness_strength_change(prev, curr),
             )
 
@@ -571,7 +571,7 @@ class WrapperParityTests(unittest.TestCase):
         ]
         for prev, curr in states:
             self.assertEqual(
-                self.main._is_runtime_autogain_loudness_change(prev, curr),
+                self.dsp_api._is_runtime_autogain_loudness_change(prev, curr),
                 effects_extras.is_runtime_autogain_loudness_change(prev, curr),
             )
 

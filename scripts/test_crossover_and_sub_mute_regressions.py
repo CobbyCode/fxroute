@@ -30,6 +30,9 @@ from playback_transition import PlaybackTransitionCoordinator, TransitionRequest
 
 import samplerate
 import main
+import dsp_api
+
+dsp_api.configure_dsp_api(main._make_dsp_api_deps())
 
 
 def _write_mode_file(config_home: Path, payload: dict) -> None:
@@ -499,7 +502,7 @@ async def _preset_load_reclean_skipped_during_sync() -> None:
         schedule_peak_monitor_refresh_after_effects_change=mock.MagicMock(),
     )
     with stack:
-        await main.load_dsp_preset(FakeRequest({"preset_name": "Neutral"}))
+        await dsp_api.load_dsp_preset(FakeRequest({"preset_name": "Neutral"}))
     active_runtime._reclean_guarded.assert_not_awaited()
 
     idle_runtime = mock.MagicMock(
@@ -516,7 +519,7 @@ async def _preset_load_reclean_skipped_during_sync() -> None:
         schedule_peak_monitor_refresh_after_effects_change=mock.MagicMock(),
     )
     with stack2:
-        await main.load_dsp_preset(FakeRequest({"preset_name": "Neutral"}))
+        await dsp_api.load_dsp_preset(FakeRequest({"preset_name": "Neutral"}))
     idle_runtime._reclean_guarded.assert_awaited_once()
     print("preset-load reclean defers to an in-flight subwoofer sync: ok")
 

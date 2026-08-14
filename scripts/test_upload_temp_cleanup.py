@@ -12,6 +12,9 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
+import dsp_api
+
+dsp_api.configure_dsp_api(main._make_dsp_api_deps())
 
 
 class FakeUpload:
@@ -74,13 +77,13 @@ class UploadTempCleanupTests(unittest.IsolatedAsyncioTestCase):
     async def test_ir_upload_read_failure_leaves_no_temp_file(self):
         upload = FakeUpload("test.ir", fail=True)
         with self.assertRaises(Exception):
-            await main.upload_dsp_ir(file=upload)
+            await dsp_api.upload_dsp_ir(file=upload)
         self.assertEqual(self._leftovers(), [])
 
     async def test_create_with_ir_read_failure_leaves_no_temp_file(self):
         upload = FakeUpload("test.ir", fail=True)
         with self.assertRaises(Exception):
-            await main.create_convolver_preset_with_ir(
+            await dsp_api.create_convolver_preset_with_ir(
                 preset_name="p",
                 load_after_create=False,
                 limiter_enabled=False,
@@ -102,14 +105,14 @@ class UploadTempCleanupTests(unittest.IsolatedAsyncioTestCase):
     async def test_bundle_write_failure_leaves_no_temp_zip(self):
         upload = FakeUpload("bundle.zip", fail=True)
         with self.assertRaises(Exception):
-            await main.import_dsp_preset_bundle(file=upload)
+            await dsp_api.import_dsp_preset_bundle(file=upload)
         self.assertEqual(self._leftovers(), [])
 
     async def test_dual_import_second_upload_failure_cleans_both(self):
         left = FakeUpload("left.irs", payload=b"left")
         right = FakeUpload("right.irs", fail=True)
         with self.assertRaises(Exception):
-            await main.import_dual_filter_preset(
+            await dsp_api.import_dual_filter_preset(
                 preset_name="p",
                 left_text="", right_text="",
                 load_after_create=False,
@@ -130,11 +133,11 @@ class UploadTempCleanupTests(unittest.IsolatedAsyncioTestCase):
             return_value={"preset": {"name": "p"}, "ir": {"name": "ir"}},
         )
         finish = patch.object(
-            main, "_finish_dsp_preset_mutation",
+            dsp_api, "_finish_dsp_preset_mutation",
             return_value={"active_preset": "p"},
         )
         with run_locked, finish:
-            result = await main.import_dual_filter_preset(
+            result = await dsp_api.import_dual_filter_preset(
                 preset_name="p",
                 left_text="", right_text="",
                 load_after_create=False,
@@ -165,7 +168,7 @@ class UploadTempCleanupTests(unittest.IsolatedAsyncioTestCase):
         broadcast = patch.object(main.manager, "broadcast", new=_async_noop)
         refresh = patch.object(main, "schedule_peak_monitor_refresh_after_effects_change")
         with run_locked, broadcast, refresh, patch.object(_Path, "unlink", _flaky_unlink):
-            result = await main.upload_dsp_ir(file=upload)
+            result = await dsp_api.upload_dsp_ir(file=upload)
 
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["ir"], {"name": "ir"})
@@ -183,7 +186,7 @@ class UploadTempCleanupTests(unittest.IsolatedAsyncioTestCase):
         upload = FakeUpload("test.ir", fail=True)
         with patch.object(_Path, "unlink", _flaky_unlink):
             with self.assertRaises(HTTPException) as ctx:
-                await main.upload_dsp_ir(file=upload)
+                await dsp_api.upload_dsp_ir(file=upload)
 
         self.assertEqual(ctx.exception.status_code, 500)
         self.assertIn("client disconnected", str(ctx.exception.detail))
@@ -191,7 +194,7 @@ class UploadTempCleanupTests(unittest.IsolatedAsyncioTestCase):
     async def test_bundle_cancellation_during_read_cleans_temp_zip(self):
         upload = FakeUpload("bundle.zip", cancel=True)
         with self.assertRaises(asyncio.CancelledError):
-            await main.import_dsp_preset_bundle(file=upload)
+            await dsp_api.import_dsp_preset_bundle(file=upload)
         self.assertEqual(self._leftovers(), [])
 
     async def test_bundle_staging_failure_cleans_temp_zip(self):
@@ -201,12 +204,12 @@ class UploadTempCleanupTests(unittest.IsolatedAsyncioTestCase):
             archive.writestr("preset.json", json_dumps({"name": "p"}))
             payload = archive.fp.getvalue()
         upload = FakeUpload("bundle.zip", payload=payload)
-        with patch.object(main, "_finish_dsp_preset_mutation",
+        with patch.object(dsp_api, "_finish_dsp_preset_mutation",
                           return_value={"active_preset": "p"}):
             # The bundle stages, then fails later (no preset import backend
             # in the dummy manager); the staged zip must still be removed.
             with self.assertRaises(Exception):
-                await main.import_dsp_preset_bundle(file=upload)
+                await dsp_api.import_dsp_preset_bundle(file=upload)
         self.assertEqual(self._leftovers(), [])
 
 

@@ -18,6 +18,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from fastapi import HTTPException
 
 import main
+import dsp_api
+
+dsp_api.configure_dsp_api(main._make_dsp_api_deps())
 import uploads
 
 
@@ -139,11 +142,11 @@ class EffectsEndpointLimitTests(unittest.IsolatedAsyncioTestCase):
         upload = FakeUpload(
             b"",
             filename="ir.wav",
-            content_length=uploads.EASYEEFFECTS_IR_MAX_BYTES + 1,
+            content_length=uploads.DSP_IR_MAX_BYTES + 1,
         )
         with self._recording_tempfile(created):
             with self.assertRaises(HTTPException) as ctx:
-                await main.upload_dsp_ir(upload)
+                await dsp_api.upload_dsp_ir(upload)
         self.assertEqual(ctx.exception.status_code, 413)
         self.assertEqual(upload.read_sizes, [])
         self.assertTrue(all(not Path(path).exists() for path in created))
@@ -151,13 +154,13 @@ class EffectsEndpointLimitTests(unittest.IsolatedAsyncioTestCase):
     async def test_ir_upload_oversized_by_counted_read_returns_413(self):
         created = []
         upload = FakeUpload(
-            b"x" * (uploads.EASYEEFFECTS_IR_MAX_BYTES + 1),
+            b"x" * (uploads.DSP_IR_MAX_BYTES + 1),
             filename="ir.irs",
             content_length=None,
         )
         with self._recording_tempfile(created):
             with self.assertRaises(HTTPException) as ctx:
-                await main.upload_dsp_ir(upload)
+                await dsp_api.upload_dsp_ir(upload)
         self.assertEqual(ctx.exception.status_code, 413)
         self.assertTrue(all(size > 0 for size in upload.read_sizes))
         self.assertTrue(all(not Path(path).exists() for path in created))
@@ -165,14 +168,14 @@ class EffectsEndpointLimitTests(unittest.IsolatedAsyncioTestCase):
     async def test_dual_upload_oversized_first_file_cleans_up_temps(self):
         created = []
         left = FakeUpload(
-            b"x" * (uploads.EASYEEFFECTS_IR_MAX_BYTES + 1),
+            b"x" * (uploads.DSP_IR_MAX_BYTES + 1),
             filename="left.irs",
             content_length=None,
         )
         right = FakeUpload(b"small", filename="right.irs")
         with self._recording_tempfile(created):
             with self.assertRaises(HTTPException) as ctx:
-                await main.import_dual_filter_preset(
+                await dsp_api.import_dual_filter_preset(
                     preset_name="Dual",
                     left_file=left,
                     right_file=right,
@@ -186,12 +189,12 @@ class EffectsEndpointLimitTests(unittest.IsolatedAsyncioTestCase):
         left = FakeUpload(
             b"",
             filename="left.irs",
-            content_length=uploads.EASYEEFFECTS_IR_MAX_BYTES + 1,
+            content_length=uploads.DSP_IR_MAX_BYTES + 1,
         )
         right = FakeUpload(b"small", filename="right.irs")
         with self._recording_tempfile(created):
             with self.assertRaises(HTTPException) as ctx:
-                await main.import_dual_filter_preset(
+                await dsp_api.import_dual_filter_preset(
                     preset_name="Dual",
                     left_file=left,
                     right_file=right,
@@ -208,7 +211,7 @@ class EffectsEndpointLimitTests(unittest.IsolatedAsyncioTestCase):
         right = FakeUpload(b"small", filename="right.irs")
         with self._recording_tempfile(created):
             with self.assertRaises(asyncio.CancelledError):
-                await main.import_dual_filter_preset(
+                await dsp_api.import_dual_filter_preset(
                     preset_name="Dual",
                     left_file=left,
                     right_file=right,
@@ -219,13 +222,13 @@ class EffectsEndpointLimitTests(unittest.IsolatedAsyncioTestCase):
         created = []
         left = FakeUpload(b"small", filename="left.irs")
         right = FakeUpload(
-            b"y" * (uploads.EASYEEFFECTS_IR_MAX_BYTES + 1),
+            b"y" * (uploads.DSP_IR_MAX_BYTES + 1),
             filename="right.irs",
             content_length=None,
         )
         with self._recording_tempfile(created):
             with self.assertRaises(HTTPException) as ctx:
-                await main.import_dual_filter_preset(
+                await dsp_api.import_dual_filter_preset(
                     preset_name="Dual",
                     left_file=left,
                     right_file=right,
@@ -236,33 +239,33 @@ class EffectsEndpointLimitTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_preset_json_upload_oversized_returns_413(self):
         upload = FakeUpload(
-            b'{"x": 1}' + b" " * uploads.EASYEEFFECTS_PRESET_TEXT_MAX_BYTES,
+            b'{"x": 1}' + b" " * uploads.DSP_PRESET_TEXT_MAX_BYTES,
             filename="preset.json",
             content_length=None,
         )
         with self.assertRaises(HTTPException) as ctx:
-            await main.import_dsp_preset_json(upload)
+            await dsp_api.import_dsp_preset_json(upload)
         self.assertEqual(ctx.exception.status_code, 413)
 
     async def test_rew_peq_upload_oversized_returns_413(self):
         upload = FakeUpload(
-            b"1;2;3;" * (uploads.EASYEEFFECTS_PRESET_TEXT_MAX_BYTES // 6 + 2),
+            b"1;2;3;" * (uploads.DSP_PRESET_TEXT_MAX_BYTES // 6 + 2),
             filename="rew.txt",
             content_length=None,
         )
         with self.assertRaises(HTTPException) as ctx:
-            await main.import_rew_peq_preset(preset_name="Rew", file=upload)
+            await dsp_api.import_rew_peq_preset(preset_name="Rew", file=upload)
         self.assertEqual(ctx.exception.status_code, 413)
 
     async def test_dual_rew_text_oversized_returns_413(self):
         left = FakeUpload(
-            b"1;2;3;" * (uploads.EASYEEFFECTS_PRESET_TEXT_MAX_BYTES // 6 + 2),
+            b"1;2;3;" * (uploads.DSP_PRESET_TEXT_MAX_BYTES // 6 + 2),
             filename="left.txt",
             content_length=None,
         )
         right = FakeUpload(b"1;2;3", filename="right.txt")
         with self.assertRaises(HTTPException) as ctx:
-            await main.import_dual_filter_preset(
+            await dsp_api.import_dual_filter_preset(
                 preset_name="Dual",
                 left_file=left,
                 right_file=right,

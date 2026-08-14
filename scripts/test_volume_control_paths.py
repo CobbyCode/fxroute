@@ -14,6 +14,9 @@ from unittest import mock
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 import main
+import dsp_api
+
+dsp_api.configure_dsp_api(main._make_dsp_api_deps())
 import system_volume
 
 
@@ -333,7 +336,7 @@ class CanonicalVolumeSerializationTests(unittest.IsolatedAsyncioTestCase):
         ), mock.patch(
             "system_volume.subprocess.run", side_effect=blocking_run
         ):
-            extras_task = asyncio.create_task(main.save_dsp_extras(FakeExtrasRequest()))
+            extras_task = asyncio.create_task(dsp_api.save_dsp_extras(FakeExtrasRequest()))
             self.assertTrue(await asyncio.to_thread(entered.wait, 5))
 
             write_task = asyncio.create_task(main._set_canonical_output_volume(60))
@@ -406,7 +409,7 @@ class CanonicalVolumeSerializationTests(unittest.IsolatedAsyncioTestCase):
         ), mock.patch(
             "system_volume.subprocess.run", side_effect=blocking_run
         ):
-            extras_task = asyncio.create_task(main.save_dsp_extras(FakeExtrasRequest()))
+            extras_task = asyncio.create_task(dsp_api.save_dsp_extras(FakeExtrasRequest()))
             self.assertTrue(await asyncio.to_thread(entered.wait, 5))
 
             write_task = asyncio.create_task(main._set_canonical_output_volume(60))
@@ -470,7 +473,7 @@ class CanonicalVolumeSerializationTests(unittest.IsolatedAsyncioTestCase):
             canonical = main._canonical_volume_write_lock()
             await canonical.acquire()
             try:
-                extras_task = asyncio.create_task(main.save_dsp_extras(FakeExtrasRequest()))
+                extras_task = asyncio.create_task(dsp_api.save_dsp_extras(FakeExtrasRequest()))
                 await asyncio.sleep(0.05)
                 # Waiting at the canonical lock means the mutation lock is
                 # not held yet: the enable path acquires canonical first.
@@ -566,7 +569,7 @@ class DSPExtrasVolumeTests(unittest.IsolatedAsyncioTestCase):
         ), mock.patch.object(
             main.manager, "broadcast", mock.AsyncMock()
         ), mock.patch.object(main, "schedule_peak_monitor_refresh_after_effects_change"):
-            await main.save_dsp_extras(FakeExtrasRequest())
+            await dsp_api.save_dsp_extras(FakeExtrasRequest())
 
         expected = system_volume.volume_db_to_percent(-10.0)
         self.assertEqual(order, [f"set-{expected}", "apply"])
@@ -602,7 +605,7 @@ class DSPExtrasVolumeTests(unittest.IsolatedAsyncioTestCase):
         ), mock.patch.object(main, "_load_dsp_preset", reload_preset), mock.patch.object(
             main.manager, "broadcast", mock.AsyncMock()
         ), mock.patch.object(main, "schedule_peak_monitor_refresh_after_effects_change"):
-            await main.save_dsp_extras(FakeRequest())
+            await dsp_api.save_dsp_extras(FakeRequest())
 
         reload_preset.assert_awaited_once_with("Neutral", _locks_held=True)
 
@@ -646,7 +649,7 @@ class DSPExtrasVolumeTests(unittest.IsolatedAsyncioTestCase):
             main, "set_output_volume", side_effect=lambda value: order.append(f"set-{value}") or value
         ):
             with self.assertRaises(RuntimeError):
-                await main.save_dsp_extras(FakeExtrasRequest())
+                await dsp_api.save_dsp_extras(FakeExtrasRequest())
 
         expected = system_volume.volume_db_to_percent(-10.0)
         self.assertEqual(order, [f"set-{expected}", "apply", "set-100"])
@@ -701,7 +704,7 @@ class DSPExtrasVolumeTests(unittest.IsolatedAsyncioTestCase):
         ), mock.patch.object(main, "schedule_peak_monitor_refresh_after_effects_change"), mock.patch(
             "system_volume.subprocess.run", side_effect=blocking_run
         ):
-            extras_task = asyncio.create_task(main.save_dsp_extras(FakeExtrasRequest()))
+            extras_task = asyncio.create_task(dsp_api.save_dsp_extras(FakeExtrasRequest()))
             self.assertTrue(await asyncio.to_thread(entered.wait, 5))
 
             tick = asyncio.create_task(ticker())
