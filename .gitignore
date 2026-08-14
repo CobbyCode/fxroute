@@ -32,6 +32,9 @@ manual_backup.zip
 pipewire_stage1/build/
 native_dsp/build/
 
+# Optional local demo library (never tracked)
+/demo-library/
+
 # Optional local test/media clutter
 test-inputs/
 node_modules/
