@@ -589,7 +589,6 @@ async def _ensure_playback_samplerate_force(
     allow_measurement_session: bool = False,
     policy: samplerate_orchestration.PlaybackRateReconcilePolicy = samplerate_orchestration.DEFAULT_POLICY,
 ) -> bool:
-    global playback_samplerate_force_rate
     if not isinstance(expected_rate, int) or expected_rate <= 0:
         return False
     if not allow_measurement_session and _measurement_session_blocks_playback_rate(expected_rate):
@@ -617,9 +616,8 @@ async def _ensure_playback_samplerate_force(
 
     def write_force_rate(rate: int) -> None:
         nonlocal force_rate_written
-        global playback_samplerate_force_rate
         _set_pipewire_force_rate(rate)
-        playback_samplerate_force_rate = rate
+        playback_rate_state.playback_samplerate_force_rate = rate
         force_rate_written = True
         logger.info(
             "Playback samplerate force-rate applied: reason=%s expected_rate=%s active_rate=%s previous_force_rate=%s",
@@ -653,12 +651,12 @@ async def _ensure_playback_samplerate_force(
     initial_active_rate = initial_status.get("active_rate")
     initial_force_rate = initial_status.get("force_rate")
     if force_rate_written:
-        playback_samplerate_force_rate = expected_rate
+        playback_rate_state.playback_samplerate_force_rate = expected_rate
     elif (
         initial_active_rate == expected_rate
         and initial_force_rate == expected_rate
     ):
-        playback_samplerate_force_rate = expected_rate
+        playback_rate_state.playback_samplerate_force_rate = expected_rate
 
     if policy is samplerate_orchestration.DEFAULT_POLICY and not aligned:
         if isinstance(initial_active_rate, int) and initial_active_rate != expected_rate:
@@ -867,6 +865,7 @@ from stations import get_stations
 import sink_inputs
 import playback_state as playback_state_helpers
 from playback_state import PlaybackState
+from playback_rate_state import PlaybackRateState
 import samplerate
 from library import (
     LibraryScanner,
@@ -1089,8 +1088,6 @@ spotify_playerctl_detect_task = None
 spotify_state_refresh_task = None
 spotify_state_poll_task = None
 spotify_playerctl_last_trigger_at = 0.0
-playback_samplerate_force_rate = None
-current_source_mode = SOURCE_MODE_APP_PLAYBACK
 last_measurement_window_seen_at = 0.0
 silent_active_recovery_attempts: set[str] = set()
 silent_active_watch_tasks: dict[str, asyncio.Task] = {}
@@ -1119,13 +1116,16 @@ def _playback_settled_event() -> asyncio.Event:
 # transition epoch/pending attempts and the published commit tokens).
 # See playback_state.PlaybackState for the field relationships.
 playback_state = PlaybackState()
+
+# Single authoritative owner of the playback source/rate coordination state
+# (forced playback samplerate mirror, current source mode, samplerate drift
+# observation).  See playback_rate_state.PlaybackRateState.
+playback_rate_state = PlaybackRateState()
 radio_reconnect_task = None
 radio_reconnect_attempts = 0
 radio_reconnect_url = None
 radio_reconnect_active_since = 0.0
 radio_metadata_service = RadioMetadataService()
-samplerate_drift_signature: tuple[Any, ...] | None = None
-samplerate_drift_readbacks = 0
 # queue_advancing is a reentrancy/dispatch guard for
 # on_player_state_change and deliberately not queue state: the queue
 # state (list, original order, index, mode, loop, shuffle, single-track-
@@ -3477,14 +3477,11 @@ async def _dump_21_runtime_state(label: str, ui_state: dict | None = None) -> di
 
 
 def _reset_samplerate_drift_observation() -> None:
-    global samplerate_drift_signature, samplerate_drift_readbacks
-    samplerate_drift_signature = None
-    samplerate_drift_readbacks = 0
+    playback_rate_state.reset_drift_observation()
 
 
 async def _observe_playback_samplerate_drift() -> None:
     """Observe a stable source/MPV/hardware-rate mismatch without mutating playback."""
-    global samplerate_drift_signature, samplerate_drift_readbacks
 
     # The Coordinator and the measurement session own all rate mutations.  A
     # readback captured during either operation is not evidence of a settled
@@ -3562,16 +3559,12 @@ async def _observe_playback_samplerate_drift() -> None:
         active_rate,
         force_rate,
     )
-    if signature == samplerate_drift_signature:
-        samplerate_drift_readbacks += 1
-    else:
-        samplerate_drift_signature = signature
-        samplerate_drift_readbacks = 1
+    readbacks = playback_rate_state.record_drift_observation(signature)
 
     # One readback can be a transient MPV property update.  Require the same
     # source and the same mismatch on a later watcher pass before requesting
     # recovery.
-    if samplerate_drift_readbacks <= 1:
+    if readbacks <= 1:
         return
 
     diagnosis = {
@@ -5118,7 +5111,7 @@ async def _spotify_playerctl_watch_loop() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan: startup and shutdown."""
-    global settings, library_scanner, music_library_manager, library_scan_task, downloader, dsp_manager, measurement_store, measurement_sr_session, measurement_watchdog_task, hardware_controller, playback_transition_coordinator, external_input_loopback_module_id, external_input_loopback_source_name, bluetooth_input_source_name, bluetooth_monitor_task, bluetooth_agent_process, spotify_playerctl_watch_task, spotify_playerctl_detect_task, spotify_state_refresh_task, spotify_state_poll_task, spotify_playerctl_last_trigger_at, current_source_mode, radio_reconnect_task
+    global settings, library_scanner, music_library_manager, library_scan_task, downloader, dsp_manager, measurement_store, measurement_sr_session, measurement_watchdog_task, hardware_controller, playback_transition_coordinator, external_input_loopback_module_id, external_input_loopback_source_name, bluetooth_input_source_name, bluetooth_monitor_task, bluetooth_agent_process, spotify_playerctl_watch_task, spotify_playerctl_detect_task, spotify_state_refresh_task, spotify_state_poll_task, spotify_playerctl_last_trigger_at, radio_reconnect_task
 
     logger.info("Starting FXRoute... build_id=%s", _read_build_id())
     try:
@@ -5259,7 +5252,7 @@ async def lifespan(app: FastAPI):
             applied_source = get_audio_source_overview()
             applied_source = await _sync_external_input_monitoring(applied_source)
             applied_source = await _sync_bluetooth_input_monitoring(applied_source)
-            current_source_mode = applied_source.get("mode") or SOURCE_MODE_APP_PLAYBACK
+            playback_rate_state.current_source_mode = applied_source.get("mode") or SOURCE_MODE_APP_PLAYBACK
             if applied_source.get("mode") == SOURCE_MODE_EXTERNAL_INPUT:
                 logger.info(
                     "Re-applied persisted external-input monitoring: %s",
@@ -6367,12 +6360,11 @@ async def save_audio_source_selection_route(request: Request):
     except Exception:
         raise HTTPException(status_code=400, detail='Invalid JSON body, expected {"mode": <string>, "inputKey": <string?>}')
 
-    global current_source_mode
     try:
         result = set_audio_source_selection(mode, input_key)
         result = await _sync_external_input_monitoring(result)
         result = await _sync_bluetooth_input_monitoring(result)
-        current_source_mode = result.get("mode") or SOURCE_MODE_APP_PLAYBACK
+        playback_rate_state.current_source_mode = result.get("mode") or SOURCE_MODE_APP_PLAYBACK
         if result.get("mode") in {SOURCE_MODE_EXTERNAL_INPUT, SOURCE_MODE_BLUETOOTH_INPUT}:
             await _pause_all_app_playback_for_external_input()
         await sync_peak_monitor_for_source_mode_state(result)

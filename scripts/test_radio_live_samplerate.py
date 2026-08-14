@@ -18,7 +18,7 @@ class SamplerateDriftWatcherTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         self.originals = {
-            name: (getattr(main.runtime, name) if hasattr(main.runtime, name) else getattr(main.playback_state, name) if hasattr(main.playback_state, name) else getattr(main, name))
+            name: (getattr(main.runtime, name) if hasattr(main.runtime, name) else getattr(main.playback_state, name) if hasattr(main.playback_state, name) else getattr(main.playback_rate_state, name) if hasattr(main.playback_rate_state, name) else getattr(main, name))
             for name in (
                 "player_instance", "current_track_info",
                 "playback_transition_coordinator", "measurement_sr_session",
@@ -50,12 +50,12 @@ class SamplerateDriftWatcherTests(unittest.IsolatedAsyncioTestCase):
             "active_rate": 44100,
             "force_rate": 44100,
         }
-        main.samplerate_drift_signature = None
-        main.samplerate_drift_readbacks = 0
+        main.playback_rate_state.samplerate_drift_signature = None
+        main.playback_rate_state.samplerate_drift_readbacks = 0
 
     async def asyncTearDown(self):
         for name, value in self.originals.items():
-            setattr(main.runtime if hasattr(main.runtime, name) else main.playback_state if hasattr(main.playback_state, name) else main, name, value)
+            setattr(main.runtime if hasattr(main.runtime, name) else main.playback_state if hasattr(main.playback_state, name) else main.playback_rate_state if hasattr(main.playback_rate_state, name) else main, name, value)
 
     async def test_two_matching_mismatch_readbacks_request_one_recovery(self):
         """MPV/track 44.1 with hardware at 48 kHz requests repair at 44.1."""
@@ -154,7 +154,7 @@ class RadioPostLoadHandoffTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         self.originals = {
-            name: (getattr(main.runtime, name) if hasattr(main.runtime, name) else getattr(main.playback_state, name) if hasattr(main.playback_state, name) else getattr(main, name))
+            name: (getattr(main.runtime, name) if hasattr(main.runtime, name) else getattr(main.playback_state, name) if hasattr(main.playback_state, name) else getattr(main.playback_rate_state, name) if hasattr(main.playback_rate_state, name) else getattr(main, name))
             for name in (
                 "playback_transition_epoch", "dsp_runtime",
                 "asyncio",
@@ -170,7 +170,7 @@ class RadioPostLoadHandoffTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self):
         for name, value in self.originals.items():
-            setattr(main.runtime if hasattr(main.runtime, name) else main.playback_state if hasattr(main.playback_state, name) else main, name, value)
+            setattr(main.runtime if hasattr(main.runtime, name) else main.playback_state if hasattr(main.playback_state, name) else main.playback_rate_state if hasattr(main.playback_rate_state, name) else main, name, value)
 
     async def _run_handoff(
         self,
