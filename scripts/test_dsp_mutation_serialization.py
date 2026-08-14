@@ -58,7 +58,7 @@ class DSPMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
         fake = FakeManager()
         with mock.patch.object(main, "_require_dsp_manager", return_value=fake), mock.patch.object(
             main.manager, "broadcast", mock.AsyncMock()
-        ), mock.patch.object(main, "schedule_peak_monitor_refresh_after_effects_change"):
+        ), mock.patch.object(main.dsp_orchestrator, "schedule_peak_monitor_refresh_after_effects_change"):
             first = asyncio.create_task(dsp_api.upload_dsp_ir(FakeUploadFile()))
             self.assertTrue(await asyncio.to_thread(entered.wait, 5))
 
@@ -132,7 +132,7 @@ class DSPMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
         fake = FakeManager()
         with mock.patch.object(main, "_require_dsp_manager", return_value=fake), mock.patch.object(
             main.manager, "broadcast", mock.AsyncMock()
-        ), mock.patch.object(main, "schedule_peak_monitor_refresh_after_effects_change"):
+        ), mock.patch.object(main.dsp_orchestrator, "schedule_peak_monitor_refresh_after_effects_change"):
             upload_task = asyncio.create_task(dsp_api.upload_dsp_ir(FakeUploadFile()))
             self.assertTrue(await asyncio.to_thread(entered.wait, 5))
 
@@ -194,7 +194,7 @@ class DSPMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
         fake = FakeManager()
         with mock.patch.object(main, "_require_dsp_manager", return_value=fake), mock.patch.object(
             main.manager, "broadcast", mock.AsyncMock()
-        ), mock.patch.object(main, "schedule_peak_monitor_refresh_after_effects_change"):
+        ), mock.patch.object(main.dsp_orchestrator, "schedule_peak_monitor_refresh_after_effects_change"):
             upload_task = asyncio.create_task(dsp_api.upload_dsp_ir(FakeUploadFile()))
             self.assertTrue(await asyncio.to_thread(entered.wait, 5))
 
@@ -246,7 +246,7 @@ class DSPMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
         fake = FakeManager()
         with mock.patch.object(main, "_require_dsp_manager", return_value=fake), mock.patch.object(
             main.manager, "broadcast", mock.AsyncMock()
-        ), mock.patch.object(main, "schedule_peak_monitor_refresh_after_effects_change"):
+        ), mock.patch.object(main.dsp_orchestrator, "schedule_peak_monitor_refresh_after_effects_change"):
             upload_task = asyncio.create_task(dsp_api.upload_dsp_ir(FakeUploadFile()))
             self.assertTrue(await asyncio.to_thread(entered.wait, 5))
 
@@ -301,7 +301,7 @@ class DSPMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
             main, "dsp_manager", fake
         ), mock.patch.object(
             main.manager, "broadcast", mock.AsyncMock()
-        ), mock.patch.object(main, "schedule_peak_monitor_refresh_after_effects_change"), mock.patch.object(
+        ), mock.patch.object(main.dsp_orchestrator, "schedule_peak_monitor_refresh_after_effects_change"), mock.patch.object(
             main, "set_output_volume", return_value=100
         ):
             upload_task = asyncio.create_task(dsp_api.upload_dsp_ir(FakeUploadFile()))
@@ -347,7 +347,7 @@ class DSPMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
         fake = FakeManager()
         with mock.patch.object(main, "_require_dsp_manager", return_value=fake), mock.patch.object(
             main.manager, "broadcast", mock.AsyncMock()
-        ), mock.patch.object(main, "schedule_peak_monitor_refresh_after_effects_change"):
+        ), mock.patch.object(main.dsp_orchestrator, "schedule_peak_monitor_refresh_after_effects_change"):
             upload_task = asyncio.create_task(dsp_api.upload_dsp_ir(FakeUploadFile()))
             self.assertTrue(await asyncio.to_thread(entered.wait, 5))
 
@@ -407,7 +407,7 @@ class DSPMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
         fake = FakeManager()
         with mock.patch.object(main, "_require_dsp_manager", return_value=fake), mock.patch.object(
             main.manager, "broadcast", mock.AsyncMock()
-        ), mock.patch.object(main, "schedule_peak_monitor_refresh_after_effects_change"):
+        ), mock.patch.object(main.dsp_orchestrator, "schedule_peak_monitor_refresh_after_effects_change"):
             upload_task = asyncio.create_task(dsp_api.upload_dsp_ir(FakeUploadFile()))
             self.assertTrue(await asyncio.to_thread(entered.wait, 5))
 

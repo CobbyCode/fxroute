@@ -166,7 +166,7 @@ class UploadTempCleanupTests(unittest.IsolatedAsyncioTestCase):
         upload = FakeUpload("test.ir", payload=b"data")
         run_locked = patch.object(main, "_run_locked_worker", return_value={"name": "ir"})
         broadcast = patch.object(main.manager, "broadcast", new=_async_noop)
-        refresh = patch.object(main, "schedule_peak_monitor_refresh_after_effects_change")
+        refresh = patch.object(main.dsp_orchestrator, "schedule_peak_monitor_refresh_after_effects_change")
         with run_locked, broadcast, refresh, patch.object(_Path, "unlink", _flaky_unlink):
             result = await dsp_api.upload_dsp_ir(file=upload)
 

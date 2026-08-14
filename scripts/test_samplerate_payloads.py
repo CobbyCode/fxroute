@@ -331,7 +331,7 @@ class SampleRatePolicyTransitionTests(unittest.IsolatedAsyncioTestCase):
             None,
         ):
             expected = 48000 if snapshot and snapshot.get("config") else None
-            self.assertEqual(main._helper_argument_sample_rate(snapshot), expected)
+            self.assertEqual(main.helper_argument_sample_rate(snapshot), expected)
 
     def test_overview_with_rate_wrapper_matches(self):
         overview = {"selected_output": {"key": "out1"}, "current_output": {"key": "out1"}}

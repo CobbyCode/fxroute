@@ -186,7 +186,7 @@ def _lifespan_patches(slow_player, slow_effects):
         mock.patch.object(main, "sync_peak_monitor_for_spotify_state", mock.AsyncMock()),
         mock.patch.object(main, "apply_persisted_audio_output_selection", return_value=None),
         mock.patch.object(main.samplerate, "load_sample_rate_policy", return_value={"mode": "auto"}),
-        mock.patch.object(main, "_sync_dsp_runtime", mock.AsyncMock()),
+        mock.patch.object(main.dsp_orchestrator, "sync_runtime", mock.AsyncMock()),
         mock.patch.object(main, "get_audio_output_overview", return_value={}),
         mock.patch.object(main, "get_audio_source_overview", return_value={"mode": "app-playback"}),
         mock.patch.object(main, "_sync_external_input_monitoring", mock.AsyncMock(side_effect=lambda overview: overview)),

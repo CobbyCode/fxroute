@@ -10,12 +10,13 @@ Bug 2: Every `/api/audio/output-mode` POST went through the Coordinator's
 muted `output-mode-switch` transition, closing the hardware-output gate even
 for pure DSP parameter changes (level, alignment, polarity, crossover) that
 change no routing, samplerate or graph topology.  Same-mode saves must use
-the direct persist + `_sync_dsp_runtime` path instead.
+the direct persist + `dsp_orchestrator.sync_runtime` path instead.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import sys
@@ -144,36 +145,39 @@ def _route_patch_context(*, current_mode: str, target_mode: str):
     sync = mock.AsyncMock()
     run = mock.AsyncMock(return_value=mock.MagicMock(committed=True))
     set_mode = mock.MagicMock(return_value={"output_mode": {"mode": target_mode}, "selected_output": None})
-    stack = mock.patch.multiple(
+    stack = contextlib.ExitStack()
+    stack.enter_context(mock.patch.multiple(
         main,
         measurement_sr_session=mock.MagicMock(has_active_jobs=False),
         prepare_audio_output_mode=mock.MagicMock(return_value=_target(target_mode)),
         persist_audio_output_mode=set_mode,
-        _sync_dsp_runtime=sync,
-        _with_subwoofer_derived_delays=lambda value: value,
+        with_subwoofer_derived_delays=lambda value: value,
         dsp_runtime=None,
-        refresh_peak_monitor_after_effects_change=mock.AsyncMock(),
         _coordinator_current_playback_context=mock.AsyncMock(return_value={
             "source": "local", "target_url": None, "target_track": {}, "should_play": False,
         }),
         get_samplerate_status=mock.MagicMock(return_value={"active_rate": 44100}),
         _run_coordinated_transition=run,
         get_audio_output_overview=mock.MagicMock(return_value={"output_mode": {"mode": target_mode}}),
-    )
-    load = mock.patch.object(
+    ))
+    stack.enter_context(mock.patch.object(main.dsp_orchestrator, "sync_runtime", sync))
+    stack.enter_context(mock.patch.object(
+        main.dsp_orchestrator, "refresh_peak_monitor_after_effects_change", mock.AsyncMock()
+    ))
+    stack.enter_context(mock.patch.object(
         main.samplerate,
         "_load_audio_output_mode",
         return_value={"mode": current_mode},
-    )
-    return stack, load, sync, run, set_mode
+    ))
+    return stack, sync, run, set_mode
 
 
 async def _route_same_mode_direct() -> None:
     """Bug 2: same-mode DSP edit must bypass the Coordinator/gate entirely."""
-    stack, load, sync, run, set_mode = _route_patch_context(
+    stack, sync, run, set_mode = _route_patch_context(
         current_mode="subwoofer-2.2-stereo", target_mode="subwoofer-2.2-stereo"
     )
-    with stack, load:
+    with stack:
         result = await main.save_audio_output_mode_route(FakeRequest({
             "mode": "subwoofer-2.2-stereo",
             "subwoofer": {"crossover_frequency_hz": 150},
@@ -187,10 +191,10 @@ async def _route_same_mode_direct() -> None:
 
 async def _route_mode_switch_coordinated() -> None:
     """A real mode switch still needs the muted Coordinator transition."""
-    stack, load, sync, run, set_mode = _route_patch_context(
+    stack, sync, run, set_mode = _route_patch_context(
         current_mode="stereo", target_mode="subwoofer-2.1"
     )
-    with stack, load:
+    with stack:
         await main.save_audio_output_mode_route(FakeRequest({
             "mode": "subwoofer-2.1",
             "subwoofer": {"crossover_frequency_hz": 150},
@@ -494,13 +498,16 @@ async def _preset_load_reclean_skipped_during_sync() -> None:
     ee_manager.load_compare_state.return_value = {"presetA": "Neutral", "presetB": "B", "activeSide": None}
     ee_manager.get_status.return_value = {"active_preset": "Neutral", "compare": {}}
     broadcast = mock.AsyncMock()
-    stack = mock.patch.multiple(
+    stack = contextlib.ExitStack()
+    stack.enter_context(mock.patch.multiple(
         main,
         _require_dsp_manager=mock.MagicMock(return_value=ee_manager),
         dsp_runtime=active_runtime,
         manager=mock.MagicMock(broadcast=broadcast),
-        schedule_peak_monitor_refresh_after_effects_change=mock.MagicMock(),
-    )
+    ))
+    stack.enter_context(mock.patch.object(
+        main.dsp_orchestrator, "schedule_peak_monitor_refresh_after_effects_change", mock.MagicMock()
+    ))
     with stack:
         await dsp_api.load_dsp_preset(FakeRequest({"preset_name": "Neutral"}))
     active_runtime._reclean_guarded.assert_not_awaited()
@@ -511,13 +518,16 @@ async def _preset_load_reclean_skipped_during_sync() -> None:
         sync=mock.AsyncMock(),
         _reclean_guarded=mock.AsyncMock(),
     )
-    stack2 = mock.patch.multiple(
+    stack2 = contextlib.ExitStack()
+    stack2.enter_context(mock.patch.multiple(
         main,
         _require_dsp_manager=mock.MagicMock(return_value=ee_manager),
         dsp_runtime=idle_runtime,
         manager=mock.MagicMock(broadcast=mock.AsyncMock()),
-        schedule_peak_monitor_refresh_after_effects_change=mock.MagicMock(),
-    )
+    ))
+    stack2.enter_context(mock.patch.object(
+        main.dsp_orchestrator, "schedule_peak_monitor_refresh_after_effects_change", mock.MagicMock()
+    ))
     with stack2:
         await dsp_api.load_dsp_preset(FakeRequest({"preset_name": "Neutral"}))
     idle_runtime._reclean_guarded.assert_awaited_once()
@@ -565,16 +575,19 @@ async def _mode_switch_reapplies_compare_after_runtime_sync() -> None:
             }
         },
     )
-    with mock.patch.multiple(
-        main,
-        dsp_manager=ee_manager,
-        dsp_preset_load_lock=asyncio.Lock(),
-        _playback_graph_diagnosis=mock.AsyncMock(return_value=complete_graph),
-        _wait_for_dsp_output_ports=wait_for_ports,
-        _reconcile_transition_sink_rate=mock.AsyncMock(return_value=True),
-        _sync_dsp_runtime=mock.AsyncMock(side_effect=sync_runtime),
-        _repair_stereo_output_links_once=mock.AsyncMock(),
-    ):
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(mock.patch.multiple(
+            main,
+            dsp_manager=ee_manager,
+            dsp_preset_load_lock=asyncio.Lock(),
+            _playback_graph_diagnosis=mock.AsyncMock(return_value=complete_graph),
+            _wait_for_dsp_output_ports=wait_for_ports,
+            _reconcile_transition_sink_rate=mock.AsyncMock(return_value=True),
+            _repair_stereo_output_links_once=mock.AsyncMock(),
+        ))
+        stack.enter_context(mock.patch.object(
+            main.dsp_orchestrator, "sync_runtime", mock.AsyncMock(side_effect=sync_runtime)
+        ))
         result = await main._coordinator_establish_effects_and_helper(request)
 
     assert result["preset_reloaded"] is True

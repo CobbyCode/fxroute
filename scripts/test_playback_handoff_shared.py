@@ -199,10 +199,10 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(main, "get_audio_output_overview", return_value=self.overview), patch.object(
             main, "_run_pw_link_command", side_effect=pw_link
         ), patch.object(main, "dsp_runtime", helper), patch.object(
-            main, "_sync_dsp_preset_for_playback_samplerate",
+            main.dsp_orchestrator, "sync_preset_for_playback_samplerate",
             side_effect=lambda **_kwargs: calls.__setitem__("preset", calls["preset"] + 1),
         ), patch.object(
-            main, "_sync_dsp_runtime",
+            main.dsp_orchestrator, "sync_runtime",
             side_effect=lambda **_kwargs: calls.__setitem__("sync", calls["sync"] + 1),
         ):
             with self.assertRaisesRegex(RuntimeError, "graph-only reconciliation"):
@@ -243,9 +243,9 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
                 with patch.object(main, "get_audio_output_overview", return_value=overview), patch.object(
                     main, "_run_pw_link_command", side_effect=pw_link
                 ), patch.object(main, "dsp_runtime", helper), patch.object(
-                    main, "_sync_dsp_preset_for_playback_samplerate",
+                    main.dsp_orchestrator, "sync_preset_for_playback_samplerate",
                     side_effect=lambda **_kwargs: calls.__setitem__("preset", calls["preset"] + 1),
-                ), patch.object(main, "_sync_dsp_runtime", side_effect=sync), patch.object(
+                ), patch.object(main.dsp_orchestrator, "sync_runtime", side_effect=sync), patch.object(
                     main, "dsp_manager", None
                 ):
                     await main._coordinator_establish_effects_and_helper(request)
@@ -317,7 +317,7 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
         ), patch.object(
             main, "_wait_for_dsp_output_ports", new=AsyncMock(return_value=True)
         ), patch.object(
-            main, "_sync_dsp_runtime", side_effect=sync_helper
+            main.dsp_orchestrator, "sync_runtime", side_effect=sync_helper
         ), patch.object(
             main, "_coordinator_reconcile_subwoofer_links_only", reconciler
         ), patch.object(main, "dsp_runtime", helper), patch.object(
@@ -417,7 +417,7 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
             main, "_wait_for_dsp_output_ports", new=AsyncMock(return_value=True)
         ), patch.object(
             main, "_playback_graph_diagnosis", new=AsyncMock(side_effect=diagnose)
-        ), patch.object(main, "_sync_dsp_runtime", side_effect=sync_helper), patch.object(
+        ), patch.object(main.dsp_orchestrator, "sync_runtime", side_effect=sync_helper), patch.object(
             main, "_coordinator_reconcile_subwoofer_links_only", side_effect=reconcile
         ) as reconciler:
             result = await main._coordinator_establish_effects_and_helper(request)
@@ -470,7 +470,7 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
         )
         with patch.object(main, "persist_audio_output_mode", return_value={}), patch.object(
             main, "dsp_manager", None
-        ), patch.object(main, "_sync_dsp_runtime", side_effect=sync_helper), patch.object(
+        ), patch.object(main.dsp_orchestrator, "sync_runtime", side_effect=sync_helper), patch.object(
             main, "_coordinator_reconcile_subwoofer_links_only", side_effect=reconcile
         ) as reconciler, patch.object(
             main, "_playback_graph_diagnosis", new=AsyncMock(side_effect=diagnose)
@@ -945,7 +945,7 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
         ), patch.object(
             main, "dsp_runtime", runtime
         ), patch.object(
-            main, "_sync_dsp_preset_for_playback_samplerate",
+            main.dsp_orchestrator, "sync_preset_for_playback_samplerate",
             side_effect=lambda **_kwargs: calls.__setitem__("preset", calls["preset"] + 1),
         ), patch.object(
             main, "_repair_stereo_output_links_once",
@@ -1045,7 +1045,7 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
         ), patch.object(main, "dsp_runtime", helper), patch.object(
             main, "dsp_manager", None
         ), patch.object(
-            main, "_sync_dsp_runtime",
+            main.dsp_orchestrator, "sync_runtime",
             side_effect=AssertionError("same-rate helper rebuild"),
         ):
             result = await main._coordinator_establish_effects_and_helper(request)
@@ -1089,10 +1089,10 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(main, "get_audio_output_overview", return_value=overview), patch.object(
             main, "_run_pw_link_command", side_effect=pw_link
         ), patch.object(main, "dsp_runtime", helper), patch.object(
-            main,
-            "_sync_dsp_preset_for_playback_samplerate",
+            main.dsp_orchestrator,
+            "sync_preset_for_playback_samplerate",
             side_effect=lambda **_kwargs: calls.__setitem__("preset", calls["preset"] + 1),
-        ), patch.object(main, "_sync_dsp_runtime", side_effect=sync), patch.object(
+        ), patch.object(main.dsp_orchestrator, "sync_runtime", side_effect=sync), patch.object(
             main, "dsp_manager", ConvolverManager()
         ):
             await main._coordinator_establish_effects_and_helper(request)

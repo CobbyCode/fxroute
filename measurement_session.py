@@ -311,7 +311,7 @@ class MeasurementSampleRateSession:
             _set_pipewire_force_rate,
             _ensure_playback_samplerate_force,
             _wait_for_samplerate_alignment,
-            _sync_dsp_runtime_at_rate,
+            dsp_orchestrator,
             get_samplerate_status,
         )
         global _playback_state_before_measurement
@@ -460,7 +460,7 @@ class MeasurementSampleRateSession:
 
                 measurement_only_restore = not playback_target_rate or playback_source not in {"local", "radio", "spotify"}
                 if rate_ready and not coordinator_attempted and measurement_only_restore:
-                    await _sync_dsp_runtime_at_rate(runtime_restore_rate, _rate_lock_held=True)
+                    await dsp_orchestrator.sync_runtime_at_rate(runtime_restore_rate, _rate_lock_held=True)
                 else:
                     logger.warning(
                         "Measurement sample-rate session runtime restore deferred until playback sink aligns: "
@@ -881,7 +881,7 @@ async def _sync_dsp_runtime_for_measurement_sweep(measurement_rate: int) -> None
         get_samplerate_status,
         _pulse_suspend_sink_for_samplerate,
         _audio_output_overview_with_effective_rate,
-        _sync_dsp_runtime,
+        dsp_orchestrator,
     )
     if dsp_runtime is None:
         return None
@@ -920,7 +920,7 @@ async def _sync_dsp_runtime_for_measurement_sweep(measurement_rate: int) -> None
         _pulse_suspend_sink_for_samplerate(output_key, "measurement-pre-arm")
 
     overview = _audio_output_overview_with_effective_rate(get_audio_output_overview(), measurement_rate)
-    await _sync_dsp_runtime(overview, reason="measurement-pre-arm")
+    await dsp_orchestrator.sync_runtime(overview, reason="measurement-pre-arm")
 
     aligned, overview = await _wait_for_selected_output_effective_rate(measurement_rate, timeout_ms=3500)
     if not aligned:
@@ -931,7 +931,7 @@ async def _sync_dsp_runtime_for_measurement_sweep(measurement_rate: int) -> None
             f"{measurement_rate} Hz before sweep start (effective_rate={effective_rate})"
         )
 
-    await _sync_dsp_runtime(overview, reason="measurement-pre-arm")
+    await dsp_orchestrator.sync_runtime(overview, reason="measurement-pre-arm")
     after = dsp_runtime.snapshot()
     samplerate_after = get_samplerate_status()
     after_config = after.get("config") or {}

@@ -527,7 +527,7 @@ class CoordinatorTransactionTests(unittest.IsolatedAsyncioTestCase):
             main, "dsp_manager", None
         ), patch.object(
             main, "_playback_graph_diagnosis", new=AsyncMock(side_effect=[incomplete, incomplete, complete])
-        ), patch.object(main, "_sync_dsp_runtime", new=AsyncMock()), patch.object(
+        ), patch.object(main.dsp_orchestrator, "sync_runtime", new=AsyncMock()), patch.object(
             main, "_wait_for_dsp_output_ports", new=AsyncMock(return_value=True)
         ), patch.object(main, "_reconcile_transition_sink_rate", new=AsyncMock(return_value=True)), patch.object(
             main, "_coordinator_reconcile_subwoofer_links_only", new=AsyncMock()
@@ -592,7 +592,7 @@ class CoordinatorTransactionTests(unittest.IsolatedAsyncioTestCase):
             main, "dsp_manager", None
         ), patch.object(
             main, "_playback_graph_diagnosis", new=AsyncMock(side_effect=[incomplete, incomplete, complete])
-        ), patch.object(main, "_sync_dsp_runtime", new=AsyncMock()), patch.object(
+        ), patch.object(main.dsp_orchestrator, "sync_runtime", new=AsyncMock()), patch.object(
             main, "_wait_for_dsp_output_ports", new=AsyncMock(return_value=True)
         ), patch.object(main, "_reconcile_transition_sink_rate", new=AsyncMock(return_value=True)), patch.object(
             main, "_connect_ports", new=AsyncMock()
@@ -635,9 +635,9 @@ class EntryBoundaryTests(unittest.IsolatedAsyncioTestCase):
         })), patch.object(main, "get_samplerate_status", return_value={"active_rate": 44100}), patch.object(
             main, "_run_coordinated_transition", run
         ), patch.object(main, "get_audio_output_overview", return_value=target["overview"]), patch.object(
-            main, "_with_subwoofer_derived_delays", side_effect=lambda value: value
+            main, "with_subwoofer_derived_delays", side_effect=lambda value: value
         ), patch.object(main, "dsp_runtime", None), patch.object(
-            main, "refresh_peak_monitor_after_effects_change", new=AsyncMock()
+            main.dsp_orchestrator, "refresh_peak_monitor_after_effects_change", new=AsyncMock()
         ):
             await main.save_audio_output_mode_route(Request())
 
@@ -820,11 +820,11 @@ class EntryBoundaryTests(unittest.IsolatedAsyncioTestCase):
         # pre-coordinator direct sync without closing the output gate.
         self.assertIn("target_mode == current_mode", output_mode_source)
         self.assertIn("persist_audio_output_mode", output_mode_source)
-        self.assertIn("_sync_dsp_runtime", output_mode_source)
+        self.assertIn("dsp_orchestrator.sync_runtime", output_mode_source)
         self.assertIn("operation=\"measurement-entry\"", start_source)
         self.assertIn("_run_coordinated_transition", start_source)
         self.assertNotIn("_set_pipewire_force_rate", start_source)
-        self.assertNotIn("_sync_dsp_runtime", start_source)
+        self.assertNotIn("dsp_orchestrator.sync_runtime", start_source)
 
     def test_sample_rate_policy_reuses_settings_selector_and_coordinator(self):
         index = (pathlib.Path(__file__).resolve().parents[1] / "static" / "index.html").read_text()

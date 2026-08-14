@@ -40,8 +40,6 @@ class DspOrchestrationDeps:
     get_spotify_ui_state: Callable[..., Awaitable[Any]]
     sync_peak_monitor_for_playback_state: Callable[..., Awaitable[Any]]
     sync_peak_monitor_for_spotify_state: Callable[..., Awaitable[Any]]
-    sync_runtime: Callable[..., Awaitable[Any]]
-    refresh_peak_monitor: Callable[..., Awaitable[Any]]
     load_dsp_preset: Callable[..., Awaitable[Any]]
     broadcast: Callable[[dict], Awaitable[Any]]
     wait_for_samplerate_alignment: Callable[..., Awaitable[bool]]
@@ -203,11 +201,11 @@ class DspOrchestrator:
                     target_rate, selected_aligned, sink_aligned,
                 )
                 return
-        await self._deps.sync_runtime(
+        await self.sync_runtime(
             reason="measurement-release", _rate_lock_held=_rate_lock_held,
         )
         await self._deps.sleep(0.5)
-        await self._deps.sync_runtime(
+        await self.sync_runtime(
             reason="measurement-release-settle", _rate_lock_held=_rate_lock_held,
         )
         runtime_snapshot = dsp_runtime.snapshot()
@@ -332,7 +330,7 @@ class DspOrchestrator:
 
     async def _run_peak_monitor_refresh_after_effects_change(self, reason: str, timeout: float = 4.0) -> None:
         try:
-            await asyncio.wait_for(self._deps.refresh_peak_monitor(reason), timeout=timeout)
+            await asyncio.wait_for(self.refresh_peak_monitor_after_effects_change(reason), timeout=timeout)
         except asyncio.TimeoutError:
             logger.warning("Timed out refreshing peak monitor after %s", reason)
         except Exception as e:

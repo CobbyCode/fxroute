@@ -73,8 +73,8 @@ class SamplerateOrchestrationContractTests(unittest.IsolatedAsyncioTestCase):
         main.playback_transition_epoch = 40
         with patch.object(main, "get_samplerate_status", samplerate_status), patch.object(
             main, "_ensure_playback_samplerate_force", ensure_force
-        ), patch.object(main, "_sync_dsp_preset_for_playback_samplerate", preset_sync), patch.object(
-            main, "_sync_dsp_runtime", helper_sync
+        ), patch.object(main.dsp_orchestrator, "sync_preset_for_playback_samplerate", preset_sync), patch.object(
+            main.dsp_orchestrator, "sync_runtime", helper_sync
         ), patch.object(main, "_get_current_pipewire_force_rate", lambda: status["force_rate"]), patch.object(
             main, "_run_pw_link_command", pw_link
         ), patch.object(

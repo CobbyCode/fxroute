@@ -34,6 +34,7 @@ class _TestAudioHarness:
 
     def __init__(self) -> None:
         self._saved: dict[tuple[str, str], object] = {}
+        self._sync_runtime_at_rate_patch = None
         self.force_rate = 44100
         self.set_force_calls: list[int] = []
         self.session: MeasurementSampleRateSession | None = None
@@ -50,7 +51,6 @@ class _TestAudioHarness:
             "_get_current_pipewire_force_rate",
             "_coordinator_current_playback_context",
             "_run_coordinated_transition",
-            "_sync_dsp_runtime_at_rate",
             "_ensure_playback_samplerate_force",
             "_wait_for_samplerate_alignment",
             "playback_transition_coordinator",
@@ -67,7 +67,10 @@ class _TestAudioHarness:
         m._get_current_pipewire_force_rate = lambda: self.force_rate
         m._coordinator_current_playback_context = self._playback_context
         m._run_coordinated_transition = self._run_transition
-        m._sync_dsp_runtime_at_rate = self._noop
+        self._sync_runtime_at_rate_patch = patch.object(
+            m.dsp_orchestrator, "sync_runtime_at_rate", self._noop
+        )
+        self._sync_runtime_at_rate_patch.start()
         m._ensure_playback_samplerate_force = self._noop
         m._wait_for_samplerate_alignment = self._noop
         m.playback_transition_coordinator = None
@@ -82,6 +85,8 @@ class _TestAudioHarness:
         return self
 
     def __exit__(self, *exc) -> None:
+        if self._sync_runtime_at_rate_patch is not None:
+            self._sync_runtime_at_rate_patch.stop()
         for (module_name, name), value in self._saved.items():
             module = sys.modules[module_name]
             setattr(module, name, value)

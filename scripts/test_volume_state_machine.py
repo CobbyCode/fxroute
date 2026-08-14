@@ -375,9 +375,9 @@ class VolumeTransitionIntegrationTests(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(main, "dsp_runtime", self.runtime),
             mock.patch.object(main, "set_output_volume", self.recorder.set_master),
             mock.patch.object(main, "get_output_volume", self.recorder.get_master),
-            mock.patch.object(main, "_sync_dsp_runtime", mock.AsyncMock()),
+            mock.patch.object(main.dsp_orchestrator, "sync_runtime", mock.AsyncMock()),
             mock.patch.object(main.manager, "broadcast", mock.AsyncMock()),
-            mock.patch.object(main, "schedule_peak_monitor_refresh_after_effects_change"),
+            mock.patch.object(main.dsp_orchestrator, "schedule_peak_monitor_refresh_after_effects_change"),
             mock.patch.object(main, "get_audio_output_overview", return_value={"output_mode": {"mode": "stereo"}}),
         ]
         for patcher in self.patches:
@@ -436,7 +436,7 @@ class VolumeTransitionIntegrationTests(unittest.IsolatedAsyncioTestCase):
             events.append(("sync", self.manager.get_active_preset()))
 
         with mock.patch.object(main, "set_output_volume", record_master), \
-                mock.patch.object(main, "_sync_dsp_runtime", side_effect=confirm_sync):
+                mock.patch.object(main.dsp_orchestrator, "sync_runtime", side_effect=confirm_sync):
             start = self.recorder.capture()
             await main._load_dsp_preset("Neutral")
             await main._load_dsp_preset("Direct")
@@ -477,7 +477,7 @@ class VolumeTransitionIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
         self.manager.load_preset = load
         with mock.patch.object(main, "set_output_volume", record_master), \
-                mock.patch.object(main, "_sync_dsp_runtime", side_effect=confirm_sync):
+                mock.patch.object(main.dsp_orchestrator, "sync_runtime", side_effect=confirm_sync):
             await main._load_dsp_preset("Room")
             await main._load_dsp_preset("Direct")
 

@@ -210,7 +210,7 @@ class CanonicalVolumeSerializationTests(unittest.IsolatedAsyncioTestCase):
         fake = FakeManager()
         sync = mock.AsyncMock()
         with mock.patch.object(main, "dsp_manager", fake), mock.patch.object(
-            main, "_sync_dsp_runtime", sync
+            main.dsp_orchestrator, "sync_runtime", sync
         ), mock.patch.object(main, "set_output_volume", return_value=100):
             await main._set_canonical_output_volume(60)
 
@@ -331,8 +331,8 @@ class CanonicalVolumeSerializationTests(unittest.IsolatedAsyncioTestCase):
             main, "dsp_manager", fake
         ), mock.patch.object(
             main.manager, "broadcast", mock.AsyncMock()
-        ), mock.patch.object(main, "schedule_peak_monitor_refresh_after_effects_change"), mock.patch.object(
-            main, "_sync_dsp_runtime", mock.AsyncMock()
+        ), mock.patch.object(main.dsp_orchestrator, "schedule_peak_monitor_refresh_after_effects_change"), mock.patch.object(
+            main.dsp_orchestrator, "sync_runtime", mock.AsyncMock()
         ), mock.patch(
             "system_volume.subprocess.run", side_effect=blocking_run
         ):
@@ -404,8 +404,8 @@ class CanonicalVolumeSerializationTests(unittest.IsolatedAsyncioTestCase):
             main, "dsp_manager", fake
         ), mock.patch.object(
             main.manager, "broadcast", mock.AsyncMock()
-        ), mock.patch.object(main, "schedule_peak_monitor_refresh_after_effects_change"), mock.patch.object(
-            main, "_sync_dsp_runtime", mock.AsyncMock()
+        ), mock.patch.object(main.dsp_orchestrator, "schedule_peak_monitor_refresh_after_effects_change"), mock.patch.object(
+            main.dsp_orchestrator, "sync_runtime", mock.AsyncMock()
         ), mock.patch(
             "system_volume.subprocess.run", side_effect=blocking_run
         ):
@@ -465,7 +465,7 @@ class CanonicalVolumeSerializationTests(unittest.IsolatedAsyncioTestCase):
             main, "dsp_manager", fake
         ), mock.patch.object(
             main.manager, "broadcast", mock.AsyncMock()
-        ), mock.patch.object(main, "schedule_peak_monitor_refresh_after_effects_change"), mock.patch.object(
+        ), mock.patch.object(main.dsp_orchestrator, "schedule_peak_monitor_refresh_after_effects_change"), mock.patch.object(
             main, "get_output_volume", return_value=50
         ), mock.patch.object(
             main, "set_output_volume", return_value=50
@@ -568,7 +568,7 @@ class DSPExtrasVolumeTests(unittest.IsolatedAsyncioTestCase):
             main, "get_output_volume", side_effect=AssertionError("no read expected")
         ), mock.patch.object(
             main.manager, "broadcast", mock.AsyncMock()
-        ), mock.patch.object(main, "schedule_peak_monitor_refresh_after_effects_change"):
+        ), mock.patch.object(main.dsp_orchestrator, "schedule_peak_monitor_refresh_after_effects_change"):
             await dsp_api.save_dsp_extras(FakeExtrasRequest())
 
         expected = system_volume.volume_db_to_percent(-10.0)
@@ -604,7 +604,7 @@ class DSPExtrasVolumeTests(unittest.IsolatedAsyncioTestCase):
             main, "dsp_manager", fake
         ), mock.patch.object(main, "_load_dsp_preset", reload_preset), mock.patch.object(
             main.manager, "broadcast", mock.AsyncMock()
-        ), mock.patch.object(main, "schedule_peak_monitor_refresh_after_effects_change"):
+        ), mock.patch.object(main.dsp_orchestrator, "schedule_peak_monitor_refresh_after_effects_change"):
             await dsp_api.save_dsp_extras(FakeRequest())
 
         reload_preset.assert_awaited_once_with("Neutral", _locks_held=True)
@@ -701,7 +701,7 @@ class DSPExtrasVolumeTests(unittest.IsolatedAsyncioTestCase):
             main, "dsp_manager", fake
         ), mock.patch.object(
             main.manager, "broadcast", mock.AsyncMock()
-        ), mock.patch.object(main, "schedule_peak_monitor_refresh_after_effects_change"), mock.patch(
+        ), mock.patch.object(main.dsp_orchestrator, "schedule_peak_monitor_refresh_after_effects_change"), mock.patch(
             "system_volume.subprocess.run", side_effect=blocking_run
         ):
             extras_task = asyncio.create_task(dsp_api.save_dsp_extras(FakeExtrasRequest()))
@@ -919,12 +919,12 @@ class VolumeOwnershipDirectTests(unittest.IsolatedAsyncioTestCase):
     async def test_preset_load_entering_direct_transfers_before_rebuild(self):
         manager = self.use_manager(loudness_enabled=True, active_preset="Neutral", volume_db=-20.0)
         sync_calls = []
-        original_sync = main._sync_dsp_runtime
-        main._sync_dsp_runtime = mock.AsyncMock(side_effect=lambda **_k: sync_calls.append(1))
+        original_sync = main.dsp_orchestrator.sync_runtime
+        main.dsp_orchestrator.sync_runtime = mock.AsyncMock(side_effect=lambda **_k: sync_calls.append(1))
         try:
             await main._load_dsp_preset("Direct")
         finally:
-            main._sync_dsp_runtime = original_sync
+            main.dsp_orchestrator.sync_runtime = original_sync
         expected = manager.loudness_percent_from_db(-20.0)
         self.assertEqual(self.volume_writes, [expected])
         self.assertNotIn(100, self.volume_writes)

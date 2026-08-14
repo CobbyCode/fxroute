@@ -39,11 +39,11 @@ class PlaybackTransitionGenerationTests(unittest.IsolatedAsyncioTestCase):
             "peak_monitor_playback_armed", "peak_monitor_context_signature",
             "playback_transition_epoch", "current_track_info",
             "_wait_for_samplerate_alignment",
-            "_sync_dsp_preset_for_playback_samplerate",
             "dsp_manager", "player_instance", "dsp_runtime",
             "_wait_for_player_current_file",
         )
         self.originals = {name: getattr(main, name) for name in names}
+        self._sync_preset_original = main.dsp_orchestrator.sync_preset_for_playback_samplerate
         self.monitor = FakePeakMonitor()
         main.peak_monitor = self.monitor
         main.manager = FakeManager()
@@ -53,13 +53,14 @@ class PlaybackTransitionGenerationTests(unittest.IsolatedAsyncioTestCase):
             "id": "local-track", "source": "local", "url": "/music/local.flac"
         }
         main._wait_for_samplerate_alignment = lambda _rate: async_value(True)
-        main._sync_dsp_preset_for_playback_samplerate = lambda **_kwargs: async_value(None)
+        main.dsp_orchestrator.sync_preset_for_playback_samplerate = lambda **_kwargs: async_value(None)
         main.dsp_manager = object()
         main.player_instance = type("Player", (), {"_running": True})()
 
     async def asyncTearDown(self):
         for name, value in self.originals.items():
             setattr(main, name, value)
+        main.dsp_orchestrator.sync_preset_for_playback_samplerate = self._sync_preset_original
 
     async def test_stale_radio_callback_cannot_apply_after_local_handoff(self):
         main.peak_monitor_playback_armed = False

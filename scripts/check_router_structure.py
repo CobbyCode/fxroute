@@ -35,6 +35,7 @@ MAIN_GLOBALS = {
     "playback_transition_coordinator",
     "settings",
     "dsp_runtime",
+    "dsp_orchestrator",
     "_audio_output_overview_with_effective_rate",
     "_begin_playback_transition_attempt",
     "_coordinator_current_playback_context",
@@ -55,8 +56,6 @@ MAIN_GLOBALS = {
     "_spotify_intent_matches_live_state",
     "_spotify_snapshot_identity_values",
     "_spotify_target_track_from_state",
-    "_sync_dsp_runtime",
-    "_sync_dsp_runtime_at_rate",
     "_wait_for_samplerate_alignment",
 }
 ROUTE_METHODS = {"get", "post", "put", "delete", "patch"}

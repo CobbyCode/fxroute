@@ -879,8 +879,8 @@ import dsp_orchestration
 from dsp_orchestration import (
     DspOrchestrationDeps,
     DspOrchestrator,
-    helper_argument_sample_rate as _helper_argument_sample_rate,
-    with_subwoofer_derived_delays as _with_subwoofer_derived_delays,
+    helper_argument_sample_rate,
+    with_subwoofer_derived_delays,
 )
 try:
     from hardware_controller import HardwareController
@@ -1208,8 +1208,8 @@ def make_playback_runtime_deps() -> PlaybackRuntimeDependencies:
         dsp_mutation_lock=lambda: _dsp_mutation_lock(),
         drain_worker=lambda *a, **k: _drain_worker(*a, **k),
         load_dsp_preset=lambda *a, **k: _load_dsp_preset(*a, **k),
-        sync_dsp_runtime=lambda *a, **k: _sync_dsp_runtime(*a, **k),
-        helper_argument_sample_rate=lambda *a, **k: _helper_argument_sample_rate(*a, **k),
+        sync_dsp_runtime=lambda *a, **k: dsp_orchestrator.sync_runtime(*a, **k),
+        helper_argument_sample_rate=dsp_orchestration.helper_argument_sample_rate,
         playback_graph_diagnosis=lambda *a, **k: _playback_graph_diagnosis(*a, **k),
         measurement_session_link_loss_is_repairable=lambda *a, **k: _measurement_session_link_loss_is_repairable(*a, **k),
         coordinator_reconcile_subwoofer_links_only=lambda *a, **k: _coordinator_reconcile_subwoofer_links_only(*a, **k),
@@ -2524,7 +2524,7 @@ async def _playback_graph_diagnosis(
     result["ee_ports"] = all(port in io_text for port in (*ingress_targets, *dsp_ports))
     result["helper_ports"] = result["ee_ports"]
     result["helper_active"] = bool(runtime.get("active"))
-    result["helper_rate"] = _helper_argument_sample_rate(runtime)
+    result["helper_rate"] = helper_argument_sample_rate(runtime)
     result["helper_rate_matches"] = bool(result["helper_active"] and (target_rate is None or result["helper_rate"] == target_rate))
     result["source_links"] = {
         f"{port} -> {target}": _contains_link(link_text, port, target)
@@ -2973,7 +2973,7 @@ async def _coordinator_establish_effects_and_helper(
                     compare_target_preset,
                 )
         if needs_preset and not preset_reloaded:
-            await _sync_dsp_preset_for_playback_samplerate(
+            await dsp_orchestrator.sync_preset_for_playback_samplerate(
                 sample_rate_hz=target_rate,
                 reason=f"coordinator-{request.operation}",
                 detail=request.detail,
@@ -3002,7 +3002,7 @@ async def _coordinator_establish_effects_and_helper(
         if request.operation == "output-mode-switch":
             # A mode switch always rebuilds the runtime from the target
             # overview/config, independent of the rate-staleness heuristic.
-            await _sync_dsp_runtime(
+            await dsp_orchestrator.sync_runtime(
                 audio_overview=overview,
                 reason="coordinator-output-mode-switch",
                 _rate_lock_held=False,
@@ -3064,13 +3064,13 @@ async def _coordinator_establish_effects_and_helper(
             helper_needs_sync = bool(
                 request.rate_change
                 or not helper_snapshot.get("active")
-                or _helper_argument_sample_rate(helper_snapshot) != target_rate
+                or helper_argument_sample_rate(helper_snapshot) != target_rate
                 or not diagnosis.get("helper_ports")
                 or not all(diagnosis.get("links", {}).values())
             )
             if helper_needs_sync:
                 if request.operation in {"measurement-entry", "measurement-restore"}:
-                    await _sync_dsp_runtime(
+                    await dsp_orchestrator.sync_runtime(
                         audio_overview=overview,
                         reason=f"coordinator-{request.operation}",
                         _rate_lock_held=True,
@@ -3080,7 +3080,7 @@ async def _coordinator_establish_effects_and_helper(
                     # playback transitions; measurement/output-mode are the
                     # only operations that must carry an explicit target
                     # overview through this Coordinator-owned path.
-                    await _sync_dsp_runtime(
+                    await dsp_orchestrator.sync_runtime(
                         reason=f"coordinator-{request.operation}",
                     )
                 helper_rebuilt = True
@@ -3444,11 +3444,6 @@ async def _dump_21_runtime_state(label: str, ui_state: dict | None = None) -> di
 
 
 
-async def _sync_dsp_runtime_at_rate(target_rate: int, *, _rate_lock_held: bool = False) -> None:
-    """Re-sync through the central live-rate helper path after a rate transition."""
-    await dsp_orchestrator.sync_runtime_at_rate(target_rate, _rate_lock_held=_rate_lock_held)
-
-
 def _reset_samplerate_drift_observation() -> None:
     global samplerate_drift_signature, samplerate_drift_readbacks
     samplerate_drift_signature = None
@@ -3584,10 +3579,6 @@ async def _observe_playback_samplerate_drift() -> None:
     )
 
 
-async def _dsp_runtime_link_watch_loop() -> None:
-    await dsp_orchestrator.runtime_link_watch_loop()
-
-
 def _get_player_audio_samplerate() -> Optional[int]:
     global player_instance
     if not player_instance or not player_instance._running:
@@ -3666,19 +3657,6 @@ async def _wait_for_radio_live_rate_after_load(
         previous_rate,
     )
     return None
-
-
-
-
-async def _sync_dsp_preset_for_playback_samplerate(
-    *,
-    sample_rate_hz: Optional[int],
-    reason: str,
-    detail: str = "",
-) -> None:
-    await dsp_orchestrator.sync_preset_for_playback_samplerate(
-        sample_rate_hz=sample_rate_hz, reason=reason, detail=detail,
-    )
 
 
 
@@ -3804,7 +3782,7 @@ async def _set_canonical_output_volume(volume: float | int) -> dict[str, Any]:
                     dsp_manager.set_loudness_volume_db, target.volume_db
                 )
                 if not volume_result.get("runtime_applied"):
-                    await _sync_dsp_runtime(reason="native-dsp-loudness-volume")
+                    await dsp_orchestrator.sync_runtime(reason="native-dsp-loudness-volume")
                 await _drain_worker(set_output_volume, 100)
                 return {
                     "volume": requested,
@@ -4180,15 +4158,6 @@ async def sync_peak_monitor_for_source_mode_state(source_overview: dict | None =
                 peak_monitor_playback_armed = False
                 peak_monitor_context_signature = None
                 await manager.broadcast({"type": "playback_peak_warning", "data": peak_monitor.snapshot()})
-
-
-async def refresh_peak_monitor_after_effects_change(reason: str = "effects-change"):
-    await dsp_orchestrator.refresh_peak_monitor_after_effects_change(reason)
-
-
-def schedule_peak_monitor_refresh_after_effects_change(reason: str = "effects-change"):
-    dsp_orchestrator.schedule_peak_monitor_refresh_after_effects_change(reason)
-
 
 
 async def _radio_reconnect_after_delay(
@@ -4916,22 +4885,6 @@ def _authoritative_sample_rate(status: dict | None) -> int | None:
     return samplerate.authoritative_sample_rate(status)
 
 
-async def _sync_dsp_runtime(
-    audio_overview: dict | None = None,
-    *,
-    reason: str = "unspecified",
-    _rate_lock_held: bool = False,
-    target_overview: dict | None = None,
-) -> dict:
-    """Synchronize the native helper from one live, lock-protected rate."""
-    return await dsp_orchestrator.sync_runtime(
-        audio_overview,
-        reason=reason,
-        _rate_lock_held=_rate_lock_held,
-        target_overview=target_overview,
-    )
-
-
 async def _bluetooth_input_monitor_loop() -> None:
     while True:
         try:
@@ -5272,9 +5225,9 @@ async def lifespan(app: FastAPI):
                     logger.info("Re-applied fixed sample-rate policy: %s Hz", policy.get("rate"))
                 except Exception as exc:
                     logger.warning("Failed to re-apply fixed sample-rate policy: %s", exc)
-            await _sync_dsp_runtime(applied_output or get_audio_output_overview())
+            await dsp_orchestrator.sync_runtime(applied_output or get_audio_output_overview())
             dsp_runtime_link_watch_task = asyncio.create_task(
-                _dsp_runtime_link_watch_loop(),
+                dsp_orchestrator.runtime_link_watch_loop(),
                 name="subwoofer-runtime-link-watch",
             )
         except Exception as exc:
@@ -5472,7 +5425,7 @@ def _make_dsp_api_deps() -> dsp_api.DspApiDeps:
         restore_volume_state=lambda *args, **kwargs: _restore_volume_state(*args, **kwargs),
         volume_state_for_manager=lambda *args, **kwargs: _volume_state_for_manager(*args, **kwargs),
         apply_volume_actions=lambda *args, **kwargs: _apply_volume_actions(*args, **kwargs),
-        schedule_peak_monitor_refresh=lambda reason: schedule_peak_monitor_refresh_after_effects_change(reason),
+        schedule_peak_monitor_refresh=lambda reason: dsp_orchestrator.schedule_peak_monitor_refresh_after_effects_change(reason),
     )
 
 
@@ -5496,8 +5449,6 @@ def _make_dsp_orchestration_deps() -> DspOrchestrationDeps:
         get_spotify_ui_state=lambda *args, **kwargs: get_spotify_ui_state(*args, **kwargs),
         sync_peak_monitor_for_playback_state=lambda state: sync_peak_monitor_for_playback_state(state),
         sync_peak_monitor_for_spotify_state=lambda state: sync_peak_monitor_for_spotify_state(state),
-        sync_runtime=lambda *args, **kwargs: _sync_dsp_runtime(*args, **kwargs),
-        refresh_peak_monitor=lambda reason: refresh_peak_monitor_after_effects_change(reason),
         load_dsp_preset=lambda *args, **kwargs: _load_dsp_preset(*args, **kwargs),
         broadcast=lambda message: manager.broadcast(message),
         wait_for_samplerate_alignment=lambda *args, **kwargs: _wait_for_samplerate_alignment(*args, **kwargs),
@@ -6207,7 +6158,7 @@ async def hardware_auto_off():
 
 @app.get("/api/audio/outputs")
 async def audio_output_overview():
-    overview = _with_subwoofer_derived_delays(await asyncio.to_thread(get_audio_output_overview))
+    overview = with_subwoofer_derived_delays(await asyncio.to_thread(get_audio_output_overview))
     if dsp_runtime is not None:
         overview["output_mode"] = {
             **(overview.get("output_mode") or {}),
@@ -6226,14 +6177,14 @@ async def save_audio_output_selection_route(request: Request):
 
     try:
         result = set_audio_output_selection(output_key)
-        await _sync_dsp_runtime(result, reason="output-selection")
-        result = _with_subwoofer_derived_delays(result)
+        await dsp_orchestrator.sync_runtime(result, reason="output-selection")
+        result = with_subwoofer_derived_delays(result)
         if dsp_runtime is not None:
             result["output_mode"] = {
                 **(result.get("output_mode") or {}),
                 "runtime": dsp_runtime.snapshot(),
             }
-        await refresh_peak_monitor_after_effects_change("audio-output-switch")
+        await dsp_orchestrator.refresh_peak_monitor_after_effects_change("audio-output-switch")
         return result
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -6281,7 +6232,7 @@ async def save_audio_output_mode_route(request: Request):
             previous_overview = get_audio_output_overview()
             result = persist_audio_output_mode(target["config"])
             if dsp_runtime is None:
-                await _sync_dsp_runtime(result, reason="output-mode-params")
+                await dsp_orchestrator.sync_runtime(result, reason="output-mode-params")
             else:
                 try:
                     await dsp_runtime.guarded_rebuild(
@@ -6297,13 +6248,13 @@ async def save_audio_output_mode_route(request: Request):
                     except Exception:
                         logger.exception("Failed to restore native DSP after same-mode transition failure")
                     raise
-            result = _with_subwoofer_derived_delays(result)
+            result = with_subwoofer_derived_delays(result)
             if dsp_runtime is not None:
                 result["output_mode"] = {
                     **(result.get("output_mode") or {}),
                     "runtime": dsp_runtime.snapshot(),
                 }
-            await refresh_peak_monitor_after_effects_change("audio-output-mode-params")
+            await dsp_orchestrator.refresh_peak_monitor_after_effects_change("audio-output-mode-params")
             return result
 
         if dsp_runtime is None:
@@ -6327,8 +6278,8 @@ async def save_audio_output_mode_route(request: Request):
                 output_mode_target=dict(target["overview"]),
                 output_mode_config=dict(target["config"]),
             ))
-            result = _with_subwoofer_derived_delays(get_audio_output_overview())
-            await refresh_peak_monitor_after_effects_change("audio-output-mode-switch")
+            result = with_subwoofer_derived_delays(get_audio_output_overview())
+            await dsp_orchestrator.refresh_peak_monitor_after_effects_change("audio-output-mode-switch")
             return result
 
         previous_overview = get_audio_output_overview()
@@ -6348,13 +6299,13 @@ async def save_audio_output_mode_route(request: Request):
                 logger.exception("Failed to restore native DSP after output-mode transition failure")
             raise
 
-        result = _with_subwoofer_derived_delays(result)
+        result = with_subwoofer_derived_delays(result)
         if dsp_runtime is not None:
             result["output_mode"] = {
                 **(result.get("output_mode") or {}),
                 "runtime": dsp_runtime.snapshot(),
             }
-        await refresh_peak_monitor_after_effects_change("audio-output-mode-switch")
+        await dsp_orchestrator.refresh_peak_monitor_after_effects_change("audio-output-mode-switch")
         return result
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -6510,7 +6461,7 @@ async def _load_preset_locked(
             preset_name,
             convolver_sample_rate_hz=convolver_sample_rate_hz,
         )
-        await _sync_dsp_runtime(reason="native-dsp-preset-load")
+        await dsp_orchestrator.sync_runtime(reason="native-dsp-preset-load")
         await _apply_volume_actions(post)
         await _apply_volume_actions(deferred_master)
     except Exception:
@@ -6523,7 +6474,7 @@ async def _load_preset_locked(
                     if hasattr(manager, "active_preset"):
                         manager.active_preset = start.preset
             await _restore_volume_state(manager, start)
-            await _sync_dsp_runtime(reason="native-dsp-preset-load-rollback")
+            await dsp_orchestrator.sync_runtime(reason="native-dsp-preset-load-rollback")
         except Exception:
             logger.exception("Failed to restore volume state after preset load failure")
         raise

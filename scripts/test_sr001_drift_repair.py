@@ -81,7 +81,7 @@ class CoordinatorRecoveryTests(unittest.IsolatedAsyncioTestCase):
         watcher = source[start:end]
         self.assertIn("_request_coordinated_recovery", watcher)
         self.assertNotIn("_set_pipewire_force_rate", watcher)
-        self.assertNotIn("_sync_dsp_runtime", watcher)
+        self.assertNotIn("dsp_orchestrator.sync_runtime", watcher)
 
         recovery = AsyncMock()
         states = iter((
@@ -265,7 +265,7 @@ class CoordinatorRecoveryTests(unittest.IsolatedAsyncioTestCase):
         end = source.index("def _transition_error_http", start)
         body = source[start:end]
         self.assertNotIn("_set_pipewire_force_rate", body)
-        self.assertNotIn("_sync_dsp_runtime", body)
+        self.assertNotIn("dsp_orchestrator.sync_runtime", body)
         self.assertIn("_run_coordinated_transition", body)
 
 

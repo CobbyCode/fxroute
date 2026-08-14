@@ -54,9 +54,9 @@ OLD_HANDOFF_NAMES = {
 MUTATION_CALL_NAMES = {
     "_set_pipewire_force_rate",
     "_ensure_playback_samplerate_force",
-    "_sync_dsp_preset_for_playback_samplerate",
-    "_sync_dsp_runtime",
-    "_sync_dsp_runtime_at_rate",
+    "sync_preset_for_playback_samplerate",
+    "sync_runtime",
+    "sync_runtime_at_rate",
     "_sync_dsp_runtime_for_measurement_sweep",
     "_run_pw_link_command",
     "_connect_ports",
@@ -202,7 +202,6 @@ def _reason(context: str, name: str) -> str | None:
             "_relink_missing_production_links",
             "rollback_output_mode_runtime",
             "_ensure_mpv_to_dsp_links",
-            "_sync_dsp_preset_for_playback_samplerate",
             "_restore_committed_source_after_failed_transition",
         }
         or "_sync_locked" in context
@@ -220,7 +219,7 @@ def _reason(context: str, name: str) -> str | None:
         return "read-only graph diagnosis/readback"
     if leaf in {
         "_start_locked", "_release", "_sync_dsp_runtime_for_measurement_sweep",
-        "_sync_dsp_runtime_at_rate", "start_measurement", "start_lr_repeat_measurement",
+        "start_measurement", "start_lr_repeat_measurement",
     }:
         return "measurement workflow, outside playback transitions"
     if leaf in {

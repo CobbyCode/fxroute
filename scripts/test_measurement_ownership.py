@@ -130,7 +130,7 @@ class MeasurementOwnershipTests(unittest.IsolatedAsyncioTestCase):
             main, "_request_coordinated_recovery", recovery
         ), patch.object(main, "asyncio") as asyncio_module:
             asyncio_module.sleep = one_tick_then_cancel
-            task = asyncio.create_task(main._dsp_runtime_link_watch_loop())
+            task = asyncio.create_task(main.dsp_orchestrator.runtime_link_watch_loop())
             with self.assertRaises(asyncio.CancelledError):
                 await task
 

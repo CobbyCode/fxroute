@@ -246,8 +246,8 @@ class RadioPostLoadHandoffTests(unittest.IsolatedAsyncioTestCase):
         with rate_mock, patch.object(
             main, "get_samplerate_status", side_effect=lambda: dict(status)
         ), patch.object(main, "_ensure_playback_samplerate_force", force), patch.object(
-            main, "_sync_dsp_preset_for_playback_samplerate", preset_sync
-        ), patch.object(main, "_sync_dsp_runtime", helper_sync), patch.object(
+            main.dsp_orchestrator, "sync_preset_for_playback_samplerate", preset_sync
+        ), patch.object(main.dsp_orchestrator, "sync_runtime", helper_sync), patch.object(
             main, "dsp_runtime", type("NativeRuntime", (), {
                 "snapshot": lambda self: {
                     "active": True,
