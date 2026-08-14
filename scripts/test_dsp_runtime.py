@@ -260,6 +260,38 @@ class DSPRuntimeConfigTests(unittest.TestCase):
         self.assertIn(("effects bypass 1", True), commands)
         self.assertEqual(commands[-1][0], "gain db 0")
 
+    def test_hot_update_swaps_compatible_config_without_rebuild(self):
+        events = []
+
+        async def exercise():
+            async def complete():
+                return CommandResult(0)
+            with tempfile.TemporaryDirectory() as directory:
+                binary = Path(directory) / "fxroute-dsp"
+                binary.touch()
+                runtime = DSPRuntime(self.manager, binary=binary)
+                runtime._process = FakeProcess()
+                runtime._control_socket = object()
+                runtime._config = DSPRuntimeConfig.from_overview(self.overview("stereo"))
+                runtime._run = lambda _command: complete()
+                runtime._stop_orphan_helpers = lambda: complete()
+                runtime._reconcile_output_links = lambda _config: complete()
+                runtime._control = lambda command, **kwargs: record_async(events, ("control", command.split()[0:2]))
+                await runtime.sync(self.overview("stereo"))
+
+        async def record_async(target, event):
+            target.append(event)
+
+        asyncio.run(exercise())
+        self.assertEqual(events, [("control", ["swap", "config"])])
+
+    def test_incompatible_config_still_uses_rebuild_path(self):
+        runtime = DSPRuntime(self.manager)
+        runtime._config = DSPRuntimeConfig.from_overview(self.overview("stereo"))
+        changed = self.overview("stereo")
+        changed["output_mode"]["effective_output_key"] = "other-hw"
+        self.assertFalse(runtime._can_hot_update(DSPRuntimeConfig.from_overview(changed)))
+
     def test_runtime_snapshot_reports_actual_layout_and_effect_bypass(self):
         runtime = DSPRuntime(self.manager)
         runtime._config = DSPRuntimeConfig.from_overview(self.overview("subwoofer-2.1"))
@@ -429,6 +461,23 @@ class DSPRuntimeConfigTests(unittest.TestCase):
         asyncio.run(runtime._remove_direct_source_links())
         self.assertIn(("pw-link", "-d", "mpv:output_FL", "hw:playback_FL"), commands)
         self.assertIn(("pw-link", "-d", "spotify:output_RR", "hw:playback_RR"), commands)
+
+    def test_reclean_reconciles_stable_native_sub_output_links(self):
+        commands = []
+
+        async def run(command):
+            commands.append(tuple(command))
+            return CommandResult(0, "")
+
+        runtime = DSPRuntime(self.manager, command_runner=run)
+        runtime._config = DSPRuntimeConfig.from_overview(self.overview("subwoofer-2.1"))
+        runtime._links = [
+            PipeWireLink("fxroute_dsp:output_1", "hw:playback_FL"),
+            PipeWireLink("fxroute_dsp:output_2", "hw:playback_FR"),
+        ]
+        asyncio.run(runtime.reclean_direct_easyeffects_links())
+        self.assertIn(("pw-link", "fxroute_dsp:output_3", "hw:playback_RL"), commands)
+        self.assertIn(("pw-link", "fxroute_dsp:output_4", "hw:playback_RR"), commands)
 
     def test_reclean_waits_for_runtime_lock(self):
         events = []

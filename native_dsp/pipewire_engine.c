@@ -5,6 +5,7 @@
 #include <math.h>
 #include <poll.h>
 #include <pthread.h>
+#include <sched.h>
 #include <signal.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -17,7 +18,8 @@
 struct engine {
     struct pw_main_loop *loop;
     struct pw_filter *filter;
-    fxdsp *dsp;
+    _Atomic(fxdsp *) dsp;
+    _Atomic unsigned processing;
     void *input[FXDSP_MAX_CHANNELS];
     void *output[FXDSP_MAX_CHANNELS];
     void *post_effect[2];
@@ -30,13 +32,34 @@ struct engine {
 static void reply_peaks(struct engine *engine, const struct sockaddr_un *client, socklen_t client_size) {
     float peaks[FXDSP_MAX_CHANNELS];
     char reply[1024];
-    unsigned outputs=fxdsp_peaks(engine->dsp,peaks,FXDSP_MAX_CHANNELS);
+    unsigned outputs=fxdsp_peaks(atomic_load_explicit(&engine->dsp,memory_order_acquire),peaks,FXDSP_MAX_CHANNELS);
     size_t used=(size_t)snprintf(reply,sizeof reply,"{\"peaks\":[");
     for(unsigned i=0;i<outputs&&used<sizeof reply;i++)
         used+=(size_t)snprintf(reply+used,sizeof reply-used,"%s%.9g",i?",":"",peaks[i]);
     if(used<sizeof reply)used+=(size_t)snprintf(reply+used,sizeof reply-used,"]}\n");
     if(used>sizeof reply)used=sizeof reply;
     (void)sendto(engine->control_fd,reply,used,0,(const struct sockaddr *)client,client_size);
+}
+
+static int fxdsp_swap_config(struct engine *engine, const char *path, float gain_db) {
+    char error[256];
+    fxdsp *candidate = fxdsp_load(path, error, sizeof error);
+    fxdsp *previous;
+    if (!candidate || !isfinite(gain_db) || gain_db < -80.0f || gain_db > 0.0f) {
+        fxdsp_free(candidate);
+        return 0;
+    }
+    previous = atomic_load_explicit(&engine->dsp, memory_order_acquire);
+    if (!fxdsp_compatible(previous, candidate)) {
+        fxdsp_free(candidate);
+        return 0;
+    }
+    fxdsp_set_output_gain_db(candidate, gain_db);
+    previous = atomic_exchange_explicit(&engine->dsp, candidate, memory_order_acq_rel);
+    while (atomic_load_explicit(&engine->processing, memory_order_acquire) != 0)
+        sched_yield();
+    fxdsp_free(previous);
+    return 1;
 }
 
 static void handle_control(struct engine *engine, char *command, const struct sockaddr_un *client, socklen_t client_size) {
@@ -48,30 +71,34 @@ static void handle_control(struct engine *engine, char *command, const struct so
     long mask;
     int value;
     char extra;
+    char path[1024];
     if(sscanf(command,"mute %li %d %c",&mask,&value,&extra)==2&&!strncmp(command,mute_command,sizeof mute_command-1)&&(value==0||value==1)&&mask>=0&&(unsigned long)mask<=UINT32_MAX) {
-        fxdsp_set_mute(engine->dsp,(uint32_t)mask,value);
+        fxdsp_set_mute(atomic_load_explicit(&engine->dsp,memory_order_acquire),(uint32_t)mask,value);
         (void)sendto(engine->control_fd,"ok\n",3,0,(const struct sockaddr *)client,client_size);
     }
     else if(!strcmp(command,peaks_reset_command)) {
-        fxdsp_reset_peaks(engine->dsp);
+        fxdsp_reset_peaks(atomic_load_explicit(&engine->dsp,memory_order_acquire));
         (void)sendto(engine->control_fd,"ok\n",3,0,(const struct sockaddr *)client,client_size);
     }
     else if(!strcmp(command,peaks_get_command))reply_peaks(engine,client,client_size);
     else if(sscanf(command,"effects bypass %d %c",&value,&extra)==1&&!strncmp(command,effects_bypass_command,sizeof effects_bypass_command-1)&&(value==0||value==1)) {
-        fxdsp_set_effect_bypass(engine->dsp,value);
+        fxdsp_set_effect_bypass(atomic_load_explicit(&engine->dsp,memory_order_acquire),value);
         (void)sendto(engine->control_fd,"ok\n",3,0,(const struct sockaddr *)client,client_size);
     }
     else if(!strcmp(command,"effects bypass get")) {
-        char reply[16]; int size=snprintf(reply,sizeof reply,"%d\n",fxdsp_effect_bypass(engine->dsp));
+        char reply[16]; int size=snprintf(reply,sizeof reply,"%d\n",fxdsp_effect_bypass(atomic_load_explicit(&engine->dsp,memory_order_acquire)));
         (void)sendto(engine->control_fd,reply,(size_t)size,0,(const struct sockaddr *)client,client_size);
     }
     else { float gain_db;
         if(sscanf(command,"gain db %f %c",&gain_db,&extra)==1&&!strncmp(command,gain_db_command,sizeof gain_db_command-1)&&isfinite(gain_db)&&gain_db>=-80.0f&&gain_db<=0.0f) {
-            fxdsp_set_output_gain_db(engine->dsp,gain_db);
+            fxdsp_set_output_gain_db(atomic_load_explicit(&engine->dsp,memory_order_acquire),gain_db);
             (void)sendto(engine->control_fd,"ok\n",3,0,(const struct sockaddr *)client,client_size);
         } else if(!strcmp(command,"gain db get")) {
-            char reply[32]; int size=snprintf(reply,sizeof reply,"%.9g\n",fxdsp_output_gain_db(engine->dsp));
+            char reply[32]; int size=snprintf(reply,sizeof reply,"%.9g\n",fxdsp_output_gain_db(atomic_load_explicit(&engine->dsp,memory_order_acquire)));
             (void)sendto(engine->control_fd,reply,(size_t)size,0,(const struct sockaddr *)client,client_size);
+        } else if (sscanf(command,"swap config %1023s %f %c",path,&gain_db,&extra)==2 &&
+                   fxdsp_swap_config(engine, path, gain_db)) {
+            (void)sendto(engine->control_fd,"ok\n",3,0,(const struct sockaddr *)client,client_size);
         } else (void)sendto(engine->control_fd,"error invalid command\n",22,0,(const struct sockaddr *)client,client_size);
     }
 }
@@ -116,16 +143,18 @@ static void stop_control(struct engine *engine) {
 
 static void on_process(void *data, struct spa_io_position *position) {
     struct engine *engine = data;
+    atomic_fetch_add_explicit(&engine->processing, 1, memory_order_acquire);
+    fxdsp *dsp = atomic_load_explicit(&engine->dsp, memory_order_acquire);
     uint32_t frames = position && position->clock.duration ? position->clock.duration : 1024;
     const float *input[FXDSP_MAX_CHANNELS];
     float *output[FXDSP_MAX_CHANNELS];
     float *post_effect[2];
     int complete = 1;
-    for (unsigned i = 0; i < fxdsp_inputs(engine->dsp); i++) {
+    for (unsigned i = 0; i < fxdsp_inputs(dsp); i++) {
         input[i] = pw_filter_get_dsp_buffer(engine->input[i], frames);
         if (!input[i]) complete = 0;
     }
-    for (unsigned i = 0; i < fxdsp_outputs(engine->dsp); i++) {
+    for (unsigned i = 0; i < fxdsp_outputs(dsp); i++) {
         output[i] = pw_filter_get_dsp_buffer(engine->output[i], frames);
         if (!output[i]) complete = 0;
     }
@@ -133,14 +162,16 @@ static void on_process(void *data, struct spa_io_position *position) {
         post_effect[i] = pw_filter_get_dsp_buffer(engine->post_effect[i], frames);
     }
     if (!complete) {
-        for (unsigned i = 0; i < fxdsp_outputs(engine->dsp); i++)
+        for (unsigned i = 0; i < fxdsp_outputs(dsp); i++)
             if (output[i]) memset(output[i], 0, frames * sizeof *output[i]);
         for (unsigned i = 0; i < 2; i++)
             if (post_effect[i]) memset(post_effect[i], 0, frames * sizeof *post_effect[i]);
+        atomic_fetch_sub_explicit(&engine->processing, 1, memory_order_release);
         return;
     }
-    fxdsp_process_tapped(engine->dsp, input, output,
+    fxdsp_process_tapped(dsp, input, output,
                          post_effect[0] && post_effect[1] ? post_effect : NULL, frames);
+    atomic_fetch_sub_explicit(&engine->processing, 1, memory_order_release);
 }
 
 static const struct pw_filter_events filter_events = {
@@ -161,8 +192,8 @@ int main(int argc, char **argv) {
         fprintf(stderr, "usage: %s CONFIG [CONTROL_SOCKET]\n", argv[0]);
         return 2;
     }
-    engine.dsp = fxdsp_load(argv[1], error, sizeof error);
-    if (!engine.dsp) {
+    fxdsp *initial_dsp = fxdsp_load(argv[1], error, sizeof error);
+    if (!initial_dsp) {
         fprintf(stderr, "%s\n", error);
         return 1;
     }
@@ -170,7 +201,7 @@ int main(int argc, char **argv) {
     engine.loop = pw_main_loop_new(NULL);
     if (!engine.loop) {
         fprintf(stderr, "cannot create PipeWire main loop\n");
-        fxdsp_free(engine.dsp); pw_deinit();
+        fxdsp_free(initial_dsp); pw_deinit();
         return 1;
     }
     engine.filter = pw_filter_new_simple(
@@ -180,16 +211,18 @@ int main(int argc, char **argv) {
         &filter_events, &engine);
     if (!engine.filter) {
         fprintf(stderr, "cannot create PipeWire filter\n");
-        pw_main_loop_destroy(engine.loop); fxdsp_free(engine.dsp); pw_deinit();
+        pw_main_loop_destroy(engine.loop); fxdsp_free(initial_dsp); pw_deinit();
         return 1;
     }
-    for (unsigned i = 0; i < fxdsp_inputs(engine.dsp); i++) {
+    atomic_init(&engine.dsp, initial_dsp);
+    atomic_init(&engine.processing, 0);
+    for (unsigned i = 0; i < fxdsp_inputs(initial_dsp); i++) {
         char name[32]; snprintf(name, sizeof name, "input_%u", i + 1);
         engine.input[i] = pw_filter_add_port(engine.filter, PW_DIRECTION_INPUT,
             PW_FILTER_PORT_FLAG_MAP_BUFFERS, 0,
             pw_properties_new(PW_KEY_FORMAT_DSP, "32 bit float mono audio", PW_KEY_PORT_NAME, name, NULL), NULL, 0);
     }
-    for (unsigned i = 0; i < fxdsp_outputs(engine.dsp); i++) {
+    for (unsigned i = 0; i < fxdsp_outputs(initial_dsp); i++) {
         char name[32]; snprintf(name, sizeof name, "output_%u", i + 1);
         engine.output[i] = pw_filter_add_port(engine.filter, PW_DIRECTION_OUTPUT,
             PW_FILTER_PORT_FLAG_MAP_BUFFERS, 0,
@@ -204,18 +237,18 @@ int main(int argc, char **argv) {
     if (pw_filter_connect(engine.filter, PW_FILTER_FLAG_RT_PROCESS, NULL, 0) < 0) {
         fprintf(stderr, "cannot connect PipeWire filter\n");
         pw_filter_destroy(engine.filter); pw_main_loop_destroy(engine.loop);
-        fxdsp_free(engine.dsp); pw_deinit();
+        fxdsp_free(atomic_load(&engine.dsp)); pw_deinit();
         return 1;
     }
     if(argc==3&&start_control(&engine,argv[2])) {
         pw_filter_destroy(engine.filter); pw_main_loop_destroy(engine.loop);
-        fxdsp_free(engine.dsp); pw_deinit();
+        fxdsp_free(atomic_load(&engine.dsp)); pw_deinit();
         return 1;
     }
     signal_engine = &engine;
     signal(SIGINT, stop_engine); signal(SIGTERM, stop_engine);
     pw_main_loop_run(engine.loop);
     pw_filter_destroy(engine.filter); pw_main_loop_destroy(engine.loop); stop_control(&engine);
-    fxdsp_free(engine.dsp); pw_deinit();
+    fxdsp_free(atomic_load(&engine.dsp)); pw_deinit();
     return 0;
 }

@@ -24,5 +24,6 @@ void fxdsp_set_output_gain_db(fxdsp *dsp, float gain_db);
 float fxdsp_output_gain_db(const fxdsp *dsp);
 unsigned fxdsp_peaks(const fxdsp *dsp, float *peaks, unsigned count);
 void fxdsp_reset_peaks(fxdsp *dsp);
+int fxdsp_compatible(const fxdsp *a, const fxdsp *b);
 
 #endif

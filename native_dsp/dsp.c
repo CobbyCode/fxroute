@@ -577,3 +577,4 @@ void fxdsp_set_output_gain_db(fxdsp*d,float gain_db){float gain=isfinite(gain_db
 float fxdsp_output_gain_db(const fxdsp*d){float gain=bits_float(atomic_load_explicit(&d->output_gain_bits,memory_order_relaxed));return gain>0.0f?20.0f*log10f(gain):-INFINITY;}
 unsigned fxdsp_peaks(const fxdsp*d,float*peaks,unsigned count){unsigned total=d->outputs,limit=count<total?count:total;for(unsigned o=0;o<limit;o++)peaks[o]=bits_float(atomic_load_explicit(&d->peak_bits[o],memory_order_relaxed));return total;}
 void fxdsp_reset_peaks(fxdsp*d){for(unsigned o=0;o<d->outputs;o++)atomic_store_explicit(&d->peak_bits[o],0,memory_order_relaxed);}
+int fxdsp_compatible(const fxdsp *a, const fxdsp *b){return a&&b&&a->rate==b->rate&&a->inputs==b->inputs&&a->outputs==b->outputs;}

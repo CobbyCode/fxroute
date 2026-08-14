@@ -86,7 +86,18 @@ def test_pipewire_engine_exposes_non_rt_datagram_control_protocol():
     assert '"mute"' in source and '"peaks reset"' in source and '"peaks get"' in source
     assert '"effects bypass"' in source and '"gain db"' in source
     assert '"{\\"peaks\\":["' in source
+    assert '"swap config' in source and "fxdsp_swap_config" in source
     assert "pthread_create" in source and "pthread_join" in source
+
+
+def test_native_config_swap_is_atomic_and_keeps_realtime_callback_free_of_loading():
+    dsp = (NATIVE / "dsp.c").read_text()
+    engine = (NATIVE / "pipewire_engine.c").read_text()
+    assert "fxdsp_compatible" in dsp
+    assert "atomic_exchange_explicit(&engine->dsp" in engine
+    process = engine[engine.index("static void on_process"):engine.index("\n}", engine.index("static void on_process"))]
+    assert "fxdsp_load" not in process
+    assert "fxdsp_free" not in process
 
 
 def test_pipewire_process_callback_has_no_non_rt_operations():

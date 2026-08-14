@@ -260,6 +260,11 @@ class DSPRuntimeConfig:
                     "invert": str(definition.get("polarity", definition.get("sub_polarity", "normal"))).lower() in {"invert", "inverted", "180"},
                     "filters": [{"type": "lowpass", "frequency_hz": frequency, "q": 0.70710678, "stages": 2}],
                 })
+        else:
+            layout.extend((
+                {"name": "SUB1", "routes": [{"input": 0, "gain": 0.0}]},
+                {"name": "SUB2", "routes": [{"input": 1, "gain": 0.0}]},
+            ))
         return cls(name, output_key, rate, tuple(ports), tuple(layout))
 
 
@@ -317,6 +322,8 @@ class DSPRuntime:
                 ))
 
     async def reclean_direct_easyeffects_links(self) -> None:
+        if self._config is not None:
+            await self._reconcile_output_links(self._config)
         await self._reclean_guarded()
 
     def snapshot(self) -> dict[str, Any]:
@@ -433,6 +440,8 @@ class DSPRuntime:
                               before_ramp: Callable[[], Awaitable[Any]] | None = None,
                               before_rollback_ramp: Callable[[], Awaitable[Any]] | None = None) -> None:
         guard = max(-80.0, min(0.0, float(guard_db)))
+        hot_update = self._can_hot_update(DSPRuntimeConfig.from_overview(overview))
+        settle_seconds = 0.0 if hot_update else settle_seconds
         async with self._measurement_scope_lock:
             await self.set_output_gain_db(guard)
             try:
@@ -494,6 +503,20 @@ class DSPRuntime:
                 Path(input_name).unlink(missing_ok=True)
                 Path(output_name).unlink(missing_ok=True)
 
+            if self._can_hot_update(config):
+                try:
+                    await self._control(
+                        f"swap config {config_name} {max(-80.0, min(0.0, float(initial_output_gain_db))):.9g}",
+                        reply=True,
+                    )
+                    Path(config_name).unlink(missing_ok=True)
+                    await self._reconcile_output_links(config)
+                    self._config = config
+                    self._error = None
+                    return
+                except Exception as exc:
+                    logger.warning("Native DSP hot update failed; falling back to process rebuild: %s", exc)
+
             await self.stop()
             self._config_path = Path(config_name)
             try:
@@ -533,7 +556,7 @@ class DSPRuntime:
 
     async def _wait_for_ports(self, config: DSPRuntimeConfig) -> None:
         expected = [f"{DSP_NODE_NAME}:input_1", f"{DSP_NODE_NAME}:input_2"]
-        expected.extend(f"{DSP_NODE_NAME}:output_{index + 1}" for index in range(len(config.hardware_ports)))
+        expected.extend(f"{DSP_NODE_NAME}:output_{index + 1}" for index in range(len(config.layout)))
         expected.extend(f"{DSP_NODE_NAME}:{port}" for port in DSP_POST_EFFECT_PORTS)
         for _ in range(50):
             result = await self._run(("pw-link", "-io"))
@@ -547,6 +570,35 @@ class DSPRuntime:
             "Native DSP did not expose expected PipeWire ports"
             + (f"; engine stderr: {detail}" if detail else "")
         )
+
+    def _can_hot_update(self, config: DSPRuntimeConfig) -> bool:
+        """Return whether the prepared state fits the existing native node."""
+        return bool(
+            self._process is not None
+            and getattr(self._process, "returncode", None) is None
+            and self._control_socket is not None
+            and self._config is not None
+            and self._config.output_key == config.output_key
+            and self._config.sample_rate == config.sample_rate
+            and len(self._config.layout) == len(config.layout)
+        )
+
+    async def _reconcile_output_links(self, config: DSPRuntimeConfig) -> None:
+        """Update only hardware links; native ports remain stable across modes."""
+        desired = [
+            PipeWireLink(f"{DSP_NODE_NAME}:output_{index + 1}", f"{config.output_key}:{port}")
+            for index, port in enumerate(config.hardware_ports)
+        ]
+        for link in tuple(self._links):
+            if link.source.startswith(f"{DSP_NODE_NAME}:output_") and link not in desired:
+                await self._run(("pw-link", "-d", link.source, link.target))
+        for link in desired:
+            if link not in self._links:
+                result = await self._run(("pw-link", link.source, link.target))
+                if result.returncode and "exists" not in (result.stderr or "").lower():
+                    raise RuntimeError(result.stderr or f"Failed to link {link.source} -> {link.target}")
+        self._links = [link for link in self._links if not link.source.startswith(f"{DSP_NODE_NAME}:output_")]
+        self._links.extend(desired)
 
     async def stop(self) -> None:
         for link in self._links:

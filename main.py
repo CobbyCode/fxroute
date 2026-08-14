@@ -6471,29 +6471,50 @@ async def save_audio_output_mode_route(request: Request):
             await refresh_peak_monitor_after_effects_change("audio-output-mode-params")
             return result
 
-        context = await _coordinator_current_playback_context()
-        status = get_samplerate_status()
-        target_rate = status.get("active_rate")
-        if not isinstance(target_rate, int) or target_rate <= 0:
-            target_rate = status.get("force_rate")
-        if not isinstance(target_rate, int) or target_rate <= 0:
-            raise RuntimeError("current hardware sample rate is unavailable")
+        if subwoofer_runtime is None:
+            context = await _coordinator_current_playback_context()
+            status = get_samplerate_status()
+            target_rate = status.get("active_rate")
+            if not isinstance(target_rate, int) or target_rate <= 0:
+                target_rate = status.get("force_rate")
+            if not isinstance(target_rate, int) or target_rate <= 0:
+                raise RuntimeError("current hardware sample rate is unavailable")
+            await _run_coordinated_transition(TransitionRequest(
+                operation="output-mode-switch",
+                source=str(context.get("source") or "local"),
+                target_rate=target_rate,
+                target_url=context.get("target_url"),
+                target_track=dict(context.get("target_track") or {}),
+                should_play=bool(context.get("should_play")),
+                rate_change=False,
+                reload_source=False,
+                detail="api-audio-output-mode",
+                output_mode_target=dict(target["overview"]),
+                output_mode_config=dict(target["config"]),
+            ))
+            result = _with_subwoofer_derived_delays(get_audio_output_overview())
+            await refresh_peak_monitor_after_effects_change("audio-output-mode-switch")
+            return result
 
-        await _run_coordinated_transition(TransitionRequest(
-            operation="output-mode-switch",
-            source=str(context.get("source") or "local"),
-            target_rate=target_rate,
-            target_url=context.get("target_url"),
-            target_track=dict(context.get("target_track") or {}),
-            should_play=bool(context.get("should_play")),
-            rate_change=False,
-            reload_source=False,
-            detail="api-audio-output-mode",
-            output_mode_target=dict(target["overview"]),
-            output_mode_config=dict(target["config"]),
-        ))
+        previous_overview = get_audio_output_overview()
+        previous_gain = float((subwoofer_runtime.snapshot() if subwoofer_runtime else {}).get("output_gain_db") or 0.0)
+        try:
+            await subwoofer_runtime.guarded_rebuild(
+                target["overview"],
+                guard_db=min(0.0, previous_gain, -18.0),
+                apply_candidate=lambda: None,
+                apply_previous=lambda: None,
+                settle_seconds=0.0,
+            )
+            result = persist_audio_output_mode(target["config"])
+        except Exception:
+            try:
+                await subwoofer_runtime.sync(previous_overview)
+            except Exception:
+                logger.exception("Failed to restore native DSP after output-mode transition failure")
+            raise
 
-        result = _with_subwoofer_derived_delays(get_audio_output_overview())
+        result = _with_subwoofer_derived_delays(result)
         if subwoofer_runtime is not None:
             result["output_mode"] = {
                 **(result.get("output_mode") or {}),
