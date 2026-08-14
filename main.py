@@ -853,7 +853,6 @@ from stations import get_stations
 import sink_inputs
 import playback_state as playback_state_helpers
 from playback_state import PlaybackState
-from playback_rate_state import PlaybackRateState
 import samplerate
 from library import (
     LibraryScanner,
@@ -1103,10 +1102,6 @@ def _playback_settled_event() -> asyncio.Event:
 # transition epoch/pending attempts and the published commit tokens).
 # See playback_state.PlaybackState for the field relationships.
 playback_state = PlaybackState()
-
-# Single authoritative owner of the playback samplerate drift observation
-# state.  See playback_rate_state.PlaybackRateState.
-playback_rate_state = PlaybackRateState()
 radio_reconnect_task = None
 radio_reconnect_attempts = 0
 radio_reconnect_url = None
@@ -3462,8 +3457,36 @@ async def _dump_21_runtime_state(label: str, ui_state: dict | None = None) -> di
 
 
 
+@dataclass
+class _SamplerateDriftTracker:
+    """Private drift-observation state for the samplerate drift watcher.
+
+    A single matching readback is treated as transient; only a repeated
+    matching signature confirms a drift/recovery condition.  The sole owner
+    is ``_observe_playback_samplerate_drift`` and its reset helper.
+    """
+
+    signature: tuple[Any, ...] | None = None
+    readbacks: int = 0
+
+    def reset(self) -> None:
+        self.signature = None
+        self.readbacks = 0
+
+    def record(self, signature: tuple[Any, ...]) -> int:
+        if signature == self.signature:
+            self.readbacks += 1
+        else:
+            self.signature = signature
+            self.readbacks = 1
+        return self.readbacks
+
+
+_samplerate_drift_tracker = _SamplerateDriftTracker()
+
+
 def _reset_samplerate_drift_observation() -> None:
-    playback_rate_state.reset_drift_observation()
+    _samplerate_drift_tracker.reset()
 
 
 async def _observe_playback_samplerate_drift() -> None:
@@ -3545,7 +3568,7 @@ async def _observe_playback_samplerate_drift() -> None:
         active_rate,
         force_rate,
     )
-    readbacks = playback_rate_state.record_drift_observation(signature)
+    readbacks = _samplerate_drift_tracker.record(signature)
 
     # One readback can be a transient MPV property update.  Require the same
     # source and the same mismatch on a later watcher pass before requesting
