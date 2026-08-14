@@ -72,7 +72,7 @@ class DSPManagerStateTests(unittest.TestCase):
             manager.load_preset("Direct")
         self.assertEqual(manager.get_active_preset(), "Neutral")
 
-    def test_loudness_and_autogain_offsets_preserve_canonical_level(self):
+    def test_loudness_and_autogain_offsets_keep_plugin_net_zero(self):
         manager = DSPManager(home=self.home)
         for strength in (1, 4, 7, 10):
             for target in (-12, -15, -18, -23):
@@ -85,8 +85,35 @@ class DSPManagerStateTests(unittest.TestCase):
                 })
                 payload = manager._loudness_plugin_payload(
                     extras["loudness"], extras["autogain"])
+                # The plugin only carries the tonal work-point compensation
+                # with a net-zero trim; the canonical volume (volumeDb) lives
+                # in the native engine output gain after the meter taps.
                 self.assertTrue(math.isclose(
-                    payload["volume"] + payload["output-gain"], -26.5, abs_tol=1e-9))
+                    payload["volume"] + payload["output-gain"], 0.0, abs_tol=1e-9))
+
+    def test_loudness_work_point_tracks_volume_while_stage_is_level_neutral(self):
+        manager = DSPManager(home=self.home)
+        base = {
+            "loudness": {"enabled": True, "params": {
+                "fftSize": 4096, "strength": 7, "volumeDb": 0.0,
+                "calibration": {}, "calibrationProfiles": {},
+            }},
+            "autogain": {"enabled": False},
+        }
+        quiet = manager.normalize_effects_extras(copy.deepcopy(base))
+        loud = manager.normalize_effects_extras(copy.deepcopy(base))
+        loud["loudness"]["params"]["volumeDb"] = -37.19
+        quiet_payload = manager._loudness_plugin_payload(
+            quiet["loudness"], quiet["autogain"])
+        loud_payload = manager._loudness_plugin_payload(
+            loud["loudness"], loud["autogain"])
+        # The LSP work point follows the canonical volume exactly as before
+        # the native-DSP migration...
+        self.assertNotEqual(quiet_payload["volume"], loud_payload["volume"])
+        # ...while the stage stays level-neutral at the pre-master meter tap.
+        for payload in (quiet_payload, loud_payload):
+            self.assertTrue(math.isclose(
+                payload["volume"] + payload["output-gain"], 0.0, abs_tol=1e-9))
 
     def test_runtime_transition_receives_previous_and_persists_only_in_callback(self):
         manager = DSPManager(home=self.home)

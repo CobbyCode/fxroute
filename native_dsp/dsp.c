@@ -42,7 +42,7 @@ typedef struct {
 } output_state;
 
 typedef enum { STAGE_CONVOLVER, STAGE_DELAY, STAGE_HEADROOM, STAGE_AUTOGAIN,
-               STAGE_CRYSTALIZER, STAGE_LV2 } stage_kind;
+               STAGE_CRYSTALIZER, STAGE_LV2, STAGE_MASTER_GAIN } stage_kind;
 typedef struct { char symbol[128]; float value; } stage_control;
 typedef struct {
     stage_kind kind;
@@ -83,6 +83,15 @@ static float bits_float(uint32_t bits) { float value; memcpy(&value,&bits,sizeof
 static void update_peak(_Atomic uint32_t *peak, float value) {
     uint32_t wanted=float_bits(value),current=atomic_load_explicit(peak,memory_order_relaxed);
     while(bits_float(current)<value&&!atomic_compare_exchange_weak_explicit(peak,&current,wanted,memory_order_relaxed,memory_order_relaxed)) {}
+}
+
+static void write_post_effect_taps(float *const *post_effect, unsigned inputs,
+                                   float *const *source_buffers,
+                                   size_t offset, size_t count) {
+    for(unsigned channel=0;channel<2U;channel++) {
+        if(channel<inputs) memcpy(post_effect[channel]+offset,source_buffers[channel],count*sizeof(float));
+        else memset(post_effect[channel]+offset,0,count*sizeof(float));
+    }
 }
 
 static void fail(char *error, size_t size, const char *message) {
@@ -302,6 +311,10 @@ static int set_native_param(dsp_stage *stage, const char *key, char *raw) {
         if (strcmp(key, "gain_db") || parse_float_value(value, &number)) return -1;
         stage->gain = powf(10.0f, number / 20.0f); return 0;
     }
+    if (stage->kind == STAGE_MASTER_GAIN) {
+        if (strcmp(key, "gain_db") || parse_float_value(value, &number)) return -1;
+        stage->gain = powf(10.0f, number / 20.0f); return 0;
+    }
     if (stage->kind == STAGE_CRYSTALIZER) {
         if (strcmp(key, "intensity_band2_db") || parse_float_value(value, &number)) return -1;
         stage->intensity_db = number; return 0;
@@ -426,6 +439,7 @@ fxdsp *fxdsp_load(const char *path, char *error, size_t error_size) {
             else if (!strcmp(type, "native") && !strcmp(kind, "convolver")) current->kind = STAGE_CONVOLVER;
             else if (!strcmp(type, "native") && !strcmp(kind, "delay")) current->kind = STAGE_DELAY;
             else if (!strcmp(type, "native") && !strcmp(kind, "headroom")) current->kind = STAGE_HEADROOM;
+            else if (!strcmp(type, "native") && !strcmp(kind, "master_gain")) current->kind = STAGE_MASTER_GAIN;
             else if (!strcmp(type, "native") && !strcmp(kind, "autogain")) current->kind = STAGE_AUTOGAIN;
             else if (!strcmp(type, "native") && !strcmp(kind, "crystalizer")) current->kind = STAGE_CRYSTALIZER;
             else goto invalid;
@@ -489,10 +503,17 @@ void fxdsp_process_tapped(fxdsp *d, const float *const *input, float *const *out
         uint32_t mute_mask=atomic_load_explicit(&d->mute_mask,memory_order_relaxed);
         for(unsigned channel=0;channel<d->inputs;channel++)
             memcpy(d->scratch[0][channel],input[channel]+offset,count*sizeof(float));
-        unsigned source=0;
+        unsigned source=0, tap_written=0;
         if(!atomic_load_explicit(&d->effect_bypass,memory_order_relaxed)) {
             for(unsigned index=0;index<d->stage_count;index++) {
                 dsp_stage *stage=&d->stages[index]; unsigned target=1U-source;
+                if(stage->kind==STAGE_MASTER_GAIN && post_effect) {
+                    /* The canonical listening volume sits after the pre-master
+                     * meter tap and before the protection limiter; write the
+                     * tap before applying the master gain. */
+                    write_post_effect_taps(post_effect,d->inputs,d->scratch[source],offset,count);
+                    tap_written=1;
+                }
                 if(stage->kind==STAGE_AUTOGAIN || stage->kind==STAGE_LV2) {
                     for(unsigned pair=0;pair<d->inputs/2U;pair++) {
                         unsigned left=pair*2U,right=left+1U;
@@ -510,7 +531,7 @@ void fxdsp_process_tapped(fxdsp *d, const float *const *input, float *const *out
                     if(stage->kind==STAGE_CRYSTALIZER) fx_crystalizer_process(stage->crystalizer[channel],src,dst,count);
                     else for(size_t n=0;n<count;n++) {
                         float value=src[n];
-                        if(stage->kind==STAGE_HEADROOM) value*=stage->gain;
+                        if(stage->kind==STAGE_HEADROOM || stage->kind==STAGE_MASTER_GAIN) value*=stage->gain;
                         else if(stage->kind==STAGE_CONVOLVER) { float driven=value*stage->input_gain; value=stage->output_gain*(stage->dry*driven+stage->wet*convolve(d,&stage->conv[channel],driven)); }
                         else if(stage->kind==STAGE_DELAY) {
                             stage->delay_line[channel][stage->delay_pos[channel]]=value;
@@ -523,9 +544,8 @@ void fxdsp_process_tapped(fxdsp *d, const float *const *input, float *const *out
                 source=target;
             }
         }
-        if(post_effect) for(unsigned channel=0;channel<2U;channel++) {
-            if(channel<d->inputs) memcpy(post_effect[channel]+offset,d->scratch[source][channel],count*sizeof(float));
-            else memset(post_effect[channel]+offset,0,count*sizeof(float));
+        if(post_effect && !tap_written) {
+            write_post_effect_taps(post_effect,d->inputs,d->scratch[source],offset,count);
         }
         unsigned routed=1U-source;
         for(unsigned channel=0;channel<d->outputs;channel++) for(size_t n=0;n<count;n++) {

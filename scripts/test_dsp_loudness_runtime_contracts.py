@@ -49,6 +49,9 @@ class LoudnessRuntimeContractTests(unittest.TestCase):
         return float(payload["volume"]) + float(payload["output-gain"])
 
     def test_adjacent_strength_transitions_preserve_total_level(self):
+        # The plugin net trim is always 0 dB (canonical volume lives in the
+        # engine output gain), so no strength transition changes the level
+        # carried by the stage itself.
         for old, new in ((10, 9), (9, 8), (8, 7), (7, 6), (6, 5), (5, 4),
                          (4, 3), (3, 2), (2, 1), (1, 2), (2, 3), (5, 6), (9, 10)):
             self.assertTrue(math.isclose(
@@ -56,8 +59,15 @@ class LoudnessRuntimeContractTests(unittest.TestCase):
                 self.payload_level_db(extras(new)),
                 abs_tol=1e-9,
             ), f"level jump between strengths {old} -> {new}")
+            self.assertTrue(math.isclose(
+                self.payload_level_db(extras(old)), 0.0, abs_tol=1e-9))
+            self.assertTrue(math.isclose(
+                self.payload_level_db(extras(new)), 0.0, abs_tol=1e-9))
 
     def test_guard_keeps_ramp_start_below_previous_level(self):
+        # The audible level during the guarded rebuild is the engine gain
+        # (volume + guard) plus the stage net trim (0 dB); the guard must
+        # keep the ramp start below the previous level by the guard margin.
         for old, new in ((1, 2), (2, 3), (4, 5), (5, 6), (9, 10), (10, 9), (3, 1)):
             guard = self.manager.loudness_transition_guard_db(extras(old), extras(new))
             old_payload = self.manager._loudness_plugin_payload(
@@ -68,21 +78,26 @@ class LoudnessRuntimeContractTests(unittest.TestCase):
                 self.manager.normalize_effects_extras(extras(new))["autogain"])
             expected = max(
                 self.manager.LOUDNESS_OUTPUT_GAIN_MIN_DB,
-                min(float(old_payload["output-gain"]), float(new_payload["output-gain"]))
+                min(0.0, float(old_payload["output-gain"]), float(new_payload["output-gain"]))
                 - self.manager.LOUDNESS_STRENGTH_GUARD_DB,
             )
             self.assertTrue(math.isclose(guard, expected, abs_tol=1e-9))
-            old_level = float(old_payload["volume"]) + float(old_payload["output-gain"])
-            ramp_start = guard + float(new_payload["volume"])
+            volume_db = float(extras(old)["loudness"]["params"]["volumeDb"])
+            old_level = volume_db + float(old_payload["volume"]) + float(old_payload["output-gain"])
+            ramp_start = volume_db + guard + float(new_payload["volume"]) + float(new_payload["output-gain"])
             self.assertLessEqual(ramp_start, old_level - self.manager.LOUDNESS_STRENGTH_GUARD_DB + 1e-9,
                                  f"positive jump risk between strengths {old} -> {new}")
 
-    def test_guard_clamps_to_engine_floor(self):
+    def test_guard_stays_within_engine_floor(self):
         guard = self.manager.loudness_transition_guard_db(
             extras(10, volume_db=-40.0, calibration_db=-50.0),
             extras(1, volume_db=-40.0, calibration_db=-50.0),
         )
-        self.assertEqual(guard, self.manager.LOUDNESS_OUTPUT_GAIN_MIN_DB)
+        # The plugin net trim is 0 dB on both sides; the guard is the deeper
+        # plugin trim minus the guard margin and stays inside the engine
+        # floor.
+        self.assertEqual(guard, -7.0 - self.manager.LOUDNESS_STRENGTH_GUARD_DB)
+        self.assertGreaterEqual(guard, self.manager.LOUDNESS_OUTPUT_GAIN_MIN_DB)
 
     def test_successful_transition_readback_matches_candidate(self):
         previous = self.manager.load_global_extras()

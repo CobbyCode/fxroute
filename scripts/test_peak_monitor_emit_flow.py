@@ -29,6 +29,9 @@ class _FakeProc:
         self.stderr = asyncio.StreamReader()
         self.returncode = None
 
+    def terminate(self):
+        self.returncode = 0
+
     async def wait(self):
         return self.returncode
 
@@ -70,6 +73,7 @@ id 2, type PipeWire:Interface:Port/3
         )
         self.patcher.start()
         self.monitor._link_capture_stream = AsyncMock()
+        self.monitor._discover_target = AsyncMock(return_value=TARGET)
         self.task = asyncio.create_task(self.monitor._capture_target(TARGET))
         await self._wait_for(lambda: len(self.emits) >= 1)
 

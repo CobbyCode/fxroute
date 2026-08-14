@@ -193,6 +193,19 @@ class DSPManager:
 
     @classmethod
     def _loudness_plugin_payload(cls, definition: Dict[str, Any], autogain: Dict[str, Any]) -> Dict[str, Any]:
+        """Loudness stage payload: volumeDb-dependent work point, net-zero output.
+
+        The LSP work point keeps the established FXRoute relation
+        ``volumeDb - calibration + strength + AutoGain`` so the tonal
+        compensation follows the canonical listening volume exactly as before
+        the native-DSP migration.  The stage applies the inverse output
+        compensation (``output-gain = -volume``) and is therefore
+        level-neutral at the pre-master post_effect meter tap; the canonical
+        listening attenuation is applied right after the tap by the
+        master_gain stage and before the protection limiter, so Peak/VU stays
+        independent of listening volume while the Limiter keeps the
+        pre-migration input level (volumeDb).
+        """
         params = definition["params"]
         calibration = params.get("calibration")
         adjustment = calibration.get("requiredAdjustmentDb") if isinstance(calibration, dict) else 0.0
@@ -206,7 +219,7 @@ class DSPManager:
                                min(cls.LOUDNESS_PLUGIN_VOLUME_MAX_DB, raw_volume_db))
         return {"bypass": not definition["enabled"], "fft": str(params.get("fftSize", 4096)),
                 "volume": plugin_volume_db,
-                "output-gain": master_db - plugin_volume_db if definition["enabled"] else 0.0}
+                "output-gain": -plugin_volume_db if definition["enabled"] else 0.0}
 
     def __init__(self, home: Optional[Path] = None,
                   apply_callback: Optional[Callable[[Dict[str, Any]], Any]] = None):
@@ -422,16 +435,18 @@ class DSPManager:
                                      candidate_extras: Dict[str, Any]) -> float:
         """Guard gain for a Loudness runtime transition, with no positive jump.
 
-        The transition first ramps the engine output gain down to
-        min(old, new) work-point minus the guard margin, then applies the new
-        work point and ramps back to unity; the total attenuation is preserved.
+        The canonical volume (master_gain stage) is constant across the
+        transition; the plugin net trim is 0 dB on both sides, so the guard
+        only has to keep the rebuild pin at least the guard margin below the
+        previous level (clamped at 0 dB so a positive plugin trim can never
+        shallow the pin).
         """
         previous = self.normalize_effects_extras(previous_extras)
         candidate = self.normalize_effects_extras(candidate_extras)
         old_payload = self._loudness_plugin_payload(previous["loudness"], previous["autogain"])
         new_payload = self._loudness_plugin_payload(candidate["loudness"], candidate["autogain"])
         return max(self.LOUDNESS_OUTPUT_GAIN_MIN_DB,
-                   min(float(old_payload["output-gain"]), float(new_payload["output-gain"]))
+                   min(0.0, float(old_payload["output-gain"]), float(new_payload["output-gain"]))
                    - self.LOUDNESS_STRENGTH_GUARD_DB)
 
     def apply_temporary_effects_runtime(self, previous_extras: Dict[str, Any],
@@ -584,6 +599,7 @@ class DSPManager:
         autogain_definition = ({"enabled": True, "params": enabled_autogain.get("params", {})}
                                if enabled_autogain else {"enabled": False, "params": {}})
         ordinal = 0
+        master_gain_db = None
         lv2_uris = {
             "equalizer": "http://lsp-plug.in/plugins/lv2/para_equalizer_x32_lr",
             "bass_enhancer": "http://calf.sourceforge.net/plugins/BassEnhancer",
@@ -715,6 +731,14 @@ class DSPManager:
                 control("hclip", 0)
                 control("hcrange", 6)
                 lines.append(f"param output_gain_db {number(payload['output-gain'])}")
+                # The canonical listening attenuation is split off the old
+                # wrapper gain (volumeDb - p): the stage keeps the LSP work
+                # point p with the inverse compensation -p (level-neutral at
+                # the pre-master meter tap), and the volumeDb part is applied
+                # by a dedicated master gain right after the tap and before
+                # the protection limiter, so the Limiter input equals the
+                # pre-migration level (volumeDb) again.
+                master_gain_db = float(params.get("volumeDb", 0.0))
             elif plugin_type == "limiter":
                 # Control values verified against the installed lsp-plugins
                 # metadata (sc_limiter_stereo.ttl): mode 0=Herm Thin (matches
@@ -748,6 +772,12 @@ class DSPManager:
                 control("thresh", params.get("thresholdDb", params.get("threshold", 0.0)))
                 control("rel", params.get("releaseMs", params.get("release", 25.0)))
             lines.append("stage_end")
+            if master_gain_db is not None:
+                lines.append(f"stage_begin {ordinal} global-loudness-master native master_gain")
+                ordinal += 1
+                lines.append(f"param gain_db {number(master_gain_db)}")
+                lines.append("stage_end")
+                master_gain_db = None
             if peq_delay is not None:
                 lines.append(f"stage_begin {ordinal} {plugin.get('id', plugin_type)}-delay native delay")
                 ordinal += 1

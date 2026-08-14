@@ -132,6 +132,102 @@ def test_loudness_volume_clamp_moves_remainder_to_output_gain_param(tmp_path):
     assert abs(plugin_volume + output_gain) < 1e-9
 
 
+def test_loudness_work_point_follows_volume_and_stage_is_level_neutral(tmp_path):
+    # The LSP work point must keep following the canonical volume
+    # (volumeDb - calibration + strength + AutoGain), while the stage stays
+    # level-neutral at the pre-master meter tap via the inverse output
+    # compensation.  The canonical listening attenuation is applied by the
+    # master gain stage right after the tap, before the protection limiter.
+    quiet = compile_loudness(tmp_path, {"volumeDb": -37.19, "strength": 7})
+    loud = compile_loudness(tmp_path, {"volumeDb": 0.0, "strength": 7})
+
+    def control(text, symbol):
+        return float([line for line in text.splitlines()
+                      if line.startswith(f"control {symbol} ")][0].split()[-1])
+
+    def param(text, symbol):
+        return float([line for line in text.splitlines()
+                      if line.startswith(f"param {symbol} ")][0].split()[-1])
+
+    assert control(quiet, "volume") != control(loud, "volume")
+    for text in (quiet, loud):
+        assert abs(control(text, "volume") + param(text, "output_gain_db")) < 1e-9
+
+
+def _chain_blocks(text):
+    """Split the engine text into stage blocks with their inner lines."""
+    blocks = []
+    current = None
+    for line in text.splitlines():
+        if line.startswith("stage_begin "):
+            current = {"header": line, "lines": []}
+            blocks.append(current)
+        elif current is not None and line == "stage_end":
+            current = None
+        elif current is not None:
+            current["lines"].append(line)
+    return blocks
+
+
+def _block_value(block, prefix):
+    for line in block["lines"]:
+        if line.startswith(prefix):
+            return float(line.split()[-1])
+    return None
+
+
+def test_limiter_input_matches_pre_migration_level(tmp_path):
+    # Pre-migration: plugin work point p = volumeDb - calibration + strength
+    # + AutoGain, wrapper output gain = volumeDb - p, so the level entering
+    # the protection limiter was volumeDb.  The new split keeps the same p
+    # with the inverse host compensation (-p) and moves the canonical volume
+    # into a master gain stage between the pre-master meter tap and the
+    # limiter: -p + volumeDb = volumeDb - p, so the Limiter input must be
+    # identical to the pre-migration level.
+    cases = (
+        (0.0, 10, 0.0, -23.0, False),
+        (-37.19, 10, 0.0, -23.0, False),
+        (-20.0, 7, 2.5, -18.0, True),
+        (-80.0, 1, -50.0, -12.0, True),
+        (-41.94, 5, 4.25, -15.0, True),
+        (-25.9, 2, 0.0, -18.0, True),
+    )
+    for volume_db, strength, calibration_db, autogain_db, autogain_on in cases:
+        manager = DSPManager(home=tmp_path / "home")
+        manager.save_global_extras({
+            "limiter": {"enabled": True, "params": {}},
+            "autogain": {"enabled": autogain_on, "params": {"targetDb": autogain_db}},
+            "loudness": {"enabled": True, "params": {
+                "fftSize": 4096, "strength": strength, "volumeDb": volume_db,
+                "calibration": {"requiredAdjustmentDb": calibration_db},
+                "calibrationProfiles": {}}},
+        })
+        text = manager.compile_engine_text([
+            {"name": "FL", "source": 0}, {"name": "FR", "source": 1}])
+        blocks = _chain_blocks(text)
+        kinds = [block["header"].split()[4] for block in blocks]
+        loudness_index = kinds.index("http://lsp-plug.in/plugins/lv2/loud_comp_stereo")
+        limiter_index = kinds.index("http://lsp-plug.in/plugins/lv2/sc_limiter_stereo")
+
+        strength_db = (10 - strength) * (30.0 / 9.0)
+        autogain_contrib = (autogain_db + 23.0) if autogain_on else 0.0
+        p = volume_db - calibration_db + strength_db + autogain_contrib
+        p_clamped = max(-83.0, min(7.0, p))
+
+        loudness = blocks[loudness_index]
+        assert abs(_block_value(loudness, "control volume ") - p_clamped) < 1e-6
+        assert abs(_block_value(loudness, "param output_gain_db ") + p_clamped) < 1e-6
+
+        # Canonical volume gain sits right after the loudness stage and
+        # before the protection limiter; its net with the stage compensation
+        # equals the pre-migration Limiter input level (volumeDb).
+        master = blocks[loudness_index + 1]
+        assert master["header"].split()[4] == "master_gain"
+        assert abs(_block_value(master, "param gain_db ") - volume_db) < 1e-6
+        assert limiter_index == loudness_index + 2
+        assert abs((p_clamped - p_clamped + volume_db) - volume_db) < 1e-6
+
+
 from native_test_runner import run_pytest_style_module
 
 if __name__ == "__main__":

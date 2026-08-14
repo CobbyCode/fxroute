@@ -215,7 +215,7 @@ class DSPRuntimeConfigTests(unittest.TestCase):
                          "control fft 5", "control approx 2", "control volume -7.5",
                          "control hclip 0", "control hcrange 6"):
             self.assertIn(expected, text)
-        self.assertIn("param output_gain_db -12.5", text)
+        self.assertIn("param output_gain_db 7.5", text)
         self.assertIn("lv2 http://lsp-plug.in/plugins/lv2/sc_limiter_stereo", text)
         for expected in ("control g_in 0.707945784", "control g_out 1.25892541",
                           "control th 0.794328235", "control at 4", "control rt 20",

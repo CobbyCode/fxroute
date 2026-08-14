@@ -42,6 +42,19 @@ VU_RELEASE_SECONDS = 0.85
 VU_EMIT_INTERVAL = 0.25
 CAPTURE_NO_DATA_TIMEOUT = 3.0
 FALLBACK_CAPTURE_RATE = 48_000
+# After the DSP engine is recreated the graph needs a settle window before
+# the post_effect buffers deliver data again; a fresh capture linked during
+# that window must not be killed by the normal no-data timeout.
+REBUILD_SETTLE_GRACE_SECONDS = 10.0
+# While a capture is silent, re-check the DSP node identity this often so a
+# node recreation (same id, new serial) triggers an immediate rearm instead
+# of waiting for the no-data timeout.
+TARGET_RECHECK_INTERVAL = 1.0
+# A capture armed during the rebuild settle window can negotiate a degraded
+# stream (periodic 250-400 ms data gaps).  When repeated timeouts were
+# observed during the grace, rearm the capture once after the grace so the
+# fresh negotiation delivers a clean continuous stream.
+SETTLE_REARM_MIN_TIMEOUTS = 2
 
 
 def _resolve_capture_rate() -> int:
@@ -150,6 +163,7 @@ class MonitorTarget:
     source_name: str
     source_id: int
     description: str
+    serial: int = 0
 
 
 class EasyEffectsPeakMonitor:
@@ -169,6 +183,9 @@ class EasyEffectsPeakMonitor:
         self._last_vu_update_at: Optional[float] = None
         self._last_audio_sample_at: Optional[float] = None
         self._last_vu_emit_at = 0.0
+        self._settle_until = 0.0
+        self._settle_timeout_count = 0
+        self._settle_rearmed = False
 
     async def start(self):
         if self._task and not self._task.done():
@@ -255,6 +272,7 @@ class EasyEffectsPeakMonitor:
         self._last_vu_update_at = None
         self._last_audio_sample_at = None
         self._last_vu_emit_at = 0.0
+        self._settle_rearmed = False
         logger.info("Peak monitor stop completed in %.3fs (had_task=%s had_proc=%s)", time.monotonic() - stop_started_at, had_task, had_proc)
 
     def snapshot(self) -> dict:
@@ -277,6 +295,7 @@ class EasyEffectsPeakMonitor:
                 "source_id": self._target.source_id,
                 "source_name": self._target.source_name,
                 "description": self._target.description,
+                "serial": self._target.serial,
             } if self._target else None,
             "last_over_at": self._last_over_at,
             "last_error": self._last_error,
@@ -311,8 +330,27 @@ class EasyEffectsPeakMonitor:
                 continue
 
             if self._target != target:
+                previous_target = self._target
+                was_recreated = (
+                    previous_target is not None
+                    and target.serial != previous_target.serial
+                )
+                first_target = previous_target is None
                 self._target = target
                 self._last_error = None
+                if first_target or was_recreated:
+                    self._settle_until = time.monotonic() + REBUILD_SETTLE_GRACE_SECONDS
+                    if was_recreated:
+                        logger.info(
+                            "Peak monitor target node recreated (serial %s -> %s); "
+                            "arming capture with rebuild settle grace",
+                            previous_target.serial, target.serial,
+                        )
+                    else:
+                        logger.info(
+                            "Peak monitor first target armed with rebuild settle grace (serial %s)",
+                            target.serial,
+                        )
                 await self._emit_if_changed(force=True)
 
             try:
@@ -376,6 +414,9 @@ class EasyEffectsPeakMonitor:
                 logger.warning("Peak monitor link setup failed, continuing without capture links yet: %s", exc)
                 self._last_error = str(exc)
                 await self._emit_if_changed(force=True)
+            self._settle_timeout_count = 0
+            self._capture_armed_under_settle = self._settle_until > 0.0
+            last_target_check_at = time.monotonic()
             while self._running:
                 try:
                     chunk = await asyncio.wait_for(self._proc.stdout.read(READ_SIZE), timeout=0.25)
@@ -401,7 +442,35 @@ class EasyEffectsPeakMonitor:
                 elif self._proc.returncode is not None:
                     break
                 else:
-                    if now - last_data_at >= CAPTURE_NO_DATA_TIMEOUT:
+                    if not (now < self._settle_until):
+                        # A capture armed under the settle grace can develop
+                        # periodic data gaps after the graph settled; rearm
+                        # once so the fresh negotiation delivers a clean
+                        # continuous stream.
+                        if self._capture_armed_under_settle and not self._settle_rearmed:
+                            self._settle_timeout_count += 1
+                            if self._settle_timeout_count >= SETTLE_REARM_MIN_TIMEOUTS:
+                                self._settle_rearmed = True
+                                self._settle_until = 0.0
+                                raise RuntimeError(
+                                    "Peak monitor capture degraded after rebuild settle; "
+                                    "rearming for a clean stream"
+                                )
+                    if now - last_target_check_at >= TARGET_RECHECK_INTERVAL:
+                        last_target_check_at = now
+                        try:
+                            current_target = await self._discover_target()
+                        except Exception:
+                            current_target = None
+                        if current_target is not None and current_target != self._target:
+                            raise RuntimeError(
+                                "Peak monitor target node was recreated; rearming capture"
+                            )
+                    no_data_timeout = (
+                        REBUILD_SETTLE_GRACE_SECONDS
+                        if now < self._settle_until else CAPTURE_NO_DATA_TIMEOUT
+                    )
+                    if now - last_data_at >= no_data_timeout:
                         raise RuntimeError("Peak monitor received no audio data while pw-record remained running")
                     self._update_vu_db(VU_FLOOR_DB, now)
                 if self._hold_until and now >= self._hold_until:
@@ -597,6 +666,7 @@ class EasyEffectsPeakMonitor:
         current_id = 0
         current_name = ""
         current_description = ""
+        current_serial = 0
 
         def flush_current():
             nonlocal current_id, current_name, current_description, candidates
@@ -609,6 +679,7 @@ class EasyEffectsPeakMonitor:
                 source_name=node_name,
                 source_id=current_id,
                 description=(current_description.strip() or node_name),
+                serial=current_serial,
             )))
 
         for raw_line in text.splitlines():
@@ -617,6 +688,7 @@ class EasyEffectsPeakMonitor:
                 flush_current()
                 current_name = ""
                 current_description = ""
+                current_serial = 0
                 try:
                     current_id = int(line.split(",", 1)[0].split()[1])
                 except Exception:
@@ -628,6 +700,11 @@ class EasyEffectsPeakMonitor:
             if line.startswith('node.description = "'):
                 current_description = line.split('"', 1)[1].rsplit('"', 1)[0]
                 continue
+            if line.startswith('object.serial = "'):
+                try:
+                    current_serial = int(line.split('"', 1)[1].rsplit('"', 1)[0])
+                except Exception:
+                    current_serial = 0
         flush_current()
 
         if not candidates:
