@@ -82,7 +82,7 @@ class SamplerateOrchestrationContractTests(unittest.IsolatedAsyncioTestCase):
             "get_audio_output_overview",
             return_value={"output_mode": {"mode": "stereo", "effective_output_key": "alsa_output.pci-0000_00_1f.3.analog-stereo"}},
         ), patch.object(main.asyncio, "sleep", sleep), patch.object(
-            main, "dsp_runtime", type("NativeRuntime", (), {
+            main.runtime, "dsp_runtime", type("NativeRuntime", (), {
                 "snapshot": lambda self: {"active": True, "config": {"sample_rate": status["force_rate"]}}
             })()
         ):
@@ -157,7 +157,7 @@ class SamplerateOrchestrationContractTests(unittest.IsolatedAsyncioTestCase):
         """A window heartbeat is neutral; active playback restore has one owner."""
         ledger = EventLedger()
         original = {
-            name: getattr(main, name)
+            name: (getattr(main.runtime, name) if hasattr(main.runtime, name) else getattr(main, name))
             for name in (
                 "measurement_sr_session", "playback_transition_coordinator",
                     "current_track_info", "player_instance",
@@ -181,7 +181,7 @@ class SamplerateOrchestrationContractTests(unittest.IsolatedAsyncioTestCase):
                 "was_playing": True,
             }
             main.current_track_info = {"source": "local", "url": "/music/a.flac"}
-            main.player_instance = SimpleNamespace(
+            main.runtime.player_instance = SimpleNamespace(
                 state={"current_file": "/music/a.flac", "ended": False}
             )
             await session.request_open()
@@ -193,7 +193,7 @@ class SamplerateOrchestrationContractTests(unittest.IsolatedAsyncioTestCase):
             await session._release()
         finally:
             for name, value in original.items():
-                setattr(main, name, value)
+                setattr(main.runtime if hasattr(main.runtime, name) else main, name, value)
 
         self.assertEqual(ledger.events, ["restore:local:44100:True"])
 
@@ -228,7 +228,7 @@ class SamplerateOrchestrationContractTests(unittest.IsolatedAsyncioTestCase):
 
         track = {"source": "radio", "url": "https://radio.example/live", "sample_rate_hz": 44100}
         with patch.object(main, "playback_transition_coordinator", FakeCoordinator()), patch.object(
-            main, "player_instance", SimpleNamespace(state={
+            main.runtime, "player_instance", SimpleNamespace(state={
                 "current_file": "https://radio.example/live",
                 "playing": True,
                 "paused": False,

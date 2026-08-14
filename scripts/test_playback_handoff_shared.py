@@ -128,7 +128,7 @@ class CanonicalGraphTests(unittest.IsolatedAsyncioTestCase):
             hardware_ports=("playback_FL", "playback_FR"),
         )
         runtime._links = [SimpleNamespace(source="source", target="target")] if runtime._process else []
-        with patch.object(main, "dsp_runtime", runtime), patch.object(
+        with patch.object(main.runtime, "dsp_runtime", runtime), patch.object(
             main, "_run_pw_link_command", side_effect=pw_link
         ), patch.object(main, "get_audio_output_overview", return_value=overview):
             return await main._playback_graph_diagnosis(
@@ -198,7 +198,7 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
         )
         with patch.object(main, "get_audio_output_overview", return_value=self.overview), patch.object(
             main, "_run_pw_link_command", side_effect=pw_link
-        ), patch.object(main, "dsp_runtime", helper), patch.object(
+        ), patch.object(main.runtime, "dsp_runtime", helper), patch.object(
             main.dsp_orchestrator, "sync_preset_for_playback_samplerate",
             side_effect=lambda **_kwargs: calls.__setitem__("preset", calls["preset"] + 1),
         ), patch.object(
@@ -242,7 +242,7 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
                 )
                 with patch.object(main, "get_audio_output_overview", return_value=overview), patch.object(
                     main, "_run_pw_link_command", side_effect=pw_link
-                ), patch.object(main, "dsp_runtime", helper), patch.object(
+                ), patch.object(main.runtime, "dsp_runtime", helper), patch.object(
                     main.dsp_orchestrator, "sync_preset_for_playback_samplerate",
                     side_effect=lambda **_kwargs: calls.__setitem__("preset", calls["preset"] + 1),
                 ), patch.object(main.dsp_orchestrator, "sync_runtime", side_effect=sync), patch.object(
@@ -320,7 +320,7 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
             main.dsp_orchestrator, "sync_runtime", side_effect=sync_helper
         ), patch.object(
             main, "_coordinator_reconcile_subwoofer_links_only", reconciler
-        ), patch.object(main, "dsp_runtime", helper), patch.object(
+        ), patch.object(main.runtime, "dsp_runtime", helper), patch.object(
             main, "dsp_manager", None
         ):
             runtime = MainCoreTransitionRuntime(
@@ -411,7 +411,7 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
             output_mode_target=self.overview,
             output_mode_config={"mode": "subwoofer-2.2"},
         )
-        with patch.object(main, "dsp_runtime", helper), patch.object(
+        with patch.object(main.runtime, "dsp_runtime", helper), patch.object(
             main, "dsp_manager", None
         ), patch.object(
             main, "_wait_for_dsp_output_ports", new=AsyncMock(return_value=True)
@@ -576,7 +576,7 @@ class StereoRateTransitionRegressionTests(unittest.IsolatedAsyncioTestCase):
                 reload_source=True,
             )
 
-            with patch.object(main, "dsp_runtime", runtime), patch.object(
+            with patch.object(main.runtime, "dsp_runtime", runtime), patch.object(
                 main, "dsp_manager", None
             ), patch.object(
                 main, "get_audio_output_overview", return_value=stereo_overview(44100)
@@ -654,7 +654,7 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
             "sample_rate_hz": 44100,
         }
         with patch.object(main, "playback_transition_coordinator", RecoveryCoordinatorDouble()), patch.object(
-            main, "player_instance", PlayerDouble()
+            main.runtime, "player_instance", PlayerDouble()
         ), patch.object(main, "_run_coordinated_transition", run), patch.object(main, "coordinator_last_successful_commit_id", "tr-context"
         ), patch.object(main, "get_samplerate_status", return_value={
             "active_rate": 48000,
@@ -694,7 +694,7 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
             "sample_rate_hz": 44100,
         }
         with patch.object(main, "playback_transition_coordinator", RecoveryCoordinatorDouble()), patch.object(
-            main, "player_instance", PlayerDouble()
+            main.runtime, "player_instance", PlayerDouble()
         ), patch.object(main, "_run_coordinated_transition", run), patch.object(main, "coordinator_last_successful_commit_id", "tr-context"
         ), patch.object(main, "get_samplerate_status", return_value={
             "active_rate": 44100,
@@ -728,7 +728,7 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
             "sample_rate_hz": 44100,
         }
         with patch.object(main, "playback_transition_coordinator", RecoveryCoordinatorDouble()), patch.object(
-            main, "player_instance", PlayerDouble()
+            main.runtime, "player_instance", PlayerDouble()
         ), patch.object(main, "current_track_info", dict(track)), patch.object(
             main, "coordinator_last_successful_commit_id", "tr-committed"
         ), patch.object(main, "_run_coordinated_transition", run):
@@ -752,7 +752,7 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
             "sample_rate_hz": 44100,
         }
         with patch.object(main, "playback_transition_coordinator", RecoveryCoordinatorDouble()), patch.object(
-            main, "player_instance", PlayerDouble()
+            main.runtime, "player_instance", PlayerDouble()
         ), patch.object(main, "_run_coordinated_transition", run), patch.object(
             main, "_coordinator_commit_context_id", side_effect=("tr-before", "tr-after")
         ):
@@ -786,7 +786,7 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
             "sample_rate_hz": 44100,
         }
         with patch.object(main, "playback_transition_coordinator", coordinator), patch.object(
-            main, "player_instance", PlayerDouble()
+            main.runtime, "player_instance", PlayerDouble()
         ), patch.object(main, "_run_coordinated_transition", run), patch.object(main, "coordinator_last_successful_commit_id", "tr-before"), patch.object(
             main, "get_samplerate_status", return_value={"active_rate": 48000, "force_rate": 48000}
         ):
@@ -833,7 +833,7 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
             "sample_rate_hz": 44100,
         }
         with patch.object(main, "playback_transition_coordinator", coordinator), patch.object(
-            main, "player_instance", PlayerDouble()
+            main.runtime, "player_instance", PlayerDouble()
         ), patch.object(main, "_run_coordinated_transition", run), patch.object(main, "coordinator_last_successful_commit_id", "tr-before"), patch.object(
             main, "get_samplerate_status", return_value={"active_rate": 48000, "force_rate": 48000}
         ):
@@ -943,7 +943,7 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(main, "get_audio_output_overview", return_value=overview), patch.object(
             main, "_run_pw_link_command", side_effect=pw_link
         ), patch.object(
-            main, "dsp_runtime", runtime
+            main.runtime, "dsp_runtime", runtime
         ), patch.object(
             main.dsp_orchestrator, "sync_preset_for_playback_samplerate",
             side_effect=lambda **_kwargs: calls.__setitem__("preset", calls["preset"] + 1),
@@ -970,7 +970,7 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
             rate_change=False,
             reload_source=True,
         )
-        with patch.object(main, "player_instance", player), patch.object(
+        with patch.object(main.runtime, "player_instance", player), patch.object(
             main, "_player_is_running", return_value=True
         ), patch.object(
             main, "pause_spotify_for_local_playback_broadcast", new=AsyncMock()
@@ -1003,7 +1003,7 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
                     reload_source=True,
                 )
                 release = AsyncMock(return_value=True)
-                with patch.object(main, "player_instance", player), patch.object(
+                with patch.object(main.runtime, "player_instance", player), patch.object(
                     main, "_player_is_running", return_value=True
                 ), patch.object(
                     main, "get_spotify_ui_state",
@@ -1042,7 +1042,7 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
 
         with patch.object(main, "get_audio_output_overview", return_value=overview), patch.object(
             main, "_run_pw_link_command", side_effect=pw_link
-        ), patch.object(main, "dsp_runtime", helper), patch.object(
+        ), patch.object(main.runtime, "dsp_runtime", helper), patch.object(
             main, "dsp_manager", None
         ), patch.object(
             main.dsp_orchestrator, "sync_runtime",
@@ -1088,7 +1088,7 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
         )
         with patch.object(main, "get_audio_output_overview", return_value=overview), patch.object(
             main, "_run_pw_link_command", side_effect=pw_link
-        ), patch.object(main, "dsp_runtime", helper), patch.object(
+        ), patch.object(main.runtime, "dsp_runtime", helper), patch.object(
             main.dsp_orchestrator,
             "sync_preset_for_playback_samplerate",
             side_effect=lambda **_kwargs: calls.__setitem__("preset", calls["preset"] + 1),
@@ -1119,7 +1119,7 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(main, "get_audio_output_overview", return_value=overview), patch.object(
             main, "_run_pw_link_command",
             side_effect=lambda *_args: _links_text("subwoofer-2.2", direct=False, complete=False),
-        ), patch.object(main, "dsp_runtime", helper):
+        ), patch.object(main.runtime, "dsp_runtime", helper):
             with self.assertRaisesRegex(RuntimeError, "graph-only reconciliation"):
                 await main._coordinator_establish_effects_and_helper(request)
 
@@ -1149,7 +1149,7 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
             return _links_text("subwoofer-2.2", direct=helper.direct)
 
         with patch.object(main, "_run_pw_link_command", side_effect=pw_link), patch.object(
-            main, "dsp_runtime", helper
+            main.runtime, "dsp_runtime", helper
         ), patch.object(main, "get_audio_output_overview", return_value={
             "output_mode": {"mode": "subwoofer-2.2", "effective_output_key": OUTPUT_KEY}
         }):
@@ -1190,7 +1190,7 @@ class RuntimeStateDumpTests(unittest.IsolatedAsyncioTestCase):
 
         with patch.object(main, "get_audio_output_overview", return_value=overview), \
              patch.object(main, "get_samplerate_status", return_value={"active_rate": 48000, "force_rate": 48000}), \
-             patch.object(main, "dsp_runtime", FakeRuntime()), \
+             patch.object(main.runtime, "dsp_runtime", FakeRuntime()), \
              patch.object(main, "_run_debug_command", side_effect=debug_command), \
              patch.object(main, "_read_build_id", return_value="test"), \
              patch.object(main, "_measurement_helper_snapshot_summary", return_value={}):

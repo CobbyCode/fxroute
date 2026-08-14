@@ -372,7 +372,7 @@ class VolumeTransitionIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.recorder = VolumePathRecorder(self.manager, self.runtime)
         self.patches = [
             mock.patch.object(main, "dsp_manager", self.manager),
-            mock.patch.object(main, "dsp_runtime", self.runtime),
+            mock.patch.object(main.runtime, "dsp_runtime", self.runtime),
             mock.patch.object(main, "set_output_volume", self.recorder.set_master),
             mock.patch.object(main, "get_output_volume", self.recorder.get_master),
             mock.patch.object(main.dsp_orchestrator, "sync_runtime", mock.AsyncMock()),
@@ -382,16 +382,16 @@ class VolumeTransitionIntegrationTests(unittest.IsolatedAsyncioTestCase):
         ]
         for patcher in self.patches:
             patcher.start()
-        main.canonical_volume_write_lock = None
-        main.dsp_mutation_lock = None
+        main.runtime.canonical_volume_write_lock = None
+        main.runtime.dsp_mutation_lock = None
 
     async def asyncTearDown(self):
         for patcher in self.patches:
             patcher.stop()
-        main.canonical_volume_write_lock = None
-        main.dsp_mutation_lock = None
+        main.runtime.canonical_volume_write_lock = None
+        main.runtime.dsp_mutation_lock = None
         main.dsp_manager = None
-        main.dsp_runtime = None
+        main.runtime.dsp_runtime = None
 
     def peak(self):
         if not self.recorder.samples:

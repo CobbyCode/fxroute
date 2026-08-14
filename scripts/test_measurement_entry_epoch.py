@@ -33,14 +33,15 @@ class _TestAudioHarness:
     """
 
     def __init__(self) -> None:
-        self._saved: dict[tuple[str, str], object] = {}
+        self._saved: dict[tuple[str, str], tuple[object, object]] = {}
         self._sync_runtime_at_rate_patch = None
         self.force_rate = 44100
         self.set_force_calls: list[int] = []
         self.session: MeasurementSampleRateSession | None = None
 
     def _remember(self, module, name: str) -> None:
-        self._saved[(module.__name__, name)] = getattr(module, name)
+        target = module.runtime if name == "player_instance" else module
+        self._saved[(module.__name__, name)] = (target, getattr(target, name))
 
     def __enter__(self):
         m = main
@@ -75,7 +76,7 @@ class _TestAudioHarness:
         m._wait_for_samplerate_alignment = self._noop
         m.playback_transition_coordinator = None
         m.current_track_info = None
-        m.player_instance = None
+        m.runtime.player_instance = None
         m._begin_playback_transition_attempt = lambda: 0
         m._end_playback_transition_attempt = lambda: None
         ms._capture_playback_state_before_measurement = lambda *a, **k: None
@@ -87,9 +88,8 @@ class _TestAudioHarness:
     def __exit__(self, *exc) -> None:
         if self._sync_runtime_at_rate_patch is not None:
             self._sync_runtime_at_rate_patch.stop()
-        for (module_name, name), value in self._saved.items():
-            module = sys.modules[module_name]
-            setattr(module, name, value)
+        for (_module_name, name), (target, value) in self._saved.items():
+            setattr(target, name, value)
 
     def _get_samplerate_status(self) -> dict:
         return {"force_rate": self.force_rate, "active_rate": self.force_rate}

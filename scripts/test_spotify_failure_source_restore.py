@@ -656,7 +656,7 @@ class PositionRestoreOrderTests(unittest.IsolatedAsyncioTestCase):
     async def test_position_restore_orders_load_paused_seek_then_start(self):
         player = RecordingPlayer()
         runtime = make_transition_runtime()
-        with patch.object(main, "player_instance", player), patch.object(
+        with patch.object(main.runtime, "player_instance", player), patch.object(
             main, "_load_player_paused",
             side_effect=lambda path: player.set_pause(True) or player._state.update(current_file=path),
         ), patch.object(
@@ -695,7 +695,7 @@ class PositionRestoreOrderTests(unittest.IsolatedAsyncioTestCase):
     async def test_paused_restore_volume_100_then_resume_starts_from_100(self):
         player = RecordingPlayer()
         runtime = make_transition_runtime()
-        with patch.object(main, "player_instance", player), patch.object(
+        with patch.object(main.runtime, "player_instance", player), patch.object(
             main, "_load_player_paused",
             side_effect=lambda path: player.set_pause(True) or player._state.update(current_file=path),
         ), patch.object(

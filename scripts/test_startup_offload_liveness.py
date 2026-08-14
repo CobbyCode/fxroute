@@ -233,7 +233,7 @@ class StartupOffloadLivenessTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any(call == slow_player.start for call in drain_calls))
         self.assertTrue(any(call is slow_dsp_class for call in drain_calls))
         self.assertLess(ticker.max_gap(), MAX_ACCEPTABLE_GAP)
-        self.assertIsNone(main.player_instance)
+        self.assertIsNone(main.runtime.player_instance)
         self.assertIsNone(main.dsp_manager)
 
     async def test_slow_socket_wait_inside_start_does_not_block_loop(self):

@@ -152,7 +152,6 @@ def _route_patch_context(*, current_mode: str, target_mode: str):
         prepare_audio_output_mode=mock.MagicMock(return_value=_target(target_mode)),
         persist_audio_output_mode=set_mode,
         with_subwoofer_derived_delays=lambda value: value,
-        dsp_runtime=None,
         _coordinator_current_playback_context=mock.AsyncMock(return_value={
             "source": "local", "target_url": None, "target_track": {}, "should_play": False,
         }),
@@ -160,6 +159,7 @@ def _route_patch_context(*, current_mode: str, target_mode: str):
         _run_coordinated_transition=run,
         get_audio_output_overview=mock.MagicMock(return_value={"output_mode": {"mode": target_mode}}),
     ))
+    stack.enter_context(mock.patch.multiple(main.runtime, dsp_runtime=None))
     stack.enter_context(mock.patch.object(main.dsp_orchestrator, "sync_runtime", sync))
     stack.enter_context(mock.patch.object(
         main.dsp_orchestrator, "refresh_peak_monitor_after_effects_change", mock.AsyncMock()
@@ -245,9 +245,9 @@ async def _recovery_valid(
     runtime: mock.MagicMock | None,
 ) -> bool:
     with mock.patch.object(main, "playback_transition_coordinator", coordinator), \
-            mock.patch.object(main, "dsp_runtime", runtime), \
+            mock.patch.object(main.runtime, "dsp_runtime", runtime), \
             mock.patch.object(
-                main, "player_instance",
+                main.runtime, "player_instance",
                 mock.MagicMock(state={"current_file": RADIO_URL, "ended": False}),
             ), \
             mock.patch.object(
@@ -502,9 +502,9 @@ async def _preset_load_reclean_skipped_during_sync() -> None:
     stack.enter_context(mock.patch.multiple(
         main,
         _require_dsp_manager=mock.MagicMock(return_value=ee_manager),
-        dsp_runtime=active_runtime,
         manager=mock.MagicMock(broadcast=broadcast),
     ))
+    stack.enter_context(mock.patch.multiple(main.runtime, dsp_runtime=active_runtime))
     stack.enter_context(mock.patch.object(
         main.dsp_orchestrator, "schedule_peak_monitor_refresh_after_effects_change", mock.MagicMock()
     ))
@@ -522,9 +522,9 @@ async def _preset_load_reclean_skipped_during_sync() -> None:
     stack2.enter_context(mock.patch.multiple(
         main,
         _require_dsp_manager=mock.MagicMock(return_value=ee_manager),
-        dsp_runtime=idle_runtime,
         manager=mock.MagicMock(broadcast=mock.AsyncMock()),
     ))
+    stack2.enter_context(mock.patch.multiple(main.runtime, dsp_runtime=idle_runtime))
     stack2.enter_context(mock.patch.object(
         main.dsp_orchestrator, "schedule_peak_monitor_refresh_after_effects_change", mock.MagicMock()
     ))
@@ -579,12 +579,12 @@ async def _mode_switch_reapplies_compare_after_runtime_sync() -> None:
         stack.enter_context(mock.patch.multiple(
             main,
             dsp_manager=ee_manager,
-            dsp_preset_load_lock=asyncio.Lock(),
             _playback_graph_diagnosis=mock.AsyncMock(return_value=complete_graph),
             _wait_for_dsp_output_ports=wait_for_ports,
             _reconcile_transition_sink_rate=mock.AsyncMock(return_value=True),
             _repair_stereo_output_links_once=mock.AsyncMock(),
         ))
+        stack.enter_context(mock.patch.multiple(main.runtime, dsp_preset_load_lock=asyncio.Lock()))
         stack.enter_context(mock.patch.object(
             main.dsp_orchestrator, "sync_runtime", mock.AsyncMock(side_effect=sync_runtime)
         ))

@@ -84,9 +84,9 @@ class PlayQueueTransactionalTests(unittest.IsolatedAsyncioTestCase):
 
     def _install(self, queue_a: list[dict], *, index: int, mode: str = "app_replace",
                  loop: bool = False, shuffle: bool = False) -> dict:
-        originals = {name: getattr(main, name) for name in self.GLOBALS}
+        originals = {name: (getattr(main.runtime, name) if hasattr(main.runtime, name) else getattr(main, name)) for name in self.GLOBALS}
         self._saved_queue = queue_state()
-        main.player_instance = _FakePlayer()
+        main.runtime.player_instance = _FakePlayer()
         main.library_scanner = _Scanner(["a", "b", "c", "d"])
         main.current_track_info = dict(queue_a[index]) if queue_a and index >= 0 else None
         main.last_track_info = dict(queue_a[index]) if queue_a and index >= 0 else None
@@ -104,7 +104,7 @@ class PlayQueueTransactionalTests(unittest.IsolatedAsyncioTestCase):
     def _restore(self, originals: dict) -> None:
         restore_queue_state(self._saved_queue)
         for name, value in originals.items():
-            setattr(main, name, value)
+            setattr(main.runtime if hasattr(main.runtime, name) else main, name, value)
 
     def _patches(self, transition, *, radio_stations: list[_Station] | None = None):
         async def no_op(*_args, **_kwargs):
@@ -189,7 +189,7 @@ class PlayQueueTransactionalTests(unittest.IsolatedAsyncioTestCase):
 
             async def navigate(request):
                 navigation_requests.append(request)
-                main.player_instance.state.update({
+                main.runtime.player_instance.state.update({
                     "current_file": request.target_url,
                     "paused": False,
                     "playing": True,
@@ -216,7 +216,7 @@ class PlayQueueTransactionalTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(await playback_queue.queue.load_track(2, transition_reason="queue navigation"))
             self.assertEqual(playback_queue.queue.index, 2)
             self.assertEqual(len(navigation_requests), 0)
-            self.assertEqual(main.player_instance.state["playlist_pos"], 2)
+            self.assertEqual(main.runtime.player_instance.state["playlist_pos"], 2)
         finally:
             self._restore(originals)
 
@@ -224,9 +224,9 @@ class PlayQueueTransactionalTests(unittest.IsolatedAsyncioTestCase):
         queue_a = [_track("a", rate=48000), _track("b", rate=48000), _track("c", rate=48000)]
         originals = self._install(queue_a, index=0, mode="native_mpv")
         try:
-            main.player_instance.state["current_file"] = "/music/a.flac"
-            main.player_instance.state["playing"] = True
-            main.player_instance.state["paused"] = False
+            main.runtime.player_instance.state["current_file"] = "/music/a.flac"
+            main.runtime.player_instance.state["playing"] = True
+            main.runtime.player_instance.state["paused"] = False
             with self._patch_context(lambda _request: self.fail("Coordinator must not run")), patch.object(
                 main.library_scanner, "get_tracks"
             ) as scan:
@@ -235,7 +235,7 @@ class PlayQueueTransactionalTests(unittest.IsolatedAsyncioTestCase):
             scan.assert_not_called()
             self.assertEqual(result["track"]["id"], "c")
             self.assertEqual(playback_queue.queue.index, 2)
-            self.assertEqual(main.player_instance.state["playlist_pos"], 2)
+            self.assertEqual(main.runtime.player_instance.state["playlist_pos"], 2)
         finally:
             self._restore(originals)
 
@@ -246,7 +246,7 @@ class PlayQueueTransactionalTests(unittest.IsolatedAsyncioTestCase):
         real_commit = playback_queue.queue.commit
         try:
             async def succeed(request):
-                main.player_instance.state.update({
+                main.runtime.player_instance.state.update({
                     "current_file": request.target_url,
                     "paused": False,
                     "playing": True,
@@ -284,7 +284,7 @@ class PlayQueueTransactionalTests(unittest.IsolatedAsyncioTestCase):
 
             async def succeed(request):
                 requests.append(request)
-                main.player_instance.state.update({
+                main.runtime.player_instance.state.update({
                     "current_file": request.target_url,
                     "paused": False,
                     "playing": True,
@@ -319,7 +319,7 @@ class PlayQueueTransactionalTests(unittest.IsolatedAsyncioTestCase):
         try:
             async def succeed(request):
                 requests.append(request)
-                main.player_instance.state.update({
+                main.runtime.player_instance.state.update({
                     "current_file": request.target_url,
                     "paused": False,
                     "playing": True,
@@ -396,7 +396,7 @@ class PlayQueueTransactionalTests(unittest.IsolatedAsyncioTestCase):
         originals = self._install(queue_a, index=0)
         try:
             async def succeed(request):
-                main.player_instance.state.update({
+                main.runtime.player_instance.state.update({
                     "current_file": request.target_url,
                     "paused": False,
                     "playing": True,
@@ -438,11 +438,11 @@ class QueueSelectionTransactionalTests(unittest.IsolatedAsyncioTestCase):
 
     def _install(self, queue_a: list[dict], *, index: int, mode: str = "app_replace",
                  shuffle: bool = False) -> dict:
-        originals = {name: getattr(main, name) for name in self.GLOBALS}
+        originals = {name: (getattr(main.runtime, name) if hasattr(main.runtime, name) else getattr(main, name)) for name in self.GLOBALS}
         self._saved_queue = queue_state()
-        main.player_instance = _FakePlayer()
+        main.runtime.player_instance = _FakePlayer()
         main.library_scanner = _Scanner(["a", "b", "c", "d"])
-        main.player_instance.state["current_file"] = queue_a[index]["url"]
+        main.runtime.player_instance.state["current_file"] = queue_a[index]["url"]
         main.current_track_info = dict(queue_a[index])
         main.last_track_info = dict(queue_a[index])
         main.current_footer_owner = "local"
@@ -458,7 +458,7 @@ class QueueSelectionTransactionalTests(unittest.IsolatedAsyncioTestCase):
     def _restore(self, originals: dict) -> None:
         restore_queue_state(self._saved_queue)
         for name, value in originals.items():
-            setattr(main, name, value)
+            setattr(main.runtime if hasattr(main.runtime, name) else main, name, value)
 
     async def test_selection_commits_prepared_queue_and_track_dict(self):
         queue_a = [_track("a"), _track("b"), _track("c")]

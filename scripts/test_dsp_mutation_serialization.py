@@ -31,7 +31,7 @@ class FakeUploadFile:
 
 class DSPMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
-        main.dsp_mutation_lock = None
+        main.runtime.dsp_mutation_lock = None
         main.dsp_manager = None
 
     async def test_two_concurrent_ir_uploads_are_serialized(self):
@@ -73,9 +73,9 @@ class DSPMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(critical), 2)
 
     async def test_convolver_create_uses_the_same_mutation_lock(self):
-        main.dsp_mutation_lock = asyncio.Lock()
+        main.runtime.dsp_mutation_lock = asyncio.Lock()
         lock = main._dsp_mutation_lock()
-        self.assertIs(lock, main.dsp_mutation_lock)
+        self.assertIs(lock, main.runtime.dsp_mutation_lock)
 
         observed = []
         holder = asyncio.create_task(self._hold_lock(lock, observed))
@@ -154,7 +154,7 @@ class DSPMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
         # New test loop: the shutdown path resets the lock to None, so the
         # runtime restart must create a fresh loop-bound lock (reusing the
         # old loop-bound lock would raise here).
-        main.dsp_mutation_lock = None
+        main.runtime.dsp_mutation_lock = None
         lock = main._dsp_mutation_lock()
         async with lock:
             pass

@@ -523,7 +523,7 @@ class CoordinatorTransactionTests(unittest.IsolatedAsyncioTestCase):
             output_mode_target=overview,
             output_mode_config={"mode": "subwoofer-2.2"},
         )
-        with patch.object(main, "dsp_runtime", SimpleNamespace()), patch.object(
+        with patch.object(main.runtime, "dsp_runtime", SimpleNamespace()), patch.object(
             main, "dsp_manager", None
         ), patch.object(
             main, "_playback_graph_diagnosis", new=AsyncMock(side_effect=[incomplete, incomplete, complete])
@@ -588,7 +588,7 @@ class CoordinatorTransactionTests(unittest.IsolatedAsyncioTestCase):
             output_mode_target=overview,
             output_mode_config={"mode": "stereo"},
         )
-        with patch.object(main, "dsp_runtime", None), patch.object(
+        with patch.object(main.runtime, "dsp_runtime", None), patch.object(
             main, "dsp_manager", None
         ), patch.object(
             main, "_playback_graph_diagnosis", new=AsyncMock(side_effect=[incomplete, incomplete, complete])
@@ -636,7 +636,7 @@ class EntryBoundaryTests(unittest.IsolatedAsyncioTestCase):
             main, "_run_coordinated_transition", run
         ), patch.object(main, "get_audio_output_overview", return_value=target["overview"]), patch.object(
             main, "with_subwoofer_derived_delays", side_effect=lambda value: value
-        ), patch.object(main, "dsp_runtime", None), patch.object(
+        ), patch.object(main.runtime, "dsp_runtime", None), patch.object(
             main.dsp_orchestrator, "refresh_peak_monitor_after_effects_change", new=AsyncMock()
         ):
             await main.save_audio_output_mode_route(Request())
@@ -654,12 +654,12 @@ class EntryBoundaryTests(unittest.IsolatedAsyncioTestCase):
         originals = {
             "measurement_sr_session": main.measurement_sr_session,
             "current_track_info": main.current_track_info,
-            "player_instance": main.player_instance,
+            "player_instance": main.runtime.player_instance,
         }
         try:
             main.measurement_sr_session = session
             main.current_track_info = None
-            main.player_instance = None
+            main.runtime.player_instance = None
             with patch.object(measurement_session, "_capture_playback_state_before_measurement"), patch.object(
                 main, "get_samplerate_status", return_value={"force_rate": 44100, "active_rate": 44100}
             ), patch.object(main, "_coordinator_current_playback_context", new=AsyncMock(return_value={
@@ -671,7 +671,7 @@ class EntryBoundaryTests(unittest.IsolatedAsyncioTestCase):
                 await session._start_locked(48000)
         finally:
             for name, value in originals.items():
-                setattr(main, name, value)
+                setattr(main.runtime if hasattr(main.runtime, name) else main, name, value)
 
         request = run.await_args.args[0]
         self.assertEqual(request.operation, "measurement-entry")

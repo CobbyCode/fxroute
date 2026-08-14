@@ -34,7 +34,7 @@ class _TestSession:
         # Replace globals needed by the session / capture code.
         self._orig_measurement_sr_session = main.measurement_sr_session
         self._orig_current_track_info = main.current_track_info
-        self._orig_player_instance = main.player_instance
+        self._orig_player_instance = main.runtime.player_instance
         self._orig_get_samplerate_status = main.get_samplerate_status
         self._orig_set_pipewire_force_rate = main._set_pipewire_force_rate
         self._orig_get_current_pipewire_force_rate = main._get_current_pipewire_force_rate
@@ -72,7 +72,7 @@ class _TestSession:
         main.get_spotify_ui_state = self._mock_get_spotify_ui_state
         main.latest_spotify_state = None
         main.playback_intent_generation = 0
-        main.player_instance = None
+        main.runtime.player_instance = None
         main._run_coordinated_transition = self._mock_run_coordinated_transition
         main._coordinator_current_playback_context = self._mock_coordinator_current_playback_context
 
@@ -96,8 +96,8 @@ class _TestSession:
         import main
         self._transition_requests.append(request)
         self._force_rate = request.target_rate
-        if request.source in {"local", "radio"} and main.player_instance is not None:
-            state = main.player_instance.state
+        if request.source in {"local", "radio"} and main.runtime.player_instance is not None:
+            state = main.runtime.player_instance.state
             state["paused"] = True
             state["playing"] = False
         elif request.source == "spotify":
@@ -110,7 +110,7 @@ class _TestSession:
     async def _mock_coordinator_current_playback_context(self):
         import main
         track = dict(main.current_track_info or {})
-        state = dict(main.player_instance.state if main.player_instance else {})
+        state = dict(main.runtime.player_instance.state if main.runtime.player_instance else {})
         spotify_state = await main.get_spotify_ui_state()
         spotify_identity = spotify_state.get("trackId") or spotify_state.get("url")
         if spotify_identity and spotify_state.get("status") in {"Playing", "Paused"}:
@@ -161,7 +161,7 @@ class _TestSession:
             "sample_rate_hz": sample_rate,
         }
         # player_instance must exist for capture to proceed
-        main.player_instance = type("_FakePlayer", (), {
+        main.runtime.player_instance = type("_FakePlayer", (), {
             "_running": True,
             "state": {
                 "current_file": "file:///test.flac",
@@ -187,13 +187,13 @@ class _TestSession:
     def clear_track(self) -> None:
         import main
         main.current_track_info = None
-        main.player_instance = None
+        main.runtime.player_instance = None
 
     def cleanup(self) -> None:
         import main
         main.measurement_sr_session = self._orig_measurement_sr_session
         main.current_track_info = self._orig_current_track_info
-        main.player_instance = self._orig_player_instance
+        main.runtime.player_instance = self._orig_player_instance
         main.get_samplerate_status = self._orig_get_samplerate_status
         main._set_pipewire_force_rate = self._orig_set_pipewire_force_rate
         main._get_current_pipewire_force_rate = self._orig_get_current_pipewire_force_rate
@@ -280,7 +280,7 @@ class TestCentralCapture:
                 "id": "radio1",
                 "title": "Radio Stream",
             }
-            main.player_instance = type("_FakePlayer", (), {
+            main.runtime.player_instance = type("_FakePlayer", (), {
                 "_running": True,
                 "state": {
                     "current_file": "http://radio.example/stream",
@@ -326,13 +326,13 @@ class TestCentralCapture:
                 "url": "file:///other.flac",
                 "id": "other",
             }
-            main.player_instance.state["current_file"] = "file:///other.flac"
+            main.runtime.player_instance.state["current_file"] = "file:///other.flac"
             assert not asyncio.get_event_loop().run_until_complete(
                 measurement_session._measurement_restore_snapshot_matches_current_intent(saved)
             )
 
             main.current_track_info = None
-            main.player_instance = None
+            main.runtime.player_instance = None
             assert not asyncio.get_event_loop().run_until_complete(
                 measurement_session._measurement_restore_snapshot_matches_current_intent(saved)
             )
@@ -347,9 +347,9 @@ class TestCentralCapture:
 
             ts.set_spotify_playing("spotify:track:A")
             ts.set_track_playing(source="local", sample_rate=44100)
-            main.player_instance.state.update(paused=True, playing=False)
+            main.runtime.player_instance.state.update(paused=True, playing=False)
             local_track_before = dict(main.current_track_info)
-            local_state_before = dict(main.player_instance.state)
+            local_state_before = dict(main.runtime.player_instance.state)
             # A stale cache must not become the capture authority.
             main.latest_spotify_state = {
                 "available": True,
@@ -389,7 +389,7 @@ class TestCentralCapture:
             assert restore_calls[0]["restore_intent"]["id"] == "spotify:track:A"
             assert ts._spotify_state["status"] == "Playing"
             assert main.current_track_info == local_track_before
-            assert main.player_instance.state == local_state_before
+            assert main.runtime.player_instance.state == local_state_before
         finally:
             ts.cleanup()
 
@@ -427,7 +427,7 @@ class TestCentralCapture:
 
             ts.set_spotify_playing("spotify:track:A")
             ts.set_track_playing(source="local", sample_rate=44100)
-            main.player_instance.state.update(paused=True, playing=False)
+            main.runtime.player_instance.state.update(paused=True, playing=False)
             local_track_before = dict(main.current_track_info)
             coordinator = SimpleNamespace(
                 restore_measurement=AsyncMock(return_value=SimpleNamespace(committed=True))
@@ -470,7 +470,7 @@ class TestCentralCapture:
 
             ts.set_spotify_playing("spotify:track:A")
             ts.set_track_playing(source="local", sample_rate=44100)
-            main.player_instance.state.update(
+            main.runtime.player_instance.state.update(
                 current_file="file:///local.flac",
                 paused=True,
                 playing=False,
@@ -558,11 +558,11 @@ class TestCentralCapture:
             assert run_precheck(base) is True
             assert validate_runtime(base) is True
 
-            main.player_instance.state["current_file"] = "file:///different-player-file.flac"
+            main.runtime.player_instance.state["current_file"] = "file:///different-player-file.flac"
             no_current_file = {key: value for key, value in base.items() if key != "current_file"}
             assert run_precheck(no_current_file) is False
             assert validate_runtime(no_current_file) is True
-            main.player_instance.state["current_file"] = "file:///test.flac"
+            main.runtime.player_instance.state["current_file"] = "file:///test.flac"
 
             no_source = {key: value for key, value in base.items() if key != "source"}
             assert run_precheck(no_source) is False

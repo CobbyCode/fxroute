@@ -49,7 +49,7 @@ class TransportContractTests(unittest.IsolatedAsyncioTestCase):
     async def test_api_pause_restores_v094_toggle_without_coordinator(self):
         player = PlayerDouble()
         coordinator = AsyncMock(side_effect=AssertionError("transport entered coordinator"))
-        with patch.object(main, "player_instance", player), patch.object(
+        with patch.object(main.runtime, "player_instance", player), patch.object(
             main, "_run_coordinated_transition", coordinator
         ), patch.object(main, "build_playback_payload", side_effect=self._payload), patch.object(
             main, "_mark_player_state_authoritative"
@@ -66,7 +66,7 @@ class TransportContractTests(unittest.IsolatedAsyncioTestCase):
         player = PlayerDouble()
         coordinator = AsyncMock(side_effect=AssertionError("pause entered coordinator"))
         track = {"source": "local", "url": "/music/current.flac", "sample_rate_hz": 44100}
-        with patch.object(main, "player_instance", player), patch.object(
+        with patch.object(main.runtime, "player_instance", player), patch.object(
             main, "current_track_info", track
         ), patch.object(main, "_can_send_play_command", return_value=True), patch.object(
             main, "_run_coordinated_transition", coordinator
@@ -90,7 +90,7 @@ class TransportContractTests(unittest.IsolatedAsyncioTestCase):
         track = {"source": "radio", "url": "https://radio.example/live", "sample_rate_hz": 44100}
         request_rate_change = Mock(return_value=False)
         run_mock = AsyncMock(side_effect=run)
-        with patch.object(main, "player_instance", player), patch.object(
+        with patch.object(main.runtime, "player_instance", player), patch.object(
             main, "current_track_info", track
         ), patch.object(main, "_can_send_play_command", return_value=True), patch.object(
             main, "_run_coordinated_transition", run_mock
@@ -125,7 +125,7 @@ class TransportContractTests(unittest.IsolatedAsyncioTestCase):
             for endpoint, action, response in actions:
                 with self.subTest(action=action):
                     transport = AsyncMock(return_value=response)
-                    with patch.object(main, "player_instance", player), patch.object(
+                    with patch.object(main.runtime, "player_instance", player), patch.object(
                         main, "current_track_info", local_track
                     ), patch.object(
                         main, action, transport
@@ -151,7 +151,7 @@ class TransportContractTests(unittest.IsolatedAsyncioTestCase):
         pause = AsyncMock(return_value={"status": "Paused"})
         coordinator = AsyncMock(side_effect=AssertionError("Spotify pause entered coordinator"))
         broadcast = AsyncMock(side_effect=lambda data: data)
-        with patch.object(main, "player_instance", player), patch.object(
+        with patch.object(main.runtime, "player_instance", player), patch.object(
             main, "current_track_info", {"source": "local", "url": "/music/current.flac"}
         ), patch.object(
             main, "get_spotify_ui_state", new=AsyncMock(return_value={"status": "Playing"})
@@ -192,7 +192,7 @@ class FooterOwnershipContractTests(unittest.TestCase):
             }
         )
         local_track = {"source": "local", "url": "/music/paused.flac"}
-        with patch.object(main, "player_instance", player), patch.object(
+        with patch.object(main.runtime, "player_instance", player), patch.object(
             main, "current_track_info", local_track
         ), patch.object(main, "current_footer_owner", "local"):
             owner = main._get_authoritative_footer_owner(
@@ -211,7 +211,7 @@ class FooterOwnershipContractTests(unittest.TestCase):
             }
         )
         local_track = {"source": "local", "url": "/music/active.flac"}
-        with patch.object(main, "player_instance", player), patch.object(
+        with patch.object(main.runtime, "player_instance", player), patch.object(
             main, "current_track_info", local_track
         ), patch.object(main, "current_footer_owner", "spotify"):
             owner = main._get_authoritative_footer_owner(
@@ -238,7 +238,7 @@ class QuietSourceContractTests(unittest.IsolatedAsyncioTestCase):
             should_play=True,
             reload_source=True,
         )
-        with patch.object(main, "player_instance", player), patch.object(
+        with patch.object(main.runtime, "player_instance", player), patch.object(
             main, "current_track_info", {"source": "local", "url": "/music/current.flac"}
         ), patch.object(main, "get_spotify_ui_state", new=AsyncMock(return_value={"status": "Paused"})), patch.object(
             main, "pause_spotify_for_local_playback_broadcast", pause_spotify
@@ -267,7 +267,7 @@ class QuietSourceContractTests(unittest.IsolatedAsyncioTestCase):
             should_play=True,
             reload_source=True,
         )
-        with patch.object(main, "player_instance", player), patch.object(
+        with patch.object(main.runtime, "player_instance", player), patch.object(
             main, "current_track_info", {"source": "local", "url": "/music/old.flac"}
         ), patch.object(main, "get_spotify_ui_state", new=AsyncMock(return_value={
             "available": True, "status": "Playing"
@@ -323,7 +323,7 @@ class QuietSourceContractTests(unittest.IsolatedAsyncioTestCase):
             should_play=True,
             reload_source=True,
         )
-        with patch.object(main, "player_instance", player), patch.object(
+        with patch.object(main.runtime, "player_instance", player), patch.object(
             main, "current_track_info", {"source": "local", "url": "/music/old.flac"}
         ), patch.object(main, "get_spotify_ui_state", new=AsyncMock(return_value={
             "available": True, "status": "Playing"

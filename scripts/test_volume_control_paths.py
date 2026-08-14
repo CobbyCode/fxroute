@@ -51,8 +51,8 @@ class SilentActiveLiveVolumeTests(unittest.IsolatedAsyncioTestCase):
 
     def _patches(self):
         return [
-            mock.patch.object(main, "peak_monitor", _FakePeakMonitor()),
-            mock.patch.object(main, "player_instance", _FakePlayer()),
+            mock.patch.object(main.runtime, "peak_monitor", _FakePeakMonitor()),
+            mock.patch.object(main.runtime, "player_instance", _FakePlayer()),
             mock.patch.object(main, "_current_track_matches", return_value=True),
             mock.patch.object(main, "_is_local_playback_active", return_value=True),
             mock.patch.object(main, "_list_mpv_sink_inputs", return_value=[{"muted": False}]),
@@ -129,7 +129,7 @@ class VolumeEndpointEventLoopTests(unittest.IsolatedAsyncioTestCase):
             async def json(self):
                 return {"volume": 50}
 
-        with mock.patch.object(main, "player_instance", _FakePlayer()), mock.patch.object(
+        with mock.patch.object(main.runtime, "player_instance", _FakePlayer()), mock.patch.object(
             main, "ensure_local_source_volume"
         ), mock.patch.object(main, "dsp_manager", None), mock.patch.object(
             main, "build_playback_payload", return_value={"volume": 50}
@@ -157,10 +157,10 @@ class CanonicalVolumeSerializationTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.original_cache = system_volume._status_volume_cache
         system_volume._status_volume_cache = None
-        main.canonical_volume_write_lock = None
+        main.runtime.canonical_volume_write_lock = None
 
     async def asyncTearDown(self):
-        main.canonical_volume_write_lock = None
+        main.runtime.canonical_volume_write_lock = None
         main.dsp_manager = None
         system_volume._status_volume_cache = self.original_cache
 

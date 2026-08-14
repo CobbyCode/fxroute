@@ -28,7 +28,7 @@ class SpotifyEntrySamplerateTests(unittest.IsolatedAsyncioTestCase):
 
     def _patches(self, *, spotify_rate: int, hardware_rate: int = 44100):
         return (
-            patch.object(main, "player_instance", SimpleNamespace(state={})),
+            patch.object(main.runtime, "player_instance", SimpleNamespace(state={})),
             patch.object(
                 main,
                 "get_spotify_ui_state",
@@ -257,7 +257,7 @@ class SpotifyEntrySamplerateTests(unittest.IsolatedAsyncioTestCase):
             reload_source=True,
             rate_change=True,
         )
-        with patch.object(main, "player_instance", SimpleNamespace(state={})), patch.object(
+        with patch.object(main.runtime, "player_instance", SimpleNamespace(state={})), patch.object(
             main, "spotify_pause", pause
         ), patch.object(main, "_wait_for_pipewire_spotify_release", release):
             await runtime.quiet_old_source(request)

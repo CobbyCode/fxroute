@@ -264,7 +264,7 @@ async def main_async() -> None:
         return {"loudness": {"volume": -16.36, "output_gain": -16.36, "bypass": False}}
 
     with mock.patch.object(main, "get_samplerate_status", return_value=stuck_status(44100, 44100)), \
-         mock.patch.object(main, "player_instance", fake_player), \
+         mock.patch.object(main.runtime, "player_instance", fake_player), \
          mock.patch.object(main, "dsp_manager", fake_apply), \
          mock.patch.object(main, "_playback_graph_links_complete", new=mock.AsyncMock(return_value=True)), \
          mock.patch.object(main, "get_audio_output_overview", return_value={"output_mode": {"mode": "stereo"}}), \
@@ -279,7 +279,7 @@ async def main_async() -> None:
     async def always_failing(*_args, **_kwargs):
         raise RuntimeError("DSP Loudness was bypassed after DSP stabilization")
     with mock.patch.object(main, "get_samplerate_status", return_value=stuck_status(44100, 44100)), \
-         mock.patch.object(main, "player_instance", fake_player), \
+         mock.patch.object(main.runtime, "player_instance", fake_player), \
          mock.patch.object(main, "dsp_manager", fake_apply2), \
          mock.patch.object(main, "_playback_graph_links_complete", new=mock.AsyncMock(return_value=True)), \
          mock.patch.object(main, "get_audio_output_overview", return_value={"output_mode": {"mode": "stereo"}}), \

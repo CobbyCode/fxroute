@@ -18,7 +18,7 @@ class SamplerateDriftWatcherTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         self.originals = {
-            name: getattr(main, name)
+            name: (getattr(main.runtime, name) if hasattr(main.runtime, name) else getattr(main, name))
             for name in (
                 "player_instance", "current_track_info",
                 "playback_transition_coordinator", "measurement_sr_session",
@@ -36,7 +36,7 @@ class SamplerateDriftWatcherTests(unittest.IsolatedAsyncioTestCase):
                 "ended": False,
             }
 
-        main.player_instance = Player()
+        main.runtime.player_instance = Player()
         main.current_track_info = {
             "id": "radio_48k",
             "source": "radio",
@@ -55,7 +55,7 @@ class SamplerateDriftWatcherTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self):
         for name, value in self.originals.items():
-            setattr(main, name, value)
+            setattr(main.runtime if hasattr(main.runtime, name) else main, name, value)
 
     async def test_two_matching_mismatch_readbacks_request_one_recovery(self):
         """MPV/track 44.1 with hardware at 48 kHz requests repair at 44.1."""
@@ -119,7 +119,7 @@ class SamplerateDriftWatcherTests(unittest.IsolatedAsyncioTestCase):
                 "url": "https://radio.example/other",
                 "sample_rate_hz": 44100,
             }
-            main.player_instance.state["current_file"] = "https://radio.example/other"
+            main.runtime.player_instance.state["current_file"] = "https://radio.example/other"
             await main._observe_playback_samplerate_drift()
 
         recovery.assert_not_awaited()
@@ -154,14 +154,14 @@ class RadioPostLoadHandoffTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         self.originals = {
-            name: getattr(main, name)
+            name: (getattr(main.runtime, name) if hasattr(main.runtime, name) else getattr(main, name))
             for name in (
                 "playback_transition_epoch", "dsp_runtime",
                 "asyncio",
             )
         }
         main.playback_transition_epoch = 100
-        main.dsp_runtime = type("NativeRuntime", (), {
+        main.runtime.dsp_runtime = type("NativeRuntime", (), {
             "snapshot": lambda self: {
                 "active": True,
                 "config": {"sample_rate": 48000},
@@ -170,7 +170,7 @@ class RadioPostLoadHandoffTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self):
         for name, value in self.originals.items():
-            setattr(main, name, value)
+            setattr(main.runtime if hasattr(main.runtime, name) else main, name, value)
 
     async def _run_handoff(
         self,
@@ -248,7 +248,7 @@ class RadioPostLoadHandoffTests(unittest.IsolatedAsyncioTestCase):
         ), patch.object(main, "_ensure_playback_samplerate_force", force), patch.object(
             main.dsp_orchestrator, "sync_preset_for_playback_samplerate", preset_sync
         ), patch.object(main.dsp_orchestrator, "sync_runtime", helper_sync), patch.object(
-            main, "dsp_runtime", type("NativeRuntime", (), {
+            main.runtime, "dsp_runtime", type("NativeRuntime", (), {
                 "snapshot": lambda self: {
                     "active": True,
                     "config": {"sample_rate": status["force_rate"]},

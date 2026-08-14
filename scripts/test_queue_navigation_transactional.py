@@ -71,9 +71,9 @@ class QueueNavigationTransactionalTests(unittest.IsolatedAsyncioTestCase):
 
     def _install(self, queue_a: list[dict], *, index: int, mode: str = "app_replace",
                  loop: bool = False, shuffle: bool = False) -> dict:
-        originals = {name: getattr(main, name) for name in self.GLOBALS}
+        originals = {name: (getattr(main.runtime, name) if hasattr(main.runtime, name) else getattr(main, name)) for name in self.GLOBALS}
         self._saved_queue = queue_state()
-        main.player_instance = _FakePlayer()
+        main.runtime.player_instance = _FakePlayer()
         main.library_scanner = _Scanner(["a", "b", "c", "d"])
         main.current_track_info = dict(queue_a[index])
         main.last_track_info = dict(queue_a[index])
@@ -90,7 +90,7 @@ class QueueNavigationTransactionalTests(unittest.IsolatedAsyncioTestCase):
     def _restore(self, originals: dict) -> None:
         restore_queue_state(self._saved_queue)
         for name, value in originals.items():
-            setattr(main, name, value)
+            setattr(main.runtime if hasattr(main.runtime, name) else main, name, value)
 
     def _patch_context(self, transition, *, reverse_shuffle: bool = False):
         from contextlib import ExitStack
@@ -151,7 +151,7 @@ class QueueNavigationTransactionalTests(unittest.IsolatedAsyncioTestCase):
         originals = self._install(queue_a, index=0)
         try:
             async def succeed(request):
-                main.player_instance.state.update({
+                main.runtime.player_instance.state.update({
                     "current_file": request.target_url,
                     "paused": False,
                     "playing": True,
@@ -228,7 +228,7 @@ class QueueNavigationTransactionalTests(unittest.IsolatedAsyncioTestCase):
         try:
             async def succeed(request):
                 self.assertEqual([item["id"] for item in request.native_queue], ["a", "b", "d", "c"])
-                main.player_instance.state.update({
+                main.runtime.player_instance.state.update({
                     "current_file": request.target_url,
                     "paused": False,
                     "playing": True,
@@ -287,14 +287,14 @@ class QueueNavigationTransactionalTests(unittest.IsolatedAsyncioTestCase):
         queue_a = [_track("a"), _track("b")]
         originals = self._install(queue_a, index=1)
         try:
-            main.player_instance.state.update({
+            main.runtime.player_instance.state.update({
                 "current_file": "/music/b.flac",
                 "paused": False,
                 "playing": True,
                 "ended": False,
                 "position": 10.0,
             })
-            state_before = dict(main.player_instance.state)
+            state_before = dict(main.runtime.player_instance.state)
 
             async def unreachable(_request):
                 self.fail("queue end must not start a transition")
@@ -314,7 +314,7 @@ class QueueNavigationTransactionalTests(unittest.IsolatedAsyncioTestCase):
                 "track context must survive the terminal end state",
             )
             self.assertEqual(
-                main.player_instance.state, state_before,
+                main.runtime.player_instance.state, state_before,
                 "the player must keep playing the last track",
             )
             self.assertEqual(
@@ -368,7 +368,7 @@ class QueueNavigationTransactionalTests(unittest.IsolatedAsyncioTestCase):
         originals = self._install(queue_a, index=1, loop=True)
         try:
             async def succeed(request):
-                main.player_instance.state.update({
+                main.runtime.player_instance.state.update({
                     "current_file": request.target_url,
                     "paused": False,
                     "playing": True,
@@ -395,7 +395,7 @@ class QueueNavigationTransactionalTests(unittest.IsolatedAsyncioTestCase):
         originals = self._install(queue_a, index=3, shuffle=True)
         try:
             async def succeed(request):
-                main.player_instance.state.update({
+                main.runtime.player_instance.state.update({
                     "current_file": request.target_url,
                     "paused": False,
                     "playing": True,

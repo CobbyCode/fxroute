@@ -91,7 +91,7 @@ class FailedTransitionAbortTests(unittest.IsolatedAsyncioTestCase):
                 main.current_track_info = dict(committed)
                 return True
 
-            with patch.object(main, "player_instance", player), patch.object(
+            with patch.object(main.runtime, "player_instance", player), patch.object(
                 main, "current_track_info", None
             ), patch.object(main, "last_radio_track_info", {"source": "radio", "id": "old-radio"}), patch.object(
                 main, "current_footer_owner", "local"
@@ -127,7 +127,7 @@ class FailedTransitionAbortTests(unittest.IsolatedAsyncioTestCase):
         player = PlayerDouble("/music/old.flac", playing=True)
         saved_queue = queue_state()
         try:
-            main.player_instance = player
+            main.runtime.player_instance = player
             main.current_track_info = None
             main.last_track_info = _track_entry("old")
             main.last_radio_track_info = {"source": "radio", "id": "old-radio", "url": "https://radio.example/live"}
@@ -149,7 +149,7 @@ class FailedTransitionAbortTests(unittest.IsolatedAsyncioTestCase):
             playback_queue.queue.original = [dict(track) for track in queue]
             playback_queue.queue.index = 0
             playback_queue.queue.mode = "app_replace"
-            with patch.object(main, "player_instance", player), patch.object(
+            with patch.object(main.runtime, "player_instance", player), patch.object(
                 main, "current_track_info", current
             ), patch.object(main, "last_track_info", retry), patch.object(
                 main, "current_footer_owner", "local"
@@ -187,7 +187,7 @@ class FailedTransitionAbortTests(unittest.IsolatedAsyncioTestCase):
             playback_queue.queue.original = [dict(track) for track in queue]
             playback_queue.queue.index = 1
             playback_queue.queue.mode = "native_mpv"
-            with patch.object(main, "player_instance", player), patch.object(
+            with patch.object(main.runtime, "player_instance", player), patch.object(
                 main, "current_track_info", dict(queue[1])
             ), patch.object(main, "last_track_info", dict(queue[1])), patch.object(
                 main, "current_footer_owner", "local"
@@ -226,7 +226,7 @@ class FailedTransitionAbortTests(unittest.IsolatedAsyncioTestCase):
             playback_queue.queue.original = [dict(track) for track in queue]
             playback_queue.queue.index = 1
             playback_queue.queue.mode = "native_mpv"
-            with patch.object(main, "player_instance", player), patch.object(
+            with patch.object(main.runtime, "player_instance", player), patch.object(
                 main, "current_track_info", dict(queue[1])
             ), patch.object(main, "last_track_info", dict(queue[1])), patch.object(
                 main, "current_footer_owner", "local"
@@ -278,7 +278,7 @@ class FailedTransitionAbortTests(unittest.IsolatedAsyncioTestCase):
         try:
             playback_queue.queue.tracks = [dict(track) for track in queue]
             playback_queue.queue.mode = "app_replace"
-            with patch.object(main, "player_instance", player), patch.object(
+            with patch.object(main.runtime, "player_instance", player), patch.object(
                 main, "current_track_info", current
             ), patch.object(main, "_mark_player_state_authoritative"):
                 request = TransitionRequest(
@@ -315,7 +315,7 @@ class FailedTransitionAbortTests(unittest.IsolatedAsyncioTestCase):
         try:
             playback_queue.queue.tracks = [dict(track) for track in queue]
             playback_queue.queue.mode = "app_replace"
-            with patch.object(main, "player_instance", player), patch.object(
+            with patch.object(main.runtime, "player_instance", player), patch.object(
                 main, "current_track_info", current
             ), patch.object(main, "_mark_player_state_authoritative"):
                 request = TransitionRequest(

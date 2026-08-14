@@ -213,7 +213,7 @@ class MainReferenceSnapshotTests(unittest.IsolatedAsyncioTestCase):
             runtime = FakeRuntime(fail_restore=outcome == "restore_error")
             store = FakeStore("success" if outcome == "restore_error" else outcome, job)
             with (
-                patch.object(main, "dsp_runtime", runtime),
+                patch.object(main.runtime, "dsp_runtime", runtime),
                 patch.object(main, "measurement_store", store),
                 patch.object(autosub, "set_audio_output_mode"),
                 patch.object(autosub, "get_audio_output_overview", return_value={}),

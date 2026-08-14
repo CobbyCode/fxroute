@@ -225,7 +225,7 @@ class SharedPreparePathTests(unittest.IsolatedAsyncioTestCase):
             rate_change=False,
             reload_source=True,
         )
-        with patch.object(main, "player_instance", fake), patch.object(
+        with patch.object(main.runtime, "player_instance", fake), patch.object(
             main, "_ensure_mpv_to_dsp_links", ensure
         ):
             await runtime.prepare_target_source(request)

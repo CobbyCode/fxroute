@@ -20,7 +20,7 @@ import tempfile
 import playback_queue
 import samplerate_orchestration
 from contextlib import asynccontextmanager
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, List, Mapping, Optional
 from urllib.parse import quote, unquote, urlparse
@@ -789,7 +789,7 @@ def _is_measurement_window_open() -> bool:
 
 
 def _build_power_state_payload() -> dict:
-    local_state = player_instance.state if player_instance else {}
+    local_state = runtime.player_instance.state if runtime.player_instance else {}
     spotify_state = latest_spotify_state or {}
     playback_active = _is_local_playback_active(local_state) or _is_spotify_playback_active(spotify_state)
     measurement_window_open = _is_measurement_window_open()
@@ -822,8 +822,8 @@ def _has_local_footer_context(state: dict | None) -> bool:
 
 
 def _get_authoritative_footer_owner(playback_state: dict | None = None, spotify_state: dict | None = None) -> str:
-    global current_footer_owner, latest_spotify_state, player_instance
-    playback_state = playback_state or (player_instance.state if player_instance else {})
+    global current_footer_owner, latest_spotify_state
+    playback_state = playback_state or (runtime.player_instance.state if runtime.player_instance else {})
     spotify_state = spotify_state or latest_spotify_state or {}
 
     # A loaded/paused MPV file is only fallback context.  First resolve the
@@ -966,9 +966,54 @@ from library_api import (
 from library_metadata import LibraryMetadataStore
 
 
+@dataclass
+class RuntimeResources:
+    """Lifecycle-owned runtime resources created and torn down by the FastAPI lifespan.
+
+    One authoritative location for the mutable resources that are initialized
+    on startup and reset on shutdown.  Persistent configuration, manager
+    singletons and measurement stores stay at module scope.
+    """
+
+    player_instance: Any = None
+    dsp_runtime: Any = None
+    peak_monitor: Any = None
+    dsp_runtime_link_watch_task: Optional[asyncio.Task] = None
+    peak_monitor_playback_armed: bool = False
+    peak_monitor_transition_lock: Optional[asyncio.Lock] = None
+    peak_monitor_context_signature: Any = None
+    dsp_preset_load_lock: Optional[asyncio.Lock] = None
+    # Serializes threaded DSP mutations (convolver IR upload/create) so
+    # concurrent HTTP requests cannot interleave filesystem/preset state
+    # changes that used to run serially in the event loop.
+    dsp_mutation_lock: Optional[asyncio.Lock] = None
+    source_transition_lock: Optional[asyncio.Lock] = None
+    # Serializes canonical volume writes (/api/volume, /api/spotify/volume) so
+    # concurrent requests cannot interleave their set -> verified get -> status
+    # cache publish sequences.
+    canonical_volume_write_lock: Optional[asyncio.Lock] = None
+
+    def reset(self) -> None:
+        """Clear every lifecycle-owned resource at shutdown.
+
+        ``peak_monitor_playback_armed`` is intentionally left alone to match
+        the previous lifespan behaviour (it is re-armed on the next startup).
+        """
+        self.player_instance = None
+        self.dsp_runtime = None
+        self.peak_monitor = None
+        self.dsp_runtime_link_watch_task = None
+        self.peak_monitor_transition_lock = None
+        self.peak_monitor_context_signature = None
+        self.dsp_preset_load_lock = None
+        self.dsp_mutation_lock = None
+        self.source_transition_lock = None
+        self.canonical_volume_write_lock = None
+
+
 # Global instances (initialized on startup)
 settings = None
-player_instance = None
+runtime = RuntimeResources()
 library_scanner = None
 music_library_manager = None
 music_library_switch_lock = None
@@ -978,46 +1023,25 @@ measurement_store = None
 measurement_sr_session = None
 measurement_watchdog_task = None
 library_scan_task = None
-peak_monitor = None
-dsp_runtime = None
-dsp_runtime_link_watch_task = None
 hardware_controller = None
-peak_monitor_playback_armed = False
-peak_monitor_transition_lock = None
-peak_monitor_context_signature = None
-dsp_preset_load_lock = None
-# Serializes threaded DSP mutations (convolver IR upload/create)
-# so concurrent HTTP requests cannot interleave filesystem/preset state
-# changes that used to run serially in the event loop.
-dsp_mutation_lock = None
-source_transition_lock = None
 
 
 def _dsp_mutation_lock() -> asyncio.Lock:
-    global dsp_mutation_lock
-    if dsp_mutation_lock is None:
-        dsp_mutation_lock = asyncio.Lock()
-    return dsp_mutation_lock
+    if runtime.dsp_mutation_lock is None:
+        runtime.dsp_mutation_lock = asyncio.Lock()
+    return runtime.dsp_mutation_lock
 
 
 def _get_dsp_preset_load_lock() -> asyncio.Lock:
-    global dsp_preset_load_lock
-    if dsp_preset_load_lock is None:
-        dsp_preset_load_lock = asyncio.Lock()
-    return dsp_preset_load_lock
-
-
-# Serializes canonical volume writes (/api/volume, /api/spotify/volume) so
-# concurrent requests cannot interleave their set -> verified get -> status
-# cache publish sequences.
-canonical_volume_write_lock = None
+    if runtime.dsp_preset_load_lock is None:
+        runtime.dsp_preset_load_lock = asyncio.Lock()
+    return runtime.dsp_preset_load_lock
 
 
 def _canonical_volume_write_lock() -> asyncio.Lock:
-    global canonical_volume_write_lock
-    if canonical_volume_write_lock is None:
-        canonical_volume_write_lock = asyncio.Lock()
-    return canonical_volume_write_lock
+    if runtime.canonical_volume_write_lock is None:
+        runtime.canonical_volume_write_lock = asyncio.Lock()
+    return runtime.canonical_volume_write_lock
 
 
 async def _drain_worker(func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
@@ -1158,21 +1182,20 @@ def _set_runtime_track_context(current: dict, last: dict) -> None:
 
 
 def _set_peak_monitor_context_signature(value) -> None:
-    global peak_monitor_context_signature
-    peak_monitor_context_signature = value
+    runtime.peak_monitor_context_signature = value
 
 
 def make_playback_runtime_deps() -> PlaybackRuntimeDependencies:
     """Late-bound wiring for ``FxrouteTransitionRuntime`` (playback_runtime.py).
 
-    Every accessor resolves the current module-level state at call time, so
+    Every accessor resolves the current runtime state at call time, so
     production wiring and test mocks observe the same attributes (same
     contract as the ``configure_*`` pattern used by the extracted routers).
     """
     return PlaybackRuntimeDependencies(
-        player=lambda: player_instance,
+        player=lambda: runtime.player_instance,
         dsp_manager=lambda: dsp_manager,
-        dsp_runtime=lambda: dsp_runtime,
+        dsp_runtime=lambda: runtime.dsp_runtime,
         get_current_track_info=lambda: current_track_info,
         set_current_track_info=_set_runtime_current_track_info,
         get_playback_intent_generation=lambda: playback_intent_generation,
@@ -1223,7 +1246,7 @@ def make_playback_runtime_deps() -> PlaybackRuntimeDependencies:
 
 
 playback_queue.configure_playback_queue(playback_queue.PlaybackQueueDependencies(
-    player=lambda: player_instance,
+    player=lambda: runtime.player_instance,
     run_transition=lambda *a, **k: _run_coordinated_transition(*a, **k),
     commit_coordinated_track=lambda *a, **k: _commit_coordinated_track(*a, **k),
     get_current_track_info=lambda: current_track_info,
@@ -1325,7 +1348,7 @@ def _player_is_running(player=None) -> bool:
     and does not weaken the production check: an explicit ``False`` still
     means unavailable.
     """
-    player = player if player is not None else player_instance
+    player = player if player is not None else runtime.player_instance
     return bool(player is not None and getattr(player, "_running", True))
 
 
@@ -1333,17 +1356,17 @@ def _load_player_paused(path: str) -> None:
     """Load a target through the explicit paused-load contract."""
     if not _player_is_running():
         raise RuntimeError("MPV player is not available")
-    player_instance.set_pause(True)
+    runtime.player_instance.set_pause(True)
     try:
-        player_instance.loadfile(path, mode="replace", start_paused=True)
+        runtime.player_instance.loadfile(path, mode="replace", start_paused=True)
     except TypeError as exc:
         # Compatibility for a minimal adapter that predates the explicit
         # keyword.  The real MPVWrapper implements start_paused; the fallback
         # still keeps the source paused before and after load.
         if "start_paused" not in str(exc) and "keyword" not in str(exc):
             raise
-        player_instance.loadfile(path, mode="replace")
-    player_instance.set_pause(True)
+        runtime.player_instance.loadfile(path, mode="replace")
+    runtime.player_instance.set_pause(True)
 
 
 def _coordinator_source_rate(source: str, track: Mapping[str, Any] | None = None) -> int | None:
@@ -1485,7 +1508,7 @@ def _spotify_target_track_from_state(state: Mapping[str, Any]) -> dict[str, Any]
 
 async def _coordinator_current_playback_context() -> dict[str, Any]:
     """Read the currently owned source without mutating either transport."""
-    local_state = dict(player_instance.state if player_instance else {})
+    local_state = dict(runtime.player_instance.state if runtime.player_instance else {})
     local_track = dict(current_track_info or {})
     spotify_state = await get_spotify_ui_state()
     local_active = _is_local_playback_active(local_state)
@@ -1596,7 +1619,7 @@ async def _recovery_context_is_valid(request: TransitionRequest) -> bool:
     elif _coordinator_commit_context_id() != expected_context or _playback_transition_is_active():
         return False
 
-    if dsp_runtime is not None and dsp_runtime.sync_in_progress:
+    if runtime.dsp_runtime is not None and runtime.dsp_runtime.sync_in_progress:
         logger.debug(
             "Coordinator recovery deferred while subwoofer runtime reconfiguration is in progress: reason=%s",
             request.detail,
@@ -1617,7 +1640,7 @@ async def _recovery_context_is_valid(request: TransitionRequest) -> bool:
         )
         return live_identity == str(expected_url)
 
-    state = dict(player_instance.state if player_instance else {})
+    state = dict(runtime.player_instance.state if runtime.player_instance else {})
     if state.get("current_file") != expected_url or state.get("ended"):
         return False
     # A paused/loaded committed local context is still a valid context for a
@@ -1699,7 +1722,7 @@ async def _request_coordinated_recovery(
         except Exception:
             should_play = False
     else:
-        state = dict(player_instance.state if player_instance else {})
+        state = dict(runtime.player_instance.state if runtime.player_instance else {})
         should_play = bool(
             state.get("current_file")
             and state.get("playing")
@@ -1837,7 +1860,7 @@ def _commit_coordinated_track(
         last_radio_track_info = dict(track)
     if source == "local":
         _record_local_track_started(track)
-    _mark_player_state_authoritative(player_instance.state if player_instance else {})
+    _mark_player_state_authoritative(runtime.player_instance.state if runtime.player_instance else {})
     # Publish the new playback context token only here, after all globals
     # belonging to the context were committed: the ended waiter can never
     # run between the coordinator commit and this boundary (the boundary
@@ -2099,7 +2122,7 @@ def _current_track_matches(expected_track: dict | None) -> bool:
     ):
         return False
     expected_url = expected_track.get("url")
-    current_file = (player_instance.state if player_instance else {}).get("current_file")
+    current_file = (runtime.player_instance.state if runtime.player_instance else {}).get("current_file")
     if expected_url and current_file and current_file != expected_url:
         return False
     return True
@@ -2110,11 +2133,11 @@ def _playback_state_matches_track(state: dict | None, track: dict | None) -> boo
 
 
 async def _wait_for_player_current_file(expected_url: str | None, timeout_ms: int = 1600) -> bool:
-    if not expected_url or not player_instance:
+    if not expected_url or not runtime.player_instance:
         return False
     deadline = time.monotonic() + max(timeout_ms, 0) / 1000
     while time.monotonic() <= deadline:
-        state = player_instance.state
+        state = runtime.player_instance.state
         if state.get("current_file") == expected_url:
             return True
         await asyncio.sleep(PIPEWIRE_HANDOFF_POLL_INTERVAL_MS / 1000)
@@ -2298,10 +2321,10 @@ async def _check_and_recover_silent_active(
 ) -> None:
     if signature in silent_active_recovery_attempts:
         return
-    if not peak_monitor:
+    if not runtime.peak_monitor:
         return
 
-    playback_state = player_instance.state if player_instance and player_instance._running else {}
+    playback_state = runtime.player_instance.state if runtime.player_instance and runtime.player_instance._running else {}
     live_track = current_track_info or {}
     owner = current_footer_owner or source
     if source in {"local", "radio"}:
@@ -2350,14 +2373,14 @@ async def _check_and_recover_silent_active(
     if not _silent_active_source_links_present(source, links_text, output_mode):
         return
 
-    peak_snapshot = peak_monitor.snapshot()
+    peak_snapshot = runtime.peak_monitor.snapshot()
     vu_db = peak_snapshot.get("vu_db")
     if not isinstance(vu_db, (int, float)) or vu_db > SILENT_ACTIVE_FLOOR_DB:
         return
 
     # Skip when no current sample is available: vu_db then only reflects the
     # technical -60 dB floor, not real silence. Freshness (vu_fresh) is the
-    # sample-validity signal of peak_monitor.snapshot(); the peak-hold
+    # sample-validity signal of runtime.peak_monitor.snapshot(); the peak-hold
     # "detected" flag is unrelated to sample validity and must not gate the
     # diagnosis.
     if not peak_snapshot.get("vu_fresh"):
@@ -2370,12 +2393,12 @@ async def _check_and_recover_silent_active(
     # Skip during measurement window or while EE preset is actively loading.
     # The audio path is in transition; not a real silent-active condition.
     if _is_measurement_window_open() or (
-        dsp_preset_load_lock is not None and dsp_preset_load_lock.locked()
+        runtime.dsp_preset_load_lock is not None and runtime.dsp_preset_load_lock.locked()
     ):
         logger.info(
             "SILENT-ACTIVE-DIAG skip: transition_window measurement_open=%s ee_preset_loading=%s source=%s signature=%s",
             _is_measurement_window_open(),
-            dsp_preset_load_lock.locked() if dsp_preset_load_lock is not None else False,
+            runtime.dsp_preset_load_lock.locked() if runtime.dsp_preset_load_lock is not None else False,
             source, signature,
         )
         return
@@ -2515,7 +2538,7 @@ async def _playback_graph_diagnosis(
     source_node = "spotify" if source == "spotify" else "mpv" if source in {"local", "radio"} else None
     source_targets = ("fxroute_dsp_sink:playback_FL", "fxroute_dsp_sink:playback_FR")
     source_ports = ((f"{source_node}:output_FL", f"{source_node}:output_FR") if source_node else ())
-    runtime = dsp_runtime.snapshot() if dsp_runtime is not None else {}
+    runtime_snapshot = runtime.dsp_runtime.snapshot() if runtime.dsp_runtime is not None else {}
     output_count = 4 if mode in OUTPUT_MODE_SUBWOOFER_MODES else 2
     hardware_channels = ("FL", "FR", "RL", "RR")[:output_count]
     dsp_ports = tuple(f"fxroute_dsp:output_{index + 1}" for index in range(output_count))
@@ -2523,8 +2546,8 @@ async def _playback_graph_diagnosis(
     ingress_targets = ("fxroute_dsp:input_1", "fxroute_dsp:input_2")
     result["ee_ports"] = all(port in io_text for port in (*ingress_targets, *dsp_ports))
     result["helper_ports"] = result["ee_ports"]
-    result["helper_active"] = bool(runtime.get("active"))
-    result["helper_rate"] = helper_argument_sample_rate(runtime)
+    result["helper_active"] = bool(runtime_snapshot.get("active"))
+    result["helper_rate"] = helper_argument_sample_rate(runtime_snapshot)
     result["helper_rate_matches"] = bool(result["helper_active"] and (target_rate is None or result["helper_rate"] == target_rate))
     result["source_links"] = {
         f"{port} -> {target}": _contains_link(link_text, port, target)
@@ -2677,9 +2700,9 @@ async def _repair_stereo_output_links_once(diagnosis: dict) -> None:
 
 async def _coordinator_reconcile_subwoofer_links_only() -> None:
     """Repair only the 2.1/2.2 link topology, never restart the helper."""
-    if dsp_runtime is None:
+    if runtime.dsp_runtime is None:
         raise RuntimeError("subwoofer helper runtime is not available")
-    reconcile = getattr(dsp_runtime, "reclean_direct_dsp_links", None)
+    reconcile = getattr(runtime.dsp_runtime, "reclean_direct_dsp_links", None)
     if not callable(reconcile):
         raise RuntimeError("subwoofer runtime has no link-only reconciliation")
     await reconcile()
@@ -2705,7 +2728,7 @@ def _post_start_graph_links_are_repairable(
     if diagnosis.get("direct_ee_to_hw_present"):
         return False
     # Helper lifecycle and rate are part of the canonical commit predicate for
-    # every output mode: dsp_runtime is the complete native DSPRuntime
+    # every output mode: runtime.dsp_runtime is the complete native DSPRuntime
     # (Stereo included), so an inactive or stale-rate runtime is never link-only
     # drift regardless of mode.
     if diagnosis.get("helper_ports") is not True:
@@ -2895,7 +2918,6 @@ async def _coordinator_establish_effects_and_helper(
     the following adapter stages; this function only performs the idempotent
     EE/helper/link work and then uses the canonical graph readback.
     """
-    global dsp_preset_load_lock
 
     target_rate = request.target_rate
     if not isinstance(target_rate, int) or target_rate <= 0:
@@ -3010,9 +3032,9 @@ async def _coordinator_establish_effects_and_helper(
             )
             helper_rebuilt = True
             if dsp_manager is not None:
-                if dsp_preset_load_lock is None:
-                    dsp_preset_load_lock = asyncio.Lock()
-                async with dsp_preset_load_lock:
+                if runtime.dsp_preset_load_lock is None:
+                    runtime.dsp_preset_load_lock = asyncio.Lock()
+                async with runtime.dsp_preset_load_lock:
                     # A/B can change while runtime sync recovers the graph, so
                     # use the current side rather than the pre-sync snapshot.
                     compare = dsp_manager.load_compare_state()
@@ -3055,12 +3077,12 @@ async def _coordinator_establish_effects_and_helper(
                 await _repair_stereo_output_links_once(diagnosis)
             links_reconciled = True
         else:
-            # dsp_runtime is now the complete native DSPRuntime,
+            # runtime.dsp_runtime is now the complete native DSPRuntime,
             # including Stereo.  A real rate change or a stale/inactive/
             # port-less runtime therefore requires a full rebuild for every
             # output mode.  The mode only selects the link/routing
             # reconciliation below; it no longer gates runtime sync.
-            helper_snapshot = dsp_runtime.snapshot() if dsp_runtime is not None else {}
+            helper_snapshot = runtime.dsp_runtime.snapshot() if runtime.dsp_runtime is not None else {}
             helper_needs_sync = bool(
                 request.rate_change
                 or not helper_snapshot.get("active")
@@ -3195,7 +3217,7 @@ def _local_intent_matches_live_state(
     if expected_url and live_track.get("url") != expected_url:
         return False
 
-    state = dict(player_instance.state if player_instance else {})
+    state = dict(runtime.player_instance.state if runtime.player_instance else {})
     current_file = state.get("current_file")
     if not current_file or state.get("ended"):
         return False
@@ -3372,7 +3394,7 @@ async def _dump_21_runtime_state(label: str, ui_state: dict | None = None) -> di
     output_mode = overview.get("output_mode") or {}
     output_key = str(output_mode.get("effective_output_key") or "").strip()
     samplerate_status = get_samplerate_status()
-    snapshot = dsp_runtime.snapshot() if dsp_runtime is not None else {}
+    snapshot = runtime.dsp_runtime.snapshot() if runtime.dsp_runtime is not None else {}
     helper_pid = snapshot.get("helper_pid")
     helper_alive = False
     helper_cmdline = ""
@@ -3469,7 +3491,7 @@ async def _observe_playback_samplerate_drift() -> None:
         _reset_samplerate_drift_observation()
         return
 
-    state = dict(player_instance.state if player_instance else {})
+    state = dict(runtime.player_instance.state if runtime.player_instance else {})
     current_file = state.get("current_file")
     expected_url = str(track.get("url") or "")
     if (
@@ -3580,11 +3602,10 @@ async def _observe_playback_samplerate_drift() -> None:
 
 
 def _get_player_audio_samplerate() -> Optional[int]:
-    global player_instance
-    if not player_instance or not player_instance._running:
+    if not runtime.player_instance or not runtime.player_instance._running:
         return None
     try:
-        audio_params = player_instance.get_property("audio-params")
+        audio_params = runtime.player_instance.get_property("audio-params")
     except Exception as exc:
         logger.debug("Failed to read mpv audio-params: %s", exc)
         return None
@@ -3600,13 +3621,13 @@ async def _wait_for_player_audio_samplerate(
     expected_url: str | None = None,
 ) -> Optional[int]:
     rate = _get_player_audio_samplerate()
-    state = player_instance.state if player_instance else {}
+    state = runtime.player_instance.state if runtime.player_instance else {}
     if rate and (not expected_url or state.get("current_file") == expected_url):
         return rate
     deadline = time.monotonic() + max(timeout_ms, 0) / 1000
     while time.monotonic() <= deadline:
         await asyncio.sleep(PIPEWIRE_HANDOFF_POLL_INTERVAL_MS / 1000)
-        state = player_instance.state if player_instance else {}
+        state = runtime.player_instance.state if runtime.player_instance else {}
         if expected_url and state.get("current_file") != expected_url:
             continue
         rate = _get_player_audio_samplerate()
@@ -3662,11 +3683,10 @@ async def _wait_for_radio_live_rate_after_load(
 
 
 def ensure_local_source_volume() -> None:
-    global player_instance
-    if not player_instance or not player_instance._running:
+    if not runtime.player_instance or not runtime.player_instance._running:
         return
     try:
-        player_instance.set_volume(100)
+        runtime.player_instance.set_volume(100)
     except Exception as exc:
         logger.warning("Failed to pin MPV source volume to 100%%: %s", exc)
 
@@ -3722,9 +3742,9 @@ async def _volume_state_for_manager(
         else:
             live_master = int(await _drain_worker(get_output_volume))
     guard = 0.0
-    if dsp_runtime is not None:
+    if runtime.dsp_runtime is not None:
         try:
-            guard = float(dsp_runtime.snapshot().get("output_gain_db") or 0.0)
+            guard = float(runtime.dsp_runtime.snapshot().get("output_gain_db") or 0.0)
         except Exception:
             guard = 0.0
     return volume_contract.VolumeState(
@@ -3757,8 +3777,8 @@ async def _apply_volume_actions(
         elif action.op == "set_master":
             await _drain_worker(set_output_volume, int(round(float(action.value))))
         elif action.op == "set_guard":
-            if dsp_runtime is not None and dsp_runtime.snapshot().get("active"):
-                await dsp_runtime.set_output_gain_db(float(action.value))
+            if runtime.dsp_runtime is not None and runtime.dsp_runtime.snapshot().get("active"):
+                await runtime.dsp_runtime.set_output_gain_db(float(action.value))
     if extras_dirty and persist_extras and dsp_manager and extras is not None:
         dsp_manager.save_global_extras(extras)
     return extras
@@ -3830,7 +3850,7 @@ async def _guarded_effects_transition(previous, candidate, persist_all_presets):
             if persist_all_presets else
             dsp_manager.apply_global_extras_to_active_preset(candidate))
 
-    await dsp_runtime.guarded_rebuild(
+    await runtime.dsp_runtime.guarded_rebuild(
         overview,
         guard_db=guard_db,
         apply_candidate=persist_candidate,
@@ -3913,8 +3933,8 @@ def build_playback_payload(
     *,
     include_live_metadata: bool = True,
 ) -> dict:
-    global current_track_info, dsp_manager, player_instance, peak_monitor
-    playback_state = dict(state or (player_instance.state if player_instance else {}))
+    global current_track_info, dsp_manager
+    playback_state = dict(state or (runtime.player_instance.state if runtime.player_instance else {}))
     source_volume = playback_state.get("volume") if isinstance(playback_state.get("volume"), (int, float)) else None
     if current_track_info and current_track_info.get("source") in {"local", "radio"}:
         playback_state["source_volume"] = int(round(float(source_volume))) if source_volume is not None else None
@@ -3934,15 +3954,15 @@ def build_playback_payload(
     playback_state["footer_owner"] = _get_authoritative_footer_owner(playback_state=playback_state)
 
     live_title = None
-    if include_live_metadata and player_instance and current_track_info and current_track_info.get("source") == "radio":
-        metadata = player_instance.get_metadata() if playback_state.get("current_file") else {}
+    if include_live_metadata and runtime.player_instance and current_track_info and current_track_info.get("source") == "radio":
+        metadata = runtime.player_instance.get_metadata() if playback_state.get("current_file") else {}
         title = (metadata.get("icy-title") or metadata.get("title") or "").strip()
         if title:
             live_title = title
         playback_state["metadata"] = metadata
 
     playback_state["live_title"] = live_title
-    playback_state["output_peak_warning"] = peak_monitor.snapshot() if peak_monitor else {
+    playback_state["output_peak_warning"] = runtime.peak_monitor.snapshot() if runtime.peak_monitor else {
         "available": False,
         "detected": False,
         "hold_ms": 0,
@@ -3995,22 +4015,22 @@ async def sync_peak_monitor_for_playback_state(
     state: dict,
     transition_generation: int | None = None,
 ):
-    global peak_monitor_playback_armed, peak_monitor, peak_monitor_transition_lock, peak_monitor_context_signature, current_track_info
-    if not peak_monitor:
+    global current_track_info
+    if not runtime.peak_monitor:
         return
     if transition_generation is None:
         transition_generation = _capture_playback_transition_epoch()
     if not _playback_transition_context_is_current(transition_generation):
         return
-    if peak_monitor_transition_lock is None:
-        peak_monitor_transition_lock = asyncio.Lock()
-    async with peak_monitor_transition_lock:
+    if runtime.peak_monitor_transition_lock is None:
+        runtime.peak_monitor_transition_lock = asyncio.Lock()
+    async with runtime.peak_monitor_transition_lock:
         if not _playback_transition_context_is_current(transition_generation):
             return
         is_active_playback = _is_local_playback_active(state)
         source = (current_track_info or {}).get("source") or "unknown"
         state_matches_track = _playback_state_matches_track(state, current_track_info)
-        if is_active_playback and not state_matches_track and peak_monitor_playback_armed:
+        if is_active_playback and not state_matches_track and runtime.peak_monitor_playback_armed:
             logger.info(
                 "Skipping peak monitor resync during unsettled player transition: source=%s state_file=%s track_url=%s track_id=%s",
                 source,
@@ -4026,10 +4046,10 @@ async def sync_peak_monitor_for_playback_state(
             # only restart the peak monitor — do NOT reload the DSP
             # preset or repair the output graph, which causes an audible crack.
             if (
-                not peak_monitor_playback_armed
-                and peak_monitor_context_signature == desired_signature
+                not runtime.peak_monitor_playback_armed
+                and runtime.peak_monitor_context_signature == desired_signature
             ):
-                peak_monitor_playback_armed = True
+                runtime.peak_monitor_playback_armed = True
                 logger.info(
                     "Repairing peak monitor links after pause (same source, relink only): %s",
                     desired_signature,
@@ -4037,32 +4057,32 @@ async def sync_peak_monitor_for_playback_state(
                 # Peak monitor process was kept running but PipeWire links are
                 # dropped during pause. Repair links without restarting the
                 # pw-record process to avoid audible cracks.
-                relinked = await peak_monitor.relink()
+                relinked = await runtime.peak_monitor.relink()
                 if not relinked:
                     logger.warning(
                         "Peak monitor relink failed; falling back to full restart: %s",
                         desired_signature,
                     )
-                    await peak_monitor.restart()
-                await manager.broadcast({"type": "playback_peak_warning", "data": peak_monitor.snapshot()})
-            elif peak_monitor_context_signature != desired_signature:
-                peak_monitor_playback_armed = True
-                peak_monitor_context_signature = desired_signature
+                    await runtime.peak_monitor.restart()
+                await manager.broadcast({"type": "playback_peak_warning", "data": runtime.peak_monitor.snapshot()})
+            elif runtime.peak_monitor_context_signature != desired_signature:
+                runtime.peak_monitor_playback_armed = True
+                runtime.peak_monitor_context_signature = desired_signature
                 if not _playback_transition_context_is_current(transition_generation):
                     return
                 logger.info(
                     "Restarting peak monitor on committed playback context change; production graph remains coordinator-owned: %s",
                     desired_signature,
                 )
-                await peak_monitor.restart()
-                await manager.broadcast({"type": "playback_peak_warning", "data": peak_monitor.snapshot()})
+                await runtime.peak_monitor.restart()
+                await manager.broadcast({"type": "playback_peak_warning", "data": runtime.peak_monitor.snapshot()})
         elif (
             not is_active_playback
-            and peak_monitor_playback_armed
-            and str(peak_monitor_context_signature or "").startswith("player:")
+            and runtime.peak_monitor_playback_armed
+            and str(runtime.peak_monitor_context_signature or "").startswith("player:")
         ):
             await asyncio.sleep(PEAK_MONITOR_INACTIVE_GRACE_MS / 1000)
-            refreshed_player_state = player_instance.state if player_instance else {}
+            refreshed_player_state = runtime.player_instance.state if runtime.player_instance else {}
             if _is_local_playback_active(refreshed_player_state):
                 return
             spotify_state = await get_spotify_ui_state()
@@ -4071,44 +4091,43 @@ async def sync_peak_monitor_for_playback_state(
             # Keep the peak monitor process running through pauses to avoid
             # pw-record restart + PipeWire link glitches on resume.
             # Mark as not armed so the resume path will trigger relink().
-            logger.info("Peak monitor pausing (process stays alive, armed=False): signature=%s", peak_monitor_context_signature)
-            peak_monitor_playback_armed = False
-            # peak_monitor_context_signature is preserved for same-source resume detection.
+            logger.info("Peak monitor pausing (process stays alive, armed=False): signature=%s", runtime.peak_monitor_context_signature)
+            runtime.peak_monitor_playback_armed = False
+            # runtime.peak_monitor_context_signature is preserved for same-source resume detection.
 
 
 async def sync_peak_monitor_for_spotify_state(data: dict):
-    global peak_monitor_playback_armed, peak_monitor, player_instance, peak_monitor_transition_lock, peak_monitor_context_signature
-    if not peak_monitor:
+    if not runtime.peak_monitor:
         return
-    if peak_monitor_transition_lock is None:
-        peak_monitor_transition_lock = asyncio.Lock()
+    if runtime.peak_monitor_transition_lock is None:
+        runtime.peak_monitor_transition_lock = asyncio.Lock()
 
-    async with peak_monitor_transition_lock:
-        player_state = player_instance.state if player_instance else {}
+    async with runtime.peak_monitor_transition_lock:
+        player_state = runtime.player_instance.state if runtime.player_instance else {}
         is_spotify_playing = _is_spotify_playback_active(data)
         desired_signature = "spotify:playing" if is_spotify_playing else None
 
-        if is_spotify_playing and (not peak_monitor_playback_armed or peak_monitor_context_signature != desired_signature):
+        if is_spotify_playing and (not runtime.peak_monitor_playback_armed or runtime.peak_monitor_context_signature != desired_signature):
             if _playback_transition_is_active():
                 logger.info("Delaying peak monitor restart while Spotify samplerate recovery is active")
                 return
-            peak_monitor_playback_armed = True
-            peak_monitor_context_signature = desired_signature
+            runtime.peak_monitor_playback_armed = True
+            runtime.peak_monitor_context_signature = desired_signature
             logger.info(
                 "Starting peak monitor for committed Spotify playback; rate/graph mutations remain coordinator-owned",
             )
-            await peak_monitor.restart()
-            await manager.broadcast({"type": "playback_peak_warning", "data": peak_monitor.snapshot()})
+            await runtime.peak_monitor.restart()
+            await manager.broadcast({"type": "playback_peak_warning", "data": runtime.peak_monitor.snapshot()})
         elif (
             not is_spotify_playing
-            and peak_monitor_playback_armed
-            and str(peak_monitor_context_signature or "").startswith("spotify:")
+            and runtime.peak_monitor_playback_armed
+            and str(runtime.peak_monitor_context_signature or "").startswith("spotify:")
         ):
             if _playback_transition_is_active():
                 logger.info("Keeping peak monitor armed while Spotify samplerate recovery is active")
                 return
             await asyncio.sleep(PEAK_MONITOR_INACTIVE_GRACE_MS / 1000)
-            refreshed_player_state = player_instance.state if player_instance else {}
+            refreshed_player_state = runtime.player_instance.state if runtime.player_instance else {}
             refreshed_spotify_state = await get_spotify_ui_state()
             if _playback_transition_is_active():
                 logger.info("Keeping peak monitor armed while Spotify samplerate recovery is still active")
@@ -4118,20 +4137,19 @@ async def sync_peak_monitor_for_spotify_state(data: dict):
             if _is_spotify_playback_active(refreshed_spotify_state):
                 return
             logger.info("Stopping peak monitor because Spotify is no longer actively playing")
-            await peak_monitor.stop()
-            peak_monitor_playback_armed = False
-            peak_monitor_context_signature = None
-            await manager.broadcast({"type": "playback_peak_warning", "data": peak_monitor.snapshot()})
+            await runtime.peak_monitor.stop()
+            runtime.peak_monitor_playback_armed = False
+            runtime.peak_monitor_context_signature = None
+            await manager.broadcast({"type": "playback_peak_warning", "data": runtime.peak_monitor.snapshot()})
 
 
 async def sync_peak_monitor_for_source_mode_state(source_overview: dict | None = None):
-    global peak_monitor_playback_armed, peak_monitor, player_instance, peak_monitor_transition_lock, peak_monitor_context_signature
-    if not peak_monitor:
+    if not runtime.peak_monitor:
         return
-    if peak_monitor_transition_lock is None:
-        peak_monitor_transition_lock = asyncio.Lock()
+    if runtime.peak_monitor_transition_lock is None:
+        runtime.peak_monitor_transition_lock = asyncio.Lock()
 
-    async with peak_monitor_transition_lock:
+    async with runtime.peak_monitor_transition_lock:
         overview = source_overview or get_audio_source_overview()
         bluetooth = overview.get("bluetooth") or {}
         is_bt_streaming = bool(
@@ -4143,21 +4161,21 @@ async def sync_peak_monitor_for_source_mode_state(source_overview: dict | None =
         if is_bt_streaming:
             desired_signature = f"bluetooth:{bluetooth.get('connected_device')}:{bluetooth.get('active_codec') or ''}"
 
-        if is_bt_streaming and (not peak_monitor_playback_armed or peak_monitor_context_signature != desired_signature):
-            peak_monitor_playback_armed = True
-            peak_monitor_context_signature = desired_signature
+        if is_bt_streaming and (not runtime.peak_monitor_playback_armed or runtime.peak_monitor_context_signature != desired_signature):
+            runtime.peak_monitor_playback_armed = True
+            runtime.peak_monitor_context_signature = desired_signature
             logger.info("Starting peak monitor for active Bluetooth input: %s", desired_signature)
-            await peak_monitor.restart()
-            await manager.broadcast({"type": "playback_peak_warning", "data": peak_monitor.snapshot()})
-        elif (not is_bt_streaming) and peak_monitor_playback_armed and str(peak_monitor_context_signature or "").startswith("bluetooth:"):
-            player_state = player_instance.state if player_instance else {}
+            await runtime.peak_monitor.restart()
+            await manager.broadcast({"type": "playback_peak_warning", "data": runtime.peak_monitor.snapshot()})
+        elif (not is_bt_streaming) and runtime.peak_monitor_playback_armed and str(runtime.peak_monitor_context_signature or "").startswith("bluetooth:"):
+            player_state = runtime.player_instance.state if runtime.player_instance else {}
             spotify_state = await get_spotify_ui_state()
             if not _is_local_playback_active(player_state) and not _is_spotify_playback_active(spotify_state):
                 logger.info("Stopping peak monitor because Bluetooth input is no longer actively streaming")
-                await peak_monitor.stop()
-                peak_monitor_playback_armed = False
-                peak_monitor_context_signature = None
-                await manager.broadcast({"type": "playback_peak_warning", "data": peak_monitor.snapshot()})
+                await runtime.peak_monitor.stop()
+                runtime.peak_monitor_playback_armed = False
+                runtime.peak_monitor_context_signature = None
+                await manager.broadcast({"type": "playback_peak_warning", "data": runtime.peak_monitor.snapshot()})
 
 
 async def _radio_reconnect_after_delay(
@@ -4171,13 +4189,13 @@ async def _radio_reconnect_after_delay(
         expected_url = (track_info or {}).get("url")
         if not expected_url:
             return
-        if not player_instance or not player_instance._running:
+        if not runtime.player_instance or not runtime.player_instance._running:
             return
         if not _playback_transition_context_is_current(transition_generation):
             return
         if not current_track_info or current_track_info.get("source") != "radio" or current_track_info.get("url") != expected_url:
             return
-        state = player_instance.state
+        state = runtime.player_instance.state
         if state.get("current_file") and not state.get("ended"):
             return
         logger.info("Reconnecting radio stream after unexpected end: station=%s attempt=%s/%s", track_info.get("title") or track_info.get("id"), attempt, RADIO_RECONNECT_MAX_ATTEMPTS)
@@ -4347,13 +4365,13 @@ async def on_player_state_change(state: dict, event_commit_id: str | None = None
             queue_advancing = False
 
     _schedule_radio_reconnect_if_needed(state)
-    if source_transition_lock is None:
+    if runtime.source_transition_lock is None:
         await sync_peak_monitor_for_playback_state(state, callback_generation)
     else:
         # Serialize callback context application with explicit play handoffs.
         # A callback queued before/during a handoff observes an obsolete
         # generation after acquiring the lock and becomes a no-op.
-        async with source_transition_lock:
+        async with runtime.source_transition_lock:
             await sync_peak_monitor_for_playback_state(state, callback_generation)
     if not _playback_transition_context_is_current(callback_generation):
         logger.debug(
@@ -4525,13 +4543,13 @@ async def pause_spotify_for_local_playback_broadcast():
 
 
 async def pause_local_playback_for_spotify_broadcast():
-    global player_instance, current_footer_owner, current_track_info
+    global current_footer_owner, current_track_info
     current_footer_owner = "spotify"
     try:
-        if player_instance and player_instance._running:
-            player_instance.stop_playback()
+        if runtime.player_instance and runtime.player_instance._running:
+            runtime.player_instance.stop_playback()
             current_track_info = None
-            await manager.broadcast({"type": "playback", "data": build_playback_payload(player_instance.state)})
+            await manager.broadcast({"type": "playback", "data": build_playback_payload(runtime.player_instance.state)})
             released = await _wait_for_pipewire_mpv_release()
             if not released:
                 await asyncio.sleep(SOURCE_HANDOFF_SETTLE_MS / 1000)
@@ -5096,7 +5114,7 @@ async def _spotify_playerctl_watch_loop() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan: startup and shutdown."""
-    global settings, player_instance, library_scanner, music_library_manager, library_scan_task, downloader, dsp_manager, measurement_store, measurement_sr_session, measurement_watchdog_task, peak_monitor, dsp_runtime, dsp_runtime_link_watch_task, hardware_controller, peak_monitor_playback_armed, peak_monitor_transition_lock, peak_monitor_context_signature, dsp_preset_load_lock, dsp_mutation_lock, canonical_volume_write_lock, source_transition_lock, playback_transition_coordinator, coordinator_last_successful_commit_id, external_input_loopback_module_id, external_input_loopback_source_name, bluetooth_input_source_name, bluetooth_monitor_task, bluetooth_agent_process, spotify_playerctl_watch_task, spotify_playerctl_detect_task, spotify_state_refresh_task, spotify_state_poll_task, spotify_playerctl_last_trigger_at, current_source_mode, latest_spotify_state, radio_reconnect_task
+    global settings, library_scanner, music_library_manager, library_scan_task, downloader, dsp_manager, measurement_store, measurement_sr_session, measurement_watchdog_task, hardware_controller, playback_transition_coordinator, coordinator_last_successful_commit_id, external_input_loopback_module_id, external_input_loopback_source_name, bluetooth_input_source_name, bluetooth_monitor_task, bluetooth_agent_process, spotify_playerctl_watch_task, spotify_playerctl_detect_task, spotify_state_refresh_task, spotify_state_poll_task, spotify_playerctl_last_trigger_at, current_source_mode, latest_spotify_state, radio_reconnect_task
 
     logger.info("Starting FXRoute... build_id=%s", _read_build_id())
     try:
@@ -5104,9 +5122,9 @@ async def lifespan(app: FastAPI):
         logger.info("Configuration loaded. MUSIC_ROOT: %s", settings.MUSIC_ROOT)
         logger.info("Download directory: %s", settings.download_dir)
 
-        player_instance = get_player()
+        runtime.player_instance = get_player()
         try:
-            await _drain_worker(player_instance.start)
+            await _drain_worker(runtime.player_instance.start)
             logger.info("MPV player started")
             ensure_local_source_volume()
         except MPVNotInstalledError as exc:
@@ -5165,15 +5183,15 @@ async def lifespan(app: FastAPI):
                 logger.warning("Hardware controller not available: %s", exc)
                 hardware_controller = None
 
-        peak_monitor = DSPPeakMonitor(on_change=on_peak_monitor_change)
-        dsp_runtime = DSPRuntime(dsp_manager)
+        runtime.peak_monitor = DSPPeakMonitor(on_change=on_peak_monitor_change)
+        runtime.dsp_runtime = DSPRuntime(dsp_manager)
         if hasattr(measurement_store, "runtime_snapshot_provider"):
-            measurement_store.runtime_snapshot_provider = getattr(dsp_runtime, "snapshot", None)
-            measurement_store.effect_bypass_setter = getattr(dsp_runtime, "set_effect_bypass", None)
-            measurement_store.raw_scope_enter = getattr(dsp_runtime, "enter_raw_measurement", None)
-            measurement_store.raw_scope_exit = getattr(dsp_runtime, "exit_raw_measurement", None)
-            measurement_store.active_scope_enter = getattr(dsp_runtime, "enter_active_measurement", None)
-            measurement_store.active_scope_exit = getattr(dsp_runtime, "exit_active_measurement", None)
+            measurement_store.runtime_snapshot_provider = getattr(runtime.dsp_runtime, "snapshot", None)
+            measurement_store.effect_bypass_setter = getattr(runtime.dsp_runtime, "set_effect_bypass", None)
+            measurement_store.raw_scope_enter = getattr(runtime.dsp_runtime, "enter_raw_measurement", None)
+            measurement_store.raw_scope_exit = getattr(runtime.dsp_runtime, "exit_raw_measurement", None)
+            measurement_store.active_scope_enter = getattr(runtime.dsp_runtime, "enter_active_measurement", None)
+            measurement_store.active_scope_exit = getattr(runtime.dsp_runtime, "exit_active_measurement", None)
         runtime_loop = asyncio.get_running_loop()
 
         def guarded_effects_transition(previous, candidate, persist_all_presets):
@@ -5187,7 +5205,7 @@ async def lifespan(app: FastAPI):
         def temporary_effects_transition(previous, candidate):
             async def transition():
                 async with _dsp_mutation_lock():
-                    await dsp_runtime.guarded_rebuild(
+                    await runtime.dsp_runtime.guarded_rebuild(
                         get_audio_output_overview(),
                         guard_db=-18.0,
                         apply_candidate=lambda: None,
@@ -5200,16 +5218,16 @@ async def lifespan(app: FastAPI):
 
         dsp_manager.temporary_runtime_transition_callback = temporary_effects_transition
         try:
-            stop_orphans = getattr(dsp_runtime, "_stop_orphan_helpers", None)
+            stop_orphans = getattr(runtime.dsp_runtime, "_stop_orphan_helpers", None)
             if callable(stop_orphans):
                 await stop_orphans()
         except Exception:
             pass
-        peak_monitor_playback_armed = False
-        peak_monitor_transition_lock = asyncio.Lock()
-        peak_monitor_context_signature = None
-        dsp_preset_load_lock = asyncio.Lock()
-        source_transition_lock = asyncio.Lock()
+        runtime.peak_monitor_playback_armed = False
+        runtime.peak_monitor_transition_lock = asyncio.Lock()
+        runtime.peak_monitor_context_signature = None
+        runtime.dsp_preset_load_lock = asyncio.Lock()
+        runtime.source_transition_lock = asyncio.Lock()
         latest_spotify_state = await get_spotify_ui_state()
         await sync_peak_monitor_for_spotify_state(latest_spotify_state)
         logger.info("DSP output peak monitor initialized")
@@ -5226,7 +5244,7 @@ async def lifespan(app: FastAPI):
                 except Exception as exc:
                     logger.warning("Failed to re-apply fixed sample-rate policy: %s", exc)
             await dsp_orchestrator.sync_runtime(applied_output or get_audio_output_overview())
-            dsp_runtime_link_watch_task = asyncio.create_task(
+            runtime.dsp_runtime_link_watch_task = asyncio.create_task(
                 dsp_orchestrator.runtime_link_watch_loop(),
                 name="subwoofer-runtime-link-watch",
             )
@@ -5264,7 +5282,7 @@ async def lifespan(app: FastAPI):
             name="spotify-state-poll",
         )
 
-        player_instance.register_callbacks(_dispatch_player_state_change)
+        runtime.player_instance.register_callbacks(_dispatch_player_state_change)
         downloader.register_callback(on_download_progress, asyncio.get_running_loop())
         logger.info("Application startup complete build_id=%s", _read_build_id())
         yield
@@ -5279,7 +5297,7 @@ async def lifespan(app: FastAPI):
 
 
 async def _shutdown_lifespan_resources() -> None:
-    global settings, player_instance, library_scanner, library_scan_task, downloader, dsp_manager, measurement_store, measurement_sr_session, measurement_watchdog_task, peak_monitor, dsp_runtime, dsp_runtime_link_watch_task, hardware_controller, peak_monitor_transition_lock, peak_monitor_context_signature, dsp_preset_load_lock, dsp_mutation_lock, canonical_volume_write_lock, source_transition_lock, playback_transition_coordinator, external_input_loopback_module_id, external_input_loopback_source_name, bluetooth_input_source_name, bluetooth_monitor_task, bluetooth_agent_process, spotify_playerctl_watch_task, spotify_playerctl_detect_task, spotify_state_refresh_task, spotify_state_poll_task, radio_reconnect_task
+    global settings, library_scanner, library_scan_task, downloader, dsp_manager, measurement_store, measurement_sr_session, measurement_watchdog_task, hardware_controller, playback_transition_coordinator, external_input_loopback_module_id, external_input_loopback_source_name, bluetooth_input_source_name, bluetooth_monitor_task, bluetooth_agent_process, spotify_playerctl_watch_task, spotify_playerctl_detect_task, spotify_state_refresh_task, spotify_state_poll_task, radio_reconnect_task
 
     async def cleanup(label: str, operation) -> None:
         nonlocal cleanup_cancelled
@@ -5302,7 +5320,7 @@ async def _shutdown_lifespan_resources() -> None:
 
     cleanup_cancelled = False
     owned_tasks = [
-        dsp_runtime_link_watch_task,
+        runtime.dsp_runtime_link_watch_task,
         measurement_watchdog_task,
         bluetooth_monitor_task,
         spotify_playerctl_watch_task,
@@ -5327,10 +5345,10 @@ async def _shutdown_lifespan_resources() -> None:
     silent_active_watch_tasks.clear()
     lifecycle_background_tasks.clear()
 
-    if player_instance is not None:
+    if runtime.player_instance is not None:
         await cleanup(
             "player-callbacks",
-            lambda: player_instance.shutdown_callbacks(_dispatch_player_state_change),
+            lambda: runtime.player_instance.shutdown_callbacks(_dispatch_player_state_change),
         )
     await cleanup("autosub", autosub.shutdown)
     if measurement_store is not None:
@@ -5358,22 +5376,22 @@ async def _shutdown_lifespan_resources() -> None:
             lambda: asyncio.gather(*refresh_tasks, return_exceptions=True),
         )
     library_refresh_tasks.clear()
-    if player_instance is not None:
-        await cleanup("player", lambda: asyncio.to_thread(player_instance.stop))
-    if dsp_runtime is not None:
-        await cleanup("subwoofer-runtime", dsp_runtime.stop)
+    if runtime.player_instance is not None:
+        await cleanup("player", lambda: asyncio.to_thread(runtime.player_instance.stop))
+    if runtime.dsp_runtime is not None:
+        await cleanup("subwoofer-runtime", runtime.dsp_runtime.stop)
     if bluetooth_agent_process is not None or bluetooth_input_source_name is not None:
         await cleanup("bluetooth-input", _disable_bluetooth_input_monitoring)
     await cleanup("bluetooth-receiver", lambda: asyncio.to_thread(set_bluetooth_receiver_enabled, False))
     if external_input_loopback_module_id is not None or external_input_loopback_source_name is not None:
         await cleanup("external-input", _disable_external_input_loopback)
-    if peak_monitor is not None:
-        await cleanup("peak-monitor", peak_monitor.stop)
+    if runtime.peak_monitor is not None:
+        await cleanup("peak-monitor", runtime.peak_monitor.stop)
     if hardware_controller is not None:
         await cleanup("hardware-controller", lambda: asyncio.to_thread(hardware_controller.close))
 
+    runtime.reset()
     settings = None
-    player_instance = None
     library_scanner = None
     library_scan_task = None
     downloader = None
@@ -5381,16 +5399,7 @@ async def _shutdown_lifespan_resources() -> None:
     measurement_store = None
     measurement_sr_session = None
     measurement_watchdog_task = None
-    peak_monitor = None
-    dsp_runtime = None
-    dsp_runtime_link_watch_task = None
     hardware_controller = None
-    peak_monitor_transition_lock = None
-    peak_monitor_context_signature = None
-    dsp_preset_load_lock = None
-    dsp_mutation_lock = None
-    canonical_volume_write_lock = None
-    source_transition_lock = None
     playback_transition_coordinator = None
     external_input_loopback_module_id = None
     external_input_loopback_source_name = None
@@ -5408,13 +5417,13 @@ async def _shutdown_lifespan_resources() -> None:
 def _make_dsp_api_deps() -> dsp_api.DspApiDeps:
     """Bind the /api/dsp/* routes to the application's DSP services.
 
-    All entries resolve module-level names at call time, so tests that patch
-    main.py attributes observe the patched services.
+    All entries resolve the current runtime state at call time, so tests that
+    patch main.runtime attributes observe the patched services.
     """
     return dsp_api.DspApiDeps(
         require_dsp_manager=lambda: _require_dsp_manager(),
         get_dsp_manager=lambda: dsp_manager,
-        get_dsp_runtime=lambda: dsp_runtime,
+        get_dsp_runtime=lambda: runtime.dsp_runtime,
         get_dsp_preset_load_lock=lambda: _get_dsp_preset_load_lock(),
         dsp_mutation_lock=lambda: _dsp_mutation_lock(),
         canonical_volume_write_lock=lambda: _canonical_volume_write_lock(),
@@ -5432,19 +5441,19 @@ def _make_dsp_api_deps() -> dsp_api.DspApiDeps:
 def _make_dsp_orchestration_deps() -> DspOrchestrationDeps:
     """Bind the DSP/output orchestration to the application's runtime services.
 
-    All entries resolve module-level names at call time, so tests that patch
-    main.py attributes observe the patched services.
+    All entries resolve the current runtime state at call time, so tests that
+    patch main.runtime attributes observe the patched services.
     """
     return DspOrchestrationDeps(
-        get_dsp_runtime=lambda: dsp_runtime,
+        get_dsp_runtime=lambda: runtime.dsp_runtime,
         get_dsp_manager=lambda: dsp_manager,
         get_audio_output_overview=lambda: get_audio_output_overview(),
         get_samplerate_status=lambda: get_samplerate_status(),
         get_measurement_sr_session=lambda: measurement_sr_session,
-        get_player_instance=lambda: player_instance,
+        get_player_instance=lambda: runtime.player_instance,
         get_current_track_info=lambda: current_track_info,
-        get_peak_monitor=lambda: peak_monitor,
-        peak_monitor_playback_armed=lambda: peak_monitor_playback_armed,
+        get_peak_monitor=lambda: runtime.peak_monitor,
+        peak_monitor_playback_armed=lambda: runtime.peak_monitor_playback_armed,
         set_peak_monitor_context_signature=_set_peak_monitor_context_signature,
         get_spotify_ui_state=lambda *args, **kwargs: get_spotify_ui_state(*args, **kwargs),
         sync_peak_monitor_for_playback_state=lambda state: sync_peak_monitor_for_playback_state(state),
@@ -5501,10 +5510,10 @@ async def site_webmanifest_root():
     return FileResponse(STATIC_DIR / "site.webmanifest", media_type="application/manifest+json")
 @app.post("/api/play")
 async def play_track(req: PlayRequest):
-    if not player_instance or not player_instance._running:
+    if not runtime.player_instance or not runtime.player_instance._running:
         raise HTTPException(status_code=503, detail="Player not available")
     if not _can_send_play_command():
-        state = player_instance.state
+        state = runtime.player_instance.state
         return {
             "status": "playing" if not state.get("paused") else "paused",
             "url": state.get("current_file") or "",
@@ -5532,10 +5541,10 @@ async def play_track(req: PlayRequest):
             "status": "playing",
             "url": str(track_info.get("url") or ""),
             "track": track_info,
-            "playback": build_playback_payload(player_instance.state),
+            "playback": build_playback_payload(runtime.player_instance.state),
         }
 
-    previous_state = dict(player_instance.state)
+    previous_state = dict(runtime.player_instance.state)
     if source == "radio":
         track_info = None
         for station in get_stations():
@@ -5626,24 +5635,23 @@ async def play_track(req: PlayRequest):
         "status": "playing",
         "url": target_url,
         "track": track_info,
-        "playback": build_playback_payload(player_instance.state),
+        "playback": build_playback_payload(runtime.player_instance.state),
     }
 
 @app.post("/api/pause")
 async def pause_playback():
-    global player_instance
-    if not player_instance or not player_instance._running:
+    if not runtime.player_instance or not runtime.player_instance._running:
         raise HTTPException(status_code=503, detail="Player not available")
     if _playback_transition_is_active():
         raise HTTPException(status_code=409, detail="A playback transition is in progress")
 
-    state = player_instance.state
+    state = runtime.player_instance.state
     if not state.get("current_file") or state.get("ended"):
         raise HTTPException(status_code=409, detail="Nothing is currently loaded to pause or resume")
     # v0.9.4 contract: this endpoint is a pure MPV pause toggle.  It must not
     # rebuild the committed source/rate/graph just because transport changed.
-    player_instance.pause()
-    new_state = player_instance.state
+    runtime.player_instance.pause()
+    new_state = runtime.player_instance.state
     _mark_player_state_authoritative(new_state)
     _mark_playback_intent_changed()
     return {
@@ -5655,15 +5663,15 @@ async def pause_playback():
 @app.post("/api/playback/toggle")
 async def toggle_playback():
     global current_track_info, last_track_info, last_radio_track_info
-    if not player_instance or not player_instance._running:
+    if not runtime.player_instance or not runtime.player_instance._running:
         raise HTTPException(status_code=503, detail="Player not available")
     if _playback_transition_is_active():
         raise HTTPException(status_code=409, detail="A playback transition is in progress")
     if not _can_send_play_command():
-        state = player_instance.state
+        state = runtime.player_instance.state
         return {"status": "paused" if state.get("paused") else "playing", "playback": build_playback_payload(state)}
 
-    state = dict(player_instance.state)
+    state = dict(runtime.player_instance.state)
     active_track = dict(current_track_info or {})
     if state.get("current_file") and not state.get("ended") and active_track.get("source") in {"local", "radio"}:
         was_paused = bool(state.get("paused"))
@@ -5671,8 +5679,8 @@ async def toggle_playback():
         if not was_paused:
             # Same-source pause is transport only.  Resuming below remains a
             # Coordinator transition because it is a Local/Radio play action.
-            player_instance.pause()
-            new_state = player_instance.state
+            runtime.player_instance.pause()
+            new_state = runtime.player_instance.state
             _mark_player_state_authoritative(new_state)
             _mark_playback_intent_changed()
             return {
@@ -5702,7 +5710,7 @@ async def toggle_playback():
             _commit_coordinated_track(
                 active_track, source=source, commit_token=getattr(result, "transition_id", None)
             )
-        new_state = player_instance.state
+        new_state = runtime.player_instance.state
         return {
             "status": "playing" if not new_state.get("paused") else "paused",
             "playback": build_playback_payload(new_state),
@@ -5738,13 +5746,13 @@ async def toggle_playback():
     return {
         "status": "playing",
         "replayed": True,
-        "playback": build_playback_payload(player_instance.state),
+        "playback": build_playback_payload(runtime.player_instance.state),
     }
 
 @app.post("/api/stop")
 async def stop_playback():
-    global player_instance, current_track_info, last_radio_track_info, radio_reconnect_attempts, radio_reconnect_url, radio_reconnect_active_since
-    if not player_instance or not player_instance._running:
+    global current_track_info, last_radio_track_info, radio_reconnect_attempts, radio_reconnect_url, radio_reconnect_active_since
+    if not runtime.player_instance or not runtime.player_instance._running:
         raise HTTPException(status_code=503, detail="Player not available")
     if _playback_transition_is_active():
         raise HTTPException(status_code=409, detail="A playback transition is in progress")
@@ -5757,14 +5765,13 @@ async def stop_playback():
     radio_reconnect_active_since = 0.0
     playback_queue.queue.reset()
     playback_queue.queue.reset_mpv_loop_state()
-    player_instance.stop_playback()
-    _mark_player_state_authoritative(player_instance.state)
+    runtime.player_instance.stop_playback()
+    _mark_player_state_authoritative(runtime.player_instance.state)
     return {"status": "stopped"}
 
 @app.post("/api/volume")
 async def set_volume(request: Request):
-    global player_instance
-    if not player_instance or not player_instance._running:
+    if not runtime.player_instance or not runtime.player_instance._running:
         raise HTTPException(status_code=503, detail="Player not available")
     try:
         body = await request.json()
@@ -5779,7 +5786,7 @@ async def set_volume(request: Request):
     # Keep local/radio output-volume changes responsive. Spotify volume uses
     # /api/spotify/volume, so this endpoint should not block on multiple
     # playerctl/Spotify status reads on slow boards.
-    await manager.broadcast({"type": "playback", "data": build_playback_payload(player_instance.state)})
+    await manager.broadcast({"type": "playback", "data": build_playback_payload(runtime.player_instance.state)})
     return {
         "volume": volume_result["volume"],
         **({"loudnessVolumeDb": volume_result["loudnessVolumeDb"]}
@@ -5788,8 +5795,7 @@ async def set_volume(request: Request):
 
 @app.post("/api/playback/next")
 async def next_playback():
-    global player_instance
-    if not player_instance or not player_instance._running:
+    if not runtime.player_instance or not runtime.player_instance._running:
         raise HTTPException(status_code=503, detail="Player not available")
     if len(playback_queue.queue.tracks) <= 1:
         raise HTTPException(status_code=409, detail="No queue is active")
@@ -5805,40 +5811,37 @@ async def next_playback():
             "status": "ok",
             "advanced": False,
             "queue_ended": True,
-            "playback": build_playback_payload(player_instance.state),
+            "playback": build_playback_payload(runtime.player_instance.state),
         }
-    return {"status": "playing", "playback": build_playback_payload(player_instance.state)}
+    return {"status": "playing", "playback": build_playback_payload(runtime.player_instance.state)}
 
 
 @app.post("/api/playback/previous")
 async def previous_playback():
-    global player_instance
-    if not player_instance or not player_instance._running:
+    if not runtime.player_instance or not runtime.player_instance._running:
         raise HTTPException(status_code=503, detail="Player not available")
     if len(playback_queue.queue.tracks) <= 1:
         raise HTTPException(status_code=409, detail="No queue is active")
     if not await playback_queue.queue.rewind(transition_reason="manual queue previous"):
         raise HTTPException(status_code=409, detail="Already at the start of the queue")
-    return {"status": "playing", "playback": build_playback_payload(player_instance.state)}
+    return {"status": "playing", "playback": build_playback_payload(runtime.player_instance.state)}
 
 
 @app.post("/api/playback/clear-queue")
 async def clear_playback_queue():
-    global player_instance
-    if not player_instance or not player_instance._running:
+    if not runtime.player_instance or not runtime.player_instance._running:
         raise HTTPException(status_code=503, detail="Player not available")
 
     had_queue = len(playback_queue.queue.tracks) > 1
     playback_queue.queue.reset()
-    playback = build_playback_payload(player_instance.state)
+    playback = build_playback_payload(runtime.player_instance.state)
     await manager.broadcast({"type": "playback", "data": playback})
     return {"status": "cleared" if had_queue else "idle", "playback": playback}
 
 
 @app.post("/api/playback/selection")
 async def sync_playback_selection(request: Request):
-    global player_instance
-    if not player_instance or not player_instance._running:
+    if not runtime.player_instance or not runtime.player_instance._running:
         raise HTTPException(status_code=503, detail="Player not available")
 
     try:
@@ -5863,8 +5866,7 @@ async def sync_playback_selection(request: Request):
 
 @app.post("/api/playback/shuffle")
 async def set_playback_shuffle(request: Request):
-    global player_instance
-    if not player_instance or not player_instance._running:
+    if not runtime.player_instance or not runtime.player_instance._running:
         raise HTTPException(status_code=503, detail="Player not available")
     try:
         body = await request.json()
@@ -5885,15 +5887,14 @@ async def set_playback_shuffle(request: Request):
             detail={"message": "Native queue reorder failed", "error": str(exc)},
         ) from exc
 
-    playback = build_playback_payload(player_instance.state)
+    playback = build_playback_payload(runtime.player_instance.state)
     await manager.broadcast({"type": "playback", "data": playback})
     return {"status": "ok", "shuffle": playback["queue"].get("shuffle", False), "playback": playback}
 
 
 @app.post("/api/playback/loop")
 async def set_playback_loop(request: Request):
-    global player_instance
-    if not player_instance or not player_instance._running:
+    if not runtime.player_instance or not runtime.player_instance._running:
         raise HTTPException(status_code=503, detail="Player not available")
     try:
         body = await request.json()
@@ -5904,42 +5905,41 @@ async def set_playback_loop(request: Request):
     if not playback_queue.queue.set_loop(enabled):
         raise HTTPException(status_code=409, detail="Loop requires active local playback")
 
-    playback = build_playback_payload(player_instance.state)
+    playback = build_playback_payload(runtime.player_instance.state)
     await manager.broadcast({"type": "playback", "data": playback})
     return {"status": "ok", "loop": playback["queue"].get("loop", False), "playback": playback}
 
 
 @app.post("/api/playback/seek")
 async def seek_playback(request: Request):
-    global player_instance
-    if not player_instance or not player_instance._running:
+    if not runtime.player_instance or not runtime.player_instance._running:
         raise HTTPException(status_code=503, detail="Player not available")
     if _playback_transition_is_active():
         raise HTTPException(status_code=409, detail="A playback transition is in progress")
     if not _can_send_play_command():
-        state = player_instance.state
+        state = runtime.player_instance.state
         return {"status": "ok", "position": state.get("position", 0), "playback": build_playback_payload(state)}
     try:
         body = await request.json()
         pos = float(body.get("position", 0))
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON, expected {\"position\": <float>}")
-    if not player_instance.state.get("current_file"):
+    if not runtime.player_instance.state.get("current_file"):
         raise HTTPException(status_code=409, detail="Nothing loaded to seek")
     # Re-check after the last await: a transition may have started while the
     # request body was being read.  Never seek or mark intent mid-transition.
     if _playback_transition_is_active():
         raise HTTPException(status_code=409, detail="A playback transition is in progress")
-    player_instance.seek(pos)
+    runtime.player_instance.seek(pos)
     _mark_playback_intent_changed()
-    return {"status": "ok", "position": pos, "playback": build_playback_payload(player_instance.state)}
+    return {"status": "ok", "position": pos, "playback": build_playback_payload(runtime.player_instance.state)}
 
 @app.get("/api/status")
 async def get_status():
-    if player_instance:
-        state = build_playback_payload(player_instance.state, include_live_metadata=False)
+    if runtime.player_instance:
+        state = build_playback_payload(runtime.player_instance.state, include_live_metadata=False)
         state["metadata"] = (
-            await _read_status_player_detail(player_instance.get_metadata, {})
+            await _read_status_player_detail(runtime.player_instance.get_metadata, {})
             if state.get("current_file") else {}
         )
         if track := (state.get("current_track") or {}):
@@ -5985,7 +5985,7 @@ async def get_status():
         # tech line.  Read-only; never derived from URLs or catalog fields.
         if track.get("source") in ("radio", "local") and state.get("current_file"):
             state["stream_info"] = normalize_stream_info(
-                await _read_status_player_detail(player_instance.get_stream_audio_info, {})
+                await _read_status_player_detail(runtime.player_instance.get_stream_audio_info, {})
             )
         else:
             state["stream_info"] = None
@@ -6159,10 +6159,10 @@ async def hardware_auto_off():
 @app.get("/api/audio/outputs")
 async def audio_output_overview():
     overview = with_subwoofer_derived_delays(await asyncio.to_thread(get_audio_output_overview))
-    if dsp_runtime is not None:
+    if runtime.dsp_runtime is not None:
         overview["output_mode"] = {
             **(overview.get("output_mode") or {}),
-            "runtime": dsp_runtime.snapshot(),
+            "runtime": runtime.dsp_runtime.snapshot(),
         }
     return overview
 
@@ -6179,10 +6179,10 @@ async def save_audio_output_selection_route(request: Request):
         result = set_audio_output_selection(output_key)
         await dsp_orchestrator.sync_runtime(result, reason="output-selection")
         result = with_subwoofer_derived_delays(result)
-        if dsp_runtime is not None:
+        if runtime.dsp_runtime is not None:
             result["output_mode"] = {
                 **(result.get("output_mode") or {}),
-                "runtime": dsp_runtime.snapshot(),
+                "runtime": runtime.dsp_runtime.snapshot(),
             }
         await dsp_orchestrator.refresh_peak_monitor_after_effects_change("audio-output-switch")
         return result
@@ -6210,7 +6210,7 @@ async def save_audio_output_mode_route(request: Request):
         target_mode = str(target["config"].get("mode") or "").strip()
 
         def mode_transition_guard(target_overview: dict) -> float:
-            runtime_snapshot = dsp_runtime.snapshot() if dsp_runtime else {}
+            runtime_snapshot = runtime.dsp_runtime.snapshot() if runtime.dsp_runtime else {}
             previous_gain = float(runtime_snapshot.get("output_gain_db") or 0.0)
             current_layout = ((runtime_snapshot.get("config") or {}).get("layout") or [])
             target_layout = DSPRuntimeConfig.from_overview(target_overview).layout
@@ -6231,11 +6231,11 @@ async def save_audio_output_mode_route(request: Request):
         if target_mode == current_mode:
             previous_overview = get_audio_output_overview()
             result = persist_audio_output_mode(target["config"])
-            if dsp_runtime is None:
+            if runtime.dsp_runtime is None:
                 await dsp_orchestrator.sync_runtime(result, reason="output-mode-params")
             else:
                 try:
-                    await dsp_runtime.guarded_rebuild(
+                    await runtime.dsp_runtime.guarded_rebuild(
                         result,
                         guard_db=mode_transition_guard(result),
                         apply_candidate=lambda: None,
@@ -6244,20 +6244,20 @@ async def save_audio_output_mode_route(request: Request):
                     )
                 except Exception:
                     try:
-                        await dsp_runtime.sync(previous_overview)
+                        await runtime.dsp_runtime.sync(previous_overview)
                     except Exception:
                         logger.exception("Failed to restore native DSP after same-mode transition failure")
                     raise
             result = with_subwoofer_derived_delays(result)
-            if dsp_runtime is not None:
+            if runtime.dsp_runtime is not None:
                 result["output_mode"] = {
                     **(result.get("output_mode") or {}),
-                    "runtime": dsp_runtime.snapshot(),
+                    "runtime": runtime.dsp_runtime.snapshot(),
                 }
             await dsp_orchestrator.refresh_peak_monitor_after_effects_change("audio-output-mode-params")
             return result
 
-        if dsp_runtime is None:
+        if runtime.dsp_runtime is None:
             context = await _coordinator_current_playback_context()
             status = get_samplerate_status()
             target_rate = status.get("active_rate")
@@ -6284,7 +6284,7 @@ async def save_audio_output_mode_route(request: Request):
 
         previous_overview = get_audio_output_overview()
         try:
-            await dsp_runtime.guarded_rebuild(
+            await runtime.dsp_runtime.guarded_rebuild(
                 target["overview"],
                 guard_db=mode_transition_guard(target["overview"]),
                 apply_candidate=lambda: None,
@@ -6294,16 +6294,16 @@ async def save_audio_output_mode_route(request: Request):
             result = persist_audio_output_mode(target["config"])
         except Exception:
             try:
-                await dsp_runtime.sync(previous_overview)
+                await runtime.dsp_runtime.sync(previous_overview)
             except Exception:
                 logger.exception("Failed to restore native DSP after output-mode transition failure")
             raise
 
         result = with_subwoofer_derived_delays(result)
-        if dsp_runtime is not None:
+        if runtime.dsp_runtime is not None:
             result["output_mode"] = {
                 **(result.get("output_mode") or {}),
-                "runtime": dsp_runtime.snapshot(),
+                "runtime": runtime.dsp_runtime.snapshot(),
             }
         await dsp_orchestrator.refresh_peak_monitor_after_effects_change("audio-output-mode-switch")
         return result
@@ -6337,11 +6337,10 @@ async def audio_bluetooth_overview():
 
 
 async def _pause_all_app_playback_for_external_input() -> None:
-    global player_instance
     try:
-        if player_instance and player_instance._running:
-            player_instance.stop_playback()
-            await manager.broadcast({"type": "playback", "data": build_playback_payload(player_instance.state)})
+        if runtime.player_instance and runtime.player_instance._running:
+            runtime.player_instance.stop_playback()
+            await manager.broadcast({"type": "playback", "data": build_playback_payload(runtime.player_instance.state)})
             released = await _wait_for_pipewire_mpv_release()
             if not released:
                 await asyncio.sleep(SOURCE_HANDOFF_SETTLE_MS / 1000)
@@ -6420,8 +6419,8 @@ async def _load_dsp_preset(
 
 async def _restore_volume_state(manager, start: volume_contract.VolumeState) -> None:
     await _drain_worker(set_output_volume, int(start.master_percent))
-    if dsp_runtime is not None and dsp_runtime.snapshot().get("active"):
-        await dsp_runtime.set_output_gain_db(float(start.dsp_guard_db))
+    if runtime.dsp_runtime is not None and runtime.dsp_runtime.snapshot().get("active"):
+        await runtime.dsp_runtime.set_output_gain_db(float(start.dsp_guard_db))
     if not manager:
         return
     extras = copy.deepcopy(manager.load_global_extras())
@@ -6545,9 +6544,9 @@ async def select_music_library(request: Request):
         active_refreshes = [task for task in library_refresh_tasks if not task.done()]
         if active_refreshes:
             await asyncio.gather(*active_refreshes, return_exceptions=True)
-        if player_instance is not None and player_instance._running:
+        if runtime.player_instance is not None and runtime.player_instance._running:
             _mark_playback_intent_changed()
-            player_instance.stop_playback()
+            runtime.player_instance.stop_playback()
             current_track_info = None
             last_track_info = None
         playback_queue.queue.reset()

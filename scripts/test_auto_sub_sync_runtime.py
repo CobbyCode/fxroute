@@ -77,12 +77,12 @@ class FakeDSPRuntime:
 
 class AutoSubSyncRuntimeTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        self.original_runtime = main.dsp_runtime
+        self.original_runtime = main.runtime.dsp_runtime
         self.runtime = FakeDSPRuntime()
-        main.dsp_runtime = self.runtime
+        main.runtime.dsp_runtime = self.runtime
 
     def tearDown(self):
-        main.dsp_runtime = self.original_runtime
+        main.runtime.dsp_runtime = self.original_runtime
 
     async def test_21_sync_receives_live_overview_dict_with_candidate(self):
         persisted = overview_21(2.34, level=-3.0)
@@ -166,7 +166,7 @@ class AutoSubSyncRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.runtime.sync.assert_awaited_once()
 
     async def test_runtime_none_is_a_noop(self):
-        main.dsp_runtime = None
+        main.runtime.dsp_runtime = None
         with patch.object(autosub, "get_audio_output_overview", return_value=overview_21(2.34)):
             await autosub._auto_sub_sync_dsp_runtime(
                 output_mode="subwoofer-2.1", persisted_overview=overview_21(2.34))

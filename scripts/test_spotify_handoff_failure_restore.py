@@ -103,7 +103,7 @@ class SpotifyHandoffFailureRestoreTests(unittest.IsolatedAsyncioTestCase):
                 main.FxrouteTransitionRuntime,
                 "_restore_committed_source_after_failed_transition",
                 AsyncMock(return_value=True),
-            ), patch.object(main, "player_instance", player), patch.object(
+            ), patch.object(main.runtime, "player_instance", player), patch.object(
                 main, "current_track_info", None
             ), patch.object(main, "last_track_info", dict(retry)), patch.object(
                 main, "current_footer_owner", "spotify"
@@ -132,7 +132,7 @@ class SpotifyHandoffFailureRestoreTests(unittest.IsolatedAsyncioTestCase):
             main.FxrouteTransitionRuntime,
                 "_restore_committed_source_after_failed_transition",
             AsyncMock(return_value=True),
-        ), patch.object(main, "player_instance", player), patch.object(
+        ), patch.object(main.runtime, "player_instance", player), patch.object(
             main, "current_track_info", None
         ), patch.object(main, "last_track_info", dict(track)), patch.object(
             main, "current_footer_owner", "spotify"
@@ -160,7 +160,7 @@ class SpotifyHandoffFailureRestoreTests(unittest.IsolatedAsyncioTestCase):
             main.FxrouteTransitionRuntime,
                 "_restore_committed_source_after_failed_transition",
             AsyncMock(return_value=True),
-        ), patch.object(main, "player_instance", player), patch.object(
+        ), patch.object(main.runtime, "player_instance", player), patch.object(
             main, "current_track_info", None
         ), patch.object(main, "current_footer_owner", "spotify"), patch.object(
             main, "_mark_player_state_authoritative"
@@ -178,7 +178,7 @@ class SpotifyHandoffFailureRestoreTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_spotify_failure_without_prior_local_context_restores_nothing(self):
         player = PlayerDouble(None, playing=False)
-        with patch.object(main, "player_instance", player), patch.object(
+        with patch.object(main.runtime, "player_instance", player), patch.object(
             main, "current_track_info", None
         ), patch.object(main, "current_footer_owner", "spotify"), patch.object(
             main, "_mark_player_state_authoritative"
@@ -198,7 +198,7 @@ class SpotifyHandoffFailureRestoreTests(unittest.IsolatedAsyncioTestCase):
             main.FxrouteTransitionRuntime,
                 "_restore_committed_source_after_failed_transition",
             AsyncMock(return_value=True),
-        ), patch.object(main, "player_instance", None), patch.object(
+        ), patch.object(main.runtime, "player_instance", None), patch.object(
             main, "current_track_info", None
         ), patch.object(main, "current_footer_owner", "spotify"), patch.object(
             main, "_mark_player_state_authoritative"
@@ -221,7 +221,7 @@ class SpotifyHandoffFailureRestoreTests(unittest.IsolatedAsyncioTestCase):
             main.FxrouteTransitionRuntime,
                 "_restore_committed_source_after_failed_transition",
             restore_ready,
-        ), patch.object(main, "player_instance", player), patch.object(
+        ), patch.object(main.runtime, "player_instance", player), patch.object(
             main, "current_track_info", None
         ), patch.object(main, "current_footer_owner", "spotify"), patch.object(
             main, "_can_send_play_command", return_value=True

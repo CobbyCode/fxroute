@@ -43,7 +43,7 @@ class _FakeRuntime:
 class StereoMeasurementReleaseTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self._saved = {
-            "dsp_runtime": main.dsp_runtime,
+            "dsp_runtime": main.runtime.dsp_runtime,
             "_wait_for_selected_output_effective_rate": main._wait_for_selected_output_effective_rate,
             "_wait_for_samplerate_alignment": main._wait_for_samplerate_alignment,
             "get_audio_output_overview": main.get_audio_output_overview,
@@ -52,12 +52,12 @@ class StereoMeasurementReleaseTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self) -> None:
         for name, value in self._saved.items():
-            setattr(main, name, value)
+            setattr(main.runtime if hasattr(main.runtime, name) else main, name, value)
 
     async def test_stereo_release_resyncs_runtime_at_restore_rate(self) -> None:
         """Stereo release re-syncs the DSP from 48 kHz back to 44.1 kHz."""
         runtime = _FakeRuntime(48_000)  # native DSP at the measurement rate
-        main.dsp_runtime = runtime
+        main.runtime.dsp_runtime = runtime
 
         # Stereo is the active output mode.
         main.get_audio_output_overview = lambda: {

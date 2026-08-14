@@ -164,7 +164,7 @@ class QueueCallbackOwnershipTests(unittest.IsolatedAsyncioTestCase):
             "peak_monitor", "build_playback_payload", "_schedule_radio_reconnect_if_needed",
             "sync_peak_monitor_for_playback_state",
         )
-        originals = {name: getattr(main, name) for name in names}
+        originals = {name: (getattr(main.runtime, name) if hasattr(main.runtime, name) else getattr(main, name)) for name in names}
         saved_queue = queue_state()
         try:
             playback_queue.queue.tracks = [
@@ -179,9 +179,9 @@ class QueueCallbackOwnershipTests(unittest.IsolatedAsyncioTestCase):
             playback_queue.queue.single_track_loop = False
             main.playback_transition_epoch = 2
             main.latest_player_state_seq_seen = 0
-            main.source_transition_lock = None
+            main.runtime.source_transition_lock = None
             main.manager = _FakeManager()
-            main.peak_monitor = None
+            main.runtime.peak_monitor = None
             main.build_playback_payload = lambda state: state
             main._schedule_radio_reconnect_if_needed = lambda _state: None
 
@@ -209,7 +209,7 @@ class QueueCallbackOwnershipTests(unittest.IsolatedAsyncioTestCase):
         finally:
             restore_queue_state(saved_queue)
             for name, value in originals.items():
-                setattr(main, name, value)
+                setattr(main.runtime if hasattr(main.runtime, name) else main, name, value)
 
     def test_selected_queue_order_is_exact_and_deduplicated(self):
         original_scanner = main.library_scanner
@@ -285,7 +285,7 @@ class ApiPlayQueueOrderTests(unittest.IsolatedAsyncioTestCase):
 
     def _install(self):
         originals = {
-            name: getattr(main, name)
+            name: (getattr(main.runtime, name) if hasattr(main.runtime, name) else getattr(main, name))
             for name in (
                 "player_instance", "library_scanner", "current_track_info",
                 "last_track_info", "last_radio_track_info", "current_footer_owner",
@@ -297,7 +297,7 @@ class ApiPlayQueueOrderTests(unittest.IsolatedAsyncioTestCase):
             )
         }
         self._saved_queue = queue_state()
-        main.player_instance = _FakePlayer()
+        main.runtime.player_instance = _FakePlayer()
         main.library_scanner = SimpleNamespace(
             get_tracks=lambda: [_FakeTrack("a"), _FakeTrack("b"), _FakeTrack("c")],
         )
@@ -312,8 +312,8 @@ class ApiPlayQueueOrderTests(unittest.IsolatedAsyncioTestCase):
         playback_queue.queue.loop = False
         playback_queue.queue.shuffle = False
         playback_queue.queue.single_track_loop = False
-        main.peak_monitor = None
-        main.source_transition_lock = None
+        main.runtime.peak_monitor = None
+        main.runtime.source_transition_lock = None
         measurement_session._playback_state_before_measurement = None
         main.playback_transition_epoch = 0
         main.radio_reconnect_attempts = 0
@@ -325,7 +325,7 @@ class ApiPlayQueueOrderTests(unittest.IsolatedAsyncioTestCase):
     def _restore(self, originals):
         restore_queue_state(self._saved_queue)
         for name, value in originals.items():
-            setattr(main, name, value)
+            setattr(main.runtime if hasattr(main.runtime, name) else main, name, value)
 
     def _patches(self, recording_shuffle):
         async def no_op(*_args, **_kwargs):
@@ -333,7 +333,7 @@ class ApiPlayQueueOrderTests(unittest.IsolatedAsyncioTestCase):
 
         async def coordinated(request):
             self.transition_requests.append(request)
-            main.player_instance.state.update({
+            main.runtime.player_instance.state.update({
                 "current_file": request.target_url,
                 "paused": not request.should_play,
                 "playing": request.should_play,
@@ -584,7 +584,7 @@ class SilentActiveDiagnosisTests(unittest.IsolatedAsyncioTestCase):
 
     def _install(self):
         originals = {
-            name: getattr(main, name)
+            name: (getattr(main.runtime, name) if hasattr(main.runtime, name) else getattr(main, name))
             for name in (
                 "peak_monitor", "player_instance", "current_track_info",
                 "current_footer_owner", "silent_active_recovery_attempts",
@@ -596,15 +596,15 @@ class SilentActiveDiagnosisTests(unittest.IsolatedAsyncioTestCase):
                 "_is_measurement_window_open", "_list_sink_inputs",
             )
         }
-        main.peak_monitor = SimpleNamespace()
-        main.player_instance = SimpleNamespace(
+        main.runtime.peak_monitor = SimpleNamespace()
+        main.runtime.player_instance = SimpleNamespace(
             _running=True,
             state={"current_file": "/music/t1.flac", "paused": False, "ended": False, "volume": 100},
         )
         main.current_track_info = {"id": "t1", "title": "T1", "url": "/music/t1.flac", "source": "local"}
         main.current_footer_owner = "local"
         main.silent_active_recovery_attempts = set()
-        main.dsp_preset_load_lock = None
+        main.runtime.dsp_preset_load_lock = None
         main._current_track_matches = lambda track: True
         main._is_local_playback_active = lambda state: True
         main._list_mpv_sink_inputs = lambda: [
@@ -624,12 +624,12 @@ class SilentActiveDiagnosisTests(unittest.IsolatedAsyncioTestCase):
 
     def _restore(self, originals):
         for name, value in originals.items():
-            setattr(main, name, value)
+            setattr(main.runtime if hasattr(main.runtime, name) else main, name, value)
 
     async def test_fresh_samples_reach_diagnosis_and_recovery_stays_suppressed(self):
         originals = self._install()
         try:
-            main.peak_monitor.snapshot = lambda: {
+            main.runtime.peak_monitor.snapshot = lambda: {
                 "available": True,
                 "detected": True,
                 "vu_db": -60.0,
@@ -653,7 +653,7 @@ class SilentActiveDiagnosisTests(unittest.IsolatedAsyncioTestCase):
         originals = self._install()
         try:
             # Stale samples with the peak-hold flag set: freshness decides.
-            main.peak_monitor.snapshot = lambda: {
+            main.runtime.peak_monitor.snapshot = lambda: {
                 "available": True,
                 "detected": True,
                 "vu_db": -60.0,

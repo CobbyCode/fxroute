@@ -69,7 +69,7 @@ class LifespanOwnershipTests(unittest.IsolatedAsyncioTestCase):
                 await context.__aenter__()
 
         player.stop.assert_called_once()
-        self.assertIsNone(main.player_instance)
+        self.assertIsNone(main.runtime.player_instance)
         self.assertIsNone(main.library_scan_task)
 
     async def test_startup_cancellation_drains_watchdog_and_owned_managers(self):

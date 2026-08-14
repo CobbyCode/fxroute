@@ -64,7 +64,7 @@ def _transition_coordinator(active: bool):
 def _base_patches(player, coordinator=None):
     """Shared patch set; returns (ExitStack, authoritative_mock, intent_mock)."""
     stack = ExitStack()
-    stack.enter_context(patch.object(main, "player_instance", player))
+    stack.enter_context(patch.object(main.runtime, "player_instance", player))
     stack.enter_context(patch.object(main, "build_playback_payload", side_effect=dict))
     mark_authoritative = stack.enter_context(
         patch.object(main, "_mark_player_state_authoritative")
@@ -97,7 +97,7 @@ class ActiveTransitionGuardTests(unittest.IsolatedAsyncioTestCase):
         player = PlayerDouble()
         coordinator = _transition_coordinator(True)
         track = {"source": "local", "url": "/music/current.flac"}
-        with patch.object(main, "player_instance", player), patch.object(
+        with patch.object(main.runtime, "player_instance", player), patch.object(
             main, "playback_transition_coordinator", coordinator
         ), patch.object(main, "current_track_info", track), patch.object(
             main, "_can_send_play_command", return_value=True
@@ -115,7 +115,7 @@ class ActiveTransitionGuardTests(unittest.IsolatedAsyncioTestCase):
         coordinator = _transition_coordinator(True)
         track = {"source": "radio", "url": "https://radio.example/live"}
         transition_run = AsyncMock(side_effect=AssertionError("resume entered coordinator"))
-        with patch.object(main, "player_instance", player), patch.object(
+        with patch.object(main.runtime, "player_instance", player), patch.object(
             main, "playback_transition_coordinator", coordinator
         ), patch.object(main, "current_track_info", track), patch.object(
             main, "_can_send_play_command", return_value=True
@@ -135,7 +135,7 @@ class ActiveTransitionGuardTests(unittest.IsolatedAsyncioTestCase):
         saved_queue = queue_state()
         try:
             playback_queue.queue.tracks = [dict(item) for item in queue]
-            with patch.object(main, "player_instance", player), patch.object(
+            with patch.object(main.runtime, "player_instance", player), patch.object(
                 main, "playback_transition_coordinator", coordinator
             ), patch.object(main, "current_track_info", track), patch.object(
                 main, "last_radio_track_info", previous_radio
@@ -160,7 +160,7 @@ class ActiveTransitionGuardTests(unittest.IsolatedAsyncioTestCase):
         player = PlayerDouble()
         coordinator = _transition_coordinator(True)
         request = _seek_request()
-        with patch.object(main, "player_instance", player), patch.object(
+        with patch.object(main.runtime, "player_instance", player), patch.object(
             main, "playback_transition_coordinator", coordinator
         ), patch.object(main, "_can_send_play_command", return_value=True):
             with self.assertRaises(HTTPException) as cm:
@@ -182,7 +182,7 @@ class ActiveTransitionGuardTests(unittest.IsolatedAsyncioTestCase):
             return {"position": 30.0}
 
         request = SimpleNamespace(json=AsyncMock(side_effect=body_with_transition_start))
-        with patch.object(main, "player_instance", player), patch.object(
+        with patch.object(main.runtime, "player_instance", player), patch.object(
             main, "playback_transition_coordinator", coordinator
         ), patch.object(main, "_can_send_play_command", return_value=True), patch.object(
             main, "build_playback_payload", side_effect=dict
@@ -200,7 +200,7 @@ class InactiveTransitionSemanticsTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_pause_works_when_transition_inactive(self):
         player = PlayerDouble()
-        with patch.object(main, "player_instance", player), patch.object(
+        with patch.object(main.runtime, "player_instance", player), patch.object(
             main, "build_playback_payload", side_effect=dict
         ), patch.object(main, "_mark_player_state_authoritative"), patch.object(
             main, "_mark_playback_intent_changed"
@@ -213,7 +213,7 @@ class InactiveTransitionSemanticsTests(unittest.IsolatedAsyncioTestCase):
     async def test_toggle_works_when_transition_inactive(self):
         player = PlayerDouble()
         track = {"source": "local", "url": "/music/current.flac"}
-        with patch.object(main, "player_instance", player), patch.object(
+        with patch.object(main.runtime, "player_instance", player), patch.object(
             main, "current_track_info", track
         ), patch.object(main, "_can_send_play_command", return_value=True), patch.object(
             main, "build_playback_payload", side_effect=dict
@@ -238,7 +238,7 @@ class InactiveTransitionSemanticsTests(unittest.IsolatedAsyncioTestCase):
             playback_queue.queue.loop = False
             playback_queue.queue.shuffle = False
             playback_queue.queue.single_track_loop = False
-            with patch.object(main, "player_instance", player), patch.object(
+            with patch.object(main.runtime, "player_instance", player), patch.object(
                 main, "current_track_info", track
             ), patch.object(main, "last_radio_track_info", {}), patch.object(
                 main, "radio_reconnect_attempts", 0
@@ -258,7 +258,7 @@ class InactiveTransitionSemanticsTests(unittest.IsolatedAsyncioTestCase):
     async def test_seek_works_when_transition_inactive(self):
         player = PlayerDouble()
         request = _seek_request()
-        with patch.object(main, "player_instance", player), patch.object(
+        with patch.object(main.runtime, "player_instance", player), patch.object(
             main, "_can_send_play_command", return_value=True
         ), patch.object(main, "build_playback_payload", side_effect=dict), patch.object(
             main, "_mark_playback_intent_changed"
@@ -304,7 +304,7 @@ class TransitionEndRecoveryTests(unittest.IsolatedAsyncioTestCase):
             playback_queue.queue.loop = False
             playback_queue.queue.shuffle = False
             playback_queue.queue.single_track_loop = False
-            with patch.object(main, "player_instance", player), patch.object(
+            with patch.object(main.runtime, "player_instance", player), patch.object(
                 main, "playback_transition_coordinator", coordinator
             ), patch.object(main, "current_track_info", track), patch.object(
                 main, "radio_reconnect_attempts", 0

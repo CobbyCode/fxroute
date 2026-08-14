@@ -110,7 +110,7 @@ class StaleEndfileOwnershipTests(unittest.IsolatedAsyncioTestCase):
             patch.object(main, "sync_peak_monitor_for_playback_state", no_peak_sync),
             patch.object(main, "build_playback_payload", lambda state: dict(state)),
             patch.object(main, "manager", self.manager),
-            patch.object(main, "player_instance", SimpleNamespace(state={})),
+            patch.object(main.runtime, "player_instance", SimpleNamespace(state={})),
         ]
         for patcher in self._patchers:
             patcher.start()
