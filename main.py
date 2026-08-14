@@ -894,7 +894,7 @@ from library import (
 )
 from downloader import Downloader
 from dsp_manager import DSPManager
-from dsp_runtime import DSPRuntime, SubwooferRuntimeConfig, _contains_link
+from dsp_runtime import DSPRuntime, DSPRuntimeConfig, SubwooferRuntimeConfig, _contains_link
 try:
     from hardware_controller import HardwareController
 except ImportError:
@@ -6450,6 +6450,16 @@ async def save_audio_output_mode_route(request: Request):
         target = prepare_audio_output_mode(mode, subwoofer, subwoofers)
         target_mode = str(target["config"].get("mode") or "").strip()
 
+        def mode_transition_guard(target_overview: dict) -> float:
+            runtime_snapshot = subwoofer_runtime.snapshot() if subwoofer_runtime else {}
+            previous_gain = float(runtime_snapshot.get("output_gain_db") or 0.0)
+            current_layout = ((runtime_snapshot.get("config") or {}).get("layout") or [])
+            target_layout = DSPRuntimeConfig.from_overview(target_overview).layout
+            current_peak_gain = max((float(channel.get("gain_db", 0.0)) for channel in current_layout), default=0.0)
+            target_peak_gain = max((float(channel.get("gain_db", 0.0)) for channel in target_layout), default=0.0)
+            positive_gain_delta = max(0.0, target_peak_gain - current_peak_gain)
+            return min(0.0, previous_gain - max(1.0, positive_gain_delta + 1.0))
+
         # A same-mode request is a pure DSP parameter change (crossover, level,
         # alignment, polarity, highpass).  It changes no routing, samplerate or
         # graph topology, so it must not enter the Coordinator's muted
@@ -6460,8 +6470,25 @@ async def save_audio_output_mode_route(request: Request):
             (samplerate._load_audio_output_mode().get("mode") or OUTPUT_MODE_STEREO)
         ).strip()
         if target_mode == current_mode:
+            previous_overview = get_audio_output_overview()
             result = persist_audio_output_mode(target["config"])
-            await _sync_subwoofer_runtime(result, reason="output-mode-params")
+            if subwoofer_runtime is None:
+                await _sync_subwoofer_runtime(result, reason="output-mode-params")
+            else:
+                try:
+                    await subwoofer_runtime.guarded_rebuild(
+                        result,
+                        guard_db=mode_transition_guard(result),
+                        apply_candidate=lambda: None,
+                        apply_previous=lambda: None,
+                        settle_seconds=0.0,
+                    )
+                except Exception:
+                    try:
+                        await subwoofer_runtime.sync(previous_overview)
+                    except Exception:
+                        logger.exception("Failed to restore native DSP after same-mode transition failure")
+                    raise
             result = _with_subwoofer_derived_delays(result)
             if subwoofer_runtime is not None:
                 result["output_mode"] = {
@@ -6497,11 +6524,10 @@ async def save_audio_output_mode_route(request: Request):
             return result
 
         previous_overview = get_audio_output_overview()
-        previous_gain = float((subwoofer_runtime.snapshot() if subwoofer_runtime else {}).get("output_gain_db") or 0.0)
         try:
             await subwoofer_runtime.guarded_rebuild(
                 target["overview"],
-                guard_db=min(0.0, previous_gain, -18.0),
+                guard_db=mode_transition_guard(target["overview"]),
                 apply_candidate=lambda: None,
                 apply_previous=lambda: None,
                 settle_seconds=0.0,

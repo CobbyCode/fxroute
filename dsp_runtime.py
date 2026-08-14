@@ -13,6 +13,7 @@ import time
 import json
 import logging
 import socket
+import shlex
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Sequence
@@ -225,9 +226,11 @@ class DSPRuntimeConfig:
             {"name": "FL", "routes": [{"input": 0, "gain": 1.0}]},
             {"name": "FR", "routes": [{"input": 1, "gain": 1.0}]},
         ]
+        channel_count = int(mode.get("effective_output_channels") or output.get("channels") or 0)
         ports = ["playback_FL", "playback_FR"]
-        if name.startswith("subwoofer-2."):
+        if channel_count >= 4:
             ports.extend(("playback_RL", "playback_RR"))
+        if name.startswith("subwoofer-2."):
             if name.startswith("subwoofer-2.2"):
                 frequency = int(mode.get("crossover_frequency_hz") or 80)
                 subs = mode.get("subwoofers") or {}
@@ -279,6 +282,7 @@ class DSPRuntime:
         self._process = None
         self._config: DSPRuntimeConfig | None = None
         self._config_path: Path | None = None
+        self._config_text: str | None = None
         self._links: list[PipeWireLink] = []
         self._lock = asyncio.Lock()
         self._measurement_scope_lock = asyncio.Lock()
@@ -505,13 +509,20 @@ class DSPRuntime:
 
             if self._can_hot_update(config):
                 try:
+                    if await self._try_live_update(text):
+                        Path(config_name).unlink(missing_ok=True)
+                        self._config = config
+                        self._config_text = text
+                        self._error = None
+                        return
                     await self._control(
                         f"swap config {config_name} {max(-80.0, min(0.0, float(initial_output_gain_db))):.9g}",
                         reply=True,
                     )
-                    Path(config_name).unlink(missing_ok=True)
                     await self._reconcile_output_links(config)
+                    Path(config_name).unlink(missing_ok=True)
                     self._config = config
+                    self._config_text = text
                     self._error = None
                     return
                 except Exception as exc:
@@ -528,6 +539,7 @@ class DSPRuntime:
                 self._control_socket.bind(str(self._control_client_path))
                 self._process = await self._launch((str(self.binary), config_name, str(self._control_path)))
                 self._config = config
+                self._config_text = text
                 self._started_at = time.time()
                 self._start_stderr_drain(self._process)
                 await self._wait_for_ports(config)
@@ -583,6 +595,88 @@ class DSPRuntime:
             and len(self._config.layout) == len(config.layout)
         )
 
+    @staticmethod
+    def _live_config(text: str) -> tuple[list[tuple], list[tuple]]:
+        """Return immutable stage shape and mutable values from a native config."""
+        shape = []
+        values = []
+        stage = None
+        peq_indices = {}
+        for raw in text.splitlines():
+            parts = shlex.split(raw)
+            if not parts:
+                continue
+            kind = parts[0]
+            if kind == "stage_begin":
+                stage = parts[2]
+                shape.append((kind, parts[2], *parts[3:]))
+            elif kind == "stage_end":
+                stage = None
+            elif kind == "control" and stage is not None and len(parts) == 3:
+                shape.append((kind, stage, parts[1]))
+                values.append((kind, stage, parts[1], float(parts[2])))
+            elif kind == "param" and stage is not None and len(parts) >= 3:
+                if parts[1] == "path":
+                    shape.append((kind, stage, parts[1], *parts[2:]))
+                else:
+                    shape.append((kind, stage, parts[1]))
+                    try:
+                        values.append((kind, stage, parts[1], float(parts[2])))
+                    except ValueError:
+                        shape.append(("static", *parts[1:]))
+            elif kind == "matrix" and len(parts) == 4:
+                shape.append((kind, parts[1], parts[2]))
+                values.append((kind, int(parts[1]), int(parts[2]), float(parts[3])))
+            elif kind == "peq" and len(parts) == 6:
+                index = peq_indices.get(parts[1], 0)
+                peq_indices[parts[1]] = index + 1
+                shape.append((kind, parts[1], index, parts[2]))
+                values.append((kind, int(parts[1]), index, parts[2], *(float(item) for item in parts[3:])))
+            elif kind == "output" and len(parts) == 5:
+                shape.append((kind, parts[1]))
+                values.append((kind, int(parts[1]), float(parts[2]), float(parts[3]), parts[4]))
+            elif kind == "bypass":
+                shape.append((kind, parts[1:]))
+        return shape, values
+
+    async def _try_live_update(self, text: str) -> bool:
+        if self._config_text is None:
+            return False
+        old_shape, old_values = self._live_config(self._config_text)
+        new_shape, new_values = self._live_config(text)
+        if old_shape != new_shape:
+            return False
+        old_map = {item[:3]: item[3:] for item in old_values if item[0] in {"control", "param"}}
+        updates = []
+        for item in new_values:
+            key = item[:3]
+            if item[0] in {"control", "param"}:
+                if old_map.get(key) != item[3:]:
+                    updates.append("live %s %s %s %.9g" % (item[0], item[1], item[2], item[3]))
+            elif item[0] == "matrix":
+                old = next((v for v in old_values if v[:3] == item[:3]), None)
+                if old is None or old[3] != item[3]:
+                    updates.append(f"live matrix {item[1]} {item[2]} {item[3]:.9g}")
+            elif item[0] == "peq":
+                old = next((v for v in old_values if v[:3] == item[:3]), None)
+                if old is None or old[3:] != item[3:]:
+                    updates.append("live peq %s %s %s %.9g %.9g %.9g" % item[1:])
+            elif item[0] == "output":
+                old = next((v for v in old_values if v[:2] == item[:2]), None)
+                if old is None or old[2:] != item[2:]:
+                    updates.append("live output %s %.9g %.9g %s" % item[1:])
+        if not updates:
+            return True
+        try:
+            await self._control("live begin", reply=True)
+            for command in updates:
+                await self._control(command, reply=True)
+            await self._control("live commit", reply=True)
+            return True
+        except Exception as exc:
+            logger.warning("Native DSP live update unavailable; using atomic config swap: %s", exc)
+            return False
+
     async def _reconcile_output_links(self, config: DSPRuntimeConfig) -> None:
         """Update only hardware links; native ports remain stable across modes."""
         desired = [
@@ -592,13 +686,14 @@ class DSPRuntime:
         for link in tuple(self._links):
             if link.source.startswith(f"{DSP_NODE_NAME}:output_") and link not in desired:
                 await self._run(("pw-link", "-d", link.source, link.target))
+                self._links.remove(link)
         for link in desired:
             if link not in self._links:
                 result = await self._run(("pw-link", link.source, link.target))
                 if result.returncode and "exists" not in (result.stderr or "").lower():
                     raise RuntimeError(result.stderr or f"Failed to link {link.source} -> {link.target}")
-        self._links = [link for link in self._links if not link.source.startswith(f"{DSP_NODE_NAME}:output_")]
-        self._links.extend(desired)
+                self._links.append(link)
+        self._links = [link for link in self._links if not link.source.startswith(f"{DSP_NODE_NAME}:output_")] + desired
 
     async def stop(self) -> None:
         for link in self._links:
@@ -639,6 +734,7 @@ class DSPRuntime:
         self._exact_sub_mute = False
         self._effect_bypass = False
         self._output_gain_db = 0.0
+        self._config_text = None
 
     async def verify(self) -> bool:
         if not self._links:

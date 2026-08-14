@@ -25,5 +25,12 @@ float fxdsp_output_gain_db(const fxdsp *dsp);
 unsigned fxdsp_peaks(const fxdsp *dsp, float *peaks, unsigned count);
 void fxdsp_reset_peaks(fxdsp *dsp);
 int fxdsp_compatible(const fxdsp *a, const fxdsp *b);
+int fxdsp_live_begin(fxdsp *dsp);
+int fxdsp_live_control(fxdsp *dsp, const char *stage_id, const char *symbol, float value);
+int fxdsp_live_param(fxdsp *dsp, const char *stage_id, const char *key, float value);
+int fxdsp_live_matrix(fxdsp *dsp, unsigned output, unsigned input, float gain);
+int fxdsp_live_peq(fxdsp *dsp, unsigned output, unsigned filter, const char *type, float frequency, float q, float gain_db);
+int fxdsp_live_output(fxdsp *dsp, unsigned output, float gain_db, float delay_ms, int invert);
+int fxdsp_live_commit(fxdsp *dsp);
 
 #endif

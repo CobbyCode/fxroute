@@ -72,6 +72,9 @@ static void handle_control(struct engine *engine, char *command, const struct so
     int value;
     char extra;
     char path[1024];
+    char stage_id[256], symbol[128], type[32], polarity[16];
+    unsigned first, second;
+    float live_value, live_value2, live_value3;
     if(sscanf(command,"mute %li %d %c",&mask,&value,&extra)==2&&!strncmp(command,mute_command,sizeof mute_command-1)&&(value==0||value==1)&&mask>=0&&(unsigned long)mask<=UINT32_MAX) {
         fxdsp_set_mute(atomic_load_explicit(&engine->dsp,memory_order_acquire),(uint32_t)mask,value);
         (void)sendto(engine->control_fd,"ok\n",3,0,(const struct sockaddr *)client,client_size);
@@ -89,6 +92,25 @@ static void handle_control(struct engine *engine, char *command, const struct so
         char reply[16]; int size=snprintf(reply,sizeof reply,"%d\n",fxdsp_effect_bypass(atomic_load_explicit(&engine->dsp,memory_order_acquire)));
         (void)sendto(engine->control_fd,reply,(size_t)size,0,(const struct sockaddr *)client,client_size);
     }
+    else if(!strcmp(command,"live begin") && fxdsp_live_begin(atomic_load_explicit(&engine->dsp,memory_order_acquire)))
+        (void)sendto(engine->control_fd,"ok\n",3,0,(const struct sockaddr *)client,client_size);
+    else if(!strcmp(command,"live commit") && fxdsp_live_commit(atomic_load_explicit(&engine->dsp,memory_order_acquire)))
+        (void)sendto(engine->control_fd,"ok\n",3,0,(const struct sockaddr *)client,client_size);
+    else if(sscanf(command,"live control %255s %127s %f %c",stage_id,symbol,&live_value,&extra)==3 &&
+            fxdsp_live_control(atomic_load_explicit(&engine->dsp,memory_order_acquire),stage_id,symbol,live_value))
+        (void)sendto(engine->control_fd,"ok\n",3,0,(const struct sockaddr *)client,client_size);
+    else if(sscanf(command,"live param %255s %127s %f %c",stage_id,symbol,&live_value,&extra)==3 &&
+            fxdsp_live_param(atomic_load_explicit(&engine->dsp,memory_order_acquire),stage_id,symbol,live_value))
+        (void)sendto(engine->control_fd,"ok\n",3,0,(const struct sockaddr *)client,client_size);
+    else if(sscanf(command,"live matrix %u %u %f %c",&first,&second,&live_value,&extra)==3 &&
+            fxdsp_live_matrix(atomic_load_explicit(&engine->dsp,memory_order_acquire),first,second,live_value))
+        (void)sendto(engine->control_fd,"ok\n",3,0,(const struct sockaddr *)client,client_size);
+    else if(sscanf(command,"live peq %u %u %31s %f %f %f %c",&first,&second,type,&live_value,&live_value2,&live_value3,&extra)==6 &&
+            fxdsp_live_peq(atomic_load_explicit(&engine->dsp,memory_order_acquire),first,second,type,live_value,live_value2,live_value3))
+        (void)sendto(engine->control_fd,"ok\n",3,0,(const struct sockaddr *)client,client_size);
+    else if(sscanf(command,"live output %u %f %f %15s %c",&first,&live_value,&live_value2,polarity,&extra)==4 &&
+            fxdsp_live_output(atomic_load_explicit(&engine->dsp,memory_order_acquire),first,live_value,live_value2,!strcmp(polarity,"invert")))
+        (void)sendto(engine->control_fd,"ok\n",3,0,(const struct sockaddr *)client,client_size);
     else { float gain_db;
         if(sscanf(command,"gain db %f %c",&gain_db,&extra)==1&&!strncmp(command,gain_db_command,sizeof gain_db_command-1)&&isfinite(gain_db)&&gain_db>=-80.0f&&gain_db<=0.0f) {
             fxdsp_set_output_gain_db(atomic_load_explicit(&engine->dsp,memory_order_acquire),gain_db);

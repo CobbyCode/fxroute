@@ -10,6 +10,7 @@
 #include <samplerate.h>
 #include <stdint.h>
 #include <stdatomic.h>
+#include <sched.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -21,6 +22,7 @@
 #define PROCESS_BLOCK 1024
 #define MAX_STAGES 128
 #define MAX_CONTROLS 268
+#define MAX_LIVE_UPDATES 1024
 #define PI 3.14159265358979323846
 
 typedef struct { unsigned in, out; float gain; } route;
@@ -61,6 +63,15 @@ typedef struct {
     fx_lv2_host *lv2[FXDSP_MAX_CHANNELS / 2];
 } dsp_stage;
 
+typedef enum { LIVE_CONTROL, LIVE_PARAM, LIVE_MATRIX, LIVE_PEQ, LIVE_OUTPUT } live_kind;
+typedef struct {
+    live_kind kind;
+    unsigned first, second;
+    float values[8];
+    int invert;
+    char stage_id[256], symbol[128], type[32];
+} live_update;
+
 struct fxdsp {
     unsigned rate, inputs, outputs;
     route routes[MAX_ROUTES];
@@ -75,6 +86,9 @@ struct fxdsp {
     complex_value *fft_roots;
     _Atomic uint32_t mute_mask;
     _Atomic uint32_t peak_bits[FXDSP_MAX_CHANNELS];
+    live_update live[MAX_LIVE_UPDATES];
+    _Atomic unsigned live_count;
+    _Atomic int live_commit;
 };
 
 static uint32_t float_bits(float value) { uint32_t bits; memcpy(&bits,&value,sizeof bits); return bits; }
@@ -357,10 +371,12 @@ static int initialize_stage(fxdsp *d, dsp_stage *stage, char *error, size_t erro
             free(taps);
         }
     } else if (stage->kind == STAGE_DELAY) {
+        size_t id_length = strlen(stage->id);
+        int peq_delay = id_length >= 6U && !strcmp(stage->id + id_length - 6U, "-delay");
         for (channel = 0; channel < d->inputs; channel++) {
             float milliseconds = channel & 1U ? stage->right_ms : stage->left_ms;
             stage->delay[channel] = (size_t)llround(milliseconds * d->rate / 1000.0f);
-            stage->delay_size[channel] = stage->delay[channel] + 1U;
+            stage->delay_size[channel] = (size_t)llround((peq_delay ? 10000.0f : 500.0f) * d->rate / 1000.0f) + 1U;
             stage->delay_line[channel] = calloc(stage->delay_size[channel], sizeof(float));
             if (!stage->delay_line[channel]) { fail(error, error_size, "out of memory"); return -1; }
         }
@@ -462,7 +478,7 @@ fxdsp *fxdsp_load(const char *path, char *error, size_t error_size) {
     if(!d->fft_reverse||!d->fft_roots){fail(error,error_size,"out of memory");goto bad;}
     for(unsigned i=0;i<CONV_BLOCK*2;i++){unsigned value=i,reversed=0;for(unsigned bit=0;bit<9;bit++){reversed=(reversed<<1)|(value&1);value>>=1;}d->fft_reverse[i]=reversed;}
     for(unsigned i=0;i<CONV_BLOCK;i++){double angle=-2*PI*i/(CONV_BLOCK*2);d->fft_roots[i].re=cos(angle);d->fft_roots[i].im=sin(angle);}
-    for(out=0;out<d->outputs;out++) { output_state *s=&d->out[out]; s->delay_size=s->delay+1; s->delay_line=calloc(s->delay_size,sizeof(float)); if(!s->delay_line){fail(error,error_size,"out of memory");goto bad;} }
+    for(out=0;out<d->outputs;out++) { output_state *s=&d->out[out]; s->delay_size=(size_t)llround(500.0*d->rate/1000.0)+1U; s->delay_line=calloc(s->delay_size,sizeof(float)); if(!s->delay_line){fail(error,error_size,"out of memory");goto bad;} }
     for(out=0;out<(d->inputs>d->outputs?d->inputs:d->outputs);out++) for(unsigned b=0;b<2;b++){d->scratch[b][out]=calloc(PROCESS_BLOCK,sizeof(float));if(!d->scratch[b][out]){fail(error,error_size,"out of memory");goto bad;}}
     for (unsigned stage = 0; stage < d->stage_count; stage++) if (initialize_stage(d, &d->stages[stage], error, error_size)) goto bad;
     return d;
@@ -496,10 +512,167 @@ void fxdsp_free(fxdsp *d) {
 }
 unsigned fxdsp_inputs(const fxdsp*d){return d->inputs;} unsigned fxdsp_outputs(const fxdsp*d){return d->outputs;} unsigned fxdsp_rate(const fxdsp*d){return d->rate;}
 
+static dsp_stage *find_stage(fxdsp *d, const char *id) {
+    for (unsigned i = 0; i < d->stage_count; i++)
+        if (!strcmp(d->stages[i].id, id)) return &d->stages[i];
+    return NULL;
+}
+
+static int live_add(fxdsp *d, const live_update *update) {
+    unsigned count = atomic_load_explicit(&d->live_count, memory_order_relaxed);
+    if (count >= MAX_LIVE_UPDATES || atomic_load_explicit(&d->live_commit, memory_order_acquire)) return 0;
+    d->live[count] = *update;
+    atomic_store_explicit(&d->live_count, count + 1U, memory_order_release);
+    return 1;
+}
+
+int fxdsp_live_begin(fxdsp *d) {
+    if (!d || atomic_load_explicit(&d->live_commit, memory_order_acquire)) return 0;
+    atomic_store_explicit(&d->live_count, 0, memory_order_release);
+    return 1;
+}
+
+int fxdsp_live_control(fxdsp *d, const char *stage_id, const char *symbol, float value) {
+    dsp_stage *stage = d ? find_stage(d, stage_id) : NULL;
+    live_update update = {.kind = LIVE_CONTROL, .values = {value}};
+    if (!stage || stage->kind != STAGE_LV2 || !symbol || !isfinite(value)) return 0;
+    int known = 0;
+    for (unsigned i = 0; i < stage->control_count; i++)
+        if (!strcmp(stage->controls[i].symbol, symbol)) known = 1;
+    if (!known) return 0;
+    snprintf(update.stage_id, sizeof update.stage_id, "%s", stage_id);
+    snprintf(update.symbol, sizeof update.symbol, "%s", symbol);
+    return live_add(d, &update);
+}
+
+int fxdsp_live_param(fxdsp *d, const char *stage_id, const char *key, float value) {
+    dsp_stage *stage = d ? find_stage(d, stage_id) : NULL;
+    live_update update = {.kind = LIVE_PARAM, .values = {value}};
+    int known = 0;
+    if (!stage || !key || !isfinite(value)) return 0;
+    if (stage->kind == STAGE_LV2) known = !strcmp(key, "output_gain_db");
+    else if (stage->kind == STAGE_CONVOLVER)
+        known = !strcmp(key, "wet_db") || !strcmp(key, "dry_db") || !strcmp(key, "input_gain_db") || !strcmp(key, "output_gain_db");
+    else if (stage->kind == STAGE_DELAY) known = !strcmp(key, "left_ms") || !strcmp(key, "right_ms");
+    else if (stage->kind == STAGE_HEADROOM || stage->kind == STAGE_MASTER_GAIN) known = !strcmp(key, "gain_db");
+    else if (stage->kind == STAGE_CRYSTALIZER) known = !strcmp(key, "intensity_band2_db");
+    else if (stage->kind == STAGE_AUTOGAIN) known = !strcmp(key, "target_db") || !strcmp(key, "silence_threshold_db");
+    if (!known) return 0;
+    snprintf(update.stage_id, sizeof update.stage_id, "%s", stage_id);
+    snprintf(update.symbol, sizeof update.symbol, "%s", key);
+    if (stage->kind == STAGE_CONVOLVER || stage->kind == STAGE_LV2 ||
+        stage->kind == STAGE_HEADROOM || stage->kind == STAGE_MASTER_GAIN) update.values[1] = powf(10.0f, value / 20.0f);
+    if (stage->kind == STAGE_DELAY) update.values[1] = (float)llround(value * d->rate / 1000.0f);
+    return live_add(d, &update);
+}
+
+int fxdsp_live_matrix(fxdsp *d, unsigned output, unsigned input, float gain) {
+    live_update update = {.kind = LIVE_MATRIX, .first = output, .second = input, .values = {gain}};
+    if (!d || output >= d->outputs || input >= d->inputs || !isfinite(gain)) return 0;
+    for (unsigned i = 0; i < d->route_count; i++)
+        if (d->routes[i].out == output && d->routes[i].in == input) return live_add(d, &update);
+    return 0;
+}
+
+int fxdsp_live_peq(fxdsp *d, unsigned output, unsigned filter, const char *type,
+                   float frequency, float q, float gain_db) {
+    live_update update = {.kind = LIVE_PEQ, .first = output, .second = filter};
+    biquad prepared = {0};
+    if (!d || output >= d->outputs || filter >= d->out[output].filter_count || !type ||
+        !isfinite(frequency) || !isfinite(q) || !isfinite(gain_db) ||
+        (strcmp(type, "bell") && strcmp(type, "notch") && strcmp(type, "lowpass") &&
+         strcmp(type, "highpass") && strcmp(type, "lowshelf") && strcmp(type, "highshelf"))) return 0;
+    if (design(&prepared, type, (float)d->rate, frequency, q, gain_db)) return 0;
+    update.values[0] = prepared.b0;
+    update.values[1] = prepared.b1;
+    update.values[2] = prepared.b2;
+    update.values[3] = prepared.a1;
+    update.values[4] = prepared.a2;
+    return live_add(d, &update);
+}
+
+int fxdsp_live_output(fxdsp *d, unsigned output, float gain_db, float delay_ms, int invert) {
+    live_update update = {.kind = LIVE_OUTPUT, .first = output, .values = {gain_db, delay_ms}, .invert = invert};
+    if (!d || output >= d->outputs || !isfinite(gain_db) || !isfinite(delay_ms) || delay_ms < 0.0f || delay_ms > 500.0f || (invert != 0 && invert != 1)) return 0;
+    update.values[2] = powf(10.0f, gain_db / 20.0f);
+    update.values[3] = (float)llround(delay_ms * d->rate / 1000.0f);
+    return live_add(d, &update);
+}
+
+static void apply_live_updates(fxdsp *d) {
+    if (!atomic_load_explicit(&d->live_commit, memory_order_acquire)) return;
+    unsigned count = atomic_load_explicit(&d->live_count, memory_order_acquire);
+    for (unsigned i = 0; i < count; i++) {
+        live_update *update = &d->live[i];
+        if (update->kind == LIVE_MATRIX) {
+            for (unsigned route = 0; route < d->route_count; route++)
+                if (d->routes[route].out == update->first && d->routes[route].in == update->second) d->routes[route].gain = update->values[0];
+        } else if (update->kind == LIVE_OUTPUT) {
+            output_state *state = &d->out[update->first];
+            state->gain = update->values[2];
+            state->delay = (size_t)update->values[3];
+            if (state->delay >= state->delay_size) state->delay = state->delay_size - 1U;
+            state->polarity = update->invert ? -1.0f : 1.0f;
+        } else if (update->kind == LIVE_PEQ) {
+            biquad *filter = &d->out[update->first].filters[update->second];
+            float z1 = filter->z1, z2 = filter->z2;
+            filter->b0 = update->values[0]; filter->b1 = update->values[1]; filter->b2 = update->values[2];
+            filter->a1 = update->values[3]; filter->a2 = update->values[4];
+            filter->z1 = z1; filter->z2 = z2;
+        } else {
+            dsp_stage *stage = find_stage(d, update->stage_id);
+            if (!stage) continue;
+            if (update->kind == LIVE_CONTROL) {
+                for (unsigned pair = 0; pair < d->inputs / 2U; pair++)
+                    fx_lv2_host_set_control(stage->lv2[pair], update->symbol, update->values[0]);
+            } else if (stage->kind == STAGE_LV2) {
+                stage->output_gain = update->values[1];
+            } else if (stage->kind == STAGE_CONVOLVER) {
+                float gain = update->values[1];
+                if (!strcmp(update->symbol, "wet_db")) stage->wet = gain;
+                else if (!strcmp(update->symbol, "dry_db")) stage->dry = gain;
+                else if (!strcmp(update->symbol, "input_gain_db")) stage->input_gain = gain;
+                else if (!strcmp(update->symbol, "output_gain_db")) stage->output_gain = gain;
+            } else if (stage->kind == STAGE_DELAY) {
+                float *milliseconds = !strcmp(update->symbol, "left_ms") ? &stage->left_ms : &stage->right_ms;
+                *milliseconds = update->values[0];
+                for (unsigned channel = 0; channel < d->inputs; channel++)
+                    if ((!strcmp(update->symbol, "left_ms") && !(channel & 1U)) ||
+                        (!strcmp(update->symbol, "right_ms") && (channel & 1U))) {
+                        stage->delay[channel] = (size_t)update->values[1];
+                        if (stage->delay[channel] >= stage->delay_size[channel]) stage->delay[channel] = stage->delay_size[channel] - 1U;
+                    }
+            } else if (stage->kind == STAGE_HEADROOM || stage->kind == STAGE_MASTER_GAIN) stage->gain = update->values[1];
+            else if (stage->kind == STAGE_CRYSTALIZER) {
+                stage->intensity_db = update->values[0];
+                for (unsigned channel = 0; channel < d->inputs; channel++) fx_crystalizer_set_band_intensity_db(stage->crystalizer[channel], 2U, stage->intensity_db);
+            } else if (stage->kind == STAGE_AUTOGAIN) {
+                if (!strcmp(update->symbol, "target_db")) {
+                    stage->target_db = update->values[0];
+                    for (unsigned pair = 0; pair < d->inputs / 2U; pair++) fx_autogain_set_target(stage->autogain[pair], update->values[0]);
+                } else {
+                    stage->silence_db = update->values[0];
+                    for (unsigned pair = 0; pair < d->inputs / 2U; pair++) fx_autogain_set_silence_threshold(stage->autogain[pair], update->values[0]);
+                }
+            }
+        }
+    }
+    atomic_store_explicit(&d->live_count, 0, memory_order_release);
+    atomic_store_explicit(&d->live_commit, 0, memory_order_release);
+}
+
+int fxdsp_live_commit(fxdsp *d) {
+    if (!d || atomic_load_explicit(&d->live_commit, memory_order_acquire)) return 0;
+    atomic_store_explicit(&d->live_commit, 1, memory_order_release);
+    while (atomic_load_explicit(&d->live_commit, memory_order_acquire)) sched_yield();
+    return 1;
+}
+
 void fxdsp_process_tapped(fxdsp *d, const float *const *input, float *const *output,
                           float *const *post_effect, size_t frames) {
     for(size_t offset=0;offset<frames;offset+=PROCESS_BLOCK) {
         size_t count=frames-offset<PROCESS_BLOCK?frames-offset:PROCESS_BLOCK;
+        apply_live_updates(d);
         uint32_t mute_mask=atomic_load_explicit(&d->mute_mask,memory_order_relaxed);
         for(unsigned channel=0;channel<d->inputs;channel++)
             memcpy(d->scratch[0][channel],input[channel]+offset,count*sizeof(float));

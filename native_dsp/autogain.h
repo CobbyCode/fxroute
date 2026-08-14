@@ -38,6 +38,8 @@ fx_autogain *fx_autogain_init(unsigned sample_rate, size_t maximum_block_frames,
 void fx_autogain_free(fx_autogain *autogain);
 int fx_autogain_process(fx_autogain *autogain, const float *left, const float *right,
                         float *out_left, float *out_right, size_t frames);
+void fx_autogain_set_target(fx_autogain *autogain, double target_lufs);
+void fx_autogain_set_silence_threshold(fx_autogain *autogain, double threshold_lufs);
 fx_autogain_measurement fx_autogain_get_measurement(const fx_autogain *autogain);
 
 #endif

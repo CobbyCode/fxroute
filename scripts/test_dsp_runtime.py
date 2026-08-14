@@ -48,7 +48,7 @@ class DSPRuntimeConfigTests(unittest.TestCase):
 
     def test_stereo_is_two_output_identity_matrix(self):
         config = DSPRuntimeConfig.from_overview(self.overview("stereo"))
-        self.assertEqual(config.hardware_ports, ("playback_FL", "playback_FR"))
+        self.assertEqual(config.hardware_ports, ("playback_FL", "playback_FR", "playback_RL", "playback_RR"))
         self.assertEqual(config.layout[0]["routes"], [{"input": 0, "gain": 1.0}])
         self.assertEqual(config.layout[1]["routes"], [{"input": 1, "gain": 1.0}])
 
@@ -271,7 +271,7 @@ class DSPRuntimeConfigTests(unittest.TestCase):
                 binary.touch()
                 runtime = DSPRuntime(self.manager, binary=binary)
                 runtime._process = FakeProcess()
-                runtime._control_socket = object()
+                runtime._control_socket = unittest.mock.Mock()
                 runtime._config = DSPRuntimeConfig.from_overview(self.overview("stereo"))
                 runtime._run = lambda _command: complete()
                 runtime._stop_orphan_helpers = lambda: complete()
@@ -285,12 +285,78 @@ class DSPRuntimeConfigTests(unittest.TestCase):
         asyncio.run(exercise())
         self.assertEqual(events, [("control", ["swap", "config"])])
 
+    def test_live_update_sends_only_changed_stage_values(self):
+        async def exercise():
+            runtime = DSPRuntime(self.manager)
+            runtime._config_text = "stage_begin 0 global-headroom native headroom\nparam gain_db -3\nstage_end\n"
+            commands = []
+
+            async def control(command, **_kwargs):
+                commands.append(command)
+                return "ok\n"
+
+            runtime._control = control
+            self.assertTrue(await runtime._try_live_update(
+                "stage_begin 0 global-headroom native headroom\nparam gain_db -2\nstage_end\n"
+            ))
+            self.assertEqual(commands, [
+                "live begin", "live param global-headroom gain_db -2", "live commit",
+            ])
+
+        asyncio.run(exercise())
+
     def test_incompatible_config_still_uses_rebuild_path(self):
         runtime = DSPRuntime(self.manager)
         runtime._config = DSPRuntimeConfig.from_overview(self.overview("stereo"))
         changed = self.overview("stereo")
         changed["output_mode"]["effective_output_key"] = "other-hw"
         self.assertFalse(runtime._can_hot_update(DSPRuntimeConfig.from_overview(changed)))
+
+    def test_swap_reconcile_failure_keeps_config_for_fallback_rebuild(self):
+        events = []
+
+        async def exercise():
+            with tempfile.TemporaryDirectory() as directory:
+                binary = Path(directory) / "fxroute-dsp"
+                binary.touch()
+                runtime = DSPRuntime(self.manager, binary=binary)
+                runtime._process = FakeProcess()
+                runtime._control_socket = unittest.mock.Mock()
+                runtime._config = DSPRuntimeConfig.from_overview(self.overview("stereo"))
+                runtime._links = []
+
+                async def run(command):
+                    events.append(("run", tuple(command)))
+                    return CommandResult(0, "")
+
+                async def launch(command):
+                    events.append(("launch", tuple(command), Path(command[1]).exists()))
+                    return FakeProcess()
+
+                async def control(command, **_kwargs):
+                    events.append(("control", command))
+                    return "0\n" if command == "effects bypass get" else "ok\n"
+
+                runtime._run = run
+                runtime._launch = launch
+                runtime._control = control
+                runtime._stop_orphan_helpers = lambda: complete()
+                runtime._wait_for_ports = lambda _config: complete()
+                runtime._remove_direct_source_links = lambda: complete()
+                runtime._reconcile_output_links = lambda _config: fail_reconcile()
+                await runtime.sync(self.overview("stereo"))
+                await runtime.stop()
+
+        async def complete():
+            return None
+
+        async def fail_reconcile():
+            raise RuntimeError("link failed")
+
+        asyncio.run(exercise())
+        launch_events = [event for event in events if event[0] == "launch"]
+        self.assertEqual(len(launch_events), 1)
+        self.assertTrue(launch_events[0][2])
 
     def test_runtime_snapshot_reports_actual_layout_and_effect_bypass(self):
         runtime = DSPRuntime(self.manager)

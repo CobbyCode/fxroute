@@ -37,6 +37,8 @@ struct fx_autogain {
     atomic_measurement published;
     fx_autogain_measurement rt_measurement;
     double applied_gain;
+    _Atomic uint64_t pending_target;
+    _Atomic uint64_t pending_silence;
 };
 
 static uint64_t double_bits(double value) {
@@ -49,6 +51,16 @@ static double bits_double(uint64_t bits) {
     double value;
     memcpy(&value, &bits, sizeof(value));
     return value;
+}
+
+void fx_autogain_set_target(fx_autogain *autogain, double target_lufs) {
+    if (autogain && isfinite(target_lufs))
+        atomic_store_explicit(&autogain->pending_target, double_bits(target_lufs), memory_order_release);
+}
+
+void fx_autogain_set_silence_threshold(fx_autogain *autogain, double threshold_lufs) {
+    if (autogain && isfinite(threshold_lufs))
+        atomic_store_explicit(&autogain->pending_silence, double_bits(threshold_lufs), memory_order_release);
 }
 
 static void publish_measurement(fx_autogain *autogain,
@@ -135,6 +147,8 @@ static double reference_loudness(const fx_autogain *autogain,
 
 static void measure_frames(fx_autogain *autogain, const float *frames, size_t count,
                            fx_autogain_measurement *measurement) {
+    autogain->config.target_lufs = bits_double(atomic_load_explicit(&autogain->pending_target, memory_order_acquire));
+    autogain->config.silence_threshold_lufs = bits_double(atomic_load_explicit(&autogain->pending_silence, memory_order_acquire));
     int failed = ebur128_add_frames_float(autogain->state, frames, count) != EBUR128_SUCCESS;
     if (ebur128_loudness_momentary(autogain->state, &measurement->momentary_lufs) !=
         EBUR128_SUCCESS) failed = 1;
@@ -241,6 +255,8 @@ fx_autogain *fx_autogain_init(unsigned sample_rate, size_t maximum_block_frames,
     autogain->frames_until_lra = (uint64_t)sample_rate * 3U;
     autogain->sample_rate = sample_rate;
     autogain->config = selected;
+    atomic_store_explicit(&autogain->pending_target, double_bits(selected.target_lufs), memory_order_relaxed);
+    atomic_store_explicit(&autogain->pending_silence, double_bits(selected.silence_threshold_lufs), memory_order_relaxed);
     autogain->rt_measurement.gain = 1.0;
     autogain->applied_gain = 1.0;
     publish_measurement(autogain, &autogain->rt_measurement);
