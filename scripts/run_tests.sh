@@ -71,6 +71,7 @@ NATIVE_HELPER_TESTS=(
 NATIVE_C_TESTS=(
     "native_dsp/test_lv2_host.sh"
     "native_dsp/test_master_gain.sh"
+    "native_dsp/test_loudness_strength.sh"
 )
 
 # Native DSP suites build and run the C engine; they need the dev packages

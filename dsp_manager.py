@@ -198,9 +198,11 @@ class DSPManager:
         The LSP work point keeps the established FXRoute relation
         ``volumeDb - calibration + strength + AutoGain`` so the tonal
         compensation follows the canonical listening volume exactly as before
-        the native-DSP migration.  The stage applies the inverse output
-        compensation (``output-gain = -volume``) and is therefore
-        level-neutral at the pre-master post_effect meter tap; the canonical
+        the native-DSP migration.  The stage applies the inverse compensation
+        after the plugin (``output-gain = -volume``); the native engine
+        matches the plugin's FFT/OLA latency so the trim switches on the same
+        frame boundary as the work-point curve, keeping the stage
+        level-neutral at the pre-master post_effect meter tap.  The canonical
         listening attenuation is applied right after the tap by the
         master_gain stage and before the protection limiter, so Peak/VU stays
         independent of listening volume while the Limiter keeps the

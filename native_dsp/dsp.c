@@ -61,6 +61,12 @@ typedef struct {
     fx_autogain *autogain[FXDSP_MAX_CHANNELS / 2];
     fx_crystalizer *crystalizer[FXDSP_MAX_CHANNELS];
     fx_lv2_host *lv2[FXDSP_MAX_CHANNELS / 2];
+    /* Matched-latency loudness compensation (post-LSP output trim). */
+    size_t lv2_frames_fed;
+    unsigned lv2_frame_size, lv2_buf_size;
+    int lv2_comp_transition;
+    float lv2_comp_old_g, lv2_comp_new_g;
+    size_t lv2_comp_boundary_l, lv2_comp_boundary_r;
 } dsp_stage;
 
 typedef enum { LIVE_CONTROL, LIVE_PARAM, LIVE_MATRIX, LIVE_PEQ, LIVE_OUTPUT } live_kind;
@@ -409,6 +415,21 @@ static int initialize_stage(fxdsp *d, dsp_stage *stage, char *error, size_t erro
                 }
             fx_lv2_host_activate(stage->lv2[channel]);
         }
+        /* Derive the FFT overlap timing for the matched-latency loudness
+         * compensation from the plugin rank (fft 0..6 -> rank 8..14 -> FFT
+         * size 256..16384).  The spectral processor uses a Hann (cosine)
+         * window with 50% overlap, so the curve change reaches the output
+         * at the next frame boundary and crossfades over half the window. */
+        unsigned fft_index = 4U;
+        for (unsigned control = 0; control < stage->control_count; control++)
+            if (!strcmp(stage->controls[control].symbol, "fft"))
+                fft_index = (unsigned)stage->controls[control].value;
+        if (fft_index > 6U) fft_index = 4U;
+        unsigned rank = 8U + fft_index;
+        stage->lv2_frame_size = 1U << (rank - 1U);
+        stage->lv2_buf_size = 1U << rank;
+        stage->lv2_frames_fed = 0;
+        stage->lv2_comp_transition = 0;
     }
     return 0;
 }
@@ -599,6 +620,22 @@ int fxdsp_live_output(fxdsp *d, unsigned output, float gain_db, float delay_ms, 
     return live_add(d, &update);
 }
 
+/* Inverse trim for one output sample of a matched-latency loudness
+ * transition.  The plugin crossfades the work-point curve (its flat 1 kHz
+ * component g) from g_old to g_new over one frame with the squared cosine
+ * overlap weight sin^2(pi*d/buf_size); the compensation applies the
+ * reciprocal so the Loudness+trim pair stays level-neutral at the
+ * pre-master meter tap on every sample of the transition. */
+static float lv2_comp_gain(const dsp_stage *stage, size_t sample, unsigned channel) {
+    size_t boundary = channel ? stage->lv2_comp_boundary_r : stage->lv2_comp_boundary_l;
+    if (sample < boundary) return 1.0f / stage->lv2_comp_old_g;
+    if (sample >= boundary + stage->lv2_frame_size) return 1.0f / stage->lv2_comp_new_g;
+    float weight = sinf((float)PI * (float)(sample - boundary) / (float)stage->lv2_buf_size);
+    weight *= weight;
+    float curve = stage->lv2_comp_old_g * (1.0f - weight) + stage->lv2_comp_new_g * weight;
+    return 1.0f / curve;
+}
+
 static void apply_live_updates(fxdsp *d) {
     if (!atomic_load_explicit(&d->live_commit, memory_order_acquire)) return;
     unsigned count = atomic_load_explicit(&d->live_count, memory_order_acquire);
@@ -626,7 +663,20 @@ static void apply_live_updates(fxdsp *d) {
                 for (unsigned pair = 0; pair < d->inputs / 2U; pair++)
                     fx_lv2_host_set_control(stage->lv2[pair], update->symbol, update->values[0]);
             } else if (stage->kind == STAGE_LV2) {
-                stage->output_gain = update->values[1];
+                float gain = update->values[1];
+                if (stage->lv2_frame_size && gain != stage->output_gain) {
+                    /* Schedule the inverse trim to switch in lock-step with
+                     * the work-point curve: keep the previous compensation
+                     * until the new curve reaches the plugin output, then
+                     * crossfade over the same Hann overlap the plugin uses. */
+                    stage->lv2_comp_old_g = 1.0f / stage->output_gain;
+                    stage->lv2_comp_new_g = 1.0f / gain;
+                    size_t fed = stage->lv2_frames_fed, frame = stage->lv2_frame_size;
+                    stage->lv2_comp_boundary_l = frame * ((fed + frame - 1U) / frame);
+                    stage->lv2_comp_boundary_r = frame * ((fed + frame / 2U + frame - 1U) / frame) - frame / 2U;
+                    stage->lv2_comp_transition = 1;
+                }
+                stage->output_gain = gain;
             } else if (stage->kind == STAGE_CONVOLVER) {
                 float gain = update->values[1];
                 if (!strcmp(update->symbol, "wet_db")) stage->wet = gain;
@@ -690,13 +740,38 @@ void fxdsp_process_tapped(fxdsp *d, const float *const *input, float *const *out
                 if(stage->kind==STAGE_AUTOGAIN || stage->kind==STAGE_LV2) {
                     for(unsigned pair=0;pair<d->inputs/2U;pair++) {
                         unsigned left=pair*2U,right=left+1U;
-                        if(stage->kind==STAGE_AUTOGAIN)
+                        if(stage->kind==STAGE_AUTOGAIN) {
                             (void)fx_autogain_process(stage->autogain[pair],d->scratch[source][left],d->scratch[source][right],d->scratch[target][left],d->scratch[target][right],count);
-                        else
+                        } else {
                             (void)fx_lv2_host_run(stage->lv2[pair],d->scratch[source][left],d->scratch[source][right],d->scratch[target][left],d->scratch[target][right],(uint32_t)count,NULL,0);
-                        if(stage->kind==STAGE_LV2 && stage->output_gain!=1.0f) for(size_t n=0;n<count;n++) {
-                            d->scratch[target][left][n]*=stage->output_gain;
-                            d->scratch[target][right][n]*=stage->output_gain;
+                            /* The loudness compensation is applied after the
+                             * plugin so the work point and its inverse trim
+                             * stay one level-neutral transaction.  A Strength
+                             * change alters the work-point curve through the
+                             * plugin's FFT/OLA path (latency 2^rank, Hann
+                             * overlap); the trim switches with the same sample
+                             * timing instead of instantly, so the work-point
+                             * delta is never exposed as a positive excursion. */
+                            if(stage->lv2_comp_transition) {
+                                for(size_t n=0;n<count;n++) {
+                                    size_t s=stage->lv2_frames_fed+n;
+                                    d->scratch[target][left][n]*=lv2_comp_gain(stage,s,0U);
+                                    d->scratch[target][right][n]*=lv2_comp_gain(stage,s,1U);
+                                }
+                            } else if(stage->output_gain != 1.0f) {
+                                for(size_t n=0;n<count;n++) {
+                                    d->scratch[target][left][n]*=stage->output_gain;
+                                    d->scratch[target][right][n]*=stage->output_gain;
+                                }
+                            }
+                        }
+                    }
+                    if(stage->kind==STAGE_LV2) {
+                        stage->lv2_frames_fed += count;
+                        if(stage->lv2_comp_transition) {
+                            size_t latest=(stage->lv2_comp_boundary_l>stage->lv2_comp_boundary_r)?stage->lv2_comp_boundary_l:stage->lv2_comp_boundary_r;
+                            if(stage->lv2_frames_fed >= latest + stage->lv2_frame_size)
+                                stage->lv2_comp_transition = 0;
                         }
                     }
                 } else for(unsigned channel=0;channel<d->inputs;channel++) {
