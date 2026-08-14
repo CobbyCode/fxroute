@@ -210,8 +210,6 @@ def _reason(context: str, name: str) -> str | None:
         return "Coordinator adapter/core: production transition graph ownership"
     if leaf == "stabilize_effects_after_rate_change":
         return "Coordinator adapter/core: bounded link-only repair under the closed gate"
-    if leaf == "_ensure_stereo_easyeffects_output_graph":
-        return "targeted stereo link repair after helper sync; no preset or service restart"
     if leaf == "_reconcile_transition_sink_rate":
         return "rate reconciliation primitive invoked by Coordinator adapter/verifier or measurement entry"
     if leaf == "_coordinator_reconcile_subwoofer_links_only":

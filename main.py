@@ -3462,18 +3462,14 @@ async def _sync_subwoofer_runtime_at_rate(target_rate: int, *, _rate_lock_held: 
         )
         return
     logger.info("Subwoofer runtime measurement release re-sync requested: raw_target_rate=%s", target_rate)
-    overview = get_audio_output_overview()
-    output_mode = overview.get("output_mode") or {}
-    if output_mode.get("mode") not in OUTPUT_MODE_SUBWOOFER_MODES:
-        logger.info(
-            "Subwoofer runtime measurement release re-sync skipped: api_mode=%s target_rate=%s",
-            output_mode.get("mode"), target_rate,
-        )
-        return
 
-    # target_rate is diagnostic/stale-check information only. Do not inject it
-    # into an overview: the central sync reads the authoritative rate again
-    # under the sample-rate lock immediately before deciding to start.
+    # The native DSP runtime owns Stereo as well as subwoofer modes, so a
+    # measurement release re-syncs it at the restore rate for every mode: the
+    # guarded measurement entry may have rebuilt it at the measurement rate
+    # (e.g. the 48 kHz sweep path).  target_rate is diagnostic/stale-check
+    # information only. Do not inject it into an overview: the central sync
+    # reads the authoritative rate again under the sample-rate lock
+    # immediately before deciding to start.
     if target_rate > 0:
         selected_aligned, _ = await _wait_for_selected_output_effective_rate(target_rate, timeout_ms=3500)
         sink_aligned = await _wait_for_samplerate_alignment(target_rate, timeout_ms=3500)
@@ -5184,20 +5180,6 @@ def _with_subwoofer_derived_delays(overview: dict) -> dict:
             "derived_sub2_delay_ms": config.derived_sub2_delay_ms,
         }
     return overview
-
-
-async def _ensure_stereo_easyeffects_output_graph(audio_overview: dict | None = None) -> None:
-    overview = audio_overview or get_audio_output_overview()
-    output_mode = overview.get("output_mode") or {}
-    if output_mode.get("mode") != OUTPUT_MODE_STEREO:
-        return
-    output_key = str(output_mode.get("effective_output_key") or "").strip()
-    if not output_key or output_key == "fxroute_dsp_sink":
-        return
-    try:
-        await _repair_stereo_output_links_once({"output_key": output_key})
-    except Exception as exc:
-        logger.warning("Stereo EasyEffects output link repair failed for %s: %s", output_key, exc)
 
 
 async def _bluetooth_input_monitor_loop() -> None:

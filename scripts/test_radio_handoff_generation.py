@@ -40,7 +40,6 @@ class PlaybackTransitionGenerationTests(unittest.IsolatedAsyncioTestCase):
             "playback_transition_epoch", "current_track_info",
             "_wait_for_samplerate_alignment",
             "_sync_easyeffects_preset_for_playback_samplerate",
-            "_ensure_stereo_easyeffects_output_graph",
             "easyeffects_manager", "player_instance", "subwoofer_runtime",
             "_wait_for_player_current_file",
         )
@@ -55,7 +54,6 @@ class PlaybackTransitionGenerationTests(unittest.IsolatedAsyncioTestCase):
         }
         main._wait_for_samplerate_alignment = lambda _rate: async_value(True)
         main._sync_easyeffects_preset_for_playback_samplerate = lambda **_kwargs: async_value(None)
-        main._ensure_stereo_easyeffects_output_graph = lambda: async_value(None)
         main.easyeffects_manager = object()
         main.player_instance = type("Player", (), {"_running": True})()
 
