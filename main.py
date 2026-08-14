@@ -3005,12 +3005,15 @@ async def _coordinator_establish_effects_and_helper(
                 )
 
         if request.operation == "output-mode-switch":
+            # A mode switch always rebuilds the runtime from the target
+            # overview/config, independent of the rate-staleness heuristic.
             await _sync_subwoofer_runtime(
                 audio_overview=overview,
                 reason="coordinator-output-mode-switch",
                 _rate_lock_held=False,
                 target_overview=overview,
             )
+            helper_rebuilt = True
             if easyeffects_manager is not None:
                 if easyeffects_preset_load_lock is None:
                     easyeffects_preset_load_lock = asyncio.Lock()
@@ -3045,10 +3048,8 @@ async def _coordinator_establish_effects_and_helper(
                             "after runtime sync: %s",
                             compare_target_preset,
                         )
-            helper_rebuilt = mode in OUTPUT_MODE_SUBWOOFER_MODES
             if mode in OUTPUT_MODE_SUBWOOFER_MODES:
                 await _coordinator_reconcile_subwoofer_links_only()
-                links_reconciled = True
             else:
                 # The direct EE -> hardware front links were restored by the
                 # SUB-STOP above, but a concurrently taken pw-link snapshot
@@ -3057,8 +3058,13 @@ async def _coordinator_establish_effects_and_helper(
                 # stereo switch; the extra read also lets the listing settle
                 # before the final diagnosis below.
                 await _repair_stereo_output_links_once(diagnosis)
-                links_reconciled = True
-        elif mode in OUTPUT_MODE_SUBWOOFER_MODES:
+            links_reconciled = True
+        else:
+            # subwoofer_runtime is now the complete native DSPRuntime,
+            # including Stereo.  A real rate change or a stale/inactive/
+            # port-less runtime therefore requires a full rebuild for every
+            # output mode.  The mode only selects the link/routing
+            # reconciliation below; it no longer gates runtime sync.
             helper_snapshot = subwoofer_runtime.snapshot() if subwoofer_runtime is not None else {}
             helper_needs_sync = bool(
                 request.rate_change
@@ -3083,15 +3089,20 @@ async def _coordinator_establish_effects_and_helper(
                         reason=f"coordinator-{request.operation}",
                     )
                 helper_rebuilt = True
-            # EasyEffects may recreate its direct front links after a preset
-            # action.  Reconcile them after helper setup without restarting
-            # either process.
-            if helper_needs_sync or not diagnosis.get("links_complete"):
-                await _coordinator_reconcile_subwoofer_links_only()
+                # EasyEffects may recreate its direct front links after a
+                # preset action.  Reconcile them after helper setup without
+                # restarting either process.
+                if mode in OUTPUT_MODE_SUBWOOFER_MODES:
+                    await _coordinator_reconcile_subwoofer_links_only()
+                else:
+                    await _repair_stereo_output_links_once(diagnosis)
                 links_reconciled = True
-        elif not diagnosis.get("links_complete"):
-            await _repair_stereo_output_links_once(diagnosis)
-            links_reconciled = True
+            elif not diagnosis.get("links_complete"):
+                if mode in OUTPUT_MODE_SUBWOOFER_MODES:
+                    await _coordinator_reconcile_subwoofer_links_only()
+                else:
+                    await _repair_stereo_output_links_once(diagnosis)
+                links_reconciled = True
 
     final = await _playback_graph_diagnosis(
         overview,

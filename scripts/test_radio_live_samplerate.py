@@ -310,10 +310,10 @@ class RadioPostLoadHandoffTests(unittest.IsolatedAsyncioTestCase):
             0,
             "a working EasyEffects graph must not reload its preset for rate alone",
         )
-        # This fixture uses the stereo graph; no subwoofer helper is part of
-        # that topology.  The Coordinator still performs the canonical graph
-        # readback before opening the gate.
-        self.assertEqual(len(calls["subwoofer"]), 0)
+        # subwoofer_runtime is now the complete native DSPRuntime, including
+        # Stereo; a real rate transition rebuilds it at the target rate even
+        # for the stereo graph.
+        self.assertEqual(len(calls["subwoofer"]), 1)
 
     async def test_48_to_44_switches_exactly_once(self):
         track = {"id": "radio_44c", "source": "radio", "url": "https://radio.example/44c"}
@@ -327,7 +327,7 @@ class RadioPostLoadHandoffTests(unittest.IsolatedAsyncioTestCase):
             0,
             "a working EasyEffects graph must not reload its preset for rate alone",
         )
-        self.assertEqual(len(calls["subwoofer"]), 0)
+        self.assertEqual(len(calls["subwoofer"]), 1)
 
     async def test_first_radio_start_accepts_any_valid_live_rate(self):
         # previous_rate None (no prior stream): first valid live rate wins.

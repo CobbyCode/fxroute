@@ -9,6 +9,7 @@ and the canonical graph snapshot is the only commit predicate.
 from __future__ import annotations
 
 import asyncio
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -19,6 +20,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
+from dsp_runtime import CommandResult, PipeWireLink
 from playback_transition import PlaybackTransitionCoordinator, PlaybackTransitionFailure, TransitionRequest
 from playback_transition_test_support import MainCoreTransitionRuntime, make_transition_runtime
 
@@ -210,37 +212,45 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(link_state["direct"])
 
     async def test_rate_change_syncs_helper_once_and_reaches_canonical_graph(self):
-        helper = HelperDouble(active=False, rate=None)
-        calls = {"preset": 0, "sync": 0}
+        for mode in ("subwoofer-2.1", "subwoofer-2.2"):
+            with self.subTest(mode=mode):
+                helper = HelperDouble(active=False, rate=None)
+                calls = {"preset": 0, "sync": 0}
+                overview = {
+                    "output_mode": {
+                        "mode": mode,
+                        "effective_output_key": OUTPUT_KEY,
+                    }
+                }
 
-        async def sync(**_kwargs):
-            calls["sync"] += 1
-            helper.active = True
-            helper.rate = 48000
+                async def sync(**_kwargs):
+                    calls["sync"] += 1
+                    helper.active = True
+                    helper.rate = 48000
 
-        async def pw_link(*args):
-            return _links_text("subwoofer-2.2")
+                async def pw_link(*_args):
+                    return _links_text(mode)
 
-        request = TransitionRequest(
-            operation="play",
-            source="local",
-            target_rate=48000,
-            target_url="/music/target.flac",
-            should_play=True,
-            rate_change=True,
-            reload_source=True,
-        )
-        with patch.object(main, "get_audio_output_overview", return_value=self.overview), patch.object(
-            main, "_run_pw_link_command", side_effect=pw_link
-        ), patch.object(main, "subwoofer_runtime", helper), patch.object(
-            main, "_sync_easyeffects_preset_for_playback_samplerate",
-            side_effect=lambda **_kwargs: calls.__setitem__("preset", calls["preset"] + 1),
-        ), patch.object(main, "_sync_subwoofer_runtime", side_effect=sync), patch.object(
-            main, "easyeffects_manager", None
-        ):
-            await main._coordinator_establish_effects_and_helper(request)
-        self.assertEqual(calls, {"preset": 0, "sync": 1})
-        self.assertEqual(helper.reconcile_calls, 1)
+                request = TransitionRequest(
+                    operation="play",
+                    source="local",
+                    target_rate=48000,
+                    target_url="/music/target.flac",
+                    should_play=True,
+                    rate_change=True,
+                    reload_source=True,
+                )
+                with patch.object(main, "get_audio_output_overview", return_value=overview), patch.object(
+                    main, "_run_pw_link_command", side_effect=pw_link
+                ), patch.object(main, "subwoofer_runtime", helper), patch.object(
+                    main, "_sync_easyeffects_preset_for_playback_samplerate",
+                    side_effect=lambda **_kwargs: calls.__setitem__("preset", calls["preset"] + 1),
+                ), patch.object(main, "_sync_subwoofer_runtime", side_effect=sync), patch.object(
+                    main, "easyeffects_manager", None
+                ):
+                    await main._coordinator_establish_effects_and_helper(request)
+                self.assertEqual(calls, {"preset": 0, "sync": 1})
+                self.assertEqual(helper.reconcile_calls, 1)
 
     async def test_measurement_restore_respects_held_session_lock_and_commits(self):
         """Restore must not re-enter the measurement lock during helper sync."""
@@ -470,6 +480,126 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
         reconciler.assert_awaited_once()
         self.assertEqual(events, ["sync", "reconcile", "verify", "verify"])
         self.assertLess(events.index("reconcile"), events.index("verify"))
+
+
+class StereoRateTransitionRegressionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_stereo_rate_change_rebuilds_native_dsp_and_confirms_canonical_graph(self):
+        """44100 DSP -> 48000 hardware -> full native DSP rebuild -> canonical graph.
+
+        The Stereo branch must synchronize the complete native DSPRuntime on a
+        real rate transition, not merely repair its hardware links.  A stale
+        DSP rate cannot be fixed by link repair, so the Coordinator must drive
+        a full rebuild before the final graph readback can pass.
+        """
+
+        def stereo_overview(rate):
+            return {
+                "output_mode": {
+                    "mode": "stereo",
+                    "effective_output_key": OUTPUT_KEY,
+                    "effective_output_rate": rate,
+                }
+            }
+
+        manager = main.DSPManager(home=Path(tempfile.mkdtemp()))
+        manager.save_global_extras({"limiter": {"enabled": False}})
+
+        class FakeProcess:
+            def __init__(self, pid):
+                self.returncode = None
+                self.pid = pid
+                self.terminated = False
+
+            def terminate(self):
+                self.terminated = True
+                self.returncode = 0
+
+            async def wait(self):
+                return self.returncode
+
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory) / "fxroute-dsp"
+            binary.touch()
+
+            old_process = FakeProcess(100)
+            launched = []
+
+            async def run(command):
+                command = tuple(command)
+                if command[0] == "pgrep":
+                    return CommandResult(0, "")
+                if command[0].endswith("fxroute-dsp-offline"):
+                    return CommandResult(0, "")
+                if command[:2] == ("pw-link", "-io"):
+                    return CommandResult(0, "\n".join([
+                        "fxroute_dsp:input_1",
+                        "fxroute_dsp:input_2",
+                        "fxroute_dsp:output_1",
+                        "fxroute_dsp:output_2",
+                        "fxroute_dsp:output_3",
+                        "fxroute_dsp:output_4",
+                        "fxroute_dsp:post_effect_FL",
+                        "fxroute_dsp:post_effect_FR",
+                    ]))
+                return CommandResult(0, "")
+
+            async def launch(_command):
+                process = FakeProcess(200 + len(launched))
+                launched.append(process)
+                return process
+
+            runtime = main.DSPRuntime(
+                manager,
+                binary=binary,
+                command_runner=run,
+                process_launcher=launch,
+            )
+            runtime._process = old_process
+            runtime._config = main.DSPRuntimeConfig.from_overview(stereo_overview(44100))
+            runtime._links = [
+                PipeWireLink("fxroute_dsp:output_1", f"{OUTPUT_KEY}:playback_FL"),
+                PipeWireLink("fxroute_dsp:output_2", f"{OUTPUT_KEY}:playback_FR"),
+            ]
+
+            async def control(command, *, reply):
+                return "0\n" if command == "effects bypass get" else "ok\n"
+
+            runtime._control = control
+
+            request = TransitionRequest(
+                operation="play",
+                source="local",
+                target_rate=48000,
+                target_url="/music/target.flac",
+                should_play=True,
+                rate_change=True,
+                reload_source=True,
+            )
+
+            with patch.object(main, "subwoofer_runtime", runtime), patch.object(
+                main, "easyeffects_manager", None
+            ), patch.object(
+                main, "get_audio_output_overview", return_value=stereo_overview(44100)
+            ), patch.object(
+                main, "get_samplerate_status", return_value={"active_rate": 48000, "force_rate": 48000}
+            ), patch.object(
+                main, "_run_pw_link_command",
+                side_effect=lambda *_args: _links_text("stereo", source=False),
+            ):
+                result = await main._coordinator_establish_effects_and_helper(request)
+
+            snapshot = runtime.snapshot()
+            self.assertTrue(result["graph_complete"])
+            self.assertTrue(result["helper_rebuilt"])
+            self.assertTrue(result["links_reconciled"])
+            self.assertEqual(snapshot["config"]["sample_rate"], 48000)
+            self.assertEqual(snapshot["config"]["output_mode"], "stereo")
+            self.assertTrue(snapshot["active"])
+            self.assertEqual(len(launched), 1)
+            self.assertTrue(old_process.terminated)
+            if runtime._control_socket is not None:
+                runtime._control_socket.close()
+                runtime._control_socket = None
 
 
 
