@@ -9,6 +9,7 @@ import math
 import re
 import subprocess
 import tempfile
+import time
 import wave
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -32,6 +33,7 @@ class _SplCalibrationOperation:
     session_job_id: str
     noise_process: subprocess.Popen[Any] | None = None
     noise_file: Path | None = None
+    noise_links: list[tuple[str, str]] | None = None
     recorder: subprocess.Popen[Any] | None = None
     restore_state: dict[str, Any] | None = None
     capture_path: Path | None = None
@@ -578,6 +580,73 @@ def _terminate_and_reap(process: subprocess.Popen[Any] | None) -> None:
     process.wait(timeout=2)
 
 
+SPL_NOISE_SINK_NAME = "fxroute_dsp_sink"
+SPL_NOISE_LINK_TIMEOUT_SECONDS = 4.0
+
+
+def _spl_noise_node_name(operation: _SplCalibrationOperation) -> str:
+    return f"fxroute-spl-noise-{operation.id[:8]}"
+
+
+def _spl_noise_link_ports(noise_node_name: str) -> dict[str, str]:
+    """Wait for the pw-play output ports and return them as a port pair."""
+    deadline = time.monotonic() + SPL_NOISE_LINK_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        try:
+            listed = subprocess.run(
+                ["pw-link", "-o"],
+                capture_output=True,
+                text=True,
+                timeout=3,
+                check=False,
+            )
+        except Exception:
+            time.sleep(0.05)
+            continue
+        ports = listed.stdout or ""
+        left = f"{noise_node_name}:output_FL"
+        right = f"{noise_node_name}:output_FR"
+        if left in ports and right in ports:
+            return {"left": left, "right": right}
+        time.sleep(0.05)
+    raise RuntimeError(
+        f"SPL calibration noise source ports did not appear in time: {noise_node_name}"
+    )
+
+
+def _link_spl_noise_to_dsp_sink(operation: _SplCalibrationOperation) -> None:
+    """Deterministically link the calibration noise into the DSP ingress.
+
+    The default sink is the hardware output (not the DSP ingress), so plain
+    pw-play autoconnect would bypass the native DSP chain (headroom, active
+    filters, crossover, Protection Limiter) and the calibration would measure
+    an unprocessed signal.  Mirror the measurement sweep playback: disable
+    autoconnect and link the play node explicitly to fxroute_dsp_sink.
+    """
+    noise_node = _spl_noise_node_name(operation)
+    ports = _spl_noise_link_ports(noise_node)
+    links: list[tuple[str, str]] = []
+    for source, target in (
+        (ports["left"], f"{SPL_NOISE_SINK_NAME}:playback_FL"),
+        (ports["right"], f"{SPL_NOISE_SINK_NAME}:playback_FR"),
+    ):
+        result = subprocess.run(
+            ["pw-link", source, target],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+        stderr = (result.stderr or "").strip().lower()
+        if result.returncode != 0 and "already exists" not in stderr and "file exists" not in stderr:
+            raise RuntimeError(
+                f"Could not link SPL calibration noise to the DSP chain "
+                f"({source} -> {target}): {(result.stderr or result.stdout).strip()}"
+            )
+        links.append((source, target))
+    operation.noise_links = links
+
+
 def _restore_spl_calibration_audio(operation: _SplCalibrationOperation) -> None:
     dependencies = _dependencies()
     dsp_manager = dependencies.get_dsp_manager()
@@ -671,10 +740,18 @@ def _start_spl_calibration_noise(operation: _SplCalibrationOperation) -> dict[st
         if operation.cancel_requested:
             raise RuntimeError("SPL calibration was stopped")
         operation.noise_process = subprocess.Popen(
-            ["pw-play", "--volume=1.0", str(noise_path)],
+            [
+                "pw-play",
+                "-P", "node.autoconnect=false",
+                "-P", f"node.name={_spl_noise_node_name(operation)}",
+                "--target", "0",
+                "--volume=1.0",
+                str(noise_path),
+            ],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
+        _link_spl_noise_to_dsp_sink(operation)
         if operation.cancel_requested:
             _terminate_and_reap(operation.noise_process)
             raise RuntimeError("SPL calibration was stopped")
@@ -799,6 +876,20 @@ async def _cleanup_operation(operation: _SplCalibrationOperation) -> None:
             return
         operation.completed.clear()
         cleanup_failed = False
+        if operation.noise_links:
+            for source, target in operation.noise_links:
+                try:
+                    await asyncio.to_thread(
+                        subprocess.run,
+                        ["pw-link", "-d", source, target],
+                        capture_output=True,
+                        text=True,
+                        timeout=3,
+                        check=False,
+                    )
+                except BaseException:
+                    logger.exception("Failed to remove SPL calibration noise link")
+            operation.noise_links = None
         for label, process in (
             ("capture", operation.recorder),
             ("noise", operation.noise_process),

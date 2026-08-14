@@ -101,9 +101,18 @@ class SplNoiseTempCleanupTests(unittest.TestCase):
         self.assertFalse(self._noise_path().exists())
 
     def test_ffmpeg_success_keeps_cached_noise_file(self):
-        def _fake_run(_args, **_kwargs):
-            self._noise_path().write_bytes(b"valid")
-            return type("Result", (), {"returncode": 0, "stderr": ""})()
+        noise_node = f"fxroute-spl-noise-{self._operation().id[:8]}"
+
+        def _fake_run(args, **_kwargs):
+            if args and args[0] == "ffmpeg":
+                self._noise_path().write_bytes(b"valid")
+                return type("Result", (), {"returncode": 0, "stderr": "", "stdout": ""})()
+            if args[:2] == ["pw-link", "-o"]:
+                return type("Result", (), {
+                    "returncode": 0, "stderr": "",
+                    "stdout": f"{noise_node}:output_FL\n{noise_node}:output_FR\n",
+                })()
+            return type("Result", (), {"returncode": 0, "stderr": "", "stdout": ""})()
 
         with patch.object(spl_calibration.subprocess, "run", _fake_run), \
                 patch.object(spl_calibration.subprocess, "Popen", FakePwPlayProcess):
@@ -114,10 +123,17 @@ class SplNoiseTempCleanupTests(unittest.TestCase):
     def test_existing_cache_file_is_reused_without_regeneration(self):
         self._noise_path().write_bytes(b"valid-cache")
         generated = []
+        noise_node = f"fxroute-spl-noise-{self._operation().id[:8]}"
 
         def _fake_run(args, **_kwargs):
-            generated.append(args)
-            return type("Result", (), {"returncode": 0, "stderr": ""})()
+            if args and args[0] == "ffmpeg":
+                generated.append(args)
+            if args[:2] == ["pw-link", "-o"]:
+                return type("Result", (), {
+                    "returncode": 0, "stderr": "",
+                    "stdout": f"{noise_node}:output_FL\n{noise_node}:output_FR\n",
+                })()
+            return type("Result", (), {"returncode": 0, "stderr": "", "stdout": ""})()
 
         with patch.object(spl_calibration.subprocess, "run", _fake_run), \
                 patch.object(spl_calibration.subprocess, "Popen", FakePwPlayProcess):

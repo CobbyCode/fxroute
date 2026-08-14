@@ -141,6 +141,78 @@ async def _restore_auto_sub_original_config(original_config_snapshot: dict[str, 
         logger.exception("Auto-sub: failed to restore original config from snapshot")
 
 
+async def _auto_sub_sync_dsp_runtime(
+    *,
+    output_mode: str,
+    persisted_overview: dict[str, Any],
+) -> None:
+    """Sync the native DSP runtime to the exact candidate/winner state.
+
+    ``persisted_overview`` is the overview returned by the candidate
+    ``set_audio_output_mode`` call, which persists the mode file synchronously
+    and reads it back.  The live overview is re-read here and its derived
+    bass configuration must match the persisted candidate on mode, sub
+    alignments, levels, polarities, crossover and main high-pass.  A mismatch
+    (for example a concurrent writer replacing the candidate with the
+    incumbent state) raises instead of silently syncing the wrong topology,
+    so every AutoSub sweep runs with exactly the gain/delay/polarity/
+    crossover state the caller intends to evaluate.
+    """
+    from main import dsp_runtime
+    if dsp_runtime is None:
+        return
+    overview = get_audio_output_overview()
+    expected = BassManagementConfig.from_overview(persisted_overview)
+    actual = BassManagementConfig.from_overview(overview)
+    mismatches: list[str] = []
+    if actual.output_mode != output_mode:
+        mismatches.append(f"mode={actual.output_mode} (expected {output_mode})")
+    if abs(actual.sub_alignment_ms - expected.sub_alignment_ms) > 0.05:
+        mismatches.append(
+            f"sub1 alignment={actual.sub_alignment_ms:.2f} ms "
+            f"(expected {expected.sub_alignment_ms:.2f} ms)"
+        )
+    if actual.crossover_frequency_hz != expected.crossover_frequency_hz:
+        mismatches.append(
+            f"crossover={actual.crossover_frequency_hz} Hz "
+            f"(expected {expected.crossover_frequency_hz} Hz)"
+        )
+    if bool(actual.main_highpass_enabled) != bool(expected.main_highpass_enabled):
+        mismatches.append(
+            f"main high-pass={actual.main_highpass_enabled} "
+            f"(expected {expected.main_highpass_enabled})"
+        )
+    if abs(round(actual.sub_level_db, 1) - round(expected.sub_level_db, 1)) > 0.05:
+        mismatches.append(
+            f"sub1 level={actual.sub_level_db:.1f} dB "
+            f"(expected {expected.sub_level_db:.1f} dB)"
+        )
+    if actual.sub_polarity != expected.sub_polarity:
+        mismatches.append(
+            f"sub1 polarity={actual.sub_polarity} (expected {expected.sub_polarity})"
+        )
+    if output_mode in OUTPUT_MODE_SUBWOOFER_22_MODES:
+        if abs(actual.sub2_alignment_ms - expected.sub2_alignment_ms) > 0.05:
+            mismatches.append(
+                f"sub2 alignment={actual.sub2_alignment_ms:.2f} ms "
+                f"(expected {expected.sub2_alignment_ms:.2f} ms)"
+            )
+        if abs(round(actual.sub2_level_db, 1) - round(expected.sub2_level_db, 1)) > 0.05:
+            mismatches.append(
+                f"sub2 level={actual.sub2_level_db:.1f} dB "
+                f"(expected {expected.sub2_level_db:.1f} dB)"
+            )
+        if actual.sub2_polarity != expected.sub2_polarity:
+            mismatches.append(
+                f"sub2 polarity={actual.sub2_polarity} (expected {expected.sub2_polarity})"
+            )
+    if mismatches:
+        raise RuntimeError(
+            "AutoSub candidate state changed before DSP sync: " + "; ".join(mismatches)
+        )
+    await dsp_runtime.sync(overview)
+
+
 def _auto_sub_step_ms(fc: int) -> float:
     return (1000.0 / float(fc)) / 16.0
 
@@ -1690,7 +1762,7 @@ async def _measure_auto_sub_candidate(
                 sub1_polarity=sub1_polarity,
                 sub2_polarity=sub2_polarity,
             )
-            set_audio_output_mode(output_mode, sub_config, subwoofers_config)
+            persisted_overview = set_audio_output_mode(output_mode, sub_config, subwoofers_config)
         else:
             sub_config = {
                 "crossover_frequency_hz": fc,
@@ -1699,10 +1771,12 @@ async def _measure_auto_sub_candidate(
                 "sub_polarity": original_polarity,
                 "main_highpass_enabled": original_highpass,
             }
-            set_audio_output_mode(OUTPUT_MODE_SUBWOOFER_21, sub_config)
+            persisted_overview = set_audio_output_mode(OUTPUT_MODE_SUBWOOFER_21, sub_config)
         if dsp_runtime is not None:
-            config = BassManagementConfig.from_overview(get_audio_output_overview())
-            await dsp_runtime.sync(config)
+            await _auto_sub_sync_dsp_runtime(
+                output_mode=output_mode,
+                persisted_overview=persisted_overview,
+            )
         _marks["config_set"] = time.monotonic()
         await asyncio.sleep(0.5)
         if _auto_sub_cancel_requested(job):
@@ -3311,10 +3385,12 @@ async def _run_auto_sub_22_optimize(
                 sub2_alignment_ms=best_sub2,
                 active_subs=("sub1", "sub2"),
             )
-            set_audio_output_mode(OUTPUT_MODE_SUBWOOFER_22, sub_config, subwoofers_config)
+            persisted_overview = set_audio_output_mode(OUTPUT_MODE_SUBWOOFER_22, sub_config, subwoofers_config)
             if dsp_runtime is not None:
-                config = BassManagementConfig.from_overview(get_audio_output_overview())
-                await dsp_runtime.sync(config)
+                await _auto_sub_sync_dsp_runtime(
+                    output_mode=OUTPUT_MODE_SUBWOOFER_22,
+                    persisted_overview=persisted_overview,
+                )
             await asyncio.sleep(0.3)
             verify = _load_audio_output_mode()
             apply_ok = _auto_sub_22_verify_alignment(verify, best_sub1, best_sub2)
@@ -4107,10 +4183,12 @@ async def _run_auto_sub_22_stereo_optimize(
                 sub2_alignment_ms=best_right,
                 active_subs=("sub1", "sub2"),
             )
-            set_audio_output_mode(OUTPUT_MODE_SUBWOOFER_22_STEREO, sub_config, subwoofers_config)
+            persisted_overview = set_audio_output_mode(OUTPUT_MODE_SUBWOOFER_22_STEREO, sub_config, subwoofers_config)
             if dsp_runtime is not None:
-                config = BassManagementConfig.from_overview(get_audio_output_overview())
-                await dsp_runtime.sync(config)
+                await _auto_sub_sync_dsp_runtime(
+                    output_mode=OUTPUT_MODE_SUBWOOFER_22_STEREO,
+                    persisted_overview=persisted_overview,
+                )
             await asyncio.sleep(0.3)
             apply_ok = _auto_sub_22_verify_alignment(_load_audio_output_mode(), best_left, best_right)
         except Exception:
@@ -5094,10 +5172,12 @@ async def _run_auto_sub_optimize(
                     "sub_polarity": original_polarity,
                     "main_highpass_enabled": original_highpass,
                 }
-                set_audio_output_mode(OUTPUT_MODE_SUBWOOFER_21, sub_config)
+                persisted_overview = set_audio_output_mode(OUTPUT_MODE_SUBWOOFER_21, sub_config)
                 if dsp_runtime is not None:
-                    config = BassManagementConfig.from_overview(get_audio_output_overview())
-                    await dsp_runtime.sync(config)
+                    await _auto_sub_sync_dsp_runtime(
+                        output_mode=OUTPUT_MODE_SUBWOOFER_21,
+                        persisted_overview=persisted_overview,
+                    )
                 await asyncio.sleep(0.3)
                 verify = _load_audio_output_mode()
                 if float(verify.get("subwoofer", {}).get("sub_alignment_ms", -999)) == best_delay:
