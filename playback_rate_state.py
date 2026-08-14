@@ -1,11 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
-"""Single authoritative owner of the mutable playback source/rate state.
+"""Single authoritative owner of the mutable playback samplerate drift state.
 
-``PlaybackRateState`` consolidates the globals that used to be scattered over
-``main.py`` for source/rate coordination: the forced playback samplerate
-mirror, the current source mode, and the samplerate drift observation state.
-Only stdlib, so the container stays testable without FXRoute imports.
+``PlaybackRateState`` owns the samplerate drift observation state that used to
+be scattered over ``main.py``.  Only stdlib, so the container stays testable
+without FXRoute imports.
+
+The PipeWire forced rate stays authoritative via ``get_samplerate_status`` /
+``_get_current_pipewire_force_rate``, and the committed source mode via
+``get_audio_source_overview``; neither is cached here.
 """
 
 from __future__ import annotations
@@ -16,20 +19,13 @@ from typing import Any
 
 @dataclass
 class PlaybackRateState:
-    """Authoritative owner of the playback source/rate coordination state.
+    """Authoritative owner of the playback samplerate drift observation state.
 
-    * ``playback_samplerate_force_rate`` mirrors the last PipeWire forced
-      playback rate applied by ``_ensure_playback_samplerate_force``.
-    * ``current_source_mode`` is the committed app source mode
-      (app-playback / external-input / bluetooth-input).
     * ``samplerate_drift_signature`` / ``samplerate_drift_readbacks`` hold the
       drift observation state: the signature of the currently observed
       mismatch and how many consecutive readbacks confirmed it.
     """
 
-    playback_samplerate_force_rate: int | None = None
-    # Mirrors samplerate.SOURCE_MODE_APP_PLAYBACK.
-    current_source_mode: str = "app-playback"
     samplerate_drift_signature: tuple[Any, ...] | None = None
     samplerate_drift_readbacks: int = 0
 

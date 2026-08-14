@@ -602,7 +602,6 @@ async def _ensure_playback_samplerate_force(
         return False
 
     initial_status: dict = {}
-    force_rate_written = False
     pulse_attempted = False
     pulse_succeeded = False
 
@@ -615,10 +614,7 @@ async def _ensure_playback_samplerate_force(
         return initial_status
 
     def write_force_rate(rate: int) -> None:
-        nonlocal force_rate_written
         _set_pipewire_force_rate(rate)
-        playback_rate_state.playback_samplerate_force_rate = rate
-        force_rate_written = True
         logger.info(
             "Playback samplerate force-rate applied: reason=%s expected_rate=%s active_rate=%s previous_force_rate=%s",
             reason,
@@ -649,14 +645,6 @@ async def _ensure_playback_samplerate_force(
     )
 
     initial_active_rate = initial_status.get("active_rate")
-    initial_force_rate = initial_status.get("force_rate")
-    if force_rate_written:
-        playback_rate_state.playback_samplerate_force_rate = expected_rate
-    elif (
-        initial_active_rate == expected_rate
-        and initial_force_rate == expected_rate
-    ):
-        playback_rate_state.playback_samplerate_force_rate = expected_rate
 
     if policy is samplerate_orchestration.DEFAULT_POLICY and not aligned:
         if isinstance(initial_active_rate, int) and initial_active_rate != expected_rate:
@@ -911,7 +899,6 @@ from samplerate import (
     OUTPUT_MODE_SUBWOOFER_22_STEREO,
     OUTPUT_MODE_SUBWOOFER_22_MODES,
     OUTPUT_MODE_SUBWOOFER_MODES,
-    SOURCE_MODE_APP_PLAYBACK,
     SOURCE_MODE_BLUETOOTH_INPUT,
     SOURCE_MODE_EXTERNAL_INPUT,
     apply_persisted_audio_output_selection,
@@ -1117,9 +1104,8 @@ def _playback_settled_event() -> asyncio.Event:
 # See playback_state.PlaybackState for the field relationships.
 playback_state = PlaybackState()
 
-# Single authoritative owner of the playback source/rate coordination state
-# (forced playback samplerate mirror, current source mode, samplerate drift
-# observation).  See playback_rate_state.PlaybackRateState.
+# Single authoritative owner of the playback samplerate drift observation
+# state.  See playback_rate_state.PlaybackRateState.
 playback_rate_state = PlaybackRateState()
 radio_reconnect_task = None
 radio_reconnect_attempts = 0
@@ -5252,7 +5238,6 @@ async def lifespan(app: FastAPI):
             applied_source = get_audio_source_overview()
             applied_source = await _sync_external_input_monitoring(applied_source)
             applied_source = await _sync_bluetooth_input_monitoring(applied_source)
-            playback_rate_state.current_source_mode = applied_source.get("mode") or SOURCE_MODE_APP_PLAYBACK
             if applied_source.get("mode") == SOURCE_MODE_EXTERNAL_INPUT:
                 logger.info(
                     "Re-applied persisted external-input monitoring: %s",
@@ -6364,7 +6349,6 @@ async def save_audio_source_selection_route(request: Request):
         result = set_audio_source_selection(mode, input_key)
         result = await _sync_external_input_monitoring(result)
         result = await _sync_bluetooth_input_monitoring(result)
-        playback_rate_state.current_source_mode = result.get("mode") or SOURCE_MODE_APP_PLAYBACK
         if result.get("mode") in {SOURCE_MODE_EXTERNAL_INPUT, SOURCE_MODE_BLUETOOTH_INPUT}:
             await _pause_all_app_playback_for_external_input()
         await sync_peak_monitor_for_source_mode_state(result)
