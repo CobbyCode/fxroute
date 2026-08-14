@@ -156,12 +156,12 @@ class RadioPostLoadHandoffTests(unittest.IsolatedAsyncioTestCase):
         self.originals = {
             name: getattr(main, name)
             for name in (
-                "playback_transition_epoch", "subwoofer_runtime",
+                "playback_transition_epoch", "dsp_runtime",
                 "asyncio",
             )
         }
         main.playback_transition_epoch = 100
-        main.subwoofer_runtime = type("NativeRuntime", (), {
+        main.dsp_runtime = type("NativeRuntime", (), {
             "snapshot": lambda self: {
                 "active": True,
                 "config": {"sample_rate": 48000},
@@ -246,9 +246,9 @@ class RadioPostLoadHandoffTests(unittest.IsolatedAsyncioTestCase):
         with rate_mock, patch.object(
             main, "get_samplerate_status", side_effect=lambda: dict(status)
         ), patch.object(main, "_ensure_playback_samplerate_force", force), patch.object(
-            main, "_sync_easyeffects_preset_for_playback_samplerate", preset_sync
-        ), patch.object(main, "_sync_subwoofer_runtime", helper_sync), patch.object(
-            main, "subwoofer_runtime", type("NativeRuntime", (), {
+            main, "_sync_dsp_preset_for_playback_samplerate", preset_sync
+        ), patch.object(main, "_sync_dsp_runtime", helper_sync), patch.object(
+            main, "dsp_runtime", type("NativeRuntime", (), {
                 "snapshot": lambda self: {
                     "active": True,
                     "config": {"sample_rate": status["force_rate"]},
@@ -308,9 +308,9 @@ class RadioPostLoadHandoffTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             len(calls["preset"]),
             0,
-            "a working EasyEffects graph must not reload its preset for rate alone",
+            "a working DSP graph must not reload its preset for rate alone",
         )
-        # subwoofer_runtime is now the complete native DSPRuntime, including
+        # dsp_runtime is now the complete native DSPRuntime, including
         # Stereo; a real rate transition rebuilds it at the target rate even
         # for the stereo graph.
         self.assertEqual(len(calls["subwoofer"]), 1)
@@ -325,7 +325,7 @@ class RadioPostLoadHandoffTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             len(calls["preset"]),
             0,
-            "a working EasyEffects graph must not reload its preset for rate alone",
+            "a working DSP graph must not reload its preset for rate alone",
         )
         self.assertEqual(len(calls["subwoofer"]), 1)
 

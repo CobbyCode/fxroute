@@ -24,14 +24,14 @@ class FakeRuntime:
         self,
         *,
         muted=False,
-        easyeffects_muted=False,
+        dsp_muted=False,
         fail_stage=None,
         force_dsp_reinit=False,
         drop_mute_read_number=None,
         fail_mute_read_number=None,
     ):
         self.muted = muted
-        self.easyeffects_muted = easyeffects_muted
+        self.dsp_muted = dsp_muted
         self.fail_stage = fail_stage
         self.force_dsp_reinit = force_dsp_reinit
         self.drop_mute_read_number = drop_mute_read_number
@@ -70,13 +70,13 @@ class FakeRuntime:
 
     async def read_sink_mute(self, sink_name):
         self.assert_sink_name(sink_name)
-        self.events.append(f"read-sink-mute:{self.easyeffects_muted}")
-        return self.easyeffects_muted
+        self.events.append(f"read-sink-mute:{self.dsp_muted}")
+        return self.dsp_muted
 
     async def set_sink_mute(self, sink_name, muted, transition_id):
         self.assert_sink_name(sink_name)
-        self.easyeffects_muted = bool(muted)
-        self.events.append(f"sink-mute:{self.easyeffects_muted}")
+        self.dsp_muted = bool(muted)
+        self.events.append(f"sink-mute:{self.dsp_muted}")
 
     @staticmethod
     def assert_sink_name(sink_name):
@@ -176,7 +176,7 @@ class MeasurementSessionRuntime:
         self.graphs = [dict(graph) for graph in graphs]
         self.events = []
         self.muted = True
-        self.easyeffects_muted = True
+        self.dsp_muted = True
         self.reconcile_calls = 0
 
     async def read_hardware_mute(self):
@@ -189,13 +189,13 @@ class MeasurementSessionRuntime:
 
     async def read_sink_mute(self, sink_name):
         self.assert_sink_name(sink_name)
-        self.events.append(f"read-sink-mute:{self.easyeffects_muted}")
-        return self.easyeffects_muted
+        self.events.append(f"read-sink-mute:{self.dsp_muted}")
+        return self.dsp_muted
 
     async def set_sink_mute(self, sink_name, muted, _transition_id):
         self.assert_sink_name(sink_name)
-        self.easyeffects_muted = bool(muted)
-        self.events.append(f"sink-mute:{self.easyeffects_muted}")
+        self.dsp_muted = bool(muted)
+        self.events.append(f"sink-mute:{self.dsp_muted}")
 
     @staticmethod
     def assert_sink_name(sink_name):
@@ -273,7 +273,7 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(runtime.events.count("mute:False"), 0)
         self.assertLess(runtime.events.index("link-reconcile"), runtime.events.index("mute:False"))
         self.assertFalse(runtime.muted)
-        self.assertFalse(runtime.easyeffects_muted)
+        self.assertFalse(runtime.dsp_muted)
         self.assertFalse(coordinator.gate.closed)
         self.assertFalse(coordinator.gate.failure_latched)
 
@@ -389,8 +389,8 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(coordinator.gate.failure_latched)
         self.assertIsNone(coordinator.gate.original_user_muted)
 
-    async def test_audible_spotify_play_clears_stale_hardware_and_easyeffects_mutes(self):
-        runtime = FakeRuntime(muted=True, easyeffects_muted=True)
+    async def test_audible_spotify_play_clears_stale_hardware_and_dsp_mutes(self):
+        runtime = FakeRuntime(muted=True, dsp_muted=True)
         coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
 
         result = await coordinator.execute(TransitionRequest(
@@ -406,7 +406,7 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(result.committed)
         self.assertFalse(runtime.muted)
-        self.assertFalse(runtime.easyeffects_muted)
+        self.assertFalse(runtime.dsp_muted)
         self.assertFalse(coordinator.gate.closed)
         self.assertLess(runtime.events.index("mute:True"), runtime.events.index("sink-mute:False"))
         self.assertLess(runtime.events.index("sink-mute:False"), runtime.events.index("mute:False"))

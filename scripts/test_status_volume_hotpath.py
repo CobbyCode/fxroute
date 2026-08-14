@@ -14,12 +14,12 @@ import system_volume
 
 class PlaybackPayloadVolumePathTests(unittest.TestCase):
     def setUp(self):
-        self.original_manager = main.easyeffects_manager
-        main.easyeffects_manager = None
+        self.original_manager = main.dsp_manager
+        main.dsp_manager = None
         system_volume._status_volume_cache = None
 
     def tearDown(self):
-        main.easyeffects_manager = self.original_manager
+        main.dsp_manager = self.original_manager
         system_volume._status_volume_cache = None
 
     def test_empty_cache_never_spawns_wpctl_in_payload_path(self):

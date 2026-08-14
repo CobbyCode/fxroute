@@ -141,7 +141,7 @@ async def main_async() -> None:
             should_play=should_play, target_url=None,
         )
         with mock.patch.object(main, "get_samplerate_status", return_value=stuck_status(48000, 48000)), \
-             mock.patch.object(main, "easyeffects_manager", FakeEffectsManager()), \
+             mock.patch.object(main, "dsp_manager", FakeEffectsManager()), \
              mock.patch.object(main, "_playback_graph_diagnosis", new=fake_diagnosis), \
              mock.patch.object(runtime, "_read_and_validate_effects_runtime", new=mock.AsyncMock(return_value={})):
             await runtime.stabilize_effects_after_rate_change(
@@ -260,12 +260,12 @@ async def main_async() -> None:
     async def drifting_read(*_args, **_kwargs):
         read_calls["count"] += 1
         if read_calls["count"] == 1:
-            raise RuntimeError("EasyEffects Loudness was bypassed after DSP stabilization")
+            raise RuntimeError("DSP Loudness was bypassed after DSP stabilization")
         return {"loudness": {"volume": -16.36, "output_gain": -16.36, "bypass": False}}
 
     with mock.patch.object(main, "get_samplerate_status", return_value=stuck_status(44100, 44100)), \
          mock.patch.object(main, "player_instance", fake_player), \
-         mock.patch.object(main, "easyeffects_manager", fake_apply), \
+         mock.patch.object(main, "dsp_manager", fake_apply), \
          mock.patch.object(main, "_playback_graph_links_complete", new=mock.AsyncMock(return_value=True)), \
          mock.patch.object(main, "get_audio_output_overview", return_value={"output_mode": {"mode": "stereo"}}), \
          mock.patch.object(runtime, "_read_and_validate_effects_runtime", new=drifting_read):
@@ -277,10 +277,10 @@ async def main_async() -> None:
     # 15. Commit readback: persistent drift still fails the transition.
     fake_apply2 = FakeEffectsWithApply()
     async def always_failing(*_args, **_kwargs):
-        raise RuntimeError("EasyEffects Loudness was bypassed after DSP stabilization")
+        raise RuntimeError("DSP Loudness was bypassed after DSP stabilization")
     with mock.patch.object(main, "get_samplerate_status", return_value=stuck_status(44100, 44100)), \
          mock.patch.object(main, "player_instance", fake_player), \
-         mock.patch.object(main, "easyeffects_manager", fake_apply2), \
+         mock.patch.object(main, "dsp_manager", fake_apply2), \
          mock.patch.object(main, "_playback_graph_links_complete", new=mock.AsyncMock(return_value=True)), \
          mock.patch.object(main, "get_audio_output_overview", return_value={"output_mode": {"mode": "stereo"}}), \
          mock.patch.object(runtime, "_read_and_validate_effects_runtime", new=always_failing):
@@ -304,7 +304,7 @@ async def main_async() -> None:
     async def fake_repair_stereo_seq(diagnosis):
         repair_calls.append(diagnosis.get("mode"))
     with mock.patch.object(main, "get_samplerate_status", return_value=stuck_status(48000, 48000)), \
-         mock.patch.object(main, "easyeffects_manager", FakeEffectsManager()), \
+         mock.patch.object(main, "dsp_manager", FakeEffectsManager()), \
          mock.patch.object(main, "_playback_graph_diagnosis", new=fake_diagnosis_seq), \
          mock.patch.object(main, "_repair_stereo_output_links_once", new=fake_repair_stereo_seq) as repair, \
          mock.patch.object(runtime, "_read_and_validate_effects_runtime", new=mock.AsyncMock(return_value={})):
@@ -315,7 +315,7 @@ async def main_async() -> None:
 
     # 17. DSP stabilization: persistent link loss still fails.
     with mock.patch.object(main, "get_samplerate_status", return_value=stuck_status(48000, 48000)), \
-         mock.patch.object(main, "easyeffects_manager", FakeEffectsManager()), \
+         mock.patch.object(main, "dsp_manager", FakeEffectsManager()), \
          mock.patch.object(main, "_playback_graph_diagnosis", new=mock.AsyncMock(return_value=stereo_diagnosis(links_present=False))), \
          mock.patch.object(main, "_repair_stereo_output_links_once", new=mock.AsyncMock()), \
          mock.patch.object(runtime, "_read_and_validate_effects_runtime", new=mock.AsyncMock(return_value={})):

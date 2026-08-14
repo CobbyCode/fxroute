@@ -661,7 +661,7 @@ class PositionRestoreOrderTests(unittest.IsolatedAsyncioTestCase):
             side_effect=lambda path: player.set_pause(True) or player._state.update(current_file=path),
         ), patch.object(
             main, "_wait_for_player_current_file", AsyncMock(return_value=True)
-        ), patch.object(main, "_ensure_mpv_to_easyeffects_links", AsyncMock(return_value=True)):
+        ), patch.object(main, "_ensure_mpv_to_dsp_links", AsyncMock(return_value=True)):
             request = TransitionRequest(
                 operation="replay",
                 source="local",
@@ -700,7 +700,7 @@ class PositionRestoreOrderTests(unittest.IsolatedAsyncioTestCase):
             side_effect=lambda path: player.set_pause(True) or player._state.update(current_file=path),
         ), patch.object(
             main, "_wait_for_player_current_file", AsyncMock(return_value=True)
-        ), patch.object(main, "_ensure_mpv_to_easyeffects_links", AsyncMock(return_value=True)):
+        ), patch.object(main, "_ensure_mpv_to_dsp_links", AsyncMock(return_value=True)):
             request = TransitionRequest(
                 operation="replay",
                 source="local",
@@ -844,7 +844,7 @@ class CoordinatorGateRestoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(coordinator.gate.failure_latched)
         self.assertFalse(coordinator.gate.closed)
         self.assertFalse(runtime.muted)
-        self.assertFalse(runtime.easyeffects_muted)
+        self.assertFalse(runtime.dsp_muted)
         # The failure status reflects the real, opened gate.
         self.assertFalse(cm.exception.failure_latched)
         self.assertFalse(coordinator.last_error["failure_latched"])

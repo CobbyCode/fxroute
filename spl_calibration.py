@@ -51,13 +51,13 @@ class _SplCalibrationOperation:
 class SplCalibrationDependencies:
     get_measurement_store: Callable[[], Any]
     get_measurement_session: Callable[[], Any]
-    get_easyeffects_manager: Callable[[], Any]
-    require_easyeffects_manager: Callable[[], Any]
+    get_dsp_manager: Callable[[], Any]
+    require_dsp_manager: Callable[[], Any]
     get_output_volume: Callable[[], float]
     set_output_volume: Callable[[float], None]
     read_measurement_settings: Callable[[], dict[str, Any]]
     measurement_entry_preflight: Callable[[int], Any]
-    run_easyeffects_mutation: Callable[[Callable[[], Any]], Any]
+    run_dsp_mutation: Callable[[Callable[[], Any]], Any]
 
 
 @dataclass
@@ -581,7 +581,7 @@ def _terminate_and_reap(process: subprocess.Popen[Any] | None) -> None:
 
 def _restore_spl_calibration_audio(operation: _SplCalibrationOperation) -> None:
     dependencies = _dependencies()
-    easyeffects_manager = dependencies.get_easyeffects_manager()
+    dsp_manager = dependencies.get_dsp_manager()
     restore = operation.restore_state
     if not restore:
         return
@@ -604,13 +604,13 @@ def _restore_spl_calibration_audio(operation: _SplCalibrationOperation) -> None:
     except Exception:
         logger.exception("Failed to restore system volume after SPL calibration")
 
-    if easyeffects_manager is None:
+    if dsp_manager is None:
         return
 
     if restore.get("native_effects_extras") is not None:
         try:
-            current_extras = easyeffects_manager.load_global_extras()
-            easyeffects_manager.apply_temporary_effects_runtime(
+            current_extras = dsp_manager.load_global_extras()
+            dsp_manager.apply_temporary_effects_runtime(
                 restore["neutral_effects_extras"], current_extras)
         except Exception:
             logger.exception("Failed to restore native DSP after SPL calibration")
@@ -623,7 +623,7 @@ def _restore_spl_calibration_audio(operation: _SplCalibrationOperation) -> None:
         owned_value: Any,
     ) -> None:
         try:
-            current = easyeffects_manager.get_active_plugin_property(plugin, 0, name)
+            current = dsp_manager.get_active_plugin_property(plugin, 0, name)
             if isinstance(owned_value, bool):
                 current_matches = (
                     str(current).lower() in {"true", "1", "on"}
@@ -637,7 +637,7 @@ def _restore_spl_calibration_audio(operation: _SplCalibrationOperation) -> None:
                 )
             if not current_matches:
                 logger.info(
-                    "Preserving newer EasyEffects value during SPL cleanup: "
+                    "Preserving newer DSP value during SPL cleanup: "
                     "plugin=%s property=%s current=%s owned=%s",
                     plugin,
                     name,
@@ -645,7 +645,7 @@ def _restore_spl_calibration_audio(operation: _SplCalibrationOperation) -> None:
                     owned_value,
                 )
                 return
-            easyeffects_manager.set_active_plugin_property(plugin, 0, name, value)
+            dsp_manager.set_active_plugin_property(plugin, 0, name, value)
         except Exception:
             logger.exception(
                 "Failed to restore SPL calibration property: plugin=%s property=%s",
@@ -670,7 +670,7 @@ def _restore_spl_calibration_audio(operation: _SplCalibrationOperation) -> None:
 
 def _start_spl_calibration_noise(operation: _SplCalibrationOperation) -> dict[str, Any]:
     dependencies = _dependencies()
-    ee_manager = dependencies.require_easyeffects_manager()
+    ee_manager = dependencies.require_dsp_manager()
     native_transition = callable(getattr(ee_manager, "apply_temporary_effects_runtime", None)) and bool(
         getattr(ee_manager, "temporary_runtime_transition_callback", None))
     operation.restore_state = {
@@ -1021,7 +1021,7 @@ async def shutdown() -> None:
 
 @router.get("/api/measurements/spl-calibration")
 async def get_spl_calibration():
-    extras = _dependencies().require_easyeffects_manager().load_global_extras()
+    extras = _dependencies().require_dsp_manager().load_global_extras()
     return {
         "status": "ok",
         "target_spl_db": 83.0,
@@ -1235,13 +1235,13 @@ async def apply_spl_calibration(request: Request):
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     await _stop_active_operation()
-    ee_manager = _dependencies().require_easyeffects_manager()
-    run_mutation = _dependencies().run_easyeffects_mutation
+    ee_manager = _dependencies().require_dsp_manager()
+    run_mutation = _dependencies().run_dsp_mutation
     profile = _spl_output_profile()
     automatic = _spl_auto_capability()
 
     def _apply_calibration_serialized() -> dict:
-        # Runs under the central EasyEffects mutation ownership: the extras
+        # Runs under the central DSP mutation ownership: the extras
         # read, the calibration merge and the runtime apply/persist form one
         # atomic read-modify-write against other EE mutations.
         extras = ee_manager.load_global_extras()

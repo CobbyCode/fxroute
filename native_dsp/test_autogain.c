@@ -103,7 +103,7 @@ static void test_defaults_and_validation(void) {
     fx_autogain_config config = fx_autogain_default_config();
     check(config.reference == FX_AUTOGAIN_GEOMETRIC_MEAN_MSI,
           "default reference is Geometric Mean (MSI)");
-    check_close(config.target_lufs, -23.0, 0.0, "default target matches EasyEffects");
+    check_close(config.target_lufs, -23.0, 0.0, "default target is -23 LUFS");
     check_close(config.silence_threshold_lufs, -70.0, 0.0,
                 "default silence threshold matches FXRoute settings");
     check(config.maximum_history_seconds == 15U, "default maximum history is 15 seconds");
@@ -117,7 +117,7 @@ static void test_defaults_and_validation(void) {
     config = fx_autogain_default_config();
     config.maximum_history_seconds = 5U;
     check(fx_autogain_init(RATE, BLOCK, &config) == NULL,
-          "history below the EasyEffects range is rejected");
+          "history below the supported range is rejected");
 }
 
 static void test_common_stereo_gain_and_modes(void) {
@@ -159,7 +159,7 @@ static void test_common_stereo_gain_and_modes(void) {
             default: expected_loudness = 0.0; break;
         }
         check_close(measurement.reference_lufs, expected_loudness, 1e-9,
-                    "reference mode uses EasyEffects loudness formula");
+                    "reference mode applies the native loudness formula");
         check_close(measurement.gain, pow(10.0, (-23.0 - expected_loudness) / 20.0), 1e-9,
                     "target determines linear gain");
         for (size_t i = 0; i < BLOCK; i++) {

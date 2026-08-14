@@ -371,11 +371,11 @@ class VolumeTransitionIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.runtime = _RecordingRuntime()
         self.recorder = VolumePathRecorder(self.manager, self.runtime)
         self.patches = [
-            mock.patch.object(main, "easyeffects_manager", self.manager),
-            mock.patch.object(main, "subwoofer_runtime", self.runtime),
+            mock.patch.object(main, "dsp_manager", self.manager),
+            mock.patch.object(main, "dsp_runtime", self.runtime),
             mock.patch.object(main, "set_output_volume", self.recorder.set_master),
             mock.patch.object(main, "get_output_volume", self.recorder.get_master),
-            mock.patch.object(main, "_sync_subwoofer_runtime", mock.AsyncMock()),
+            mock.patch.object(main, "_sync_dsp_runtime", mock.AsyncMock()),
             mock.patch.object(main.manager, "broadcast", mock.AsyncMock()),
             mock.patch.object(main, "schedule_peak_monitor_refresh_after_effects_change"),
             mock.patch.object(main, "get_audio_output_overview", return_value={"output_mode": {"mode": "stereo"}}),
@@ -383,15 +383,15 @@ class VolumeTransitionIntegrationTests(unittest.IsolatedAsyncioTestCase):
         for patcher in self.patches:
             patcher.start()
         main.canonical_volume_write_lock = None
-        main.easyeffects_mutation_lock = None
+        main.dsp_mutation_lock = None
 
     async def asyncTearDown(self):
         for patcher in self.patches:
             patcher.stop()
         main.canonical_volume_write_lock = None
-        main.easyeffects_mutation_lock = None
-        main.easyeffects_manager = None
-        main.subwoofer_runtime = None
+        main.dsp_mutation_lock = None
+        main.dsp_manager = None
+        main.dsp_runtime = None
 
     def peak(self):
         if not self.recorder.samples:
@@ -405,7 +405,7 @@ class VolumeTransitionIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.recorder.master = 30
         start = db(30)
         self.recorder.capture()
-        await main._load_easyeffects_preset("Neutral")
+        await main._load_dsp_preset("Neutral")
         final = self.recorder.capture()
         self.assertEqual(final.preset, "Neutral")
         self.assertTrue(final.loudness_in_path)
@@ -436,11 +436,11 @@ class VolumeTransitionIntegrationTests(unittest.IsolatedAsyncioTestCase):
             events.append(("sync", self.manager.get_active_preset()))
 
         with mock.patch.object(main, "set_output_volume", record_master), \
-                mock.patch.object(main, "_sync_subwoofer_runtime", side_effect=confirm_sync):
+                mock.patch.object(main, "_sync_dsp_runtime", side_effect=confirm_sync):
             start = self.recorder.capture()
-            await main._load_easyeffects_preset("Neutral")
-            await main._load_easyeffects_preset("Direct")
-            await main._load_easyeffects_preset("Neutral")
+            await main._load_dsp_preset("Neutral")
+            await main._load_dsp_preset("Direct")
+            await main._load_dsp_preset("Neutral")
 
         self.assertEqual([event for event in events if event == ("master", 100)],
                          [("master", 100), ("master", 100)])
@@ -477,9 +477,9 @@ class VolumeTransitionIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
         self.manager.load_preset = load
         with mock.patch.object(main, "set_output_volume", record_master), \
-                mock.patch.object(main, "_sync_subwoofer_runtime", side_effect=confirm_sync):
-            await main._load_easyeffects_preset("Room")
-            await main._load_easyeffects_preset("Direct")
+                mock.patch.object(main, "_sync_dsp_runtime", side_effect=confirm_sync):
+            await main._load_dsp_preset("Room")
+            await main._load_dsp_preset("Direct")
 
         room_sync = events.index(("sync", "Room"))
         room_master = events.index(("master", 100))
@@ -493,7 +493,7 @@ class VolumeTransitionIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.manager.extras["loudness"]["params"]["volumeDb"] = db(30)
         self.recorder.master = 100
         self.recorder.capture()
-        await main._load_easyeffects_preset("Direct")
+        await main._load_dsp_preset("Direct")
         final = self.recorder.capture()
         self.assertEqual(final.preset, "Direct")
         self.assertEqual(final.master_percent, 30)
@@ -609,7 +609,7 @@ class VolumeTransitionIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
         self.manager.load_preset = failing_load
         with self.assertRaisesRegex(RuntimeError, "preset load failed"):
-            await main._load_easyeffects_preset("Neutral")
+            await main._load_dsp_preset("Neutral")
         self.assertEqual(self.recorder.master, 30)
         self.assertEqual(self.manager.active_preset, "Direct")
         self.assertAlmostEqual(self.manager.extras["loudness"]["params"]["volumeDb"], 0.0, places=9)

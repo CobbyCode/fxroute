@@ -125,7 +125,7 @@ class LifespanOwnershipTests(unittest.IsolatedAsyncioTestCase):
     async def test_bluetooth_partial_link_is_rolled_back(self):
         disconnect = AsyncMock()
         with patch.object(main, "_clear_bluetooth_input_monitoring_links", AsyncMock()), patch.object(
-            main, "_link_bluetooth_source_to_easyeffects", AsyncMock(side_effect=RuntimeError("FR failed"))
+            main, "_link_bluetooth_source_to_dsp", AsyncMock(side_effect=RuntimeError("FR failed"))
         ), patch.object(main, "_disconnect_bluetooth_input_source", disconnect):
             with self.assertRaisesRegex(RuntimeError, "FR failed"):
                 await main._ensure_bluetooth_input_loopback("bluez-source")

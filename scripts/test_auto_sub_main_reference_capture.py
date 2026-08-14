@@ -142,7 +142,7 @@ class MainReferenceSnapshotTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("status", job)  # Existing optimization state is not failed here.
 
     async def test_candidate_restores_exact_mute_on_success_error_and_cancel(self):
-        # Realistic sweep profile: the candidate path runs the native Stage1 peak
+        # Realistic sweep profile: the candidate path runs the native DSP peak
         # prediction against it, so it must be a valid profile that predicts a safe sweep.
         sweep_profile = {"sweep_seconds": 0.1, "sweep_start_hz": 20.0, "sweep_end_hz": 200.0}
         prediction = autosub._auto_sub_stage_peak_prediction(
@@ -213,13 +213,13 @@ class MainReferenceSnapshotTests(unittest.IsolatedAsyncioTestCase):
             runtime = FakeRuntime(fail_restore=outcome == "restore_error")
             store = FakeStore("success" if outcome == "restore_error" else outcome, job)
             with (
-                patch.object(main, "subwoofer_runtime", runtime),
+                patch.object(main, "dsp_runtime", runtime),
                 patch.object(main, "measurement_store", store),
                 patch.object(autosub, "set_audio_output_mode"),
                 patch.object(autosub, "get_audio_output_overview", return_value={}),
                 patch.object(main.SubwooferRuntimeConfig, "from_overview", return_value=runtime_config()),
-                # Pre-arm responsibility moved to _sync_subwoofer_runtime_for_measurement_sweep.
-                patch.object(measurement_session, "_sync_subwoofer_runtime_for_measurement_sweep", new_callable=AsyncMock, return_value=None),
+                # Pre-arm responsibility moved to _sync_dsp_runtime_for_measurement_sweep.
+                patch.object(measurement_session, "_sync_dsp_runtime_for_measurement_sweep", new_callable=AsyncMock, return_value=None),
                 patch.object(main.asyncio, "sleep", side_effect=no_sleep),
                 patch("samplerate._load_audio_output_mode", return_value={"subwoofer": {"sub_alignment_ms": 2.0}}),
             ):

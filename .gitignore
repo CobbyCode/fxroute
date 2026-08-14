@@ -28,8 +28,7 @@ manual_backup.zip
 *.tar.gz
 *.zip
 
-# Generated 2.1 native helper binary
-pipewire_stage1/build/
+# Generated native helper binary
 native_dsp/build/
 
 # Optional local demo library (never tracked)

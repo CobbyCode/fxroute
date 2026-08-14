@@ -311,7 +311,7 @@ class MeasurementSampleRateSession:
             _set_pipewire_force_rate,
             _ensure_playback_samplerate_force,
             _wait_for_samplerate_alignment,
-            _sync_subwoofer_runtime_at_rate,
+            _sync_dsp_runtime_at_rate,
             get_samplerate_status,
         )
         global _playback_state_before_measurement
@@ -460,7 +460,7 @@ class MeasurementSampleRateSession:
 
                 measurement_only_restore = not playback_target_rate or playback_source not in {"local", "radio", "spotify"}
                 if rate_ready and not coordinator_attempted and measurement_only_restore:
-                    await _sync_subwoofer_runtime_at_rate(runtime_restore_rate, _rate_lock_held=True)
+                    await _sync_dsp_runtime_at_rate(runtime_restore_rate, _rate_lock_held=True)
                 else:
                     logger.warning(
                         "Measurement sample-rate session runtime restore deferred until playback sink aligns: "
@@ -836,7 +836,7 @@ def _build_measurement_audio_output_context() -> dict:
     """Build audio_output_context metadata for measurement saves."""
     from main import (
         get_audio_output_overview,
-        subwoofer_runtime,
+        dsp_runtime,
     )
     context: dict = {}
     try:
@@ -845,7 +845,7 @@ def _build_measurement_audio_output_context() -> dict:
         mode = str(output_mode.get("mode", "stereo") or "stereo")
         if mode in OUTPUT_MODE_SUBWOOFER_MODES:
             config = SubwooferRuntimeConfig.from_overview(overview)
-            snapshot = subwoofer_runtime.snapshot() if subwoofer_runtime is not None else {}
+            snapshot = dsp_runtime.snapshot() if dsp_runtime is not None else {}
             context["output_mode"] = mode
             context["output_key"] = config.output_key
             context["output_label"] = config.output_label
@@ -874,16 +874,16 @@ def _build_measurement_audio_output_context() -> dict:
     return context
 
 
-async def _sync_subwoofer_runtime_for_measurement_sweep(measurement_rate: int) -> None:
+async def _sync_dsp_runtime_for_measurement_sweep(measurement_rate: int) -> None:
     from main import (
-        subwoofer_runtime,
+        dsp_runtime,
         get_audio_output_overview,
         get_samplerate_status,
         _pulse_suspend_sink_for_samplerate,
         _audio_output_overview_with_effective_rate,
-        _sync_subwoofer_runtime,
+        _sync_dsp_runtime,
     )
-    if subwoofer_runtime is None:
+    if dsp_runtime is None:
         return None
     overview = get_audio_output_overview()
     output_mode = overview.get("output_mode") or {}
@@ -895,7 +895,7 @@ async def _sync_subwoofer_runtime_for_measurement_sweep(measurement_rate: int) -
     samplerate_status = get_samplerate_status()
     previous_force_rate = samplerate_status.get("force_rate")
     previous_active_rate = samplerate_status.get("active_rate")
-    before = subwoofer_runtime.snapshot()
+    before = dsp_runtime.snapshot()
     logger.info(
         "%s measurement pre-arm starting: measurement_rate=%s samplerate_before=%s helper_before=%s",
         mode_num,
@@ -920,7 +920,7 @@ async def _sync_subwoofer_runtime_for_measurement_sweep(measurement_rate: int) -
         _pulse_suspend_sink_for_samplerate(output_key, "measurement-pre-arm")
 
     overview = _audio_output_overview_with_effective_rate(get_audio_output_overview(), measurement_rate)
-    await _sync_subwoofer_runtime(overview, reason="measurement-pre-arm")
+    await _sync_dsp_runtime(overview, reason="measurement-pre-arm")
 
     aligned, overview = await _wait_for_selected_output_effective_rate(measurement_rate, timeout_ms=3500)
     if not aligned:
@@ -931,8 +931,8 @@ async def _sync_subwoofer_runtime_for_measurement_sweep(measurement_rate: int) -
             f"{measurement_rate} Hz before sweep start (effective_rate={effective_rate})"
         )
 
-    await _sync_subwoofer_runtime(overview, reason="measurement-pre-arm")
-    after = subwoofer_runtime.snapshot()
+    await _sync_dsp_runtime(overview, reason="measurement-pre-arm")
+    after = dsp_runtime.snapshot()
     samplerate_after = get_samplerate_status()
     after_config = after.get("config") or {}
     runtime_config = SubwooferRuntimeConfig.from_overview(overview)

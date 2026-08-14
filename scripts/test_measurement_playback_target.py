@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """ACTIVE_CHAIN measurement playback-target resolution contracts.
 
-ACTIVE_CHAIN must resolve to the active EasyEffects chain (fxroute_dsp_sink)
+ACTIVE_CHAIN must resolve to the active DSP chain (fxroute_dsp_sink)
 in every output mode and fail closed when that chain is unavailable.  The
 explicit raw/helper scope keeps resolving to the hardware sink.
 """
@@ -83,7 +83,7 @@ class MeasurementPlaybackTargetTests(unittest.TestCase):
             self.assertEqual(route["route"], "direct-sink")
             self.assertEqual(route["playback_target_name"], "fxroute_dsp_sink")
 
-    def test_pre_sweep_validation_uses_native_runtime_config_not_stage1_argv(self):
+    def test_pre_sweep_validation_uses_native_runtime_config_not_legacy_argv(self):
         self.store.runtime_snapshot_provider = lambda: {
             "active": True,
             "config": {"sample_rate": 48000, "output_mode": "subwoofer-2.2", "layout": [{}, {}, {}, {}]},

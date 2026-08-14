@@ -50,7 +50,6 @@ EXCLUDE_PATTERNS = [
     "media/reference",
     # Native build artifacts
     "native_dsp/build",
-    "pipewire_stage1/build",
 ]
 
 

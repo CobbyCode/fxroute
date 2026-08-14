@@ -21,7 +21,7 @@ from unittest.mock import AsyncMock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import peak_monitor
-from peak_monitor import EasyEffectsPeakMonitor, MonitorTarget
+from peak_monitor import DSPPeakMonitor, MonitorTarget
 
 
 class _FakeProc:
@@ -46,7 +46,7 @@ def _audio_chunk(value: float = 0.5) -> bytes:
 class PeakMonitorRebuildSurvivalTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.emits = []
-        self.monitor = EasyEffectsPeakMonitor(on_change=self._collect)
+        self.monitor = DSPPeakMonitor(on_change=self._collect)
         self.monitor._running = True
         self.monitor._link_capture_stream = AsyncMock()
         self.procs = [_FakeProc(), _FakeProc()]
@@ -243,7 +243,7 @@ class PeakMonitorRebuildSurvivalTests(unittest.IsolatedAsyncioTestCase):
             "\tnode.name = \"fxroute_dsp\"\n"
             "\tmedia.type = \"Audio\"\n"
         )
-        monitor = EasyEffectsPeakMonitor()
+        monitor = DSPPeakMonitor()
         with patch(
             "peak_monitor._run_bounded_command",
             new=AsyncMock(return_value=(0, text.encode(), b"")),

@@ -10,7 +10,7 @@ Bug 2: Every `/api/audio/output-mode` POST went through the Coordinator's
 muted `output-mode-switch` transition, closing the hardware-output gate even
 for pure DSP parameter changes (level, alignment, polarity, crossover) that
 change no routing, samplerate or graph topology.  Same-mode saves must use
-the direct persist + `_sync_subwoofer_runtime` path instead.
+the direct persist + `_sync_dsp_runtime` path instead.
 """
 
 from __future__ import annotations
@@ -146,9 +146,9 @@ def _route_patch_context(*, current_mode: str, target_mode: str):
         measurement_sr_session=mock.MagicMock(has_active_jobs=False),
         prepare_audio_output_mode=mock.MagicMock(return_value=_target(target_mode)),
         persist_audio_output_mode=set_mode,
-        _sync_subwoofer_runtime=sync,
+        _sync_dsp_runtime=sync,
         _with_subwoofer_derived_delays=lambda value: value,
-        subwoofer_runtime=None,
+        dsp_runtime=None,
         refresh_peak_monitor_after_effects_change=mock.AsyncMock(),
         _coordinator_current_playback_context=mock.AsyncMock(return_value={
             "source": "local", "target_url": None, "target_track": {}, "should_play": False,
@@ -238,7 +238,7 @@ async def _recovery_valid(
     runtime: mock.MagicMock | None,
 ) -> bool:
     with mock.patch.object(main, "playback_transition_coordinator", coordinator), \
-            mock.patch.object(main, "subwoofer_runtime", runtime), \
+            mock.patch.object(main, "dsp_runtime", runtime), \
             mock.patch.object(
                 main, "player_instance",
                 mock.MagicMock(state={"current_file": RADIO_URL, "ended": False}),
@@ -296,7 +296,7 @@ class VolumeSwitchRuntime:
 
     The audible volume (``volume``) mirrors the canonical user volume
     (``canonical_volume``) unless a mode switch resurrects a stale preset
-    work point (mimicking the EasyEffects graph rebuild re-applying its own
+    work point (mimicking the native DSP graph rebuild re-applying its own
     preset loudness state).  The Coordinator's DSP
     stabilization must repair that by re-applying the canonical volume.
     """
@@ -428,7 +428,7 @@ def _mode_request(mode: str, *, operation: str = "output-mode-switch") -> Transi
 async def _mode_switch_volume_preserved() -> None:
     """Volume X in A -> B -> volume Y -> back to A: Y must survive.
 
-    The EasyEffects preset reload / graph rebuild re-applies a stale preset
+    The DSP preset reload / graph rebuild re-applies a stale preset
     loudness work point over the canonical user volume; the output-mode
     switch must always re-apply the canonical volume instead of resurrecting
     the older value.
@@ -493,8 +493,8 @@ async def _preset_load_reclean_skipped_during_sync() -> None:
     broadcast = mock.AsyncMock()
     stack = mock.patch.multiple(
         main,
-        _require_easyeffects_manager=mock.MagicMock(return_value=ee_manager),
-        subwoofer_runtime=active_runtime,
+        _require_dsp_manager=mock.MagicMock(return_value=ee_manager),
+        dsp_runtime=active_runtime,
         manager=mock.MagicMock(broadcast=broadcast),
         schedule_peak_monitor_refresh_after_effects_change=mock.MagicMock(),
     )
@@ -510,8 +510,8 @@ async def _preset_load_reclean_skipped_during_sync() -> None:
     )
     stack2 = mock.patch.multiple(
         main,
-        _require_easyeffects_manager=mock.MagicMock(return_value=ee_manager),
-        subwoofer_runtime=idle_runtime,
+        _require_dsp_manager=mock.MagicMock(return_value=ee_manager),
+        dsp_runtime=idle_runtime,
         manager=mock.MagicMock(broadcast=mock.AsyncMock()),
         schedule_peak_monitor_refresh_after_effects_change=mock.MagicMock(),
     )
@@ -528,7 +528,7 @@ async def _mode_switch_reapplies_compare_after_runtime_sync() -> None:
     ee_manager = mock.MagicMock()
     ee_manager.load_compare_state.side_effect = [
         {"presetA": "A", "presetB": "B", "activeSide": "A"},
-        # Model a user selecting B while runtime sync restarts EasyEffects.
+        # Model a user selecting B while runtime sync restarts the DSP.
         {"presetA": "A", "presetB": "B", "activeSide": "B"},
     ]
     ee_manager.get_active_preset.side_effect = lambda: active_preset
@@ -564,12 +564,12 @@ async def _mode_switch_reapplies_compare_after_runtime_sync() -> None:
     )
     with mock.patch.multiple(
         main,
-        easyeffects_manager=ee_manager,
-        easyeffects_preset_load_lock=asyncio.Lock(),
+        dsp_manager=ee_manager,
+        dsp_preset_load_lock=asyncio.Lock(),
         _playback_graph_diagnosis=mock.AsyncMock(return_value=complete_graph),
-        _wait_for_easyeffects_output_ports=wait_for_ports,
+        _wait_for_dsp_output_ports=wait_for_ports,
         _reconcile_transition_sink_rate=mock.AsyncMock(return_value=True),
-        _sync_subwoofer_runtime=mock.AsyncMock(side_effect=sync_runtime),
+        _sync_dsp_runtime=mock.AsyncMock(side_effect=sync_runtime),
         _repair_stereo_output_links_once=mock.AsyncMock(),
     ):
         result = await main._coordinator_establish_effects_and_helper(request)

@@ -32,7 +32,7 @@ class OwnershipStructureTests(unittest.TestCase):
         body = function_source("audio_samplerate_status")
         self.assertNotIn("_maybe_repair_active_app_samplerate_drift", body)
         self.assertNotIn("_set_pipewire_force_rate", body)
-        self.assertNotIn("_sync_subwoofer_runtime", body)
+        self.assertNotIn("_sync_dsp_runtime", body)
 
     def test_coordinated_playback_entrypoints_do_not_prearm_or_bypass_coordinator(self):
         for name in (
@@ -57,9 +57,9 @@ class OwnershipStructureTests(unittest.TestCase):
             "_run_coordinated_transition",
             "_set_pipewire_force_rate",
             "_ensure_playback_samplerate_force",
-            "_sync_easyeffects_preset_for_playback_samplerate",
-            "_sync_subwoofer_runtime",
-            "_ensure_mpv_to_easyeffects_links",
+            "_sync_dsp_preset_for_playback_samplerate",
+            "_sync_dsp_runtime",
+            "_ensure_mpv_to_dsp_links",
             "_set_hardware_sink_mute",
         )
         for name in (
@@ -86,9 +86,9 @@ class OwnershipStructureTests(unittest.TestCase):
         self.assertIn("measurement_only_restore", body)
 
     def test_watchers_only_request_coordinator_recovery(self):
-        watcher = function_source("_subwoofer_runtime_link_watch_loop")
+        watcher = function_source("_dsp_runtime_link_watch_loop")
         self.assertIn("_request_coordinated_recovery", watcher)
-        self.assertNotIn("_sync_subwoofer_runtime(overview)", watcher)
+        self.assertNotIn("_sync_dsp_runtime(overview)", watcher)
         self.assertNotIn("_reclean_guarded", watcher)
 
     def test_coordinator_module_exists_and_owns_gate_state(self):

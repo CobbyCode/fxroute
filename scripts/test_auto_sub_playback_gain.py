@@ -34,7 +34,7 @@ class AutoSubPlaybackGainTests(unittest.TestCase):
         manager = SimpleNamespace(load_global_extras=lambda: {
             "loudness": {"enabled": False, "params": {"volumeDb": -20.0}},
         })
-        with patch.object(main, "easyeffects_manager", manager), patch.object(
+        with patch.object(main, "dsp_manager", manager), patch.object(
             main, "set_output_volume"
         ) as set_output_volume:
             captured = autosub._capture_auto_sub_playback_gain()
@@ -57,7 +57,7 @@ class AutoSubPlaybackGainTests(unittest.TestCase):
         manager = SimpleNamespace(load_global_extras=lambda: {
             "loudness": {"enabled": True, "params": {"volumeDb": -20.0}},
         })
-        with patch.object(main, "easyeffects_manager", manager):
+        with patch.object(main, "dsp_manager", manager):
             captured = autosub._capture_auto_sub_playback_gain()
 
         self.assertAlmostEqual(captured["linear"], 0.1, places=12)

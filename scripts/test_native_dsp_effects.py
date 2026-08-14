@@ -135,7 +135,7 @@ class NativeEffectsTests(unittest.TestCase):
 
     def test_direct_and_neutral_protection_limiter_match_after_latency_and_boost(self):
         # The protection limiter runs with gain-boost enabled like the old
-        # EasyEffects default: the LSP limiter applies a constant makeup gain
+        # pre-native-DSP default: the LSP limiter applies a constant makeup gain
         # equal to |threshold| dB to the output signal (verified against the
         # installed sc_limiter_stereo metadata and the LSP manual).  With
         # threshold -1 dB the Neutral chain therefore differs from the Direct

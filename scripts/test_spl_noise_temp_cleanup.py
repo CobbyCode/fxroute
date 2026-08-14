@@ -15,7 +15,7 @@ from fastapi import HTTPException
 from spl_calibration import _SplCalibrationOperation
 
 
-class FakeEasyEffects:
+class FakeDSPManager:
     def get_active_plugin_property(self, plugin, index, name):
         if name == "outputGain":
             return "0.0"
@@ -26,11 +26,11 @@ class FakeEasyEffects:
 
 
 class FakeDependencies:
-    def require_easyeffects_manager(self):
-        return FakeEasyEffects()
+    def require_dsp_manager(self):
+        return FakeDSPManager()
 
-    def get_easyeffects_manager(self):
-        return FakeEasyEffects()
+    def get_dsp_manager(self):
+        return FakeDSPManager()
 
     def get_output_volume(self):
         return 50

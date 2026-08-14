@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Concurrent threaded EasyEffects mutations must stay serialized."""
+"""Concurrent threaded DSP mutations must stay serialized."""
 
 import asyncio
 import pathlib
@@ -26,10 +26,10 @@ class FakeUploadFile:
         return b"RIFFxxxx"
 
 
-class EasyEffectsMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
+class DSPMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
-        main.easyeffects_mutation_lock = None
-        main.easyeffects_manager = None
+        main.dsp_mutation_lock = None
+        main.dsp_manager = None
 
     async def test_two_concurrent_ir_uploads_are_serialized(self):
         entered = threading.Event()
@@ -53,7 +53,7 @@ class EasyEffectsMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
                 return {"status": "ok"}
 
         fake = FakeManager()
-        with mock.patch.object(main, "_require_easyeffects_manager", return_value=fake), mock.patch.object(
+        with mock.patch.object(main, "_require_dsp_manager", return_value=fake), mock.patch.object(
             main.manager, "broadcast", mock.AsyncMock()
         ), mock.patch.object(main, "schedule_peak_monitor_refresh_after_effects_change"):
             first = asyncio.create_task(main.upload_easyeffects_ir(FakeUploadFile()))
@@ -70,9 +70,9 @@ class EasyEffectsMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(critical), 2)
 
     async def test_convolver_create_uses_the_same_mutation_lock(self):
-        main.easyeffects_mutation_lock = asyncio.Lock()
-        lock = main._easyeffects_mutation_lock()
-        self.assertIs(lock, main.easyeffects_mutation_lock)
+        main.dsp_mutation_lock = asyncio.Lock()
+        lock = main._dsp_mutation_lock()
+        self.assertIs(lock, main.dsp_mutation_lock)
 
         observed = []
         holder = asyncio.create_task(self._hold_lock(lock, observed))
@@ -127,7 +127,7 @@ class EasyEffectsMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
                 return {"preset_name": "Some Preset"}
 
         fake = FakeManager()
-        with mock.patch.object(main, "_require_easyeffects_manager", return_value=fake), mock.patch.object(
+        with mock.patch.object(main, "_require_dsp_manager", return_value=fake), mock.patch.object(
             main.manager, "broadcast", mock.AsyncMock()
         ), mock.patch.object(main, "schedule_peak_monitor_refresh_after_effects_change"):
             upload_task = asyncio.create_task(main.upload_easyeffects_ir(FakeUploadFile()))
@@ -143,7 +143,7 @@ class EasyEffectsMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(order, ["upload-entered", "delete-entered"])
 
     async def test_lock_binds_to_current_loop(self):
-        lock = main._easyeffects_mutation_lock()
+        lock = main._dsp_mutation_lock()
         async with lock:
             pass
 
@@ -151,8 +151,8 @@ class EasyEffectsMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
         # New test loop: the shutdown path resets the lock to None, so the
         # runtime restart must create a fresh loop-bound lock (reusing the
         # old loop-bound lock would raise here).
-        main.easyeffects_mutation_lock = None
-        lock = main._easyeffects_mutation_lock()
+        main.dsp_mutation_lock = None
+        lock = main._dsp_mutation_lock()
         async with lock:
             pass
 
@@ -189,7 +189,7 @@ class EasyEffectsMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
                 return {"status": "ok"}
 
         fake = FakeManager()
-        with mock.patch.object(main, "_require_easyeffects_manager", return_value=fake), mock.patch.object(
+        with mock.patch.object(main, "_require_dsp_manager", return_value=fake), mock.patch.object(
             main.manager, "broadcast", mock.AsyncMock()
         ), mock.patch.object(main, "schedule_peak_monitor_refresh_after_effects_change"):
             upload_task = asyncio.create_task(main.upload_easyeffects_ir(FakeUploadFile()))
@@ -241,7 +241,7 @@ class EasyEffectsMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
                 return {"headroomGainDb": -2.5}
 
         fake = FakeManager()
-        with mock.patch.object(main, "_require_easyeffects_manager", return_value=fake), mock.patch.object(
+        with mock.patch.object(main, "_require_dsp_manager", return_value=fake), mock.patch.object(
             main.manager, "broadcast", mock.AsyncMock()
         ), mock.patch.object(main, "schedule_peak_monitor_refresh_after_effects_change"):
             upload_task = asyncio.create_task(main.upload_easyeffects_ir(FakeUploadFile()))
@@ -294,8 +294,8 @@ class EasyEffectsMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
                 return {"status": "ok"}
 
         fake = FakeManager()
-        with mock.patch.object(main, "_require_easyeffects_manager", return_value=fake), mock.patch.object(
-            main, "easyeffects_manager", fake
+        with mock.patch.object(main, "_require_dsp_manager", return_value=fake), mock.patch.object(
+            main, "dsp_manager", fake
         ), mock.patch.object(
             main.manager, "broadcast", mock.AsyncMock()
         ), mock.patch.object(main, "schedule_peak_monitor_refresh_after_effects_change"), mock.patch.object(
@@ -342,7 +342,7 @@ class EasyEffectsMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
                 return {"preset_name": "Some Preset"}
 
         fake = FakeManager()
-        with mock.patch.object(main, "_require_easyeffects_manager", return_value=fake), mock.patch.object(
+        with mock.patch.object(main, "_require_dsp_manager", return_value=fake), mock.patch.object(
             main.manager, "broadcast", mock.AsyncMock()
         ), mock.patch.object(main, "schedule_peak_monitor_refresh_after_effects_change"):
             upload_task = asyncio.create_task(main.upload_easyeffects_ir(FakeUploadFile()))
@@ -402,7 +402,7 @@ class EasyEffectsMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
                 return {"preset_name": "Neutral"}
 
         fake = FakeManager()
-        with mock.patch.object(main, "_require_easyeffects_manager", return_value=fake), mock.patch.object(
+        with mock.patch.object(main, "_require_dsp_manager", return_value=fake), mock.patch.object(
             main.manager, "broadcast", mock.AsyncMock()
         ), mock.patch.object(main, "schedule_peak_monitor_refresh_after_effects_change"):
             upload_task = asyncio.create_task(main.upload_easyeffects_ir(FakeUploadFile()))

@@ -32,7 +32,7 @@ class MainCoreTransitionRuntime:
         operation: str = "play",
         detail: str = "test-handoff",
         ee_port_timeout_ms: int | None = None,
-        preserve_easyeffects_output_graph: bool = False,
+        preserve_dsp_output_graph: bool = False,
         live_rate: int | None = None,
         failure: BaseException | None = None,
         resolver: Any = None,
@@ -46,7 +46,7 @@ class MainCoreTransitionRuntime:
         self.operation = operation
         self.detail = detail
         self.ee_port_timeout_ms = ee_port_timeout_ms
-        self.preserve_easyeffects_output_graph = preserve_easyeffects_output_graph
+        self.preserve_dsp_output_graph = preserve_dsp_output_graph
         self.live_rate = live_rate
         self.failure = failure
         self.resolver = resolver
@@ -165,7 +165,7 @@ async def run_main_handoff_through_coordinator(
     operation: str = "play",
     detail: str = "test-handoff",
     ee_port_timeout_ms: int | None = None,
-    preserve_easyeffects_output_graph: bool = False,
+    preserve_dsp_output_graph: bool = False,
     live_rate: int | None = None,
     failure: BaseException | None = None,
     resolver: Any = None,
@@ -182,7 +182,7 @@ async def run_main_handoff_through_coordinator(
         operation=operation,
         detail=detail,
         ee_port_timeout_ms=ee_port_timeout_ms,
-        preserve_easyeffects_output_graph=preserve_easyeffects_output_graph,
+        preserve_dsp_output_graph=preserve_dsp_output_graph,
         live_rate=live_rate,
         failure=failure,
         resolver=resolver,

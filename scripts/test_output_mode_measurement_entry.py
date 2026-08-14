@@ -27,13 +27,13 @@ class TransactionRuntime:
         *,
         fail_output_verify: bool = False,
         initially_muted: bool = False,
-        initially_easyeffects_muted: bool = False,
+        initially_dsp_muted: bool = False,
         dsp_reinitialized: bool = False,
         real_reconcile: bool = False,
     ):
         self.events: list[str] = []
         self.muted = initially_muted
-        self.easyeffects_muted = initially_easyeffects_muted
+        self.dsp_muted = initially_dsp_muted
         self.fail_output_verify = fail_output_verify
         self.rate = 44100
         self.helper_rate = 44100
@@ -57,14 +57,14 @@ class TransactionRuntime:
     async def read_sink_mute(self, sink_name):
         if sink_name != "fxroute_dsp_sink":
             raise AssertionError(f"unexpected explicit sink: {sink_name}")
-        self.events.append(f"read-sink-mute:{self.easyeffects_muted}")
-        return self.easyeffects_muted
+        self.events.append(f"read-sink-mute:{self.dsp_muted}")
+        return self.dsp_muted
 
     async def set_sink_mute(self, sink_name, muted, _transition_id):
         if sink_name != "fxroute_dsp_sink":
             raise AssertionError(f"unexpected explicit sink: {sink_name}")
-        self.easyeffects_muted = bool(muted)
-        self.events.append(f"sink-mute:{self.easyeffects_muted}")
+        self.dsp_muted = bool(muted)
+        self.events.append(f"sink-mute:{self.dsp_muted}")
 
     async def read_transition_snapshot(self, _request):
         self.events.append("snapshot")
@@ -298,7 +298,7 @@ class CoordinatorTransactionTests(unittest.IsolatedAsyncioTestCase):
     async def test_spotify_play_clears_stale_hardware_and_internal_mutes(self):
         runtime = TransactionRuntime(
             initially_muted=True,
-            initially_easyeffects_muted=True,
+            initially_dsp_muted=True,
         )
         coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
 
@@ -306,14 +306,14 @@ class CoordinatorTransactionTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(result.committed)
         self.assertFalse(runtime.muted)
-        self.assertFalse(runtime.easyeffects_muted)
+        self.assertFalse(runtime.dsp_muted)
         self.assertLess(runtime.events.index("mute:True"), runtime.events.index("sink-mute:False"))
         self.assertLess(runtime.events.index("sink-mute:False"), runtime.events.index("mute:False"))
 
     async def test_running_output_mode_switch_clears_stale_mutes(self):
         runtime = TransactionRuntime(
             initially_muted=True,
-            initially_easyeffects_muted=True,
+            initially_dsp_muted=True,
         )
         coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
 
@@ -321,12 +321,12 @@ class CoordinatorTransactionTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(result.committed)
         self.assertFalse(runtime.muted)
-        self.assertFalse(runtime.easyeffects_muted)
+        self.assertFalse(runtime.dsp_muted)
 
     async def test_paused_output_mode_switch_preserves_existing_mutes(self):
         runtime = TransactionRuntime(
             initially_muted=True,
-            initially_easyeffects_muted=True,
+            initially_dsp_muted=True,
         )
         coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
 
@@ -334,12 +334,12 @@ class CoordinatorTransactionTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(result.committed)
         self.assertTrue(runtime.muted)
-        self.assertTrue(runtime.easyeffects_muted)
+        self.assertTrue(runtime.dsp_muted)
 
     async def test_measurement_entry_unmutes_both_sinks_before_sweep(self):
         runtime = TransactionRuntime(
             initially_muted=True,
-            initially_easyeffects_muted=True,
+            initially_dsp_muted=True,
         )
         coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
 
@@ -349,7 +349,7 @@ class CoordinatorTransactionTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(result.committed)
         self.assertFalse(runtime.muted)
-        self.assertFalse(runtime.easyeffects_muted)
+        self.assertFalse(runtime.dsp_muted)
         self.assertLess(
             runtime.events.index("sink-mute:False"),
             runtime.events.index("verify-measurement-entry"),
@@ -523,12 +523,12 @@ class CoordinatorTransactionTests(unittest.IsolatedAsyncioTestCase):
             output_mode_target=overview,
             output_mode_config={"mode": "subwoofer-2.2"},
         )
-        with patch.object(main, "subwoofer_runtime", SimpleNamespace()), patch.object(
-            main, "easyeffects_manager", None
+        with patch.object(main, "dsp_runtime", SimpleNamespace()), patch.object(
+            main, "dsp_manager", None
         ), patch.object(
             main, "_playback_graph_diagnosis", new=AsyncMock(side_effect=[incomplete, incomplete, complete])
-        ), patch.object(main, "_sync_subwoofer_runtime", new=AsyncMock()), patch.object(
-            main, "_wait_for_easyeffects_output_ports", new=AsyncMock(return_value=True)
+        ), patch.object(main, "_sync_dsp_runtime", new=AsyncMock()), patch.object(
+            main, "_wait_for_dsp_output_ports", new=AsyncMock(return_value=True)
         ), patch.object(main, "_reconcile_transition_sink_rate", new=AsyncMock(return_value=True)), patch.object(
             main, "_coordinator_reconcile_subwoofer_links_only", new=AsyncMock()
         ), patch.object(main, "_connect_ports", new=AsyncMock()
@@ -588,12 +588,12 @@ class CoordinatorTransactionTests(unittest.IsolatedAsyncioTestCase):
             output_mode_target=overview,
             output_mode_config={"mode": "stereo"},
         )
-        with patch.object(main, "subwoofer_runtime", None), patch.object(
-            main, "easyeffects_manager", None
+        with patch.object(main, "dsp_runtime", None), patch.object(
+            main, "dsp_manager", None
         ), patch.object(
             main, "_playback_graph_diagnosis", new=AsyncMock(side_effect=[incomplete, incomplete, complete])
-        ), patch.object(main, "_sync_subwoofer_runtime", new=AsyncMock()), patch.object(
-            main, "_wait_for_easyeffects_output_ports", new=AsyncMock(return_value=True)
+        ), patch.object(main, "_sync_dsp_runtime", new=AsyncMock()), patch.object(
+            main, "_wait_for_dsp_output_ports", new=AsyncMock(return_value=True)
         ), patch.object(main, "_reconcile_transition_sink_rate", new=AsyncMock(return_value=True)), patch.object(
             main, "_connect_ports", new=AsyncMock()
         ), patch.object(main.asyncio, "sleep", new=AsyncMock()):
@@ -636,7 +636,7 @@ class EntryBoundaryTests(unittest.IsolatedAsyncioTestCase):
             main, "_run_coordinated_transition", run
         ), patch.object(main, "get_audio_output_overview", return_value=target["overview"]), patch.object(
             main, "_with_subwoofer_derived_delays", side_effect=lambda value: value
-        ), patch.object(main, "subwoofer_runtime", None), patch.object(
+        ), patch.object(main, "dsp_runtime", None), patch.object(
             main, "refresh_peak_monitor_after_effects_change", new=AsyncMock()
         ):
             await main.save_audio_output_mode_route(Request())
@@ -820,11 +820,11 @@ class EntryBoundaryTests(unittest.IsolatedAsyncioTestCase):
         # pre-coordinator direct sync without closing the output gate.
         self.assertIn("target_mode == current_mode", output_mode_source)
         self.assertIn("persist_audio_output_mode", output_mode_source)
-        self.assertIn("_sync_subwoofer_runtime", output_mode_source)
+        self.assertIn("_sync_dsp_runtime", output_mode_source)
         self.assertIn("operation=\"measurement-entry\"", start_source)
         self.assertIn("_run_coordinated_transition", start_source)
         self.assertNotIn("_set_pipewire_force_rate", start_source)
-        self.assertNotIn("_sync_subwoofer_runtime", start_source)
+        self.assertNotIn("_sync_dsp_runtime", start_source)
 
     def test_sample_rate_policy_reuses_settings_selector_and_coordinator(self):
         index = (pathlib.Path(__file__).resolve().parents[1] / "static" / "index.html").read_text()

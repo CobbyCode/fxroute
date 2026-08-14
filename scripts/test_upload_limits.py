@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Upload size-limit tests for the shared bounded upload helpers and the
-EasyEffects upload endpoints.
+Effects upload endpoints.
 
 No network or real hardware is touched; uploads are fake in-memory objects
-and the EasyEffects manager is faked.
+and the DSP manager is faked.
 """
 
 import asyncio
@@ -114,14 +114,14 @@ class FakeEEManager:
         return extras or {}
 
 
-class EasyEffectsEndpointLimitTests(unittest.IsolatedAsyncioTestCase):
+class EffectsEndpointLimitTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
-        self.original_manager = main.easyeffects_manager
-        main.easyeffects_manager = FakeEEManager()
+        self.original_manager = main.dsp_manager
+        main.dsp_manager = FakeEEManager()
 
     async def asyncTearDown(self):
-        main.easyeffects_manager = self.original_manager
+        main.dsp_manager = self.original_manager
         self.temp_dir.cleanup()
 
     def _recording_tempfile(self, created):

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Startup offload must keep the asyncio event loop live.
 
-Positive regression for the P2 finding: the EasyEffects flatpak probe and
+Positive regression for the P2 finding: the native DSP manager construction and
 the whole MPV player start (mpv --version probe + socket wait) used to run
 synchronously inside the lifespan and froze the event loop for the full
 blocking duration.  Both are now executed through main._drain_worker, so
@@ -80,8 +80,8 @@ class SlowPlayer:
         pass
 
 
-class SlowEasyEffects:
-    """Constructor blocks like the flatpak capability probe inside _detect_runtime."""
+class SlowDSPManager:
+    """Constructor blocks like the native DSP manager construction."""
 
     def __init__(self):
         SLOW_EFFECTS_EVENTS.append("effects-construct")
@@ -179,14 +179,14 @@ def _lifespan_patches(slow_player, slow_effects):
         mock.patch.object(main, "MeasurementSampleRateSession", FakeMeasurementSession),
         mock.patch.object(main, "PlaybackTransitionCoordinator", FakeCoordinator),
         mock.patch.object(main, "HardwareController", None),
-        mock.patch.object(main, "EasyEffectsPeakMonitor", FakePeakMonitor),
+        mock.patch.object(main, "DSPPeakMonitor", FakePeakMonitor),
         mock.patch.object(main, "DSPRuntime", FakeSubwooferRuntime),
         mock.patch.object(main, "start_volume_read_monitor", lambda: asyncio.create_task(asyncio.sleep(0.01))),
         mock.patch.object(main, "get_spotify_ui_state", mock.AsyncMock(return_value={})),
         mock.patch.object(main, "sync_peak_monitor_for_spotify_state", mock.AsyncMock()),
         mock.patch.object(main, "apply_persisted_audio_output_selection", return_value=None),
         mock.patch.object(main.samplerate, "load_sample_rate_policy", return_value={"mode": "auto"}),
-        mock.patch.object(main, "_sync_subwoofer_runtime", mock.AsyncMock()),
+        mock.patch.object(main, "_sync_dsp_runtime", mock.AsyncMock()),
         mock.patch.object(main, "get_audio_output_overview", return_value={}),
         mock.patch.object(main, "get_audio_source_overview", return_value={"mode": "app-playback"}),
         mock.patch.object(main, "_sync_external_input_monitoring", mock.AsyncMock(side_effect=lambda overview: overview)),
@@ -203,7 +203,7 @@ class StartupOffloadLivenessTests(unittest.IsolatedAsyncioTestCase):
         events = []
         SLOW_EFFECTS_EVENTS.clear()
         slow_player = SlowPlayer(events)
-        slow_effects_class = SlowEasyEffects
+        slow_dsp_class = SlowDSPManager
 
         real_drain_worker = main._drain_worker
         drain_calls = []
@@ -234,7 +234,7 @@ class StartupOffloadLivenessTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any(call is slow_effects_class for call in drain_calls))
         self.assertLess(ticker.max_gap(), MAX_ACCEPTABLE_GAP)
         self.assertIsNone(main.player_instance)
-        self.assertIsNone(main.easyeffects_manager)
+        self.assertIsNone(main.dsp_manager)
 
     async def test_slow_socket_wait_inside_start_does_not_block_loop(self):
         class SocketWaitPlayer:

@@ -81,7 +81,7 @@ class FakeRequest:
 class SplCalibrationLifecycleTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.original_session = main.measurement_sr_session
-        self.original_manager = main.easyeffects_manager
+        self.original_manager = main.dsp_manager
         self.original_get_volume = main.get_output_volume
         self.original_set_volume = main.set_output_volume
         spl_calibration._runtime.operation = None
@@ -91,7 +91,7 @@ class SplCalibrationLifecycleTests(unittest.IsolatedAsyncioTestCase):
         if spl_calibration._runtime.operation is not None:
             await spl_calibration._stop_active_operation()
         main.measurement_sr_session = self.original_session
-        main.easyeffects_manager = self.original_manager
+        main.dsp_manager = self.original_manager
         main.get_output_volume = self.original_get_volume
         main.set_output_volume = self.original_set_volume
         spl_calibration._runtime.operation = None
@@ -295,7 +295,7 @@ class SplCalibrationLifecycleTests(unittest.IsolatedAsyncioTestCase):
                     raise RuntimeError("autogain restore failed")
 
         manager = Manager()
-        main.easyeffects_manager = manager
+        main.dsp_manager = manager
         main.get_output_volume = lambda: 100
         volume_writes = []
         main.set_output_volume = volume_writes.append
@@ -335,7 +335,7 @@ class SplCalibrationLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 self.writes.append((plugin, name, value))
 
         manager = Manager()
-        main.easyeffects_manager = manager
+        main.dsp_manager = manager
         main.get_output_volume = lambda: 55
         volume_writes = []
         main.set_output_volume = volume_writes.append

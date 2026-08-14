@@ -325,7 +325,7 @@ class DSPRuntime:
                     f"{self._config.output_key}:playback_{channel}",
                 ))
 
-    async def reclean_direct_easyeffects_links(self) -> None:
+    async def reclean_direct_dsp_links(self) -> None:
         if self._config is not None:
             await self._reconcile_output_links(self._config)
         await self._reclean_guarded()

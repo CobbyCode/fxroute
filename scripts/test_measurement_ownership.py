@@ -23,7 +23,7 @@ class MeasurementOwnershipTests(unittest.IsolatedAsyncioTestCase):
                 "playback_transition_coordinator",
                 "player_instance",
                 "current_track_info",
-                "subwoofer_runtime",
+                "dsp_runtime",
                 "_is_measurement_window_open",
                 "_run_coordinated_transition",
                 "_recovery_context_is_valid",
@@ -111,7 +111,7 @@ class MeasurementOwnershipTests(unittest.IsolatedAsyncioTestCase):
             "url": "/music/a.flac",
             "sample_rate_hz": 44100,
         }
-        main.subwoofer_runtime = object()
+        main.dsp_runtime = object()
         observe_drift = AsyncMock()
         diagnose = AsyncMock()
         recovery = AsyncMock()
@@ -130,7 +130,7 @@ class MeasurementOwnershipTests(unittest.IsolatedAsyncioTestCase):
             main, "_request_coordinated_recovery", recovery
         ), patch.object(main, "asyncio") as asyncio_module:
             asyncio_module.sleep = one_tick_then_cancel
-            task = asyncio.create_task(main._subwoofer_runtime_link_watch_loop())
+            task = asyncio.create_task(main._dsp_runtime_link_watch_loop())
             with self.assertRaises(asyncio.CancelledError):
                 await task
 

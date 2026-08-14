@@ -4,7 +4,7 @@
 # Manager/engine validation parity: values the native engine rejects must
 # fail in normalize_effects_extras at the API boundary, never during engine
 # startup, and the tone_effect "off" normalization must match the old
-# EasyEffects-era contract.
+# pre-native-DSP contract.
 
 import json
 import sys

@@ -55,7 +55,7 @@ class NativeQueueSelectionTests(unittest.TestCase):
             def set_loudness_volume_db(self, volume_db):
                 return {"extras": {"loudness": {"params": {"volumeDb": volume_db}}}}
 
-        with patch.object(main, "easyeffects_manager", LoudnessManager()), \
+        with patch.object(main, "dsp_manager", LoudnessManager()), \
              patch.object(main, "set_output_volume", return_value=100) as set_master:
             result = asyncio.run(main._set_canonical_output_volume(32))
         self.assertEqual(result["volume"], 32)
@@ -166,7 +166,7 @@ class NativeQueueRuntimeTests(unittest.IsolatedAsyncioTestCase):
             native_queue_shuffle=True,
         )
         with patch.object(main, "player_instance", fake), \
-             patch.object(main, "_ensure_mpv_to_easyeffects_links", new=_true_async):
+             patch.object(main, "_ensure_mpv_to_dsp_links", new=_true_async):
             runtime = make_transition_runtime()
             await runtime.prepare_target_source(request)
 

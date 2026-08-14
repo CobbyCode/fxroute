@@ -23,7 +23,7 @@ When preparing a contribution:
 - avoid unrelated cleanup in the same PR
 - prefer readable, practical solutions over clever ones
 - preserve current install and upgrade behavior unless the change is intentional
-- mention any Linux / desktop / PipeWire / EasyEffects assumptions explicitly
+- mention any Linux / desktop / PipeWire assumptions explicitly
 
 If your change affects setup, install, deployment, or public docs, please update the relevant documentation too.
 

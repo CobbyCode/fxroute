@@ -131,7 +131,7 @@ FXRoute checks guest access when discovering shares, mounts the selected share w
 
 ## 7. Native DSP installation
 
-The installer installs compiler and PipeWire development dependencies on supported distributions, then builds the DSP engine shipped with FXRoute. Audio applications connect through `fxroute_dsp_sink`; processing runs in the `fxroute_dsp` node. EasyEffects is not required.
+The installer installs compiler and PipeWire development dependencies on supported distributions, then builds the DSP engine shipped with FXRoute. Audio applications connect through `fxroute_dsp_sink`; processing runs in the `fxroute_dsp` node.
 
 ## 8. DSP
 

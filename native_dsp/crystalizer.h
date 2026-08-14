@@ -5,7 +5,7 @@
 
 typedef struct fx_crystalizer fx_crystalizer;
 
-/* EasyEffects 8.2.8 Crystalizer preset used by c9e4876. All processing state is
+/* Crystalizer band structure and intensity defaults. All processing state is
  * allocated at creation; process and reset perform no allocation, locking or I/O. */
 fx_crystalizer *fx_crystalizer_create(unsigned rate);
 void fx_crystalizer_destroy(fx_crystalizer *crystalizer);

@@ -50,7 +50,7 @@ class _TestAudioHarness:
             "_get_current_pipewire_force_rate",
             "_coordinator_current_playback_context",
             "_run_coordinated_transition",
-            "_sync_subwoofer_runtime_at_rate",
+            "_sync_dsp_runtime_at_rate",
             "_ensure_playback_samplerate_force",
             "_wait_for_samplerate_alignment",
             "playback_transition_coordinator",
@@ -67,7 +67,7 @@ class _TestAudioHarness:
         m._get_current_pipewire_force_rate = lambda: self.force_rate
         m._coordinator_current_playback_context = self._playback_context
         m._run_coordinated_transition = self._run_transition
-        m._sync_subwoofer_runtime_at_rate = self._noop
+        m._sync_dsp_runtime_at_rate = self._noop
         m._ensure_playback_samplerate_force = self._noop
         m._wait_for_samplerate_alignment = self._noop
         m.playback_transition_coordinator = None

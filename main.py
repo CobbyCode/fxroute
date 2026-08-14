@@ -902,7 +902,7 @@ except ImportError:
 from measurement import (
     MeasurementStore,
 )
-from peak_monitor import EasyEffectsPeakMonitor
+from peak_monitor import DSPPeakMonitor
 from playback_transition import (
     PlaybackTransitionCoordinator,
     PlaybackTransitionFailure,
@@ -988,31 +988,31 @@ library_scanner = None
 music_library_manager = None
 music_library_switch_lock = None
 downloader = None
-easyeffects_manager = None
+dsp_manager = None
 measurement_store = None
 measurement_sr_session = None
 measurement_watchdog_task = None
 library_scan_task = None
 peak_monitor = None
-subwoofer_runtime = None
-subwoofer_runtime_link_watch_task = None
+dsp_runtime = None
+dsp_runtime_link_watch_task = None
 hardware_controller = None
 peak_monitor_playback_armed = False
 peak_monitor_transition_lock = None
 peak_monitor_context_signature = None
-easyeffects_preset_load_lock = None
-# Serializes threaded EasyEffects mutations (convolver IR upload/create)
+dsp_preset_load_lock = None
+# Serializes threaded DSP mutations (convolver IR upload/create)
 # so concurrent HTTP requests cannot interleave filesystem/preset state
 # changes that used to run serially in the event loop.
-easyeffects_mutation_lock = None
+dsp_mutation_lock = None
 source_transition_lock = None
 
 
-def _easyeffects_mutation_lock() -> asyncio.Lock:
-    global easyeffects_mutation_lock
-    if easyeffects_mutation_lock is None:
-        easyeffects_mutation_lock = asyncio.Lock()
-    return easyeffects_mutation_lock
+def _dsp_mutation_lock() -> asyncio.Lock:
+    global dsp_mutation_lock
+    if dsp_mutation_lock is None:
+        dsp_mutation_lock = asyncio.Lock()
+    return dsp_mutation_lock
 
 
 # Serializes canonical volume writes (/api/volume, /api/spotify/volume) so
@@ -1133,14 +1133,14 @@ configure_library_api_runtime(LibraryApiRuntime(
 spl_calibration.configure_runtime(spl_calibration.SplCalibrationDependencies(
     get_measurement_store=lambda: measurement_store,
     get_measurement_session=lambda: measurement_sr_session,
-    get_easyeffects_manager=lambda: easyeffects_manager,
-    require_easyeffects_manager=lambda: _require_easyeffects_manager(),
+    get_dsp_manager=lambda: dsp_manager,
+    require_dsp_manager=lambda: _require_dsp_manager(),
     get_output_volume=lambda: get_output_volume(),
     set_output_volume=lambda value: set_output_volume(value),
     read_measurement_settings=lambda: measurement_session._read_measurement_setup_settings(),
     measurement_entry_preflight=lambda rate: measurement_session._measurement_entry_preflight(rate),
-    run_easyeffects_mutation=lambda func: _run_locked_worker(
-        _easyeffects_mutation_lock(), func
+    run_dsp_mutation=lambda func: _run_locked_worker(
+        _dsp_mutation_lock(), func
     ),
 ))
 measurement_session.configure_services(MeasurementServices(
@@ -1174,8 +1174,8 @@ def make_playback_runtime_deps() -> PlaybackRuntimeDependencies:
     """
     return PlaybackRuntimeDependencies(
         player=lambda: player_instance,
-        easyeffects_manager=lambda: easyeffects_manager,
-        subwoofer_runtime=lambda: subwoofer_runtime,
+        dsp_manager=lambda: dsp_manager,
+        dsp_runtime=lambda: dsp_runtime,
         get_current_track_info=lambda: current_track_info,
         set_current_track_info=_set_runtime_current_track_info,
         get_playback_intent_generation=lambda: playback_intent_generation,
@@ -1208,17 +1208,17 @@ def make_playback_runtime_deps() -> PlaybackRuntimeDependencies:
         mark_player_state_authoritative=lambda *a, **k: _mark_player_state_authoritative(*a, **k),
         spotify_snapshot_identity_values=lambda *a, **k: _spotify_snapshot_identity_values(*a, **k),
         measurement_restore_intent_matches_live_state=lambda *a, **k: _measurement_restore_intent_matches_live_state(*a, **k),
-        easyeffects_mutation_lock=lambda: _easyeffects_mutation_lock(),
+        dsp_mutation_lock=lambda: _dsp_mutation_lock(),
         drain_worker=lambda *a, **k: _drain_worker(*a, **k),
-        load_easyeffects_preset=lambda *a, **k: _load_easyeffects_preset(*a, **k),
-        sync_subwoofer_runtime=lambda *a, **k: _sync_subwoofer_runtime(*a, **k),
+        load_dsp_preset=lambda *a, **k: _load_dsp_preset(*a, **k),
+        sync_dsp_runtime=lambda *a, **k: _sync_dsp_runtime(*a, **k),
         helper_argument_sample_rate=lambda *a, **k: _helper_argument_sample_rate(*a, **k),
         playback_graph_diagnosis=lambda *a, **k: _playback_graph_diagnosis(*a, **k),
         measurement_session_link_loss_is_repairable=lambda *a, **k: _measurement_session_link_loss_is_repairable(*a, **k),
         coordinator_reconcile_subwoofer_links_only=lambda *a, **k: _coordinator_reconcile_subwoofer_links_only(*a, **k),
         repair_stereo_output_links_once=lambda *a, **k: _repair_stereo_output_links_once(*a, **k),
         coordinator_establish_effects_and_helper=lambda *a, **k: _coordinator_establish_effects_and_helper(*a, **k),
-        ensure_mpv_to_easyeffects_links=lambda *a, **k: _ensure_mpv_to_easyeffects_links(*a, **k),
+        ensure_mpv_to_dsp_links=lambda *a, **k: _ensure_mpv_to_dsp_links(*a, **k),
         playback_graph_links_complete=lambda *a, **k: _playback_graph_links_complete(*a, **k),
         log_playback_graph_diagnosis=lambda *a, **k: _log_playback_graph_diagnosis(*a, **k),
         coordinator_reconcile_post_start_graph=lambda *a, **k: _coordinator_reconcile_post_start_graph(*a, **k),
@@ -1599,7 +1599,7 @@ async def _recovery_context_is_valid(request: TransitionRequest) -> bool:
     elif _coordinator_commit_context_id() != expected_context or _playback_transition_is_active():
         return False
 
-    if subwoofer_runtime is not None and subwoofer_runtime.sync_in_progress:
+    if dsp_runtime is not None and dsp_runtime.sync_in_progress:
         logger.debug(
             "Coordinator recovery deferred while subwoofer runtime reconfiguration is in progress: reason=%s",
             request.detail,
@@ -2378,12 +2378,12 @@ async def _check_and_recover_silent_active(
     # Skip during measurement window or while EE preset is actively loading.
     # The audio path is in transition; not a real silent-active condition.
     if _is_measurement_window_open() or (
-        easyeffects_preset_load_lock is not None and easyeffects_preset_load_lock.locked()
+        dsp_preset_load_lock is not None and dsp_preset_load_lock.locked()
     ):
         logger.info(
             "SILENT-ACTIVE-DIAG skip: transition_window measurement_open=%s ee_preset_loading=%s source=%s signature=%s",
             _is_measurement_window_open(),
-            easyeffects_preset_load_lock.locked() if easyeffects_preset_load_lock is not None else False,
+            dsp_preset_load_lock.locked() if dsp_preset_load_lock is not None else False,
             source, signature,
         )
         return
@@ -2437,7 +2437,7 @@ def _playback_transition_context_is_current(generation: int | None) -> bool:
 
 
 
-async def _easyeffects_output_ports_present() -> bool:
+async def _dsp_output_ports_present() -> bool:
     """Read back the native DSP stereo ingress and output ports."""
     try:
         links_text = await _run_pw_link_command("-io")
@@ -2451,7 +2451,7 @@ async def _easyeffects_output_ports_present() -> bool:
     )
 
 
-async def _wait_for_easyeffects_output_ports(timeout_ms: int) -> bool:
+async def _wait_for_dsp_output_ports(timeout_ms: int) -> bool:
     """Poll pw-link -io until the native DSP ports are exposed.
 
     Readback-driven replacement for fixed sleeps: the handoff only proceeds
@@ -2460,7 +2460,7 @@ async def _wait_for_easyeffects_output_ports(timeout_ms: int) -> bool:
     """
     deadline = time.monotonic() + max(timeout_ms, 0) / 1000
     while True:
-        if await _easyeffects_output_ports_present():
+        if await _dsp_output_ports_present():
             return True
         if time.monotonic() >= deadline:
             return False
@@ -2523,7 +2523,7 @@ async def _playback_graph_diagnosis(
     source_node = "spotify" if source == "spotify" else "mpv" if source in {"local", "radio"} else None
     source_targets = ("fxroute_dsp_sink:playback_FL", "fxroute_dsp_sink:playback_FR")
     source_ports = ((f"{source_node}:output_FL", f"{source_node}:output_FR") if source_node else ())
-    runtime = subwoofer_runtime.snapshot() if subwoofer_runtime is not None else {}
+    runtime = dsp_runtime.snapshot() if dsp_runtime is not None else {}
     output_count = 4 if mode in OUTPUT_MODE_SUBWOOFER_MODES else 2
     hardware_channels = ("FL", "FR", "RL", "RR")[:output_count]
     dsp_ports = tuple(f"fxroute_dsp:output_{index + 1}" for index in range(output_count))
@@ -2685,9 +2685,9 @@ async def _repair_stereo_output_links_once(diagnosis: dict) -> None:
 
 async def _coordinator_reconcile_subwoofer_links_only() -> None:
     """Repair only the 2.1/2.2 link topology, never restart the helper."""
-    if subwoofer_runtime is None:
+    if dsp_runtime is None:
         raise RuntimeError("subwoofer helper runtime is not available")
-    reconcile = getattr(subwoofer_runtime, "reclean_direct_easyeffects_links", None)
+    reconcile = getattr(dsp_runtime, "reclean_direct_dsp_links", None)
     if not callable(reconcile):
         raise RuntimeError("subwoofer runtime has no link-only reconciliation")
     await reconcile()
@@ -2713,7 +2713,7 @@ def _post_start_graph_links_are_repairable(
     if diagnosis.get("direct_ee_to_hw_present"):
         return False
     # Helper lifecycle and rate are part of the canonical commit predicate for
-    # every output mode: subwoofer_runtime is the complete native DSPRuntime
+    # every output mode: dsp_runtime is the complete native DSPRuntime
     # (Stereo included), so an inactive or stale-rate runtime is never link-only
     # drift regardless of mode.
     if diagnosis.get("helper_ports") is not True:
@@ -2832,7 +2832,7 @@ async def _coordinator_reconcile_post_start_graph(
         )
     if not initial.get("links_complete") and not initial_missing:
         if initial.get("bypass_only"):
-            # EasyEffects can recreate its direct EE -> hardware front links
+            # The DSP can recreate its direct source -> hardware front links
             # after the output-mode preset reload, even though the helper
             # topology and the commit stage just reconciled them.  That is
             # the same invalid-but-link-only state the watcher heals via a
@@ -2903,7 +2903,7 @@ async def _coordinator_establish_effects_and_helper(
     the following adapter stages; this function only performs the idempotent
     EE/helper/link work and then uses the canonical graph readback.
     """
-    global easyeffects_preset_load_lock
+    global dsp_preset_load_lock
 
     target_rate = request.target_rate
     if not isinstance(target_rate, int) or target_rate <= 0:
@@ -2939,9 +2939,9 @@ async def _coordinator_establish_effects_and_helper(
         # A healthy same-rate graph must not reload its preset.  A convolver
         # that needs the target rate is relevant only during a real rate
         # transition; missing EE ports remain a genuine recovery condition.
-        if request.rate_change and not needs_preset and easyeffects_manager is not None:
+        if request.rate_change and not needs_preset and dsp_manager is not None:
             requires_convolver_reload = getattr(
-                easyeffects_manager,
+                dsp_manager,
                 "active_preset_requires_samplerate_reload",
                 None,
             )
@@ -2963,17 +2963,17 @@ async def _coordinator_establish_effects_and_helper(
                         "sample-rate reload: %s",
                         exc,
                     )
-        if request.operation == "output-mode-switch" and easyeffects_manager is not None:
-            compare = easyeffects_manager.load_compare_state()
+        if request.operation == "output-mode-switch" and dsp_manager is not None:
+            compare = dsp_manager.load_compare_state()
             active_side = compare.get("activeSide") if compare.get("activeSide") in {"A", "B"} else None
             compare_target_preset = (
                 compare.get("presetA") if active_side == "A" else
                 compare.get("presetB") if active_side == "B" else
                 None
             )
-            current_preset = easyeffects_manager.get_active_preset()
+            current_preset = dsp_manager.get_active_preset()
             if compare_target_preset and current_preset != compare_target_preset:
-                await _load_easyeffects_preset(compare_target_preset, convolver_sample_rate_hz=target_rate)
+                await _load_dsp_preset(compare_target_preset, convolver_sample_rate_hz=target_rate)
                 needs_preset = True
                 preset_reloaded = True
                 logger.info(
@@ -2981,13 +2981,13 @@ async def _coordinator_establish_effects_and_helper(
                     compare_target_preset,
                 )
         if needs_preset and not preset_reloaded:
-            await _sync_easyeffects_preset_for_playback_samplerate(
+            await _sync_dsp_preset_for_playback_samplerate(
                 sample_rate_hz=target_rate,
                 reason=f"coordinator-{request.operation}",
                 detail=request.detail,
             )
             preset_reloaded = True
-        if not await _wait_for_easyeffects_output_ports(ee_port_timeout_ms):
+        if not await _wait_for_dsp_output_ports(ee_port_timeout_ms):
             raise RuntimeError(
                 "Coordinator effects stage failed: native DSP output ports were not confirmed"
             )
@@ -3010,20 +3010,20 @@ async def _coordinator_establish_effects_and_helper(
         if request.operation == "output-mode-switch":
             # A mode switch always rebuilds the runtime from the target
             # overview/config, independent of the rate-staleness heuristic.
-            await _sync_subwoofer_runtime(
+            await _sync_dsp_runtime(
                 audio_overview=overview,
                 reason="coordinator-output-mode-switch",
                 _rate_lock_held=False,
                 target_overview=overview,
             )
             helper_rebuilt = True
-            if easyeffects_manager is not None:
-                if easyeffects_preset_load_lock is None:
-                    easyeffects_preset_load_lock = asyncio.Lock()
-                async with easyeffects_preset_load_lock:
+            if dsp_manager is not None:
+                if dsp_preset_load_lock is None:
+                    dsp_preset_load_lock = asyncio.Lock()
+                async with dsp_preset_load_lock:
                     # A/B can change while runtime sync recovers the graph, so
                     # use the current side rather than the pre-sync snapshot.
-                    compare = easyeffects_manager.load_compare_state()
+                    compare = dsp_manager.load_compare_state()
                     active_side = compare.get("activeSide") if compare.get("activeSide") in {"A", "B"} else None
                     compare_target_preset = (
                         compare.get("presetA") if active_side == "A" else
@@ -3032,15 +3032,15 @@ async def _coordinator_establish_effects_and_helper(
                     )
                     if (
                         compare_target_preset
-                        and easyeffects_manager.get_active_preset() != compare_target_preset
+                        and dsp_manager.get_active_preset() != compare_target_preset
                     ):
                         # Runtime synchronization may overlap an A/B change;
                         # restore the side selected after synchronization.
-                        await _load_easyeffects_preset(
+                        await _load_dsp_preset(
                             compare_target_preset,
                             convolver_sample_rate_hz=target_rate,
                         )
-                        if not await _wait_for_easyeffects_output_ports(ee_port_timeout_ms):
+                        if not await _wait_for_dsp_output_ports(ee_port_timeout_ms):
                             raise RuntimeError(
                                 "Coordinator compare preset restore did not recreate "
                                 "native DSP output ports"
@@ -3063,12 +3063,12 @@ async def _coordinator_establish_effects_and_helper(
                 await _repair_stereo_output_links_once(diagnosis)
             links_reconciled = True
         else:
-            # subwoofer_runtime is now the complete native DSPRuntime,
+            # dsp_runtime is now the complete native DSPRuntime,
             # including Stereo.  A real rate change or a stale/inactive/
             # port-less runtime therefore requires a full rebuild for every
             # output mode.  The mode only selects the link/routing
             # reconciliation below; it no longer gates runtime sync.
-            helper_snapshot = subwoofer_runtime.snapshot() if subwoofer_runtime is not None else {}
+            helper_snapshot = dsp_runtime.snapshot() if dsp_runtime is not None else {}
             helper_needs_sync = bool(
                 request.rate_change
                 or not helper_snapshot.get("active")
@@ -3078,7 +3078,7 @@ async def _coordinator_establish_effects_and_helper(
             )
             if helper_needs_sync:
                 if request.operation in {"measurement-entry", "measurement-restore"}:
-                    await _sync_subwoofer_runtime(
+                    await _sync_dsp_runtime(
                         audio_overview=overview,
                         reason=f"coordinator-{request.operation}",
                         _rate_lock_held=True,
@@ -3088,11 +3088,11 @@ async def _coordinator_establish_effects_and_helper(
                     # playback transitions; measurement/output-mode are the
                     # only operations that must carry an explicit target
                     # overview through this Coordinator-owned path.
-                    await _sync_subwoofer_runtime(
+                    await _sync_dsp_runtime(
                         reason=f"coordinator-{request.operation}",
                     )
                 helper_rebuilt = True
-                # EasyEffects may recreate its direct front links after a
+                # The DSP may recreate its direct front links after a
                 # preset action.  Reconcile them after helper setup without
                 # restarting either process.
                 if mode in OUTPUT_MODE_SUBWOOFER_MODES:
@@ -3113,7 +3113,7 @@ async def _coordinator_establish_effects_and_helper(
         require_source=False,
     )
     if not final.get("links_complete"):
-        # EasyEffects can recreate its output nodes during the transition and
+        # The DSP can recreate its output nodes during the transition and
         # drop a freshly established edge. Reuse the canonical link-only
         # repairability contract before declaring the switch failed.
         for _ in range(3):
@@ -3312,10 +3312,10 @@ async def _mpv_source_ports_present() -> bool:
     )
 
 
-async def _ensure_mpv_to_easyeffects_links(
+async def _ensure_mpv_to_dsp_links(
     timeout_ms: int = RADIO_SOURCE_PORT_READINESS_TIMEOUT_MS,
 ) -> bool:
-    """Ensure only the newly-created MPV stream is connected to EasyEffects.
+    """Ensure only the newly-created MPV stream is connected to the native DSP.
 
     Two-phase, read-back driven contract (no fixed sleeps):
 
@@ -3330,7 +3330,7 @@ async def _ensure_mpv_to_easyeffects_links(
        idempotently, then confirmed read-only (bounded by
        ``MPV_LINK_REPAIR_TIMEOUT_MS``).
 
-    Radio-to-radio switches keep the existing EasyEffects output graph; the
+    Radio-to-radio switches keep the existing DSP output graph; the
     same contract applies to local playback, which shares this exact path.
     A missing port set within the bounded budget still fails the transition
     cleanly at target-source-prepare with the gate/fault safety unchanged.
@@ -3380,7 +3380,7 @@ async def _dump_21_runtime_state(label: str, ui_state: dict | None = None) -> di
     output_mode = overview.get("output_mode") or {}
     output_key = str(output_mode.get("effective_output_key") or "").strip()
     samplerate_status = get_samplerate_status()
-    snapshot = subwoofer_runtime.snapshot() if subwoofer_runtime is not None else {}
+    snapshot = dsp_runtime.snapshot() if dsp_runtime is not None else {}
     helper_pid = snapshot.get("helper_pid")
     helper_alive = False
     helper_cmdline = ""
@@ -3452,12 +3452,12 @@ async def _dump_21_runtime_state(label: str, ui_state: dict | None = None) -> di
 
 
 
-async def _sync_subwoofer_runtime_at_rate(target_rate: int, *, _rate_lock_held: bool = False) -> None:
+async def _sync_dsp_runtime_at_rate(target_rate: int, *, _rate_lock_held: bool = False) -> None:
     """Re-sync through the central live-rate helper path after a rate transition."""
-    global subwoofer_runtime
-    if subwoofer_runtime is None:
+    global dsp_runtime
+    if dsp_runtime is None:
         logger.info(
-            "Subwoofer runtime measurement release re-sync skipped: subwoofer_runtime_missing=true target_rate=%s",
+            "Subwoofer runtime measurement release re-sync skipped: dsp_runtime_missing=true target_rate=%s",
             target_rate,
         )
         return
@@ -3480,14 +3480,14 @@ async def _sync_subwoofer_runtime_at_rate(target_rate: int, *, _rate_lock_held: 
                 target_rate, selected_aligned, sink_aligned,
             )
             return
-    await _sync_subwoofer_runtime(
+    await _sync_dsp_runtime(
         reason="measurement-release", _rate_lock_held=_rate_lock_held,
     )
     await asyncio.sleep(0.5)
-    await _sync_subwoofer_runtime(
+    await _sync_dsp_runtime(
         reason="measurement-release-settle", _rate_lock_held=_rate_lock_held,
     )
-    runtime_snapshot = subwoofer_runtime.snapshot()
+    runtime_snapshot = dsp_runtime.snapshot()
     try:
         samplerate_status = get_samplerate_status()
     except Exception:
@@ -3637,7 +3637,7 @@ async def _observe_playback_samplerate_drift() -> None:
     )
 
 
-async def _subwoofer_runtime_link_watch_loop() -> None:
+async def _dsp_runtime_link_watch_loop() -> None:
     while True:
         await asyncio.sleep(2.0)
         try:
@@ -3645,7 +3645,7 @@ async def _subwoofer_runtime_link_watch_loop() -> None:
                 logger.debug("Subwoofer link watcher skipped while Measurement owns the audio graph")
                 continue
             await _observe_playback_samplerate_drift()
-            if subwoofer_runtime is None:
+            if dsp_runtime is None:
                 continue
             overview = get_audio_output_overview()
             output_mode = overview.get("output_mode") or {}
@@ -3653,7 +3653,7 @@ async def _subwoofer_runtime_link_watch_loop() -> None:
                 continue
             if _playback_transition_is_active():
                 continue
-            if subwoofer_runtime.sync_in_progress:
+            if dsp_runtime.sync_in_progress:
                 logger.debug(
                     "Subwoofer link watcher skipped while a subwoofer runtime reconfiguration is in progress"
                 )
@@ -3774,29 +3774,29 @@ async def _wait_for_radio_live_rate_after_load(
 
 
 
-async def _sync_easyeffects_preset_for_playback_samplerate(
+async def _sync_dsp_preset_for_playback_samplerate(
     *,
     sample_rate_hz: Optional[int],
     reason: str,
     detail: str = "",
 ) -> None:
-    global easyeffects_manager
-    if not easyeffects_manager or not isinstance(sample_rate_hz, int) or sample_rate_hz <= 0:
+    global dsp_manager
+    if not dsp_manager or not isinstance(sample_rate_hz, int) or sample_rate_hz <= 0:
         return
 
-    active_preset = easyeffects_manager.get_active_preset()
-    if not active_preset or active_preset in easyeffects_manager.EXCLUDED_GLOBAL_EXTRAS_PRESETS:
+    active_preset = dsp_manager.get_active_preset()
+    if not active_preset or active_preset in dsp_manager.EXCLUDED_GLOBAL_EXTRAS_PRESETS:
         return
 
     logger.info(
-        "Syncing EasyEffects preset for playback samplerate: preset=%s sample_rate=%s reason=%s detail=%s",
+        "Syncing DSP preset for playback samplerate: preset=%s sample_rate=%s reason=%s detail=%s",
         active_preset,
         sample_rate_hz,
         reason,
         detail,
     )
-    await _load_easyeffects_preset(active_preset, convolver_sample_rate_hz=sample_rate_hz)
-    status = easyeffects_manager.get_status()
+    await _load_dsp_preset(active_preset, convolver_sample_rate_hz=sample_rate_hz)
+    status = dsp_manager.get_status()
     await manager.broadcast({"type": "easyeffects", "data": status})
 
 
@@ -3815,9 +3815,9 @@ def ensure_local_source_volume() -> None:
 def get_output_volume_safe(default: int = 100) -> int:
     if _loudness_owns_volume():
         try:
-            loudness = easyeffects_manager.load_global_extras().get("loudness", {})
+            loudness = dsp_manager.load_global_extras().get("loudness", {})
             volume_db = float(loudness.get("params", {}).get("volumeDb", 0.0))
-            return easyeffects_manager.loudness_percent_from_db(volume_db)
+            return dsp_manager.loudness_percent_from_db(volume_db)
         except Exception:
             logger.warning("Failed to read Loudness volume, falling back to system volume", exc_info=True)
     return get_status_volume(default)
@@ -3829,11 +3829,11 @@ def _loudness_owns_volume() -> bool:
     Ownership follows the active signal path: Direct bypasses every global
     helper, so the persisted ``loudness.enabled`` flag is not enough.
     """
-    if not easyeffects_manager:
+    if not dsp_manager:
         return False
     try:
-        extras = easyeffects_manager.load_global_extras()
-        active = easyeffects_manager.get_active_preset() or ""
+        extras = dsp_manager.load_global_extras()
+        active = dsp_manager.get_active_preset() or ""
         return volume_contract.loudness_in_path(
             active, bool((extras.get("loudness") or {}).get("enabled"))
         )
@@ -3863,9 +3863,9 @@ async def _volume_state_for_manager(
         else:
             live_master = int(await _drain_worker(get_output_volume))
     guard = 0.0
-    if subwoofer_runtime is not None:
+    if dsp_runtime is not None:
         try:
-            guard = float(subwoofer_runtime.snapshot().get("output_gain_db") or 0.0)
+            guard = float(dsp_runtime.snapshot().get("output_gain_db") or 0.0)
         except Exception:
             guard = 0.0
     return volume_contract.VolumeState(
@@ -3881,8 +3881,8 @@ async def _apply_volume_actions(
     actions, extras=None, *, persist_extras: bool = True
 ):
     """Apply planned master/Loudness/guard writes. Caller holds the volume locks."""
-    if extras is None and easyeffects_manager:
-        extras = easyeffects_manager.load_global_extras()
+    if extras is None and dsp_manager:
+        extras = dsp_manager.load_global_extras()
     extras_dirty = False
     for action in actions:
         if action.op == "set_volume_db":
@@ -3898,11 +3898,11 @@ async def _apply_volume_actions(
         elif action.op == "set_master":
             await _drain_worker(set_output_volume, int(round(float(action.value))))
         elif action.op == "set_guard":
-            if subwoofer_runtime is not None and subwoofer_runtime.snapshot().get("active"):
-                await subwoofer_runtime.set_output_gain_db(float(action.value))
-    if extras_dirty and persist_extras and easyeffects_manager and extras is not None:
-        easyeffects_manager.save_global_extras(extras)
-        easyeffects_manager.apply_runtime_properties_from_extras(extras)
+            if dsp_runtime is not None and dsp_runtime.snapshot().get("active"):
+                await dsp_runtime.set_output_gain_db(float(action.value))
+    if extras_dirty and persist_extras and dsp_manager and extras is not None:
+        dsp_manager.save_global_extras(extras)
+        dsp_manager.apply_runtime_properties_from_extras(extras)
     return extras
 
 
@@ -3912,19 +3912,19 @@ async def _set_canonical_output_volume(volume: float | int) -> dict[str, Any]:
     One canonical perceived volume.  Loudness owns it only while it is in
     the active path; otherwise the system master does.  The write is
     serialized against other canonical volume writes.  Lock order:
-    canonical volume write lock first, then EasyEffects mutation lock.
+    canonical volume write lock first, then DSP mutation lock.
     """
     async with _canonical_volume_write_lock():
         requested = max(0, min(100, int(round(float(volume)))))
-        async with _easyeffects_mutation_lock():
-            start = await _volume_state_for_manager(easyeffects_manager, live_master=0)
+        async with _dsp_mutation_lock():
+            start = await _volume_state_for_manager(dsp_manager, live_master=0)
             target = volume_contract.target_for(current=start, percent=requested)
-            if target.loudness_in_path and easyeffects_manager:
+            if target.loudness_in_path and dsp_manager:
                 volume_result = await _drain_worker(
-                    easyeffects_manager.set_loudness_volume_db, target.volume_db
+                    dsp_manager.set_loudness_volume_db, target.volume_db
                 )
                 if not volume_result.get("runtime_applied"):
-                    await _sync_subwoofer_runtime(reason="native-dsp-loudness-volume")
+                    await _sync_dsp_runtime(reason="native-dsp-loudness-volume")
                 await _drain_worker(set_output_volume, 100)
                 return {
                     "volume": requested,
@@ -3934,7 +3934,7 @@ async def _set_canonical_output_volume(volume: float | int) -> dict[str, Any]:
                     "loudness_enabled": True,
                 }
             await _drain_worker(set_output_volume, requested)
-            extras = easyeffects_manager.load_global_extras() if easyeffects_manager else None
+            extras = dsp_manager.load_global_extras() if dsp_manager else None
             remaining = [
                 action for action in volume_contract.plan_transition(start, target)
                 if action.op not in {"set_master", "set_volume_db"}
@@ -3952,34 +3952,34 @@ async def _guarded_effects_transition(previous, candidate, persist_all_presets):
     """Apply extras through a guarded DSP rebuild. Master is pinned only if Loudness is in path."""
     overview = get_audio_output_overview()
     result_holder = {}
-    start = await _volume_state_for_manager(easyeffects_manager)
+    start = await _volume_state_for_manager(dsp_manager)
     candidate_loudness = (candidate.get("loudness") or {})
     target = volume_contract.target_for(
         current=start,
         loudness_enabled=bool(candidate_loudness.get("enabled")),
     )
     if start.loudness_in_path or target.loudness_in_path:
-        guard_db = easyeffects_manager.loudness_transition_guard_db(previous, candidate)
+        guard_db = dsp_manager.loudness_transition_guard_db(previous, candidate)
     else:
         guard_db = min(0.0, start.dsp_guard_db, volume_percent_to_db(start.master_percent))
     pin_master = target.loudness_in_path and int(start.master_percent) != 100
     restore_master = start.master_percent if pin_master else None
-    settle = float(getattr(easyeffects_manager, "LOUDNESS_STRENGTH_VOLUME_SETTLE_SECONDS", 0.0) or 0.0)
+    settle = float(getattr(dsp_manager, "LOUDNESS_STRENGTH_VOLUME_SETTLE_SECONDS", 0.0) or 0.0)
 
     def persist_candidate():
         result_holder["result"] = (
-            easyeffects_manager.apply_global_extras_to_all_presets(candidate)
+            dsp_manager.apply_global_extras_to_all_presets(candidate)
             if persist_all_presets else
-            easyeffects_manager.apply_global_extras_to_active_preset(candidate))
-        easyeffects_manager.apply_runtime_properties_from_extras(candidate)
+            dsp_manager.apply_global_extras_to_active_preset(candidate))
+        dsp_manager.apply_runtime_properties_from_extras(candidate)
 
-    await subwoofer_runtime.guarded_rebuild(
+    await dsp_runtime.guarded_rebuild(
         overview,
         guard_db=guard_db,
         apply_candidate=persist_candidate,
         apply_previous=lambda: (
-            easyeffects_manager.save_global_extras(previous),
-            easyeffects_manager.apply_runtime_properties_from_extras(previous),
+            dsp_manager.save_global_extras(previous),
+            dsp_manager.apply_runtime_properties_from_extras(previous),
         ),
         settle_seconds=settle,
         candidate_extras=candidate,
@@ -4059,7 +4059,7 @@ def build_playback_payload(
     *,
     include_live_metadata: bool = True,
 ) -> dict:
-    global current_track_info, easyeffects_manager, player_instance, peak_monitor
+    global current_track_info, dsp_manager, player_instance, peak_monitor
     playback_state = dict(state or (player_instance.state if player_instance else {}))
     source_volume = playback_state.get("volume") if isinstance(playback_state.get("volume"), (int, float)) else None
     if current_track_info and current_track_info.get("source") in {"local", "radio"}:
@@ -4118,8 +4118,8 @@ def build_playback_payload(
                 else "transitioning" if transition_status.get("active") else "safe-muted"
             )
 
-    # Keep playback/status payloads lightweight. EasyEffects has dedicated
-    # endpoints and websocket updates, and pulling full EasyEffects status here
+    # Keep playback/status payloads lightweight. The DSP has dedicated
+    # endpoints and websocket updates, and pulling full DSP status here
     # can stall frequent /api/status polling during playback.
     return playback_state
 
@@ -4169,7 +4169,7 @@ async def sync_peak_monitor_for_playback_state(
 
         if is_active_playback:
             # Resume from pause/inactive with same source:
-            # only restart the peak monitor — do NOT reload the EasyEffects
+            # only restart the peak monitor — do NOT reload the DSP
             # preset or repair the output graph, which causes an audible crack.
             if (
                 not peak_monitor_playback_armed
@@ -4928,7 +4928,7 @@ async def _disconnect_bluetooth_input_source(source_name: str | None) -> None:
     if not normalized:
         return
     try:
-        await _link_bluetooth_source_to_easyeffects(normalized, disconnect=True)
+        await _link_bluetooth_source_to_dsp(normalized, disconnect=True)
     except Exception:
         pass
 
@@ -4985,7 +4985,7 @@ async def _clear_bluetooth_input_monitoring_links() -> None:
     await _disconnect_bluetooth_input_source(previous_source)
 
 
-async def _link_bluetooth_source_to_easyeffects(source_name: str, disconnect: bool = False) -> None:
+async def _link_bluetooth_source_to_dsp(source_name: str, disconnect: bool = False) -> None:
     normalized = (source_name or "").strip()
     if not normalized:
         return
@@ -5025,7 +5025,7 @@ async def _ensure_bluetooth_input_loopback(source_name: str) -> None:
         return
     await _clear_bluetooth_input_monitoring_links()
     try:
-        await _link_bluetooth_source_to_easyeffects(normalized)
+        await _link_bluetooth_source_to_dsp(normalized)
     except BaseException:
         await _disconnect_bluetooth_input_source(normalized)
         raise
@@ -5079,7 +5079,7 @@ def _helper_argument_sample_rate(snapshot: dict | None) -> int | None:
     return None
 
 
-async def _sync_subwoofer_runtime(
+async def _sync_dsp_runtime(
     audio_overview: dict | None = None,
     *,
     reason: str = "unspecified",
@@ -5092,11 +5092,11 @@ async def _sync_subwoofer_runtime(
     token. The actual helper config is rebuilt after the final live PipeWire
     read, so a delayed caller cannot restart a helper with its old target.
     """
-    global subwoofer_runtime
+    global dsp_runtime
     overview_was_supplied = audio_overview is not None
     overview = audio_overview or get_audio_output_overview()
 
-    if subwoofer_runtime is None:
+    if dsp_runtime is None:
         return overview
 
     requested_rate = _overview_sample_rate(overview) if overview_was_supplied else None
@@ -5160,7 +5160,7 @@ async def _sync_subwoofer_runtime(
                 reason, requested_rate, authoritative_rate, final_rate,
             )
             return current_overview
-        await subwoofer_runtime.sync(current_overview)
+        await dsp_runtime.sync(current_overview)
         return current_overview
 
     if _rate_lock_held or measurement_sr_session is None:
@@ -5393,7 +5393,7 @@ async def _spotify_playerctl_watch_loop() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan: startup and shutdown."""
-    global settings, player_instance, library_scanner, music_library_manager, library_scan_task, downloader, easyeffects_manager, measurement_store, measurement_sr_session, measurement_watchdog_task, peak_monitor, subwoofer_runtime, subwoofer_runtime_link_watch_task, hardware_controller, peak_monitor_playback_armed, peak_monitor_transition_lock, peak_monitor_context_signature, easyeffects_preset_load_lock, easyeffects_mutation_lock, canonical_volume_write_lock, source_transition_lock, playback_transition_coordinator, coordinator_last_successful_commit_id, external_input_loopback_module_id, external_input_loopback_source_name, bluetooth_input_source_name, bluetooth_monitor_task, bluetooth_agent_process, spotify_playerctl_watch_task, spotify_playerctl_detect_task, spotify_state_refresh_task, spotify_state_poll_task, spotify_playerctl_last_trigger_at, current_source_mode, latest_spotify_state, radio_reconnect_task
+    global settings, player_instance, library_scanner, music_library_manager, library_scan_task, downloader, dsp_manager, measurement_store, measurement_sr_session, measurement_watchdog_task, peak_monitor, dsp_runtime, dsp_runtime_link_watch_task, hardware_controller, peak_monitor_playback_armed, peak_monitor_transition_lock, peak_monitor_context_signature, dsp_preset_load_lock, dsp_mutation_lock, canonical_volume_write_lock, source_transition_lock, playback_transition_coordinator, coordinator_last_successful_commit_id, external_input_loopback_module_id, external_input_loopback_source_name, bluetooth_input_source_name, bluetooth_monitor_task, bluetooth_agent_process, spotify_playerctl_watch_task, spotify_playerctl_detect_task, spotify_state_refresh_task, spotify_state_poll_task, spotify_playerctl_last_trigger_at, current_source_mode, latest_spotify_state, radio_reconnect_task
 
     logger.info("Starting FXRoute... build_id=%s", _read_build_id())
     try:
@@ -5421,7 +5421,7 @@ async def lifespan(app: FastAPI):
         downloader = Downloader()
         logger.info("Downloader initialized")
 
-        easyeffects_manager = await _drain_worker(DSPManager)
+        dsp_manager = await _drain_worker(DSPManager)
         if _loudness_owns_volume():
             set_output_volume(100)
         volume_read_monitor_task = start_volume_read_monitor()
@@ -5462,15 +5462,15 @@ async def lifespan(app: FastAPI):
                 logger.warning("Hardware controller not available: %s", exc)
                 hardware_controller = None
 
-        peak_monitor = EasyEffectsPeakMonitor(on_change=on_peak_monitor_change)
-        subwoofer_runtime = DSPRuntime(easyeffects_manager)
+        peak_monitor = DSPPeakMonitor(on_change=on_peak_monitor_change)
+        dsp_runtime = DSPRuntime(dsp_manager)
         if hasattr(measurement_store, "runtime_snapshot_provider"):
-            measurement_store.runtime_snapshot_provider = getattr(subwoofer_runtime, "snapshot", None)
-            measurement_store.effect_bypass_setter = getattr(subwoofer_runtime, "set_effect_bypass", None)
-            measurement_store.raw_scope_enter = getattr(subwoofer_runtime, "enter_raw_measurement", None)
-            measurement_store.raw_scope_exit = getattr(subwoofer_runtime, "exit_raw_measurement", None)
-            measurement_store.active_scope_enter = getattr(subwoofer_runtime, "enter_active_measurement", None)
-            measurement_store.active_scope_exit = getattr(subwoofer_runtime, "exit_active_measurement", None)
+            measurement_store.runtime_snapshot_provider = getattr(dsp_runtime, "snapshot", None)
+            measurement_store.effect_bypass_setter = getattr(dsp_runtime, "set_effect_bypass", None)
+            measurement_store.raw_scope_enter = getattr(dsp_runtime, "enter_raw_measurement", None)
+            measurement_store.raw_scope_exit = getattr(dsp_runtime, "exit_raw_measurement", None)
+            measurement_store.active_scope_enter = getattr(dsp_runtime, "enter_active_measurement", None)
+            measurement_store.active_scope_exit = getattr(dsp_runtime, "exit_active_measurement", None)
         runtime_loop = asyncio.get_running_loop()
 
         def guarded_effects_transition(previous, candidate, persist_all_presets):
@@ -5479,25 +5479,25 @@ async def lifespan(app: FastAPI):
                 runtime_loop,
             ).result()
 
-        easyeffects_manager.runtime_transition_callback = guarded_effects_transition
+        dsp_manager.runtime_transition_callback = guarded_effects_transition
 
         def temporary_effects_transition(previous, candidate):
             async def transition():
-                async with _easyeffects_mutation_lock():
-                    await subwoofer_runtime.guarded_rebuild(
+                async with _dsp_mutation_lock():
+                    await dsp_runtime.guarded_rebuild(
                         get_audio_output_overview(),
                         guard_db=-18.0,
                         apply_candidate=lambda: None,
                         apply_previous=lambda: None,
-                        settle_seconds=easyeffects_manager.LOUDNESS_STRENGTH_VOLUME_SETTLE_SECONDS,
+                        settle_seconds=dsp_manager.LOUDNESS_STRENGTH_VOLUME_SETTLE_SECONDS,
                         candidate_extras=candidate,
                         previous_extras=previous,
                     )
             asyncio.run_coroutine_threadsafe(transition(), runtime_loop).result()
 
-        easyeffects_manager.temporary_runtime_transition_callback = temporary_effects_transition
+        dsp_manager.temporary_runtime_transition_callback = temporary_effects_transition
         try:
-            stop_orphans = getattr(subwoofer_runtime, "_stop_orphan_helpers", None)
+            stop_orphans = getattr(dsp_runtime, "_stop_orphan_helpers", None)
             if callable(stop_orphans):
                 await stop_orphans()
         except Exception:
@@ -5505,11 +5505,11 @@ async def lifespan(app: FastAPI):
         peak_monitor_playback_armed = False
         peak_monitor_transition_lock = asyncio.Lock()
         peak_monitor_context_signature = None
-        easyeffects_preset_load_lock = asyncio.Lock()
+        dsp_preset_load_lock = asyncio.Lock()
         source_transition_lock = asyncio.Lock()
         latest_spotify_state = await get_spotify_ui_state()
         await sync_peak_monitor_for_spotify_state(latest_spotify_state)
-        logger.info("EasyEffects output peak monitor initialized")
+        logger.info("DSP output peak monitor initialized")
 
         try:
             applied_output = apply_persisted_audio_output_selection()
@@ -5522,9 +5522,9 @@ async def lifespan(app: FastAPI):
                     logger.info("Re-applied fixed sample-rate policy: %s Hz", policy.get("rate"))
                 except Exception as exc:
                     logger.warning("Failed to re-apply fixed sample-rate policy: %s", exc)
-            await _sync_subwoofer_runtime(applied_output or get_audio_output_overview())
-            subwoofer_runtime_link_watch_task = asyncio.create_task(
-                _subwoofer_runtime_link_watch_loop(),
+            await _sync_dsp_runtime(applied_output or get_audio_output_overview())
+            dsp_runtime_link_watch_task = asyncio.create_task(
+                _dsp_runtime_link_watch_loop(),
                 name="subwoofer-runtime-link-watch",
             )
         except Exception as exc:
@@ -5576,7 +5576,7 @@ async def lifespan(app: FastAPI):
 
 
 async def _shutdown_lifespan_resources() -> None:
-    global settings, player_instance, library_scanner, library_scan_task, downloader, easyeffects_manager, measurement_store, measurement_sr_session, measurement_watchdog_task, peak_monitor, subwoofer_runtime, subwoofer_runtime_link_watch_task, hardware_controller, peak_monitor_transition_lock, peak_monitor_context_signature, easyeffects_preset_load_lock, easyeffects_mutation_lock, canonical_volume_write_lock, source_transition_lock, playback_transition_coordinator, external_input_loopback_module_id, external_input_loopback_source_name, bluetooth_input_source_name, bluetooth_monitor_task, bluetooth_agent_process, spotify_playerctl_watch_task, spotify_playerctl_detect_task, spotify_state_refresh_task, spotify_state_poll_task, radio_reconnect_task
+    global settings, player_instance, library_scanner, library_scan_task, downloader, dsp_manager, measurement_store, measurement_sr_session, measurement_watchdog_task, peak_monitor, dsp_runtime, dsp_runtime_link_watch_task, hardware_controller, peak_monitor_transition_lock, peak_monitor_context_signature, dsp_preset_load_lock, dsp_mutation_lock, canonical_volume_write_lock, source_transition_lock, playback_transition_coordinator, external_input_loopback_module_id, external_input_loopback_source_name, bluetooth_input_source_name, bluetooth_monitor_task, bluetooth_agent_process, spotify_playerctl_watch_task, spotify_playerctl_detect_task, spotify_state_refresh_task, spotify_state_poll_task, radio_reconnect_task
 
     async def cleanup(label: str, operation) -> None:
         nonlocal cleanup_cancelled
@@ -5599,7 +5599,7 @@ async def _shutdown_lifespan_resources() -> None:
 
     cleanup_cancelled = False
     owned_tasks = [
-        subwoofer_runtime_link_watch_task,
+        dsp_runtime_link_watch_task,
         measurement_watchdog_task,
         bluetooth_monitor_task,
         spotify_playerctl_watch_task,
@@ -5657,8 +5657,8 @@ async def _shutdown_lifespan_resources() -> None:
     library_refresh_tasks.clear()
     if player_instance is not None:
         await cleanup("player", lambda: asyncio.to_thread(player_instance.stop))
-    if subwoofer_runtime is not None:
-        await cleanup("subwoofer-runtime", subwoofer_runtime.stop)
+    if dsp_runtime is not None:
+        await cleanup("subwoofer-runtime", dsp_runtime.stop)
     if bluetooth_agent_process is not None or bluetooth_input_source_name is not None:
         await cleanup("bluetooth-input", _disable_bluetooth_input_monitoring)
     await cleanup("bluetooth-receiver", lambda: asyncio.to_thread(set_bluetooth_receiver_enabled, False))
@@ -5674,18 +5674,18 @@ async def _shutdown_lifespan_resources() -> None:
     library_scanner = None
     library_scan_task = None
     downloader = None
-    easyeffects_manager = None
+    dsp_manager = None
     measurement_store = None
     measurement_sr_session = None
     measurement_watchdog_task = None
     peak_monitor = None
-    subwoofer_runtime = None
-    subwoofer_runtime_link_watch_task = None
+    dsp_runtime = None
+    dsp_runtime_link_watch_task = None
     hardware_controller = None
     peak_monitor_transition_lock = None
     peak_monitor_context_signature = None
-    easyeffects_preset_load_lock = None
-    easyeffects_mutation_lock = None
+    dsp_preset_load_lock = None
+    dsp_mutation_lock = None
     canonical_volume_write_lock = None
     source_transition_lock = None
     playback_transition_coordinator = None
@@ -6396,10 +6396,10 @@ async def hardware_auto_off():
 @app.get("/api/audio/outputs")
 async def audio_output_overview():
     overview = _with_subwoofer_derived_delays(await asyncio.to_thread(get_audio_output_overview))
-    if subwoofer_runtime is not None:
+    if dsp_runtime is not None:
         overview["output_mode"] = {
             **(overview.get("output_mode") or {}),
-            "runtime": subwoofer_runtime.snapshot(),
+            "runtime": dsp_runtime.snapshot(),
         }
     return overview
 
@@ -6414,12 +6414,12 @@ async def save_audio_output_selection_route(request: Request):
 
     try:
         result = set_audio_output_selection(output_key)
-        await _sync_subwoofer_runtime(result, reason="output-selection")
+        await _sync_dsp_runtime(result, reason="output-selection")
         result = _with_subwoofer_derived_delays(result)
-        if subwoofer_runtime is not None:
+        if dsp_runtime is not None:
             result["output_mode"] = {
                 **(result.get("output_mode") or {}),
-                "runtime": subwoofer_runtime.snapshot(),
+                "runtime": dsp_runtime.snapshot(),
             }
         await refresh_peak_monitor_after_effects_change("audio-output-switch")
         return result
@@ -6447,7 +6447,7 @@ async def save_audio_output_mode_route(request: Request):
         target_mode = str(target["config"].get("mode") or "").strip()
 
         def mode_transition_guard(target_overview: dict) -> float:
-            runtime_snapshot = subwoofer_runtime.snapshot() if subwoofer_runtime else {}
+            runtime_snapshot = dsp_runtime.snapshot() if dsp_runtime else {}
             previous_gain = float(runtime_snapshot.get("output_gain_db") or 0.0)
             current_layout = ((runtime_snapshot.get("config") or {}).get("layout") or [])
             target_layout = DSPRuntimeConfig.from_overview(target_overview).layout
@@ -6468,11 +6468,11 @@ async def save_audio_output_mode_route(request: Request):
         if target_mode == current_mode:
             previous_overview = get_audio_output_overview()
             result = persist_audio_output_mode(target["config"])
-            if subwoofer_runtime is None:
-                await _sync_subwoofer_runtime(result, reason="output-mode-params")
+            if dsp_runtime is None:
+                await _sync_dsp_runtime(result, reason="output-mode-params")
             else:
                 try:
-                    await subwoofer_runtime.guarded_rebuild(
+                    await dsp_runtime.guarded_rebuild(
                         result,
                         guard_db=mode_transition_guard(result),
                         apply_candidate=lambda: None,
@@ -6481,20 +6481,20 @@ async def save_audio_output_mode_route(request: Request):
                     )
                 except Exception:
                     try:
-                        await subwoofer_runtime.sync(previous_overview)
+                        await dsp_runtime.sync(previous_overview)
                     except Exception:
                         logger.exception("Failed to restore native DSP after same-mode transition failure")
                     raise
             result = _with_subwoofer_derived_delays(result)
-            if subwoofer_runtime is not None:
+            if dsp_runtime is not None:
                 result["output_mode"] = {
                     **(result.get("output_mode") or {}),
-                    "runtime": subwoofer_runtime.snapshot(),
+                    "runtime": dsp_runtime.snapshot(),
                 }
             await refresh_peak_monitor_after_effects_change("audio-output-mode-params")
             return result
 
-        if subwoofer_runtime is None:
+        if dsp_runtime is None:
             context = await _coordinator_current_playback_context()
             status = get_samplerate_status()
             target_rate = status.get("active_rate")
@@ -6521,7 +6521,7 @@ async def save_audio_output_mode_route(request: Request):
 
         previous_overview = get_audio_output_overview()
         try:
-            await subwoofer_runtime.guarded_rebuild(
+            await dsp_runtime.guarded_rebuild(
                 target["overview"],
                 guard_db=mode_transition_guard(target["overview"]),
                 apply_candidate=lambda: None,
@@ -6531,16 +6531,16 @@ async def save_audio_output_mode_route(request: Request):
             result = persist_audio_output_mode(target["config"])
         except Exception:
             try:
-                await subwoofer_runtime.sync(previous_overview)
+                await dsp_runtime.sync(previous_overview)
             except Exception:
                 logger.exception("Failed to restore native DSP after output-mode transition failure")
             raise
 
         result = _with_subwoofer_derived_delays(result)
-        if subwoofer_runtime is not None:
+        if dsp_runtime is not None:
             result["output_mode"] = {
                 **(result.get("output_mode") or {}),
-                "runtime": subwoofer_runtime.snapshot(),
+                "runtime": dsp_runtime.snapshot(),
             }
         await refresh_peak_monitor_after_effects_change("audio-output-mode-switch")
         return result
@@ -6619,22 +6619,22 @@ async def save_audio_source_selection_route(request: Request):
 
 
 def _parse_effects_extras_from_json(body: dict) -> dict:
-    """Thin wrapper: EasyEffects extras parsing lives in effects_extras (REFACTOR-010)."""
+    """Thin wrapper: effects extras parsing lives in effects_extras (REFACTOR-010)."""
     return effects_extras.parse_effects_extras_from_json(body)
 
 
 def _merge_effects_extras_from_json(previous: dict, body: dict) -> dict:
-    """Thin wrapper: EasyEffects extras merge lives in effects_extras (REFACTOR-010)."""
+    """Thin wrapper: effects extras merge lives in effects_extras (REFACTOR-010)."""
     return effects_extras.merge_effects_extras_from_json(previous, body)
 
 
 def _resolve_effects_extras(extras: dict | None = None) -> dict:
-    global easyeffects_manager
-    if not easyeffects_manager:
+    global dsp_manager
+    if not dsp_manager:
         return extras or {}
     if extras is None:
-        return easyeffects_manager.load_global_extras()
-    return easyeffects_manager.normalize_effects_extras(extras)
+        return dsp_manager.load_global_extras()
+    return dsp_manager.normalize_effects_extras(extras)
 
 
 def _is_pure_loudness_strength_change(previous: dict, current: dict) -> bool:
@@ -6647,24 +6647,24 @@ def _is_runtime_autogain_loudness_change(previous: dict, current: dict) -> bool:
     return effects_extras.is_runtime_autogain_loudness_change(previous, current)
 
 
-def _require_easyeffects_manager():
-    global easyeffects_manager
-    if not easyeffects_manager:
-        raise HTTPException(status_code=503, detail="EasyEffects manager not available")
-    return easyeffects_manager
+def _require_dsp_manager():
+    global dsp_manager
+    if not dsp_manager:
+        raise HTTPException(status_code=503, detail="DSP manager not available")
+    return dsp_manager
 
 
-async def _load_easyeffects_preset(
+async def _load_dsp_preset(
     preset_name: str, *, convolver_sample_rate_hz: int | None = None,
     _locks_held: bool = False,
 ) -> None:
-    """Serialize preset loads against threaded EasyEffects mutations.
+    """Serialize preset loads against threaded DSP mutations.
 
     load_preset() also synchronizes global extras into the preset and is
     therefore not read-only: it must never run concurrently with a threaded
     IR/preset mutation.  Lock order: the canonical volume write lock is
     acquired first (so the Direct volume-ownership transfer serializes
-    against volume writes), then the EasyEffects mutation lock.  Callers
+    against volume writes), then the DSP mutation lock.  Callers
     that already hold both locks pass ``_locks_held=True``.
     """
     volume_lock = None
@@ -6675,7 +6675,7 @@ async def _load_easyeffects_preset(
         if _locks_held:
             await _load_preset_locked(preset_name, convolver_sample_rate_hz=convolver_sample_rate_hz)
         else:
-            async with _easyeffects_mutation_lock():
+            async with _dsp_mutation_lock():
                 await _load_preset_locked(preset_name, convolver_sample_rate_hz=convolver_sample_rate_hz)
     finally:
         if volume_lock is not None:
@@ -6684,8 +6684,8 @@ async def _load_easyeffects_preset(
 
 async def _restore_volume_state(manager, start: volume_contract.VolumeState) -> None:
     await _drain_worker(set_output_volume, int(start.master_percent))
-    if subwoofer_runtime is not None and subwoofer_runtime.snapshot().get("active"):
-        await subwoofer_runtime.set_output_gain_db(float(start.dsp_guard_db))
+    if dsp_runtime is not None and dsp_runtime.snapshot().get("active"):
+        await dsp_runtime.set_output_gain_db(float(start.dsp_guard_db))
     if not manager:
         return
     extras = copy.deepcopy(manager.load_global_extras())
@@ -6710,7 +6710,7 @@ async def _restore_volume_state(manager, start: volume_contract.VolumeState) -> 
 async def _load_preset_locked(
     preset_name: str, *, convolver_sample_rate_hz: int | None = None
 ) -> None:
-    manager = _require_easyeffects_manager()
+    manager = _require_dsp_manager()
     start = await _volume_state_for_manager(manager)
     target = volume_contract.target_for(current=start, preset=preset_name)
     actions = volume_contract.plan_transition(start, target)
@@ -6728,7 +6728,7 @@ async def _load_preset_locked(
             preset_name,
             convolver_sample_rate_hz=convolver_sample_rate_hz,
         )
-        await _sync_subwoofer_runtime(reason="native-dsp-preset-load")
+        await _sync_dsp_runtime(reason="native-dsp-preset-load")
         await _apply_volume_actions(post)
         await _apply_volume_actions(deferred_master)
     except Exception:
@@ -6741,7 +6741,7 @@ async def _load_preset_locked(
                     if hasattr(manager, "active_preset"):
                         manager.active_preset = start.preset
             await _restore_volume_state(manager, start)
-            await _sync_subwoofer_runtime(reason="native-dsp-preset-load-rollback")
+            await _sync_dsp_runtime(reason="native-dsp-preset-load-rollback")
         except Exception:
             logger.exception("Failed to restore volume state after preset load failure")
         raise
@@ -6791,21 +6791,21 @@ def _effects_extras_from_form(
             "enabled": bool(bass_enabled),
             "params": {"amount": 0.0 if bass_amount is None else bass_amount},
         }
-    if easyeffects_manager:
-        extras["loudness"] = easyeffects_manager.load_global_extras().get("loudness", {})
+    if dsp_manager:
+        extras["loudness"] = dsp_manager.load_global_extras().get("loudness", {})
     return _resolve_effects_extras(extras)
 
 
-async def _finish_easyeffects_preset_mutation(
+async def _finish_dsp_preset_mutation(
     *,
     load_after_create: bool,
     preset_name: str,
     refresh_reason: str,
     refresh_only_when_loaded: bool = False,
 ) -> dict:
-    ee_manager = _require_easyeffects_manager()
+    ee_manager = _require_dsp_manager()
     if load_after_create:
-        await _load_easyeffects_preset(preset_name)
+        await _load_dsp_preset(preset_name)
     status = ee_manager.get_status()
     await manager.broadcast({"type": "easyeffects", "data": status})
     if load_after_create or not refresh_only_when_loaded:
@@ -6813,7 +6813,7 @@ async def _finish_easyeffects_preset_mutation(
     return status
 
 
-def _raise_easyeffects_http_error(exc: Exception) -> None:
+def _raise_dsp_http_error(exc: Exception) -> None:
     if isinstance(exc, FileNotFoundError):
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     if isinstance(exc, ValueError):
@@ -6824,7 +6824,7 @@ def _raise_easyeffects_http_error(exc: Exception) -> None:
 
 @app.get("/api/easyeffects/extras")
 async def get_easyeffects_extras():
-    ee_manager = _require_easyeffects_manager()
+    ee_manager = _require_dsp_manager()
     return {
         "status": "ok",
         "extras": ee_manager.load_global_extras(),
@@ -6833,7 +6833,7 @@ async def get_easyeffects_extras():
 
 @app.post("/api/easyeffects/extras")
 async def save_easyeffects_extras(request: Request):
-    ee_manager = _require_easyeffects_manager()
+    ee_manager = _require_dsp_manager()
 
     try:
         body = await request.json()
@@ -6847,10 +6847,10 @@ async def save_easyeffects_extras(request: Request):
     # lock.  Non-Loudness extras updates never take this lock.
     #
     # The full read-modify-write (extras read, JSON merge, resolution, manager
-    # mutation/persistence) runs under the central EasyEffects mutation
+    # mutation/persistence) runs under the central DSP mutation
     # ownership so a parallel coordinator/volume/SPL mutation can never
     # interleave between the read and the write.  Lock order: canonical
-    # volume write lock first, then EasyEffects mutation lock.
+    # volume write lock first, then DSP mutation lock.
     canonical_transition = any(
         key in body for key in ("loudness_enabled", "loudnessEnabled")
     )
@@ -6859,7 +6859,7 @@ async def save_easyeffects_extras(request: Request):
         canonical_lock = _canonical_volume_write_lock()
         await canonical_lock.acquire()
     try:
-        async with _easyeffects_mutation_lock():
+        async with _dsp_mutation_lock():
             previous = ee_manager.load_global_extras()
             parsed = _merge_effects_extras_from_json(previous, body)
             try:
@@ -6877,7 +6877,7 @@ async def save_easyeffects_extras(request: Request):
             extras.setdefault("loudness", {}).setdefault("params", {})["volumeDb"] = target.volume_db
             extras.setdefault("loudness", {})["enabled"] = target.loudness_enabled
             if extras == previous:
-                logger.info("Ignored unchanged EasyEffects extras update")
+                logger.info("Ignored unchanged effects extras update")
                 return {
                     "status": "ok",
                     "extras": extras,
@@ -6918,7 +6918,7 @@ async def save_easyeffects_extras(request: Request):
         if (not result.get("runtime_applied") and active_preset
                 and active_preset not in ee_manager.EXCLUDED_GLOBAL_EXTRAS_PRESETS):
             try:
-                await _load_easyeffects_preset(active_preset, _locks_held=True)
+                await _load_dsp_preset(active_preset, _locks_held=True)
             except Exception as e:
                 logger.warning("Failed to reload active preset after extras update: %s", e)
     finally:
@@ -6937,30 +6937,30 @@ async def save_easyeffects_extras(request: Request):
 
 @app.get("/api/easyeffects/presets")
 async def list_easyeffects_presets():
-    return _require_easyeffects_manager().get_status()
+    return _require_dsp_manager().get_status()
 
 
 @app.get("/api/easyeffects/presets/{preset_name}/file")
 async def download_easyeffects_preset_file(preset_name: str):
-    global easyeffects_manager
-    if not easyeffects_manager:
-        raise HTTPException(status_code=503, detail="EasyEffects manager not available")
-    preset = next((item for item in easyeffects_manager.list_presets() if item.get("name") == preset_name), None)
+    global dsp_manager
+    if not dsp_manager:
+        raise HTTPException(status_code=503, detail="DSP manager not available")
+    preset = next((item for item in dsp_manager.list_presets() if item.get("name") == preset_name), None)
     if not preset:
         raise HTTPException(status_code=404, detail="Preset not found")
     preset_path = Path(str(preset.get("path") or "")).resolve()
-    if not _path_within_root(preset_path, easyeffects_manager.output_dir):
-        raise HTTPException(status_code=403, detail="Preset path outside EasyEffects preset directory")
+    if not _path_within_root(preset_path, dsp_manager.output_dir):
+        raise HTTPException(status_code=403, detail="Preset path outside DSP preset directory")
     if not preset_path.is_file():
         raise HTTPException(status_code=404, detail="Preset file missing")
     try:
         payload = json.loads(preset_path.read_text())
     except Exception:
         payload = None
-    kernel_names = easyeffects_manager._extract_kernel_names_from_payload(payload) if isinstance(payload, dict) else set()
+    kernel_names = dsp_manager._extract_kernel_names_from_payload(payload) if isinstance(payload, dict) else set()
     ir_paths = []
     for kernel_name in sorted(kernel_names):
-        ir_paths.extend(easyeffects_manager._find_ir_paths_for_kernel_name(kernel_name))
+        ir_paths.extend(dsp_manager._find_ir_paths_for_kernel_name(kernel_name))
     if ir_paths:
         with tempfile.NamedTemporaryFile(prefix="fxroute-preset-", suffix=".zip", delete=False) as temp_file:
             temp_zip_path = Path(temp_file.name)
@@ -6969,7 +6969,7 @@ async def download_easyeffects_preset_file(preset_name: str):
             with zipfile.ZipFile(temp_zip_path, "w", compression=zipfile.ZIP_STORED) as archive:
                 archive.write(preset_path, arcname="preset.json")
                 for ir_path in ir_paths:
-                    if ir_path.is_file() and _path_within_root(ir_path.resolve(), easyeffects_manager.irs_dir):
+                    if ir_path.is_file() and _path_within_root(ir_path.resolve(), dsp_manager.irs_dir):
                         archive.write(ir_path, arcname=_dedupe_archive_name(ir_path.name, used_names))
                         archive.write(ir_path, arcname=_dedupe_archive_name(f"{ir_path.stem}.wav", used_names))
                 manifest = {
@@ -6993,7 +6993,7 @@ async def download_easyeffects_preset_file(preset_name: str):
 
 @app.post("/api/easyeffects/compare")
 async def save_easyeffects_compare(request: Request):
-    ee_manager = _require_easyeffects_manager()
+    ee_manager = _require_dsp_manager()
 
     try:
         body = await request.json()
@@ -7012,7 +7012,7 @@ async def save_easyeffects_compare(request: Request):
 
 @app.post("/api/easyeffects/presets/combine")
 async def combine_easyeffects_presets(request: Request):
-    ee_manager = _require_easyeffects_manager()
+    ee_manager = _require_dsp_manager()
 
     try:
         body = await request.json()
@@ -7032,9 +7032,9 @@ async def combine_easyeffects_presets(request: Request):
         raise HTTPException(status_code=400, detail="presetNames must be an array")
 
     try:
-        async with _easyeffects_mutation_lock():
+        async with _dsp_mutation_lock():
             created = ee_manager.combine_presets(preset_name, preset_names)
-        status = await _finish_easyeffects_preset_mutation(
+        status = await _finish_dsp_preset_mutation(
             load_after_create=load_after_create,
             preset_name=created["name"],
             refresh_reason="combine-presets",
@@ -7047,12 +7047,12 @@ async def combine_easyeffects_presets(request: Request):
             "active_preset": status.get("active_preset"),
         }
     except (FileNotFoundError, ValueError, RuntimeError) as e:
-        _raise_easyeffects_http_error(e)
+        _raise_dsp_http_error(e)
 
 @app.post("/api/easyeffects/presets/load")
 async def load_easyeffects_preset(request: Request):
-    global easyeffects_preset_load_lock
-    ee_manager = _require_easyeffects_manager()
+    global dsp_preset_load_lock
+    ee_manager = _require_dsp_manager()
 
     try:
         body = await request.json()
@@ -7063,12 +7063,12 @@ async def load_easyeffects_preset(request: Request):
     if not preset_name:
         raise HTTPException(status_code=400, detail="preset_name is required")
 
-    if easyeffects_preset_load_lock is None:
-        easyeffects_preset_load_lock = asyncio.Lock()
+    if dsp_preset_load_lock is None:
+        dsp_preset_load_lock = asyncio.Lock()
 
     try:
-        async with easyeffects_preset_load_lock:
-            await _load_easyeffects_preset(preset_name)
+        async with dsp_preset_load_lock:
+            await _load_dsp_preset(preset_name)
             compare = ee_manager.load_compare_state()
             if compare.get("presetA") == preset_name:
                 compare["activeSide"] = "A"
@@ -7078,22 +7078,22 @@ async def load_easyeffects_preset(request: Request):
                 ee_manager.save_compare_state(compare)
             status = ee_manager.get_status()
         if (
-            subwoofer_runtime is not None
-            and subwoofer_runtime.snapshot().get("active")
-            and not subwoofer_runtime.sync_in_progress
+            dsp_runtime is not None
+            and dsp_runtime.snapshot().get("active")
+            and not dsp_runtime.sync_in_progress
         ):
             # A running helper sync owns the graph and verifies/repairs its
             # own links; a concurrent reclean would race that repair.
-            await subwoofer_runtime._reclean_guarded(skip_if_locked=False)
+            await dsp_runtime._reclean_guarded(skip_if_locked=False)
         await manager.broadcast({"type": "easyeffects", "data": status})
         schedule_peak_monitor_refresh_after_effects_change("preset-load")
         return {"status": "ok", "active_preset": preset_name, "compare": status.get("compare")}
     except (FileNotFoundError, RuntimeError) as e:
-        _raise_easyeffects_http_error(e)
+        _raise_dsp_http_error(e)
 
 @app.post("/api/easyeffects/irs/upload")
 async def upload_easyeffects_ir(file: UploadFile = File(...)):
-    ee_manager = _require_easyeffects_manager()
+    ee_manager = _require_dsp_manager()
 
     tmp_path = None
     try:
@@ -7104,7 +7104,7 @@ async def upload_easyeffects_ir(file: UploadFile = File(...)):
             await save_upload_to_file(file, tmp, EASYEEFFECTS_IR_MAX_BYTES)
 
         uploaded = await _run_locked_worker(
-            _easyeffects_mutation_lock(),
+            _dsp_mutation_lock(),
             ee_manager.upload_ir,
             tmp_path,
             file.filename or tmp_path.name,
@@ -7118,7 +7118,7 @@ async def upload_easyeffects_ir(file: UploadFile = File(...)):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        logger.error(f"EasyEffects IR upload failed: {e}")
+        logger.error(f"DSP IR upload failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         if tmp_path is not None:
@@ -7143,14 +7143,14 @@ async def create_convolver_preset(
     tone_effect_enabled: bool = Form(False),
     tone_effect_mode: str = Form("crystalizer"),
 ):
-    ee_manager = _require_easyeffects_manager()
+    ee_manager = _require_dsp_manager()
 
     try:
         # The canonical loudness read inside _effects_extras_from_form must
         # happen under the same mutation ownership as the preset creation:
         # a parallel extras mutation may never be frozen into the new preset
         # from a stale pre-lock snapshot.
-        async with _easyeffects_mutation_lock():
+        async with _dsp_mutation_lock():
             extras = _effects_extras_from_form(
                 limiter_enabled=limiter_enabled,
                 headroom_enabled=headroom_enabled,
@@ -7164,7 +7164,7 @@ async def create_convolver_preset(
                 tone_effect_mode=tone_effect_mode,
             )
             created = ee_manager.create_convolver_preset(preset_name, ir_filename, extras=extras)
-        status = await _finish_easyeffects_preset_mutation(
+        status = await _finish_dsp_preset_mutation(
             load_after_create=load_after_create,
             preset_name=created["name"],
             refresh_reason="create-convolver",
@@ -7176,20 +7176,20 @@ async def create_convolver_preset(
             "active_preset": status.get("active_preset"),
         }
     except (FileNotFoundError, ValueError, RuntimeError) as e:
-        _raise_easyeffects_http_error(e)
+        _raise_dsp_http_error(e)
 
 @app.post("/api/easyeffects/presets/import-json")
 async def import_easyeffects_preset_json(
     file: UploadFile = File(...),
     load_after_create: bool = Form(False),
 ):
-    ee_manager = _require_easyeffects_manager()
+    ee_manager = _require_dsp_manager()
 
     try:
         content = (await read_upload(file, EASYEEFFECTS_PRESET_TEXT_MAX_BYTES)).decode("utf-8-sig")
-        async with _easyeffects_mutation_lock():
+        async with _dsp_mutation_lock():
             created = ee_manager.import_preset_json(file.filename or "preset.json", content)
-        status = await _finish_easyeffects_preset_mutation(
+        status = await _finish_dsp_preset_mutation(
             load_after_create=load_after_create,
             preset_name=created["name"],
             refresh_reason="import-preset-json",
@@ -7205,7 +7205,7 @@ async def import_easyeffects_preset_json(
     except UnicodeDecodeError as e:
         raise HTTPException(status_code=400, detail=f"Preset JSON is not valid UTF-8 text: {e}")
     except (ValueError, RuntimeError) as e:
-        _raise_easyeffects_http_error(e)
+        _raise_dsp_http_error(e)
 
 # Preset bundle ZIP hardening limits (FXRoute bundles: manifest + preset
 # JSON + a few IR files, each IR stored twice by name variant).
@@ -7220,7 +7220,7 @@ async def import_easyeffects_preset_bundle(
     file: UploadFile = File(...),
     load_after_create: bool = Form(False),
 ):
-    ee_manager = _require_easyeffects_manager()
+    ee_manager = _require_dsp_manager()
 
     temp_zip_path = None
     import_succeeded = False
@@ -7280,7 +7280,7 @@ async def import_easyeffects_preset_bundle(
                 raise HTTPException(status_code=400, detail=f"Preset JSON is invalid: {e}") from e
             kernel_names = ee_manager._extract_kernel_names_from_payload(preset_payload if isinstance(preset_payload, dict) else None)
 
-            async with _easyeffects_mutation_lock():
+            async with _dsp_mutation_lock():
                 ee_manager.irs_dir.mkdir(parents=True, exist_ok=True)
                 imported_irs = []
                 ir_members_by_stem = {}
@@ -7336,7 +7336,7 @@ async def import_easyeffects_preset_bundle(
                 preset_filename = preset_rel.name if preset_rel.name.lower() != "preset.json" else (Path(file.filename or "preset.json").stem + ".json")
                 created = ee_manager.import_preset_json(preset_filename, preset_text)
             import_succeeded = True
-            status = await _finish_easyeffects_preset_mutation(
+            status = await _finish_dsp_preset_mutation(
                 load_after_create=load_after_create,
                 preset_name=created["name"],
                 refresh_reason="import-preset-bundle",
@@ -7357,7 +7357,7 @@ async def import_easyeffects_preset_bundle(
     except UnicodeDecodeError as e:
         raise HTTPException(status_code=400, detail=f"Preset JSON is not valid UTF-8 text: {e}")
     except (ValueError, RuntimeError) as e:
-        _raise_easyeffects_http_error(e)
+        _raise_dsp_http_error(e)
     finally:
         if import_succeeded:
             for _, backup_path in ir_backups:
@@ -7405,7 +7405,7 @@ async def create_convolver_preset_with_ir(
     tone_effect_mode: str = Form("crystalizer"),
     file: UploadFile = File(...),
 ):
-    ee_manager = _require_easyeffects_manager()
+    ee_manager = _require_dsp_manager()
 
     tmp_path = None
     try:
@@ -7422,7 +7422,7 @@ async def create_convolver_preset_with_ir(
         # pre-lock snapshot.  The lock is acquired here (not via
         # _run_locked_worker, which would re-acquire) and the blocking
         # manager call runs through the cancellation-safe worker.
-        async with _easyeffects_mutation_lock():
+        async with _dsp_mutation_lock():
             extras = _effects_extras_from_form(
                 limiter_enabled=limiter_enabled,
                 headroom_enabled=headroom_enabled,
@@ -7444,7 +7444,7 @@ async def create_convolver_preset_with_ir(
                 file.filename or tmp_path.name,
                 extras=extras,
             )
-        status = await _finish_easyeffects_preset_mutation(
+        status = await _finish_dsp_preset_mutation(
             load_after_create=load_after_create,
             preset_name=created["preset"]["name"],
             refresh_reason="create-with-ir",
@@ -7459,9 +7459,9 @@ async def create_convolver_preset_with_ir(
     except UploadTooLargeError as e:
         raise HTTPException(status_code=413, detail=str(e))
     except (FileNotFoundError, ValueError, RuntimeError) as e:
-        _raise_easyeffects_http_error(e)
+        _raise_dsp_http_error(e)
     except Exception as e:
-        logger.error(f"EasyEffects create-with-ir failed: {e}")
+        logger.error(f"DSP create-with-ir failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         if tmp_path is not None:
@@ -7472,7 +7472,7 @@ async def create_convolver_preset_with_ir(
 
 @app.post("/api/easyeffects/presets/create-peq")
 async def create_peq_preset(request: Request):
-    ee_manager = _require_easyeffects_manager()
+    ee_manager = _require_dsp_manager()
 
     try:
         body = await request.json()
@@ -7493,9 +7493,9 @@ async def create_peq_preset(request: Request):
         raise HTTPException(status_code=400, detail="peq is required")
 
     try:
-        async with _easyeffects_mutation_lock():
+        async with _dsp_mutation_lock():
             created = ee_manager.create_peq_preset(preset_name, peq_definition, extras=extras)
-        status = await _finish_easyeffects_preset_mutation(
+        status = await _finish_dsp_preset_mutation(
             load_after_create=load_after_create,
             preset_name=created["name"],
             refresh_reason="create-peq",
@@ -7507,7 +7507,7 @@ async def create_peq_preset(request: Request):
             "active_preset": status.get("active_preset"),
         }
     except (FileNotFoundError, ValueError, RuntimeError) as e:
-        _raise_easyeffects_http_error(e)
+        _raise_dsp_http_error(e)
 
 @app.post("/api/easyeffects/presets/import-rew-peq")
 async def import_rew_peq_preset(
@@ -7527,7 +7527,7 @@ async def import_rew_peq_preset(
     tone_effect_mode: str = Form("crystalizer"),
     file: UploadFile = File(...),
 ):
-    ee_manager = _require_easyeffects_manager()
+    ee_manager = _require_dsp_manager()
 
     try:
         content = await read_upload(file, EASYEEFFECTS_PRESET_TEXT_MAX_BYTES)
@@ -7544,7 +7544,7 @@ async def import_rew_peq_preset(
         # Canonical extras resolution under the same mutation ownership as
         # the import: never freeze a stale pre-lock loudness snapshot into
         # the new preset.
-        async with _easyeffects_mutation_lock():
+        async with _dsp_mutation_lock():
             extras = _effects_extras_from_form(
                 limiter_enabled=limiter_enabled,
                 headroom_enabled=headroom_enabled,
@@ -7560,7 +7560,7 @@ async def import_rew_peq_preset(
                 tone_effect_mode=tone_effect_mode,
             )
             created = ee_manager.create_peq_preset_from_rew_text(preset_name, rew_text, extras=extras)
-        status = await _finish_easyeffects_preset_mutation(
+        status = await _finish_dsp_preset_mutation(
             load_after_create=load_after_create,
             preset_name=created["name"],
             refresh_reason="import-rew-peq",
@@ -7572,7 +7572,7 @@ async def import_rew_peq_preset(
             "active_preset": status.get("active_preset"),
         }
     except (ValueError, RuntimeError) as e:
-        _raise_easyeffects_http_error(e)
+        _raise_dsp_http_error(e)
 
 @app.post("/api/easyeffects/presets/import-filter-dual")
 async def import_dual_filter_preset(
@@ -7595,7 +7595,7 @@ async def import_dual_filter_preset(
     left_file: Optional[UploadFile] = File(None),
     right_file: Optional[UploadFile] = File(None),
 ):
-    ee_manager = _require_easyeffects_manager()
+    ee_manager = _require_dsp_manager()
 
     if not preset_name.strip():
         raise HTTPException(status_code=400, detail="preset_name is required")
@@ -7656,7 +7656,7 @@ async def import_dual_filter_preset(
             # as the creation; the blocking manager call runs through the
             # cancellation-safe worker (the lock is acquired here, not via
             # _run_locked_worker).
-            async with _easyeffects_mutation_lock():
+            async with _dsp_mutation_lock():
                 extras = _effects_extras_from_form(**_form_extras_kwargs())
                 created = await _drain_worker(
                     ee_manager.create_convolver_preset_with_dual_uploads,
@@ -7681,7 +7681,7 @@ async def import_dual_filter_preset(
             if not left_text or not right_text:
                 raise HTTPException(status_code=400, detail="Provide Left and Right REW text, or Left and Right .irs/.wav files")
 
-            async with _easyeffects_mutation_lock():
+            async with _dsp_mutation_lock():
                 extras = _effects_extras_from_form(**_form_extras_kwargs())
                 created = ee_manager.create_dual_peq_preset_from_rew_texts(
                     preset_name,
@@ -7692,7 +7692,7 @@ async def import_dual_filter_preset(
             import_kind = "dual-peq"
 
         created_preset = created["preset"] if import_kind == "dual-convolver" else created
-        status = await _finish_easyeffects_preset_mutation(
+        status = await _finish_dsp_preset_mutation(
             load_after_create=load_after_create,
             preset_name=created_preset["name"],
             refresh_reason="import-filter-dual",
@@ -7708,7 +7708,7 @@ async def import_dual_filter_preset(
     except UploadTooLargeError as e:
         raise HTTPException(status_code=413, detail=str(e))
     except (ValueError, RuntimeError) as e:
-        _raise_easyeffects_http_error(e)
+        _raise_dsp_http_error(e)
     finally:
         for tmp_path in tmp_paths:
             try:
@@ -7718,7 +7718,7 @@ async def import_dual_filter_preset(
 
 @app.post("/api/easyeffects/presets/delete")
 async def delete_easyeffects_preset(request: Request):
-    ee_manager = _require_easyeffects_manager()
+    ee_manager = _require_dsp_manager()
 
     try:
         body = await request.json()
@@ -7730,14 +7730,14 @@ async def delete_easyeffects_preset(request: Request):
         raise HTTPException(status_code=400, detail="preset_name is required")
 
     try:
-        async with _easyeffects_mutation_lock():
+        async with _dsp_mutation_lock():
             ee_manager.delete_preset(preset_name)
         status = ee_manager.get_status()
         await manager.broadcast({"type": "easyeffects", "data": status})
         schedule_peak_monitor_refresh_after_effects_change("preset-delete")
         return {"status": "ok", "deleted": preset_name}
     except (FileNotFoundError, ValueError) as e:
-        _raise_easyeffects_http_error(e)
+        _raise_dsp_http_error(e)
 
 @app.get("/api/library/status")
 async def library_status():

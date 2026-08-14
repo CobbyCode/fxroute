@@ -180,7 +180,7 @@ CHANNEL_CORRELATION_WARN_THRESHOLD = 0.985
 
 MEASUREMENT_SCOPE_NOTE = (
     "FXRoute measures with a host-local sweep through the active PipeWire output and selected microphone input. "
-    "The result is a practical response trace for comparison and PEQ drafting, independent of the active EasyEffects preset."
+    "The result is a practical response trace for comparison and PEQ drafting, independent of the active DSP preset."
 )
 
 TERMINAL_JOB_STATUSES = frozenset({"completed", "failed", "cancelled"})
@@ -2326,7 +2326,7 @@ class MeasurementStore:
         source_node_name = str(selected_input.get("node_name") or "").strip()
         if not source_node_name:
             raise RuntimeError("Selected capture input has no usable PipeWire source node")
-        if source_node_name == "easyeffects_source" or source_node_name.endswith(".monitor"):
+        if source_node_name.endswith(".monitor"):
             raise RuntimeError("Refusing to measure through a non-microphone source; select a real PipeWire input")
 
         playback_channel = channel
@@ -2675,7 +2675,7 @@ class MeasurementStore:
                 "This path is a real host-local sweep playback and capture flow, but it is still a conservative sweep-v3 implementation.",
                 "Host-local timing now follows the separate sink-monitor reference capture and applies that offset/drift correction to the mic path; it is still not a full REW feature set.",
                 "The displayed trace is intentionally trimmed to the conservative trusted band when the low or high edges remain unstable.",
-                "Measurements stay separate from EasyEffects presets and active PEQ state. No Auto-PEQ or Copy-to-PEQ is included here.",
+                "Measurements stay separate from DSP presets and active PEQ state. No Auto-PEQ or Copy-to-PEQ is included here.",
             ],
             "message": completion_message,
             "scope_note": MEASUREMENT_SCOPE_NOTE,
@@ -5604,7 +5604,7 @@ class MeasurementStore:
         ports = self._list_pw_ports(target_name)
         if f"{target_name}:playback_FL" not in ports or f"{target_name}:playback_FR" not in ports:
             raise RuntimeError(
-                "Active-chain measurement route unavailable: EasyEffects input sink ports are missing "
+                "Active-chain measurement route unavailable: DSP input sink ports are missing "
                 f"for {target_name} (ports={ports})"
             )
         current_output = overview.get("current_output") or {}
@@ -6072,7 +6072,7 @@ class MeasurementStore:
             label = match.group("label").strip()
             details = self._inspect_source_details(serial)
             node_name = str(details.get("node_name") or label.split()[0]).strip()
-            if not node_name or node_name == "easyeffects_source" or node_name.endswith(".monitor"):
+            if not node_name or node_name.endswith(".monitor"):
                 continue
             input_id = f"pw-source-{serial}"
             if input_id in seen_ids or node_name in seen_node_names:
@@ -6122,7 +6122,7 @@ class MeasurementStore:
                 continue
             serial, node_name, driver, spec = parts[:4]
             node_name = str(node_name or "").strip()
-            if not node_name or node_name == "easyeffects_source" or node_name.endswith(".monitor"):
+            if not node_name or node_name.endswith(".monitor"):
                 continue
             input_id = f"pw-source-{serial}"
             if input_id in seen_ids or node_name in seen_node_names:
@@ -6503,7 +6503,7 @@ class MeasurementStore:
         # Measurement playback must not rely on pw-play --target
         # autoconnect: PipeWire resolves it non-deterministically (observed
         # live: the sweep node linked output_FL to the sink FR input and
-        # output_FR to an EasyEffects internal output port, producing a
+        # output_FR to a DSP internal output port, producing a
         # silent/wrong sweep).  Mirror the subwoofer routes: disable
         # autoconnect and link the play node explicitly after its ports
         # exist.
@@ -6569,11 +6569,11 @@ class MeasurementStore:
         The direct-sink route previously relied on pw-play --target
         autoconnect, which PipeWire resolves non-deterministically (observed
         live: the sweep node linked output_FL to the sink FR input and
-        output_FR to an EasyEffects internal output port).  Mirror the
+        output_FR to a DSP internal output port).  Mirror the
         subwoofer routes: disable autoconnect, wait for the play node ports
         and link explicitly to the resolved playback target.  With
         ACTIVE_CHAIN that target is fxroute_dsp_sink, so the sweep passes
-        through the full FXRoute/EasyEffects gain chain.
+        through the full FXRoute DSP gain chain.
         """
         diagnostics = self._new_measurement_playback_route_diagnostics(playback_route)
         play_ports = self._wait_for_measurement_play_ports(play_node_name)
@@ -6687,7 +6687,6 @@ class MeasurementStore:
             play_node_name,
             "fxroute_dsp",
             "fxroute_dsp_sink",
-            "easyeffects_source",
         ]
         relevant_nodes = [node for node in relevant_nodes if node]
         snapshot = {

@@ -107,7 +107,7 @@ Tested installer targets so far include:
 
 ## Native DSP engine
 
-FXRoute builds and runs its own PipeWire-native DSP engine. The stable ingress sink is `fxroute_dsp_sink`; the processing node is `fxroute_dsp`. EasyEffects is not a runtime dependency and FXRoute does not install, start, or monitor it.
+FXRoute builds and runs its own PipeWire-native DSP engine. The stable ingress sink is `fxroute_dsp_sink`; the processing node is `fxroute_dsp`.
 
 Fresh installs default Spotify autostart to enabled when a local Spotify desktop client is available, so the player can return after a desktop/session restart. Existing `.env` files are preserved on installer reruns.
 

@@ -87,7 +87,7 @@ class HelperDouble:
             "config": {"sample_rate": self.rate} if self.rate else None,
         }
 
-    async def reclean_direct_easyeffects_links(self):
+    async def reclean_direct_dsp_links(self):
         self.reconcile_calls += 1
         self.direct = False
 
@@ -128,7 +128,7 @@ class CanonicalGraphTests(unittest.IsolatedAsyncioTestCase):
             hardware_ports=("playback_FL", "playback_FR"),
         )
         runtime._links = [SimpleNamespace(source="source", target="target")] if runtime._process else []
-        with patch.object(main, "subwoofer_runtime", runtime), patch.object(
+        with patch.object(main, "dsp_runtime", runtime), patch.object(
             main, "_run_pw_link_command", side_effect=pw_link
         ), patch.object(main, "get_audio_output_overview", return_value=overview):
             return await main._playback_graph_diagnosis(
@@ -185,7 +185,7 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
             helper.reconcile_calls += 1
             link_state["direct"] = False
 
-        helper.reclean_direct_easyeffects_links = reclean
+        helper.reclean_direct_dsp_links = reclean
         request = TransitionRequest(
             operation="graph-reconcile",
             source="local",
@@ -198,11 +198,11 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
         )
         with patch.object(main, "get_audio_output_overview", return_value=self.overview), patch.object(
             main, "_run_pw_link_command", side_effect=pw_link
-        ), patch.object(main, "subwoofer_runtime", helper), patch.object(
-            main, "_sync_easyeffects_preset_for_playback_samplerate",
+        ), patch.object(main, "dsp_runtime", helper), patch.object(
+            main, "_sync_dsp_preset_for_playback_samplerate",
             side_effect=lambda **_kwargs: calls.__setitem__("preset", calls["preset"] + 1),
         ), patch.object(
-            main, "_sync_subwoofer_runtime",
+            main, "_sync_dsp_runtime",
             side_effect=lambda **_kwargs: calls.__setitem__("sync", calls["sync"] + 1),
         ):
             with self.assertRaisesRegex(RuntimeError, "graph-only reconciliation"):
@@ -242,11 +242,11 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
                 )
                 with patch.object(main, "get_audio_output_overview", return_value=overview), patch.object(
                     main, "_run_pw_link_command", side_effect=pw_link
-                ), patch.object(main, "subwoofer_runtime", helper), patch.object(
-                    main, "_sync_easyeffects_preset_for_playback_samplerate",
+                ), patch.object(main, "dsp_runtime", helper), patch.object(
+                    main, "_sync_dsp_preset_for_playback_samplerate",
                     side_effect=lambda **_kwargs: calls.__setitem__("preset", calls["preset"] + 1),
-                ), patch.object(main, "_sync_subwoofer_runtime", side_effect=sync), patch.object(
-                    main, "easyeffects_manager", None
+                ), patch.object(main, "_sync_dsp_runtime", side_effect=sync), patch.object(
+                    main, "dsp_manager", None
                 ):
                     await main._coordinator_establish_effects_and_helper(request)
                 self.assertEqual(calls, {"preset": 0, "sync": 1})
@@ -315,13 +315,13 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
         ), patch.object(
             main, "_playback_graph_diagnosis", new=AsyncMock(side_effect=[initial, stable])
         ), patch.object(
-            main, "_wait_for_easyeffects_output_ports", new=AsyncMock(return_value=True)
+            main, "_wait_for_dsp_output_ports", new=AsyncMock(return_value=True)
         ), patch.object(
-            main, "_sync_subwoofer_runtime", side_effect=sync_helper
+            main, "_sync_dsp_runtime", side_effect=sync_helper
         ), patch.object(
             main, "_coordinator_reconcile_subwoofer_links_only", reconciler
-        ), patch.object(main, "subwoofer_runtime", helper), patch.object(
-            main, "easyeffects_manager", None
+        ), patch.object(main, "dsp_runtime", helper), patch.object(
+            main, "dsp_manager", None
         ):
             runtime = MainCoreTransitionRuntime(
                 target_rate=48000,
@@ -411,13 +411,13 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
             output_mode_target=self.overview,
             output_mode_config={"mode": "subwoofer-2.2"},
         )
-        with patch.object(main, "subwoofer_runtime", helper), patch.object(
-            main, "easyeffects_manager", None
+        with patch.object(main, "dsp_runtime", helper), patch.object(
+            main, "dsp_manager", None
         ), patch.object(
-            main, "_wait_for_easyeffects_output_ports", new=AsyncMock(return_value=True)
+            main, "_wait_for_dsp_output_ports", new=AsyncMock(return_value=True)
         ), patch.object(
             main, "_playback_graph_diagnosis", new=AsyncMock(side_effect=diagnose)
-        ), patch.object(main, "_sync_subwoofer_runtime", side_effect=sync_helper), patch.object(
+        ), patch.object(main, "_sync_dsp_runtime", side_effect=sync_helper), patch.object(
             main, "_coordinator_reconcile_subwoofer_links_only", side_effect=reconcile
         ) as reconciler:
             result = await main._coordinator_establish_effects_and_helper(request)
@@ -469,8 +469,8 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
             output_mode_config={"mode": "stereo"},
         )
         with patch.object(main, "persist_audio_output_mode", return_value={}), patch.object(
-            main, "easyeffects_manager", None
-        ), patch.object(main, "_sync_subwoofer_runtime", side_effect=sync_helper), patch.object(
+            main, "dsp_manager", None
+        ), patch.object(main, "_sync_dsp_runtime", side_effect=sync_helper), patch.object(
             main, "_coordinator_reconcile_subwoofer_links_only", side_effect=reconcile
         ) as reconciler, patch.object(
             main, "_playback_graph_diagnosis", new=AsyncMock(side_effect=diagnose)
@@ -576,8 +576,8 @@ class StereoRateTransitionRegressionTests(unittest.IsolatedAsyncioTestCase):
                 reload_source=True,
             )
 
-            with patch.object(main, "subwoofer_runtime", runtime), patch.object(
-                main, "easyeffects_manager", None
+            with patch.object(main, "dsp_runtime", runtime), patch.object(
+                main, "dsp_manager", None
             ), patch.object(
                 main, "get_audio_output_overview", return_value=stereo_overview(44100)
             ), patch.object(
@@ -943,9 +943,9 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(main, "get_audio_output_overview", return_value=overview), patch.object(
             main, "_run_pw_link_command", side_effect=pw_link
         ), patch.object(
-            main, "subwoofer_runtime", runtime
+            main, "dsp_runtime", runtime
         ), patch.object(
-            main, "_sync_easyeffects_preset_for_playback_samplerate",
+            main, "_sync_dsp_preset_for_playback_samplerate",
             side_effect=lambda **_kwargs: calls.__setitem__("preset", calls["preset"] + 1),
         ), patch.object(
             main, "_repair_stereo_output_links_once",
@@ -1042,10 +1042,10 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
 
         with patch.object(main, "get_audio_output_overview", return_value=overview), patch.object(
             main, "_run_pw_link_command", side_effect=pw_link
-        ), patch.object(main, "subwoofer_runtime", helper), patch.object(
-            main, "easyeffects_manager", None
+        ), patch.object(main, "dsp_runtime", helper), patch.object(
+            main, "dsp_manager", None
         ), patch.object(
-            main, "_sync_subwoofer_runtime",
+            main, "_sync_dsp_runtime",
             side_effect=AssertionError("same-rate helper rebuild"),
         ):
             result = await main._coordinator_establish_effects_and_helper(request)
@@ -1088,12 +1088,12 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
         )
         with patch.object(main, "get_audio_output_overview", return_value=overview), patch.object(
             main, "_run_pw_link_command", side_effect=pw_link
-        ), patch.object(main, "subwoofer_runtime", helper), patch.object(
+        ), patch.object(main, "dsp_runtime", helper), patch.object(
             main,
-            "_sync_easyeffects_preset_for_playback_samplerate",
+            "_sync_dsp_preset_for_playback_samplerate",
             side_effect=lambda **_kwargs: calls.__setitem__("preset", calls["preset"] + 1),
-        ), patch.object(main, "_sync_subwoofer_runtime", side_effect=sync), patch.object(
-            main, "easyeffects_manager", ConvolverManager()
+        ), patch.object(main, "_sync_dsp_runtime", side_effect=sync), patch.object(
+            main, "dsp_manager", ConvolverManager()
         ):
             await main._coordinator_establish_effects_and_helper(request)
         self.assertEqual(calls, {"preset": 1, "sync": 1})
@@ -1119,7 +1119,7 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(main, "get_audio_output_overview", return_value=overview), patch.object(
             main, "_run_pw_link_command",
             side_effect=lambda *_args: _links_text("subwoofer-2.2", direct=False, complete=False),
-        ), patch.object(main, "subwoofer_runtime", helper):
+        ), patch.object(main, "dsp_runtime", helper):
             with self.assertRaisesRegex(RuntimeError, "graph-only reconciliation"):
                 await main._coordinator_establish_effects_and_helper(request)
 
@@ -1149,7 +1149,7 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
             return _links_text("subwoofer-2.2", direct=helper.direct)
 
         with patch.object(main, "_run_pw_link_command", side_effect=pw_link), patch.object(
-            main, "subwoofer_runtime", helper
+            main, "dsp_runtime", helper
         ), patch.object(main, "get_audio_output_overview", return_value={
             "output_mode": {"mode": "subwoofer-2.2", "effective_output_key": OUTPUT_KEY}
         }):
@@ -1190,7 +1190,7 @@ class RuntimeStateDumpTests(unittest.IsolatedAsyncioTestCase):
 
         with patch.object(main, "get_audio_output_overview", return_value=overview), \
              patch.object(main, "get_samplerate_status", return_value={"active_rate": 48000, "force_rate": 48000}), \
-             patch.object(main, "subwoofer_runtime", FakeRuntime()), \
+             patch.object(main, "dsp_runtime", FakeRuntime()), \
              patch.object(main, "_run_debug_command", side_effect=debug_command), \
              patch.object(main, "_read_build_id", return_value="test"), \
              patch.object(main, "_measurement_helper_snapshot_summary", return_value={}):

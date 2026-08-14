@@ -53,7 +53,7 @@ class SpotifyEntrySamplerateTests(unittest.IsolatedAsyncioTestCase):
                 "get_audio_output_overview",
                 return_value={"output_mode": {"mode": "stereo"}},
             ),
-            patch.object(main, "easyeffects_manager", None),
+            patch.object(main, "dsp_manager", None),
         )
 
     async def test_entry_commit_reads_stable_spotify_input_and_returns_it(self):

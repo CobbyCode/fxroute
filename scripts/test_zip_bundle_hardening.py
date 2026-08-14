@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """ZIP / preset-bundle hardening tests.
 
-Covers the EasyEffects preset-bundle import endpoint and the library album
+Covers the effects preset-bundle import endpoint and the library album
 ZIP extraction: size limits (upload, member count, total uncompressed,
 per-member, read budget), traversal / absolute / drive / UNC paths,
 symlink / special / encrypted entries, counted extraction reads, and
@@ -159,8 +159,8 @@ class PresetBundleEndpointTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.irs_dir = Path(self.temp_dir.name) / "irs"
-        self.original_manager = main.easyeffects_manager
-        self.original_finish = main._finish_easyeffects_preset_mutation
+        self.original_manager = main.dsp_manager
+        self.original_finish = main._finish_dsp_preset_mutation
         self.original_limits = {
             name: getattr(main, name)
             for name in (
@@ -171,8 +171,8 @@ class PresetBundleEndpointTests(unittest.IsolatedAsyncioTestCase):
                 "PRESET_BUNDLE_MAX_CENTRAL_DIRECTORY_BYTES",
             )
         }
-        main.easyeffects_manager = FakeEEManager(self.irs_dir)
-        main._finish_easyeffects_preset_mutation = self._fake_finish
+        main.dsp_manager = FakeEEManager(self.irs_dir)
+        main._finish_dsp_preset_mutation = self._fake_finish
         self.created_temps = []
         real_tempfile = tempfile.NamedTemporaryFile
 
@@ -189,8 +189,8 @@ class PresetBundleEndpointTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self):
         self.tempfile_patch.stop()
-        main.easyeffects_manager = self.original_manager
-        main._finish_easyeffects_preset_mutation = self.original_finish
+        main.dsp_manager = self.original_manager
+        main._finish_dsp_preset_mutation = self.original_finish
         for name, value in self.original_limits.items():
             setattr(main, name, value)
         self.temp_dir.cleanup()
@@ -354,7 +354,7 @@ class PresetBundleEndpointTests(unittest.IsolatedAsyncioTestCase):
     async def test_existing_ir_restored_when_import_fails(self):
         self.irs_dir.mkdir()
         (self.irs_dir / "same.irs").write_bytes(b"OLD" * 8)
-        main.easyeffects_manager = FakeEEManager(self.irs_dir, fail_import=True)
+        main.dsp_manager = FakeEEManager(self.irs_dir, fail_import=True)
         with self.assertRaises(HTTPException) as ctx:
             await self._import(self._bundle_with_ir("same.irs", b"NEW" * 16))
         self.assertEqual(ctx.exception.status_code, 400)
@@ -364,7 +364,7 @@ class PresetBundleEndpointTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_new_ir_removed_when_import_fails(self):
         self.irs_dir.mkdir()
-        main.easyeffects_manager = FakeEEManager(self.irs_dir, fail_import=True)
+        main.dsp_manager = FakeEEManager(self.irs_dir, fail_import=True)
         with self.assertRaises(HTTPException) as ctx:
             await self._import(self._bundle_with_ir("new.irs", b"NEW" * 16))
         self.assertEqual(ctx.exception.status_code, 400)

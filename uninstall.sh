@@ -26,17 +26,15 @@ Options:
 
 Safe by default:
 - removes FXRoute user service
-- removes legacy EasyEffects watchdog files from older FXRoute installations
 - removes optional Spotify cache cleanup timer/service
 - removes optional system package update timer/service
 - removes FXRoute helper scripts
-- restores legacy EasyEffects autostart backups and removes Spotify autostart
+- removes Spotify autostart
 - removes the optional FXRoute Caddy reverse proxy service/config if present
 - restores the previous default `caddy.service` when FXRoute had disabled it to take over port 80
 
 Cautious by default:
 - does NOT remove the project directory unless requested
-- only offers to uninstall EasyEffects when legacy install state proves FXRoute installed it
 EOF
 }
 
@@ -110,22 +108,6 @@ remove_file_if_exists() {
   fi
 }
 
-restore_backed_up_file_or_remove() {
-  local path="$1"
-  local backup_name="$2"
-  local backup_path="$FXROUTE_BACKUP_DIR/$backup_name"
-
-  if [[ -e "$backup_path" || -L "$backup_path" ]]; then
-    mkdir -p "$(dirname "$path")"
-    rm -f "$path"
-    mv "$backup_path" "$path"
-    log "Restored $path from backup"
-    return 0
-  fi
-
-  remove_file_if_exists "$path"
-}
-
 remove_service() {
   systemctl --user disable --now "$SERVICE_NAME" >/dev/null 2>&1 || true
   remove_file_if_exists "$HOME/.config/systemd/user/$SERVICE_NAME.service"
@@ -136,12 +118,6 @@ remove_dsp_ingress_sink() {
   remove_file_if_exists "$config_file"
   rmdir "$(dirname "$config_file")" >/dev/null 2>&1 || true
   systemctl --user restart pipewire-pulse.service >/dev/null 2>&1 || true
-}
-
-remove_watchdog() {
-  systemctl --user disable --now easyeffects-stale-watchdog.timer >/dev/null 2>&1 || true
-  restore_backed_up_file_or_remove "$HOME/.config/systemd/user/easyeffects-stale-watchdog.service" "easyeffects-stale-watchdog.service.pre-fxroute"
-  restore_backed_up_file_or_remove "$HOME/.config/systemd/user/easyeffects-stale-watchdog.timer" "easyeffects-stale-watchdog.timer.pre-fxroute"
 }
 
 remove_spotify_cleanup_helper() {
@@ -194,7 +170,6 @@ remove_network_library_helper() {
 }
 
 remove_autostart() {
-  restore_backed_up_file_or_remove "$HOME/.config/autostart/easyeffects.desktop" "easyeffects.desktop.pre-fxroute"
   remove_file_if_exists "$HOME/.config/autostart/fxroute-spotify.desktop"
 }
 
@@ -495,53 +470,6 @@ else:
 PY
 }
 
-remove_easyeffects_if_requested() {
-  local installed_by_fxroute
-  installed_by_fxroute="$(read_install_state_field "easyeffects.installed_by_fxroute" 2>/dev/null || true)"
-  [[ "$installed_by_fxroute" == "true" ]] || return 0
-
-  local install_method
-  install_method="$(read_install_state_field "easyeffects.install_method" 2>/dev/null || true)"
-  [[ -n "$install_method" ]] || install_method="flatpak"
-
-  if ! confirm "FXRoute installed EasyEffects via $install_method. Remove EasyEffects too?"; then
-    warn "Keeping EasyEffects installed"
-    return 0
-  fi
-
-  case "$install_method" in
-    flatpak)
-      if flatpak info --user com.github.wwmm.easyeffects >/dev/null 2>&1; then
-        flatpak uninstall --user -y com.github.wwmm.easyeffects >/dev/null 2>&1 || {
-          warn "Failed to uninstall EasyEffects Flatpak"
-          return 0
-        }
-        log "Removed EasyEffects Flatpak"
-      else
-        warn "EasyEffects Flatpak not found anymore"
-      fi
-      ;;
-    native)
-      if command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
-        if command -v apt-get >/dev/null 2>&1; then
-          sudo apt-get remove -y easyeffects >/dev/null 2>&1 || warn "Failed to uninstall native EasyEffects with apt"
-        elif command -v dnf >/dev/null 2>&1; then
-          sudo dnf remove -y easyeffects >/dev/null 2>&1 || warn "Failed to uninstall native EasyEffects with dnf"
-        elif command -v zypper >/dev/null 2>&1; then
-          sudo zypper --non-interactive remove easyeffects >/dev/null 2>&1 || warn "Failed to uninstall native EasyEffects with zypper"
-        else
-          warn "No supported package manager found to remove native EasyEffects"
-        fi
-      else
-        warn "Could not auto-remove native EasyEffects because passwordless sudo is unavailable"
-      fi
-      ;;
-    *)
-      warn "Unknown EasyEffects install method '$install_method', leaving package installed"
-      ;;
-  esac
-}
-
 remove_project_dir_if_requested() {
   [[ $REMOVE_PROJECT_DIR -eq 1 ]] || return 0
   if ! confirm "Remove project directory $INSTALL_ROOT?"; then
@@ -559,9 +487,6 @@ main() {
   log "Removing FXRoute DSP ingress sink"
   remove_dsp_ingress_sink
 
-  log "Removing legacy EasyEffects watchdog units"
-  remove_watchdog
-
   log "Removing optional Spotify cache cleanup helper"
   remove_spotify_cleanup_helper
 
@@ -574,7 +499,7 @@ main() {
   log "Removing network library mount helper"
   remove_network_library_helper
 
-  log "Restoring legacy EasyEffects autostart backup and removing Spotify autostart"
+  log "Removing Spotify autostart"
   remove_autostart
 
   log "Removing optional FXRoute mDNS guard"
@@ -595,7 +520,6 @@ main() {
   remove_firewalld_service_if_requested mdns ".local LAN access"
   remove_firewalld_service_if_requested http "port-80 LAN access"
   remove_firewalld_service_if_requested https "port-443 LAN access"
-  remove_easyeffects_if_requested
   remove_project_dir_if_requested
   remove_file_if_exists "$INSTALL_STATE_FILE"
   rmdir "$FXROUTE_BACKUP_DIR" >/dev/null 2>&1 || true

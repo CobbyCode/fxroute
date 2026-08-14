@@ -541,7 +541,7 @@ class DSPRuntimeConfigTests(unittest.TestCase):
             PipeWireLink("fxroute_dsp:output_1", "hw:playback_FL"),
             PipeWireLink("fxroute_dsp:output_2", "hw:playback_FR"),
         ]
-        asyncio.run(runtime.reclean_direct_easyeffects_links())
+        asyncio.run(runtime.reclean_direct_dsp_links())
         self.assertIn(("pw-link", "fxroute_dsp:output_3", "hw:playback_RL"), commands)
         self.assertIn(("pw-link", "fxroute_dsp:output_4", "hw:playback_RR"), commands)
 

@@ -3,7 +3,7 @@
 
 The native DSP runtime now owns Stereo as well as the subwoofer modes.  After
 a measurement session rebuilds it at the 48 kHz measurement rate, the release
-path (_sync_subwoofer_runtime_at_rate) must re-sync it at the restored rate for
+path (_sync_dsp_runtime_at_rate) must re-sync it at the restored rate for
 every output mode, including Stereo.  This guards the removed legacy gate that
 skipped the re-sync whenever the active mode was not a subwoofer mode.
 
@@ -11,7 +11,7 @@ Scenario under test:
   native DSP at the measurement rate (48 kHz)
   -> measurement ends with the restore rate established (44.1 kHz)
   -> Stereo is the active output mode
-  -> _sync_subwoofer_runtime_at_rate() re-syncs the DSP
+  -> _sync_dsp_runtime_at_rate() re-syncs the DSP
   -> final runtime rate matches the restored rate.
 """
 
@@ -43,8 +43,8 @@ class _FakeRuntime:
 class StereoMeasurementReleaseTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self._saved = {
-            "subwoofer_runtime": main.subwoofer_runtime,
-            "_sync_subwoofer_runtime": main._sync_subwoofer_runtime,
+            "dsp_runtime": main.dsp_runtime,
+            "_sync_dsp_runtime": main._sync_dsp_runtime,
             "_wait_for_selected_output_effective_rate": main._wait_for_selected_output_effective_rate,
             "_wait_for_samplerate_alignment": main._wait_for_samplerate_alignment,
             "get_audio_output_overview": main.get_audio_output_overview,
@@ -58,7 +58,7 @@ class StereoMeasurementReleaseTests(unittest.IsolatedAsyncioTestCase):
     async def test_stereo_release_resyncs_runtime_at_restore_rate(self) -> None:
         """Stereo release re-syncs the DSP from 48 kHz back to 44.1 kHz."""
         runtime = _FakeRuntime(48_000)  # native DSP at the measurement rate
-        main.subwoofer_runtime = runtime
+        main.dsp_runtime = runtime
 
         # Stereo is the active output mode.
         main.get_audio_output_overview = lambda: {
@@ -82,9 +82,9 @@ class StereoMeasurementReleaseTests(unittest.IsolatedAsyncioTestCase):
             runtime.rate = 44_100
             return {"output_mode": {"mode": main.OUTPUT_MODE_STEREO}}
 
-        main._sync_subwoofer_runtime = AsyncMock(side_effect=fake_sync)
+        main._sync_dsp_runtime = AsyncMock(side_effect=fake_sync)
 
-        await main._sync_subwoofer_runtime_at_rate(44_100, _rate_lock_held=True)
+        await main._sync_dsp_runtime_at_rate(44_100, _rate_lock_held=True)
 
         # The restore rate was established before the re-sync.
         main._wait_for_selected_output_effective_rate.assert_awaited_once_with(
@@ -99,7 +99,7 @@ class StereoMeasurementReleaseTests(unittest.IsolatedAsyncioTestCase):
             sync_reasons,
             ["measurement-release", "measurement-release-settle"],
         )
-        for call in main._sync_subwoofer_runtime.call_args_list:
+        for call in main._sync_dsp_runtime.call_args_list:
             self.assertTrue(call.kwargs["_rate_lock_held"])
 
         # Final runtime rate matches the restored rate.

@@ -16,7 +16,7 @@ static double rms(const float *values, size_t begin, size_t count) {
     return sqrt(square / (double)count);
 }
 
-static void test_uses_easyeffects_8_2_8_configuration(void) {
+static void test_uses_8_2_8_band_configuration(void) {
     static const float expected_edges[14] = {
         20.0F, 219.331F, 485.102F, 867.511F, 1395.82F, 2102.93F, 3026.51F,
         4209.57F, 5701.10F, 7556.64F, 9839.05F, 12619.1F, 15976.4F, 20000.0F
@@ -96,7 +96,7 @@ static void test_processing_is_quantum_independent_and_silence_stays_silent(void
 }
 
 int main(void) {
-    test_uses_easyeffects_8_2_8_configuration();
+    test_uses_8_2_8_band_configuration();
     test_impulse_has_oversampled_fir_latency();
     test_adaptive_intensity_tracks_program_material_and_resets();
     test_processing_is_quantum_independent_and_silence_stays_silent();

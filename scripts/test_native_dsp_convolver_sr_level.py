@@ -3,7 +3,7 @@
 #
 # Convolver sample-rate level stability.
 #
-# The EasyEffects-era engine needed hidden per-rate output-gain
+# The pre-native-DSP engine needed hidden per-rate output-gain
 # compensation anchors (44100 +1 dB ... 768000 -24 dB).  The native
 # convolver resamples the IR with libsamplerate and convolves at the
 # stream rate; the requirement is that an otherwise identical Convolver
@@ -123,7 +123,7 @@ def test_convolver_impulse_response_is_level_neutral_at_every_rate(tmp_path):
     # gain: its resampled gain is sub-linear in the ratio (measured residual
     # -2.6 dB at 96 kHz and -4.1 dB at 192 kHz after the ratio
     # normalization, vs the x2.0/x4.0 gain of broadband material).  The
-    # previous EasyEffects engine (fixed -6 dB/octave anchors) left the same
+    # previous pre-native-DSP engine (fixed -6 dB/octave anchors) left the same
     # residual for deltas.  Real impulse responses are broadband and covered
     # tightly by test_convolver_level_is_sample_rate_independent; the delta
     # contract here is "no wild drift".

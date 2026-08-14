@@ -39,8 +39,8 @@ class PlaybackTransitionGenerationTests(unittest.IsolatedAsyncioTestCase):
             "peak_monitor_playback_armed", "peak_monitor_context_signature",
             "playback_transition_epoch", "current_track_info",
             "_wait_for_samplerate_alignment",
-            "_sync_easyeffects_preset_for_playback_samplerate",
-            "easyeffects_manager", "player_instance", "subwoofer_runtime",
+            "_sync_dsp_preset_for_playback_samplerate",
+            "dsp_manager", "player_instance", "dsp_runtime",
             "_wait_for_player_current_file",
         )
         self.originals = {name: getattr(main, name) for name in names}
@@ -53,8 +53,8 @@ class PlaybackTransitionGenerationTests(unittest.IsolatedAsyncioTestCase):
             "id": "local-track", "source": "local", "url": "/music/local.flac"
         }
         main._wait_for_samplerate_alignment = lambda _rate: async_value(True)
-        main._sync_easyeffects_preset_for_playback_samplerate = lambda **_kwargs: async_value(None)
-        main.easyeffects_manager = object()
+        main._sync_dsp_preset_for_playback_samplerate = lambda **_kwargs: async_value(None)
+        main.dsp_manager = object()
         main.player_instance = type("Player", (), {"_running": True})()
 
     async def asyncTearDown(self):
@@ -118,7 +118,7 @@ class PlaybackTransitionGenerationTests(unittest.IsolatedAsyncioTestCase):
         # The watcher no longer has a direct helper-sync callback to invalidate;
         # its only allowed action is a Coordinator recovery request.
         self.assertFalse(
-            hasattr(main, "_sync_subwoofer_runtime_after_playback_transition"),
+            hasattr(main, "_sync_dsp_runtime_after_playback_transition"),
             "direct deferred helper sync must be removed in favor of Coordinator recovery",
         )
 

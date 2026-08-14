@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import peak_monitor
-from peak_monitor import EasyEffectsPeakMonitor, MonitorTarget
+from peak_monitor import DSPPeakMonitor, MonitorTarget
 
 TARGET = MonitorTarget("fxroute_dsp", 42, "Output Level")
 
@@ -48,9 +48,9 @@ id 2, type PipeWire:Interface:Port/3
     port.name = "post_effect_FR"
     port.alias = "fxroute_dsp:post_effect_FR"
 '''
-        ports = list(EasyEffectsPeakMonitor._iter_ports(text))
+        ports = list(DSPPeakMonitor._iter_ports(text))
         self.assertEqual(
-            EasyEffectsPeakMonitor._target_output_ports(TARGET, ports),
+            DSPPeakMonitor._target_output_ports(TARGET, ports),
             ("fxroute_dsp:post_effect_FL", "fxroute_dsp:post_effect_FR"),
         )
 
@@ -59,11 +59,11 @@ id 2, type PipeWire:Interface:Port/3
             {"node_id": 42, "port_name": "output_1"},
             {"node_id": 42, "port_name": "output_2"},
         ]
-        self.assertEqual(EasyEffectsPeakMonitor._target_output_ports(TARGET, ports), (None, None))
+        self.assertEqual(DSPPeakMonitor._target_output_ports(TARGET, ports), (None, None))
 
     async def asyncSetUp(self):
         self.emits = []
-        self.monitor = EasyEffectsPeakMonitor(on_change=self._collect)
+        self.monitor = DSPPeakMonitor(on_change=self._collect)
         self.monitor._running = True
         self.monitor._target = TARGET
         self.proc = _FakeProc()

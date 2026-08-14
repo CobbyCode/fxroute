@@ -22,7 +22,7 @@ class UnsupportedPluginError(ValueError):
 
 
 class DSPManager:
-    """EasyEffects-call-site compatible manager with no EasyEffects runtime dependency."""
+    """Native DSP manager for the FXRoute effects chain."""
 
     PURE_PRESET = "Direct"
     PROTECTED_PRESETS = {"Direct", "Neutral"}
@@ -687,7 +687,7 @@ class DSPManager:
                 paths = self.preset_store.find_ir_paths(str(params.get("kernel", "")))
                 if not paths:
                     raise FileNotFoundError(f"IR file not found: {params.get('kernel', '')}")
-                # The EasyEffects-era engine needed hidden per-rate output-gain
+                # The pre-native-DSP engine needed hidden per-rate output-gain
                 # compensation (44100 +1 dB ... 768000 -24 dB).  The native
                 # convolver resamples the IR and convolves at the stream rate
                 # and is level-stable across rates (verified by
@@ -743,11 +743,10 @@ class DSPManager:
                 master_gain_db = float(params.get("volumeDb", 0.0))
             elif plugin_type == "limiter":
                 # Control values verified against the installed lsp-plugins
-                # metadata (sc_limiter_stereo.ttl): mode 0=Herm Thin (matches
-                # the old EasyEffects "Herm Thin"), boost 1 = the old
-                # gain-boost enabled default (plugin default is 1).  The
+                # metadata (sc_limiter_stereo.ttl): mode 0=Herm Thin, boost 1
+                # = the gain-boost enabled default (plugin default is 1).  The
                 # plugin ports cap at/rt/lk (0.25..20 / 0.25..20 / 0.1..20 ms);
-                # the clamps below match those port bounds, so the old 50 ms
+                # the clamps below match those port bounds, so the 50 ms
                 # release is clamped to 20 ms exactly as the plugin itself did.
                 control("g_in", 10.0 ** (float(params.get("inputGainDb", 0.0)) / 20.0))
                 control("g_out", 10.0 ** (float(params.get("outputGainDb", 0.0)) / 20.0))
@@ -1148,7 +1147,3 @@ class DSPManager:
                 "paths": {"output": str(self.output_dir), "irs": str(self.irs_dir),
                           "state": str(self.state_dir), "global_extras": str(self.global_extras_file),
                           "compare_state": str(self.compare_state_file)}}
-
-
-# Naming bridge for call sites transitioning from EasyEffectsManager.
-NativeDSPManager = DSPManager

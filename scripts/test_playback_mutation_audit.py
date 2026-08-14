@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Static ownership audit for playback graph/rate mutations.
 
-The low-level PipeWire/EasyEffects/helper primitives remain in their existing
+The low-level PipeWire/DSP/helper primitives remain in their existing
 modules.  This audit checks the application callsites: source-entry and graph
 mutations must submit to PlaybackTransitionCoordinator, while same-source
 transport endpoints may call only their transport primitive.  Startup,
@@ -35,7 +35,7 @@ OLD_HANDOFF_NAMES = {
     "_complete_local_playback_handoff",
     "_complete_radio_handoff_after_load",
     "_complete_spotify_entry_handoff",
-    "_sync_subwoofer_runtime_after_playback_transition",
+    "_sync_dsp_runtime_after_playback_transition",
     "_prearm_known_local_samplerate",
     "_prearm_spotify_samplerate",
     "_recover_spotify_samplerate_alignment",
@@ -54,19 +54,19 @@ OLD_HANDOFF_NAMES = {
 MUTATION_CALL_NAMES = {
     "_set_pipewire_force_rate",
     "_ensure_playback_samplerate_force",
-    "_sync_easyeffects_preset_for_playback_samplerate",
-    "_sync_subwoofer_runtime",
-    "_sync_subwoofer_runtime_at_rate",
-    "_sync_subwoofer_runtime_for_measurement_sweep",
+    "_sync_dsp_preset_for_playback_samplerate",
+    "_sync_dsp_runtime",
+    "_sync_dsp_runtime_at_rate",
+    "_sync_dsp_runtime_for_measurement_sweep",
     "_run_pw_link_command",
     "_connect_ports",
     "_disconnect_ports",
-    "_ensure_mpv_to_easyeffects_links",
+    "_ensure_mpv_to_dsp_links",
     "_repair_stereo_output_links_once",
     "_set_hardware_sink_mute",
     "load_preset",
     "set_exact_sub_mute",
-    "_load_easyeffects_preset",
+    "_load_dsp_preset",
 }
 
 # Mutations delegated through worker wrappers (asyncio.to_thread and the
@@ -201,8 +201,8 @@ def _reason(context: str, name: str) -> str | None:
             "_coordinator_establish_effects_and_helper",
             "_relink_missing_production_links",
             "rollback_output_mode_runtime",
-            "_ensure_mpv_to_easyeffects_links",
-            "_sync_easyeffects_preset_for_playback_samplerate",
+            "_ensure_mpv_to_dsp_links",
+            "_sync_dsp_preset_for_playback_samplerate",
             "_restore_committed_source_after_failed_transition",
         }
         or "_sync_locked" in context
@@ -216,11 +216,11 @@ def _reason(context: str, name: str) -> str | None:
         return "Coordinator-only link reconciliation; no helper/process restart"
     if leaf == "reconcile_measurement_session_graph":
         return "Coordinator measurement-session link-only reconciliation"
-    if leaf in {"_easyeffects_output_ports_present", "_mpv_source_ports_present", "_playback_graph_diagnosis"}:
+    if leaf in {"_dsp_output_ports_present", "_mpv_source_ports_present", "_playback_graph_diagnosis"}:
         return "read-only graph diagnosis/readback"
     if leaf in {
-        "_start_locked", "_release", "_sync_subwoofer_runtime_for_measurement_sweep",
-        "_sync_subwoofer_runtime_at_rate", "start_measurement", "start_lr_repeat_measurement",
+        "_start_locked", "_release", "_sync_dsp_runtime_for_measurement_sweep",
+        "_sync_dsp_runtime_at_rate", "start_measurement", "start_lr_repeat_measurement",
     }:
         return "measurement workflow, outside playback transitions"
     if leaf in {
@@ -232,14 +232,14 @@ def _reason(context: str, name: str) -> str | None:
     if leaf in {
         "lifespan", "save_audio_output_selection_route", "save_audio_output_mode_route",
         "_set_canonical_output_volume",
-        "_finish_easyeffects_preset_mutation", "save_easyeffects_extras",
-        "load_easyeffects_preset", "_load_easyeffects_preset", "_load_preset_locked",
+        "_finish_dsp_preset_mutation", "save_easyeffects_extras",
+        "load_easyeffects_preset", "_load_dsp_preset", "_load_preset_locked",
         "_transfer_volume_ownership_for_preset",
     }:
         return "startup or explicit user configuration workflow"
     if leaf.startswith("sync_peak_monitor_for_"):
         return "peak-monitor process only; no production graph mutation"
-    if leaf in {"_disconnect_external_input_source", "_ensure_external_input_loopback", "_link_bluetooth_source_to_easyeffects"}:
+    if leaf in {"_disconnect_external_input_source", "_ensure_external_input_loopback", "_link_bluetooth_source_to_dsp"}:
         return "external-input/Bluetooth routing workflow"
     if leaf in {"_disconnect_ports", "_connect_ports"}:
         return "shared PipeWire port primitive; callers are Coordinator graph repair or input/config workflows"

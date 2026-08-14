@@ -3,7 +3,7 @@
 #
 # Loudness runtime transition regression contracts.
 #
-# Restores the still-relevant contracts of the deleted EasyEffects-era
+# Restores the still-relevant contracts of the deleted pre-native-DSP
 # loudness suites (adjacent strength changes, no positive level jumps,
 # safe failure/rollback) against the native DSP manager, plus the guarded
 # transition readback contract: after a successful transition the runtime

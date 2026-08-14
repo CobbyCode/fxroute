@@ -1,4 +1,4 @@
-"""EasyEffects extras payload helpers.
+"""Effects extras payload helpers.
 
 Extracted verbatim from main.py (REFACTOR-010). Behavior is identical to the
 previous inline implementation: camelCase/snake_case alias parsing with

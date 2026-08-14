@@ -128,7 +128,7 @@ class VolumeEndpointEventLoopTests(unittest.IsolatedAsyncioTestCase):
 
         with mock.patch.object(main, "player_instance", _FakePlayer()), mock.patch.object(
             main, "ensure_local_source_volume"
-        ), mock.patch.object(main, "easyeffects_manager", None), mock.patch.object(
+        ), mock.patch.object(main, "dsp_manager", None), mock.patch.object(
             main, "build_playback_payload", return_value={"volume": 50}
         ), mock.patch.object(
             main.manager, "broadcast", mock.AsyncMock()
@@ -158,7 +158,7 @@ class CanonicalVolumeSerializationTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self):
         main.canonical_volume_write_lock = None
-        main.easyeffects_manager = None
+        main.dsp_manager = None
         system_volume._status_volume_cache = self.original_cache
 
     async def test_concurrent_canonical_volume_writes_are_serialized(self):
@@ -173,7 +173,7 @@ class CanonicalVolumeSerializationTests(unittest.IsolatedAsyncioTestCase):
                 release.wait(timeout=5)
             return value
 
-        with mock.patch.object(main, "easyeffects_manager", None), mock.patch.object(
+        with mock.patch.object(main, "dsp_manager", None), mock.patch.object(
             main, "set_output_volume", side_effect=fake_set_output_volume
         ):
             first = asyncio.create_task(main._set_canonical_output_volume(50))
@@ -206,8 +206,8 @@ class CanonicalVolumeSerializationTests(unittest.IsolatedAsyncioTestCase):
 
         fake = FakeManager()
         sync = mock.AsyncMock()
-        with mock.patch.object(main, "easyeffects_manager", fake), mock.patch.object(
-            main, "_sync_subwoofer_runtime", sync
+        with mock.patch.object(main, "dsp_manager", fake), mock.patch.object(
+            main, "_sync_dsp_runtime", sync
         ), mock.patch.object(main, "set_output_volume", return_value=100):
             await main._set_canonical_output_volume(60)
 
@@ -229,7 +229,7 @@ class CanonicalVolumeSerializationTests(unittest.IsolatedAsyncioTestCase):
                 calls.append("get")
             return subprocess.CompletedProcess([], 0, stdout="Volume: 0.50\n", stderr="")
 
-        with mock.patch.object(main, "easyeffects_manager", None), mock.patch(
+        with mock.patch.object(main, "dsp_manager", None), mock.patch(
             "system_volume.subprocess.run", side_effect=fake_run
         ):
             first = asyncio.create_task(main._set_canonical_output_volume(50))
@@ -324,12 +324,12 @@ class CanonicalVolumeSerializationTests(unittest.IsolatedAsyncioTestCase):
                 return {"loudness_enabled": True}
 
         fake = FakeManager()
-        with mock.patch.object(main, "_require_easyeffects_manager", return_value=fake), mock.patch.object(
-            main, "easyeffects_manager", fake
+        with mock.patch.object(main, "_require_dsp_manager", return_value=fake), mock.patch.object(
+            main, "dsp_manager", fake
         ), mock.patch.object(
             main.manager, "broadcast", mock.AsyncMock()
         ), mock.patch.object(main, "schedule_peak_monitor_refresh_after_effects_change"), mock.patch.object(
-            main, "_sync_subwoofer_runtime", mock.AsyncMock()
+            main, "_sync_dsp_runtime", mock.AsyncMock()
         ), mock.patch(
             "system_volume.subprocess.run", side_effect=blocking_run
         ):
@@ -397,12 +397,12 @@ class CanonicalVolumeSerializationTests(unittest.IsolatedAsyncioTestCase):
                 return {"loudness_enabled": False}
 
         fake = FakeManager()
-        with mock.patch.object(main, "_require_easyeffects_manager", return_value=fake), mock.patch.object(
-            main, "easyeffects_manager", fake
+        with mock.patch.object(main, "_require_dsp_manager", return_value=fake), mock.patch.object(
+            main, "dsp_manager", fake
         ), mock.patch.object(
             main.manager, "broadcast", mock.AsyncMock()
         ), mock.patch.object(main, "schedule_peak_monitor_refresh_after_effects_change"), mock.patch.object(
-            main, "_sync_subwoofer_runtime", mock.AsyncMock()
+            main, "_sync_dsp_runtime", mock.AsyncMock()
         ), mock.patch(
             "system_volume.subprocess.run", side_effect=blocking_run
         ):
@@ -458,8 +458,8 @@ class CanonicalVolumeSerializationTests(unittest.IsolatedAsyncioTestCase):
                 return {"loudness_enabled": True}
 
         fake = FakeManager()
-        with mock.patch.object(main, "_require_easyeffects_manager", return_value=fake), mock.patch.object(
-            main, "easyeffects_manager", fake
+        with mock.patch.object(main, "_require_dsp_manager", return_value=fake), mock.patch.object(
+            main, "dsp_manager", fake
         ), mock.patch.object(
             main.manager, "broadcast", mock.AsyncMock()
         ), mock.patch.object(main, "schedule_peak_monitor_refresh_after_effects_change"), mock.patch.object(
@@ -475,7 +475,7 @@ class CanonicalVolumeSerializationTests(unittest.IsolatedAsyncioTestCase):
                 # Waiting at the canonical lock means the mutation lock is
                 # not held yet: the enable path acquires canonical first.
                 self.assertFalse(extras_task.done())
-                self.assertFalse(main._easyeffects_mutation_lock().locked())
+                self.assertFalse(main._dsp_mutation_lock().locked())
             finally:
                 canonical.release()
             await extras_task
@@ -494,7 +494,7 @@ class CanonicalVolumeSerializationTests(unittest.IsolatedAsyncioTestCase):
             calls.append("get")
             return subprocess.CompletedProcess([], 0, stdout="Volume: 0.50\n", stderr="")
 
-        with mock.patch.object(main, "easyeffects_manager", None), mock.patch(
+        with mock.patch.object(main, "dsp_manager", None), mock.patch(
             "system_volume.subprocess.run", side_effect=blocking_run
         ):
             first = asyncio.create_task(main._set_canonical_output_volume(50))
@@ -516,9 +516,9 @@ class CanonicalVolumeSerializationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(calls, ["set", "get", "set", "get"])
 
 
-class EasyEffectsExtrasVolumeTests(unittest.IsolatedAsyncioTestCase):
+class DSPExtrasVolumeTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
-        main.easyeffects_manager = None
+        main.dsp_manager = None
 
     async def test_loudness_disable_transfer_order_is_preserved(self):
         order = []
@@ -557,8 +557,8 @@ class EasyEffectsExtrasVolumeTests(unittest.IsolatedAsyncioTestCase):
                 return {"loudness_enabled": False}
 
         fake = FakeManager()
-        with mock.patch.object(main, "_require_easyeffects_manager", return_value=fake), mock.patch.object(
-            main, "easyeffects_manager", fake
+        with mock.patch.object(main, "_require_dsp_manager", return_value=fake), mock.patch.object(
+            main, "dsp_manager", fake
         ), mock.patch.object(
             main, "set_output_volume", side_effect=lambda value: order.append(f"set-{value}") or value
         ), mock.patch.object(
@@ -597,9 +597,9 @@ class EasyEffectsExtrasVolumeTests(unittest.IsolatedAsyncioTestCase):
 
         fake = FakeManager()
         reload_preset = mock.AsyncMock()
-        with mock.patch.object(main, "_require_easyeffects_manager", return_value=fake), mock.patch.object(
-            main, "easyeffects_manager", fake
-        ), mock.patch.object(main, "_load_easyeffects_preset", reload_preset), mock.patch.object(
+        with mock.patch.object(main, "_require_dsp_manager", return_value=fake), mock.patch.object(
+            main, "dsp_manager", fake
+        ), mock.patch.object(main, "_load_dsp_preset", reload_preset), mock.patch.object(
             main.manager, "broadcast", mock.AsyncMock()
         ), mock.patch.object(main, "schedule_peak_monitor_refresh_after_effects_change"):
             await main.save_easyeffects_extras(FakeRequest())
@@ -643,8 +643,8 @@ class EasyEffectsExtrasVolumeTests(unittest.IsolatedAsyncioTestCase):
                 return {"loudness_enabled": False}
 
         fake = FakeManager()
-        with mock.patch.object(main, "_require_easyeffects_manager", return_value=fake), mock.patch.object(
-            main, "easyeffects_manager", fake
+        with mock.patch.object(main, "_require_dsp_manager", return_value=fake), mock.patch.object(
+            main, "dsp_manager", fake
         ), mock.patch.object(
             main, "set_output_volume", side_effect=lambda value: order.append(f"set-{value}") or value
         ):
@@ -697,8 +697,8 @@ class EasyEffectsExtrasVolumeTests(unittest.IsolatedAsyncioTestCase):
                 return {"loudness_enabled": True}
 
         fake = FakeManager()
-        with mock.patch.object(main, "_require_easyeffects_manager", return_value=fake), mock.patch.object(
-            main, "easyeffects_manager", fake
+        with mock.patch.object(main, "_require_dsp_manager", return_value=fake), mock.patch.object(
+            main, "dsp_manager", fake
         ), mock.patch.object(
             main.manager, "broadcast", mock.AsyncMock()
         ), mock.patch.object(main, "schedule_peak_monitor_refresh_after_effects_change"), mock.patch(
@@ -855,13 +855,13 @@ class VolumeOwnershipDirectTests(unittest.IsolatedAsyncioTestCase):
         patcher_get = mock.patch.object(main, "get_output_volume", new=lambda: self.live_master)
         patcher_get.start()
         self.addCleanup(patcher_get.stop)
-        patcher2 = mock.patch.object(main, "easyeffects_manager", self.manager)
+        patcher2 = mock.patch.object(main, "dsp_manager", self.manager)
         patcher2.start()
         self.addCleanup(patcher2.stop)
 
     def use_manager(self, **kwargs):
         self.manager = _FakeVolumeManager(**kwargs)
-        main.easyeffects_manager = self.manager
+        main.dsp_manager = self.manager
         return self.manager
 
     async def test_loudness_owns_volume_depends_on_active_path(self):
@@ -922,12 +922,12 @@ class VolumeOwnershipDirectTests(unittest.IsolatedAsyncioTestCase):
     async def test_preset_load_entering_direct_transfers_before_rebuild(self):
         manager = self.use_manager(loudness_enabled=True, active_preset="Neutral", volume_db=-20.0)
         sync_calls = []
-        original_sync = main._sync_subwoofer_runtime
-        main._sync_subwoofer_runtime = mock.AsyncMock(side_effect=lambda **_k: sync_calls.append(1))
+        original_sync = main._sync_dsp_runtime
+        main._sync_dsp_runtime = mock.AsyncMock(side_effect=lambda **_k: sync_calls.append(1))
         try:
-            await main._load_easyeffects_preset("Direct")
+            await main._load_dsp_preset("Direct")
         finally:
-            main._sync_subwoofer_runtime = original_sync
+            main._sync_dsp_runtime = original_sync
         expected = manager.loudness_percent_from_db(-20.0)
         self.assertEqual(self.volume_writes, [expected])
         self.assertNotIn(100, self.volume_writes)

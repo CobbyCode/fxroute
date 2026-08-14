@@ -38,7 +38,7 @@ class FakeRuntime:
 
     def __init__(self, *, abort_result=None):
         self.muted = False
-        self.easyeffects_muted = False
+        self.dsp_muted = False
         self.rate = 44_100
         self.volume = 100
         self.paused = True
@@ -77,12 +77,12 @@ class FakeRuntime:
         self.muted = bool(muted)
 
     async def read_sink_mute(self, sink_name):
-        self.events.append(f"read-sink-mute:{self.easyeffects_muted}")
-        return self.easyeffects_muted
+        self.events.append(f"read-sink-mute:{self.dsp_muted}")
+        return self.dsp_muted
 
     async def set_sink_mute(self, sink_name, muted, transition_id):
-        self.easyeffects_muted = bool(muted)
-        self.events.append(f"sink-mute:{self.easyeffects_muted}")
+        self.dsp_muted = bool(muted)
+        self.events.append(f"sink-mute:{self.dsp_muted}")
 
     async def read_transition_snapshot(self, request):
         self.events.append("snapshot")
@@ -297,7 +297,7 @@ class CancellationCleanupContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(coordinator.gate.failure_latched)
         self.assertFalse(coordinator.gate.closed)
         self.assertFalse(runtime.muted)
-        self.assertFalse(runtime.easyeffects_muted)
+        self.assertFalse(runtime.dsp_muted)
         self.assertFalse(coordinator.last_error["failure_latched"])
         self.assertTrue(coordinator.last_error["cancelled"])
         self.assertEqual(runtime.volume, 100)

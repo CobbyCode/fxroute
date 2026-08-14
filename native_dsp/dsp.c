@@ -179,7 +179,7 @@ static int load_wav(const char *path, unsigned wanted_channel, float **samples, 
          * 96 kHz, x3.98 at 192 kHz, x0.916 at 44.1 kHz against a 48 kHz
          * source).  Without compensation the same convolver configuration
          * changes level by about +6 dB per rate doubling when the playback
-         * rate changes.  The EasyEffects-era engine compensated the same
+         * rate changes.  The pre-native-DSP engine compensated the same
          * libsamplerate behavior with hidden output-gain anchors; the native
          * engine fixes the cause by normalizing the resampled IR by the
          * ratio, making the convolution level-stable across rates.

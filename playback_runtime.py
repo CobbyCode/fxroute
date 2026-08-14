@@ -5,7 +5,7 @@
 This module owns the concrete runtime adapter for the generic
 ``PlaybackTransitionCoordinator`` from ``playback_transition.py``.  It is
 deliberately decoupled from ``main.py``: every application-shell dependency
-(player, EasyEffects manager, queue/track state, shared helpers) arrives
+(player, DSP manager, queue/track state, shared helpers) arrives
 through the explicit ``PlaybackRuntimeDependencies`` wiring, resolved
 late-bound so production wiring and test mocks observe the same attributes.
 
@@ -127,8 +127,8 @@ class PlaybackRuntimeDependencies:
 
     # Runtime services
     player: Callable[[], Any]
-    easyeffects_manager: Callable[[], Any]
-    subwoofer_runtime: Callable[[], Any]
+    dsp_manager: Callable[[], Any]
+    dsp_runtime: Callable[[], Any]
 
     # Playback-context state owned by the application shell
     get_current_track_info: Callable[[], dict | None]
@@ -170,11 +170,11 @@ class PlaybackRuntimeDependencies:
     spotify_snapshot_identity_values: Callable[..., set]
     measurement_restore_intent_matches_live_state: Callable[..., Awaitable[bool]]
 
-    # EasyEffects / worker helpers (main.py)
-    easyeffects_mutation_lock: Callable[[], Any]
+    # DSP / worker helpers (main.py)
+    dsp_mutation_lock: Callable[[], Any]
     drain_worker: Callable[..., Awaitable[Any]]
-    load_easyeffects_preset: Callable[..., Awaitable[None]]
-    sync_subwoofer_runtime: Callable[..., Awaitable[dict]]
+    load_dsp_preset: Callable[..., Awaitable[None]]
+    sync_dsp_runtime: Callable[..., Awaitable[dict]]
     helper_argument_sample_rate: Callable[..., int | None]
 
     # Graph / effects-helper primitives (main.py)
@@ -183,7 +183,7 @@ class PlaybackRuntimeDependencies:
     coordinator_reconcile_subwoofer_links_only: Callable[[], Awaitable[None]]
     repair_stereo_output_links_once: Callable[..., Awaitable[None]]
     coordinator_establish_effects_and_helper: Callable[..., Awaitable[dict]]
-    ensure_mpv_to_easyeffects_links: Callable[[], Awaitable[bool]]
+    ensure_mpv_to_dsp_links: Callable[[], Awaitable[bool]]
     playback_graph_links_complete: Callable[..., Awaitable[bool]]
     log_playback_graph_diagnosis: Callable[..., None]
     coordinator_reconcile_post_start_graph: Callable[..., Awaitable[dict]]
@@ -203,14 +203,14 @@ class FxrouteTransitionRuntime(TransitionRuntime):
         return self._deps.player()
 
     @property
-    def _easyeffects_manager(self) -> Any:
-        """EasyEffects manager resolved late-bound through the app-shell wiring."""
-        return self._deps.easyeffects_manager()
+    def _dsp_manager(self) -> Any:
+        """DSP manager resolved late-bound through the app-shell wiring."""
+        return self._deps.dsp_manager()
 
     @property
-    def _subwoofer_runtime(self) -> Any:
+    def _dsp_runtime(self) -> Any:
         """Subwoofer helper runtime resolved late-bound through the wiring."""
-        return self._deps.subwoofer_runtime()
+        return self._deps.dsp_runtime()
 
     async def read_hardware_mute(self) -> bool:
         self._output_key = _hardware_sink_for_transition(self._deps)
@@ -297,8 +297,8 @@ class FxrouteTransitionRuntime(TransitionRuntime):
                 samplerate._load_raw_audio_output_mode()
             )
             snapshot["ee_active_preset"] = (
-                self._easyeffects_manager.get_active_preset()
-                if self._easyeffects_manager is not None
+                self._dsp_manager.get_active_preset()
+                if self._dsp_manager is not None
                 else None
             )
             snapshot["spotify"] = await self._deps.get_spotify_ui_state()
@@ -977,8 +977,8 @@ class FxrouteTransitionRuntime(TransitionRuntime):
                 position,
             )
 
-        if not await self._deps.ensure_mpv_to_easyeffects_links():
-            raise RuntimeError("target source to EasyEffects links were not confirmed")
+        if not await self._deps.ensure_mpv_to_dsp_links():
+            raise RuntimeError("target source to DSP links were not confirmed")
         if not request.should_play:
             self._player.set_pause(True)
 
@@ -1068,7 +1068,7 @@ class FxrouteTransitionRuntime(TransitionRuntime):
         self, extras: Mapping[str, Any]
     ) -> dict[str, Any]:
         """Read the active DSP work point after a guarded runtime update."""
-        manager = self._easyeffects_manager
+        manager = self._dsp_manager
         if manager is None:
             return {}
 
@@ -1093,7 +1093,7 @@ class FxrouteTransitionRuntime(TransitionRuntime):
                 except (KeyError, TypeError, ValueError) as exc:
                     if loudness_enabled:
                         raise RuntimeError(
-                            f"EasyEffects Loudness readback is incomplete: {exc}"
+                            f"DSP Loudness readback is incomplete: {exc}"
                         ) from exc
                     loudness_runtime = None
                 if isinstance(loudness_runtime, dict):
@@ -1101,7 +1101,7 @@ class FxrouteTransitionRuntime(TransitionRuntime):
                     maximum = float(manager.LOUDNESS_PLUGIN_VOLUME_MAX_DB)
                     if not minimum <= actual_volume <= maximum:
                         raise RuntimeError(
-                            "EasyEffects Loudness volume is outside the installed LSP range: "
+                            "DSP Loudness volume is outside the installed LSP range: "
                             f"{actual_volume} not in [{minimum}, {maximum}]"
                         )
                     expected_payload = manager._loudness_plugin_payload(
@@ -1110,7 +1110,7 @@ class FxrouteTransitionRuntime(TransitionRuntime):
                     if loudness_enabled:
                         if loudness_runtime.get("bypass"):
                             raise RuntimeError(
-                                "EasyEffects Loudness was bypassed after DSP stabilization"
+                                "DSP Loudness was bypassed after DSP stabilization"
                             )
                         if not math.isclose(
                             actual_volume,
@@ -1124,7 +1124,7 @@ class FxrouteTransitionRuntime(TransitionRuntime):
                             abs_tol=0.05,
                         ):
                             raise RuntimeError(
-                                "EasyEffects Loudness work point mismatch: "
+                                "DSP Loudness work point mismatch: "
                                 f"expected=({expected_payload['volume']}, "
                                 f"{expected_payload['output-gain']}) "
                                 f"actual=({actual_volume}, {actual_output_gain})"
@@ -1135,7 +1135,7 @@ class FxrouteTransitionRuntime(TransitionRuntime):
                         "bypass": bool(loudness_runtime.get("bypass")),
                     }
         elif loudness_enabled:
-            raise RuntimeError("EasyEffects Loudness readback is unavailable")
+            raise RuntimeError("DSP Loudness readback is unavailable")
 
         read_autogain = getattr(manager, "read_autogain_runtime", None)
         if callable(read_autogain):
@@ -1151,7 +1151,7 @@ class FxrouteTransitionRuntime(TransitionRuntime):
                 except (KeyError, TypeError, ValueError) as exc:
                     if autogain_enabled:
                         raise RuntimeError(
-                            f"EasyEffects Auto Gain readback is incomplete: {exc}"
+                            f"DSP Auto Gain readback is incomplete: {exc}"
                         ) from exc
                     autogain_runtime = None
                 if isinstance(autogain_runtime, dict):
@@ -1159,7 +1159,7 @@ class FxrouteTransitionRuntime(TransitionRuntime):
                     if autogain_enabled:
                         if autogain_runtime.get("bypass"):
                             raise RuntimeError(
-                                "EasyEffects Auto Gain was bypassed after DSP stabilization"
+                                "DSP Auto Gain was bypassed after DSP stabilization"
                             )
                         if not math.isclose(
                             actual_target,
@@ -1168,7 +1168,7 @@ class FxrouteTransitionRuntime(TransitionRuntime):
                             abs_tol=0.05,
                         ):
                             raise RuntimeError(
-                                "EasyEffects Auto Gain target mismatch: "
+                                "DSP Auto Gain target mismatch: "
                                 f"expected={expected_autogain['target']} actual={actual_target}"
                             )
                     result["autogain"] = {
@@ -1176,7 +1176,7 @@ class FxrouteTransitionRuntime(TransitionRuntime):
                         "bypass": bool(autogain_runtime.get("bypass")),
                     }
         elif autogain_enabled:
-            raise RuntimeError("EasyEffects Auto Gain readback is unavailable")
+            raise RuntimeError("DSP Auto Gain readback is unavailable")
 
         return result
 
@@ -1186,10 +1186,10 @@ class FxrouteTransitionRuntime(TransitionRuntime):
         *,
         dsp_reinitialized: bool = False,
     ) -> dict[str, Any]:
-        """Re-apply the canonical DSP work point after a rate/EE mutation.
+        """Re-apply the canonical DSP work point after a rate/DSP mutation.
 
         An output-mode switch may reload the compare preset or rebuild the
-        EasyEffects graph, either of which can re-apply a stale preset
+        DSP graph, either of which can re-apply a stale preset
         loudness work point over the user volume.
         The switch therefore re-applies the canonical extras unconditionally
         instead of gating on rate_change/dsp_reinitialized, so the volume
@@ -1207,11 +1207,11 @@ class FxrouteTransitionRuntime(TransitionRuntime):
         ):
             return {"stabilized": True, "no_op": True}
 
-        manager = self._easyeffects_manager
+        manager = self._dsp_manager
         if manager is None:
             return {"stabilized": True, "no_op": True}
 
-        # The whole guarded re-apply runs under the central EasyEffects
+        # The whole guarded re-apply runs under the central DSP
         # mutation ownership, and the canonical extras are (re)read after
         # acquiring it: a parallel volume/extras/SPL mutation must never be
         # clobbered by a stale pre-lock snapshot.  The ownership is held
@@ -1219,7 +1219,7 @@ class FxrouteTransitionRuntime(TransitionRuntime):
         # coordinator validates the live DSP against the very extras it
         # applied, never against a snapshot made stale by a mutation that
         # landed between apply and verify.
-        async with self._deps.easyeffects_mutation_lock():
+        async with self._deps.dsp_mutation_lock():
             extras = manager.load_global_extras()
             loudness_enabled = bool((extras.get("loudness") or {}).get("enabled"))
             autogain_enabled = bool((extras.get("autogain") or {}).get("enabled"))
@@ -1409,9 +1409,9 @@ class FxrouteTransitionRuntime(TransitionRuntime):
         try:
             output_mode = (self._deps.get_audio_output_overview().get("output_mode") or {}).get("mode")
             if output_mode in OUTPUT_MODE_SUBWOOFER_MODES:
-                if self._subwoofer_runtime is None:
+                if self._dsp_runtime is None:
                     raise RuntimeError("subwoofer helper runtime is not available at commit")
-                helper_snapshot = self._subwoofer_runtime.snapshot()
+                helper_snapshot = self._dsp_runtime.snapshot()
                 helper_rate = self._deps.helper_argument_sample_rate(helper_snapshot)
                 if not helper_snapshot.get("active") or helper_rate != request.target_rate:
                     raise RuntimeError(
@@ -1425,20 +1425,20 @@ class FxrouteTransitionRuntime(TransitionRuntime):
             raise RuntimeError(f"subwoofer helper readback failed at commit: {exc}") from exc
 
         effects_runtime = {}
-        if self._easyeffects_manager and require_effects_runtime:
-            preset = await asyncio.to_thread(self._easyeffects_manager.get_active_preset)
+        if self._dsp_manager and require_effects_runtime:
+            preset = await asyncio.to_thread(self._dsp_manager.get_active_preset)
             if not preset:
-                raise RuntimeError("EasyEffects active preset was not confirmed at commit")
-            extras = self._easyeffects_manager.load_global_extras()
+                raise RuntimeError("DSP active preset was not confirmed at commit")
+            extras = self._dsp_manager.load_global_extras()
             try:
                 effects_runtime = await self._read_and_validate_effects_runtime(extras)
             except RuntimeError:
                 # Recoverable DSP work-point drift (e.g. a stale SPL-noise
-                # state surviving an EasyEffects restart/preset reload):
+                # state surviving a DSP restart/preset reload):
                 # re-apply the canonical runtime once under the still-closed
                 # gate and re-validate before failing the transition.
                 apply_runtime = getattr(
-                    self._easyeffects_manager, "apply_autogain_loudness_runtime", None
+                    self._dsp_manager, "apply_autogain_loudness_runtime", None
                 )
                 if not callable(apply_runtime):
                     raise
@@ -1453,8 +1453,8 @@ class FxrouteTransitionRuntime(TransitionRuntime):
                 # The ownership stays held through the re-validation so the
                 # re-applied runtime is verified against the very extras that
                 # were re-read, not a snapshot a parallel mutation made stale.
-                async with self._deps.easyeffects_mutation_lock():
-                    extras = self._easyeffects_manager.load_global_extras()
+                async with self._deps.dsp_mutation_lock():
+                    extras = self._dsp_manager.load_global_extras()
                     await self._deps.drain_worker(
                         apply_runtime, extras, extras, persist_all_presets=False
                     )
@@ -1678,11 +1678,11 @@ class FxrouteTransitionRuntime(TransitionRuntime):
         # Restore persistence first.  If the old graph cannot be rebuilt, the
         # durable mode still cannot claim the failed target configuration.
         self._deps.persist_audio_output_mode(old_config)
-        if self._easyeffects_manager is not None and old_preset:
-            current_preset = self._easyeffects_manager.get_active_preset()
+        if self._dsp_manager is not None and old_preset:
+            current_preset = self._dsp_manager.get_active_preset()
             if current_preset != old_preset:
-                await self._deps.load_easyeffects_preset(old_preset, convolver_sample_rate_hz=request.target_rate)
-        await self._deps.sync_subwoofer_runtime(
+                await self._deps.load_dsp_preset(old_preset, convolver_sample_rate_hz=request.target_rate)
+        await self._deps.sync_dsp_runtime(
             old_overview,
             reason="coordinator-output-mode-rollback",
             target_overview=old_overview,

@@ -22,7 +22,7 @@ import main
 import measurement_session
 import player
 from playback_queue_test_support import queue_state, restore_queue_state
-from peak_monitor import EasyEffectsPeakMonitor, MonitorTarget
+from peak_monitor import DSPPeakMonitor, MonitorTarget
 
 
 class _FakeManager:
@@ -47,7 +47,7 @@ class _FakeTrack:
 
 class PeakMonitorTests(unittest.IsolatedAsyncioTestCase):
     async def test_relink_clears_previous_error(self):
-        monitor = EasyEffectsPeakMonitor()
+        monitor = DSPPeakMonitor()
         monitor._running = True
         monitor._proc = SimpleNamespace(returncode=None)
         monitor._target = MonitorTarget("fxroute_dsp", 1, "Output")
@@ -588,7 +588,7 @@ class SilentActiveDiagnosisTests(unittest.IsolatedAsyncioTestCase):
             for name in (
                 "peak_monitor", "player_instance", "current_track_info",
                 "current_footer_owner", "silent_active_recovery_attempts",
-                "easyeffects_preset_load_lock", "_current_track_matches",
+                "dsp_preset_load_lock", "_current_track_matches",
                 "_is_local_playback_active", "_list_mpv_sink_inputs",
                 "_active_unmuted_sink_inputs", "get_output_volume_safe",
                 "get_audio_output_overview", "_run_debug_command",
@@ -604,7 +604,7 @@ class SilentActiveDiagnosisTests(unittest.IsolatedAsyncioTestCase):
         main.current_track_info = {"id": "t1", "title": "T1", "url": "/music/t1.flac", "source": "local"}
         main.current_footer_owner = "local"
         main.silent_active_recovery_attempts = set()
-        main.easyeffects_preset_load_lock = None
+        main.dsp_preset_load_lock = None
         main._current_track_matches = lambda track: True
         main._is_local_playback_active = lambda state: True
         main._list_mpv_sink_inputs = lambda: [

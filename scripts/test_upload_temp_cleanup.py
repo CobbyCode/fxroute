@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Upload temp files are removed when the upload read/write fails, for
-every EasyEffects upload/conversion endpoint that stages a temp file."""
+every effects upload/conversion endpoint that stages a temp file."""
 
 import asyncio
 import sys
@@ -61,7 +61,7 @@ class UploadTempCleanupTests(unittest.IsolatedAsyncioTestCase):
         self.gettempdir = patch("tempfile.gettempdir", return_value=self.tmpdir.name)
         self.gettempdir.start()
         self.manager = DummyManager()
-        self.require_manager = patch.object(main, "_require_easyeffects_manager",
+        self.require_manager = patch.object(main, "_require_dsp_manager",
                                             return_value=self.manager)
         self.require_manager.start()
         self.addCleanup(self.require_manager.stop)
@@ -130,7 +130,7 @@ class UploadTempCleanupTests(unittest.IsolatedAsyncioTestCase):
             return_value={"preset": {"name": "p"}, "ir": {"name": "ir"}},
         )
         finish = patch.object(
-            main, "_finish_easyeffects_preset_mutation",
+            main, "_finish_dsp_preset_mutation",
             return_value={"active_preset": "p"},
         )
         with run_locked, finish:
@@ -201,7 +201,7 @@ class UploadTempCleanupTests(unittest.IsolatedAsyncioTestCase):
             archive.writestr("preset.json", json_dumps({"name": "p"}))
             payload = archive.fp.getvalue()
         upload = FakeUpload("bundle.zip", payload=payload)
-        with patch.object(main, "_finish_easyeffects_preset_mutation",
+        with patch.object(main, "_finish_dsp_preset_mutation",
                           return_value={"active_preset": "p"}):
             # The bundle stages, then fails later (no preset import backend
             # in the dummy manager); the staged zip must still be removed.

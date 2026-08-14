@@ -10,7 +10,7 @@ checks the unified package-manager preparation:
   apt-get update, dnf install --refresh, zypper refresh, pacman -Syu
 - no automatic system upgrades in the installer
   (apt upgrade, dist-upgrade, dnf upgrade, zypper update)
-- current Manjaro package lists (core, audio), stage-1 dependencies
+- current Manjaro package lists (core, audio), native DSP build dependencies
   (gcc pkgconf libpipewire), venv handling, Avahi, LAN-IP fallback
 - pacman branch in scripts/system-package-update.sh
 
@@ -165,7 +165,7 @@ class InstallerPkgManagerStaticTests(unittest.TestCase):
         self.assertIn('PATH="/usr/sbin:/usr/bin:/sbin:/bin"', helper)
         self.assertIn('install -d -o root -g root -m 755 /var/lib/fxroute', helper)
 
-    def test_stage1_pacman_deps(self):
+    def test_native_dsp_pacman_deps(self):
         match = re.search(r"pacman\) dsp_packages=\(([^)]*)\)", self.text)
         self.assertIsNotNone(match)
         packages = set(match.group(1).split())

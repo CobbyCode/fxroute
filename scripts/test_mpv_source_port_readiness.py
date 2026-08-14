@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Focused MPV->EasyEffects source port-readiness contract tests.
+"""Focused MPV->DSP source port-readiness contract tests.
 
-Covers the bounded two-phase handoff in ``main._ensure_mpv_to_easyeffects_links``:
+Covers the bounded two-phase handoff in ``main._ensure_mpv_to_DSP_links``:
 
 * cold radio: MPV ports absent for several read-only polls, appear later ->
   no premature link mutation, then only the missing edges are created;
@@ -81,7 +81,7 @@ class MpvSourcePortReadinessTests(unittest.IsolatedAsyncioTestCase):
         appear = asyncio.create_task(appear_later())
         try:
             with patch.object(main, "_run_pw_link_command", side_effect=pw_link):
-                result = await main._ensure_mpv_to_easyeffects_links(timeout_ms=2000)
+                result = await main._ensure_mpv_to_DSP_links(timeout_ms=2000)
         finally:
             await appear
 
@@ -112,7 +112,7 @@ class MpvSourcePortReadinessTests(unittest.IsolatedAsyncioTestCase):
             return ""
 
         with patch.object(main, "_run_pw_link_command", side_effect=pw_link):
-            result = await main._ensure_mpv_to_easyeffects_links(timeout_ms=250)
+            result = await main._ensure_mpv_to_DSP_links(timeout_ms=250)
 
         elapsed = time.monotonic() - start
         self.assertFalse(result, "bounded failure when the ports never appear")
@@ -138,7 +138,7 @@ class MpvSourcePortReadinessTests(unittest.IsolatedAsyncioTestCase):
             return ""
 
         with patch.object(main, "_run_pw_link_command", side_effect=pw_link):
-            result = await main._ensure_mpv_to_easyeffects_links(timeout_ms=2000)
+            result = await main._ensure_mpv_to_DSP_links(timeout_ms=2000)
 
         elapsed = time.monotonic() - start
         self.assertTrue(result)
@@ -164,7 +164,7 @@ class MpvSourcePortReadinessTests(unittest.IsolatedAsyncioTestCase):
             return ""
 
         with patch.object(main, "_run_pw_link_command", side_effect=pw_link):
-            result = await main._ensure_mpv_to_easyeffects_links(timeout_ms=2000)
+            result = await main._ensure_mpv_to_DSP_links(timeout_ms=2000)
 
         self.assertTrue(result)
         self.assertEqual(
@@ -175,7 +175,7 @@ class MpvSourcePortReadinessTests(unittest.IsolatedAsyncioTestCase):
 
 
 class SharedPreparePathTests(unittest.IsolatedAsyncioTestCase):
-    """Local and radio must share the same MPV->EasyEffects prepare path."""
+    """Local and radio must share the same MPV->DSP prepare path."""
 
     class FakePlayer:
         def __init__(self):
@@ -226,7 +226,7 @@ class SharedPreparePathTests(unittest.IsolatedAsyncioTestCase):
             reload_source=True,
         )
         with patch.object(main, "player_instance", fake), patch.object(
-            main, "_ensure_mpv_to_easyeffects_links", ensure
+            main, "_ensure_mpv_to_DSP_links", ensure
         ):
             await runtime.prepare_target_source(request)
         return fake, ensure

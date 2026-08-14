@@ -166,7 +166,7 @@ class MonitorTarget:
     serial: int = 0
 
 
-class EasyEffectsPeakMonitor:
+class DSPPeakMonitor:
     def __init__(self, on_change: Optional[Callable[[dict], Awaitable[None]]] = None):
         self.on_change = on_change
         self._task: Optional[asyncio.Task] = None

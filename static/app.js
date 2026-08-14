@@ -3098,12 +3098,12 @@ function formatOutputLevelBadgeDb(level) {
 function renderPeakWarningBadge(activeOverride = null) {
     const warning = state.playback.output_peak_warning || {};
     const showPeak = !!warning.detected;
-    const title = warning.target?.description || warning.target?.source_name || 'EasyEffects output monitor';
+    const title = warning.target?.description || warning.target?.source_name || 'DSP output monitor';
     const vuDb = Number.isFinite(Number(warning.vu_db)) ? Number(warning.vu_db) : null;
 
     if (elements.peakWarningBadge) {
         elements.peakWarningBadge.classList.toggle('hidden', !showPeak);
-        elements.peakWarningBadge.title = showPeak ? `Post-EasyEffects output peak detected on ${title}` : '';
+        elements.peakWarningBadge.title = showPeak ? `Post-DSP output peak detected on ${title}` : '';
     }
 
     if (elements.outputLevelBadge) {
@@ -3131,12 +3131,12 @@ function renderPeakWarningBadge(activeOverride = null) {
             elements.outputLevelBadge.style.visibility = '';
         }
         elements.outputLevelBadge.textContent = showVu ? formatOutputLevelBadgeDb(vuDb) : '';
-        elements.outputLevelBadge.title = showVu ? `Post-EasyEffects output level (slow VU) on ${title}` : '';
+        elements.outputLevelBadge.title = showVu ? `Post-DSP output level (slow VU) on ${title}` : '';
     }
 
     if (elements.playbackEq) {
         elements.playbackEq.classList.toggle('peak-alert', showPeak);
-        elements.playbackEq.title = showPeak ? `Post-EasyEffects output peak detected on ${title}` : '';
+        elements.playbackEq.title = showPeak ? `Post-DSP output peak detected on ${title}` : '';
     }
 }
 function renderQueueUI() {
@@ -11581,7 +11581,7 @@ function setupMeasurementActions() {
 async function fetchEffects() {
     try {
         const resp = await fetch('/api/easyeffects/presets');
-        if (!resp.ok) throw new Error('Failed to fetch EasyEffects presets');
+        if (!resp.ok) throw new Error('Failed to fetch DSP presets');
         const data = await resp.json();
         const prev = state.easyeffects?.compare;
         const presetNames = (data.presets || []).map(p => p.name);
@@ -11624,7 +11624,7 @@ async function fetchEffects() {
         }
         renderEffects();
     } catch (e) {
-        if (elements.effectsStatus) elements.effectsStatus.innerHTML = '<div style="color: var(--danger);">EasyEffects presets are unavailable</div>';
+        if (elements.effectsStatus) elements.effectsStatus.innerHTML = '<div style="color: var(--danger);">DSP presets are unavailable</div>';
     }
 }
 function defaultPeqBand() {
@@ -12055,7 +12055,7 @@ function renderEffects() {
     const presetNames = presets.map(p => p.name);
     elements.effectsInfo.textContent = fx.available
         ? `${fx.preset_count} presets`
-        : 'EasyEffects is not available';
+        : 'DSP is not available';
     if (fx.combineDraft) {
         fx.combineDraft = normalizeEffectsCombineDraft(fx.combineDraft, presetNames);
     }
