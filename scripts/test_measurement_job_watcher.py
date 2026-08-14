@@ -71,6 +71,8 @@ def _services(store, session):
         get_store=lambda: store,
         get_session=lambda: session,
         auto_sub_active=lambda: False,
+        get_dsp_runtime=lambda: None,
+        get_player=lambda: None,
     )
 
 
@@ -380,6 +382,8 @@ class TestWatcherExitConditions:
                     get_store=lambda: None,
                     get_session=lambda: session,
                     auto_sub_active=lambda: False,
+                    get_dsp_runtime=lambda: None,
+                    get_player=lambda: None,
                 ),
             ):
                 with _fake_sleep():

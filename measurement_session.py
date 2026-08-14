@@ -62,6 +62,8 @@ class MeasurementServices:
     get_store: Callable[[], Any]
     get_session: Callable[[], Any]
     auto_sub_active: Callable[[], bool]
+    get_dsp_runtime: Callable[[], Any]
+    get_player: Callable[[], Any]
 
 
 _services: MeasurementServices | None = None
@@ -76,6 +78,16 @@ def _measurement_services() -> MeasurementServices:
     if _services is None:
         raise RuntimeError("Measurement services are not configured")
     return _services
+
+
+def _dsp_runtime() -> Any:
+    """Resolve the native DSP runtime late-bound through the injected accessor."""
+    return _measurement_services().get_dsp_runtime()
+
+
+def _player() -> Any:
+    """Resolve the player instance late-bound through the injected accessor."""
+    return _measurement_services().get_player()
 
 
 _playback_state_before_measurement: dict[str, Any] | None = None
@@ -520,7 +532,6 @@ def _capture_playback_state_before_measurement(
         _get_player_audio_samplerate,
         _spotify_target_track_from_state,
         current_track_info,
-        runtime,
         SPOTIFY_PREARM_SAMPLE_RATE_HZ,
     )
     measurement_sr_session = _measurement_services().get_session()
@@ -583,9 +594,9 @@ def _capture_playback_state_before_measurement(
     source = current_track_info.get("source")
     if source not in {"radio", "local"}:
         return
-    if not runtime.player_instance or not runtime.player_instance._running:
+    if not _player() or not _player()._running:
         return
-    state = runtime.player_instance.state
+    state = _player().state
     current_file = state.get("current_file") or ""
     if not current_file or state.get("ended"):
         return
@@ -836,7 +847,6 @@ def _build_measurement_audio_output_context() -> dict:
     """Build audio_output_context metadata for measurement saves."""
     from main import (
         get_audio_output_overview,
-        runtime,
     )
     context: dict = {}
     try:
@@ -845,7 +855,7 @@ def _build_measurement_audio_output_context() -> dict:
         mode = str(output_mode.get("mode", "stereo") or "stereo")
         if mode in OUTPUT_MODE_SUBWOOFER_MODES:
             config = BassManagementConfig.from_overview(overview)
-            snapshot = runtime.dsp_runtime.snapshot() if runtime.dsp_runtime is not None else {}
+            snapshot = _dsp_runtime().snapshot() if _dsp_runtime() is not None else {}
             context["output_mode"] = mode
             context["output_key"] = config.output_key
             context["output_label"] = config.output_label
@@ -876,14 +886,13 @@ def _build_measurement_audio_output_context() -> dict:
 
 async def _sync_dsp_runtime_for_measurement_sweep(measurement_rate: int) -> None:
     from main import (
-        runtime,
         get_audio_output_overview,
         get_samplerate_status,
         _pulse_suspend_sink_for_samplerate,
         _audio_output_overview_with_effective_rate,
         dsp_orchestrator,
     )
-    if runtime.dsp_runtime is None:
+    if _dsp_runtime() is None:
         return None
     overview = get_audio_output_overview()
     output_mode = overview.get("output_mode") or {}
@@ -895,7 +904,7 @@ async def _sync_dsp_runtime_for_measurement_sweep(measurement_rate: int) -> None
     samplerate_status = get_samplerate_status()
     previous_force_rate = samplerate_status.get("force_rate")
     previous_active_rate = samplerate_status.get("active_rate")
-    before = runtime.dsp_runtime.snapshot()
+    before = _dsp_runtime().snapshot()
     logger.info(
         "%s measurement pre-arm starting: measurement_rate=%s samplerate_before=%s helper_before=%s",
         mode_num,
@@ -932,7 +941,7 @@ async def _sync_dsp_runtime_for_measurement_sweep(measurement_rate: int) -> None
         )
 
     await dsp_orchestrator.sync_runtime(overview, reason="measurement-pre-arm")
-    after = runtime.dsp_runtime.snapshot()
+    after = _dsp_runtime().snapshot()
     samplerate_after = get_samplerate_status()
     after_config = after.get("config") or {}
     runtime_config = BassManagementConfig.from_overview(overview)

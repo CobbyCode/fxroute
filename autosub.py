@@ -9,8 +9,9 @@ import logging
 import math
 import statistics
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 from uuid import uuid4
 
 import numpy as np
@@ -41,6 +42,29 @@ _AUTO_SUB_MIN_ALIGNMENT_SCORE_GAIN: float = 0.01
 
 router = APIRouter()
 # ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class AutoSubRuntimeDependencies:
+    """Lifecycle-owned runtime accessors injected from main.py."""
+
+    get_dsp_runtime: Callable[[], Any]
+
+
+_autosub_runtime_dependencies: AutoSubRuntimeDependencies | None = None
+
+
+def configure_runtime_dependencies(deps: AutoSubRuntimeDependencies) -> None:
+    """Bind the lifecycle-owned runtime accessors used by AutoSub."""
+    global _autosub_runtime_dependencies
+    _autosub_runtime_dependencies = deps
+
+
+def _dsp_runtime() -> Any:
+    """Resolve the native DSP runtime late-bound through the injected accessor."""
+    if _autosub_runtime_dependencies is None:
+        raise RuntimeError("AutoSub runtime dependencies are not configured")
+    return _autosub_runtime_dependencies.get_dsp_runtime()
 
 
 def is_optimization_active() -> bool:
@@ -121,7 +145,6 @@ def _auto_sub_cancelled_candidate(delay_ms: float, stage: str) -> dict[str, Any]
 
 async def _restore_auto_sub_original_config(original_config_snapshot: dict[str, Any]) -> None:
     """Restore subwoofer config from snapshot."""
-    from main import runtime
     try:
         from samplerate import set_audio_output_mode
         mode = original_config_snapshot.get("mode", "stereo") or "stereo"
@@ -135,8 +158,8 @@ async def _restore_auto_sub_original_config(original_config_snapshot: dict[str, 
             subwoofer_config,
             original_config_snapshot.get("subwoofers") or {},
         )
-        if runtime.dsp_runtime is not None:
-            await runtime.dsp_runtime.sync(get_audio_output_overview())
+        if _dsp_runtime() is not None:
+            await _dsp_runtime().sync(get_audio_output_overview())
     except Exception:
         logger.exception("Auto-sub: failed to restore original config from snapshot")
 
@@ -158,8 +181,7 @@ async def _auto_sub_sync_dsp_runtime(
     so every AutoSub sweep runs with exactly the gain/delay/polarity/
     crossover state the caller intends to evaluate.
     """
-    from main import runtime
-    if runtime.dsp_runtime is None:
+    if _dsp_runtime() is None:
         return
     overview = get_audio_output_overview()
     expected = BassManagementConfig.from_overview(persisted_overview)
@@ -210,7 +232,7 @@ async def _auto_sub_sync_dsp_runtime(
         raise RuntimeError(
             "AutoSub candidate state changed before DSP sync: " + "; ".join(mismatches)
         )
-    await runtime.dsp_runtime.sync(overview)
+    await _dsp_runtime().sync(overview)
 
 
 def _auto_sub_step_ms(fc: int) -> float:
@@ -1211,7 +1233,7 @@ async def start_auto_sub_optimize(
     target_curve_snapshot: str = Form(""),
     calibration_file: UploadFile | None = File(None),
 ):
-    from main import measurement_store, measurement_sr_session, runtime
+    from main import measurement_store, measurement_sr_session
     global _auto_sub_lock
     if not measurement_store:
         raise HTTPException(status_code=503, detail="Measurement store not available")
@@ -1703,7 +1725,7 @@ async def _measure_auto_sub_candidate(
     exact_sub_mute: bool = False,
 ) -> dict[str, Any]:
     """Measure one AutoSub delay candidate with the standard safety checks."""
-    from main import measurement_store, runtime
+    from main import measurement_store
     from measurement_session import _sync_dsp_runtime_for_measurement_sweep
     from samplerate import _load_audio_output_mode
 
@@ -1772,7 +1794,7 @@ async def _measure_auto_sub_candidate(
                 "main_highpass_enabled": original_highpass,
             }
             persisted_overview = set_audio_output_mode(OUTPUT_MODE_SUBWOOFER_21, sub_config)
-        if runtime.dsp_runtime is not None:
+        if _dsp_runtime() is not None:
             await _auto_sub_sync_dsp_runtime(
                 output_mode=output_mode,
                 persisted_overview=persisted_overview,
@@ -1868,15 +1890,15 @@ async def _measure_auto_sub_candidate(
     exact_sub_mute_enabled = False
     try:
         if exact_sub_mute:
-            if runtime.dsp_runtime is None:
+            if _dsp_runtime() is None:
                 raise RuntimeError("Subwoofer runtime unavailable; exact digital mute cannot be enabled")
-            previous_exact_sub_mute = await runtime.dsp_runtime.set_exact_sub_mute(True)
+            previous_exact_sub_mute = await _dsp_runtime().set_exact_sub_mute(True)
             exact_sub_mute_enabled = True
-            if not runtime.dsp_runtime.snapshot().get("exact_sub_mute"):
+            if not _dsp_runtime().snapshot().get("exact_sub_mute"):
                 raise RuntimeError("Subwoofer helper did not retain exact digital mute state")
-        if runtime.dsp_runtime is None:
+        if _dsp_runtime() is None:
             raise RuntimeError("Native DSP output peak capture unavailable")
-        await runtime.dsp_runtime.reset_output_peaks()
+        await _dsp_runtime().reset_output_peaks()
         sweep_job = await measurement_store.start_measurement(
             input_id=input_id,
             channel=channel,
@@ -1930,7 +1952,7 @@ async def _measure_auto_sub_candidate(
             await asyncio.sleep(0.5)
 
         _marks["sweep_poll_done"] = time.monotonic()
-        measured_stage_peaks = await runtime.dsp_runtime.read_output_peaks()
+        measured_stage_peaks = await _dsp_runtime().read_output_peaks()
         stage_peak_comparison = _auto_sub_stage_peak_comparison(
             stage_peak_prediction, measured_stage_peaks,
         )
@@ -2031,9 +2053,9 @@ async def _measure_auto_sub_candidate(
             "scan": stage,
         })
     finally:
-        if exact_sub_mute_enabled and runtime.dsp_runtime is not None:
+        if exact_sub_mute_enabled and _dsp_runtime() is not None:
             try:
-                await runtime.dsp_runtime.set_exact_sub_mute(previous_exact_sub_mute)
+                await _dsp_runtime().set_exact_sub_mute(previous_exact_sub_mute)
             except Exception as exc:
                 logger.exception("Auto-sub: failed to restore exact sub mute after %s reference", channel)
                 job["auto_gain"] = {
@@ -3017,7 +3039,6 @@ async def _run_auto_sub_22_optimize(
     from main import (
         measurement_sr_session,
         measurement_store,
-        runtime,
     )
     from measurement_session import (
         MeasurementEntryInvalidated,
@@ -3386,7 +3407,7 @@ async def _run_auto_sub_22_optimize(
                 active_subs=("sub1", "sub2"),
             )
             persisted_overview = set_audio_output_mode(OUTPUT_MODE_SUBWOOFER_22, sub_config, subwoofers_config)
-            if runtime.dsp_runtime is not None:
+            if _dsp_runtime() is not None:
                 await _auto_sub_sync_dsp_runtime(
                     output_mode=OUTPUT_MODE_SUBWOOFER_22,
                     persisted_overview=persisted_overview,
@@ -3442,8 +3463,8 @@ async def _run_auto_sub_22_optimize(
                 active_subs=("sub1", "sub2"),
             )
             set_audio_output_mode(OUTPUT_MODE_SUBWOOFER_22, _auto_sub_22_global_config(polarity_snapshot), rollback_subs)
-            if runtime.dsp_runtime is not None:
-                await runtime.dsp_runtime.sync(get_audio_output_overview())
+            if _dsp_runtime() is not None:
+                await _dsp_runtime().sync(get_audio_output_overview())
         else:
             correction_plan = _auto_sub_gain_response_correction(
                 job["auto_gain"], gain_after, gain_deltas, OUTPUT_MODE_SUBWOOFER_22,
@@ -3468,8 +3489,8 @@ async def _run_auto_sub_22_optimize(
                         active_subs=("sub1", "sub2"),
                     ),
                 )
-                if runtime.dsp_runtime is not None:
-                    await runtime.dsp_runtime.sync(get_audio_output_overview())
+                if _dsp_runtime() is not None:
+                    await _dsp_runtime().sync(get_audio_output_overview())
                 correction_sweep = await _measure_auto_sub_combined_candidate(
                     delay_ms=best_sub1, job=job, candidate_index=1, total=1,
                     sweep_index_start=matrix_sweep_total + 3, sweep_total=matrix_sweep_total + 4,
@@ -3505,8 +3526,8 @@ async def _run_auto_sub_22_optimize(
                             active_subs=("sub1", "sub2"),
                         ),
                     )
-                    if runtime.dsp_runtime is not None:
-                        await runtime.dsp_runtime.sync(get_audio_output_overview())
+                    if _dsp_runtime() is not None:
+                        await _dsp_runtime().sync(get_audio_output_overview())
         _auto_sub_gain_log_line("AUTOGAIN_FEEDBACK", {
             "gain_after_step1": {
                 "sub1": float(_auto_sub_22_sub(gain_snapshot, "sub1").get("level_db", 0.0)),
@@ -3707,7 +3728,6 @@ async def _run_auto_sub_22_stereo_optimize(
     from main import (
         measurement_sr_session,
         measurement_store,
-        runtime,
     )
     from measurement_session import (
         MeasurementEntryInvalidated,
@@ -4184,7 +4204,7 @@ async def _run_auto_sub_22_stereo_optimize(
                 active_subs=("sub1", "sub2"),
             )
             persisted_overview = set_audio_output_mode(OUTPUT_MODE_SUBWOOFER_22_STEREO, sub_config, subwoofers_config)
-            if runtime.dsp_runtime is not None:
+            if _dsp_runtime() is not None:
                 await _auto_sub_sync_dsp_runtime(
                     output_mode=OUTPUT_MODE_SUBWOOFER_22_STEREO,
                     persisted_overview=persisted_overview,
@@ -4317,8 +4337,8 @@ async def _run_auto_sub_22_stereo_optimize(
                     active_subs=("sub1", "sub2"),
                 ),
             )
-            if runtime.dsp_runtime is not None:
-                await runtime.dsp_runtime.sync(get_audio_output_overview())
+            if _dsp_runtime() is not None:
+                await _dsp_runtime().sync(get_audio_output_overview())
         gain_after_left = await _measure_auto_sub_candidate(
             delay_ms=best_left, job=job, candidate_index=1, total=2, stage="gain_after", fc=fc,
             input_id=input_id, channel="left", mic_input_channel=mic_input_channel,
@@ -4379,8 +4399,8 @@ async def _run_auto_sub_22_stereo_optimize(
                     active_subs=("sub1", "sub2"),
                 ),
             )
-            if runtime.dsp_runtime is not None:
-                await runtime.dsp_runtime.sync(get_audio_output_overview())
+            if _dsp_runtime() is not None:
+                await _dsp_runtime().sync(get_audio_output_overview())
         elif not all(accepted_step1_sides.values()):
             # Stereo channels have independent Gain controls.  A regression on
             # one side must not discard a measured improvement on the other.
@@ -4391,8 +4411,8 @@ async def _run_auto_sub_22_stereo_optimize(
                     active_subs=("sub1", "sub2"),
                 ),
             )
-            if runtime.dsp_runtime is not None:
-                await runtime.dsp_runtime.sync(get_audio_output_overview())
+            if _dsp_runtime() is not None:
+                await _dsp_runtime().sync(get_audio_output_overview())
             correction_verdict = {
                 "accepted": False,
                 "reason": "Retained improved Stereo side; restored regressed side",
@@ -4435,8 +4455,8 @@ async def _run_auto_sub_22_stereo_optimize(
                         active_subs=("sub1", "sub2"),
                     ),
                 )
-                if runtime.dsp_runtime is not None:
-                    await runtime.dsp_runtime.sync(get_audio_output_overview())
+                if _dsp_runtime() is not None:
+                    await _dsp_runtime().sync(get_audio_output_overview())
                 correction_left = await _measure_auto_sub_candidate(
                     delay_ms=best_left, job=job, candidate_index=1, total=2,
                     stage="gain_correction_after", fc=fc, input_id=input_id, channel="left",
@@ -4522,8 +4542,8 @@ async def _run_auto_sub_22_stereo_optimize(
                                 active_subs=("sub1", "sub2"),
                             ),
                         )
-                        if runtime.dsp_runtime is not None:
-                            await runtime.dsp_runtime.sync(get_audio_output_overview())
+                        if _dsp_runtime() is not None:
+                            await _dsp_runtime().sync(get_audio_output_overview())
                 else:
                     correction_verdict = _auto_sub_gain_verdict(
                         gain_after, correction_after, OUTPUT_MODE_SUBWOOFER_22_STEREO,
@@ -4543,8 +4563,8 @@ async def _run_auto_sub_22_stereo_optimize(
                                 active_subs=("sub1", "sub2"),
                             ),
                         )
-                        if runtime.dsp_runtime is not None:
-                            await runtime.dsp_runtime.sync(get_audio_output_overview())
+                        if _dsp_runtime() is not None:
+                            await _dsp_runtime().sync(get_audio_output_overview())
         _auto_sub_gain_log_line("AUTOGAIN_FEEDBACK", {
             "gain_after_step1": {
                 "left": float(_auto_sub_22_sub(gain_snapshot, "sub1").get("level_db", 0.0)),
@@ -4825,7 +4845,6 @@ async def _run_auto_sub_optimize(
     from main import (
         measurement_sr_session,
         measurement_store,
-        runtime,
     )
     from measurement_session import (
         MeasurementEntryInvalidated,
@@ -5173,7 +5192,7 @@ async def _run_auto_sub_optimize(
                     "main_highpass_enabled": original_highpass,
                 }
                 persisted_overview = set_audio_output_mode(OUTPUT_MODE_SUBWOOFER_21, sub_config)
-                if runtime.dsp_runtime is not None:
+                if _dsp_runtime() is not None:
                     await _auto_sub_sync_dsp_runtime(
                         output_mode=OUTPUT_MODE_SUBWOOFER_21,
                         persisted_overview=persisted_overview,
@@ -5267,8 +5286,8 @@ async def _run_auto_sub_optimize(
                 "sub_level_db": original_level, "sub_polarity": final_polarity,
                 "main_highpass_enabled": original_highpass,
             })
-            if runtime.dsp_runtime is not None:
-                await runtime.dsp_runtime.sync(get_audio_output_overview())
+            if _dsp_runtime() is not None:
+                await _dsp_runtime().sync(get_audio_output_overview())
         job["polarity_check"] = polarity_check
         job["auto_gain"] = _calculate_auto_sub_gain(
             mode=OUTPUT_MODE_SUBWOOFER_21,
@@ -5299,8 +5318,8 @@ async def _run_auto_sub_optimize(
                 "sub_level_db": gained_level, "sub_polarity": final_polarity,
                 "main_highpass_enabled": original_highpass,
             })
-            if runtime.dsp_runtime is not None:
-                await runtime.dsp_runtime.sync(get_audio_output_overview())
+            if _dsp_runtime() is not None:
+                await _dsp_runtime().sync(get_audio_output_overview())
         gain_after_sweep = await _measure_auto_sub_combined_candidate(
             delay_ms=applied_delay, job=job, candidate_index=1, total=1,
             sweep_index_start=total + 1, sweep_total=total + 2, stage="gain_after", fc=fc,
@@ -5333,8 +5352,8 @@ async def _run_auto_sub_optimize(
                 "sub_level_db": original_level, "sub_polarity": final_polarity,
                 "main_highpass_enabled": original_highpass,
             })
-            if runtime.dsp_runtime is not None:
-                await runtime.dsp_runtime.sync(get_audio_output_overview())
+            if _dsp_runtime() is not None:
+                await _dsp_runtime().sync(get_audio_output_overview())
         else:
             correction_plan = _auto_sub_gain_response_correction(
                 job["auto_gain"], gain_after, gain_deltas, OUTPUT_MODE_SUBWOOFER_21,
@@ -5355,8 +5374,8 @@ async def _run_auto_sub_optimize(
                     "sub_level_db": corrected_level, "sub_polarity": final_polarity,
                     "main_highpass_enabled": original_highpass,
                 })
-                if runtime.dsp_runtime is not None:
-                    await runtime.dsp_runtime.sync(get_audio_output_overview())
+                if _dsp_runtime() is not None:
+                    await _dsp_runtime().sync(get_audio_output_overview())
                 correction_sweep = await _measure_auto_sub_combined_candidate(
                     delay_ms=applied_delay, job=job, candidate_index=1, total=1,
                     sweep_index_start=total + 3, sweep_total=total + 4, stage="gain_correction_after", fc=fc,
@@ -5389,8 +5408,8 @@ async def _run_auto_sub_optimize(
                         "sub_level_db": gained_level, "sub_polarity": final_polarity,
                         "main_highpass_enabled": original_highpass,
                     })
-                    if runtime.dsp_runtime is not None:
-                        await runtime.dsp_runtime.sync(get_audio_output_overview())
+                    if _dsp_runtime() is not None:
+                        await _dsp_runtime().sync(get_audio_output_overview())
         _auto_sub_gain_log_line("AUTOGAIN_FEEDBACK", {
             "gain_after_step1": gained_level,
             "score_before": _auto_sub_gain_log_score(job["auto_gain"]),

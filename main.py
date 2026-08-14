@@ -1163,6 +1163,11 @@ measurement_session.configure_services(MeasurementServices(
     get_store=lambda: measurement_store,
     get_session=lambda: measurement_sr_session,
     auto_sub_active=lambda: autosub.is_optimization_active(),
+    get_dsp_runtime=lambda: runtime.dsp_runtime,
+    get_player=lambda: runtime.player_instance,
+))
+autosub.configure_runtime_dependencies(autosub.AutoSubRuntimeDependencies(
+    get_dsp_runtime=lambda: runtime.dsp_runtime,
 ))
 
 def _set_runtime_current_track_info(value: dict | None) -> None:
