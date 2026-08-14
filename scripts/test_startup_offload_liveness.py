@@ -216,7 +216,7 @@ class StartupOffloadLivenessTests(unittest.IsolatedAsyncioTestCase):
         ticker_task = asyncio.create_task(ticker.run())
         try:
             with contextlib.ExitStack() as stack:
-                for patch in _lifespan_patches(slow_player, slow_effects_class):
+                for patch in _lifespan_patches(slow_player, slow_dsp_class):
                     stack.enter_context(patch)
                 stack.enter_context(mock.patch.object(main, "_drain_worker", side_effect=drain_spy))
                 start = time.perf_counter()
@@ -231,7 +231,7 @@ class StartupOffloadLivenessTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(events, ["player-start"])
         self.assertEqual(SLOW_EFFECTS_EVENTS, ["effects-construct"])
         self.assertTrue(any(call == slow_player.start for call in drain_calls))
-        self.assertTrue(any(call is slow_effects_class for call in drain_calls))
+        self.assertTrue(any(call is slow_dsp_class for call in drain_calls))
         self.assertLess(ticker.max_gap(), MAX_ACCEPTABLE_GAP)
         self.assertIsNone(main.player_instance)
         self.assertIsNone(main.dsp_manager)

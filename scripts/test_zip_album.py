@@ -7,8 +7,8 @@
 - zip_album.is_safe_relative_zip_path
 - zip_album.extract_zip_album
 
-plus wrapper parity against main._dedupe_archive_name and
-main._is_safe_relative_zip_path.
+plus wrapper parity against dsp_api._dedupe_archive_name and
+dsp_api._is_safe_relative_zip_path.
 Tests use real temporary ZIP files (zipfile, tmp dirs).
 """
 import sys
@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import main
+import dsp_api
 from fastapi import HTTPException
 from zip_album import (
     choose_unique_dir,
@@ -276,7 +277,7 @@ class WrapperParityTests(unittest.TestCase):
         used_m: set[str] = set()
         for name in ("track.mp3", "track.mp3", "cover.jpg", "", None):
             self.assertEqual(
-                main._dedupe_archive_name(name, used_m),
+                dsp_api._dedupe_archive_name(name, used_m),
                 dedupe_archive_name(name, used_w),
                 f"mismatch for {name!r}",
             )
@@ -299,7 +300,7 @@ class WrapperParityTests(unittest.TestCase):
         ]
         for case in cases:
             self.assertEqual(
-                main._is_safe_relative_zip_path(case),
+                dsp_api._is_safe_relative_zip_path(case),
                 is_safe_relative_zip_path(case),
                 f"mismatch for {case!r}",
             )

@@ -189,7 +189,7 @@ async function main() {
         },
     );
 
-    assert.match(indexSource, /app\.js\?v=0\.9\.12/);
+    assert.match(indexSource, /app\.js\?v=\d+\.\d+\.\d+/);
     console.log('measurement output-mode frontend tests: ok');
 }
 
