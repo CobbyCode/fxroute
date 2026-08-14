@@ -508,7 +508,7 @@ class VolumeTransitionIntegrationTests(unittest.IsolatedAsyncioTestCase):
             async def json(self):
                 return {"loudness_enabled": True}
 
-        await main.save_easyeffects_extras(Request())
+        await main.save_dsp_extras(Request())
         self.assertEqual(self.recorder.master, 30)
         self.assertTrue(self.manager.extras["loudness"]["enabled"])
         self.assertAlmostEqual(self.manager.extras["loudness"]["params"]["volumeDb"], db(30), places=6)
@@ -524,7 +524,7 @@ class VolumeTransitionIntegrationTests(unittest.IsolatedAsyncioTestCase):
             async def json(self):
                 return {"loudness_enabled": True}
 
-        await main.save_easyeffects_extras(Request())
+        await main.save_dsp_extras(Request())
         final = self.recorder.capture()
         self.assertEqual(final.master_percent, 100)
         self.assertTrue(final.loudness_in_path)
@@ -541,7 +541,7 @@ class VolumeTransitionIntegrationTests(unittest.IsolatedAsyncioTestCase):
             async def json(self):
                 return {"loudness_enabled": False}
 
-        await main.save_easyeffects_extras(Request())
+        await main.save_dsp_extras(Request())
         self.assertEqual(self.recorder.master, 30)
         self.assertFalse(self.manager.extras["loudness"]["enabled"])
 
@@ -579,7 +579,7 @@ class VolumeTransitionIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 async def json(self):
                     return {"autogain_enabled": True, "autogain_target_db": -18.0}
 
-            await main.save_easyeffects_extras(Request())
+            await main.save_dsp_extras(Request())
         self.assertEqual(writes, [])
         self.assertEqual(self.recorder.master, 100)
         self.assertAlmostEqual(self.manager.extras["loudness"]["params"]["volumeDb"], db(30), places=6)

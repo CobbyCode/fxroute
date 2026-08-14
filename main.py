@@ -1949,7 +1949,7 @@ class ConnectionManager:
         self._coalesced_message_types = {
             "playback",
             "spotify",
-            "easyeffects",
+            "dsp",
             "playback_peak_warning",
         }
 
@@ -3797,7 +3797,7 @@ async def _sync_dsp_preset_for_playback_samplerate(
     )
     await _load_dsp_preset(active_preset, convolver_sample_rate_hz=sample_rate_hz)
     status = dsp_manager.get_status()
-    await manager.broadcast({"type": "easyeffects", "data": status})
+    await manager.broadcast({"type": "dsp", "data": status})
 
 
 
@@ -6795,11 +6795,11 @@ async def _finish_dsp_preset_mutation(
     refresh_reason: str,
     refresh_only_when_loaded: bool = False,
 ) -> dict:
-    ee_manager = _require_dsp_manager()
+    dsp_mgr = _require_dsp_manager()
     if load_after_create:
         await _load_dsp_preset(preset_name)
-    status = ee_manager.get_status()
-    await manager.broadcast({"type": "easyeffects", "data": status})
+    status = dsp_mgr.get_status()
+    await manager.broadcast({"type": "dsp", "data": status})
     if load_after_create or not refresh_only_when_loaded:
         schedule_peak_monitor_refresh_after_effects_change(refresh_reason)
     return status
@@ -6814,18 +6814,18 @@ def _raise_dsp_http_error(exc: Exception) -> None:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     raise exc
 
-@app.get("/api/easyeffects/extras")
-async def get_easyeffects_extras():
-    ee_manager = _require_dsp_manager()
+@app.get("/api/dsp/extras")
+async def get_dsp_extras():
+    dsp_mgr = _require_dsp_manager()
     return {
         "status": "ok",
-        "extras": ee_manager.load_global_extras(),
-        "excluded_presets": sorted(ee_manager.EXCLUDED_GLOBAL_EXTRAS_PRESETS),
+        "extras": dsp_mgr.load_global_extras(),
+        "excluded_presets": sorted(dsp_mgr.EXCLUDED_GLOBAL_EXTRAS_PRESETS),
     }
 
-@app.post("/api/easyeffects/extras")
-async def save_easyeffects_extras(request: Request):
-    ee_manager = _require_dsp_manager()
+@app.post("/api/dsp/extras")
+async def save_dsp_extras(request: Request):
+    dsp_mgr = _require_dsp_manager()
 
     try:
         body = await request.json()
@@ -6852,7 +6852,7 @@ async def save_easyeffects_extras(request: Request):
         await canonical_lock.acquire()
     try:
         async with _dsp_mutation_lock():
-            previous = ee_manager.load_global_extras()
+            previous = dsp_mgr.load_global_extras()
             parsed = _merge_effects_extras_from_json(previous, body)
             try:
                 extras = _resolve_effects_extras(parsed)
@@ -6861,7 +6861,7 @@ async def save_easyeffects_extras(request: Request):
                     status_code=400,
                     detail={"code": "invalid_effects_extras", "message": str(exc)},
                 ) from exc
-            start = await _volume_state_for_manager(ee_manager)
+            start = await _volume_state_for_manager(dsp_mgr)
             target = volume_contract.target_for(
                 current=start,
                 loudness_enabled=bool((extras.get("loudness") or {}).get("enabled")),
@@ -6888,27 +6888,27 @@ async def save_easyeffects_extras(request: Request):
                 await _apply_volume_actions(pre, extras, persist_extras=False)
                 if runtime_strength_change:
                     result = await _drain_worker(
-                        ee_manager.apply_loudness_strength_runtime, previous, extras
+                        dsp_mgr.apply_loudness_strength_runtime, previous, extras
                     )
                 elif runtime_autogain_loudness_change:
                     result = await _drain_worker(
-                        ee_manager.apply_autogain_loudness_runtime, previous, extras
+                        dsp_mgr.apply_autogain_loudness_runtime, previous, extras
                     )
                 else:
                     result = await _drain_worker(
-                        ee_manager.apply_global_extras_to_all_presets, extras
+                        dsp_mgr.apply_global_extras_to_all_presets, extras
                     )
                 await _apply_volume_actions(post, extras, persist_extras=False)
             except Exception:
                 try:
-                    await _restore_volume_state(ee_manager, start)
+                    await _restore_volume_state(dsp_mgr, start)
                 except Exception:
                     logger.exception("Failed to restore volume state after extras update failure")
                 raise
 
-        active_preset = ee_manager.get_active_preset()
+        active_preset = dsp_mgr.get_active_preset()
         if (not result.get("runtime_applied") and active_preset
-                and active_preset not in ee_manager.EXCLUDED_GLOBAL_EXTRAS_PRESETS):
+                and active_preset not in dsp_mgr.EXCLUDED_GLOBAL_EXTRAS_PRESETS):
             try:
                 await _load_dsp_preset(active_preset, _locks_held=True)
             except Exception as e:
@@ -6917,8 +6917,8 @@ async def save_easyeffects_extras(request: Request):
         if canonical_lock is not None:
             canonical_lock.release()
 
-    status = ee_manager.get_status()
-    await manager.broadcast({"type": "easyeffects", "data": status})
+    status = dsp_mgr.get_status()
+    await manager.broadcast({"type": "dsp", "data": status})
     schedule_peak_monitor_refresh_after_effects_change("global-extras-update")
     return {
         "status": "ok",
@@ -6927,13 +6927,13 @@ async def save_easyeffects_extras(request: Request):
         "skipped_presets": result["skipped"],
     }
 
-@app.get("/api/easyeffects/presets")
-async def list_easyeffects_presets():
+@app.get("/api/dsp/presets")
+async def list_dsp_presets():
     return _require_dsp_manager().get_status()
 
 
-@app.get("/api/easyeffects/presets/{preset_name}/file")
-async def download_easyeffects_preset_file(preset_name: str):
+@app.get("/api/dsp/presets/{preset_name}/file")
+async def download_dsp_preset_file(preset_name: str):
     global dsp_manager
     if not dsp_manager:
         raise HTTPException(status_code=503, detail="DSP manager not available")
@@ -6983,28 +6983,28 @@ async def download_easyeffects_preset_file(preset_name: str):
     return FileResponse(preset_path, filename=preset_path.name)
 
 
-@app.post("/api/easyeffects/compare")
-async def save_easyeffects_compare(request: Request):
-    ee_manager = _require_dsp_manager()
+@app.post("/api/dsp/compare")
+async def save_dsp_compare(request: Request):
+    dsp_mgr = _require_dsp_manager()
 
     try:
         body = await request.json()
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON body")
 
-    compare = ee_manager.save_compare_state({
+    compare = dsp_mgr.save_compare_state({
         "presetA": body.get("presetA", body.get("preset_a", "")),
         "presetB": body.get("presetB", body.get("preset_b", "")),
         "activeSide": body.get("activeSide", body.get("active_side")),
     })
 
-    status = ee_manager.get_status()
-    await manager.broadcast({"type": "easyeffects", "data": status})
+    status = dsp_mgr.get_status()
+    await manager.broadcast({"type": "dsp", "data": status})
     return {"status": "ok", "compare": compare}
 
-@app.post("/api/easyeffects/presets/combine")
-async def combine_easyeffects_presets(request: Request):
-    ee_manager = _require_dsp_manager()
+@app.post("/api/dsp/presets/combine")
+async def combine_dsp_presets(request: Request):
+    dsp_mgr = _require_dsp_manager()
 
     try:
         body = await request.json()
@@ -7025,7 +7025,7 @@ async def combine_easyeffects_presets(request: Request):
 
     try:
         async with _dsp_mutation_lock():
-            created = ee_manager.combine_presets(preset_name, preset_names)
+            created = dsp_mgr.combine_presets(preset_name, preset_names)
         status = await _finish_dsp_preset_mutation(
             load_after_create=load_after_create,
             preset_name=created["name"],
@@ -7041,10 +7041,10 @@ async def combine_easyeffects_presets(request: Request):
     except (FileNotFoundError, ValueError, RuntimeError) as e:
         _raise_dsp_http_error(e)
 
-@app.post("/api/easyeffects/presets/load")
-async def load_easyeffects_preset(request: Request):
+@app.post("/api/dsp/presets/load")
+async def load_dsp_preset(request: Request):
     global dsp_preset_load_lock
-    ee_manager = _require_dsp_manager()
+    dsp_mgr = _require_dsp_manager()
 
     try:
         body = await request.json()
@@ -7061,14 +7061,14 @@ async def load_easyeffects_preset(request: Request):
     try:
         async with dsp_preset_load_lock:
             await _load_dsp_preset(preset_name)
-            compare = ee_manager.load_compare_state()
+            compare = dsp_mgr.load_compare_state()
             if compare.get("presetA") == preset_name:
                 compare["activeSide"] = "A"
-                ee_manager.save_compare_state(compare)
+                dsp_mgr.save_compare_state(compare)
             elif compare.get("presetB") == preset_name:
                 compare["activeSide"] = "B"
-                ee_manager.save_compare_state(compare)
-            status = ee_manager.get_status()
+                dsp_mgr.save_compare_state(compare)
+            status = dsp_mgr.get_status()
         if (
             dsp_runtime is not None
             and dsp_runtime.snapshot().get("active")
@@ -7077,15 +7077,15 @@ async def load_easyeffects_preset(request: Request):
             # A running helper sync owns the graph and verifies/repairs its
             # own links; a concurrent reclean would race that repair.
             await dsp_runtime._reclean_guarded(skip_if_locked=False)
-        await manager.broadcast({"type": "easyeffects", "data": status})
+        await manager.broadcast({"type": "dsp", "data": status})
         schedule_peak_monitor_refresh_after_effects_change("preset-load")
         return {"status": "ok", "active_preset": preset_name, "compare": status.get("compare")}
     except (FileNotFoundError, RuntimeError) as e:
         _raise_dsp_http_error(e)
 
-@app.post("/api/easyeffects/irs/upload")
-async def upload_easyeffects_ir(file: UploadFile = File(...)):
-    ee_manager = _require_dsp_manager()
+@app.post("/api/dsp/irs/upload")
+async def upload_dsp_ir(file: UploadFile = File(...)):
+    dsp_mgr = _require_dsp_manager()
 
     tmp_path = None
     try:
@@ -7097,12 +7097,12 @@ async def upload_easyeffects_ir(file: UploadFile = File(...)):
 
         uploaded = await _run_locked_worker(
             _dsp_mutation_lock(),
-            ee_manager.upload_ir,
+            dsp_mgr.upload_ir,
             tmp_path,
             file.filename or tmp_path.name,
         )
-        status = ee_manager.get_status()
-        await manager.broadcast({"type": "easyeffects", "data": status})
+        status = dsp_mgr.get_status()
+        await manager.broadcast({"type": "dsp", "data": status})
         schedule_peak_monitor_refresh_after_effects_change("ir-upload")
         return {"status": "ok", "ir": uploaded}
     except UploadTooLargeError as e:
@@ -7119,7 +7119,7 @@ async def upload_easyeffects_ir(file: UploadFile = File(...)):
             except Exception:
                 logger.exception("Failed to remove uploaded IR temp file %s", tmp_path)
 
-@app.post("/api/easyeffects/presets/create-convolver")
+@app.post("/api/dsp/presets/create-convolver")
 async def create_convolver_preset(
     preset_name: str = Form(...),
     ir_filename: str = Form(...),
@@ -7135,7 +7135,7 @@ async def create_convolver_preset(
     tone_effect_enabled: bool = Form(False),
     tone_effect_mode: str = Form("crystalizer"),
 ):
-    ee_manager = _require_dsp_manager()
+    dsp_mgr = _require_dsp_manager()
 
     try:
         # The canonical loudness read inside _effects_extras_from_form must
@@ -7155,7 +7155,7 @@ async def create_convolver_preset(
                 tone_effect_enabled=tone_effect_enabled,
                 tone_effect_mode=tone_effect_mode,
             )
-            created = ee_manager.create_convolver_preset(preset_name, ir_filename, extras=extras)
+            created = dsp_mgr.create_convolver_preset(preset_name, ir_filename, extras=extras)
         status = await _finish_dsp_preset_mutation(
             load_after_create=load_after_create,
             preset_name=created["name"],
@@ -7170,17 +7170,17 @@ async def create_convolver_preset(
     except (FileNotFoundError, ValueError, RuntimeError) as e:
         _raise_dsp_http_error(e)
 
-@app.post("/api/easyeffects/presets/import-json")
-async def import_easyeffects_preset_json(
+@app.post("/api/dsp/presets/import-json")
+async def import_dsp_preset_json(
     file: UploadFile = File(...),
     load_after_create: bool = Form(False),
 ):
-    ee_manager = _require_dsp_manager()
+    dsp_mgr = _require_dsp_manager()
 
     try:
         content = (await read_upload(file, EASYEEFFECTS_PRESET_TEXT_MAX_BYTES)).decode("utf-8-sig")
         async with _dsp_mutation_lock():
-            created = ee_manager.import_preset_json(file.filename or "preset.json", content)
+            created = dsp_mgr.import_preset_json(file.filename or "preset.json", content)
         status = await _finish_dsp_preset_mutation(
             load_after_create=load_after_create,
             preset_name=created["name"],
@@ -7207,12 +7207,12 @@ PRESET_BUNDLE_MAX_MEMBER_BYTES = 256 * 1024 * 1024
 PRESET_BUNDLE_MAX_JSON_BYTES = 16 * 1024 * 1024
 PRESET_BUNDLE_MAX_CENTRAL_DIRECTORY_BYTES = 8 * 1024 * 1024
 
-@app.post("/api/easyeffects/presets/import-bundle")
-async def import_easyeffects_preset_bundle(
+@app.post("/api/dsp/presets/import-bundle")
+async def import_dsp_preset_bundle(
     file: UploadFile = File(...),
     load_after_create: bool = Form(False),
 ):
-    ee_manager = _require_dsp_manager()
+    dsp_mgr = _require_dsp_manager()
 
     temp_zip_path = None
     import_succeeded = False
@@ -7270,10 +7270,10 @@ async def import_easyeffects_preset_bundle(
                 preset_payload = json.loads(preset_text)
             except Exception as e:
                 raise HTTPException(status_code=400, detail=f"Preset JSON is invalid: {e}") from e
-            kernel_names = ee_manager._extract_kernel_names_from_payload(preset_payload if isinstance(preset_payload, dict) else None)
+            kernel_names = dsp_mgr._extract_kernel_names_from_payload(preset_payload if isinstance(preset_payload, dict) else None)
 
             async with _dsp_mutation_lock():
-                ee_manager.irs_dir.mkdir(parents=True, exist_ok=True)
+                dsp_mgr.irs_dir.mkdir(parents=True, exist_ok=True)
                 imported_irs = []
                 ir_members_by_stem = {}
                 for member, rel in safe_members:
@@ -7289,7 +7289,7 @@ async def import_easyeffects_preset_bundle(
 
                 extracted_total = 0
                 for _, (member, clean_ir_name) in sorted(ir_members_by_stem.items()):
-                    destination = ee_manager.irs_dir / clean_ir_name
+                    destination = dsp_mgr.irs_dir / clean_ir_name
                     if destination.is_symlink():
                         raise ValueError(
                             f"Import blocked: existing IR path is a symlink: {clean_ir_name}"
@@ -7298,7 +7298,7 @@ async def import_easyeffects_preset_bundle(
                         raise ValueError(
                             f"Import blocked: existing IR path is a directory: {clean_ir_name}"
                         )
-                    stage_path = ee_manager.irs_dir / f".fxroute-bundle-stage-{uuid4().hex}"
+                    stage_path = dsp_mgr.irs_dir / f".fxroute-bundle-stage-{uuid4().hex}"
                     try:
                         remaining = min(
                             PRESET_BUNDLE_MAX_TOTAL_UNCOMPRESSED_BYTES - extracted_total,
@@ -7313,7 +7313,7 @@ async def import_easyeffects_preset_bundle(
                     extracted_total += written
                     staged_irs.append(stage_path)
                     if destination.exists():
-                        backup_path = ee_manager.irs_dir / f".fxroute-bundle-backup-{uuid4().hex}"
+                        backup_path = dsp_mgr.irs_dir / f".fxroute-bundle-backup-{uuid4().hex}"
                         os.replace(destination, backup_path)
                         ir_backups.append((destination, backup_path))
                     else:
@@ -7321,12 +7321,12 @@ async def import_easyeffects_preset_bundle(
                     os.replace(stage_path, destination)
                     imported_irs.append(destination.name)
 
-                missing_kernels = [name for name in sorted(kernel_names) if not ee_manager._find_ir_paths_for_kernel_name(name)]
+                missing_kernels = [name for name in sorted(kernel_names) if not dsp_mgr._find_ir_paths_for_kernel_name(name)]
                 if missing_kernels:
                     raise HTTPException(status_code=400, detail=f"Preset bundle is missing IR file(s): {', '.join(missing_kernels)}")
 
                 preset_filename = preset_rel.name if preset_rel.name.lower() != "preset.json" else (Path(file.filename or "preset.json").stem + ".json")
-                created = ee_manager.import_preset_json(preset_filename, preset_text)
+                created = dsp_mgr.import_preset_json(preset_filename, preset_text)
             import_succeeded = True
             status = await _finish_dsp_preset_mutation(
                 load_after_create=load_after_create,
@@ -7379,7 +7379,7 @@ async def import_easyeffects_preset_bundle(
             except Exception:
                 logger.exception("Failed to remove imported preset bundle temp file %s", temp_zip_path)
 
-@app.post("/api/easyeffects/presets/create-with-ir")
+@app.post("/api/dsp/presets/create-with-ir")
 async def create_convolver_preset_with_ir(
     preset_name: str = Form(...),
     load_after_create: bool = Form(False),
@@ -7397,7 +7397,7 @@ async def create_convolver_preset_with_ir(
     tone_effect_mode: str = Form("crystalizer"),
     file: UploadFile = File(...),
 ):
-    ee_manager = _require_dsp_manager()
+    dsp_mgr = _require_dsp_manager()
 
     tmp_path = None
     try:
@@ -7430,7 +7430,7 @@ async def create_convolver_preset_with_ir(
                 tone_effect_mode=tone_effect_mode,
             )
             created = await _drain_worker(
-                ee_manager.create_convolver_preset_with_upload,
+                dsp_mgr.create_convolver_preset_with_upload,
                 preset_name,
                 tmp_path,
                 file.filename or tmp_path.name,
@@ -7462,9 +7462,9 @@ async def create_convolver_preset_with_ir(
             except Exception:
                 logger.exception("Failed to remove create-with-ir temp file %s", tmp_path)
 
-@app.post("/api/easyeffects/presets/create-peq")
+@app.post("/api/dsp/presets/create-peq")
 async def create_peq_preset(request: Request):
-    ee_manager = _require_dsp_manager()
+    dsp_mgr = _require_dsp_manager()
 
     try:
         body = await request.json()
@@ -7486,7 +7486,7 @@ async def create_peq_preset(request: Request):
 
     try:
         async with _dsp_mutation_lock():
-            created = ee_manager.create_peq_preset(preset_name, peq_definition, extras=extras)
+            created = dsp_mgr.create_peq_preset(preset_name, peq_definition, extras=extras)
         status = await _finish_dsp_preset_mutation(
             load_after_create=load_after_create,
             preset_name=created["name"],
@@ -7501,7 +7501,7 @@ async def create_peq_preset(request: Request):
     except (FileNotFoundError, ValueError, RuntimeError) as e:
         _raise_dsp_http_error(e)
 
-@app.post("/api/easyeffects/presets/import-rew-peq")
+@app.post("/api/dsp/presets/import-rew-peq")
 async def import_rew_peq_preset(
     preset_name: str = Form(...),
     load_after_create: bool = Form(False),
@@ -7519,7 +7519,7 @@ async def import_rew_peq_preset(
     tone_effect_mode: str = Form("crystalizer"),
     file: UploadFile = File(...),
 ):
-    ee_manager = _require_dsp_manager()
+    dsp_mgr = _require_dsp_manager()
 
     try:
         content = await read_upload(file, EASYEEFFECTS_PRESET_TEXT_MAX_BYTES)
@@ -7551,7 +7551,7 @@ async def import_rew_peq_preset(
                 tone_effect_enabled=tone_effect_enabled,
                 tone_effect_mode=tone_effect_mode,
             )
-            created = ee_manager.create_peq_preset_from_rew_text(preset_name, rew_text, extras=extras)
+            created = dsp_mgr.create_peq_preset_from_rew_text(preset_name, rew_text, extras=extras)
         status = await _finish_dsp_preset_mutation(
             load_after_create=load_after_create,
             preset_name=created["name"],
@@ -7566,7 +7566,7 @@ async def import_rew_peq_preset(
     except (ValueError, RuntimeError) as e:
         _raise_dsp_http_error(e)
 
-@app.post("/api/easyeffects/presets/import-filter-dual")
+@app.post("/api/dsp/presets/import-filter-dual")
 async def import_dual_filter_preset(
     preset_name: str = Form(...),
     left_text: str = Form(""),
@@ -7587,7 +7587,7 @@ async def import_dual_filter_preset(
     left_file: Optional[UploadFile] = File(None),
     right_file: Optional[UploadFile] = File(None),
 ):
-    ee_manager = _require_dsp_manager()
+    dsp_mgr = _require_dsp_manager()
 
     if not preset_name.strip():
         raise HTTPException(status_code=400, detail="preset_name is required")
@@ -7651,7 +7651,7 @@ async def import_dual_filter_preset(
             async with _dsp_mutation_lock():
                 extras = _effects_extras_from_form(**_form_extras_kwargs())
                 created = await _drain_worker(
-                    ee_manager.create_convolver_preset_with_dual_uploads,
+                    dsp_mgr.create_convolver_preset_with_dual_uploads,
                     preset_name,
                     left_tmp,
                     left_file.filename or left_tmp.name,
@@ -7675,7 +7675,7 @@ async def import_dual_filter_preset(
 
             async with _dsp_mutation_lock():
                 extras = _effects_extras_from_form(**_form_extras_kwargs())
-                created = ee_manager.create_dual_peq_preset_from_rew_texts(
+                created = dsp_mgr.create_dual_peq_preset_from_rew_texts(
                     preset_name,
                     left_text,
                     right_text,
@@ -7708,9 +7708,9 @@ async def import_dual_filter_preset(
             except Exception:
                 logger.exception("Failed to remove dual import temp file %s", tmp_path)
 
-@app.post("/api/easyeffects/presets/delete")
-async def delete_easyeffects_preset(request: Request):
-    ee_manager = _require_dsp_manager()
+@app.post("/api/dsp/presets/delete")
+async def delete_dsp_preset(request: Request):
+    dsp_mgr = _require_dsp_manager()
 
     try:
         body = await request.json()
@@ -7723,9 +7723,9 @@ async def delete_easyeffects_preset(request: Request):
 
     try:
         async with _dsp_mutation_lock():
-            ee_manager.delete_preset(preset_name)
-        status = ee_manager.get_status()
-        await manager.broadcast({"type": "easyeffects", "data": status})
+            dsp_mgr.delete_preset(preset_name)
+        status = dsp_mgr.get_status()
+        await manager.broadcast({"type": "dsp", "data": status})
         schedule_peak_monitor_refresh_after_effects_change("preset-delete")
         return {"status": "ok", "deleted": preset_name}
     except (FileNotFoundError, ValueError) as e:

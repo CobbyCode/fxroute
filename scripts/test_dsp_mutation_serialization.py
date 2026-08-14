@@ -56,10 +56,10 @@ class DSPMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch.object(main, "_require_dsp_manager", return_value=fake), mock.patch.object(
             main.manager, "broadcast", mock.AsyncMock()
         ), mock.patch.object(main, "schedule_peak_monitor_refresh_after_effects_change"):
-            first = asyncio.create_task(main.upload_easyeffects_ir(FakeUploadFile()))
+            first = asyncio.create_task(main.upload_dsp_ir(FakeUploadFile()))
             self.assertTrue(await asyncio.to_thread(entered.wait, 5))
 
-            second = asyncio.create_task(main.upload_easyeffects_ir(FakeUploadFile()))
+            second = asyncio.create_task(main.upload_dsp_ir(FakeUploadFile()))
             await asyncio.sleep(0.05)
             # The second request must wait at the mutation lock: only one
             # manager mutation may be in flight at a time.
@@ -130,10 +130,10 @@ class DSPMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch.object(main, "_require_dsp_manager", return_value=fake), mock.patch.object(
             main.manager, "broadcast", mock.AsyncMock()
         ), mock.patch.object(main, "schedule_peak_monitor_refresh_after_effects_change"):
-            upload_task = asyncio.create_task(main.upload_easyeffects_ir(FakeUploadFile()))
+            upload_task = asyncio.create_task(main.upload_dsp_ir(FakeUploadFile()))
             self.assertTrue(await asyncio.to_thread(entered.wait, 5))
 
-            delete_task = asyncio.create_task(main.delete_easyeffects_preset(FakeDeleteRequest()))
+            delete_task = asyncio.create_task(main.delete_dsp_preset(FakeDeleteRequest()))
             await asyncio.sleep(0.05)
             # The loop-side preset mutation must wait for the threaded upload.
             self.assertEqual(order, ["upload-entered"])
@@ -192,7 +192,7 @@ class DSPMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch.object(main, "_require_dsp_manager", return_value=fake), mock.patch.object(
             main.manager, "broadcast", mock.AsyncMock()
         ), mock.patch.object(main, "schedule_peak_monitor_refresh_after_effects_change"):
-            upload_task = asyncio.create_task(main.upload_easyeffects_ir(FakeUploadFile()))
+            upload_task = asyncio.create_task(main.upload_dsp_ir(FakeUploadFile()))
             self.assertTrue(await asyncio.to_thread(entered.wait, 5))
 
             convolver_task = asyncio.create_task(main.create_convolver_preset(
@@ -244,10 +244,10 @@ class DSPMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch.object(main, "_require_dsp_manager", return_value=fake), mock.patch.object(
             main.manager, "broadcast", mock.AsyncMock()
         ), mock.patch.object(main, "schedule_peak_monitor_refresh_after_effects_change"):
-            upload_task = asyncio.create_task(main.upload_easyeffects_ir(FakeUploadFile()))
+            upload_task = asyncio.create_task(main.upload_dsp_ir(FakeUploadFile()))
             self.assertTrue(await asyncio.to_thread(entered.wait, 5))
 
-            extras_task = asyncio.create_task(main.save_easyeffects_extras(FakeExtrasRequest()))
+            extras_task = asyncio.create_task(main.save_dsp_extras(FakeExtrasRequest()))
             await asyncio.sleep(0.05)
             self.assertEqual(order, ["upload-entered"])
 
@@ -301,7 +301,7 @@ class DSPMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
         ), mock.patch.object(main, "schedule_peak_monitor_refresh_after_effects_change"), mock.patch.object(
             main, "set_output_volume", return_value=100
         ):
-            upload_task = asyncio.create_task(main.upload_easyeffects_ir(FakeUploadFile()))
+            upload_task = asyncio.create_task(main.upload_dsp_ir(FakeUploadFile()))
             self.assertTrue(await asyncio.to_thread(entered.wait, 5))
 
             volume_task = asyncio.create_task(main._set_canonical_output_volume(32))
@@ -345,14 +345,14 @@ class DSPMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch.object(main, "_require_dsp_manager", return_value=fake), mock.patch.object(
             main.manager, "broadcast", mock.AsyncMock()
         ), mock.patch.object(main, "schedule_peak_monitor_refresh_after_effects_change"):
-            upload_task = asyncio.create_task(main.upload_easyeffects_ir(FakeUploadFile()))
+            upload_task = asyncio.create_task(main.upload_dsp_ir(FakeUploadFile()))
             self.assertTrue(await asyncio.to_thread(entered.wait, 5))
 
             # Cancel the caller while the worker thread is still running.
             upload_task.cancel()
             await asyncio.sleep(0.05)
 
-            delete_task = asyncio.create_task(main.delete_easyeffects_preset(FakeDeleteRequest()))
+            delete_task = asyncio.create_task(main.delete_dsp_preset(FakeDeleteRequest()))
             await asyncio.sleep(0.05)
             # The cancelled caller must still own the mutation lock until the
             # worker actually finished: the delete must not enter yet.
@@ -405,10 +405,10 @@ class DSPMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch.object(main, "_require_dsp_manager", return_value=fake), mock.patch.object(
             main.manager, "broadcast", mock.AsyncMock()
         ), mock.patch.object(main, "schedule_peak_monitor_refresh_after_effects_change"):
-            upload_task = asyncio.create_task(main.upload_easyeffects_ir(FakeUploadFile()))
+            upload_task = asyncio.create_task(main.upload_dsp_ir(FakeUploadFile()))
             self.assertTrue(await asyncio.to_thread(entered.wait, 5))
 
-            load_task = asyncio.create_task(main.load_easyeffects_preset(FakeLoadRequest()))
+            load_task = asyncio.create_task(main.load_dsp_preset(FakeLoadRequest()))
             await asyncio.sleep(0.05)
             # load_preset must not enter the manager while the threaded
             # mutation is still running.

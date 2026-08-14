@@ -74,7 +74,7 @@ class UploadTempCleanupTests(unittest.IsolatedAsyncioTestCase):
     async def test_ir_upload_read_failure_leaves_no_temp_file(self):
         upload = FakeUpload("test.ir", fail=True)
         with self.assertRaises(Exception):
-            await main.upload_easyeffects_ir(file=upload)
+            await main.upload_dsp_ir(file=upload)
         self.assertEqual(self._leftovers(), [])
 
     async def test_create_with_ir_read_failure_leaves_no_temp_file(self):
@@ -102,7 +102,7 @@ class UploadTempCleanupTests(unittest.IsolatedAsyncioTestCase):
     async def test_bundle_write_failure_leaves_no_temp_zip(self):
         upload = FakeUpload("bundle.zip", fail=True)
         with self.assertRaises(Exception):
-            await main.import_easyeffects_preset_bundle(file=upload)
+            await main.import_dsp_preset_bundle(file=upload)
         self.assertEqual(self._leftovers(), [])
 
     async def test_dual_import_second_upload_failure_cleans_both(self):
@@ -165,7 +165,7 @@ class UploadTempCleanupTests(unittest.IsolatedAsyncioTestCase):
         broadcast = patch.object(main.manager, "broadcast", new=_async_noop)
         refresh = patch.object(main, "schedule_peak_monitor_refresh_after_effects_change")
         with run_locked, broadcast, refresh, patch.object(_Path, "unlink", _flaky_unlink):
-            result = await main.upload_easyeffects_ir(file=upload)
+            result = await main.upload_dsp_ir(file=upload)
 
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["ir"], {"name": "ir"})
@@ -183,7 +183,7 @@ class UploadTempCleanupTests(unittest.IsolatedAsyncioTestCase):
         upload = FakeUpload("test.ir", fail=True)
         with patch.object(_Path, "unlink", _flaky_unlink):
             with self.assertRaises(HTTPException) as ctx:
-                await main.upload_easyeffects_ir(file=upload)
+                await main.upload_dsp_ir(file=upload)
 
         self.assertEqual(ctx.exception.status_code, 500)
         self.assertIn("client disconnected", str(ctx.exception.detail))
@@ -191,7 +191,7 @@ class UploadTempCleanupTests(unittest.IsolatedAsyncioTestCase):
     async def test_bundle_cancellation_during_read_cleans_temp_zip(self):
         upload = FakeUpload("bundle.zip", cancel=True)
         with self.assertRaises(asyncio.CancelledError):
-            await main.import_easyeffects_preset_bundle(file=upload)
+            await main.import_dsp_preset_bundle(file=upload)
         self.assertEqual(self._leftovers(), [])
 
     async def test_bundle_staging_failure_cleans_temp_zip(self):
@@ -206,7 +206,7 @@ class UploadTempCleanupTests(unittest.IsolatedAsyncioTestCase):
             # The bundle stages, then fails later (no preset import backend
             # in the dummy manager); the staged zip must still be removed.
             with self.assertRaises(Exception):
-                await main.import_easyeffects_preset_bundle(file=upload)
+                await main.import_dsp_preset_bundle(file=upload)
         self.assertEqual(self._leftovers(), [])
 
 

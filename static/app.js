@@ -57,7 +57,7 @@ let state = {
     playlists: [],
     stations: [],
     download: null,
-    easyeffects: {
+    dsp: {
         available: false,
         preset_count: 0,
         active_preset: null,
@@ -683,7 +683,7 @@ function resolveEffectsCompareState(compare, presets = [], activePreset = '') {
 
 async function saveEffectsCompareState(compare) {
     try {
-        await fetch('/api/easyeffects/compare', {
+        await fetch('/api/dsp/compare', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(compare),
@@ -855,26 +855,26 @@ function handleWebSocketMessage(msg) {
             if (data.spotify) {
                 handleIncomingSpotifyState(data.spotify, { renderTab: true, renderFooter: true });
             }
-            if (data.player && data.player.state && data.player.state.easyeffects) {
-                state.easyeffects = data.player.state.easyeffects;
-                if (state.easyeffects?.global_extras) {
+            if (data.player && data.player.state && data.player.state.dsp) {
+                state.dsp = data.player.state.dsp;
+                if (state.dsp?.global_extras) {
                     applyEffectsExtras({
-                        limiterEnabled: !!state.easyeffects.global_extras?.limiter?.enabled,
-                        headroomEnabled: !!state.easyeffects.global_extras?.headroom?.enabled,
-                        headroomGainDb: Number(state.easyeffects.global_extras?.headroom?.params?.gainDb ?? -3),
-                        autogainEnabled: !!state.easyeffects.global_extras?.autogain?.enabled,
-                        autogainTargetDb: Number(state.easyeffects.global_extras?.autogain?.params?.targetDb ?? -12),
-                        loudnessEnabled: !!state.easyeffects.global_extras?.loudness?.enabled,
-                        loudnessStrength: state.easyeffects.global_extras?.loudness?.params?.strength ?? 10,
-                        loudnessFftSize: Number(state.easyeffects.global_extras?.loudness?.params?.fftSize ?? 4096),
-                        loudnessVolumeDb: Number(state.easyeffects.global_extras?.loudness?.params?.volumeDb ?? 0),
-                        delayEnabled: !!state.easyeffects.global_extras?.delay?.enabled,
-                        delayLeftMs: Number(state.easyeffects.global_extras?.delay?.params?.leftMs || 0),
-                        delayRightMs: Number(state.easyeffects.global_extras?.delay?.params?.rightMs || 0),
-                        bassEnabled: !!state.easyeffects.global_extras?.bass_enhancer?.enabled,
-                        bassAmount: Number(state.easyeffects.global_extras?.bass_enhancer?.params?.amount || 0),
-                        toneEffectEnabled: !!state.easyeffects.global_extras?.tone_effect?.enabled,
-                        toneEffectMode: String(state.easyeffects.global_extras?.tone_effect?.mode || 'crystalizer'),
+                        limiterEnabled: !!state.dsp.global_extras?.limiter?.enabled,
+                        headroomEnabled: !!state.dsp.global_extras?.headroom?.enabled,
+                        headroomGainDb: Number(state.dsp.global_extras?.headroom?.params?.gainDb ?? -3),
+                        autogainEnabled: !!state.dsp.global_extras?.autogain?.enabled,
+                        autogainTargetDb: Number(state.dsp.global_extras?.autogain?.params?.targetDb ?? -12),
+                        loudnessEnabled: !!state.dsp.global_extras?.loudness?.enabled,
+                        loudnessStrength: state.dsp.global_extras?.loudness?.params?.strength ?? 10,
+                        loudnessFftSize: Number(state.dsp.global_extras?.loudness?.params?.fftSize ?? 4096),
+                        loudnessVolumeDb: Number(state.dsp.global_extras?.loudness?.params?.volumeDb ?? 0),
+                        delayEnabled: !!state.dsp.global_extras?.delay?.enabled,
+                        delayLeftMs: Number(state.dsp.global_extras?.delay?.params?.leftMs || 0),
+                        delayRightMs: Number(state.dsp.global_extras?.delay?.params?.rightMs || 0),
+                        bassEnabled: !!state.dsp.global_extras?.bass_enhancer?.enabled,
+                        bassAmount: Number(state.dsp.global_extras?.bass_enhancer?.params?.amount || 0),
+                        toneEffectEnabled: !!state.dsp.global_extras?.tone_effect?.enabled,
+                        toneEffectMode: String(state.dsp.global_extras?.tone_effect?.mode || 'crystalizer'),
                     });
                 }
                 renderEffects();
@@ -949,16 +949,16 @@ function handleWebSocketMessage(msg) {
                 stopDownloadStatusPolling();
             }
             break;
-        case 'easyeffects':
-            const prev = state.easyeffects?.compare;
+        case 'dsp':
+            const prev = state.dsp?.compare;
             const presetNames = (data.presets || []).map(p => p.name);
-            state.easyeffects = {
+            state.dsp = {
                 ...data,
-                combineDraft: state.easyeffects?.combineDraft || getDefaultEffectsCombineDraft(),
-                peqDraft: state.easyeffects?.peqDraft || { presetName: '', eqMode: 'IIR', loadAfterCreate: false, leftBands: [defaultPeqBand()], rightBands: [defaultPeqBand()] },
+                combineDraft: state.dsp?.combineDraft || getDefaultEffectsCombineDraft(),
+                peqDraft: state.dsp?.peqDraft || { presetName: '', eqMode: 'IIR', loadAfterCreate: false, leftBands: [defaultPeqBand()], rightBands: [defaultPeqBand()] },
                 compare: resolveEffectsCompareState(data.compare || prev, presetNames, data.active_preset || ''),
             };
-            state.easyeffects.combineDraft = normalizeEffectsCombineDraft(state.easyeffects.combineDraft, presetNames);
+            state.dsp.combineDraft = normalizeEffectsCombineDraft(state.dsp.combineDraft, presetNames);
             renderEffects();
             break;
         case 'download_complete':
@@ -2893,12 +2893,12 @@ async function sendVolume() {
             lastConfirmedVolume = typeof data.volume === 'number' ? data.volume : nextVolume;
             state.playback.volume = lastConfirmedVolume;
             if (typeof data.loudnessVolumeDb === 'number') {
-                state.easyeffects = state.easyeffects || {};
-                state.easyeffects.global_extras = state.easyeffects.global_extras || {};
-                state.easyeffects.global_extras.loudness = state.easyeffects.global_extras.loudness || {};
-                state.easyeffects.global_extras.loudness.params =
-                    state.easyeffects.global_extras.loudness.params || {};
-                state.easyeffects.global_extras.loudness.params.volumeDb = data.loudnessVolumeDb;
+                state.dsp = state.dsp || {};
+                state.dsp.global_extras = state.dsp.global_extras || {};
+                state.dsp.global_extras.loudness = state.dsp.global_extras.loudness || {};
+                state.dsp.global_extras.loudness.params =
+                    state.dsp.global_extras.loudness.params || {};
+                state.dsp.global_extras.loudness.params.volumeDb = data.loudnessVolumeDb;
             }
             volumeSyncGraceUntil = Date.now() + VOLUME_SYNC_GRACE_MS;
             if (!volumeGestureActive && pendingVolume === null) {
@@ -5553,7 +5553,7 @@ async function createDualFilterPreset() {
         if (leftFile) formData.append('left_file', leftFile);
         if (rightFile) formData.append('right_file', rightFile);
 
-        const resp = await fetch('/api/easyeffects/presets/import-filter-dual', {
+        const resp = await fetch('/api/dsp/presets/import-filter-dual', {
             method: 'POST',
             body: formData,
         });
@@ -5582,8 +5582,8 @@ async function createDualFilterPreset() {
 
 function updateEffectsPeqDisclosureLabel() {
     if (!elements.effectsPeqDisclosureMeta || !elements.effectsPeqDisclosure) return;
-    const leftCount = state.easyeffects?.peqDraft?.leftBands?.length || 0;
-    const rightCount = state.easyeffects?.peqDraft?.rightBands?.length || 0;
+    const leftCount = state.dsp?.peqDraft?.leftBands?.length || 0;
+    const rightCount = state.dsp?.peqDraft?.rightBands?.length || 0;
     const actionLabel = elements.effectsPeqDisclosure.open ? 'Collapse' : 'Expand';
     elements.effectsPeqDisclosureMeta.textContent = `L${leftCount} · R${rightCount} · ${actionLabel}`;
 }
@@ -5613,10 +5613,10 @@ function setupEffectsActions() {
     if (elements.effectsRewDualCreatePresetBtn) elements.effectsRewDualCreatePresetBtn.addEventListener('click', createDualFilterPreset);
     if (elements.effectsCombinePreset1) {
         elements.effectsCombinePreset1.addEventListener('change', (event) => {
-            state.easyeffects.combineDraft = state.easyeffects.combineDraft || getDefaultEffectsCombineDraft();
-            state.easyeffects.combineDraft.preset1 = event.target.value;
-            if (state.easyeffects.combineDraft.preset1 && state.easyeffects.combineDraft.preset1 === state.easyeffects.combineDraft.preset2) {
-                state.easyeffects.combineDraft.preset2 = '';
+            state.dsp.combineDraft = state.dsp.combineDraft || getDefaultEffectsCombineDraft();
+            state.dsp.combineDraft.preset1 = event.target.value;
+            if (state.dsp.combineDraft.preset1 && state.dsp.combineDraft.preset1 === state.dsp.combineDraft.preset2) {
+                state.dsp.combineDraft.preset2 = '';
                 if (elements.effectsCombinePreset2) elements.effectsCombinePreset2.value = '';
             }
             renderEffectsCombine();
@@ -5624,34 +5624,34 @@ function setupEffectsActions() {
     }
     if (elements.effectsCombinePreset2) {
         elements.effectsCombinePreset2.addEventListener('change', (event) => {
-            state.easyeffects.combineDraft = state.easyeffects.combineDraft || getDefaultEffectsCombineDraft();
-            state.easyeffects.combineDraft.preset2 = event.target.value;
+            state.dsp.combineDraft = state.dsp.combineDraft || getDefaultEffectsCombineDraft();
+            state.dsp.combineDraft.preset2 = event.target.value;
             renderEffectsCombine();
         });
     }
     if (elements.effectsCombinePreset3) {
         elements.effectsCombinePreset3.addEventListener('change', (event) => {
-            state.easyeffects.combineDraft = state.easyeffects.combineDraft || getDefaultEffectsCombineDraft();
-            state.easyeffects.combineDraft.preset3 = event.target.value;
+            state.dsp.combineDraft = state.dsp.combineDraft || getDefaultEffectsCombineDraft();
+            state.dsp.combineDraft.preset3 = event.target.value;
             renderEffectsCombine();
         });
     }
     if (elements.effectsCombinePresetName) {
         elements.effectsCombinePresetName.addEventListener('input', (event) => {
-            state.easyeffects.combineDraft = state.easyeffects.combineDraft || getDefaultEffectsCombineDraft();
-            state.easyeffects.combineDraft.presetName = event.target.value;
+            state.dsp.combineDraft = state.dsp.combineDraft || getDefaultEffectsCombineDraft();
+            state.dsp.combineDraft.presetName = event.target.value;
             renderEffectsCombine();
         });
     }
     if (elements.effectsCombineSaveBtn) elements.effectsCombineSaveBtn.addEventListener('click', createCombinedEffectsPreset);
     if (elements.effectsPeqPresetName) elements.effectsPeqPresetName.addEventListener('input', (event) => {
-        if (!state.easyeffects?.peqDraft) return;
-        state.easyeffects.peqDraft.presetName = event.target.value;
+        if (!state.dsp?.peqDraft) return;
+        state.dsp.peqDraft.presetName = event.target.value;
     });
     if (elements.effectsPeqModeSelect) elements.effectsPeqModeSelect.addEventListener('change', (event) => {
-        if (!state.easyeffects?.peqDraft) return;
-        state.easyeffects.peqDraft.eqMode = normalizePeqEqMode(event.target.value);
-        event.target.value = state.easyeffects.peqDraft.eqMode;
+        if (!state.dsp?.peqDraft) return;
+        state.dsp.peqDraft.eqMode = normalizePeqEqMode(event.target.value);
+        event.target.value = state.dsp.peqDraft.eqMode;
     });
     if (elements.effectsPeqAddBandBtn) elements.effectsPeqAddBandBtn.addEventListener('click', addPeqBandPair);
     if (elements.effectsPeqCreatePresetBtn) elements.effectsPeqCreatePresetBtn.addEventListener('click', createPeqPreset);
@@ -6219,7 +6219,7 @@ function measurementFileUrl(measurementId = '') {
 }
 
 function presetFileUrl(presetName = '') {
-    return `/api/easyeffects/presets/${encodeURIComponent(String(presetName || ''))}/file`;
+    return `/api/dsp/presets/${encodeURIComponent(String(presetName || ''))}/file`;
 }
 
 const measurementComparePalette = ['#60a5fa', '#f59e0b', '#f472b6', '#a78bfa', '#f87171', '#facc15'];
@@ -6757,9 +6757,9 @@ function takeMeasurementPeqToPreset(mode = 'both') {
     }
     const effectiveMode = getMeasurementPeqDraftMode(peq) || mode;
     if (!peq.draft.nameTouched) peq.draft.presetName = getMeasurementPeqPresetName(effectiveMode, { unique: true });
-    state.easyeffects = state.easyeffects || {};
-    state.easyeffects.assistStack = state.easyeffects.assistStack || [];
-    state.easyeffects.assistStack.push({ type: 'peq', mode, createdAt: new Date().toISOString(), bands: mappedBands.map((band) => ({ ...band })) });
+    state.dsp = state.dsp || {};
+    state.dsp.assistStack = state.dsp.assistStack || [];
+    state.dsp.assistStack.push({ type: 'peq', mode, createdAt: new Date().toISOString(), bands: mappedBands.map((band) => ({ ...band })) });
     renderMeasurementPanel();
     const successMessage = mode === 'left'
         ? 'Measurement PEQ staged Left bands'
@@ -6788,12 +6788,12 @@ async function createMeasurementPeqPresetFromDraft() {
     }
     const presetName = String(peq.draft?.presetName || '').trim() || getMeasurementPeqPresetName(getMeasurementPeqDraftMode(peq) || 'both', { unique: true });
     peq.draft.presetName = presetName;
-    const eqMode = normalizePeqEqMode(state.easyeffects?.peqDraft?.eqMode || elements.effectsPeqModeSelect?.value || 'IIR');
+    const eqMode = normalizePeqEqMode(state.dsp?.peqDraft?.eqMode || elements.effectsPeqModeSelect?.value || 'IIR');
     peqCreateInFlight = true;
     if (elements.measurementPeqCreateBtn) elements.measurementPeqCreateBtn.disabled = true;
     showMeasurementPeqTakeFeedback(`Creating ${presetName}…`);
     try {
-        const resp = await fetch('/api/easyeffects/presets/create-peq', {
+        const resp = await fetch('/api/dsp/presets/create-peq', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -7372,7 +7372,7 @@ async function createMeasurementConvolverPreset(mode, analyses, sharedAutoGainDb
         appendMeasurementConvolverExtras(formData);
         formData.append('left_file', leftBlob, `${filenameBase}-L.wav`);
         formData.append('right_file', rightBlob, `${filenameBase}-R.wav`);
-        const resp = await fetch('/api/easyeffects/presets/import-filter-dual', { method: 'POST', body: formData });
+        const resp = await fetch('/api/dsp/presets/import-filter-dual', { method: 'POST', body: formData });
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) throw new Error(data.detail || 'Convolver preset creation failed');
         return data;
@@ -7385,7 +7385,7 @@ async function createMeasurementConvolverPreset(mode, analyses, sharedAutoGainDb
     formData.append('preset_name', itemName);
     appendMeasurementConvolverExtras(formData);
     formData.append('file', blob, `${filenameBase}-${side === 'right' ? 'R' : 'L'}.wav`);
-    const resp = await fetch('/api/easyeffects/presets/create-with-ir', { method: 'POST', body: formData });
+    const resp = await fetch('/api/dsp/presets/create-with-ir', { method: 'POST', body: formData });
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok) throw new Error(data.detail || 'Convolver preset creation failed');
     return data;
@@ -7558,9 +7558,9 @@ async function createMeasurementConvolverPresetFromDraft() {
             },
             analyses: analyses.map((analysis) => ({ side: analysis.side, points: analysis.points, maxPositive: analysis.maxPositive, minCorrection: analysis.minCorrection, autoGainDb: analysis.autoGainDb, dipGuardReductionMaxDb: analysis.dipGuardReductionMaxDb })),
         };
-        state.easyeffects = state.easyeffects || {};
-        state.easyeffects.assistStack = state.easyeffects.assistStack || [];
-        state.easyeffects.assistStack.push(item);
+        state.dsp = state.dsp || {};
+        state.dsp.assistStack = state.dsp.assistStack || [];
+        state.dsp.assistStack.push(item);
         conv.draft.left = null;
         conv.draft.right = null;
         conv.draft.presetName = '';
@@ -11078,7 +11078,7 @@ function renderMeasurementPanel() {
     const isCreatingConvolverPreset = !!conv.creatingPreset || convolverCreateInFlight;
     if (elements.measurementConvolverSummary) {
         const curve = getMeasurementConvolverCurve(conv.targetCurve);
-        const hasCreatedConvolver = (state.easyeffects?.assistStack || []).some((item) => item.type === 'convolver');
+        const hasCreatedConvolver = (state.dsp?.assistStack || []).some((item) => item.type === 'convolver');
         let draftStatus;
         const draftDetails = [];
         const currentTimingDelta = left && right
@@ -11580,28 +11580,28 @@ function setupMeasurementActions() {
 
 async function fetchEffects() {
     try {
-        const resp = await fetch('/api/easyeffects/presets');
+        const resp = await fetch('/api/dsp/presets');
         if (!resp.ok) throw new Error('Failed to fetch DSP presets');
         const data = await resp.json();
-        const prev = state.easyeffects?.compare;
+        const prev = state.dsp?.compare;
         const presetNames = (data.presets || []).map(p => p.name);
-        state.easyeffects = {
+        state.dsp = {
             ...data,
-            combineDraft: state.easyeffects?.combineDraft || getDefaultEffectsCombineDraft(),
-            peqDraft: state.easyeffects?.peqDraft || {
+            combineDraft: state.dsp?.combineDraft || getDefaultEffectsCombineDraft(),
+            peqDraft: state.dsp?.peqDraft || {
                 presetName: '',
                 eqMode: 'IIR',
                 loadAfterCreate: false,
                 leftBands: [defaultPeqBand()],
                 rightBands: [defaultPeqBand()],
             },
-            assistStack: Array.isArray(state.easyeffects?.assistStack) ? state.easyeffects.assistStack : [],
+            assistStack: Array.isArray(state.dsp?.assistStack) ? state.dsp.assistStack : [],
             compare: resolveEffectsCompareState(data.compare || prev, presetNames, data.active_preset || ''),
         };
-        state.easyeffects.combineDraft = normalizeEffectsCombineDraft(state.easyeffects.combineDraft, presetNames);
-        if (!Array.isArray(state.easyeffects.peqDraft?.leftBands) || !state.easyeffects.peqDraft.leftBands.length) state.easyeffects.peqDraft.leftBands = [defaultPeqBand()];
-        if (!Array.isArray(state.easyeffects.peqDraft?.rightBands) || !state.easyeffects.peqDraft.rightBands.length) state.easyeffects.peqDraft.rightBands = [defaultPeqBand()];
-        state.easyeffects.peqDraft.eqMode = normalizePeqEqMode(state.easyeffects.peqDraft?.eqMode);
+        state.dsp.combineDraft = normalizeEffectsCombineDraft(state.dsp.combineDraft, presetNames);
+        if (!Array.isArray(state.dsp.peqDraft?.leftBands) || !state.dsp.peqDraft.leftBands.length) state.dsp.peqDraft.leftBands = [defaultPeqBand()];
+        if (!Array.isArray(state.dsp.peqDraft?.rightBands) || !state.dsp.peqDraft.rightBands.length) state.dsp.peqDraft.rightBands = [defaultPeqBand()];
+        state.dsp.peqDraft.eqMode = normalizePeqEqMode(state.dsp.peqDraft?.eqMode);
         if (data.global_extras) {
             applyEffectsExtras({
                 limiterEnabled: !!data.global_extras?.limiter?.enabled,
@@ -11663,18 +11663,18 @@ function getDefaultPeqDraft() {
     };
 }
 function resetPeqDraft() {
-    state.easyeffects.peqDraft = getDefaultPeqDraft();
+    state.dsp.peqDraft = getDefaultPeqDraft();
     if (elements.effectsPeqPresetName) elements.effectsPeqPresetName.value = '';
     if (elements.effectsPeqModeSelect) elements.effectsPeqModeSelect.value = 'IIR';
     if (elements.effectsPeqLoadAfterCreate) elements.effectsPeqLoadAfterCreate.checked = false;
     renderPeqBands();
 }
 function addPeqBandPair() {
-    if (!state.easyeffects?.peqDraft) {
-        state.easyeffects.peqDraft = getDefaultPeqDraft();
+    if (!state.dsp?.peqDraft) {
+        state.dsp.peqDraft = getDefaultPeqDraft();
     }
-    const leftBands = state.easyeffects.peqDraft.leftBands || (state.easyeffects.peqDraft.leftBands = []);
-    const rightBands = state.easyeffects.peqDraft.rightBands || (state.easyeffects.peqDraft.rightBands = []);
+    const leftBands = state.dsp.peqDraft.leftBands || (state.dsp.peqDraft.leftBands = []);
+    const rightBands = state.dsp.peqDraft.rightBands || (state.dsp.peqDraft.rightBands = []);
     if (leftBands.length >= 20 || rightBands.length >= 20) {
         showToast('Maximum 20 Left and Right PEQ bands supported', 'error');
         return;
@@ -11684,21 +11684,21 @@ function addPeqBandPair() {
     renderPeqBands();
 }
 function removePeqBand(side, index) {
-    if (!state.easyeffects?.peqDraft) return;
+    if (!state.dsp?.peqDraft) return;
     const key = side === 'right' ? 'rightBands' : 'leftBands';
-    const bands = state.easyeffects.peqDraft[key] || [];
+    const bands = state.dsp.peqDraft[key] || [];
     if (index < 0 || index >= bands.length) return;
     bands.splice(index, 1);
     renderPeqBands();
 }
 function ensurePeqBandExists(side, index) {
-    if (!state.easyeffects?.peqDraft) return null;
+    if (!state.dsp?.peqDraft) return null;
     const key = side === 'right' ? 'rightBands' : 'leftBands';
-    state.easyeffects.peqDraft[key] = state.easyeffects.peqDraft[key] || [];
-    while (state.easyeffects.peqDraft[key].length <= index) {
-        state.easyeffects.peqDraft[key].push(defaultPeqBand());
+    state.dsp.peqDraft[key] = state.dsp.peqDraft[key] || [];
+    while (state.dsp.peqDraft[key].length <= index) {
+        state.dsp.peqDraft[key].push(defaultPeqBand());
     }
-    return state.easyeffects.peqDraft[key][index] || null;
+    return state.dsp.peqDraft[key][index] || null;
 }
 function getOtherPeqSide(side) {
     return side === 'right' ? 'left' : 'right';
@@ -11709,7 +11709,7 @@ function getPeqLinkedSpecialType(leftBand = {}, rightBand = {}) {
     return '';
 }
 function getPeqBandPair(side, index) {
-    if (!state.easyeffects?.peqDraft) return { sourceBand: null, otherBand: null };
+    if (!state.dsp?.peqDraft) return { sourceBand: null, otherBand: null };
     const sourceBand = ensurePeqBandExists(side, index);
     const otherBand = ensurePeqBandExists(getOtherPeqSide(side), index);
     return { sourceBand, otherBand };
@@ -11722,9 +11722,9 @@ function syncLinkedPeqSpecialBand(side, index) {
     if (linkedType === 'delay') otherBand.delayMs = sourceBand.delayMs;
 }
 function normalizeLinkedPeqSpecialBands() {
-    if (!state.easyeffects?.peqDraft) return;
-    const leftBands = state.easyeffects.peqDraft.leftBands || [];
-    const rightBands = state.easyeffects.peqDraft.rightBands || [];
+    if (!state.dsp?.peqDraft) return;
+    const leftBands = state.dsp.peqDraft.leftBands || [];
+    const rightBands = state.dsp.peqDraft.rightBands || [];
     const count = Math.max(leftBands.length, rightBands.length);
     for (let index = 0; index < count; index += 1) {
         const leftBand = leftBands[index] || null;
@@ -11735,7 +11735,7 @@ function normalizeLinkedPeqSpecialBands() {
     }
 }
 function updatePeqBand(side, index, field, value) {
-    if (!state.easyeffects?.peqDraft) return;
+    if (!state.dsp?.peqDraft) return;
     const band = ensurePeqBandExists(side, index);
     if (!band) return;
     band[field] = value;
@@ -11771,7 +11771,7 @@ function renderPeqBandColumn(container, side, bands) {
     container.innerHTML = bands.map((band, index) => {
         const isGain = isPeqGainBand(band);
         const isDelay = isPeqDelayBand(band);
-        const otherBands = side === 'right' ? (state.easyeffects?.peqDraft?.leftBands || []) : (state.easyeffects?.peqDraft?.rightBands || []);
+        const otherBands = side === 'right' ? (state.dsp?.peqDraft?.leftBands || []) : (state.dsp?.peqDraft?.rightBands || []);
         const isLinkedSpecialPair = !!getPeqLinkedSpecialType(band, otherBands[index] || null);
         const showRemove = true;
         const fieldIdPrefix = `effects-peq-${side}-${index}`;
@@ -11852,12 +11852,12 @@ function renderPeqBandColumn(container, side, bands) {
     });
 }
 function renderPeqBands() {
-    if (!state.easyeffects?.peqDraft) {
-        state.easyeffects = state.easyeffects || {};
-        state.easyeffects.peqDraft = getDefaultPeqDraft();
+    if (!state.dsp?.peqDraft) {
+        state.dsp = state.dsp || {};
+        state.dsp.peqDraft = getDefaultPeqDraft();
     }
     normalizeLinkedPeqSpecialBands();
-    const draft = state.easyeffects.peqDraft;
+    const draft = state.dsp.peqDraft;
     draft.eqMode = normalizePeqEqMode(draft.eqMode);
     if (elements.effectsPeqModeSelect) elements.effectsPeqModeSelect.value = draft.eqMode;
     renderPeqBandColumn(elements.effectsPeqLeftBands, 'left', draft.leftBands || []);
@@ -11874,7 +11874,7 @@ function readPeqNumberInput(input, fallback) {
 function collectPeqBandsFromDom(side) {
     const container = side === 'right' ? elements.effectsPeqRightBands : elements.effectsPeqLeftBands;
     if (!container) return [];
-    const draftBands = side === 'right' ? (state.easyeffects?.peqDraft?.rightBands || []) : (state.easyeffects?.peqDraft?.leftBands || []);
+    const draftBands = side === 'right' ? (state.dsp?.peqDraft?.rightBands || []) : (state.dsp?.peqDraft?.leftBands || []);
     return Array.from(container.querySelectorAll('[data-peq-band]')).map((bandEl, index) => {
         const draftBand = draftBands[index] || defaultPeqBand();
         const filterType = bandEl.querySelector(`[data-peq-side="${side}"][data-peq-index="${index}"][data-peq-field="filterType"]`)?.value || 'bell';
@@ -11923,9 +11923,9 @@ async function createPeqPreset() {
         return;
     }
     peqCreateInFlight = true;
-    if (!state.easyeffects?.peqDraft) {
-        state.easyeffects = state.easyeffects || {};
-        state.easyeffects.peqDraft = getDefaultPeqDraft();
+    if (!state.dsp?.peqDraft) {
+        state.dsp = state.dsp || {};
+        state.dsp.peqDraft = getDefaultPeqDraft();
     }
     const presetName = elements.effectsPeqPresetName?.value?.trim() || '';
     if (!presetName) {
@@ -11960,14 +11960,14 @@ async function createPeqPreset() {
         showToast(gainError, 'error');
         return;
     }
-    const eqMode = normalizePeqEqMode(elements.effectsPeqModeSelect?.value || state.easyeffects.peqDraft?.eqMode);
-    state.easyeffects.peqDraft.leftBands = leftBands;
-    state.easyeffects.peqDraft.rightBands = rightBands;
-    state.easyeffects.peqDraft.eqMode = eqMode;
+    const eqMode = normalizePeqEqMode(elements.effectsPeqModeSelect?.value || state.dsp.peqDraft?.eqMode);
+    state.dsp.peqDraft.leftBands = leftBands;
+    state.dsp.peqDraft.rightBands = rightBands;
+    state.dsp.peqDraft.eqMode = eqMode;
     if (elements.effectsPeqCreatePresetBtn) elements.effectsPeqCreatePresetBtn.disabled = true;
     if (elements.effectsStatus) elements.effectsStatus.innerHTML = `<div>Creating PEQ preset: <strong>${escapeHtml(presetName)}</strong>…</div>`;
     try {
-        const resp = await fetch('/api/easyeffects/presets/create-peq', {
+        const resp = await fetch('/api/dsp/presets/create-peq', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -12033,7 +12033,7 @@ async function importRewPeqPreset() {
     formData.append('file', file);
     if (elements.effectsStatus) elements.effectsStatus.innerHTML = `<div>Importing REW PEQ: <strong>${escapeHtml(presetName)}</strong>…</div>`;
     try {
-        const resp = await fetch('/api/easyeffects/presets/import-rew-peq', {
+        const resp = await fetch('/api/dsp/presets/import-rew-peq', {
             method: 'POST',
             body: formData,
         });
@@ -12050,7 +12050,7 @@ async function importRewPeqPreset() {
     }
 }
 function renderEffects() {
-    const fx = state.easyeffects;
+    const fx = state.dsp;
     const presets = fx.presets || [];
     const presetNames = presets.map(p => p.name);
     elements.effectsInfo.textContent = fx.available
@@ -12089,7 +12089,7 @@ function getEmptyEffectsCompareState() {
 }
 
 function getEffectsCompareState() {
-    const fx = state.easyeffects || {};
+    const fx = state.dsp || {};
     const compare = normalizeEffectsCompareSelection(fx.compare || getEmptyEffectsCompareState());
     const activePreset = fx.active_preset || '';
     const effectiveActiveSide = getEffectiveEffectsCompareSide(compare, activePreset);
@@ -12141,7 +12141,7 @@ function renderPresetDownloadLink(presetName = '') {
 }
 
 function renderEffectsCompare() {
-    const fx = state.easyeffects;
+    const fx = state.dsp;
     const presetEntries = fx.presets || [];
     const presets = presetEntries.map(p => p.name);
     const presetMap = new Map(presetEntries.map(preset => [preset.name, preset]));
@@ -12222,7 +12222,7 @@ function getEffectsCombineValidationState() {
 }
 
 function renderEffectsCombine() {
-    const fx = state.easyeffects || {};
+    const fx = state.dsp || {};
     const presets = (fx.presets || []).map(p => p.name);
     const draft = fx.combineDraft || getDefaultEffectsCombineDraft();
     if (!elements.effectsCombinePreset1 || !elements.effectsCombinePreset2 || !elements.effectsCombinePreset3 || !elements.effectsCombinePresetName) return;
@@ -12271,7 +12271,7 @@ async function createCombinedEffectsPreset() {
     if (elements.effectsCombineSaveBtn) elements.effectsCombineSaveBtn.disabled = true;
     if (elements.effectsStatus) elements.effectsStatus.innerHTML = `<div>Saving combined preset: <strong>${escapeHtml(validation.presetName)}</strong>…</div>`;
     try {
-        const resp = await fetch('/api/easyeffects/presets/combine', {
+        const resp = await fetch('/api/dsp/presets/combine', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -12281,7 +12281,7 @@ async function createCombinedEffectsPreset() {
         });
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) throw new Error(data.detail || 'Combined preset save failed');
-        state.easyeffects.combineDraft = getDefaultEffectsCombineDraft();
+        state.dsp.combineDraft = getDefaultEffectsCombineDraft();
         await fetchEffects();
         if (elements.effectsStatus) elements.effectsStatus.innerHTML = '';
         showToast(`Created combined preset: ${data.preset.name}`, 'success');
@@ -12297,20 +12297,20 @@ async function loadEffectsComparePreset(target, newSide, targetA, targetB) {
     if (effectsCompareLoadInFlight) return;
     setEffectsCompareLoadBusy(true);
     try {
-        const resp = await fetch('/api/easyeffects/presets/load', {
+        const resp = await fetch('/api/dsp/presets/load', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ preset_name: target }),
         });
         const data = await resp.json();
         if (!resp.ok) throw new Error(data.detail || 'Failed to load preset');
-        state.easyeffects.active_preset = target;
-        state.easyeffects.compare = {
+        state.dsp.active_preset = target;
+        state.dsp.compare = {
             presetA: targetA,
             presetB: targetB,
             activeSide: newSide,
         };
-        await saveEffectsCompareState(state.easyeffects.compare);
+        await saveEffectsCompareState(state.dsp.compare);
         renderEffects();
     } finally {
         setEffectsCompareLoadBusy(false);
@@ -12319,14 +12319,14 @@ async function loadEffectsComparePreset(target, newSide, targetA, targetB) {
 
 async function handleEffectsCompareSelectionChange(slot) {
     if (effectsCompareLoadInFlight) return;
-    state.easyeffects.compare = normalizeEffectsCompareSelection(state.easyeffects.compare || getEmptyEffectsCompareState());
+    state.dsp.compare = normalizeEffectsCompareSelection(state.dsp.compare || getEmptyEffectsCompareState());
 
     const previousCompare = {
-        presetA: state.easyeffects.compare.presetA || '',
-        presetB: state.easyeffects.compare.presetB || '',
-        activeSide: state.easyeffects.compare.activeSide || null,
+        presetA: state.dsp.compare.presetA || '',
+        presetB: state.dsp.compare.presetB || '',
+        activeSide: state.dsp.compare.activeSide || null,
     };
-    const activePreset = state.easyeffects?.active_preset || '';
+    const activePreset = state.dsp?.active_preset || '';
     const effectiveActiveSide = getEffectiveEffectsCompareSide(previousCompare, activePreset);
 
     let targetA = elements.effectsCompareA?.value || '';
@@ -12340,18 +12340,18 @@ async function handleEffectsCompareSelectionChange(slot) {
             targetB = '';
         }
     }
-    state.easyeffects.compare = normalizeEffectsCompareSelection({
+    state.dsp.compare = normalizeEffectsCompareSelection({
         presetA: targetA,
         presetB: targetB,
-        activeSide: state.easyeffects.compare.activeSide || null,
+        activeSide: state.dsp.compare.activeSide || null,
     });
-    await saveEffectsCompareState(state.easyeffects.compare);
+    await saveEffectsCompareState(state.dsp.compare);
 
     const selectedValue = slot === 'A' ? targetA : targetB;
     const shouldAutoload = !!selectedValue && selectedValue !== activePreset && (!effectiveActiveSide || effectiveActiveSide === slot);
 
     if (shouldAutoload) {
-        await loadEffectsComparePreset(selectedValue, slot, state.easyeffects.compare.presetA, state.easyeffects.compare.presetB);
+        await loadEffectsComparePreset(selectedValue, slot, state.dsp.compare.presetA, state.dsp.compare.presetB);
     } else {
         renderEffectsCompare();
     }
@@ -12883,7 +12883,7 @@ function saveSubwooferDebounced(delayMs = SUBWOOFER_COMMIT_DEBOUNCE_MS) {
 }
 
 function loadSavedEffectsExtras() {
-    const fx = state.easyeffects;
+    const fx = state.dsp;
     if (!fx?.global_extras) return;
     applyEffectsExtras({
         limiterEnabled: !!fx.global_extras?.limiter?.enabled,
@@ -12974,22 +12974,22 @@ async function _doSaveEffectsExtras(phase) {
     }
     const extras = collectEffectsExtras();
     try {
-        const resp = await fetch('/api/easyeffects/extras', {
+        const resp = await fetch('/api/dsp/extras', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(extras),
         });
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) throw new Error(data.detail || 'Failed to save output extras');
-        state.easyeffects = state.easyeffects || {};
-        state.easyeffects.global_extras = data.extras || {
+        state.dsp = state.dsp || {};
+        state.dsp.global_extras = data.extras || {
             limiter: { enabled: !!extras.limiterEnabled, params: { thresholdDb: -1.0, attackMs: 5.0, releaseMs: 50.0, lookaheadMs: 5.0, stereoLinkPercent: 100.0 } },
             headroom: { enabled: !!extras.headroomEnabled, params: { gainDb: extras.headroomGainDb } },
             autogain: { enabled: !!extras.autogainEnabled, params: { targetDb: extras.autogainTargetDb } },
             loudness: {
                 enabled: !!extras.loudnessEnabled,
                 params: {
-                    ...(state.easyeffects?.global_extras?.loudness?.params || {}),
+                    ...(state.dsp?.global_extras?.loudness?.params || {}),
                     strength: extras.loudnessStrength,
                     fftSize: extras.loudnessFftSize,
                 },
@@ -13096,7 +13096,7 @@ async function importEffectsPresetJson() {
     const importArea = document.getElementById('effects-import-area');
     if (importArea) importArea.classList.add('is-busy');
     try {
-        const resp = await fetch('/api/easyeffects/presets/import-json', {
+        const resp = await fetch('/api/dsp/presets/import-json', {
             method: 'POST',
             body: formData,
         });
@@ -13134,7 +13134,7 @@ async function importEffectsPresetBundle() {
     const importArea = document.getElementById('effects-import-area');
     if (importArea) importArea.classList.add('is-busy');
     try {
-        const resp = await fetch('/api/easyeffects/presets/import-bundle', {
+        const resp = await fetch('/api/dsp/presets/import-bundle', {
             method: 'POST',
             body: formData,
         });
@@ -13189,7 +13189,7 @@ async function createConvolverPreset() {
     const importArea = document.getElementById('effects-import-area');
     if (importArea) importArea.classList.add('is-busy');
     try {
-        const resp = await fetch('/api/easyeffects/presets/create-with-ir', {
+        const resp = await fetch('/api/dsp/presets/create-with-ir', {
             method: 'POST',
             body: formData,
         });
@@ -13209,7 +13209,7 @@ async function createConvolverPreset() {
     }
 }
 async function deleteEffectsPreset() {
-    const presetName = state.easyeffects.active_preset;
+    const presetName = state.dsp.active_preset;
     if (!presetName) {
         showToast('No active preset to delete', 'warning');
         return;
@@ -13221,7 +13221,7 @@ async function deleteEffectsPreset() {
     if (!confirm(`Delete preset "${presetName}"?`)) return;
     elements.effectsDeleteBtn.disabled = true;
     try {
-        const resp = await fetch('/api/easyeffects/presets/delete', {
+        const resp = await fetch('/api/dsp/presets/delete', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ preset_name: presetName }),

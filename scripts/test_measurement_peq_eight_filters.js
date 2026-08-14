@@ -51,7 +51,7 @@ function extractFunction(name) {
 
 async function main() {
     const requests = [];
-    const state = { measurement: {}, easyeffects: {} };
+    const state = { measurement: {}, dsp: {} };
     const context = {
         state,
         measurementPeqPalette: ['#1', '#2', '#3', '#4'],

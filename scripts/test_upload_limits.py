@@ -143,7 +143,7 @@ class EffectsEndpointLimitTests(unittest.IsolatedAsyncioTestCase):
         )
         with self._recording_tempfile(created):
             with self.assertRaises(HTTPException) as ctx:
-                await main.upload_easyeffects_ir(upload)
+                await main.upload_dsp_ir(upload)
         self.assertEqual(ctx.exception.status_code, 413)
         self.assertEqual(upload.read_sizes, [])
         self.assertTrue(all(not Path(path).exists() for path in created))
@@ -157,7 +157,7 @@ class EffectsEndpointLimitTests(unittest.IsolatedAsyncioTestCase):
         )
         with self._recording_tempfile(created):
             with self.assertRaises(HTTPException) as ctx:
-                await main.upload_easyeffects_ir(upload)
+                await main.upload_dsp_ir(upload)
         self.assertEqual(ctx.exception.status_code, 413)
         self.assertTrue(all(size > 0 for size in upload.read_sizes))
         self.assertTrue(all(not Path(path).exists() for path in created))
@@ -241,7 +241,7 @@ class EffectsEndpointLimitTests(unittest.IsolatedAsyncioTestCase):
             content_length=None,
         )
         with self.assertRaises(HTTPException) as ctx:
-            await main.import_easyeffects_preset_json(upload)
+            await main.import_dsp_preset_json(upload)
         self.assertEqual(ctx.exception.status_code, 413)
 
     async def test_rew_peq_upload_oversized_returns_413(self):

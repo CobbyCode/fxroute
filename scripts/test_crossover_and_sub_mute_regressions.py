@@ -499,7 +499,7 @@ async def _preset_load_reclean_skipped_during_sync() -> None:
         schedule_peak_monitor_refresh_after_effects_change=mock.MagicMock(),
     )
     with stack:
-        await main.load_easyeffects_preset(FakeRequest({"preset_name": "Neutral"}))
+        await main.load_dsp_preset(FakeRequest({"preset_name": "Neutral"}))
     active_runtime._reclean_guarded.assert_not_awaited()
 
     idle_runtime = mock.MagicMock(
@@ -516,7 +516,7 @@ async def _preset_load_reclean_skipped_during_sync() -> None:
         schedule_peak_monitor_refresh_after_effects_change=mock.MagicMock(),
     )
     with stack2:
-        await main.load_easyeffects_preset(FakeRequest({"preset_name": "Neutral"}))
+        await main.load_dsp_preset(FakeRequest({"preset_name": "Neutral"}))
     idle_runtime._reclean_guarded.assert_awaited_once()
     print("preset-load reclean defers to an in-flight subwoofer sync: ok")
 

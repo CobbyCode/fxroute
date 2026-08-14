@@ -208,7 +208,7 @@ class PresetBundleEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(leftovers, [])
 
     async def _import(self, zip_bytes: bytes, *, filename="bundle.zip"):
-        return await main.import_easyeffects_preset_bundle(
+        return await main.import_dsp_preset_bundle(
             FakeUpload(zip_bytes, filename=filename)
         )
 
@@ -341,7 +341,7 @@ class PresetBundleEndpointTests(unittest.IsolatedAsyncioTestCase):
             content_length=main.EASYEEFFECTS_BUNDLE_MAX_BYTES + 1,
         )
         with self.assertRaises(HTTPException) as ctx:
-            await main.import_easyeffects_preset_bundle(upload)
+            await main.import_dsp_preset_bundle(upload)
         self.assertEqual(ctx.exception.status_code, 413)
         self._assert_clean()
 
