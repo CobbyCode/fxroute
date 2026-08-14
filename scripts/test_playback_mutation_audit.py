@@ -189,7 +189,7 @@ def _calls() -> list[tuple[str, int, str, str]]:
 
 def _reason(context: str, name: str) -> str | None:
     leaf = context.rsplit("/", 1)[-1]
-    if leaf == "make_playback_runtime_deps":
+    if leaf in {"make_playback_runtime_deps", "_make_dsp_orchestration_deps"}:
         return "late-bound runtime wiring factory; the referenced mutations are never executed here"
     if leaf in PLAYBACK_ENTRYPOINTS:
         return None

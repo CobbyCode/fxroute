@@ -10,7 +10,7 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SOURCES = {
     file_name: (ROOT / file_name).read_text()
-    for file_name in ("main.py", "playback_queue.py", "measurement_session.py")
+    for file_name in ("main.py", "playback_queue.py", "measurement_session.py", "dsp_orchestration.py")
 }
 TREES = {
     file_name: ast.parse(source)
@@ -86,10 +86,18 @@ class OwnershipStructureTests(unittest.TestCase):
         self.assertIn("measurement_only_restore", body)
 
     def test_watchers_only_request_coordinator_recovery(self):
-        watcher = function_source("_dsp_runtime_link_watch_loop")
-        self.assertIn("_request_coordinated_recovery", watcher)
-        self.assertNotIn("_sync_dsp_runtime(overview)", watcher)
+        # The link watcher implementation now lives in dsp_orchestration.py;
+        # it must still request Coordinator recovery through the injected dep
+        # and must never re-sync the runtime or reclean the graph directly.
+        watcher = function_source("runtime_link_watch_loop")
+        self.assertIn("self._deps.request_coordinated_recovery", watcher)
+        self.assertNotIn("_sync_dsp_runtime", watcher)
+        self.assertNotIn("sync_runtime", watcher)
         self.assertNotIn("_reclean_guarded", watcher)
+
+        # main.py keeps only the thin delegation boundary to the orchestrator.
+        main_watcher = function_source("_dsp_runtime_link_watch_loop")
+        self.assertIn("dsp_orchestrator.runtime_link_watch_loop", main_watcher)
 
     def test_coordinator_module_exists_and_owns_gate_state(self):
         coordinator = (ROOT / "playback_transition.py").read_text()

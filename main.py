@@ -875,6 +875,13 @@ from downloader import Downloader
 from dsp_manager import DSPManager
 from dsp_runtime import DSPRuntime, DSPRuntimeConfig, BassManagementConfig, _contains_link
 import dsp_api
+import dsp_orchestration
+from dsp_orchestration import (
+    DspOrchestrationDeps,
+    DspOrchestrator,
+    helper_argument_sample_rate as _helper_argument_sample_rate,
+    with_subwoofer_derived_delays as _with_subwoofer_derived_delays,
+)
 try:
     from hardware_controller import HardwareController
 except ImportError:
@@ -1148,6 +1155,11 @@ def _set_runtime_track_context(current: dict, last: dict) -> None:
     global current_track_info, last_track_info
     current_track_info = current
     last_track_info = last
+
+
+def _set_peak_monitor_context_signature(value) -> None:
+    global peak_monitor_context_signature
+    peak_monitor_context_signature = value
 
 
 def make_playback_runtime_deps() -> PlaybackRuntimeDependencies:
@@ -3434,54 +3446,9 @@ async def _dump_21_runtime_state(label: str, ui_state: dict | None = None) -> di
 
 async def _sync_dsp_runtime_at_rate(target_rate: int, *, _rate_lock_held: bool = False) -> None:
     """Re-sync through the central live-rate helper path after a rate transition."""
-    global dsp_runtime
-    if dsp_runtime is None:
-        logger.info(
-            "Subwoofer runtime measurement release re-sync skipped: dsp_runtime_missing=true target_rate=%s",
-            target_rate,
-        )
-        return
-    logger.info("Subwoofer runtime measurement release re-sync requested: raw_target_rate=%s", target_rate)
+    await dsp_orchestrator.sync_runtime_at_rate(target_rate, _rate_lock_held=_rate_lock_held)
 
-    # The native DSP runtime owns Stereo as well as subwoofer modes, so a
-    # measurement release re-syncs it at the restore rate for every mode: the
-    # guarded measurement entry may have rebuilt it at the measurement rate
-    # (e.g. the 48 kHz sweep path).  target_rate is diagnostic/stale-check
-    # information only. Do not inject it into an overview: the central sync
-    # reads the authoritative rate again under the sample-rate lock
-    # immediately before deciding to start.
-    if target_rate > 0:
-        selected_aligned, _ = await _wait_for_selected_output_effective_rate(target_rate, timeout_ms=3500)
-        sink_aligned = await _wait_for_samplerate_alignment(target_rate, timeout_ms=3500)
-        if not selected_aligned or not sink_aligned:
-            logger.warning(
-                "Subwoofer runtime measurement release re-sync deferred: target_rate=%s "
-                "selected_output_aligned=%s sink_aligned=%s",
-                target_rate, selected_aligned, sink_aligned,
-            )
-            return
-    await _sync_dsp_runtime(
-        reason="measurement-release", _rate_lock_held=_rate_lock_held,
-    )
-    await asyncio.sleep(0.5)
-    await _sync_dsp_runtime(
-        reason="measurement-release-settle", _rate_lock_held=_rate_lock_held,
-    )
-    runtime_snapshot = dsp_runtime.snapshot()
-    try:
-        samplerate_status = get_samplerate_status()
-    except Exception:
-        samplerate_status = {}
-    logger.info(
-        "Subwoofer runtime measurement release re-sync verified: target_rate=%s authoritative_rate=%s "
-        "hardware_sink_rate=%s active=%s helper_pid=%s helper_rate=%s",
-        target_rate,
-        _authoritative_sample_rate(samplerate_status),
-        samplerate_status.get("active_rate") if isinstance(samplerate_status, dict) else None,
-        runtime_snapshot.get("active"),
-        runtime_snapshot.get("helper_pid"),
-        _helper_argument_sample_rate(runtime_snapshot),
-    )
+
 def _reset_samplerate_drift_observation() -> None:
     global samplerate_drift_signature, samplerate_drift_readbacks
     samplerate_drift_signature = None
@@ -3618,58 +3585,7 @@ async def _observe_playback_samplerate_drift() -> None:
 
 
 async def _dsp_runtime_link_watch_loop() -> None:
-    while True:
-        await asyncio.sleep(2.0)
-        try:
-            if _measurement_audio_graph_owned():
-                logger.debug("Subwoofer link watcher skipped while Measurement owns the audio graph")
-                continue
-            await _observe_playback_samplerate_drift()
-            if dsp_runtime is None:
-                continue
-            overview = get_audio_output_overview()
-            output_mode = overview.get("output_mode") or {}
-            if output_mode.get("mode") not in OUTPUT_MODE_SUBWOOFER_MODES:
-                continue
-            if _playback_transition_is_active():
-                continue
-            if dsp_runtime.sync_in_progress:
-                logger.debug(
-                    "Subwoofer link watcher skipped while a subwoofer runtime reconfiguration is in progress"
-                )
-                continue
-            track = dict(current_track_info or {})
-            if not track:
-                continue
-            source = str(track.get("source") or "")
-            target_rate = _coordinator_target_rate(source, track)
-            diagnosis = await _playback_graph_diagnosis(
-                overview,
-                source=source,
-                target_rate=target_rate,
-                require_source=True,
-            )
-            if diagnosis.get("links_complete"):
-                continue
-            logger.info(
-                "Subwoofer link watcher observed incomplete canonical graph; requesting Coordinator action: "
-                "bypass_only=%s helper_active=%s helper_rate=%s direct_bypass=%s signature=%s",
-                diagnosis.get("bypass_only"),
-                diagnosis.get("helper_active"),
-                diagnosis.get("helper_rate"),
-                diagnosis.get("direct_ee_to_hw_present"),
-                diagnosis.get("signature"),
-            )
-            await _request_coordinated_recovery(
-                track,
-                "subwoofer-link-watcher",
-                graph_only=bool(diagnosis.get("bypass_only")),
-                diagnosis=diagnosis,
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            logger.warning("Subwoofer link watch repair failed: %s", exc)
+    await dsp_orchestrator.runtime_link_watch_loop()
 
 
 def _get_player_audio_samplerate() -> Optional[int]:
@@ -3760,24 +3676,9 @@ async def _sync_dsp_preset_for_playback_samplerate(
     reason: str,
     detail: str = "",
 ) -> None:
-    global dsp_manager
-    if not dsp_manager or not isinstance(sample_rate_hz, int) or sample_rate_hz <= 0:
-        return
-
-    active_preset = dsp_manager.get_active_preset()
-    if not active_preset or active_preset in dsp_manager.EXCLUDED_GLOBAL_EXTRAS_PRESETS:
-        return
-
-    logger.info(
-        "Syncing DSP preset for playback samplerate: preset=%s sample_rate=%s reason=%s detail=%s",
-        active_preset,
-        sample_rate_hz,
-        reason,
-        detail,
+    await dsp_orchestrator.sync_preset_for_playback_samplerate(
+        sample_rate_hz=sample_rate_hz, reason=reason, detail=detail,
     )
-    await _load_dsp_preset(active_preset, convolver_sample_rate_hz=sample_rate_hz)
-    status = dsp_manager.get_status()
-    await manager.broadcast({"type": "dsp", "data": status})
 
 
 
@@ -4282,42 +4183,11 @@ async def sync_peak_monitor_for_source_mode_state(source_overview: dict | None =
 
 
 async def refresh_peak_monitor_after_effects_change(reason: str = "effects-change"):
-    global peak_monitor, peak_monitor_playback_armed, peak_monitor_context_signature, player_instance
-    if not peak_monitor or not peak_monitor_playback_armed:
-        return
-
-    player_state = player_instance.state if player_instance else {}
-    spotify_state = await get_spotify_ui_state()
-    is_local_playing = _is_local_playback_active(player_state)
-    is_spotify_playing = bool(spotify_state.get("available") and spotify_state.get("status") == "Playing")
-
-    if not is_local_playing and not is_spotify_playing:
-        return
-
-    logger.info("Refreshing peak monitor after %s", reason)
-    peak_monitor_context_signature = None
-    await asyncio.sleep(PEAK_MONITOR_RESTART_SETTLE_MS / 1000)
-
-    if is_spotify_playing:
-        await sync_peak_monitor_for_spotify_state(spotify_state)
-    elif is_local_playing:
-        await sync_peak_monitor_for_playback_state(player_state)
-
-
-async def _run_peak_monitor_refresh_after_effects_change(reason: str, timeout: float = 4.0):
-    try:
-        await asyncio.wait_for(refresh_peak_monitor_after_effects_change(reason), timeout=timeout)
-    except asyncio.TimeoutError:
-        logger.warning("Timed out refreshing peak monitor after %s", reason)
-    except Exception as e:
-        logger.warning("Failed refreshing peak monitor after %s: %s", reason, e)
+    await dsp_orchestrator.refresh_peak_monitor_after_effects_change(reason)
 
 
 def schedule_peak_monitor_refresh_after_effects_change(reason: str = "effects-change"):
-    _create_lifecycle_background_task(
-        _run_peak_monitor_refresh_after_effects_change(reason),
-        name=f"peak-monitor-refresh:{reason}",
-    )
+    dsp_orchestrator.schedule_peak_monitor_refresh_after_effects_change(reason)
 
 
 
@@ -5046,14 +4916,6 @@ def _authoritative_sample_rate(status: dict | None) -> int | None:
     return samplerate.authoritative_sample_rate(status)
 
 
-def _helper_argument_sample_rate(snapshot: dict | None) -> int | None:
-    """Extract the native DSP rate from its runtime config."""
-    config = (snapshot or {}).get("config")
-    if isinstance(config, dict) and isinstance(config.get("sample_rate"), int):
-        return config["sample_rate"]
-    return None
-
-
 async def _sync_dsp_runtime(
     audio_overview: dict | None = None,
     *,
@@ -5061,100 +4923,13 @@ async def _sync_dsp_runtime(
     _rate_lock_held: bool = False,
     target_overview: dict | None = None,
 ) -> dict:
-    """Synchronize the native helper from one live, lock-protected rate.
-
-    An overview passed by a transition/release caller is only a stale-check
-    token. The actual helper config is rebuilt after the final live PipeWire
-    read, so a delayed caller cannot restart a helper with its old target.
-    """
-    global dsp_runtime
-    overview_was_supplied = audio_overview is not None
-    overview = audio_overview or get_audio_output_overview()
-
-    if dsp_runtime is None:
-        return overview
-
-    requested_rate = _overview_sample_rate(overview) if overview_was_supplied else None
-
-    async def _sync_locked() -> dict:
-        try:
-            samplerate_status = get_samplerate_status()
-        except Exception as exc:
-            logger.warning(
-                "Subwoofer runtime sync skipped: authoritative samplerate unavailable reason=%s error=%s",
-                reason, exc,
-            )
-            return overview
-
-        authoritative_rate = _authoritative_sample_rate(samplerate_status)
-        if authoritative_rate is None:
-            logger.warning(
-                "Subwoofer runtime sync skipped: authoritative samplerate missing reason=%s requested_rate=%s",
-                reason, requested_rate,
-            )
-            return overview
-
-        sink_rate = samplerate_status.get("active_rate")
-        if sink_rate != authoritative_rate:
-            logger.info(
-                "Subwoofer runtime sync deferred until sink reaches authoritative rate: "
-                "reason=%s requested_rate=%s authoritative_rate=%s hardware_sink_rate=%s",
-                reason, requested_rate, authoritative_rate, sink_rate,
-            )
-            return overview
-
-        current_overview = target_overview or audio_overview or get_audio_output_overview()
-        if requested_rate is not None and requested_rate != authoritative_rate:
-            logger.info(
-                "Native DSP sync stale; restart suppressed: reason=%s requested_rate=%s authoritative_rate=%s",
-                reason, requested_rate, authoritative_rate,
-            )
-            return overview
-        current_overview = _audio_output_overview_with_effective_rate(
-            current_overview, authoritative_rate,
-        )
-        pre_start_status = get_samplerate_status()
-        pre_start_rate = _authoritative_sample_rate(pre_start_status)
-        pre_start_sink_rate = pre_start_status.get("active_rate")
-        if pre_start_rate != authoritative_rate or pre_start_sink_rate != authoritative_rate:
-            logger.info(
-                "Subwoofer runtime sync stale immediately before helper start; restart suppressed: "
-                "reason=%s requested_rate=%s authoritative_rate=%s pre_start_rate=%s pre_start_sink_rate=%s",
-                reason, requested_rate, authoritative_rate, pre_start_rate, pre_start_sink_rate,
-            )
-            return current_overview
-        current_overview = _audio_output_overview_with_effective_rate(
-            current_overview, pre_start_rate,
-        )
-        final_status = get_samplerate_status()
-        final_rate = _authoritative_sample_rate(final_status)
-        if final_rate != authoritative_rate:
-            logger.info(
-                "Native DSP sync stale at start gate; restart suppressed: "
-                "reason=%s requested_rate=%s expected_rate=%s final_rate=%s",
-                reason, requested_rate, authoritative_rate, final_rate,
-            )
-            return current_overview
-        await dsp_runtime.sync(current_overview)
-        return current_overview
-
-    if _rate_lock_held or measurement_sr_session is None:
-        return await _sync_locked()
-    async with measurement_sr_session.lock:
-        return await _sync_locked()
-
-
-def _with_subwoofer_derived_delays(overview: dict) -> dict:
-    output_mode = overview.get("output_mode") or {}
-    if output_mode.get("mode") in OUTPUT_MODE_SUBWOOFER_22_MODES:
-        config = BassManagementConfig.from_overview(overview)
-        overview["output_mode"] = {
-            **output_mode,
-            "derived_main_delay_ms": config.derived_main_delay_ms,
-            "derived_sub1_delay_ms": config.derived_sub1_delay_ms,
-            "derived_sub2_delay_ms": config.derived_sub2_delay_ms,
-        }
-    return overview
+    """Synchronize the native helper from one live, lock-protected rate."""
+    return await dsp_orchestrator.sync_runtime(
+        audio_overview,
+        reason=reason,
+        _rate_lock_held=_rate_lock_held,
+        target_overview=target_overview,
+    )
 
 
 async def _bluetooth_input_monitor_loop() -> None:
@@ -5698,6 +5473,44 @@ def _make_dsp_api_deps() -> dsp_api.DspApiDeps:
         volume_state_for_manager=lambda *args, **kwargs: _volume_state_for_manager(*args, **kwargs),
         apply_volume_actions=lambda *args, **kwargs: _apply_volume_actions(*args, **kwargs),
         schedule_peak_monitor_refresh=lambda reason: schedule_peak_monitor_refresh_after_effects_change(reason),
+    )
+
+
+def _make_dsp_orchestration_deps() -> DspOrchestrationDeps:
+    """Bind the DSP/output orchestration to the application's runtime services.
+
+    All entries resolve module-level names at call time, so tests that patch
+    main.py attributes observe the patched services.
+    """
+    return DspOrchestrationDeps(
+        get_dsp_runtime=lambda: dsp_runtime,
+        get_dsp_manager=lambda: dsp_manager,
+        get_audio_output_overview=lambda: get_audio_output_overview(),
+        get_samplerate_status=lambda: get_samplerate_status(),
+        get_measurement_sr_session=lambda: measurement_sr_session,
+        get_player_instance=lambda: player_instance,
+        get_current_track_info=lambda: current_track_info,
+        get_peak_monitor=lambda: peak_monitor,
+        peak_monitor_playback_armed=lambda: peak_monitor_playback_armed,
+        set_peak_monitor_context_signature=_set_peak_monitor_context_signature,
+        get_spotify_ui_state=lambda *args, **kwargs: get_spotify_ui_state(*args, **kwargs),
+        sync_peak_monitor_for_playback_state=lambda state: sync_peak_monitor_for_playback_state(state),
+        sync_peak_monitor_for_spotify_state=lambda state: sync_peak_monitor_for_spotify_state(state),
+        sync_runtime=lambda *args, **kwargs: _sync_dsp_runtime(*args, **kwargs),
+        refresh_peak_monitor=lambda reason: refresh_peak_monitor_after_effects_change(reason),
+        load_dsp_preset=lambda *args, **kwargs: _load_dsp_preset(*args, **kwargs),
+        broadcast=lambda message: manager.broadcast(message),
+        wait_for_samplerate_alignment=lambda *args, **kwargs: _wait_for_samplerate_alignment(*args, **kwargs),
+        wait_for_selected_output_effective_rate=lambda *args, **kwargs: _wait_for_selected_output_effective_rate(*args, **kwargs),
+        measurement_audio_graph_owned=lambda: _measurement_audio_graph_owned(),
+        observe_playback_samplerate_drift=lambda: _observe_playback_samplerate_drift(),
+        playback_transition_is_active=lambda: _playback_transition_is_active(),
+        coordinator_target_rate=lambda *args, **kwargs: _coordinator_target_rate(*args, **kwargs),
+        playback_graph_diagnosis=lambda *args, **kwargs: _playback_graph_diagnosis(*args, **kwargs),
+        request_coordinated_recovery=lambda *args, **kwargs: _request_coordinated_recovery(*args, **kwargs),
+        create_lifecycle_background_task=lambda coro, *, name: _create_lifecycle_background_task(coro, name=name),
+        peak_monitor_restart_settle_ms=PEAK_MONITOR_RESTART_SETTLE_MS,
+        sleep=lambda delay: asyncio.sleep(delay),
     )
 
 
@@ -7019,6 +6832,7 @@ def run_server():
 
 
 dsp_api.register_dsp_routes(app, _make_dsp_api_deps())
+dsp_orchestrator = DspOrchestrator(_make_dsp_orchestration_deps())
 
 if __name__ == "__main__":
     settings = get_settings()
