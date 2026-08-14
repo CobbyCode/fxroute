@@ -3902,7 +3902,6 @@ async def _apply_volume_actions(
                 await dsp_runtime.set_output_gain_db(float(action.value))
     if extras_dirty and persist_extras and dsp_manager and extras is not None:
         dsp_manager.save_global_extras(extras)
-        dsp_manager.apply_runtime_properties_from_extras(extras)
     return extras
 
 
@@ -3971,16 +3970,12 @@ async def _guarded_effects_transition(previous, candidate, persist_all_presets):
             dsp_manager.apply_global_extras_to_all_presets(candidate)
             if persist_all_presets else
             dsp_manager.apply_global_extras_to_active_preset(candidate))
-        dsp_manager.apply_runtime_properties_from_extras(candidate)
 
     await dsp_runtime.guarded_rebuild(
         overview,
         guard_db=guard_db,
         apply_candidate=persist_candidate,
-        apply_previous=lambda: (
-            dsp_manager.save_global_extras(previous),
-            dsp_manager.apply_runtime_properties_from_extras(previous),
-        ),
+        apply_previous=lambda: dsp_manager.save_global_extras(previous),
         settle_seconds=settle,
         candidate_extras=candidate,
         previous_extras=previous,
@@ -6692,11 +6687,8 @@ async def _restore_volume_state(manager, start: volume_contract.VolumeState) -> 
     extras.setdefault("loudness", {}).setdefault("params", {})["volumeDb"] = float(start.volume_db)
     extras.setdefault("loudness", {})["enabled"] = bool(start.loudness_enabled)
     save = getattr(manager, "save_global_extras", None)
-    apply_runtime = getattr(manager, "apply_runtime_properties_from_extras", None)
     if callable(save):
         save(extras)
-    if callable(apply_runtime):
-        apply_runtime(extras)
     if (manager.get_active_preset() or "") != start.preset:
         if hasattr(manager, "active_preset"):
             manager.active_preset = start.preset

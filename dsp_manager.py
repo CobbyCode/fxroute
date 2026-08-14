@@ -246,10 +246,6 @@ class DSPManager:
         )
         self._bootstrap()
         self._migrate_legacy_extras()
-        self._runtime_properties = self.state_store.read("runtime.json", {})
-        if not isinstance(self._runtime_properties, dict):
-            self._runtime_properties = {}
-        self._seed_runtime_properties()
 
     def _migrate_legacy_extras(self) -> None:
         """Import EasyEffects-era global extras once, before any extras.json exists.
@@ -350,7 +346,6 @@ class DSPManager:
             self.apply_callback({"operation": "load_preset", "preset": name, "config": config})
         self.state_store.write("active.json", {"schema": "fxroute.dsp.active", "version": 1,
                                                "preset": name})
-        self._seed_runtime_properties()
 
     def normalize_compare_state(self, compare: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         compare = compare if isinstance(compare, dict) else {}
@@ -408,30 +403,12 @@ class DSPManager:
         normalized = self.normalize_effects_extras(extras)
         if self.runtime_transition_callback:
             return self.runtime_transition_callback(previous, normalized, persist_all_presets)
-        self.apply_runtime_properties_from_extras(normalized)
         return (self.apply_global_extras_to_all_presets(normalized) if persist_all_presets
                 else self.apply_global_extras_to_active_preset(normalized))
 
     def apply_loudness_strength_runtime(self, previous_extras: Dict[str, Any],
                                         extras: Dict[str, Any]) -> Dict[str, Any]:
         return self.apply_autogain_loudness_runtime(previous_extras, extras)
-
-    def apply_runtime_properties_from_extras(self, extras: Dict[str, Any]) -> None:
-        """Write the live AutoGain/Loudness work point into the runtime readback.
-
-        Called after a guarded transition has confirmed the candidate engine
-        state (and by the rollback path with the previous extras), so
-        read_loudness_runtime()/read_autogain_runtime() always report the
-        confirmed state instead of stale seeded values.
-        """
-        normalized = self.normalize_effects_extras(extras)
-        autogain = self._autogain_plugin_payload(normalized["autogain"])
-        loudness = self._loudness_plugin_payload(normalized["loudness"], normalized["autogain"])
-        for plugin, values in (("autogain", autogain), ("loudness", loudness)):
-            for name, value in values.items():
-                if name in {"bypass", "target", "fft", "volume", "output-gain"}:
-                    runtime_name = "outputGain" if name == "output-gain" else name
-                    self.set_active_plugin_property(plugin, 0, runtime_name, value)
 
     def loudness_transition_guard_db(self, previous_extras: Dict[str, Any],
                                      candidate_extras: Dict[str, Any]) -> float:
@@ -464,53 +441,6 @@ class DSPManager:
         current = copy.deepcopy(previous)
         current["loudness"]["params"]["volumeDb"] = max(-80.0, min(0.0, float(volume_db)))
         return self.apply_autogain_loudness_runtime(previous, current, persist_all_presets=False)
-
-    @staticmethod
-    def _property_key(plugin_name: str, instance_id: int, property_name: str) -> str:
-        return f"{plugin_name}#{int(instance_id)}.{property_name}"
-
-    def _seed_runtime_properties(self) -> None:
-        extras = self.load_global_extras()
-        values = {
-            "autogain#0.target": self._autogain_plugin_payload(extras["autogain"])["target"],
-            "autogain#0.bypass": self._autogain_plugin_payload(extras["autogain"])["bypass"],
-            "loudness#0.volume": self._loudness_plugin_payload(extras["loudness"], extras["autogain"])["volume"],
-            "loudness#0.outputGain": self._loudness_plugin_payload(extras["loudness"], extras["autogain"])["output-gain"],
-            "loudness#0.bypass": self._loudness_plugin_payload(extras["loudness"], extras["autogain"])["bypass"],
-        }
-        for key, value in values.items():
-            self._runtime_properties.setdefault(key, value)
-        self.state_store.write("runtime.json", self._runtime_properties)
-
-    def set_active_plugin_property(self, plugin_name: str, instance_id: int,
-                                   property_name: str, value: int | float | bool) -> None:
-        if not isinstance(value, bool):
-            value = float(value)
-            if not math.isfinite(value):
-                raise ValueError("DSP runtime property must be finite")
-        event = {"operation": "set_property", "plugin": plugin_name,
-                 "instance": int(instance_id), "property": property_name, "value": value}
-        if self.apply_callback:
-            self.apply_callback(event)
-        self._runtime_properties[self._property_key(plugin_name, instance_id, property_name)] = value
-        self.state_store.write("runtime.json", self._runtime_properties)
-
-    def get_active_plugin_property(self, plugin_name: str, instance_id: int,
-                                   property_name: str) -> str:
-        key = self._property_key(plugin_name, instance_id, property_name)
-        if key not in self._runtime_properties:
-            raise KeyError(f"Unknown DSP runtime property: {key}")
-        value = self._runtime_properties[key]
-        return str(value).lower() if isinstance(value, bool) else format(float(value), ".15g")
-
-    def read_loudness_runtime(self) -> Dict[str, Any]:
-        return {"volume": float(self.get_active_plugin_property("loudness", 0, "volume")),
-                "output_gain": float(self.get_active_plugin_property("loudness", 0, "outputGain")),
-                "bypass": self.get_active_plugin_property("loudness", 0, "bypass") == "true"}
-
-    def read_autogain_runtime(self) -> Dict[str, Any]:
-        return {"target": float(self.get_active_plugin_property("autogain", 0, "target")),
-                "bypass": self.get_active_plugin_property("autogain", 0, "bypass") == "true"}
 
     def _notify_active_config(self) -> None:
         if self.apply_callback:

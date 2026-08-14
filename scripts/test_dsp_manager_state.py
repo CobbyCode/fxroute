@@ -50,24 +50,21 @@ class DSPManagerStateTests(unittest.TestCase):
         self.assertEqual(compare["activeSide"], "B")
         self.assertEqual(DSPManager(home=self.home).load_compare_state(), compare)
 
-    def test_runtime_properties_are_owned_locally_and_applied(self):
-        calls = []
-        manager = DSPManager(home=self.home, apply_callback=calls.append)
-        manager.set_active_plugin_property("loudness", 0, "outputGain", -4.5)
-        self.assertEqual(manager.get_active_plugin_property("loudness", 0, "outputGain"), "-4.5")
-        self.assertEqual(calls[-1]["operation"], "set_property")
-        self.assertEqual(calls[-1]["property"], "outputGain")
-        self.assertEqual(manager.read_loudness_runtime()["output_gain"], -4.5)
+    def test_manager_does_not_own_runtime_state(self):
+        # Live/confirmed DSP state is owned by DSPRuntime; the manager only
+        # holds persistent configuration.  No runtime mirror file or readback
+        # API may exist on the manager.
+        manager = DSPManager(home=self.home)
+        self.assertFalse(manager.state_store.read("runtime.json", None))
+        self.assertFalse(hasattr(manager, "read_loudness_runtime"))
+        self.assertFalse(hasattr(manager, "read_autogain_runtime"))
+        self.assertFalse(hasattr(manager, "set_active_plugin_property"))
 
-    def test_failed_apply_does_not_acknowledge_runtime_or_preset_state(self):
+    def test_failed_apply_does_not_acknowledge_preset_state(self):
         def reject(_event):
             raise RuntimeError("engine rejected update")
 
         manager = DSPManager(home=self.home, apply_callback=reject)
-        old_gain = manager.get_active_plugin_property("loudness", 0, "outputGain")
-        with self.assertRaisesRegex(RuntimeError, "engine rejected"):
-            manager.set_active_plugin_property("loudness", 0, "outputGain", -9)
-        self.assertEqual(manager.get_active_plugin_property("loudness", 0, "outputGain"), old_gain)
         with self.assertRaisesRegex(RuntimeError, "engine rejected"):
             manager.load_preset("Direct")
         self.assertEqual(manager.get_active_preset(), "Neutral")

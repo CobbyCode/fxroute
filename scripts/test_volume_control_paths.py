@@ -629,9 +629,6 @@ class DSPExtrasVolumeTests(unittest.IsolatedAsyncioTestCase):
                 order.append("apply")
                 raise RuntimeError("preset write failed")
 
-            def apply_runtime_properties_from_extras(self, extras):
-                return extras
-
             def save_global_extras(self, extras):
                 return extras
 
@@ -829,9 +826,6 @@ class _FakeVolumeManager:
     def save_global_extras(self, extras):
         self.extras = copy.deepcopy(extras)
         self.saved.append(copy.deepcopy(extras))
-
-    def apply_runtime_properties_from_extras(self, extras):
-        pass
 
     def load_preset(self, preset_name, **_kwargs):
         self.active_preset = preset_name

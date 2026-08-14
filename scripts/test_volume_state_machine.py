@@ -261,9 +261,6 @@ class _RecordingManager:
     def loudness_percent_from_db(self, volume_db):
         return system_volume.volume_db_to_percent(volume_db)
 
-    def apply_runtime_properties_from_extras(self, extras):
-        self.runtime_properties.append(copy.deepcopy(extras))
-
     def apply_global_extras_to_all_presets(self, extras):
         self.save_global_extras(extras)
         return {"extras": copy.deepcopy(self.extras), "updated": 1, "skipped": ["Direct"], "runtime_applied": False}

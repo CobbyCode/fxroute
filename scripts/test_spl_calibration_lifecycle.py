@@ -278,21 +278,16 @@ class SplCalibrationLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
     def test_restore_failure_does_not_skip_other_resources(self):
         class Manager:
-            def __init__(self):
-                self.values = {
-                    ("autogain", "bypass"): "true",
-                    ("loudness", "outputGain"): "0",
-                    ("loudness", "bypass"): "true",
+            temporary_runtime_transition_callback = object()
+
+            def load_global_extras(self):
+                return {
+                    "autogain": {"enabled": True, "params": {}},
+                    "loudness": {"enabled": True, "params": {}},
                 }
-                self.writes = []
 
-            def get_active_plugin_property(self, plugin, _instance, name):
-                return self.values[(plugin, name)]
-
-            def set_active_plugin_property(self, plugin, _instance, name, value):
-                self.writes.append((plugin, name, value))
-                if plugin == "autogain":
-                    raise RuntimeError("autogain restore failed")
+            def apply_temporary_effects_runtime(self, _previous, _candidate):
+                raise RuntimeError("native transition failed")
 
         manager = Manager()
         main.dsp_manager = manager
@@ -304,35 +299,38 @@ class SplCalibrationLifecycleTests(unittest.IsolatedAsyncioTestCase):
             kind="manual-noise",
             session_job_id="spl-calibration:restore",
             restore_state={
-                "autogain_bypass": False,
-                "loudness_bypass": False,
-                "loudness_output_gain": 12.5,
+                "native_effects_extras": {
+                    "autogain": {"enabled": True, "params": {}},
+                    "loudness": {"enabled": True, "params": {}},
+                },
+                "neutral_effects_extras": {
+                    "autogain": {"enabled": False, "params": {}},
+                    "loudness": {"enabled": False, "params": {}},
+                },
                 "system_volume_percent": 37,
             },
         )
 
-        with mock.patch.object(spl_calibration.time, "sleep", return_value=None):
-            spl_calibration._restore_spl_calibration_audio(operation)
+        spl_calibration._restore_spl_calibration_audio(operation)
 
         self.assertEqual(volume_writes, [37])
-        self.assertIn(("loudness", "outputGain", 12.5), manager.writes)
-        self.assertIn(("loudness", "bypass", False), manager.writes)
         self.assertIsNone(operation.restore_state)
 
     def test_cleanup_preserves_newer_external_gain_and_volume(self):
         class Manager:
+            temporary_runtime_transition_callback = object()
+
             def __init__(self):
-                self.writes = []
+                self.transitions = []
 
-            def get_active_plugin_property(self, plugin, _instance, name):
+            def load_global_extras(self):
                 return {
-                    ("autogain", "bypass"): "false",
-                    ("loudness", "outputGain"): "4.0",
-                    ("loudness", "bypass"): "false",
-                }[(plugin, name)]
+                    "autogain": {"enabled": True, "params": {}},
+                    "loudness": {"enabled": True, "params": {}},
+                }
 
-            def set_active_plugin_property(self, plugin, _instance, name, value):
-                self.writes.append((plugin, name, value))
+            def apply_temporary_effects_runtime(self, previous, candidate):
+                self.transitions.append((previous, candidate))
 
         manager = Manager()
         main.dsp_manager = manager
@@ -344,9 +342,14 @@ class SplCalibrationLifecycleTests(unittest.IsolatedAsyncioTestCase):
             kind="manual-noise",
             session_job_id="spl-calibration:stale",
             restore_state={
-                "autogain_bypass": True,
-                "loudness_bypass": True,
-                "loudness_output_gain": 0.0,
+                "native_effects_extras": {
+                    "autogain": {"enabled": True, "params": {}},
+                    "loudness": {"enabled": True, "params": {}},
+                },
+                "neutral_effects_extras": {
+                    "autogain": {"enabled": False, "params": {}},
+                    "loudness": {"enabled": False, "params": {}},
+                },
                 "system_volume_percent": 37,
             },
         )
@@ -354,7 +357,10 @@ class SplCalibrationLifecycleTests(unittest.IsolatedAsyncioTestCase):
         spl_calibration._restore_spl_calibration_audio(operation)
 
         self.assertEqual(volume_writes, [])
-        self.assertEqual(manager.writes, [])
+        self.assertEqual(len(manager.transitions), 1)
+        self.assertFalse(manager.transitions[0][0]["loudness"]["enabled"])
+        self.assertTrue(manager.transitions[0][1]["loudness"]["enabled"])
+        self.assertIsNone(operation.restore_state)
 
     def test_panel_close_always_requests_idempotent_server_stop(self):
         app = (

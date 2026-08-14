@@ -5,6 +5,7 @@
 # global AutoGain/Bass settings must survive the move to the native DSP
 # state, exactly once, without overwriting newer state.
 
+import copy
 import json
 import sys
 import tempfile
@@ -111,14 +112,25 @@ class DSPMigrationTests(unittest.TestCase):
         self.assertEqual(reloaded.load_global_extras()["loudness"]["params"]["volumeDb"], -33.0)
         self.assertFalse(reloaded.state_store.read("migration.json", {}).get("extras_migrated"))
 
-    def test_calibration_flows_into_runtime_readback_after_migration(self):
+    def test_calibration_flows_into_confirmed_work_point_after_migration(self):
         self.write_legacy(LEGACY_EXTRAS)
         manager = DSPManager(home=self.home)
+        extras = manager.load_global_extras()
         payload = manager._loudness_plugin_payload(
+            extras["loudness"], extras["autogain"])
+        expected = manager._loudness_plugin_payload(
             manager.normalize_effects_extras(LEGACY_EXTRAS)["loudness"],
             manager.normalize_effects_extras(LEGACY_EXTRAS)["autogain"])
-        self.assertTrue(math_isclose(
-            manager.read_loudness_runtime()["volume"], float(payload["volume"])))
+        self.assertTrue(math_isclose(float(payload["volume"]), float(expected["volume"])))
+        # The legacy calibration profile is part of the persisted extras, so
+        # the confirmed work point reflects it without any runtime mirror.
+        uncalibrated = copy.deepcopy(extras)
+        uncalibrated["loudness"]["params"]["calibration"] = {}
+        uncalibrated["loudness"]["params"]["calibrationProfiles"] = {}
+        uncalibrated_payload = manager._loudness_plugin_payload(
+            manager.normalize_effects_extras(uncalibrated)["loudness"],
+            manager.normalize_effects_extras(uncalibrated)["autogain"])
+        self.assertFalse(math_isclose(float(payload["volume"]), float(uncalibrated_payload["volume"])))
 
 
 def math_isclose(a, b):

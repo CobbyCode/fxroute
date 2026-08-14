@@ -20,6 +20,21 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from dsp_manager import DSPManager
+from dsp_runtime import DSPRuntime
+
+
+class FakeProcess:
+    returncode = None
+    pid = 4242
+
+    def terminate(self):
+        self.returncode = 0
+
+    def kill(self):
+        self.returncode = -9
+
+    async def wait(self):
+        return self.returncode
 
 
 def extras(strength, *, volume_db=-25.212984202991393, calibration_db=17.6):
@@ -41,6 +56,11 @@ class LoudnessRuntimeContractTests(unittest.TestCase):
     def setUp(self):
         self.home = Path(tempfile.mkdtemp(prefix="fxroute-loudness-contract-"))
         self.manager = DSPManager(home=self.home)
+        self.runtime = DSPRuntime(self.manager, binary="fxroute-dsp")
+        self.runtime._process = FakeProcess()
+
+    def running_readback(self, extras=None):
+        return self.runtime.read_loudness_runtime(extras)
 
     def payload_level_db(self, extras_payload):
         normalized = self.manager.normalize_effects_extras(extras_payload)
@@ -107,7 +127,6 @@ class LoudnessRuntimeContractTests(unittest.TestCase):
         candidate["loudness"]["params"]["strength"] = 7
 
         def transition(old, new, persist_all):
-            self.manager.apply_runtime_properties_from_extras(new)
             return self.manager.apply_global_extras_to_all_presets(new)
 
         self.manager.runtime_transition_callback = transition
@@ -116,10 +135,10 @@ class LoudnessRuntimeContractTests(unittest.TestCase):
             self.manager.normalize_effects_extras(candidate)["loudness"],
             self.manager.normalize_effects_extras(candidate)["autogain"])
         self.assertTrue(math.isclose(
-            self.manager.read_loudness_runtime()["volume"], float(payload["volume"]), abs_tol=1e-9))
+            self.running_readback()["volume"], float(payload["volume"]), abs_tol=1e-9))
         self.assertTrue(math.isclose(
-            self.manager.read_loudness_runtime()["output_gain"], float(payload["output-gain"]), abs_tol=1e-9))
-        self.assertFalse(self.manager.read_loudness_runtime()["bypass"])
+            self.running_readback()["output_gain"], float(payload["output-gain"]), abs_tol=1e-9))
+        self.assertFalse(self.running_readback()["bypass"])
 
     def test_failed_transition_leaves_readback_on_previous_state(self):
         previous = self.manager.load_global_extras()
@@ -135,44 +154,43 @@ class LoudnessRuntimeContractTests(unittest.TestCase):
             self.manager.apply_autogain_loudness_runtime(previous, candidate)
         expected = self.manager._autogain_plugin_payload(previous["autogain"])
         self.assertTrue(math.isclose(
-            self.manager.read_autogain_runtime()["target"], float(expected["target"]), abs_tol=1e-9))
-        self.assertEqual(self.manager.read_autogain_runtime()["bypass"], expected["bypass"])
+            self.runtime.read_autogain_runtime()["target"], float(expected["target"]), abs_tol=1e-9))
+        self.assertEqual(self.runtime.read_autogain_runtime()["bypass"], expected["bypass"])
 
     def test_rollback_contract_restores_previous_readback(self):
         # Mirrors the production guarded transition: the transition applies
         # the candidate, the engine settle fails, and the rollback path
-        # (apply_previous) restores the previous extras and readback state.
+        # (apply_previous) restores the previous extras, which the readback
+        # derives its work point from.
         previous = self.manager.load_global_extras()
         candidate = copy.deepcopy(previous)
         candidate["loudness"]["enabled"] = True
         candidate["loudness"]["params"]["volumeDb"] = -30.0
 
         def transition_applies_then_fails(_old, new, _persist_all):
-            self.manager.apply_runtime_properties_from_extras(new)
+            self.manager.apply_global_extras_to_all_presets(new)
             raise RuntimeError("settle failed; rollback required")
 
         self.manager.runtime_transition_callback = transition_applies_then_fails
         with self.assertRaisesRegex(RuntimeError, "rollback required"):
             self.manager.apply_autogain_loudness_runtime(previous, candidate)
-        # The guarded rollback executes apply_previous: extras + readback.
+        # The guarded rollback executes apply_previous: extras restore.
         self.manager.save_global_extras(previous)
-        self.manager.apply_runtime_properties_from_extras(previous)
         previous_payload = self.manager._loudness_plugin_payload(
             self.manager.normalize_effects_extras(previous)["loudness"],
             self.manager.normalize_effects_extras(previous)["autogain"])
         self.assertTrue(math.isclose(
-            self.manager.read_loudness_runtime()["volume"], float(previous_payload["volume"]), abs_tol=1e-9))
+            self.running_readback()["volume"], float(previous_payload["volume"]), abs_tol=1e-9))
         self.assertTrue(math.isclose(
-            self.manager.read_loudness_runtime()["output_gain"], float(previous_payload["output-gain"]), abs_tol=1e-9))
+            self.running_readback()["output_gain"], float(previous_payload["output-gain"]), abs_tol=1e-9))
 
-    def test_runtime_properties_survive_manager_reload(self):
+    def test_confirmed_work_point_survives_manager_reload(self):
         previous = self.manager.load_global_extras()
         candidate = copy.deepcopy(previous)
         candidate["loudness"]["enabled"] = True
         candidate["loudness"]["params"]["volumeDb"] = -15.0
 
         def transition(old, new, persist_all):
-            self.manager.apply_runtime_properties_from_extras(new)
             return self.manager.apply_global_extras_to_all_presets(new)
 
         self.manager.runtime_transition_callback = transition
@@ -181,8 +199,19 @@ class LoudnessRuntimeContractTests(unittest.TestCase):
         payload = self.manager._loudness_plugin_payload(
             self.manager.normalize_effects_extras(candidate)["loudness"],
             self.manager.normalize_effects_extras(candidate)["autogain"])
+        runtime = DSPRuntime(reloaded, binary="fxroute-dsp")
+        runtime._process = FakeProcess()
         self.assertTrue(math.isclose(
-            reloaded.read_loudness_runtime()["volume"], float(payload["volume"]), abs_tol=1e-9))
+            runtime.read_loudness_runtime()["volume"], float(payload["volume"]), abs_tol=1e-9))
+
+    def test_readback_requires_a_running_engine(self):
+        # The native engine is the authority on liveness: without a running
+        # process there is no confirmed live state to report.
+        runtime = DSPRuntime(self.manager, binary="fxroute-dsp")
+        with self.assertRaisesRegex(RuntimeError, "engine is not active"):
+            runtime.read_loudness_runtime()
+        with self.assertRaisesRegex(RuntimeError, "engine is not active"):
+            runtime.read_autogain_runtime()
 
 
 if __name__ == "__main__":

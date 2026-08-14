@@ -16,12 +16,15 @@ from spl_calibration import _SplCalibrationOperation
 
 
 class FakeDSPManager:
-    def get_active_plugin_property(self, plugin, index, name):
-        if name == "outputGain":
-            return "0.0"
-        return "true"
+    temporary_runtime_transition_callback = object()
 
-    def set_active_plugin_property(self, *_args, **_kwargs):
+    def load_global_extras(self):
+        return {
+            "autogain": {"enabled": True, "params": {}},
+            "loudness": {"enabled": True, "params": {}},
+        }
+
+    def apply_temporary_effects_runtime(self, previous, candidate):
         pass
 
 

@@ -16,7 +16,7 @@ import socket
 import shlex
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Sequence
+from typing import Any, Awaitable, Callable, Mapping, Sequence
 
 DSP_NODE_NAME = "fxroute_dsp"
 DSP_INGRESS_MONITOR_NODE = "fxroute_dsp_sink"
@@ -284,6 +284,36 @@ class DSPRuntime:
     @property
     def sync_in_progress(self) -> bool:
         return self._lock.locked()
+
+    def _engine_running(self) -> bool:
+        return self._process is not None and getattr(self._process, "returncode", None) is None
+
+    def read_loudness_runtime(self,
+                              extras: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        """Return the confirmed Loudness work point for the given extras.
+
+        The work point is a deterministic derivation of the confirmed extras
+        (the manager's persisted extras unless ``extras`` is passed).  The
+        engine is the authority on liveness: without a running native engine
+        there is no confirmed live state to report.
+        """
+        if not self._engine_running():
+            raise RuntimeError("Native DSP engine is not active; Loudness runtime readback is unavailable")
+        source = self.manager.load_global_extras() if extras is None else extras
+        normalized = self.manager.normalize_effects_extras(dict(source))
+        payload = self.manager._loudness_plugin_payload(normalized["loudness"], normalized["autogain"])
+        return {"volume": float(payload["volume"]), "output_gain": float(payload["output-gain"]),
+                "bypass": bool(payload["bypass"])}
+
+    def read_autogain_runtime(self,
+                              extras: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        """Return the confirmed AutoGain work point for the given extras."""
+        if not self._engine_running():
+            raise RuntimeError("Native DSP engine is not active; AutoGain runtime readback is unavailable")
+        source = self.manager.load_global_extras() if extras is None else extras
+        normalized = self.manager.normalize_effects_extras(dict(source))
+        payload = self.manager._autogain_plugin_payload(normalized["autogain"])
+        return {"target": float(payload["target"]), "bypass": bool(payload["bypass"])}
 
     async def _reclean_guarded(self, skip_if_locked: bool = False) -> bool:
         if skip_if_locked and self._lock.locked():

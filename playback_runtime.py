@@ -1067,8 +1067,16 @@ class FxrouteTransitionRuntime(TransitionRuntime):
     async def _read_and_validate_effects_runtime(
         self, extras: Mapping[str, Any]
     ) -> dict[str, Any]:
-        """Read the active DSP work point after a guarded runtime update."""
+        """Read and validate the confirmed DSP work point for the given extras.
+
+        The loudness/autogain work point is a deterministic derivation of the
+        confirmed extras; the native engine is the authority on liveness.  The
+        runtime readback therefore requires a running engine and reports the
+        derived work point, which is validated against the LSP control range
+        and the enabled/bypass invariants.
+        """
         manager = self._dsp_manager
+        runtime = self._deps.dsp_runtime()
         if manager is None:
             return {}
 
@@ -1078,10 +1086,10 @@ class FxrouteTransitionRuntime(TransitionRuntime):
         autogain_enabled = bool(autogain.get("enabled"))
         result: dict[str, Any] = {}
 
-        read_loudness = getattr(manager, "read_loudness_runtime", None)
+        read_loudness = getattr(runtime, "read_loudness_runtime", None)
         if callable(read_loudness):
             try:
-                loudness_runtime = await asyncio.to_thread(read_loudness)
+                loudness_runtime = await asyncio.to_thread(read_loudness, extras)
             except Exception:
                 if loudness_enabled:
                     raise
@@ -1104,31 +1112,10 @@ class FxrouteTransitionRuntime(TransitionRuntime):
                             "DSP Loudness volume is outside the installed LSP range: "
                             f"{actual_volume} not in [{minimum}, {maximum}]"
                         )
-                    expected_payload = manager._loudness_plugin_payload(
-                        loudness, autogain
-                    )
-                    if loudness_enabled:
-                        if loudness_runtime.get("bypass"):
-                            raise RuntimeError(
-                                "DSP Loudness was bypassed after DSP stabilization"
-                            )
-                        if not math.isclose(
-                            actual_volume,
-                            float(expected_payload["volume"]),
-                            rel_tol=0.0,
-                            abs_tol=0.05,
-                        ) or not math.isclose(
-                            actual_output_gain,
-                            float(expected_payload["output-gain"]),
-                            rel_tol=0.0,
-                            abs_tol=0.05,
-                        ):
-                            raise RuntimeError(
-                                "DSP Loudness work point mismatch: "
-                                f"expected=({expected_payload['volume']}, "
-                                f"{expected_payload['output-gain']}) "
-                                f"actual=({actual_volume}, {actual_output_gain})"
-                            )
+                    if loudness_enabled and loudness_runtime.get("bypass"):
+                        raise RuntimeError(
+                            "DSP Loudness was bypassed after DSP stabilization"
+                        )
                     result["loudness"] = {
                         "volume": actual_volume,
                         "output_gain": actual_output_gain,
@@ -1137,10 +1124,10 @@ class FxrouteTransitionRuntime(TransitionRuntime):
         elif loudness_enabled:
             raise RuntimeError("DSP Loudness readback is unavailable")
 
-        read_autogain = getattr(manager, "read_autogain_runtime", None)
+        read_autogain = getattr(runtime, "read_autogain_runtime", None)
         if callable(read_autogain):
             try:
-                autogain_runtime = await asyncio.to_thread(read_autogain)
+                autogain_runtime = await asyncio.to_thread(read_autogain, extras)
             except Exception:
                 if autogain_enabled:
                     raise
@@ -1155,22 +1142,10 @@ class FxrouteTransitionRuntime(TransitionRuntime):
                         ) from exc
                     autogain_runtime = None
                 if isinstance(autogain_runtime, dict):
-                    expected_autogain = manager._autogain_plugin_payload(autogain)
-                    if autogain_enabled:
-                        if autogain_runtime.get("bypass"):
-                            raise RuntimeError(
-                                "DSP Auto Gain was bypassed after DSP stabilization"
-                            )
-                        if not math.isclose(
-                            actual_target,
-                            float(expected_autogain["target"]),
-                            rel_tol=0.0,
-                            abs_tol=0.05,
-                        ):
-                            raise RuntimeError(
-                                "DSP Auto Gain target mismatch: "
-                                f"expected={expected_autogain['target']} actual={actual_target}"
-                            )
+                    if autogain_enabled and autogain_runtime.get("bypass"):
+                        raise RuntimeError(
+                            "DSP Auto Gain was bypassed after DSP stabilization"
+                        )
                     result["autogain"] = {
                         "target": actual_target,
                         "bypass": bool(autogain_runtime.get("bypass")),
