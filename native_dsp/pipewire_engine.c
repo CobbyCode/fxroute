@@ -177,8 +177,11 @@ static void on_process(void *data, struct spa_io_position *position) {
         if (!input[i]) complete = 0;
     }
     for (unsigned i = 0; i < fxdsp_outputs(dsp); i++) {
+        /* A hardware output with fewer channels than the engine layout
+         * leaves some output ports unlinked; those buffers are NULL and the
+         * channels are skipped by fxdsp_process_tapped.  They must not
+         * silence the whole engine and the post_effect meter taps. */
         output[i] = pw_filter_get_dsp_buffer(engine->output[i], frames);
-        if (!output[i]) complete = 0;
     }
     for (unsigned i = 0; i < 2; i++) {
         post_effect[i] = pw_filter_get_dsp_buffer(engine->post_effect[i], frames);

@@ -115,13 +115,72 @@ def test_pipewire_process_callback_has_no_non_rt_operations():
     assert all(call not in body for call in forbidden)
 
 
-def test_pipewire_process_callback_silences_partial_port_cycles():
+def test_pipewire_process_callback_tolerates_unlinked_output_ports():
     source = (NATIVE / "pipewire_engine.c").read_text()
     start = source.index("static void on_process")
     body = source[start:source.index("\n}", start)]
     assert "if (!input[i]) complete = 0;" in body
-    assert "if (!output[i]) complete = 0;" in body
+    assert "if (!output[i]) complete = 0;" not in body
     assert "memset(output[i], 0, frames * sizeof *output[i])" in body
+
+
+def test_partially_linked_outputs_keep_processing_and_meter_taps(tmp_path):
+    harness = tmp_path / "partial_links_test.c"
+    binary = tmp_path / "partial_links_test"
+    config = tmp_path / "dsp.conf"
+    config.write_text(
+        "rate 48000\n"
+        "inputs 2\n"
+        "outputs 4\n"
+        "matrix 0 0 1\n"
+        "matrix 1 1 1\n"
+        "matrix 2 0 1\n"
+        "matrix 3 1 1\n"
+    )
+    harness.write_text(r'''
+#include "dsp.h"
+#include <math.h>
+#include <stdint.h>
+
+int main(int argc, char **argv) {
+    char error[256];
+    fxdsp *d = fxdsp_load(argv[1], error, sizeof error);
+    float left[4096], right[4096], fl[4096], fr[4096], tap_l[4096], tap_r[4096];
+    const float *input[] = {left, right};
+    /* 4-channel engine layout with only the first two outputs linked, as on
+     * a 2-channel hardware output; the SUB channels have no buffers. */
+    float *output[] = {fl, fr, NULL, NULL};
+    float *tap[] = {tap_l, tap_r};
+    (void)argc;
+    if (!d) return 1;
+    if (fxdsp_outputs(d) != 4) return 2;
+    for (unsigned i = 0; i < 4096; i++) {
+        left[i] = 0.5f * sinf(2.0f * 3.14159265358979323846f * 440.0f * (float)i / 48000.0f);
+        right[i] = 0.25f * sinf(2.0f * 3.14159265358979323846f * 440.0f * (float)i / 48000.0f);
+    }
+    fxdsp_process_tapped(d, input, output, tap, 4096);
+    double main_l = 0, main_r = 0, meter_l = 0, meter_r = 0;
+    for (unsigned i = 1024; i < 4096; i++) {
+        main_l += fl[i] * fl[i]; main_r += fr[i] * fr[i];
+        meter_l += tap_l[i] * tap_l[i]; meter_r += tap_r[i] * tap_r[i];
+    }
+    main_l = sqrt(main_l / 3072); main_r = sqrt(main_r / 3072);
+    meter_l = sqrt(meter_l / 3072); meter_r = sqrt(meter_r / 3072);
+    if (main_l < 0.3 || main_r < 0.1) return 3;
+    if (fabs(meter_l / main_l - 1.0) > 0.01 || fabs(meter_r / main_r - 1.0) > 0.01) return 4;
+    fxdsp_free(d); return 0;
+}
+''')
+    flags = shlex.split(subprocess.check_output(
+        ["pkg-config", "--cflags", "--libs", "libebur128", "lilv-0", "samplerate",
+         "speexdsp"], text=True))
+    subprocess.run([
+        "cc", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-pedantic",
+        "-I", str(NATIVE), str(NATIVE / "dsp.c"), str(NATIVE / "autogain.c"),
+        str(NATIVE / "crystalizer.c"), str(NATIVE / "lv2_host.c"), str(harness),
+        *flags, "-lm", "-o", str(binary),
+    ], check=True)
+    subprocess.run([str(binary), str(config)], check=True)
 
 
 def test_pipewire_engine_exposes_post_effect_pre_matrix_taps():
@@ -192,8 +251,10 @@ if __name__ == "__main__":
         test_atomic_mutes_and_peak_snapshots_work_offline(Path(directory))
     test_pipewire_engine_exposes_non_rt_datagram_control_protocol()
     test_pipewire_process_callback_has_no_non_rt_operations()
-    test_pipewire_process_callback_silences_partial_port_cycles()
+    test_pipewire_process_callback_tolerates_unlinked_output_ports()
     test_pipewire_engine_exposes_post_effect_pre_matrix_taps()
+    with tempfile.TemporaryDirectory() as directory:
+        test_partially_linked_outputs_keep_processing_and_meter_taps(Path(directory))
     with tempfile.TemporaryDirectory() as directory:
         test_post_effect_tap_stays_full_band_before_subwoofer_crossovers(Path(directory))
     print("native DSP control tests passed")

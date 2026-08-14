@@ -803,16 +803,19 @@ void fxdsp_process_tapped(fxdsp *d, const float *const *input, float *const *out
             for(unsigned filter=0;filter<d->out[channel].filter_count;filter++) value=run_biquad(&d->out[channel].filters[filter],value);
             d->scratch[routed][channel][n]=isfinite(value)?value:0.0f;
         }
-        for(unsigned channel=0;channel<d->outputs;channel++) for(size_t n=0;n<count;n++) {
-            output_state *state=&d->out[channel]; float value=d->scratch[routed][channel][n];
-            state->delay_line[state->delay_pos]=value;
-            size_t read=(state->delay_pos+state->delay_size-state->delay)%state->delay_size;
-            value=state->delay_line[read]*state->gain*state->polarity;
-            state->delay_pos=(state->delay_pos+1U)%state->delay_size;
-            value*=bits_float(atomic_load_explicit(&d->output_gain_bits,memory_order_relaxed));
-            if(!isfinite(value)||(mute_mask&(UINT32_C(1)<<channel)))value=0.0f;
-            output[channel][offset+n]=value;float magnitude=fabsf(value);if(magnitude>state->peak)state->peak=magnitude;
-            update_peak(&d->peak_bits[channel],magnitude);state->square_sum+=value*value;state->meter_frames++;
+        for(unsigned channel=0;channel<d->outputs;channel++) {
+            if(!output[channel])continue; /* unlinked hardware output channel */
+            for(size_t n=0;n<count;n++) {
+                output_state *state=&d->out[channel]; float value=d->scratch[routed][channel][n];
+                state->delay_line[state->delay_pos]=value;
+                size_t read=(state->delay_pos+state->delay_size-state->delay)%state->delay_size;
+                value=state->delay_line[read]*state->gain*state->polarity;
+                state->delay_pos=(state->delay_pos+1U)%state->delay_size;
+                value*=bits_float(atomic_load_explicit(&d->output_gain_bits,memory_order_relaxed));
+                if(!isfinite(value)||(mute_mask&(UINT32_C(1)<<channel)))value=0.0f;
+                output[channel][offset+n]=value;float magnitude=fabsf(value);if(magnitude>state->peak)state->peak=magnitude;
+                update_peak(&d->peak_bits[channel],magnitude);state->square_sum+=value*value;state->meter_frames++;
+            }
         }
     }
 }
