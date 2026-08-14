@@ -2712,13 +2712,16 @@ def _post_start_graph_links_are_repairable(
         return False
     if diagnosis.get("direct_ee_to_hw_present"):
         return False
-    if diagnosis.get("mode") in OUTPUT_MODE_SUBWOOFER_MODES:
-        if diagnosis.get("helper_ports") is not True:
-            return False
-        if diagnosis.get("helper_active") is not True:
-            return False
-        if diagnosis.get("helper_rate_matches") is not True:
-            return False
+    # Helper lifecycle and rate are part of the canonical commit predicate for
+    # every output mode: subwoofer_runtime is the complete native DSPRuntime
+    # (Stereo included), so an inactive or stale-rate runtime is never link-only
+    # drift regardless of mode.
+    if diagnosis.get("helper_ports") is not True:
+        return False
+    if diagnosis.get("helper_active") is not True:
+        return False
+    if diagnosis.get("helper_rate_matches") is not True:
+        return False
 
     identities = {
         str(port)
