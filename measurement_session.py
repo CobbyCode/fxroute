@@ -5,9 +5,8 @@
 Owns the guarded MeasurementSampleRateSession (48 kHz measurement entry and
 coordinator-backed restore), the captured-playback snapshot, the
 measurement-entry/pre-arm helpers and the /api/measurements* endpoints.
-The store, session instance and cross-domain admission check are supplied by
-the composition root. Audio-graph operations still delegate to main's
-transition runtime because that remains the owner of playback orchestration.
+Every application service is supplied by the composition root through
+:class:`MeasurementServices`, so this module never imports ``main``.
 """
 
 import asyncio
@@ -42,6 +41,7 @@ from samplerate import (
     OUTPUT_MODE_SUBWOOFER_MODES,
 )
 from dsp_runtime import DEFAULT_SAMPLE_RATE, BassManagementConfig
+from library import path_within_root
 
 logger = logging.getLogger(__name__)
 
@@ -59,11 +59,45 @@ class MeasurementEntryInvalidated(Exception):
 
 @dataclass(frozen=True)
 class MeasurementServices:
+    """Application services injected from main.py.
+
+    The DSP runtime and player accessors are lifecycle-owned; the
+    measurement store/session, playback transition coordinator and DSP
+    orchestrator are persistent singletons; the remaining entries are
+    late-bound callables/accessors into playback orchestration.
+    """
+
     get_store: Callable[[], Any]
     get_session: Callable[[], Any]
     auto_sub_active: Callable[[], bool]
     get_dsp_runtime: Callable[[], Any]
     get_player: Callable[[], Any]
+    get_samplerate_status: Callable[[], dict]
+    get_audio_output_overview: Callable[[], dict]
+    # Playback orchestration state and callbacks.
+    get_current_track_info: Callable[[], Any]
+    get_playback_transition_coordinator: Callable[[], Any]
+    get_dsp_orchestrator: Callable[[], Any]
+    get_playback_intent_generation: Callable[[], Any]
+    run_coordinated_transition: Callable[..., Awaitable[Any]]
+    coordinator_current_playback_context: Callable[[], Awaitable[Any]]
+    begin_playback_transition_attempt: Callable[[], Any]
+    end_playback_transition_attempt: Callable[[], None]
+    get_current_pipewire_force_rate: Callable[[], Any]
+    set_pipewire_force_rate: Callable[[Any], None]
+    ensure_playback_samplerate_force: Callable[..., Awaitable[Any]]
+    wait_for_samplerate_alignment: Callable[..., Awaitable[Any]]
+    reconcile_transition_sink_rate: Callable[..., Awaitable[Any]]
+    playback_graph_diagnosis: Callable[..., Awaitable[Any]]
+    log_playback_graph_diagnosis: Callable[..., None]
+    measurement_restore_intent_matches_live_state: Callable[..., Awaitable[Any]]
+    spotify_snapshot_identity_values: Callable[..., Any]
+    spotify_target_track_from_state: Callable[..., Any]
+    get_player_audio_samplerate: Callable[..., Any]
+    pulse_suspend_sink_for_samplerate: Callable[..., None]
+    audio_output_overview_with_effective_rate: Callable[..., Any]
+    spotify_prearm_sample_rate_hz: Any
+    pipewire_handoff_poll_interval_ms: Any
 
 
 _services: MeasurementServices | None = None
@@ -151,11 +185,10 @@ class MeasurementSampleRateSession:
         return captured
 
     async def _start_locked(self, measurement_rate: int) -> int:
-        from main import (
-            get_samplerate_status,
-            _coordinator_current_playback_context,
-            _run_coordinated_transition,
-        )
+        services = _measurement_services()
+        get_samplerate_status = services.get_samplerate_status
+        _coordinator_current_playback_context = services.coordinator_current_playback_context
+        _run_coordinated_transition = services.run_coordinated_transition
         if self.active:
             return self.generation
         # Reset old snapshots so a new session always starts fresh.
@@ -314,18 +347,17 @@ class MeasurementSampleRateSession:
         return True
 
     async def _release(self) -> None:
-        from main import (
-            current_track_info,
-            _begin_playback_transition_attempt,
-            playback_transition_coordinator,
-            _end_playback_transition_attempt,
-            _get_current_pipewire_force_rate,
-            _set_pipewire_force_rate,
-            _ensure_playback_samplerate_force,
-            _wait_for_samplerate_alignment,
-            dsp_orchestrator,
-            get_samplerate_status,
-        )
+        services = _measurement_services()
+        current_track_info = services.get_current_track_info()
+        _begin_playback_transition_attempt = services.begin_playback_transition_attempt
+        playback_transition_coordinator = services.get_playback_transition_coordinator()
+        _end_playback_transition_attempt = services.end_playback_transition_attempt
+        _get_current_pipewire_force_rate = services.get_current_pipewire_force_rate
+        _set_pipewire_force_rate = services.set_pipewire_force_rate
+        _ensure_playback_samplerate_force = services.ensure_playback_samplerate_force
+        _wait_for_samplerate_alignment = services.wait_for_samplerate_alignment
+        dsp_orchestrator = services.get_dsp_orchestrator()
+        get_samplerate_status = services.get_samplerate_status
         global _playback_state_before_measurement
 
         policy = samplerate.load_sample_rate_policy()
@@ -527,14 +559,13 @@ def _capture_playback_state_before_measurement(
     Stores source, url/path, id, title, expected_rate, position, and paused
     flag so the controlled restart can restore the user's exact spot.
     """
-    from main import (
-        playback_intent_generation,
-        _get_player_audio_samplerate,
-        _spotify_target_track_from_state,
-        current_track_info,
-        SPOTIFY_PREARM_SAMPLE_RATE_HZ,
-    )
-    measurement_sr_session = _measurement_services().get_session()
+    services = _measurement_services()
+    playback_intent_generation = services.get_playback_intent_generation()
+    _get_player_audio_samplerate = services.get_player_audio_samplerate
+    _spotify_target_track_from_state = services.spotify_target_track_from_state
+    current_track_info = services.get_current_track_info()
+    SPOTIFY_PREARM_SAMPLE_RATE_HZ = services.spotify_prearm_sample_rate_hz
+    measurement_sr_session = services.get_session()
     global _playback_state_before_measurement
     if measurement_sr_session is not None and measurement_sr_session._playback_captured:
         return
@@ -653,17 +684,15 @@ async def _measurement_entry_preflight(
     graph_already_verified: bool = False,
 ) -> None:
     """Validate the guarded measurement state before creating a sweep job."""
-    from main import (
-        playback_transition_coordinator,
-        get_samplerate_status,
-        get_audio_output_overview,
-        _reconcile_transition_sink_rate,
-        _playback_graph_diagnosis,
-        _log_playback_graph_diagnosis,
-    )
     services = _measurement_services()
     measurement_sr_session = services.get_session()
     measurement_store = services.get_store()
+    playback_transition_coordinator = services.get_playback_transition_coordinator()
+    get_samplerate_status = services.get_samplerate_status
+    get_audio_output_overview = services.get_audio_output_overview
+    _reconcile_transition_sink_rate = services.reconcile_transition_sink_rate
+    _playback_graph_diagnosis = services.playback_graph_diagnosis
+    _log_playback_graph_diagnosis = services.log_playback_graph_diagnosis
     coordinator = playback_transition_coordinator
     if coordinator is None:
         raise RuntimeError("PlaybackTransitionCoordinator is not available for measurement entry")
@@ -759,10 +788,9 @@ async def _measurement_restore_snapshot_matches_current_intent(
     snapshot: Mapping[str, Any] | None,
 ) -> bool:
     """Return whether a captured playback snapshot is still user-intended."""
-    from main import (
-        _measurement_restore_intent_matches_live_state,
-        _spotify_snapshot_identity_values,
-    )
+    services = _measurement_services()
+    _measurement_restore_intent_matches_live_state = services.measurement_restore_intent_matches_live_state
+    _spotify_snapshot_identity_values = services.spotify_snapshot_identity_values
     if not snapshot:
         return False
     expected_source = str(snapshot.get("source") or "")
@@ -802,10 +830,9 @@ def _resolve_measurement_start_sample_rate() -> int:
 
 
 async def _wait_for_selected_output_effective_rate(expected_rate: int, timeout_ms: int = 3000) -> tuple[bool, dict]:
-    from main import (
-        get_audio_output_overview,
-        PIPEWIRE_HANDOFF_POLL_INTERVAL_MS,
-    )
+    services = _measurement_services()
+    get_audio_output_overview = services.get_audio_output_overview
+    PIPEWIRE_HANDOFF_POLL_INTERVAL_MS = services.pipewire_handoff_poll_interval_ms
     last_overview: dict = {}
     deadline = time.monotonic() + max(timeout_ms, 0) / 1000
     while time.monotonic() <= deadline:
@@ -845,9 +872,7 @@ def _log_22_measurement_sweep_config(config: BassManagementConfig, snapshot: dic
 
 def _build_measurement_audio_output_context() -> dict:
     """Build audio_output_context metadata for measurement saves."""
-    from main import (
-        get_audio_output_overview,
-    )
+    get_audio_output_overview = _measurement_services().get_audio_output_overview
     context: dict = {}
     try:
         overview = get_audio_output_overview()
@@ -885,13 +910,12 @@ def _build_measurement_audio_output_context() -> dict:
 
 
 async def _sync_dsp_runtime_for_measurement_sweep(measurement_rate: int) -> None:
-    from main import (
-        get_audio_output_overview,
-        get_samplerate_status,
-        _pulse_suspend_sink_for_samplerate,
-        _audio_output_overview_with_effective_rate,
-        dsp_orchestrator,
-    )
+    services = _measurement_services()
+    get_audio_output_overview = services.get_audio_output_overview
+    get_samplerate_status = services.get_samplerate_status
+    _pulse_suspend_sink_for_samplerate = services.pulse_suspend_sink_for_samplerate
+    _audio_output_overview_with_effective_rate = services.audio_output_overview_with_effective_rate
+    dsp_orchestrator = services.get_dsp_orchestrator()
     if _dsp_runtime() is None:
         return None
     overview = get_audio_output_overview()
@@ -1233,9 +1257,6 @@ async def delete_measurement_house_curve(house_curve_id: str):
 
 @router.get("/api/measurements/{measurement_id}/file")
 async def download_measurement_file(measurement_id: str):
-    from main import (
-        _path_within_root,
-    )
     measurement_store = _measurement_services().get_store()
     if not measurement_store:
         raise HTTPException(status_code=503, detail="Measurement store not available")
@@ -1243,7 +1264,7 @@ async def download_measurement_file(measurement_id: str):
     if not measurement:
         raise HTTPException(status_code=404, detail="Measurement not found")
     storage_path = Path(str(measurement.get("storage_path") or "")).resolve()
-    if not _path_within_root(storage_path, measurement_store.measurements_dir):
+    if not path_within_root(storage_path, measurement_store.measurements_dir):
         raise HTTPException(status_code=403, detail="Measurement path outside measurement storage")
     if not storage_path.is_file():
         raise HTTPException(status_code=404, detail="Measurement file missing")

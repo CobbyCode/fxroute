@@ -67,12 +67,38 @@ class _FakeSession:
 
 
 def _services(store, session):
+    """Build a full MeasurementServices; only store/session are exercised."""
     return measurement_session.MeasurementServices(
         get_store=lambda: store,
         get_session=lambda: session,
         auto_sub_active=lambda: False,
         get_dsp_runtime=lambda: None,
         get_player=lambda: None,
+        get_samplerate_status=lambda: {},
+        get_audio_output_overview=lambda: {},
+        get_current_track_info=lambda: None,
+        get_playback_transition_coordinator=lambda: None,
+        get_dsp_orchestrator=lambda: None,
+        get_playback_intent_generation=lambda: 0,
+        run_coordinated_transition=lambda *a, **k: None,
+        coordinator_current_playback_context=lambda: None,
+        begin_playback_transition_attempt=lambda: 0,
+        end_playback_transition_attempt=lambda: None,
+        get_current_pipewire_force_rate=lambda: None,
+        set_pipewire_force_rate=lambda *a, **k: None,
+        ensure_playback_samplerate_force=lambda *a, **k: None,
+        wait_for_samplerate_alignment=lambda *a, **k: None,
+        reconcile_transition_sink_rate=lambda *a, **k: None,
+        playback_graph_diagnosis=lambda *a, **k: None,
+        log_playback_graph_diagnosis=lambda *a, **k: None,
+        measurement_restore_intent_matches_live_state=lambda *a, **k: None,
+        spotify_snapshot_identity_values=lambda *a, **k: set(),
+        spotify_target_track_from_state=lambda *a, **k: {},
+        get_player_audio_samplerate=lambda *a, **k: None,
+        pulse_suspend_sink_for_samplerate=lambda *a, **k: None,
+        audio_output_overview_with_effective_rate=lambda *a, **k: {},
+        spotify_prearm_sample_rate_hz=44100,
+        pipewire_handoff_poll_interval_ms=50,
     )
 
 
@@ -378,13 +404,7 @@ class TestWatcherExitConditions:
             with patch.object(
                 measurement_session,
                 "_measurement_services",
-                return_value=measurement_session.MeasurementServices(
-                    get_store=lambda: None,
-                    get_session=lambda: session,
-                    auto_sub_active=lambda: False,
-                    get_dsp_runtime=lambda: None,
-                    get_player=lambda: None,
-                ),
+                return_value=_services(None, session),
             ):
                 with _fake_sleep():
                     await asyncio.wait_for(

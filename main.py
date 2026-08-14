@@ -1159,13 +1159,47 @@ spl_calibration.configure_runtime(spl_calibration.SplCalibrationDependencies(
         _dsp_mutation_lock(), func
     ),
 ))
-measurement_session.configure_services(MeasurementServices(
-    get_store=lambda: measurement_store,
-    get_session=lambda: measurement_sr_session,
-    auto_sub_active=lambda: autosub.is_optimization_active(),
-    get_dsp_runtime=lambda: runtime.dsp_runtime,
-    get_player=lambda: runtime.player_instance,
-))
+def _make_measurement_services() -> MeasurementServices:
+    """Bind the /api/measurements* module to the application services.
+
+    All entries resolve the current runtime state at call time, so tests that
+    patch main attributes observe the patched services.
+    """
+    return MeasurementServices(
+        get_store=lambda: measurement_store,
+        get_session=lambda: measurement_sr_session,
+        auto_sub_active=lambda: autosub.is_optimization_active(),
+        get_dsp_runtime=lambda: runtime.dsp_runtime,
+        get_player=lambda: runtime.player_instance,
+        get_samplerate_status=lambda *a, **k: get_samplerate_status(*a, **k),
+        get_audio_output_overview=lambda *a, **k: get_audio_output_overview(*a, **k),
+        get_current_track_info=lambda: current_track_info,
+        get_playback_transition_coordinator=lambda: playback_transition_coordinator,
+        get_dsp_orchestrator=lambda: dsp_orchestrator,
+        get_playback_intent_generation=lambda: playback_intent_generation,
+        run_coordinated_transition=lambda *a, **k: _run_coordinated_transition(*a, **k),
+        coordinator_current_playback_context=lambda *a, **k: _coordinator_current_playback_context(*a, **k),
+        begin_playback_transition_attempt=lambda *a, **k: _begin_playback_transition_attempt(*a, **k),
+        end_playback_transition_attempt=lambda *a, **k: _end_playback_transition_attempt(*a, **k),
+        get_current_pipewire_force_rate=lambda *a, **k: _get_current_pipewire_force_rate(*a, **k),
+        set_pipewire_force_rate=lambda *a, **k: _set_pipewire_force_rate(*a, **k),
+        ensure_playback_samplerate_force=lambda *a, **k: _ensure_playback_samplerate_force(*a, **k),
+        wait_for_samplerate_alignment=lambda *a, **k: _wait_for_samplerate_alignment(*a, **k),
+        reconcile_transition_sink_rate=lambda *a, **k: _reconcile_transition_sink_rate(*a, **k),
+        playback_graph_diagnosis=lambda *a, **k: _playback_graph_diagnosis(*a, **k),
+        log_playback_graph_diagnosis=lambda *a, **k: _log_playback_graph_diagnosis(*a, **k),
+        measurement_restore_intent_matches_live_state=lambda *a, **k: _measurement_restore_intent_matches_live_state(*a, **k),
+        spotify_snapshot_identity_values=lambda *a, **k: _spotify_snapshot_identity_values(*a, **k),
+        spotify_target_track_from_state=lambda *a, **k: _spotify_target_track_from_state(*a, **k),
+        get_player_audio_samplerate=lambda *a, **k: _get_player_audio_samplerate(*a, **k),
+        pulse_suspend_sink_for_samplerate=lambda *a, **k: _pulse_suspend_sink_for_samplerate(*a, **k),
+        audio_output_overview_with_effective_rate=lambda *a, **k: _audio_output_overview_with_effective_rate(*a, **k),
+        spotify_prearm_sample_rate_hz=SPOTIFY_PREARM_SAMPLE_RATE_HZ,
+        pipewire_handoff_poll_interval_ms=PIPEWIRE_HANDOFF_POLL_INTERVAL_MS,
+    )
+
+
+measurement_session.configure_services(_make_measurement_services())
 autosub.configure_dependencies(autosub.AutoSubDependencies(
     get_dsp_runtime=lambda: runtime.dsp_runtime,
     get_measurement_store=lambda: measurement_store,
