@@ -27,7 +27,7 @@ from samplerate import (
     get_audio_output_overview,
     set_audio_output_mode,
 )
-from dsp_runtime import SubwooferRuntimeConfig
+from dsp_runtime import BassManagementConfig
 import volume_contract
 
 logger = logging.getLogger(__name__)
@@ -1181,23 +1181,13 @@ async def start_auto_sub_optimize(
             raise HTTPException(status_code=400, detail="Auto Sub Optimize requires 2.1 or 2.2 Subwoofer output mode")
         auto_sub_playback_gain = _capture_auto_sub_playback_gain()
 
-        if output_mode in OUTPUT_MODE_SUBWOOFER_22_MODES:
-            sub1 = _auto_sub_22_sub(mode_state, "sub1")
-            sub2 = _auto_sub_22_sub(mode_state, "sub2")
-            fc = int(mode_state.get("crossover_frequency_hz", 80))
-            current_alignment = float(sub1.get("alignment_ms", 0.0))
-            current_sub2_alignment = float(sub2.get("alignment_ms", 0.0))
-            original_polarity = str(sub1.get("polarity", "normal"))
-            original_level = float(sub1.get("level_db", 0.0))
-            original_highpass = bool(mode_state.get("main_highpass_enabled", True))
-        else:
-            sub = mode_state.get("subwoofer") or {}
-            fc = int(sub.get("crossover_frequency_hz", 80))
-            current_alignment = float(sub.get("sub_alignment_ms", 0.0))
-            current_sub2_alignment = 0.0
-            original_polarity = str(sub.get("sub_polarity", "normal"))
-            original_level = float(sub.get("sub_level_db", 0.0))
-            original_highpass = bool(sub.get("main_highpass_enabled", True))
+        config = BassManagementConfig.from_overview(get_audio_output_overview())
+        fc = config.crossover_frequency_hz
+        current_alignment = config.sub_alignment_ms
+        current_sub2_alignment = config.sub2_alignment_ms if output_mode in OUTPUT_MODE_SUBWOOFER_22_MODES else 0.0
+        original_polarity = config.sub_polarity
+        original_level = config.sub_level_db
+        original_highpass = config.main_highpass_enabled
 
         # Compute scan range
         step_ms = _auto_sub_step_ms(fc)
@@ -1422,7 +1412,7 @@ class AutoSubPeakSafetyError(RuntimeError):
 
 def _auto_sub_stage_peak_prediction(
     *, sweep_profile: dict[str, Any], sample_rate: int, channel: str,
-    config: SubwooferRuntimeConfig, playback_gain: float = 1.0,
+    config: BassManagementConfig, playback_gain: float = 1.0,
 ) -> dict[str, Any]:
     """Run the known measurement PCM through the native DSP topology."""
     rate = int(sample_rate)
@@ -1711,7 +1701,7 @@ async def _measure_auto_sub_candidate(
             }
             set_audio_output_mode(OUTPUT_MODE_SUBWOOFER_21, sub_config)
         if dsp_runtime is not None:
-            config = SubwooferRuntimeConfig.from_overview(get_audio_output_overview())
+            config = BassManagementConfig.from_overview(get_audio_output_overview())
             await dsp_runtime.sync(config)
         _marks["config_set"] = time.monotonic()
         await asyncio.sleep(0.5)
@@ -1777,7 +1767,7 @@ async def _measure_auto_sub_candidate(
         sweep_profile=auto_sub_sweep_profile,
         sample_rate=auto_sub_rate,
         channel=channel,
-        config=SubwooferRuntimeConfig.from_overview(get_audio_output_overview()),
+        config=BassManagementConfig.from_overview(get_audio_output_overview()),
         playback_gain=playback_gain,
     )
     if exact_sub_mute:
@@ -3323,7 +3313,7 @@ async def _run_auto_sub_22_optimize(
             )
             set_audio_output_mode(OUTPUT_MODE_SUBWOOFER_22, sub_config, subwoofers_config)
             if dsp_runtime is not None:
-                config = SubwooferRuntimeConfig.from_overview(get_audio_output_overview())
+                config = BassManagementConfig.from_overview(get_audio_output_overview())
                 await dsp_runtime.sync(config)
             await asyncio.sleep(0.3)
             verify = _load_audio_output_mode()
@@ -3490,7 +3480,7 @@ async def _run_auto_sub_22_optimize(
 
         derived_delays: dict[str, Any] = {}
         try:
-            config = SubwooferRuntimeConfig.from_overview(get_audio_output_overview())
+            config = BassManagementConfig.from_overview(get_audio_output_overview())
             derived_delays = {
                 "derived_main_delay_ms": round(config.derived_main_delay_ms, 2),
                 "derived_sub1_delay_ms": round(config.derived_sub1_delay_ms, 2),
@@ -4119,7 +4109,7 @@ async def _run_auto_sub_22_stereo_optimize(
             )
             set_audio_output_mode(OUTPUT_MODE_SUBWOOFER_22_STEREO, sub_config, subwoofers_config)
             if dsp_runtime is not None:
-                config = SubwooferRuntimeConfig.from_overview(get_audio_output_overview())
+                config = BassManagementConfig.from_overview(get_audio_output_overview())
                 await dsp_runtime.sync(config)
             await asyncio.sleep(0.3)
             apply_ok = _auto_sub_22_verify_alignment(_load_audio_output_mode(), best_left, best_right)
@@ -4135,7 +4125,7 @@ async def _run_auto_sub_22_stereo_optimize(
 
         derived_delays: dict[str, Any] = {}
         try:
-            config = SubwooferRuntimeConfig.from_overview(get_audio_output_overview())
+            config = BassManagementConfig.from_overview(get_audio_output_overview())
             derived_delays = {
                 "derived_main_delay_ms": round(config.derived_main_delay_ms, 2),
                 "derived_sub1_delay_ms": round(config.derived_sub1_delay_ms, 2),
@@ -5106,7 +5096,7 @@ async def _run_auto_sub_optimize(
                 }
                 set_audio_output_mode(OUTPUT_MODE_SUBWOOFER_21, sub_config)
                 if dsp_runtime is not None:
-                    config = SubwooferRuntimeConfig.from_overview(get_audio_output_overview())
+                    config = BassManagementConfig.from_overview(get_audio_output_overview())
                     await dsp_runtime.sync(config)
                 await asyncio.sleep(0.3)
                 verify = _load_audio_output_mode()

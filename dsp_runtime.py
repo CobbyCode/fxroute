@@ -133,8 +133,15 @@ async def _stop_command_child_cancellation_safe(proc, grace_seconds: float) -> b
 
 
 @dataclass(frozen=True)
-class SubwooferRuntimeConfig:
-    """Normalized subwoofer settings used by measurement and AutoSub."""
+class BassManagementConfig:
+    """Canonical normalized output/bass-management configuration.
+
+    ``from_overview`` is the single place that interprets, normalizes and
+    clamps output mode, output selection, sample rate, crossover, Main
+    high-pass, Sub1/Sub2 level/alignment/polarity, derived delays and
+    Mono/Stereo bass routing.  The DSP runtime, measurement and AutoSub all
+    consume this one representation.
+    """
 
     output_mode: str
     output_key: str
@@ -172,7 +179,7 @@ class SubwooferRuntimeConfig:
         return "stereo" if self.output_mode == "subwoofer-2.2-stereo" else "mono"
 
     @classmethod
-    def from_overview(cls, overview: dict[str, Any]) -> "SubwooferRuntimeConfig":
+    def from_overview(cls, overview: dict[str, Any]) -> "BassManagementConfig":
         mode = overview.get("output_mode") or {}
         output = overview.get("selected_output") or overview.get("current_output") or {}
         name = str(mode.get("mode") or "stereo")
@@ -200,13 +207,6 @@ class SubwooferRuntimeConfig:
                    channels, rate, frequency, highpass, levels[0], alignments[0], polarities[0], levels[1], alignments[1], polarities[1])
 
 
-def _number(value: Any, default: float = 0.0) -> float:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return default
-
-
 @dataclass(frozen=True)
 class DSPRuntimeConfig:
     output_mode: str
@@ -217,58 +217,41 @@ class DSPRuntimeConfig:
 
     @classmethod
     def from_overview(cls, overview: dict[str, Any]) -> "DSPRuntimeConfig":
-        mode = overview.get("output_mode") or {}
-        name = str(mode.get("mode") or "stereo")
-        output = overview.get("selected_output") or overview.get("current_output") or {}
-        output_key = str(mode.get("effective_output_key") or output.get("key") or output.get("name") or "")
-        rate = int(mode.get("effective_output_rate") or output.get("active_rate") or overview.get("active_rate") or 48000)
+        bass = BassManagementConfig.from_overview(overview)
         layout = [
             {"name": "FL", "routes": [{"input": 0, "gain": 1.0}]},
             {"name": "FR", "routes": [{"input": 1, "gain": 1.0}]},
         ]
-        channel_count = int(mode.get("effective_output_channels") or output.get("channels") or 0)
         ports = ["playback_FL", "playback_FR"]
-        if channel_count >= 4:
+        if bass.output_channels >= 4:
             ports.extend(("playback_RL", "playback_RR"))
-        if name.startswith("subwoofer-2."):
-            if name.startswith("subwoofer-2.2"):
-                frequency = int(mode.get("crossover_frequency_hz") or 80)
-                subs = mode.get("subwoofers") or {}
-                sub1, sub2 = subs.get("sub1") or {}, subs.get("sub2") or {}
-                align1, align2 = _number(sub1.get("alignment_ms")), _number(sub2.get("alignment_ms"))
-                main_delay = max(0.0, -min(align1, align2))
-                sub_defs = (sub1, sub2)
-                stereo_bass = name == "subwoofer-2.2-stereo"
-            else:
-                sub = mode.get("subwoofer") or {}
-                frequency = int(sub.get("crossover_frequency_hz") or 80)
-                align1 = align2 = _number(sub.get("sub_alignment_ms"))
-                main_delay = max(0.0, -align1)
-                sub_defs = (sub, sub)
-                stereo_bass = False
-            highpass = bool((mode.get("subwoofer") or mode).get("main_highpass_enabled", True))
-            if highpass:
+        if bass.output_mode.startswith("subwoofer-2."):
+            if bass.main_highpass_enabled:
                 for channel in layout:
-                    channel["filters"] = [{"type": "highpass", "frequency_hz": frequency, "q": 0.70710678, "stages": 2}]
+                    channel["filters"] = [{"type": "highpass", "frequency_hz": bass.crossover_frequency_hz, "q": 0.70710678, "stages": 2}]
             for channel in layout:
-                channel["delay_ms"] = main_delay
-            for index, definition in enumerate(sub_defs):
-                alignment = align1 if index == 0 else align2
+                channel["delay_ms"] = bass.derived_main_delay_ms
+            stereo_bass = bass.bass_routing == "stereo"
+            sub_defs = (
+                (bass.sub_level_db, bass.derived_sub1_delay_ms, bass.sub_polarity),
+                (bass.sub2_level_db, bass.derived_sub2_delay_ms, bass.sub2_polarity),
+            )
+            for index, (level_db, delay_ms, polarity) in enumerate(sub_defs):
                 routes = ([{"input": index, "gain": 1.0}] if stereo_bass else
                           [{"input": 0, "gain": 0.5}, {"input": 1, "gain": 0.5}])
                 layout.append({
                     "name": f"SUB{index + 1}", "routes": routes,
-                    "gain_db": _number(definition.get("level_db", definition.get("sub_level_db"))),
-                    "delay_ms": main_delay + alignment if name.startswith("subwoofer-2.2") else max(0.0, alignment),
-                    "invert": str(definition.get("polarity", definition.get("sub_polarity", "normal"))).lower() in {"invert", "inverted", "180"},
-                    "filters": [{"type": "lowpass", "frequency_hz": frequency, "q": 0.70710678, "stages": 2}],
+                    "gain_db": level_db,
+                    "delay_ms": delay_ms,
+                    "invert": polarity == "invert",
+                    "filters": [{"type": "lowpass", "frequency_hz": bass.crossover_frequency_hz, "q": 0.70710678, "stages": 2}],
                 })
         else:
             layout.extend((
                 {"name": "SUB1", "routes": [{"input": 0, "gain": 0.0}]},
                 {"name": "SUB2", "routes": [{"input": 1, "gain": 0.0}]},
             ))
-        return cls(name, output_key, rate, tuple(ports), tuple(layout))
+        return cls(bass.output_mode, bass.output_key, bass.sample_rate, tuple(ports), tuple(layout))
 
 
 class DSPRuntime:

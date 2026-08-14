@@ -894,7 +894,7 @@ from library import (
 )
 from downloader import Downloader
 from dsp_manager import DSPManager
-from dsp_runtime import DSPRuntime, DSPRuntimeConfig, SubwooferRuntimeConfig, _contains_link
+from dsp_runtime import DSPRuntime, DSPRuntimeConfig, BassManagementConfig, _contains_link
 try:
     from hardware_controller import HardwareController
 except ImportError:
@@ -5172,7 +5172,7 @@ async def _sync_dsp_runtime(
 def _with_subwoofer_derived_delays(overview: dict) -> dict:
     output_mode = overview.get("output_mode") or {}
     if output_mode.get("mode") in OUTPUT_MODE_SUBWOOFER_22_MODES:
-        config = SubwooferRuntimeConfig.from_overview(overview)
+        config = BassManagementConfig.from_overview(overview)
         overview["output_mode"] = {
             **output_mode,
             "derived_main_delay_ms": config.derived_main_delay_ms,

@@ -15,7 +15,7 @@ sys.path.insert(0, str(ROOT))
 import main
 import measurement_session
 import autosub
-from dsp_runtime import DSPRuntime, SubwooferRuntimeConfig
+from dsp_runtime import DSPRuntime, BassManagementConfig
 
 
 class FakeProcess:
@@ -32,8 +32,8 @@ class FakeProcess:
         return self.returncode
 
 
-def runtime_config() -> SubwooferRuntimeConfig:
-    return SubwooferRuntimeConfig(
+def runtime_config() -> BassManagementConfig:
+    return BassManagementConfig(
         output_mode="subwoofer-2.1", output_key="mock", output_label="Mock",
         output_channels=4, sample_rate=48_000, crossover_frequency_hz=80,
         main_highpass_enabled=True, sub_level_db=-3.0, sub_alignment_ms=2.0,
@@ -217,7 +217,7 @@ class MainReferenceSnapshotTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(main, "measurement_store", store),
                 patch.object(autosub, "set_audio_output_mode"),
                 patch.object(autosub, "get_audio_output_overview", return_value={}),
-                patch.object(main.SubwooferRuntimeConfig, "from_overview", return_value=runtime_config()),
+                patch.object(main.BassManagementConfig, "from_overview", return_value=runtime_config()),
                 # Pre-arm responsibility moved to _sync_dsp_runtime_for_measurement_sweep.
                 patch.object(measurement_session, "_sync_dsp_runtime_for_measurement_sweep", new_callable=AsyncMock, return_value=None),
                 patch.object(main.asyncio, "sleep", side_effect=no_sleep),

@@ -14,8 +14,8 @@ import autosub
 from measurement import MEASUREMENT_SCOPE_ACTIVE_CHAIN, MEASUREMENT_SCOPE_RAW_HELPER, MeasurementStore
 
 
-def runtime_config() -> main.SubwooferRuntimeConfig:
-    return main.SubwooferRuntimeConfig(
+def runtime_config() -> main.BassManagementConfig:
+    return main.BassManagementConfig(
         output_mode=main.OUTPUT_MODE_SUBWOOFER_21,
         output_key="test-output",
         output_label="Test output",

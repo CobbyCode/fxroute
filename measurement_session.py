@@ -41,7 +41,7 @@ from samplerate import (
     OUTPUT_MODE_SUBWOOFER_22_MODES,
     OUTPUT_MODE_SUBWOOFER_MODES,
 )
-from dsp_runtime import DEFAULT_SAMPLE_RATE, SubwooferRuntimeConfig
+from dsp_runtime import DEFAULT_SAMPLE_RATE, BassManagementConfig
 
 logger = logging.getLogger(__name__)
 
@@ -814,7 +814,7 @@ def _measurement_helper_snapshot_summary(snapshot: dict | None) -> dict:
     return samplerate.measurement_helper_snapshot_summary(snapshot)
 
 
-def _log_22_measurement_sweep_config(config: SubwooferRuntimeConfig, snapshot: dict | None) -> None:
+def _log_22_measurement_sweep_config(config: BassManagementConfig, snapshot: dict | None) -> None:
     if config.output_mode not in OUTPUT_MODE_SUBWOOFER_22_MODES:
         return
     snapshot = snapshot or {}
@@ -844,7 +844,7 @@ def _build_measurement_audio_output_context() -> dict:
         output_mode = overview.get("output_mode") or {}
         mode = str(output_mode.get("mode", "stereo") or "stereo")
         if mode in OUTPUT_MODE_SUBWOOFER_MODES:
-            config = SubwooferRuntimeConfig.from_overview(overview)
+            config = BassManagementConfig.from_overview(overview)
             snapshot = dsp_runtime.snapshot() if dsp_runtime is not None else {}
             context["output_mode"] = mode
             context["output_key"] = config.output_key
@@ -935,7 +935,7 @@ async def _sync_dsp_runtime_for_measurement_sweep(measurement_rate: int) -> None
     after = dsp_runtime.snapshot()
     samplerate_after = get_samplerate_status()
     after_config = after.get("config") or {}
-    runtime_config = SubwooferRuntimeConfig.from_overview(overview)
+    runtime_config = BassManagementConfig.from_overview(overview)
     helper_rate = after_config.get("sample_rate")
     if not after.get("active") or helper_rate != measurement_rate:
         raise RuntimeError(
