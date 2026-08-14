@@ -1166,8 +1166,11 @@ measurement_session.configure_services(MeasurementServices(
     get_dsp_runtime=lambda: runtime.dsp_runtime,
     get_player=lambda: runtime.player_instance,
 ))
-autosub.configure_runtime_dependencies(autosub.AutoSubRuntimeDependencies(
+autosub.configure_dependencies(autosub.AutoSubDependencies(
     get_dsp_runtime=lambda: runtime.dsp_runtime,
+    get_measurement_store=lambda: measurement_store,
+    get_measurement_session=lambda: measurement_sr_session,
+    get_dsp_manager=lambda: dsp_manager,
 ))
 
 def _set_runtime_current_track_info(value: dict | None) -> None:

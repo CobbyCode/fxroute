@@ -45,26 +45,53 @@ router = APIRouter()
 
 
 @dataclass(frozen=True)
-class AutoSubRuntimeDependencies:
-    """Lifecycle-owned runtime accessors injected from main.py."""
+class AutoSubDependencies:
+    """Application services injected from main.py.
+
+    The DSP runtime accessor is lifecycle-owned; the measurement store,
+    measurement sample-rate session and DSP manager are persistent
+    module-scope singletons resolved late-bound at call time.
+    """
 
     get_dsp_runtime: Callable[[], Any]
+    get_measurement_store: Callable[[], Any]
+    get_measurement_session: Callable[[], Any]
+    get_dsp_manager: Callable[[], Any]
 
 
-_autosub_runtime_dependencies: AutoSubRuntimeDependencies | None = None
+_autosub_deps: AutoSubDependencies | None = None
 
 
-def configure_runtime_dependencies(deps: AutoSubRuntimeDependencies) -> None:
-    """Bind the lifecycle-owned runtime accessors used by AutoSub."""
-    global _autosub_runtime_dependencies
-    _autosub_runtime_dependencies = deps
+def configure_dependencies(deps: AutoSubDependencies) -> None:
+    """Bind the application services used by AutoSub."""
+    global _autosub_deps
+    _autosub_deps = deps
+
+
+def _autosub_dependencies() -> AutoSubDependencies:
+    if _autosub_deps is None:
+        raise RuntimeError("AutoSub dependencies are not configured")
+    return _autosub_deps
 
 
 def _dsp_runtime() -> Any:
     """Resolve the native DSP runtime late-bound through the injected accessor."""
-    if _autosub_runtime_dependencies is None:
-        raise RuntimeError("AutoSub runtime dependencies are not configured")
-    return _autosub_runtime_dependencies.get_dsp_runtime()
+    return _autosub_dependencies().get_dsp_runtime()
+
+
+def _measurement_store() -> Any:
+    """Resolve the measurement store late-bound through the injected accessor."""
+    return _autosub_dependencies().get_measurement_store()
+
+
+def _measurement_session() -> Any:
+    """Resolve the measurement sample-rate session late-bound through the injected accessor."""
+    return _autosub_dependencies().get_measurement_session()
+
+
+def _dsp_manager() -> Any:
+    """Resolve the DSP manager late-bound through the injected accessor."""
+    return _autosub_dependencies().get_dsp_manager()
 
 
 def is_optimization_active() -> bool:
@@ -110,7 +137,7 @@ def _start_auto_sub_worker(coro) -> None:
 
 async def shutdown() -> None:
     """Cooperatively cancel and drain all AutoSub-owned tasks."""
-    from main import measurement_store
+    measurement_store = _measurement_store()
 
     for job in _AUTO_SUB_JOBS.values():
         if str(job.get("status") or "") not in {"completed", "failed", "cancelled"}:
@@ -1176,8 +1203,7 @@ def _auto_sub_candidate_ledger(
 
 def _capture_auto_sub_playback_gain() -> dict[str, Any]:
     """Capture one fixed neutral source gain for an AutoSub optimization job."""
-    from main import dsp_manager
-    manager = dsp_manager
+    manager = _dsp_manager()
     loudness_enabled = False
     volume_db = 0.0
     if manager is not None:
@@ -1233,7 +1259,8 @@ async def start_auto_sub_optimize(
     target_curve_snapshot: str = Form(""),
     calibration_file: UploadFile | None = File(None),
 ):
-    from main import measurement_store, measurement_sr_session
+    measurement_store = _measurement_store()
+    measurement_sr_session = _measurement_session()
     global _auto_sub_lock
     if not measurement_store:
         raise HTTPException(status_code=503, detail="Measurement store not available")
@@ -1460,7 +1487,7 @@ async def get_auto_sub_optimize_job(job_id: str):
 
 @router.post("/api/measurements/auto-sub-optimize/jobs/{job_id}/cancel")
 async def cancel_auto_sub_optimize_job(job_id: str):
-    from main import measurement_store
+    measurement_store = _measurement_store()
     job = _AUTO_SUB_JOBS.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Auto Sub Optimize job not found")
@@ -1725,7 +1752,7 @@ async def _measure_auto_sub_candidate(
     exact_sub_mute: bool = False,
 ) -> dict[str, Any]:
     """Measure one AutoSub delay candidate with the standard safety checks."""
-    from main import measurement_store
+    measurement_store = _measurement_store()
     from measurement_session import _sync_dsp_runtime_for_measurement_sweep
     from samplerate import _load_audio_output_mode
 
@@ -2992,7 +3019,7 @@ async def _finish_auto_sub_worker(job: dict[str, Any] | None, job_id: str) -> No
     never overwrite the worker/job outcome (a failed job stays failed, a
     cancelled job stays cancelled).
     """
-    from main import measurement_sr_session
+    measurement_sr_session = _measurement_session()
     try:
         if measurement_sr_session is not None:
             try:
@@ -3036,10 +3063,7 @@ async def _run_auto_sub_22_optimize(
     fine_step_ms: float,
     entry_epoch: int | None = None,
 ) -> None:
-    from main import (
-        measurement_sr_session,
-        measurement_store,
-    )
+    measurement_sr_session = _measurement_session()
     from measurement_session import (
         MeasurementEntryInvalidated,
         _resolve_measurement_start_sample_rate,
@@ -3725,10 +3749,7 @@ async def _run_auto_sub_22_stereo_optimize(
     original_config_snapshot: dict[str, Any],
     entry_epoch: int | None = None,
 ) -> None:
-    from main import (
-        measurement_sr_session,
-        measurement_store,
-    )
+    measurement_sr_session = _measurement_session()
     from measurement_session import (
         MeasurementEntryInvalidated,
         _resolve_measurement_start_sample_rate,
@@ -4842,10 +4863,7 @@ async def _run_auto_sub_optimize(
     original_config_snapshot: dict[str, Any],
     entry_epoch: int | None = None,
 ) -> None:
-    from main import (
-        measurement_sr_session,
-        measurement_store,
-    )
+    measurement_sr_session = _measurement_session()
     from measurement_session import (
         MeasurementEntryInvalidated,
         _resolve_measurement_start_sample_rate,
