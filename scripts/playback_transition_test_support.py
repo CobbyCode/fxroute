@@ -89,7 +89,7 @@ class MainCoreTransitionRuntime:
         attempt_epoch = request.attempt_epoch
         if not isinstance(attempt_epoch, int):
             attempt_epoch = self.generation
-        if attempt_epoch != main.playback_transition_epoch:
+        if attempt_epoch != main.playback_state.playback_transition_epoch:
             raise RuntimeError("stale transition epoch")
         try:
             status = main.get_samplerate_status()

@@ -40,7 +40,12 @@ class _TestAudioHarness:
         self.session: MeasurementSampleRateSession | None = None
 
     def _remember(self, module, name: str) -> None:
-        target = module.runtime if name == "player_instance" else module
+        if name == "player_instance":
+            target = module.runtime
+        elif name == "current_track_info":
+            target = module.playback_state
+        else:
+            target = module
         self._saved[(module.__name__, name)] = (target, getattr(target, name))
 
     def __enter__(self):
@@ -75,7 +80,7 @@ class _TestAudioHarness:
         m._ensure_playback_samplerate_force = self._noop
         m._wait_for_samplerate_alignment = self._noop
         m.playback_transition_coordinator = None
-        m.current_track_info = None
+        m.playback_state.current_track_info = None
         m.runtime.player_instance = None
         m._begin_playback_transition_attempt = lambda: 0
         m._end_playback_transition_attempt = lambda: None

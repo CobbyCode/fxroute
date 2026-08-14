@@ -776,10 +776,10 @@ async def _reconcile_transition_sink_rate(target_rate: int, *, reason: str) -> b
 
 
 def _is_local_playback_active(state: dict | None) -> bool:
-    return playback_state.is_local_playback_active(state)
+    return playback_state_helpers.is_local_playback_active(state)
 
 def _is_spotify_playback_active(state: dict | None) -> bool:
-    return playback_state.is_spotify_playback_active(state)
+    return playback_state_helpers.is_spotify_playback_active(state)
 
 
 def _is_measurement_window_open() -> bool:
@@ -790,7 +790,7 @@ def _is_measurement_window_open() -> bool:
 
 def _build_power_state_payload() -> dict:
     local_state = runtime.player_instance.state if runtime.player_instance else {}
-    spotify_state = latest_spotify_state or {}
+    spotify_state = playback_state.latest_spotify_state or {}
     playback_active = _is_local_playback_active(local_state) or _is_spotify_playback_active(spotify_state)
     measurement_window_open = _is_measurement_window_open()
     if measurement_window_open:
@@ -809,7 +809,7 @@ def _build_power_state_payload() -> dict:
 
 def _has_local_footer_context(state: dict | None) -> bool:
     state = state or {}
-    track = current_track_info or state.get("current_track") or {}
+    track = playback_state.current_track_info or state.get("current_track") or {}
     source = (track or {}).get("source")
     if source not in {"local", "radio"}:
         return False
@@ -821,40 +821,39 @@ def _has_local_footer_context(state: dict | None) -> bool:
     )
 
 
-def _get_authoritative_footer_owner(playback_state: dict | None = None, spotify_state: dict | None = None) -> str:
-    global current_footer_owner, latest_spotify_state
-    playback_state = playback_state or (runtime.player_instance.state if runtime.player_instance else {})
-    spotify_state = spotify_state or latest_spotify_state or {}
+def _get_authoritative_footer_owner(player_state: dict | None = None, spotify_state: dict | None = None) -> str:
+    player_state = player_state or (runtime.player_instance.state if runtime.player_instance else {})
+    spotify_state = spotify_state or playback_state.latest_spotify_state or {}
 
     # A loaded/paused MPV file is only fallback context.  First resolve the
     # sources that are actually producing audio; otherwise a paused Local
     # track would mask a currently playing Spotify client (and vice versa).
-    local_active = _is_local_playback_active(playback_state)
+    local_active = _is_local_playback_active(player_state)
     spotify_active = _is_spotify_playback_active(spotify_state)
     if spotify_active and not local_active:
-        current_footer_owner = "spotify"
-        return current_footer_owner
+        playback_state.current_footer_owner = "spotify"
+        return playback_state.current_footer_owner
     if local_active and not spotify_active:
-        current_footer_owner = "local"
-        return current_footer_owner
+        playback_state.current_footer_owner = "local"
+        return playback_state.current_footer_owner
 
     if local_active and spotify_active:
         # This is an inconsistent dual-active readback.  Keep the already
         # committed owner when possible; it is deterministic and avoids a UI
         # flip while the two source states converge.
-        if current_footer_owner in {"local", "spotify"}:
-            return current_footer_owner
-        current_footer_owner = "spotify"
-        return current_footer_owner
+        if playback_state.current_footer_owner in {"local", "spotify"}:
+            return playback_state.current_footer_owner
+        playback_state.current_footer_owner = "spotify"
+        return playback_state.current_footer_owner
 
     # Neither source is active.  The committed owner is the first fallback;
     # only an unowned loaded MPV context may establish a local fallback.
-    if current_footer_owner in {"local", "spotify"}:
-        return current_footer_owner
-    if _has_local_footer_context(playback_state):
-        current_footer_owner = "local"
-        return current_footer_owner
-    return current_footer_owner or "local"
+    if playback_state.current_footer_owner in {"local", "spotify"}:
+        return playback_state.current_footer_owner
+    if _has_local_footer_context(player_state):
+        playback_state.current_footer_owner = "local"
+        return playback_state.current_footer_owner
+    return playback_state.current_footer_owner or "local"
 
 
 
@@ -866,7 +865,8 @@ from player import get_player, MPVNotInstalledError, normalize_stream_info
 from radio_api import _station_api_payload, router as radio_api_router
 from stations import get_stations
 import sink_inputs
-import playback_state
+import playback_state as playback_state_helpers
+from playback_state import PlaybackState
 import samplerate
 from library import (
     LibraryScanner,
@@ -1079,7 +1079,6 @@ async def _run_locked_worker(lock: asyncio.Lock, func: Callable[..., Any], *args
     async with lock:
         return await _drain_worker(func, *args, **kwargs)
 playback_transition_coordinator: PlaybackTransitionCoordinator | None = None
-coordinator_last_successful_commit_id: str | None = None
 external_input_loopback_module_id = None
 external_input_loopback_source_name = None
 bluetooth_input_source_name = None
@@ -1092,16 +1091,11 @@ spotify_state_poll_task = None
 spotify_playerctl_last_trigger_at = 0.0
 playback_samplerate_force_rate = None
 current_source_mode = SOURCE_MODE_APP_PLAYBACK
-latest_spotify_state = None
-current_footer_owner = "local"
 last_measurement_window_seen_at = 0.0
 silent_active_recovery_attempts: set[str] = set()
 silent_active_watch_tasks: dict[str, asyncio.Task] = {}
 lifecycle_background_tasks: set[asyncio.Task] = set()
 library_refresh_tasks: set[asyncio.Task] = set()
-latest_player_state_seq_seen = 0
-playback_transition_epoch = 0
-playback_transition_pending_attempts = 0
 # Wait primitive for ended callbacks: set once no playback transition
 # is in flight.  asyncio.Event binds to the first used event loop; tests
 # use a fresh loop per test, so the signal is kept per loop (production:
@@ -1118,16 +1112,13 @@ def _playback_settled_event() -> asyncio.Event:
         event.set()
         _playback_settled_events[loop] = event
     return event
-playback_intent_generation = 0
-# Published playback context token: changes ONLY when a new authoritative
-# playback context (local/radio/spotify/queue track) was fully published at
-# the app commit boundary.  Coordinator operations without a source/track
-# change (output-mode, measurement-entry/restore, sample-rate-policy,
-# recovery, graph-reconcile) leave it unchanged; failed attempts too.
-playback_context_commit_id: str | None = None
-current_track_info = None
-last_track_info = None
-last_radio_track_info = None
+
+
+# Single authoritative owner of the mutable playback/transition state
+# (current/last track, Spotify UI state, footer owner, intent generation,
+# transition epoch/pending attempts and the published commit tokens).
+# See playback_state.PlaybackState for the field relationships.
+playback_state = PlaybackState()
 radio_reconnect_task = None
 radio_reconnect_attempts = 0
 radio_reconnect_url = None
@@ -1173,10 +1164,10 @@ def _make_measurement_services() -> MeasurementServices:
         get_player=lambda: runtime.player_instance,
         get_samplerate_status=lambda *a, **k: get_samplerate_status(*a, **k),
         get_audio_output_overview=lambda *a, **k: get_audio_output_overview(*a, **k),
-        get_current_track_info=lambda: current_track_info,
+        get_current_track_info=lambda: playback_state.current_track_info,
         get_playback_transition_coordinator=lambda: playback_transition_coordinator,
         get_dsp_orchestrator=lambda: dsp_orchestrator,
-        get_playback_intent_generation=lambda: playback_intent_generation,
+        get_playback_intent_generation=lambda: playback_state.playback_intent_generation,
         run_coordinated_transition=lambda *a, **k: _run_coordinated_transition(*a, **k),
         coordinator_current_playback_context=lambda *a, **k: _coordinator_current_playback_context(*a, **k),
         begin_playback_transition_attempt=lambda *a, **k: _begin_playback_transition_attempt(*a, **k),
@@ -1208,19 +1199,15 @@ autosub.configure_dependencies(autosub.AutoSubDependencies(
 ))
 
 def _set_runtime_current_track_info(value: dict | None) -> None:
-    global current_track_info
-    current_track_info = value
+    playback_state.current_track_info = value
 
 
 def _set_runtime_current_footer_owner(value: str) -> None:
-    global current_footer_owner
-    current_footer_owner = value
+    playback_state.current_footer_owner = value
 
 
 def _set_runtime_track_context(current: dict, last: dict) -> None:
-    global current_track_info, last_track_info
-    current_track_info = current
-    last_track_info = last
+    playback_state.set_track_context(current, last)
 
 
 def _set_peak_monitor_context_signature(value) -> None:
@@ -1238,10 +1225,10 @@ def make_playback_runtime_deps() -> PlaybackRuntimeDependencies:
         player=lambda: runtime.player_instance,
         dsp_manager=lambda: dsp_manager,
         dsp_runtime=lambda: runtime.dsp_runtime,
-        get_current_track_info=lambda: current_track_info,
+        get_current_track_info=lambda: playback_state.current_track_info,
         set_current_track_info=_set_runtime_current_track_info,
-        get_playback_intent_generation=lambda: playback_intent_generation,
-        get_transition_epoch=lambda: playback_transition_epoch,
+        get_playback_intent_generation=lambda: playback_state.playback_intent_generation,
+        get_transition_epoch=lambda: playback_state.playback_transition_epoch,
         set_footer_owner=_set_runtime_current_footer_owner,
         queue=lambda: playback_queue.queue,
         player_is_running=lambda *a, **k: _player_is_running(*a, **k),
@@ -1291,7 +1278,7 @@ playback_queue.configure_playback_queue(playback_queue.PlaybackQueueDependencies
     player=lambda: runtime.player_instance,
     run_transition=lambda *a, **k: _run_coordinated_transition(*a, **k),
     commit_coordinated_track=lambda *a, **k: _commit_coordinated_track(*a, **k),
-    get_current_track_info=lambda: current_track_info,
+    get_current_track_info=lambda: playback_state.current_track_info,
     set_track_context=_set_runtime_track_context,
     transition_is_active=lambda: _playback_transition_is_active(),
     player_is_running=lambda *a, **k: _player_is_running(*a, **k),
@@ -1306,20 +1293,13 @@ playback_queue.configure_playback_queue(playback_queue.PlaybackQueueDependencies
 
 
 def _begin_playback_transition_attempt() -> int:
-    global playback_transition_epoch, playback_transition_pending_attempts
-    playback_transition_epoch += 1
-    playback_transition_pending_attempts += 1
+    epoch = playback_state.begin_transition_attempt()
     _playback_settled_event().clear()
-    return playback_transition_epoch
+    return epoch
 
 
 def _end_playback_transition_attempt() -> None:
-    global playback_transition_pending_attempts
-    playback_transition_pending_attempts -= 1
-    if playback_transition_pending_attempts < 0:
-        playback_transition_pending_attempts = 0
-        logger.critical("playback transition attempt accounting underflow")
-    if playback_transition_pending_attempts == 0:
+    if playback_state.end_transition_attempt():
         _playback_settled_event().set()
 
 
@@ -1330,9 +1310,7 @@ def _capture_playback_transition_epoch() -> int | None:
     matching the legacy odd/even generation contract: only idle captures may
     ever become a committed context.
     """
-    if playback_transition_pending_attempts > 0:
-        return None
-    return playback_transition_epoch
+    return playback_state.capture_transition_epoch()
 
 
 def _current_playback_commit_id() -> str | None:
@@ -1345,7 +1323,7 @@ def _current_playback_commit_id() -> str | None:
     authoritative playback globals.  It stays unchanged while an attempt is
     running, after it failed, and after non-source-changing commits.
     """
-    return playback_context_commit_id
+    return playback_state.current_playback_commit_id()
 
 
 def _publish_playback_context_commit(commit_token: str | None) -> None:
@@ -1356,9 +1334,7 @@ def _publish_playback_context_commit(commit_token: str | None) -> None:
     await, so the Ended-Waiter can never observe a window with a new token
     but old playback globals (or vice versa).
     """
-    global playback_context_commit_id
-    if commit_token:
-        playback_context_commit_id = str(commit_token)
+    playback_state.publish_playback_context_commit(commit_token)
 
 
 async def _wait_playback_transition_settled() -> None:
@@ -1370,7 +1346,7 @@ async def _wait_playback_transition_settled() -> None:
     counter only reaches zero after the final attempt drained.  Never holds
     the Coordinator lock and never blocks the event loop.
     """
-    while playback_transition_pending_attempts > 0:
+    while playback_state.playback_transition_pending_attempts > 0:
         event = _playback_settled_event()
         if not event.is_set():
             await event.wait()
@@ -1551,7 +1527,7 @@ def _spotify_target_track_from_state(state: Mapping[str, Any]) -> dict[str, Any]
 async def _coordinator_current_playback_context() -> dict[str, Any]:
     """Read the currently owned source without mutating either transport."""
     local_state = dict(runtime.player_instance.state if runtime.player_instance else {})
-    local_track = dict(current_track_info or {})
+    local_track = dict(playback_state.current_track_info or {})
     spotify_state = await get_spotify_ui_state()
     local_active = _is_local_playback_active(local_state)
     spotify_active = _is_spotify_playback_active(spotify_state)
@@ -1581,7 +1557,7 @@ async def _coordinator_current_playback_context() -> dict[str, Any]:
             "should_play": bool(local_state.get("playing") and not local_state.get("paused")),
             "spotify": spotify_state,
         }
-    if current_footer_owner == "spotify" and spotify_state.get("trackId"):
+    if playback_state.current_footer_owner == "spotify" and spotify_state.get("trackId"):
         return {
             "source": "spotify",
             "target_url": str(spotify_state.get("trackId")),
@@ -1617,11 +1593,10 @@ def _playback_transition_is_active() -> bool:
 
 def _coordinator_commit_context_id() -> str | None:
     """Return the newest successful Coordinator commit context."""
-    global coordinator_last_successful_commit_id
     context_id = getattr(playback_transition_coordinator, "last_successful_commit_id", None)
     if context_id:
-        coordinator_last_successful_commit_id = str(context_id)
-    return coordinator_last_successful_commit_id
+        playback_state.coordinator_last_successful_commit_id = str(context_id)
+    return playback_state.coordinator_last_successful_commit_id
 
 
 async def _recovery_context_is_valid(request: TransitionRequest) -> bool:
@@ -1687,7 +1662,7 @@ async def _recovery_context_is_valid(request: TransitionRequest) -> bool:
         return False
     # A paused/loaded committed local context is still a valid context for a
     # graph/rate observation; a missing active file is not.
-    live_track = current_track_info or {}
+    live_track = playback_state.current_track_info or {}
     if live_track:
         if live_track.get("source") != expected_source:
             return False
@@ -1698,8 +1673,7 @@ async def _recovery_context_is_valid(request: TransitionRequest) -> bool:
 
 async def _run_coordinated_transition(request: TransitionRequest):
     """Run one transition under a monotonic attempt epoch."""
-    global playback_transition_epoch, playback_transition_pending_attempts
-    global playback_transition_coordinator, coordinator_last_successful_commit_id
+    global playback_transition_coordinator
     if playback_transition_coordinator is None:
         # Unit callers may invoke an endpoint without running FastAPI's
         # lifespan.  Production still initializes the same singleton during
@@ -1715,7 +1689,7 @@ async def _run_coordinated_transition(request: TransitionRequest):
         if getattr(result, "committed", False):
             transition_id = getattr(result, "transition_id", None)
             if transition_id:
-                coordinator_last_successful_commit_id = str(transition_id)
+                playback_state.coordinator_last_successful_commit_id = str(transition_id)
         return result
     finally:
         # The epoch changes before lock acquisition, so queued successors
@@ -1861,11 +1835,11 @@ async def _request_coordinated_recovery(
         ):
             track["sample_rate_hz"] = result.target_rate
             if (
-                current_track_info
-                and current_track_info.get("source") == source
-                and current_track_info.get("url") == track.get("url")
+                playback_state.current_track_info
+                and playback_state.current_track_info.get("source") == source
+                and playback_state.current_track_info.get("url") == track.get("url")
             ):
-                current_track_info["sample_rate_hz"] = result.target_rate
+                playback_state.current_track_info["sample_rate_hz"] = result.target_rate
         return result
 
     await playback_transition_coordinator.run_recovery(
@@ -1882,8 +1856,7 @@ def _transition_error_http(exc: PlaybackTransitionFailure) -> HTTPException:
 
 def _mark_playback_intent_changed() -> None:
     """Advance the measurement-restore intent token after a user action."""
-    global playback_intent_generation
-    playback_intent_generation += 1
+    playback_state.mark_playback_intent_changed()
 
 
 def _commit_coordinated_track(
@@ -1892,14 +1865,13 @@ def _commit_coordinated_track(
     source: str,
     commit_token: str | None = None,
 ) -> None:
-    global current_track_info, last_track_info, last_radio_track_info, current_footer_owner
     track = dict(track_info)
     _mark_playback_intent_changed()
-    current_track_info = track
-    last_track_info = track
-    current_footer_owner = "spotify" if source == "spotify" else "local"
+    playback_state.current_track_info = track
+    playback_state.last_track_info = track
+    playback_state.current_footer_owner = "spotify" if source == "spotify" else "local"
     if source == "radio":
-        last_radio_track_info = dict(track)
+        playback_state.last_radio_track_info = dict(track)
     if source == "local":
         _record_local_track_started(track)
     _mark_player_state_authoritative(runtime.player_instance.state if runtime.player_instance else {})
@@ -2156,7 +2128,7 @@ manager = ConnectionManager()
 def _current_track_matches(expected_track: dict | None) -> bool:
     if not expected_track:
         return False
-    live_track = current_track_info or {}
+    live_track = playback_state.current_track_info or {}
     if not (
         live_track.get("source") == expected_track.get("source")
         and live_track.get("url") == expected_track.get("url")
@@ -2171,7 +2143,7 @@ def _current_track_matches(expected_track: dict | None) -> bool:
 
 
 def _playback_state_matches_track(state: dict | None, track: dict | None) -> bool:
-    return playback_state.playback_state_matches_track(state, track)
+    return playback_state_helpers.playback_state_matches_track(state, track)
 
 
 async def _wait_for_player_current_file(expected_url: str | None, timeout_ms: int = 1600) -> bool:
@@ -2221,7 +2193,7 @@ def _silent_active_snapshot(
     source: str,
     owner: str,
     track: dict | None,
-    playback_state: dict,
+    player_state: dict,
     spotify_state: dict,
     source_inputs: list[dict],
     all_inputs: list[dict],
@@ -2239,10 +2211,10 @@ def _silent_active_snapshot(
             "url": (track or {}).get("url"),
         },
         "playback": {
-            "playing": playback_state.get("playing"),
-            "paused": playback_state.get("paused"),
-            "current_file": playback_state.get("current_file"),
-            "source_volume": playback_state.get("volume"),
+            "playing": player_state.get("playing"),
+            "paused": player_state.get("paused"),
+            "current_file": player_state.get("current_file"),
+            "source_volume": player_state.get("volume"),
             "output_volume": get_output_volume_safe(100),
         },
         "spotify": {
@@ -2366,16 +2338,16 @@ async def _check_and_recover_silent_active(
     if not runtime.peak_monitor:
         return
 
-    playback_state = runtime.player_instance.state if runtime.player_instance and runtime.player_instance._running else {}
-    live_track = current_track_info or {}
-    owner = current_footer_owner or source
+    player_state = runtime.player_instance.state if runtime.player_instance and runtime.player_instance._running else {}
+    live_track = playback_state.current_track_info or {}
+    owner = playback_state.current_footer_owner or source
     if source in {"local", "radio"}:
         if not track or not _current_track_matches(track):
             return
-        if not _is_local_playback_active(playback_state):
+        if not _is_local_playback_active(player_state):
             return
         source_inputs = _list_mpv_sink_inputs()
-        source_volume = playback_state.get("volume")
+        source_volume = player_state.get("volume")
     elif source == "spotify":
         spotify_state = await get_spotify_ui_state()
         if not _is_spotify_playback_active(spotify_state):
@@ -2450,7 +2422,7 @@ async def _check_and_recover_silent_active(
         source=source,
         owner=owner,
         track=live_track,
-        playback_state=playback_state,
+        player_state=player_state,
         spotify_state=spotify_state or {},
         source_inputs=source_inputs,
         all_inputs=all_inputs,
@@ -2485,11 +2457,7 @@ def _playback_transition_context_is_current(generation: int | None) -> bool:
     that a newer attempt superseded) and can never become current again,
     exactly like a legacy odd-generation capture.
     """
-    return (
-        isinstance(generation, int)
-        and generation == playback_transition_epoch
-        and playback_transition_pending_attempts == 0
-    )
+    return playback_state.transition_context_is_current(generation)
 
 
 
@@ -3251,7 +3219,7 @@ def _local_intent_matches_live_state(
     intent_generation: Any,
 ) -> bool:
     """Return whether the live MPV/local context still matches a captured intent."""
-    live_track = current_track_info or {}
+    live_track = playback_state.current_track_info or {}
     if str(live_track.get("source") or "") != expected_source:
         return False
     if expected_id is not None and live_track.get("id") != expected_id:
@@ -3271,7 +3239,7 @@ def _local_intent_matches_live_state(
 def _measurement_restore_intent_generation_matches(intent_generation: Any) -> bool:
     return not (
         isinstance(intent_generation, int)
-        and intent_generation != playback_intent_generation
+        and intent_generation != playback_state.playback_intent_generation
     )
 
 
@@ -3527,7 +3495,7 @@ async def _observe_playback_samplerate_drift() -> None:
         _reset_samplerate_drift_observation()
         return
 
-    track = dict(current_track_info or {})
+    track = dict(playback_state.current_track_info or {})
     source = str(track.get("source") or "")
     if source not in {"local", "radio"}:
         _reset_samplerate_drift_observation()
@@ -3696,12 +3664,12 @@ async def _wait_for_radio_live_rate_after_load(
     deadline = time.monotonic() + max(timeout_ms, 0) / 1000
     stable_same = 0
     while time.monotonic() <= deadline:
-        if transition_generation != playback_transition_epoch:
+        if transition_generation != playback_state.playback_transition_epoch:
             logger.info(
                 "Radio post-load rate wait aborted: stale transition "
                 "generation=%s current=%s",
                 transition_generation,
-                playback_transition_epoch,
+                playback_state.playback_transition_epoch,
             )
             return None
         rate = _get_player_audio_samplerate()
@@ -3975,36 +3943,36 @@ def build_playback_payload(
     *,
     include_live_metadata: bool = True,
 ) -> dict:
-    global current_track_info, dsp_manager
-    playback_state = dict(state or (runtime.player_instance.state if runtime.player_instance else {}))
-    source_volume = playback_state.get("volume") if isinstance(playback_state.get("volume"), (int, float)) else None
-    if current_track_info and current_track_info.get("source") in {"local", "radio"}:
-        playback_state["source_volume"] = int(round(float(source_volume))) if source_volume is not None else None
+    global dsp_manager
+    player_state = dict(state or (runtime.player_instance.state if runtime.player_instance else {}))
+    source_volume = player_state.get("volume") if isinstance(player_state.get("volume"), (int, float)) else None
+    if playback_state.current_track_info and playback_state.current_track_info.get("source") in {"local", "radio"}:
+        player_state["source_volume"] = int(round(float(source_volume))) if source_volume is not None else None
     elif source_volume is not None:
-        playback_state["source_volume"] = int(round(float(source_volume)))
-    playback_state["volume"] = get_output_volume_safe(int(round(float(source_volume))) if source_volume is not None else 100)
+        player_state["source_volume"] = int(round(float(source_volume)))
+    player_state["volume"] = get_output_volume_safe(int(round(float(source_volume))) if source_volume is not None else 100)
     # Radio: hide stale track from UI when mpv has no active stream.
     # Prevents UI showing a resumable station when the stream connection
     # is dead and mpv is idle (current_file=None, ended=True).
-    _effective_track = current_track_info
+    _effective_track = playback_state.current_track_info
     if _effective_track and _effective_track.get("source") == "radio":
-        cur_file = playback_state.get("current_file")
-        if not cur_file or playback_state.get("ended"):
+        cur_file = player_state.get("current_file")
+        if not cur_file or player_state.get("ended"):
             _effective_track = None
-    playback_state["current_track"] = _playback_track_with_artwork_fields(_effective_track)
-    playback_state["queue"] = playback_queue.queue.payload()
-    playback_state["footer_owner"] = _get_authoritative_footer_owner(playback_state=playback_state)
+    player_state["current_track"] = _playback_track_with_artwork_fields(_effective_track)
+    player_state["queue"] = playback_queue.queue.payload()
+    player_state["footer_owner"] = _get_authoritative_footer_owner(player_state=player_state)
 
     live_title = None
-    if include_live_metadata and runtime.player_instance and current_track_info and current_track_info.get("source") == "radio":
-        metadata = runtime.player_instance.get_metadata() if playback_state.get("current_file") else {}
+    if include_live_metadata and runtime.player_instance and playback_state.current_track_info and playback_state.current_track_info.get("source") == "radio":
+        metadata = runtime.player_instance.get_metadata() if player_state.get("current_file") else {}
         title = (metadata.get("icy-title") or metadata.get("title") or "").strip()
         if title:
             live_title = title
-        playback_state["metadata"] = metadata
+        player_state["metadata"] = metadata
 
-    playback_state["live_title"] = live_title
-    playback_state["output_peak_warning"] = runtime.peak_monitor.snapshot() if runtime.peak_monitor else {
+    player_state["live_title"] = live_title
+    player_state["output_peak_warning"] = runtime.peak_monitor.snapshot() if runtime.peak_monitor else {
         "available": False,
         "detected": False,
         "hold_ms": 0,
@@ -4018,7 +3986,7 @@ def build_playback_payload(
     }
     if playback_transition_coordinator:
         transition_status = playback_transition_coordinator.status()
-        playback_state["transition"] = transition_status
+        player_state["transition"] = transition_status
         gate = transition_status.get("gate") or {}
         if transition_status.get("transition_blocked"):
             # A physical source may still report playing while FXRoute owns a
@@ -4026,9 +3994,9 @@ def build_playback_payload(
             # committed result.  Do not expose that transient as committed
             # normal playback to the UI; the structured transition status is
             # the authoritative state until the gate is released.
-            playback_state["playing"] = False
-            playback_state["safe_muted"] = True
-            playback_state["transition_status"] = (
+            player_state["playing"] = False
+            player_state["safe_muted"] = True
+            player_state["transition_status"] = (
                 "failure-latched"
                 if gate.get("failure_latched")
                 else "transitioning" if transition_status.get("active") else "safe-muted"
@@ -4037,7 +4005,7 @@ def build_playback_payload(
     # Keep playback/status payloads lightweight. The DSP has dedicated
     # endpoints and websocket updates, and pulling full DSP status here
     # can stall frequent /api/status polling during playback.
-    return playback_state
+    return player_state
 
 
 async def _read_status_player_detail(reader: Callable[[], Any], default: Any) -> Any:
@@ -4057,7 +4025,6 @@ async def sync_peak_monitor_for_playback_state(
     state: dict,
     transition_generation: int | None = None,
 ):
-    global current_track_info
     if not runtime.peak_monitor:
         return
     if transition_generation is None:
@@ -4070,15 +4037,15 @@ async def sync_peak_monitor_for_playback_state(
         if not _playback_transition_context_is_current(transition_generation):
             return
         is_active_playback = _is_local_playback_active(state)
-        source = (current_track_info or {}).get("source") or "unknown"
-        state_matches_track = _playback_state_matches_track(state, current_track_info)
+        source = (playback_state.current_track_info or {}).get("source") or "unknown"
+        state_matches_track = _playback_state_matches_track(state, playback_state.current_track_info)
         if is_active_playback and not state_matches_track and runtime.peak_monitor_playback_armed:
             logger.info(
                 "Skipping peak monitor resync during unsettled player transition: source=%s state_file=%s track_url=%s track_id=%s",
                 source,
                 state.get("current_file"),
-                (current_track_info or {}).get("url"),
-                (current_track_info or {}).get("id"),
+                (playback_state.current_track_info or {}).get("url"),
+                (playback_state.current_track_info or {}).get("id"),
             )
             return
         desired_signature = f"player:{source}:{state.get('current_file') or ''}" if is_active_playback else None
@@ -4235,7 +4202,7 @@ async def _radio_reconnect_after_delay(
             return
         if not _playback_transition_context_is_current(transition_generation):
             return
-        if not current_track_info or current_track_info.get("source") != "radio" or current_track_info.get("url") != expected_url:
+        if not playback_state.current_track_info or playback_state.current_track_info.get("source") != "radio" or playback_state.current_track_info.get("url") != expected_url:
             return
         state = runtime.player_instance.state
         if state.get("current_file") and not state.get("ended"):
@@ -4256,7 +4223,7 @@ async def _radio_reconnect_after_delay(
 
 def _schedule_radio_reconnect_if_needed(state: dict) -> None:
     global radio_reconnect_task, radio_reconnect_attempts, radio_reconnect_url, radio_reconnect_active_since
-    track_info = current_track_info or {}
+    track_info = playback_state.current_track_info or {}
     track_url = track_info.get("url")
     if track_info.get("source") != "radio" or not track_url:
         return
@@ -4297,10 +4264,9 @@ def _schedule_radio_reconnect_if_needed(state: dict) -> None:
 
 # Callback functions
 def _mark_player_state_authoritative(state: dict | None) -> None:
-    global latest_player_state_seq_seen
     seq = (state or {}).get("_seq")
     if isinstance(seq, int):
-        latest_player_state_seq_seen = max(latest_player_state_seq_seen, seq)
+        playback_state.latest_player_state_seq_seen = max(playback_state.latest_player_state_seq_seen, seq)
 
 
 def _dispatch_player_state_change(state: dict):
@@ -4320,13 +4286,13 @@ def _dispatch_player_state_change(state: dict):
 
 
 async def on_player_state_change(state: dict, event_commit_id: str | None = None):
-    global queue_advancing, current_track_info, last_track_info, latest_player_state_seq_seen
+    global queue_advancing
     callback_generation = _capture_playback_transition_epoch()
     seq = state.get("_seq")
     if isinstance(seq, int):
-        if seq < latest_player_state_seq_seen:
+        if seq < playback_state.latest_player_state_seq_seen:
             return
-        latest_player_state_seq_seen = seq
+        playback_state.latest_player_state_seq_seen = seq
 
     # Ended ownership: an end-file event may only mutate queue or playback
     # while it still belongs to the currently committed playback context.
@@ -4355,9 +4321,9 @@ async def on_player_state_change(state: dict, event_commit_id: str | None = None
     synced = playback_queue.queue.sync_index_from_mpv(state)
     if synced is not None:
         queue_index, track = synced
-        previous_track = current_track_info or {}
-        current_track_info = track
-        last_track_info = track
+        previous_track = playback_state.current_track_info or {}
+        playback_state.current_track_info = track
+        playback_state.last_track_info = track
         if (
             previous_track.get("source") != track.get("source")
             or previous_track.get("id") != track.get("id")
@@ -4369,16 +4335,16 @@ async def on_player_state_change(state: dict, event_commit_id: str | None = None
         not queue_advancing
         and state.get("ended")
         and not state.get("current_file")
-        and current_track_info
-        and current_track_info.get("source") == "local"
+        and playback_state.current_track_info
+        and playback_state.current_track_info.get("source") == "local"
         and playback_queue.queue.mode != "native_mpv"
     ):
         queue_advancing = True
         try:
             if len(playback_queue.queue.tracks) > 1 and await playback_queue.queue.advance(transition_reason="queue auto-advance") == "advanced":
                 return
-            if playback_queue.queue.single_track_loop and current_track_info and current_track_info.get("url"):
-                loop_track = dict(current_track_info)
+            if playback_queue.queue.single_track_loop and playback_state.current_track_info and playback_state.current_track_info.get("url"):
+                loop_track = dict(playback_state.current_track_info)
                 loop_rate = _coordinator_target_rate("local", loop_track)
                 try:
                     result = await _run_coordinated_transition(TransitionRequest(
@@ -4393,7 +4359,7 @@ async def on_player_state_change(state: dict, event_commit_id: str | None = None
                         detail="single-track-loop",
                     ))
                     if _sample_rate_policy_is_auto() and isinstance(result.target_rate, int) and result.target_rate > 0:
-                        current_track_info["sample_rate_hz"] = result.target_rate
+                        playback_state.current_track_info["sample_rate_hz"] = result.target_rate
                     # A new physical playback instance was committed:
                     # publish only the playback instance token (no
                     # _commit_coordinated_track: its side effects like
@@ -4419,7 +4385,7 @@ async def on_player_state_change(state: dict, event_commit_id: str | None = None
         logger.debug(
             "Discarding stale player callback after playback transition: callback_generation=%s current_generation=%s",
             callback_generation,
-            playback_transition_epoch,
+            playback_state.playback_transition_epoch,
         )
         return
     await manager.broadcast({"type": "playback", "data": build_playback_payload(state)})
@@ -4438,9 +4404,8 @@ async def on_download_progress(progress):
         await manager.broadcast({"type": "download_error", "data": data})
 
 async def broadcast_spotify_state(data=None):
-    global latest_spotify_state
     data = await get_spotify_ui_state(data)
-    latest_spotify_state = data
+    playback_state.latest_spotify_state = data
     await sync_peak_monitor_for_spotify_state(data)
     if _is_spotify_playback_active(data):
         signature_payload = repr(_spotify_state_signature(data)).encode("utf-8", errors="replace")
@@ -4484,11 +4449,10 @@ def _spotify_refresh_should_broadcast(new_state: dict, old_state: Optional[dict]
 
 
 async def _refresh_spotify_state_from_mpris(reason: str, *, force: bool = False) -> None:
-    global latest_spotify_state
     try:
         data = await get_spotify_ui_state()
-        if force or _spotify_refresh_should_broadcast(data, latest_spotify_state):
-            if _spotify_identity_signature(data) != _spotify_identity_signature(latest_spotify_state):
+        if force or _spotify_refresh_should_broadcast(data, playback_state.latest_spotify_state):
+            if _spotify_identity_signature(data) != _spotify_identity_signature(playback_state.latest_spotify_state):
                 logger.info(
                     "Spotify metadata refresh: reason=%s status=%s title=%s artist=%s trackId=%s",
                     reason,
@@ -4499,7 +4463,7 @@ async def _refresh_spotify_state_from_mpris(reason: str, *, force: bool = False)
                 )
             await broadcast_spotify_state(data)
         else:
-            latest_spotify_state = data
+            playback_state.latest_spotify_state = data
     except asyncio.CancelledError:
         raise
     except Exception as exc:
@@ -4526,8 +4490,8 @@ async def _spotify_state_poll_loop() -> None:
     while True:
         try:
             await _refresh_spotify_state_from_mpris("poll-fallback")
-            state = latest_spotify_state or {}
-            active = bool(state.get("available") and (state.get("status") == "Playing" or current_footer_owner == "spotify"))
+            state = playback_state.latest_spotify_state or {}
+            active = bool(state.get("available") and (state.get("status") == "Playing" or playback_state.current_footer_owner == "spotify"))
             await asyncio.sleep(SPOTIFY_STATE_POLL_INTERVAL_SECONDS if active else SPOTIFY_STATE_IDLE_POLL_INTERVAL_SECONDS)
         except asyncio.CancelledError:
             raise
@@ -4558,17 +4522,16 @@ async def _spotify_player_present(timeout: float = 0.8) -> bool:
 
 
 async def pause_spotify_for_local_playback_broadcast():
-    global current_footer_owner, latest_spotify_state
-    current_footer_owner = "local"
+    playback_state.current_footer_owner = "local"
     if not await _spotify_player_present():
-        latest_spotify_state = {
+        playback_state.latest_spotify_state = {
             "available": playerctl_available(),
             "installed": spotify_installed(),
             "source": "spotify",
             "status": "Stopped",
             "footer_owner": "local",
         }
-        await manager.broadcast({"type": "spotify", "data": latest_spotify_state})
+        await manager.broadcast({"type": "spotify", "data": playback_state.latest_spotify_state})
         return
     try:
         import shutil
@@ -4585,12 +4548,11 @@ async def pause_spotify_for_local_playback_broadcast():
 
 
 async def pause_local_playback_for_spotify_broadcast():
-    global current_footer_owner, current_track_info
-    current_footer_owner = "spotify"
+    playback_state.current_footer_owner = "spotify"
     try:
         if runtime.player_instance and runtime.player_instance._running:
             runtime.player_instance.stop_playback()
-            current_track_info = None
+            playback_state.current_track_info = None
             await manager.broadcast({"type": "playback", "data": build_playback_payload(runtime.player_instance.state)})
             released = await _wait_for_pipewire_mpv_release()
             if not released:
@@ -5053,7 +5015,7 @@ async def _spotify_playerctl_event_detect_check(reason: str) -> None:
                     len(spotify_inputs),
                     spotify_rate,
                     sink_rate,
-                    current_footer_owner,
+                    playback_state.current_footer_owner,
                     spotify_state.get("title"),
                 )
                 break
@@ -5070,7 +5032,7 @@ async def _spotify_playerctl_event_detect_check(reason: str) -> None:
                     inputs_count,
                     spotify_rate,
                     sink_rate,
-                    current_footer_owner,
+                    playback_state.current_footer_owner,
                 )
     except asyncio.CancelledError:
         raise
@@ -5156,7 +5118,7 @@ async def _spotify_playerctl_watch_loop() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan: startup and shutdown."""
-    global settings, library_scanner, music_library_manager, library_scan_task, downloader, dsp_manager, measurement_store, measurement_sr_session, measurement_watchdog_task, hardware_controller, playback_transition_coordinator, coordinator_last_successful_commit_id, external_input_loopback_module_id, external_input_loopback_source_name, bluetooth_input_source_name, bluetooth_monitor_task, bluetooth_agent_process, spotify_playerctl_watch_task, spotify_playerctl_detect_task, spotify_state_refresh_task, spotify_state_poll_task, spotify_playerctl_last_trigger_at, current_source_mode, latest_spotify_state, radio_reconnect_task
+    global settings, library_scanner, music_library_manager, library_scan_task, downloader, dsp_manager, measurement_store, measurement_sr_session, measurement_watchdog_task, hardware_controller, playback_transition_coordinator, external_input_loopback_module_id, external_input_loopback_source_name, bluetooth_input_source_name, bluetooth_monitor_task, bluetooth_agent_process, spotify_playerctl_watch_task, spotify_playerctl_detect_task, spotify_state_refresh_task, spotify_state_poll_task, spotify_playerctl_last_trigger_at, current_source_mode, radio_reconnect_task
 
     logger.info("Starting FXRoute... build_id=%s", _read_build_id())
     try:
@@ -5205,7 +5167,7 @@ async def lifespan(app: FastAPI):
             FxrouteTransitionRuntime(make_playback_runtime_deps()),
             gate_state_path=_playback_gate_state_path(),
         )
-        coordinator_last_successful_commit_id = None
+        playback_state.coordinator_last_successful_commit_id = None
         startup_gate_reconciled = await playback_transition_coordinator.reconcile_startup_gate()
         logger.info(
             "Playback transition startup gate reconciled: success=%s status=%s",
@@ -5270,8 +5232,8 @@ async def lifespan(app: FastAPI):
         runtime.peak_monitor_context_signature = None
         runtime.dsp_preset_load_lock = asyncio.Lock()
         runtime.source_transition_lock = asyncio.Lock()
-        latest_spotify_state = await get_spotify_ui_state()
-        await sync_peak_monitor_for_spotify_state(latest_spotify_state)
+        playback_state.latest_spotify_state = await get_spotify_ui_state()
+        await sync_peak_monitor_for_spotify_state(playback_state.latest_spotify_state)
         logger.info("DSP output peak monitor initialized")
 
         try:
@@ -5493,7 +5455,7 @@ def _make_dsp_orchestration_deps() -> DspOrchestrationDeps:
         get_samplerate_status=lambda: get_samplerate_status(),
         get_measurement_sr_session=lambda: measurement_sr_session,
         get_player_instance=lambda: runtime.player_instance,
-        get_current_track_info=lambda: current_track_info,
+        get_current_track_info=lambda: playback_state.current_track_info,
         get_peak_monitor=lambda: runtime.peak_monitor,
         peak_monitor_playback_armed=lambda: runtime.peak_monitor_playback_armed,
         set_peak_monitor_context_signature=_set_peak_monitor_context_signature,
@@ -5559,7 +5521,7 @@ async def play_track(req: PlayRequest):
         return {
             "status": "playing" if not state.get("paused") else "paused",
             "url": state.get("current_file") or "",
-            "track": current_track_info or last_track_info or {},
+            "track": playback_state.current_track_info or playback_state.last_track_info or {},
             "playback": build_playback_payload(state),
         }
 
@@ -5704,7 +5666,6 @@ async def pause_playback():
 
 @app.post("/api/playback/toggle")
 async def toggle_playback():
-    global current_track_info, last_track_info, last_radio_track_info
     if not runtime.player_instance or not runtime.player_instance._running:
         raise HTTPException(status_code=503, detail="Player not available")
     if _playback_transition_is_active():
@@ -5714,7 +5675,7 @@ async def toggle_playback():
         return {"status": "paused" if state.get("paused") else "playing", "playback": build_playback_payload(state)}
 
     state = dict(runtime.player_instance.state)
-    active_track = dict(current_track_info or {})
+    active_track = dict(playback_state.current_track_info or {})
     if state.get("current_file") and not state.get("ended") and active_track.get("source") in {"local", "radio"}:
         was_paused = bool(state.get("paused"))
         source = str(active_track.get("source"))
@@ -5758,7 +5719,7 @@ async def toggle_playback():
             "playback": build_playback_payload(new_state),
         }
 
-    replay_track = dict(current_track_info or last_track_info or {})
+    replay_track = dict(playback_state.current_track_info or playback_state.last_track_info or {})
     replay_url = str(replay_track.get("url") or "")
     if not replay_url:
         raise HTTPException(status_code=409, detail="Nothing is available to replay")
@@ -5793,15 +5754,15 @@ async def toggle_playback():
 
 @app.post("/api/stop")
 async def stop_playback():
-    global current_track_info, last_radio_track_info, radio_reconnect_attempts, radio_reconnect_url, radio_reconnect_active_since
+    global radio_reconnect_attempts, radio_reconnect_url, radio_reconnect_active_since
     if not runtime.player_instance or not runtime.player_instance._running:
         raise HTTPException(status_code=503, detail="Player not available")
     if _playback_transition_is_active():
         raise HTTPException(status_code=409, detail="A playback transition is in progress")
-    if current_track_info and current_track_info.get("source") == "radio":
-        last_radio_track_info = dict(current_track_info)
+    if playback_state.current_track_info and playback_state.current_track_info.get("source") == "radio":
+        playback_state.last_radio_track_info = dict(playback_state.current_track_info)
     _mark_playback_intent_changed()
-    current_track_info = None
+    playback_state.current_track_info = None
     radio_reconnect_attempts = 0
     radio_reconnect_url = None
     radio_reconnect_active_since = 0.0
@@ -5998,7 +5959,7 @@ async def get_status():
             # Provider lookup is metadata-only and occurs after the playback
             # payload has been built.  It cannot affect loadfile or audio state.
             provider_metadata = await radio_metadata_service.get(station_id, stream_url)
-            active_track = (current_track_info or {})
+            active_track = (playback_state.current_track_info or {})
             active_station_id = str(active_track.get("id") or "").removeprefix("radio_")
             if provider_metadata and station_id == active_station_id:
                 state["radio_metadata"] = provider_metadata
@@ -6128,7 +6089,7 @@ async def audio_samplerate_status():
     status = await asyncio.to_thread(get_samplerate_status)
     logger.info(
         "audio_samplerate_status entry: footer_owner=%s active_rate=%s sink_state=%s",
-        current_footer_owner,
+        playback_state.current_footer_owner,
         status.get("active_rate"),
         (status.get("relevant_sink") or {}).get("state"),
     )
@@ -6565,7 +6526,7 @@ async def add_manual_music_library(request: Request):
 
 @app.post("/api/music-libraries/select")
 async def select_music_library(request: Request):
-    global library_scanner, library_scan_task, current_track_info, last_track_info
+    global library_scanner, library_scan_task
     if music_library_manager is None or library_scanner is None:
         raise HTTPException(status_code=503, detail="Music libraries are not initialized")
     try:
@@ -6589,8 +6550,8 @@ async def select_music_library(request: Request):
         if runtime.player_instance is not None and runtime.player_instance._running:
             _mark_playback_intent_changed()
             runtime.player_instance.stop_playback()
-            current_track_info = None
-            last_track_info = None
+            playback_state.current_track_info = None
+            playback_state.last_track_info = None
         playback_queue.queue.reset()
         library_scanner = _library_scanner_for(root, library_id)
         library_scanner.prepare_scan_status()
@@ -6651,9 +6612,8 @@ async def download_status():
 
 @app.get("/api/spotify/status")
 async def api_spotify_status():
-    global latest_spotify_state
     data = await get_spotify_ui_state()
-    latest_spotify_state = data
+    playback_state.latest_spotify_state = data
     await sync_peak_monitor_for_spotify_state(data)
     return data
 
@@ -6674,16 +6634,15 @@ async def api_spotify_play():
         result = await _run_coordinated_transition(request)
     except PlaybackTransitionFailure as exc:
         raise _transition_error_http(exc) from exc
-    global current_footer_owner, latest_spotify_state
     # After the coordinator commit the Spotify source is already the
     # committed playback context; the subsequent state read is
     # telemetry/UI refresh and not part of the ownership boundary.
     # Publish synchronously before any further await so the ended waiter
     # never sees a window with a new token and an old footer.
-    current_footer_owner = "spotify"
+    playback_state.current_footer_owner = "spotify"
     _publish_playback_context_commit(getattr(result, "transition_id", None))
-    latest_spotify_state = await get_spotify_ui_state()
-    return await broadcast_spotify_state(latest_spotify_state)
+    playback_state.latest_spotify_state = await get_spotify_ui_state()
+    return await broadcast_spotify_state(playback_state.latest_spotify_state)
 
 
 @app.post("/api/spotify/pause")
@@ -6716,11 +6675,10 @@ async def api_spotify_toggle():
         result = await _run_coordinated_transition(request)
     except PlaybackTransitionFailure as exc:
         raise _transition_error_http(exc) from exc
-    global current_footer_owner
     # Same ownership contract as api_spotify_play: footer and token are
     # published synchronously after the commit, before the Spotify state
     # is read or broadcast.
-    current_footer_owner = "spotify"
+    playback_state.current_footer_owner = "spotify"
     _publish_playback_context_commit(getattr(result, "transition_id", None))
     data = await get_spotify_ui_state()
     return await broadcast_spotify_state(data)

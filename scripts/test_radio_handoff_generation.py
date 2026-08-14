@@ -42,14 +42,14 @@ class PlaybackTransitionGenerationTests(unittest.IsolatedAsyncioTestCase):
             "dsp_manager", "player_instance", "dsp_runtime",
             "_wait_for_player_current_file",
         )
-        self.originals = {name: (getattr(main.runtime, name) if hasattr(main.runtime, name) else getattr(main, name)) for name in names}
+        self.originals = {name: (getattr(main.runtime, name) if hasattr(main.runtime, name) else getattr(main.playback_state, name) if hasattr(main.playback_state, name) else getattr(main, name)) for name in names}
         self._sync_preset_original = main.dsp_orchestrator.sync_preset_for_playback_samplerate
         self.monitor = FakePeakMonitor()
         main.runtime.peak_monitor = self.monitor
         main.manager = FakeManager()
         main.runtime.peak_monitor_transition_lock = asyncio.Lock()
-        main.playback_transition_epoch = 4
-        main.current_track_info = {
+        main.playback_state.playback_transition_epoch = 4
+        main.playback_state.current_track_info = {
             "id": "local-track", "source": "local", "url": "/music/local.flac"
         }
         main._wait_for_samplerate_alignment = lambda _rate: async_value(True)
@@ -59,7 +59,7 @@ class PlaybackTransitionGenerationTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self):
         for name, value in self.originals.items():
-            setattr(main.runtime if hasattr(main.runtime, name) else main, name, value)
+            setattr(main.runtime if hasattr(main.runtime, name) else main.playback_state if hasattr(main.playback_state, name) else main, name, value)
         main.dsp_orchestrator.sync_preset_for_playback_samplerate = self._sync_preset_original
 
     async def test_stale_radio_callback_cannot_apply_after_local_handoff(self):
@@ -89,7 +89,7 @@ class PlaybackTransitionGenerationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(main.runtime.peak_monitor_context_signature, "player:local:/music/local.flac")
 
     async def test_local_to_radio_uses_committed_radio_context(self):
-        main.current_track_info = {
+        main.playback_state.current_track_info = {
             "id": "radio-station", "source": "radio", "url": "https://radio.example/stream"
         }
         main.runtime.peak_monitor_playback_armed = True

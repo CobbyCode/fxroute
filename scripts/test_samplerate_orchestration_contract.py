@@ -70,7 +70,7 @@ class SamplerateOrchestrationContractTests(unittest.IsolatedAsyncioTestCase):
                 "fxroute_dsp:output_2 -> alsa_output.pci-0000_00_1f.3.analog-stereo:playback_FR\n"
             )
 
-        main.playback_transition_epoch = 40
+        main.playback_state.playback_transition_epoch = 40
         with patch.object(main, "get_samplerate_status", samplerate_status), patch.object(
             main, "_ensure_playback_samplerate_force", ensure_force
         ), patch.object(main.dsp_orchestrator, "sync_preset_for_playback_samplerate", preset_sync), patch.object(
@@ -157,7 +157,7 @@ class SamplerateOrchestrationContractTests(unittest.IsolatedAsyncioTestCase):
         """A window heartbeat is neutral; active playback restore has one owner."""
         ledger = EventLedger()
         original = {
-            name: (getattr(main.runtime, name) if hasattr(main.runtime, name) else getattr(main, name))
+            name: (getattr(main.runtime, name) if hasattr(main.runtime, name) else getattr(main.playback_state, name) if hasattr(main.playback_state, name) else getattr(main, name))
             for name in (
                 "measurement_sr_session", "playback_transition_coordinator",
                     "current_track_info", "player_instance",
@@ -180,7 +180,7 @@ class SamplerateOrchestrationContractTests(unittest.IsolatedAsyncioTestCase):
                 "expected_rate": 44100,
                 "was_playing": True,
             }
-            main.current_track_info = {"source": "local", "url": "/music/a.flac"}
+            main.playback_state.current_track_info = {"source": "local", "url": "/music/a.flac"}
             main.runtime.player_instance = SimpleNamespace(
                 state={"current_file": "/music/a.flac", "ended": False}
             )
@@ -193,7 +193,7 @@ class SamplerateOrchestrationContractTests(unittest.IsolatedAsyncioTestCase):
             await session._release()
         finally:
             for name, value in original.items():
-                setattr(main.runtime if hasattr(main.runtime, name) else main, name, value)
+                setattr(main.runtime if hasattr(main.runtime, name) else main.playback_state if hasattr(main.playback_state, name) else main, name, value)
 
         self.assertEqual(ledger.events, ["restore:local:44100:True"])
 
@@ -234,8 +234,8 @@ class SamplerateOrchestrationContractTests(unittest.IsolatedAsyncioTestCase):
                 "paused": False,
                 "ended": False,
             })
-        ), patch.object(main, "current_track_info", dict(track)), patch.object(
-            main, "coordinator_last_successful_commit_id", "tr-status-repair"
+        ), patch.object(main.playback_state, "current_track_info", dict(track)), patch.object(
+            main.playback_state, "coordinator_last_successful_commit_id", "tr-status-repair"
         ), patch.object(main, "_run_coordinated_transition", run):
             await main._request_coordinated_recovery(track, "status-drift-repair")
 

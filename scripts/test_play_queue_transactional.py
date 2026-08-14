@@ -84,14 +84,14 @@ class PlayQueueTransactionalTests(unittest.IsolatedAsyncioTestCase):
 
     def _install(self, queue_a: list[dict], *, index: int, mode: str = "app_replace",
                  loop: bool = False, shuffle: bool = False) -> dict:
-        originals = {name: (getattr(main.runtime, name) if hasattr(main.runtime, name) else getattr(main, name)) for name in self.GLOBALS}
+        originals = {name: (getattr(main.runtime, name) if hasattr(main.runtime, name) else getattr(main.playback_state, name) if hasattr(main.playback_state, name) else getattr(main, name)) for name in self.GLOBALS}
         self._saved_queue = queue_state()
         main.runtime.player_instance = _FakePlayer()
         main.library_scanner = _Scanner(["a", "b", "c", "d"])
-        main.current_track_info = dict(queue_a[index]) if queue_a and index >= 0 else None
-        main.last_track_info = dict(queue_a[index]) if queue_a and index >= 0 else None
-        main.last_radio_track_info = None
-        main.current_footer_owner = "local"
+        main.playback_state.current_track_info = dict(queue_a[index]) if queue_a and index >= 0 else None
+        main.playback_state.last_track_info = dict(queue_a[index]) if queue_a and index >= 0 else None
+        main.playback_state.last_radio_track_info = None
+        main.playback_state.current_footer_owner = "local"
         playback_queue.queue.tracks = [dict(track) for track in queue_a]
         playback_queue.queue.original = [dict(track) for track in queue_a]
         playback_queue.queue.index = index
@@ -104,7 +104,7 @@ class PlayQueueTransactionalTests(unittest.IsolatedAsyncioTestCase):
     def _restore(self, originals: dict) -> None:
         restore_queue_state(self._saved_queue)
         for name, value in originals.items():
-            setattr(main.runtime if hasattr(main.runtime, name) else main, name, value)
+            setattr(main.runtime if hasattr(main.runtime, name) else main.playback_state if hasattr(main.playback_state, name) else main, name, value)
 
     def _patches(self, transition, *, radio_stations: list[_Station] | None = None):
         async def no_op(*_args, **_kwargs):
@@ -156,8 +156,8 @@ class PlayQueueTransactionalTests(unittest.IsolatedAsyncioTestCase):
                         await self._play(track_id="d", queue_track_ids=["c", "d", "a"])
         finally:
             self._assert_queue_a_intact(queue_a, index=1, mode="app_replace", loop=True, shuffle=False)
-            self.assertEqual(main.current_track_info, _track("b"))
-            self.assertEqual(main.last_track_info, _track("b"))
+            self.assertEqual(main.playback_state.current_track_info, _track("b"))
+            self.assertEqual(main.playback_state.last_track_info, _track("b"))
             self.assertEqual(ctx.exception.status_code, 500)
             self._restore(originals)
 
@@ -272,7 +272,7 @@ class PlayQueueTransactionalTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(playback_queue.queue.index, 1)
             self.assertEqual(playback_queue.queue.original, [_track("d"), _track("b"), _track("a")])
-            self.assertEqual(main.current_track_info["id"], "b")
+            self.assertEqual(main.playback_state.current_track_info["id"], "b")
         finally:
             self._restore(originals)
 
@@ -302,7 +302,7 @@ class PlayQueueTransactionalTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual([item["id"] for item in playback_queue.queue.tracks],
                              ["a", "b", "c", "d", "e", "f"])
             self.assertEqual(playback_queue.queue.index, 3)
-            self.assertEqual(main.current_track_info["id"], "d")
+            self.assertEqual(main.playback_state.current_track_info["id"], "d")
             self.assertEqual([item["id"] for item in requests[0].native_queue],
                              ["a", "b", "c", "d", "e", "f"])
             self.assertEqual(requests[0].native_queue_index, 3)
@@ -415,7 +415,7 @@ class PlayQueueTransactionalTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(playback_queue.queue.mode, "app_replace")
             self.assertFalse(playback_queue.queue.shuffle)
             self.assertFalse(playback_queue.queue.loop)
-            self.assertEqual(main.current_track_info["id"], "radio_s1")
+            self.assertEqual(main.playback_state.current_track_info["id"], "radio_s1")
         finally:
             self._restore(originals)
 
@@ -438,14 +438,14 @@ class QueueSelectionTransactionalTests(unittest.IsolatedAsyncioTestCase):
 
     def _install(self, queue_a: list[dict], *, index: int, mode: str = "app_replace",
                  shuffle: bool = False) -> dict:
-        originals = {name: (getattr(main.runtime, name) if hasattr(main.runtime, name) else getattr(main, name)) for name in self.GLOBALS}
+        originals = {name: (getattr(main.runtime, name) if hasattr(main.runtime, name) else getattr(main.playback_state, name) if hasattr(main.playback_state, name) else getattr(main, name)) for name in self.GLOBALS}
         self._saved_queue = queue_state()
         main.runtime.player_instance = _FakePlayer()
         main.library_scanner = _Scanner(["a", "b", "c", "d"])
         main.runtime.player_instance.state["current_file"] = queue_a[index]["url"]
-        main.current_track_info = dict(queue_a[index])
-        main.last_track_info = dict(queue_a[index])
-        main.current_footer_owner = "local"
+        main.playback_state.current_track_info = dict(queue_a[index])
+        main.playback_state.last_track_info = dict(queue_a[index])
+        main.playback_state.current_footer_owner = "local"
         playback_queue.queue.tracks = [dict(track) for track in queue_a]
         playback_queue.queue.original = [dict(track) for track in queue_a]
         playback_queue.queue.index = index
@@ -458,7 +458,7 @@ class QueueSelectionTransactionalTests(unittest.IsolatedAsyncioTestCase):
     def _restore(self, originals: dict) -> None:
         restore_queue_state(self._saved_queue)
         for name, value in originals.items():
-            setattr(main.runtime if hasattr(main.runtime, name) else main, name, value)
+            setattr(main.runtime if hasattr(main.runtime, name) else main.playback_state if hasattr(main.playback_state, name) else main, name, value)
 
     async def test_selection_commits_prepared_queue_and_track_dict(self):
         queue_a = [_track("a"), _track("b"), _track("c")]
@@ -483,11 +483,11 @@ class QueueSelectionTransactionalTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(playback_queue.queue.loop)
             self.assertFalse(playback_queue.queue.single_track_loop)
 
-            self.assertEqual(main.current_track_info["id"], "b")
-            self.assertEqual(main.last_track_info["id"], "b")
-            self.assertIsInstance(main.current_track_info, dict)
-            self.assertNotIsInstance(main.current_track_info, QueueCandidate)
-            self.assertEqual(main.current_track_info.get("url"), "/music/b.flac")
+            self.assertEqual(main.playback_state.current_track_info["id"], "b")
+            self.assertEqual(main.playback_state.last_track_info["id"], "b")
+            self.assertIsInstance(main.playback_state.current_track_info, dict)
+            self.assertNotIsInstance(main.playback_state.current_track_info, QueueCandidate)
+            self.assertEqual(main.playback_state.current_track_info.get("url"), "/music/b.flac")
             self.assertEqual(payload["queue"]["index"], 1)
             self.assertEqual(payload["queue"]["mode"], "app_replace")
             self.assertEqual(payload["queue"]["count"], 3)
@@ -519,8 +519,8 @@ class QueueSelectionTransactionalTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(playback_queue.queue.mode, "app_replace")
             self.assertEqual([item["id"] for item in playback_queue.queue.tracks], ["b", "a"])
             self.assertEqual(playback_queue.queue.index, 1)
-            self.assertEqual(main.current_track_info["id"], "a")
-            self.assertIsInstance(main.current_track_info, dict)
+            self.assertEqual(main.playback_state.current_track_info["id"], "a")
+            self.assertIsInstance(main.playback_state.current_track_info, dict)
         finally:
             self._restore(originals)
 

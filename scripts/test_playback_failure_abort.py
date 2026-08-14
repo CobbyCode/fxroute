@@ -88,13 +88,13 @@ class FailedTransitionAbortTests(unittest.IsolatedAsyncioTestCase):
             playback_queue.queue.index = 0
             playback_queue.queue.mode = "app_replace"
             async def restore_source(*_args, **_kwargs):
-                main.current_track_info = dict(committed)
+                main.playback_state.current_track_info = dict(committed)
                 return True
 
             with patch.object(main.runtime, "player_instance", player), patch.object(
-                main, "current_track_info", None
-            ), patch.object(main, "last_radio_track_info", {"source": "radio", "id": "old-radio"}), patch.object(
-                main, "current_footer_owner", "local"
+                main.playback_state, "current_track_info", None
+            ), patch.object(main.playback_state, "last_radio_track_info", {"source": "radio", "id": "old-radio"}), patch.object(
+                main.playback_state, "current_footer_owner", "local"
             ), patch.object(main, "_mark_player_state_authoritative"), patch.object(
                 main.FxrouteTransitionRuntime,
                 "_restore_committed_source_after_failed_transition",
@@ -117,7 +117,7 @@ class FailedTransitionAbortTests(unittest.IsolatedAsyncioTestCase):
                 )
                 self.assertTrue(restored)
                 restore.assert_awaited_once()
-                self.assertEqual(main.current_track_info, committed)
+                self.assertEqual(main.playback_state.current_track_info, committed)
                 self.assertEqual(playback_queue.queue.tracks, queue)
                 self.assertEqual(playback_queue.queue.index, 0)
         finally:
@@ -128,9 +128,9 @@ class FailedTransitionAbortTests(unittest.IsolatedAsyncioTestCase):
         saved_queue = queue_state()
         try:
             main.runtime.player_instance = player
-            main.current_track_info = None
-            main.last_track_info = _track_entry("old")
-            main.last_radio_track_info = {"source": "radio", "id": "old-radio", "url": "https://radio.example/live"}
+            main.playback_state.current_track_info = None
+            main.playback_state.last_track_info = _track_entry("old")
+            main.playback_state.last_radio_track_info = {"source": "radio", "id": "old-radio", "url": "https://radio.example/live"}
             with patch.object(main, "_run_coordinated_transition", AsyncMock()) as transition:
                 transition.return_value = SimpleNamespace(committed=True, target_rate=44100)
                 await main.toggle_playback()
@@ -150,9 +150,9 @@ class FailedTransitionAbortTests(unittest.IsolatedAsyncioTestCase):
             playback_queue.queue.index = 0
             playback_queue.queue.mode = "app_replace"
             with patch.object(main.runtime, "player_instance", player), patch.object(
-                main, "current_track_info", current
-            ), patch.object(main, "last_track_info", retry), patch.object(
-                main, "current_footer_owner", "local"
+                main.playback_state, "current_track_info", current
+            ), patch.object(main.playback_state, "last_track_info", retry), patch.object(
+                main.playback_state, "current_footer_owner", "local"
             ), patch.object(main, "_mark_player_state_authoritative"):
                 await make_transition_runtime().abort_failed_transition(
                     local_request("/music/new.flac"),
@@ -165,8 +165,8 @@ class FailedTransitionAbortTests(unittest.IsolatedAsyncioTestCase):
 
                 # A failed transition must never discard the previously working
                 # committed queue; only the active track context is invalidated.
-                self.assertIsNone(main.current_track_info)
-                self.assertEqual(main.last_track_info, retry)
+                self.assertIsNone(main.playback_state.current_track_info)
+                self.assertEqual(main.playback_state.last_track_info, retry)
                 self.assertEqual(playback_queue.queue.tracks, queue)
                 self.assertEqual(playback_queue.queue.mode, "app_replace")
         finally:
@@ -188,9 +188,9 @@ class FailedTransitionAbortTests(unittest.IsolatedAsyncioTestCase):
             playback_queue.queue.index = 1
             playback_queue.queue.mode = "native_mpv"
             with patch.object(main.runtime, "player_instance", player), patch.object(
-                main, "current_track_info", dict(queue[1])
-            ), patch.object(main, "last_track_info", dict(queue[1])), patch.object(
-                main, "current_footer_owner", "local"
+                main.playback_state, "current_track_info", dict(queue[1])
+            ), patch.object(main.playback_state, "last_track_info", dict(queue[1])), patch.object(
+                main.playback_state, "current_footer_owner", "local"
             ), patch.object(
                 playback_queue.queue, "reduce_native_playlist_to_current"
             ), patch.object(
@@ -211,7 +211,7 @@ class FailedTransitionAbortTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(playback_queue.queue.tracks, queue)
                 self.assertEqual(playback_queue.queue.index, 1)
                 self.assertEqual(playback_queue.queue.mode, "app_replace")
-                self.assertIsNone(main.current_track_info)
+                self.assertIsNone(main.playback_state.current_track_info)
         finally:
             restore_queue_state(saved_queue)
 
@@ -227,9 +227,9 @@ class FailedTransitionAbortTests(unittest.IsolatedAsyncioTestCase):
             playback_queue.queue.index = 1
             playback_queue.queue.mode = "native_mpv"
             with patch.object(main.runtime, "player_instance", player), patch.object(
-                main, "current_track_info", dict(queue[1])
-            ), patch.object(main, "last_track_info", dict(queue[1])), patch.object(
-                main, "current_footer_owner", "local"
+                main.playback_state, "current_track_info", dict(queue[1])
+            ), patch.object(main.playback_state, "last_track_info", dict(queue[1])), patch.object(
+                main.playback_state, "current_footer_owner", "local"
             ), patch.object(
                 playback_queue.queue, "reduce_native_playlist_to_current",
                 side_effect=RuntimeError("IPC communication failed: timed out"),
@@ -251,7 +251,7 @@ class FailedTransitionAbortTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(playback_queue.queue.tracks, queue)
                 self.assertEqual(playback_queue.queue.index, 1)
                 self.assertEqual(playback_queue.queue.mode, "app_replace")
-                self.assertIsNone(main.current_track_info)
+                self.assertIsNone(main.playback_state.current_track_info)
 
                 # Subsequent queue navigation must use app-owned coordinator
                 # navigation, never a false MPV-native jump.
@@ -279,7 +279,7 @@ class FailedTransitionAbortTests(unittest.IsolatedAsyncioTestCase):
             playback_queue.queue.tracks = [dict(track) for track in queue]
             playback_queue.queue.mode = "app_replace"
             with patch.object(main.runtime, "player_instance", player), patch.object(
-                main, "current_track_info", current
+                main.playback_state, "current_track_info", current
             ), patch.object(main, "_mark_player_state_authoritative"):
                 request = TransitionRequest(
                     operation="play",
@@ -300,7 +300,7 @@ class FailedTransitionAbortTests(unittest.IsolatedAsyncioTestCase):
                     target_staged=False,
                 )
 
-                self.assertEqual(main.current_track_info, current)
+                self.assertEqual(main.playback_state.current_track_info, current)
                 self.assertEqual(playback_queue.queue.tracks, queue)
         finally:
             restore_queue_state(saved_queue)
@@ -316,7 +316,7 @@ class FailedTransitionAbortTests(unittest.IsolatedAsyncioTestCase):
             playback_queue.queue.tracks = [dict(track) for track in queue]
             playback_queue.queue.mode = "app_replace"
             with patch.object(main.runtime, "player_instance", player), patch.object(
-                main, "current_track_info", current
+                main.playback_state, "current_track_info", current
             ), patch.object(main, "_mark_player_state_authoritative"):
                 request = TransitionRequest(
                     operation="recovery",
@@ -337,7 +337,7 @@ class FailedTransitionAbortTests(unittest.IsolatedAsyncioTestCase):
                     target_staged=False,
                 )
 
-                self.assertEqual(main.current_track_info, current)
+                self.assertEqual(main.playback_state.current_track_info, current)
                 self.assertEqual(playback_queue.queue.tracks, queue)
         finally:
             restore_queue_state(saved_queue)

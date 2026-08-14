@@ -99,7 +99,7 @@ class ActiveTransitionGuardTests(unittest.IsolatedAsyncioTestCase):
         track = {"source": "local", "url": "/music/current.flac"}
         with patch.object(main.runtime, "player_instance", player), patch.object(
             main, "playback_transition_coordinator", coordinator
-        ), patch.object(main, "current_track_info", track), patch.object(
+        ), patch.object(main.playback_state, "current_track_info", track), patch.object(
             main, "_can_send_play_command", return_value=True
         ), patch.object(main, "_mark_player_state_authoritative"), patch.object(
             main, "_mark_playback_intent_changed"
@@ -117,7 +117,7 @@ class ActiveTransitionGuardTests(unittest.IsolatedAsyncioTestCase):
         transition_run = AsyncMock(side_effect=AssertionError("resume entered coordinator"))
         with patch.object(main.runtime, "player_instance", player), patch.object(
             main, "playback_transition_coordinator", coordinator
-        ), patch.object(main, "current_track_info", track), patch.object(
+        ), patch.object(main.playback_state, "current_track_info", track), patch.object(
             main, "_can_send_play_command", return_value=True
         ), patch.object(main, "_run_coordinated_transition", transition_run):
             with self.assertRaises(HTTPException) as cm:
@@ -137,8 +137,8 @@ class ActiveTransitionGuardTests(unittest.IsolatedAsyncioTestCase):
             playback_queue.queue.tracks = [dict(item) for item in queue]
             with patch.object(main.runtime, "player_instance", player), patch.object(
                 main, "playback_transition_coordinator", coordinator
-            ), patch.object(main, "current_track_info", track), patch.object(
-                main, "last_radio_track_info", previous_radio
+            ), patch.object(main.playback_state, "current_track_info", track), patch.object(
+                main.playback_state, "last_radio_track_info", previous_radio
             ), patch.object(main, "radio_reconnect_attempts", 3), patch.object(
                 main, "radio_reconnect_url", "https://radio.example/reconnect"
             ), patch.object(main, "radio_reconnect_active_since", 5.0):
@@ -148,8 +148,8 @@ class ActiveTransitionGuardTests(unittest.IsolatedAsyncioTestCase):
                 player.stop_playback.assert_not_called()
                 self.assertEqual(len(playback_queue.queue.tracks), 2)
                 self.assertEqual(playback_queue.queue.tracks[0]["id"], "a")
-                self.assertEqual(main.current_track_info, track)
-                self.assertEqual(main.last_radio_track_info, previous_radio)
+                self.assertEqual(main.playback_state.current_track_info, track)
+                self.assertEqual(main.playback_state.last_radio_track_info, previous_radio)
                 self.assertEqual(main.radio_reconnect_attempts, 3)
                 self.assertEqual(main.radio_reconnect_url, "https://radio.example/reconnect")
                 self.assertEqual(main.radio_reconnect_active_since, 5.0)
@@ -214,7 +214,7 @@ class InactiveTransitionSemanticsTests(unittest.IsolatedAsyncioTestCase):
         player = PlayerDouble()
         track = {"source": "local", "url": "/music/current.flac"}
         with patch.object(main.runtime, "player_instance", player), patch.object(
-            main, "current_track_info", track
+            main.playback_state, "current_track_info", track
         ), patch.object(main, "_can_send_play_command", return_value=True), patch.object(
             main, "build_playback_payload", side_effect=dict
         ), patch.object(main, "_mark_player_state_authoritative"), patch.object(
@@ -239,8 +239,8 @@ class InactiveTransitionSemanticsTests(unittest.IsolatedAsyncioTestCase):
             playback_queue.queue.shuffle = False
             playback_queue.queue.single_track_loop = False
             with patch.object(main.runtime, "player_instance", player), patch.object(
-                main, "current_track_info", track
-            ), patch.object(main, "last_radio_track_info", {}), patch.object(
+                main.playback_state, "current_track_info", track
+            ), patch.object(main.playback_state, "last_radio_track_info", {}), patch.object(
                 main, "radio_reconnect_attempts", 0
             ), patch.object(main, "radio_reconnect_url", None), patch.object(
                 main, "radio_reconnect_active_since", 0.0
@@ -251,7 +251,7 @@ class InactiveTransitionSemanticsTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(result["status"], "stopped")
                 player.stop_playback.assert_called_once_with()
                 self.assertEqual(playback_queue.queue.tracks, [])
-                self.assertIsNone(main.current_track_info)
+                self.assertIsNone(main.playback_state.current_track_info)
         finally:
             restore_queue_state(saved_queue)
 
@@ -306,7 +306,7 @@ class TransitionEndRecoveryTests(unittest.IsolatedAsyncioTestCase):
             playback_queue.queue.single_track_loop = False
             with patch.object(main.runtime, "player_instance", player), patch.object(
                 main, "playback_transition_coordinator", coordinator
-            ), patch.object(main, "current_track_info", track), patch.object(
+            ), patch.object(main.playback_state, "current_track_info", track), patch.object(
                 main, "radio_reconnect_attempts", 0
             ), patch.object(main, "radio_reconnect_url", None), patch.object(
                 main, "radio_reconnect_active_since", 0.0

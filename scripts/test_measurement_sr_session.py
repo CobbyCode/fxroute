@@ -33,7 +33,7 @@ class _TestSession:
         self._main = main
         # Replace globals needed by the session / capture code.
         self._orig_measurement_sr_session = main.measurement_sr_session
-        self._orig_current_track_info = main.current_track_info
+        self._orig_current_track_info = main.playback_state.current_track_info
         self._orig_player_instance = main.runtime.player_instance
         self._orig_get_samplerate_status = main.get_samplerate_status
         self._orig_set_pipewire_force_rate = main._set_pipewire_force_rate
@@ -43,9 +43,9 @@ class _TestSession:
         self._orig_last_measurement_window_seen_at = main.last_measurement_window_seen_at
         self._orig_get_player_audio_samplerate = main._get_player_audio_samplerate
         self._orig_get_spotify_ui_state = main.get_spotify_ui_state
-        self._orig_latest_spotify_state = main.latest_spotify_state
-        self._orig_current_footer_owner = main.current_footer_owner
-        self._orig_playback_intent_generation = main.playback_intent_generation
+        self._orig_latest_spotify_state = main.playback_state.latest_spotify_state
+        self._orig_current_footer_owner = main.playback_state.current_footer_owner
+        self._orig_playback_intent_generation = main.playback_state.playback_intent_generation
         self._orig_playback_transition_coordinator = main.playback_transition_coordinator
         self._orig_run_coordinated_transition = main._run_coordinated_transition
         self._orig_coordinator_current_playback_context = main._coordinator_current_playback_context
@@ -62,7 +62,7 @@ class _TestSession:
         # Patch
         main.measurement_sr_session = main.MeasurementSampleRateSession()
         measurement_session._playback_state_before_measurement = None
-        main.current_track_info = self._track_info
+        main.playback_state.current_track_info = self._track_info
         main.last_measurement_window_seen_at = self._window_seen_at
         main.get_samplerate_status = self._mock_get_samplerate_status
         main._set_pipewire_force_rate = self._mock_set_pipewire_force_rate
@@ -70,8 +70,8 @@ class _TestSession:
         main._is_measurement_window_open = self._mock_is_measurement_window_open
         main._get_player_audio_samplerate = self._mock_get_player_audio_samplerate
         main.get_spotify_ui_state = self._mock_get_spotify_ui_state
-        main.latest_spotify_state = None
-        main.playback_intent_generation = 0
+        main.playback_state.latest_spotify_state = None
+        main.playback_state.playback_intent_generation = 0
         main.runtime.player_instance = None
         main._run_coordinated_transition = self._mock_run_coordinated_transition
         main._coordinator_current_playback_context = self._mock_coordinator_current_playback_context
@@ -109,7 +109,7 @@ class _TestSession:
 
     async def _mock_coordinator_current_playback_context(self):
         import main
-        track = dict(main.current_track_info or {})
+        track = dict(main.playback_state.current_track_info or {})
         state = dict(main.runtime.player_instance.state if main.runtime.player_instance else {})
         spotify_state = await main.get_spotify_ui_state()
         spotify_identity = spotify_state.get("trackId") or spotify_state.get("url")
@@ -152,7 +152,7 @@ class _TestSession:
 
     def set_track_playing(self, source: str = "local", sample_rate: int = 44100) -> None:
         import main
-        main.current_track_info = {
+        main.playback_state.current_track_info = {
             "source": source,
             "url": "file:///test.flac",
             "path": "/test.flac",
@@ -186,13 +186,13 @@ class _TestSession:
 
     def clear_track(self) -> None:
         import main
-        main.current_track_info = None
+        main.playback_state.current_track_info = None
         main.runtime.player_instance = None
 
     def cleanup(self) -> None:
         import main
         main.measurement_sr_session = self._orig_measurement_sr_session
-        main.current_track_info = self._orig_current_track_info
+        main.playback_state.current_track_info = self._orig_current_track_info
         main.runtime.player_instance = self._orig_player_instance
         main.get_samplerate_status = self._orig_get_samplerate_status
         main._set_pipewire_force_rate = self._orig_set_pipewire_force_rate
@@ -202,9 +202,9 @@ class _TestSession:
         main.last_measurement_window_seen_at = self._orig_last_measurement_window_seen_at
         main._get_player_audio_samplerate = self._orig_get_player_audio_samplerate
         main.get_spotify_ui_state = self._orig_get_spotify_ui_state
-        main.latest_spotify_state = self._orig_latest_spotify_state
-        main.current_footer_owner = self._orig_current_footer_owner
-        main.playback_intent_generation = self._orig_playback_intent_generation
+        main.playback_state.latest_spotify_state = self._orig_latest_spotify_state
+        main.playback_state.current_footer_owner = self._orig_current_footer_owner
+        main.playback_state.playback_intent_generation = self._orig_playback_intent_generation
         main.playback_transition_coordinator = self._orig_playback_transition_coordinator
         main._run_coordinated_transition = self._orig_run_coordinated_transition
         main._coordinator_current_playback_context = self._orig_coordinator_current_playback_context
@@ -274,7 +274,7 @@ class TestCentralCapture:
             assert first_capture != id(None)
 
             # Change track info mid-session (simulate track change)
-            main.current_track_info = {
+            main.playback_state.current_track_info = {
                 "source": "radio",
                 "url": "http://radio.example/stream",
                 "id": "radio1",
@@ -321,7 +321,7 @@ class TestCentralCapture:
                 measurement_session._measurement_restore_snapshot_matches_current_intent(saved)
             )
 
-            main.current_track_info = {
+            main.playback_state.current_track_info = {
                 "source": "local",
                 "url": "file:///other.flac",
                 "id": "other",
@@ -331,7 +331,7 @@ class TestCentralCapture:
                 measurement_session._measurement_restore_snapshot_matches_current_intent(saved)
             )
 
-            main.current_track_info = None
+            main.playback_state.current_track_info = None
             main.runtime.player_instance = None
             assert not asyncio.get_event_loop().run_until_complete(
                 measurement_session._measurement_restore_snapshot_matches_current_intent(saved)
@@ -348,10 +348,10 @@ class TestCentralCapture:
             ts.set_spotify_playing("spotify:track:A")
             ts.set_track_playing(source="local", sample_rate=44100)
             main.runtime.player_instance.state.update(paused=True, playing=False)
-            local_track_before = dict(main.current_track_info)
+            local_track_before = dict(main.playback_state.current_track_info)
             local_state_before = dict(main.runtime.player_instance.state)
             # A stale cache must not become the capture authority.
-            main.latest_spotify_state = {
+            main.playback_state.latest_spotify_state = {
                 "available": True,
                 "status": "Playing",
                 "trackId": "spotify:track:B",
@@ -376,7 +376,7 @@ class TestCentralCapture:
             assert saved["id"] == "spotify:track:A"
             assert saved["url"] == "spotify:track:A"
             assert ts._spotify_state["status"] == "Paused"
-            assert main.current_track_info == local_track_before
+            assert main.playback_state.current_track_info == local_track_before
 
             asyncio.get_event_loop().run_until_complete(ts._session.request_close())
             asyncio.get_event_loop().run_until_complete(
@@ -388,7 +388,7 @@ class TestCentralCapture:
             assert restore_calls[0]["should_play"] is True
             assert restore_calls[0]["restore_intent"]["id"] == "spotify:track:A"
             assert ts._spotify_state["status"] == "Playing"
-            assert main.current_track_info == local_track_before
+            assert main.playback_state.current_track_info == local_track_before
             assert main.runtime.player_instance.state == local_state_before
         finally:
             ts.cleanup()
@@ -428,7 +428,7 @@ class TestCentralCapture:
             ts.set_spotify_playing("spotify:track:A")
             ts.set_track_playing(source="local", sample_rate=44100)
             main.runtime.player_instance.state.update(paused=True, playing=False)
-            local_track_before = dict(main.current_track_info)
+            local_track_before = dict(main.playback_state.current_track_info)
             coordinator = SimpleNamespace(
                 restore_measurement=AsyncMock(return_value=SimpleNamespace(committed=True))
             )
@@ -456,8 +456,8 @@ class TestCentralCapture:
 
             coordinator.restore_measurement.assert_not_awaited()
             assert measurement_session._playback_state_before_measurement is None
-            assert main.current_track_info == local_track_before
-            assert not main.current_track_info.get("source") == "spotify"
+            assert main.playback_state.current_track_info == local_track_before
+            assert not main.playback_state.current_track_info.get("source") == "spotify"
         finally:
             ts.cleanup()
 
@@ -475,7 +475,7 @@ class TestCentralCapture:
                 paused=True,
                 playing=False,
             )
-            local_track_before = dict(main.current_track_info)
+            local_track_before = dict(main.playback_state.current_track_info)
             intent = {
                 "source": "spotify",
                 "id": "spotify:track:A",
@@ -486,7 +486,7 @@ class TestCentralCapture:
                     "id": "spotify:track:A",
                     "url": "spotify:track:A",
                 },
-                "intent_generation": main.playback_intent_generation,
+                "intent_generation": main.playback_state.playback_intent_generation,
             }
             request = TransitionRequest(
                 operation="measurement-restore",
@@ -505,7 +505,7 @@ class TestCentralCapture:
             assert asyncio.get_event_loop().run_until_complete(
                 runtime.validate_measurement_restore_intent(request, {})
             ) is True
-            assert main.current_track_info == local_track_before
+            assert main.playback_state.current_track_info == local_track_before
 
             ts._spotify_state.update({
                 "trackId": "spotify:track:B",
@@ -514,7 +514,7 @@ class TestCentralCapture:
             assert asyncio.get_event_loop().run_until_complete(
                 runtime.validate_measurement_restore_intent(request, {})
             ) is False
-            assert main.current_track_info == local_track_before
+            assert main.playback_state.current_track_info == local_track_before
         finally:
             ts.cleanup()
 
@@ -533,7 +533,7 @@ class TestCentralCapture:
                     source=source,
                     target_rate=44100,
                     target_url=target_url,
-                    target_track=track or dict(main.current_track_info or {}),
+                    target_track=track or dict(main.playback_state.current_track_info or {}),
                     should_play=True,
                     restore_intent=intent,
                 )
@@ -549,11 +549,11 @@ class TestCentralCapture:
 
             base = {
                 "source": "local",
-                "track_info": dict(main.current_track_info),
+                "track_info": dict(main.playback_state.current_track_info),
                 "url": "file:///test.flac",
                 "current_file": "file:///test.flac",
                 "id": "track1",
-                "intent_generation": main.playback_intent_generation,
+                "intent_generation": main.playback_state.playback_intent_generation,
             }
             assert run_precheck(base) is True
             assert validate_runtime(base) is True
@@ -577,14 +577,14 @@ class TestCentralCapture:
                 assert run_precheck(identity_fallback) is False
                 assert validate_runtime(identity_fallback) is True
 
-            changed_generation = dict(base, intent_generation=main.playback_intent_generation + 1)
+            changed_generation = dict(base, intent_generation=main.playback_state.playback_intent_generation + 1)
             assert run_precheck(changed_generation) is False
             assert validate_runtime(changed_generation) is False
 
             ts.set_spotify_playing("spotify:track:A")
             spotify_without_identity = {
                 "source": "spotify",
-                "intent_generation": main.playback_intent_generation,
+                "intent_generation": main.playback_state.playback_intent_generation,
             }
             spotify_track = {"source": "spotify", "id": "spotify:track:A", "url": "spotify:track:A"}
             assert run_precheck(dict(spotify_without_identity, track_info="invalid")) is False

@@ -182,13 +182,13 @@ class FullGraphRestoreTests(RestoreTestBase):
     async def test_local_44100_to_48000_failure_restores_full_graph(self):
         runtime = make_transition_runtime()
         recorder = StageRecorder(runtime)
-        with patch.object(main, "current_track_info", None), patch.object(
-            main, "current_footer_owner", "spotify"
+        with patch.object(main.playback_state, "current_track_info", None), patch.object(
+            main.playback_state, "current_footer_owner", "spotify"
         ), patch.object(main, "_mark_player_state_authoritative"):
             restored = await _abort(runtime, local_snapshot())
             self.assertTrue(restored)
-            self.assertEqual(main.current_track_info["source"], "local")
-            self.assertEqual(main.current_footer_owner, "local")
+            self.assertEqual(main.playback_state.current_track_info["source"], "local")
+            self.assertEqual(main.playback_state.current_footer_owner, "local")
 
         self.assertEqual(recorder.events, [
             "establish_target_rate",
@@ -220,8 +220,8 @@ class FullGraphRestoreTests(RestoreTestBase):
             effects_result={"dsp_reinitialized": False, "helper_rebuilt": False},
         )
         snapshot = local_snapshot(force_rate=None, active_rate=48_000)
-        with patch.object(main, "current_track_info", None), patch.object(
-            main, "current_footer_owner", "spotify"
+        with patch.object(main.playback_state, "current_track_info", None), patch.object(
+            main.playback_state, "current_footer_owner", "spotify"
         ), patch.object(main, "_mark_player_state_authoritative"), patch.object(
             main, "get_samplerate_status", return_value={"active_rate": 48_000}
         ):
@@ -250,8 +250,8 @@ class FullGraphRestoreTests(RestoreTestBase):
         )
         snapshot = local_snapshot(force_rate=None, active_rate=48_000)
         snapshot["current_track"]["sample_rate_hz"] = 44_100
-        with patch.object(main, "current_track_info", None), patch.object(
-            main, "current_footer_owner", "spotify"
+        with patch.object(main.playback_state, "current_track_info", None), patch.object(
+            main.playback_state, "current_footer_owner", "spotify"
         ), patch.object(main, "_mark_player_state_authoritative"), patch.object(
             main, "get_samplerate_status", return_value={"active_rate": 48_000}
         ):
@@ -271,8 +271,8 @@ class FullGraphRestoreTests(RestoreTestBase):
         runtime = make_transition_runtime()
         recorder = StageRecorder(runtime)
         snapshot = local_snapshot(force_rate=None, active_rate=48_000)
-        with patch.object(main, "current_track_info", None), patch.object(
-            main, "current_footer_owner", "spotify"
+        with patch.object(main.playback_state, "current_track_info", None), patch.object(
+            main.playback_state, "current_footer_owner", "spotify"
         ), patch.object(main, "_mark_player_state_authoritative"), patch.object(
             main, "get_samplerate_status",
             Mock(side_effect=RuntimeError("samplerate status unavailable")),
@@ -290,8 +290,8 @@ class FullGraphRestoreTests(RestoreTestBase):
     async def test_local_position_restored_for_playing_and_paused(self):
         runtime = make_transition_runtime()
         recorder = StageRecorder(runtime)
-        with patch.object(main, "current_track_info", None), patch.object(
-            main, "current_footer_owner", "spotify"
+        with patch.object(main.playback_state, "current_track_info", None), patch.object(
+            main.playback_state, "current_footer_owner", "spotify"
         ), patch.object(main, "_mark_player_state_authoritative"):
             restored = await _abort(
                 runtime,
@@ -305,8 +305,8 @@ class FullGraphRestoreTests(RestoreTestBase):
 
         runtime = make_transition_runtime()
         recorder = StageRecorder(runtime)
-        with patch.object(main, "current_track_info", None), patch.object(
-            main, "current_footer_owner", "spotify"
+        with patch.object(main.playback_state, "current_track_info", None), patch.object(
+            main.playback_state, "current_footer_owner", "spotify"
         ), patch.object(main, "_mark_player_state_authoritative"):
             restored = await _abort(
                 runtime,
@@ -322,8 +322,8 @@ class FullGraphRestoreTests(RestoreTestBase):
     async def test_radio_gets_no_position_restore(self):
         runtime = make_transition_runtime()
         recorder = StageRecorder(runtime)
-        with patch.object(main, "current_track_info", None), patch.object(
-            main, "current_footer_owner", "spotify"
+        with patch.object(main.playback_state, "current_track_info", None), patch.object(
+            main.playback_state, "current_footer_owner", "spotify"
         ), patch.object(main, "_mark_player_state_authoritative"):
             restored = await _abort(runtime, radio_snapshot())
             self.assertTrue(restored)
@@ -336,14 +336,14 @@ class FullGraphRestoreTests(RestoreTestBase):
         runtime = make_transition_runtime()
         recorder = StageRecorder(runtime)
         release_mock = AsyncMock(return_value=False)
-        with patch.object(main, "current_track_info", None), patch.object(
-            main, "current_footer_owner", "spotify"
+        with patch.object(main.playback_state, "current_track_info", None), patch.object(
+            main.playback_state, "current_footer_owner", "spotify"
         ), patch.object(main, "_mark_player_state_authoritative"), patch.object(
             main, "_wait_for_pipewire_spotify_release", release_mock
         ):
             restored = await _abort(runtime, local_snapshot())
             self.assertIsNone(restored)
-            self.assertIsNone(main.current_track_info)
+            self.assertIsNone(main.playback_state.current_track_info)
 
         release_mock.assert_awaited_once()
         self.assertEqual(recorder.events, [])
@@ -359,8 +359,8 @@ class FullGraphRestoreTests(RestoreTestBase):
             return True
 
         release_mock = AsyncMock(side_effect=record_release)
-        with patch.object(main, "current_track_info", None), patch.object(
-            main, "current_footer_owner", "spotify"
+        with patch.object(main.playback_state, "current_track_info", None), patch.object(
+            main.playback_state, "current_footer_owner", "spotify"
         ), patch.object(main, "_mark_player_state_authoritative"), patch.object(
             main, "_wait_for_pipewire_spotify_release", release_mock
         ):
@@ -374,35 +374,35 @@ class FullGraphRestoreTests(RestoreTestBase):
     async def test_final_readback_without_volume_100_aborts_restore(self):
         runtime = make_transition_runtime()
         StageRecorder(runtime, final_result={"committed": True, "source_volume": 0})
-        with patch.object(main, "current_track_info", None), patch.object(
-            main, "current_footer_owner", "spotify"
+        with patch.object(main.playback_state, "current_track_info", None), patch.object(
+            main.playback_state, "current_footer_owner", "spotify"
         ), patch.object(main, "_mark_player_state_authoritative"):
             restored = await _abort(runtime, local_snapshot(playing=False))
             self.assertIsNone(restored)
-            self.assertIsNone(main.current_track_info)
+            self.assertIsNone(main.playback_state.current_track_info)
 
     async def test_final_readback_without_volume_confirmation_aborts_restore(self):
         # source_volume missing/unusable is not a successful confirmation:
         # no recovery, no committed track metadata, failure latch stays.
         runtime = make_transition_runtime()
         StageRecorder(runtime, final_result={"committed": True, "source_volume": None})
-        with patch.object(main, "current_track_info", None), patch.object(
-            main, "current_footer_owner", "spotify"
+        with patch.object(main.playback_state, "current_track_info", None), patch.object(
+            main.playback_state, "current_footer_owner", "spotify"
         ), patch.object(main, "_mark_player_state_authoritative"):
             restored = await _abort(runtime, local_snapshot())
             self.assertIsNone(restored)
-            self.assertIsNone(main.current_track_info)
-            self.assertEqual(main.current_footer_owner, "spotify")
+            self.assertIsNone(main.playback_state.current_track_info)
+            self.assertEqual(main.playback_state.current_footer_owner, "spotify")
 
     async def test_radio_restore_runs_same_sequence_with_radio_request(self):
         runtime = make_transition_runtime()
         recorder = StageRecorder(runtime)
-        with patch.object(main, "current_track_info", None), patch.object(
-            main, "current_footer_owner", "spotify"
+        with patch.object(main.playback_state, "current_track_info", None), patch.object(
+            main.playback_state, "current_footer_owner", "spotify"
         ), patch.object(main, "_mark_player_state_authoritative"):
             restored = await _abort(runtime, radio_snapshot())
             self.assertTrue(restored)
-            self.assertEqual(main.current_track_info["source"], "radio")
+            self.assertEqual(main.playback_state.current_track_info["source"], "radio")
 
         self.assertEqual(recorder.events[-1], "verify_committed_transition")
         rate_request = recorder.requests["establish_target_rate"]
@@ -415,8 +415,8 @@ class FullGraphRestoreTests(RestoreTestBase):
     async def test_paused_restore_keeps_paused_with_volume_but_without_dsp_stage(self):
         runtime = make_transition_runtime()
         recorder = StageRecorder(runtime)
-        with patch.object(main, "current_track_info", None), patch.object(
-            main, "current_footer_owner", "spotify"
+        with patch.object(main.playback_state, "current_track_info", None), patch.object(
+            main.playback_state, "current_footer_owner", "spotify"
         ), patch.object(main, "_mark_player_state_authoritative"):
             restored = await _abort(
                 runtime, local_snapshot(playing=False)
@@ -436,8 +436,8 @@ class FullGraphRestoreTests(RestoreTestBase):
         recorder = StageRecorder(
             runtime, effects_result={"dsp_reinitialized": False, "helper_rebuilt": False}
         )
-        with patch.object(main, "current_track_info", None), patch.object(
-            main, "current_footer_owner", "spotify"
+        with patch.object(main.playback_state, "current_track_info", None), patch.object(
+            main.playback_state, "current_footer_owner", "spotify"
         ), patch.object(main, "_mark_player_state_authoritative"):
             restored = await _abort(
                 runtime, local_snapshot(), request=spotify_request(rate_change=False)
@@ -455,23 +455,23 @@ class FullGraphRestoreTests(RestoreTestBase):
     async def test_stage_failure_keeps_latch_semantics(self):
         runtime = make_transition_runtime()
         StageRecorder(runtime, fail_stage="prepare_target_source")
-        with patch.object(main, "current_track_info", None), patch.object(
-            main, "current_footer_owner", "spotify"
+        with patch.object(main.playback_state, "current_track_info", None), patch.object(
+            main.playback_state, "current_footer_owner", "spotify"
         ), patch.object(main, "_mark_player_state_authoritative"):
             restored = await _abort(runtime, local_snapshot())
             self.assertIsNone(restored)
-            self.assertIsNone(main.current_track_info)
-            self.assertEqual(main.current_footer_owner, "spotify")
+            self.assertIsNone(main.playback_state.current_track_info)
+            self.assertEqual(main.playback_state.current_footer_owner, "spotify")
 
     async def test_final_readback_failure_keeps_latch(self):
         runtime = make_transition_runtime()
         StageRecorder(runtime, final_result={"committed": False})
-        with patch.object(main, "current_track_info", None), patch.object(
-            main, "current_footer_owner", "spotify"
+        with patch.object(main.playback_state, "current_track_info", None), patch.object(
+            main.playback_state, "current_footer_owner", "spotify"
         ), patch.object(main, "_mark_player_state_authoritative"):
             restored = await _abort(runtime, local_snapshot())
             self.assertIsNone(restored)
-            self.assertIsNone(main.current_track_info)
+            self.assertIsNone(main.playback_state.current_track_info)
 
 
 class RecordingPlayer:
@@ -525,8 +525,8 @@ class RestoreGateBoundaryTests(RestoreTestBase):
         async def gate_guard(*, stage):
             guard_calls.append(stage)
 
-        with patch.object(main, "current_track_info", None), patch.object(
-            main, "current_footer_owner", "spotify"
+        with patch.object(main.playback_state, "current_track_info", None), patch.object(
+            main.playback_state, "current_footer_owner", "spotify"
         ), patch.object(main, "_mark_player_state_authoritative"):
             restored = await _abort(
                 runtime, local_snapshot(), ensure_gate_closed=gate_guard
@@ -550,8 +550,8 @@ class RestoreGateBoundaryTests(RestoreTestBase):
             if stage == "failed-transition-restore-before-rate":
                 raise RuntimeError("output gate could not be confirmed closed")
 
-        with patch.object(main, "current_track_info", None), patch.object(
-            main, "current_footer_owner", "spotify"
+        with patch.object(main.playback_state, "current_track_info", None), patch.object(
+            main.playback_state, "current_footer_owner", "spotify"
         ), patch.object(main, "_mark_player_state_authoritative"):
             restored = await _abort(
                 runtime, local_snapshot(), ensure_gate_closed=failing_guard
@@ -561,7 +561,7 @@ class RestoreGateBoundaryTests(RestoreTestBase):
         # No single mutating restore stage ran: no rate, effects/helper, MPV
         # load, graph or volume mutation under an unverified gate.
         self.assertEqual(recorder.events, [])
-        self.assertIsNone(main.current_track_info)
+        self.assertIsNone(main.playback_state.current_track_info)
 
     async def test_gate_loss_before_volume_aborts_restore_without_volume_change(self):
         runtime = make_transition_runtime()
@@ -571,8 +571,8 @@ class RestoreGateBoundaryTests(RestoreTestBase):
             if stage == "failed-transition-restore-before-volume":
                 raise RuntimeError("output gate lost before volume restore")
 
-        with patch.object(main, "current_track_info", None), patch.object(
-            main, "current_footer_owner", "spotify"
+        with patch.object(main.playback_state, "current_track_info", None), patch.object(
+            main.playback_state, "current_footer_owner", "spotify"
         ), patch.object(main, "_mark_player_state_authoritative"):
             restored = await _abort(
                 runtime, local_snapshot(), ensure_gate_closed=failing_guard
@@ -581,7 +581,7 @@ class RestoreGateBoundaryTests(RestoreTestBase):
 
         # No source volume may ever be set under an unconfirmed gate.
         self.assertNotIn("set_source_volume", recorder.events)
-        self.assertIsNone(main.current_track_info)
+        self.assertIsNone(main.playback_state.current_track_info)
 
     async def test_gate_guard_after_volume_runs_in_no_dsp_and_paused_paths(self):
         # Same-rate/no-DSP: the after-volume gate re-check still runs, like
@@ -596,8 +596,8 @@ class RestoreGateBoundaryTests(RestoreTestBase):
         async def gate_guard(*, stage):
             guard_calls.append(stage)
 
-        with patch.object(main, "current_track_info", None), patch.object(
-            main, "current_footer_owner", "spotify"
+        with patch.object(main.playback_state, "current_track_info", None), patch.object(
+            main.playback_state, "current_footer_owner", "spotify"
         ), patch.object(main, "_mark_player_state_authoritative"):
             restored = await _abort(
                 runtime,
@@ -618,8 +618,8 @@ class RestoreGateBoundaryTests(RestoreTestBase):
         )
         guard_calls = []
 
-        with patch.object(main, "current_track_info", None), patch.object(
-            main, "current_footer_owner", "spotify"
+        with patch.object(main.playback_state, "current_track_info", None), patch.object(
+            main.playback_state, "current_footer_owner", "spotify"
         ), patch.object(main, "_mark_player_state_authoritative"):
             restored = await _abort(
                 runtime, local_snapshot(playing=False), ensure_gate_closed=gate_guard
@@ -637,8 +637,8 @@ class RestoreGateBoundaryTests(RestoreTestBase):
             if stage == "failed-transition-restore-after-dsp":
                 raise RuntimeError("output gate lost after volume restore")
 
-        with patch.object(main, "current_track_info", None), patch.object(
-            main, "current_footer_owner", "spotify"
+        with patch.object(main.playback_state, "current_track_info", None), patch.object(
+            main.playback_state, "current_footer_owner", "spotify"
         ), patch.object(main, "_mark_player_state_authoritative"):
             restored = await _abort(
                 runtime, local_snapshot(), ensure_gate_closed=failing_guard
@@ -647,7 +647,7 @@ class RestoreGateBoundaryTests(RestoreTestBase):
 
         self.assertIn("set_source_volume", recorder.events)
         self.assertNotIn("verify_committed_transition", recorder.events)
-        self.assertIsNone(main.current_track_info)
+        self.assertIsNone(main.playback_state.current_track_info)
 
 
 class PositionRestoreOrderTests(unittest.IsolatedAsyncioTestCase):
@@ -773,8 +773,8 @@ class NativeQueueRestoreTests(RestoreTestBase):
             playback_queue.queue.loop = True
             playback_queue.queue.shuffle = False
             playback_queue.queue.single_track_loop = False
-            with patch.object(main, "current_track_info", None), patch.object(
-                main, "current_footer_owner", "spotify"
+            with patch.object(main.playback_state, "current_track_info", None), patch.object(
+                main.playback_state, "current_footer_owner", "spotify"
             ), patch.object(main, "_mark_player_state_authoritative"):
                 restored = await _abort(runtime, local_snapshot())
                 self.assertTrue(restored)
@@ -802,8 +802,8 @@ class NativeQueueRestoreTests(RestoreTestBase):
             playback_queue.queue.loop = False
             playback_queue.queue.shuffle = False
             playback_queue.queue.single_track_loop = False
-            with patch.object(main, "current_track_info", None), patch.object(
-                main, "current_footer_owner", "spotify"
+            with patch.object(main.playback_state, "current_track_info", None), patch.object(
+                main.playback_state, "current_footer_owner", "spotify"
             ), patch.object(main, "_mark_player_state_authoritative"), patch.object(
                 playback_queue.queue, "reduce_native_playlist_to_current"
             ), patch.object(playback_queue.queue, "reset_mpv_loop_state"):

@@ -18,7 +18,7 @@ class SamplerateDriftWatcherTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         self.originals = {
-            name: (getattr(main.runtime, name) if hasattr(main.runtime, name) else getattr(main, name))
+            name: (getattr(main.runtime, name) if hasattr(main.runtime, name) else getattr(main.playback_state, name) if hasattr(main.playback_state, name) else getattr(main, name))
             for name in (
                 "player_instance", "current_track_info",
                 "playback_transition_coordinator", "measurement_sr_session",
@@ -37,7 +37,7 @@ class SamplerateDriftWatcherTests(unittest.IsolatedAsyncioTestCase):
             }
 
         main.runtime.player_instance = Player()
-        main.current_track_info = {
+        main.playback_state.current_track_info = {
             "id": "radio_48k",
             "source": "radio",
             "url": "https://radio.example/48k",
@@ -55,7 +55,7 @@ class SamplerateDriftWatcherTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self):
         for name, value in self.originals.items():
-            setattr(main.runtime if hasattr(main.runtime, name) else main, name, value)
+            setattr(main.runtime if hasattr(main.runtime, name) else main.playback_state if hasattr(main.playback_state, name) else main, name, value)
 
     async def test_two_matching_mismatch_readbacks_request_one_recovery(self):
         """MPV/track 44.1 with hardware at 48 kHz requests repair at 44.1."""
@@ -113,7 +113,7 @@ class SamplerateDriftWatcherTests(unittest.IsolatedAsyncioTestCase):
             main, "_request_coordinated_recovery", recovery
         ):
             await main._observe_playback_samplerate_drift()
-            main.current_track_info = {
+            main.playback_state.current_track_info = {
                 "id": "radio_other",
                 "source": "radio",
                 "url": "https://radio.example/other",
@@ -154,13 +154,13 @@ class RadioPostLoadHandoffTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         self.originals = {
-            name: (getattr(main.runtime, name) if hasattr(main.runtime, name) else getattr(main, name))
+            name: (getattr(main.runtime, name) if hasattr(main.runtime, name) else getattr(main.playback_state, name) if hasattr(main.playback_state, name) else getattr(main, name))
             for name in (
                 "playback_transition_epoch", "dsp_runtime",
                 "asyncio",
             )
         }
-        main.playback_transition_epoch = 100
+        main.playback_state.playback_transition_epoch = 100
         main.runtime.dsp_runtime = type("NativeRuntime", (), {
             "snapshot": lambda self: {
                 "active": True,
@@ -170,7 +170,7 @@ class RadioPostLoadHandoffTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self):
         for name, value in self.originals.items():
-            setattr(main.runtime if hasattr(main.runtime, name) else main, name, value)
+            setattr(main.runtime if hasattr(main.runtime, name) else main.playback_state if hasattr(main.playback_state, name) else main, name, value)
 
     async def _run_handoff(
         self,
@@ -344,7 +344,7 @@ class RadioPostLoadHandoffTests(unittest.IsolatedAsyncioTestCase):
         # The generation must flip after the first stable same-rate poll
         # (during sleep), not before the first check.
         def bump_during_sleep(_delay):
-            main.playback_transition_epoch += 1
+            main.playback_state.playback_transition_epoch += 1
 
         with patch.object(
             main, "_get_player_audio_samplerate", return_value=44100
@@ -361,7 +361,7 @@ class RadioPostLoadHandoffTests(unittest.IsolatedAsyncioTestCase):
         track = {"id": "radio_stale", "source": "radio", "url": "https://radio.example/stale"}
 
         def bump_during_sleep(_delay):
-            main.playback_transition_epoch += 1
+            main.playback_state.playback_transition_epoch += 1
 
         # Same-rate poll: only accepted after stability polls, so the sleep
         # (and the generation bump inside it) runs before a rate is returned.

@@ -251,7 +251,7 @@ async def _recovery_valid(
                 mock.MagicMock(state={"current_file": RADIO_URL, "ended": False}),
             ), \
             mock.patch.object(
-                main, "current_track_info",
+                main.playback_state, "current_track_info",
                 {"source": "radio", "url": RADIO_URL},
             ):
         return await main._recovery_context_is_valid(request)

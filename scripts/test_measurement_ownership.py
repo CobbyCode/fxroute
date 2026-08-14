@@ -17,7 +17,7 @@ import measurement_session
 class MeasurementOwnershipTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self._originals = {
-            name: (getattr(main.runtime, name) if hasattr(main.runtime, name) else getattr(main, name))
+            name: (getattr(main.runtime, name) if hasattr(main.runtime, name) else getattr(main.playback_state, name) if hasattr(main.playback_state, name) else getattr(main, name))
             for name in (
                 "measurement_sr_session",
                 "playback_transition_coordinator",
@@ -40,7 +40,7 @@ class MeasurementOwnershipTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self):
         for name, value in self._originals.items():
-            setattr(main.runtime if hasattr(main.runtime, name) else main, name, value)
+            setattr(main.runtime if hasattr(main.runtime, name) else main.playback_state if hasattr(main.playback_state, name) else main, name, value)
 
     async def test_entry_in_progress_owns_graph_before_session_becomes_active(self):
         session = main.MeasurementSampleRateSession()
@@ -106,7 +106,7 @@ class MeasurementOwnershipTests(unittest.IsolatedAsyncioTestCase):
         session = main.MeasurementSampleRateSession()
         session.active = True
         session.measurement_rate = 48000
-        main.current_track_info = {
+        main.playback_state.current_track_info = {
             "source": "local",
             "url": "/music/a.flac",
             "sample_rate_hz": 44100,
@@ -205,7 +205,7 @@ class MeasurementOwnershipTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(main, "measurement_sr_session", session), patch.object(
             main, "playback_transition_coordinator", coordinator
         ), patch.object(main.runtime, "player_instance", player), patch.object(
-            main, "current_track_info", dict(track)
+            main.playback_state, "current_track_info", dict(track)
         ), patch.object(main, "_coordinator_target_rate", return_value=44100), patch.object(
             main, "_coordinator_rate_change", return_value=False
         ), patch.object(main, "_coordinator_commit_context_id", return_value="tr-after-release"), patch.object(

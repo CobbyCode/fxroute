@@ -653,12 +653,12 @@ class EntryBoundaryTests(unittest.IsolatedAsyncioTestCase):
         run = AsyncMock(return_value=result)
         originals = {
             "measurement_sr_session": main.measurement_sr_session,
-            "current_track_info": main.current_track_info,
+            "current_track_info": main.playback_state.current_track_info,
             "player_instance": main.runtime.player_instance,
         }
         try:
             main.measurement_sr_session = session
-            main.current_track_info = None
+            main.playback_state.current_track_info = None
             main.runtime.player_instance = None
             with patch.object(measurement_session, "_capture_playback_state_before_measurement"), patch.object(
                 main, "get_samplerate_status", return_value={"force_rate": 44100, "active_rate": 44100}
@@ -671,7 +671,7 @@ class EntryBoundaryTests(unittest.IsolatedAsyncioTestCase):
                 await session._start_locked(48000)
         finally:
             for name, value in originals.items():
-                setattr(main.runtime if hasattr(main.runtime, name) else main, name, value)
+                setattr(main.runtime if hasattr(main.runtime, name) else main.playback_state if hasattr(main.playback_state, name) else main, name, value)
 
         request = run.await_args.args[0]
         self.assertEqual(request.operation, "measurement-entry")

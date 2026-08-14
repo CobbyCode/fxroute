@@ -164,7 +164,7 @@ class QueueCallbackOwnershipTests(unittest.IsolatedAsyncioTestCase):
             "peak_monitor", "build_playback_payload", "_schedule_radio_reconnect_if_needed",
             "sync_peak_monitor_for_playback_state",
         )
-        originals = {name: (getattr(main.runtime, name) if hasattr(main.runtime, name) else getattr(main, name)) for name in names}
+        originals = {name: (getattr(main.runtime, name) if hasattr(main.runtime, name) else getattr(main.playback_state, name) if hasattr(main.playback_state, name) else getattr(main, name)) for name in names}
         saved_queue = queue_state()
         try:
             playback_queue.queue.tracks = [
@@ -173,12 +173,12 @@ class QueueCallbackOwnershipTests(unittest.IsolatedAsyncioTestCase):
             ]
             playback_queue.queue.mode = "app_replace"
             playback_queue.queue.index = 0
-            main.current_track_info = dict(playback_queue.queue.tracks[0])
-            main.last_track_info = dict(playback_queue.queue.tracks[0])
+            main.playback_state.current_track_info = dict(playback_queue.queue.tracks[0])
+            main.playback_state.last_track_info = dict(playback_queue.queue.tracks[0])
             main.queue_advancing = False
             playback_queue.queue.single_track_loop = False
-            main.playback_transition_epoch = 2
-            main.latest_player_state_seq_seen = 0
+            main.playback_state.playback_transition_epoch = 2
+            main.playback_state.latest_player_state_seq_seen = 0
             main.runtime.source_transition_lock = None
             main.manager = _FakeManager()
             main.runtime.peak_monitor = None
@@ -194,7 +194,7 @@ class QueueCallbackOwnershipTests(unittest.IsolatedAsyncioTestCase):
                 "_seq": 1, "current_file": "/music/a.flac", "playlist_pos": 1,
                 "paused": True, "ended": False,
             })
-            self.assertEqual(main.current_track_info["url"], "/music/a.flac")
+            self.assertEqual(main.playback_state.current_track_info["url"], "/music/a.flac")
             self.assertEqual(playback_queue.queue.index, 0)
 
             await main.on_player_state_change({
@@ -204,12 +204,12 @@ class QueueCallbackOwnershipTests(unittest.IsolatedAsyncioTestCase):
             # The Coordinator endpoint owns the queue-track commit.  A player
             # callback must not commit a different queue item from stale MPV
             # playlist metadata.
-            self.assertEqual(main.current_track_info["url"], "/music/a.flac")
+            self.assertEqual(main.playback_state.current_track_info["url"], "/music/a.flac")
             self.assertEqual(playback_queue.queue.index, 0)
         finally:
             restore_queue_state(saved_queue)
             for name, value in originals.items():
-                setattr(main.runtime if hasattr(main.runtime, name) else main, name, value)
+                setattr(main.runtime if hasattr(main.runtime, name) else main.playback_state if hasattr(main.playback_state, name) else main, name, value)
 
     def test_selected_queue_order_is_exact_and_deduplicated(self):
         original_scanner = main.library_scanner
@@ -285,7 +285,7 @@ class ApiPlayQueueOrderTests(unittest.IsolatedAsyncioTestCase):
 
     def _install(self):
         originals = {
-            name: (getattr(main.runtime, name) if hasattr(main.runtime, name) else getattr(main, name))
+            name: (getattr(main.runtime, name) if hasattr(main.runtime, name) else getattr(main.playback_state, name) if hasattr(main.playback_state, name) else getattr(main, name))
             for name in (
                 "player_instance", "library_scanner", "current_track_info",
                 "last_track_info", "last_radio_track_info", "current_footer_owner",
@@ -301,10 +301,10 @@ class ApiPlayQueueOrderTests(unittest.IsolatedAsyncioTestCase):
         main.library_scanner = SimpleNamespace(
             get_tracks=lambda: [_FakeTrack("a"), _FakeTrack("b"), _FakeTrack("c")],
         )
-        main.current_track_info = None
-        main.last_track_info = None
-        main.last_radio_track_info = None
-        main.current_footer_owner = "local"
+        main.playback_state.current_track_info = None
+        main.playback_state.last_track_info = None
+        main.playback_state.last_radio_track_info = None
+        main.playback_state.current_footer_owner = "local"
         playback_queue.queue.tracks = []
         playback_queue.queue.original = []
         playback_queue.queue.index = -1
@@ -315,7 +315,7 @@ class ApiPlayQueueOrderTests(unittest.IsolatedAsyncioTestCase):
         main.runtime.peak_monitor = None
         main.runtime.source_transition_lock = None
         measurement_session._playback_state_before_measurement = None
-        main.playback_transition_epoch = 0
+        main.playback_state.playback_transition_epoch = 0
         main.radio_reconnect_attempts = 0
         main.radio_reconnect_url = None
         main.radio_reconnect_active_since = 0.0
@@ -325,7 +325,7 @@ class ApiPlayQueueOrderTests(unittest.IsolatedAsyncioTestCase):
     def _restore(self, originals):
         restore_queue_state(self._saved_queue)
         for name, value in originals.items():
-            setattr(main.runtime if hasattr(main.runtime, name) else main, name, value)
+            setattr(main.runtime if hasattr(main.runtime, name) else main.playback_state if hasattr(main.playback_state, name) else main, name, value)
 
     def _patches(self, recording_shuffle):
         async def no_op(*_args, **_kwargs):
@@ -584,7 +584,7 @@ class SilentActiveDiagnosisTests(unittest.IsolatedAsyncioTestCase):
 
     def _install(self):
         originals = {
-            name: (getattr(main.runtime, name) if hasattr(main.runtime, name) else getattr(main, name))
+            name: (getattr(main.runtime, name) if hasattr(main.runtime, name) else getattr(main.playback_state, name) if hasattr(main.playback_state, name) else getattr(main, name))
             for name in (
                 "peak_monitor", "player_instance", "current_track_info",
                 "current_footer_owner", "silent_active_recovery_attempts",
@@ -601,8 +601,8 @@ class SilentActiveDiagnosisTests(unittest.IsolatedAsyncioTestCase):
             _running=True,
             state={"current_file": "/music/t1.flac", "paused": False, "ended": False, "volume": 100},
         )
-        main.current_track_info = {"id": "t1", "title": "T1", "url": "/music/t1.flac", "source": "local"}
-        main.current_footer_owner = "local"
+        main.playback_state.current_track_info = {"id": "t1", "title": "T1", "url": "/music/t1.flac", "source": "local"}
+        main.playback_state.current_footer_owner = "local"
         main.silent_active_recovery_attempts = set()
         main.runtime.dsp_preset_load_lock = None
         main._current_track_matches = lambda track: True
@@ -624,7 +624,7 @@ class SilentActiveDiagnosisTests(unittest.IsolatedAsyncioTestCase):
 
     def _restore(self, originals):
         for name, value in originals.items():
-            setattr(main.runtime if hasattr(main.runtime, name) else main, name, value)
+            setattr(main.runtime if hasattr(main.runtime, name) else main.playback_state if hasattr(main.playback_state, name) else main, name, value)
 
     async def test_fresh_samples_reach_diagnosis_and_recovery_stays_suppressed(self):
         originals = self._install()

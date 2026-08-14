@@ -47,7 +47,7 @@ class CoordinatorRecoveryTests(unittest.IsolatedAsyncioTestCase):
         track = {"source": "radio", "url": "https://radio.example/live", "sample_rate_hz": 44100}
         with patch.object(main, "playback_transition_coordinator", coordinator), patch.object(
             main.runtime, "player_instance", PlayerDouble()
-        ), patch.object(main, "coordinator_last_successful_commit_id", "tr-radio"), patch.object(
+        ), patch.object(main.playback_state, "coordinator_last_successful_commit_id", "tr-radio"), patch.object(
             main, "_run_coordinated_transition", run
         ):
             await main._request_coordinated_recovery(track, "status-drift-repair")

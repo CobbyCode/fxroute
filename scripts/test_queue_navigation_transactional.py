@@ -71,13 +71,13 @@ class QueueNavigationTransactionalTests(unittest.IsolatedAsyncioTestCase):
 
     def _install(self, queue_a: list[dict], *, index: int, mode: str = "app_replace",
                  loop: bool = False, shuffle: bool = False) -> dict:
-        originals = {name: (getattr(main.runtime, name) if hasattr(main.runtime, name) else getattr(main, name)) for name in self.GLOBALS}
+        originals = {name: (getattr(main.runtime, name) if hasattr(main.runtime, name) else getattr(main.playback_state, name) if hasattr(main.playback_state, name) else getattr(main, name)) for name in self.GLOBALS}
         self._saved_queue = queue_state()
         main.runtime.player_instance = _FakePlayer()
         main.library_scanner = _Scanner(["a", "b", "c", "d"])
-        main.current_track_info = dict(queue_a[index])
-        main.last_track_info = dict(queue_a[index])
-        main.current_footer_owner = "local"
+        main.playback_state.current_track_info = dict(queue_a[index])
+        main.playback_state.last_track_info = dict(queue_a[index])
+        main.playback_state.current_footer_owner = "local"
         playback_queue.queue.tracks = [dict(track) for track in queue_a]
         playback_queue.queue.original = [dict(track) for track in queue_a]
         playback_queue.queue.index = index
@@ -90,7 +90,7 @@ class QueueNavigationTransactionalTests(unittest.IsolatedAsyncioTestCase):
     def _restore(self, originals: dict) -> None:
         restore_queue_state(self._saved_queue)
         for name, value in originals.items():
-            setattr(main.runtime if hasattr(main.runtime, name) else main, name, value)
+            setattr(main.runtime if hasattr(main.runtime, name) else main.playback_state if hasattr(main.playback_state, name) else main, name, value)
 
     def _patch_context(self, transition, *, reverse_shuffle: bool = False):
         from contextlib import ExitStack
@@ -123,7 +123,7 @@ class QueueNavigationTransactionalTests(unittest.IsolatedAsyncioTestCase):
         finally:
             self.assertEqual(ctx.exception.status_code, 500)
             self.assertEqual(playback_queue.queue.index, 0, "index must stay on the old track")
-            self.assertEqual(main.current_track_info, _track("a"))
+            self.assertEqual(main.playback_state.current_track_info, _track("a"))
             self.assertEqual(playback_queue.queue.tracks, queue_a)
             self._restore(originals)
 
@@ -142,7 +142,7 @@ class QueueNavigationTransactionalTests(unittest.IsolatedAsyncioTestCase):
         finally:
             self.assertEqual(ctx.exception.status_code, 500)
             self.assertEqual(playback_queue.queue.index, 0)
-            self.assertEqual(main.current_track_info, _track("a"))
+            self.assertEqual(main.playback_state.current_track_info, _track("a"))
             self.assertEqual(playback_queue.queue.tracks, queue_a)
             self._restore(originals)
 
@@ -164,8 +164,8 @@ class QueueNavigationTransactionalTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(await playback_queue.queue.load_track(1, transition_reason="queue navigation"))
 
             self.assertEqual(playback_queue.queue.index, 1)
-            self.assertEqual(main.current_track_info, _track("b"))
-            self.assertEqual(main.last_track_info, _track("b"))
+            self.assertEqual(main.playback_state.current_track_info, _track("b"))
+            self.assertEqual(main.playback_state.last_track_info, _track("b"))
             self.assertEqual(playback_queue.queue.tracks, queue_a)
         finally:
             self._restore(originals)
@@ -185,7 +185,7 @@ class QueueNavigationTransactionalTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(playback_queue.queue.tracks, queue_a, "queue order must stay intact")
             self.assertEqual(playback_queue.queue.index, 1)
             self.assertFalse(playback_queue.queue.shuffle)
-            self.assertEqual(main.current_track_info, _track("b"))
+            self.assertEqual(main.playback_state.current_track_info, _track("b"))
             self._restore(originals)
 
     async def test_native_shuffle_during_transition_is_rejected(self):
@@ -219,7 +219,7 @@ class QueueNavigationTransactionalTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(playback_queue.queue.tracks, queue_a)
             self.assertEqual(playback_queue.queue.index, 1)
             self.assertFalse(playback_queue.queue.shuffle)
-            self.assertEqual(main.current_track_info, _track("b"))
+            self.assertEqual(main.playback_state.current_track_info, _track("b"))
             self._restore(originals)
 
     async def test_native_shuffle_success_commits_prepared_queue(self):
@@ -243,8 +243,8 @@ class QueueNavigationTransactionalTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual([item["id"] for item in playback_queue.queue.tracks], ["a", "b", "d", "c"])
             self.assertEqual(playback_queue.queue.index, 1)
             self.assertTrue(playback_queue.queue.shuffle)
-            self.assertEqual(main.current_track_info["id"], "b")
-            self.assertEqual(main.last_track_info["id"], "b")
+            self.assertEqual(main.playback_state.current_track_info["id"], "b")
+            self.assertEqual(main.playback_state.last_track_info["id"], "b")
         finally:
             self._restore(originals)
 
@@ -262,7 +262,7 @@ class QueueNavigationTransactionalTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(playback_queue.queue.tracks, [])
             self.assertEqual(playback_queue.queue.index, -1)
             self.assertFalse(playback_queue.queue.shuffle)
-            self.assertEqual(main.current_track_info, _track("d"))
+            self.assertEqual(main.playback_state.current_track_info, _track("d"))
             self._restore(originals)
 
     async def test_shuffle_at_queue_end_with_loop_wraps(self):
@@ -310,7 +310,7 @@ class QueueNavigationTransactionalTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(playback_queue.queue.tracks, [], "queue must be cleared")
             self.assertEqual(playback_queue.queue.index, -1)
             self.assertEqual(
-                main.current_track_info, _track("b"),
+                main.playback_state.current_track_info, _track("b"),
                 "track context must survive the terminal end state",
             )
             self.assertEqual(
@@ -340,7 +340,7 @@ class QueueNavigationTransactionalTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(ctx.exception.status_code, 409)
             self.assertEqual(playback_queue.queue.tracks, queue_a)
             self.assertEqual(playback_queue.queue.index, 0)
-            self.assertEqual(main.current_track_info, _track("a"))
+            self.assertEqual(main.playback_state.current_track_info, _track("a"))
         finally:
             self._restore(originals)
 
@@ -358,7 +358,7 @@ class QueueNavigationTransactionalTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(ctx.exception.status_code, 409)
             self.assertEqual(playback_queue.queue.tracks, queue_a)
             self.assertEqual(playback_queue.queue.index, 0)
-            self.assertEqual(main.current_track_info, _track("a"))
+            self.assertEqual(main.playback_state.current_track_info, _track("a"))
             self.assertTrue(playback_queue.queue.loop)
         finally:
             self._restore(originals)
@@ -386,7 +386,7 @@ class QueueNavigationTransactionalTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("queue_ended", result)
             self.assertEqual(playback_queue.queue.tracks, queue_a)
             self.assertEqual(playback_queue.queue.index, 0)
-            self.assertEqual(main.current_track_info, _track("a"))
+            self.assertEqual(main.playback_state.current_track_info, _track("a"))
         finally:
             self._restore(originals)
 
@@ -414,7 +414,7 @@ class QueueNavigationTransactionalTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(playback_queue.queue.tracks, [])
             self.assertEqual(playback_queue.queue.index, -1)
             self.assertFalse(playback_queue.queue.shuffle)
-            self.assertEqual(main.current_track_info, _track("d"))
+            self.assertEqual(main.playback_state.current_track_info, _track("d"))
         finally:
             self._restore(originals)
 
@@ -433,7 +433,7 @@ class QueueNavigationTransactionalTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(playback_queue.queue.tracks, queue_a)
             self.assertEqual(playback_queue.queue.index, 2)
             self.assertEqual(playback_queue.queue.mode, "native_mpv")
-            self.assertEqual(main.current_track_info, _track("c", rate=48000))
+            self.assertEqual(main.playback_state.current_track_info, _track("c", rate=48000))
         finally:
             self._restore(originals)
 
@@ -452,7 +452,7 @@ class QueueNavigationTransactionalTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(playback_queue.queue.tracks, queue_a)
             self.assertEqual(playback_queue.queue.index, 0)
             self.assertEqual(playback_queue.queue.mode, "native_mpv")
-            self.assertEqual(main.current_track_info, _track("a", rate=48000))
+            self.assertEqual(main.playback_state.current_track_info, _track("a", rate=48000))
         finally:
             self._restore(originals)
 
@@ -472,7 +472,7 @@ class QueueNavigationTransactionalTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(ctx.exception.status_code, 500)
             self.assertEqual(playback_queue.queue.tracks, queue_a)
             self.assertEqual(playback_queue.queue.index, 0)
-            self.assertEqual(main.current_track_info, _track("a"))
+            self.assertEqual(main.playback_state.current_track_info, _track("a"))
         finally:
             self._restore(originals)
 
