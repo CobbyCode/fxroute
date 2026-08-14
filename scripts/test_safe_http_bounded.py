@@ -11,7 +11,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import requests
 import urllib3
@@ -67,8 +67,10 @@ def make_response(*, status_code=200, body=b"", headers=None, raw_exc=None):
 
 class SafeGetBoundedBodyTests(unittest.TestCase):
     def _fetch(self, responses, url="https://public.example/radio.pls", max_bytes=1024):
+        session = MagicMock()
+        session.get.side_effect = responses
         with patch.object(safe_http.socket, "getaddrinfo", side_effect=fake_dns_public), \
-                patch("safe_http.requests.get", side_effect=responses):
+                patch.object(safe_http, "_build_public_session", return_value=session):
             return safe_http.safe_get(url, timeout=5, max_bytes=max_bytes)
 
     def test_small_playlist_body_unchanged(self):
@@ -127,11 +129,13 @@ class SafeGetBoundedBodyTests(unittest.TestCase):
             status_code=302,
             headers={"Location": "http://127.0.0.1:9000/internal.pls"},
         )
+        session = MagicMock()
+        session.get.side_effect = [first]
         with patch.object(safe_http.socket, "getaddrinfo", side_effect=fake_dns_public), \
-                patch("safe_http.requests.get", side_effect=[first]) as mock_get:
+                patch.object(safe_http, "_build_public_session", return_value=session):
             with self.assertRaises(safe_http.BlockedUrlError):
                 safe_http.safe_get("https://public.example/a.pls", timeout=5, max_bytes=1024)
-        mock_get.assert_called_once()
+        session.get.assert_called_once()
         self.assertTrue(first.raw.closed)
 
     def test_read_timeout_closes_response_and_stays_requests_semantics(self):
@@ -159,9 +163,11 @@ class SafeGetBoundedBodyTests(unittest.TestCase):
 class StationResolutionLimitTests(unittest.TestCase):
     def test_oversized_playlist_is_controlled_resolution_error(self):
         response = make_response(body=b"x" * 5000)
+        session = MagicMock()
+        session.get.return_value = response
         with patch.object(safe_http.socket, "getaddrinfo", side_effect=fake_dns_public), \
                 patch.object(stations, "RADIO_PLAYLIST_FETCH_MAX_BYTES", 1024), \
-                patch("safe_http.requests.get", return_value=response):
+                patch.object(safe_http, "_build_public_session", return_value=session):
             with self.assertRaises(safe_http.ResponseTooLargeError) as ctx:
                 stations.resolve_stream_url("https://example.com/radio.pls")
         self.assertIn("exceeded", str(ctx.exception))
@@ -169,8 +175,10 @@ class StationResolutionLimitTests(unittest.TestCase):
 
     def test_timeout_during_playlist_body_is_controlled_error(self):
         response = make_response(raw_exc=urllib3.exceptions.ReadTimeoutError("p", "h", "t"))
+        session = MagicMock()
+        session.get.return_value = response
         with patch.object(safe_http.socket, "getaddrinfo", side_effect=fake_dns_public), \
-                patch("safe_http.requests.get", return_value=response):
+                patch.object(safe_http, "_build_public_session", return_value=session):
             with self.assertRaises(ValueError) as ctx:
                 stations.resolve_stream_url("https://example.com/radio.pls")
         self.assertIn("Could not fetch", str(ctx.exception))
@@ -178,8 +186,10 @@ class StationResolutionLimitTests(unittest.TestCase):
 
     def test_small_playlist_resolution_unchanged(self):
         response = make_response(body=b"[playlist]\nFile1=http://stream.example/radio\n")
+        session = MagicMock()
+        session.get.return_value = response
         with patch.object(safe_http.socket, "getaddrinfo", side_effect=fake_dns_public), \
-                patch("safe_http.requests.get", return_value=response):
+                patch.object(safe_http, "_build_public_session", return_value=session):
             resolved = stations.resolve_stream_url("https://example.com/radio.pls")
         self.assertEqual(resolved, "http://stream.example/radio")
 
@@ -206,9 +216,11 @@ class SomafmArtworkLimitTests(unittest.TestCase):
             body=b"PNG" * 5000,
             headers={"content-type": "image/png"},
         )
+        session = MagicMock()
+        session.get.side_effect = [page, image]
         with patch.object(safe_http.socket, "getaddrinfo", side_effect=fake_dns_public), \
                 patch.object(stations, "SOMAFM_ARTWORK_FETCH_MAX_BYTES", 1024), \
-                patch("safe_http.requests.get", side_effect=[page, image]):
+                patch.object(safe_http, "_build_public_session", return_value=session):
             result = stations._download_somafm_art("testslug")
         self.assertIsNone(result)
         self.assertEqual(list(self.art_dir.iterdir()), [], "no partial artwork may remain")
@@ -220,8 +232,10 @@ class SomafmArtworkLimitTests(unittest.TestCase):
             body=b"\x89PNG-test",
             headers={"content-type": "image/png"},
         )
+        session = MagicMock()
+        session.get.side_effect = [page, image]
         with patch.object(safe_http.socket, "getaddrinfo", side_effect=fake_dns_public), \
-                patch("safe_http.requests.get", side_effect=[page, image]):
+                patch.object(safe_http, "_build_public_session", return_value=session):
             result = stations._download_somafm_art("testslug")
         self.assertIsNotNone(result)
         saved = self.art_dir / "testslug.png"

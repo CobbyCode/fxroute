@@ -2,6 +2,7 @@
 import asyncio
 import os
 import signal
+import socket
 import sys
 import tempfile
 import unittest
@@ -13,7 +14,8 @@ sys.path.insert(0, str(ROOT))
 
 from dsp_manager import DSPManager
 from dsp_runtime import (CommandResult, DSPRuntime, DSPRuntimeConfig, PipeWireLink,
-                         DSP_INGRESS_MONITOR_NODE, RUNTIME_COMMAND_TIMEOUT_RETURNCODE,
+                         CONTROL_REPLY_MAX_BYTES, DSP_INGRESS_MONITOR_NODE,
+                         RUNTIME_COMMAND_TIMEOUT_RETURNCODE,
                          RUNTIME_COMMAND_TIMEOUT_SECONDS, _contains_link)
 
 class FakeProcess:
@@ -914,6 +916,56 @@ class ContainsLinkTests(unittest.TestCase):
     def test_arrow_text_form_is_still_recognized(self):
         self.assertTrue(_contains_link("mpv:output_FL -> fxroute_dsp_sink:playback_FL",
                                        "mpv:output_FL", "fxroute_dsp_sink:playback_FL"))
+
+
+class ControlReplyTruncationTests(unittest.TestCase):
+    def setUp(self):
+        self.manager = DSPManager(home=Path(tempfile.mkdtemp()))
+        self.manager.save_global_extras({"limiter": {"enabled": False}})
+
+    def _runtime_with_datagram_pair(self, runtime, tmpdir):
+        server_path = os.path.join(tmpdir, "server.sock")
+        client_path = os.path.join(tmpdir, "client.sock")
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        server.bind(server_path)
+        client = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        client.setblocking(False)
+        client.bind(client_path)
+        runtime._control_socket = client
+        runtime._control_path = Path(server_path)
+        return server, client, client_path
+
+    def test_oversized_control_reply_is_rejected(self):
+        async def exercise():
+            runtime = DSPRuntime(self.manager)
+            tmpdir = tempfile.mkdtemp()
+            server, client, client_path = self._runtime_with_datagram_pair(runtime, tmpdir)
+            try:
+                server.sendto(b"x" * (CONTROL_REPLY_MAX_BYTES + 1), client_path)
+                with self.assertRaises(RuntimeError) as ctx:
+                    await runtime._control_unlocked("peaks get", reply=True)
+                self.assertIn("truncated", str(ctx.exception))
+            finally:
+                client.close()
+                server.close()
+
+        asyncio.run(exercise())
+
+    def test_bounded_control_reply_is_parsed(self):
+        async def exercise():
+            runtime = DSPRuntime(self.manager)
+            tmpdir = tempfile.mkdtemp()
+            server, client, client_path = self._runtime_with_datagram_pair(runtime, tmpdir)
+            try:
+                server.sendto(b"ok\n", client_path)
+                result = await runtime._control_unlocked("peaks get", reply=True)
+                self.assertEqual(result, "ok\n")
+            finally:
+                client.close()
+                server.close()
+
+        asyncio.run(exercise())
+
 
 if __name__ == "__main__":
     unittest.main()

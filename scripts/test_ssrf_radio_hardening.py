@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """SSRF hardening tests for server-side radio/playlist URL resolution.
 
-All network I/O is mocked: ``safe_http.requests.get`` provides fake
-responses and ``safe_http.socket.getaddrinfo`` provides fake DNS answers.
-No real internet or LAN targets are contacted.
+All network I/O is mocked: ``safe_http._build_public_session`` provides a
+session whose ``get`` returns fake responses and ``safe_http.socket.getaddrinfo``
+provides fake DNS answers. No real internet or LAN targets are contacted.
 """
 
 import asyncio
@@ -13,7 +13,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import requests
 
@@ -193,11 +193,13 @@ class SafeGetTests(unittest.TestCase):
                 headers={"Location": "http://127.0.0.1:9000/internal.pls"},
             )
 
+        session = MagicMock()
+        session.get.side_effect = side_effect
         with patch.object(safe_http.socket, "getaddrinfo", side_effect=fake_dns_public), \
-                patch("safe_http.requests.get", side_effect=side_effect) as mock_get:
+                patch.object(safe_http, "_build_public_session", return_value=session):
             with self.assertRaises(safe_http.BlockedUrlError):
                 safe_http.safe_get("https://public.example/a.pls", timeout=5, max_bytes=1024)
-        mock_get.assert_called_once()
+        session.get.assert_called_once()
 
     def test_redirect_to_private_dns_target_is_blocked(self):
         def side_effect(url, **kwargs):
@@ -213,11 +215,13 @@ class SafeGetTests(unittest.TestCase):
                 return fake_dns_public(host, port, **kwargs)
             return fake_dns_private(host, port, **kwargs)
 
+        session = MagicMock()
+        session.get.side_effect = side_effect
         with patch.object(safe_http.socket, "getaddrinfo", side_effect=dns), \
-                patch("safe_http.requests.get", side_effect=side_effect) as mock_get:
+                patch.object(safe_http, "_build_public_session", return_value=session):
             with self.assertRaises(safe_http.BlockedUrlError):
                 safe_http.safe_get("https://public.example/a.pls", timeout=5, max_bytes=1024)
-        mock_get.assert_called_once()
+        session.get.assert_called_once()
 
     def test_redirect_chain_to_public_target_succeeds(self):
         calls = []
@@ -231,8 +235,10 @@ class SafeGetTests(unittest.TestCase):
                 )
             return FakeResponse(text="File1=https://ice.example/stream")
 
+        session = MagicMock()
+        session.get.side_effect = side_effect
         with patch.object(safe_http.socket, "getaddrinfo", side_effect=fake_dns_public), \
-                patch("safe_http.requests.get", side_effect=side_effect):
+                patch.object(safe_http, "_build_public_session", return_value=session):
             response = safe_http.safe_get("https://public.example/a.pls", timeout=5, max_bytes=1024)
         self.assertEqual(calls, ["https://public.example/a.pls", "https://cdn.example/b.pls"])
         self.assertEqual(response.text, "File1=https://ice.example/stream")
@@ -244,21 +250,25 @@ class SafeGetTests(unittest.TestCase):
                 headers={"Location": "https://cdn.example/next.pls"},
             )
 
+        session = MagicMock()
+        session.get.side_effect = side_effect
         with patch.object(safe_http.socket, "getaddrinfo", side_effect=fake_dns_public), \
-                patch("safe_http.requests.get", side_effect=side_effect):
+                patch.object(safe_http, "_build_public_session", return_value=session):
             with self.assertRaises(requests.TooManyRedirects):
                 safe_http.safe_get("https://public.example/a.pls", timeout=5, max_bytes=1024)
 
 
 class ResolveStreamUrlTests(unittest.TestCase):
     def test_normal_pls_resolution_still_works(self):
+        session = MagicMock()
+        session.get.return_value = FakeResponse(
+            text="[playlist]\nFile1=http://stream.example/radio\nTitle1=Test",
+        )
         with patch.object(safe_http.socket, "getaddrinfo", side_effect=fake_dns_public), \
-                patch("safe_http.requests.get", return_value=FakeResponse(
-                    text="[playlist]\nFile1=http://stream.example/radio\nTitle1=Test",
-                )) as mock_get:
+                patch.object(safe_http, "_build_public_session", return_value=session):
             resolved = stations.resolve_stream_url("https://example.com/radio.pls")
         self.assertEqual(resolved, "http://stream.example/radio")
-        self.assertEqual(mock_get.call_count, 1)
+        self.assertEqual(session.get.call_count, 1)
 
     def test_normal_somafm_resolution_still_works(self):
         responses = [
@@ -270,32 +280,38 @@ class ResolveStreamUrlTests(unittest.TestCase):
         def side_effect(url, **kwargs):
             return responses.pop(0)
 
+        session = MagicMock()
+        session.get.side_effect = side_effect
         with patch.object(safe_http.socket, "getaddrinfo", side_effect=fake_dns_public), \
-                patch("safe_http.requests.get", side_effect=side_effect):
+                patch.object(safe_http, "_build_public_session", return_value=session):
             resolved = stations.resolve_stream_url("https://somafm.com/groovesalad130.pls")
         self.assertEqual(resolved, "https://ice4.somafm.com/groovesalad-256-mp3")
 
     def test_normal_m3u_resolution_still_works(self):
+        session = MagicMock()
+        session.get.return_value = FakeResponse(
+            text="#EXTM3U\nhttps://stream.example/radio",
+        )
         with patch.object(safe_http.socket, "getaddrinfo", side_effect=fake_dns_public), \
-                patch("safe_http.requests.get", return_value=FakeResponse(
-                    text="#EXTM3U\nhttps://stream.example/radio",
-                )):
+                patch.object(safe_http, "_build_public_session", return_value=session):
             resolved = stations.resolve_stream_url("https://example.com/playlist.m3u8")
         self.assertEqual(resolved, "https://stream.example/radio")
 
     def test_private_playlist_url_rejected(self):
+        session = MagicMock()
         with patch.object(safe_http.socket, "getaddrinfo", side_effect=fake_dns_public), \
-                patch("safe_http.requests.get") as mock_get:
+                patch.object(safe_http, "_build_public_session", return_value=session):
             with self.assertRaises(safe_http.BlockedUrlError):
                 stations.resolve_stream_url("http://127.0.0.1:9000/radio.pls")
-        mock_get.assert_not_called()
+        session.get.assert_not_called()
 
     def test_private_dns_playlist_url_rejected(self):
+        session = MagicMock()
         with patch.object(safe_http.socket, "getaddrinfo", side_effect=fake_dns_private), \
-                patch("safe_http.requests.get") as mock_get:
+                patch.object(safe_http, "_build_public_session", return_value=session):
             with self.assertRaises(safe_http.BlockedUrlError):
                 stations.resolve_stream_url("https://internal.example/radio.pls")
-        mock_get.assert_not_called()
+        session.get.assert_not_called()
 
     def test_public_url_redirecting_to_private_rejected(self):
         def side_effect(url, **kwargs):
@@ -304,11 +320,13 @@ class ResolveStreamUrlTests(unittest.TestCase):
                 headers={"Location": "http://localhost:9000/stream.pls"},
             )
 
+        session = MagicMock()
+        session.get.side_effect = side_effect
         with patch.object(safe_http.socket, "getaddrinfo", side_effect=fake_dns_table), \
-                patch("safe_http.requests.get", side_effect=side_effect) as mock_get:
+                patch.object(safe_http, "_build_public_session", return_value=session):
             with self.assertRaises(safe_http.BlockedUrlError):
                 stations.resolve_stream_url("https://example.com/radio.pls")
-        mock_get.assert_called_once()
+        session.get.assert_called_once()
 
 
 class StationApiTests(unittest.TestCase):
@@ -332,10 +350,12 @@ class StationApiTests(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def test_create_station_with_public_playlist_url_succeeds(self):
+        session = MagicMock()
+        session.get.return_value = FakeResponse(
+            text="File1=https://stream.example/radio",
+        )
         with patch.object(safe_http.socket, "getaddrinfo", side_effect=fake_dns_public), \
-                patch("safe_http.requests.get", return_value=FakeResponse(
-                    text="File1=https://stream.example/radio",
-                )):
+                patch.object(safe_http, "_build_public_session", return_value=session):
             result = asyncio.run(radio_api.create_station(
                 radio_api.StationUpsertRequest(name="Test FM", stream_url="https://example.com/radio.pls")
             ))
@@ -345,21 +365,24 @@ class StationApiTests(unittest.TestCase):
         self.assertEqual(saved[0].stream_url, "https://stream.example/radio")
 
     def test_create_station_with_private_playlist_url_returns_400(self):
+        session = MagicMock()
         with patch.object(safe_http.socket, "getaddrinfo", side_effect=fake_dns_public), \
-                patch("safe_http.requests.get") as mock_get:
+                patch.object(safe_http, "_build_public_session", return_value=session):
             with self.assertRaises(radio_api.HTTPException) as ctx:
                 asyncio.run(radio_api.create_station(
                     radio_api.StationUpsertRequest(name="Evil FM", stream_url="http://127.0.0.1:9000/radio.pls")
                 ))
         self.assertEqual(ctx.exception.status_code, 400)
-        mock_get.assert_not_called()
+        session.get.assert_not_called()
         self.assertEqual(stations.get_stations(), [])
 
     def test_update_station_with_redirect_to_private_returns_400(self):
+        session = MagicMock()
+        session.get.return_value = FakeResponse(
+            text="File1=https://stream.example/radio",
+        )
         with patch.object(safe_http.socket, "getaddrinfo", side_effect=fake_dns_public), \
-                patch("safe_http.requests.get", return_value=FakeResponse(
-                    text="File1=https://stream.example/radio",
-                )):
+                patch.object(safe_http, "_build_public_session", return_value=session):
             created = asyncio.run(radio_api.create_station(
                 radio_api.StationUpsertRequest(name="Test FM", stream_url="https://example.com/radio.pls")
             ))
@@ -371,8 +394,10 @@ class StationApiTests(unittest.TestCase):
                 headers={"Location": "http://192.168.1.50:8000/stream.pls"},
             )
 
+        session2 = MagicMock()
+        session2.get.side_effect = side_effect
         with patch.object(safe_http.socket, "getaddrinfo", side_effect=fake_dns_public), \
-                patch("safe_http.requests.get", side_effect=side_effect):
+                patch.object(safe_http, "_build_public_session", return_value=session2):
             with self.assertRaises(radio_api.HTTPException) as ctx:
                 asyncio.run(radio_api.edit_station(
                     station_id,

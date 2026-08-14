@@ -27,6 +27,8 @@ from typing import Optional
 from urllib.parse import urljoin, urlparse
 
 import requests
+import urllib3
+from requests.adapters import HTTPAdapter
 
 DEFAULT_MAX_REDIRECTS = 5
 DEFAULT_FETCH_READ_CHUNK_BYTES = 64 * 1024
@@ -198,6 +200,103 @@ def _read_bounded(response: requests.Response, max_bytes: int) -> requests.Respo
     return response
 
 
+def _assert_public_peer(sock) -> None:
+    """Reject a connection whose actual remote address is not public.
+
+    ``validate_public_url`` checks the addresses a hostname resolves to
+    *before* the request.  A DNS rebinding target can resolve public during
+    that check and then resolve private for the real connection.  This
+    re-applies the same public-address policy to the socket that was
+    actually connected, so the gap between validation and connect is
+    closed.  Fail closed: if the peer cannot be determined it is rejected.
+    """
+    if sock is None:
+        raise BlockedUrlError("Connection has no peer address to validate")
+    try:
+        peer = sock.getpeername()
+    except OSError as exc:
+        raise BlockedUrlError(f"Could not determine connected peer address: {exc}") from exc
+    if not peer:
+        raise BlockedUrlError("Connection has no peer address")
+    host = str(peer[0])
+    try:
+        address = ipaddress.ip_address(host.split("%", 1)[0])
+    except ValueError as exc:
+        raise BlockedUrlError(f"Connected peer is not an IP address: {host!r}") from exc
+    if isinstance(address, ipaddress.IPv4Address):
+        public = _ipv4_is_public(address)
+    else:
+        public = _ipv6_is_public(address)
+    if not public:
+        raise BlockedUrlError(f"Connected to a non-public address: {host!r}")
+
+
+class _PublicPeerHTTPConnection(urllib3.connection.HTTPConnection):
+    """HTTP connection that validates the connected peer address."""
+
+    def connect(self) -> None:
+        super().connect()
+        _assert_public_peer(self.sock)
+
+
+class _PublicPeerHTTPSConnection(urllib3.connection.HTTPSConnection):
+    """HTTPS connection that validates the connected peer address."""
+
+    def connect(self) -> None:
+        super().connect()
+        _assert_public_peer(self.sock)
+
+
+class _PublicPeerHTTPConnectionPool(urllib3.connectionpool.HTTPConnectionPool):
+    ConnectionCls = _PublicPeerHTTPConnection
+
+
+class _PublicPeerHTTPSConnectionPool(urllib3.connectionpool.HTTPSConnectionPool):
+    ConnectionCls = _PublicPeerHTTPSConnection
+
+
+class _PublicAddressPoolManager(urllib3.PoolManager):
+    """Pool manager that builds peer-validating connections for every hop."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.pool_classes_by_scheme = {
+            "http": _PublicPeerHTTPConnectionPool,
+            "https": _PublicPeerHTTPSConnectionPool,
+        }
+
+
+class _PublicAddressAdapter(HTTPAdapter):
+    """requests adapter whose connections validate the connected peer."""
+
+    def init_poolmanager(self, connections, maxsize, block=False, **pool_kwargs):
+        self._pool_connections = connections
+        self._pool_maxsize = maxsize
+        self._pool_block = block
+        self.poolmanager = _PublicAddressPoolManager(
+            num_pools=connections,
+            maxsize=maxsize,
+            block=block,
+            **pool_kwargs,
+        )
+
+
+def _build_public_session() -> requests.Session:
+    """Session for a validated public-internet fetch.
+
+    Environment proxies are deliberately ignored: a proxy is an unvalidated
+    hop whose own resolution is outside this boundary, and the peer check
+    must see the target's address, not the proxy's.  Each new connection
+    (initial target and every redirect hop) validates its connected peer.
+    """
+    session = requests.Session()
+    session.trust_env = False
+    adapter = _PublicAddressAdapter()
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    return session
+
+
 def safe_get(
     url: str,
     *,
@@ -211,7 +310,10 @@ def safe_get(
 
     The initial URL and each redirect Location are validated with
     :func:`validate_public_url` before that hop is requested, so a
-    redirect cannot escape the public-target policy.  Timeout and
+    redirect cannot escape the public-target policy.  In addition the
+    address actually connected to on every hop is re-validated after the
+    connection is established (see :func:`_assert_public_peer`), closing
+    the DNS-rebinding gap between validation and connect.  Timeout and
     requests exception semantics are unchanged; ``requests.Timeout`` and
     ``requests.RequestException`` propagate exactly like a plain
     ``requests.get`` call.
@@ -221,27 +323,31 @@ def safe_get(
     :class:`ResponseTooLargeError`.  Redirect responses are closed
     without reading their bodies.
     """
-    current = url
-    for _ in range(max_redirects + 1):
-        validate_public_url(current)
-        response = requests.get(
-            current,
-            params=params,
-            headers=headers,
-            timeout=timeout,
-            allow_redirects=False,
-            stream=True,
-        )
-        if response.is_redirect:
-            location = response.headers.get("Location")
-            if not location:
-                try:
-                    return _read_bounded(response, max_bytes)
-                except BaseException:
-                    response.close()
-                    raise
-            response.close()
-            current = urljoin(current, location)
-            continue
-        return _read_bounded(response, max_bytes)
+    session = _build_public_session()
+    try:
+        current = url
+        for _ in range(max_redirects + 1):
+            validate_public_url(current)
+            response = session.get(
+                current,
+                params=params,
+                headers=headers,
+                timeout=timeout,
+                allow_redirects=False,
+                stream=True,
+            )
+            if response.is_redirect:
+                location = response.headers.get("Location")
+                if not location:
+                    try:
+                        return _read_bounded(response, max_bytes)
+                    except BaseException:
+                        response.close()
+                        raise
+                response.close()
+                current = urljoin(current, location)
+                continue
+            return _read_bounded(response, max_bytes)
+    finally:
+        session.close()
     raise requests.TooManyRedirects(f"Exceeded {max_redirects} redirects for {url}")

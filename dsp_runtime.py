@@ -29,6 +29,11 @@ RUNTIME_COMMAND_TERMINATE_GRACE_SECONDS = 2.0
 RUNTIME_COMMAND_TIMEOUT_RETURNCODE = -1
 RUNTIME_ORPHAN_KILL_GRACE_SECONDS = 0.5
 HELPER_STDERR_TAIL_LIMIT = 64 * 1024
+# Largest accepted native DSP control reply.  The control channel is a
+# datagram socket: an oversized reply is silently truncated at the receive
+# buffer, so the reader requests one extra byte and treats a full buffer as
+# truncation instead of parsing a partial payload.
+CONTROL_REPLY_MAX_BYTES = 4096
 logger = logging.getLogger(__name__)
 
 
@@ -442,7 +447,13 @@ class DSPRuntime:
         if not reply:
             return ""
         loop = asyncio.get_running_loop()
-        data = await asyncio.wait_for(loop.sock_recv(self._control_socket, 4096), 1.0)
+        data = await asyncio.wait_for(
+            loop.sock_recv(self._control_socket, CONTROL_REPLY_MAX_BYTES + 1), 1.0
+        )
+        if len(data) > CONTROL_REPLY_MAX_BYTES:
+            raise RuntimeError(
+                "Native DSP control reply exceeded the receive buffer and was truncated"
+            )
         response = data.decode(errors="replace")
         if response.startswith("error"):
             raise RuntimeError(response)
