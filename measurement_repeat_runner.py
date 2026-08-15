@@ -12,18 +12,18 @@ from uuid import uuid4
 
 import numpy as np
 
+from measurement_constants import (
+    MEASUREMENT_SCOPE_NOTE,
+    SWEEP_END_HZ,
+    SWEEP_START_HZ,
+    SWEEP_V2_LEAD_IN_SECONDS,
+    SWEEP_V2_SECONDS,
+    SWEEP_V2_TAIL_SECONDS,
+    TRACE_COLORS,
+)
+
 logger = logging.getLogger(__name__)
 
-SWEEP_V2_SECONDS = 11.0
-SWEEP_V2_LEAD_IN_SECONDS = 0.5
-SWEEP_V2_TAIL_SECONDS = 1.25
-SWEEP_START_HZ = 10.0
-SWEEP_END_HZ = 22_000.0
-TRACE_COLORS = ["#6ee7b7", "#a78bfa", "#f59e0b", "#60a5fa", "#f472b6", "#f87171"]
-MEASUREMENT_SCOPE_NOTE = (
-    "FXRoute measures with a host-local sweep through the active PipeWire output and selected microphone input. "
-    "The result is a practical response trace for comparison and PEQ drafting, independent of the active DSP preset."
-)
 LR_REPEAT_ELECTRICAL_TIMING_CLUSTER_MS = 0.35
 LR_REPEAT_ACOUSTIC_TIMING_CLUSTER_MS = 0.75
 LR_REPEAT_PAIRED_DELTA_CLUSTER_MS = 0.35

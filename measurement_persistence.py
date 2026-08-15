@@ -15,22 +15,16 @@ from uuid import uuid4
 
 import numpy as np
 
-logger = logging.getLogger(__name__)
-
-DISPLAY_DEFAULTS = {
-    "normalize": True,
-    "smoothing": "1/6-oct",
-    "target_db": 0,
-    "x_range_hz": [20, 20000],
-}
-TRACE_COLORS = ["#6ee7b7", "#a78bfa", "#f59e0b", "#60a5fa", "#f472b6", "#f87171"]
-MEASUREMENT_SCOPE_NOTE = (
-    "FXRoute measures with a host-local sweep through the active PipeWire output and selected microphone input. "
-    "The result is a practical response trace for comparison and PEQ drafting, independent of the active DSP preset."
+from measurement_constants import (
+    DISPLAY_DEFAULTS,
+    IR_DEBUG_SEGMENT_RETENTION_SEGMENTS,
+    JOB_RECORD_RETENTION_DAYS,
+    MEASUREMENT_SCOPE_NOTE,
+    TERMINAL_JOB_STATUSES,
+    TRACE_COLORS,
 )
-TERMINAL_JOB_STATUSES = frozenset({"completed", "failed", "cancelled"})
-JOB_RECORD_RETENTION_DAYS = 30
-IR_DEBUG_SEGMENT_RETENTION_SEGMENTS = 10
+
+logger = logging.getLogger(__name__)
 
 
 class MeasurementPersistence:
@@ -388,15 +382,6 @@ class MeasurementPersistence:
         except Exception:
             logger.exception("IR debug segment pruning failed")
 
-
-
-
-
-
-
-
-
-
     def _build_measurement_from_analysis(
         self,
         analysis: dict[str, Any],
@@ -678,4 +663,3 @@ class MeasurementPersistence:
         while "--" in slug:
             slug = slug.replace("--", "-")
         return slug or f"measurement-{uuid4().hex[:8]}"
-

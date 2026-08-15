@@ -11,12 +11,12 @@ from pathlib import Path
 from typing import Any
 
 from dsp_runtime import DSPRuntimeConfig
+from measurement_constants import (
+    MEASUREMENT_SCOPE_ACTIVE_CHAIN,
+    MEASUREMENT_SCOPE_RAW_HELPER,
+)
 
 logger = logging.getLogger(__name__)
-
-MEASUREMENT_SCOPE_ACTIVE_CHAIN = "active_chain"
-MEASUREMENT_SCOPE_RAW_HELPER = "raw_helper"
-MEASUREMENT_SCOPES = {MEASUREMENT_SCOPE_ACTIVE_CHAIN, MEASUREMENT_SCOPE_RAW_HELPER}
 
 
 class MeasurementRouting:
