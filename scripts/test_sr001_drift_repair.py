@@ -260,13 +260,13 @@ class CoordinatorRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("pause", runtime.events)
 
     async def test_recovery_requests_have_no_parallel_direct_mutation(self):
-        source = (Path(__file__).resolve().parents[1] / "main.py").read_text()
-        start = source.index("async def _request_coordinated_recovery")
-        end = source.index("def _transition_error_http", start)
+        source = (Path(__file__).resolve().parents[1] / "playback_orchestration.py").read_text()
+        start = source.index("async def request_coordinated_recovery")
+        end = source.index("async def transition_sample_rate_policy", start)
         body = source[start:end]
         self.assertNotIn("_set_pipewire_force_rate", body)
         self.assertNotIn("dsp_orchestrator.sync_runtime", body)
-        self.assertIn("_run_coordinated_transition", body)
+        self.assertIn("run_transition", body)
 
 
 if __name__ == "__main__":

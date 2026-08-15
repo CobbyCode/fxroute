@@ -10,7 +10,7 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SOURCES = {
     file_name: (ROOT / file_name).read_text()
-    for file_name in ("main.py", "playback_queue.py", "measurement_session.py", "dsp_orchestration.py")
+    for file_name in ("main.py", "playback_orchestration.py", "playback_queue.py", "measurement_session.py", "dsp_orchestration.py")
 }
 TREES = {
     file_name: ast.parse(source)
@@ -19,7 +19,21 @@ TREES = {
 
 
 def function_source(name):
-    for file_name, source in SOURCES.items():
+    preferred = {
+        "_coordinator_source_rate", "_coordinator_target_rate", "_sample_rate_policy_is_auto",
+        "_transition_sample_rate_policy", "_coordinator_current_playback_context", "_coordinator_rate_change",
+        "_playback_graph_diagnosis", "_missing_playback_graph_links", "_measurement_session_link_loss_is_repairable",
+        "_log_playback_graph_diagnosis", "_repair_stereo_output_links_once",
+        "_coordinator_reconcile_subwoofer_links_only", "_post_start_graph_links_are_repairable",
+        "_relink_missing_production_links", "_coordinator_reconcile_post_start_graph",
+        "_coordinator_establish_effects_and_helper", "_playback_graph_links_complete",
+    }
+    file_names = list(SOURCES)
+    if name in preferred:
+        file_names.remove("playback_orchestration.py")
+        file_names.insert(0, "playback_orchestration.py")
+    for file_name in file_names:
+        source = SOURCES[file_name]
         lines = source.splitlines(keepends=True)
         for node in ast.walk(TREES[file_name]):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
@@ -100,6 +114,18 @@ class OwnershipStructureTests(unittest.TestCase):
         self.assertIn("class OutputGateState", coordinator)
         self.assertIn("failure_latched", coordinator)
         self.assertIn("output-gate-restore", coordinator)
+
+    def test_playback_orchestration_owns_graph_and_rate_implementations(self):
+        orchestration = SOURCES["playback_orchestration.py"]
+        for name in (
+            "transition_sample_rate_policy", "playback_graph_diagnosis",
+            "reconcile_post_start_graph", "establish_effects_and_helper",
+            "relink_missing_production_links",
+        ):
+            self.assertIn(f"def {name}", orchestration)
+        main = SOURCES["main.py"]
+        self.assertNotIn("io_text = await _run_pw_link_command", main)
+        self.assertNotIn("Build the effects/helper graph inside the Coordinator-owned gate", main)
 
     def test_status_never_commits_playing_while_transition_is_active(self):
         body = function_source("build_playback_payload")

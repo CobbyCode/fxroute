@@ -862,6 +862,7 @@ from dsp_manager import DSPManager
 from dsp_runtime import DSPRuntime, DSPRuntimeConfig, BassManagementConfig, _contains_link
 import dsp_api
 import dsp_orchestration
+import playback_orchestration
 from dsp_orchestration import (
     DspOrchestrationDeps,
     DspOrchestrator,
@@ -1442,71 +1443,6 @@ def _load_player_paused(path: str) -> None:
     runtime.player_instance.set_pause(True)
 
 
-def _coordinator_source_rate(source: str, track: Mapping[str, Any] | None = None) -> int | None:
-    track = track or {}
-    if source == "spotify":
-        return SPOTIFY_PREARM_SAMPLE_RATE_HZ
-    if source == "radio":
-        return int(track.get("sample_rate_hz") or RADIO_EXPECTED_SAMPLE_RATE_HZ)
-    value = track.get("sample_rate_hz")
-    return int(value) if isinstance(value, int) and value > 0 else None
-
-
-def _coordinator_target_rate(source: str, track: Mapping[str, Any] | None = None) -> int | None:
-    return samplerate.effective_playback_rate(_coordinator_source_rate(source, track))
-
-
-def _sample_rate_policy_is_auto() -> bool:
-    return samplerate.load_sample_rate_policy().get("mode") == "auto"
-
-
-async def _transition_sample_rate_policy(policy: Mapping[str, Any], *, detail: str) -> None:
-    overview = get_audio_output_overview()
-    selected_output = overview.get("selected_output") or overview.get("current_output") or {}
-    if (
-        policy.get("mode") == "fixed"
-        and policy.get("rate") not in (selected_output.get("supported_rates") or [])
-    ):
-        raise ValueError("Selected output does not support this sample rate")
-
-    context = await _coordinator_current_playback_context()
-    source = str(context.get("source") or "local")
-    source_rate = _coordinator_source_rate(source, context.get("target_track"))
-    if source in {"local", "radio"} and context.get("target_url"):
-        live_source_rate = _get_player_audio_samplerate()
-        if isinstance(live_source_rate, int) and live_source_rate > 0:
-            source_rate = live_source_rate
-    target_rate = samplerate.effective_playback_rate(source_rate, policy)
-    if not isinstance(target_rate, int) or target_rate <= 0:
-        status = get_samplerate_status()
-        target_rate = status.get("active_rate") or status.get("force_rate")
-    if not isinstance(target_rate, int) or target_rate <= 0:
-        raise RuntimeError("current hardware sample rate is unavailable")
-
-    rate_change = _coordinator_rate_change(target_rate)
-    reload_source = bool(
-        rate_change
-        and source in {"local", "radio", "spotify"}
-        and context.get("target_url")
-    )
-
-    native_queue_fields = playback_queue.queue.native_request_fields() if source == "local" else {}
-    await _run_coordinated_transition(TransitionRequest(
-        operation="sample-rate-policy",
-        source=source,
-        target_rate=target_rate,
-        target_url=context.get("target_url"),
-        target_track=dict(context.get("target_track") or {}),
-        should_play=bool(context.get("should_play")),
-        rate_change=rate_change,
-        reload_source=reload_source,
-        detail=detail,
-        output_mode_target=dict(overview),
-        sample_rate_policy=dict(policy),
-        **native_queue_fields,
-    ))
-
-
 def _normalize_spotify_identity(value: Any) -> str | None:
     """Return a stable comparison key for a Spotify track identity."""
     raw = str(value or "").strip()
@@ -1577,332 +1513,6 @@ def _spotify_target_track_from_state(state: Mapping[str, Any]) -> dict[str, Any]
         "artist": state.get("artist"),
         "sample_rate_hz": SPOTIFY_PREARM_SAMPLE_RATE_HZ,
     }
-
-
-async def _coordinator_current_playback_context() -> dict[str, Any]:
-    """Read the currently owned source without mutating either transport."""
-    local_state = dict(runtime.player_instance.state if runtime.player_instance else {})
-    local_track = dict(playback_state.current_track_info or {})
-    spotify_state = await get_spotify_ui_state()
-    local_active = _is_local_playback_active(local_state)
-    spotify_active = _is_spotify_playback_active(spotify_state)
-
-    if local_active and local_track.get("source") in {"local", "radio"}:
-        return {
-            "source": local_track.get("source"),
-            "target_url": local_state.get("current_file"),
-            "target_track": local_track,
-            "should_play": True,
-            "spotify": spotify_state,
-        }
-    if spotify_active:
-        track_id = spotify_state.get("trackId") or spotify_state.get("url")
-        return {
-            "source": "spotify",
-            "target_url": str(track_id or "") or None,
-            "target_track": _spotify_target_track_from_state(spotify_state),
-            "should_play": True,
-            "spotify": spotify_state,
-        }
-    if local_track.get("source") in {"local", "radio"} and local_state.get("current_file"):
-        return {
-            "source": local_track.get("source"),
-            "target_url": local_state.get("current_file"),
-            "target_track": local_track,
-            "should_play": bool(local_state.get("playing") and not local_state.get("paused")),
-            "spotify": spotify_state,
-        }
-    if playback_state.current_footer_owner == "spotify" and spotify_state.get("trackId"):
-        return {
-            "source": "spotify",
-            "target_url": str(spotify_state.get("trackId")),
-            "target_track": _spotify_target_track_from_state(spotify_state),
-            "should_play": False,
-            "spotify": spotify_state,
-        }
-    return {
-        "source": "local",
-        "target_url": None,
-        "target_track": {},
-        "should_play": False,
-        "spotify": spotify_state,
-    }
-
-
-def _coordinator_rate_change(target_rate: int | None) -> bool:
-    if not isinstance(target_rate, int) or target_rate <= 0:
-        return False
-    try:
-        status = get_samplerate_status()
-    except Exception:
-        return True
-    return not samplerate.playback_rate_aligned(status, target_rate)
-
-
-def _playback_transition_is_active() -> bool:
-    return bool(
-        playback_transition_coordinator is not None
-        and playback_transition_coordinator.transition_active
-    )
-
-
-def _coordinator_commit_context_id() -> str | None:
-    """Return the newest successful Coordinator commit context."""
-    context_id = getattr(playback_transition_coordinator, "last_successful_commit_id", None)
-    if context_id:
-        playback_state.coordinator_last_successful_commit_id = str(context_id)
-    return playback_state.coordinator_last_successful_commit_id
-
-
-async def _recovery_context_is_valid(request: TransitionRequest) -> bool:
-    """Validate a watcher recovery against the still-committed live source."""
-    expected_context = request.recovery_commit_context_id
-    expected_source = request.recovery_source or request.source
-    expected_url = request.recovery_url or request.target_url
-    if not expected_context or expected_source != request.source or not expected_url:
-        return False
-    coordinator = playback_transition_coordinator
-    context_validator = getattr(coordinator, "recovery_context_is_current", None)
-    if callable(context_validator):
-        if not context_validator(expected_context):
-            # A failed transition latches the coordinator gate; while the
-            # latch is held recovery_context_is_current() is always False and
-            # watcher recoveries would be deadlocked forever.  A subwoofer
-            # link repair against the still-committed context may re-enter:
-            # the Coordinator's own gate-close/restore stages own the latch
-            # (clear it on restore) and the helper re-sync restores the
-            # missing links.
-            commit_is_current = (
-                getattr(coordinator, "last_successful_commit_id", None)
-                == expected_context
-            )
-            gate = getattr(coordinator, "gate", None)
-            gate_latched = bool(
-                gate is not None and bool(getattr(gate, "failure_latched", False))
-            )
-            latch_reentry = bool(
-                request.detail == "subwoofer-link-watcher"
-                and commit_is_current
-                and gate_latched
-                and not bool(getattr(coordinator, "transition_active", False))
-            )
-            if not latch_reentry:
-                return False
-    elif _coordinator_commit_context_id() != expected_context or _playback_transition_is_active():
-        return False
-
-    if runtime.dsp_runtime is not None and runtime.dsp_runtime.sync_in_progress:
-        logger.debug(
-            "Coordinator recovery deferred while subwoofer runtime reconfiguration is in progress: reason=%s",
-            request.detail,
-        )
-        return False
-
-    if expected_source == "spotify":
-        try:
-            spotify_state = await get_spotify_ui_state()
-        except Exception:
-            return False
-        if spotify_state.get("status") != "Playing":
-            return False
-        live_identity = str(
-            spotify_state.get("trackId")
-            or spotify_state.get("url")
-            or ""
-        )
-        return live_identity == str(expected_url)
-
-    state = dict(runtime.player_instance.state if runtime.player_instance else {})
-    if state.get("current_file") != expected_url or state.get("ended"):
-        return False
-    # A paused/loaded committed local context is still a valid context for a
-    # graph/rate observation; a missing active file is not.
-    live_track = playback_state.current_track_info or {}
-    if live_track:
-        if live_track.get("source") != expected_source:
-            return False
-        if live_track.get("url") != expected_url:
-            return False
-    return True
-
-
-async def _run_coordinated_transition(request: TransitionRequest):
-    """Run one transition under a monotonic attempt epoch."""
-    global playback_transition_coordinator
-    if playback_transition_coordinator is None:
-        # Unit callers may invoke an endpoint without running FastAPI's
-        # lifespan.  Production still initializes the same singleton during
-        # startup; lazy construction keeps the ownership boundary identical.
-        playback_transition_coordinator = PlaybackTransitionCoordinator(
-            FxrouteTransitionRuntime(make_playback_runtime_deps()),
-            gate_state_path=_playback_gate_state_path(),
-        )
-    attempt_epoch = _begin_playback_transition_attempt()
-    request = replace(request, attempt_epoch=attempt_epoch)
-    try:
-        result = await playback_transition_coordinator.execute(request)
-        if getattr(result, "committed", False):
-            transition_id = getattr(result, "transition_id", None)
-            if transition_id:
-                playback_state.coordinator_last_successful_commit_id = str(transition_id)
-        return result
-    finally:
-        # The epoch changes before lock acquisition, so queued successors
-        # invalidate older callbacks even while the current attempt drains.
-        _end_playback_transition_attempt()
-
-
-def _measurement_audio_graph_owned() -> bool:
-    """Return whether the Measurement session currently owns audio routing."""
-    session = measurement_sr_session
-    return bool(session is not None and getattr(session, "owns_audio_graph", False))
-
-
-async def _request_coordinated_recovery(
-    track: Mapping[str, Any],
-    reason: str,
-    *,
-    reload_source: bool = False,
-    graph_only: bool = False,
-    diagnosis: Mapping[str, Any] | None = None,
-) -> None:
-    """Request one deduplicated recovery through the Coordinator.
-
-    Watchers pass the canonical graph signature.  Identical observations are
-    coalesced, so a persistent bypass link cannot create a two-second full
-    handoff loop.
-    """
-    if _measurement_audio_graph_owned():
-        logger.info(
-            "Coordinator recovery skipped while Measurement owns the audio graph: reason=%s",
-            reason,
-        )
-        return
-    if playback_transition_coordinator is None or not track:
-        return
-    source = str(track.get("source") or "")
-    if source not in {"local", "radio", "spotify"}:
-        return
-    target_rate = _coordinator_target_rate(source, track)
-    if not isinstance(target_rate, int) or target_rate <= 0:
-        return
-
-    if source == "spotify":
-        try:
-            should_play = (await get_spotify_ui_state()).get("status") == "Playing"
-        except Exception:
-            should_play = False
-    else:
-        state = dict(runtime.player_instance.state if runtime.player_instance else {})
-        should_play = bool(
-            state.get("current_file")
-            and state.get("playing")
-            and not state.get("paused")
-            and not state.get("ended")
-        )
-
-    operation = "graph-reconcile" if graph_only else "recovery"
-    rate_change = False if graph_only else _coordinator_rate_change(target_rate)
-    effective_reload = False if graph_only else reload_source
-    signature = json.dumps(
-        {
-            "source": source,
-            "url": str(track.get("url") or track.get("id") or ""),
-            "target_rate": target_rate,
-            "should_play": should_play,
-            "rate_change": rate_change,
-            "reload_source": effective_reload,
-            "graph_only": graph_only,
-            "graph": (diagnosis or {}).get("signature") if diagnosis else None,
-        },
-        sort_keys=True,
-    )
-    # Freeze the observation context before entering the Coordinator-owned
-    # recovery slot.  A queued duplicate must retain the original context.
-    attempt_commit_context_id = _coordinator_commit_context_id()
-    if not attempt_commit_context_id:
-        logger.info(
-            "Coordinator recovery discarded without a committed context: reason=%s source=%s url=%s",
-            reason,
-            source,
-            track.get("url") or track.get("id"),
-        )
-        return
-
-    observed_url = str(track.get("url") or track.get("id") or "") or None
-    recovery_track = dict(track)
-    if source == "spotify" and observed_url:
-        recovery_track.setdefault("url", observed_url)
-    native_queue_fields = playback_queue.queue.native_request_fields() if source == "local" else {}
-    request = TransitionRequest(
-        operation=operation,
-        source=source,
-        target_rate=target_rate,
-        target_url=observed_url,
-        target_track=recovery_track,
-        should_play=should_play,
-        rate_change=rate_change,
-        reload_source=effective_reload,
-        graph_only=graph_only,
-        detail=reason,
-        recovery_commit_context_id=attempt_commit_context_id,
-        recovery_source=source,
-        recovery_url=observed_url,
-        **native_queue_fields,
-    )
-
-    async def validate_recovery() -> bool:
-        if _measurement_audio_graph_owned():
-            logger.info(
-                "Coordinator recovery skipped before execution while Measurement owns the audio graph: reason=%s",
-                reason,
-            )
-            return False
-        if not await _recovery_context_is_valid(request):
-            logger.info(
-                "Coordinator recovery discarded after context recheck: reason=%s source=%s url=%s commit_context=%s",
-                reason,
-                source,
-                observed_url,
-                attempt_commit_context_id,
-            )
-            return False
-        if _measurement_audio_graph_owned():
-            logger.info(
-                "Coordinator recovery skipped at execution boundary while Measurement owns the audio graph: reason=%s",
-                reason,
-            )
-            return False
-        return True
-
-    async def execute_recovery():
-        try:
-            result = await _run_coordinated_transition(request)
-        except PlaybackTransitionFailure as exc:
-            logger.warning("Coordinator recovery failed: %s", exc.as_status())
-            return None
-        if (
-            getattr(result, "committed", False)
-            and _sample_rate_policy_is_auto()
-            and source in {"local", "radio"}
-            and isinstance(result.target_rate, int)
-            and result.target_rate > 0
-        ):
-            track["sample_rate_hz"] = result.target_rate
-            if (
-                playback_state.current_track_info
-                and playback_state.current_track_info.get("source") == source
-                and playback_state.current_track_info.get("url") == track.get("url")
-            ):
-                playback_state.current_track_info["sample_rate_hz"] = result.target_rate
-        return result
-
-    await playback_transition_coordinator.run_recovery(
-        signature=signature,
-        commit_context_id=attempt_commit_context_id,
-        validate=validate_recovery,
-        execute=execute_recovery,
-    )
 
 
 def _transition_error_http(exc: PlaybackTransitionFailure) -> HTTPException:
@@ -2504,744 +2114,70 @@ async def _check_and_recover_silent_active(
     return
 
 
-def _playback_transition_context_is_current(generation: int | None) -> bool:
-    """Return true only for a context token captured at an idle boundary.
-
-    A token captured while any attempt was in flight is None (or an epoch
-    that a newer attempt superseded) and can never become current again,
-    exactly like a legacy odd-generation capture.
-    """
-    return playback_state.transition_context_is_current(generation)
+async def _dsp_output_ports_present():
+    return await playback_orchestration.configured()._dsp_output_ports_present()
 
 
 
-
-async def _dsp_output_ports_present() -> bool:
-    """Read back the native DSP stereo ingress and output ports."""
-    try:
-        links_text = await _run_pw_link_command("-io")
-    except Exception:
-        return False
-    return (
-        "fxroute_dsp:input_1" in links_text
-        and "fxroute_dsp:input_2" in links_text
-        and "fxroute_dsp:output_1" in links_text
-        and "fxroute_dsp:output_2" in links_text
-    )
+async def _wait_for_dsp_output_ports(timeout_ms):
+    return await playback_orchestration.configured().wait_for_dsp_output_ports(timeout_ms)
 
 
-async def _wait_for_dsp_output_ports(timeout_ms: int) -> bool:
-    """Poll pw-link -io until the native DSP ports are exposed.
 
-    Readback-driven replacement for fixed sleeps: the handoff only proceeds
-    to the helper sync once the fxroute_dsp input/output ports actually
-    exist; this wait observes the engine startup port creation.
-    """
-    deadline = time.monotonic() + max(timeout_ms, 0) / 1000
-    while True:
-        if await _dsp_output_ports_present():
-            return True
-        if time.monotonic() >= deadline:
-            return False
-        await asyncio.sleep(PIPEWIRE_HANDOFF_POLL_INTERVAL_MS / 1000)
+async def _playback_graph_diagnosis(audio_overview=None, *, source=None, target_rate=None, require_source=False):
+    return await playback_orchestration.configured().playback_graph_diagnosis(audio_overview, source=source, target_rate=target_rate, require_source=require_source)
 
 
-async def _playback_graph_diagnosis(
-    audio_overview: dict | None = None,
-    *,
-    source: str | None = None,
-    target_rate: int | None = None,
-    require_source: bool = False,
-) -> dict:
-    """Return the one canonical, read-only production-graph snapshot.
 
-    The Coordinator and every watcher use this function unchanged.  The
-    production graph is native: source -> fxroute_dsp_sink ingress ->
-    fxroute_dsp -> hardware.  In 2.1/2.2 the DSP owns every hardware output
-    and direct source -> hardware links are explicitly invalid, even when
-    the canonical links are also present.
-    """
-    result = {
-        "mode": None,
-        "output_key": "",
-        "ee_ports": False,
-        "helper_ports": None,
-        "helper_active": None,
-        "helper_rate": None,
-        "helper_rate_matches": None,
-        "links": {},
-        "source_links": {},
-        "source_links_complete": None,
-        "direct_ee_to_hw_present": False,
-        "direct_source_to_hw_present": False,
-        "links_complete": False,
-        "bypass_only": False,
-        "port_identities": {
-            "source": (),
-            "source_target": (),
-            "ee": (),
-            "helper": (),
-            "output": (),
-        },
-        "signature": "unreadable",
-    }
-    try:
-        overview = audio_overview or get_audio_output_overview()
-        output_mode = overview.get("output_mode") or {}
-        mode = output_mode.get("mode")
-        output_key = str(output_mode.get("effective_output_key") or "").strip()
-        result["mode"] = mode
-        result["output_key"] = output_key
-        if not output_key:
-            return result
-        io_text = await _run_pw_link_command("-io")
-        link_text = await _run_pw_link_command("-l")
-    except Exception:
-        return result
-
-    source_node = "spotify" if source == "spotify" else "mpv" if source in {"local", "radio"} else None
-    source_targets = ("fxroute_dsp_sink:playback_FL", "fxroute_dsp_sink:playback_FR")
-    source_ports = ((f"{source_node}:output_FL", f"{source_node}:output_FR") if source_node else ())
-    runtime_snapshot = runtime.dsp_runtime.snapshot() if runtime.dsp_runtime is not None else {}
-    output_count = 4 if mode in OUTPUT_MODE_SUBWOOFER_MODES else 2
-    hardware_channels = ("FL", "FR", "RL", "RR")[:output_count]
-    dsp_ports = tuple(f"fxroute_dsp:output_{index + 1}" for index in range(output_count))
-    ingress_sources = ("fxroute_dsp_sink:monitor_FL", "fxroute_dsp_sink:monitor_FR")
-    ingress_targets = ("fxroute_dsp:input_1", "fxroute_dsp:input_2")
-    result["ee_ports"] = all(port in io_text for port in (*ingress_targets, *dsp_ports))
-    result["helper_ports"] = result["ee_ports"]
-    result["helper_active"] = bool(runtime_snapshot.get("active"))
-    result["helper_rate"] = helper_argument_sample_rate(runtime_snapshot)
-    result["helper_rate_matches"] = bool(result["helper_active"] and (target_rate is None or result["helper_rate"] == target_rate))
-    result["source_links"] = {
-        f"{port} -> {target}": _contains_link(link_text, port, target)
-        for port, target in zip(source_ports, source_targets)
-    }
-    result["source_links_complete"] = all(result["source_links"].values()) if source_node else (False if require_source else None)
-    direct_source_links = (
-        _contains_link(link_text, f"{node}:output_{channel}", f"{output_key}:playback_{channel}")
-        for node in ("mpv", "spotify")
-        for channel in ("FL", "FR", "RL", "RR")
-    )
-    result["direct_source_to_hw_present"] = any(direct_source_links)
-    result["links"] = {
-        **{f"{source_port} -> {target_port}": _contains_link(link_text, source_port, target_port)
-           for source_port, target_port in zip(ingress_sources, ingress_targets)},
-        **{f"{dsp_port} -> {output_key}:playback_{channel}": _contains_link(link_text, dsp_port, f"{output_key}:playback_{channel}")
-           for dsp_port, channel in zip(dsp_ports, hardware_channels)},
-    }
-    result["port_identities"] = {
-        "source": tuple(port for port in source_ports if port in io_text),
-        "source_target": tuple(port for port in source_targets if port in io_text),
-        "ee": tuple(port for port in ingress_targets if port in io_text),
-        "helper": tuple(port for port in dsp_ports if port in io_text),
-        "output": tuple(f"{output_key}:playback_{channel}" for channel in hardware_channels if f"{output_key}:playback_{channel}" in io_text),
-    }
-    source_ok = result["source_links_complete"] is not False
-    native_topology_complete = bool(
-        source_ok
-        and result["ee_ports"]
-        and result["helper_rate_matches"]
-        and all(result["links"].values())
-    )
-    result["bypass_only"] = bool(
-        native_topology_complete and result["direct_source_to_hw_present"]
-    )
-    result["links_complete"] = bool(
-        native_topology_complete
-        and not result["direct_source_to_hw_present"]
-    )
-    result["signature"] = json.dumps(result, sort_keys=True, default=list)
-    return result
+def _missing_playback_graph_links(diagnosis, *, include_source=False):
+    return playback_orchestration.configured().missing_playback_graph_links(diagnosis, include_source=include_source)
 
 
-def _missing_playback_graph_links(
-    diagnosis: Mapping[str, Any],
-    *,
-    include_source: bool = False,
-) -> list[str]:
-    """Names of missing canonical links from a graph diagnosis."""
-    missing = [
-        link for link, present in (diagnosis.get("links") or {}).items()
-        if not present
-    ]
-    if include_source:
-        missing = [
-            *[
-                link
-                for link, present in (diagnosis.get("source_links") or {}).items()
-                if not present
-            ],
-            *missing,
-        ]
-    return missing
+
+def _measurement_session_link_loss_is_repairable(diagnosis, *, target_rate):
+    return playback_orchestration.configured().measurement_session_link_loss_is_repairable(diagnosis, target_rate=target_rate)
 
 
-def _measurement_session_link_loss_is_repairable(
-    diagnosis: Mapping[str, Any],
-    *,
-    target_rate: int,
-) -> bool:
-    """Allow only the known production-link drift during measurement.
 
-    Native DSP ingress or hardware-output link drift with the engine healthy.
-    """
-    if diagnosis.get("links_complete"):
-        return False
-    if diagnosis.get("ee_ports") is not True:
-        return False
-    if diagnosis.get("measurement_rate_aligned") is not True:
-        return False
-    output_key = str(diagnosis.get("output_key") or "").strip()
-    if not output_key:
-        return False
-    if diagnosis.get("mode") not in {OUTPUT_MODE_STEREO, *OUTPUT_MODE_SUBWOOFER_MODES}:
-        return False
-    if diagnosis.get("helper_ports") is not True:
-        return False
-    if diagnosis.get("helper_active") is not True:
-        return False
-    if diagnosis.get("helper_rate_matches") is not True:
-        return False
-    if diagnosis.get("helper_rate") != target_rate:
-        return False
-    missing = set(_missing_playback_graph_links(diagnosis))
-    output_count = 4 if diagnosis.get("mode") in OUTPUT_MODE_SUBWOOFER_MODES else 2
-    channels = ("FL", "FR", "RL", "RR")[:output_count]
-    repairable = {
-        "fxroute_dsp_sink:monitor_FL -> fxroute_dsp:input_1",
-        "fxroute_dsp_sink:monitor_FR -> fxroute_dsp:input_2",
-        *(f"fxroute_dsp:output_{index + 1} -> {output_key}:playback_{channel}"
-          for index, channel in enumerate(channels)),
-    }
-    return bool(missing) and missing.issubset(repairable)
+def _log_playback_graph_diagnosis(diagnosis, *, target_rate, reason, detail):
+    return playback_orchestration.configured().log_playback_graph_diagnosis(diagnosis, target_rate=target_rate, reason=reason, detail=detail)
 
 
-def _log_playback_graph_diagnosis(
-    diagnosis: dict,
-    *,
-    target_rate: int,
-    reason: str,
-    detail: str,
-) -> None:
-    """Log every missing graph component individually (EE ports, helper
-    ports, each missing link) so a failed handoff is diagnosable."""
-    logger.warning(
-        "Playback handoff graph incomplete: mode=%s output_key=%s target_rate=%s "
-        "ee_ports=%s helper_ports=%s helper_active=%s helper_rate=%s "
-        "direct_bypass=%s source_links=%s missing_links=%s reason=%s detail=%s",
-        diagnosis.get("mode"),
-        diagnosis.get("output_key"),
-        target_rate,
-        diagnosis.get("ee_ports"),
-        diagnosis.get("helper_ports"),
-        diagnosis.get("helper_active"),
-        diagnosis.get("helper_rate"),
-        diagnosis.get("direct_ee_to_hw_present"),
-        diagnosis.get("source_links_complete"),
-        _missing_playback_graph_links(diagnosis),
-        reason,
-        detail,
-    )
+
+async def _repair_stereo_output_links_once(diagnosis):
+    return await playback_orchestration.configured().repair_stereo_output_links_once(diagnosis)
 
 
-async def _repair_stereo_output_links_once(diagnosis: dict) -> None:
-    """Repair only missing native DSP stereo hardware links."""
-    output_key = str(diagnosis.get("output_key") or "").strip()
-    if not output_key:
-        raise RuntimeError("Playback handoff repair failed: missing stereo output target")
-    expected = (
-        ("fxroute_dsp:output_1", f"{output_key}:playback_FL"),
-        ("fxroute_dsp:output_2", f"{output_key}:playback_FR"),
-    )
-    links_text = await _run_pw_link_command("-l")
-    for source, target in expected:
-        if _contains_link(links_text, source, target):
-            continue
-        logger.info("Repairing native DSP hardware link: %s -> %s", source, target)
-        await _connect_ports((source,), target)
+
+async def _coordinator_reconcile_subwoofer_links_only():
+    return await playback_orchestration.configured().reconcile_subwoofer_links_only()
 
 
-async def _coordinator_reconcile_subwoofer_links_only() -> None:
-    """Repair only the 2.1/2.2 link topology, never restart the helper."""
-    if runtime.dsp_runtime is None:
-        raise RuntimeError("subwoofer helper runtime is not available")
-    reconcile = getattr(runtime.dsp_runtime, "reclean_direct_dsp_links", None)
-    if not callable(reconcile):
-        raise RuntimeError("subwoofer runtime has no link-only reconciliation")
-    await reconcile()
+
+def _post_start_graph_links_are_repairable(diagnosis, *, include_source=False, require_source=True):
+    return playback_orchestration.configured().post_start_graph_links_are_repairable(diagnosis, include_source=include_source, require_source=require_source)
 
 
-def _post_start_graph_links_are_repairable(
-    diagnosis: Mapping[str, Any],
-    *,
-    include_source: bool = False,
-    require_source: bool = True,
-) -> bool:
-    """Return true only when a diagnosis contains stable ports and link-only drift.
 
-    Source-link loss is repairable only for the output-mode commit, where the
-    source was deliberately re-created under the gate.  Helper lifecycle or
-    rate problems, direct bypass links, and missing port identities remain
-    fatal.
-    """
-    if not diagnosis.get("output_key") or not diagnosis.get("ee_ports"):
-        return False
-    if require_source and diagnosis.get("source_links_complete") is not True and not include_source:
-        return False
-    if diagnosis.get("direct_ee_to_hw_present"):
-        return False
-    # Helper lifecycle and rate are part of the canonical commit predicate for
-    # every output mode: runtime.dsp_runtime is the complete native DSPRuntime
-    # (Stereo included), so an inactive or stale-rate runtime is never link-only
-    # drift regardless of mode.
-    if diagnosis.get("helper_ports") is not True:
-        return False
-    if diagnosis.get("helper_active") is not True:
-        return False
-    if diagnosis.get("helper_rate_matches") is not True:
-        return False
-
-    identities = {
-        str(port)
-        for ports in (diagnosis.get("port_identities") or {}).values()
-        if isinstance(ports, (tuple, list, set, frozenset))
-        for port in ports
-    }
-    for link in _missing_playback_graph_links(
-        diagnosis,
-        include_source=include_source,
-    ):
-        try:
-            source, target = link.split(" -> ", 1)
-        except ValueError:
-            return False
-        if source not in identities or target not in identities:
-            return False
-    return True
+async def _relink_missing_production_links(diagnosis, *, include_source=False, require_source=True):
+    return await playback_orchestration.configured().relink_missing_production_links(diagnosis, include_source=include_source, require_source=require_source)
 
 
-async def _relink_missing_production_links(
-    diagnosis: Mapping[str, Any],
-    *,
-    include_source: bool = False,
-    require_source: bool = True,
-) -> bool:
-    """Relink only the missing production edges from the current readback.
 
-    The endpoint names come from the immediately preceding canonical
-    readback, so a recreated PipeWire port cannot be mistaken for an old
-    identity.  ``_connect_ports`` is idempotent for an already existing edge.
-    """
-    missing = _missing_playback_graph_links(
-        diagnosis,
-        include_source=include_source,
-    )
-    if not missing:
-        return False
-    if not _post_start_graph_links_are_repairable(
-        diagnosis,
-        include_source=include_source,
-        require_source=require_source,
-    ):
-        raise RuntimeError(
-            "production graph was not link-only drift with stable current ports"
-        )
-    for link in missing:
-        source, target = link.split(" -> ", 1)
-        logger.info(
-            "Coordinator relinking current production edge: %s -> %s",
-            source,
-            target,
-        )
-        await _connect_ports((source,), target)
-    return True
+async def _coordinator_reconcile_post_start_graph(request):
+    return await playback_orchestration.configured().reconcile_post_start_graph(request)
 
 
-async def _coordinator_reconcile_post_start_graph(
-    request: TransitionRequest,
-) -> dict[str, Any]:
-    """Reconcile a transient production-link loss before staged commit.
 
-    This is a final Coordinator-owned step shared by Local, Radio and
-    Spotify.  It performs at most one targeted link-only repair and then
-    requires two identical complete graph readbacks.  No preset, helper or
-    watcher recovery is entered here.
-    """
-    target_rate = request.target_rate
-    target_overview = (
-        copy.deepcopy(request.output_mode_target)
-        if request.operation == "output-mode-switch" and request.output_mode_target
-        else None
-    )
-    graph_source = (
-        request.source
-        if request.target_url or request.should_play
-        else None
-    )
-    if not isinstance(target_rate, int) or target_rate <= 0:
-        return {
-            "graph_complete": True,
-            "post_start_graph_reconciled": False,
-            "post_start_graph_links_relinked": False,
-        }
-
-    initial = await _playback_graph_diagnosis(
-        target_overview,
-        source=graph_source,
-        target_rate=target_rate,
-        require_source=graph_source is not None,
-    )
-    include_source = graph_source is not None
-    initial_missing = _missing_playback_graph_links(
-        initial,
-        include_source=include_source,
-    )
-    if initial.get("direct_source_to_hw_present"):
-        await _coordinator_reconcile_subwoofer_links_only()
-        initial = await _playback_graph_diagnosis(
-            target_overview,
-            source=graph_source,
-            target_rate=target_rate,
-            require_source=graph_source is not None,
-        )
-        initial_missing = _missing_playback_graph_links(
-            initial,
-            include_source=include_source,
-        )
-    if not initial.get("links_complete") and not initial_missing:
-        if initial.get("bypass_only"):
-            # The DSP can recreate its direct source -> hardware front links
-            # after the output-mode preset reload, even though the helper
-            # topology and the commit stage just reconciled them.  That is
-            # the same invalid-but-link-only state the watcher heals via a
-            # graph-only recovery; reconcile it here instead of failing the
-            # committed transition over a second-generation bypass.
-            await _coordinator_reconcile_subwoofer_links_only()
-        else:
-            _log_playback_graph_diagnosis(
-                initial,
-                target_rate=target_rate,
-                reason=f"post-start-{request.operation}",
-                detail=request.detail,
-            )
-            raise RuntimeError(
-                "post-start graph readback was incomplete without link-only drift"
-            )
-    relinked = await _relink_missing_production_links(
-        initial,
-        include_source=include_source,
-    )
-
-    readbacks: list[dict[str, Any]] = []
-    for _ in range(POST_START_GRAPH_STABILITY_READBACKS):
-        readbacks.append(
-            await _playback_graph_diagnosis(
-                target_overview,
-                source=graph_source,
-                target_rate=target_rate,
-                require_source=graph_source is not None,
-            )
-        )
-
-    signatures = [str(readback.get("signature")) for readback in readbacks]
-    stable_complete = bool(
-        len(readbacks) == POST_START_GRAPH_STABILITY_READBACKS
-        and all(readback.get("links_complete") for readback in readbacks)
-        and len(set(signatures)) == 1
-    )
-    if not stable_complete:
-        final = readbacks[-1] if readbacks else initial
-        _log_playback_graph_diagnosis(
-            final,
-            target_rate=target_rate,
-            reason=f"post-start-{request.operation}",
-            detail=request.detail,
-        )
-        raise RuntimeError(
-            "post-start production graph did not reach two stable canonical readbacks"
-        )
-
-    return {
-        "graph_complete": True,
-        "post_start_graph_reconciled": True,
-        "post_start_graph_links_relinked": relinked,
-        "graph_signature": signatures[-1],
-    }
+async def _coordinator_establish_effects_and_helper(request, *, ee_port_timeout_ms=None):
+    kwargs = {} if ee_port_timeout_ms is None else {"ee_port_timeout_ms": ee_port_timeout_ms}
+    return await playback_orchestration.configured().establish_effects_and_helper(request, **kwargs)
 
 
-async def _coordinator_establish_effects_and_helper(
-    request: TransitionRequest,
-    *,
-    ee_port_timeout_ms: int = PLAYBACK_HANDOFF_EE_PORT_TIMEOUT_MS,
-) -> dict[str, Any]:
-    """Build the effects/helper graph inside the Coordinator-owned gate.
 
-    This is intentionally smaller than the removed legacy handoff.  Rate
-    alignment belongs to ``establish_target_rate``; source loading belongs to
-    the following adapter stages; this function only performs the idempotent
-    EE/helper/link work and then uses the canonical graph readback.
-    """
+async def _playback_graph_links_complete(audio_overview=None, *, source=None, target_rate=None, require_source=False):
+    return await playback_orchestration.configured().playback_graph_links_complete(audio_overview, source=source, target_rate=target_rate, require_source=require_source)
 
-    target_rate = request.target_rate
-    if not isinstance(target_rate, int) or target_rate <= 0:
-        return {
-            "dsp_reinitialized": False,
-            "preset_reloaded": False,
-            "helper_rebuilt": False,
-            "links_reconciled": False,
-        }
-
-    overview = copy.deepcopy(request.output_mode_target) if request.output_mode_target else get_audio_output_overview()
-    mode = (overview.get("output_mode") or {}).get("mode")
-    preset_reloaded = False
-    helper_rebuilt = False
-    links_reconciled = False
-    compare_target_preset = None
-    diagnosis = await _playback_graph_diagnosis(
-        overview,
-        target_rate=target_rate,
-        require_source=False,
-    )
-
-    if request.graph_only:
-        if not diagnosis.get("bypass_only"):
-            raise RuntimeError(
-                "graph-only reconciliation requested for a non-bypass graph: "
-                f"signature={diagnosis.get('signature')}"
-            )
-        await _coordinator_reconcile_subwoofer_links_only()
-        links_reconciled = True
-    else:
-        needs_preset = not diagnosis.get("ee_ports")
-        # A healthy same-rate graph must not reload its preset.  A convolver
-        # that needs the target rate is relevant only during a real rate
-        # transition; missing EE ports remain a genuine recovery condition.
-        if request.rate_change and not needs_preset and dsp_manager is not None:
-            requires_convolver_reload = getattr(
-                dsp_manager,
-                "active_preset_requires_samplerate_reload",
-                None,
-            )
-            if callable(requires_convolver_reload):
-                try:
-                    needs_preset = bool(
-                        await asyncio.to_thread(
-                            requires_convolver_reload,
-                            target_rate,
-                        )
-                    )
-                except Exception as exc:
-                    # Preserve a functioning active graph when its preset file
-                    # cannot be inspected.  A missing/broken graph still takes
-                    # the reload path above; an unknown convolver is not a
-                    # reason to reload every rate transition.
-                    logger.warning(
-                        "Coordinator could not inspect active preset for convolver "
-                        "sample-rate reload: %s",
-                        exc,
-                    )
-        if request.operation == "output-mode-switch" and dsp_manager is not None:
-            compare = dsp_manager.load_compare_state()
-            active_side = compare.get("activeSide") if compare.get("activeSide") in {"A", "B"} else None
-            compare_target_preset = (
-                compare.get("presetA") if active_side == "A" else
-                compare.get("presetB") if active_side == "B" else
-                None
-            )
-            current_preset = dsp_manager.get_active_preset()
-            if compare_target_preset and current_preset != compare_target_preset:
-                await _load_dsp_preset(compare_target_preset, convolver_sample_rate_hz=target_rate)
-                needs_preset = True
-                preset_reloaded = True
-                logger.info(
-                    "Coordinator output-mode switch loaded compare-active preset under gate: %s",
-                    compare_target_preset,
-                )
-        if needs_preset and not preset_reloaded:
-            await dsp_orchestrator.sync_preset_for_playback_samplerate(
-                sample_rate_hz=target_rate,
-                reason=f"coordinator-{request.operation}",
-                detail=request.detail,
-            )
-            preset_reloaded = True
-        if not await _wait_for_dsp_output_ports(ee_port_timeout_ms):
-            raise RuntimeError(
-                "Coordinator effects stage failed: native DSP output ports were not confirmed"
-            )
-
-        if request.operation in {"measurement-entry", "output-mode-switch"}:
-            # The EE preset reload/rebuild above can leave the hardware sink
-            # suspended at the configured default rate.  Re-establish the
-            # target rate before the helper/stereo runtime sync, which defers
-            # on any sink/authoritative rate mismatch.
-            if not await _reconcile_transition_sink_rate(
-                target_rate, reason=f"effects-{request.operation}"
-            ):
-                status = dict(get_samplerate_status())
-                raise RuntimeError(
-                    "Coordinator effects stage rate reconcile failed: "
-                    f"expected={target_rate} active={status.get('active_rate')} "
-                    f"force={status.get('force_rate')}"
-                )
-
-        if request.operation == "output-mode-switch":
-            # A mode switch always rebuilds the runtime from the target
-            # overview/config, independent of the rate-staleness heuristic.
-            await dsp_orchestrator.sync_runtime(
-                audio_overview=overview,
-                reason="coordinator-output-mode-switch",
-                _rate_lock_held=False,
-                target_overview=overview,
-            )
-            helper_rebuilt = True
-            if dsp_manager is not None:
-                if runtime.dsp_preset_load_lock is None:
-                    runtime.dsp_preset_load_lock = asyncio.Lock()
-                async with runtime.dsp_preset_load_lock:
-                    # A/B can change while runtime sync recovers the graph, so
-                    # use the current side rather than the pre-sync snapshot.
-                    compare = dsp_manager.load_compare_state()
-                    active_side = compare.get("activeSide") if compare.get("activeSide") in {"A", "B"} else None
-                    compare_target_preset = (
-                        compare.get("presetA") if active_side == "A" else
-                        compare.get("presetB") if active_side == "B" else
-                        None
-                    )
-                    if (
-                        compare_target_preset
-                        and dsp_manager.get_active_preset() != compare_target_preset
-                    ):
-                        # Runtime synchronization may overlap an A/B change;
-                        # restore the side selected after synchronization.
-                        await _load_dsp_preset(
-                            compare_target_preset,
-                            convolver_sample_rate_hz=target_rate,
-                        )
-                        if not await _wait_for_dsp_output_ports(ee_port_timeout_ms):
-                            raise RuntimeError(
-                                "Coordinator compare preset restore did not recreate "
-                                "native DSP output ports"
-                            )
-                        preset_reloaded = True
-                        logger.info(
-                            "Coordinator output-mode switch restored compare-active preset "
-                            "after runtime sync: %s",
-                            compare_target_preset,
-                        )
-            if mode in OUTPUT_MODE_SUBWOOFER_MODES:
-                await _coordinator_reconcile_subwoofer_links_only()
-            else:
-                # The direct EE -> hardware front links were restored by the
-                # SUB-STOP above, but a concurrently taken pw-link snapshot
-                # can transiently miss them (link readback racing the link
-                # creation).  Repair the stereo links idempotently for every
-                # stereo switch; the extra read also lets the listing settle
-                # before the final diagnosis below.
-                await _repair_stereo_output_links_once(diagnosis)
-            links_reconciled = True
-        else:
-            # runtime.dsp_runtime is now the complete native DSPRuntime,
-            # including Stereo.  A real rate change or a stale/inactive/
-            # port-less runtime therefore requires a full rebuild for every
-            # output mode.  The mode only selects the link/routing
-            # reconciliation below; it no longer gates runtime sync.
-            helper_snapshot = runtime.dsp_runtime.snapshot() if runtime.dsp_runtime is not None else {}
-            helper_needs_sync = bool(
-                request.rate_change
-                or not helper_snapshot.get("active")
-                or helper_argument_sample_rate(helper_snapshot) != target_rate
-                or not diagnosis.get("helper_ports")
-                or not all(diagnosis.get("links", {}).values())
-            )
-            if helper_needs_sync:
-                if request.operation in {"measurement-entry", "measurement-restore"}:
-                    await dsp_orchestrator.sync_runtime(
-                        audio_overview=overview,
-                        reason=f"coordinator-{request.operation}",
-                        _rate_lock_held=True,
-                    )
-                else:
-                    # Preserve the original adapter call shape for normal
-                    # playback transitions; measurement/output-mode are the
-                    # only operations that must carry an explicit target
-                    # overview through this Coordinator-owned path.
-                    await dsp_orchestrator.sync_runtime(
-                        reason=f"coordinator-{request.operation}",
-                    )
-                helper_rebuilt = True
-                # The DSP may recreate its direct front links after a
-                # preset action.  Reconcile them after helper setup without
-                # restarting either process.
-                if mode in OUTPUT_MODE_SUBWOOFER_MODES:
-                    await _coordinator_reconcile_subwoofer_links_only()
-                else:
-                    await _repair_stereo_output_links_once(diagnosis)
-                links_reconciled = True
-            elif not diagnosis.get("links_complete"):
-                if mode in OUTPUT_MODE_SUBWOOFER_MODES:
-                    await _coordinator_reconcile_subwoofer_links_only()
-                else:
-                    await _repair_stereo_output_links_once(diagnosis)
-                links_reconciled = True
-
-    final = await _playback_graph_diagnosis(
-        overview,
-        target_rate=target_rate,
-        require_source=False,
-    )
-    if not final.get("links_complete"):
-        # The DSP can recreate its output nodes during the transition and
-        # drop a freshly established edge. Reuse the canonical link-only
-        # repairability contract before declaring the switch failed.
-        for _ in range(3):
-            if final.get("bypass_only"):
-                await _coordinator_reconcile_subwoofer_links_only()
-            else:
-                await _relink_missing_production_links(final, require_source=False)
-            await asyncio.sleep(PIPEWIRE_HANDOFF_POLL_INTERVAL_MS * 5 / 1000)
-            final = await _playback_graph_diagnosis(
-                overview,
-                target_rate=target_rate,
-                require_source=False,
-            )
-            if final.get("links_complete"):
-                break
-    if not final.get("links_complete"):
-        _log_playback_graph_diagnosis(
-            final,
-            target_rate=target_rate,
-            reason=f"coordinator-{request.operation}",
-            detail=request.detail,
-        )
-        raise RuntimeError(
-            "Coordinator effects/helper graph did not reach the canonical topology"
-        )
-    return {
-        "dsp_reinitialized": preset_reloaded,
-        "preset_reloaded": preset_reloaded,
-        "helper_rebuilt": helper_rebuilt,
-        "links_reconciled": links_reconciled,
-        "graph_complete": True,
-        "graph_signature": final.get("signature"),
-    }
-
-
-async def _playback_graph_links_complete(
-    audio_overview: dict | None = None,
-    *,
-    source: str | None = None,
-    target_rate: int | None = None,
-    require_source: bool = False,
-) -> bool:
-    """Read the canonical graph snapshot and return its commit predicate."""
-    diagnosis = await _playback_graph_diagnosis(
-        audio_overview,
-        source=source,
-        target_rate=target_rate,
-        require_source=require_source,
-    )
-    return diagnosis["links_complete"]
 
 
 
@@ -5485,6 +4421,94 @@ def _make_dsp_orchestration_deps() -> DspOrchestrationDeps:
         peak_monitor_restart_settle_ms=PEAK_MONITOR_RESTART_SETTLE_MS,
         sleep=lambda delay: asyncio.sleep(delay),
     )
+
+
+def _make_playback_orchestration_deps() -> playback_orchestration.PlaybackOrchestrationDeps:
+    """Bind transition/recovery orchestration to live application services."""
+    return playback_orchestration.PlaybackOrchestrationDeps(
+        get_coordinator=lambda: playback_transition_coordinator,
+        set_coordinator=lambda value: globals().__setitem__("playback_transition_coordinator", value),
+        make_transition_coordinator=lambda: PlaybackTransitionCoordinator(
+            FxrouteTransitionRuntime(make_playback_runtime_deps()),
+            gate_state_path=_playback_gate_state_path(),
+        ),
+        begin_transition_attempt=_begin_playback_transition_attempt,
+        end_transition_attempt=_end_playback_transition_attempt,
+        run_transition=lambda request: _run_coordinated_transition(request),
+        get_playback_state=lambda: playback_state,
+        get_runtime_player=lambda: runtime.player_instance,
+        get_dsp_runtime=lambda: runtime.dsp_runtime,
+        get_dsp_manager=lambda: dsp_manager,
+        get_dsp_preset_load_lock=lambda: runtime.dsp_preset_load_lock,
+        get_measurement_session=lambda: measurement_sr_session,
+        get_samplerate_status=lambda: get_samplerate_status(),
+        get_audio_output_overview=lambda: get_audio_output_overview(),
+        get_spotify_ui_state=lambda *args, **kwargs: get_spotify_ui_state(*args, **kwargs),
+        get_player_audio_samplerate=_get_player_audio_samplerate,
+        is_local_playback_active=_is_local_playback_active,
+        is_spotify_playback_active=_is_spotify_playback_active,
+        spotify_target_track=_spotify_target_track_from_state,
+        source_rate=lambda source, track=None: playback_orchestration.configured().coordinator_source_rate(source, track),
+        get_target_rate=lambda source, track=None: playback_orchestration.configured().coordinator_target_rate(source, track),
+        sample_rate_policy_is_auto=lambda: samplerate.load_sample_rate_policy().get("mode") == "auto",
+        get_player_queue_fields=lambda: playback_queue.queue.native_request_fields(),
+        run_pw_link_command=lambda *args: _run_pw_link_command(*args),
+        connect_ports=lambda *args: _connect_ports(*args),
+        contains_link=_contains_link,
+        helper_argument_sample_rate=dsp_orchestration.helper_argument_sample_rate,
+        sync_preset_for_samplerate=lambda *args, **kwargs: dsp_orchestrator.sync_preset_for_playback_samplerate(*args, **kwargs),
+        sync_runtime=lambda *args, **kwargs: dsp_orchestrator.sync_runtime(*args, **kwargs),
+        reconcile_sink_rate=lambda *args, **kwargs: _reconcile_transition_sink_rate(*args, **kwargs),
+        load_dsp_preset=lambda *args, **kwargs: _load_dsp_preset(*args, **kwargs),
+        sleep=lambda delay: asyncio.sleep(delay),
+        pipewire_poll_interval_ms=PIPEWIRE_HANDOFF_POLL_INTERVAL_MS,
+        dsp_port_timeout_ms=PLAYBACK_HANDOFF_EE_PORT_TIMEOUT_MS,
+        post_start_readbacks=POST_START_GRAPH_STABILITY_READBACKS,
+        output_mode_subwoofer_modes=frozenset(OUTPUT_MODE_SUBWOOFER_MODES),
+        output_mode_stereo=OUTPUT_MODE_STEREO,
+        playback_graph_diagnosis=lambda *args, **kwargs: _playback_graph_diagnosis(*args, **kwargs),
+        transition_sample_rate_policy=lambda *args, **kwargs: playback_orchestration.configured().transition_sample_rate_policy(*args, **kwargs),
+        get_dsp_snapshot=lambda: runtime.dsp_runtime.snapshot() if runtime.dsp_runtime is not None else {},
+        wait_for_dsp_ports=lambda timeout_ms: _wait_for_dsp_output_ports(timeout_ms),
+        reconcile_subwoofer_links=lambda: _coordinator_reconcile_subwoofer_links_only(),
+         # Let the extracted owner use the supplied low-level PipeWire
+         # primitives; do not route this dependency through its public wrapper.
+         repair_stereo_output_links=None,
+        current_context_override=lambda: _coordinator_current_playback_context(),
+        rate_change_override=lambda target_rate: _coordinator_rate_change(target_rate),
+    )
+
+
+playback_orchestration.configure(_make_playback_orchestration_deps())
+
+# Bound orchestration entry points retained for application wiring and legacy
+# internal callers; implementations live in playback_orchestration.py.
+_coordinator_source_rate = playback_orchestration.configured().coordinator_source_rate
+_coordinator_target_rate = playback_orchestration.configured().coordinator_target_rate
+_sample_rate_policy_is_auto = playback_orchestration.configured().sample_rate_policy_is_auto
+_transition_sample_rate_policy = playback_orchestration.configured().transition_sample_rate_policy
+_coordinator_current_playback_context = playback_orchestration.configured().current_playback_context
+_coordinator_rate_change = playback_orchestration.configured().coordinator_rate_change
+_playback_transition_is_active = playback_orchestration.configured().transition_is_active
+_coordinator_commit_context_id = playback_orchestration.configured().coordinator_commit_context_id
+_recovery_context_is_valid = playback_orchestration.configured().recovery_context_is_valid
+_run_coordinated_transition = playback_orchestration.configured().run_coordinated_transition
+_measurement_audio_graph_owned = playback_orchestration.configured().measurement_audio_graph_owned
+_request_coordinated_recovery = playback_orchestration.configured().request_coordinated_recovery
+_playback_transition_context_is_current = playback_orchestration.configured().playback_transition_context_is_current
+_dsp_output_ports_present = playback_orchestration.configured()._dsp_output_ports_present
+_wait_for_dsp_output_ports = playback_orchestration.configured().wait_for_dsp_output_ports
+_playback_graph_diagnosis = playback_orchestration.configured().playback_graph_diagnosis
+_missing_playback_graph_links = playback_orchestration.configured().missing_playback_graph_links
+_measurement_session_link_loss_is_repairable = playback_orchestration.configured().measurement_session_link_loss_is_repairable
+_log_playback_graph_diagnosis = playback_orchestration.configured().log_playback_graph_diagnosis
+_repair_stereo_output_links_once = playback_orchestration.configured().repair_stereo_output_links_once
+_coordinator_reconcile_subwoofer_links_only = playback_orchestration.configured().reconcile_subwoofer_links_only
+_post_start_graph_links_are_repairable = playback_orchestration.configured().post_start_graph_links_are_repairable
+_relink_missing_production_links = playback_orchestration.configured().relink_missing_production_links
+_coordinator_reconcile_post_start_graph = playback_orchestration.configured().reconcile_post_start_graph
+_coordinator_establish_effects_and_helper = playback_orchestration.configured().establish_effects_and_helper
+_playback_graph_links_complete = playback_orchestration.configured().playback_graph_links_complete
 
 
 app = FastAPI(lifespan=lifespan)

@@ -830,15 +830,15 @@ class EntryBoundaryTests(unittest.IsolatedAsyncioTestCase):
         index = (pathlib.Path(__file__).resolve().parents[1] / "static" / "index.html").read_text()
         app = (pathlib.Path(__file__).resolve().parents[1] / "static" / "app.js").read_text()
         samplerate_source = (pathlib.Path(__file__).resolve().parents[1] / "samplerate.py").read_text()
-        main_source = (pathlib.Path(__file__).resolve().parents[1] / "main.py").read_text()
+        orchestration_source = (pathlib.Path(__file__).resolve().parents[1] / "playback_orchestration.py").read_text()
         self.assertIn("settings-samplerate-select", index)
         self.assertIn("Sample Rate", index)
         self.assertIn("saveSampleRatePolicy", app)
         self.assertNotIn("set_pipewire_default_rate_selection", samplerate_source)
         self.assertNotIn("_render_pipewire_clock_rate_dropin", samplerate_source)
-        self.assertIn('operation="sample-rate-policy"', main_source)
+        self.assertIn('operation="sample-rate-policy"', orchestration_source)
         self.assertIn("_transition_sample_rate_policy", inspect.getsource(main.save_audio_samplerate_policy))
-        self.assertIn("_run_coordinated_transition", inspect.getsource(main._transition_sample_rate_policy))
+        self.assertIn("run_transition", inspect.getsource(main._transition_sample_rate_policy))
         self.assertIn("/api/audio/samplerate", app)
 
 

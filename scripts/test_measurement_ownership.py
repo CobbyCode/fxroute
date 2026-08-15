@@ -208,9 +208,9 @@ class MeasurementOwnershipTests(unittest.IsolatedAsyncioTestCase):
             main.playback_state, "current_track_info", dict(track)
         ), patch.object(main, "_coordinator_target_rate", return_value=44100), patch.object(
             main, "_coordinator_rate_change", return_value=False
-        ), patch.object(main, "_coordinator_commit_context_id", return_value="tr-after-release"), patch.object(
-            main, "_recovery_context_is_valid", new=AsyncMock(return_value=True)
+        ), patch.object(main, "_recovery_context_is_valid", new=AsyncMock(return_value=True)
         ), patch.object(main, "_run_coordinated_transition", run):
+            main.playback_state.coordinator_last_successful_commit_id = "tr-after-release"
             await main._request_coordinated_recovery(track, "post-measurement-watcher")
 
         run.assert_awaited_once()

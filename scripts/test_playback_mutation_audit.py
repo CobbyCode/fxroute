@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 # extracted AutoSub module.  Playback entrypoints and single-owner paths live
 # only in main.py; all files are parsed for direct mutation calls so the
 # extraction cannot create an audit coverage gap.
-AUDIT_FILES = ("main.py", "playback_runtime.py", "playback_queue.py", "autosub.py", "measurement_session.py", "dsp_api.py")
+AUDIT_FILES = ("main.py", "playback_orchestration.py", "playback_runtime.py", "playback_queue.py", "autosub.py", "measurement_session.py", "dsp_api.py")
 SOURCES = {name: (ROOT / name).read_text() for name in AUDIT_FILES}
 TREES = {name: ast.parse(source) for name, source in SOURCES.items()}
 MAIN_SOURCE = SOURCES["main.py"]
@@ -189,8 +189,10 @@ def _calls() -> list[tuple[str, int, str, str]]:
 
 def _reason(context: str, name: str) -> str | None:
     leaf = context.rsplit("/", 1)[-1]
-    if leaf in {"make_playback_runtime_deps", "_make_dsp_orchestration_deps", "_make_measurement_services"}:
+    if leaf in {"make_playback_runtime_deps", "_make_dsp_orchestration_deps", "_make_measurement_services", "_make_playback_orchestration_deps"}:
         return "late-bound runtime wiring factory; the referenced mutations are never executed here"
+    if leaf in {"_request_coordinated_recovery", "request_coordinated_recovery"}:
+        return "Coordinator recovery request and validation"
     if leaf in PLAYBACK_ENTRYPOINTS:
         return None
     if (
@@ -200,6 +202,8 @@ def _reason(context: str, name: str) -> str | None:
             "_repair_playback_graph_once", "_repair_stereo_output_links_once",
             "_coordinator_establish_effects_and_helper",
             "_relink_missing_production_links",
+            "establish_effects_and_helper", "relink_missing_production_links",
+            "repair_stereo_output_links_once", "reconcile_subwoofer_links_only",
             "rollback_output_mode_runtime",
             "_ensure_mpv_to_dsp_links",
             "_restore_committed_source_after_failed_transition",
@@ -326,6 +330,9 @@ def main() -> int:
             # facade or knows transition stages.
             if "run_transition" not in body:
                 errors.append(f"single-owner path bypasses coordinator boundary: {path_name}")
+        elif path_name == "_request_coordinated_recovery":
+            if "configured().request_coordinated_recovery" not in body:
+                errors.append(f"single-owner recovery does not enter orchestration: {path_name}")
         elif "_run_coordinated_transition" not in body:
             errors.append(f"single-owner path bypasses coordinator: {path_name}")
 
