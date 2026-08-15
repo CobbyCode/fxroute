@@ -510,6 +510,11 @@ class MeasurementStore:
         executor: Callable[[dict[str, Any]], Any],
     ) -> dict[str, Any]:
         job_id = str(job["id"])
+        self._job_runner._raw_scope_enter = self.raw_scope_enter
+        self._job_runner._raw_scope_exit = self.raw_scope_exit
+        self._job_runner._effect_bypass_setter = self.effect_bypass_setter
+        self._job_runner._active_scope_enter = self.active_scope_enter
+        self._job_runner._active_scope_exit = self.active_scope_exit
         self._jobs[job_id] = job
         self._persist_job(job)
         self._job_runner.start(job_id, job, executor)
