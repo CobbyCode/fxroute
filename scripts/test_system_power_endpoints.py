@@ -31,7 +31,7 @@ import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-import power
+from audio import power
 import main as main_module
 from fastapi.testclient import TestClient
 

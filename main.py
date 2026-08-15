@@ -936,7 +936,7 @@ import audio.volume_contract as volume_contract
 logger = logging.getLogger(__name__)
 
 import install_info
-import power as system_power
+import audio.power as system_power
 import dsp.effects_extras
 import measurement.spl_calibration as spl_calibration
 import measurement.autosub as autosub

@@ -39,6 +39,9 @@ OBSOLETE_ROOT_MODULES = frozenset({
     "sink_inputs.py",
     "system_volume.py",
     "volume_contract.py",
+    # audio/ (post-migration move: power.py shipped at root when the
+    # system power feature was introduced, later moved under audio/)
+    "power.py",
     # dsp/ (commit ff6907d)
     "dsp_api.py",
     "effects_extras.py",

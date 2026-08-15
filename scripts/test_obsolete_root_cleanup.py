@@ -151,7 +151,7 @@ class ObsoleteRootCleanupBehaviorTests(unittest.TestCase):
 
 
 class ObsoleteRootManifestCompletenessTests(unittest.TestCase):
-    """The manifest must match the actual migration renames exactly."""
+    """The manifest must match the actual root-module renames exactly."""
 
     @classmethod
     def setUpClass(cls):
@@ -183,7 +183,11 @@ class ObsoleteRootManifestCompletenessTests(unittest.TestCase):
         # measurement_*.py modules as new files at root; the renames above
         # cover them when moved under measurement/.  Verify the union with
         # the committed move list by checking both directions below.
-        cls.renamed_sources = renamed_sources
+        #
+        # Post-migration moves of root modules into packages are added
+        # explicitly (each must come with a matching package rename):
+        # power.py -> audio/power.py.
+        cls.renamed_sources = renamed_sources | {"power.py"}
 
     def test_manifest_contains_all_renamed_root_modules(self):
         missing = sorted(self.renamed_sources - set(cleanup.OBSOLETE_ROOT_MODULES))

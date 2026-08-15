@@ -14,9 +14,9 @@ The implementation prefers the ``dbus-send`` binary (provided by the
 ``dbus`` package on every supported distro and shipped in the installer
 dependency list) over the in-process python ``dbus`` bindings.  This keeps
 FXRoute compatible with the project venv that does not pull
-``python3-dbus`` as a pip dependency and removes the exposure to a
-process-global gin trap that an in-process D-Bus connection would create
-on top of the existing FastAPI asyncio loop.
+``python3-dbus`` as a pip dependency and avoids the event-loop integration
+hazards an in-process D-Bus connection would create on top of the existing
+FastAPI asyncio loop.
 
 The exposed surface is intentionally narrow:
 
@@ -453,7 +453,7 @@ def is_logind_call_executable(value: str) -> bool:
     """Strict-Yes gate for a textual logind ``CanX`` answer.
 
     systemd-logind's ``Manager.CanSuspend`` / ``Manager.CanPowerOff``
-    properties return one of the small enum the task enumerates:
+    methods/properties return one of a small fixed set of values:
 
     ``yes``                                -> directly executable
     ``no``                                 -> denied
@@ -486,6 +486,10 @@ async def is_now_supported(action: str) -> tuple[bool, str]:
     command the operator's UI had every reason not to advertise.
     """
 
+    if action not in _ALLOWED_LOGIND_ACTIONS:
+        # Unknown actions must not silently alias an existing probe; the
+        # callers (HTTP handlers) only ever pass the allow-listed names.
+        return False, "invalid-action"
     try:
         caps = await asyncio.wait_for(
             get_capabilities(),

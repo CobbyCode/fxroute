@@ -36,7 +36,7 @@ POLKIT_TEMPLATE = ROOT / "assets" / "polkit" / "50-fxroute-power.rules"
 INDEX_HTML = ROOT / "static" / "index.html"
 APP_JS = ROOT / "static" / "app.js"
 STYLE_CSS = ROOT / "static" / "style.css"
-POWER_PY = ROOT / "power.py"
+POWER_PY = ROOT / "audio" / "power.py"
 
 
 def _assert_node_available() -> str:
@@ -477,7 +477,7 @@ class ProbeArchitectureTests(unittest.TestCase):
     def test_query_logind_property_prefers_direct_method_call(self):
         # The method-form args tuple MUST be assembled first, the property
         # form comes after the rcode-0 success shortcut.
-        power_src = (Path(__file__).resolve().parents[1] / "power.py").read_text()
+        power_src = (Path(__file__).resolve().parents[1] / "audio" / "power.py").read_text()
         method_idx = power_src.find('f"{_LOGIND_MANAGER_IFACE}.{name}"')
         prop_idx = power_src.find('_DBUS_PROPERTIES_IFACE + ".Get"')
         self.assertGreater(prop_idx, 0)
@@ -493,7 +493,7 @@ class ProbeArchitectureTests(unittest.TestCase):
 
     def test_fallback_only_runs_on_unknown_method_or_unknown_property(self):
         # The fallback MUST NOT trigger on a transient PermissionDenied.
-        power_src = (Path(__file__).resolve().parents[1] / "power.py").read_text()
+        power_src = (Path(__file__).resolve().parents[1] / "audio" / "power.py").read_text()
         # Use DOTALL so the (.*?) crosses the multi-line tuple body.
         snippet = re.search(
             r"if method_error not in \((.*?)\) and name in",

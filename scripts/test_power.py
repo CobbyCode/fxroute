@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-only
-"""Unit tests for the systemd-logind power backend (power.py).
+"""Unit tests for the systemd-logind power backend (audio/power.py).
 
 These tests do NOT touch the real dbus-send binary or the system bus:
 
@@ -38,7 +38,7 @@ from typing import List, Tuple
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-import power
+from audio import power
 
 
 class _ScriptedRunner:
@@ -327,6 +327,28 @@ class ActionTests(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertEqual(result.status, "denied")
         self.assertEqual(runner.calls, [])
+
+    def test_is_now_supported_rejects_unknown_action_without_probe(self):
+        runner = _ScriptedRunner([])
+        power.set_backend(power.PowerBackend(runner=runner))
+        supported, raw = _run(power.is_now_supported("reboot"))
+        self.assertFalse(supported)
+        self.assertEqual(raw, "invalid-action")
+        # An unknown action must not alias an existing probe (e.g. power_off).
+        self.assertEqual(runner.calls, [])
+
+    def test_is_now_supported_reports_matching_capability(self):
+        runner = _ScriptedRunner([
+            (0, CAN_SUSPEND_YES, ""),
+            (0, CAN_POWEROFF_YES, ""),
+        ])
+        power.set_backend(power.PowerBackend(runner=runner))
+        supported, raw = _run(power.is_now_supported("suspend"))
+        self.assertTrue(supported)
+        self.assertEqual(raw, "yes")
+        # Both capabilities are probed by get_capabilities; only the
+        # suspend answer decides the result.
+        self.assertEqual(len(runner.calls), 2)
 
     def test_dbus_send_missing_runner_yields_unavailable(self):
         def missing_runner(*args, **kwargs):
