@@ -408,6 +408,113 @@ class MeasurementStore:
             })
         return annotated
 
+    async def _prepare_measurement_job_setup(
+        self,
+        *,
+        input_id: str,
+        input_key: str,
+        mic_input_channel: str | int | None,
+        reference_input_channel: str | int | None,
+        calibration_filename: str | None,
+        calibration_bytes: bytes | None,
+        calibration_ref: str | None,
+        measurement_scope: str,
+        job_prefix: str,
+        channel: str | None = None,
+    ) -> dict[str, Any]:
+        if self._shutdown:
+            raise RuntimeError("Measurement store is shutting down")
+        # Normalize stale jobs before checking the single-job ownership guard.
+        self._normalize_stale_jobs()
+        active_job = self._find_active_or_cancelling_job()
+        if active_job is not None:
+            active_id = active_job["id"]
+            active_status = active_job.get("status", "unknown")
+            logger.warning(
+                "MEASUREMENT-CANCEL-DIAG new job blocked: existing_job=%s status=%s",
+                active_id,
+                active_status,
+            )
+            raise RuntimeError(
+                f"Another measurement is still active ({active_id}, status={active_status}). "
+                "Wait for it to finish or cancel it first."
+            )
+
+        inputs = self._measurement_inputs_with_sample_rate(
+            await asyncio.to_thread(self._discover_capture_inputs)
+        )
+        selected_input = self._resolve_capture_input(inputs, input_id=input_id, input_key=input_key)
+        if not selected_input.get("available"):
+            raise ValueError("Selected capture input is not available")
+
+        normalized_channel = None
+        if channel is not None:
+            normalized_channel = str(channel or "left").strip().lower()
+            if normalized_channel not in {"left", "right", "stereo"}:
+                raise ValueError("channel must be left, right, or stereo")
+
+        input_channel_count = max(1, int(selected_input.get("channels") or 1))
+        mic_input_channel_index = self._parse_input_channel_index(
+            mic_input_channel,
+            channel_count=input_channel_count,
+            default=0,
+            field_name="mic_input_channel",
+        )
+        reference_input_channel_index = self._parse_optional_input_channel_index(
+            reference_input_channel,
+            channel_count=input_channel_count,
+            field_name="reference_input_channel",
+        )
+        reference_disabled_reason = ""
+        if reference_input_channel_index is not None and reference_input_channel_index == mic_input_channel_index:
+            reference_disabled_reason = "Mic input and electrical reference input are the same channel; reference compensation disabled."
+            reference_input_channel_index = None
+
+        calibration_meta = self._file_store.resolve_calibration_meta(
+            calibration_filename=calibration_filename,
+            calibration_bytes=calibration_bytes,
+            calibration_ref=calibration_ref,
+        )
+        normalized_scope = self._normalize_measurement_scope(measurement_scope)
+        now = self._utc_now()
+        job_id = f"{job_prefix}{uuid4().hex[:12]}"
+        job = {
+            "id": job_id,
+            "status": "queued",
+            "created_at": now,
+            "updated_at": now,
+            "input": {
+                "id": selected_input["id"],
+                "label": selected_input["label"],
+                "node_serial": selected_input.get("node_serial"),
+                "node_name": selected_input.get("node_name"),
+                "channels": selected_input.get("channels"),
+                "sample_rate": selected_input.get("sample_rate"),
+            },
+            "input_channels": {
+                "mic": mic_input_channel_index + 1,
+                "electrical_reference": reference_input_channel_index + 1 if reference_input_channel_index is not None else None,
+                "reference_disabled_reason": reference_disabled_reason,
+            },
+            "calibration": calibration_meta or {"filename": "", "applied": False},
+            "scope_note": MEASUREMENT_SCOPE_NOTE,
+            "measurement_scope": normalized_scope,
+            "result": None,
+            "error": None,
+        }
+        return {"job": job, "channel": normalized_channel}
+
+    def _register_measurement_job(
+        self,
+        job: dict[str, Any],
+        executor: Callable[[dict[str, Any]], Any],
+    ) -> dict[str, Any]:
+        job_id = str(job["id"])
+        self._jobs[job_id] = job
+        self._persist_job(job)
+        self._job_runner.start(job_id, job, executor)
+        return self.get_job(job_id)
+
     async def start_measurement(
         self,
         *,
@@ -424,58 +531,20 @@ class MeasurementStore:
         playback_gain: float | None = None,
         measurement_role: str = "",
     ) -> dict[str, Any]:
-        if self._shutdown:
-            raise RuntimeError("Measurement store is shutting down")
-        # Promote stale non-terminal jobs without a live worker before the
-        # active-job guard, otherwise a stale cancelling/running record could
-        # block every future measurement forever.
-        self._normalize_stale_jobs()
-        # Guard against concurrent measurement jobs
-        active_job = self._find_active_or_cancelling_job()
-        if active_job is not None:
-            active_id = active_job["id"]
-            active_status = active_job.get("status", "unknown")
-            logger.warning(
-                "MEASUREMENT-CANCEL-DIAG new job blocked: existing_job=%s status=%s",
-                active_id, active_status,
-            )
-            raise RuntimeError(
-                f"Another measurement is still active ({active_id}, status={active_status}). "
-                "Wait for it to finish or cancel it first."
-            )
-        inputs = self._measurement_inputs_with_sample_rate(
-            await asyncio.to_thread(self._discover_capture_inputs)
-        )
-        selected_input = self._resolve_capture_input(inputs, input_id=input_id, input_key=input_key)
-        if not selected_input.get("available"):
-            raise ValueError("Selected capture input is not available")
-
-        normalized_channel = str(channel or "left").strip().lower()
-        if normalized_channel not in {"left", "right", "stereo"}:
-            raise ValueError("channel must be left, right, or stereo")
-        input_channel_count = max(1, int(selected_input.get("channels") or 1))
-        mic_input_channel_index = self._parse_input_channel_index(
-            mic_input_channel,
-            channel_count=input_channel_count,
-            default=0,
-            field_name="mic_input_channel",
-        )
-        reference_input_channel_index = self._parse_optional_input_channel_index(
-            reference_input_channel,
-            channel_count=input_channel_count,
-            field_name="reference_input_channel",
-        )
-        reference_disabled_reason = ""
-        if reference_input_channel_index is not None and reference_input_channel_index == mic_input_channel_index:
-            reference_disabled_reason = "Mic input and electrical reference input are the same channel; reference compensation disabled."
-            reference_input_channel_index = None
-
-        calibration_meta = self._file_store.resolve_calibration_meta(
+        setup = await self._prepare_measurement_job_setup(
+            input_id=input_id,
+            input_key=input_key,
+            mic_input_channel=mic_input_channel,
+            reference_input_channel=reference_input_channel,
             calibration_filename=calibration_filename,
             calibration_bytes=calibration_bytes,
             calibration_ref=calibration_ref,
+            measurement_scope=measurement_scope,
+            job_prefix="measurement-job-",
+            channel=channel,
         )
-        normalized_scope = self._normalize_measurement_scope(measurement_scope)
+        job = setup["job"]
+        normalized_channel = setup["channel"]
         normalized_role = str(measurement_role or "").strip().lower()
         if normalized_role not in {"", "direct", "mlp", "secondary", "integration"}:
             raise ValueError("measurement_role must be direct, mlp, secondary, or integration")
@@ -487,46 +556,14 @@ class MeasurementStore:
                 raise ValueError("playback_gain must be a finite non-negative number") from exc
             if not math.isfinite(normalized_playback_gain) or normalized_playback_gain < 0.0:
                 raise ValueError("playback_gain must be a finite non-negative number")
-
-        job_id = f"measurement-job-{uuid4().hex[:12]}"
-        now = self._utc_now()
-        job = {
-            "id": job_id,
-            "status": "queued",
-            "created_at": now,
-            "updated_at": now,
-            "input": {
-                "id": selected_input["id"],
-                "label": selected_input["label"],
-                "node_serial": selected_input.get("node_serial"),
-                "node_name": selected_input.get("node_name"),
-                "channels": selected_input.get("channels"),
-                "sample_rate": selected_input.get("sample_rate"),
-            },
-            "input_channels": {
-                "mic": mic_input_channel_index + 1,
-                "electrical_reference": reference_input_channel_index + 1 if reference_input_channel_index is not None else None,
-                "reference_disabled_reason": reference_disabled_reason,
-            },
+        job.update({
             "channel": normalized_channel,
-            "calibration": calibration_meta or {"filename": "", "applied": False},
             "message": "Sweep queued.",
-            "scope_note": MEASUREMENT_SCOPE_NOTE,
-            "measurement_scope": normalized_scope,
             "playback_gain": normalized_playback_gain,
             "measurement_role": normalized_role,
-            "result": None,
-            "error": None,
             "sweep_profile": sweep_profile if isinstance(sweep_profile, dict) and sweep_profile else None,
-        }
-        self._jobs[job_id] = job
-        self._persist_job(job)
-        task = self._job_runner.start(
-            job_id,
-            job,
-            self._execute_lr_repeat_job if job.get("job_kind") == "lr-repeat" else self._execute_capture_job,
-        )
-        return self.get_job(job_id)
+        })
+        return self._register_measurement_job(job, self._execute_capture_job)
 
     async def start_lr_repeat_measurement(
         self,
@@ -542,88 +579,27 @@ class MeasurementStore:
         measurement_scope: str = MEASUREMENT_SCOPE_ACTIVE_CHAIN,
     ) -> dict[str, Any]:
         normalized_repeat_count = 3
-        # Guard against concurrent measurement jobs
-        if self._shutdown:
-            raise RuntimeError("Measurement store is shutting down")
-        # Promote stale non-terminal jobs without a live worker before the
-        # active-job guard, otherwise a stale cancelling/running record could
-        # block every future measurement forever.
-        self._normalize_stale_jobs()
-        active_job = self._find_active_or_cancelling_job()
-        if active_job is not None:
-            active_id = active_job["id"]
-            active_status = active_job.get("status", "unknown")
-            logger.warning(
-                "MEASUREMENT-CANCEL-DIAG new job blocked: existing_job=%s status=%s",
-                active_id, active_status,
-            )
-            raise RuntimeError(
-                f"Another measurement is still active ({active_id}, status={active_status}). "
-                "Wait for it to finish or cancel it first."
-            )
-        inputs = self._measurement_inputs_with_sample_rate(
-            await asyncio.to_thread(self._discover_capture_inputs)
-        )
-        selected_input = self._resolve_capture_input(inputs, input_id=input_id, input_key=input_key)
-        if not selected_input.get("available"):
-            raise ValueError("Selected capture input is not available")
-        input_channel_count = max(1, int(selected_input.get("channels") or 1))
-        mic_input_channel_index = self._parse_input_channel_index(
-            mic_input_channel,
-            channel_count=input_channel_count,
-            default=0,
-            field_name="mic_input_channel",
-        )
-        reference_input_channel_index = self._parse_optional_input_channel_index(
-            reference_input_channel,
-            channel_count=input_channel_count,
-            field_name="reference_input_channel",
-        )
-        reference_disabled_reason = ""
-        if reference_input_channel_index is not None and reference_input_channel_index == mic_input_channel_index:
-            reference_disabled_reason = "Mic input and electrical reference input are the same channel; reference compensation disabled."
-            reference_input_channel_index = None
-        calibration_meta = self._file_store.resolve_calibration_meta(
+        setup = await self._prepare_measurement_job_setup(
+            input_id=input_id,
+            input_key=input_key,
+            mic_input_channel=mic_input_channel,
+            reference_input_channel=reference_input_channel,
             calibration_filename=calibration_filename,
             calibration_bytes=calibration_bytes,
             calibration_ref=calibration_ref,
+            measurement_scope=measurement_scope,
+            job_prefix="measurement-repeat-job-",
         )
-        normalized_scope = self._normalize_measurement_scope(measurement_scope)
-        job_id = f"measurement-repeat-job-{uuid4().hex[:12]}"
-        now = self._utc_now()
-        job = {
-            "id": job_id,
-            "status": "queued",
-            "created_at": now,
-            "updated_at": now,
+        job = setup["job"]
+        now = job["created_at"]
+        job.update({
             "job_kind": "lr-repeat",
             "repeat_count": normalized_repeat_count,
             "base_name": str(base_name or "").strip() or f"L/R Repeat {now[:19].replace('T', ' ')}",
-            "input": {
-                "id": selected_input["id"],
-                "label": selected_input["label"],
-                "node_serial": selected_input.get("node_serial"),
-                "node_name": selected_input.get("node_name"),
-                "channels": selected_input.get("channels"),
-                "sample_rate": selected_input.get("sample_rate"),
-            },
-            "input_channels": {
-                "mic": mic_input_channel_index + 1,
-                "electrical_reference": reference_input_channel_index + 1 if reference_input_channel_index is not None else None,
-                "reference_disabled_reason": reference_disabled_reason,
-            },
             "channel": "stereo",
-            "calibration": calibration_meta or {"filename": "", "applied": False},
             "message": "L/R repeat queued.",
-            "scope_note": MEASUREMENT_SCOPE_NOTE,
-            "measurement_scope": normalized_scope,
-            "result": None,
-            "error": None,
-        }
-        self._jobs[job_id] = job
-        self._persist_job(job)
-        task = self._job_runner.start(job_id, job, self._execute_lr_repeat_job)
-        return self.get_job(job_id)
+        })
+        return self._register_measurement_job(job, self._execute_lr_repeat_job)
 
     @staticmethod
     def _resolve_capture_input(
