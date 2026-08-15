@@ -230,6 +230,64 @@ class MeasurementCancelLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 await cancel
             self.assertTrue(process.terminated)
 
+    async def test_child_process_failure_finalizes_job_and_releases_process(self):
+        with tempfile.TemporaryDirectory() as tempdir, patch.dict(
+            "os.environ", {"XDG_CONFIG_HOME": tempdir, "XDG_STATE_HOME": tempdir}
+        ):
+            store = MeasurementStore(home=Path(tempdir))
+            job_id = "measurement-job-child-failure"
+            store._jobs[job_id] = {
+                "id": job_id, "status": "queued", "created_at": store._utc_now(),
+                "updated_at": store._utc_now(), "message": "queued",
+            }
+
+            class Process:
+                def poll(self):
+                    return 1
+
+            process = Process()
+            with patch("measurement.subprocess.Popen", return_value=process):
+                def worker(_job):
+                    store._start_job_process(job_id, ["pw-record"])
+                    raise RuntimeError("pw-record failed")
+
+                store._execute_capture_job = worker
+                await store._run_measurement_job(job_id)
+
+            self.assertEqual(store.get_job(job_id)["status"], "failed")
+            self.assertNotIn(job_id, store._job_processes)
+
+    async def test_partial_startup_failure_cleans_registered_children(self):
+        with tempfile.TemporaryDirectory() as tempdir, patch.dict(
+            "os.environ", {"XDG_CONFIG_HOME": tempdir, "XDG_STATE_HOME": tempdir}
+        ):
+            store = MeasurementStore(home=Path(tempdir))
+            job_id = "measurement-job-partial-startup"
+            store._jobs[job_id] = {
+                "id": job_id, "status": "queued", "created_at": store._utc_now(),
+                "updated_at": store._utc_now(), "message": "queued",
+            }
+
+            class Process:
+                def poll(self):
+                    return None
+
+                def terminate(self):
+                    return None
+
+            process = Process()
+            with patch("measurement.subprocess.Popen", side_effect=[process, OSError("spawn failed")]):
+                def worker(_job):
+                    store._start_job_process(job_id, ["pw-record"])
+                    store._start_job_process(job_id, ["pw-play"])
+                    return {"message": "unreachable"}
+
+                store._execute_capture_job = worker
+                await store._run_measurement_job(job_id)
+
+            self.assertEqual(store.get_job(job_id)["status"], "failed")
+            self.assertNotIn(job_id, store._job_processes)
+
     async def test_lr_repeat_child_uses_parent_owner(self):
         with tempfile.TemporaryDirectory() as tempdir, patch.dict(
             "os.environ", {"XDG_CONFIG_HOME": tempdir, "XDG_STATE_HOME": tempdir}

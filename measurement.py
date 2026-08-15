@@ -27,6 +27,7 @@ from dsp_runtime import DSPRuntimeConfig
 from hybrid_measurement import analyze_direct_window, build_complex_response, build_gated_response
 from measurement_audio import MeasurementAudioAdapter
 from measurement_signal import write_sweep_file
+from measurement_job_runner import MeasurementJobRunner
 from samplerate import (
     OUTPUT_MODE_SUBWOOFER_21,
     OUTPUT_MODE_SUBWOOFER_22,
@@ -244,13 +245,39 @@ class MeasurementStore:
         ]:
             directory.mkdir(parents=True, exist_ok=True)
         self._jobs: dict[str, dict[str, Any]] = {}
-        self._job_tasks: dict[str, asyncio.Task[Any]] = {}
-        self._job_processes: dict[str, list[subprocess.Popen[str]]] = {}
-        self._job_process_lock = threading.Lock()
-        self._cancelled_jobs: set[str] = set()
         self._shutdown = False
         self._last_successful_lag: int | None = None
         self.audio_adapter = MeasurementAudioAdapter()
+        self._job_runner = MeasurementJobRunner(
+            get_job=lambda job_id: self._jobs[job_id],
+            persist_job=self._persist_job,
+            public_result=self._public_measurement_job_result,
+            cleanup_job=self._cleanup_job_wav_files,
+            retain_history=self._retain_job_history,
+            utc_now=self._utc_now,
+            is_terminal=self._is_terminal_job_status,
+            raw_scope_enter=self.raw_scope_enter,
+            raw_scope_exit=self.raw_scope_exit,
+            effect_bypass_setter=self.effect_bypass_setter,
+            active_scope_enter=self.active_scope_enter,
+            active_scope_exit=self.active_scope_exit,
+        )
+
+    @property
+    def _job_tasks(self):
+        return self._job_runner.tasks
+
+    @property
+    def _job_processes(self):
+        return self._job_runner.processes
+
+    @property
+    def _job_process_lock(self):
+        return self._job_runner.process_lock
+
+    @property
+    def _cancelled_jobs(self):
+        return self._job_runner.cancelled_jobs
 
     def list_measurements(self) -> dict[str, Any]:
         measurements = []
@@ -427,9 +454,11 @@ class MeasurementStore:
         }
         self._jobs[job_id] = job
         self._persist_job(job)
-        task = asyncio.create_task(self._run_measurement_job(job_id))
-        self._job_tasks[job_id] = task
-        task.add_done_callback(lambda completed, owned_job_id=job_id: self._measurement_job_task_done(owned_job_id, completed))
+        task = self._job_runner.start(
+            job_id,
+            job,
+            self._execute_lr_repeat_job if job.get("job_kind") == "lr-repeat" else self._execute_capture_job,
+        )
         return self.get_job(job_id)
 
     async def start_lr_repeat_measurement(
@@ -526,9 +555,7 @@ class MeasurementStore:
         }
         self._jobs[job_id] = job
         self._persist_job(job)
-        task = asyncio.create_task(self._run_measurement_job(job_id))
-        self._job_tasks[job_id] = task
-        task.add_done_callback(lambda completed, owned_job_id=job_id: self._measurement_job_task_done(owned_job_id, completed))
+        task = self._job_runner.start(job_id, job, self._execute_lr_repeat_job)
         return self.get_job(job_id)
 
     @staticmethod
@@ -756,35 +783,18 @@ class MeasurementStore:
 
     def cancel_job(self, job_id: str) -> dict[str, Any]:
         self.get_job(job_id)
-        with self._job_process_lock:
-            live_job = self._jobs[job_id]
-            status = str(live_job.get("status") or "")
-            if status in {"completed", "failed", "cancelled"}:
-                return deepcopy(live_job)
-            self._cancelled_jobs.add(job_id)
-            proc_list = list(self._job_processes.get(job_id, []))
-            # Use "cancelling" so release watcher does NOT fire prematurely.
-            live_job["status"] = "cancelling"
-            live_job["updated_at"] = self._utc_now()
-            live_job["message"] = "Measurement cancelled."
-            live_job["error"] = None
-            self._persist_job(live_job)
-        if proc_list:
+        live_job = self._jobs[job_id]
+        cancelled = self._job_runner.cancel_job(job_id, live_job)
+        if self._job_processes.get(job_id):
             logger.warning(
                 "MEASUREMENT-CANCEL-DIAG subprocesses terminated: job_id=%s process_count=%d",
-                job_id, len(proc_list),
+                job_id, len(self._job_processes[job_id]),
             )
-        for process in proc_list:
-            try:
-                if process.poll() is None:
-                    process.terminate()
-            except Exception:
-                pass
         logger.warning(
             "MEASUREMENT-CANCEL-DIAG cancel requested: job_id=%s status=cancelling",
             job_id,
         )
-        return self.get_job(job_id)
+        return cancelled
 
     def delete_measurement(self, measurement_id: str) -> None:
         measurement_id = str(measurement_id or "").strip()
@@ -810,76 +820,13 @@ class MeasurementStore:
             for job_id, job in self._jobs.items()
             if str(job.get("status") or "") in {"queued", "running", "cancelling"}
         ]
-        for job_id in active_job_ids:
-            self.cancel_job(job_id)
-
-        with self._job_process_lock:
-            processes = [
-                process
-                for job_processes in self._job_processes.values()
-                for process in job_processes
-                if process.poll() is None
-            ]
-        for process in processes:
-            try:
-                await asyncio.to_thread(process.wait, 3)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                await asyncio.to_thread(process.wait, 3)
-            except Exception:
-                logger.exception("Failed to stop measurement process during shutdown")
-
-        tasks = [task for task in self._job_tasks.values() if not task.done()]
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-
-        with self._job_process_lock:
-            remaining = [
-                process
-                for processes in self._job_processes.values()
-                for process in processes
-                if process.poll() is None
-            ]
-        for process in remaining:
-            try:
-                process.terminate()
-                await asyncio.to_thread(process.wait, 3)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                await asyncio.to_thread(process.wait, 3)
-            except Exception:
-                logger.exception("Failed to stop measurement process during shutdown")
-        with self._job_process_lock:
-            self._job_processes.clear()
+        await self._job_runner.shutdown(active_job_ids, self._jobs)
 
     def _start_job_process(self, job_id: str, command: list[str]) -> subprocess.Popen[str]:
-        """Atomically refuse cancellation or register the new child process."""
-        with self._job_process_lock:
-            if job_id in self._cancelled_jobs:
-                raise RuntimeError("Measurement cancelled.")
-            process = subprocess.Popen(
-                command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-            self._job_processes.setdefault(job_id, []).append(process)
-            return process
+        return self._job_runner.start_process(job_id, command)
 
     def _measurement_job_task_done(self, job_id: str, task: asyncio.Task[Any]) -> None:
-        """Finalize a runner cancelled before its coroutine could take ownership."""
-        if not task.cancelled():
-            return
-        job = self._jobs.get(job_id)
-        if job is None or str(job.get("status") or "") != "queued":
-            return
-        self._cancelled_jobs.add(job_id)
-        job["status"] = "cancelled"
-        job["updated_at"] = self._utc_now()
-        job["message"] = "Measurement cancelled."
-        job["result"] = None
-        job["error"] = None
-        self._persist_job(job)
+        self._job_runner._task_done(job_id, task)
 
     def upload_calibration_file(self, filename: str, data: bytes) -> dict[str, Any]:
         if not data:
@@ -987,137 +934,14 @@ class MeasurementStore:
         return self.get_calibration_state()
 
     async def _run_measurement_job(self, job_id: str) -> None:
-        """Run measurement job and transition to terminal state.
-
-        The "cancelling" status set by cancel_job() is promoted to "cancelled"
-        here when the worker thread finishes, so the release watcher and
-        new-job guard see the final state.
-        """
         job = self._jobs[job_id]
-        with self._job_process_lock:
-            was_cancelling_before = job_id in self._cancelled_jobs
-            if not was_cancelling_before:
-                job["status"] = "running"
-                job["updated_at"] = self._utc_now()
-                job["message"] = "Running L/R repeat…" if job.get("job_kind") == "lr-repeat" else "Running sweep…"
-                self._persist_job(job)
-        previous_effect_bypass = None
-        measurement_scope_owned = False
-        try:
-            if was_cancelling_before:
-                raise RuntimeError("Measurement cancelled.")
-            if job.get("measurement_scope") == MEASUREMENT_SCOPE_RAW_HELPER:
-                enter = self.raw_scope_enter or (
-                    (lambda: self.effect_bypass_setter(True))
-                    if callable(self.effect_bypass_setter) else None)
-                if not callable(enter):
-                    raise RuntimeError("Native DSP effect-bypass control is unavailable")
-                previous_effect_bypass = await enter()
-                measurement_scope_owned = True
-            elif callable(self.active_scope_enter):
-                previous_effect_bypass = await self.active_scope_enter()
-                measurement_scope_owned = True
-            executor = self._execute_lr_repeat_job if job.get("job_kind") == "lr-repeat" else self._execute_capture_job
-            worker_task = asyncio.create_task(asyncio.to_thread(executor, deepcopy(job)))
-            try:
-                result = await asyncio.shield(worker_task)
-            except asyncio.CancelledError:
-                # Wrapper cancellation cannot stop a worker thread. Request
-                # cooperative cancellation and retain ownership until it exits.
-                self.cancel_job(job_id)
-                while not worker_task.done():
-                    try:
-                        await asyncio.shield(worker_task)
-                    except asyncio.CancelledError:
-                        continue
-                    except Exception:
-                        break
-                if worker_task.done() and not worker_task.cancelled():
-                    try:
-                        worker_task.result()
-                    except Exception:
-                        pass
-                raise
-
-            was_cancelled_during = job_id in self._cancelled_jobs
-            if was_cancelled_during:
-                logger.warning(
-                    "MEASUREMENT-CANCEL-DIAG job terminal cleanup (was cancelling): job_id=%s cancelling_before=%s",
-                    job_id, was_cancelling_before,
-                )
-
-            with self._job_process_lock:
-                if not self._is_terminal_job_status(job.get("status")):
-                    if job_id in self._cancelled_jobs:
-                        job["status"] = "cancelled"
-                        job["updated_at"] = self._utc_now()
-                        job["message"] = "Measurement cancelled."
-                        job["result"] = None
-                        job["error"] = None
-                    else:
-                        job["status"] = "completed"
-                        job["updated_at"] = self._utc_now()
-                        job["message"] = result.get("message") or "Measurement finished."
-                        job["result"] = self._public_measurement_job_result(result)
-                        if isinstance(result.get("calibration"), dict):
-                            job["calibration"] = deepcopy(result["calibration"])
-                        job["error"] = None
-        except asyncio.CancelledError:
-            logger.warning(
-                "MEASUREMENT-CANCEL-DIAG job terminal cleanup (CancelledError): job_id=%s",
-                job_id,
-            )
-            with self._job_process_lock:
-                self._cancelled_jobs.add(job_id)
-                if not self._is_terminal_job_status(job.get("status")):
-                    job["status"] = "cancelled"
-                    job["updated_at"] = self._utc_now()
-                    job["message"] = "Measurement cancelled."
-                    job["result"] = None
-                    job["error"] = None
-        except Exception as exc:
-            with self._job_process_lock:
-                if not self._is_terminal_job_status(job.get("status")):
-                    if job_id in self._cancelled_jobs:
-                        logger.warning(
-                            "MEASUREMENT-CANCEL-DIAG job terminal cleanup (exception+cancelled): job_id=%s exc=%s",
-                            job_id, exc,
-                        )
-                        job["status"] = "cancelled"
-                        job["updated_at"] = self._utc_now()
-                        job["message"] = "Measurement cancelled."
-                        job["result"] = None
-                        job["error"] = None
-                    else:
-                        job["status"] = "failed"
-                        job["updated_at"] = self._utc_now()
-                        job["message"] = str(exc) or "Measurement failed"
-                        job["result"] = None
-                        job["error"] = {"detail": str(exc)}
-        finally:
-            if measurement_scope_owned:
-                try:
-                    if job.get("measurement_scope") == MEASUREMENT_SCOPE_RAW_HELPER:
-                        exit_scope = self.raw_scope_exit or self.effect_bypass_setter
-                    else:
-                        exit_scope = self.active_scope_exit
-                    await exit_scope(bool(previous_effect_bypass))
-                except Exception:
-                    logger.exception("Failed to restore native DSP effect bypass after measurement")
-            with self._job_process_lock:
-                self._job_processes.pop(job_id, None)
-            try:
-                self._persist_job(job)
-            except Exception:
-                logger.exception("Failed to persist terminal measurement job %s", job_id)
-            # Temporary WAV cleanup is guaranteed even when persistence
-            # fails; cleanup failures are logged, never raised.
-            self._cleanup_job_wav_files(job_id)
-            self._retain_job_history()
-            logger.warning(
-                "MEASUREMENT-CANCEL-DIAG job terminal cleanup complete: job_id=%s final_status=%s",
-                job_id, job.get("status"),
-            )
+        executor = self._execute_lr_repeat_job if job.get("job_kind") == "lr-repeat" else self._execute_capture_job
+        self._job_runner._raw_scope_enter = self.raw_scope_enter
+        self._job_runner._raw_scope_exit = self.raw_scope_exit
+        self._job_runner._effect_bypass_setter = self.effect_bypass_setter
+        self._job_runner._active_scope_enter = self.active_scope_enter
+        self._job_runner._active_scope_exit = self.active_scope_exit
+        await self._job_runner.run(job_id, job, executor)
 
     def _pre_average_er_captures(
         self,
