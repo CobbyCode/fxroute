@@ -1136,26 +1136,6 @@ class MeasurementAnalyzer:
         top_scores = region_scores[:2]
         return float(sum(top_scores) / len(top_scores))
 
-    def _find_best_alignment_in_region(self, region: np.ndarray, template: np.ndarray) -> dict[str, float]:
-        region64 = region.astype(np.float64)
-        template64 = template.astype(np.float64)
-        if region64.size < template64.size:
-            raise RuntimeError("Timing search region was too short for sweep alignment")
-        corr = self._fft_correlate(region64, template64[::-1])
-        valid = corr[template64.size - 1 : region64.size]
-        if valid.size == 0:
-            raise RuntimeError("Unable to refine sweep timing")
-        index = int(np.argmax(np.abs(valid)))
-        snippet = region64[index : index + template64.size]
-        denominator = float(np.linalg.norm(snippet) * np.linalg.norm(template64))
-        raw_score = 0.0 if denominator <= 1e-12 else float(np.dot(snippet, template64) / denominator)
-        return {
-            "index": float(index),
-            "score": abs(raw_score),
-            "raw_score": raw_score,
-            "polarity": -1.0 if raw_score < 0 else 1.0,
-        }
-
     def _find_top_n_alignments_in_region(
         self,
         region: np.ndarray,
@@ -1166,7 +1146,7 @@ class MeasurementAnalyzer:
         """Return top-N correlation peaks from a search region.
 
         Each result dict contains ``index``, ``score``, ``raw_score`` and
-        ``polarity``, matching ``_find_best_alignment_in_region``.
+        ``polarity``.
         """
         region64 = region.astype(np.float64)
         template64 = template.astype(np.float64)
