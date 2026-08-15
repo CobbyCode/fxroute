@@ -26,7 +26,6 @@ logger = logging.getLogger(__name__)
 
 SILENT_ACTIVE_SETTLE_SECONDS = 8.0
 SILENT_ACTIVE_FLOOR_DB = -58.0
-SILENT_ACTIVE_RECHECK_SECONDS = 2.5
 
 
 @dataclass

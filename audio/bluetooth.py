@@ -193,4 +193,8 @@ class BluetoothInputMonitor:
         if self.monitor_task is not None and not self.monitor_task.done():
             self.monitor_task.cancel()
         self.monitor_task = None
-        await self.disable()
+        # The input may never have been active; the disable side effects
+        # (link disconnect, agent stop, BlueZ source disconnect) only apply
+        # then.  The monitor task above is always stopped.
+        if self.agent_process is not None or self.input_source_name is not None:
+            await self.disable()

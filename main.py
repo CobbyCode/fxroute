@@ -49,7 +49,6 @@ PIPEWIRE_HANDOFF_POLL_INTERVAL_MS = 50
 # after the source ports appeared (link creation plus readback confirm).
 MPV_LINK_REPAIR_TIMEOUT_MS = 1500
 SPOTIFY_SINK_INPUT_RATE_TIMEOUT_MS = 1800
-SPOTIFY_SINK_INPUT_RATE_STABILITY_POLLS = 2
 PEAK_MONITOR_INACTIVE_GRACE_MS = 450
 PEAK_MONITOR_RESTART_SETTLE_MS = 320
 PEAK_MONITOR_RATE_MATCH_TIMEOUT_MS = 900
@@ -68,7 +67,6 @@ PLAYBACK_HANDOFF_EE_PORT_TIMEOUT_MS = 5000
 # A post-source-start graph repair is deliberately a short, deterministic
 # readback window.  It is not a second watcher or a general graph recovery.
 POST_START_GRAPH_STABILITY_READBACKS = 2
-SPOTIFY_PREARM_SAMPLE_RATE_HZ = 44100
 SPOTIFY_STATE_POLL_INTERVAL_SECONDS = 2.0
 SPOTIFY_STATE_IDLE_POLL_INTERVAL_SECONDS = 5.0
 SPOTIFY_STATE_REFRESH_DEBOUNCE_SECONDS = 0.20
@@ -864,7 +862,12 @@ from audio.drift import SamplerateDriftDependencies, SamplerateDriftObserver
 from audio.external_input import ExternalInputRouting, ExternalInputRoutingDependencies
 from playback.radio_reconnect import RadioReconnect, RadioReconnectDependencies
 from playback.silent_active import SilentActiveDependencies, SilentActiveRecovery
-from playback.spotify_watch import SpotifyPlayerctlWatch, SpotifyWatchDependencies
+from playback.spotify_watch import (
+    SPOTIFY_PREARM_SAMPLE_RATE_HZ,
+    SPOTIFY_SINK_INPUT_RATE_STABILITY_POLLS,
+    SpotifyPlayerctlWatch,
+    SpotifyWatchDependencies,
+)
 from dsp.orchestration import (
     DspOrchestrationDeps,
     DspOrchestrator,
@@ -3164,13 +3167,8 @@ async def _shutdown_lifespan_resources() -> None:
     owned_tasks = [
         runtime.dsp_runtime_link_watch_task,
         runtime.measurement_watchdog_task,
-        bluetooth_input.monitor_task,
-        spotify_playerctl_watch.watch_task,
-        spotify_playerctl_watch.detect_task,
         runtime.spotify_state_refresh_task,
         runtime.spotify_state_poll_task,
-        radio_reconnect.task,
-        *silent_active_recovery.watch_tasks.values(),
         *runtime.lifecycle_background_tasks,
     ]
     tasks = list({task for task in owned_tasks if task is not None and not task.done()})
@@ -3184,7 +3182,11 @@ async def _shutdown_lifespan_resources() -> None:
                     logger.warning("Background task failed during cleanup: task=%s error=%s", task.get_name(), result)
 
         await cleanup("background-tasks", drain_background_tasks)
-    silent_active_recovery.watch_tasks.clear()
+    # Watcher subsystems own their task lifecycles; stopping them cancels
+    # their in-flight tasks and releases their state.
+    spotify_playerctl_watch.stop()
+    radio_reconnect.stop()
+    silent_active_recovery.stop()
     runtime.lifecycle_background_tasks.clear()
 
     if runtime.player_instance is not None:
@@ -3222,11 +3224,9 @@ async def _shutdown_lifespan_resources() -> None:
         await cleanup("player", lambda: asyncio.to_thread(runtime.player_instance.stop))
     if runtime.dsp_runtime is not None:
         await cleanup("subwoofer-runtime", runtime.dsp_runtime.stop)
-    if bluetooth_input.agent_process is not None or bluetooth_input.input_source_name is not None:
-        await cleanup("bluetooth-input", bluetooth_input.disable)
+    await cleanup("bluetooth-input", bluetooth_input.stop)
     await cleanup("bluetooth-receiver", lambda: asyncio.to_thread(set_bluetooth_receiver_enabled, False))
-    if external_input.loopback_source_name is not None:
-        await cleanup("external-input", external_input.disable)
+    await cleanup("external-input", external_input.disable)
     if runtime.peak_monitor is not None:
         await cleanup("peak-monitor", runtime.peak_monitor.stop)
     if hardware_controller is not None:
@@ -3240,9 +3240,6 @@ async def _shutdown_lifespan_resources() -> None:
     measurement_sr_session = None
     hardware_controller = None
     playback_transition_coordinator = None
-    external_input.loopback_source_name = None
-    bluetooth_input.input_source_name = None
-    radio_reconnect.task = None
     if cleanup_cancelled:
         raise asyncio.CancelledError
 
