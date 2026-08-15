@@ -2678,7 +2678,10 @@ def _auto_sub_gain_response_correction(
 
 def _auto_sub_gain_log_score(diagnostics: dict[str, Any] | None) -> float | None:
     channels = (diagnostics or {}).get("channels") or {}
-    values = [abs(float((channels.get(side) or {}).get("target_delta_db"))) for side in ("left", "right")]
+    raw_values = [(channels.get(side) or {}).get("target_delta_db") for side in ("left", "right")]
+    if any(value is None for value in raw_values):
+        return None
+    values = [abs(float(value)) for value in raw_values]
     return round(statistics.median(values), 3) if len(values) == 2 and all(math.isfinite(v) for v in values) else None
 
 

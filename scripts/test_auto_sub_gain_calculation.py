@@ -29,6 +29,15 @@ class GainCalculationTests(unittest.TestCase):
         self.target = {"points": curve(0.0), "key": "flat", "label": "Flat"}
         self.anchor = {"status": "ready", "target_vertical_offset_db": -20.0}
 
+    def test_gain_log_score_accepts_unavailable_target_delta(self):
+        diagnostics = {
+            "channels": {
+                "left": {"target_delta_db": None},
+                "right": {"target_delta_db": None},
+            }
+        }
+        self.assertIsNone(autosub._auto_sub_gain_log_score(diagnostics))
+
     def calculate(self, mode=main.OUTPUT_MODE_SUBWOOFER_21, left=-20.0, right=-20.0, **kwargs):
         curves = kwargs.pop("winner_curves", {"left": curve(left), "right": curve(right)})
         return autosub._calculate_auto_sub_gain(
