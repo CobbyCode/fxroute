@@ -368,6 +368,249 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
         self.assertLess(events.index("graph-readback"), events.index("commit-readback"))
         self.assertLess(events.index("commit-readback"), events.index("gate.set:False"))
 
+    async def test_measurement_entry_convolver_preset_sync_respects_held_session_lock(self):
+        """Convolver preset reload inside the measurement entry must not
+        re-enter the sample-rate session lock the entry already owns.
+
+        A convolver preset needs a samplerate-triggered reload during the
+        entry; the nested preset-load runtime sync must carry the held-lock
+        marker exactly like the entry's direct helper syncs.  Without it the
+        entry deadlocks on its own session lock before the first sweep.
+        """
+        helper = HelperDouble(active=True, rate=48000)
+        overview = {
+            "output_mode": {
+                "mode": "subwoofer-2.2",
+                "effective_output_key": OUTPUT_KEY,
+            }
+        }
+        stable_links = {
+            "fxroute_dsp_sink:monitor_FL -> fxroute_dsp:input_1": True,
+            "fxroute_dsp_sink:monitor_FR -> fxroute_dsp:input_2": True,
+        }
+        initial = {
+            "ee_ports": True,
+            "helper_ports": True,
+            "links": {
+                "fxroute_dsp_sink:monitor_FL -> fxroute_dsp:input_1": False,
+                "fxroute_dsp_sink:monitor_FR -> fxroute_dsp:input_2": False,
+            },
+            "links_complete": False,
+        }
+        stable = {
+            "ee_ports": True,
+            "helper_ports": True,
+            "links": stable_links,
+            "links_complete": True,
+            "signature": "stable-measurement-entry",
+        }
+        measurement_lock = asyncio.Lock()
+        lock_flags = []
+        events = []
+        status = {"active_rate": 96000, "force_rate": 96000}
+        reconciler = AsyncMock()
+
+        def read_status():
+            return dict(status)
+
+        async def force_rate(*_args, **_kwargs):
+            status["active_rate"] = 48000
+            status["force_rate"] = 48000
+            return True
+
+        async def sync_helper(*_args, _rate_lock_held=False, **_kwargs):
+            lock_flags.append(_rate_lock_held)
+            if not _rate_lock_held:
+                async with measurement_lock:
+                    return overview
+            return overview
+
+        class ConvolverManagerStub:
+            EXCLUDED_GLOBAL_EXTRAS_PRESETS = {"Direct"}
+
+            def get_active_preset(self):
+                return "Conv L HybAlign Test 194030"
+
+            def active_preset_requires_samplerate_reload(self, _sample_rate_hz=None):
+                return True
+
+            def load_global_extras(self):
+                return {
+                    "loudness": {"enabled": False, "params": {}},
+                    "autogain": {"enabled": False, "params": {}},
+                }
+
+            def normalize_effects_extras(self, extras):
+                return dict(extras)
+
+            def load_preset(self, preset_name, convolver_sample_rate_hz=None):
+                return None
+
+            def get_status(self):
+                return {"status": "ok", "active_preset": self.get_active_preset()}
+
+        request = TransitionRequest(
+            operation="measurement-entry",
+            source="radio",
+            target_rate=48000,
+            target_url="https://radio.example/stream",
+            target_track={"source": "radio", "url": "https://radio.example/stream"},
+            should_play=False,
+            rate_change=True,
+            reload_source=False,
+            detail="measurement-entry",
+        )
+        with patch.object(main, "measurement_sr_session", SimpleNamespace(lock=measurement_lock)), patch.object(
+            main, "get_audio_output_overview", return_value=overview
+        ), patch.object(
+            main, "get_samplerate_status", side_effect=read_status
+        ), patch.object(
+            main, "_get_current_pipewire_force_rate", return_value=96000
+        ), patch.object(
+            main, "_ensure_playback_samplerate_force", side_effect=force_rate
+        ), patch.object(
+            main, "_playback_graph_diagnosis", new=AsyncMock(side_effect=[initial, stable, stable, stable])
+        ), patch.object(
+            main, "_wait_for_dsp_output_ports", new=AsyncMock(return_value=True)
+        ), patch.object(
+            main, "_reconcile_transition_sink_rate", new=AsyncMock(return_value=True)
+        ), patch.object(
+            main.dsp_orchestrator, "sync_runtime", side_effect=sync_helper
+        ), patch.object(
+            main, "_coordinator_reconcile_subwoofer_links_only", reconciler
+        ), patch.object(main.runtime, "dsp_runtime", helper), patch.object(
+            main, "dsp_manager", ConvolverManagerStub()
+        ), patch.object(main, "get_output_volume", return_value=33), patch.object(
+            main, "set_output_volume", return_value=33
+        ), patch.object(main.manager, "broadcast", new=AsyncMock()), patch.object(
+            main.runtime, "player_instance", SimpleNamespace(
+                state={"current_file": request.target_url, "paused": True})
+        ):
+            runtime = MainCoreTransitionRuntime(
+                target_rate=48000,
+                generation=main.playback_state.playback_transition_epoch,
+                source="radio",
+                target_url="https://radio.example/stream",
+                operation="measurement-entry",
+                use_core=True,
+                events=events,
+            )
+
+            async def verify_measurement_entry(_request):
+                return {"committed": True, "graph_complete": True}
+
+            async def stabilize_effects_after_rate_change(_request, **_kwargs):
+                return {"stabilized": True}
+
+            runtime.verify_measurement_entry = verify_measurement_entry
+            runtime.stabilize_effects_after_rate_change = stabilize_effects_after_rate_change
+            coordinator = PlaybackTransitionCoordinator(
+                runtime,
+                gate_settle_seconds=0,
+            )
+            await measurement_lock.acquire()
+            try:
+                result = await asyncio.wait_for(
+                    coordinator.execute(request),
+                    timeout=0.5,
+                )
+            finally:
+                measurement_lock.release()
+
+        self.assertTrue(result.committed)
+        self.assertEqual(lock_flags, [True, True])
+        reconciler.assert_awaited_once()
+        self.assertFalse(coordinator.gate.closed)
+
+    async def test_play_convolver_preset_sync_acquires_session_lock_normally(self):
+        """Outside the measurement entry the preset reload keeps the default
+        lock behaviour: the runtime sync must not skip the session lock."""
+        helper = HelperDouble(active=True, rate=48000)
+        overview = {
+            "output_mode": {
+                "mode": "subwoofer-2.2",
+                "effective_output_key": OUTPUT_KEY,
+            }
+        }
+        initial = {
+            "ee_ports": False,
+            "helper_ports": False,
+            "links": {},
+            "links_complete": False,
+        }
+        stable_links = {
+            "fxroute_dsp_sink:monitor_FL -> fxroute_dsp:input_1": True,
+            "fxroute_dsp_sink:monitor_FR -> fxroute_dsp:input_2": True,
+        }
+        stable = {
+            "ee_ports": True,
+            "helper_ports": True,
+            "links": stable_links,
+            "links_complete": True,
+            "signature": "stable-play-convolver",
+        }
+        lock_flags = []
+        reconciler = AsyncMock()
+
+        async def sync_helper(*_args, _rate_lock_held=False, **_kwargs):
+            lock_flags.append(_rate_lock_held)
+            return overview
+
+        class ConvolverManagerStub:
+            EXCLUDED_GLOBAL_EXTRAS_PRESETS = {"Direct"}
+
+            def get_active_preset(self):
+                return "Conv L HybAlign Test 194030"
+
+            def active_preset_requires_samplerate_reload(self, _sample_rate_hz=None):
+                return True
+
+            def load_global_extras(self):
+                return {
+                    "loudness": {"enabled": False, "params": {}},
+                    "autogain": {"enabled": False, "params": {}},
+                }
+
+            def normalize_effects_extras(self, extras):
+                return dict(extras)
+
+            def load_preset(self, preset_name, convolver_sample_rate_hz=None):
+                return None
+
+            def get_status(self):
+                return {"status": "ok", "active_preset": self.get_active_preset()}
+
+        request = TransitionRequest(
+            operation="play",
+            source="local",
+            target_rate=48000,
+            target_url="/music/target.flac",
+            should_play=True,
+            rate_change=False,
+            reload_source=False,
+        )
+        with patch.object(main, "get_audio_output_overview", return_value=overview), patch.object(
+            main, "_playback_graph_diagnosis", new=AsyncMock(side_effect=[initial, stable])
+        ), patch.object(
+            main, "_wait_for_dsp_output_ports", new=AsyncMock(return_value=True)
+        ), patch.object(
+            main.dsp_orchestrator, "sync_runtime", side_effect=sync_helper
+        ), patch.object(
+            main, "_coordinator_reconcile_subwoofer_links_only", reconciler
+        ), patch.object(main.runtime, "dsp_runtime", helper), patch.object(
+            main, "dsp_manager", ConvolverManagerStub()
+        ), patch.object(main, "get_output_volume", return_value=33), patch.object(
+            main, "set_output_volume", return_value=33
+        ), patch.object(main.manager, "broadcast", new=AsyncMock()):
+            result = await asyncio.wait_for(
+                main._coordinator_establish_effects_and_helper(request),
+                timeout=0.5,
+            )
+
+        self.assertTrue(result.get("preset_reloaded"))
+        self.assertEqual(lock_flags, [False, False])
+        reconciler.assert_awaited_once()
+
     async def test_output_mode_subwoofer_sync_reconciles_before_final_readback(self):
         """A transient EE->helper loss is repaired before the mode commit readback."""
         helper = HelperDouble(active=True, rate=48000)

@@ -5303,7 +5303,7 @@ def _require_dsp_manager():
 
 async def _load_dsp_preset(
     preset_name: str, *, convolver_sample_rate_hz: int | None = None,
-    _locks_held: bool = False,
+    _locks_held: bool = False, _rate_lock_held: bool = False,
 ) -> None:
     """Serialize preset loads against threaded DSP mutations.
 
@@ -5313,6 +5313,9 @@ async def _load_dsp_preset(
     acquired first (so the Direct volume-ownership transfer serializes
     against volume writes), then the DSP mutation lock.  Callers
     that already hold both locks pass ``_locks_held=True``.
+    ``_rate_lock_held`` is forwarded to the runtime sync so a caller that
+    already owns the measurement sample-rate session lock (the measurement
+    entry) does not re-enter it.
     """
     volume_lock = None
     if not _locks_held:
@@ -5320,10 +5323,12 @@ async def _load_dsp_preset(
         await volume_lock.acquire()
     try:
         if _locks_held:
-            await _load_preset_locked(preset_name, convolver_sample_rate_hz=convolver_sample_rate_hz)
+            await _load_preset_locked(preset_name, convolver_sample_rate_hz=convolver_sample_rate_hz,
+                                      _rate_lock_held=_rate_lock_held)
         else:
             async with _dsp_mutation_lock():
-                await _load_preset_locked(preset_name, convolver_sample_rate_hz=convolver_sample_rate_hz)
+                await _load_preset_locked(preset_name, convolver_sample_rate_hz=convolver_sample_rate_hz,
+                                          _rate_lock_held=_rate_lock_held)
     finally:
         if volume_lock is not None:
             volume_lock.release()
@@ -5352,7 +5357,8 @@ async def _restore_volume_state(manager, start: volume_contract.VolumeState) -> 
 
 
 async def _load_preset_locked(
-    preset_name: str, *, convolver_sample_rate_hz: int | None = None
+    preset_name: str, *, convolver_sample_rate_hz: int | None = None,
+    _rate_lock_held: bool = False,
 ) -> None:
     manager = _require_dsp_manager()
     start = await _volume_state_for_manager(manager)
@@ -5372,7 +5378,8 @@ async def _load_preset_locked(
             preset_name,
             convolver_sample_rate_hz=convolver_sample_rate_hz,
         )
-        await dsp_orchestrator.sync_runtime(reason="native-dsp-preset-load")
+        await dsp_orchestrator.sync_runtime(reason="native-dsp-preset-load",
+                                            _rate_lock_held=_rate_lock_held)
         await _apply_volume_actions(post)
         await _apply_volume_actions(deferred_master)
     except Exception:
@@ -5385,7 +5392,8 @@ async def _load_preset_locked(
                     if hasattr(manager, "active_preset"):
                         manager.active_preset = start.preset
             await _restore_volume_state(manager, start)
-            await dsp_orchestrator.sync_runtime(reason="native-dsp-preset-load-rollback")
+            await dsp_orchestrator.sync_runtime(reason="native-dsp-preset-load-rollback",
+                                                _rate_lock_held=_rate_lock_held)
         except Exception:
             logger.exception("Failed to restore volume state after preset load failure")
         raise

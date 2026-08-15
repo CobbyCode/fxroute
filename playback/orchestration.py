@@ -532,7 +532,16 @@ class PlaybackOrchestrator:
                 if target and manager.get_active_preset() != target:
                     await self._deps.load_dsp_preset(target, convolver_sample_rate_hz=target_rate); needs_preset = preset_reloaded = True
             if needs_preset and not preset_reloaded:
-                await self._deps.sync_preset_for_samplerate(sample_rate_hz=target_rate, reason=f"coordinator-{request.operation}", detail=request.detail)
+                await self._deps.sync_preset_for_samplerate(
+                    sample_rate_hz=target_rate,
+                    reason=f"coordinator-{request.operation}",
+                    detail=request.detail,
+                    # The measurement entry owns the sample-rate session lock
+                    # for its whole transition; the nested preset reload must
+                    # not re-enter it (same contract as the direct helper
+                    # syncs below).
+                    _rate_lock_held=request.operation in {"measurement-entry", "measurement-restore"},
+                )
                 preset_reloaded = True
             if not await self.wait_for_dsp_output_ports(timeout):
                 raise RuntimeError("Coordinator effects stage failed: native DSP output ports were not confirmed")

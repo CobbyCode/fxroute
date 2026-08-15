@@ -230,6 +230,7 @@ class DspOrchestrator:
         sample_rate_hz: int | None,
         reason: str,
         detail: str = "",
+        _rate_lock_held: bool = False,
     ) -> None:
         dsp_manager = self._deps.get_dsp_manager()
         if not dsp_manager or not isinstance(sample_rate_hz, int) or sample_rate_hz <= 0:
@@ -246,7 +247,11 @@ class DspOrchestrator:
             reason,
             detail,
         )
-        await self._deps.load_dsp_preset(active_preset, convolver_sample_rate_hz=sample_rate_hz)
+        await self._deps.load_dsp_preset(
+            active_preset,
+            convolver_sample_rate_hz=sample_rate_hz,
+            _rate_lock_held=_rate_lock_held,
+        )
         status = dsp_manager.get_status()
         await self._deps.broadcast({"type": "dsp", "data": status})
 
