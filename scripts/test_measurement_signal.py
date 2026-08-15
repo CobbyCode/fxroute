@@ -10,7 +10,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from measurement_signal import build_inverse_sweep, generate_log_sweep, write_sweep_file
+from measurement.signal import build_inverse_sweep, generate_log_sweep, write_sweep_file
 
 
 class MeasurementSignalTests(unittest.TestCase):

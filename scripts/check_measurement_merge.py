@@ -11,7 +11,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from measurement import MeasurementStore
+from measurement.store import MeasurementStore
 
 
 def measurement_payload(

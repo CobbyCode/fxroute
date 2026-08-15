@@ -15,7 +15,7 @@ from uuid import uuid4
 
 import numpy as np
 
-from measurement_constants import (
+from measurement.constants import (
     DISPLAY_DEFAULTS,
     IR_DEBUG_SEGMENT_RETENTION_SEGMENTS,
     JOB_RECORD_RETENTION_DAYS,

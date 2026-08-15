@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from measurement import (
+from measurement.store import (
     IR_DEBUG_SEGMENT_RETENTION_SEGMENTS,
     JOB_RECORD_RETENTION_DAYS,
     MeasurementStore,

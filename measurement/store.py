@@ -23,17 +23,17 @@ from uuid import uuid4
 
 import numpy as np
 
-from measurement_audio import MeasurementAudioAdapter
-from measurement_file_store import MeasurementFileStore
-from measurement_host_capture import HostCaptureRunner
-from measurement_capture_policy import MeasurementCapturePolicyRunner
-from measurement_persistence import MeasurementPersistence
-from measurement_routing import MeasurementRouting
-from measurement_signal import write_sweep_file
-from measurement_job_runner import MeasurementJobRunner
-from measurement_repeat_runner import MeasurementRepeatRunner
-from measurement_analyzer import MeasurementAnalyzer
-from measurement_constants import (
+from measurement.audio import MeasurementAudioAdapter
+from measurement.file_store import MeasurementFileStore
+from measurement.host_capture import HostCaptureRunner
+from measurement.capture_policy import MeasurementCapturePolicyRunner
+from measurement.persistence import MeasurementPersistence
+from measurement.routing import MeasurementRouting
+from measurement.signal import write_sweep_file
+from measurement.job_runner import MeasurementJobRunner
+from measurement.repeat_runner import MeasurementRepeatRunner
+from measurement.analyzer import MeasurementAnalyzer
+from measurement.constants import (
     CAPTURE_CLIP_FAIL_DBFS,
     IR_DEBUG_SEGMENT_RETENTION_SEGMENTS,
     JOB_RECORD_RETENTION_DAYS,

@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from measurement import MeasurementStore
+from measurement.store import MeasurementStore
 
 
 class MeasurementCaptureQualityTests(unittest.TestCase):
@@ -58,7 +58,7 @@ class MeasurementCaptureQualityTests(unittest.TestCase):
         analysis = {"quality_checks": {"items": [
             {"level": "warning", "code": "capture-level-low", "message": "low"},
         ]}}
-        with patch("measurement.get_node_volume", return_value=72), patch("measurement.set_node_volume") as set_volume:
+        with patch("measurement.store.get_node_volume", return_value=72), patch("measurement.store.set_node_volume") as set_volume:
             first = self.store._try_raise_mic_for_low_capture(
                 analysis, mic_target="mic", attempt_index=0, mic_auto_boosted=False,
             )
@@ -74,7 +74,7 @@ class MeasurementCaptureQualityTests(unittest.TestCase):
         analysis = {"quality_checks": {"items": [
             {"level": "warning", "code": "capture-level-low", "message": "low"},
         ]}}
-        with patch("measurement.get_node_volume", return_value=100), patch("measurement.set_node_volume") as set_volume:
+        with patch("measurement.store.get_node_volume", return_value=100), patch("measurement.store.set_node_volume") as set_volume:
             retry = self.store._try_raise_mic_for_low_capture(
                 analysis, mic_target="mic", attempt_index=0, mic_auto_boosted=False,
             )

@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from measurement_audio import MeasurementAudioAdapter
+from measurement.audio import MeasurementAudioAdapter
 
 
 class MeasurementAudioAdapterTests(unittest.TestCase):

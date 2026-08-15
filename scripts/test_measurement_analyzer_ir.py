@@ -8,7 +8,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from measurement_analyzer import MeasurementAnalyzer
+from measurement.analyzer import MeasurementAnalyzer
 
 
 class MeasurementAnalyzerIrTests(unittest.TestCase):

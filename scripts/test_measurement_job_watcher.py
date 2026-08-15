@@ -54,7 +54,7 @@ class _FakeStore:
             raise self.lookup_error
         # Mirror the real store: a stale non-terminal record without a live
         # worker is promoted to a terminal state during the lookup itself
-        # (measurement.py _promote_stale_job_to_terminal via get_job).
+        # (measurement/store.py _promote_stale_job_to_terminal via get_job).
         if self.promote_on_lookup and self.job["status"] not in TERMINAL:
             self.job["status"] = "cancelled"
         return dict(self.job)

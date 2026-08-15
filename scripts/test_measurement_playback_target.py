@@ -15,12 +15,12 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-from measurement import (
+from measurement.store import (
     MEASUREMENT_SCOPE_ACTIVE_CHAIN,
     MEASUREMENT_SCOPE_RAW_HELPER,
     MeasurementStore,
 )
-from measurement_routing import MeasurementRouting
+from measurement.routing import MeasurementRouting
 
 
 def stereo_overview():
@@ -51,7 +51,7 @@ class MeasurementPlaybackTargetTests(unittest.TestCase):
         self._tmp.cleanup()
 
     def _resolve(self, overview, scope=MEASUREMENT_SCOPE_ACTIVE_CHAIN, ports_present=True):
-        with patch("measurement.get_audio_output_overview", return_value=overview), patch.object(
+        with patch("measurement.store.get_audio_output_overview", return_value=overview), patch.object(
             self.store, "_list_pw_ports", return_value=(
                 ["fxroute_dsp_sink:playback_FL", "fxroute_dsp_sink:playback_FR"]
                 if ports_present else []
@@ -144,7 +144,7 @@ class MeasurementPlaybackTargetTests(unittest.TestCase):
             },
         ]
         with patch.object(self.store, "_disconnect_link", return_value=True) as disconnect, patch(
-            "measurement.subprocess.run"
+            "measurement.store.subprocess.run"
         ) as run:
             run.return_value.returncode = 0
             run.return_value.stdout = ""

@@ -8,8 +8,8 @@ from unittest.mock import patch
 
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from measurement import MeasurementStore
-from measurement_file_store import MeasurementFileStore
+from measurement.store import MeasurementStore
+from measurement.file_store import MeasurementFileStore
 
 
 class MeasurementFileExportTests(unittest.TestCase):

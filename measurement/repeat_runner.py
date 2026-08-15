@@ -12,7 +12,7 @@ from uuid import uuid4
 
 import numpy as np
 
-from measurement_constants import (
+from measurement.constants import (
     MEASUREMENT_SCOPE_NOTE,
     SWEEP_END_HZ,
     SWEEP_START_HZ,
@@ -21,7 +21,7 @@ from measurement_constants import (
     SWEEP_V2_TAIL_SECONDS,
     TRACE_COLORS,
 )
-from measurement_signal import build_inverse_sweep
+from measurement.signal import build_inverse_sweep
 
 logger = logging.getLogger(__name__)
 

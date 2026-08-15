@@ -16,10 +16,10 @@ from hybrid_measurement import (
     build_gated_response,
     sum_complex_points,
 )
-from measurement import MeasurementStore
-from measurement_analyzer import MeasurementAnalyzer
-from measurement_persistence import MeasurementPersistence
-from measurement_signal import generate_log_sweep
+from measurement.store import MeasurementStore
+from measurement.analyzer import MeasurementAnalyzer
+from measurement.persistence import MeasurementPersistence
+from measurement.signal import generate_log_sweep
 
 
 class HybridMeasurementAnalysisTests(unittest.TestCase):

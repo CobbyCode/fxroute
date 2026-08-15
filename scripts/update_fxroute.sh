@@ -174,7 +174,7 @@ run_production_build() {
 
   log "No package.json found; FXRoute has no separate frontend build step."
   log "Validating Python files instead."
-  "$REPO_PATH/.venv/bin/python3" -m py_compile main.py config.py measurement.py
+  "$REPO_PATH/.venv/bin/python3" -m py_compile main.py config.py measurement/store.py
 }
 
 build_native_dsp_if_needed() {

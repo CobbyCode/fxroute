@@ -19,9 +19,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import numpy as np
 
-import measurement_repeat_runner as repeat_runner_module
-from measurement import MeasurementStore
-from measurement_signal import generate_log_sweep
+import measurement.repeat_runner as repeat_runner_module
+from measurement.store import MeasurementStore
+from measurement.signal import generate_log_sweep
 
 
 def _write_stereo_wav(path: Path, sample_rate: int, data: np.ndarray) -> None:

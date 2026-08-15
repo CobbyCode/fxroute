@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from measurement import MeasurementStore
+from measurement.store import MeasurementStore
 
 
 class MeasurementCancelLifecycleTests(unittest.IsolatedAsyncioTestCase):
@@ -58,7 +58,7 @@ class MeasurementCancelLifecycleTests(unittest.IsolatedAsyncioTestCase):
         ):
             store = MeasurementStore(home=Path(tempdir))
             store._cancelled_jobs.add("job-1")
-            with patch("measurement.subprocess.Popen") as popen:
+            with patch("measurement.store.subprocess.Popen") as popen:
                 with self.assertRaisesRegex(RuntimeError, "Measurement cancelled"):
                     store._start_job_process("job-1", ["pw-play", "sweep.wav"])
             popen.assert_not_called()
@@ -217,7 +217,7 @@ class MeasurementCancelLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 allow_popen.wait(timeout=5)
                 return process
 
-            with patch("measurement.subprocess.Popen", side_effect=fake_popen):
+            with patch("measurement.store.subprocess.Popen", side_effect=fake_popen):
                 spawn = asyncio.create_task(
                     asyncio.to_thread(store._start_job_process, job_id, ["pw-record"])
                 )
@@ -246,7 +246,7 @@ class MeasurementCancelLifecycleTests(unittest.IsolatedAsyncioTestCase):
                     return 1
 
             process = Process()
-            with patch("measurement.subprocess.Popen", return_value=process):
+            with patch("measurement.store.subprocess.Popen", return_value=process):
                 def worker(_job):
                     store._start_job_process(job_id, ["pw-record"])
                     raise RuntimeError("pw-record failed")
@@ -276,7 +276,7 @@ class MeasurementCancelLifecycleTests(unittest.IsolatedAsyncioTestCase):
                     return None
 
             process = Process()
-            with patch("measurement.subprocess.Popen", side_effect=[process, OSError("spawn failed")]):
+            with patch("measurement.store.subprocess.Popen", side_effect=[process, OSError("spawn failed")]):
                 def worker(_job):
                     store._start_job_process(job_id, ["pw-record"])
                     store._start_job_process(job_id, ["pw-play"])

@@ -17,7 +17,7 @@ from uuid import uuid4
 import numpy as np
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
-from measurement import score_sub_alignment_candidates
+from measurement.store import score_sub_alignment_candidates
 from uploads import UploadTooLargeError, read_upload
 from samplerate import (
     OUTPUT_MODE_SUBWOOFER_21,

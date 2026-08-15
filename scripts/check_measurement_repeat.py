@@ -13,7 +13,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from measurement import (
+from measurement.store import (
     HOST_SWEEP_RECORD_POSTROLL_SECONDS,
     HOST_SWEEP_RECORD_PREROLL_SECONDS,
     LR_REPEAT_LEAD_IN_SECONDS,
@@ -24,7 +24,7 @@ from measurement import (
     SWEEP_V2_SECONDS,
     SWEEP_V2_TAIL_SECONDS,
 )
-from measurement_repeat_runner import MeasurementRepeatRunner
+from measurement.repeat_runner import MeasurementRepeatRunner
 
 
 def measurement_payload(measurement_id: str, channel: str, timing_ms: float, level_db: float, *, electrical: bool) -> dict:

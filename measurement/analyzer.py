@@ -12,7 +12,7 @@ from typing import Any
 import numpy as np
 
 from hybrid_measurement import analyze_direct_window, build_complex_response, build_gated_response
-from measurement_constants import (
+from measurement.constants import (
     CAPTURE_CLIP_FAIL_DBFS,
     DISPLAY_POINT_COUNT,
     EDGE_STABILITY_MAX_DELTA_DB,

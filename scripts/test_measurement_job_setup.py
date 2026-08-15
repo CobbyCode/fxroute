@@ -8,7 +8,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from measurement import MeasurementStore
+from measurement.store import MeasurementStore
 
 
 class MeasurementJobSetupTests(unittest.IsolatedAsyncioTestCase):

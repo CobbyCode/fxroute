@@ -873,7 +873,7 @@ try:
     from hardware_controller import HardwareController
 except ImportError:
     HardwareController = None
-from measurement import (
+from measurement.store import (
     MeasurementStore,
 )
 from peak_monitor import DSPPeakMonitor

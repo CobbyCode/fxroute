@@ -23,7 +23,7 @@ from fastapi.responses import FileResponse
 
 import samplerate
 import samplerate_orchestration
-from measurement import (
+from measurement.store import (
     MEASUREMENT_DEFAULT_SAMPLE_RATE,
     measurement_setup_settings_from_payload,
     normalize_measurement_optional_input_channel,

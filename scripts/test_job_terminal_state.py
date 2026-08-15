@@ -13,7 +13,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from autosub import _finalize_autosub_job
-from measurement import MeasurementStore
+from measurement.store import MeasurementStore
 
 
 class MeasurementJobStateTests(unittest.IsolatedAsyncioTestCase):

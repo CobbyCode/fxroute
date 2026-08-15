@@ -15,9 +15,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import numpy as np
 
-from measurement import MeasurementStore, SWEEP_V2_SECONDS, SWEEP_V2_TAIL_SECONDS
-from measurement_analyzer import MeasurementAnalyzer
-from measurement_persistence import MeasurementPersistence
+from measurement.store import MeasurementStore, SWEEP_V2_SECONDS, SWEEP_V2_TAIL_SECONDS
+from measurement.analyzer import MeasurementAnalyzer
+from measurement.persistence import MeasurementPersistence
 
 
 def _repeat_meta_result(store, sweep_id):

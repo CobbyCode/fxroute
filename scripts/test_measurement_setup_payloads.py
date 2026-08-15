@@ -17,7 +17,7 @@ sys.path.insert(0, str(ROOT))
 
 import main
 import measurement_session
-from measurement import (
+from measurement.store import (
     MeasurementStore,
     measurement_input_persistent_id,
     measurement_setup_settings_from_payload,

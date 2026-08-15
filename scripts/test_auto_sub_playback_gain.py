@@ -11,8 +11,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
 import autosub
-from measurement import MEASUREMENT_SCOPE_ACTIVE_CHAIN, MEASUREMENT_SCOPE_RAW_HELPER
-from measurement_routing import MeasurementRouting
+from measurement.store import MEASUREMENT_SCOPE_ACTIVE_CHAIN, MEASUREMENT_SCOPE_RAW_HELPER
+from measurement.routing import MeasurementRouting
 
 
 def runtime_config() -> main.BassManagementConfig:

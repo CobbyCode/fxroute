@@ -9,8 +9,8 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-from measurement import MeasurementStore
-from measurement_host_capture import HostCaptureRunner
+from measurement.store import MeasurementStore
+from measurement.host_capture import HostCaptureRunner
 
 
 class MeasurementCapturePortDiagnosticTests(unittest.TestCase):
@@ -40,8 +40,8 @@ class MeasurementCapturePortDiagnosticTests(unittest.TestCase):
             "_list_source_output_ports",
             side_effect=lambda name: [f"{name}:monitor_FL"] if name.endswith(".monitor") else [f"{name}:capture_FL"],
         ), patch.object(self.store, "_list_pw_ports", return_value=[]), patch(
-            "measurement.time.monotonic", side_effect=[0.0, 0.1, 5.0]
-        ), patch("measurement.time.sleep"):
+            "measurement.store.time.monotonic", side_effect=[0.0, 0.1, 5.0]
+        ), patch("measurement.store.time.sleep"):
             with self.assertRaises(RuntimeError) as caught:
                 self._link(process)
 
@@ -58,7 +58,7 @@ class MeasurementCapturePortDiagnosticTests(unittest.TestCase):
 
         with patch.object(self.store._routing, "_list_source_output_ports", return_value=[]), patch.object(
             self.store, "_list_pw_ports", return_value=[]
-        ), patch("measurement.time.monotonic", side_effect=[0.0, 0.1]):
+        ), patch("measurement.store.time.monotonic", side_effect=[0.0, 0.1]):
             with self.assertRaises(RuntimeError) as caught:
                 self._link(process)
 
