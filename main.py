@@ -1147,13 +1147,12 @@ class InputRoutingState:
     """Single authoritative owner of the Bluetooth/external-input routing bookkeeping.
 
     Owns the currently-linked Bluetooth input source name and the
-    external-input loopback module id / source name used for external-input
-    monitoring.  Mutated only by the Bluetooth/external-input enable, disable
-    and clear helpers, the Bluetooth monitor loop and lifespan shutdown.
+    external-input loopback source name used for external-input monitoring.
+    Mutated only by the Bluetooth/external-input enable, disable and clear
+    helpers, the Bluetooth monitor loop and lifespan shutdown.
     """
 
     bluetooth_input_source_name: Optional[str] = None
-    external_input_loopback_module_id: Optional[int] = None
     external_input_loopback_source_name: Optional[str] = None
 
 
@@ -4613,42 +4612,6 @@ async def pause_local_playback_for_spotify_broadcast():
         pass
 
 
-async def _run_pactl_command(*args: str) -> str:
-    proc = await asyncio.create_subprocess_exec(
-        "pactl", *args,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    try:
-        stdout, stderr = await asyncio.wait_for(
-            proc.communicate(), timeout=_PACTL_COMMAND_TIMEOUT_SECONDS
-        )
-    except asyncio.TimeoutError:
-        # A hanging PulseAudio/PipeWire daemon must not block a source-mode
-        # change (startup or /api/audio/source-mode) forever.  Report the
-        # timeout as a controlled command failure, exactly like the
-        # nonzero-exit path below.  If the caller is cancelled while the
-        # cleanup drains, the cancellation wins over the timeout failure.
-        if await _stop_command_child_cancellation_safe(
-            proc, _PACTL_TERMINATE_GRACE_SECONDS
-        ):
-            raise asyncio.CancelledError
-        raise RuntimeError(
-            f"pactl {' '.join(args)} timed out after {_PACTL_COMMAND_TIMEOUT_SECONDS}s"
-        )
-    except asyncio.CancelledError:
-        # Caller cancellation must not leave the child behind; the shielded
-        # cleanup terminates/kills/drains it even under further cancellation,
-        # then the original cancellation is re-raised.
-        await _stop_command_child_cancellation_safe(proc, _PACTL_TERMINATE_GRACE_SECONDS)
-        raise
-    if proc.returncode != 0:
-        raise RuntimeError(stderr.decode(errors="ignore").strip() or f"pactl {' '.join(args)} failed")
-    return stdout.decode(errors="ignore").strip()
-
-
-_PACTL_COMMAND_TIMEOUT_SECONDS = 3
-_PACTL_TERMINATE_GRACE_SECONDS = 1
 _PW_LINK_COMMAND_TIMEOUT_SECONDS = 10
 _PW_LINK_TERMINATE_GRACE_SECONDS = 3
 
@@ -4764,14 +4727,7 @@ async def _disconnect_external_input_source(source_name: str | None) -> None:
 
 async def _disable_external_input_loopback() -> None:
     previous_source = input_routing_state.external_input_loopback_source_name
-    if input_routing_state.external_input_loopback_module_id is not None:
-        try:
-            await _run_pactl_command("unload-module", str(input_routing_state.external_input_loopback_module_id))
-            logger.info("Disabled legacy external-input loopback module %s", input_routing_state.external_input_loopback_module_id)
-        except Exception as exc:
-            logger.warning("Failed to unload legacy external-input loopback module %s: %s", input_routing_state.external_input_loopback_module_id, exc)
     await _disconnect_external_input_source(previous_source)
-    input_routing_state.external_input_loopback_module_id = None
     input_routing_state.external_input_loopback_source_name = None
 
 
@@ -4790,7 +4746,6 @@ async def _ensure_external_input_loopback(source_name: str) -> None:
     except BaseException:
         await _disconnect_external_input_source(normalized)
         raise
-    input_routing_state.external_input_loopback_module_id = None
     input_routing_state.external_input_loopback_source_name = normalized
     logger.info("Enabled direct external-input monitoring from %s to fxroute_dsp_sink", normalized)
 
@@ -5434,7 +5389,7 @@ async def _shutdown_lifespan_resources() -> None:
     if bluetooth_agent_process is not None or input_routing_state.bluetooth_input_source_name is not None:
         await cleanup("bluetooth-input", _disable_bluetooth_input_monitoring)
     await cleanup("bluetooth-receiver", lambda: asyncio.to_thread(set_bluetooth_receiver_enabled, False))
-    if input_routing_state.external_input_loopback_module_id is not None or input_routing_state.external_input_loopback_source_name is not None:
+    if input_routing_state.external_input_loopback_source_name is not None:
         await cleanup("external-input", _disable_external_input_loopback)
     if runtime.peak_monitor is not None:
         await cleanup("peak-monitor", runtime.peak_monitor.stop)
@@ -5452,7 +5407,6 @@ async def _shutdown_lifespan_resources() -> None:
     measurement_watchdog_task = None
     hardware_controller = None
     playback_transition_coordinator = None
-    input_routing_state.external_input_loopback_module_id = None
     input_routing_state.external_input_loopback_source_name = None
     input_routing_state.bluetooth_input_source_name = None
     bluetooth_monitor_task = None
