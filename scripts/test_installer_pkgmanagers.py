@@ -173,6 +173,116 @@ class InstallerPkgManagerStaticTests(unittest.TestCase):
                          "lsp-plugins", "zam-plugins", "calf", "libebur128",
                          "libsamplerate", "speexdsp"}.issubset(packages))
 
+    def test_lv2ls_tool_package_for_each_distro(self):
+        required = {
+            "apt": {"lilv-utils"},
+            "dnf": {"lilv"},
+            "zypper": {"lilv"},
+            "pacman": {"lilv"},
+        }
+        for manager, packages_needed in required.items():
+            match = re.search(rf"{manager}\) dsp_packages=\(([^)]*)\)", self.text)
+            self.assertIsNotNone(match)
+            packages = set(match.group(1).split())
+            self.assertTrue(
+                packages_needed.issubset(packages),
+                f"{manager} dsp_packages misses {packages_needed - packages}",
+            )
+
+    def test_headless_audio_services_enabled(self):
+        self.assertIn("enable_user_audio_services()", self.text)
+        self.assertIn("pipewire.socket", self.text)
+        self.assertIn("pipewire-pulse.socket", self.text)
+        self.assertIn("systemctl --user enable --now", self.text)
+        self.assertIn("enable_user_audio_services\n", self.text)
+
+    def test_headless_audio_units_existence_check(self):
+        self.assertIn("user_unit_exists()", self.text)
+        self.assertIn("/usr/lib/systemd/user/$unit", self.text)
+        self.assertIn("wireplumber.service", self.text)
+
+    def test_headless_audio_service_selection_behavior(self):
+        exists = _extract_function(self.text, "user_unit_exists")
+        body = _extract_function(self.text, "enable_user_audio_services")
+        harness = f'''
+{exists}
+{body}
+SYSTEMCTL_CALLS=
+PASS=0; FAIL=0
+pass() {{ PASS=$((PASS+1)); }}
+fail() {{ FAIL=$((FAIL+1)); }}
+warn() {{ echo "WARN $*"; }}
+systemctl() {{ SYSTEMCTL_CALLS="$SYSTEMCTL_CALLS|systemctl $*"; return 0; }}
+'''
+
+        def run(mock_user_unit_exists: str) -> str:
+            code = harness + mock_user_unit_exists + "\nenable_user_audio_services\necho \"CALLS:$SYSTEMCTL_CALLS\"\n"
+            result = subprocess.run(
+                ["bash", "-c", code], capture_output=True, text=True, check=True
+            )
+            return result.stdout
+
+        sockets_only = '''user_unit_exists() {
+  case "$1" in
+    pipewire.socket) return 0 ;;
+    wireplumber.service) return 0 ;;
+    pipewire-pulse.socket) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+'''
+        stdout = run(sockets_only)
+        calls = stdout.split("CALLS:")[-1].strip()
+        self.assertIn(
+            "systemctl --user enable --now pipewire.socket wireplumber.service pipewire-pulse.socket",
+            calls,
+        )
+        self.assertNotIn("pipewire.service", calls)
+
+        services_only = '''user_unit_exists() {
+  case "$1" in
+    pipewire.service) return 0 ;;
+    wireplumber.service) return 0 ;;
+    pipewire-pulse.service) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+'''
+        stdout = run(services_only)
+        calls = stdout.split("CALLS:")[-1].strip()
+        self.assertIn(
+            "systemctl --user enable --now pipewire.service wireplumber.service pipewire-pulse.service",
+            calls,
+        )
+
+        pulse_absent = '''user_unit_exists() {
+  case "$1" in
+    pipewire.socket) return 0 ;;
+    wireplumber.service) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+'''
+        stdout = run(pulse_absent)
+        calls = stdout.split("CALLS:")[-1].strip()
+        self.assertIn(
+            "systemctl --user enable --now pipewire.socket wireplumber.service",
+            calls,
+        )
+        self.assertNotIn("pipewire-pulse", calls)
+        self.assertIn("WARN PipeWire user units not found", stdout)
+
+    def test_headless_user_session_persistence(self):
+        self.assertIn("enable_user_session_persistence()", self.text)
+        self.assertIn("loginctl enable-linger", self.text)
+        self.assertIn("loginctl show-user", self.text)
+        self.assertIn("enable_user_session_persistence\n", self.text)
+
+    def test_spotify_autostart_default_is_x86_64_only(self):
+        self.assertIn('[[ "$(uname -m)" != "x86_64" ]]', self.text)
+        self.assertIn('spotify_autostart="off"', self.text)
+        self.assertIn("SPOTIFY_AUTOSTART=$spotify_autostart", self.text)
+
     def test_venv_pacman_branch(self):
         self.assertIn("pacman)\n        # python on Arch/Manjaro ships the venv module", self.text)
 

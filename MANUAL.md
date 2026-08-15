@@ -17,7 +17,7 @@ FXRoute puts these tasks on one local hi-fi control system:
 - measure the room/speaker response and use it as a tuning guide
 - expose the setup safely on the local network
 
-FXRoute runs in a Linux desktop audio session. It is not intended for a fully headless server.
+FXRoute runs in a Linux user session with an active PipeWire audio stack. That can be a desktop session or a headless CLI/minimal system with enabled user services. FXRoute is not intended to run as a system daemon.
 
 ## 2. Opening FXRoute
 
@@ -131,7 +131,7 @@ FXRoute checks guest access when discovering shares, mounts the selected share w
 
 ## 7. Native DSP installation
 
-The installer installs compiler and PipeWire development dependencies on supported distributions, then builds the DSP engine shipped with FXRoute. Audio applications connect through `fxroute_dsp_sink`; processing runs in the `fxroute_dsp` node.
+The installer installs compiler, PipeWire development, and LV2 plugin dependencies (LSP, Zam, Calf) on supported distributions, then builds the DSP engine shipped with FXRoute. Audio applications connect through `fxroute_dsp_sink`; processing runs in the `fxroute_dsp` node.
 
 ## 8. DSP
 
@@ -429,10 +429,10 @@ pw-cli ls Node | grep fxroute_dsp
 
 FXRoute is designed for:
 
-- a Linux desktop-session audio machine
+- a Linux user-session audio machine (desktop or headless with enabled user services)
 - PipeWire
 - the FXRoute native DSP engine in the same PipeWire user session
 - local network browser control
 - a DAC, amp, active speakers, headphones, or similar listening setup
 
-FXRoute depends on the audio desktop session and does not target fully headless operation.
+FXRoute depends on an active audio user session with PipeWire. Headless CLI/minimal setups are supported when the user services stay enabled; running without a user session is not supported.

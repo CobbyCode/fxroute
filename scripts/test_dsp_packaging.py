@@ -43,6 +43,23 @@ class DspPackagingTests(unittest.TestCase):
         self.assertIn('"$HOME/.lv2/calf.lv2"', script)
         self.assertIn('mv "$candidate" "$HOME/.lv2/calf.lv2"', script)
 
+    def test_installer_verifies_required_lv2_plugin_uris(self):
+        script = (ROOT / "install.sh").read_text()
+        self.assertGreaterEqual(script.count("verify_lv2_plugins"), 2)
+        self.assertIn("lv2ls", script)
+        self.assertIn('discovered="$(lv2ls 2>/dev/null || true)"', script)
+        self.assertIn('die "FXRoute DSP effects need these LV2 plugins:', script)
+        self.assertIn('die "LV2 plugin verification needs lv2ls', script)
+        for uri in (
+            "http://lsp-plug.in/plugins/lv2/para_equalizer_x32_lr",
+            "http://lsp-plug.in/plugins/lv2/loud_comp_stereo",
+            "http://lsp-plug.in/plugins/lv2/sc_limiter_stereo",
+            "urn:zamaudio:ZaMaximX2",
+            "http://calf.sourceforge.net/plugins/BassEnhancer",
+        ):
+            self.assertIn(uri, script)
+            self.assertIn('grep -Fxq "$uri" <<<"$discovered"', script)
+
     def test_native_dsp_links_libsamplerate(self):
         script = (ROOT / "native_dsp/build.sh").read_text()
         self.assertIn("pkg-config --cflags samplerate", script)

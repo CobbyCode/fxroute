@@ -79,12 +79,12 @@ It runs on mini PCs, desktops, ARM boards, and dedicated stereo systems. It comb
 
 ## Intended setup
 
-FXRoute runs in a **Linux desktop audio session**. It is not intended as a fully headless rack server.
+FXRoute runs in a **Linux user session with an active PipeWire audio stack**. That session can be a desktop session or a headless CLI/minimal setup (for example ARM64 Armbian) with the user services enabled. FXRoute is not intended to run as a system daemon.
 
 Typical setup:
 
 - small PC or ARM board near DAC, amp, active speakers, headphones, or TV
-- PipeWire-based Linux desktop session
+- PipeWire-based Linux user session (desktop or headless)
 - FXRoute's native DSP engine in the same local PipeWire session
 - optional Spotify desktop client in the same session
 - control from any browser on the LAN
@@ -95,7 +95,7 @@ FXRoute coordinates local audio applications, its DSP engine, MPRIS/playerctl, a
 
 On supported distributions, `install.sh` installs and configures the runtime tools: Python dependencies, `mpv`, `ffmpeg`, `playerctl`, Bluetooth/PipeWire helpers, and service files.
 
-The installer builds the native DSP engine from the source shipped with FXRoute. A C compiler, `pkg-config`, and PipeWire development headers are installed on supported distributions.
+The installer builds the native DSP engine from the source shipped with FXRoute. A C compiler, `pkg-config`, PipeWire development headers, and the LV2 libraries and plugin packages used by the DSP effects (LSP, Zam, Calf) are installed on supported distributions.
 
 Tested installer targets so far include:
 
@@ -109,7 +109,7 @@ Tested installer targets so far include:
 
 FXRoute builds and runs its own PipeWire-native DSP engine. The stable ingress sink is `fxroute_dsp_sink`; the processing node is `fxroute_dsp`.
 
-Fresh installs default Spotify autostart to enabled when a local Spotify desktop client is available, so the player can return after a desktop/session restart. Existing `.env` files are preserved on installer reruns.
+Fresh installs on x86_64 default Spotify autostart to enabled when a local Spotify desktop client is available, so the player can return after a desktop/session restart. Other architectures default Spotify autostart to disabled. Existing `.env` files are preserved on installer reruns.
 
 ## Maintenance updates
 

@@ -765,6 +765,10 @@ create_env_if_missing() {
   local host="0.0.0.0"
   local port="8000"
   local max_downloads="1"
+  local spotify_autostart="on"
+  if [[ "$(uname -m)" != "x86_64" ]]; then
+    spotify_autostart="off"
+  fi
 
   if [[ -f "$env_file" ]]; then
     log "Keeping existing .env"
@@ -788,7 +792,7 @@ LOG_LEVEL=$log_level
 HOST=$host
 PORT=$port
 MAX_DOWNLOADS=$max_downloads
-SPOTIFY_AUTOSTART=on
+SPOTIFY_AUTOSTART=$spotify_autostart
 SPOTIFY_CACHE_CLEANUP=off
 SPOTIFY_CACHE_CLEANUP_INTERVAL_HOURS=24
 SYSTEM_AUTO_UPDATE=off
@@ -856,6 +860,66 @@ EOF
     fi
   else
     fail "systemd user daemon-reload"
+  fi
+}
+
+user_unit_exists() {
+  local unit="$1"
+  [[ -f "$HOME/.config/systemd/user/$unit" \
+    || -f "/etc/systemd/user/$unit" \
+    || -f "/usr/local/lib/systemd/user/$unit" \
+    || -f "/usr/lib/systemd/user/$unit" ]]
+}
+
+enable_user_audio_services() {
+  local targets=()
+  local missing_units=()
+
+  if user_unit_exists pipewire.socket; then
+    targets+=(pipewire.socket)
+  elif user_unit_exists pipewire.service; then
+    targets+=(pipewire.service)
+  else
+    missing_units+=(pipewire.socket pipewire.service)
+  fi
+
+  if user_unit_exists wireplumber.service; then
+    targets+=(wireplumber.service)
+  else
+    missing_units+=(wireplumber.service)
+  fi
+
+  if user_unit_exists pipewire-pulse.socket; then
+    targets+=(pipewire-pulse.socket)
+  elif user_unit_exists pipewire-pulse.service; then
+    targets+=(pipewire-pulse.service)
+  else
+    missing_units+=(pipewire-pulse.socket pipewire-pulse.service)
+  fi
+
+  if [[ ${#targets[@]} -gt 0 ]]; then
+    if systemctl --user enable --now "${targets[@]}" >/dev/null 2>&1; then
+      pass "PipeWire/WirePlumber user services enabled (${targets[*]})"
+    else
+      warn "PipeWire/WirePlumber user services could not be enabled in this shell: ${targets[*]}; on headless systems start them with: systemctl --user enable --now ${targets[*]}"
+    fi
+  fi
+
+  if [[ ${#missing_units[@]} -gt 0 ]]; then
+    warn "PipeWire user units not found: ${missing_units[*]}; FXRoute needs pipewire with a session manager (wireplumber) and the pipewire-pulse compatibility server for the DSP ingress sink"
+  fi
+}
+
+enable_user_session_persistence() {
+  local install_user="${SUDO_USER:-$(id -un)}"
+  if loginctl show-user "$install_user" -p Linger --value 2>/dev/null | grep -qx 'yes'; then
+    pass "user session persistence already active (loginctl enable-linger)"
+    return 0
+  fi
+  if "${SUDO_CMD[@]}" loginctl enable-linger "$install_user"; then
+    pass "user session persistence enabled (loginctl enable-linger)"
+  else
+    warn "loginctl enable-linger failed; FXRoute user services will stop when the login session ends"
   fi
 }
 
@@ -1055,9 +1119,9 @@ build_native_dsp_engine() {
 
   [[ -f "$build_script" ]] || die "Missing FXRoute native DSP build script: $build_script"
   case "$PACKAGE_MANAGER" in
-    apt) dsp_packages=(gcc pkg-config libpipewire-0.3-dev libspa-0.2-dev liblilv-dev lv2-dev lsp-plugins-lv2 zam-plugins calf-plugins libebur128-dev libsamplerate0-dev libspeexdsp-dev) ;;
-    dnf) dsp_packages=(gcc pkgconf-pkg-config pipewire-devel lilv-devel lv2-devel lsp-plugins-lv2 zam-plugins-lv2 lv2-calf-plugins libebur128-devel libsamplerate-devel speexdsp-devel) ;;
-    zypper) dsp_packages=(gcc gcc-c++ cmake pkgconf-pkg-config pipewire-devel liblilv-0-devel lv2-devel lv2-lsp-plugins lv2-zam-plugins libebur128-devel libsamplerate-devel speexdsp-devel libexpat-devel fluidsynth-devel) ;;
+    apt) dsp_packages=(gcc pkg-config libpipewire-0.3-dev libspa-0.2-dev liblilv-dev lilv-utils lv2-dev lsp-plugins-lv2 zam-plugins calf-plugins libebur128-dev libsamplerate0-dev libspeexdsp-dev) ;;
+    dnf) dsp_packages=(gcc pkgconf-pkg-config pipewire-devel lilv lilv-devel lv2-devel lsp-plugins-lv2 zam-plugins-lv2 lv2-calf-plugins libebur128-devel libsamplerate-devel speexdsp-devel) ;;
+    zypper) dsp_packages=(gcc gcc-c++ cmake pkgconf-pkg-config pipewire-devel lilv liblilv-0-devel lv2-devel lv2-lsp-plugins lv2-zam-plugins libebur128-devel libsamplerate-devel speexdsp-devel libexpat-devel fluidsynth-devel) ;;
     pacman) dsp_packages=(gcc pkgconf libpipewire lilv lv2 lsp-plugins zam-plugins calf libebur128 libsamplerate speexdsp) ;;
   esac
   [[ ${#dsp_packages[@]} -eq 0 ]] || pkg_install "${dsp_packages[@]}"
@@ -1298,6 +1362,40 @@ validate_http() {
   fi
 }
 
+verify_lv2_plugins() {
+  local required_uris=(
+    http://lsp-plug.in/plugins/lv2/para_equalizer_x32_lr
+    http://lsp-plug.in/plugins/lv2/loud_comp_stereo
+    http://lsp-plug.in/plugins/lv2/sc_limiter_stereo
+    urn:zamaudio:ZaMaximX2
+    http://calf.sourceforge.net/plugins/BassEnhancer
+  )
+  local missing=()
+  local discovered=""
+  local uri=""
+
+  if ! command -v lv2ls >/dev/null 2>&1; then
+    fail "LV2 plugin discovery tool (lv2ls) available"
+    die "LV2 plugin verification needs lv2ls from lilv-utils (Debian/Ubuntu) or lilv (Fedora/openSUSE/Arch)"
+  fi
+
+  discovered="$(lv2ls 2>/dev/null || true)"
+  for uri in "${required_uris[@]}"; do
+    if grep -Fxq "$uri" <<<"$discovered"; then
+      pass "LV2 plugin available: $uri"
+    else
+      missing+=("$uri")
+    fi
+  done
+
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    for uri in "${missing[@]}"; do
+      fail "LV2 plugin available: $uri"
+    done
+    die "FXRoute DSP effects need these LV2 plugins: ${missing[*]}; install lsp-plugins-lv2 zam-plugins calf-plugins (Debian/Ubuntu/Armbian), lsp-plugins-lv2 zam-plugins-lv2 lv2-calf-plugins (Fedora), lv2-lsp-plugins lv2-zam-plugins (openSUSE), or lsp-plugins zam-plugins calf (Arch/Manjaro)"
+  fi
+}
+
 validate_tools() {
   mpv --version >/dev/null 2>&1 && pass "mpv available" || fail "mpv available"
   ffmpeg -version >/dev/null 2>&1 && pass "ffmpeg available" || fail "ffmpeg available"
@@ -1336,6 +1434,8 @@ validate_tools() {
   else
     fail "service enabled"
   fi
+
+  verify_lv2_plugins
 }
 
 print_summary() {
@@ -1838,9 +1938,11 @@ main() {
   create_env_if_missing
   setup_python_env
   build_native_dsp_engine
+  enable_user_audio_services
   configure_pipewire_samplerates_if_available
   configure_dsp_ingress_sink
   write_service_unit
+  enable_user_session_persistence
   setup_spotify_autostart
   chmod +x "$INSTALL_ROOT/scripts/update_fxroute.sh"
   install_helpers
