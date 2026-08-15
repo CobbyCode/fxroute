@@ -9,6 +9,7 @@ from unittest.mock import patch
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from measurement import MeasurementStore
+from measurement_file_store import MeasurementFileStore
 
 
 class MeasurementFileExportTests(unittest.TestCase):
@@ -24,6 +25,7 @@ class MeasurementFileExportTests(unittest.TestCase):
     def test_calibration_export_uses_managed_file_and_original_name_and_bytes(self):
         with tempfile.TemporaryDirectory() as root, self.make_store(root):
             store = MeasurementStore(home=Path(root))
+            self.assertIsInstance(store._file_store, MeasurementFileStore)
             payload = b"# calibration header\r\n20,0.25\r\n1000,-1.5\r\n"
             meta = store._store_calibration_file("UMIK-1 calibration.csv", payload)
             path, filename = store.get_calibration_file_for_export(meta["id"])
