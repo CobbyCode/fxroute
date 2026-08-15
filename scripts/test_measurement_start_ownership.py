@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
-import measurement_session
+import measurement.session as measurement_session
 
 
 class _Session:

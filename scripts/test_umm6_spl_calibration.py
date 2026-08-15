@@ -6,8 +6,8 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import main
-import measurement_session
-import spl_calibration
+import measurement.session as measurement_session
+import measurement.spl_calibration as spl_calibration
 
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "1880171.txt"

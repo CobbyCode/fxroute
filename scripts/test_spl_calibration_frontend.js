@@ -7,7 +7,7 @@ const path = require('path');
 const vm = require('vm');
 
 const source = fs.readFileSync(path.join(__dirname, '..', 'static', 'app.js'), 'utf8');
-const backendSource = fs.readFileSync(path.join(__dirname, '..', 'spl_calibration.py'), 'utf8');
+const backendSource = fs.readFileSync(path.join(__dirname, '..', 'measurement', 'spl_calibration.py'), 'utf8');
 
 function extractFunction(name) {
     const match = new RegExp(`(?:async\\s+)?function\\s+${name}\\s*\\(`).exec(source);

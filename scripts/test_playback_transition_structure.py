@@ -10,7 +10,7 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SOURCES = {
     file_name: (ROOT / file_name).read_text()
-    for file_name in ("main.py", "playback_orchestration.py", "playback_queue.py", "measurement_session.py", "dsp_orchestration.py")
+    for file_name in ("main.py", "playback_orchestration.py", "playback_queue.py", "measurement/session.py", "dsp_orchestration.py")
 }
 TREES = {
     file_name: ast.parse(source)

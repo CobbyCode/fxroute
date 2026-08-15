@@ -17,17 +17,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import autosub
 import main
-import measurement_session
-import spl_calibration
+import measurement.session as measurement_session
+import measurement.spl_calibration as spl_calibration
 from fastapi import HTTPException
-from measurement_session import (
+from measurement.session import (
     MeasurementEntryInvalidated,
     MeasurementSampleRateSession,
 )
 
 
 class _TestAudioHarness:
-    """Replace main/measurement_session globals; restore them afterwards.
+    """Replace main/measurement.session globals; restore them afterwards.
 
     Fake audio only: no real PipeWire, force-rate, playback or subwoofer state.
     """

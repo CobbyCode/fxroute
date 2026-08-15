@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Measurement session resolves all application dependencies through injection.
 
-Proves measurement_session.py no longer imports main.py: the player, the
+Proves measurement/session.py no longer imports main.py: the player, the
 native DSP runtime, captured-playback state and the playback orchestration
 callbacks are all read through the injected ``MeasurementServices`` accessors.
-This module imports only ``measurement_session`` (plus the stdlib); it never
-imports ``main``, and ``measurement_session`` must not pull ``main`` into
+This module imports only ``measurement.session`` (plus the stdlib); it never
+imports ``main``, and ``measurement.session`` must not pull ``main`` into
 ``sys.modules``.
 """
 
@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-import measurement_session
+import measurement.session as measurement_session
 
 
 def subwoofer_overview():

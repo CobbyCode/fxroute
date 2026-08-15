@@ -16,7 +16,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 import main
 from playback_transition_test_support import make_transition_runtime
-import measurement_session
+import measurement.session as measurement_session
 import samplerate
 from playback_transition import PlaybackTransitionCoordinator, PlaybackTransitionFailure, TransitionRequest
 

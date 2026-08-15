@@ -10,9 +10,9 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import spl_calibration
+import measurement.spl_calibration as spl_calibration
 from fastapi import HTTPException
-from spl_calibration import _SplCalibrationOperation
+from measurement.spl_calibration import _SplCalibrationOperation
 
 
 class FakeDSPManager:

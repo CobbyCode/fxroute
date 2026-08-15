@@ -19,8 +19,8 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import spl_calibration
-from spl_calibration import (
+import measurement.spl_calibration as spl_calibration
+from measurement.spl_calibration import (
     _SplCalibrationOperation,
     _start_spl_calibration_noise,
     SPL_NOISE_SINK_NAME,

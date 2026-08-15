@@ -1779,7 +1779,7 @@ async def _measure_auto_sub_candidate(
 ) -> dict[str, Any]:
     """Measure one AutoSub delay candidate with the standard safety checks."""
     measurement_store = _measurement_store()
-    from measurement_session import _sync_dsp_runtime_for_measurement_sweep
+    from measurement.session import _sync_dsp_runtime_for_measurement_sweep
     from samplerate import _load_audio_output_mode
 
     _marks = {"start": time.monotonic()}
@@ -3093,7 +3093,7 @@ async def _run_auto_sub_22_optimize(
     entry_epoch: int | None = None,
 ) -> None:
     measurement_sr_session = _measurement_session()
-    from measurement_session import (
+    from measurement.session import (
         MeasurementEntryInvalidated,
         _resolve_measurement_start_sample_rate,
     )
@@ -3773,7 +3773,7 @@ async def _run_auto_sub_22_stereo_optimize(
     entry_epoch: int | None = None,
 ) -> None:
     measurement_sr_session = _measurement_session()
-    from measurement_session import (
+    from measurement.session import (
         MeasurementEntryInvalidated,
         _resolve_measurement_start_sample_rate,
     )
@@ -4882,7 +4882,7 @@ async def _run_auto_sub_optimize(
     entry_epoch: int | None = None,
 ) -> None:
     measurement_sr_session = _measurement_session()
-    from measurement_session import (
+    from measurement.session import (
         MeasurementEntryInvalidated,
         _resolve_measurement_start_sample_rate,
     )

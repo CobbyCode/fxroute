@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, patch
 # Ensure the project root is on sys.path so 'import main' works.
 _project_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_project_root))
-import measurement_session
+import measurement.session as measurement_session
 from playback_transition_test_support import make_transition_runtime
 
 
@@ -29,7 +29,7 @@ class _TestSession:
     def __init__(self):
         # Import main lazily so mocking work.
         import main
-        import measurement_session
+        import measurement.session as measurement_session
         self._main = main
         # Replace globals needed by the session / capture code.
         self._orig_measurement_sr_session = main.measurement_sr_session

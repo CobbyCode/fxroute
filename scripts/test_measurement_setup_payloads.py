@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import main
-import measurement_session
+import measurement.session as measurement_session
 from measurement.store import (
     MeasurementStore,
     measurement_input_persistent_id,

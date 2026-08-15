@@ -24,12 +24,12 @@ import traceback
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-# Ensure the project root is on sys.path so 'import measurement_session' works.
+# Ensure the project root is on sys.path so 'import measurement.session' works.
 _project_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_project_root))
-import measurement_session
+import measurement.session as measurement_session
 
-# The watcher polls through measurement_session.asyncio.sleep, which is the
+# The watcher polls through measurement.session.asyncio.sleep, which is the
 # global asyncio module.  The tests patch that attribute; everything that
 # needs a real yield while the patch is active must use this original.
 _real_sleep = asyncio.sleep
@@ -119,7 +119,7 @@ def _fake_sleep(on_poll=None):
             on_poll()
         await _real_sleep(0)
 
-    return patch("measurement_session.asyncio.sleep", side_effect=fake_sleep)
+    return patch("measurement.session.asyncio.sleep", side_effect=fake_sleep)
 
 
 async def _wait_until(predicate, *, timeout: float = 5.0) -> None:

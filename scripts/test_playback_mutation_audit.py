@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 # extracted AutoSub module.  Playback entrypoints and single-owner paths live
 # only in main.py; all files are parsed for direct mutation calls so the
 # extraction cannot create an audit coverage gap.
-AUDIT_FILES = ("main.py", "playback_orchestration.py", "playback_runtime.py", "playback_queue.py", "autosub.py", "measurement_session.py", "dsp_api.py")
+AUDIT_FILES = ("main.py", "playback_orchestration.py", "playback_runtime.py", "playback_queue.py", "autosub.py", "measurement/session.py", "dsp_api.py")
 SOURCES = {name: (ROOT / name).read_text() for name in AUDIT_FILES}
 TREES = {name: ast.parse(source) for name, source in SOURCES.items()}
 MAIN_SOURCE = SOURCES["main.py"]

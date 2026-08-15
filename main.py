@@ -933,10 +933,10 @@ logger = logging.getLogger(__name__)
 
 import install_info
 import effects_extras
-import spl_calibration
+import measurement.spl_calibration as spl_calibration
 import autosub
-import measurement_session
-from measurement_session import (
+import measurement.session as measurement_session
+from measurement.session import (
     MeasurementServices,
     MeasurementSampleRateSession,
     _measurement_helper_snapshot_summary,

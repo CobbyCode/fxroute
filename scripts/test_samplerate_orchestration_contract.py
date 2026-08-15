@@ -12,7 +12,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
-import measurement_session
+import measurement.session as measurement_session
 import samplerate_orchestration
 from playback_transition_test_support import run_main_handoff_through_coordinator
 

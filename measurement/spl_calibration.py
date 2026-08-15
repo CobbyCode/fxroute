@@ -19,7 +19,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Request
 
-from measurement_session import MeasurementEntryInvalidated
+from measurement.session import MeasurementEntryInvalidated
 from samplerate import get_audio_output_overview
 
 logger = logging.getLogger(__name__)
