@@ -25,6 +25,7 @@ import numpy as np
 from dsp_runtime import DSPRuntimeConfig
 
 from hybrid_measurement import analyze_direct_window, build_complex_response, build_gated_response
+from measurement_audio import MeasurementAudioAdapter
 from samplerate import (
     OUTPUT_MODE_SUBWOOFER_21,
     OUTPUT_MODE_SUBWOOFER_22,
@@ -248,6 +249,7 @@ class MeasurementStore:
         self._cancelled_jobs: set[str] = set()
         self._shutdown = False
         self._last_successful_lag: int | None = None
+        self.audio_adapter = MeasurementAudioAdapter()
 
     def list_measurements(self) -> dict[str, Any]:
         measurements = []
@@ -6461,14 +6463,7 @@ class MeasurementStore:
         return []
 
     def _list_pw_ports(self, node_name: str) -> list[str]:
-        try:
-            completed = subprocess.run(["pw-link", "-io"], capture_output=True, text=True, timeout=3)
-        except Exception:
-            return []
-        if completed.returncode != 0:
-            return []
-        prefix = f"{node_name}:"
-        return [line.strip() for line in (completed.stdout or "").splitlines() if line.strip().startswith(prefix)]
+        return self.audio_adapter.list_pw_ports(node_name)
 
     def _build_measurement_playback_route(
         self,
@@ -6613,21 +6608,8 @@ class MeasurementStore:
         )
         return diagnostics
 
-    @staticmethod
-    @staticmethod
-    @staticmethod
-    @staticmethod
-    def _create_pipewire_link(source_port: str, target_port: str) -> None:
-        try:
-            subprocess.run(["pw-link", source_port, target_port], capture_output=True, text=True, timeout=3, check=True)
-        except subprocess.CalledProcessError as exc:
-            stderr = (exc.stderr or "").strip()
-            stdout = (exc.stdout or "").strip()
-            message = stderr or stdout
-            if "already exists" in message.lower() or "file exists" in message.lower():
-                logger.info("Measurement playback link already exists (%s -> %s), skipping", source_port, target_port)
-                return
-            raise RuntimeError(f"Could not create measurement playback link ({source_port} -> {target_port}): {message or exc}") from exc
+    def _create_pipewire_link(self, source_port: str, target_port: str) -> None:
+        self.audio_adapter.create_pipewire_link(source_port, target_port)
 
     def _cleanup_measurement_playback_links(
         self,
@@ -6956,40 +6938,12 @@ class MeasurementStore:
         flush_block()
         return kept[:240]
 
-    @staticmethod
-    def _pw_record_supports_option(option: str) -> bool:
-        try:
-            completed = subprocess.run(["pw-record", "--help"], capture_output=True, text=True, timeout=3)
-        except Exception:
-            return False
-        help_text = f"{completed.stdout or ''}\n{completed.stderr or ''}"
-        return option in help_text
+    def _pw_record_supports_option(self, option: str) -> bool:
+        return self.audio_adapter.supports_option(option)
 
     def _disconnect_link(self, source_port: str, target_port: str) -> bool:
         """Remove a single pw-link. Returns True if removed or already gone."""
-        try:
-            result = subprocess.run(
-                ["pw-link", "-d", source_port, target_port],
-                capture_output=True, text=True, timeout=3,
-            )
-            if result.returncode == 0:
-                return True
-            stderr = (result.stderr or "").strip().lower()
-            stdout = (result.stdout or "").strip().lower()
-            if any(phrase in stderr or phrase in stdout for phrase in (
-                "not found", "no such", "cannot find",
-                "link not found", "does not exist", "no link",
-            )):
-                return True
-            logger.warning(
-                "pw-link -d returned %d for %s -> %s: %s",
-                result.returncode, source_port, target_port,
-                result.stderr or result.stdout,
-            )
-            return False
-        except Exception as exc:
-            logger.warning("pw-link -d failed for %s -> %s: %s", source_port, target_port, exc)
-            return False
+        return self.audio_adapter.disconnect_link(source_port, target_port)
 
     def _cleanup_fxroute_links(
         self,
