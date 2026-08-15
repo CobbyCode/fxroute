@@ -24,6 +24,7 @@ from measurement import (
     SWEEP_V2_SECONDS,
     SWEEP_V2_TAIL_SECONDS,
 )
+from measurement_repeat_runner import MeasurementRepeatRunner
 
 
 def measurement_payload(measurement_id: str, channel: str, timing_ms: float, level_db: float, *, electrical: bool) -> dict:
@@ -75,6 +76,7 @@ def main() -> None:
         os.environ["XDG_STATE_HOME"] = str(root / "state")
         try:
             store = MeasurementStore(home=root)
+            assert isinstance(store._repeat_runner, MeasurementRepeatRunner)
             sweep_profile = store._default_measurement_sweep_profile()
             assert sweep_profile["sweep_seconds"] == SWEEP_V2_SECONDS
             assert sweep_profile["lead_in_seconds"] == SWEEP_V2_LEAD_IN_SECONDS

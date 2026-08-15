@@ -132,9 +132,11 @@ class MeasurementWavLifecycleTests(unittest.IsolatedAsyncioTestCase):
             job_id = "measurement-repeat-job-repeat-ok"
             self._register_job(store, job_id, job_kind="lr-repeat", repeat_count=1, base_name="R")
             created = []
+            order = []
 
             def _executor(job):
                 sweep_id = job["id"]
+                order.append(job["channel"])
                 store.captures_dir.mkdir(parents=True, exist_ok=True)
                 store.playbacks_dir.mkdir(parents=True, exist_ok=True)
                 capture = store.captures_dir / f"{sweep_id}.wav"
@@ -151,6 +153,7 @@ class MeasurementWavLifecycleTests(unittest.IsolatedAsyncioTestCase):
             result = store._execute_lr_repeat_job(store._jobs[job_id])
 
             self.assertIn("measurements", result)
+            self.assertEqual(order, ["left", "right"])
             self.assertEqual(len(created), 4)
             for path in created:
                 self.assertFalse(path.exists())
