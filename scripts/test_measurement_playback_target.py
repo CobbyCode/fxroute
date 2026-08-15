@@ -91,7 +91,7 @@ class MeasurementPlaybackTargetTests(unittest.TestCase):
             "config": {"sample_rate": 48000, "output_mode": "subwoofer-2.2", "layout": [{}, {}, {}, {}]},
             "effect_bypass": True,
         }
-        snapshot = self.store._build_pre_sweep_state_snapshot(
+        snapshot = self.store._routing._build_pre_sweep_state_snapshot(
             job_id="job", sample_rate=48000,
             playback_route={"route": "direct-sink", "measurement_scope": MEASUREMENT_SCOPE_RAW_HELPER,
                             "output_mode": "subwoofer-2.2"})
@@ -148,7 +148,7 @@ class MeasurementPlaybackTargetTests(unittest.TestCase):
         ) as run:
             run.return_value.returncode = 0
             run.return_value.stdout = ""
-            self.store._cleanup_measurement_playback_links(
+            self.store._routing._cleanup_measurement_playback_links(
                 play_node_name="measure",
                 temporary_links=temporary_links,
             )

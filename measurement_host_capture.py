@@ -77,12 +77,12 @@ class HostCaptureRunner:
         if store._pw_record_supports_option("--sample-count"):
             record_command.extend(["--sample-count", str(sample_count)])
         record_command.append(str(capture_path))
-        playback_route = store._build_measurement_playback_route(
+        playback_route = store._routing._build_measurement_playback_route(
             play_node_name,
             playback_target,
             measurement_scope=measurement_scope,
         )
-        play_command = store._build_measurement_play_command(
+        play_command = store._routing._build_measurement_play_command(
             play_node_name=play_node_name,
             playback_path=playback_path,
             playback_target=playback_target,
@@ -112,10 +112,10 @@ class HostCaptureRunner:
         detailed_diagnostics_enabled = _detailed_measurement_diagnostics_enabled()
         routing_snapshots: list[dict[str, Any]] = []
         link_diagnostics: dict[str, Any] = {}
-        playback_route_diagnostics = store._new_measurement_playback_route_diagnostics(playback_route)
+        playback_route_diagnostics = store._routing._new_measurement_playback_route_diagnostics(playback_route)
         if detailed_diagnostics_enabled:
             routing_snapshots.append(
-                store._build_measurement_routing_snapshot(
+                store._routing._build_measurement_routing_snapshot(
                     label="before-record-link",
                     playback_target=playback_target,
                     mic_source_node_name=mic_source_node_name,
@@ -125,18 +125,18 @@ class HostCaptureRunner:
                 )
             )
         try:
-            store._cleanup_fxroute_links(
+            store._routing._cleanup_fxroute_links(
                 source_node_name=mic_source_node_name,
                 record_node_name=record_node_name,
             )
             if electrical_reference_channel_index is not None:
-                link_diagnostics = store._link_capture_channels_to_record_stream(
+                link_diagnostics = store._routing._link_capture_channels_to_record_stream(
                     source_node_name=mic_source_node_name,
                     record_node_name=record_node_name,
                     channel_indices=sorted({mic_input_channel_index, electrical_reference_channel_index}),
                 )
             else:
-                link_diagnostics = store._link_host_reference_capture(
+                link_diagnostics = store._routing._link_host_reference_capture(
                     reference_source_node_name=str(reference_capture["source_node_name"]),
                     mic_source_node_name=mic_source_node_name,
                     record_node_name=record_node_name,
@@ -146,7 +146,7 @@ class HostCaptureRunner:
                 )
             if detailed_diagnostics_enabled:
                 routing_snapshots.append(
-                    store._build_measurement_routing_snapshot(
+                    store._routing._build_measurement_routing_snapshot(
                         label="after-record-link",
                         playback_target=playback_target,
                         mic_source_node_name=mic_source_node_name,
@@ -165,7 +165,7 @@ class HostCaptureRunner:
                 helper_process_snapshots[-1].get("processes"),
             )
 
-            pre_sweep_state = store._build_pre_sweep_state_snapshot(
+            pre_sweep_state = store._routing._build_pre_sweep_state_snapshot(
                 job_id=job_id,
                 sample_rate=sample_rate,
                 playback_route=playback_route,
@@ -183,7 +183,7 @@ class HostCaptureRunner:
 
             play_process = store._start_job_process(owner_job_id, play_command)
             if playback_route["route"] == "direct-sink":
-                playback_route_diagnostics = store._link_measurement_playback_to_direct_sink(
+                playback_route_diagnostics = store._routing._link_measurement_playback_to_direct_sink(
                     play_node_name=play_node_name,
                     playback_target=playback_target,
                     playback_route=playback_route,
@@ -191,7 +191,7 @@ class HostCaptureRunner:
             time.sleep(0.2)
             if detailed_diagnostics_enabled:
                 routing_snapshots.append(
-                    store._build_measurement_routing_snapshot(
+                    store._routing._build_measurement_routing_snapshot(
                         label="during-playback",
                         playback_target=playback_target,
                         mic_source_node_name=mic_source_node_name,
@@ -242,17 +242,17 @@ class HostCaptureRunner:
             level_monitor_stop.set()
             if level_monitor_thread.is_alive():
                 level_monitor_thread.join(timeout=1.0)
-            store._cleanup_measurement_playback_links(
+            store._routing._cleanup_measurement_playback_links(
                 play_node_name=play_node_name,
                 temporary_links=playback_route_diagnostics.get("temporary_playback_links", []),
             )
-            store._cleanup_fxroute_links(
+            store._routing._cleanup_fxroute_links(
                 source_node_name=mic_source_node_name,
                 record_node_name=record_node_name,
             )
             if detailed_diagnostics_enabled:
                 routing_snapshots.append(
-                    store._build_measurement_routing_snapshot(
+                    store._routing._build_measurement_routing_snapshot(
                         label="after-capture",
                         playback_target=playback_target,
                         mic_source_node_name=mic_source_node_name,
@@ -286,7 +286,7 @@ class HostCaptureRunner:
         store._update_measurement_job_message(owner_job_id, "Processing measurement…")
         try:
             is_21_active = any(bool(snap.get("processes")) for snap in helper_process_snapshots)
-            analysis = store._analyze_sweep_capture(
+            analysis = store._analyzer._analyze_sweep_capture(
                 capture_path,
                 expected_sample_rate=sample_rate,
                 channel=channel,
@@ -362,15 +362,15 @@ class HostCaptureRunner:
                 "stability": "host-reference",
             })
         analysis["reference_path"] = reference_path
-        pipewire_warnings = store._extract_pipewire_warning_lines({
+        pipewire_warnings = store._routing._extract_pipewire_warning_lines({
             "pw-play.stdout": play_stdout,
             "pw-play.stderr": play_stderr,
             "pw-record.stdout": record_stdout,
             "pw-record.stderr": record_stderr,
         })
-        playback_node = store._lookup_pipewire_audio_node(playback_target["target_name"])
-        capture_node = store._lookup_pipewire_audio_node(mic_source_node_name)
-        reference_node = store._lookup_pipewire_audio_node(str(reference_capture.get("source_node_name") or ""))
+        playback_node = store._routing._lookup_pipewire_audio_node(playback_target["target_name"])
+        capture_node = store._routing._lookup_pipewire_audio_node(mic_source_node_name)
+        reference_node = store._routing._lookup_pipewire_audio_node(str(reference_capture.get("source_node_name") or ""))
         uses_monitor_source = str(reference_capture.get("source_node_name") or "").endswith(".monitor")
         routing_diagnostics = {
             "schema": "fxroute.measurement-routing-diagnostics.v1",

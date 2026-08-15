@@ -150,12 +150,13 @@ class MeasurementStore:
         self._shutdown = False
         self._last_successful_lag: int | None = None
         self.audio_adapter = MeasurementAudioAdapter()
+        self._persistence = MeasurementPersistence(self)
         self._job_runner = MeasurementJobRunner(
             get_job=lambda job_id: self._jobs[job_id],
-            persist_job=self._persist_job,
+            persist_job=self._persistence._persist_job,
             public_result=self._public_measurement_job_result,
             cleanup_job=self._cleanup_job_wav_files,
-            retain_history=self._retain_job_history,
+            retain_history=self._persistence._retain_job_history,
             utc_now=self._utc_now,
             is_terminal=self._is_terminal_job_status,
             raw_scope_enter=self.raw_scope_enter,
@@ -191,7 +192,6 @@ class MeasurementStore:
         self._routing_command_runner = lambda *args, **kwargs: subprocess.run(*args, **kwargs)
         self._routing_output_overview = lambda: get_audio_output_overview()
         self._routing = MeasurementRouting(self)
-        self._persistence = MeasurementPersistence(self)
         self.calibrations_dir = self._file_store.calibrations_dir
         self.house_curves_dir = self._file_store.house_curves_dir
         self.settings_path = self._file_store.settings_path
@@ -212,57 +212,20 @@ class MeasurementStore:
     def _cancelled_jobs(self):
         return self._job_runner.cancelled_jobs
 
-    def list_measurements(self, *args, **kwargs):
-        return self._persistence.list_measurements(*args, **kwargs)
+    def list_measurements(self) -> dict[str, Any]:
+        return self._persistence.list_measurements()
 
-    def save_measurement(self, *args, **kwargs):
-        return self._persistence.save_measurement(*args, **kwargs)
+    def save_measurement(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._persistence.save_measurement(payload)
 
-    def save_measurements(self, *args, **kwargs):
-        return self._persistence.save_measurements(*args, **kwargs)
+    def save_measurements(self, payloads: list[Any]) -> list[dict[str, Any]]:
+        return self._persistence.save_measurements(payloads)
 
-    def merge_measurements(self, *args, **kwargs):
-        return self._persistence.merge_measurements(*args, **kwargs)
+    def merge_measurements(self, measurement_ids: list[Any], name: str = "") -> dict[str, Any]:
+        return self._persistence.merge_measurements(measurement_ids, name)
 
-    def _select_merge_trace(self, *args, **kwargs):
-        return self._persistence._select_merge_trace(*args, **kwargs)
-
-    def _average_merge_traces(self, *args, **kwargs):
-        return self._persistence._average_merge_traces(*args, **kwargs)
-
-    def delete_measurement(self, *args, **kwargs):
-        return self._persistence.delete_measurement(*args, **kwargs)
-
-    def _save_impulse_response_debug_segment(self, *args, **kwargs):
-        return self._persistence._save_impulse_response_debug_segment(*args, **kwargs)
-
-    def _prune_ir_debug_segments(self, *args, **kwargs):
-        return self._persistence._prune_ir_debug_segments(*args, **kwargs)
-
-    def _build_measurement_from_analysis(self, *args, **kwargs):
-        return self._persistence._build_measurement_from_analysis(*args, **kwargs)
-
-    def _normalize_measurement(self, *args, **kwargs):
-        return self._persistence._normalize_measurement(*args, **kwargs)
-
-    def _normalize_traces(self, *args, **kwargs):
-        return self._persistence._normalize_traces(*args, **kwargs)
-
-    def _build_summary(self, *args, **kwargs):
-        return self._persistence._build_summary(*args, **kwargs)
-
-    def _retain_job_history(self, *args, **kwargs):
-        return self._persistence._retain_job_history(*args, **kwargs)
-
-    def _persist_job(self, *args, **kwargs):
-        return self._persistence._persist_job(*args, **kwargs)
-
-    @staticmethod
-    def _parse_job_timestamp(*args, **kwargs):
-        return MeasurementPersistence._parse_job_timestamp(*args, **kwargs)
-
-    def _slugify(self, *args, **kwargs):
-        return self._persistence._slugify(*args, **kwargs)
+    def delete_measurement(self, measurement_id: str) -> None:
+        return self._persistence.delete_measurement(measurement_id)
 
     def list_inputs(self) -> dict[str, Any]:
         inputs = self._measurement_inputs_with_sample_rate(self._discover_capture_inputs())
@@ -412,7 +375,7 @@ class MeasurementStore:
         self._job_runner._active_scope_enter = self.active_scope_enter
         self._job_runner._active_scope_exit = self.active_scope_exit
         self._jobs[job_id] = job
-        self._persist_job(job)
+        self._persistence._persist_job(job)
         self._job_runner.start(job_id, job, executor)
         return self.get_job(job_id)
 
@@ -631,105 +594,6 @@ class MeasurementStore:
     def _execute_lr_repeat_job(self, job: dict[str, Any]) -> dict[str, Any]:
         return self._repeat_runner.execute(job)
 
-    def _pre_average_er_captures(self, *args, **kwargs):
-        return self._repeat_runner._pre_average_er_captures(*args, **kwargs)
-
-    def summarize_repeat_measurements(self, *args, **kwargs):
-        return self._repeat_runner.summarize_repeat_measurements(*args, **kwargs)
-
-    def summarize_lr_repeat_paired(self, *args, **kwargs):
-        return self._repeat_runner.summarize_lr_repeat_paired(*args, **kwargs)
-
-    def _build_pre_averaged_lr_summary(self, *args, **kwargs):
-        return self._repeat_runner._build_pre_averaged_lr_summary(*args, **kwargs)
-
-    def _cleanup_lr_repeat_sweep_wavs(self, *args, **kwargs):
-        return self._repeat_runner._cleanup_lr_repeat_sweep_wavs(*args, **kwargs)
-
-    def _select_repeat_timing_cluster(self, *args, **kwargs):
-        return self._repeat_runner._select_repeat_timing_cluster(*args, **kwargs)
-
-    def _analyze_sweep_capture(self, *args, **kwargs):
-        return self._analyzer.analyze_sweep_capture(*args, **kwargs)
-
-    def _build_impulse_response_debug_segment(self, *args, **kwargs):
-        return self._analyzer._build_impulse_response_debug_segment(*args, **kwargs)
-
-    def _build_ir_preview(self, *args, **kwargs):
-        return self._analyzer._build_ir_preview(*args, **kwargs)
-
-    @staticmethod
-    def _uses_electrical_reference_timing(*args, **kwargs):
-        return MeasurementAnalyzer._uses_electrical_reference_timing(*args, **kwargs)
-
-    @staticmethod
-    def _hybrid_analysis_requirements(*args, **kwargs):
-        return MeasurementAnalyzer._hybrid_analysis_requirements(*args, **kwargs)
-
-    def _build_display_points(self, *args, **kwargs):
-        return self._analyzer._build_display_points(*args, **kwargs)
-
-    def _select_trusted_band(self, *args, **kwargs):
-        return self._analyzer._select_trusted_band(*args, **kwargs)
-
-    @staticmethod
-    def _find_response_outliers(*args, **kwargs):
-        return MeasurementAnalyzer._find_response_outliers(*args, **kwargs)
-
-    @staticmethod
-    def _edge_window_is_stable(*args, **kwargs):
-        return MeasurementAnalyzer._edge_window_is_stable(*args, **kwargs)
-
-    def _estimate_sweep_timing(self, *args, **kwargs):
-        return self._analyzer._estimate_sweep_timing(*args, **kwargs)
-
-    def _build_sweep_timing_anchors(self, *args, **kwargs):
-        return self._analyzer._build_sweep_timing_anchors(*args, **kwargs)
-
-    def _fit_sweep_timing_from_matches(self, *args, **kwargs):
-        return self._analyzer._fit_sweep_timing_from_matches(*args, **kwargs)
-
-    @staticmethod
-    def _weighted_anchor_line_fit(*args, **kwargs):
-        return MeasurementAnalyzer._weighted_anchor_line_fit(*args, **kwargs)
-
-    @staticmethod
-    def _sweep_timing_anchor_region(*args, **kwargs):
-        return MeasurementAnalyzer._sweep_timing_anchor_region(*args, **kwargs)
-
-    def _aggregate_anchor_region_score(self, *args, **kwargs):
-        return self._analyzer._aggregate_anchor_region_score(*args, **kwargs)
-
-    def _find_best_alignment_in_region(self, *args, **kwargs):
-        return self._analyzer._find_best_alignment_in_region(*args, **kwargs)
-
-    def _find_top_n_alignments_in_region(self, *args, **kwargs):
-        return self._analyzer._find_top_n_alignments_in_region(*args, **kwargs)
-
-    def _select_global_lag_from_peaks(self, *args, **kwargs):
-        return self._analyzer._select_global_lag_from_peaks(*args, **kwargs)
-
-    def _build_variable_window_response(self, *args, **kwargs):
-        return self._analyzer._build_variable_window_response(*args, **kwargs)
-
-    def _window_impulse_response(self, *args, **kwargs):
-        return self._analyzer._window_impulse_response(*args, **kwargs)
-
-    def _estimate_impulse_direct_arrival(self, *args, **kwargs):
-        return self._analyzer._estimate_impulse_direct_arrival(*args, **kwargs)
-
-    def _resample_signal(self, *args, **kwargs):
-        return self._analyzer._resample_signal(*args, **kwargs)
-
-    def _find_sweep_start(self, *args, **kwargs):
-        return self._analyzer._find_sweep_start(*args, **kwargs)
-
-    def _fft_correlate(self, *args, **kwargs):
-        return self._analyzer._fft_correlate(*args, **kwargs)
-
-    def _fft_convolve(self, *args, **kwargs):
-        return self._analyzer._fft_convolve(*args, **kwargs)
-
     def _write_sweep_file(
         self,
         path: Path,
@@ -754,31 +618,6 @@ class MeasurementStore:
             start_hz=start_hz,
             end_hz=end_hz,
         )
-
-    @staticmethod
-    def _compute_alignment_shift(*args, **kwargs):
-        return MeasurementRepeatRunner._compute_alignment_shift(*args, **kwargs)
-
-    @staticmethod
-    def _shift_signal(*args, **kwargs):
-        return MeasurementRepeatRunner._shift_signal(*args, **kwargs)
-
-    @staticmethod
-    def _er_pre_average_sample_spread_limit(*args, **kwargs):
-        return MeasurementRepeatRunner._er_pre_average_sample_spread_limit(*args, **kwargs)
-
-    def _extract_measurement_timing_ms(self, *args, **kwargs):
-        return self._repeat_runner._extract_measurement_timing_ms(*args, **kwargs)
-
-    def _select_paired_delta_cluster(self, *args, **kwargs):
-        return self._repeat_runner._select_paired_delta_cluster(*args, **kwargs)
-
-    def _build_repeat_side_summary(self, *args, **kwargs):
-        return self._repeat_runner._build_repeat_side_summary(*args, **kwargs)
-
-    @staticmethod
-    def _write_stereo_wav(*args, **kwargs):
-        return MeasurementRepeatRunner._write_stereo_wav(*args, **kwargs)
 
     @classmethod
     def _public_job_result(cls, value: Any) -> Any:
@@ -882,8 +721,8 @@ class MeasurementStore:
             raise RuntimeError("Refusing to measure through a non-microphone source; select a real PipeWire input")
 
         playback_channel = channel
-        playback_target = self._resolve_playback_target(measurement_scope=measurement_scope)
-        host_reference = self._resolve_host_reference_capture(
+        playback_target = self._routing._resolve_playback_target(measurement_scope=measurement_scope)
+        host_reference = self._routing._resolve_host_reference_capture(
             playback_target=playback_target,
             mic_source_node_name=source_node_name,
             requested_channel=playback_channel,
@@ -972,7 +811,7 @@ class MeasurementStore:
         if reference_warning and not self._analysis_has_warning_code(analysis, "electrical-reference-fallback"):
             self._append_reference_fallback_warning(analysis, reference_warning)
 
-        measurement = self._build_measurement_from_analysis(
+        measurement = self._persistence._build_measurement_from_analysis(
             analysis,
             input_device={
                 "id": str(selected_input.get("id") or "capture-input"),
@@ -1054,9 +893,6 @@ class MeasurementStore:
             "_record_duration_seconds": record_duration_seconds,
         }
 
-    def _run_host_capture_attempt(self, **kwargs):
-        return self._host_capture_runner.execute(**kwargs)
-
     def _run_capture_policy_attempt(
         self,
         *,
@@ -1068,7 +904,7 @@ class MeasurementStore:
     ):
         if capture_path.exists():
             capture_path.unlink()
-        return self._run_host_capture_attempt(
+        return self._host_capture_runner.execute(
             reference_capture=reference_capture,
             capture_channels=capture_channels,
             electrical_reference_channel_index=electrical_reference_channel_index,
@@ -1126,14 +962,14 @@ class MeasurementStore:
             record_cmd.extend(["--sample-count", str(sample_count)])
         record_cmd.append(str(prime_capture))
 
-        playback_route = self._build_measurement_playback_route(play_node, playback_target)
-        play_cmd = self._build_measurement_play_command(
+        playback_route = self._routing._build_measurement_playback_route(play_node, playback_target)
+        play_cmd = self._routing._build_measurement_play_command(
             play_node_name=play_node,
             playback_path=playback_path,
             playback_target=playback_target,
             playback_route=playback_route,
         )
-        playback_route_diagnostics = self._new_measurement_playback_route_diagnostics(playback_route)
+        playback_route_diagnostics = self._routing._new_measurement_playback_route_diagnostics(playback_route)
 
         logger.info(
             "Measurement prime sweep starting: prime_id=%s mic=%s channels=%d sample_rate=%d",
@@ -1142,11 +978,11 @@ class MeasurementStore:
 
         record_proc = subprocess.Popen(record_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         try:
-            self._cleanup_fxroute_links(
+            self._routing._cleanup_fxroute_links(
                 source_node_name=mic_source_node_name,
                 record_node_name=record_node,
             )
-            self._link_host_reference_capture(
+            self._routing._link_host_reference_capture(
                 reference_source_node_name=mic_source_node_name,
                 mic_source_node_name=mic_source_node_name,
                 record_node_name=record_node,
@@ -1157,7 +993,7 @@ class MeasurementStore:
             time.sleep(record_preroll_seconds)
             play_proc = subprocess.Popen(play_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             if playback_route["route"] == "direct-sink":
-                playback_route_diagnostics = self._link_measurement_playback_to_direct_sink(
+                playback_route_diagnostics = self._routing._link_measurement_playback_to_direct_sink(
                     play_node_name=play_node,
                     playback_target=playback_target,
                     playback_route=playback_route,
@@ -1193,11 +1029,11 @@ class MeasurementStore:
                 prime_capture.unlink(missing_ok=True)
             except OSError:
                 pass
-            self._cleanup_measurement_playback_links(
+            self._routing._cleanup_measurement_playback_links(
                 play_node_name=play_node,
                 temporary_links=playback_route_diagnostics.get("temporary_playback_links", []),
             )
-            self._cleanup_fxroute_links(
+            self._routing._cleanup_fxroute_links(
                 source_node_name=mic_source_node_name,
                 record_node_name=record_node,
             )
@@ -1265,7 +1101,7 @@ class MeasurementStore:
         job["message"] = "Measurement interrupted (no live worker)."
         job["result"] = None
         job["error"] = None
-        self._persist_job(job)
+        self._persistence._persist_job(job)
         logger.warning(
             "MEASUREMENT-CANCEL-DIAG stale job without live worker promoted to terminal state: "
             "job_id=%s previous_status=%s",
@@ -1430,7 +1266,7 @@ class MeasurementStore:
                 "updated_at": now,
             }
             try:
-                self._persist_job(job)
+                self._persistence._persist_job(job)
             except Exception:
                 logger.debug("Failed to persist measurement input level status for %s", job_id, exc_info=True)
 
@@ -1442,7 +1278,7 @@ class MeasurementStore:
             job["message"] = message
             job["updated_at"] = self._utc_now()
             try:
-                self._persist_job(job)
+                self._persistence._persist_job(job)
             except Exception:
                 logger.debug("Failed to persist measurement job message for %s", job_id, exc_info=True)
 
@@ -1536,84 +1372,28 @@ class MeasurementStore:
             raise ValueError(f"measurement_scope must be one of: {', '.join(sorted(MEASUREMENT_SCOPES))}")
         return normalized
 
-    def _resolve_playback_target(self, *args, **kwargs):
-        return self._routing._resolve_playback_target(*args, **kwargs)
+    def _resolve_playback_target(
+        self,
+        *,
+        measurement_scope: str = MEASUREMENT_SCOPE_ACTIVE_CHAIN,
+        overview: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return self._routing._resolve_playback_target(measurement_scope=measurement_scope, overview=overview)
 
-    def _resolve_active_chain_playback_target(self, *args, **kwargs):
-        return self._routing._resolve_active_chain_playback_target(*args, **kwargs)
-
-    def _resolve_host_reference_capture(self, *args, **kwargs):
-        return self._routing._resolve_host_reference_capture(*args, **kwargs)
-
-    def _link_host_reference_capture(self, *args, **kwargs):
-        return self._routing._link_host_reference_capture(*args, **kwargs)
-
-    def _link_capture_channels_to_record_stream(self, *args, **kwargs):
-        return self._routing._link_capture_channels_to_record_stream(*args, **kwargs)
-
-    def _list_source_output_ports(self, *args, **kwargs):
-        return self._routing._list_source_output_ports(*args, **kwargs)
-
-    def _build_measurement_playback_route(self, *args, **kwargs):
-        return self._routing._build_measurement_playback_route(*args, **kwargs)
-
-    @staticmethod
-    def _build_measurement_play_command(*args, **kwargs):
-        return MeasurementRouting._build_measurement_play_command(*args, **kwargs)
-
-    @staticmethod
-    def _new_measurement_playback_route_diagnostics(*args, **kwargs):
-        return MeasurementRouting._new_measurement_playback_route_diagnostics(*args, **kwargs)
-
-    def _wait_for_measurement_play_ports(self, *args, **kwargs):
-        return self._routing._wait_for_measurement_play_ports(*args, **kwargs)
-
-    def _link_measurement_playback_to_direct_sink(self, *args, **kwargs):
-        return self._routing._link_measurement_playback_to_direct_sink(*args, **kwargs)
-
-    def _cleanup_measurement_playback_links(self, *args, **kwargs):
-        return self._routing._cleanup_measurement_playback_links(*args, **kwargs)
-
-    def _build_measurement_routing_snapshot(self, *args, **kwargs):
-        return self._routing._build_measurement_routing_snapshot(*args, **kwargs)
-
-    def _lookup_pipewire_audio_node(self, *args, **kwargs):
-        return self._routing._lookup_pipewire_audio_node(*args, **kwargs)
-
-    def _build_pre_sweep_state_snapshot(self, *args, **kwargs):
-        return self._routing._build_pre_sweep_state_snapshot(*args, **kwargs)
-
-    @staticmethod
-    def _extract_pipewire_warning_lines(*args, **kwargs):
-        return MeasurementRouting._extract_pipewire_warning_lines(*args, **kwargs)
-
-    def _pactl_info_value(self, *args, **kwargs):
-        return self._routing._pactl_info_value(*args, **kwargs)
-
-    def _list_pactl_short_nodes(self, *args, **kwargs):
-        return self._routing._list_pactl_short_nodes(*args, **kwargs)
-
-    def _list_relevant_pw_links(self, *args, **kwargs):
-        return self._routing._list_relevant_pw_links(*args, **kwargs)
-
-    def _cleanup_fxroute_links(self, *args, **kwargs):
-        return self._routing._cleanup_fxroute_links(*args, **kwargs)
-
-    @staticmethod
-    def _pick_port(*args, **kwargs):
-        return MeasurementRouting._pick_port(*args, **kwargs)
-
-    @staticmethod
-    def _pick_preferred_port(*args, **kwargs):
-        return MeasurementRouting._pick_preferred_port(*args, **kwargs)
-
-    @staticmethod
-    def _port_suffixes_for_channel_index(*args, **kwargs):
-        return MeasurementRouting._port_suffixes_for_channel_index(*args, **kwargs)
-
-    @staticmethod
-    def _record_input_suffixes_for_channel_index(*args, **kwargs):
-        return MeasurementRouting._record_input_suffixes_for_channel_index(*args, **kwargs)
+    def _build_measurement_playback_route(
+        self,
+        play_node_name: str,
+        playback_target: dict[str, Any],
+        *,
+        measurement_scope: str = MEASUREMENT_SCOPE_ACTIVE_CHAIN,
+        overview: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return self._routing._build_measurement_playback_route(
+            play_node_name,
+            playback_target,
+            measurement_scope=measurement_scope,
+            overview=overview,
+        )
 
     def _resolve_measurement_sample_rate(self) -> int:
         return MEASUREMENT_DEFAULT_SAMPLE_RATE

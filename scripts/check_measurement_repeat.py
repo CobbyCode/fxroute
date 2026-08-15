@@ -126,7 +126,7 @@ def main() -> None:
             measurement_payload("left-2", "left", 1.10, 2.0, electrical=True),
             measurement_payload("left-outlier", "left", 3.00, 20.0, electrical=True),
         ]
-            summary = store.summarize_repeat_measurements(left, base_name="Sofa", channel="left", repeat_count=3)
+            summary = store._repeat_runner.summarize_repeat_measurements(left, base_name="Sofa", channel="left", repeat_count=3)
             repeat = summary["analysis"]["lr_repeat"]
             assert summary["name"] == "Sofa · L"
             assert summary["measurement_kind"] == "lr-repeat-summary"
@@ -144,7 +144,7 @@ def main() -> None:
                 measurement_payload("right-1", "right", 1.00, 0.0, electrical=False),
                 measurement_payload("right-2", "right", 3.00, 2.0, electrical=False),
             ]
-            unstable = store.summarize_repeat_measurements(right, base_name="Sofa", channel="right", repeat_count=2)
+            unstable = store._repeat_runner.summarize_repeat_measurements(right, base_name="Sofa", channel="right", repeat_count=2)
             unstable_repeat = unstable["analysis"]["lr_repeat"]
             assert unstable["name"] == "Sofa · R"
             assert unstable_repeat["accepted_runs"] == 0

@@ -11,7 +11,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
 import autosub
-from measurement import MEASUREMENT_SCOPE_ACTIVE_CHAIN, MEASUREMENT_SCOPE_RAW_HELPER, MeasurementStore
+from measurement import MEASUREMENT_SCOPE_ACTIVE_CHAIN, MEASUREMENT_SCOPE_RAW_HELPER
+from measurement_routing import MeasurementRouting
 
 
 def runtime_config() -> main.BassManagementConfig:
@@ -44,7 +45,7 @@ class AutoSubPlaybackGainTests(unittest.TestCase):
         self.assertEqual(captured["source"], "hardware-sink")
         set_output_volume.assert_not_called()
 
-        command = MeasurementStore._build_measurement_play_command(
+        command = MeasurementRouting._build_measurement_play_command(
             play_node_name="fxroute-measure-play-test",
             playback_path=Path("/tmp/sweep.wav"),
             playback_target={"target_name": "alsa_output.test"},
@@ -64,7 +65,7 @@ class AutoSubPlaybackGainTests(unittest.TestCase):
         self.assertEqual(captured["volume_db"], -20.0)
         self.assertEqual(captured["source"], "loudness.params.volumeDb")
 
-        command = MeasurementStore._build_measurement_play_command(
+        command = MeasurementRouting._build_measurement_play_command(
             play_node_name="fxroute-measure-play-test",
             playback_path=Path("/tmp/sweep.wav"),
             playback_target={"target_name": "alsa_output.test"},
@@ -107,8 +108,8 @@ class AutoSubPlaybackGainTests(unittest.TestCase):
             "playback_target": {"target_name": "alsa_output.test"},
             "playback_route": {"route": "direct-sink", "measurement_scope": MEASUREMENT_SCOPE_ACTIVE_CHAIN},
         }
-        without_gain = MeasurementStore._build_measurement_play_command(**kwargs)
-        with_gain = MeasurementStore._build_measurement_play_command(
+        without_gain = MeasurementRouting._build_measurement_play_command(**kwargs)
+        with_gain = MeasurementRouting._build_measurement_play_command(
             **kwargs,
             playback_gain=0.1,
         )

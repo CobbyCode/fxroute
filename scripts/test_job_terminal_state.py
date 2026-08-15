@@ -165,7 +165,7 @@ class MeasurementJobStateTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(playback.exists())
             # Second cleanup (e.g. re-entry) must be a harmless no-op.
             store._cleanup_job_wav_files(job_id)
-            store._cleanup_lr_repeat_sweep_wavs(job_id)
+            store._repeat_runner._cleanup_lr_repeat_sweep_wavs(job_id)
 
 
 class AutoSubJobStateTests(unittest.TestCase):

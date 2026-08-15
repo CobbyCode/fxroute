@@ -17,6 +17,7 @@ import numpy as np
 
 from measurement import MeasurementStore, SWEEP_V2_SECONDS, SWEEP_V2_TAIL_SECONDS
 from measurement_analyzer import MeasurementAnalyzer
+from measurement_persistence import MeasurementPersistence
 
 
 def _repeat_meta_result(store, sweep_id):
@@ -150,7 +151,7 @@ class MeasurementWavLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 return _repeat_meta_result(store, sweep_id)
 
             store._execute_capture_job = _executor
-            store.summarize_lr_repeat_paired = lambda _a, _b, base_name="", repeat_count=1: [
+            store._repeat_runner.summarize_lr_repeat_paired = lambda _a, _b, base_name="", repeat_count=1: [
                 {"channel": "left"}, {"channel": "right"}
             ]
             result = store._execute_lr_repeat_job(store._jobs[job_id])
@@ -234,7 +235,7 @@ class MeasurementWavLifecycleTests(unittest.IsolatedAsyncioTestCase):
             other_playback.write_bytes(b"RIFF-test")
 
             store._cleanup_job_wav_files("measurement-job-unrelated")
-            store._cleanup_lr_repeat_sweep_wavs("measurement-repeat-job-unrelated")
+            store._repeat_runner._cleanup_lr_repeat_sweep_wavs("measurement-repeat-job-unrelated")
 
             self.assertTrue(other_capture.exists())
             self.assertTrue(other_playback.exists())
@@ -256,8 +257,8 @@ class MeasurementWavLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 raise RuntimeError("pre-average QC failed")
 
             with patch.object(store, "_load_wav_array", _fake_load), \
-                    patch.object(store, "_find_sweep_start", lambda *_a, **_k: 0), \
-                    patch.object(store, "_estimate_sweep_timing", lambda *_a, **_k: {
+                    patch.object(store._analyzer, "_find_sweep_start", lambda *_a, **_k: 0), \
+                    patch.object(store._analyzer, "_estimate_sweep_timing", lambda *_a, **_k: {
                         "aligned_start": 0,
                         "observed_sweep_samples": sweep.shape[0],
                         "start_score": 1.0,
@@ -268,12 +269,12 @@ class MeasurementWavLifecycleTests(unittest.IsolatedAsyncioTestCase):
                         "total_drift_samples": 0,
                         "anchor_seconds": 0.0,
                     }), \
-                    patch.object(store, "_compute_alignment_shift", lambda *_a, **_k: 0), \
-                    patch.object(store, "_shift_signal", lambda signal, _shift: signal), \
-                    patch.object(store, "_write_stereo_wav", _fake_write_wav), \
-                    patch.object(store, "_analyze_sweep_capture", _fake_analyze):
+                    patch.object(store._repeat_runner, "_compute_alignment_shift", lambda *_a, **_k: 0), \
+                    patch.object(store._repeat_runner, "_shift_signal", lambda signal, _shift: signal), \
+                    patch.object(store._repeat_runner, "_write_stereo_wav", _fake_write_wav), \
+                    patch.object(store._analyzer, "_analyze_sweep_capture", _fake_analyze):
                 with self.assertRaisesRegex(RuntimeError, "pre-average QC failed"):
-                    store._pre_average_er_captures(
+                    store._repeat_runner._pre_average_er_captures(
                         capture_paths=["c1.wav", "c2.wav"],
                         playback_path="p.wav",
                         sample_rate=48_000,
@@ -302,8 +303,8 @@ class MeasurementWavLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 raise OSError("disk full")
 
             with patch.object(store, "_load_wav_array", _fake_load), \
-                    patch.object(store, "_find_sweep_start", lambda *_a, **_k: 0), \
-                    patch.object(store, "_estimate_sweep_timing", lambda *_a, **_k: {
+                    patch.object(store._analyzer, "_find_sweep_start", lambda *_a, **_k: 0), \
+                    patch.object(store._analyzer, "_estimate_sweep_timing", lambda *_a, **_k: {
                         "aligned_start": 0,
                         "observed_sweep_samples": sweep.shape[0],
                         "start_score": 1.0,
@@ -314,11 +315,11 @@ class MeasurementWavLifecycleTests(unittest.IsolatedAsyncioTestCase):
                         "total_drift_samples": 0,
                         "anchor_seconds": 0.0,
                     }), \
-                    patch.object(store, "_compute_alignment_shift", lambda *_a, **_k: 0), \
-                    patch.object(store, "_shift_signal", lambda signal, _shift: signal), \
-                    patch.object(store, "_write_stereo_wav", _failing_write_wav):
+                    patch.object(store._repeat_runner, "_compute_alignment_shift", lambda *_a, **_k: 0), \
+                    patch.object(store._repeat_runner, "_shift_signal", lambda signal, _shift: signal), \
+                    patch.object(store._repeat_runner, "_write_stereo_wav", _failing_write_wav):
                 with self.assertRaisesRegex(OSError, "disk full"):
-                    store._pre_average_er_captures(
+                    store._repeat_runner._pre_average_er_captures(
                         capture_paths=["c1.wav", "c2.wav"],
                         playback_path="p.wav",
                         sample_rate=48_000,
@@ -407,7 +408,7 @@ class MeasurementWavLifecycleTests(unittest.IsolatedAsyncioTestCase):
             self._register_job(store, job_id)
             capture, playback = self._write_job_wavs(store, job_id)
 
-            original_persist = MeasurementStore._persist_job
+            original_persist = MeasurementPersistence._persist_job
 
             def _executor(_job):
                 return {"message": "Measurement finished."}
@@ -415,10 +416,10 @@ class MeasurementWavLifecycleTests(unittest.IsolatedAsyncioTestCase):
             def _flaky_persist(job):
                 if str(job.get("status") or "") in {"completed", "failed", "cancelled"}:
                     raise OSError("disk full")
-                original_persist(store, job)
+                original_persist(store._persistence, job)
 
             store._execute_capture_job = _executor
-            store._persist_job = _flaky_persist
+            store._persistence._persist_job = _flaky_persist
             await store._run_measurement_job(job_id)
 
             self.assertEqual(store.get_job(job_id)["status"], "completed")

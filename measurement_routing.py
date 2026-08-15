@@ -35,7 +35,7 @@ class MeasurementRouting:
     ) -> dict[str, Any]:
         overview = overview or self._get_output_overview()
         self._store._normalize_measurement_scope(measurement_scope)
-        return self._store._resolve_active_chain_playback_target(overview)
+        return self._resolve_active_chain_playback_target(overview)
 
     def _resolve_active_chain_playback_target(self, overview: dict[str, Any]) -> dict[str, Any]:
         target_name = "fxroute_dsp_sink"
@@ -68,9 +68,9 @@ class MeasurementRouting:
             raise RuntimeError("Host-reference capture requires a real microphone source")
         monitor_source_node_name = f"{sink_node_name}.monitor"
         monitor_channel = "right" if requested_channel == "right" else "left"
-        monitor_ports = self._store._list_source_output_ports(monitor_source_node_name)
+        monitor_ports = self._list_source_output_ports(monitor_source_node_name)
         preferred_suffixes = [":monitor_FR", ":output_FR", ":capture_FR", ":capture_MONO", ":output_MONO"] if monitor_channel == "right" else [":monitor_FL", ":output_FL", ":capture_FL", ":capture_MONO", ":output_MONO"]
-        if not self._store._pick_port(monitor_ports, preferred_suffixes):
+        if not self._pick_port(monitor_ports, preferred_suffixes):
             raise RuntimeError(f"Active sink monitor for {requested_channel} is not available on {sink_node_name}")
         return {
             "source_node_name": monitor_source_node_name,
@@ -94,8 +94,8 @@ class MeasurementRouting:
         mic_ports: list[str] = []
         record_inputs: list[str] = []
         while time.monotonic() < deadline:
-            reference_ports = self._store._list_source_output_ports(reference_source_node_name)
-            mic_ports = self._store._list_source_output_ports(mic_source_node_name)
+            reference_ports = self._list_source_output_ports(reference_source_node_name)
+            mic_ports = self._list_source_output_ports(mic_source_node_name)
             record_ports = self._store._list_pw_ports(record_node_name)
             record_inputs = [port for port in record_ports if ":input_" in port]
             if reference_ports and mic_ports and record_inputs:
@@ -142,15 +142,15 @@ class MeasurementRouting:
             )
 
         reference_suffixes = [":monitor_FR", ":output_FR", ":capture_FR", ":capture_MONO", ":output_MONO", ":monitor_FL", ":output_FL", ":capture_FL"] if requested_channel == "right" else [":monitor_FL", ":output_FL", ":capture_FL", ":capture_MONO", ":output_MONO", ":monitor_FR", ":output_FR", ":capture_FR"]
-        mic_suffixes = self._store._port_suffixes_for_channel_index(mic_input_channel_index) + [":capture_MONO", ":output_MONO"]
-        reference_port = self._store._pick_port(reference_ports, reference_suffixes)
-        mic_port = self._store._pick_port(mic_ports, mic_suffixes)
-        input_left = self._store._pick_port(record_inputs, [":input_FL", ":input_MONO"])
-        input_right = self._store._pick_port(record_inputs, [":input_FR", ":input_MONO", ":input_FL"])
+        mic_suffixes = self._port_suffixes_for_channel_index(mic_input_channel_index) + [":capture_MONO", ":output_MONO"]
+        reference_port = self._pick_port(reference_ports, reference_suffixes)
+        mic_port = self._pick_port(mic_ports, mic_suffixes)
+        input_left = self._pick_port(record_inputs, [":input_FL", ":input_MONO"])
+        input_right = self._pick_port(record_inputs, [":input_FR", ":input_MONO", ":input_FL"])
         if not reference_port or not mic_port or not input_left or not input_right:
             raise RuntimeError("Could not resolve PipeWire ports for host-reference capture")
 
-        self._store._cleanup_fxroute_links(
+        self._cleanup_fxroute_links(
             source_node_name=mic_source_node_name,
             record_node_name=record_node_name,
         )
@@ -205,7 +205,7 @@ class MeasurementRouting:
         source_ports: list[str] = []
         record_ports: list[str] = []
         while time.monotonic() < deadline:
-            source_ports = self._store._list_source_output_ports(source_node_name)
+            source_ports = self._list_source_output_ports(source_node_name)
             record_ports = self._store._list_pw_ports(record_node_name)
             record_inputs = [port for port in record_ports if ":input_" in port]
             if source_ports and record_inputs:
@@ -218,8 +218,8 @@ class MeasurementRouting:
         links: list[dict[str, str | int]] = []
         used_pairs: set[tuple[str, str]] = set()
         for channel_index in channel_indices:
-            source_port = self._store._pick_preferred_port(source_ports, self._store._port_suffixes_for_channel_index(channel_index))
-            input_port = self._store._pick_preferred_port(record_inputs, self._store._record_input_suffixes_for_channel_index(channel_index))
+            source_port = self._pick_preferred_port(source_ports, self._port_suffixes_for_channel_index(channel_index))
+            input_port = self._pick_preferred_port(record_inputs, self._record_input_suffixes_for_channel_index(channel_index))
             if not source_port or not input_port:
                 raise RuntimeError(f"Could not resolve PipeWire ports for Input {channel_index + 1}")
             pair = (source_port, input_port)
@@ -375,8 +375,8 @@ class MeasurementRouting:
         ACTIVE_CHAIN that target is fxroute_dsp_sink, so the sweep passes
         through the full FXRoute DSP gain chain.
         """
-        diagnostics = self._store._new_measurement_playback_route_diagnostics(playback_route)
-        play_ports = self._store._wait_for_measurement_play_ports(play_node_name)
+        diagnostics = self._new_measurement_playback_route_diagnostics(playback_route)
+        play_ports = self._wait_for_measurement_play_ports(play_node_name)
         sink_name = str(playback_route.get("playback_target_name") or playback_target.get("target_name") or "").strip()
         sink_ports = self._store._list_pw_ports(sink_name)
         input_left = f"{sink_name}:playback_FL"
@@ -397,7 +397,7 @@ class MeasurementRouting:
                 self._store._create_pipewire_link(str(link["source_port"]), str(link["target_port"]))
                 created_links.append(link)
         except Exception:
-            self._store._cleanup_measurement_playback_links(
+            self._cleanup_measurement_playback_links(
                 play_node_name=play_node_name,
                 temporary_links=created_links,
             )
@@ -405,7 +405,7 @@ class MeasurementRouting:
 
         diagnostics["temporary_playback_links"] = temporary_links
         diagnostics["active_chain_input_links"] = list(temporary_links)
-        diagnostics["play_node_links_after_manual_link"] = self._store._list_relevant_pw_links([play_node_name, sink_name])
+        diagnostics["play_node_links_after_manual_link"] = self._list_relevant_pw_links([play_node_name, sink_name])
         logger.info(
             "Direct-sink measurement playback manually linked: play_node=%s input_links=%s",
             play_node_name,
@@ -476,12 +476,12 @@ class MeasurementRouting:
         snapshot = {
             "label": label,
             "captured_at": self._store._utc_now(),
-            "default_sink": self._store._pactl_info_value("Default Sink"),
-            "default_source": self._store._pactl_info_value("Default Source"),
-            "sinks": self._store._list_pactl_short_nodes("sinks", relevant_nodes),
-            "sources": self._store._list_pactl_short_nodes("sources", relevant_nodes),
+            "default_sink": self._pactl_info_value("Default Sink"),
+            "default_source": self._pactl_info_value("Default Source"),
+            "sinks": self._list_pactl_short_nodes("sinks", relevant_nodes),
+            "sources": self._list_pactl_short_nodes("sources", relevant_nodes),
             "ports": {node: self._store._list_pw_ports(node) for node in relevant_nodes},
-            "links": self._store._list_relevant_pw_links(relevant_nodes),
+            "links": self._list_relevant_pw_links(relevant_nodes),
         }
         snapshot["monitor_sources_involved"] = [
             node
@@ -499,7 +499,7 @@ class MeasurementRouting:
         if not node_name:
             return {}
         for kind in ("sinks", "sources"):
-            for item in self._store._list_pactl_short_nodes(kind, [node_name]):
+            for item in self._list_pactl_short_nodes(kind, [node_name]):
                 if item.get("name") == node_name:
                     item["kind"] = kind[:-1]
                 return item

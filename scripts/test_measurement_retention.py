@@ -47,7 +47,7 @@ class MeasurementRetentionTests(unittest.TestCase):
                 os.utime(output_dir / f"seg-{index:02d}.json", (stamp, stamp))
                 os.utime(output_dir / f"seg-{index:02d}.csv", (stamp, stamp))
 
-            store._prune_ir_debug_segments(output_dir)
+            store._persistence._prune_ir_debug_segments(output_dir)
 
             remaining_json = sorted(path.name for path in output_dir.glob("*.json"))
             remaining_csv = sorted(path.name for path in output_dir.glob("*.csv"))
@@ -83,7 +83,7 @@ class MeasurementRetentionTests(unittest.TestCase):
                     "abs_normalized": 0.0,
                 }],
             }
-            saved = store._save_impulse_response_debug_segment("sweep-new", segment)
+            saved = store._persistence._save_impulse_response_debug_segment("sweep-new", segment)
             self.assertTrue(saved.get("json_path"))
 
             self.assertEqual(len(list(output_dir.glob("*.json"))), IR_DEBUG_SEGMENT_RETENTION_SEGMENTS)
@@ -121,7 +121,7 @@ class MeasurementRetentionTests(unittest.TestCase):
             (store.job_records_dir / f"{old_id}.json").write_text(json.dumps(old_record))
             (store.job_records_dir / f"{fresh_id}.json").write_text(json.dumps(fresh_record))
 
-            store._retain_job_history()
+            store._persistence._retain_job_history()
 
             self.assertNotIn(old_id, store._jobs)
             self.assertNotIn(old_id, store._job_tasks)
@@ -146,7 +146,7 @@ class MeasurementRetentionTests(unittest.TestCase):
                 "error": {"detail": "boom"},
             }))
 
-            store._retain_job_history()
+            store._persistence._retain_job_history()
 
             self.assertFalse((store.job_records_dir / f"{old_id}.json").exists())
 
@@ -169,7 +169,7 @@ class MeasurementRetentionTests(unittest.TestCase):
                 }
                 (store.job_records_dir / f"{job_id}.json").write_text(json.dumps(store._jobs[job_id]))
 
-            store._retain_job_history()
+            store._persistence._retain_job_history()
 
             self.assertIn(running_id, store._jobs)
             self.assertIn(queued_id, store._jobs)
@@ -194,7 +194,7 @@ class MeasurementRetentionTests(unittest.TestCase):
                 "error": None,
             }
 
-            store._retain_job_history()
+            store._persistence._retain_job_history()
 
             self.assertTrue(user_path.exists())
             self.assertTrue((store.measurements_dir / "saved-measurement.json").exists())
@@ -209,7 +209,7 @@ class MeasurementRetentionTests(unittest.TestCase):
             link = store.job_records_dir / "measurement-job-evil.json"
             link.symlink_to(outside)
 
-            store._retain_job_history()
+            store._persistence._retain_job_history()
 
             self.assertEqual(outside.read_text(), '{"secret": true}')
             self.assertTrue(link.is_symlink())
@@ -235,7 +235,7 @@ class MeasurementRetentionTests(unittest.TestCase):
             (output_dir / "evil.json").symlink_to(outside)
             (output_dir / "evil.csv").symlink_to(outside_csv)
 
-            store._prune_ir_debug_segments(output_dir)
+            store._persistence._prune_ir_debug_segments(output_dir)
 
             self.assertEqual(outside.read_text(), '{"outside": true}')
             self.assertEqual(outside_csv.read_text(), "outside")
@@ -271,7 +271,7 @@ class MeasurementRetentionTests(unittest.TestCase):
             }
 
             # Must never raise (would break job finalization / measurement start).
-            store._retain_job_history()
+            store._persistence._retain_job_history()
 
             # Naive timestamps are normalized to UTC and retained out when old;
             # malformed timestamps are skipped conservatively and kept.
@@ -299,7 +299,7 @@ class MeasurementRetentionTests(unittest.TestCase):
             (output_dir / "seg-00.csv").unlink()
             (output_dir / "seg-00.csv").symlink_to(outside_csv)
 
-            store._prune_ir_debug_segments(output_dir)
+            store._persistence._prune_ir_debug_segments(output_dir)
 
             self.assertTrue((output_dir / "seg-00.json").exists())
             self.assertTrue((output_dir / "seg-00.csv").is_symlink())
@@ -323,7 +323,7 @@ class MeasurementRetentionTests(unittest.TestCase):
             (output_dir / "seg-x.csv").write_text("x")
             (output_dir / "seg-x.json").symlink_to(outside)
 
-            store._prune_ir_debug_segments(output_dir)
+            store._persistence._prune_ir_debug_segments(output_dir)
 
             self.assertTrue((output_dir / "seg-x.csv").exists())
             self.assertTrue((output_dir / "seg-x.json").is_symlink())
@@ -354,13 +354,13 @@ class MeasurementRetentionTests(unittest.TestCase):
                 return original_unlink(path_self, *args, **kwargs)
 
             with patch.object(Path, "unlink", _flaky_unlink):
-                store._prune_ir_debug_segments(output_dir)
+                store._persistence._prune_ir_debug_segments(output_dir)
             # First run: seg-00 CSV removal failed, its JSON stays intact.
             self.assertTrue((output_dir / "seg-00.json").exists())
             self.assertTrue((output_dir / "seg-00.csv").exists())
 
             # Second run: the pair can now be removed completely.
-            store._prune_ir_debug_segments(output_dir)
+            store._persistence._prune_ir_debug_segments(output_dir)
 
             self.assertEqual(len(list(output_dir.glob("*.json"))), IR_DEBUG_SEGMENT_RETENTION_SEGMENTS)
             self.assertEqual(len(list(output_dir.glob("*.csv"))), IR_DEBUG_SEGMENT_RETENTION_SEGMENTS)

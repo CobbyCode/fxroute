@@ -17,6 +17,7 @@ from hybrid_measurement import (
     sum_complex_points,
 )
 from measurement import MeasurementStore
+from measurement_analyzer import MeasurementAnalyzer
 from measurement_persistence import MeasurementPersistence
 
 
@@ -54,7 +55,7 @@ class HybridMeasurementAnalysisTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as home:
             store = MeasurementStore(home=Path(home))
             self.assertIsInstance(store._persistence, MeasurementPersistence)
-            measurement = store._build_measurement_from_analysis(
+            measurement = store._persistence._build_measurement_from_analysis(
                 self._analysis_payload(),
                 input_device={"id": "mic", "label": "Mic"},
                 channel="left",
@@ -67,7 +68,7 @@ class HybridMeasurementAnalysisTests(unittest.TestCase):
     def test_direct_complex_response_survives_final_measurement_payload(self):
         with tempfile.TemporaryDirectory() as home:
             store = MeasurementStore(home=Path(home))
-            measurement = store._build_measurement_from_analysis(
+            measurement = store._persistence._build_measurement_from_analysis(
                 self._analysis_payload(),
                 input_device={"id": "mic", "label": "Mic"},
                 channel="left",
@@ -78,10 +79,10 @@ class HybridMeasurementAnalysisTests(unittest.TestCase):
         self.assertEqual(measurement["analysis"]["complex_response"]["points"], [[40, 1, 0]])
 
     def test_classic_role_does_not_request_hybrid_analysis(self):
-        self.assertEqual(MeasurementStore._hybrid_analysis_requirements(""), (False, False))
-        self.assertEqual(MeasurementStore._hybrid_analysis_requirements("secondary"), (False, False))
-        self.assertEqual(MeasurementStore._hybrid_analysis_requirements("mlp"), (False, True))
-        self.assertEqual(MeasurementStore._hybrid_analysis_requirements("direct"), (True, True))
+        self.assertEqual(MeasurementAnalyzer._hybrid_analysis_requirements(""), (False, False))
+        self.assertEqual(MeasurementAnalyzer._hybrid_analysis_requirements("secondary"), (False, False))
+        self.assertEqual(MeasurementAnalyzer._hybrid_analysis_requirements("mlp"), (False, True))
+        self.assertEqual(MeasurementAnalyzer._hybrid_analysis_requirements("direct"), (True, True))
 
     def test_first_reflection_sets_gate_and_frequency_limit(self):
         sample_rate = 48_000

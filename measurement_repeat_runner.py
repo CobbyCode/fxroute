@@ -77,9 +77,9 @@ class MeasurementRepeatRunner:
 
         er_timings: list[dict[str, Any]] = []
         for er_ch in er_signals:
-            coarse_start = self._store._find_sweep_start(er_ch, reference_sweep)
+            coarse_start = self._store._analyzer._find_sweep_start(er_ch, reference_sweep)
             er_timings.append(
-                self._store._estimate_sweep_timing(
+                self._store._analyzer._estimate_sweep_timing(
                     er_ch,
                     reference_sweep,
                     coarse_start,
@@ -101,12 +101,12 @@ class MeasurementRepeatRunner:
         applied_shifts: list[int] = [0]
 
         for i in range(1, len(er_signals)):
-            shift = self._store._compute_alignment_shift(ref_er, er_signals[i], sample_rate)
+            shift = self._compute_alignment_shift(ref_er, er_signals[i], sample_rate)
             alignment_shifts.append(shift)
             applied_shift = -shift
             applied_shifts.append(applied_shift)
-            aligned_mic.append(self._store._shift_signal(mic_signals[i], applied_shift))
-            aligned_er.append(self._store._shift_signal(er_signals[i], applied_shift))
+            aligned_mic.append(self._shift_signal(mic_signals[i], applied_shift))
+            aligned_er.append(self._shift_signal(er_signals[i], applied_shift))
             if applied_shift > 0:
                 valid_ranges.append((applied_shift, mic_signals[i].shape[0]))
             elif applied_shift < 0:
@@ -115,7 +115,7 @@ class MeasurementRepeatRunner:
                 valid_ranges.append((0, mic_signals[i].shape[0]))
 
         sample_spread = max(alignment_shifts) - min(alignment_shifts)
-        spread_limit = self._store._er_pre_average_sample_spread_limit(sample_rate)
+        spread_limit = self._er_pre_average_sample_spread_limit(sample_rate)
         overlap_start = max(start for start, _end in valid_ranges)
         overlap_end = min(end for _start, end in valid_ranges)
         if overlap_end <= overlap_start:
@@ -140,7 +140,7 @@ class MeasurementRepeatRunner:
         residual_shifts = [
             0,
             *[
-                self._store._compute_alignment_shift(overlap_er[0], overlap_er[i], sample_rate)
+                self._compute_alignment_shift(overlap_er[0], overlap_er[i], sample_rate)
                 for i in range(1, len(overlap_er))
             ],
         ]
@@ -231,11 +231,11 @@ class MeasurementRepeatRunner:
                 averaged_mic,
                 averaged_er,
             ])
-            self._store._write_stereo_wav(averaged_path, sample_rate, stereo)
+            self._write_stereo_wav(averaged_path, sample_rate, stereo)
 
             # Run standard analysis — mic on ch0, ER on ch1
             try:
-                analysis = self._store._analyze_sweep_capture(
+                analysis = self._store._analyzer._analyze_sweep_capture(
                     averaged_path,
                     expected_sample_rate=sample_rate,
                     channel="",
@@ -385,7 +385,7 @@ class MeasurementRepeatRunner:
                     if live_job is not None and not self._store._is_terminal_job_status(live_job.get("status")):
                         live_job["message"] = f"L/R repeat {sweep_number}/{total_sweeps}: {channel.upper()}{repeat_index + 1}…"
                         live_job["updated_at"] = self._store._utc_now()
-                        self._store._persist_job(live_job)
+                        self._store._persistence._persist_job(live_job)
                 capture_job = deepcopy(job)
                 # Unique ID per sweep so each capture gets its own WAV file
                 sweep_id = f"{job_id}-repeat{repeat_index + 1}-{channel}"
@@ -451,7 +451,7 @@ class MeasurementRepeatRunner:
                     start_hz=start_hz,
                     end_hz=end_hz,
                 )
-                avg_analysis, debug = self._store._pre_average_er_captures(
+                avg_analysis, debug = self._pre_average_er_captures(
                     [m["capture_path"] for m in side_meta],
                     playback_path=pb_path,
                     sample_rate=sr,
@@ -462,10 +462,10 @@ class MeasurementRepeatRunner:
                     inverse_sweep=inverse_sweep,
                 )
                 source_traces = [
-                    self._store._select_merge_trace(item, "traces", preferred_role="trusted")
+                    self._store._persistence._select_merge_trace(item, "traces", preferred_role="trusted")
                     for item in captures[side_channel]
                 ]
-                source_trace_average = self._store._average_merge_traces(
+                source_trace_average = self._store._persistence._average_merge_traces(
                     source_traces,
                     label=f"{side_channel.title()} repeat · magnitude average of individual sweeps",
                     kind="lr-repeat-er-source-magnitude-average",
@@ -473,12 +473,12 @@ class MeasurementRepeatRunner:
                     color=TRACE_COLORS[2],
                 )
                 source_review_traces = [
-                    self._store._select_merge_trace(item, "review_traces", preferred_role="raw-review", required=False)
+                    self._store._persistence._select_merge_trace(item, "review_traces", preferred_role="raw-review", required=False)
                     for item in captures[side_channel]
                 ]
                 source_review_average = None
                 if all(source_review_traces):
-                    source_review_average = self._store._average_merge_traces(
+                    source_review_average = self._store._persistence._average_merge_traces(
                         source_review_traces,
                         label=f"{side_channel.title()} repeat · raw magnitude average of individual sweeps",
                         kind="lr-repeat-er-source-review-magnitude-average",
@@ -515,14 +515,14 @@ class MeasurementRepeatRunner:
             # Both sides pre-averaged: build paired summary directly
             l_eff = captures["left"][0]
             r_eff = captures["right"][0]
-            l_summary = self._store._build_pre_averaged_lr_summary(
+            l_summary = self._build_pre_averaged_lr_summary(
                 l_eff, r_eff,
                 side="left",
                 base_name=str(job.get("base_name") or "L/R Repeat"),
                 repeat_count=repeat_count,
                 pre_avg_debug=pre_avg_debug,
             )
-            r_summary = self._store._build_pre_averaged_lr_summary(
+            r_summary = self._build_pre_averaged_lr_summary(
                 r_eff, l_eff,
                 side="right",
                 base_name=str(job.get("base_name") or "L/R Repeat"),
@@ -530,7 +530,7 @@ class MeasurementRepeatRunner:
                 pre_avg_debug=pre_avg_debug,
             )
         else:
-            l_summary, r_summary = self._store.summarize_lr_repeat_paired(
+            l_summary, r_summary = self.summarize_lr_repeat_paired(
                 captures["left"],
                 captures["right"],
                 base_name=str(job.get("base_name") or "L/R Repeat"),
@@ -576,7 +576,7 @@ class MeasurementRepeatRunner:
     ) -> dict[str, Any]:
         if not measurements:
             raise ValueError("L/R repeat summary needs at least one measurement")
-        normalized = [self._store._normalize_measurement(item) for item in measurements]
+        normalized = [self._store._persistence._normalize_measurement(item) for item in measurements]
         timings = []
         for index, measurement in enumerate(normalized):
             analysis = measurement.get("analysis") if isinstance(measurement.get("analysis"), dict) else {}
@@ -599,7 +599,7 @@ class MeasurementRepeatRunner:
             if electrical_reference_used
             else LR_REPEAT_ACOUSTIC_TIMING_CLUSTER_MS
         )
-        accepted_indices, timing_center_ms, timing_spread_ms = self._store._select_repeat_timing_cluster(
+        accepted_indices, timing_center_ms, timing_spread_ms = self._select_repeat_timing_cluster(
             timings,
             repeat_count=repeat_count,
             cluster_limit_ms=cluster_limit_ms,
@@ -619,8 +619,8 @@ class MeasurementRepeatRunner:
             "channel": channel,
             "measurement_kind": "lr-repeat-summary",
             "traces": [
-                self._store._average_merge_traces(
-                    [self._store._select_merge_trace(item, "traces", preferred_role="trusted") for item in accepted_measurements],
+                self._store._persistence._average_merge_traces(
+                    [self._store._persistence._select_merge_trace(item, "traces", preferred_role="trusted") for item in accepted_measurements],
                     label=f"{summary_name} · trusted average",
                     kind="lr-repeat-sweep-response",
                     role="trusted",
@@ -634,12 +634,12 @@ class MeasurementRepeatRunner:
             ],
         })
         review_traces = [
-            self._store._select_merge_trace(item, "review_traces", preferred_role="raw-review", required=False)
+            self._store._persistence._select_merge_trace(item, "review_traces", preferred_role="raw-review", required=False)
             for item in accepted_measurements
         ]
         if all(review_traces):
             payload["review_traces"] = [
-                self._store._average_merge_traces(
+                self._store._persistence._average_merge_traces(
                     review_traces,
                     label=f"{summary_name} · raw/full-band review average",
                     kind="lr-repeat-sweep-response-review",
@@ -705,7 +705,7 @@ class MeasurementRepeatRunner:
         analysis["reference_path"] = reference_path
         analysis["impulse_response"] = impulse
         payload["analysis"] = analysis
-        return self._store._normalize_measurement(payload)
+        return self._store._persistence._normalize_measurement(payload)
 
     def _extract_measurement_timing_ms(self, measurement: dict[str, Any]) -> float | None:
         """Extract corrected arrival timing from a measurement, or None unavailable."""
@@ -771,20 +771,20 @@ class MeasurementRepeatRunner:
         """
         pair_deltas: list[tuple[int, float]] = []
         for idx in range(min(len(left_measurements), len(right_measurements), repeat_count)):
-            l_timing = self._store._extract_measurement_timing_ms(left_measurements[idx])
-            r_timing = self._store._extract_measurement_timing_ms(right_measurements[idx])
+            l_timing = self._extract_measurement_timing_ms(left_measurements[idx])
+            r_timing = self._extract_measurement_timing_ms(right_measurements[idx])
             if l_timing is not None and r_timing is not None:
                 pair_deltas.append((idx, r_timing - l_timing))
 
         l_elec_all = all(
-            self._store._extract_measurement_timing_ms(m) is not None and
+            self._extract_measurement_timing_ms(m) is not None and
             (m.get("analysis", {}).get("reference_path", {}) or {}).get("electrical_reference_used")
-            for m in left_measurements if self._store._extract_measurement_timing_ms(m) is not None
+            for m in left_measurements if self._extract_measurement_timing_ms(m) is not None
         )
         r_elec_all = all(
-            self._store._extract_measurement_timing_ms(m) is not None and
+            self._extract_measurement_timing_ms(m) is not None and
             (m.get("analysis", {}).get("reference_path", {}) or {}).get("electrical_reference_used")
-            for m in right_measurements if self._store._extract_measurement_timing_ms(m) is not None
+            for m in right_measurements if self._extract_measurement_timing_ms(m) is not None
         )
         electrical_reference_used = l_elec_all and r_elec_all
 
@@ -795,7 +795,7 @@ class MeasurementRepeatRunner:
         )
         min_cluster_size = LR_REPEAT_PAIRED_MIN_CLUSTER_SIZE
 
-        accepted_pair_indices, delta_center, delta_spread = self._store._select_paired_delta_cluster(
+        accepted_pair_indices, delta_center, delta_spread = self._select_paired_delta_cluster(
             [d for _, d in pair_deltas],
             cluster_limit_ms=delta_cluster_limit,
             min_cluster_size=min_cluster_size,
@@ -810,8 +810,8 @@ class MeasurementRepeatRunner:
             l_accepted_timings = []
             r_accepted_timings = []
             for idx in accepted_pair_indices:
-                lt = self._store._extract_measurement_timing_ms(left_measurements[idx])
-                rt = self._store._extract_measurement_timing_ms(right_measurements[idx])
+                lt = self._extract_measurement_timing_ms(left_measurements[idx])
+                rt = self._extract_measurement_timing_ms(right_measurements[idx])
                 if lt is not None:
                     l_accepted_timings.append(lt)
                 if rt is not None:
@@ -822,7 +822,7 @@ class MeasurementRepeatRunner:
             l_final_ms = None
             r_final_ms = None
 
-        l_summary = self._store._build_repeat_side_summary(
+        l_summary = self._build_repeat_side_summary(
             left_measurements,
             accepted_pair_indices,
             base_name=base_name,
@@ -835,7 +835,7 @@ class MeasurementRepeatRunner:
             paired_timing_stable=delta_center is not None,
             pair_count=len(pair_deltas),
         )
-        r_summary = self._store._build_repeat_side_summary(
+        r_summary = self._build_repeat_side_summary(
             right_measurements,
             accepted_pair_indices,
             base_name=base_name,
@@ -940,7 +940,7 @@ class MeasurementRepeatRunner:
             max(residual_shifts) - min(residual_shifts)
             if len(residual_shifts) > 1 else 0
         )
-        spread_limit = self._store._er_pre_average_sample_spread_limit(sample_rate)
+        spread_limit = self._er_pre_average_sample_spread_limit(sample_rate)
         timing_stable = bool(own_dbg.get("pre_average_applied")) and residual_spread <= spread_limit
 
         if delta is not None:
@@ -985,7 +985,7 @@ class MeasurementRepeatRunner:
         analysis_out["reference_path"] = ref_path_out
         analysis_out["impulse_response"] = impulse
         payload["analysis"] = analysis_out
-        return self._store._normalize_measurement(payload)
+        return self._store._persistence._normalize_measurement(payload)
 
     def _build_repeat_side_summary(
         self,
@@ -1005,7 +1005,7 @@ class MeasurementRepeatRunner:
         """Build one side (L or R) of an L/R Repeat summary using pre-clustered pair indices."""
         if not measurements:
             raise ValueError("L/R repeat side summary needs at least one measurement")
-        normalized = [self._store._normalize_measurement(item) for item in measurements]
+        normalized = [self._store._persistence._normalize_measurement(item) for item in measurements]
         accepted_indices = accepted_pair_indices if accepted_pair_indices is not None else list(range(len(normalized)))
         accepted_measurements = [normalized[index] for index in accepted_indices]
         side_label = "L" if channel == "left" else "R"
@@ -1020,8 +1020,8 @@ class MeasurementRepeatRunner:
             "channel": channel,
             "measurement_kind": "lr-repeat-summary",
             "traces": [
-                self._store._average_merge_traces(
-                    [self._store._select_merge_trace(item, "traces", preferred_role="trusted") for item in accepted_measurements],
+                self._store._persistence._average_merge_traces(
+                    [self._store._persistence._select_merge_trace(item, "traces", preferred_role="trusted") for item in accepted_measurements],
                     label=f"{summary_name} · trusted average",
                     kind="lr-repeat-sweep-response",
                     role="trusted",
@@ -1037,12 +1037,12 @@ class MeasurementRepeatRunner:
 
         # Magnitude traces
         review_traces = [
-            self._store._select_merge_trace(item, "review_traces", preferred_role="raw-review", required=False)
+            self._store._persistence._select_merge_trace(item, "review_traces", preferred_role="raw-review", required=False)
             for item in accepted_measurements
         ]
         if all(review_traces):
             payload["review_traces"] = [
-                self._store._average_merge_traces(
+                self._store._persistence._average_merge_traces(
                     review_traces,
                     label=f"{summary_name} · raw/full-band review average",
                     kind="lr-repeat-sweep-response-review",
@@ -1113,7 +1113,7 @@ class MeasurementRepeatRunner:
         analysis["reference_path"] = reference_path
         analysis["impulse_response"] = impulse
         payload["analysis"] = analysis
-        return self._store._normalize_measurement(payload)
+        return self._store._persistence._normalize_measurement(payload)
 
     @staticmethod
     def _select_repeat_timing_cluster(

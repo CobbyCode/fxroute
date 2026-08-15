@@ -77,9 +77,6 @@ class MeasurementAnalyzer:
         self._store = store
         self._capture_quality_error = capture_quality_error
 
-    def analyze_sweep_capture(self, *args, **kwargs):
-        return self._analyze_sweep_capture(*args, **kwargs)
-
     def _build_impulse_response_debug_segment(
         self,
         impulse_response: np.ndarray,
@@ -271,10 +268,10 @@ class MeasurementAnalyzer:
         if reference_peak_dbfs <= -90.0 and reference_rms_dbfs <= -100.0:
             raise RuntimeError(f"{reference_channel_label.capitalize()} channel was effectively silent")
 
-        allow_drift_compensation = not self._store._uses_electrical_reference_timing(reference_channel_label)
+        allow_drift_compensation = not self._uses_electrical_reference_timing(reference_channel_label)
         if timing_override is None:
-            coarse_start = self._store._find_sweep_start(timing_signal, reference_sweep)
-            timing = self._store._estimate_sweep_timing(
+            coarse_start = self._find_sweep_start(timing_signal, reference_sweep)
+            timing = self._estimate_sweep_timing(
                 timing_signal,
                 reference_sweep,
                 coarse_start,
@@ -326,20 +323,20 @@ class MeasurementAnalyzer:
             raise RuntimeError("Aligned sweep segment was too short after timing estimation")
         stretch_ratio = float(timing.get("stretch_ratio") or 1.0)
         corrected_segment_size = max(reference_sweep.size, int(round(analysis_segment.size / max(stretch_ratio, 1e-9))))
-        corrected_segment = self._store._resample_signal(analysis_segment, corrected_segment_size)
-        corrected_reference_segment = self._store._resample_signal(reference_segment, corrected_segment_size)
+        corrected_segment = self._resample_signal(analysis_segment, corrected_segment_size)
+        corrected_reference_segment = self._resample_signal(reference_segment, corrected_segment_size)
         captured_tail_samples = max(0, analysis_segment.size - int(timing["observed_sweep_samples"]))
 
-        timing_impulse_response = self._store._fft_convolve(corrected_segment, inverse_sweep.astype(np.float64))
-        reference_impulse_response = self._store._fft_convolve(corrected_reference_segment, inverse_sweep.astype(np.float64))
-        magnitude_impulse_response = self._store._fft_convolve(analysis_segment, inverse_sweep.astype(np.float64))
-        windowed_ir, ir_meta = self._store._window_impulse_response(timing_impulse_response, sample_rate)
-        direct_timing_meta = self._store._estimate_impulse_direct_arrival(
+        timing_impulse_response = self._fft_convolve(corrected_segment, inverse_sweep.astype(np.float64))
+        reference_impulse_response = self._fft_convolve(corrected_reference_segment, inverse_sweep.astype(np.float64))
+        magnitude_impulse_response = self._fft_convolve(analysis_segment, inverse_sweep.astype(np.float64))
+        windowed_ir, ir_meta = self._window_impulse_response(timing_impulse_response, sample_rate)
+        direct_timing_meta = self._estimate_impulse_direct_arrival(
             timing_impulse_response,
             reference_impulse_response,
             sample_rate,
         )
-        response_frequencies, response_magnitude, variable_window_meta = self._store._build_variable_window_response(
+        response_frequencies, response_magnitude, variable_window_meta = self._build_variable_window_response(
             magnitude_impulse_response,
             sample_rate,
         )
@@ -407,7 +404,7 @@ class MeasurementAnalyzer:
             top_timing_candidates_by_score,
             top_timing_candidates_chronological,
         )
-        impulse_response_debug_segment = self._store._build_impulse_response_debug_segment(
+        impulse_response_debug_segment = self._build_impulse_response_debug_segment(
             timing_impulse_response,
             sample_rate=sample_rate,
             channel=channel,
@@ -415,12 +412,12 @@ class MeasurementAnalyzer:
             alignment_samples=aligned_start,
             direct_timing_meta=direct_timing_meta,
         )
-        display_data = self._store._build_display_points(
+        display_data = self._build_display_points(
             frequencies=response_frequencies,
             magnitude=response_magnitude,
             calibration_curve=calibration_curve,
         )
-        needs_direct_response, needs_complex_response = self._store._hybrid_analysis_requirements(measurement_role)
+        needs_direct_response, needs_complex_response = self._hybrid_analysis_requirements(measurement_role)
         direct_window = None
         complex_response = None
         if needs_direct_response:
@@ -436,7 +433,7 @@ class MeasurementAnalyzer:
                     sample_rate,
                     direct_window,
                 )
-                direct_display = self._store._build_display_points(
+                direct_display = self._build_display_points(
                     frequencies=direct_frequencies,
                     magnitude=direct_magnitude,
                     calibration_curve=calibration_curve,
@@ -572,7 +569,7 @@ class MeasurementAnalyzer:
                 "pre_window_seconds": round(float(ir_meta["pre_window_seconds"]), 6),
                 "post_window_seconds": round(float(ir_meta["post_window_seconds"]), 6),
                 "peak_dbfs": round(float(ir_meta["peak_dbfs"]), 2),
-                "preview": self._store._build_ir_preview(timing_impulse_response, sample_rate, direct_timing_meta, ir_meta),
+                "preview": self._build_ir_preview(timing_impulse_response, sample_rate, direct_timing_meta, ir_meta),
             },
             "variable_window": variable_window_meta,
             "_impulse_response_debug_segment": impulse_response_debug_segment,
@@ -649,14 +646,14 @@ class MeasurementAnalyzer:
         if not raw_points:
             raise RuntimeError("Sweep analysis produced no displayable trace points")
 
-        trusted_min_hz, trusted_max_hz, trusted_band_meta = self._store._select_trusted_band(
+        trusted_min_hz, trusted_max_hz, trusted_band_meta = self._select_trusted_band(
             raw_points,
         )
         trusted_points = [point for point in raw_points if trusted_min_hz <= point[0] <= trusted_max_hz]
         if not trusted_points:
             raise RuntimeError("Sweep analysis produced no trusted trace points")
 
-        response_outliers = self._store._find_response_outliers(
+        response_outliers = self._find_response_outliers(
             raw_points,
             min_hz=max(RESPONSE_OUTLIER_MIN_HZ, trusted_min_hz),
             max_hz=trusted_max_hz,
@@ -701,13 +698,13 @@ class MeasurementAnalyzer:
         low_index = 0
         high_index = total_points - 1
 
-        while (high_index - low_index + 1) > min_trusted_points and not self._store._edge_window_is_stable(levels[low_index : low_index + window_points]):
+        while (high_index - low_index + 1) > min_trusted_points and not self._edge_window_is_stable(levels[low_index : low_index + window_points]):
             low_index += 1
-        while (high_index - low_index + 1) > min_trusted_points and not self._store._edge_window_is_stable(levels[high_index - window_points + 1 : high_index + 1]):
+        while (high_index - low_index + 1) > min_trusted_points and not self._edge_window_is_stable(levels[high_index - window_points + 1 : high_index + 1]):
             high_index -= 1
 
-        low_stable = self._store._edge_window_is_stable(levels[low_index : low_index + window_points])
-        high_stable = self._store._edge_window_is_stable(levels[high_index - window_points + 1 : high_index + 1])
+        low_stable = self._edge_window_is_stable(levels[low_index : low_index + window_points])
+        high_stable = self._edge_window_is_stable(levels[high_index - window_points + 1 : high_index + 1])
         edge_trimmed = low_index > 0 or high_index < total_points - 1
 
         trimmed = low_index > 0 or high_index < total_points - 1
@@ -800,7 +797,7 @@ class MeasurementAnalyzer:
         )
         search_margin = max(edge_anchor_samples // 2, int(round(sample_rate * SWEEP_TIMING_SEARCH_SECONDS)))
 
-        anchors = self._store._build_sweep_timing_anchors(
+        anchors = self._build_sweep_timing_anchors(
             reference_sweep=reference_sweep,
             anchor_samples=anchor_samples,
             edge_inset=edge_inset,
@@ -817,7 +814,7 @@ class MeasurementAnalyzer:
             expected_start = coarse_start + int(anchor["offset_samples"])
             search_start = max(0, expected_start - search_margin)
             search_end = min(signal.size, expected_start + anchor_samples + search_margin)
-            top = self._store._find_top_n_alignments_in_region(
+            top = self._find_top_n_alignments_in_region(
                 signal[search_start:search_end],
                 anchor["template"],
                 top_n=TOP_N_PEAKS,
@@ -832,7 +829,7 @@ class MeasurementAnalyzer:
                 }
             )
 
-        selected_lag, per_anchor_pick, lag_debug = self._store._select_global_lag_from_peaks(
+        selected_lag, per_anchor_pick, lag_debug = self._select_global_lag_from_peaks(
             anchor_peaks,
             cluster_threshold=LAG_CLUSTER_SAMPLES,
             previous_successful_lag=self._store._last_successful_lag,
@@ -864,7 +861,7 @@ class MeasurementAnalyzer:
                 }
             )
 
-        fit = self._store._fit_sweep_timing_from_matches(
+        fit = self._fit_sweep_timing_from_matches(
             matches=matches,
             reference_sweep_samples=reference_sweep.size,
             sample_rate=sample_rate,
@@ -955,7 +952,7 @@ class MeasurementAnalyzer:
         observed = np.array([float(item["observed_start"]) for item in matches], dtype=np.float64)
         scores = np.array([max(float(item.get("score") or 0.0), 1e-6) for item in matches], dtype=np.float64)
 
-        raw_intercept, raw_slope, raw_residuals = self._store._weighted_anchor_line_fit(offsets, observed, scores)
+        raw_intercept, raw_slope, raw_residuals = self._weighted_anchor_line_fit(offsets, observed, scores)
         raw_slope = min(max(raw_slope, 0.5), 1.5)
         raw_ppm = (raw_slope - 1.0) * 1_000_000.0
 
@@ -1000,7 +997,7 @@ class MeasurementAnalyzer:
                     "time_fraction": round(fraction, 5),
                     "time_seconds": round(float(item["offset_samples"]) / sample_rate, 6),
                     "approx_frequency_hz": round(float(approx_frequency), 2),
-                    "region": self._store._sweep_timing_anchor_region(name),
+                    "region": self._sweep_timing_anchor_region(name),
                     "offset_samples": int(item["offset_samples"]),
                     "score": round(score, 5),
                     "raw_score": round(float(item["raw_score"]), 5),
@@ -1017,7 +1014,7 @@ class MeasurementAnalyzer:
 
         accepted_count = int(np.count_nonzero(fit_candidate_mask))
         if allow_drift_compensation and accepted_count >= 3:
-            fit_intercept, fit_slope, fit_residuals = self._store._weighted_anchor_line_fit(
+            fit_intercept, fit_slope, fit_residuals = self._weighted_anchor_line_fit(
                 offsets[fit_candidate_mask],
                 observed[fit_candidate_mask],
                 scores[fit_candidate_mask],
@@ -1050,8 +1047,8 @@ class MeasurementAnalyzer:
         fitted_all_residuals = observed - (intercept + slope * offsets)
 
         inlier_mask = fit_candidate_mask
-        start_score = self._store._aggregate_anchor_region_score(matches, inlier_mask, region="start")
-        end_score = self._store._aggregate_anchor_region_score(matches, inlier_mask, region="end")
+        start_score = self._aggregate_anchor_region_score(matches, inlier_mask, region="start")
+        end_score = self._aggregate_anchor_region_score(matches, inlier_mask, region="end")
         anchor_matches = []
         for index, item in enumerate(matches):
             fitted_expected_start = float(intercept + slope * offsets[index])
@@ -1144,7 +1141,7 @@ class MeasurementAnalyzer:
         template64 = template.astype(np.float64)
         if region64.size < template64.size:
             raise RuntimeError("Timing search region was too short for sweep alignment")
-        corr = self._store._fft_correlate(region64, template64[::-1])
+        corr = self._fft_correlate(region64, template64[::-1])
         valid = corr[template64.size - 1 : region64.size]
         if valid.size == 0:
             raise RuntimeError("Unable to refine sweep timing")
@@ -1175,7 +1172,7 @@ class MeasurementAnalyzer:
         template64 = template.astype(np.float64)
         if region64.size < template64.size:
             raise RuntimeError("Timing search region was too short for sweep alignment")
-        corr = self._store._fft_correlate(region64, template64[::-1])
+        corr = self._fft_correlate(region64, template64[::-1])
         valid = corr[template64.size - 1 : region64.size]
         if valid.size == 0:
             raise RuntimeError("Unable to refine sweep timing")
@@ -1344,17 +1341,17 @@ class MeasurementAnalyzer:
         return selected_lag, per_anchor_pick, debug
 
     def _build_variable_window_response(self, impulse_response: np.ndarray, sample_rate: int) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
-        low_windowed, low_meta = self._store._window_impulse_response(
+        low_windowed, low_meta = self._window_impulse_response(
             impulse_response,
             sample_rate,
             post_seconds=IR_WINDOW_POST_LOW_SECONDS,
         )
-        mid_windowed, mid_meta = self._store._window_impulse_response(
+        mid_windowed, mid_meta = self._window_impulse_response(
             impulse_response,
             sample_rate,
             post_seconds=IR_WINDOW_POST_SECONDS,
         )
-        high_windowed, high_meta = self._store._window_impulse_response(
+        high_windowed, high_meta = self._window_impulse_response(
             impulse_response,
             sample_rate,
             post_seconds=IR_WINDOW_POST_HIGH_SECONDS,
@@ -1665,7 +1662,7 @@ class MeasurementAnalyzer:
     def _find_sweep_start(self, signal: np.ndarray, reference_sweep: np.ndarray) -> int:
         signal64 = signal.astype(np.float64)
         sweep64 = reference_sweep.astype(np.float64)
-        corr = self._store._fft_correlate(signal64, sweep64[::-1])
+        corr = self._fft_correlate(signal64, sweep64[::-1])
         valid = corr[sweep64.size - 1 : signal64.size]
         if valid.size == 0:
             raise RuntimeError("Unable to align recorded sweep")

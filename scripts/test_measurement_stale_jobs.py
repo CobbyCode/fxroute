@@ -111,7 +111,7 @@ class MeasurementStaleJobTests(unittest.IsolatedAsyncioTestCase):
         ):
             store = self._store(tempdir)
             retention = Mock()
-            store._retain_job_history = retention
+            store._persistence._retain_job_history = retention
 
             job = await store.start_measurement(input_id="mic", channel="left")
 
@@ -126,7 +126,7 @@ class MeasurementStaleJobTests(unittest.IsolatedAsyncioTestCase):
         ):
             store = self._store(tempdir)
             retention = Mock()
-            store._retain_job_history = retention
+            store._persistence._retain_job_history = retention
 
             job = await store.start_lr_repeat_measurement(input_id="mic")
 

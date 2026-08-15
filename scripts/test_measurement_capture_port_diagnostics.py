@@ -23,7 +23,7 @@ class MeasurementCapturePortDiagnosticTests(unittest.TestCase):
         self._tmp.cleanup()
 
     def _link(self, process):
-        return self.store._link_host_reference_capture(
+        return self.store._routing._link_host_reference_capture(
             reference_source_node_name="fxroute_dsp_sink.monitor",
             mic_source_node_name="mic",
             record_node_name="record",
@@ -36,7 +36,7 @@ class MeasurementCapturePortDiagnosticTests(unittest.TestCase):
         process.poll.return_value = None
 
         with patch.object(
-            self.store,
+            self.store._routing,
             "_list_source_output_ports",
             side_effect=lambda name: [f"{name}:monitor_FL"] if name.endswith(".monitor") else [f"{name}:capture_FL"],
         ), patch.object(self.store, "_list_pw_ports", return_value=[]), patch(
@@ -56,7 +56,7 @@ class MeasurementCapturePortDiagnosticTests(unittest.TestCase):
         process.poll.return_value = 2
         process.communicate.return_value = ("", "unknown option --bad")
 
-        with patch.object(self.store, "_list_source_output_ports", return_value=[]), patch.object(
+        with patch.object(self.store._routing, "_list_source_output_ports", return_value=[]), patch.object(
             self.store, "_list_pw_ports", return_value=[]
         ), patch("measurement.time.monotonic", side_effect=[0.0, 0.1]):
             with self.assertRaises(RuntimeError) as caught:
