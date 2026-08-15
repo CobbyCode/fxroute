@@ -262,6 +262,32 @@ async def _auto_sub_sync_dsp_runtime(
     await _dsp_runtime().sync(overview)
 
 
+async def _auto_sub_apply_candidate(
+    *,
+    output_mode: str,
+    global_config: dict[str, Any],
+    subwoofers_config: dict[str, Any] | None,
+    verify: Callable[[dict[str, Any]], bool],
+    load_overview: Callable[[], dict[str, Any]] | None = None,
+) -> bool:
+    """Persist, live-sync, settle, and verify one mode-owned candidate."""
+    try:
+        persisted_overview = set_audio_output_mode(
+            output_mode, global_config, subwoofers_config,
+        )
+        if _dsp_runtime() is not None:
+            await _auto_sub_sync_dsp_runtime(
+                output_mode=output_mode,
+                persisted_overview=persisted_overview,
+            )
+        await asyncio.sleep(0.3)
+        overview = (load_overview or get_audio_output_overview)()
+        return bool(verify(overview))
+    except Exception:
+        logger.exception("Auto-sub: candidate apply or verification failed")
+        return False
+
+
 def _auto_sub_step_ms(fc: int) -> float:
     return (1000.0 / float(fc)) / 16.0
 
@@ -3421,26 +3447,20 @@ async def _run_auto_sub_22_optimize(
             )
         )
 
-        apply_ok = False
-        try:
-            sub_config = _auto_sub_22_global_config(gain_snapshot)
-            subwoofers_config = _auto_sub_22_candidate_subwoofers(
-                gain_snapshot,
-                sub1_alignment_ms=best_sub1,
-                sub2_alignment_ms=best_sub2,
-                active_subs=("sub1", "sub2"),
-            )
-            persisted_overview = set_audio_output_mode(OUTPUT_MODE_SUBWOOFER_22, sub_config, subwoofers_config)
-            if _dsp_runtime() is not None:
-                await _auto_sub_sync_dsp_runtime(
-                    output_mode=OUTPUT_MODE_SUBWOOFER_22,
-                    persisted_overview=persisted_overview,
-                )
-            await asyncio.sleep(0.3)
-            verify = _load_audio_output_mode()
-            apply_ok = _auto_sub_22_verify_alignment(verify, best_sub1, best_sub2)
-        except Exception:
-            logger.exception("Auto-sub 2.2: failed to apply winner pair %.2f / %.2f ms", best_sub1, best_sub2)
+        sub_config = _auto_sub_22_global_config(gain_snapshot)
+        subwoofers_config = _auto_sub_22_candidate_subwoofers(
+            gain_snapshot,
+            sub1_alignment_ms=best_sub1,
+            sub2_alignment_ms=best_sub2,
+            active_subs=("sub1", "sub2"),
+        )
+        apply_ok = await _auto_sub_apply_candidate(
+            output_mode=OUTPUT_MODE_SUBWOOFER_22,
+            global_config=sub_config,
+            subwoofers_config=subwoofers_config,
+            verify=lambda overview: _auto_sub_22_verify_alignment(overview, best_sub1, best_sub2),
+            load_overview=_load_audio_output_mode,
+        )
 
         if _auto_sub_cancel_requested(job):
             job["message"] = "Auto Sub Optimize cancelled."
@@ -4215,25 +4235,20 @@ async def _run_auto_sub_22_stereo_optimize(
             )
         )
 
-        apply_ok = False
-        try:
-            sub_config = _auto_sub_22_global_config(original_config_snapshot)
-            subwoofers_config = _auto_sub_22_candidate_subwoofers(
-                original_config_snapshot,
-                sub1_alignment_ms=best_left,
-                sub2_alignment_ms=best_right,
-                active_subs=("sub1", "sub2"),
-            )
-            persisted_overview = set_audio_output_mode(OUTPUT_MODE_SUBWOOFER_22_STEREO, sub_config, subwoofers_config)
-            if _dsp_runtime() is not None:
-                await _auto_sub_sync_dsp_runtime(
-                    output_mode=OUTPUT_MODE_SUBWOOFER_22_STEREO,
-                    persisted_overview=persisted_overview,
-                )
-            await asyncio.sleep(0.3)
-            apply_ok = _auto_sub_22_verify_alignment(_load_audio_output_mode(), best_left, best_right)
-        except Exception:
-            logger.exception("Auto-sub 2.2 Stereo Bass: failed to apply winner pair %.2f / %.2f ms", best_left, best_right)
+        sub_config = _auto_sub_22_global_config(original_config_snapshot)
+        subwoofers_config = _auto_sub_22_candidate_subwoofers(
+            original_config_snapshot,
+            sub1_alignment_ms=best_left,
+            sub2_alignment_ms=best_right,
+            active_subs=("sub1", "sub2"),
+        )
+        apply_ok = await _auto_sub_apply_candidate(
+            output_mode=OUTPUT_MODE_SUBWOOFER_22_STEREO,
+            global_config=sub_config,
+            subwoofers_config=subwoofers_config,
+            verify=lambda overview: _auto_sub_22_verify_alignment(overview, best_left, best_right),
+            load_overview=_load_audio_output_mode,
+        )
 
         if not apply_ok:
             job["status"] = "failed"
@@ -5209,19 +5224,17 @@ async def _run_auto_sub_optimize(
                     "sub_polarity": original_polarity,
                     "main_highpass_enabled": original_highpass,
                 }
-                persisted_overview = set_audio_output_mode(OUTPUT_MODE_SUBWOOFER_21, sub_config)
-                if _dsp_runtime() is not None:
-                    await _auto_sub_sync_dsp_runtime(
-                        output_mode=OUTPUT_MODE_SUBWOOFER_21,
-                        persisted_overview=persisted_overview,
-                    )
-                await asyncio.sleep(0.3)
-                verify = _load_audio_output_mode()
-                if float(verify.get("subwoofer", {}).get("sub_alignment_ms", -999)) == best_delay:
-                    apply_ok = True
+                apply_ok = await _auto_sub_apply_candidate(
+                    output_mode=OUTPUT_MODE_SUBWOOFER_21,
+                    global_config=sub_config,
+                    subwoofers_config=None,
+                    verify=lambda overview: float(overview.get("subwoofer", {}).get("sub_alignment_ms", -999)) == best_delay,
+                    load_overview=_load_audio_output_mode,
+                )
+                if apply_ok:
                     applied_delay = best_delay
-            except Exception as exc:
-                logger.exception("Auto-sub: failed to apply winner delay %.2f ms", best_delay)
+            except Exception:
+                logger.exception("Auto-sub: failed to construct winner delay %.2f ms", best_delay)
         else:
             await _restore_original_config()
             apply_ok = True
