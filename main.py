@@ -2114,71 +2114,8 @@ async def _check_and_recover_silent_active(
     return
 
 
-async def _dsp_output_ports_present():
-    return await playback_orchestration.configured()._dsp_output_ports_present()
-
-
-
 async def _wait_for_dsp_output_ports(timeout_ms):
     return await playback_orchestration.configured().wait_for_dsp_output_ports(timeout_ms)
-
-
-
-async def _playback_graph_diagnosis(audio_overview=None, *, source=None, target_rate=None, require_source=False):
-    return await playback_orchestration.configured().playback_graph_diagnosis(audio_overview, source=source, target_rate=target_rate, require_source=require_source)
-
-
-
-def _missing_playback_graph_links(diagnosis, *, include_source=False):
-    return playback_orchestration.configured().missing_playback_graph_links(diagnosis, include_source=include_source)
-
-
-
-def _measurement_session_link_loss_is_repairable(diagnosis, *, target_rate):
-    return playback_orchestration.configured().measurement_session_link_loss_is_repairable(diagnosis, target_rate=target_rate)
-
-
-
-def _log_playback_graph_diagnosis(diagnosis, *, target_rate, reason, detail):
-    return playback_orchestration.configured().log_playback_graph_diagnosis(diagnosis, target_rate=target_rate, reason=reason, detail=detail)
-
-
-
-async def _repair_stereo_output_links_once(diagnosis):
-    return await playback_orchestration.configured().repair_stereo_output_links_once(diagnosis)
-
-
-
-async def _coordinator_reconcile_subwoofer_links_only():
-    return await playback_orchestration.configured().reconcile_subwoofer_links_only()
-
-
-
-def _post_start_graph_links_are_repairable(diagnosis, *, include_source=False, require_source=True):
-    return playback_orchestration.configured().post_start_graph_links_are_repairable(diagnosis, include_source=include_source, require_source=require_source)
-
-
-
-async def _relink_missing_production_links(diagnosis, *, include_source=False, require_source=True):
-    return await playback_orchestration.configured().relink_missing_production_links(diagnosis, include_source=include_source, require_source=require_source)
-
-
-
-async def _coordinator_reconcile_post_start_graph(request):
-    return await playback_orchestration.configured().reconcile_post_start_graph(request)
-
-
-
-async def _coordinator_establish_effects_and_helper(request, *, ee_port_timeout_ms=None):
-    kwargs = {} if ee_port_timeout_ms is None else {"ee_port_timeout_ms": ee_port_timeout_ms}
-    return await playback_orchestration.configured().establish_effects_and_helper(request, **kwargs)
-
-
-
-async def _playback_graph_links_complete(audio_overview=None, *, source=None, target_rate=None, require_source=False):
-    return await playback_orchestration.configured().playback_graph_links_complete(audio_overview, source=source, target_rate=target_rate, require_source=require_source)
-
-
 
 
 
@@ -2324,69 +2261,6 @@ async def _mpv_source_ports_present() -> bool:
             "fxroute_dsp_sink:playback_FR",
         )
     )
-
-
-async def _ensure_mpv_to_dsp_links(
-    timeout_ms: int = RADIO_SOURCE_PORT_READINESS_TIMEOUT_MS,
-) -> bool:
-    """Ensure only the newly-created MPV stream is connected to the native DSP.
-
-    Two-phase, read-back driven contract (no fixed sleeps):
-
-    1. Source port readiness: after a staged ``loadfile`` the mpv PipeWire
-       stream -- and with it mpv:output_FL/FR -- appears only once the
-       stream actually opened; a cold radio stream can take ~4 s.  While
-       the ports are absent we only poll read-only (``pw-link -io``); no
-       link mutation runs against ports that do not exist yet.  That wait
-       is bounded by ``timeout_ms`` as a source-readiness budget.
-    2. Link reconciliation: once the ports exist, existing links are
-       detected read-only and only the missing MPV->EE edges are created
-       idempotently, then confirmed read-only (bounded by
-       ``MPV_LINK_REPAIR_TIMEOUT_MS``).
-
-    Radio-to-radio switches keep the existing DSP output graph; the
-    same contract applies to local playback, which shares this exact path.
-    A missing port set within the bounded budget still fails the transition
-    cleanly at target-source-prepare with the gate/fault safety unchanged.
-    """
-    expected = (
-        ("mpv:output_FL", "fxroute_dsp_sink:playback_FL"),
-        ("mpv:output_FR", "fxroute_dsp_sink:playback_FR"),
-    )
-    readiness_deadline = time.monotonic() + max(timeout_ms, 0) / 1000
-    while not await _mpv_source_ports_present():
-        if time.monotonic() >= readiness_deadline:
-            logger.warning(
-                "Radio handoff MPV source ports did not appear within %s ms; "
-                "skipping link repair",
-                timeout_ms,
-            )
-            return False
-        await asyncio.sleep(PIPEWIRE_HANDOFF_POLL_INTERVAL_MS / 1000)
-
-    repair_deadline = time.monotonic() + MPV_LINK_REPAIR_TIMEOUT_MS / 1000
-    while True:
-        try:
-            links_text = await _run_pw_link_command("-l")
-            missing = [(source, target) for source, target in expected if not _contains_link(links_text, source, target)]
-            if not missing:
-                logger.info("Radio handoff MPV->DSP ingress links complete")
-                return True
-            for source, target in missing:
-                logger.info("Radio handoff repairing MPV->DSP ingress link: %s -> %s", source, target)
-                await _connect_ports((source,), target)
-        except Exception as exc:
-            if time.monotonic() >= repair_deadline:
-                logger.warning("Radio handoff MPV->DSP ingress link repair failed: %s", exc)
-                return False
-        if time.monotonic() >= repair_deadline:
-            break
-        await asyncio.sleep(PIPEWIRE_HANDOFF_POLL_INTERVAL_MS / 1000)
-    try:
-        links_text = await _run_pw_link_command("-l")
-        return all(_contains_link(links_text, source, target) for source, target in expected)
-    except Exception:
-        return False
 
 
 async def _dump_21_runtime_state(label: str, ui_state: dict | None = None) -> dict:
@@ -4470,6 +4344,9 @@ def _make_playback_orchestration_deps() -> playback_orchestration.PlaybackOrches
         transition_sample_rate_policy=lambda *args, **kwargs: playback_orchestration.configured().transition_sample_rate_policy(*args, **kwargs),
         get_dsp_snapshot=lambda: runtime.dsp_runtime.snapshot() if runtime.dsp_runtime is not None else {},
         wait_for_dsp_ports=lambda timeout_ms: _wait_for_dsp_output_ports(timeout_ms),
+        mpv_source_ports_present=lambda: _mpv_source_ports_present(),
+        mpv_link_repair_timeout_ms=MPV_LINK_REPAIR_TIMEOUT_MS,
+        source_port_readiness_timeout_ms=RADIO_SOURCE_PORT_READINESS_TIMEOUT_MS,
         reconcile_subwoofer_links=lambda: _coordinator_reconcile_subwoofer_links_only(),
          # Let the extracted owner use the supplied low-level PipeWire
          # primitives; do not route this dependency through its public wrapper.
@@ -4496,7 +4373,6 @@ _run_coordinated_transition = playback_orchestration.configured().run_coordinate
 _measurement_audio_graph_owned = playback_orchestration.configured().measurement_audio_graph_owned
 _request_coordinated_recovery = playback_orchestration.configured().request_coordinated_recovery
 _playback_transition_context_is_current = playback_orchestration.configured().playback_transition_context_is_current
-_dsp_output_ports_present = playback_orchestration.configured()._dsp_output_ports_present
 _wait_for_dsp_output_ports = playback_orchestration.configured().wait_for_dsp_output_ports
 _playback_graph_diagnosis = playback_orchestration.configured().playback_graph_diagnosis
 _missing_playback_graph_links = playback_orchestration.configured().missing_playback_graph_links
@@ -4509,6 +4385,7 @@ _relink_missing_production_links = playback_orchestration.configured().relink_mi
 _coordinator_reconcile_post_start_graph = playback_orchestration.configured().reconcile_post_start_graph
 _coordinator_establish_effects_and_helper = playback_orchestration.configured().establish_effects_and_helper
 _playback_graph_links_complete = playback_orchestration.configured().playback_graph_links_complete
+_ensure_mpv_to_dsp_links = playback_orchestration.configured()._ensure_mpv_to_dsp_links
 
 
 app = FastAPI(lifespan=lifespan)

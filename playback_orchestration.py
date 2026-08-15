@@ -13,6 +13,7 @@ import asyncio
 import copy
 import json
 import logging
+import time
 from dataclasses import dataclass, replace
 from typing import Any, Awaitable, Callable, Mapping
 
@@ -66,6 +67,9 @@ class PlaybackOrchestrationDeps:
     output_mode_subwoofer_modes: frozenset[str]
     output_mode_stereo: str
     playback_graph_diagnosis: Callable[..., Awaitable[dict]]
+    mpv_source_ports_present: Callable[[], Awaitable[bool]] | None = None
+    mpv_link_repair_timeout_ms: int = 1500
+    source_port_readiness_timeout_ms: int = 4500
     log_diagnosis: Callable[..., None] | None = None
     transition_sample_rate_policy: Callable[..., Awaitable[None]] | None = None
     get_dsp_snapshot: Callable[[], Mapping[str, Any]] | None = None
@@ -582,6 +586,53 @@ class PlaybackOrchestrator:
     async def playback_graph_links_complete(self, audio_overview: dict | None = None, *, source: str | None = None, target_rate: int | None = None, require_source: bool = False) -> bool:
         return (await self.playback_graph_diagnosis(audio_overview, source=source, target_rate=target_rate, require_source=require_source))["links_complete"]
 
+    async def _ensure_mpv_to_dsp_links(self, timeout_ms: int | None = None) -> bool:
+        """Wait for MPV source ports, then reconcile only missing ingress links."""
+        if self._deps.mpv_source_ports_present is None:
+            raise RuntimeError("MPV source-port readiness is not configured")
+        expected = (
+            ("mpv:output_FL", "fxroute_dsp_sink:playback_FL"),
+            ("mpv:output_FR", "fxroute_dsp_sink:playback_FR"),
+        )
+        readiness_timeout = self._deps.source_port_readiness_timeout_ms if timeout_ms is None else timeout_ms
+        readiness_deadline = time.monotonic() + max(readiness_timeout, 0) / 1000
+        while not await self._deps.mpv_source_ports_present():
+            if time.monotonic() >= readiness_deadline:
+                logger.warning(
+                    "Radio handoff MPV source ports did not appear within %s ms; skipping link repair",
+                    readiness_timeout,
+                )
+                return False
+            await self._deps.sleep(self._deps.pipewire_poll_interval_ms / 1000)
+
+        repair_deadline = time.monotonic() + self._deps.mpv_link_repair_timeout_ms / 1000
+        while True:
+            try:
+                links_text = await self._deps.run_pw_link_command("-l")
+                missing = [
+                    (source, target)
+                    for source, target in expected
+                    if not self._deps.contains_link(links_text, source, target)
+                ]
+                if not missing:
+                    logger.info("Radio handoff MPV->DSP ingress links complete")
+                    return True
+                for source, target in missing:
+                    logger.info("Radio handoff repairing MPV->DSP ingress link: %s -> %s", source, target)
+                    await self._deps.connect_ports((source,), target)
+            except Exception as exc:
+                if time.monotonic() >= repair_deadline:
+                    logger.warning("Radio handoff MPV->DSP ingress link repair failed: %s", exc)
+                    return False
+            if time.monotonic() >= repair_deadline:
+                break
+            await self._deps.sleep(self._deps.pipewire_poll_interval_ms / 1000)
+        try:
+            links_text = await self._deps.run_pw_link_command("-l")
+            return all(self._deps.contains_link(links_text, source, target) for source, target in expected)
+        except Exception:
+            return False
+
 
 _configured: PlaybackOrchestrator | None = None
 
@@ -596,101 +647,3 @@ def configured() -> PlaybackOrchestrator:
     if _configured is None:
         raise RuntimeError("playback orchestration has not been configured")
     return _configured
-
-
-# Stable names used by structural ownership checks and by callers migrating
-# from the original main.py helpers.
-def _coordinator_source_rate(source, track=None):
-    return configured().coordinator_source_rate(source, track)
-
-
-def _coordinator_target_rate(source, track=None):
-    return configured().coordinator_target_rate(source, track)
-
-
-def _sample_rate_policy_is_auto():
-    return configured().sample_rate_policy_is_auto()
-
-
-async def _transition_sample_rate_policy(policy, *, detail):
-    return await configured().transition_sample_rate_policy(policy, detail=detail)
-
-
-async def _coordinator_current_playback_context():
-    return await configured().current_playback_context()
-
-
-def _coordinator_rate_change(target_rate):
-    return configured().coordinator_rate_change(target_rate)
-
-
-def _playback_transition_is_active():
-    return configured().transition_is_active()
-
-
-def _coordinator_commit_context_id():
-    return configured().coordinator_commit_context_id()
-
-
-async def _recovery_context_is_valid(request):
-    return await configured().recovery_context_is_valid(request)
-
-
-async def _run_coordinated_transition(request):
-    return await configured().run_coordinated_transition(request)
-
-
-def _measurement_audio_graph_owned():
-    return configured().measurement_audio_graph_owned()
-
-
-async def _request_coordinated_recovery(track, reason, **kwargs):
-    return await configured().request_coordinated_recovery(track, reason, **kwargs)
-
-
-def _playback_transition_context_is_current(generation):
-    return configured().playback_transition_context_is_current(generation)
-
-
-async def _playback_graph_diagnosis(*args, **kwargs):
-    return await configured().playback_graph_diagnosis(*args, **kwargs)
-
-
-async def _playback_graph_links_complete(*args, **kwargs):
-    return await configured().playback_graph_links_complete(*args, **kwargs)
-
-
-def _missing_playback_graph_links(diagnosis, **kwargs):
-    return configured().missing_playback_graph_links(diagnosis, **kwargs)
-
-
-def _measurement_session_link_loss_is_repairable(diagnosis, **kwargs):
-    return configured().measurement_session_link_loss_is_repairable(diagnosis, **kwargs)
-
-
-def _log_playback_graph_diagnosis(diagnosis, **kwargs):
-    return configured().log_playback_graph_diagnosis(diagnosis, **kwargs)
-
-
-async def _repair_stereo_output_links_once(diagnosis):
-    return await configured().repair_stereo_output_links_once(diagnosis)
-
-
-async def _coordinator_reconcile_subwoofer_links_only():
-    return await configured().reconcile_subwoofer_links_only()
-
-
-def _post_start_graph_links_are_repairable(diagnosis, **kwargs):
-    return configured().post_start_graph_links_are_repairable(diagnosis, **kwargs)
-
-
-async def _relink_missing_production_links(diagnosis, **kwargs):
-    return await configured().relink_missing_production_links(diagnosis, **kwargs)
-
-
-async def _coordinator_reconcile_post_start_graph(request):
-    return await configured().reconcile_post_start_graph(request)
-
-
-async def _coordinator_establish_effects_and_helper(request, **kwargs):
-    return await configured().establish_effects_and_helper(request, **kwargs)

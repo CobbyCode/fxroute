@@ -295,6 +295,9 @@ def main() -> int:
                 errors.append(f"{entrypoint} still references obsolete path {old}")
 
     for path_name in sorted(SINGLE_OWNER_PATHS):
+        owner_name = {
+            "_request_coordinated_recovery": "request_coordinated_recovery",
+        }.get(path_name, path_name)
         nodes: list[ast.AST] = []
         owning_source = ""
         owning_file = ""
@@ -302,7 +305,7 @@ def main() -> int:
             matches = [
                 node
                 for node in ast.walk(tree)
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == path_name
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == owner_name
             ]
             if matches:
                 nodes = matches
@@ -331,7 +334,7 @@ def main() -> int:
             if "run_transition" not in body:
                 errors.append(f"single-owner path bypasses coordinator boundary: {path_name}")
         elif path_name == "_request_coordinated_recovery":
-            if "configured().request_coordinated_recovery" not in body:
+            if "run_recovery" not in body or "run_transition" not in body:
                 errors.append(f"single-owner recovery does not enter orchestration: {path_name}")
         elif "_run_coordinated_transition" not in body:
             errors.append(f"single-owner path bypasses coordinator: {path_name}")
