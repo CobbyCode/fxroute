@@ -20,6 +20,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
+import audio.pw_link as pw_link_mod
 from dsp.runtime import CommandResult, PipeWireLink
 from playback.transition import PlaybackTransitionCoordinator, PlaybackTransitionFailure, TransitionRequest
 from playback_transition_test_support import MainCoreTransitionRuntime, make_transition_runtime
@@ -129,7 +130,7 @@ class CanonicalGraphTests(unittest.IsolatedAsyncioTestCase):
         )
         runtime._links = [SimpleNamespace(source="source", target="target")] if runtime._process else []
         with patch.object(main.runtime, "dsp_runtime", runtime), patch.object(
-            main, "_run_pw_link_command", side_effect=pw_link
+            pw_link_mod, "run_pw_link_command", side_effect=pw_link
         ), patch.object(main, "get_audio_output_overview", return_value=overview):
             return await main._playback_graph_diagnosis(
                 overview,
@@ -197,7 +198,7 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
             graph_only=True,
         )
         with patch.object(main, "get_audio_output_overview", return_value=self.overview), patch.object(
-            main, "_run_pw_link_command", side_effect=pw_link
+            pw_link_mod, "run_pw_link_command", side_effect=pw_link
         ), patch.object(main.runtime, "dsp_runtime", helper), patch.object(
             main.dsp_orchestrator, "sync_preset_for_playback_samplerate",
             side_effect=lambda **_kwargs: calls.__setitem__("preset", calls["preset"] + 1),
@@ -241,7 +242,7 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
                     reload_source=True,
                 )
                 with patch.object(main, "get_audio_output_overview", return_value=overview), patch.object(
-                    main, "_run_pw_link_command", side_effect=pw_link
+                    pw_link_mod, "run_pw_link_command", side_effect=pw_link
                 ), patch.object(main.runtime, "dsp_runtime", helper), patch.object(
                     main.dsp_orchestrator, "sync_preset_for_playback_samplerate",
                     side_effect=lambda **_kwargs: calls.__setitem__("preset", calls["preset"] + 1),
@@ -821,7 +822,7 @@ class StereoRateTransitionRegressionTests(unittest.IsolatedAsyncioTestCase):
             ), patch.object(
                 main, "get_samplerate_status", return_value={"active_rate": 48000, "force_rate": 48000}
             ), patch.object(
-                main, "_run_pw_link_command",
+                pw_link_mod, "run_pw_link_command",
                 side_effect=lambda *_args: _links_text("stereo", source=False),
             ):
                 result = await main._coordinator_establish_effects_and_helper(request)
@@ -1179,7 +1180,7 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
         )
         runtime._links = [SimpleNamespace(source="source", target="target")]
         with patch.object(main, "get_audio_output_overview", return_value=overview), patch.object(
-            main, "_run_pw_link_command", side_effect=pw_link
+            pw_link_mod, "run_pw_link_command", side_effect=pw_link
         ), patch.object(
             main.runtime, "dsp_runtime", runtime
         ), patch.object(
@@ -1279,7 +1280,7 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
             return _links_text("subwoofer-2.2")
 
         with patch.object(main, "get_audio_output_overview", return_value=overview), patch.object(
-            main, "_run_pw_link_command", side_effect=pw_link
+            pw_link_mod, "run_pw_link_command", side_effect=pw_link
         ), patch.object(main.runtime, "dsp_runtime", helper), patch.object(
             main, "dsp_manager", None
         ), patch.object(
@@ -1312,7 +1313,7 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
             graph_only=True,
         )
         with patch.object(main, "get_audio_output_overview", return_value=overview), patch.object(
-            main, "_run_pw_link_command",
+            pw_link_mod, "run_pw_link_command",
             side_effect=lambda *_args: _links_text("subwoofer-2.2", direct=False, complete=False),
         ), patch.object(main.runtime, "dsp_runtime", helper):
             with self.assertRaisesRegex(RuntimeError, "graph-only reconciliation"):
@@ -1343,7 +1344,7 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
         async def pw_link(*_args):
             return _links_text("subwoofer-2.2", direct=helper.direct)
 
-        with patch.object(main, "_run_pw_link_command", side_effect=pw_link), patch.object(
+        with patch.object(pw_link_mod, "run_pw_link_command", side_effect=pw_link), patch.object(
             main.runtime, "dsp_runtime", helper
         ), patch.object(main, "get_audio_output_overview", return_value={
             "output_mode": {"mode": "subwoofer-2.2", "effective_output_key": OUTPUT_KEY}

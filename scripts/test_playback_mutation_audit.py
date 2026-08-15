@@ -58,9 +58,6 @@ MUTATION_CALL_NAMES = {
     "sync_runtime",
     "sync_runtime_at_rate",
     "_sync_dsp_runtime_for_measurement_sweep",
-    "_run_pw_link_command",
-    "_connect_ports",
-    "_disconnect_ports",
     "_ensure_mpv_to_dsp_links",
     "_repair_stereo_output_links_once",
     "_set_hardware_sink_mute",
@@ -242,10 +239,6 @@ def _reason(context: str, name: str) -> str | None:
         return "startup or explicit user configuration workflow"
     if leaf.startswith("sync_peak_monitor_for_"):
         return "peak-monitor process only; no production graph mutation"
-    if leaf in {"_disconnect_external_input_source", "_ensure_external_input_loopback", "_link_bluetooth_source_to_dsp"}:
-        return "external-input/Bluetooth routing workflow"
-    if leaf in {"_disconnect_ports", "_connect_ports"}:
-        return "shared PipeWire port primitive; callers are Coordinator graph repair or input/config workflows"
     if leaf in {"write_force_rate"} and "_ensure_playback_samplerate_force" in context:
         return "rate reconciliation primitive invoked by Coordinator or measurement owner"
     return None

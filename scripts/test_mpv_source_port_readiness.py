@@ -23,6 +23,7 @@ from unittest.mock import AsyncMock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
+import audio.pw_link as pw_link_mod
 from playback_transition_test_support import make_transition_runtime
 
 
@@ -80,7 +81,7 @@ class MpvSourcePortReadinessTests(unittest.IsolatedAsyncioTestCase):
 
         appear = asyncio.create_task(appear_later())
         try:
-            with patch.object(main, "_run_pw_link_command", side_effect=pw_link):
+            with patch.object(pw_link_mod, "run_pw_link_command", side_effect=pw_link):
                 result = await main._ensure_mpv_to_dsp_links(timeout_ms=2000)
         finally:
             await appear
@@ -111,7 +112,7 @@ class MpvSourcePortReadinessTests(unittest.IsolatedAsyncioTestCase):
                 return _link_text(fl=False, fr=False)
             return ""
 
-        with patch.object(main, "_run_pw_link_command", side_effect=pw_link):
+        with patch.object(pw_link_mod, "run_pw_link_command", side_effect=pw_link):
             result = await main._ensure_mpv_to_dsp_links(timeout_ms=250)
 
         elapsed = time.monotonic() - start
@@ -137,7 +138,7 @@ class MpvSourcePortReadinessTests(unittest.IsolatedAsyncioTestCase):
                 return _link_text(fl=True, fr=True)
             return ""
 
-        with patch.object(main, "_run_pw_link_command", side_effect=pw_link):
+        with patch.object(pw_link_mod, "run_pw_link_command", side_effect=pw_link):
             result = await main._ensure_mpv_to_dsp_links(timeout_ms=2000)
 
         elapsed = time.monotonic() - start
@@ -163,7 +164,7 @@ class MpvSourcePortReadinessTests(unittest.IsolatedAsyncioTestCase):
                 state["fr_linked"] = True
             return ""
 
-        with patch.object(main, "_run_pw_link_command", side_effect=pw_link):
+        with patch.object(pw_link_mod, "run_pw_link_command", side_effect=pw_link):
             result = await main._ensure_mpv_to_dsp_links(timeout_ms=2000)
 
         self.assertTrue(result)

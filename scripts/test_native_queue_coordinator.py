@@ -250,7 +250,7 @@ class NativeQueueCallbackTests(unittest.IsolatedAsyncioTestCase):
             "current_track_info", "last_track_info", "latest_player_state_seq_seen",
             "queue_advancing", "manager", "peak_monitor", "source_transition_lock",
             "playback_transition_coordinator", "sync_peak_monitor_for_playback_state",
-            "_schedule_radio_reconnect_if_needed", "build_playback_payload",
+             "build_playback_payload",
             "playback_intent_generation",
         )
         originals = {name: (getattr(main.runtime, name) if hasattr(main.runtime, name) else getattr(main.playback_state, name) if hasattr(main.playback_state, name) else getattr(main, name)) for name in names}
@@ -270,7 +270,6 @@ class NativeQueueCallbackTests(unittest.IsolatedAsyncioTestCase):
             main.runtime.source_transition_lock = None
             main.playback_transition_coordinator = SimpleNamespace(transition_active=False)
             main.sync_peak_monitor_for_playback_state = _noop_async
-            main._schedule_radio_reconnect_if_needed = lambda _state: None
             main.build_playback_payload = lambda state: state
 
             await main.on_player_state_change({
@@ -296,7 +295,7 @@ class NativeQueueCallbackTests(unittest.IsolatedAsyncioTestCase):
             "current_track_info", "last_track_info",
             "latest_player_state_seq_seen", "queue_advancing", "manager",
             "peak_monitor", "source_transition_lock", "playback_transition_coordinator",
-            "sync_peak_monitor_for_playback_state", "_schedule_radio_reconnect_if_needed",
+            "sync_peak_monitor_for_playback_state",
             "build_playback_payload", "playback_intent_generation",
         )
         originals = {name: (getattr(main.runtime, name) if hasattr(main.runtime, name) else getattr(main.playback_state, name) if hasattr(main.playback_state, name) else getattr(main, name)) for name in names}
@@ -315,7 +314,6 @@ class NativeQueueCallbackTests(unittest.IsolatedAsyncioTestCase):
             main.runtime.source_transition_lock = None
             main.playback_transition_coordinator = SimpleNamespace(transition_active=False)
             main.sync_peak_monitor_for_playback_state = _noop_async
-            main._schedule_radio_reconnect_if_needed = lambda _state: None
             main.build_playback_payload = lambda state: state
 
             for seq, track_id in enumerate(("b", "c"), start=1):
@@ -480,7 +478,7 @@ class NativeQueueShuffleParityTests(unittest.IsolatedAsyncioTestCase):
             "playback_transition_coordinator", "get_samplerate_status",
             "_run_coordinated_transition", "manager", "peak_monitor",
             "source_transition_lock", "sync_peak_monitor_for_playback_state",
-            "_schedule_radio_reconnect_if_needed", "build_playback_payload",
+             "build_playback_payload",
             "playback_intent_generation",
         )
         originals = {name: (getattr(main.runtime, name) if hasattr(main.runtime, name) else getattr(main.playback_state, name) if hasattr(main.playback_state, name) else getattr(main, name)) for name in names}
@@ -510,7 +508,6 @@ class NativeQueueShuffleParityTests(unittest.IsolatedAsyncioTestCase):
             main.runtime.peak_monitor = None
             main.runtime.source_transition_lock = None
             main.sync_peak_monitor_for_playback_state = _noop_async
-            main._schedule_radio_reconnect_if_needed = lambda _state: None
             main.build_playback_payload = lambda state: state
 
             async def apply_transition(request):

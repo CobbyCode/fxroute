@@ -161,7 +161,7 @@ class QueueCallbackOwnershipTests(unittest.IsolatedAsyncioTestCase):
             "current_track_info", "last_track_info",
             "queue_advancing", "playback_transition_epoch",
             "latest_player_state_seq_seen", "source_transition_lock", "manager",
-            "peak_monitor", "build_playback_payload", "_schedule_radio_reconnect_if_needed",
+            "peak_monitor", "build_playback_payload",
             "sync_peak_monitor_for_playback_state",
         )
         originals = {name: (getattr(main.runtime, name) if hasattr(main.runtime, name) else getattr(main.playback_state, name) if hasattr(main.playback_state, name) else getattr(main, name)) for name in names}
@@ -183,7 +183,6 @@ class QueueCallbackOwnershipTests(unittest.IsolatedAsyncioTestCase):
             main.manager = _FakeManager()
             main.runtime.peak_monitor = None
             main.build_playback_payload = lambda state: state
-            main._schedule_radio_reconnect_if_needed = lambda _state: None
 
             async def no_peak_sync(*_args, **_kwargs):
                 return None
@@ -292,7 +291,7 @@ class ApiPlayQueueOrderTests(unittest.IsolatedAsyncioTestCase):
                 "peak_monitor",
                 "source_transition_lock",
                 "playback_transition_epoch",
-                "radio_reconnect_state",
+                "radio_reconnect",
             )
         }
         self._saved_queue = queue_state()
@@ -315,9 +314,9 @@ class ApiPlayQueueOrderTests(unittest.IsolatedAsyncioTestCase):
         main.runtime.source_transition_lock = None
         measurement_session._playback_state_before_measurement = None
         main.playback_state.playback_transition_epoch = 0
-        main.radio_reconnect_state.attempts = 0
-        main.radio_reconnect_state.url = None
-        main.radio_reconnect_state.active_since = 0.0
+        main.radio_reconnect.attempts = 0
+        main.radio_reconnect.url = None
+        main.radio_reconnect.active_since = 0.0
         self.transition_requests = []
         return originals
 
@@ -345,8 +344,8 @@ class ApiPlayQueueOrderTests(unittest.IsolatedAsyncioTestCase):
         return [
             patch.object(main, "_can_send_play_command", return_value=True),
             patch.object(main, "_run_coordinated_transition", coordinated),
-            patch.object(main, "_observe_playback_samplerate_drift", no_op),
-            patch.object(main, "_schedule_silent_active_watch", lambda **_k: None),
+            patch.object(main.samplerate_drift, "observe", no_op),
+            patch.object(main.silent_active_recovery, "schedule", lambda **_k: None),
             patch.object(main, "build_playback_payload", lambda state: {}),
             patch.object(playback_queue.random, "shuffle", new=recording_shuffle),
         ]
@@ -586,13 +585,11 @@ class SilentActiveDiagnosisTests(unittest.IsolatedAsyncioTestCase):
             name: (getattr(main.runtime, name) if hasattr(main.runtime, name) else getattr(main.playback_state, name) if hasattr(main.playback_state, name) else getattr(main, name))
             for name in (
                 "peak_monitor", "player_instance", "current_track_info",
-                "current_footer_owner", "silent_active_recovery_state",
+                "current_footer_owner", "silent_active_recovery",
                 "dsp_preset_load_lock", "_current_track_matches",
-                "_is_local_playback_active", "_list_mpv_sink_inputs",
-                "_active_unmuted_sink_inputs", "get_output_volume_safe",
-                "get_audio_output_overview", "_run_debug_command",
-                "_silent_active_source_links_present", "_silent_active_snapshot",
-                "_is_measurement_window_open", "_list_sink_inputs",
+                "_list_mpv_sink_inputs", "get_output_volume_safe",
+                "_run_debug_command", "_is_measurement_window_open",
+                "_list_sink_inputs",
             )
         }
         main.runtime.peak_monitor = SimpleNamespace()
@@ -602,21 +599,17 @@ class SilentActiveDiagnosisTests(unittest.IsolatedAsyncioTestCase):
         )
         main.playback_state.current_track_info = {"id": "t1", "title": "T1", "url": "/music/t1.flac", "source": "local"}
         main.playback_state.current_footer_owner = "local"
-        main.silent_active_recovery_state = main.SilentActiveRecoveryState()
+        main.silent_active_recovery.recovery_attempts.clear()
+        main.silent_active_recovery.watch_tasks.clear()
         main.runtime.dsp_preset_load_lock = None
         main._current_track_matches = lambda track: True
-        main._is_local_playback_active = lambda state: True
         main._list_mpv_sink_inputs = lambda: [
             {"id": "si1", "volume_percent": 100, "muted": False, "corked": False},
         ]
-        main._active_unmuted_sink_inputs = lambda entries: entries
         main.get_output_volume_safe = lambda default: 100
-        main.get_audio_output_overview = lambda: {"output_mode": {"mode": "stereo"}}
         main._run_debug_command = lambda cmd, timeout: {
             "stdout": "mpv:output_FL -> fxroute_dsp_sink:playback_FL\n",
         }
-        main._silent_active_source_links_present = lambda *_a, **_k: True
-        main._silent_active_snapshot = lambda **_k: {"diagnosis": True}
         main._is_measurement_window_open = lambda: False
         main._list_sink_inputs = lambda: []
         return originals
@@ -635,8 +628,10 @@ class SilentActiveDiagnosisTests(unittest.IsolatedAsyncioTestCase):
                 "vu_fresh": True,
                 "vu_age_ms": 120,
             }
-            with self.assertLogs("main", level="WARNING") as captured:
-                await main._check_and_recover_silent_active(
+            with patch.object(main.silent_active_recovery, "_source_links_present", lambda *_a, **_k: True), \
+                    patch.object(main.silent_active_recovery, "_snapshot", lambda **_k: {"diagnosis": True}), \
+                    self.assertLogs("playback.silent_active", level="WARNING") as captured:
+                await main.silent_active_recovery._check_and_recover(
                     source="local",
                     signature="sig-fresh",
                     track={"id": "t1", "title": "T1", "url": "/music/t1.flac", "source": "local"},
@@ -644,7 +639,7 @@ class SilentActiveDiagnosisTests(unittest.IsolatedAsyncioTestCase):
             joined = "\n".join(captured.output)
             self.assertIn("Silent-active playback detected", joined)
             self.assertIn("recovery_suppressed", joined)
-            self.assertIn("sig-fresh", main.silent_active_recovery_state.recovery_attempts)
+            self.assertIn("sig-fresh", main.silent_active_recovery.recovery_attempts)
         finally:
             self._restore(originals)
 
@@ -659,8 +654,9 @@ class SilentActiveDiagnosisTests(unittest.IsolatedAsyncioTestCase):
                 "vu_fresh": False,
                 "vu_age_ms": 99999,
             }
-            with self.assertLogs("main", level="INFO") as captured:
-                await main._check_and_recover_silent_active(
+            with patch.object(main.silent_active_recovery, "_source_links_present", lambda *_a, **_k: True), \
+                    self.assertLogs("playback.silent_active", level="INFO") as captured:
+                await main.silent_active_recovery._check_and_recover(
                     source="local",
                     signature="sig-stale",
                     track={"id": "t1", "title": "T1", "url": "/music/t1.flac", "source": "local"},

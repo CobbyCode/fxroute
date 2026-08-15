@@ -4,8 +4,7 @@
 - audio/sink_inputs.brief_sink_inputs
 - audio/sink_inputs.active_unmuted_sink_inputs
 
-plus wrapper parity against main._brief_sink_inputs and
-main._active_unmuted_sink_inputs.
+plus wrapper parity against main._active_unmuted_sink_inputs.
 """
 import copy
 import sys
@@ -113,16 +112,6 @@ class ActiveUnmutedSinkInputsTests(unittest.TestCase):
 
 
 class WrapperParityTests(unittest.TestCase):
-    def test_brief_wrapper_matches_module_function(self):
-        entries = [
-            {"id": 42, "sink": "s1", "sample_rate": 48000, "volume_percent": 77,
-             "properties": {"node.name": "n", "application.name": "A", "application.id": "a", "media.name": "m"}},
-            {"id": 43},
-            {"properties": {"application.id": "only"}},
-            {},
-        ]
-        self.assertEqual(main._brief_sink_inputs(entries), brief_sink_inputs(entries))
-
     def test_active_wrapper_matches_module_function(self):
         entries = [
             {"id": 1, "volume_percent": 100},

@@ -31,7 +31,6 @@ class MeasurementOwnershipTests(unittest.IsolatedAsyncioTestCase):
                 "_coordinator_rate_change",
                 "_coordinator_commit_context_id",
                 "_playback_graph_diagnosis",
-                "_observe_playback_samplerate_drift",
                 "get_audio_output_overview",
                 "get_samplerate_status",
             )
@@ -125,7 +124,7 @@ class MeasurementOwnershipTests(unittest.IsolatedAsyncioTestCase):
             raise asyncio.CancelledError
 
         with patch.object(main, "measurement_sr_session", session), patch.object(
-            main, "_observe_playback_samplerate_drift", observe_drift
+            main.samplerate_drift, "observe", observe_drift
         ), patch.object(main, "_playback_graph_diagnosis", diagnose), patch.object(
             main, "_request_coordinated_recovery", recovery
         ), patch.object(main, "asyncio") as asyncio_module:

@@ -12,6 +12,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 import main
+import audio.pw_link as pw_link_mod
 from playback.transition import PlaybackTransitionCoordinator, PlaybackTransitionFailure, TransitionRequest
 from playback_transition_test_support import MainCoreTransitionRuntime
 
@@ -106,7 +107,7 @@ class PostStartGraphReconcileTests(unittest.IsolatedAsyncioTestCase):
             "active_rate": 48000,
             "force_rate": 48000,
         }), patch.object(main, "_playback_graph_diagnosis", diagnosis), patch.object(
-            main, "_connect_ports", relink
+            pw_link_mod, "connect_ports", relink
         ):
             result = await coordinator.execute(_request())
         return result, coordinator, runtime, diagnosis, relink
@@ -172,7 +173,7 @@ class PostStartGraphReconcileTests(unittest.IsolatedAsyncioTestCase):
             "active_rate": 48000,
             "force_rate": 48000,
         }), patch.object(main, "_playback_graph_diagnosis", diagnosis), patch.object(
-            main, "_connect_ports", relink
+            pw_link_mod, "connect_ports", relink
         ):
             with self.assertRaises(PlaybackTransitionFailure) as caught:
                 await coordinator.execute(_request())

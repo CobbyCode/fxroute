@@ -69,15 +69,10 @@ PLAYBACK_HANDOFF_EE_PORT_TIMEOUT_MS = 5000
 # readback window.  It is not a second watcher or a general graph recovery.
 POST_START_GRAPH_STABILITY_READBACKS = 2
 SPOTIFY_PREARM_SAMPLE_RATE_HZ = 44100
-RADIO_RECONNECT_DELAY_SECONDS = 2.0
-RADIO_RECONNECT_MAX_ATTEMPTS = 5
 SPOTIFY_STATE_POLL_INTERVAL_SECONDS = 2.0
 SPOTIFY_STATE_IDLE_POLL_INTERVAL_SECONDS = 5.0
 SPOTIFY_STATE_REFRESH_DEBOUNCE_SECONDS = 0.20
 MEASUREMENT_WINDOW_TTL_SECONDS = 30.0
-SILENT_ACTIVE_SETTLE_SECONDS = 8.0
-SILENT_ACTIVE_FLOOR_DB = -58.0
-SILENT_ACTIVE_RECHECK_SECONDS = 2.5
 
 # Track last play command time to debounce rapid requests
 _last_play_command_time = 0.0
@@ -289,7 +284,7 @@ async def _restart_fxroute_service_after_response(service_name: str) -> None:
     try:
         await asyncio.wait_for(proc.wait(), timeout=_SERVICE_RESTART_TIMEOUT_SECONDS)
     except asyncio.TimeoutError:
-        if await _stop_command_child_cancellation_safe(
+        if await pw_link.stop_command_child_cancellation_safe(
             proc, _SERVICE_RESTART_TERMINATE_GRACE_SECONDS
         ):
             raise asyncio.CancelledError
@@ -298,7 +293,7 @@ async def _restart_fxroute_service_after_response(service_name: str) -> None:
             _SERVICE_RESTART_TIMEOUT_SECONDS,
         )
     except asyncio.CancelledError:
-        await _stop_command_child_cancellation_safe(
+        await pw_link.stop_command_child_cancellation_safe(
             proc, _SERVICE_RESTART_TERMINATE_GRACE_SECONDS
         )
         raise
@@ -863,6 +858,13 @@ from dsp.runtime import DSPRuntime, DSPRuntimeConfig, BassManagementConfig, _con
 import dsp.api as dsp_api
 import dsp.orchestration as dsp_orchestration
 import playback.orchestration as playback_orchestration
+from audio import pw_link
+from audio.bluetooth import BluetoothInputDependencies, BluetoothInputMonitor
+from audio.drift import SamplerateDriftDependencies, SamplerateDriftObserver
+from audio.external_input import ExternalInputRouting, ExternalInputRoutingDependencies
+from playback.radio_reconnect import RadioReconnect, RadioReconnectDependencies
+from playback.silent_active import SilentActiveDependencies, SilentActiveRecovery
+from playback.spotify_watch import SpotifyPlayerctlWatch, SpotifyWatchDependencies
 from dsp.orchestration import (
     DspOrchestrationDeps,
     DspOrchestrator,
@@ -915,7 +917,6 @@ from audio.samplerate import (
     set_bluetooth_receiver_enabled,
 )
 from playback.spotify import (
-    _stop_process,
     playerctl_available,
     spotify_installed,
     get_status as spotify_get_status,
@@ -981,10 +982,6 @@ class RuntimeResources:
     peak_monitor: Any = None
     measurement_watchdog_task: Optional[asyncio.Task] = None
     library_scan_task: Optional[asyncio.Task] = None
-    bluetooth_monitor_task: Optional[asyncio.Task] = None
-    bluetooth_agent_process: Any = None
-    spotify_playerctl_watch_task: Optional[asyncio.Task] = None
-    spotify_playerctl_detect_task: Optional[asyncio.Task] = None
     spotify_state_refresh_task: Optional[asyncio.Task] = None
     spotify_state_poll_task: Optional[asyncio.Task] = None
     lifecycle_background_tasks: set[asyncio.Task] = field(default_factory=set)
@@ -1016,10 +1013,6 @@ class RuntimeResources:
         self.peak_monitor = None
         self.measurement_watchdog_task = None
         self.library_scan_task = None
-        self.bluetooth_monitor_task = None
-        self.bluetooth_agent_process = None
-        self.spotify_playerctl_watch_task = None
-        self.spotify_playerctl_detect_task = None
         self.spotify_state_refresh_task = None
         self.spotify_state_poll_task = None
         self.lifecycle_background_tasks.clear()
@@ -1096,7 +1089,6 @@ async def _run_locked_worker(lock: asyncio.Lock, func: Callable[..., Any], *args
     async with lock:
         return await _drain_worker(func, *args, **kwargs)
 playback_transition_coordinator: PlaybackTransitionCoordinator | None = None
-spotify_playerctl_last_trigger_at = 0.0
 # Measurement-window heartbeat timestamp: set by
 # /api/power/measurement-heartbeat, read only via _is_measurement_window_open().
 # It is measurement-window/power state, not silent-active recovery, so it
@@ -1127,60 +1119,57 @@ def _playback_settled_event() -> asyncio.Event:
 playback_state = PlaybackState()
 
 
-@dataclass
-class RadioReconnectState:
-    """Single authoritative owner of the radio-stream reconnect bookkeeping.
+radio_reconnect = RadioReconnect(RadioReconnectDependencies(
+    get_player_instance=lambda: runtime.player_instance,
+    get_playback_state=lambda: playback_state,
+    request_coordinated_recovery=lambda *args, **kwargs: _request_coordinated_recovery(*args, **kwargs),
+))
 
-    Owns the reconnect task handle, the attempt counter for the current
-    stream URL, the URL the counter belongs to, and the monotonic start of
-    the current reconnect window.  Mutated only by
-    _schedule_radio_reconnect_if_needed, _radio_reconnect_after_delay,
-    stop_playback and lifespan shutdown.
-    """
+silent_active_recovery = SilentActiveRecovery(SilentActiveDependencies(
+    get_peak_monitor=lambda: runtime.peak_monitor,
+    get_player_instance=lambda: runtime.player_instance,
+    get_current_track_info=lambda: playback_state.current_track_info,
+    get_current_footer_owner=lambda: playback_state.current_footer_owner,
+    get_spotify_ui_state=lambda *args, **kwargs: get_spotify_ui_state(*args, **kwargs),
+    list_mpv_sink_inputs=lambda: _list_mpv_sink_inputs(),
+    list_spotify_sink_inputs=lambda: _list_spotify_sink_inputs(),
+    list_all_sink_inputs=lambda: _list_sink_inputs(),
+    get_output_volume_safe=lambda default=100: get_output_volume_safe(default),
+    run_debug_command=lambda args, timeout=2.0: _run_debug_command(args, timeout),
+    is_measurement_window_open=lambda: _is_measurement_window_open(),
+    dsp_preset_load_locked=lambda: runtime.dsp_preset_load_lock is not None and runtime.dsp_preset_load_lock.locked(),
+    current_track_matches=lambda track: _current_track_matches(track),
+))
 
-    task: Optional[asyncio.Task] = None
-    attempts: int = 0
-    url: Optional[str] = None
-    active_since: float = 0.0
+external_input = ExternalInputRouting(ExternalInputRoutingDependencies(
+    get_audio_source_overview=lambda: get_audio_source_overview(),
+))
 
+bluetooth_input = BluetoothInputMonitor(BluetoothInputDependencies(
+    sync_peak_monitor_for_source_mode_state=lambda overview=None: sync_peak_monitor_for_source_mode_state(overview),
+))
 
-radio_reconnect_state = RadioReconnectState()
+samplerate_drift = SamplerateDriftObserver(SamplerateDriftDependencies(
+    get_current_track_info=lambda: playback_state.current_track_info,
+    get_player_instance=lambda: runtime.player_instance,
+    coordinator_source_rate=lambda *args, **kwargs: _coordinator_source_rate(*args, **kwargs),
+    get_player_audio_samplerate=lambda: _get_player_audio_samplerate(),
+    get_samplerate_status=lambda: get_samplerate_status(),
+    playback_transition_is_active=lambda: _playback_transition_is_active(),
+    is_measurement_window_open=lambda: _is_measurement_window_open(),
+    measurement_session_active=lambda: measurement_sr_session is not None and measurement_sr_session.active,
+    measurement_audio_graph_owned=lambda: _measurement_audio_graph_owned(),
+    request_coordinated_recovery=lambda *args, **kwargs: _request_coordinated_recovery(*args, **kwargs),
+))
 
-
-@dataclass
-class SilentActiveRecoveryState:
-    """Single authoritative owner of the silent-active watch/recovery bookkeeping.
-
-    Owns the in-flight watch tasks (keyed by source/url signature) and the
-    set of signatures already diagnosed as silent-active (recovery is
-    log-only; the set still dedupes repeat triggers for the same
-    signature).  Mutated only by _schedule_silent_active_watch,
-    _silent_active_watch_after_settle, _check_and_recover_silent_active
-    and lifespan shutdown.
-    """
-
-    watch_tasks: dict[str, asyncio.Task] = field(default_factory=dict)
-    recovery_attempts: set[str] = field(default_factory=set)
-
-
-silent_active_recovery_state = SilentActiveRecoveryState()
-
-
-@dataclass
-class InputRoutingState:
-    """Single authoritative owner of the Bluetooth/external-input routing bookkeeping.
-
-    Owns the currently-linked Bluetooth input source name and the
-    external-input loopback source name used for external-input monitoring.
-    Mutated only by the Bluetooth/external-input enable, disable and clear
-    helpers, the Bluetooth monitor loop and lifespan shutdown.
-    """
-
-    bluetooth_input_source_name: Optional[str] = None
-    external_input_loopback_source_name: Optional[str] = None
-
-
-input_routing_state = InputRoutingState()
+spotify_playerctl_watch = SpotifyPlayerctlWatch(SpotifyWatchDependencies(
+    get_playback_state=lambda: playback_state,
+    get_spotify_ui_state=lambda *args, **kwargs: get_spotify_ui_state(*args, **kwargs),
+    list_spotify_sink_inputs=lambda: _list_spotify_sink_inputs(),
+    spotify_sink_input_observation=lambda *args, **kwargs: _spotify_sink_input_observation(*args, **kwargs),
+    request_coordinated_recovery=lambda *args, **kwargs: _request_coordinated_recovery(*args, **kwargs),
+    schedule_spotify_state_refresh=lambda reason: _schedule_spotify_state_refresh(reason),
+))
 radio_metadata_service = RadioMetadataService()
 # queue_advancing is a reentrancy/dispatch guard for
 # on_player_state_change and deliberately not queue state: the queue
@@ -1823,119 +1812,8 @@ async def _wait_for_player_current_file(expected_url: str | None, timeout_ms: in
     return False
 
 
-def _brief_sink_inputs(entries: list[dict]) -> list[dict]:
-    return sink_inputs.brief_sink_inputs(entries)
-
-
 def _active_unmuted_sink_inputs(entries: list[dict]) -> list[dict]:
     return sink_inputs.active_unmuted_sink_inputs(entries)
-
-
-def _silent_active_source_links_present(source: str, links_text: str, output_mode: dict) -> bool:
-    if source == "spotify":
-        source_link_ok = _contains_link(links_text, "spotify:output_FL", "fxroute_dsp_sink:playback_FL")
-    else:
-        source_link_ok = _contains_link(links_text, "mpv:output_FL", "fxroute_dsp_sink:playback_FL")
-    if not source_link_ok:
-        return False
-
-    mode = output_mode.get("mode") or OUTPUT_MODE_STEREO
-    if mode != OUTPUT_MODE_STEREO:
-        return True
-    output_key = str(output_mode.get("effective_output_key") or "").strip()
-    if not output_key:
-        return True
-    # Native stereo topology: the source reaches the DSP ingress sink and
-    # the DSP output reaches the selected hardware output.
-    return (
-        _contains_link(links_text, "fxroute_dsp:output_1", f"{output_key}:playback_FL")
-        and _contains_link(links_text, "fxroute_dsp:output_2", f"{output_key}:playback_FR")
-    )
-
-
-def _silent_active_snapshot(
-    *,
-    source: str,
-    owner: str,
-    track: dict | None,
-    player_state: dict,
-    spotify_state: dict,
-    source_inputs: list[dict],
-    all_inputs: list[dict],
-    links_text: str,
-    overview: dict,
-    peak_snapshot: dict,
-) -> dict:
-    output_mode = overview.get("output_mode") or {}
-    return {
-        "source": source,
-        "owner": owner,
-        "track": {
-            "id": (track or {}).get("id"),
-            "title": (track or {}).get("title"),
-            "url": (track or {}).get("url"),
-        },
-        "playback": {
-            "playing": player_state.get("playing"),
-            "paused": player_state.get("paused"),
-            "current_file": player_state.get("current_file"),
-            "source_volume": player_state.get("volume"),
-            "output_volume": get_output_volume_safe(100),
-        },
-        "spotify": {
-            "status": spotify_state.get("status"),
-            "title": spotify_state.get("title"),
-            "source_volume": spotify_state.get("source_volume"),
-            "output_volume": spotify_state.get("volume"),
-        } if spotify_state else {},
-        "output_mode": {
-            "mode": output_mode.get("mode"),
-            "effective_output_key": output_mode.get("effective_output_key"),
-            "effective_output_rate": output_mode.get("effective_output_rate"),
-            "runtime": (output_mode.get("runtime") or {}) if isinstance(output_mode.get("runtime"), dict) else {},
-        },
-        "source_inputs": _brief_sink_inputs(source_inputs),
-        "all_sink_inputs": _brief_sink_inputs(all_inputs),
-        "source_link_present": _silent_active_source_links_present(source, links_text, output_mode),
-        "links_excerpt": "\n".join(
-            line for line in links_text.splitlines()
-            if any(
-                token in line
-                for token in (
-                    "mpv",
-                    "spotify",
-                    "fxroute_dsp_sink",
-                    "fxroute_dsp",
-                    str(output_mode.get("effective_output_key") or "").strip(),
-                )
-                if token
-            )
-        )[:4000],
-        "levels": {
-            "output_peak": peak_snapshot,
-            "pre_level": None,
-            "post_level": peak_snapshot.get("vu_db"),
-        },
-    }
-
-
-def _schedule_silent_active_watch(
-    *,
-    source: str,
-    signature: str,
-    track: dict | None = None,
-    spotify_state: dict | None = None,
-) -> None:
-    if not signature:
-        return
-    existing = silent_active_recovery_state.watch_tasks.get(signature)
-    if existing and not existing.done():
-        return
-    task = asyncio.create_task(
-        _silent_active_watch_after_settle(source=source, signature=signature, track=track, spotify_state=spotify_state),
-        name=f"silent-active-watch:{source}",
-    )
-    silent_active_recovery_state.watch_tasks[signature] = task
 
 
 def _create_lifecycle_background_task(coro, *, name: str) -> asyncio.Task:
@@ -1968,150 +1846,6 @@ def _library_scanner_for(root: Path, library_id: str = "local") -> LibraryScanne
         config_dir / f"library-metadata-covers-{cache_key}",
     )
     return LibraryScanner(root, metadata_store=store)
-
-
-async def _silent_active_watch_after_settle(
-    *,
-    source: str,
-    signature: str,
-    track: dict | None = None,
-    spotify_state: dict | None = None,
-) -> None:
-    try:
-        await asyncio.sleep(SILENT_ACTIVE_SETTLE_SECONDS)
-        await _check_and_recover_silent_active(source=source, signature=signature, track=track, spotify_state=spotify_state)
-    except asyncio.CancelledError:
-        raise
-    except Exception as exc:
-        logger.warning("Silent-active watch failed: source=%s signature=%s error=%s", source, signature, exc)
-    finally:
-        task = silent_active_recovery_state.watch_tasks.get(signature)
-        if task is asyncio.current_task():
-            silent_active_recovery_state.watch_tasks.pop(signature, None)
-
-
-async def _check_and_recover_silent_active(
-    *,
-    source: str,
-    signature: str,
-    track: dict | None = None,
-    spotify_state: dict | None = None,
-) -> None:
-    if signature in silent_active_recovery_state.recovery_attempts:
-        return
-    if not runtime.peak_monitor:
-        return
-
-    player_state = runtime.player_instance.state if runtime.player_instance and runtime.player_instance._running else {}
-    live_track = playback_state.current_track_info or {}
-    owner = playback_state.current_footer_owner or source
-    if source in {"local", "radio"}:
-        if not track or not _current_track_matches(track):
-            return
-        if not _is_local_playback_active(player_state):
-            return
-        source_inputs = _list_mpv_sink_inputs()
-        source_volume = player_state.get("volume")
-    elif source == "spotify":
-        spotify_state = await get_spotify_ui_state()
-        if not _is_spotify_playback_active(spotify_state):
-            return
-        source_inputs = _list_spotify_sink_inputs()
-        source_volume = spotify_state.get("source_volume")
-        live_track = {
-            "id": spotify_state.get("trackId"),
-            "title": spotify_state.get("title"),
-            "artist": spotify_state.get("artist"),
-            "source": "spotify",
-        }
-    else:
-        return
-
-    if not _active_unmuted_sink_inputs(source_inputs):
-        return
-    try:
-        if int(round(float(source_volume if source_volume is not None else 100))) <= 0:
-            return
-    except (TypeError, ValueError):
-        pass
-    try:
-        live_volume = await asyncio.to_thread(get_output_volume)
-    except Exception as exc:
-        logger.warning(
-            "Failed to read live output volume for silent-active check: %s", exc
-        )
-        live_volume = 100
-    if live_volume <= 0:
-        return
-
-    overview = await asyncio.to_thread(get_audio_output_overview)
-    output_mode = overview.get("output_mode") or {}
-    links_result = await asyncio.to_thread(_run_debug_command, ["pw-link", "-l"], 2.0)
-    links_text = links_result.get("stdout") or ""
-    if not _silent_active_source_links_present(source, links_text, output_mode):
-        return
-
-    peak_snapshot = runtime.peak_monitor.snapshot()
-    vu_db = peak_snapshot.get("vu_db")
-    if not isinstance(vu_db, (int, float)) or vu_db > SILENT_ACTIVE_FLOOR_DB:
-        return
-
-    # Skip when no current sample is available: vu_db then only reflects the
-    # technical -60 dB floor, not real silence. Freshness (vu_fresh) is the
-    # sample-validity signal of runtime.peak_monitor.snapshot(); the peak-hold
-    # "detected" flag is unrelated to sample validity and must not gate the
-    # diagnosis.
-    if not peak_snapshot.get("vu_fresh"):
-        logger.info(
-            "SILENT-ACTIVE-DIAG skip: peak_samples_stale vu_db=%s source=%s signature=%s",
-            vu_db, source, signature,
-        )
-        return
-
-    # Skip during measurement window or while EE preset is actively loading.
-    # The audio path is in transition; not a real silent-active condition.
-    if _is_measurement_window_open() or (
-        runtime.dsp_preset_load_lock is not None and runtime.dsp_preset_load_lock.locked()
-    ):
-        logger.info(
-            "SILENT-ACTIVE-DIAG skip: transition_window measurement_open=%s ee_preset_loading=%s source=%s signature=%s",
-            _is_measurement_window_open(),
-            runtime.dsp_preset_load_lock.locked() if runtime.dsp_preset_load_lock is not None else False,
-            source, signature,
-        )
-        return
-
-    all_inputs = _list_sink_inputs()
-    snapshot = _silent_active_snapshot(
-        source=source,
-        owner=owner,
-        track=live_track,
-        player_state=player_state,
-        spotify_state=spotify_state or {},
-        source_inputs=source_inputs,
-        all_inputs=all_inputs,
-        links_text=links_text,
-        overview=overview,
-        peak_snapshot=peak_snapshot,
-    )
-    logger.warning(
-        "Silent-active playback detected (log-only, recovery disabled): %s",
-        json.dumps(snapshot, ensure_ascii=False, sort_keys=True),
-    )
-    # PATCH silent-active-neutralize (2026-07-07):
-    # Automatic loadfile() / spotify-handoff recovery is disabled. It was
-    # breaking normal library starts by reloading mid-playback, which then
-    # triggered "Stopping peak monitor" via the buffering pause state.
-    # Existing peak-monitor / link-watch / owner logic remains the source
-    # of truth for state corrections. recovery_attempts is still recorded so
-    # duplicate triggers for the same source/url are naturally suppressed by
-    # the existing dedupe path.
-    silent_active_recovery_state.recovery_attempts.add(signature)
-    logger.warning(
-        "SILENT-ACTIVE-DIAG recovery_suppressed: would_have_recovered source=%s signature=%s vu_db=%s action=log_only",
-        source, signature, vu_db,
-    )
-    return
 
 
 async def _wait_for_dsp_output_ports(timeout_ms):
@@ -2249,7 +1983,7 @@ async def _mpv_source_ports_present() -> bool:
     mutation may run.
     """
     try:
-        links_text = await _run_pw_link_command("-io")
+        links_text = await pw_link.run_pw_link_command("-io")
     except Exception:
         return False
     return all(
@@ -2335,165 +2069,6 @@ async def _dump_21_runtime_state(label: str, ui_state: dict | None = None) -> di
     }
     logger.info("Subwoofer UI path state dump [%s]: %s", label, json.dumps(state, sort_keys=True))
     return state
-
-
-
-
-
-@dataclass
-class _SamplerateDriftTracker:
-    """Private drift-observation state for the samplerate drift watcher.
-
-    A single matching readback is treated as transient; only a repeated
-    matching signature confirms a drift/recovery condition.  The sole owner
-    is ``_observe_playback_samplerate_drift`` and its reset helper.
-    """
-
-    signature: tuple[Any, ...] | None = None
-    readbacks: int = 0
-
-    def reset(self) -> None:
-        self.signature = None
-        self.readbacks = 0
-
-    def record(self, signature: tuple[Any, ...]) -> int:
-        if signature == self.signature:
-            self.readbacks += 1
-        else:
-            self.signature = signature
-            self.readbacks = 1
-        return self.readbacks
-
-
-_samplerate_drift_tracker = _SamplerateDriftTracker()
-
-
-def _reset_samplerate_drift_observation() -> None:
-    _samplerate_drift_tracker.reset()
-
-
-async def _observe_playback_samplerate_drift() -> None:
-    """Observe a stable source/MPV/hardware-rate mismatch without mutating playback."""
-
-    # The Coordinator and the measurement session own all rate mutations.  A
-    # readback captured during either operation is not evidence of a settled
-    # playback drift and must not start a competing repair.
-    if _playback_transition_is_active() or _is_measurement_window_open() or (
-        measurement_sr_session is not None and measurement_sr_session.active
-    ) or _measurement_audio_graph_owned():
-        _reset_samplerate_drift_observation()
-        return
-
-    track = dict(playback_state.current_track_info or {})
-    source = str(track.get("source") or "")
-    if source not in {"local", "radio"}:
-        _reset_samplerate_drift_observation()
-        return
-
-    state = dict(runtime.player_instance.state if runtime.player_instance else {})
-    current_file = state.get("current_file")
-    expected_url = str(track.get("url") or "")
-    if (
-        not current_file
-        or state.get("ended")
-        or (expected_url and current_file != expected_url)
-    ):
-        _reset_samplerate_drift_observation()
-        return
-
-    # Read all rate domains as one observation.  The track rate is the last
-    # successful Coordinator context, MPV audio-params is the live source
-    # truth, and the PipeWire values are the current hardware readback.
-    track_rate = _coordinator_source_rate(source, track)
-    actual_rate = _get_player_audio_samplerate()
-    try:
-        samplerate_status = get_samplerate_status()
-    except Exception:
-        samplerate_status = {}
-    active_rate = samplerate_status.get("active_rate") if isinstance(samplerate_status, dict) else None
-    force_rate = samplerate_status.get("force_rate") if isinstance(samplerate_status, dict) else None
-    if (
-        not isinstance(track_rate, int)
-        or track_rate <= 0
-        or not isinstance(actual_rate, int)
-        or actual_rate <= 0
-        or not isinstance(active_rate, int)
-        or active_rate <= 0
-    ):
-        _reset_samplerate_drift_observation()
-        return
-
-    target_rate = samplerate.effective_playback_rate(actual_rate)
-    if not isinstance(target_rate, int) or target_rate <= 0:
-        _reset_samplerate_drift_observation()
-        return
-
-    source_metadata_aligned = (
-        samplerate.load_sample_rate_policy().get("mode") == "fixed"
-        or track_rate == actual_rate
-    )
-    healthy = (
-        source_metadata_aligned
-        and active_rate == target_rate
-        and (force_rate is None or force_rate == 0 or force_rate == target_rate)
-    )
-    if healthy:
-        _reset_samplerate_drift_observation()
-        return
-
-    signature = (
-        source,
-        expected_url or str(track.get("id") or ""),
-        str(current_file),
-        track_rate,
-        actual_rate,
-        target_rate,
-        active_rate,
-        force_rate,
-    )
-    readbacks = _samplerate_drift_tracker.record(signature)
-
-    # One readback can be a transient MPV property update.  Require the same
-    # source and the same mismatch on a later watcher pass before requesting
-    # recovery.
-    if readbacks <= 1:
-        return
-
-    diagnosis = {
-        "signature": (
-            f"samplerate:{source}:{expected_url or track.get('id')}:"
-            f"track={track_rate}:mpv={actual_rate}:target={target_rate}:active={active_rate}:force={force_rate}"
-        ),
-        "expected_rate": target_rate,
-        "track_rate": track_rate,
-        "actual_rate": actual_rate,
-        "mpv_rate": actual_rate,
-        "hardware_rate": active_rate,
-        "force_rate": force_rate,
-    }
-    _reset_samplerate_drift_observation()
-    logger.warning(
-        "Stable playback samplerate drift observed; requesting Coordinator recovery: "
-        "source=%s url=%s track=%s mpv=%s target=%s active=%s force=%s",
-        source,
-        expected_url,
-        track_rate,
-        actual_rate,
-        target_rate,
-        active_rate,
-        force_rate,
-    )
-    recovery_track = dict(track)
-    # MPV is the authoritative source-rate readback for this repair.  Keep
-    # the watcher read-only by passing a copy; the Coordinator updates the
-    # committed track context only after a successful recovery commit.
-    recovery_track["sample_rate_hz"] = actual_rate
-    await _request_coordinated_recovery(
-        recovery_track,
-        "samplerate-drift-watcher",
-        reload_source=True,
-        diagnosis=diagnosis,
-    )
 
 
 def _get_player_audio_samplerate() -> Optional[int]:
@@ -3072,79 +2647,6 @@ async def sync_peak_monitor_for_source_mode_state(source_overview: dict | None =
                 await manager.broadcast({"type": "playback_peak_warning", "data": runtime.peak_monitor.snapshot()})
 
 
-async def _radio_reconnect_after_delay(
-    track_info: dict,
-    attempt: int,
-    transition_generation: int,
-) -> None:
-    try:
-        await asyncio.sleep(RADIO_RECONNECT_DELAY_SECONDS)
-        expected_url = (track_info or {}).get("url")
-        if not expected_url:
-            return
-        if not runtime.player_instance or not runtime.player_instance._running:
-            return
-        if not _playback_transition_context_is_current(transition_generation):
-            return
-        if not playback_state.current_track_info or playback_state.current_track_info.get("source") != "radio" or playback_state.current_track_info.get("url") != expected_url:
-            return
-        state = runtime.player_instance.state
-        if state.get("current_file") and not state.get("ended"):
-            return
-        logger.info("Reconnecting radio stream after unexpected end: station=%s attempt=%s/%s", track_info.get("title") or track_info.get("id"), attempt, RADIO_RECONNECT_MAX_ATTEMPTS)
-        if not _playback_transition_context_is_current(transition_generation):
-            return
-        await _request_coordinated_recovery(
-            track_info,
-            "radio-reconnect",
-            reload_source=True,
-        )
-    except Exception as e:
-        logger.warning("Radio stream reconnect failed: %s", e)
-    finally:
-        radio_reconnect_state.task = None
-
-
-def _schedule_radio_reconnect_if_needed(state: dict) -> None:
-    track_info = playback_state.current_track_info or {}
-    track_url = track_info.get("url")
-    if track_info.get("source") != "radio" or not track_url:
-        return
-
-    if state.get("current_file") and not state.get("ended"):
-        if radio_reconnect_state.url != track_url:
-            radio_reconnect_state.url = track_url
-            radio_reconnect_state.attempts = 0
-            radio_reconnect_state.active_since = time.monotonic()
-        elif not radio_reconnect_state.active_since:
-            radio_reconnect_state.active_since = time.monotonic()
-        elif radio_reconnect_state.attempts and time.monotonic() - radio_reconnect_state.active_since >= 30.0:
-            radio_reconnect_state.attempts = 0
-        return
-
-    radio_reconnect_state.active_since = 0.0
-    if not (state.get("ended") and not state.get("current_file")):
-        return
-
-    if radio_reconnect_state.url != track_url:
-        radio_reconnect_state.url = track_url
-        radio_reconnect_state.attempts = 0
-    if radio_reconnect_state.attempts >= RADIO_RECONNECT_MAX_ATTEMPTS:
-        logger.warning("Radio stream ended and reconnect limit reached: station=%s url=%s", track_info.get("title") or track_info.get("id"), track_url)
-        return
-    if radio_reconnect_state.task and not radio_reconnect_state.task.done():
-        return
-
-    radio_reconnect_state.attempts += 1
-    radio_reconnect_state.task = asyncio.create_task(
-        _radio_reconnect_after_delay(
-            dict(track_info),
-            radio_reconnect_state.attempts,
-            _capture_playback_transition_epoch(),
-        )
-    )
-
-
 # Callback functions
 def _mark_player_state_authoritative(state: dict | None) -> None:
     seq = (state or {}).get("_seq")
@@ -3255,7 +2757,7 @@ async def on_player_state_change(state: dict, event_commit_id: str | None = None
         finally:
             queue_advancing = False
 
-    _schedule_radio_reconnect_if_needed(state)
+    radio_reconnect.schedule(state)
     if runtime.source_transition_lock is None:
         await sync_peak_monitor_for_playback_state(state, callback_generation)
     else:
@@ -3291,7 +2793,7 @@ async def broadcast_spotify_state(data=None):
     await sync_peak_monitor_for_spotify_state(data)
     if _is_spotify_playback_active(data):
         signature_payload = repr(_spotify_state_signature(data)).encode("utf-8", errors="replace")
-        _schedule_silent_active_watch(
+        silent_active_recovery.schedule(
             source="spotify",
             signature=f"spotify:{hashlib.sha1(signature_payload).hexdigest()}",
             spotify_state=data.copy(),
@@ -3442,292 +2944,6 @@ async def pause_local_playback_for_spotify_broadcast():
         pass
 
 
-_PW_LINK_COMMAND_TIMEOUT_SECONDS = 10
-_PW_LINK_TERMINATE_GRACE_SECONDS = 3
-
-
-async def _stop_command_child(proc, grace_seconds: float) -> None:
-    """Terminate a still-running command child and drain it terminally.
-
-    terminate -> bounded communicate() (drains stdout+stderr) -> if the
-    child ignores SIGTERM: kill -> bounded communicate().  Process and both
-    pipes are thereby always worked off terminally; a final wait() guards
-    against a pathological case where even the killed child's pipes never
-    close.  Already-exited processes are handled cheaply.
-    """
-    if proc is None or proc.returncode is not None:
-        return
-    proc.terminate()
-    try:
-        await asyncio.wait_for(proc.communicate(), timeout=grace_seconds)
-    except asyncio.TimeoutError:
-        proc.kill()
-        try:
-            await asyncio.wait_for(proc.communicate(), timeout=grace_seconds)
-        except asyncio.TimeoutError:
-            await proc.wait()
-
-
-async def _stop_command_child_cancellation_safe(proc, grace_seconds: float) -> bool:
-    """Stop and drain a command child shielded from caller cancellation.
-
-    Runs the actual stop in its own task behind ``asyncio.shield``: even a
-    second cancellation during the grace period cannot interrupt the
-    terminate/grace/kill/pipe-drain sequence, so no child can be orphaned by
-    caller cancellation.  Returns True when the caller was cancelled while
-    draining; the caller must then propagate CancelledError (it wins over
-    any timeout failure).  Cleanup errors are best-effort and swallowed.
-    """
-    if proc is None or proc.returncode is not None:
-        return False
-    cleanup_task = asyncio.create_task(_stop_command_child(proc, grace_seconds))
-    cancelled = False
-    while not cleanup_task.done():
-        try:
-            await asyncio.shield(cleanup_task)
-        except asyncio.CancelledError:
-            cancelled = True
-    try:
-        cleanup_task.result()
-    except Exception:
-        logger.debug("FXRoute command child cleanup failed", exc_info=True)
-    return cancelled
-
-
-async def _stop_pw_link_process(proc) -> None:
-    """Terminate and fully reap a pw-link child (no zombie/pipe left behind)."""
-    await _stop_command_child(proc, _PW_LINK_TERMINATE_GRACE_SECONDS)
-
-
-async def _run_pw_link_command(*args: str) -> str:
-    proc = await asyncio.create_subprocess_exec(
-        "pw-link", *args,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    try:
-        stdout, stderr = await asyncio.wait_for(
-            proc.communicate(), timeout=_PW_LINK_COMMAND_TIMEOUT_SECONDS
-        )
-    except asyncio.TimeoutError:
-        # A hanging PipeWire registry must not block a request forever.
-        # Report the timeout as a controlled command failure, exactly like
-        # the nonzero-exit path below.
-        await _stop_pw_link_process(proc)
-        raise RuntimeError(
-            f"pw-link {' '.join(args)} timed out after {_PW_LINK_COMMAND_TIMEOUT_SECONDS}s"
-        )
-    if proc.returncode != 0:
-        raise RuntimeError(stderr.decode(errors="ignore").strip() or f"pw-link {' '.join(args)} failed")
-    return stdout.decode(errors="ignore").strip()
-
-
-async def _disconnect_ports(source_ports: tuple[str, ...], sink_port: str) -> None:
-    for source_port in source_ports:
-        try:
-            await _run_pw_link_command("-d", source_port, sink_port)
-            return
-        except Exception:
-            continue
-
-
-async def _connect_ports(source_ports: tuple[str, ...], sink_port: str) -> None:
-    last_exc: Exception | None = None
-    for source_port in source_ports:
-        try:
-            await _run_pw_link_command(source_port, sink_port)
-            return
-        except Exception as exc:
-            message = str(exc).lower()
-            if "file exists" in message or "exists" in message or "already linked" in message:
-                return
-            last_exc = exc
-    if last_exc:
-        raise last_exc
-
-
-async def _disconnect_external_input_source(source_name: str | None) -> None:
-    normalized = (source_name or "").strip()
-    if not normalized:
-        return
-    for channel in ("FL", "FR"):
-        sink_port = f"fxroute_dsp_sink:playback_{channel}"
-        await _disconnect_ports((f"{normalized}:capture_{channel}",), sink_port)
-
-
-async def _disable_external_input_loopback() -> None:
-    previous_source = input_routing_state.external_input_loopback_source_name
-    await _disconnect_external_input_source(previous_source)
-    input_routing_state.external_input_loopback_source_name = None
-
-
-async def _ensure_external_input_loopback(source_name: str) -> None:
-    normalized = (source_name or "").strip()
-    if not normalized:
-        raise RuntimeError("Missing source name for external-input monitoring")
-    if input_routing_state.external_input_loopback_source_name == normalized:
-        return
-    await _disable_external_input_loopback()
-    try:
-        for channel in ("FL", "FR"):
-            source_port = f"{normalized}:capture_{channel}"
-            sink_port = f"fxroute_dsp_sink:playback_{channel}"
-            await _connect_ports((source_port,), sink_port)
-    except BaseException:
-        await _disconnect_external_input_source(normalized)
-        raise
-    input_routing_state.external_input_loopback_source_name = normalized
-    logger.info("Enabled direct external-input monitoring from %s to fxroute_dsp_sink", normalized)
-
-
-async def _sync_external_input_monitoring(source_overview: dict | None = None) -> dict:
-    overview = source_overview or get_audio_source_overview()
-    if overview.get("mode") != SOURCE_MODE_EXTERNAL_INPUT:
-        await _disable_external_input_loopback()
-        return overview
-    current_input = overview.get("selected_input") or overview.get("current_input") or {}
-    source_name = current_input.get("source_key") or current_input.get("name")
-    if not source_name:
-        await _disable_external_input_loopback()
-        return overview
-    await _ensure_external_input_loopback(str(source_name))
-    return overview
-
-
-async def _disconnect_bluetooth_input_source(source_name: str | None) -> None:
-    normalized = (source_name or "").strip()
-    if not normalized:
-        return
-    try:
-        await _link_bluetooth_source_to_dsp(normalized, disconnect=True)
-    except Exception:
-        pass
-
-
-async def _stop_bluetooth_audio_agent() -> None:
-    proc = runtime.bluetooth_agent_process
-    if not proc:
-        return
-    try:
-        if proc.returncode is None:
-            proc.terminate()
-            try:
-                await asyncio.wait_for(proc.wait(), timeout=3)
-            except asyncio.TimeoutError:
-                proc.kill()
-                await proc.wait()
-    except asyncio.CancelledError:
-        if proc.returncode is None:
-            proc.kill()
-            await proc.wait()
-        raise
-    finally:
-        if runtime.bluetooth_agent_process is proc:
-            runtime.bluetooth_agent_process = None
-
-
-async def _ensure_bluetooth_audio_agent() -> None:
-    proc = runtime.bluetooth_agent_process
-    if proc and proc.returncode is None:
-        return
-    agent_script = BASE_DIR / "audio/bluez_agent.py"
-    runtime.bluetooth_agent_process = await asyncio.create_subprocess_exec(
-        str(agent_script),
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    try:
-        await asyncio.sleep(0.4)
-    except BaseException:
-        await _stop_bluetooth_audio_agent()
-        raise
-    if runtime.bluetooth_agent_process.returncode is not None:
-        stderr = await runtime.bluetooth_agent_process.stderr.read()
-        runtime.bluetooth_agent_process = None
-        raise RuntimeError((stderr or b"BlueZ audio agent exited immediately").decode(errors="ignore").strip())
-
-
-async def _clear_bluetooth_input_monitoring_links() -> None:
-    previous_source = input_routing_state.bluetooth_input_source_name
-    input_routing_state.bluetooth_input_source_name = None
-    await _disconnect_bluetooth_input_source(previous_source)
-
-
-async def _link_bluetooth_source_to_dsp(source_name: str, disconnect: bool = False) -> None:
-    normalized = (source_name or "").strip()
-    if not normalized:
-        return
-    failures: list[str] = []
-    for channel in ("FL", "FR"):
-        sink_port = f"fxroute_dsp_sink:playback_{channel}"
-        source_ports = (f"{normalized}:capture_{channel}", f"{normalized}:output_{channel}")
-        try:
-            if disconnect:
-                await _disconnect_ports(source_ports, sink_port)
-            else:
-                await _connect_ports(source_ports, sink_port)
-        except Exception as exc:
-            failures.append(f"{channel}: {exc}")
-
-    if failures:
-        raise RuntimeError("failed to link ports: " + "; ".join(failures))
-
-
-async def _disable_bluetooth_input_monitoring() -> None:
-    await _clear_bluetooth_input_monitoring_links()
-    await _stop_bluetooth_audio_agent()
-    try:
-        disconnected = disconnect_connected_bluetooth_audio_sources()
-        if disconnected:
-            logger.info("Disconnected Bluetooth audio source devices while leaving bluetooth-input mode: %s", ", ".join(disconnected))
-    except Exception as exc:
-        logger.warning("Failed to disconnect Bluetooth audio source devices: %s", exc)
-
-
-async def _ensure_bluetooth_input_loopback(source_name: str) -> None:
-    normalized = (source_name or "").strip()
-    if not normalized:
-        raise RuntimeError("Missing Bluetooth source name for monitoring")
-    if input_routing_state.bluetooth_input_source_name == normalized:
-        return
-    await _clear_bluetooth_input_monitoring_links()
-    try:
-        await _link_bluetooth_source_to_dsp(normalized)
-    except BaseException:
-        await _disconnect_bluetooth_input_source(normalized)
-        raise
-    input_routing_state.bluetooth_input_source_name = normalized
-    logger.info("Enabled Bluetooth input monitoring from %s to fxroute_dsp_sink", normalized)
-
-
-async def _sync_bluetooth_input_monitoring(source_overview: dict | None = None) -> dict:
-    overview = source_overview or get_audio_source_overview()
-    if overview.get("mode") != SOURCE_MODE_BLUETOOTH_INPUT:
-        await _disable_bluetooth_input_monitoring()
-        try:
-            set_bluetooth_receiver_enabled(False)
-        except Exception as exc:
-            logger.warning("Failed to disable Bluetooth receiver mode: %s", exc)
-        return overview
-
-    bt_state = overview.get("bluetooth") or {}
-    if not bt_state.get("selectable"):
-        raise RuntimeError("Bluetooth input is not currently available")
-
-    await _ensure_bluetooth_audio_agent()
-    if not bt_state.get("discoverable") or not bt_state.get("pairable"):
-        set_bluetooth_receiver_enabled(True)
-    bt_overview = get_bluetooth_audio_overview()
-    receiver_session = bt_overview.get("receiver_session") or {}
-    source_name = receiver_session.get("source_name")
-    if not source_name:
-        await _clear_bluetooth_input_monitoring_links()
-        return get_audio_source_overview()
-
-    await _ensure_bluetooth_input_loopback(str(source_name))
-    return get_audio_source_overview()
-
-
 def _overview_sample_rate(overview: dict | None) -> int | None:
     """Thin wrapper: overview rate extraction lives in samplerate (REFACTOR-003)."""
     return samplerate.overview_sample_rate(overview)
@@ -3738,217 +2954,10 @@ def _authoritative_sample_rate(status: dict | None) -> int | None:
     return samplerate.authoritative_sample_rate(status)
 
 
-async def _bluetooth_input_monitor_loop() -> None:
-    while True:
-        try:
-            overview = get_audio_source_overview()
-            if overview.get("mode") == SOURCE_MODE_BLUETOOTH_INPUT:
-                overview = await _sync_bluetooth_input_monitoring(overview)
-                await sync_peak_monitor_for_source_mode_state(overview)
-            elif input_routing_state.bluetooth_input_source_name:
-                await _disable_bluetooth_input_monitoring()
-                await sync_peak_monitor_for_source_mode_state(overview)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            logger.debug("Bluetooth input monitor loop check failed: %s", exc)
-        await asyncio.sleep(3)
-
-
-async def _spotify_playerctl_event_detect_check(reason: str) -> None:
-    try:
-        burst_delays = (0.05, 0.15, 0.30, 0.60)
-        last_snapshot: tuple[object, object, object, object] | None = None
-        mismatch_signature: tuple[object, int, int] | None = None
-        mismatch_readbacks = 0
-        for index, delay_s in enumerate(burst_delays):
-            if delay_s > 0:
-                await asyncio.sleep(delay_s if index == 0 else max(0.0, delay_s - burst_delays[index - 1]))
-            spotify_inputs = _list_spotify_sink_inputs()
-            spotify_observation = _spotify_sink_input_observation(spotify_inputs)
-            spotify_identity = spotify_observation[0] if spotify_observation else None
-            spotify_rate = spotify_observation[1] if spotify_observation else None
-            spotify_state = await get_spotify_ui_state()
-            samplerate_status = get_samplerate_status()
-            sink_rate = samplerate_status.get("active_rate")
-            last_snapshot = (
-                spotify_state.get("status"),
-                len(spotify_inputs),
-                spotify_rate,
-                sink_rate,
-            )
-            if spotify_state.get("status") == "Playing" and isinstance(spotify_rate, int) and isinstance(sink_rate, int):
-                canonical_rate = SPOTIFY_PREARM_SAMPLE_RATE_HZ
-                target_rate = samplerate.effective_playback_rate(canonical_rate)
-                if spotify_rate != canonical_rate or sink_rate != target_rate:
-                    current_mismatch = (spotify_identity, spotify_rate, sink_rate)
-                    if current_mismatch == mismatch_signature:
-                        mismatch_readbacks += 1
-                    else:
-                        mismatch_signature = current_mismatch
-                        mismatch_readbacks = 1
-                    logger.info(
-                        "Spotify detect watcher mismatch probe: reason=%s probe=%s/%s stable=%s/%s "
-                        "spotify_rate=%s sink_rate=%s title=%s",
-                        reason,
-                        index + 1,
-                        len(burst_delays),
-                        mismatch_readbacks,
-                        SPOTIFY_SINK_INPUT_RATE_STABILITY_POLLS,
-                        spotify_rate,
-                        sink_rate,
-                        spotify_state.get("title"),
-                    )
-                    if mismatch_readbacks < SPOTIFY_SINK_INPUT_RATE_STABILITY_POLLS:
-                        continue
-                    logger.warning(
-                        "Stable Spotify samplerate mismatch after transport event; requesting Coordinator recovery: "
-                        "reason=%s spotify_rate=%s sink_rate=%s title=%s",
-                        reason,
-                        spotify_rate,
-                        sink_rate,
-                        spotify_state.get("title"),
-                    )
-                    track = {
-                        "source": "spotify",
-                        "id": spotify_state.get("trackId"),
-                        "url": spotify_state.get("trackId"),
-                        "title": spotify_state.get("title"),
-                        "artist": spotify_state.get("artist"),
-                        "sample_rate_hz": SPOTIFY_PREARM_SAMPLE_RATE_HZ,
-                    }
-                    diagnosis = {
-                        "signature": (
-                            f"spotify-samplerate:{spotify_identity}:"
-                            f"{spotify_rate}->{sink_rate}"
-                        ),
-                        "source": "spotify",
-                        "actual_rate": spotify_rate,
-                        "expected_rate": target_rate,
-                        "hardware_rate": sink_rate,
-                    }
-                    await _request_coordinated_recovery(
-                        track,
-                        f"spotify-{reason}",
-                        reload_source=True,
-                        diagnosis=diagnosis,
-                    )
-                    break
-                mismatch_signature = None
-                mismatch_readbacks = 0
-                logger.info(
-                    "Spotify detect watcher: reason=%s probe=%s/%s status=%s spotify_inputs=%s spotify_rate=%s sink_rate=%s footer_owner=%s title=%s",
-                    reason,
-                    index + 1,
-                    len(burst_delays),
-                    spotify_state.get("status"),
-                    len(spotify_inputs),
-                    spotify_rate,
-                    sink_rate,
-                    playback_state.current_footer_owner,
-                    spotify_state.get("title"),
-                )
-                break
-            mismatch_signature = None
-            mismatch_readbacks = 0
-        else:
-            if last_snapshot is not None:
-                status, inputs_count, spotify_rate, sink_rate = last_snapshot
-                logger.info(
-                    "Spotify detect watcher final: reason=%s probes=%s status=%s spotify_inputs=%s spotify_rate=%s sink_rate=%s footer_owner=%s",
-                    reason,
-                    len(burst_delays),
-                    status,
-                    inputs_count,
-                    spotify_rate,
-                    sink_rate,
-                    playback_state.current_footer_owner,
-                )
-    except asyncio.CancelledError:
-        raise
-    except Exception as exc:
-        logger.warning("Spotify playerctl detect check failed (%s): %s", reason, exc)
-    finally:
-        if runtime.spotify_playerctl_detect_task and runtime.spotify_playerctl_detect_task.done():
-            runtime.spotify_playerctl_detect_task = None
-
-
-def _schedule_spotify_playerctl_event_detect(reason: str) -> None:
-    global spotify_playerctl_last_trigger_at
-    if runtime.spotify_playerctl_detect_task and not runtime.spotify_playerctl_detect_task.done():
-        logger.debug(
-            "Spotify playerctl detect event coalesced while detect/recovery task is active: reason=%s",
-            reason,
-        )
-        return
-    now = time.monotonic()
-    if now - spotify_playerctl_last_trigger_at < 1.0:
-        return
-    spotify_playerctl_last_trigger_at = now
-    runtime.spotify_playerctl_detect_task = asyncio.create_task(
-        _spotify_playerctl_event_detect_check(reason),
-        name="spotify-playerctl-event-detect",
-    )
-
-
-async def _spotify_playerctl_watch_loop() -> None:
-    logger.info("Spotify playerctl watch loop entered")
-    if not spotify_installed():
-        logger.info("Spotify playerctl watch skipped: Spotify client not installed")
-        return
-    playerctl_path = shutil.which("playerctl")
-    if not playerctl_path:
-        logger.info("Spotify playerctl watch skipped: playerctl not available")
-        return
-    logger.info("Spotify playerctl watch resolved playerctl path: %s", playerctl_path)
-    while True:
-        proc = None
-        try:
-            logger.info("Spotify playerctl watch spawning follow process")
-            proc = await asyncio.create_subprocess_exec(
-                playerctl_path,
-                "--player=spotify",
-                "metadata",
-                "--follow",
-                "--format",
-                "{{status}}|{{title}}|{{artist}}",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            assert proc.stdout is not None
-            logger.info("Spotify playerctl watch started")
-            while True:
-                line = await proc.stdout.readline()
-                if not line:
-                    break
-                text = line.decode(errors="ignore").strip()
-                if not text:
-                    continue
-                status, _, tail = text.partition("|")
-                if status == "Playing":
-                    _schedule_spotify_playerctl_event_detect(f"playerctl:{tail or 'playing'}")
-                _schedule_spotify_state_refresh(f"playerctl:{tail or status or 'metadata'}")
-            stderr = b""
-            if proc.stderr:
-                try:
-                    stderr = await asyncio.wait_for(proc.stderr.read(), timeout=0.2)
-                except Exception:
-                    stderr = b""
-            if proc.returncode not in (0, None):
-                logger.warning("Spotify playerctl watch exited with %s: %s", proc.returncode, stderr.decode(errors="ignore").strip() or "no stderr")
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            logger.warning("Spotify playerctl watch loop failed: %s", exc)
-        finally:
-            await _stop_process(proc)
-        await asyncio.sleep(1.0)
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan: startup and shutdown."""
-    global settings, downloader, dsp_manager, measurement_store, measurement_sr_session, hardware_controller, playback_transition_coordinator, spotify_playerctl_last_trigger_at
+    global settings, downloader, dsp_manager, measurement_store, measurement_sr_session, hardware_controller, playback_transition_coordinator
 
     logger.info("Starting FXRoute... build_id=%s", _read_build_id())
     try:
@@ -4087,8 +3096,8 @@ async def lifespan(app: FastAPI):
 
         try:
             applied_source = get_audio_source_overview()
-            applied_source = await _sync_external_input_monitoring(applied_source)
-            applied_source = await _sync_bluetooth_input_monitoring(applied_source)
+            applied_source = await external_input.sync(applied_source)
+            applied_source = await bluetooth_input.sync(applied_source)
             if applied_source.get("mode") == SOURCE_MODE_EXTERNAL_INPUT:
                 logger.info(
                     "Re-applied persisted external-input monitoring: %s",
@@ -4099,14 +3108,14 @@ async def lifespan(app: FastAPI):
         except Exception as exc:
             logger.warning("Failed to re-apply source monitoring: %s", exc)
 
-        runtime.bluetooth_monitor_task = asyncio.create_task(
-            _bluetooth_input_monitor_loop(),
+        bluetooth_input.monitor_task = asyncio.create_task(
+            bluetooth_input.run_monitor_loop(),
             name="bluetooth-input-monitor",
         )
-        spotify_playerctl_last_trigger_at = 0.0
+        spotify_playerctl_watch.last_trigger_at = 0.0
         logger.info("Starting Spotify playerctl watch task")
-        runtime.spotify_playerctl_watch_task = asyncio.create_task(
-            _spotify_playerctl_watch_loop(),
+        spotify_playerctl_watch.watch_task = asyncio.create_task(
+            spotify_playerctl_watch.run_watch_loop(),
             name="spotify-playerctl-watch",
         )
         logger.info("Starting Spotify metadata poll fallback task")
@@ -4155,13 +3164,13 @@ async def _shutdown_lifespan_resources() -> None:
     owned_tasks = [
         runtime.dsp_runtime_link_watch_task,
         runtime.measurement_watchdog_task,
-        runtime.bluetooth_monitor_task,
-        runtime.spotify_playerctl_watch_task,
-        runtime.spotify_playerctl_detect_task,
+        bluetooth_input.monitor_task,
+        spotify_playerctl_watch.watch_task,
+        spotify_playerctl_watch.detect_task,
         runtime.spotify_state_refresh_task,
         runtime.spotify_state_poll_task,
-        radio_reconnect_state.task,
-        *silent_active_recovery_state.watch_tasks.values(),
+        radio_reconnect.task,
+        *silent_active_recovery.watch_tasks.values(),
         *runtime.lifecycle_background_tasks,
     ]
     tasks = list({task for task in owned_tasks if task is not None and not task.done()})
@@ -4175,7 +3184,7 @@ async def _shutdown_lifespan_resources() -> None:
                     logger.warning("Background task failed during cleanup: task=%s error=%s", task.get_name(), result)
 
         await cleanup("background-tasks", drain_background_tasks)
-    silent_active_recovery_state.watch_tasks.clear()
+    silent_active_recovery.watch_tasks.clear()
     runtime.lifecycle_background_tasks.clear()
 
     if runtime.player_instance is not None:
@@ -4213,11 +3222,11 @@ async def _shutdown_lifespan_resources() -> None:
         await cleanup("player", lambda: asyncio.to_thread(runtime.player_instance.stop))
     if runtime.dsp_runtime is not None:
         await cleanup("subwoofer-runtime", runtime.dsp_runtime.stop)
-    if runtime.bluetooth_agent_process is not None or input_routing_state.bluetooth_input_source_name is not None:
-        await cleanup("bluetooth-input", _disable_bluetooth_input_monitoring)
+    if bluetooth_input.agent_process is not None or bluetooth_input.input_source_name is not None:
+        await cleanup("bluetooth-input", bluetooth_input.disable)
     await cleanup("bluetooth-receiver", lambda: asyncio.to_thread(set_bluetooth_receiver_enabled, False))
-    if input_routing_state.external_input_loopback_source_name is not None:
-        await cleanup("external-input", _disable_external_input_loopback)
+    if external_input.loopback_source_name is not None:
+        await cleanup("external-input", external_input.disable)
     if runtime.peak_monitor is not None:
         await cleanup("peak-monitor", runtime.peak_monitor.stop)
     if hardware_controller is not None:
@@ -4231,9 +3240,9 @@ async def _shutdown_lifespan_resources() -> None:
     measurement_sr_session = None
     hardware_controller = None
     playback_transition_coordinator = None
-    input_routing_state.external_input_loopback_source_name = None
-    input_routing_state.bluetooth_input_source_name = None
-    radio_reconnect_state.task = None
+    external_input.loopback_source_name = None
+    bluetooth_input.input_source_name = None
+    radio_reconnect.task = None
     if cleanup_cancelled:
         raise asyncio.CancelledError
 
@@ -4286,7 +3295,7 @@ def _make_dsp_orchestration_deps() -> DspOrchestrationDeps:
         wait_for_samplerate_alignment=lambda *args, **kwargs: _wait_for_samplerate_alignment(*args, **kwargs),
         wait_for_selected_output_effective_rate=lambda *args, **kwargs: _wait_for_selected_output_effective_rate(*args, **kwargs),
         measurement_audio_graph_owned=lambda: _measurement_audio_graph_owned(),
-        observe_playback_samplerate_drift=lambda: _observe_playback_samplerate_drift(),
+        observe_playback_samplerate_drift=lambda: samplerate_drift.observe(),
         playback_transition_is_active=lambda: _playback_transition_is_active(),
         coordinator_target_rate=lambda *args, **kwargs: _coordinator_target_rate(*args, **kwargs),
         playback_graph_diagnosis=lambda *args, **kwargs: _playback_graph_diagnosis(*args, **kwargs),
@@ -4326,8 +3335,8 @@ def _make_playback_orchestration_deps() -> playback_orchestration.PlaybackOrches
         get_target_rate=lambda source, track=None: playback_orchestration.configured().coordinator_target_rate(source, track),
         sample_rate_policy_is_auto=lambda: samplerate.load_sample_rate_policy().get("mode") == "auto",
         get_player_queue_fields=lambda: playback_queue.queue.native_request_fields(),
-        run_pw_link_command=lambda *args: _run_pw_link_command(*args),
-        connect_ports=lambda *args: _connect_ports(*args),
+        run_pw_link_command=lambda *args: pw_link.run_pw_link_command(*args),
+        connect_ports=lambda *args: pw_link.connect_ports(*args),
         contains_link=_contains_link,
         helper_argument_sample_rate=dsp_orchestration.helper_argument_sample_rate,
         sync_preset_for_samplerate=lambda *args, **kwargs: dsp_orchestrator.sync_preset_for_playback_samplerate(*args, **kwargs),
@@ -4673,9 +3682,7 @@ async def stop_playback():
         playback_state.last_radio_track_info = dict(playback_state.current_track_info)
     _mark_playback_intent_changed()
     playback_state.current_track_info = None
-    radio_reconnect_state.attempts = 0
-    radio_reconnect_state.url = None
-    radio_reconnect_state.active_since = 0.0
+    radio_reconnect.reset()
     playback_queue.queue.reset()
     playback_queue.queue.reset_mpv_loop_state()
     runtime.player_instance.stop_playback()
@@ -5280,8 +4287,8 @@ async def save_audio_source_selection_route(request: Request):
 
     try:
         result = set_audio_source_selection(mode, input_key)
-        result = await _sync_external_input_monitoring(result)
-        result = await _sync_bluetooth_input_monitoring(result)
+        result = await external_input.sync(result)
+        result = await bluetooth_input.sync(result)
         if result.get("mode") in {SOURCE_MODE_EXTERNAL_INPUT, SOURCE_MODE_BLUETOOTH_INPUT}:
             await _pause_all_app_playback_for_external_input()
         await sync_peak_monitor_for_source_mode_state(result)

@@ -145,7 +145,8 @@ class OwnershipStructureTests(unittest.TestCase):
         ):
             self.assertIn(f"def {name}", orchestration)
         main = SOURCES["main.py"]
-        self.assertNotIn("io_text = await _run_pw_link_command", main)
+        self.assertNotIn("async def run_pw_link_command", main)
+        self.assertIn("self._deps.run_pw_link_command", orchestration)
         self.assertNotIn("Build the effects/helper graph inside the Coordinator-owned gate", main)
         self.assertNotIn("def _ensure_mpv_to_dsp_links", main)
         self.assertIn("def _ensure_mpv_to_dsp_links", orchestration)

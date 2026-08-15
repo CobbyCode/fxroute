@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
+import audio.pw_link as pw_link_mod
 from playback_transition_test_support import run_main_handoff_through_coordinator
 
 
@@ -18,7 +19,7 @@ class SamplerateDriftWatcherTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         self.originals = {
-            name: (getattr(main.runtime, name) if hasattr(main.runtime, name) else getattr(main.playback_state, name) if hasattr(main.playback_state, name) else getattr(main._samplerate_drift_tracker, name) if hasattr(main._samplerate_drift_tracker, name) else getattr(main, name))
+            name: (getattr(main.runtime, name) if hasattr(main.runtime, name) else getattr(main.playback_state, name) if hasattr(main.playback_state, name) else getattr(main.samplerate_drift, name) if hasattr(main.samplerate_drift, name) else getattr(main, name))
             for name in (
                 "player_instance", "current_track_info",
                 "playback_transition_coordinator", "measurement_sr_session",
@@ -50,12 +51,12 @@ class SamplerateDriftWatcherTests(unittest.IsolatedAsyncioTestCase):
             "active_rate": 44100,
             "force_rate": 44100,
         }
-        main._samplerate_drift_tracker.signature = None
-        main._samplerate_drift_tracker.readbacks = 0
+        main.samplerate_drift.signature = None
+        main.samplerate_drift.readbacks = 0
 
     async def asyncTearDown(self):
         for name, value in self.originals.items():
-            setattr(main.runtime if hasattr(main.runtime, name) else main.playback_state if hasattr(main.playback_state, name) else main._samplerate_drift_tracker if hasattr(main._samplerate_drift_tracker, name) else main, name, value)
+            setattr(main.runtime if hasattr(main.runtime, name) else main.playback_state if hasattr(main.playback_state, name) else main.samplerate_drift if hasattr(main.samplerate_drift, name) else main, name, value)
 
     async def test_two_matching_mismatch_readbacks_request_one_recovery(self):
         """MPV/track 44.1 with hardware at 48 kHz requests repair at 44.1."""
@@ -67,9 +68,9 @@ class SamplerateDriftWatcherTests(unittest.IsolatedAsyncioTestCase):
         ), patch.object(
             main, "_request_coordinated_recovery", recovery
         ):
-            await main._observe_playback_samplerate_drift()
+            await main.samplerate_drift.observe()
             recovery.assert_not_awaited()
-            await main._observe_playback_samplerate_drift()
+            await main.samplerate_drift.observe()
 
         recovery.assert_awaited_once()
         self.assertEqual(recovery.await_args.args[1], "samplerate-drift-watcher")
@@ -86,9 +87,9 @@ class SamplerateDriftWatcherTests(unittest.IsolatedAsyncioTestCase):
             "get_samplerate_status",
             return_value={"active_rate": 44100, "force_rate": 44100},
         ), patch.object(main, "_request_coordinated_recovery", recovery):
-            await main._observe_playback_samplerate_drift()
+            await main.samplerate_drift.observe()
             recovery.assert_not_awaited()
-            await main._observe_playback_samplerate_drift()
+            await main.samplerate_drift.observe()
 
         recovery.assert_awaited_once()
         self.assertEqual(recovery.await_args.args[0]["sample_rate_hz"], 48000)
@@ -102,8 +103,8 @@ class SamplerateDriftWatcherTests(unittest.IsolatedAsyncioTestCase):
             "get_samplerate_status",
             return_value={"active_rate": 44100, "force_rate": None},
         ), patch.object(main, "_request_coordinated_recovery", recovery):
-            await main._observe_playback_samplerate_drift()
-            await main._observe_playback_samplerate_drift()
+            await main.samplerate_drift.observe()
+            await main.samplerate_drift.observe()
 
         recovery.assert_not_awaited()
 
@@ -112,7 +113,7 @@ class SamplerateDriftWatcherTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(main, "_get_player_audio_samplerate", return_value=48000), patch.object(
             main, "_request_coordinated_recovery", recovery
         ):
-            await main._observe_playback_samplerate_drift()
+            await main.samplerate_drift.observe()
             main.playback_state.current_track_info = {
                 "id": "radio_other",
                 "source": "radio",
@@ -120,7 +121,7 @@ class SamplerateDriftWatcherTests(unittest.IsolatedAsyncioTestCase):
                 "sample_rate_hz": 44100,
             }
             main.runtime.player_instance.state["current_file"] = "https://radio.example/other"
-            await main._observe_playback_samplerate_drift()
+            await main.samplerate_drift.observe()
 
         recovery.assert_not_awaited()
 
@@ -130,10 +131,10 @@ class SamplerateDriftWatcherTests(unittest.IsolatedAsyncioTestCase):
             main, "_request_coordinated_recovery", recovery
         ):
             main.playback_transition_coordinator.transition_active = True
-            await main._observe_playback_samplerate_drift()
+            await main.samplerate_drift.observe()
             main.playback_transition_coordinator.transition_active = False
             main.measurement_sr_session.active = True
-            await main._observe_playback_samplerate_drift()
+            await main.samplerate_drift.observe()
 
         recovery.assert_not_awaited()
 
@@ -154,7 +155,7 @@ class RadioPostLoadHandoffTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         self.originals = {
-            name: (getattr(main.runtime, name) if hasattr(main.runtime, name) else getattr(main.playback_state, name) if hasattr(main.playback_state, name) else getattr(main._samplerate_drift_tracker, name) if hasattr(main._samplerate_drift_tracker, name) else getattr(main, name))
+            name: (getattr(main.runtime, name) if hasattr(main.runtime, name) else getattr(main.playback_state, name) if hasattr(main.playback_state, name) else getattr(main.samplerate_drift, name) if hasattr(main.samplerate_drift, name) else getattr(main, name))
             for name in (
                 "playback_transition_epoch", "dsp_runtime",
                 "asyncio",
@@ -170,7 +171,7 @@ class RadioPostLoadHandoffTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self):
         for name, value in self.originals.items():
-            setattr(main.runtime if hasattr(main.runtime, name) else main.playback_state if hasattr(main.playback_state, name) else main._samplerate_drift_tracker if hasattr(main._samplerate_drift_tracker, name) else main, name, value)
+            setattr(main.runtime if hasattr(main.runtime, name) else main.playback_state if hasattr(main.playback_state, name) else main.samplerate_drift if hasattr(main.samplerate_drift, name) else main, name, value)
 
     async def _run_handoff(
         self,
@@ -256,7 +257,7 @@ class RadioPostLoadHandoffTests(unittest.IsolatedAsyncioTestCase):
             })()
         ), patch.object(
             main, "_get_current_pipewire_force_rate", lambda: 0
-        ), patch.object(main, "_run_pw_link_command", ee_ports_present), patch.object(
+        ), patch.object(pw_link_mod, "run_pw_link_command", ee_ports_present), patch.object(
             main, "get_audio_output_overview",
             return_value={"output_mode": {"mode": "stereo", "effective_output_key": "alsa_output.pci-0000_00_1f.3.analog-stereo"}},
         ), patch.object(

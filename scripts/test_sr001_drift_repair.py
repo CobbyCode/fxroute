@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import audio.samplerate as samplerate
 import main
 
 
@@ -75,11 +76,11 @@ class CoordinatorRecoveryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_spotify_watcher_requests_recovery_after_stable_mismatch(self):
         self.assertFalse(hasattr(main, "_maybe_recover_spotify_samplerate_mismatch"))
-        source = (Path(__file__).resolve().parents[1] / "main.py").read_text()
-        start = source.index("async def _spotify_playerctl_event_detect_check")
-        end = source.index("def _schedule_spotify_playerctl_event_detect", start)
+        source = (Path(__file__).resolve().parents[1] / "playback/spotify_watch.py").read_text()
+        start = source.index("async def _event_detect_check")
+        end = source.index("def schedule_detect", start)
         watcher = source[start:end]
-        self.assertIn("_request_coordinated_recovery", watcher)
+        self.assertIn("request_coordinated_recovery", watcher)
         self.assertNotIn("_set_pipewire_force_rate", watcher)
         self.assertNotIn("dsp_orchestrator.sync_runtime", watcher)
 
@@ -96,13 +97,13 @@ class CoordinatorRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 [{"id": 11, "sample_rate": 48000}],
             ),
         ), patch.object(main, "get_spotify_ui_state", new=AsyncMock(side_effect=lambda: next(states))), patch.object(
-            main,
+            samplerate,
             "get_samplerate_status",
             return_value={"active_rate": 44100, "force_rate": 44100},
         ), patch.object(main, "_request_coordinated_recovery", recovery), patch.object(
             main.asyncio, "sleep", new=AsyncMock()
         ):
-            await main._spotify_playerctl_event_detect_check("playerctl:Playing")
+            await main.spotify_playerctl_watch._event_detect_check("playerctl:Playing")
 
         recovery.assert_awaited_once()
         self.assertTrue(recovery.await_args.kwargs["reload_source"])
@@ -123,13 +124,13 @@ class CoordinatorRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 [{"id": 11, "sample_rate": 48000}],
             ),
         ), patch.object(main, "get_spotify_ui_state", new=AsyncMock(side_effect=lambda: next(states))), patch.object(
-            main,
+            samplerate,
             "get_samplerate_status",
             return_value={"active_rate": 48000, "force_rate": 48000},
         ), patch.object(main, "_request_coordinated_recovery", recovery), patch.object(
             main.asyncio, "sleep", new=AsyncMock()
         ):
-            await main._spotify_playerctl_event_detect_check("playerctl:Playing")
+            await main.spotify_playerctl_watch._event_detect_check("playerctl:Playing")
 
         recovery.assert_awaited_once()
         diagnosis = recovery.await_args.kwargs["diagnosis"]
@@ -150,13 +151,13 @@ class CoordinatorRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 [{"id": 11, "sample_rate": 44100}],
             ),
         ), patch.object(main, "get_spotify_ui_state", new=AsyncMock(side_effect=lambda: next(states))), patch.object(
-            main,
+            samplerate,
             "get_samplerate_status",
             return_value={"active_rate": 48000, "force_rate": 48000},
         ), patch.object(main, "_request_coordinated_recovery", recovery), patch.object(
             main.asyncio, "sleep", new=AsyncMock()
         ):
-            await main._spotify_playerctl_event_detect_check("playerctl:Playing")
+            await main.spotify_playerctl_watch._event_detect_check("playerctl:Playing")
 
         recovery.assert_awaited_once()
         diagnosis = recovery.await_args.kwargs["diagnosis"]
@@ -177,24 +178,24 @@ class CoordinatorRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 [{"id": 11, "sample_rate": 44100}],
             ),
         ), patch.object(main, "get_spotify_ui_state", new=AsyncMock(side_effect=lambda: next(states))), patch.object(
-            main,
+            samplerate,
             "get_samplerate_status",
             return_value={"active_rate": 44100, "force_rate": 44100},
         ), patch.object(main, "_request_coordinated_recovery", recovery), patch.object(
             main.asyncio, "sleep", new=AsyncMock()
         ):
-            await main._spotify_playerctl_event_detect_check("playerctl:Playing")
+            await main.spotify_playerctl_watch._event_detect_check("playerctl:Playing")
 
         recovery.assert_not_awaited()
 
     def test_running_spotify_detector_is_coalesced_without_cancellation(self):
         existing = SimpleNamespace(done=lambda: False, cancel=Mock())
-        with patch.object(main.runtime, "spotify_playerctl_detect_task", existing), patch.object(
-            main, "spotify_playerctl_last_trigger_at", 0.0
+        with patch.object(main.spotify_playerctl_watch, "detect_task", existing), patch.object(
+            main.spotify_playerctl_watch, "last_trigger_at", 0.0
         ), patch.object(main.time, "monotonic", return_value=10.0), patch.object(
             main.asyncio, "create_task"
         ) as create_task:
-            main._schedule_spotify_playerctl_event_detect("playerctl:Playing")
+            main.spotify_playerctl_watch.schedule_detect("playerctl:Playing")
 
         existing.cancel.assert_not_called()
         create_task.assert_not_called()

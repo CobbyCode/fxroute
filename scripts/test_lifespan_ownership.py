@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 import main
+import audio.pw_link as pw_link_mod
 from playback.player import MPVWrapper
 
 
@@ -127,20 +128,20 @@ class LifespanOwnershipTests(unittest.IsolatedAsyncioTestCase):
     async def test_external_input_partial_link_is_rolled_back(self):
         connect = AsyncMock(side_effect=[None, RuntimeError("FR failed")])
         disconnect = AsyncMock()
-        with patch.object(main, "_disable_external_input_loopback", AsyncMock()), patch.object(
-            main, "_connect_ports", connect
-        ), patch.object(main, "_disconnect_external_input_source", disconnect):
+        with patch.object(main.external_input, "disable", AsyncMock()), patch.object(
+            pw_link_mod, "connect_ports", connect
+        ), patch.object(main.external_input, "_disconnect_source", disconnect):
             with self.assertRaisesRegex(RuntimeError, "FR failed"):
-                await main._ensure_external_input_loopback("source")
+                await main.external_input._ensure_loopback("source")
         disconnect.assert_awaited_once_with("source")
 
     async def test_bluetooth_partial_link_is_rolled_back(self):
         disconnect = AsyncMock()
-        with patch.object(main, "_clear_bluetooth_input_monitoring_links", AsyncMock()), patch.object(
-            main, "_link_bluetooth_source_to_dsp", AsyncMock(side_effect=RuntimeError("FR failed"))
-        ), patch.object(main, "_disconnect_bluetooth_input_source", disconnect):
+        with patch.object(main.bluetooth_input, "clear_links", AsyncMock()), patch.object(
+            main.bluetooth_input, "_link_source_to_dsp", AsyncMock(side_effect=RuntimeError("FR failed"))
+        ), patch.object(main.bluetooth_input, "_disconnect_source", disconnect):
             with self.assertRaisesRegex(RuntimeError, "FR failed"):
-                await main._ensure_bluetooth_input_loopback("bluez-source")
+                await main.bluetooth_input._ensure_loopback("bluez-source")
         disconnect.assert_awaited_once_with("bluez-source")
 
     async def test_measurement_release_task_created_during_shutdown_is_drained(self):
