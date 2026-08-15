@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-only
-"""Structural checks for the extracted API modules:
+"""Structural checks for the extracted package modules:
 
 1. every @router endpoint must decorate a handler function (name matches
    the route-handler naming pattern), never a helper;
 2. no function or class method may be defined twice in one scope;
-3. no bare reference to main.py runtime globals may remain unbound;
-4. modules with an explicit runtime boundary must not import main.py.
+3. no bare reference to main.py runtime globals may remain unbound in the
+   modules that carry the late-bound runtime contract (see MODULES);
+4. every Python module under the subsystem packages (measurement, playback,
+   dsp, library, radio, audio) must not import main.py.
 
 Catches decorator/insertion drift, missed dependency bindings and regressions
 to using main.py as a runtime service locator."""
@@ -19,7 +21,17 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 MODULES = ("measurement/spl_calibration.py", "library/api.py", "measurement/autosub.py", "measurement/session.py")
-DECOUPLED_MODULES = ("library/playlist_io.py", "library/api.py", "measurement/spl_calibration.py", "playback/runtime.py", "playback/queue.py", "measurement/autosub.py", "measurement/session.py")
+# Every production module under the subsystem packages must stay free of
+# main.py imports; discovered from the package layout so new modules are
+# covered automatically.  __init__.py files are intentionally empty and
+# excluded from the scan.
+PACKAGE_DIRS = ("measurement", "playback", "dsp", "library", "radio", "audio")
+DECOUPLED_MODULES = tuple(
+    str(path.relative_to(ROOT))
+    for package in PACKAGE_DIRS
+    for path in sorted((ROOT / package).glob("*.py"))
+    if path.name != "__init__.py"
+)
 MAIN_GLOBALS = {
     "SPOTIFY_PREARM_SAMPLE_RATE_HZ",
     "PIPEWIRE_HANDOFF_POLL_INTERVAL_MS",

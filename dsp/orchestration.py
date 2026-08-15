@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """Native DSP/output runtime orchestration extracted from main.py.
 
-Owns the coordination between the native DSP runtime (:class:`dsp_runtime.DSPRuntime`),
+Owns the coordination between the native DSP runtime (:class:`dsp.runtime.DSPRuntime`),
 the sample-rate overview, the subwoofer link watcher, and the peak monitor
 refresh scheduling after DSP/effect changes.  It holds no application state
 of its own: every dependency is injected explicitly through

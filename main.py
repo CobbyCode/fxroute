@@ -1185,7 +1185,7 @@ radio_metadata_service = RadioMetadataService()
 # queue_advancing is a reentrancy/dispatch guard for
 # on_player_state_change and deliberately not queue state: the queue
 # state (list, original order, index, mode, loop, shuffle, single-track-
-# loop) lives exclusively in playback_queue.PlaybackQueue.
+# loop) lives exclusively in playback.queue.PlaybackQueue.
 queue_advancing = False
 
 configure_library_api_runtime(LibraryApiRuntime(

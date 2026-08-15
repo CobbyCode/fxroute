@@ -1994,16 +1994,6 @@ def authoritative_sample_rate(status: dict | None) -> int | None:
     return None
 
 
-def helper_argument_sample_rate(snapshot: dict | None) -> int | None:
-    args = (snapshot or {}).get("helper_args") or []
-    try:
-        index = args.index("--rate")
-        value = int(args[index + 1])
-    except (ValueError, TypeError, IndexError):
-        return None
-    return value if value > 0 else None
-
-
 def audio_output_overview_with_effective_rate(overview: dict, effective_rate: int) -> dict:
     output_mode = dict(overview.get("output_mode") or {})
     selected_output = dict(overview.get("selected_output") or {})

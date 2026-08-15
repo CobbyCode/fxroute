@@ -1,13 +1,13 @@
-"""Playback-State-Helfer (REFACTOR-006-Extrakt).
+"""Playback state helpers (REFACTOR-006-Extrakt).
 
-Zustandsfreie Prüffunktionen rund um Player-/Spotify-State und
-Track-Matching, 1:1 aus ``main.py`` extrahiert. Keine Imports aus ``main``
-oder anderen Projektmodulen — nur stdlib.
+State-free check functions for player/Spotify state and track matching,
+extracted 1:1 from ``main.py``. No imports from ``main`` or other project
+modules, stdlib only.
 
-``PlaybackState`` ist der einzige autoritative Besitzer des veränderlichen
-Playback-/Transition-Zustands, der zuvor als globale Variablen über
-``main.py`` verteilt war.  Nur stdlib, damit der Container ohne FXRoute-Imports
-testbar bleibt.
+``PlaybackState`` is the single authoritative owner of the mutable
+playback/transition state that previously lived as global variables spread
+across ``main.py``.  Stdlib only, so the container stays testable without
+FXRoute imports.
 """
 
 from __future__ import annotations
