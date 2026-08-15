@@ -1063,9 +1063,8 @@ class DSPManager:
     def active_preset_requires_samplerate_reload(self,
                                                  sample_rate_hz: Optional[int] = None) -> bool:
         del sample_rate_hz
-        payload = self.preset_store.read(self.get_active_preset() or "Direct")
-        return any(plugin["type"] == "convolver" and plugin.get("enabled", True)
-                   for plugin in payload["chain"])
+        # The native convolver resamples its source IR to the DSP stream rate.
+        return False
 
     def get_status(self) -> dict:
         presets = self.list_presets()

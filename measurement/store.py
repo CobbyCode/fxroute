@@ -56,6 +56,8 @@ from audio.samplerate import (
     OUTPUT_MODE_SUBWOOFER_MODES,
     get_audio_output_overview,
     get_samplerate_status,
+    SAMPLE_RATE_CANDIDATES,
+    _parse_enum_format_supported_rates,
 )
 from audio.system_volume import SystemVolumeError, get_node_volume, get_output_volume, set_node_volume, set_output_volume
 
@@ -253,16 +255,26 @@ class MeasurementStore:
         }
 
     def _measurement_inputs_with_sample_rate(self, inputs: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        measurement_rate = self._resolve_measurement_sample_rate()
+        settings = self._read_settings().get("measure", {})
+        selection = resolve_measurement_input_selection(inputs, settings if isinstance(settings, dict) else {})
+        selected_id = selection.get("input_id")
         annotated: list[dict[str, Any]] = []
         for item in inputs:
             source_sample_rate = item.get("sample_rate")
+            supported_rates = _normalize_supported_measurement_rates(item.get("supported_rates"))
+            if not supported_rates and isinstance(source_sample_rate, int) and source_sample_rate > 0:
+                supported_rates = [source_sample_rate]
+            measurement_rate = resolve_measurement_sample_rate(
+                {"supported_rates": supported_rates},
+                settings if isinstance(settings, dict) and item.get("id") == selected_id else {},
+            )
             annotated.append({
                 **item,
                 "persistent_id": measurement_input_persistent_id(item),
                 "source_sample_rate": source_sample_rate,
                 "sample_rate": measurement_rate,
                 "measurement_sample_rate": measurement_rate,
+                "supported_rates": supported_rates,
             })
         return annotated
 
@@ -348,6 +360,8 @@ class MeasurementStore:
                 "node_name": selected_input.get("node_name"),
                 "channels": selected_input.get("channels"),
                 "sample_rate": selected_input.get("sample_rate"),
+                "measurement_sample_rate": selected_input.get("measurement_sample_rate"),
+                "supported_rates": selected_input.get("supported_rates", []),
             },
             "input_channels": {
                 "mic": mic_input_channel_index + 1,
@@ -668,7 +682,7 @@ class MeasurementStore:
         measurement_role = str(job.get("measurement_role") or "").strip().lower()
         calibration_meta = job.get("calibration") if isinstance(job.get("calibration"), dict) else {"filename": "", "applied": False}
 
-        sample_rate = self._resolve_measurement_sample_rate()
+        sample_rate = int(selected_input.get("measurement_sample_rate") or selected_input.get("sample_rate") or MEASUREMENT_DEFAULT_SAMPLE_RATE)
         repeat_profile = job.get("capture_profile") == "lr-repeat"
         er_preavg_requested = (
             repeat_profile
@@ -1395,7 +1409,11 @@ class MeasurementStore:
         )
 
     def _resolve_measurement_sample_rate(self) -> int:
-        return MEASUREMENT_DEFAULT_SAMPLE_RATE
+        inputs = self._measurement_inputs_with_sample_rate(self._discover_capture_inputs())
+        settings = self._read_settings().get("measure", {})
+        selected = resolve_measurement_input_selection(inputs, settings if isinstance(settings, dict) else {})
+        input_item = next((item for item in inputs if item.get("id") == selected.get("input_id")), None)
+        return resolve_measurement_sample_rate(input_item or {}, settings if isinstance(settings, dict) else {})
 
     def _load_wav_array(self, capture_path: Path) -> tuple[int, np.ndarray]:
         with wave.open(str(capture_path), "rb") as handle:
@@ -1721,6 +1739,7 @@ class MeasurementStore:
                     "node_name": node_name,
                     "channels": details.get("channels", 1),
                     "sample_rate": details.get("sample_rate"),
+                    "supported_rates": details.get("supported_rates", []),
                     "is_default": bool(match.group("star")),
                     "note": "Real PipeWire capture source",
                     "node_description": details.get("node_description"),
@@ -1773,6 +1792,7 @@ class MeasurementStore:
                     "node_name": node_name,
                     "channels": int(channels_match.group(1)) if channels_match else 1,
                     "sample_rate": int(sample_rate_match.group(1)) if sample_rate_match else None,
+                    "supported_rates": self._inspect_source_details(serial).get("supported_rates", []),
                     "is_default": False,
                     "note": "Real PipeWire capture source",
                     "driver": driver,
@@ -1796,6 +1816,15 @@ class MeasurementStore:
             details["channels"] = int(details["audio_channels"])
         if str(details.get("audio_rate") or "").isdigit():
             details["sample_rate"] = int(details["audio_rate"])
+        try:
+            formats = subprocess.run(
+                ["pw-cli", "enum-param", str(serial), "Format"],
+                capture_output=True, text=True, timeout=3,
+            )
+            if formats.returncode == 0:
+                details["supported_rates"] = _parse_enum_format_supported_rates(formats.stdout or "")
+        except Exception:
+            details["supported_rates"] = []
         details["node_name"] = details.get("node_name")
 
         device_id = str(details.get("device_id") or "").strip()
@@ -2149,6 +2178,29 @@ def normalize_measurement_optional_input_channel(value: Any) -> str:
     return str(channel) if channel >= 1 else ""
 
 
+def _normalize_supported_measurement_rates(value: Any) -> list[int]:
+    if not isinstance(value, (list, tuple, set)):
+        return []
+    return [rate for rate in SAMPLE_RATE_CANDIDATES if rate in {int(item) for item in value if str(item).isdigit()}]
+
+
+def resolve_measurement_sample_rate(input_item: dict[str, Any], settings: dict[str, Any]) -> int:
+    supported = _normalize_supported_measurement_rates(input_item.get("supported_rates"))
+    if not supported:
+        source_rate = input_item.get("sample_rate")
+        supported = [int(source_rate)] if isinstance(source_rate, int) and source_rate > 0 else [MEASUREMENT_DEFAULT_SAMPLE_RATE]
+    requested = settings.get("measurementSampleRate")
+    try:
+        requested = int(requested)
+    except (TypeError, ValueError):
+        requested = MEASUREMENT_DEFAULT_SAMPLE_RATE
+    if requested in supported:
+        return requested
+    if MEASUREMENT_DEFAULT_SAMPLE_RATE in supported:
+        return MEASUREMENT_DEFAULT_SAMPLE_RATE
+    return supported[0]
+
+
 def measurement_input_persistent_id(input_item: dict[str, Any]) -> str:
     device_serial = str(input_item.get("device_serial") or "").strip()
     node_name = str(input_item.get("node_name") or "").strip()
@@ -2205,6 +2257,12 @@ def measurement_setup_settings_from_payload(settings: dict[str, Any]) -> dict[st
     reference_input_channel = measure_settings.get("selectedReferenceInputChannel")
     if reference_input_channel is None:
         reference_input_channel = measure_settings.get("reference_input_channel")
+    try:
+        measurement_rate = int(measure_settings.get("measurementSampleRate") or MEASUREMENT_DEFAULT_SAMPLE_RATE)
+    except (TypeError, ValueError):
+        measurement_rate = MEASUREMENT_DEFAULT_SAMPLE_RATE
+    if measurement_rate <= 0:
+        measurement_rate = MEASUREMENT_DEFAULT_SAMPLE_RATE
     return {
         "selectedInputId": str(measure_settings.get("selectedInputId") or ""),
         "selectedInputKey": str(measure_settings.get("selectedInputKey") or ""),
@@ -2215,4 +2273,5 @@ def measurement_setup_settings_from_payload(settings: dict[str, Any]) -> dict[st
             measure_settings.get("selectedMicInputChannel")
         ) or "1",
         "selectedReferenceInputChannel": normalize_measurement_optional_input_channel(reference_input_channel),
+        "measurementSampleRate": measurement_rate,
     }

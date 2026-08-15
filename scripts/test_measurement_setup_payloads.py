@@ -22,6 +22,7 @@ from measurement.store import (
     measurement_input_persistent_id,
     measurement_setup_settings_from_payload,
     normalize_measurement_optional_input_channel,
+    resolve_measurement_sample_rate,
     resolve_measurement_input_selection,
 )
 
@@ -58,6 +59,7 @@ class SetupSettingsFromPayloadTests(unittest.TestCase):
                 "selectedInputConfigured": False,
                 "selectedMicInputChannel": "1",
                 "selectedReferenceInputChannel": "",
+                "measurementSampleRate": 48000,
             },
         )
 
@@ -71,6 +73,7 @@ class SetupSettingsFromPayloadTests(unittest.TestCase):
                     "selectedInputConfigured": False,
                     "selectedMicInputChannel": "1",
                     "selectedReferenceInputChannel": "",
+                    "measurementSampleRate": 48000,
                 },
             )
 
@@ -89,8 +92,9 @@ class SetupSettingsFromPayloadTests(unittest.TestCase):
                 "selectedInputKey": "",
                 "selectedInputConfigured": True,
                 "selectedMicInputChannel": "3",
-                "selectedReferenceInputChannel": "2",
-            },
+                    "selectedReferenceInputChannel": "2",
+                    "measurementSampleRate": 48000,
+                },
         )
 
     def test_snake_case_reference_key_fallback(self):
@@ -207,6 +211,20 @@ class MeasurementInputPersistenceTests(unittest.TestCase):
         self.assertEqual(selection["input_id"], "pw-source-65")
         self.assertFalse(selection["configured"])
         self.assertFalse(selection["unavailable"])
+
+    def test_rate_options_follow_selected_input_capabilities(self):
+        input_item = {"supported_rates": [44100, 48000]}
+        self.assertEqual(resolve_measurement_sample_rate(input_item, {}), 48000)
+        self.assertEqual(resolve_measurement_sample_rate(input_item, {"measurementSampleRate": 44100}), 44100)
+
+    def test_high_rate_device_still_defaults_to_48_khz(self):
+        input_item = {"supported_rates": [44100, 48000, 96000, 192000]}
+        self.assertEqual(resolve_measurement_sample_rate(input_item, {}), 48000)
+        self.assertEqual(resolve_measurement_sample_rate(input_item, {"measurementSampleRate": 48000}), 48000)
+
+    def test_unsupported_saved_rate_falls_back_to_48_or_first_supported(self):
+        self.assertEqual(resolve_measurement_sample_rate({"supported_rates": [48000, 96000]}, {"measurementSampleRate": 192000}), 48000)
+        self.assertEqual(resolve_measurement_sample_rate({"supported_rates": [96000]}, {}), 96000)
 
 
 class WrapperParityTests(unittest.TestCase):

@@ -1103,6 +1103,14 @@ def _update_measurement_setup_settings(patch: dict[str, Any]) -> dict[str, Any]:
     if "selectedReferenceInputChannel" in patch or "reference_input_channel" in patch:
         raw_reference = patch.get("selectedReferenceInputChannel", patch.get("reference_input_channel"))
         measure_settings["selectedReferenceInputChannel"] = _normalize_measurement_optional_input_channel(raw_reference)
+    if "measurementSampleRate" in patch or "measurement_sample_rate" in patch:
+        try:
+            rate = int(patch.get("measurementSampleRate", patch.get("measurement_sample_rate")))
+        except (TypeError, ValueError):
+            rate = MEASUREMENT_DEFAULT_SAMPLE_RATE
+        if rate <= 0:
+            rate = MEASUREMENT_DEFAULT_SAMPLE_RATE
+        measure_settings["measurementSampleRate"] = rate
 
     settings_path.parent.mkdir(parents=True, exist_ok=True)
     settings_path.write_text(json.dumps(settings, indent=2, sort_keys=True) + "\n", encoding="utf-8")

@@ -137,6 +137,8 @@ let state = {
         autoSubResult: null,
         autoSubMeasurements: [],
         statusText: 'Sweep ready. Calibration file is optional.',
+        measurementSampleRate: '48000',
+        measurementSampleRate: '48000',
         assistMode: 'peq',
         convolverAssistant: {
             targetCurve: 'neutral',
@@ -147,7 +149,6 @@ let state = {
             dipGuard: 'off',
             safetyMarginDb: 1,
             autoGainEnabled: true,
-            sampleRate: '48000',
             quality: 'linear_8192',
             phaseMode: 'minimum',
             irLength: '8192',
@@ -6316,7 +6317,6 @@ function getDefaultMeasurementConvolverState() {
         dipGuard: 'off',
         safetyMarginDb: 1,
         autoGainEnabled: true,
-        sampleRate: '48000',
         quality: 'linear_8192',
         phaseMode: 'minimum',
         irLength: '8192',
@@ -6344,7 +6344,6 @@ function ensureMeasurementConvolverState() {
     conv.maxCutDb = [-3, -6, -9, -12, -18, -24].includes(Number(conv.maxCutDb)) ? Number(conv.maxCutDb) : defaults.maxCutDb;
     conv.dipGuard = ['off', 'gentle', 'adaptive'].includes(String(conv.dipGuard)) ? String(conv.dipGuard) : defaults.dipGuard;
     conv.safetyMarginDb = Math.max(0, Number(conv.safetyMarginDb) || defaults.safetyMarginDb);
-    conv.sampleRate = ['44100', '48000', '88200', '96000', '176400', '192000'].includes(String(conv.sampleRate)) ? String(conv.sampleRate) : defaults.sampleRate;
     const qualityAliases = { auto: 'linear_4096', normal: 'linear_4096', high: 'linear_8192' };
     const incomingQuality = qualityAliases[String(conv.quality)] || String(conv.quality || defaults.quality);
     const hasValidPhaseMode = measurementConvolverPhaseModes.includes(String(conv.phaseMode));
@@ -6510,7 +6509,10 @@ function updateMeasurementConvolverField(field, value) {
     if (field === 'maxBoostDb') conv.maxBoostDb = [0, 3, 6, 9].includes(Number(value)) ? Number(value) : conv.maxBoostDb;
     if (field === 'maxCutDb') conv.maxCutDb = [-3, -6, -9, -12, -18, -24].includes(Number(value)) ? Number(value) : conv.maxCutDb;
     if (field === 'dipGuard') conv.dipGuard = ['off', 'gentle', 'adaptive'].includes(String(value)) ? String(value) : conv.dipGuard;
-    if (field === 'sampleRate') conv.sampleRate = String(value || '48000');
+    if (field === 'sampleRate') {
+        state.measurement.measurementSampleRate = String(value || '48000');
+        void saveMeasurementSetupSettings({ measurementSampleRate: Number(state.measurement.measurementSampleRate) });
+    }
     if (field === 'phaseMode') conv.phaseMode = measurementConvolverPhaseModes.includes(String(value)) ? String(value) : conv.phaseMode;
     if (field === 'irLength') conv.irLength = measurementConvolverTapOptions.includes(Number(value)) ? String(value) : conv.irLength;
     if (field === 'quality') {
@@ -6994,8 +6996,7 @@ function waitForNextAnimationFrame() {
 }
 
 function getMeasurementConvolverSampleRate() {
-    const conv = ensureMeasurementConvolverState();
-    const selected = Number(conv.sampleRate);
+    const selected = Number(state.measurement?.measurementSampleRate);
     return Number.isFinite(selected) && selected > 0 ? selected : 48000;
 }
 
@@ -8655,6 +8656,9 @@ function applyMeasurementSetupSettings(settings = {}, fields = null) {
     if (applies('selectedReferenceInputChannel') && Object.prototype.hasOwnProperty.call(settings, 'selectedReferenceInputChannel')) {
         state.measurement.selectedReferenceInputChannel = String(settings.selectedReferenceInputChannel || '');
     }
+    if (applies('measurementSampleRate') && Object.prototype.hasOwnProperty.call(settings, 'measurementSampleRate')) {
+        state.measurement.measurementSampleRate = String(settings.measurementSampleRate || '48000');
+    }
     normalizeMeasurementInputChannelSelections();
 }
 
@@ -8725,6 +8729,8 @@ async function fetchMeasurementInputs() {
                 label: String(input.label || input.id || `Input ${index + 1}`),
                 note: String(input.note || ''),
                 channels: Math.max(1, Number(input.channels || 1)),
+                supportedRates: Array.isArray(input.supported_rates) ? input.supported_rates.map(Number).filter(rate => Number.isFinite(rate) && rate > 0) : [],
+                measurementSampleRate: Number(input.measurement_sample_rate || input.sample_rate || 0),
                 nodeName: String(input.node_name || ''),
                 persistentId: String(input.persistent_id || ''),
             }))
@@ -8737,6 +8743,10 @@ async function fetchMeasurementInputs() {
         state.measurement.selectedInputKey = String(selection.persistent_id || previousInputKey || '');
         state.measurement.selectedInputConfigured = !!selection.configured;
         state.measurement.selectedInputUnavailable = !!selection.unavailable;
+        const selectedMeasurementInput = inputs.find(input => input.id === state.measurement.selectedInputId);
+        if (selectedMeasurementInput?.measurementSampleRate > 0) {
+            state.measurement.measurementSampleRate = String(selectedMeasurementInput.measurementSampleRate);
+        }
         normalizeMeasurementInputChannelSelections();
         state.measurement.hostCaptureAvailable = !!data.capture_available && !!inputs.length;
         state.measurement.captureAvailable = state.measurement.hostCaptureAvailable;
@@ -10622,6 +10632,13 @@ function renderMeasurementPanel() {
         elements.measurementInputSelect.innerHTML = inputs.map(input => `<option value="${escapeHtml(input.id)}" ${input.id === measurementState.selectedInputId ? 'selected' : ''}>${escapeHtml(input.label)}</option>`).join('');
         elements.measurementInputSelect.disabled = measurementState.inputsLoading || !measurementState.hostCaptureAvailable;
     }
+    if (elements.measurementConvolverSampleRate && !isSelectFocused(elements.measurementConvolverSampleRate)) {
+        const selectedInput = getSelectedMeasurementInput();
+        const rates = selectedInput?.supportedRates?.length ? selectedInput.supportedRates : [48000];
+        elements.measurementConvolverSampleRate.innerHTML = rates.map(rate => `<option value="${rate}">${formatRateKhz(rate)}</option>`).join('');
+        elements.measurementConvolverSampleRate.value = String(measurementState.measurementSampleRate || 48000);
+        elements.measurementConvolverSampleRate.disabled = measurementState.startInFlight || !measurementModeReady();
+    }
     if (elements.measurementInputRefreshBtn) {
         elements.measurementInputRefreshBtn.disabled = measurementState.startInFlight || measurementState.inputsLoading;
         elements.measurementInputRefreshBtn.textContent = measurementState.inputsLoading ? 'Detecting…' : 'Detect / refresh host microphones';
@@ -10767,7 +10784,6 @@ function renderMeasurementPanel() {
             || Number(conv.maxBoostDb) !== defaultConv.maxBoostDb
             || Number(conv.maxCutDb) !== defaultConv.maxCutDb
             || String(conv.dipGuard) !== defaultConv.dipGuard
-            || String(conv.sampleRate) !== defaultConv.sampleRate
             || String(conv.quality) !== defaultConv.quality
         );
         const hasResettableGraphState = !!current || !!peq.filters.length || hasConvolverResettableState || activeEditor === 'houseCurve';
@@ -11059,7 +11075,7 @@ function renderMeasurementPanel() {
     if (elements.measurementConvolverMaxBoost) elements.measurementConvolverMaxBoost.value = String(conv.maxBoostDb);
     if (elements.measurementConvolverMaxCut) elements.measurementConvolverMaxCut.value = String(conv.maxCutDb);
     if (elements.measurementConvolverDipGuard) elements.measurementConvolverDipGuard.value = conv.dipGuard;
-    if (elements.measurementConvolverSampleRate) elements.measurementConvolverSampleRate.value = conv.sampleRate;
+    if (elements.measurementConvolverSampleRate) elements.measurementConvolverSampleRate.value = String(measurementState.measurementSampleRate || '48000');
     if (elements.measurementConvolverPhaseMode) elements.measurementConvolverPhaseMode.value = conv.phaseMode;
     if (elements.measurementConvolverIrLength) elements.measurementConvolverIrLength.value = String(conv.irLength);
     if (elements.measurementConvolverQuality) {

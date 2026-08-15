@@ -35,6 +35,24 @@ class DSPManagerPresetTests(unittest.TestCase):
         self.assertEqual(config["sample_rate_hz"], 96000)
         self.assertEqual(config["chain"][0]["type"], "equalizer")
 
+    def test_convolver_preset_is_not_rate_reload_bound(self):
+        ir = self.manager.irs_dir / "room.wav"
+        with wave.open(str(ir), "wb") as handle:
+            handle.setnchannels(1)
+            handle.setsampwidth(2)
+            handle.setframerate(48000)
+            handle.writeframes(b"\x00\x00\x00\x40")
+        self.manager.create_convolver_preset("Room IR", ir.name)
+        self.manager.load_preset("Room IR")
+        self.assertFalse(self.manager.active_preset_requires_samplerate_reload(44100))
+        texts = [self.manager.compile_engine_text(
+            [{"name": "FL", "source": 0}, {"name": "FR", "source": 1}],
+            sample_rate_hz=rate,
+        ) for rate in (44100, 48000, 96000)]
+        self.assertTrue(all('param path ' in text for text in texts))
+        self.assertEqual([text.split('param path ', 1)[1].splitlines()[0] for text in texts],
+                         [texts[0].split('param path ', 1)[1].splitlines()[0]] * 3)
+
     def test_peq_accepts_gain_and_delay_outside_lsp(self):
         self.manager.create_peq_preset("Special", {
             "enabled": True,
