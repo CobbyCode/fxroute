@@ -638,7 +638,7 @@ class MeasurementRouting:
                     items.append({"stream": stream_name, "line": line[:500]})
         return items[:40]
 
-    def _pactl_info_value(key: str) -> str | None:
+    def _pactl_info_value(self, key: str) -> str | None:
         try:
             completed = self._run(["pactl", "info"], capture_output=True, text=True, timeout=3)
         except Exception:
@@ -652,7 +652,7 @@ class MeasurementRouting:
                 return value or None
         return None
 
-    def _list_pactl_short_nodes(kind: str, relevant_nodes: list[str]) -> list[dict[str, Any]]:
+    def _list_pactl_short_nodes(self, kind: str, relevant_nodes: list[str]) -> list[dict[str, Any]]:
         if kind not in {"sinks", "sources"}:
             return []
         try:
@@ -684,7 +684,7 @@ class MeasurementRouting:
             )
         return items
 
-    def _list_relevant_pw_links(relevant_nodes: list[str]) -> list[str]:
+    def _list_relevant_pw_links(self, relevant_nodes: list[str]) -> list[str]:
         try:
             completed = self._run(["pw-link", "-l"], capture_output=True, text=True, timeout=3)
         except Exception:
