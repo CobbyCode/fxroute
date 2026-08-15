@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import numpy as np
 
 from measurement import MeasurementStore, SWEEP_V2_SECONDS, SWEEP_V2_TAIL_SECONDS
+from measurement_analyzer import MeasurementAnalyzer
 
 
 def _repeat_meta_result(store, sweep_id):
@@ -39,7 +40,9 @@ def _repeat_meta_result(store, sweep_id):
 
 class MeasurementWavLifecycleTests(unittest.IsolatedAsyncioTestCase):
     def _store(self, tempdir):
-        return MeasurementStore(home=Path(tempdir))
+        store = MeasurementStore(home=Path(tempdir))
+        self.assertIsInstance(store._analyzer, MeasurementAnalyzer)
+        return store
 
     def _register_job(self, store, job_id, **overrides):
         job = {
