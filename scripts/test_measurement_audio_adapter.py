@@ -36,20 +36,5 @@ class MeasurementAudioAdapterTests(unittest.TestCase):
         )
         self.assertTrue(all(call[1]["timeout"] == 3 for call in calls))
 
-    def test_cleanup_removes_temporary_links_in_declared_order(self):
-        removed = []
-        adapter = MeasurementAudioAdapter(
-            command_runner=lambda command, **_kwargs: subprocess.CompletedProcess(command, 0, "", ""),
-        )
-        adapter.disconnect_link = lambda source, target: removed.append((source, target)) or True
-
-        adapter.cleanup_temporary_links([
-            {"source": "play:FL", "target": "sink:FL"},
-            {"source": "play:FR", "target": "sink:FR"},
-        ])
-
-        self.assertEqual(removed, [("play:FL", "sink:FL"), ("play:FR", "sink:FR")])
-
-
 if __name__ == "__main__":
     unittest.main()

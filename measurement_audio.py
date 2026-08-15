@@ -57,15 +57,6 @@ class MeasurementAudioAdapter:
         except Exception:
             return False
 
-    def cleanup_temporary_links(self, links: list[dict[str, str]]) -> list[str]:
-        removed: list[str] = []
-        for link in links:
-            source = str(link.get("source") or "")
-            target = str(link.get("target") or "")
-            if source and target and self.disconnect_link(source, target):
-                removed.append(f"{source} -> {target}")
-        return removed
-
     def supports_option(self, option: str) -> bool:
         try:
             completed = self._run(["pw-record", "--help"], capture_output=True, text=True, timeout=3)

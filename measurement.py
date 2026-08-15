@@ -26,6 +26,7 @@ from dsp_runtime import DSPRuntimeConfig
 
 from hybrid_measurement import analyze_direct_window, build_complex_response, build_gated_response
 from measurement_audio import MeasurementAudioAdapter
+from measurement_signal import write_sweep_file
 from samplerate import (
     OUTPUT_MODE_SUBWOOFER_21,
     OUTPUT_MODE_SUBWOOFER_22,
@@ -4567,110 +4568,18 @@ class MeasurementStore:
         start_hz: float = SWEEP_START_HZ,
         end_hz: float = SWEEP_END_HZ,
     ) -> dict[str, Any]:
-        sweep = self._generate_log_sweep(
+        """Keep sweep timing decisions here while delegating pure generation."""
+        return write_sweep_file(
+            path,
             sample_rate=sample_rate,
-            duration_seconds=sweep_seconds,
-            start_hz=start_hz,
-            end_hz=end_hz,
+            sweep_seconds=sweep_seconds,
+            lead_in_seconds=lead_in_seconds,
+            tail_seconds=tail_seconds,
+            channel=channel,
             peak_scale=HOST_SWEEP_PEAK_SCALE,
-        )
-        inverse_sweep = self._build_inverse_sweep(
-            sweep,
-            sample_rate=sample_rate,
-            duration_seconds=sweep_seconds,
             start_hz=start_hz,
             end_hz=end_hz,
         )
-        lead_in = np.zeros(int(round(sample_rate * lead_in_seconds)), dtype=np.float32)
-        tail = np.zeros(int(round(sample_rate * tail_seconds)), dtype=np.float32)
-        mono_program = np.concatenate([lead_in, sweep, tail]).astype(np.float32)
-
-        if channel == "right":
-            playback = np.column_stack([np.zeros_like(mono_program), mono_program])
-        elif channel == "stereo":
-            playback = np.column_stack([mono_program, mono_program])
-        else:
-            playback = np.column_stack([mono_program, np.zeros_like(mono_program)])
-
-        self._write_wav(path, playback, sample_rate)
-        playback64 = playback.astype(np.float64)
-        peak = float(np.max(np.abs(playback64))) if playback64.size else 0.0
-        rms = float(np.sqrt(np.mean(np.square(playback64, dtype=np.float64)))) if playback64.size else 0.0
-        per_channel_peak_dbfs = []
-        if playback64.ndim > 1:
-            for channel_index in range(playback64.shape[1]):
-                channel_peak = float(np.max(np.abs(playback64[:, channel_index]))) if playback64.size else 0.0
-                per_channel_peak_dbfs.append(round(20.0 * math.log10(max(channel_peak, 1e-9)), 2))
-        return {
-            "analysis_sweep": sweep,
-            "inverse_sweep": inverse_sweep,
-            "sample_rate": int(sample_rate),
-            "samples": int(mono_program.size),
-            "channels": 2,
-            "peak_linear": round(peak, 8),
-            "peak_dbfs": round(20.0 * math.log10(max(peak, 1e-9)), 2),
-            "rms_dbfs": round(20.0 * math.log10(max(rms, 1e-9)), 2),
-            "per_channel_peak_dbfs": per_channel_peak_dbfs,
-            "would_clip_before_write": bool(peak > 1.0),
-        }
-
-
-
-    def _generate_log_sweep(
-        self,
-        *,
-        sample_rate: int,
-        duration_seconds: float,
-        start_hz: float,
-        end_hz: float,
-        peak_scale: float = 0.8,
-    ) -> np.ndarray:
-        sample_count = max(2048, int(round(sample_rate * duration_seconds)))
-        t = np.arange(sample_count, dtype=np.float64) / sample_rate
-        log_ratio = math.log(end_hz / start_hz)
-        phase = 2.0 * math.pi * start_hz * duration_seconds / log_ratio * (np.exp(t * log_ratio / duration_seconds) - 1.0)
-        sweep = np.sin(phase).astype(np.float32)
-        fade_len = min(sample_count // 8, max(64, int(round(sample_rate * 0.01))))
-        if fade_len > 1:
-            fade_in = np.linspace(0.0, 1.0, fade_len, dtype=np.float32)
-            fade_out = np.linspace(1.0, 0.0, fade_len, dtype=np.float32)
-            sweep[:fade_len] *= fade_in
-            sweep[-fade_len:] *= fade_out
-        peak = float(np.max(np.abs(sweep))) or 1.0
-        sweep = (float(peak_scale) * sweep / peak).astype(np.float32)
-        return sweep
-
-    @staticmethod
-    def _write_mono_wav(path: Path, sample_rate: int, data: np.ndarray) -> None:
-        """Write a mono 16-bit PCM WAV file."""
-        samples = np.clip(data, -1.0, 1.0)
-        int16 = (samples * 32767).astype(np.int16)
-        with wave.open(str(path), 'wb') as wf:
-            wf.setnchannels(1)
-            wf.setsampwidth(2)
-            wf.setframerate(sample_rate)
-            wf.writeframes(int16.tobytes())
-
-    def _build_inverse_sweep(
-        self,
-        sweep: np.ndarray,
-        *,
-        sample_rate: int,
-        duration_seconds: float,
-        start_hz: float,
-        end_hz: float,
-    ) -> np.ndarray:
-        sample_count = max(1, int(sweep.size))
-        t = np.arange(sample_count, dtype=np.float64) / sample_rate
-        log_ratio = math.log(end_hz / start_hz)
-        envelope = np.exp(-t * log_ratio / max(duration_seconds, 1e-9))
-        inverse = sweep[::-1].astype(np.float64) * envelope
-        reference_ir = self._fft_convolve(sweep.astype(np.float64), inverse)
-        peak = float(np.max(np.abs(reference_ir)))
-        if peak <= 1e-12:
-            raise RuntimeError("Unable to build inverse sweep kernel")
-        inverse /= peak
-        return inverse
 
     def _estimate_sweep_timing(
         self,
@@ -5595,9 +5504,6 @@ class MeasurementStore:
         overview: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         overview = overview or get_audio_output_overview()
-        current_output = overview.get("current_output") or {}
-        selected_output = overview.get("selected_output") or {}
-        default_output = overview.get("default_output") or {}
         self._normalize_measurement_scope(measurement_scope)
         return self._resolve_active_chain_playback_target(overview)
 
@@ -5661,10 +5567,6 @@ class MeasurementStore:
             signal = signal.reshape(-1, 1)
         signal /= 32768.0
         return sample_rate, signal
-
-    def _load_wav_signal(self, capture_path: Path, *, channel: str) -> tuple[int, np.ndarray]:
-        sample_rate, raw_signal = self._load_wav_array(capture_path)
-        return sample_rate, self._select_analysis_channel(raw_signal, channel=channel)
 
     @staticmethod
     def _parse_input_channel_index(
