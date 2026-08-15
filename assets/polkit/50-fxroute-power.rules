@@ -1,0 +1,32 @@
+/* SPDX-License-Identifier: AGPL-3.0-only */
+/*
+ * Narrow FXRoute polkit rule.
+ *
+ * This .rules file is installed by install.sh into
+ *   /etc/polkit-1/rules.d/50-fxroute-power.rules
+ *
+ * Its only purpose is to let the user running the FXRoute systemd --user
+ * service (and only that user) trigger the two systemd-logind actions that
+ * the FXRoute web UI exposes through /api/system/power/*:
+ *
+ *   - org.freedesktop.login1.suspend
+ *   - org.freedesktop.login1.power-off
+ *
+ * Important: this rule does NOT grant any other privilege.  All other
+ * polkit actions (systemd unit control, rebooting, hibernate, package
+ * management, network configuration, ...) must still go through the
+ * user's normal polkit policies (interactive auth or admin membership).
+ *
+ * INSTALL_USER_PLACEHOLDER is replaced with the actual install user by
+ * install.sh before the rule is written.  Removing or reinstalling the
+ * file is done by uninstall.sh and install.sh respectively.
+ */
+polkit.addRule(function(action, subject) {
+    if (subject.user !== "INSTALL_USER_PLACEHOLDER") {
+        return;
+    }
+    if (action.id === "org.freedesktop.login1.suspend" ||
+        action.id === "org.freedesktop.login1.power-off") {
+        return polkit.Result.YES;
+    }
+});

@@ -936,6 +936,7 @@ import audio.volume_contract as volume_contract
 logger = logging.getLogger(__name__)
 
 import install_info
+import power as system_power
 import dsp.effects_extras
 import measurement.spl_calibration as spl_calibration
 import measurement.autosub as autosub
@@ -3410,6 +3411,119 @@ def _effective_request_scheme(request: Request) -> str:
         return forwarded_proto
     return (request.url.scheme or "http").lower()
 
+
+def _effective_request_host(request: Request) -> str:
+    """Resolve the host the client *thinks* it is talking to.
+
+    Honors ``X-Forwarded-Host`` when the install is behind a reverse proxy
+    (FXRoute only ever trusts a single hop here, matching the project's
+    trust assumptions for the optional Caddy reverse proxy on the LAN).
+    The value is lower-cased and stripped of optional ``:port`` so it can
+    be compared against ``Origin`` / ``Referer`` headers verbatim.
+    """
+
+    forwarded_host = (request.headers.get("x-forwarded-host") or "").split(",", 1)[0].strip().lower()
+    if forwarded_host:
+        # Hostname only -- the matching port lives in X-Forwarded-Port.
+        return forwarded_host.split(":", 1)[0]
+    return (request.url.hostname or "").lower()
+
+
+def _effective_request_port(request: Request) -> Optional[int]:
+    """Resolve the frontend port the client believes it is talking to.
+
+    Honors ``X-Forwarded-Port`` so the optional Caddy reverse proxy on
+    the LAN is supported without losing the same-origin defence.  When no
+    forward headers are set, the request's actual URL port is used.
+    """
+
+    raw = (request.headers.get("x-forwarded-port") or "").split(",", 1)[0].strip()
+    if raw.isdigit():
+        return int(raw)
+    return request.url.port
+
+
+def _request_origin_is_trusted(request: Request) -> bool:
+    """Cross-site defence for state-changing endpoints.
+
+    FXRoute's LAN security baseline is "trusted LAN, no auth, no cookies"
+    (see ``AGENTS.md``).  Within that baseline, requests originating from
+    a foreign web page in the same browser are *not* a trusted caller, so
+    we cannot rely solely on the LAN assumption.
+
+    The routine therefore refuses a POST whose ``Origin`` or ``Referer``
+    header points to a different scheme + host + port than the one the
+    request is actually reaching -- the cheap, no-cookie CSRF defence
+    recommended when an application cannot introduce a new auth surface.
+    Requests without either header (the legitimate CLI / curl / systemd
+    path) are allowed so existing LAN operators do not lose their
+    workflows.
+
+    Returns ``True`` when the call is allowed, ``False`` when it must be
+    rejected as a cross-site POST.
+    """
+
+    trusted_host = _effective_request_host(request)
+    if not trusted_host:
+        # No host to compare against: the request is malformed enough that
+        # we refuse to make a decision and let the caller choose.
+        return False
+
+    trusted_scheme = _effective_request_scheme(request)
+    # If the request did not run on a known port (httpx test client with
+    # weird hosts) the comparison falls back to comparing host only.
+    trusted_port = _effective_request_port(request)
+
+    def _netloc_matches(parsed) -> bool:
+        if not parsed.hostname:
+            return False
+        if parsed.hostname.lower() != trusted_host:
+            return False
+        if parsed.port is None and trusted_port in (None, 80, 443):
+            return True
+        if parsed.port is None:
+            # Header did not include a port; fall back to comparing
+            # against the request's effective default.
+            if (trusted_scheme == "https" and trusted_port == 443) or (
+                trusted_scheme == "http" and trusted_port in (None, 80)
+            ):
+                return True
+            return False
+        return parsed.port == trusted_port
+
+    origin = (request.headers.get("origin") or "").strip().lower()
+    if origin:
+        if origin == "null":
+            # Browsers emit Origin: null for sandboxed documents and
+            # cross-origin redirects under specific referrer policies.  We
+            # cannot confirm the caller's site, so refuse.
+            return False
+        try:
+            parsed = urlparse(origin)
+        except ValueError:
+            return False
+        if parsed.scheme and parsed.scheme.lower() != trusted_scheme:
+            return False
+        return _netloc_matches(parsed)
+
+    referer = (
+        request.headers.get("referer")
+        or request.headers.get("referrer")
+        or ""
+    ).strip()
+    if referer:
+        try:
+            parsed = urlparse(referer)
+        except ValueError:
+            return False
+        if parsed.scheme and parsed.scheme.lower() != trusted_scheme:
+            return False
+        return _netloc_matches(parsed)
+
+    # No Origin AND no Referer: a CLI / systemd caller.  Allowed because
+    # the LAN security baseline treats direct callers as trusted.
+    return True
+
 @app.get("/", response_class=HTMLResponse)
 async def read_root(request: Request):
     html = (STATIC_DIR / "index.html").read_text()
@@ -3936,6 +4050,138 @@ async def measurement_window_heartbeat(request: Request):
         "status": "ok",
         "measurement_window_open": _is_measurement_window_open(),
     }
+
+
+async def _resolve_system_power_capabilities() -> system_power.PowerCapabilities:
+    """Thin alias for :func:`power.get_capabilities` kept for readability.
+
+    All capability translation, the strict-yes gate, the timeout, and the
+    ``unavailable`` fall-through live in ``power.py``.  The handler here
+    only routes the result into the HTTP envelope.
+    """
+
+    return await system_power.get_capabilities()
+
+
+@app.get("/api/system/power")
+async def system_power_capabilities():
+    """Report suspend/power-off capability of systemd-logind.
+
+    A 503 is returned only when the dbus-send binary itself is missing
+    (then no capability probe can succeed at all); every other failure is
+    reported through the textual ``unavailable`` value so the UI keeps
+    working even on a host without a running logind.  The body shape --
+    including the strict-yes ``suspend_supported`` / ``power_off_supported``
+    conveniences -- and the full logind vocabulary are documented on
+    :func:`power.is_logind_call_executable`.
+    """
+
+    try:
+        caps = await _resolve_system_power_capabilities()
+    except asyncio.TimeoutError:
+        logger.warning("system power capabilities timed out")
+        raise HTTPException(
+            status_code=503,
+            detail="systemd-logind not reachable via dbus",
+        )
+
+    return {
+        "available": caps.available,
+        "suspend": caps.suspend,
+        "power_off": caps.power_off,
+        "suspend_supported": system_power.is_logind_call_executable(caps.suspend),
+        "power_off_supported": system_power.is_logind_call_executable(caps.power_off),
+        "unavailable_reason": caps.unavailable_reason,
+    }
+
+
+def _system_power_error_to_http(result: system_power.PowerCallResult):
+    """Map a failed :class:`PowerCallResult` to the right HTTP code.
+
+    * ``"denied"``     -> 403 (polkit refused; the user-facing message is
+      carried by the body).
+    * ``"unavailable"`` -> 503 (dbus-send or login1 missing).
+    """
+
+    if result.status == "denied":
+        return HTTPException(status_code=403, detail=result.error or "denied")
+    return HTTPException(status_code=503, detail=result.error or "unavailable")
+
+
+@app.post("/api/system/power/suspend")
+async def system_power_suspend(request: Request):
+    """Trigger ``Manager.Suspend`` via systemd-logind.
+
+    Returns ``200 OK`` when the suspend request was dispatched
+    successfully.  The HTTP response must be sent before the system
+    actually suspends; the frontend uses this signal to switch the
+    connection badge into the ``"Suspending…"`` state.
+
+    Two gates run before the action:
+
+    * :func:`_request_origin_is_trusted` rejects cross-site POSTs so a
+      foreign web page in the user's browser cannot trivially shut the
+      host down.  This is the standard CSRF mitigation when the
+      application deliberately has no session cookies.
+    * :func:`system_power.is_now_supported` re-probes ``CanSuspend`` so
+      a stale UI snapshot, an inhibitor lock that engaged after the
+      page loaded, or a CLI caller hitting the endpoint directly will
+      all fail cleanly with HTTP 409 if logind now reports anything
+      other than ``"yes"``.  This prevents FXRoute from dispatching the
+      action under a different capability than the one the menu
+      advertises -- which would either touch auth or inhibitor blocks
+      the polkit rule does not cover, i.e. exactly the "additional
+      privilege" we must not acquire.
+    """
+
+    if not _request_origin_is_trusted(request):
+        raise HTTPException(
+            status_code=403,
+            detail="Cross-site request rejected: open FXRoute on this host before using the power menu.",
+        )
+    supported, raw = await system_power.is_now_supported("suspend")
+    if not supported:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Suspend is not directly executable right now (logind CanSuspend={raw!r}).",
+        )
+    result = await system_power.request_suspend()
+    if result.ok:
+        return {"ok": True, "status": "suspended", "action": result.action}
+    raise _system_power_error_to_http(result)
+
+
+@app.post("/api/system/power/power-off")
+async def system_power_power_off(request: Request):
+    """Trigger ``Manager.PowerOff`` via systemd-logind.
+
+    Returns ``200 OK`` when the shutdown request was dispatched.
+    Like :func:`system_power_suspend`, this responds before logind has
+    actually powered the machine off; the frontend shows
+    ``"Shutting down…"`` until the websocket drops.
+
+    The same two gates apply: cross-origin rejection through
+    :func:`_request_origin_is_trusted`, plus a fresh ``CanPowerOff``
+    re-probe through :func:`system_power.is_now_supported` so any
+    non-``"yes"`` logind answer (``"challenge"``, ``"inhibited"`` ...)
+    fails cleanly with HTTP 409 instead of bypassing the polkit rule.
+    """
+
+    if not _request_origin_is_trusted(request):
+        raise HTTPException(
+            status_code=403,
+            detail="Cross-site request rejected: open FXRoute on this host before using the power menu.",
+        )
+    supported, raw = await system_power.is_now_supported("power_off")
+    if not supported:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Shutdown is not directly executable right now (logind CanPowerOff={raw!r}).",
+        )
+    result = await system_power.request_power_off()
+    if result.ok:
+        return {"ok": True, "status": "shutting_down", "action": result.action}
+    raise _system_power_error_to_http(result)
 
 
 @app.get("/api/system/update")

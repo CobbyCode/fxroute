@@ -47,6 +47,9 @@ HTTPS_WAS_ALLOWED_BEFORE=0
 MDNS_WAS_ALLOWED_BEFORE=0
 HTTP_OPENED_BY_FXROUTE=0
 HTTPS_OPENED_BY_FXROUTE=0
+POWER_POLKIT_INSTALLED=0
+POWER_POLKIT_RULE_PATH=""
+POWER_POLKIT_RULE_PRE_EXISTED=0
 MDNS_OPENED_BY_FXROUTE=0
 
 usage() {
@@ -648,6 +651,46 @@ ensure_native_packages() {
   pass "native packages installed"
 }
 
+ensure_dbus_send_binary() {
+  # dbus-send lives in different binary packages per distro:
+  #   apt (Debian/Ubuntu/Armbian): dbus-bin (dbus-send was split out of dbus)
+  #   dnf (Fedora/RHEL):           dbus-tools (split when dbus-broker took over)
+  #   zypper (openSUSE Tumbleweed): dbus-1-tools
+  #   pacman (Arch/Manjaro):       dbus (still a single package)
+  # Plain "dbus" is wrong on Fedora/openSUSE and only coincidentally works on
+  # Debian/Arch.  Install exactly the package that ships dbus-send and
+  # nothing larger so the host's dbus daemon choice stays untouched.
+  local pkg=""
+  local dbus_send_pkg=""
+
+  command -v dbus-send >/dev/null 2>&1 && return 0
+
+  case "$PACKAGE_MANAGER" in
+    apt)       dbus_send_pkg="dbus-bin" ;;
+    dnf)       dbus_send_pkg="dbus-tools" ;;
+    zypper)    dbus_send_pkg="dbus-1-tools" ;;
+    pacman)    dbus_send_pkg="dbus" ;;
+    *)
+      warn "dbus-send is missing and the package manager is unknown; suspend/shutdown actions will be unavailable"
+      return 0
+      ;;
+  esac
+
+  if package_installed "$dbus_send_pkg"; then
+    log "Found dbus-send package: $dbus_send_pkg"
+    return 0
+  fi
+
+  pkg="$dbus_send_pkg"
+  log "installing dbus-send (from package '$pkg', distro: $PACKAGE_MANAGER)"
+  if pkg_install "$pkg"; then
+    command -v dbus-send >/dev/null 2>&1 && pass "dbus-send available via $pkg" \
+      || warn "Package '$pkg' installed but dbus-send binary is still missing"
+  else
+    warn "Could not install '$pkg' for dbus-send; suspend/shutdown actions will be unavailable"
+  fi
+}
+
 install_network_library_helper() {
   local helper_src="$INSTALL_ROOT/scripts/fxroute-cifs-mount"
   local helper_path="/usr/local/sbin/fxroute-cifs-mount"
@@ -1059,7 +1102,10 @@ write_install_state() {
     "mdns_was_allowed_before": $( [[ $MDNS_WAS_ALLOWED_BEFORE -eq 1 ]] && echo true || echo false ),
     "http_opened_by_fxroute": $( [[ $HTTP_OPENED_BY_FXROUTE -eq 1 ]] && echo true || echo false ),
     "https_opened_by_fxroute": $( [[ $HTTPS_OPENED_BY_FXROUTE -eq 1 ]] && echo true || echo false ),
-    "mdns_opened_by_fxroute": $( [[ $MDNS_OPENED_BY_FXROUTE -eq 1 ]] && echo true || echo false )
+    "mdns_opened_by_fxroute": $( [[ $MDNS_OPENED_BY_FXROUTE -eq 1 ]] && echo true || echo false ),
+    "power_polkit_installed": $( [[ $POWER_POLKIT_INSTALLED -eq 1 ]] && echo true || echo false ),
+    "power_polkit_rule_path": "${POWER_POLKIT_RULE_PATH}",
+    "power_polkit_rule_pre_existed": $( [[ $POWER_POLKIT_RULE_PRE_EXISTED -eq 1 ]] && echo true || echo false )
   }
 }
 EOF
@@ -1067,11 +1113,14 @@ EOF
 }
 
 write_install_config() {
+  local install_user=""
+  install_user="${SUDO_USER:-$(id -un)}"
   mkdir -p "$(dirname "$INSTALL_CONFIG_FILE")"
   cat > "$INSTALL_CONFIG_FILE" <<EOF
 FXROUTE_INSTALL_ROOT=$INSTALL_ROOT
 FXROUTE_SERVICE_NAME=$SERVICE_NAME
 FXROUTE_INSTALL_STATE=$INSTALL_STATE_FILE
+FXROUTE_POWER_USER=$install_user
 EOF
   chmod 600 "$INSTALL_CONFIG_FILE"
   pass "install config recorded"
@@ -1714,6 +1763,64 @@ EOF
   return 0
 }
 
+configure_system_power_polkit_rule() {
+  local install_user=""
+  local template_src="$INSTALL_ROOT/assets/polkit/50-fxroute-power.rules"
+  local rule_name="50-fxroute-power.rules"
+  local rule_path="/etc/polkit-1/rules.d/$rule_name"
+  local tmp_rule=""
+  local rendered_rule=""
+  local backup_path=""
+
+  install_user="${SUDO_USER:-$(id -un)}"
+  [[ "$install_user" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]] || {
+    warn "FXRoute polkit power rule skipped because the install user is not a plain Unix name"
+    return 0
+  }
+
+  [[ -f "$template_src" ]] || {
+    warn "FXRoute polkit power rule skipped because $template_src is missing"
+    return 0
+  }
+
+  rendered_rule="$(sed -e "s/INSTALL_USER_PLACEHOLDER/${install_user}/g" "$template_src")"
+  [[ "$rendered_rule" != *"${install_user}"* ]] && {
+    warn "FXRoute polkit power rule template did not accept the install user; skipping"
+    return 0
+  }
+
+  tmp_rule="$(mktemp)"
+  printf '%s\n' "$rendered_rule" > "$tmp_rule"
+
+  POWER_POLKIT_RULE_PATH="$rule_path"
+
+  if [[ -f "$rule_path" ]]; then
+    POWER_POLKIT_RULE_PRE_EXISTED=1
+    backup_path="$FXROUTE_BACKUP_DIR/${rule_name}.pre-fxroute"
+    if [[ ! -e "$backup_path" && ! -L "$backup_path" ]]; then
+      mkdir -p "$FXROUTE_BACKUP_DIR"
+      if "${SUDO_CMD[@]}" cp -a "$rule_path" "$backup_path" 2>/dev/null; then
+        :
+      else
+        warn "Could not back up $rule_path before installing the FXRoute polkit power rule"
+      fi
+    fi
+  fi
+
+  if "${SUDO_CMD[@]}" install -d /etc/polkit-1/rules.d; then
+    if "${SUDO_CMD[@]}" install -m 644 "$tmp_rule" "$rule_path"; then
+      POWER_POLKIT_INSTALLED=1
+      pass "polkit power rule installed (closed: suspend + power-off only)"
+    else
+      warn "FXRoute polkit power rule could not be written to $rule_path"
+    fi
+  else
+    warn "FXRoute polkit power rule could not create /etc/polkit-1/rules.d"
+  fi
+
+  rm -f "$tmp_rule"
+}
+
 offer_optional_caddy_proxy() {
   local env_file="$INSTALL_ROOT/.env"
   local port="8000"
@@ -1933,6 +2040,7 @@ main() {
   confirm_supported_distro
   capture_lan_comfort_baseline
   ensure_native_packages
+  ensure_dbus_send_binary
   sync_project_tree
   install_network_library_helper
   create_env_if_missing
@@ -1947,6 +2055,7 @@ main() {
   chmod +x "$INSTALL_ROOT/scripts/update_fxroute.sh"
   install_helpers
   configure_optional_maintenance_helpers
+  configure_system_power_polkit_rule
   validate_http
   validate_tools
   offer_optional_local_lan_name

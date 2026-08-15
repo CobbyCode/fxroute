@@ -265,6 +265,7 @@ let state = {
         },
     },
     wsConnected: false,
+    powerCapabilities: null,
 };
 // WebSocket
 let ws = null;
@@ -632,6 +633,11 @@ const elements = {
     splCalibrationSave: document.getElementById('spl-calibration-save'),
     splCalibrationStatus: document.getElementById('spl-calibration-status'),
     toastContainer: document.getElementById('toast-container'),
+    powerMenuRoot: document.getElementById('power-menu-root'),
+    powerMenuToggle: document.getElementById('power-menu-toggle'),
+    powerMenu: document.getElementById('power-menu'),
+    powerSuspend: document.getElementById('power-suspend'),
+    powerShutdown: document.getElementById('power-shutdown'),
 };
 // Initialization
 document.addEventListener('DOMContentLoaded', () => {
@@ -14259,4 +14265,123 @@ if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', initSpotify);
 } else {
     initSpotify();
+}
+
+// System power menu (suspend / shut down via systemd-logind / D-Bus)
+// =================================================================
+// The backend reports the textual logind CanSuspend / CanPowerOff state
+// and exposes two narrow POST endpoints (suspend / power-off).  This
+// module only fetches capabilities, toggles a tiny dropdown and asks
+// for confirmation before the destructive POST.
+const POWER_CAPABILITIES_REFRESH_MS = 60 * 1000;
+const POWER_CONFIRM_SHUTDOWN = 'Shut down the host now? Active playback will stop.';
+const POWER_CONFIRM_SUSPEND = 'Suspend the host now? Active playback will stop.';
+
+function setupPowerMenu() {
+    if (!elements.powerMenuRoot || !elements.powerMenuToggle || !elements.powerMenu) return;
+    elements.powerMenuToggle.addEventListener('click', ev => {
+        ev.stopPropagation();
+        const open = !elements.powerMenu.classList.contains('hidden');
+        setPowerMenuOpen(!open);
+    });
+    elements.powerMenu.addEventListener('click', ev => ev.stopPropagation());
+    if (elements.powerSuspend) {
+        elements.powerSuspend.addEventListener('click', () => {
+            setPowerMenuOpen(false);
+            handlePowerAction('suspend');
+        });
+    }
+    if (elements.powerShutdown) {
+        elements.powerShutdown.addEventListener('click', () => {
+            setPowerMenuOpen(false);
+            handlePowerAction('power-off');
+        });
+    }
+    document.addEventListener('click', () => setPowerMenuOpen(false));
+    document.addEventListener('keydown', ev => {
+        if (ev.key === 'Escape') setPowerMenuOpen(false);
+    });
+    refreshPowerCapabilities();
+    setInterval(refreshPowerCapabilities, POWER_CAPABILITIES_REFRESH_MS);
+}
+
+function setPowerMenuOpen(open) {
+    if (!elements.powerMenu || !elements.powerMenuToggle) return;
+    elements.powerMenu.classList.toggle('hidden', !open);
+    elements.powerMenuToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+
+function refreshPowerCapabilities() {
+    fetch('/api/system/power')
+        .then(resp => resp.ok ? resp.json() : Promise.reject(new Error(`HTTP ${resp.status}`)))
+        .then(applyPowerCapabilities)
+        .catch(() => applyPowerCapabilities({ available: false, suspend: 'unavailable', power_off: 'unavailable', suspend_supported: false, power_off_supported: false }));
+}
+
+function applyPowerCapabilities(caps) {
+    state.powerCapabilities = caps || {};
+    const suspendSupported = !!(caps && caps.suspend_supported);
+    const powerOffSupported = !!(caps && caps.power_off_supported);
+    if (!elements.powerMenuRoot) return;
+    const anySupported = suspendSupported || powerOffSupported;
+    elements.powerMenuRoot.classList.toggle('hidden', !anySupported);
+    if (elements.powerSuspend) {
+        elements.powerSuspend.classList.toggle('hidden', !suspendSupported);
+    }
+    if (elements.powerShutdown) {
+        elements.powerShutdown.classList.toggle('hidden', !powerOffSupported);
+    }
+    // Close the menu when both items disappear mid-refresh.
+    if (!anySupported) setPowerMenuOpen(false);
+}
+
+async function handlePowerAction(action) {
+    const isShutdown = action === 'power-off';
+    const button = isShutdown ? elements.powerShutdown : elements.powerSuspend;
+    const confirmMsg = isShutdown ? POWER_CONFIRM_SHUTDOWN : POWER_CONFIRM_SUSPEND;
+    if (!confirm(confirmMsg)) return;
+
+    if (button) {
+        button.dataset.pending = 'true';
+        button.classList.add('active');
+    }
+    const endpoint = isShutdown ? '/api/system/power/power-off' : '/api/system/power/suspend';
+    const pendingLabel = isShutdown ? 'Shutting down…' : 'Suspending…';
+    const previousText = elements.connectionText ? elements.connectionText.textContent : null;
+    if (elements.connectionText) elements.connectionText.textContent = pendingLabel;
+
+    try {
+        const resp = await fetch(endpoint, { method: 'POST' });
+        if (!resp.ok) {
+            const detail = await resp.json().catch(() => ({}));
+            const message = (detail && detail.detail) || `Power action failed (${resp.status})`;
+            showToast(message, 'error');
+            // The host is not going away; restore the badge immediately.
+            if (elements.connectionText && previousText !== null) {
+                elements.connectionText.textContent = previousText;
+            }
+            return;
+        }
+        // Expect the host to drop the websocket within a few seconds.
+        showToast(pendingLabel, 'info');
+        if (elements.connDot) {
+            elements.connDot.className = 'connection-dot offline';
+        }
+    } catch (e) {
+        showToast(e && e.message ? e.message : 'Power action failed', 'error');
+        if (elements.connectionText && previousText !== null) {
+            elements.connectionText.textContent = previousText;
+        }
+    } finally {
+        if (button) {
+            button.dataset.pending = 'false';
+            button.classList.remove('active');
+        }
+    }
+}
+
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', setupPowerMenu);
+} else {
+    setupPowerMenu();
 }

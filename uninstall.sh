@@ -199,6 +199,53 @@ remove_optional_mdns_guard() {
   log "Removed optional FXRoute mDNS guard"
 }
 
+remove_system_power_polkit_rule() {
+  local rule_installed
+  local rule_path
+  local backup_path
+  local sudo_cmd=()
+  local rule_name="50-fxroute-power.rules"
+  local rule_default="/etc/polkit-1/rules.d/$rule_name"
+  local backup_default="$FXROUTE_BACKUP_DIR/${rule_name}.pre-fxroute"
+
+  rule_installed="$(read_install_state_field "lan_comfort.power_polkit_installed" 2>/dev/null || true)"
+  rule_path="$(read_install_state_field "lan_comfort.power_polkit_rule_path" 2>/dev/null || true)"
+  [[ -z "$rule_path" ]] && rule_path="$rule_default"
+  if [[ "$rule_installed" != "true" && ! -e "$rule_path" ]]; then
+    return 0
+  fi
+
+  if command -v sudo >/dev/null 2>&1; then
+    sudo_cmd=(sudo)
+  else
+    warn "Cannot remove FXRoute polkit power rule because sudo is unavailable"
+    return 0
+  fi
+
+  if [[ ! -e "$rule_path" ]]; then
+    log "FXRoute polkit power rule already absent at $rule_path"
+    return 0
+  fi
+
+  if [[ -e "$backup_default" ]]; then
+    if confirm "FXRoute added /etc/polkit-1/rules.d/$rule_name. Restore the previous rule from backup?"; then
+      if "${sudo_cmd[@]}" install -m 644 "$backup_default" "$rule_path"; then
+        "${sudo_cmd[@]}" rm -f "$backup_default"
+        log "Restored prior polkit rule from backup"
+        return 0
+      fi
+      warn "Failed to restore the pre-FXRoute polkit rule from backup"
+    fi
+  fi
+
+  if confirm "Remove FXRoute polkit power rule at $rule_path? This is what enables the suspend/shutdown menu."; then
+    "${sudo_cmd[@]}" rm -f "$rule_path"
+    log "Removed FXRoute polkit power rule"
+  else
+    warn "Keeping FXRoute polkit power rule"
+  fi
+}
+
 remove_optional_caddy_proxy() {
   local service_name="fxroute-caddy.service"
   local service_path="/etc/systemd/system/$service_name"
@@ -504,6 +551,9 @@ main() {
 
   log "Removing optional FXRoute mDNS guard"
   remove_optional_mdns_guard
+
+  log "Removing optional FXRoute system power polkit rule"
+  remove_system_power_polkit_rule
 
   log "Removing optional FXRoute Caddy reverse proxy"
   remove_optional_caddy_proxy
