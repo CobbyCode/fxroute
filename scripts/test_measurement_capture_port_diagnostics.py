@@ -10,12 +10,14 @@ from unittest.mock import Mock, patch
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from measurement import MeasurementStore
+from measurement_host_capture import HostCaptureRunner
 
 
 class MeasurementCapturePortDiagnosticTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.store = MeasurementStore(home=pathlib.Path(self._tmp.name))
+        self.assertIsInstance(self.store._host_capture_runner, HostCaptureRunner)
 
     def tearDown(self):
         self._tmp.cleanup()
