@@ -225,7 +225,7 @@ class MeasurementStore:
         return self._persistence.merge_measurements(measurement_ids, name)
 
     def delete_measurement(self, measurement_id: str) -> None:
-        return self._persistence.delete_measurement(measurement_id)
+        self._persistence.delete_measurement(measurement_id)
 
     def list_inputs(self) -> dict[str, Any]:
         inputs = self._measurement_inputs_with_sample_rate(self._discover_capture_inputs())
