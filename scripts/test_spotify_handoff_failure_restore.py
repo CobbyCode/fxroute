@@ -136,9 +136,9 @@ class SpotifyHandoffFailureRestoreTests(unittest.IsolatedAsyncioTestCase):
             main.playback_state, "current_track_info", None
         ), patch.object(main.playback_state, "last_track_info", dict(track)), patch.object(
             main.playback_state, "current_footer_owner", "spotify"
-        ), patch.object(main, "radio_reconnect_attempts", 2), patch.object(
-            main, "radio_reconnect_url", "https://radio.example/live"
-        ), patch.object(main, "radio_reconnect_active_since", 5.0), patch.object(
+        ), patch.object(main.radio_reconnect_state, "attempts", 2), patch.object(
+            main.radio_reconnect_state, "url", "https://radio.example/live"
+        ), patch.object(main.radio_reconnect_state, "active_since", 5.0), patch.object(
             main, "_mark_player_state_authoritative"
         ):
             await make_transition_runtime().abort_failed_transition(
@@ -149,9 +149,9 @@ class SpotifyHandoffFailureRestoreTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(main.playback_state.current_track_info, track)
             self.assertEqual(main.playback_state.current_footer_owner, "local")
-            self.assertEqual(main.radio_reconnect_attempts, 2)
-            self.assertEqual(main.radio_reconnect_url, "https://radio.example/live")
-            self.assertEqual(main.radio_reconnect_active_since, 5.0)
+            self.assertEqual(main.radio_reconnect_state.attempts, 2)
+            self.assertEqual(main.radio_reconnect_state.url, "https://radio.example/live")
+            self.assertEqual(main.radio_reconnect_state.active_since, 5.0)
 
     async def test_spotify_verify_failure_after_start_attempt_restores_context(self):
         player = PlayerDouble(None, playing=False)

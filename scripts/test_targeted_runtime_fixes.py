@@ -292,8 +292,7 @@ class ApiPlayQueueOrderTests(unittest.IsolatedAsyncioTestCase):
                 "peak_monitor",
                 "source_transition_lock",
                 "playback_transition_epoch",
-                "radio_reconnect_attempts", "radio_reconnect_url",
-                "radio_reconnect_active_since",
+                "radio_reconnect_state",
             )
         }
         self._saved_queue = queue_state()
@@ -316,9 +315,9 @@ class ApiPlayQueueOrderTests(unittest.IsolatedAsyncioTestCase):
         main.runtime.source_transition_lock = None
         measurement_session._playback_state_before_measurement = None
         main.playback_state.playback_transition_epoch = 0
-        main.radio_reconnect_attempts = 0
-        main.radio_reconnect_url = None
-        main.radio_reconnect_active_since = 0.0
+        main.radio_reconnect_state.attempts = 0
+        main.radio_reconnect_state.url = None
+        main.radio_reconnect_state.active_since = 0.0
         self.transition_requests = []
         return originals
 

@@ -1102,10 +1102,26 @@ def _playback_settled_event() -> asyncio.Event:
 # transition epoch/pending attempts and the published commit tokens).
 # See playback_state.PlaybackState for the field relationships.
 playback_state = PlaybackState()
-radio_reconnect_task = None
-radio_reconnect_attempts = 0
-radio_reconnect_url = None
-radio_reconnect_active_since = 0.0
+
+
+@dataclass
+class RadioReconnectState:
+    """Single authoritative owner of the radio-stream reconnect bookkeeping.
+
+    Owns the reconnect task handle, the attempt counter for the current
+    stream URL, the URL the counter belongs to, and the monotonic start of
+    the current reconnect window.  Mutated only by
+    _schedule_radio_reconnect_if_needed, _radio_reconnect_after_delay,
+    stop_playback and lifespan shutdown.
+    """
+
+    task: Optional[asyncio.Task] = None
+    attempts: int = 0
+    url: Optional[str] = None
+    active_since: float = 0.0
+
+
+radio_reconnect_state = RadioReconnectState()
 radio_metadata_service = RadioMetadataService()
 # queue_advancing is a reentrancy/dispatch guard for
 # on_player_state_change and deliberately not queue state: the queue
@@ -4194,7 +4210,6 @@ async def _radio_reconnect_after_delay(
     attempt: int,
     transition_generation: int,
 ) -> None:
-    global radio_reconnect_task
     try:
         await asyncio.sleep(RADIO_RECONNECT_DELAY_SECONDS)
         expected_url = (track_info or {}).get("url")
@@ -4220,45 +4235,44 @@ async def _radio_reconnect_after_delay(
     except Exception as e:
         logger.warning("Radio stream reconnect failed: %s", e)
     finally:
-        radio_reconnect_task = None
+        radio_reconnect_state.task = None
 
 
 def _schedule_radio_reconnect_if_needed(state: dict) -> None:
-    global radio_reconnect_task, radio_reconnect_attempts, radio_reconnect_url, radio_reconnect_active_since
     track_info = playback_state.current_track_info or {}
     track_url = track_info.get("url")
     if track_info.get("source") != "radio" or not track_url:
         return
 
     if state.get("current_file") and not state.get("ended"):
-        if radio_reconnect_url != track_url:
-            radio_reconnect_url = track_url
-            radio_reconnect_attempts = 0
-            radio_reconnect_active_since = time.monotonic()
-        elif not radio_reconnect_active_since:
-            radio_reconnect_active_since = time.monotonic()
-        elif radio_reconnect_attempts and time.monotonic() - radio_reconnect_active_since >= 30.0:
-            radio_reconnect_attempts = 0
+        if radio_reconnect_state.url != track_url:
+            radio_reconnect_state.url = track_url
+            radio_reconnect_state.attempts = 0
+            radio_reconnect_state.active_since = time.monotonic()
+        elif not radio_reconnect_state.active_since:
+            radio_reconnect_state.active_since = time.monotonic()
+        elif radio_reconnect_state.attempts and time.monotonic() - radio_reconnect_state.active_since >= 30.0:
+            radio_reconnect_state.attempts = 0
         return
 
-    radio_reconnect_active_since = 0.0
+    radio_reconnect_state.active_since = 0.0
     if not (state.get("ended") and not state.get("current_file")):
         return
 
-    if radio_reconnect_url != track_url:
-        radio_reconnect_url = track_url
-        radio_reconnect_attempts = 0
-    if radio_reconnect_attempts >= RADIO_RECONNECT_MAX_ATTEMPTS:
+    if radio_reconnect_state.url != track_url:
+        radio_reconnect_state.url = track_url
+        radio_reconnect_state.attempts = 0
+    if radio_reconnect_state.attempts >= RADIO_RECONNECT_MAX_ATTEMPTS:
         logger.warning("Radio stream ended and reconnect limit reached: station=%s url=%s", track_info.get("title") or track_info.get("id"), track_url)
         return
-    if radio_reconnect_task and not radio_reconnect_task.done():
+    if radio_reconnect_state.task and not radio_reconnect_state.task.done():
         return
 
-    radio_reconnect_attempts += 1
-    radio_reconnect_task = asyncio.create_task(
+    radio_reconnect_state.attempts += 1
+    radio_reconnect_state.task = asyncio.create_task(
         _radio_reconnect_after_delay(
             dict(track_info),
-            radio_reconnect_attempts,
+            radio_reconnect_state.attempts,
             _capture_playback_transition_epoch(),
         )
     )
@@ -5120,7 +5134,7 @@ async def _spotify_playerctl_watch_loop() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan: startup and shutdown."""
-    global settings, library_scanner, music_library_manager, library_scan_task, downloader, dsp_manager, measurement_store, measurement_sr_session, measurement_watchdog_task, hardware_controller, playback_transition_coordinator, external_input_loopback_module_id, external_input_loopback_source_name, bluetooth_input_source_name, bluetooth_monitor_task, bluetooth_agent_process, spotify_playerctl_watch_task, spotify_playerctl_detect_task, spotify_state_refresh_task, spotify_state_poll_task, spotify_playerctl_last_trigger_at, radio_reconnect_task
+    global settings, library_scanner, music_library_manager, library_scan_task, downloader, dsp_manager, measurement_store, measurement_sr_session, measurement_watchdog_task, hardware_controller, playback_transition_coordinator, external_input_loopback_module_id, external_input_loopback_source_name, bluetooth_input_source_name, bluetooth_monitor_task, bluetooth_agent_process, spotify_playerctl_watch_task, spotify_playerctl_detect_task, spotify_state_refresh_task, spotify_state_poll_task, spotify_playerctl_last_trigger_at
 
     logger.info("Starting FXRoute... build_id=%s", _read_build_id())
     try:
@@ -5302,7 +5316,7 @@ async def lifespan(app: FastAPI):
 
 
 async def _shutdown_lifespan_resources() -> None:
-    global settings, library_scanner, library_scan_task, downloader, dsp_manager, measurement_store, measurement_sr_session, measurement_watchdog_task, hardware_controller, playback_transition_coordinator, external_input_loopback_module_id, external_input_loopback_source_name, bluetooth_input_source_name, bluetooth_monitor_task, bluetooth_agent_process, spotify_playerctl_watch_task, spotify_playerctl_detect_task, spotify_state_refresh_task, spotify_state_poll_task, radio_reconnect_task
+    global settings, library_scanner, library_scan_task, downloader, dsp_manager, measurement_store, measurement_sr_session, measurement_watchdog_task, hardware_controller, playback_transition_coordinator, external_input_loopback_module_id, external_input_loopback_source_name, bluetooth_input_source_name, bluetooth_monitor_task, bluetooth_agent_process, spotify_playerctl_watch_task, spotify_playerctl_detect_task, spotify_state_refresh_task, spotify_state_poll_task
 
     async def cleanup(label: str, operation) -> None:
         nonlocal cleanup_cancelled
@@ -5332,7 +5346,7 @@ async def _shutdown_lifespan_resources() -> None:
         spotify_playerctl_detect_task,
         spotify_state_refresh_task,
         spotify_state_poll_task,
-        radio_reconnect_task,
+        radio_reconnect_state.task,
         *silent_active_watch_tasks.values(),
         *lifecycle_background_tasks,
     ]
@@ -5415,7 +5429,7 @@ async def _shutdown_lifespan_resources() -> None:
     spotify_playerctl_detect_task = None
     spotify_state_refresh_task = None
     spotify_state_poll_task = None
-    radio_reconnect_task = None
+    radio_reconnect_state.task = None
     if cleanup_cancelled:
         raise asyncio.CancelledError
 
@@ -5755,7 +5769,6 @@ async def toggle_playback():
 
 @app.post("/api/stop")
 async def stop_playback():
-    global radio_reconnect_attempts, radio_reconnect_url, radio_reconnect_active_since
     if not runtime.player_instance or not runtime.player_instance._running:
         raise HTTPException(status_code=503, detail="Player not available")
     if _playback_transition_is_active():
@@ -5764,9 +5777,9 @@ async def stop_playback():
         playback_state.last_radio_track_info = dict(playback_state.current_track_info)
     _mark_playback_intent_changed()
     playback_state.current_track_info = None
-    radio_reconnect_attempts = 0
-    radio_reconnect_url = None
-    radio_reconnect_active_since = 0.0
+    radio_reconnect_state.attempts = 0
+    radio_reconnect_state.url = None
+    radio_reconnect_state.active_since = 0.0
     playback_queue.queue.reset()
     playback_queue.queue.reset_mpv_loop_state()
     runtime.player_instance.stop_playback()

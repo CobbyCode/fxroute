@@ -139,9 +139,9 @@ class ActiveTransitionGuardTests(unittest.IsolatedAsyncioTestCase):
                 main, "playback_transition_coordinator", coordinator
             ), patch.object(main.playback_state, "current_track_info", track), patch.object(
                 main.playback_state, "last_radio_track_info", previous_radio
-            ), patch.object(main, "radio_reconnect_attempts", 3), patch.object(
-                main, "radio_reconnect_url", "https://radio.example/reconnect"
-            ), patch.object(main, "radio_reconnect_active_since", 5.0):
+            ), patch.object(main.radio_reconnect_state, "attempts", 3), patch.object(
+                main.radio_reconnect_state, "url", "https://radio.example/reconnect"
+            ), patch.object(main.radio_reconnect_state, "active_since", 5.0):
                 with self.assertRaises(HTTPException) as cm:
                     await main.stop_playback()
                 self.assertEqual(cm.exception.status_code, 409)
@@ -150,9 +150,9 @@ class ActiveTransitionGuardTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(playback_queue.queue.tracks[0]["id"], "a")
                 self.assertEqual(main.playback_state.current_track_info, track)
                 self.assertEqual(main.playback_state.last_radio_track_info, previous_radio)
-                self.assertEqual(main.radio_reconnect_attempts, 3)
-                self.assertEqual(main.radio_reconnect_url, "https://radio.example/reconnect")
-                self.assertEqual(main.radio_reconnect_active_since, 5.0)
+                self.assertEqual(main.radio_reconnect_state.attempts, 3)
+                self.assertEqual(main.radio_reconnect_state.url, "https://radio.example/reconnect")
+                self.assertEqual(main.radio_reconnect_state.active_since, 5.0)
         finally:
             restore_queue_state(saved_queue)
 
@@ -241,9 +241,9 @@ class InactiveTransitionSemanticsTests(unittest.IsolatedAsyncioTestCase):
             with patch.object(main.runtime, "player_instance", player), patch.object(
                 main.playback_state, "current_track_info", track
             ), patch.object(main.playback_state, "last_radio_track_info", {}), patch.object(
-                main, "radio_reconnect_attempts", 0
-            ), patch.object(main, "radio_reconnect_url", None), patch.object(
-                main, "radio_reconnect_active_since", 0.0
+                main.radio_reconnect_state, "attempts", 0
+            ), patch.object(main.radio_reconnect_state, "url", None), patch.object(
+                main.radio_reconnect_state, "active_since", 0.0
             ), patch.object(main, "_mark_player_state_authoritative"), patch.object(
                 main, "_mark_playback_intent_changed"
             ):
@@ -307,9 +307,9 @@ class TransitionEndRecoveryTests(unittest.IsolatedAsyncioTestCase):
             with patch.object(main.runtime, "player_instance", player), patch.object(
                 main, "playback_transition_coordinator", coordinator
             ), patch.object(main.playback_state, "current_track_info", track), patch.object(
-                main, "radio_reconnect_attempts", 0
-            ), patch.object(main, "radio_reconnect_url", None), patch.object(
-                main, "radio_reconnect_active_since", 0.0
+                main.radio_reconnect_state, "attempts", 0
+            ), patch.object(main.radio_reconnect_state, "url", None), patch.object(
+                main.radio_reconnect_state, "active_since", 0.0
             ), patch.object(main, "_mark_player_state_authoritative"), patch.object(
                 main, "_mark_playback_intent_changed"
             ):
