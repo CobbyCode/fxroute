@@ -203,6 +203,19 @@ build_native_dsp_if_needed() {
   fi
 }
 
+cleanup_obsolete_root_modules() {
+  local helper="$REPO_PATH/scripts/fxroute_obsolete_root_cleanup.py"
+  [[ -f "$helper" ]] || {
+    log "Obsolete root-module cleanup helper not found; skipping."
+    return 0
+  }
+  if python3 "$helper" --root "$REPO_PATH"; then
+    log "Obsolete pre-package root modules removed."
+  else
+    log "Obsolete root-module cleanup reported an error."
+  fi
+}
+
 restart_service_if_needed() {
   case "$RESTART_MODE" in
     none)
@@ -233,6 +246,7 @@ restart_service_if_needed() {
 reconcile_checkout() {
   install_dependencies_if_needed
   run_production_build
+  cleanup_obsolete_root_modules
   build_native_dsp_if_needed
   restart_service_if_needed
   if [[ "$NATIVE_HELPER_BUILD_OK" == "1" ]]; then

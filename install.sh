@@ -685,7 +685,21 @@ sync_project_tree() {
     --exclude='*.pyc' \
     --exclude='outputs/*.patch' \
     -C "$SOURCE_DIR" -cf - . | tar -C "$INSTALL_ROOT" -xf -
+  cleanup_obsolete_root_modules
   pass "project synced to target directory"
+}
+
+cleanup_obsolete_root_modules() {
+  local helper="$INSTALL_ROOT/scripts/fxroute_obsolete_root_cleanup.py"
+  [[ -f "$helper" ]] || {
+    log "Obsolete root-module cleanup helper not found; skipping."
+    return 0
+  }
+  if python3 "$helper" --root "$INSTALL_ROOT"; then
+    log "Obsolete pre-package root modules removed."
+  else
+    warn "Obsolete root-module cleanup reported an error."
+  fi
 }
 
 pick_port() {
