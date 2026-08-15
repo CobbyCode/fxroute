@@ -19,6 +19,7 @@ from hybrid_measurement import (
 from measurement import MeasurementStore
 from measurement_analyzer import MeasurementAnalyzer
 from measurement_persistence import MeasurementPersistence
+from measurement_signal import generate_log_sweep
 
 
 class HybridMeasurementAnalysisTests(unittest.TestCase):
@@ -83,6 +84,51 @@ class HybridMeasurementAnalysisTests(unittest.TestCase):
         self.assertEqual(MeasurementAnalyzer._hybrid_analysis_requirements("secondary"), (False, False))
         self.assertEqual(MeasurementAnalyzer._hybrid_analysis_requirements("mlp"), (False, True))
         self.assertEqual(MeasurementAnalyzer._hybrid_analysis_requirements("direct"), (True, True))
+
+    def test_analyzer_advanced_sweep_runs_all_hybrid_stages(self):
+        sample_rate = 48_000
+        sweep = generate_log_sweep(sample_rate, 0.68, 10.0, 22_000.0, peak_scale=0.8)
+        lead = np.zeros(int(round(sample_rate * 0.34)), dtype=np.float32)
+        tail = np.zeros(int(round(sample_rate * 0.18)), dtype=np.float32)
+        reference_channel = np.concatenate([lead, sweep, tail]).astype(np.float32)
+        mic_channel = np.zeros_like(reference_channel)
+        direct_offset = lead.size + 4_800
+        mic_channel[direct_offset] = 0.5
+        mic_channel[direct_offset + 480] = 0.275
+        capture = np.column_stack([mic_channel, reference_channel])
+
+        with tempfile.TemporaryDirectory() as home:
+            store = MeasurementStore(home=Path(home))
+            capture_path = store.captures_dir / "synthetic-advanced.wav"
+            store._write_wav(capture_path, capture, sample_rate)
+            analysis = store._analyzer._analyze_sweep_capture(
+                capture_path,
+                expected_sample_rate=sample_rate,
+                channel="left",
+                reference_sweep=sweep,
+                inverse_sweep=np.array([1.0], dtype=np.float64),
+                calibration_curve=None,
+                capture_label="Synthetic capture",
+                reference_channel_index=1,
+                analysis_channel_index=0,
+                reference_channel_label="reference",
+                measurement_role="direct",
+            )
+
+        direct_window = analysis["direct_response"]
+        self.assertTrue(direct_window["usable"])
+        self.assertEqual(direct_window["status"], "ok")
+        self.assertTrue(direct_window["points"])
+        self.assertGreaterEqual(
+            float(direct_window["points"][0][0]),
+            float(direct_window["gated_direct_lower_limit_hz"]),
+        )
+        complex_response = analysis["complex_response"]
+        self.assertEqual(complex_response["schema"], "fxroute.complex-response.v1")
+        self.assertEqual(len(complex_response["points"]), 160)
+        self.assertNotEqual(analysis["quality_checks"]["status"], "fail")
+        self.assertIn("direct_response", analysis)
+        self.assertIn("complex_response", analysis)
 
     def test_first_reflection_sets_gate_and_frequency_limit(self):
         sample_rate = 48_000
