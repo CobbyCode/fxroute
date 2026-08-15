@@ -17,8 +17,8 @@ import inspect
 import math
 import subprocess
 import tempfile
-import playback_queue
-import samplerate_orchestration
+import playback.queue as playback_queue
+import audio.samplerate_orchestration as samplerate_orchestration
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -31,8 +31,8 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from config import get_settings
-from music_libraries import MusicLibraryManager
-from radio_metadata import RadioMetadataService
+from library.sources import MusicLibraryManager
+from radio.metadata import RadioMetadataService
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
@@ -847,23 +847,23 @@ def _get_authoritative_footer_owner(player_state: dict | None = None, spotify_st
 from models import (
     PlayRequest,
 )
-from player import get_player, MPVNotInstalledError, normalize_stream_info
-from radio_api import _station_api_payload, router as radio_api_router
-from stations import get_stations
-import sink_inputs
-import playback_state as playback_state_helpers
-from playback_state import PlaybackState
-import samplerate
-from library import (
+from playback.player import get_player, MPVNotInstalledError, normalize_stream_info
+from radio.api import _station_api_payload, router as radio_api_router
+from radio.stations import get_stations
+import audio.sink_inputs as sink_inputs
+import playback.state as playback_state_helpers
+from playback.state import PlaybackState
+import audio.samplerate as samplerate
+from library.core import (
     LibraryScanner,
 )
 from downloader import Downloader
-from dsp_manager import DSPManager
-from dsp_runtime import DSPRuntime, DSPRuntimeConfig, BassManagementConfig, _contains_link
-import dsp_api
-import dsp_orchestration
-import playback_orchestration
-from dsp_orchestration import (
+from dsp.manager import DSPManager
+from dsp.runtime import DSPRuntime, DSPRuntimeConfig, BassManagementConfig, _contains_link
+import dsp.api as dsp_api
+import dsp.orchestration as dsp_orchestration
+import playback.orchestration as playback_orchestration
+from dsp.orchestration import (
     DspOrchestrationDeps,
     DspOrchestrator,
     helper_argument_sample_rate,
@@ -876,14 +876,14 @@ except ImportError:
 from measurement.store import (
     MeasurementStore,
 )
-from peak_monitor import DSPPeakMonitor
-from playback_transition import (
+from dsp.peak_monitor import DSPPeakMonitor
+from playback.transition import (
     PlaybackTransitionCoordinator,
     PlaybackTransitionFailure,
     TransitionRequest,
 )
 
-from playback_runtime import (
+from playback.runtime import (
     FxrouteTransitionRuntime,
     PlaybackRuntimeDependencies,
     RADIO_EXPECTED_SAMPLE_RATE_HZ,
@@ -892,7 +892,7 @@ from playback_runtime import (
 )
 
 
-from samplerate import (
+from audio.samplerate import (
     OUTPUT_MODE_STEREO,
     OUTPUT_MODE_SUBWOOFER_21,
     OUTPUT_MODE_SUBWOOFER_22,
@@ -914,7 +914,7 @@ from samplerate import (
     set_audio_source_selection,
     set_bluetooth_receiver_enabled,
 )
-from spotify import (
+from playback.spotify import (
     _stop_process,
     playerctl_available,
     spotify_installed,
@@ -926,15 +926,15 @@ from spotify import (
     loop_cycle as spotify_loop_cycle,
     seek_to as spotify_seek_to,
 )
-from system_volume import SystemVolumeError, get_output_volume, set_output_volume, get_status_volume, start_volume_read_monitor, volume_percent_to_db
-import volume_contract
+from audio.system_volume import SystemVolumeError, get_output_volume, set_output_volume, get_status_volume, start_volume_read_monitor, volume_percent_to_db
+import audio.volume_contract as volume_contract
 
 logger = logging.getLogger(__name__)
 
 import install_info
-import effects_extras
+import dsp.effects_extras
 import measurement.spl_calibration as spl_calibration
-import autosub
+import measurement.autosub as autosub
 import measurement.session as measurement_session
 from measurement.session import (
     MeasurementServices,
@@ -942,14 +942,14 @@ from measurement.session import (
     _measurement_helper_snapshot_summary,
     _wait_for_selected_output_effective_rate,
 )
-from library_api import (
+from library.api import (
     LibraryApiRuntime,
     _record_local_track_started,
     _track_cover_available,
     configure_runtime as configure_library_api_runtime,
     router as library_api_router,
 )
-from library_metadata import LibraryMetadataStore
+from library.metadata import LibraryMetadataStore
 
 
 @dataclass
@@ -1271,7 +1271,7 @@ def _set_peak_monitor_context_signature(value) -> None:
 
 
 def make_playback_runtime_deps() -> PlaybackRuntimeDependencies:
-    """Late-bound wiring for ``FxrouteTransitionRuntime`` (playback_runtime.py).
+    """Late-bound wiring for ``FxrouteTransitionRuntime`` (playback/runtime.py).
 
     Every accessor resolves the current runtime state at call time, so
     production wiring and test mocks observe the same attributes (same
@@ -3155,7 +3155,7 @@ def _mark_player_state_authoritative(state: dict | None) -> None:
 def _dispatch_player_state_change(state: dict):
     """Synchronous player-state dispatcher.
 
-    player.py invokes this at notify time (before any coroutine task is
+    playback/player.py invokes this at notify time (before any coroutine task is
     queued) and schedules the returned coroutine as a task.  Capturing the
     committed playback token here instead of inside the async callback binds
     the state event to the playback context that was committed when the
@@ -3630,7 +3630,7 @@ async def _ensure_bluetooth_audio_agent() -> None:
     proc = runtime.bluetooth_agent_process
     if proc and proc.returncode is None:
         return
-    agent_script = BASE_DIR / "bluez_audio_agent.py"
+    agent_script = BASE_DIR / "audio/bluez_agent.py"
     runtime.bluetooth_agent_process = await asyncio.create_subprocess_exec(
         str(agent_script),
         stdout=asyncio.subprocess.DEVNULL,
@@ -4359,7 +4359,7 @@ def _make_playback_orchestration_deps() -> playback_orchestration.PlaybackOrches
 playback_orchestration.configure(_make_playback_orchestration_deps())
 
 # Bound orchestration entry points retained for application wiring and legacy
-# internal callers; implementations live in playback_orchestration.py.
+# internal callers; implementations live in playback/orchestration.py.
 _coordinator_source_rate = playback_orchestration.configured().coordinator_source_rate
 _coordinator_target_rate = playback_orchestration.configured().coordinator_target_rate
 _sample_rate_policy_is_auto = playback_orchestration.configured().sample_rate_policy_is_auto

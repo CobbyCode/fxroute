@@ -24,7 +24,7 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = Path(__file__).resolve().parent.parent
 STATION_ART_DIR = BASE_DIR / "static" / "station-art"
 SOMAFM_NAME_TO_SLUG = {
     "groove salad": "groovesalad",

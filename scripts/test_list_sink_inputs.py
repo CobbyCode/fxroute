@@ -15,7 +15,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-import sink_inputs
+import audio.sink_inputs as sink_inputs
 
 
 def _completed(returncode: int = 0, stdout: str = "") -> SimpleNamespace:
@@ -68,7 +68,7 @@ Sink Input #7
 
 class ListSinkInputsTests(unittest.TestCase):
     def test_full_single_sink_input(self):
-        with patch("sink_inputs.subprocess.run", return_value=_completed(0, FULL_SINGLE)) as run:
+        with patch("audio.sink_inputs.subprocess.run", return_value=_completed(0, FULL_SINGLE)) as run:
             entries = sink_inputs.list_sink_inputs()
         run.assert_called_once()
         args = run.call_args.args[0]
@@ -87,7 +87,7 @@ class ListSinkInputsTests(unittest.TestCase):
         self.assertEqual(entry["properties"]["media.name"], "Track One")
 
     def test_multiple_sink_inputs(self):
-        with patch("sink_inputs.subprocess.run", return_value=_completed(0, FULL_MULTI)):
+        with patch("audio.sink_inputs.subprocess.run", return_value=_completed(0, FULL_MULTI)):
             entries = sink_inputs.list_sink_inputs()
         self.assertEqual(len(entries), 2)
         first, second = entries
@@ -108,7 +108,7 @@ class ListSinkInputsTests(unittest.TestCase):
 \tCorked: no
 \tMute: no
 """
-        with patch("sink_inputs.subprocess.run", return_value=_completed(0, minimal)):
+        with patch("audio.sink_inputs.subprocess.run", return_value=_completed(0, minimal)):
             entries = sink_inputs.list_sink_inputs()
         self.assertEqual(len(entries), 1)
         entry = entries[0]
@@ -124,7 +124,7 @@ class ListSinkInputsTests(unittest.TestCase):
 \t\tapplication.name = mpv
 \t\tnode.name = mpv
 """
-        with patch("sink_inputs.subprocess.run", return_value=_completed(0, no_quotes)):
+        with patch("audio.sink_inputs.subprocess.run", return_value=_completed(0, no_quotes)):
             entries = sink_inputs.list_sink_inputs()
         self.assertEqual(entries[0]["properties"]["application.name"], "mpv")
         self.assertEqual(entries[0]["properties"]["node.name"], "mpv")
@@ -135,7 +135,7 @@ class ListSinkInputsTests(unittest.TestCase):
 \t\tapplication.name = "mpv player"
 \t\tnode.name = "mpv"
 """
-        with patch("sink_inputs.subprocess.run", return_value=_completed(0, quoted)):
+        with patch("audio.sink_inputs.subprocess.run", return_value=_completed(0, quoted)):
             entries = sink_inputs.list_sink_inputs()
         self.assertEqual(entries[0]["properties"]["application.name"], "mpv player")
         self.assertEqual(entries[0]["properties"]["node.name"], "mpv")
@@ -147,7 +147,7 @@ class ListSinkInputsTests(unittest.TestCase):
 \t\tmalformed line without separator
 \t\tnode.name = "mpv"
 """
-        with patch("sink_inputs.subprocess.run", return_value=_completed(0, odd)):
+        with patch("audio.sink_inputs.subprocess.run", return_value=_completed(0, odd)):
             entries = sink_inputs.list_sink_inputs()
         self.assertEqual(entries[0]["properties"]["application.name"], "mpv")
         self.assertEqual(entries[0]["properties"]["node.name"], "mpv")
@@ -163,7 +163,7 @@ Sink Input #3
 Sink Input #4
 \tVolume: front-left: 32768 / 50 % / -6.02 dB
 """
-        with patch("sink_inputs.subprocess.run", return_value=_completed(0, variants)):
+        with patch("audio.sink_inputs.subprocess.run", return_value=_completed(0, variants)):
             entries = sink_inputs.list_sink_inputs()
         self.assertEqual(entries[0]["volume_percent"], 100)
         self.assertEqual(entries[1]["volume_percent"], 50)
@@ -176,7 +176,7 @@ Sink Input #4
         odd = """Sink Input #1
 \tVolume: front-left: 65536
 """
-        with patch("sink_inputs.subprocess.run", return_value=_completed(0, odd)):
+        with patch("audio.sink_inputs.subprocess.run", return_value=_completed(0, odd)):
             entries = sink_inputs.list_sink_inputs()
         self.assertNotIn("volume_percent", entries[0])
 
@@ -190,7 +190,7 @@ Sink Input #3
 Sink Input #4
 \tSample Specification: unknown
 """
-        with patch("sink_inputs.subprocess.run", return_value=_completed(0, specs)):
+        with patch("audio.sink_inputs.subprocess.run", return_value=_completed(0, specs)):
             entries = sink_inputs.list_sink_inputs()
         self.assertEqual(entries[0]["sample_rate"], 48000)
         self.assertEqual(entries[1]["sample_rate"], 44100)
@@ -198,22 +198,22 @@ Sink Input #4
         self.assertNotIn("sample_rate", entries[3])
 
     def test_empty_output_returns_empty_list(self):
-        with patch("sink_inputs.subprocess.run", return_value=_completed(0, "")):
+        with patch("audio.sink_inputs.subprocess.run", return_value=_completed(0, "")):
             self.assertEqual(sink_inputs.list_sink_inputs(), [])
 
     def test_returncode_nonzero_returns_empty_list(self):
-        with patch("sink_inputs.subprocess.run", return_value=_completed(1, "boom")):
+        with patch("audio.sink_inputs.subprocess.run", return_value=_completed(1, "boom")):
             self.assertEqual(sink_inputs.list_sink_inputs(), [])
 
     def test_subprocess_exception_returns_empty_list(self):
-        with patch("sink_inputs.subprocess.run", side_effect=OSError("pactl missing")):
+        with patch("audio.sink_inputs.subprocess.run", side_effect=OSError("pactl missing")):
             self.assertEqual(sink_inputs.list_sink_inputs(), [])
-        with patch("sink_inputs.subprocess.run", side_effect=TimeoutError("timeout")):
+        with patch("audio.sink_inputs.subprocess.run", side_effect=TimeoutError("timeout")):
             self.assertEqual(sink_inputs.list_sink_inputs(), [])
 
     def test_trailing_input_appended(self):
         # No trailing header after the last block - still appended
-        with patch("sink_inputs.subprocess.run", return_value=_completed(0, FULL_SINGLE)):
+        with patch("audio.sink_inputs.subprocess.run", return_value=_completed(0, FULL_SINGLE)):
             entries = sink_inputs.list_sink_inputs()
         self.assertEqual(len(entries), 1)
 
@@ -224,7 +224,7 @@ class WrapperParityTests(unittest.TestCase):
         self.main = main
 
     def _parity(self, stdout: str, returncode: int = 0):
-        with patch("sink_inputs.subprocess.run", return_value=_completed(returncode, stdout)):
+        with patch("audio.sink_inputs.subprocess.run", return_value=_completed(returncode, stdout)):
             return (
                 self.main._list_sink_inputs(),
                 sink_inputs.list_sink_inputs(),
@@ -251,10 +251,10 @@ class WrapperParityTests(unittest.TestCase):
         self.assertEqual(a, [])
 
     def test_parity_subprocess_exception(self):
-        with patch("sink_inputs.subprocess.run", side_effect=OSError("boom")):
+        with patch("audio.sink_inputs.subprocess.run", side_effect=OSError("boom")):
             self.assertEqual(self.main._list_sink_inputs(), sink_inputs.list_sink_inputs())
             self.assertEqual(self.main._list_sink_inputs(), [])
-        with patch("sink_inputs.subprocess.run", side_effect=TimeoutError("timeout")):
+        with patch("audio.sink_inputs.subprocess.run", side_effect=TimeoutError("timeout")):
             self.assertEqual(self.main._list_sink_inputs(), sink_inputs.list_sink_inputs())
             self.assertEqual(self.main._list_sink_inputs(), [])
 

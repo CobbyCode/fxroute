@@ -20,7 +20,7 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException, Request
 
 from measurement.session import MeasurementEntryInvalidated
-from samplerate import get_audio_output_overview
+from audio.samplerate import get_audio_output_overview
 
 logger = logging.getLogger(__name__)
 SPL_STOP_TIMEOUT_SECONDS = 40.0

@@ -21,7 +21,7 @@ sys.path.insert(0, str(ROOT))
 
 import main
 import measurement.session as measurement_session
-import samplerate
+import audio.samplerate as samplerate
 
 
 class SampleRatePolicyTests(unittest.TestCase):

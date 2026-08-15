@@ -17,9 +17,9 @@ from fastapi.responses import FileResponse, Response
 from mutagen import File as MutagenFile
 from starlette.background import BackgroundTask
 
-import playlist_io
+import library.playlist_io as playlist_io
 import zip_album
-from library import cleanup_track_parent_folder, path_within_root
+from library.core import cleanup_track_parent_folder, path_within_root
 from uploads import (
     LIBRARY_UPLOAD_MAX_BYTES,
     TEXT_UPLOAD_MAX_BYTES,
@@ -33,12 +33,12 @@ from models import (
     DownloadTracksRequest,
     PlaylistSaveRequest,
 )
-from playlists import delete_playlist, get_playlists, save_playlist
+from library.playlists import delete_playlist, get_playlists, save_playlist
 from zip_album import PLAYLIST_FILE_EXTENSIONS, UPLOAD_AUDIO_EXTENSIONS
 
 logger = logging.getLogger(__name__)
 
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = Path(__file__).resolve().parent.parent
 STATIC_DIR = BASE_DIR / "static"
 COVER_CACHE_DIR = BASE_DIR / "media" / "cache" / "covers"
 TOP40_COVER_IMAGE = STATIC_DIR / "Top40.png"

@@ -21,9 +21,9 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import playback_queue
+import playback.queue as playback_queue
 import main
-import player
+import playback.player as player
 from playback_queue_test_support import queue_state, restore_queue_state
 
 
@@ -630,7 +630,7 @@ class StaleEndfileOwnershipTests(unittest.IsolatedAsyncioTestCase):
 
 
 class PlayerDispatchContractTests(unittest.IsolatedAsyncioTestCase):
-    """player.py: sync callback with awaitable result is scheduled as a task."""
+    """playback/player.py: sync callback with awaitable result is scheduled as a task."""
 
     async def test_sync_callback_awaitable_result_is_scheduled(self):
         wrapper = player.MPVWrapper()

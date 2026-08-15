@@ -17,7 +17,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-import effects_extras
+import dsp.effects_extras as effects_extras
 
 
 def full_extras(**overrides) -> dict:
@@ -471,7 +471,7 @@ class RuntimeAutogainLoudnessChangeTests(unittest.TestCase):
 
 class WrapperParityTests(unittest.TestCase):
     def setUp(self):
-        import dsp_api
+        import dsp.api as dsp_api
         self.dsp_api = dsp_api
 
     def test_parse_parity(self):

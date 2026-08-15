@@ -12,7 +12,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
-import dsp_api
+import dsp.api as dsp_api
 
 dsp_api.configure_dsp_api(main._make_dsp_api_deps())
 

@@ -17,10 +17,10 @@ import time
 from dataclasses import dataclass, replace
 from typing import Any, Awaitable, Callable, Mapping
 
-import playback_queue
-import playback_state
-import samplerate
-from playback_transition import PlaybackTransitionFailure, TransitionRequest
+import playback.queue
+import playback.state
+import audio.samplerate as samplerate
+from playback.transition import PlaybackTransitionFailure, TransitionRequest
 
 logger = logging.getLogger(__name__)
 

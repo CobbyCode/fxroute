@@ -10,7 +10,7 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SOURCES = {
     file_name: (ROOT / file_name).read_text()
-    for file_name in ("main.py", "playback_orchestration.py", "playback_queue.py", "measurement/session.py", "dsp_orchestration.py")
+    for file_name in ("main.py", "playback/orchestration.py", "playback/queue.py", "measurement/session.py", "dsp/orchestration.py")
 }
 TREES = {
     file_name: ast.parse(source)
@@ -51,8 +51,8 @@ def function_source(name):
     lookup_name = owner_methods.get(name, name)
     file_names = list(SOURCES)
     if name in preferred:
-        file_names.remove("playback_orchestration.py")
-        file_names.insert(0, "playback_orchestration.py")
+        file_names.remove("playback/orchestration.py")
+        file_names.insert(0, "playback/orchestration.py")
     for file_name in file_names:
         source = SOURCES[file_name]
         lines = source.splitlines(keepends=True)
@@ -121,7 +121,7 @@ class OwnershipStructureTests(unittest.TestCase):
         self.assertIn("measurement_only_restore", body)
 
     def test_watchers_only_request_coordinator_recovery(self):
-        # The link watcher lives in dsp_orchestration.py; it must request
+        # The link watcher lives in dsp/orchestration.py; it must request
         # Coordinator recovery through the injected dep and must never
         # re-sync the runtime or reclean the graph directly.
         watcher = function_source("runtime_link_watch_loop")
@@ -130,14 +130,14 @@ class OwnershipStructureTests(unittest.TestCase):
         self.assertNotIn("_reclean_guarded", watcher)
 
     def test_coordinator_module_exists_and_owns_gate_state(self):
-        coordinator = (ROOT / "playback_transition.py").read_text()
+        coordinator = (ROOT / "playback/transition.py").read_text()
         self.assertIn("class PlaybackTransitionCoordinator", coordinator)
         self.assertIn("class OutputGateState", coordinator)
         self.assertIn("failure_latched", coordinator)
         self.assertIn("output-gate-restore", coordinator)
 
     def test_playback_orchestration_owns_graph_and_rate_implementations(self):
-        orchestration = SOURCES["playback_orchestration.py"]
+        orchestration = SOURCES["playback/orchestration.py"]
         for name in (
             "transition_sample_rate_policy", "playback_graph_diagnosis",
             "reconcile_post_start_graph", "establish_effects_and_helper",

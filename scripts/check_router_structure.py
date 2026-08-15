@@ -18,8 +18,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-MODULES = ("measurement/spl_calibration.py", "library_api.py", "autosub.py", "measurement/session.py")
-DECOUPLED_MODULES = ("playlist_io.py", "library_api.py", "measurement/spl_calibration.py", "playback_runtime.py", "playback_queue.py", "autosub.py", "measurement/session.py")
+MODULES = ("measurement/spl_calibration.py", "library/api.py", "measurement/autosub.py", "measurement/session.py")
+DECOUPLED_MODULES = ("library/playlist_io.py", "library/api.py", "measurement/spl_calibration.py", "playback/runtime.py", "playback/queue.py", "measurement/autosub.py", "measurement/session.py")
 MAIN_GLOBALS = {
     "SPOTIFY_PREARM_SAMPLE_RATE_HZ",
     "PIPEWIRE_HANDOFF_POLL_INTERVAL_MS",

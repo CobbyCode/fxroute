@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 # extracted AutoSub module.  Playback entrypoints and single-owner paths live
 # only in main.py; all files are parsed for direct mutation calls so the
 # extraction cannot create an audit coverage gap.
-AUDIT_FILES = ("main.py", "playback_orchestration.py", "playback_runtime.py", "playback_queue.py", "autosub.py", "measurement/session.py", "dsp_api.py")
+AUDIT_FILES = ("main.py", "playback/orchestration.py", "playback/runtime.py", "playback/queue.py", "measurement/autosub.py", "measurement/session.py", "dsp/api.py")
 SOURCES = {name: (ROOT / name).read_text() for name in AUDIT_FILES}
 TREES = {name: ast.parse(source) for name, source in SOURCES.items()}
 MAIN_SOURCE = SOURCES["main.py"]
@@ -104,7 +104,7 @@ SINGLE_OWNER_PATHS = {
 # main.py facade or know transition stages).
 QUEUE_MODULE_ENTRYPOINTS = {"load_track", "advance"}
 
-# Queue state values owned exclusively by playback_queue.PlaybackQueue.
+# Queue state values owned exclusively by playback/queue.py PlaybackQueue.
 QUEUE_STATE_GLOBALS = {
     "playback_queue",
     "playback_queue_original",
@@ -327,7 +327,7 @@ def main() -> int:
             ):
                 if required not in body:
                     errors.append(f"measurement restore missing single-owner guard: {required}")
-        elif owning_file == "playback_queue.py":
+        elif owning_file == "playback/queue.py":
             # The queue module reaches the Coordinator only through the
             # injected run_transition callable; it never calls the main.py
             # facade or knows transition stages.
@@ -340,7 +340,7 @@ def main() -> int:
             errors.append(f"single-owner path bypasses coordinator: {path_name}")
 
     # Queue-state ownership (Pass 2): the seven queue values may only be
-    # defined inside playback_queue.py; main.py keeps only queue_advancing.
+    # defined inside playback/queue.py; main.py keeps only queue_advancing.
     main_tree = TREES["main.py"]
     main_module_names = _module_level_names(main_tree)
     for name in sorted(QUEUE_STATE_GLOBALS):
@@ -349,14 +349,14 @@ def main() -> int:
     if "queue_advancing" not in main_module_names:
         errors.append("main.py no longer defines the queue_advancing dispatcher guard")
 
-    queue_tree = TREES["playback_queue.py"]
+    queue_tree = TREES["playback/queue.py"]
     for node in ast.walk(queue_tree):
         if isinstance(node, ast.ImportFrom) and node.module == "main":
-            errors.append("playback_queue.py imports runtime state from main.py")
+            errors.append("playback/queue.py imports runtime state from main.py")
         elif isinstance(node, ast.Import) and any(alias.name == "main" for alias in node.names):
-            errors.append("playback_queue.py imports main.py")
+            errors.append("playback/queue.py imports main.py")
 
-    runtime_tree = TREES["playback_runtime.py"]
+    runtime_tree = TREES["playback/runtime.py"]
     runtime_fields: set[str] = set()
     for class_node in (
         node for node in ast.walk(runtime_tree) if isinstance(node, ast.ClassDef)

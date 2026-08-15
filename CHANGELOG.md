@@ -2261,7 +2261,7 @@
 
 ## 0.4.43 (2026-04-14)
 - **Spotify volume control wired into the shared footer slider**: When Spotify is the visible tab or active footer source, the global volume slider now talks to Spotify via a dedicated `/api/spotify/volume` backend path instead of incorrectly changing only the local MPV path
-- **Spotify status now carries real volume**: `spotify.py` now reads `playerctl --player=spotify volume`, exposes a normalized `volume` value in Spotify status responses, and refreshes it after volume changes so the UI can stay in sync
+- **Spotify status now carries real volume**: `playback/spotify.py` now reads `playerctl --player=spotify volume`, exposes a normalized `volume` value in Spotify status responses, and refreshes it after volume changes so the UI can stay in sync
 - **Debounced Spotify volume updates**: Spotify volume changes use their own lightweight debounced sender and feed back into the same footer UI, keeping the existing volume UX but making it actually work for Spotify
 - **Asset/version bump**: `index.html` now references `app.js?v=0.4.43` and `style.css?v=0.4.43`
 

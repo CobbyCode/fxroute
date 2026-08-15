@@ -6,7 +6,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Any, Iterable
 
-from system_volume import volume_db_to_percent, volume_percent_to_db
+from audio.system_volume import volume_db_to_percent, volume_percent_to_db
 
 EXCLUDED_PRESETS = frozenset({"Direct"})
 

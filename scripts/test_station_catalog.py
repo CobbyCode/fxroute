@@ -11,9 +11,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import stations
-import radio_api
-from radio_api import add_station_catalog_selection, list_station_catalog
+import radio.stations as stations
+import radio.api as radio_api
+from radio.api import add_station_catalog_selection, list_station_catalog
 
 
 class StationCatalogTests(unittest.TestCase):

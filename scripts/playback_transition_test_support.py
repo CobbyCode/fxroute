@@ -10,8 +10,8 @@ from __future__ import annotations
 from typing import Any
 
 import main
-from playback_runtime import FxrouteTransitionRuntime
-from playback_transition import PlaybackTransitionCoordinator, TransitionRequest
+from playback.runtime import FxrouteTransitionRuntime
+from playback.transition import PlaybackTransitionCoordinator, TransitionRequest
 
 
 def make_transition_runtime() -> FxrouteTransitionRuntime:

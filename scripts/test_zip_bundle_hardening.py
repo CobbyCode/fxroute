@@ -26,9 +26,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from fastapi import HTTPException
 
-import library_api
+import library.api as library_api
 import main
-import dsp_api
+import dsp.api as dsp_api
 
 dsp_api.configure_dsp_api(main._make_dsp_api_deps())
 import zip_album
@@ -184,7 +184,7 @@ class PresetBundleEndpointTests(unittest.IsolatedAsyncioTestCase):
             self.created_temps.append(handle.name)
             return handle
 
-        self.tempfile_patch = patch("dsp_api.tempfile.NamedTemporaryFile", recording_tempfile)
+        self.tempfile_patch = patch("dsp.api.tempfile.NamedTemporaryFile", recording_tempfile)
         self.tempfile_patch.start()
 
     async def _fake_finish(self, **kwargs):
@@ -557,7 +557,7 @@ class LibraryUploadZipTests(unittest.IsolatedAsyncioTestCase):
             self.created_temps.append(handle.name)
             return handle
 
-        self.tempfile_patch = patch("library_api.tempfile.NamedTemporaryFile", recording_tempfile)
+        self.tempfile_patch = patch("library.api.tempfile.NamedTemporaryFile", recording_tempfile)
         self.tempfile_patch.start()
 
     async def asyncTearDown(self):

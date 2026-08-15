@@ -48,7 +48,7 @@ from measurement.constants import (
     SWEEP_V2_TAIL_SECONDS,
     TERMINAL_JOB_STATUSES,
 )
-from samplerate import (
+from audio.samplerate import (
     OUTPUT_MODE_SUBWOOFER_21,
     OUTPUT_MODE_SUBWOOFER_22,
     OUTPUT_MODE_SUBWOOFER_22_MODES,
@@ -57,7 +57,7 @@ from samplerate import (
     get_audio_output_overview,
     get_samplerate_status,
 )
-from system_volume import SystemVolumeError, get_node_volume, get_output_volume, set_node_volume, set_output_volume
+from audio.system_volume import SystemVolumeError, get_node_volume, get_output_volume, set_node_volume, set_output_volume
 
 logger = logging.getLogger(__name__)
 

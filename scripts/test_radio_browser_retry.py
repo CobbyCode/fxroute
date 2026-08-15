@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for the radio-browser retry/mirror-fallback logic in radio_api.py."""
+"""Tests for the radio-browser retry/mirror-fallback logic in radio/api.py."""
 
 import json
 import sys
@@ -9,7 +9,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import radio_api
+import radio.api as radio_api
 
 
 class _FakeResponse:

@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
 import measurement.session as measurement_session
-import samplerate_orchestration
+import audio.samplerate_orchestration as samplerate_orchestration
 from playback_transition_test_support import run_main_handoff_through_coordinator
 
 

@@ -19,9 +19,9 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import radio_api
+import radio.api as radio_api
 import safe_http
-import stations
+import radio.stations as stations
 
 
 def fake_dns_public(host, port=None, **kwargs):

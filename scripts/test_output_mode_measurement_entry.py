@@ -17,8 +17,8 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 import main
 from playback_transition_test_support import make_transition_runtime
 import measurement.session as measurement_session
-import samplerate
-from playback_transition import PlaybackTransitionCoordinator, PlaybackTransitionFailure, TransitionRequest
+import audio.samplerate as samplerate
+from playback.transition import PlaybackTransitionCoordinator, PlaybackTransitionFailure, TransitionRequest
 
 
 class TransactionRuntime:
@@ -829,8 +829,8 @@ class EntryBoundaryTests(unittest.IsolatedAsyncioTestCase):
     def test_sample_rate_policy_reuses_settings_selector_and_coordinator(self):
         index = (pathlib.Path(__file__).resolve().parents[1] / "static" / "index.html").read_text()
         app = (pathlib.Path(__file__).resolve().parents[1] / "static" / "app.js").read_text()
-        samplerate_source = (pathlib.Path(__file__).resolve().parents[1] / "samplerate.py").read_text()
-        orchestration_source = (pathlib.Path(__file__).resolve().parents[1] / "playback_orchestration.py").read_text()
+        samplerate_source = (pathlib.Path(__file__).resolve().parents[1] / "audio/samplerate.py").read_text()
+        orchestration_source = (pathlib.Path(__file__).resolve().parents[1] / "playback/orchestration.py").read_text()
         self.assertIn("settings-samplerate-select", index)
         self.assertIn("Sample Rate", index)
         self.assertIn("saveSampleRatePolicy", app)

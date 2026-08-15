@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import main
-import dsp_api
+import dsp.api as dsp_api
 from fastapi import HTTPException
 from zip_album import (
     choose_unique_dir,

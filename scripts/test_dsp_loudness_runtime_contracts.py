@@ -19,8 +19,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from dsp_manager import DSPManager
-from dsp_runtime import DSPRuntime
+from dsp.manager import DSPManager
+from dsp.runtime import DSPRuntime
 
 
 class FakeProcess:

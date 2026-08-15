@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from dsp_runtime import DSPRuntimeConfig
+from dsp.runtime import DSPRuntimeConfig
 from measurement.constants import (
     MEASUREMENT_SCOPE_ACTIVE_CHAIN,
     MEASUREMENT_SCOPE_RAW_HELPER,

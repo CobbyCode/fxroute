@@ -10,7 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import samplerate_orchestration as orchestration
+import audio.samplerate_orchestration as orchestration
 
 
 class PolicyReconcileTests(unittest.IsolatedAsyncioTestCase):

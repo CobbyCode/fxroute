@@ -10,7 +10,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from dsp_manager import DSPManager, UnsupportedPluginError
+from dsp.manager import DSPManager, UnsupportedPluginError
 
 
 class DSPManagerPresetTests(unittest.TestCase):
@@ -51,7 +51,7 @@ class DSPManagerPresetTests(unittest.TestCase):
         self.assertIn("native delay", text)
 
     def test_manager_has_no_easyeffects_runtime_import(self):
-        tree = ast.parse((ROOT / "dsp_manager.py").read_text())
+        tree = ast.parse((ROOT / "dsp/manager.py").read_text())
         imported = {
             alias.name
             for node in ast.walk(tree)

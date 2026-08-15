@@ -16,10 +16,10 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import playback_queue
+import playback.queue as playback_queue
 import main
 from playback_queue_test_support import queue_state, restore_queue_state
-from playback_transition import PlaybackTransitionFailure
+from playback.transition import PlaybackTransitionFailure
 
 
 def _track(track_id: str, *, rate: int = 48000) -> dict:

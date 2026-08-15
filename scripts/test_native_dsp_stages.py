@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DSP = ROOT / "native_dsp/build/fxroute-dsp-offline"
 sys.path.insert(0, str(ROOT))
 
-from dsp_manager import DSPManager
+from dsp.manager import DSPManager
 
 
 def run(tmp_path, stages, samples, *, outputs=2, quantum=509, check=True):

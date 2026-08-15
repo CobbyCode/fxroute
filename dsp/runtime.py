@@ -264,7 +264,7 @@ class DSPRuntime:
                  command_runner: Callable[[Sequence[str]], Awaitable[CommandResult]] | None = None,
                  process_launcher: Callable[[Sequence[str]], Awaitable[Any]] | None = None):
         self.manager = manager
-        self.binary = Path(binary or os.environ.get("FXROUTE_DSP_BINARY") or Path(__file__).parent / "native_dsp/build/fxroute-dsp")
+        self.binary = Path(binary or os.environ.get("FXROUTE_DSP_BINARY") or Path(__file__).parent.parent / "native_dsp/build/fxroute-dsp")
         self._run = command_runner or self._run_command
         self._launch = process_launcher or self._launch_process
         self._process = None

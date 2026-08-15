@@ -12,8 +12,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from dsp_manager import DSPManager
-from dsp_runtime import (CommandResult, DSPRuntime, DSPRuntimeConfig, PipeWireLink,
+from dsp.manager import DSPManager
+from dsp.runtime import (CommandResult, DSPRuntime, DSPRuntimeConfig, PipeWireLink,
                          CONTROL_REPLY_MAX_BYTES, DSP_INGRESS_MONITOR_NODE,
                          RUNTIME_COMMAND_TIMEOUT_RETURNCODE,
                          RUNTIME_COMMAND_TIMEOUT_SECONDS, _contains_link)
@@ -674,7 +674,7 @@ class DSPRuntimeLifecycleTests(unittest.TestCase):
         self.manager.save_global_extras({"limiter": {"enabled": False}})
 
     def test_run_command_timeout_terminates_kills_and_reaps_child(self):
-        import dsp_runtime as runtime_module
+        import dsp.runtime as runtime_module
 
         original_timeout = runtime_module.RUNTIME_COMMAND_TIMEOUT_SECONDS
         runtime_module.RUNTIME_COMMAND_TIMEOUT_SECONDS = 0.4

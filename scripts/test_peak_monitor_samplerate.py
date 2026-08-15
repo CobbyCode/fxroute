@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import peak_monitor
+import dsp.peak_monitor as peak_monitor
 
 
 def check(status: dict, expected: int) -> None:

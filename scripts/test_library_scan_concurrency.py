@@ -24,7 +24,7 @@ Deterministic tests (no real audio, no network) proving:
 
 Scans run against throwaway files in a temp directory; the real sync
 building blocks (LibraryScanner._create_track_from_file, os.walk within
-library.py) are patched with unittest.mock and restored afterwards.
+library/core.py) are patched with unittest.mock and restored afterwards.
 """
 
 import ast
@@ -54,15 +54,15 @@ os.environ["LOG_LEVEL"] = "WARNING"
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import config as config_mod
-import library as library_mod
-import library_api
+import library.core as library_mod
+import library.api as library_api
 import main
 from fastapi import UploadFile
-from library import LibraryScanner
-from library_metadata import LibraryMetadataStore
+from library.core import LibraryScanner
+from library.metadata import LibraryMetadataStore
 from models import DeleteTracksRequest
 
-from library_api import LibraryApiRuntime, configure_runtime
+from library.api import LibraryApiRuntime, configure_runtime
 
 logging.getLogger().setLevel(logging.WARNING)
 
@@ -159,7 +159,7 @@ class FirstCallGate:
 
 
 class WalkSnapshots:
-    """Snapshot of os.walk results, scoped to library.py.
+    """Snapshot of os.walk results, scoped to library/core.py.
 
     Each os.walk call (one per scan body) captures the directory listing
     once, at the moment that scan starts; later filesystem changes are not
@@ -177,7 +177,7 @@ class WalkSnapshots:
 
 
 class OsProxy:
-    """Shadow os inside library.py so only library.py's os.walk is patched."""
+    """Shadow os inside library/core.py so only library/core.py's os.walk is patched."""
 
     def __init__(self, real_os, snapshots):
         self._real_os = real_os

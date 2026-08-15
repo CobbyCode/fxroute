@@ -10,13 +10,13 @@ import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-from playback_transition import (
+from playback.transition import (
     PlaybackTransitionCoordinator,
     PlaybackTransitionFailure,
     TransitionRequest,
     TransitionResult,
 )
-from player import MPVWrapper
+from playback.player import MPVWrapper
 
 
 class FakeRuntime:
@@ -589,7 +589,7 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
         runtime = FakeRuntime(muted=False)
         coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
 
-        with self.assertLogs("playback_transition", level="INFO") as captured:
+        with self.assertLogs("playback.transition", level="INFO") as captured:
             await coordinator.execute(request())
 
         timing = [line for line in captured.output if "Playback transition timing:" in line]

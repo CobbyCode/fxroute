@@ -9,7 +9,7 @@ from unittest import mock
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 import main
-import system_volume
+import audio.system_volume as system_volume
 
 
 class PlaybackPayloadVolumePathTests(unittest.TestCase):
@@ -23,7 +23,7 @@ class PlaybackPayloadVolumePathTests(unittest.TestCase):
         system_volume._status_volume_cache = None
 
     def test_empty_cache_never_spawns_wpctl_in_payload_path(self):
-        with mock.patch("system_volume.subprocess.run") as run:
+        with mock.patch("audio.system_volume.subprocess.run") as run:
             self.assertEqual(main.get_output_volume_safe(), 100)
             run.assert_not_called()
 
@@ -36,7 +36,7 @@ class PlaybackPayloadVolumePathTests(unittest.TestCase):
 
     def test_stale_status_value_keeps_payload_non_blocking(self):
         system_volume._publish_status_volume(37, 1.0)
-        with mock.patch("system_volume.subprocess.run") as run:
+        with mock.patch("audio.system_volume.subprocess.run") as run:
             self.assertEqual(main.get_output_volume_safe(), 37)
             run.assert_not_called()
 

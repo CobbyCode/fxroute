@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import main
-import autosub
+import measurement.autosub as autosub
 
 
 def candidate(delay, left=3, right=3, **extra):

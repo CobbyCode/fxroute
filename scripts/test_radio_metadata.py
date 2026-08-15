@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from radio_metadata import (
+from radio.metadata import (
     RadioMetadataService, parse_fip, parse_kexp, parse_radio_paradise, parse_somafm,
 )
 

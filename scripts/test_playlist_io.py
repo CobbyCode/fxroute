@@ -20,8 +20,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import main
-import library_api
-import playlist_io
+import library.api as library_api
+import library.playlist_io as playlist_io
 
 
 def make_track(track_id, rel_path=None, url=None, title=None, artist=None, duration=None):
@@ -214,7 +214,7 @@ class PlaylistIOImportTests(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
 
     def test_import_without_match_returns_none(self):
-        with patch.object(main, "settings", self.settings), patch("playlist_io.save_playlist") as save:
+        with patch.object(main, "settings", self.settings), patch("library.playlist_io.save_playlist") as save:
             result = playlist_io.import_m3u_playlist(
                 "nope.m3u8", "#EXTM3U\nunknown.flac\n", tracks=[],
                 music_root=self.music_root,
@@ -225,7 +225,7 @@ class PlaylistIOImportTests(unittest.TestCase):
     def test_import_matches_and_returns_payload(self):
         track = make_track("t1", self.music_root / "album" / "song.flac", title="Song", duration=240)
         saved = SimpleNamespace(id="p9", name="mix", track_ids=["t1"])
-        with patch.object(main, "settings", self.settings), patch("playlist_io.save_playlist", return_value=saved) as save:
+        with patch.object(main, "settings", self.settings), patch("library.playlist_io.save_playlist", return_value=saved) as save:
             result = playlist_io.import_m3u_playlist(
                 "mix.m3u8", "\ufeff#EXTM3U\n#EXTINF:240,Song\nalbum/song.flac\nunknown.flac\n",
                 self.music_root,
@@ -294,7 +294,7 @@ class PlaylistIOApiTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(main, "settings", self.settings),
             patch.object(main.runtime.music_library, "scanner", scanner),
-            patch("playlist_io.save_playlist", return_value=saved) as save,
+            patch("library.playlist_io.save_playlist", return_value=saved) as save,
         ):
             payload = await library_api.upload_track(file=FakeUpload(b"#EXTM3U\nalbum/song.flac\n"))
         self.assertEqual(payload["status"], "imported")

@@ -21,8 +21,8 @@ from uuid import uuid4
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 
-import samplerate
-import samplerate_orchestration
+import audio.samplerate as samplerate
+import audio.samplerate_orchestration as samplerate_orchestration
 from measurement.store import (
     MEASUREMENT_DEFAULT_SAMPLE_RATE,
     measurement_setup_settings_from_payload,
@@ -33,15 +33,15 @@ from uploads import (
     UploadTooLargeError,
     read_upload,
 )
-from playback_transition import TransitionRequest
-from samplerate import (
+from playback.transition import TransitionRequest
+from audio.samplerate import (
     OUTPUT_MODE_SUBWOOFER_22,
     OUTPUT_MODE_SUBWOOFER_22_STEREO,
     OUTPUT_MODE_SUBWOOFER_22_MODES,
     OUTPUT_MODE_SUBWOOFER_MODES,
 )
-from dsp_runtime import DEFAULT_SAMPLE_RATE, BassManagementConfig
-from library import path_within_root
+from dsp.runtime import DEFAULT_SAMPLE_RATE, BassManagementConfig
+from library.core import path_within_root
 
 logger = logging.getLogger(__name__)
 

@@ -3,7 +3,7 @@
 """FXRoute-specific implementation of the playback TransitionRuntime contract.
 
 This module owns the concrete runtime adapter for the generic
-``PlaybackTransitionCoordinator`` from ``playback_transition.py``.  It is
+``PlaybackTransitionCoordinator`` from ``playback/transition.py``.  It is
 deliberately decoupled from ``main.py``: every application-shell dependency
 (player, DSP manager, queue/track state, shared helpers) arrives
 through the explicit ``PlaybackRuntimeDependencies`` wiring, resolved
@@ -28,17 +28,17 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping
 from urllib.parse import unquote
 
-import samplerate
-import samplerate_orchestration
-from playback_queue import PlaybackQueue
-from playback_transition import TransitionRequest, TransitionRuntime
-from samplerate import (
+import audio.samplerate as samplerate
+import audio.samplerate_orchestration as samplerate_orchestration
+from playback.queue import PlaybackQueue
+from playback.transition import TransitionRequest, TransitionRuntime
+from audio.samplerate import (
     OUTPUT_MODE_STEREO,
     OUTPUT_MODE_SUBWOOFER_MODES,
     OUTPUT_MODE_SUBWOOFER_22_MODES,
     persist_sample_rate_policy,
 )
-from spotify import (
+from playback.spotify import (
     play as spotify_play,
     next_track as spotify_next,
     previous as spotify_previous,

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Behavior tests for the REFACTOR-005 extraction:
 
-- sink_inputs.brief_sink_inputs
-- sink_inputs.active_unmuted_sink_inputs
+- audio/sink_inputs.brief_sink_inputs
+- audio/sink_inputs.active_unmuted_sink_inputs
 
 plus wrapper parity against main._brief_sink_inputs and
 main._active_unmuted_sink_inputs.
@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import main
-from sink_inputs import active_unmuted_sink_inputs, brief_sink_inputs
+from audio.sink_inputs import active_unmuted_sink_inputs, brief_sink_inputs
 
 
 class BriefSinkInputsTests(unittest.TestCase):

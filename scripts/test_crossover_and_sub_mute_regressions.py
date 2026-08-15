@@ -27,11 +27,11 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from playback_transition import PlaybackTransitionCoordinator, TransitionRequest
+from playback.transition import PlaybackTransitionCoordinator, TransitionRequest
 
-import samplerate
+import audio.samplerate as samplerate
 import main
-import dsp_api
+import dsp.api as dsp_api
 
 dsp_api.configure_dsp_api(main._make_dsp_api_deps())
 

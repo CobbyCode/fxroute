@@ -38,7 +38,7 @@ _cache_generation = 0
 _cache_lock = threading.Lock()
 
 
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = Path(__file__).resolve().parent.parent
 
 
 def _config_dir() -> Path:

@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 import main
-from player import MPVWrapper
+from playback.player import MPVWrapper
 
 
 class FakePlayer:
@@ -186,7 +186,7 @@ class LifespanOwnershipTests(unittest.IsolatedAsyncioTestCase):
         process.poll.return_value = None
         process.wait.side_effect = [__import__("subprocess").TimeoutExpired("mpv", 5), 0]
         player.process = process
-        with patch("player.os.unlink"):
+        with patch("playback.player.os.unlink"):
             player.stop()
         process.kill.assert_called_once()
         self.assertEqual(process.wait.call_count, 2)

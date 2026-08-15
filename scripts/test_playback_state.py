@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Behavior tests for the REFACTOR-006 extraction:
 
-- playback_state.is_local_playback_active
-- playback_state.is_spotify_playback_active
-- playback_state.playback_state_matches_track
+- playback.state.is_local_playback_active
+- playback.state.is_spotify_playback_active
+- playback.state.playback_state_matches_track
 
 plus wrapper parity against main._is_local_playback_active,
 main._is_spotify_playback_active and main._playback_state_matches_track.
@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import main
-from playback_state import (
+from playback.state import (
     is_local_playback_active,
     is_spotify_playback_active,
     playback_state_matches_track,

@@ -11,8 +11,8 @@ import wave
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from dsp_persistence import DSPPresetStore, DSPStateStore, clean_name
-from system_volume import volume_db_to_percent, volume_percent_to_db
+from dsp.persistence import DSPPresetStore, DSPStateStore, clean_name
+from audio.system_volume import volume_db_to_percent, volume_percent_to_db
 
 logger = logging.getLogger(__name__)
 

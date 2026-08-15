@@ -14,8 +14,8 @@ sys.path.insert(0, str(ROOT))
 
 import main
 import measurement.session as measurement_session
-import autosub
-from dsp_runtime import DSPRuntime, BassManagementConfig
+import measurement.autosub as autosub
+from dsp.runtime import DSPRuntime, BassManagementConfig
 
 
 class FakeProcess:
@@ -221,7 +221,7 @@ class MainReferenceSnapshotTests(unittest.IsolatedAsyncioTestCase):
                 # Pre-arm responsibility moved to _sync_dsp_runtime_for_measurement_sweep.
                 patch.object(measurement_session, "_sync_dsp_runtime_for_measurement_sweep", new_callable=AsyncMock, return_value=None),
                 patch.object(main.asyncio, "sleep", side_effect=no_sleep),
-                patch("samplerate._load_audio_output_mode", return_value={"subwoofer": {"sub_alignment_ms": 2.0}}),
+                patch("audio.samplerate._load_audio_output_mode", return_value={"subwoofer": {"sub_alignment_ms": 2.0}}),
             ):
                 call = autosub._measure_auto_sub_candidate(
                         delay_ms=2.0, job=job, candidate_index=1, total=2,

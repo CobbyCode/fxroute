@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for radio stream_info normalization (player.normalize_stream_info).
+"""Tests for radio stream_info normalization (playback/player.normalize_stream_info).
 
 Fixtures are live-measured mpv property values from Radio Paradise, FIP,
 SomaFM and KEXP streams (2026-08-02).  The tests assert that only values mpv
@@ -11,7 +11,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from player import normalize_stream_info
+from playback.player import normalize_stream_info
 
 
 class StreamInfoNormalizationTests(unittest.TestCase):

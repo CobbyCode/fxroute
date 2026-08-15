@@ -200,7 +200,7 @@ class CoordinatorRecoveryTests(unittest.IsolatedAsyncioTestCase):
         create_task.assert_not_called()
 
     async def test_recovery_failure_is_latched_by_coordinator(self):
-        from playback_transition import PlaybackTransitionCoordinator, PlaybackTransitionFailure, TransitionRequest
+        from playback.transition import PlaybackTransitionCoordinator, PlaybackTransitionFailure, TransitionRequest
 
         class Runtime:
             def __init__(self):
@@ -260,7 +260,7 @@ class CoordinatorRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("pause", runtime.events)
 
     async def test_recovery_requests_have_no_parallel_direct_mutation(self):
-        source = (Path(__file__).resolve().parents[1] / "playback_orchestration.py").read_text()
+        source = (Path(__file__).resolve().parents[1] / "playback/orchestration.py").read_text()
         start = source.index("async def request_coordinated_recovery")
         end = source.index("async def transition_sample_rate_policy", start)
         body = source[start:end]

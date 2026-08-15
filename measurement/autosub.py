@@ -19,7 +19,7 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 from measurement.store import score_sub_alignment_candidates
 from uploads import UploadTooLargeError, read_upload
-from samplerate import (
+from audio.samplerate import (
     OUTPUT_MODE_SUBWOOFER_21,
     OUTPUT_MODE_SUBWOOFER_22,
     OUTPUT_MODE_SUBWOOFER_22_STEREO,
@@ -28,8 +28,8 @@ from samplerate import (
     get_audio_output_overview,
     set_audio_output_mode,
 )
-from dsp_runtime import BassManagementConfig
-import volume_contract
+from dsp.runtime import BassManagementConfig
+import audio.volume_contract as volume_contract
 
 logger = logging.getLogger(__name__)
 
@@ -173,7 +173,7 @@ def _auto_sub_cancelled_candidate(delay_ms: float, stage: str) -> dict[str, Any]
 async def _restore_auto_sub_original_config(original_config_snapshot: dict[str, Any]) -> None:
     """Restore subwoofer config from snapshot."""
     try:
-        from samplerate import set_audio_output_mode
+        from audio.samplerate import set_audio_output_mode
         mode = original_config_snapshot.get("mode", "stereo") or "stereo"
         subwoofer_config = (
             _auto_sub_22_global_config(original_config_snapshot)
@@ -1306,7 +1306,7 @@ async def start_auto_sub_optimize(
         else None
     )
 
-    from samplerate import _load_audio_output_mode, set_audio_output_mode
+    from audio.samplerate import _load_audio_output_mode, set_audio_output_mode
 
     # Reject if any measurement is already running
     if measurement_store.has_active_measurement_job():
@@ -1780,7 +1780,7 @@ async def _measure_auto_sub_candidate(
     """Measure one AutoSub delay candidate with the standard safety checks."""
     measurement_store = _measurement_store()
     from measurement.session import _sync_dsp_runtime_for_measurement_sweep
-    from samplerate import _load_audio_output_mode
+    from audio.samplerate import _load_audio_output_mode
 
     _marks = {"start": time.monotonic()}
     _timing_written = False
@@ -3098,7 +3098,7 @@ async def _run_auto_sub_22_optimize(
         _resolve_measurement_start_sample_rate,
     )
     global _auto_sub_lock
-    from samplerate import _load_audio_output_mode, set_audio_output_mode
+    from audio.samplerate import _load_audio_output_mode, set_audio_output_mode
 
     job = _AUTO_SUB_JOBS.get(job_id)
     if not job:
@@ -3778,7 +3778,7 @@ async def _run_auto_sub_22_stereo_optimize(
         _resolve_measurement_start_sample_rate,
     )
     global _auto_sub_lock
-    from samplerate import _load_audio_output_mode, set_audio_output_mode
+    from audio.samplerate import _load_audio_output_mode, set_audio_output_mode
 
     job = _AUTO_SUB_JOBS.get(job_id)
     if not job:
@@ -4887,7 +4887,7 @@ async def _run_auto_sub_optimize(
         _resolve_measurement_start_sample_rate,
     )
     global _auto_sub_lock
-    from samplerate import _load_audio_output_mode, set_audio_output_mode
+    from audio.samplerate import _load_audio_output_mode, set_audio_output_mode
 
     job = _AUTO_SUB_JOBS.get(job_id)
     if not job:

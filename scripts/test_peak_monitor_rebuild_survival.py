@@ -20,8 +20,8 @@ from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import peak_monitor
-from peak_monitor import DSPPeakMonitor, MonitorTarget
+import dsp.peak_monitor as peak_monitor
+from dsp.peak_monitor import DSPPeakMonitor, MonitorTarget
 
 
 class _FakeProc:
@@ -57,7 +57,7 @@ class PeakMonitorRebuildSurvivalTests(unittest.IsolatedAsyncioTestCase):
             new=AsyncMock(side_effect=self._discover),
         )
         self.exec_patcher = patch(
-            "peak_monitor.asyncio.create_subprocess_exec",
+            "dsp.peak_monitor.asyncio.create_subprocess_exec",
             new=AsyncMock(side_effect=self._spawn),
         )
         self.interval_patcher = patch.object(peak_monitor, "TARGET_RECHECK_INTERVAL", 0.1)
@@ -245,7 +245,7 @@ class PeakMonitorRebuildSurvivalTests(unittest.IsolatedAsyncioTestCase):
         )
         monitor = DSPPeakMonitor()
         with patch(
-            "peak_monitor._run_bounded_command",
+            "dsp.peak_monitor._run_bounded_command",
             new=AsyncMock(return_value=(0, text.encode(), b"")),
         ):
             target = asyncio.run(monitor._discover_target())

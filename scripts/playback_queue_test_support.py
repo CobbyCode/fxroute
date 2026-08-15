@@ -1,6 +1,6 @@
 """Central queue-state install/restore support for tests.
 
-Tests exercise the authoritative ``playback_queue.queue`` singleton instead of
+Tests exercise the authoritative ``playback.queue`` singleton instead of
 patching ``main.playback_queue*`` globals (removed in Pass 2).  This helper
 saves, installs and restores the seven queue state values of the one
 PlaybackQueue instance.
@@ -14,7 +14,7 @@ from typing import Any, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from playback_queue import PlaybackQueue, queue
+from playback.queue import PlaybackQueue, queue
 
 
 def queue_state(obj: Optional[PlaybackQueue] = None) -> dict[str, Any]:

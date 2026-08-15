@@ -15,7 +15,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from player import (MPVWrapper, _fxroute_mpv_pids, _is_fxroute_mpv_cmdline,
+from playback.player import (MPVWrapper, _fxroute_mpv_pids, _is_fxroute_mpv_cmdline,
                     _stop_orphan_mpv_processes)
 
 SOCKET = "/tmp/mpv.sock"
@@ -54,8 +54,8 @@ class MPVCmdlineTests(unittest.TestCase):
         self.assertFalse(_is_fxroute_mpv_cmdline(FXROUTE_CMDLINE, "/tmp/other.sock"))
 
     def test_pid_scan_returns_fxroute_mpv_pids_only(self):
-        with unittest.mock.patch("player.os.listdir", return_value=["1", "2", "3", "abc"]):
-            with unittest.mock.patch("player.open") as mock_open:
+        with unittest.mock.patch("playback.player.os.listdir", return_value=["1", "2", "3", "abc"]):
+            with unittest.mock.patch("playback.player.open") as mock_open:
                 def fake_open(path, *_args, **_kwargs):
                     handle = unittest.mock.MagicMock()
                     contents = {
@@ -71,9 +71,9 @@ class MPVCmdlineTests(unittest.TestCase):
 
     def test_orphan_cleanup_terminates_then_kills_survivors(self):
         signalled = []
-        with unittest.mock.patch("player._fxroute_mpv_pids",
+        with unittest.mock.patch("playback.player._fxroute_mpv_pids",
                                  side_effect=lambda _socket: [1, 2] if not signalled else [2]):
-            with unittest.mock.patch("player.os.kill") as mock_kill:
+            with unittest.mock.patch("playback.player.os.kill") as mock_kill:
                 def recording_kill(pid, sig):
                     signalled.append((pid, sig))
                     if sig == signal.SIGTERM and pid == 1:
@@ -87,15 +87,15 @@ class MPVCmdlineTests(unittest.TestCase):
 
     def test_orphan_cleanup_never_touches_own_process(self):
         signalled = []
-        with unittest.mock.patch("player._fxroute_mpv_pids", return_value=[7, 8]):
-            with unittest.mock.patch("player.os.kill") as mock_kill:
+        with unittest.mock.patch("playback.player._fxroute_mpv_pids", return_value=[7, 8]):
+            with unittest.mock.patch("playback.player.os.kill") as mock_kill:
                 mock_kill.side_effect = lambda pid, sig: signalled.append((pid, sig))
                 _stop_orphan_mpv_processes(SOCKET, own_pid=7)
         self.assertEqual(signalled, [(8, signal.SIGTERM), (8, signal.SIGKILL)])
 
     def test_orphan_cleanup_noop_when_no_orphans(self):
-        with unittest.mock.patch("player._fxroute_mpv_pids", return_value=[]):
-            with unittest.mock.patch("player.os.kill") as mock_kill:
+        with unittest.mock.patch("playback.player._fxroute_mpv_pids", return_value=[]):
+            with unittest.mock.patch("playback.player.os.kill") as mock_kill:
                 _stop_orphan_mpv_processes(SOCKET)
         mock_kill.assert_not_called()
 

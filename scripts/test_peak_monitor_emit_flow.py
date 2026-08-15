@@ -17,8 +17,8 @@ from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import peak_monitor
-from peak_monitor import DSPPeakMonitor, MonitorTarget
+import dsp.peak_monitor as peak_monitor
+from dsp.peak_monitor import DSPPeakMonitor, MonitorTarget
 
 TARGET = MonitorTarget("fxroute_dsp", 42, "Output Level")
 
@@ -68,7 +68,7 @@ id 2, type PipeWire:Interface:Port/3
         self.monitor._target = TARGET
         self.proc = _FakeProc()
         self.patcher = patch(
-            "peak_monitor.asyncio.create_subprocess_exec",
+            "dsp.peak_monitor.asyncio.create_subprocess_exec",
             new=AsyncMock(return_value=self.proc),
         )
         self.patcher.start()

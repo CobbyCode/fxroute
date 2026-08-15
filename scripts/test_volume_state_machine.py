@@ -15,12 +15,12 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import main
-import dsp_api
+import dsp.api as dsp_api
 
 dsp_api.configure_dsp_api(main._make_dsp_api_deps())
-import system_volume
-import volume_contract
-from volume_contract import VolumeAction, VolumeState, plan_transition, target_for
+import audio.system_volume as system_volume
+import audio.volume_contract as volume_contract
+from audio.volume_contract import VolumeAction, VolumeState, plan_transition, target_for
 
 
 def db(percent: int) -> float:

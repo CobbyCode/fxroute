@@ -16,7 +16,7 @@ from mutagen.id3 import ID3NoHeaderError
 
 from models import Track
 from config import get_settings
-from library_metadata import LibraryMetadataStore
+from library.metadata import LibraryMetadataStore
 
 ALBUM_COVER_NAMES = (
     "cover.jpg", "cover.jpeg", "cover.png", "cover.webp",

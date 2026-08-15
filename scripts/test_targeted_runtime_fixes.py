@@ -17,12 +17,12 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import playback_queue
+import playback.queue as playback_queue
 import main
 import measurement.session as measurement_session
-import player
+import playback.player as player
 from playback_queue_test_support import queue_state, restore_queue_state
-from peak_monitor import DSPPeakMonitor, MonitorTarget
+from dsp.peak_monitor import DSPPeakMonitor, MonitorTarget
 
 
 class _FakeManager:
@@ -62,7 +62,7 @@ class PeakMonitorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(monitor._last_error)
 
     def test_initial_link_failure_has_initialized_no_data_clock(self):
-        source = (Path(__file__).resolve().parents[1] / "peak_monitor.py").read_text()
+        source = (Path(__file__).resolve().parents[1] / "dsp/peak_monitor.py").read_text()
         spawn_end = source.index("assert self._proc.stdout is not None")
         loop_start = source.index("try:\n            try:", spawn_end)
         clock = source.index("last_data_at = time.monotonic()", spawn_end)
@@ -97,13 +97,13 @@ class MPVCommandTests(unittest.TestCase):
         wrapper = player.MPVWrapper()
         wrapper._running = True
         empty = FakeSocket()
-        with patch("player.socket.socket", return_value=empty):
+        with patch("playback.player.socket.socket", return_value=empty):
             with self.assertRaises(player.MPVError):
                 wrapper._send_command("set_property", "pause", True)
 
         error = FakeSocket()
         error.response = b'{"error":"command-error"}'
-        with patch("player.socket.socket", return_value=error):
+        with patch("playback.player.socket.socket", return_value=error):
             with self.assertRaises(player.MPVError):
                 wrapper._send_command("set_property", "pause", True)
 
@@ -150,7 +150,7 @@ class MPVCommandTests(unittest.TestCase):
         wrapper = player.MPVWrapper()
         wrapper._running = True
         fake = EventThenResponseSocket()
-        with patch("player.socket.socket", return_value=fake):
+        with patch("playback.player.socket.socket", return_value=fake):
             result = wrapper._send_command("loadfile", "/music/a.flac", "replace")
         self.assertEqual(result["error"], "success")
 
@@ -428,7 +428,7 @@ class PlayerctlCleanupTests(unittest.IsolatedAsyncioTestCase):
     timeout or cancellation: no orphaned processes."""
 
     async def test_run_terminates_process_on_timeout(self):
-        from spotify import _run
+        from playback.spotify import _run
 
         class FakeProc:
             def __init__(self):
@@ -461,8 +461,8 @@ class PlayerctlCleanupTests(unittest.IsolatedAsyncioTestCase):
         async def fake_spawn(*_a, **_k):
             return fake
 
-        with patch("spotify._find_playerctl", return_value="/usr/bin/playerctl"), \
-             patch("spotify.asyncio.create_subprocess_exec", new=fake_spawn):
+        with patch("playback.spotify._find_playerctl", return_value="/usr/bin/playerctl"), \
+             patch("playback.spotify.asyncio.create_subprocess_exec", new=fake_spawn):
             result = await _run("--player=spotify", "metadata", timeout=0.05)
         self.assertIsNone(result)
         self.assertTrue(fake.terminated)
@@ -470,7 +470,7 @@ class PlayerctlCleanupTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(fake.wait_calls, 1)
 
     async def test_run_escalates_to_kill_when_terminate_fails_to_stop(self):
-        from spotify import _run
+        from playback.spotify import _run
 
         class StubbornProc:
             def __init__(self):
@@ -500,8 +500,8 @@ class PlayerctlCleanupTests(unittest.IsolatedAsyncioTestCase):
         async def fake_spawn(*_a, **_k):
             return fake
 
-        with patch("spotify._find_playerctl", return_value="/usr/bin/playerctl"), \
-             patch("spotify.asyncio.create_subprocess_exec", new=fake_spawn):
+        with patch("playback.spotify._find_playerctl", return_value="/usr/bin/playerctl"), \
+             patch("playback.spotify.asyncio.create_subprocess_exec", new=fake_spawn):
             result = await _run("--player=spotify", "metadata", timeout=0.05)
         self.assertIsNone(result)
         self.assertTrue(fake.terminated)
@@ -577,7 +577,7 @@ class MPVListenerTests(unittest.TestCase):
 
 
 class SilentActiveDiagnosisTests(unittest.IsolatedAsyncioTestCase):
-    """The silent-active diagnosis must use the real peak_monitor.snapshot()
+    """The silent-active diagnosis must use the real dsp/peak_monitor.snapshot()
     structure and gate on sample freshness (vu_fresh), not on the peak-hold
     "detected" flag. Automatic recovery stays disabled (log-only)."""
 

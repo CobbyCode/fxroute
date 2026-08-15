@@ -15,7 +15,7 @@ import requests
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from stations import (
+from radio.stations import (
     add_catalog_station,
     add_station,
     delete_station,
@@ -27,7 +27,7 @@ from stations import (
 
 logger = logging.getLogger(__name__)
 
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = Path(__file__).resolve().parent.parent
 STATIC_DIR = BASE_DIR / "static"
 RADIO_BROWSER_BASE_URL = os.environ.get("FXROUTE_RADIO_BROWSER_URL", "https://de1.api.radio-browser.info").rstrip("/")
 RADIO_BROWSER_MIRRORS = (

@@ -14,10 +14,10 @@ from unittest import mock
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 import main
-import dsp_api
+import dsp.api as dsp_api
 
 dsp_api.configure_dsp_api(main._make_dsp_api_deps())
-import system_volume
+import audio.system_volume as system_volume
 
 
 class _FakePlayer:
@@ -136,7 +136,7 @@ class VolumeEndpointEventLoopTests(unittest.IsolatedAsyncioTestCase):
         ), mock.patch.object(
             main.manager, "broadcast", mock.AsyncMock()
         ), mock.patch(
-            "system_volume.subprocess.run", side_effect=blocking_run
+            "audio.system_volume.subprocess.run", side_effect=blocking_run
         ):
             volume_task = asyncio.create_task(main.set_volume(FakeRequest()))
             self.assertTrue(await asyncio.to_thread(entered.wait, 5))
@@ -233,7 +233,7 @@ class CanonicalVolumeSerializationTests(unittest.IsolatedAsyncioTestCase):
             return subprocess.CompletedProcess([], 0, stdout="Volume: 0.50\n", stderr="")
 
         with mock.patch.object(main, "dsp_manager", None), mock.patch(
-            "system_volume.subprocess.run", side_effect=fake_run
+            "audio.system_volume.subprocess.run", side_effect=fake_run
         ):
             first = asyncio.create_task(main._set_canonical_output_volume(50))
             self.assertTrue(await asyncio.to_thread(entered.wait, 5))
@@ -334,7 +334,7 @@ class CanonicalVolumeSerializationTests(unittest.IsolatedAsyncioTestCase):
         ), mock.patch.object(main.dsp_orchestrator, "schedule_peak_monitor_refresh_after_effects_change"), mock.patch.object(
             main.dsp_orchestrator, "sync_runtime", mock.AsyncMock()
         ), mock.patch(
-            "system_volume.subprocess.run", side_effect=blocking_run
+            "audio.system_volume.subprocess.run", side_effect=blocking_run
         ):
             extras_task = asyncio.create_task(dsp_api.save_dsp_extras(FakeExtrasRequest()))
             self.assertTrue(await asyncio.to_thread(entered.wait, 5))
@@ -407,7 +407,7 @@ class CanonicalVolumeSerializationTests(unittest.IsolatedAsyncioTestCase):
         ), mock.patch.object(main.dsp_orchestrator, "schedule_peak_monitor_refresh_after_effects_change"), mock.patch.object(
             main.dsp_orchestrator, "sync_runtime", mock.AsyncMock()
         ), mock.patch(
-            "system_volume.subprocess.run", side_effect=blocking_run
+            "audio.system_volume.subprocess.run", side_effect=blocking_run
         ):
             extras_task = asyncio.create_task(dsp_api.save_dsp_extras(FakeExtrasRequest()))
             self.assertTrue(await asyncio.to_thread(entered.wait, 5))
@@ -498,7 +498,7 @@ class CanonicalVolumeSerializationTests(unittest.IsolatedAsyncioTestCase):
             return subprocess.CompletedProcess([], 0, stdout="Volume: 0.50\n", stderr="")
 
         with mock.patch.object(main, "dsp_manager", None), mock.patch(
-            "system_volume.subprocess.run", side_effect=blocking_run
+            "audio.system_volume.subprocess.run", side_effect=blocking_run
         ):
             first = asyncio.create_task(main._set_canonical_output_volume(50))
             self.assertTrue(await asyncio.to_thread(entered.wait, 5))
@@ -702,7 +702,7 @@ class DSPExtrasVolumeTests(unittest.IsolatedAsyncioTestCase):
         ), mock.patch.object(
             main.manager, "broadcast", mock.AsyncMock()
         ), mock.patch.object(main.dsp_orchestrator, "schedule_peak_monitor_refresh_after_effects_change"), mock.patch(
-            "system_volume.subprocess.run", side_effect=blocking_run
+            "audio.system_volume.subprocess.run", side_effect=blocking_run
         ):
             extras_task = asyncio.create_task(dsp_api.save_dsp_extras(FakeExtrasRequest()))
             self.assertTrue(await asyncio.to_thread(entered.wait, 5))

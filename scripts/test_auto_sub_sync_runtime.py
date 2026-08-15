@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import main
-import autosub
+import measurement.autosub as autosub
 
 
 def overview_21(alignment, mode="subwoofer-2.1", fc=80, level=-3.0,
@@ -178,7 +178,7 @@ class AutoSubSyncRuntimeTests(unittest.IsolatedAsyncioTestCase):
             await autosub._auto_sub_sync_dsp_runtime(
                 output_mode="subwoofer-2.1", persisted_overview=persisted)
         received = self.runtime.sync.await_args.args[0]
-        from dsp_runtime import BassManagementConfig
+        from dsp.runtime import BassManagementConfig
         self.assertFalse(isinstance(received, BassManagementConfig))
 
 

@@ -24,7 +24,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-import playlists
+import library.playlists as playlists
 
 
 class PlaylistPersistenceTestCase(unittest.TestCase):
@@ -105,7 +105,7 @@ class PlaylistPersistenceTestCase(unittest.TestCase):
         original = json.dumps([{"id": "mix", "name": "Mix", "track_ids": ["A"]}], indent=2) + "\n"
         self._seed([{"id": "mix", "name": "Mix", "track_ids": ["A"]}])
         playlists.get_playlists()
-        with patch("playlists.os.replace", side_effect=OSError("simulated replace failure")):
+        with patch("library.playlists.os.replace", side_effect=OSError("simulated replace failure")):
             with self.assertRaises(OSError):
                 playlists.save_playlist("Mix", ["A", "B"])
         self.assertEqual(self.playlists_file.read_bytes(), original.encode("utf-8"))
@@ -117,7 +117,7 @@ class PlaylistPersistenceTestCase(unittest.TestCase):
     def test_write_failure_during_fsync_preserves_old_file(self):
         original = json.dumps([{"id": "mix", "name": "Mix", "track_ids": ["A"]}], indent=2) + "\n"
         self._seed([{"id": "mix", "name": "Mix", "track_ids": ["A"]}])
-        with patch("playlists.os.fsync", side_effect=OSError("simulated fsync failure")):
+        with patch("library.playlists.os.fsync", side_effect=OSError("simulated fsync failure")):
             with self.assertRaises(OSError):
                 playlists.save_playlist("Mix", ["A", "B"])
         self.assertEqual(self.playlists_file.read_bytes(), original.encode("utf-8"))
@@ -125,10 +125,10 @@ class PlaylistPersistenceTestCase(unittest.TestCase):
 
     def test_persist_failure_is_reported_not_success(self):
         self._seed([{"id": "mix", "name": "Mix", "track_ids": ["A"]}])
-        with patch("playlists.os.replace", side_effect=OSError("simulated replace failure")):
+        with patch("library.playlists.os.replace", side_effect=OSError("simulated replace failure")):
             with self.assertRaises(OSError):
                 playlists.save_playlist("Mix", ["A", "B"])
-        with patch("playlists.os.replace", side_effect=OSError("simulated replace failure")):
+        with patch("library.playlists.os.replace", side_effect=OSError("simulated replace failure")):
             with self.assertRaises(OSError):
                 playlists.delete_playlist("mix")
         self.assertEqual([item["id"] for item in self._disk_data()], ["mix"])

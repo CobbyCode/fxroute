@@ -24,16 +24,16 @@ from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
 
-import volume_contract
+import audio.volume_contract as volume_contract
 import zip_album
-from effects_extras import (
+from dsp.effects_extras import (
     is_pure_loudness_strength_change,
     is_runtime_autogain_loudness_change,
     merge_effects_extras_from_json,
     parse_effects_extras_from_json,
 )
-from library import path_within_root
-from library_api import _cleanup_temp_file
+from library.core import path_within_root
+from library.api import _cleanup_temp_file
 from uploads import (
     DSP_BUNDLE_MAX_BYTES,
     DSP_IR_MAX_BYTES,

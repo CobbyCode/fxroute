@@ -31,8 +31,8 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main  # noqa: E402
-import radio_api  # noqa: E402
-import stations  # noqa: E402
+import radio.api as radio_api
+import radio.stations as stations
 
 TICK_INTERVAL = 0.01
 LIVE_TICK_THRESHOLD = 15
@@ -316,7 +316,7 @@ class StationEventLoopOffloadTests(unittest.TestCase):
         ]))
 
         async def scenario(ticks):
-            with patch("radio_api.requests.get", return_value=BrowserFakeResponse([browser_item()])):
+            with patch("radio.api.requests.get", return_value=BrowserFakeResponse([browser_item()])):
                 task = asyncio.ensure_future(radio_api.add_station_browser_selection("uuid-1"))
                 await asyncio.to_thread(helper.enters[0].wait)
                 live_ticks = await self._measure_liveness(ticks)
@@ -629,7 +629,7 @@ class StationEventLoopOffloadTests(unittest.TestCase):
         ]))
 
         async def scenario(ticks):
-            with patch("radio_api.requests.get", return_value=BrowserFakeResponse([browser_item()])):
+            with patch("radio.api.requests.get", return_value=BrowserFakeResponse([browser_item()])):
                 task1 = asyncio.ensure_future(radio_api.add_station_browser_selection("uuid-1"))
                 await asyncio.to_thread(helper.enters[0].wait)
                 task2 = asyncio.ensure_future(radio_api.add_station_browser_selection("uuid-1"))

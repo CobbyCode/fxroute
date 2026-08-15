@@ -10,7 +10,7 @@ from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-import system_volume
+import audio.system_volume as system_volume
 
 
 def _completed(returncode, stdout="", stderr=""):
@@ -26,7 +26,7 @@ class SystemVolumeCommandTests(unittest.TestCase):
 
     def test_successful_read_parses_percent(self):
         with mock.patch(
-            "system_volume.subprocess.run",
+            "audio.system_volume.subprocess.run",
             return_value=_completed(0, "Volume: 0.42\n"),
         ) as run:
             self.assertEqual(system_volume.get_output_volume(), 42)
@@ -35,7 +35,7 @@ class SystemVolumeCommandTests(unittest.TestCase):
 
     def test_get_output_volume_stays_live(self):
         with mock.patch(
-            "system_volume.subprocess.run",
+            "audio.system_volume.subprocess.run",
             return_value=_completed(0, "Volume: 0.25\n"),
         ) as run:
             self.assertEqual(system_volume.get_output_volume(), 25)
@@ -45,7 +45,7 @@ class SystemVolumeCommandTests(unittest.TestCase):
 
     def test_get_node_volume_stays_live(self):
         with mock.patch(
-            "system_volume.subprocess.run",
+            "audio.system_volume.subprocess.run",
             return_value=_completed(0, "Volume: 0.60\n"),
         ) as run:
             self.assertEqual(system_volume.get_node_volume("mic_source"), 60)
@@ -55,7 +55,7 @@ class SystemVolumeCommandTests(unittest.TestCase):
     def test_node_volume_is_never_cached(self):
         # A node read must not touch the status cache at all.
         with mock.patch(
-            "system_volume.subprocess.run",
+            "audio.system_volume.subprocess.run",
             return_value=_completed(0, "Volume: 0.60\n"),
         ):
             system_volume.get_node_volume("mic_source")
@@ -63,7 +63,7 @@ class SystemVolumeCommandTests(unittest.TestCase):
 
     def test_nonzero_exit_raises_system_volume_error(self):
         with mock.patch(
-            "system_volume.subprocess.run",
+            "audio.system_volume.subprocess.run",
             return_value=_completed(1, "", "sink does not exist"),
         ):
             with self.assertRaises(system_volume.SystemVolumeError) as raised:
@@ -72,7 +72,7 @@ class SystemVolumeCommandTests(unittest.TestCase):
 
     def test_timeout_raises_system_volume_error(self):
         with mock.patch(
-            "system_volume.subprocess.run",
+            "audio.system_volume.subprocess.run",
             side_effect=subprocess.TimeoutExpired(["wpctl"], 3.0),
         ):
             with self.assertRaises(system_volume.SystemVolumeError) as raised:
@@ -87,7 +87,7 @@ class SystemVolumeCommandTests(unittest.TestCase):
             ("Volume: 0.999\n", 100),
         ]:
             with mock.patch(
-                "system_volume.subprocess.run",
+                "audio.system_volume.subprocess.run",
                 return_value=_completed(0, output),
             ):
                 self.assertEqual(system_volume.get_output_volume(), expected)
@@ -101,7 +101,7 @@ class SystemVolumeCommandTests(unittest.TestCase):
                 return _completed(0, "Volume: 0.37\n")
             return _completed(0, "")
 
-        with mock.patch("system_volume.subprocess.run", side_effect=fake_run):
+        with mock.patch("audio.system_volume.subprocess.run", side_effect=fake_run):
             self.assertEqual(system_volume.set_output_volume(37), 37)
         self.assertEqual(
             [args[1] for args in calls], ["set-volume", "get-volume"]
@@ -115,14 +115,14 @@ class SystemVolumeStatusCacheTests(unittest.IsolatedAsyncioTestCase):
 
     def test_empty_cache_never_spawns_wpctl(self):
         system_volume._status_volume_cache = None
-        with mock.patch("system_volume.subprocess.run") as run:
+        with mock.patch("audio.system_volume.subprocess.run") as run:
             self.assertEqual(system_volume.get_status_volume(), 100)
             self.assertEqual(system_volume.get_status_volume(42), 42)
         run.assert_not_called()
 
     def test_status_cache_returns_last_known_value(self):
         system_volume._publish_status_volume(37, 10.0)
-        with mock.patch("system_volume.subprocess.run") as run:
+        with mock.patch("audio.system_volume.subprocess.run") as run:
             self.assertEqual(system_volume.get_status_volume(), 37)
         run.assert_not_called()
 
@@ -132,9 +132,9 @@ class SystemVolumeStatusCacheTests(unittest.IsolatedAsyncioTestCase):
                 return _completed(0, "Volume: 0.80\n")
             return _completed(0, "")
 
-        with mock.patch("system_volume.subprocess.run", side_effect=fake_run):
+        with mock.patch("audio.system_volume.subprocess.run", side_effect=fake_run):
             self.assertEqual(system_volume.set_output_volume(80), 80)
-        with mock.patch("system_volume.subprocess.run") as run:
+        with mock.patch("audio.system_volume.subprocess.run") as run:
             self.assertEqual(system_volume.get_status_volume(), 80)
             run.assert_not_called()
 
@@ -153,7 +153,7 @@ class SystemVolumeStatusCacheTests(unittest.IsolatedAsyncioTestCase):
     async def test_monitor_publishes_external_change(self):
         system_volume._publish_status_volume(30, 1.0)
         with mock.patch(
-            "system_volume.subprocess.run",
+            "audio.system_volume.subprocess.run",
             return_value=_completed(0, "Volume: 0.70\n"),
         ) as run:
             task = system_volume.start_volume_read_monitor()

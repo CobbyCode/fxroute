@@ -16,9 +16,9 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
-import playback_state
-import samplerate
-from dsp_runtime import BassManagementConfig
+import playback.state as playback_state
+import audio.samplerate as samplerate
+from dsp.runtime import BassManagementConfig
 
 logger = logging.getLogger(__name__)
 

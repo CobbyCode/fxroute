@@ -466,7 +466,7 @@ class TestCentralCapture:
         ts = _TestSession()
         try:
             import main
-            from playback_transition import TransitionRequest
+            from playback.transition import TransitionRequest
 
             ts.set_spotify_playing("spotify:track:A")
             ts.set_track_playing(source="local", sample_rate=44100)
@@ -522,7 +522,7 @@ class TestCentralCapture:
         ts = _TestSession()
         try:
             import main
-            from playback_transition import TransitionRequest
+            from playback.transition import TransitionRequest
 
             ts.set_track_playing(source="local", sample_rate=44100)
             runtime = make_transition_runtime()

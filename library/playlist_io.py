@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import List, Optional
 from urllib.parse import unquote
 
-from playlists import save_playlist
+from library.playlists import save_playlist
 
 
 def parse_m3u_entries(content: str) -> List[str]:

@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from itertools import count
 from typing import Awaitable, Callable, Optional
 
-from samplerate import get_samplerate_status
+from audio.samplerate import get_samplerate_status
 
 logger = logging.getLogger(__name__)
 

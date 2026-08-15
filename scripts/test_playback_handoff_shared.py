@@ -20,8 +20,8 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
-from dsp_runtime import CommandResult, PipeWireLink
-from playback_transition import PlaybackTransitionCoordinator, PlaybackTransitionFailure, TransitionRequest
+from dsp.runtime import CommandResult, PipeWireLink
+from playback.transition import PlaybackTransitionCoordinator, PlaybackTransitionFailure, TransitionRequest
 from playback_transition_test_support import MainCoreTransitionRuntime, make_transition_runtime
 
 

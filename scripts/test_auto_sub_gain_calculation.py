@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import main
-import autosub
+import measurement.autosub as autosub
 
 
 def curve(offset=0.0, dip=False):

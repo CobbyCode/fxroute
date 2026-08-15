@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """AutoSub resolves all application dependencies through injection.
 
-Proves autosub.py no longer imports main.py: the native DSP runtime, the
+Proves measurement/autosub.py no longer imports main.py: the native DSP runtime, the
 measurement store, the measurement sample-rate session and the DSP manager
 are all read through the injected ``AutoSubDependencies`` accessors.  This
 module imports only ``autosub`` (plus the stdlib); it never imports ``main``,
@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-import autosub
+import measurement.autosub as autosub
 
 
 def overview_21(alignment=2.34, mode="subwoofer-2.1", fc=80, level=-3.0,

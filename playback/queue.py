@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Optional
 
 from fastapi import HTTPException
-from playback_transition import PlaybackTransitionFailure, TransitionRequest
+from playback.transition import PlaybackTransitionFailure, TransitionRequest
 
 logger = logging.getLogger(__name__)
 
@@ -769,7 +769,7 @@ def configure_playback_queue(deps: PlaybackQueueDependencies) -> PlaybackQueue:
 
     Production calls this exactly once at import time; the instance becomes
     the single owner of the queue state shared by API handlers, the player
-    callback and ``playback_runtime.py``.
+    callback and ``playback/runtime.py``.
     """
     global queue
     queue = PlaybackQueue(deps)

@@ -8,20 +8,20 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from music_libraries import MusicLibraryManager, default_discovery_hosts, discover_smb_shares
+from library.sources import MusicLibraryManager, default_discovery_hosts, discover_smb_shares
 
 
 class MusicLibraryDiscoveryTests(unittest.TestCase):
     def test_default_discovery_includes_live_lan_neighbors(self):
         result = subprocess.CompletedProcess([], 0, "192.168.178.100 dev eth0 lladdr aa REACHABLE\n", "")
-        with patch("music_libraries.subprocess.run", return_value=result):
+        with patch("library.sources.subprocess.run", return_value=result):
             hosts = default_discovery_hosts()
 
         self.assertIn("192.168.178.100", hosts)
 
     def test_configured_discovery_hosts_skip_neighbor_scan(self):
         with patch.dict("os.environ", {"MUSIC_LIBRARY_SMB_HOSTS": "OpenClaw@192.168.178.100"}):
-            with patch("music_libraries.subprocess.run") as run:
+            with patch("library.sources.subprocess.run") as run:
                 hosts = default_discovery_hosts()
 
         self.assertEqual(hosts, ["OpenClaw@192.168.178.100"])
@@ -32,7 +32,7 @@ class MusicLibraryDiscoveryTests(unittest.TestCase):
             [], 0, "Disk|Music-Demo|Demo library\nDisk|print$|Drivers\nIPC|IPC$|IPC\n", ""
         )
         readable = subprocess.CompletedProcess([], 0, "  album D 0\n", "")
-        with patch("music_libraries.subprocess.run", side_effect=[listing, readable]):
+        with patch("library.sources.subprocess.run", side_effect=[listing, readable]):
             shares = discover_smb_shares(["openclaw"])
 
         self.assertEqual(len(shares), 1)
@@ -43,13 +43,13 @@ class MusicLibraryDiscoveryTests(unittest.TestCase):
 
     def test_failed_hosts_do_not_break_discovery(self):
         failed = subprocess.CompletedProcess([], 1, "", "unavailable")
-        with patch("music_libraries.subprocess.run", return_value=failed):
+        with patch("library.sources.subprocess.run", return_value=failed):
             self.assertEqual(discover_smb_shares(["offline"]), [])
 
     def test_labeled_host_uses_friendly_server_name(self):
         listing = subprocess.CompletedProcess([], 0, "Disk|Music-Demo|Demo library\n", "")
         readable = subprocess.CompletedProcess([], 0, "  album D 0\n", "")
-        with patch("music_libraries.subprocess.run", side_effect=[listing, readable]) as run:
+        with patch("library.sources.subprocess.run", side_effect=[listing, readable]) as run:
             shares = discover_smb_shares(["OpenClaw@192.168.178.100"])
 
         self.assertEqual(run.call_args_list[0].args[0][-1], "//192.168.178.100")
@@ -59,12 +59,12 @@ class MusicLibraryDiscoveryTests(unittest.TestCase):
     def test_unreadable_share_is_not_offered(self):
         listing = subprocess.CompletedProcess([], 0, "Disk|Private|\n", "")
         denied = subprocess.CompletedProcess([], 1, "", "NT_STATUS_ACCESS_DENIED")
-        with patch("music_libraries.subprocess.run", side_effect=[listing, denied]):
+        with patch("library.sources.subprocess.run", side_effect=[listing, denied]):
             self.assertEqual(discover_smb_shares(["server"]), [])
 
     def test_discovery_rejects_path_like_share_names(self):
         listing = subprocess.CompletedProcess([], 0, "Disk|../escape|\n", "")
-        with patch("music_libraries.subprocess.run", return_value=listing) as run:
+        with patch("library.sources.subprocess.run", return_value=listing) as run:
             self.assertEqual(discover_smb_shares(["server"]), [])
         self.assertEqual(run.call_count, 1)
 
@@ -108,7 +108,7 @@ class MusicLibraryManagerTests(unittest.TestCase):
             manager = MusicLibraryManager(local, mount_root=base / "mounts", discovery_hosts=[])
             manager.add_manual_share("openclaw", "Music-Demo")
 
-            with patch("music_libraries.os.path.ismount", return_value=True):
+            with patch("library.sources.os.path.ismount", return_value=True):
                 smb_root = manager.activate("smb:openclaw:Music-Demo")
                 local_root = manager.activate("local")
 
@@ -128,8 +128,8 @@ class MusicLibraryManagerTests(unittest.TestCase):
                     mounted.mkdir(parents=True)
                 return subprocess.CompletedProcess(command, 0, "", "")
 
-            with patch("music_libraries.subprocess.run", side_effect=run) as mocked, patch(
-                "music_libraries.os.path.ismount", side_effect=lambda path: Path(path) == mounted
+            with patch("library.sources.subprocess.run", side_effect=run) as mocked, patch(
+                "library.sources.os.path.ismount", side_effect=lambda path: Path(path) == mounted
             ):
                 root = manager.activate("smb:server:Music")
 
@@ -145,8 +145,8 @@ class MusicLibraryManagerTests(unittest.TestCase):
             manager = MusicLibraryManager(base / "Music", mount_root=base / "mounts", discovery_hosts=[])
             manager.add_manual_share("server", "Music")
 
-            with patch("music_libraries.os.path.ismount", return_value=False), patch(
-                "music_libraries.subprocess.run",
+            with patch("library.sources.os.path.ismount", return_value=False), patch(
+                "library.sources.subprocess.run",
                 return_value=subprocess.CompletedProcess([], 1, "", "failed"),
             ):
                 with self.assertRaises(FileNotFoundError):
@@ -159,7 +159,7 @@ class MusicLibraryManagerTests(unittest.TestCase):
             candidate.mkdir(parents=True)
             manager = MusicLibraryManager(runtime / "Music", mount_root=runtime / "mounts", discovery_hosts=[])
             with patch.dict("os.environ", {"XDG_RUNTIME_DIR": str(runtime)}), patch(
-                "music_libraries.os.path.ismount", return_value=False
+                "library.sources.os.path.ismount", return_value=False
             ):
                 self.assertIsNone(manager._mounted_share_path("server", "Music"))
 
@@ -197,7 +197,7 @@ class MusicLibraryManagerTests(unittest.TestCase):
     def test_discovery_results_are_cached(self):
         with tempfile.TemporaryDirectory() as td:
             manager = MusicLibraryManager(Path(td), discovery_hosts=["openclaw"])
-            with patch("music_libraries.discover_smb_shares", return_value=[]) as discover:
+            with patch("library.sources.discover_smb_shares", return_value=[]) as discover:
                 manager.list_libraries()
                 manager.list_libraries()
 
