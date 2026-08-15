@@ -27,6 +27,7 @@ from hybrid_measurement import analyze_direct_window, build_complex_response, bu
 from measurement_audio import MeasurementAudioAdapter
 from measurement_file_store import MeasurementFileStore
 from measurement_host_capture import HostCaptureRunner
+from measurement_capture_policy import MeasurementCapturePolicyRunner
 from measurement_persistence import MeasurementPersistence
 from measurement_routing import MeasurementRouting
 from measurement_signal import write_sweep_file
@@ -271,6 +272,26 @@ class MeasurementStore:
         self._analyzer = MeasurementAnalyzer(self, CaptureQualityError)
         self._file_store = MeasurementFileStore(self.jobs_dir, has_active_job=self.has_active_measurement_job)
         self._host_capture_runner = HostCaptureRunner(self)
+        self._capture_policy = MeasurementCapturePolicyRunner(
+            capture_attempt=self._run_capture_policy_attempt,
+            is_cancelled=self._is_measurement_cancelled,
+            evaluate_electrical_reference=self._evaluate_electrical_reference_status,
+            should_keep_electrical_reference=(
+                lambda analysis, scope: self._should_keep_active_22_dsp_electrical_reference(
+                    analysis,
+                    measurement_scope=scope,
+                )
+            ),
+            mark_electrical_reference_usable=self._mark_dsp_tolerated_electrical_reference_usable,
+            append_reference_fallback_warning=self._append_reference_fallback_warning,
+            analysis_has_warning=self._analysis_has_warning_code,
+            try_raise_mic=self._try_raise_mic_for_low_capture,
+            cancel_aware_sleep=self._cancel_aware_sleep,
+            retry_sleep=time.sleep,
+            should_retry_host_capture=self._should_retry_host_capture,
+            max_attempts=HOST_SWEEP_MAX_ATTEMPTS,
+            retry_delay=HOST_SWEEP_RETRY_DELAY_SECONDS,
+        )
         self._routing_command_runner = lambda *args, **kwargs: subprocess.run(*args, **kwargs)
         self._routing_output_overview = lambda: get_audio_output_overview()
         self._routing = MeasurementRouting(self)
@@ -1023,245 +1044,52 @@ class MeasurementStore:
             "applied": calibration_applied,
         }
 
-        analysis = None
-        capture_info = None
-        playback_info = None
-        attempts_used = 0
-        final_capture_level_low = False
-        mic_auto_boosted = False
         reference_warning = str(input_channels.get("reference_disabled_reason") or "").strip()
-
-        # Cancel guard: check before any attempt
-        if owner_job_id in self._cancelled_jobs:
-            logger.warning(
-                "MEASUREMENT-CANCEL-DIAG retry aborted before first attempt: job_id=%s",
-                job_id,
-            )
-            raise RuntimeError("Measurement cancelled.")
-        for attempt_index in range(HOST_SWEEP_MAX_ATTEMPTS):
-            attempts_used = attempt_index + 1
-            logger.info(
-                "Measurement attempt %d/%d starting: job_id=%s reference=%s",
-                attempts_used, HOST_SWEEP_MAX_ATTEMPTS, job_id,
-                "electrical" if use_electrical_reference else "acoustic",
-            )
-            try:
-                # Cancel guard: check before each capture attempt
-                if owner_job_id in self._cancelled_jobs:
-                    logger.warning(
-                        "MEASUREMENT-CANCEL-DIAG retry aborted before capture attempt %d/%d: job_id=%s",
-                        attempts_used, HOST_SWEEP_MAX_ATTEMPTS, job_id,
-                    )
-                    raise RuntimeError("Measurement cancelled.")
-
-                if capture_path.exists():
-                    capture_path.unlink()
-                attempt_reference = electrical_reference if use_electrical_reference else host_reference
-                analysis, capture_info, playback_info = self._run_host_capture_attempt(
-                    job_id=job_id,
-                    owner_job_id=owner_job_id,
-                    mic_source_node_name=source_node_name,
-                    reference_capture=attempt_reference,
-                    channel=playback_channel,
-                    capture_channels=capture_channels,
-                    capture_path=capture_path,
-                    playback_path=playback_path,
-                    playback_target=playback_target,
-                    measurement_scope=measurement_scope,
-                    measurement_role=measurement_role,
-                    playback_gain=job.get("playback_gain"),
-                    sweep_meta=sweep_meta,
-                    sample_rate=sample_rate,
-                    duration_seconds=duration_seconds,
-                    sweep_seconds=sweep_seconds,
-                    lead_in_seconds=lead_in_seconds,
-                    tail_seconds=tail_seconds,
-                    record_preroll_seconds=record_preroll_seconds,
-                    record_postroll_seconds=record_postroll_seconds,
-                    record_duration_seconds=record_duration_seconds,
-                    calibration_curve=calibration_curve,
-                    mic_input_channel_index=mic_input_channel_index,
-                    electrical_reference_channel_index=electrical_reference_channel_index if use_electrical_reference else None,
-                )
-                if use_electrical_reference:
-                    reference_status = self._evaluate_electrical_reference_status(analysis)
-
-                    # Cancel guard: check before QC-based ER fallback
-                    if owner_job_id in self._cancelled_jobs:
-                        logger.warning(
-                            "MEASUREMENT-CANCEL-DIAG retry aborted before ER fallback: job_id=%s",
-                            job_id,
-                        )
-                        raise RuntimeError("Measurement cancelled.")
-
-                    if not reference_status["usable"]:
-                        reference_warning = reference_status["warning"]
-                        if self._should_keep_active_22_dsp_electrical_reference(
-                            analysis,
-                            measurement_scope=measurement_scope,
-                        ):
-                            self._mark_dsp_tolerated_electrical_reference_usable(
-                                analysis,
-                                warning=reference_warning,
-                            )
-                            logger.warning(
-                                "Electrical measurement reference marginal for %s but kept for active 2.2 DSP path: %s",
-                                job_id,
-                                reference_warning,
-                            )
-                            reference_warning = ""
-                        else:
-                            logger.warning("Electrical measurement reference rejected for %s: %s", job_id, reference_warning)
-                            logger.info(
-                                "ER fallback capture within attempt %d/%d: reference quality rejected, retrying with host timing",
-                                attempts_used, HOST_SWEEP_MAX_ATTEMPTS,
-                            )
-                            if capture_path.exists():
-                                capture_path.unlink()
-                            analysis, capture_info, playback_info = self._run_host_capture_attempt(
-                                job_id=job_id,
-                                owner_job_id=owner_job_id,
-                                mic_source_node_name=source_node_name,
-                                reference_capture=host_reference,
-                                channel=playback_channel,
-                                capture_channels=2,
-                                capture_path=capture_path,
-                                playback_path=playback_path,
-                                playback_target=playback_target,
-                                measurement_scope=measurement_scope,
-                                measurement_role=measurement_role,
-                                playback_gain=job.get("playback_gain"),
-                                sweep_meta=sweep_meta,
-                                sample_rate=sample_rate,
-                                duration_seconds=duration_seconds,
-                                sweep_seconds=sweep_seconds,
-                                lead_in_seconds=lead_in_seconds,
-                                tail_seconds=tail_seconds,
-                                record_preroll_seconds=record_preroll_seconds,
-                                record_postroll_seconds=record_postroll_seconds,
-                                record_duration_seconds=record_duration_seconds,
-                                calibration_curve=calibration_curve,
-                                mic_input_channel_index=mic_input_channel_index,
-                                electrical_reference_channel_index=None,
-                            )
-                            self._append_reference_fallback_warning(analysis, reference_warning)
-                capture_level_low = self._analysis_has_warning_code(analysis, "capture-level-low")
-                final_capture_level_low = capture_level_low
-                mic_target = str(selected_input.get("node_serial") or source_node_name).strip()
-                if self._try_raise_mic_for_low_capture(
-                    analysis,
-                    mic_target=mic_target,
-                    attempt_index=attempt_index,
-                    mic_auto_boosted=mic_auto_boosted,
-                ):
-                    mic_auto_boosted = True
-                    time.sleep(HOST_SWEEP_RETRY_DELAY_SECONDS)
-                    continue
-                break
-            except Exception as exc:
-                # Cancel safety: cancellation is ALWAYS terminal
-                if self._is_measurement_cancelled(owner_job_id, exc):
-                    logger.warning(
-                        "MEASUREMENT-CANCEL-DIAG retry aborted because job cancelled: job_id=%s attempt=%d/%d exc=%s",
-                        job_id, attempts_used, HOST_SWEEP_MAX_ATTEMPTS, exc,
-                    )
-                    raise RuntimeError("Measurement cancelled.") from exc
-
-                if use_electrical_reference:
-                    reference_warning = f"Electrical reference unavailable; used host monitor timing fallback ({exc})."
-                    logger.warning("Electrical measurement reference failed for %s; falling back to host monitor timing: %s", job_id, exc)
-                    logger.info(
-                        "ER fallback capture within attempt %d/%d: capture exception, retrying with host timing",
-                        attempts_used, HOST_SWEEP_MAX_ATTEMPTS,
-                    )
-
-                    # Cancel guard: check before ER exception fallback
-                    if owner_job_id in self._cancelled_jobs:
-                        logger.warning(
-                            "MEASUREMENT-CANCEL-DIAG retry aborted before ER exception fallback: job_id=%s",
-                            job_id,
-                        )
-                        raise RuntimeError("Measurement cancelled.")
-
-                    try:
-                        if capture_path.exists():
-                            capture_path.unlink()
-                        analysis, capture_info, playback_info = self._run_host_capture_attempt(
-                            job_id=job_id,
-                            owner_job_id=owner_job_id,
-                            mic_source_node_name=source_node_name,
-                            reference_capture=host_reference,
-                            channel=playback_channel,
-                            capture_channels=2,
-                            capture_path=capture_path,
-                            playback_path=playback_path,
-                            playback_target=playback_target,
-                            measurement_scope=measurement_scope,
-                            measurement_role=measurement_role,
-                            playback_gain=job.get("playback_gain"),
-                            sweep_meta=sweep_meta,
-                            sample_rate=sample_rate,
-                            duration_seconds=duration_seconds,
-                            sweep_seconds=sweep_seconds,
-                            lead_in_seconds=lead_in_seconds,
-                            tail_seconds=tail_seconds,
-                            record_preroll_seconds=record_preroll_seconds,
-                            record_postroll_seconds=record_postroll_seconds,
-                            record_duration_seconds=record_duration_seconds,
-                            calibration_curve=calibration_curve,
-                            mic_input_channel_index=mic_input_channel_index,
-                            electrical_reference_channel_index=None,
-                        )
-                        self._append_reference_fallback_warning(analysis, reference_warning)
-                        final_capture_level_low = self._analysis_has_warning_code(analysis, "capture-level-low")
-                        mic_target = str(selected_input.get("node_serial") or source_node_name).strip()
-                        if self._try_raise_mic_for_low_capture(
-                            analysis,
-                            mic_target=mic_target,
-                            attempt_index=attempt_index,
-                            mic_auto_boosted=mic_auto_boosted,
-                        ):
-                            mic_auto_boosted = True
-                            time.sleep(HOST_SWEEP_RETRY_DELAY_SECONDS)
-                            continue
-                        break
-                    except Exception:
-                        logger.warning("Electrical reference fallback capture also failed for %s", job_id, exc_info=True)
-
-                        # Cancel check after ER fallback also failed
-                        if owner_job_id in self._cancelled_jobs:
-                            logger.warning(
-                                "MEASUREMENT-CANCEL-DIAG retry aborted after ER fallback failed (job cancelled): job_id=%s",
-                                job_id,
-                            )
-                            raise RuntimeError("Measurement cancelled.")
-
-                # Cancel guard before retry decision
-                if owner_job_id in self._cancelled_jobs:
-                    logger.warning(
-                        "MEASUREMENT-CANCEL-DIAG retry aborted: job_id=%s",
-                        job_id,
-                    )
-                    raise RuntimeError("Measurement cancelled.")
-
-                if attempt_index >= HOST_SWEEP_MAX_ATTEMPTS - 1 or not self._should_retry_host_capture(exc):
-                    raise RuntimeError(
-                        f"Measurement failed after {attempts_used}/{HOST_SWEEP_MAX_ATTEMPTS} attempts: {exc}"
-                    ) from exc
-
-                # Cancel-aware sleep
-                logger.info(
-                    "MEASUREMENT-CANCEL-DIAG retry sleep: job_id=%s attempt=%d/%d delay=%.2f",
-                    job_id, attempts_used, HOST_SWEEP_MAX_ATTEMPTS, HOST_SWEEP_RETRY_DELAY_SECONDS,
-                )
-                self._cancel_aware_sleep(owner_job_id, HOST_SWEEP_RETRY_DELAY_SECONDS)
-                # Re-check after sleep before next loop iteration
-                if owner_job_id in self._cancelled_jobs:
-                    logger.warning(
-                        "MEASUREMENT-CANCEL-DIAG retry aborted after sleep (job cancelled): job_id=%s",
-                        job_id,
-                    )
-                    raise RuntimeError("Measurement cancelled.")
+        mic_target = str(selected_input.get("node_serial") or source_node_name).strip()
+        policy_result = self._capture_policy.run(
+            job_id=job_id,
+            owner_job_id=owner_job_id,
+            use_electrical_reference=use_electrical_reference,
+            electrical_reference=electrical_reference,
+            host_reference=host_reference,
+            capture_channels=capture_channels,
+            electrical_reference_channel_index=(
+                electrical_reference_channel_index if use_electrical_reference else None
+            ),
+            mic_target=mic_target,
+            measurement_scope=measurement_scope,
+            reference_warning=reference_warning,
+            capture_kwargs={
+                "job_id": job_id,
+                "owner_job_id": owner_job_id,
+                "mic_source_node_name": source_node_name,
+                "channel": playback_channel,
+                "capture_path": capture_path,
+                "playback_path": playback_path,
+                "playback_target": playback_target,
+                "measurement_scope": measurement_scope,
+                "measurement_role": measurement_role,
+                "playback_gain": job.get("playback_gain"),
+                "sweep_meta": sweep_meta,
+                "sample_rate": sample_rate,
+                "duration_seconds": duration_seconds,
+                "sweep_seconds": sweep_seconds,
+                "lead_in_seconds": lead_in_seconds,
+                "tail_seconds": tail_seconds,
+                "record_preroll_seconds": record_preroll_seconds,
+                "record_postroll_seconds": record_postroll_seconds,
+                "record_duration_seconds": record_duration_seconds,
+                "calibration_curve": calibration_curve,
+                "mic_input_channel_index": mic_input_channel_index,
+            },
+        )
+        analysis = policy_result.analysis
+        capture_info = policy_result.capture_info
+        playback_info = policy_result.playback_info
+        attempts_used = policy_result.attempts_used
+        final_capture_level_low = policy_result.final_capture_level_low
+        mic_auto_boosted = policy_result.mic_auto_boosted
+        reference_warning = policy_result.reference_warning
         if analysis is None or capture_info is None or playback_info is None:
             raise RuntimeError("Host-local capture did not produce an analysis result")
         if reference_warning and not self._analysis_has_warning_code(analysis, "electrical-reference-fallback"):
@@ -1351,6 +1179,24 @@ class MeasurementStore:
 
     def _run_host_capture_attempt(self, **kwargs):
         return self._host_capture_runner.execute(**kwargs)
+
+    def _run_capture_policy_attempt(
+        self,
+        *,
+        capture_path: Path,
+        reference_capture: dict[str, Any],
+        capture_channels: int,
+        electrical_reference_channel_index: int | None,
+        **kwargs,
+    ):
+        if capture_path.exists():
+            capture_path.unlink()
+        return self._run_host_capture_attempt(
+            reference_capture=reference_capture,
+            capture_channels=capture_channels,
+            electrical_reference_channel_index=electrical_reference_channel_index,
+            **kwargs,
+        )
 
     def _capture_quality_error_codes(self, exc: Exception) -> set[str]:
         if not isinstance(exc, CaptureQualityError):
