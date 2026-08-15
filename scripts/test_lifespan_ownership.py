@@ -70,7 +70,7 @@ class LifespanOwnershipTests(unittest.IsolatedAsyncioTestCase):
 
         player.stop.assert_called_once()
         self.assertIsNone(main.runtime.player_instance)
-        self.assertIsNone(main.library_scan_task)
+        self.assertIsNone(main.runtime.library_scan_task)
 
     async def test_startup_cancellation_drains_watchdog_and_owned_managers(self):
         player = FakePlayer()
@@ -109,7 +109,7 @@ class LifespanOwnershipTests(unittest.IsolatedAsyncioTestCase):
         session.request_close.assert_awaited_once()
         downloader.shutdown.assert_called_once()
         player.stop.assert_called_once()
-        self.assertIsNone(main.measurement_watchdog_task)
+        self.assertIsNone(main.runtime.measurement_watchdog_task)
         self.assertIsNone(main.measurement_store)
 
     async def test_external_input_partial_link_is_rolled_back(self):
@@ -159,7 +159,7 @@ class LifespanOwnershipTests(unittest.IsolatedAsyncioTestCase):
             cleanup_order.index("spl-calibration"),
             cleanup_order.index("measurement-session"),
         )
-        self.assertFalse(main.lifecycle_background_tasks)
+        self.assertFalse(main.runtime.lifecycle_background_tasks)
         self.assertIsNone(main.measurement_sr_session)
 
     def test_player_callback_unregister_and_killed_process_reap(self):

@@ -957,12 +957,22 @@ class RuntimeResources:
 
     One authoritative location for the mutable resources that are initialized
     on startup and reset on shutdown.  Persistent configuration, manager
-    singletons and measurement stores stay at module scope.
+    singletons stay at module scope.
     """
 
     player_instance: Any = None
     dsp_runtime: Any = None
     peak_monitor: Any = None
+    measurement_watchdog_task: Optional[asyncio.Task] = None
+    library_scan_task: Optional[asyncio.Task] = None
+    bluetooth_monitor_task: Optional[asyncio.Task] = None
+    bluetooth_agent_process: Any = None
+    spotify_playerctl_watch_task: Optional[asyncio.Task] = None
+    spotify_playerctl_detect_task: Optional[asyncio.Task] = None
+    spotify_state_refresh_task: Optional[asyncio.Task] = None
+    spotify_state_poll_task: Optional[asyncio.Task] = None
+    lifecycle_background_tasks: set[asyncio.Task] = field(default_factory=set)
+    library_refresh_tasks: set[asyncio.Task] = field(default_factory=set)
     dsp_runtime_link_watch_task: Optional[asyncio.Task] = None
     peak_monitor_playback_armed: bool = False
     peak_monitor_transition_lock: Optional[asyncio.Lock] = None
@@ -987,6 +997,16 @@ class RuntimeResources:
         self.player_instance = None
         self.dsp_runtime = None
         self.peak_monitor = None
+        self.measurement_watchdog_task = None
+        self.library_scan_task = None
+        self.bluetooth_monitor_task = None
+        self.bluetooth_agent_process = None
+        self.spotify_playerctl_watch_task = None
+        self.spotify_playerctl_detect_task = None
+        self.spotify_state_refresh_task = None
+        self.spotify_state_poll_task = None
+        self.lifecycle_background_tasks.clear()
+        self.library_refresh_tasks.clear()
         self.dsp_runtime_link_watch_task = None
         self.peak_monitor_transition_lock = None
         self.peak_monitor_context_signature = None
@@ -1002,12 +1022,10 @@ runtime = RuntimeResources()
 library_scanner = None
 music_library_manager = None
 music_library_switch_lock = None
-downloader = None
 dsp_manager = None
+downloader = None
 measurement_store = None
 measurement_sr_session = None
-measurement_watchdog_task = None
-library_scan_task = None
 hardware_controller = None
 
 
@@ -1064,20 +1082,12 @@ async def _run_locked_worker(lock: asyncio.Lock, func: Callable[..., Any], *args
     async with lock:
         return await _drain_worker(func, *args, **kwargs)
 playback_transition_coordinator: PlaybackTransitionCoordinator | None = None
-bluetooth_monitor_task = None
-bluetooth_agent_process = None
-spotify_playerctl_watch_task = None
-spotify_playerctl_detect_task = None
-spotify_state_refresh_task = None
-spotify_state_poll_task = None
 spotify_playerctl_last_trigger_at = 0.0
 # Measurement-window heartbeat timestamp: set by
 # /api/power/measurement-heartbeat, read only via _is_measurement_window_open().
 # It is measurement-window/power state, not silent-active recovery, so it
 # stays a plain module scalar rather than joining SilentActiveRecoveryState.
 last_measurement_window_seen_at = 0.0
-lifecycle_background_tasks: set[asyncio.Task] = set()
-library_refresh_tasks: set[asyncio.Task] = set()
 # Wait primitive for ended callbacks: set once no playback transition
 # is in flight.  asyncio.Event binds to the first used event loop; tests
 # use a fresh loop per test, so the signal is kept per loop (production:
@@ -2307,15 +2317,15 @@ def _schedule_silent_active_watch(
 
 def _create_lifecycle_background_task(coro, *, name: str) -> asyncio.Task:
     task = asyncio.create_task(coro, name=name)
-    lifecycle_background_tasks.add(task)
-    task.add_done_callback(lifecycle_background_tasks.discard)
+    runtime.lifecycle_background_tasks.add(task)
+    task.add_done_callback(runtime.lifecycle_background_tasks.discard)
     return task
 
 
 def _create_library_refresh_task(scanner: LibraryScanner, *, name: str) -> asyncio.Task:
     task = asyncio.create_task(asyncio.to_thread(scanner.refresh, True), name=name)
-    library_refresh_tasks.add(task)
-    task.add_done_callback(library_refresh_tasks.discard)
+    runtime.library_refresh_tasks.add(task)
+    task.add_done_callback(runtime.library_refresh_tasks.discard)
     return task
 
 
@@ -4522,15 +4532,14 @@ async def _refresh_spotify_state_from_mpris(reason: str, *, force: bool = False)
 
 
 def _schedule_spotify_state_refresh(reason: str) -> None:
-    global spotify_state_refresh_task
-    if spotify_state_refresh_task and not spotify_state_refresh_task.done():
-        spotify_state_refresh_task.cancel()
+    if runtime.spotify_state_refresh_task and not runtime.spotify_state_refresh_task.done():
+        runtime.spotify_state_refresh_task.cancel()
 
     async def _delayed_refresh() -> None:
         await asyncio.sleep(SPOTIFY_STATE_REFRESH_DEBOUNCE_SECONDS)
         await _refresh_spotify_state_from_mpris(reason)
 
-    spotify_state_refresh_task = asyncio.create_task(
+    runtime.spotify_state_refresh_task = asyncio.create_task(
         _delayed_refresh(),
         name="spotify-state-refresh",
     )
@@ -4775,8 +4784,7 @@ async def _disconnect_bluetooth_input_source(source_name: str | None) -> None:
 
 
 async def _stop_bluetooth_audio_agent() -> None:
-    global bluetooth_agent_process
-    proc = bluetooth_agent_process
+    proc = runtime.bluetooth_agent_process
     if not proc:
         return
     try:
@@ -4793,17 +4801,16 @@ async def _stop_bluetooth_audio_agent() -> None:
             await proc.wait()
         raise
     finally:
-        if bluetooth_agent_process is proc:
-            bluetooth_agent_process = None
+        if runtime.bluetooth_agent_process is proc:
+            runtime.bluetooth_agent_process = None
 
 
 async def _ensure_bluetooth_audio_agent() -> None:
-    global bluetooth_agent_process
-    proc = bluetooth_agent_process
+    proc = runtime.bluetooth_agent_process
     if proc and proc.returncode is None:
         return
     agent_script = BASE_DIR / "bluez_audio_agent.py"
-    bluetooth_agent_process = await asyncio.create_subprocess_exec(
+    runtime.bluetooth_agent_process = await asyncio.create_subprocess_exec(
         str(agent_script),
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.PIPE,
@@ -4813,9 +4820,9 @@ async def _ensure_bluetooth_audio_agent() -> None:
     except BaseException:
         await _stop_bluetooth_audio_agent()
         raise
-    if bluetooth_agent_process.returncode is not None:
-        stderr = await bluetooth_agent_process.stderr.read()
-        bluetooth_agent_process = None
+    if runtime.bluetooth_agent_process.returncode is not None:
+        stderr = await runtime.bluetooth_agent_process.stderr.read()
+        runtime.bluetooth_agent_process = None
         raise RuntimeError((stderr or b"BlueZ audio agent exited immediately").decode(errors="ignore").strip())
 
 
@@ -4928,7 +4935,6 @@ async def _bluetooth_input_monitor_loop() -> None:
 
 
 async def _spotify_playerctl_event_detect_check(reason: str) -> None:
-    global spotify_playerctl_detect_task
     try:
         burst_delays = (0.05, 0.15, 0.30, 0.60)
         last_snapshot: tuple[object, object, object, object] | None = None
@@ -5042,13 +5048,13 @@ async def _spotify_playerctl_event_detect_check(reason: str) -> None:
     except Exception as exc:
         logger.warning("Spotify playerctl detect check failed (%s): %s", reason, exc)
     finally:
-        if spotify_playerctl_detect_task and spotify_playerctl_detect_task.done():
-            spotify_playerctl_detect_task = None
+        if runtime.spotify_playerctl_detect_task and runtime.spotify_playerctl_detect_task.done():
+            runtime.spotify_playerctl_detect_task = None
 
 
 def _schedule_spotify_playerctl_event_detect(reason: str) -> None:
-    global spotify_playerctl_detect_task, spotify_playerctl_last_trigger_at
-    if spotify_playerctl_detect_task and not spotify_playerctl_detect_task.done():
+    global spotify_playerctl_last_trigger_at
+    if runtime.spotify_playerctl_detect_task and not runtime.spotify_playerctl_detect_task.done():
         logger.debug(
             "Spotify playerctl detect event coalesced while detect/recovery task is active: reason=%s",
             reason,
@@ -5058,7 +5064,7 @@ def _schedule_spotify_playerctl_event_detect(reason: str) -> None:
     if now - spotify_playerctl_last_trigger_at < 1.0:
         return
     spotify_playerctl_last_trigger_at = now
-    spotify_playerctl_detect_task = asyncio.create_task(
+    runtime.spotify_playerctl_detect_task = asyncio.create_task(
         _spotify_playerctl_event_detect_check(reason),
         name="spotify-playerctl-event-detect",
     )
@@ -5121,7 +5127,7 @@ async def _spotify_playerctl_watch_loop() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan: startup and shutdown."""
-    global settings, library_scanner, music_library_manager, library_scan_task, downloader, dsp_manager, measurement_store, measurement_sr_session, measurement_watchdog_task, hardware_controller, playback_transition_coordinator, bluetooth_monitor_task, bluetooth_agent_process, spotify_playerctl_watch_task, spotify_playerctl_detect_task, spotify_state_refresh_task, spotify_state_poll_task, spotify_playerctl_last_trigger_at
+    global settings, library_scanner, music_library_manager, downloader, dsp_manager, measurement_store, measurement_sr_session, hardware_controller, playback_transition_coordinator, spotify_playerctl_last_trigger_at
 
     logger.info("Starting FXRoute... build_id=%s", _read_build_id())
     try:
@@ -5140,7 +5146,7 @@ async def lifespan(app: FastAPI):
         music_library_manager = MusicLibraryManager(settings.MUSIC_ROOT)
         library_scanner = _library_scanner_for(music_library_manager.active_root)
         library_scanner.prepare_scan_status()
-        library_scan_task = _create_library_refresh_task(
+        runtime.library_scan_task = _create_library_refresh_task(
             library_scanner,
             name="initial-library-scan",
         )
@@ -5153,14 +5159,14 @@ async def lifespan(app: FastAPI):
         if _loudness_owns_volume():
             set_output_volume(100)
         volume_read_monitor_task = start_volume_read_monitor()
-        lifecycle_background_tasks.add(volume_read_monitor_task)
-        volume_read_monitor_task.add_done_callback(lifecycle_background_tasks.discard)
+        runtime.lifecycle_background_tasks.add(volume_read_monitor_task)
+        volume_read_monitor_task.add_done_callback(runtime.lifecycle_background_tasks.discard)
         logger.info("FXRoute DSP manager initialized")
 
         measurement_store = MeasurementStore()
         logger.info("Measurement store initialized: %s", measurement_store.measurements_dir)
         measurement_sr_session = MeasurementSampleRateSession()
-        measurement_watchdog_task = asyncio.create_task(
+        runtime.measurement_watchdog_task = asyncio.create_task(
             measurement_sr_session.run_watchdog(),
             name="measurement-session-watchdog",
         )
@@ -5272,18 +5278,18 @@ async def lifespan(app: FastAPI):
         except Exception as exc:
             logger.warning("Failed to re-apply source monitoring: %s", exc)
 
-        bluetooth_monitor_task = asyncio.create_task(
+        runtime.bluetooth_monitor_task = asyncio.create_task(
             _bluetooth_input_monitor_loop(),
             name="bluetooth-input-monitor",
         )
         spotify_playerctl_last_trigger_at = 0.0
         logger.info("Starting Spotify playerctl watch task")
-        spotify_playerctl_watch_task = asyncio.create_task(
+        runtime.spotify_playerctl_watch_task = asyncio.create_task(
             _spotify_playerctl_watch_loop(),
             name="spotify-playerctl-watch",
         )
         logger.info("Starting Spotify metadata poll fallback task")
-        spotify_state_poll_task = asyncio.create_task(
+        runtime.spotify_state_poll_task = asyncio.create_task(
             _spotify_state_poll_loop(),
             name="spotify-state-poll",
         )
@@ -5303,7 +5309,7 @@ async def lifespan(app: FastAPI):
 
 
 async def _shutdown_lifespan_resources() -> None:
-    global settings, library_scanner, library_scan_task, downloader, dsp_manager, measurement_store, measurement_sr_session, measurement_watchdog_task, hardware_controller, playback_transition_coordinator, bluetooth_monitor_task, bluetooth_agent_process, spotify_playerctl_watch_task, spotify_playerctl_detect_task, spotify_state_refresh_task, spotify_state_poll_task
+    global settings, library_scanner, downloader, dsp_manager, measurement_store, measurement_sr_session, hardware_controller, playback_transition_coordinator
 
     async def cleanup(label: str, operation) -> None:
         nonlocal cleanup_cancelled
@@ -5327,15 +5333,15 @@ async def _shutdown_lifespan_resources() -> None:
     cleanup_cancelled = False
     owned_tasks = [
         runtime.dsp_runtime_link_watch_task,
-        measurement_watchdog_task,
-        bluetooth_monitor_task,
-        spotify_playerctl_watch_task,
-        spotify_playerctl_detect_task,
-        spotify_state_refresh_task,
-        spotify_state_poll_task,
+        runtime.measurement_watchdog_task,
+        runtime.bluetooth_monitor_task,
+        runtime.spotify_playerctl_watch_task,
+        runtime.spotify_playerctl_detect_task,
+        runtime.spotify_state_refresh_task,
+        runtime.spotify_state_poll_task,
         radio_reconnect_state.task,
         *silent_active_recovery_state.watch_tasks.values(),
-        *lifecycle_background_tasks,
+        *runtime.lifecycle_background_tasks,
     ]
     tasks = list({task for task in owned_tasks if task is not None and not task.done()})
     for task in tasks:
@@ -5349,7 +5355,7 @@ async def _shutdown_lifespan_resources() -> None:
 
         await cleanup("background-tasks", drain_background_tasks)
     silent_active_recovery_state.watch_tasks.clear()
-    lifecycle_background_tasks.clear()
+    runtime.lifecycle_background_tasks.clear()
 
     if runtime.player_instance is not None:
         await cleanup(
@@ -5362,7 +5368,7 @@ async def _shutdown_lifespan_resources() -> None:
     await cleanup("spl-calibration", spl_calibration.shutdown)
     if measurement_sr_session is not None:
         await cleanup("measurement-session", measurement_sr_session.request_close)
-    late_background_tasks = [task for task in lifecycle_background_tasks if not task.done()]
+    late_background_tasks = [task for task in runtime.lifecycle_background_tasks if not task.done()]
     for task in late_background_tasks:
         task.cancel()
     if late_background_tasks:
@@ -5370,23 +5376,23 @@ async def _shutdown_lifespan_resources() -> None:
             "late-background-tasks",
             lambda: asyncio.gather(*late_background_tasks, return_exceptions=True),
         )
-    lifecycle_background_tasks.clear()
+    runtime.lifecycle_background_tasks.clear()
     if downloader is not None:
         await cleanup("downloader", lambda: asyncio.to_thread(downloader.shutdown))
     if library_scanner is not None:
         library_scanner.cancel_refresh()
-    refresh_tasks = [task for task in library_refresh_tasks if not task.done()]
+    refresh_tasks = [task for task in runtime.library_refresh_tasks if not task.done()]
     if refresh_tasks:
         await cleanup(
             "library-refresh-tasks",
             lambda: asyncio.gather(*refresh_tasks, return_exceptions=True),
         )
-    library_refresh_tasks.clear()
+    runtime.library_refresh_tasks.clear()
     if runtime.player_instance is not None:
         await cleanup("player", lambda: asyncio.to_thread(runtime.player_instance.stop))
     if runtime.dsp_runtime is not None:
         await cleanup("subwoofer-runtime", runtime.dsp_runtime.stop)
-    if bluetooth_agent_process is not None or input_routing_state.bluetooth_input_source_name is not None:
+    if runtime.bluetooth_agent_process is not None or input_routing_state.bluetooth_input_source_name is not None:
         await cleanup("bluetooth-input", _disable_bluetooth_input_monitoring)
     await cleanup("bluetooth-receiver", lambda: asyncio.to_thread(set_bluetooth_receiver_enabled, False))
     if input_routing_state.external_input_loopback_source_name is not None:
@@ -5399,22 +5405,14 @@ async def _shutdown_lifespan_resources() -> None:
     runtime.reset()
     settings = None
     library_scanner = None
-    library_scan_task = None
     downloader = None
     dsp_manager = None
     measurement_store = None
     measurement_sr_session = None
-    measurement_watchdog_task = None
     hardware_controller = None
     playback_transition_coordinator = None
     input_routing_state.external_input_loopback_source_name = None
     input_routing_state.bluetooth_input_source_name = None
-    bluetooth_monitor_task = None
-    bluetooth_agent_process = None
-    spotify_playerctl_watch_task = None
-    spotify_playerctl_detect_task = None
-    spotify_state_refresh_task = None
-    spotify_state_poll_task = None
     radio_reconnect_state.task = None
     if cleanup_cancelled:
         raise asyncio.CancelledError
@@ -6524,7 +6522,7 @@ async def add_manual_music_library(request: Request):
 
 @app.post("/api/music-libraries/select")
 async def select_music_library(request: Request):
-    global library_scanner, library_scan_task
+    global library_scanner
     if music_library_manager is None or library_scanner is None:
         raise HTTPException(status_code=503, detail="Music libraries are not initialized")
     try:
@@ -6542,7 +6540,7 @@ async def select_music_library(request: Request):
         if root == library_scanner.music_root:
             return music_library_manager.status()
         library_scanner.cancel_refresh()
-        active_refreshes = [task for task in library_refresh_tasks if not task.done()]
+        active_refreshes = [task for task in runtime.library_refresh_tasks if not task.done()]
         if active_refreshes:
             await asyncio.gather(*active_refreshes, return_exceptions=True)
         if runtime.player_instance is not None and runtime.player_instance._running:
@@ -6553,7 +6551,7 @@ async def select_music_library(request: Request):
         playback_queue.queue.reset()
         library_scanner = _library_scanner_for(root, library_id)
         library_scanner.prepare_scan_status()
-        library_scan_task = _create_library_refresh_task(library_scanner, name="selected-library-scan")
+        runtime.library_scan_task = _create_library_refresh_task(library_scanner, name="selected-library-scan")
         return music_library_manager.status()
 
 

@@ -189,7 +189,7 @@ class CoordinatorRecoveryTests(unittest.IsolatedAsyncioTestCase):
 
     def test_running_spotify_detector_is_coalesced_without_cancellation(self):
         existing = SimpleNamespace(done=lambda: False, cancel=Mock())
-        with patch.object(main, "spotify_playerctl_detect_task", existing), patch.object(
+        with patch.object(main.runtime, "spotify_playerctl_detect_task", existing), patch.object(
             main, "spotify_playerctl_last_trigger_at", 0.0
         ), patch.object(main.time, "monotonic", return_value=10.0), patch.object(
             main.asyncio, "create_task"
