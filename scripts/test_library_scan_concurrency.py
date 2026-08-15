@@ -218,7 +218,7 @@ class LibraryScanConcurrencyTests(unittest.IsolatedAsyncioTestCase):
             get_settings=lambda: config_mod.get_settings(),
             run_blocking=main._drain_worker,
         ))
-        main.library_scanner = self.scanner
+        main.runtime.music_library.scanner = self.scanner
         network_patch = patch.object(LibraryMetadataStore, "_request_json", _no_network)
         network_patch.start()
         self.addCleanup(network_patch.stop)

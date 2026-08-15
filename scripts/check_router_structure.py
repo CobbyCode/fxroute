@@ -27,7 +27,6 @@ MAIN_GLOBALS = {
     "dsp_manager",
     "get_audio_output_overview",
     "get_samplerate_status",
-    "library_scanner",
     "measurement_sr_session",
     "measurement_store",
     "playback_transition_coordinator",

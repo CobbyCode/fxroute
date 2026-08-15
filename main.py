@@ -952,6 +952,20 @@ from library_metadata import LibraryMetadataStore
 
 
 @dataclass
+class MusicLibraryRuntime:
+    """Current music-library services and their switch serialization."""
+
+    manager: Any = None
+    scanner: Any = None
+    switch_lock: Optional[asyncio.Lock] = None
+
+    def reset(self) -> None:
+        self.manager = None
+        self.scanner = None
+        self.switch_lock = None
+
+
+@dataclass
 class RuntimeResources:
     """Lifecycle-owned runtime resources created and torn down by the FastAPI lifespan.
 
@@ -961,6 +975,7 @@ class RuntimeResources:
     """
 
     player_instance: Any = None
+    music_library: MusicLibraryRuntime = field(default_factory=MusicLibraryRuntime)
     dsp_runtime: Any = None
     peak_monitor: Any = None
     measurement_watchdog_task: Optional[asyncio.Task] = None
@@ -995,6 +1010,7 @@ class RuntimeResources:
         the previous lifespan behaviour (it is re-armed on the next startup).
         """
         self.player_instance = None
+        self.music_library.reset()
         self.dsp_runtime = None
         self.peak_monitor = None
         self.measurement_watchdog_task = None
@@ -1019,9 +1035,6 @@ class RuntimeResources:
 # Global instances (initialized on startup)
 settings = None
 runtime = RuntimeResources()
-library_scanner = None
-music_library_manager = None
-music_library_switch_lock = None
 dsp_manager = None
 downloader = None
 measurement_store = None
@@ -1175,7 +1188,7 @@ radio_metadata_service = RadioMetadataService()
 queue_advancing = False
 
 configure_library_api_runtime(LibraryApiRuntime(
-    get_scanner=lambda: library_scanner,
+    get_scanner=lambda: runtime.music_library.scanner,
     get_settings=lambda: settings,
     run_blocking=_drain_worker,
 ))
@@ -1329,7 +1342,7 @@ playback_queue.configure_playback_queue(playback_queue.PlaybackQueueDependencies
     coordinator_rate_change=lambda *a, **k: _coordinator_rate_change(*a, **k),
     sample_rate_policy_is_auto=lambda: _sample_rate_policy_is_auto(),
     transition_error_http=lambda exc: _transition_error_http(exc),
-    get_tracks=lambda: library_scanner.get_tracks(),
+    get_tracks=lambda: runtime.music_library.scanner.get_tracks(),
     build_playback_payload=lambda *a, **k: build_playback_payload(*a, **k),
 ))
 
@@ -2330,10 +2343,9 @@ def _create_library_refresh_task(scanner: LibraryScanner, *, name: str) -> async
 
 
 def _music_library_lock() -> asyncio.Lock:
-    global music_library_switch_lock
-    if music_library_switch_lock is None:
-        music_library_switch_lock = asyncio.Lock()
-    return music_library_switch_lock
+    if runtime.music_library.switch_lock is None:
+        runtime.music_library.switch_lock = asyncio.Lock()
+    return runtime.music_library.switch_lock
 
 
 def _library_scanner_for(root: Path, library_id: str = "local") -> LibraryScanner:
@@ -3986,7 +3998,7 @@ def _playback_track_with_artwork_fields(track_info: Optional[dict]) -> Optional[
         track["artwork_source"] = "none"
         return track
     try:
-        cover_available = bool(library_scanner and _track_cover_available(track_id))
+        cover_available = bool(runtime.music_library.scanner and _track_cover_available(track_id))
     except Exception as exc:
         logger.debug("Failed to resolve playback cover availability for %s: %s", track_id, exc)
         cover_available = False
@@ -4457,9 +4469,8 @@ async def on_download_progress(progress):
 
     status = (data or {}).get("status")
     if status == "complete":
-        global library_scanner
-        if library_scanner:
-            await _drain_worker(library_scanner.refresh, True, wait_if_running=True)
+        if runtime.music_library.scanner:
+            await _drain_worker(runtime.music_library.scanner.refresh, True, wait_if_running=True)
         await manager.broadcast({"type": "download_complete", "data": data})
     elif status == "error":
         await manager.broadcast({"type": "download_error", "data": data})
@@ -5127,7 +5138,7 @@ async def _spotify_playerctl_watch_loop() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan: startup and shutdown."""
-    global settings, library_scanner, music_library_manager, downloader, dsp_manager, measurement_store, measurement_sr_session, hardware_controller, playback_transition_coordinator, spotify_playerctl_last_trigger_at
+    global settings, downloader, dsp_manager, measurement_store, measurement_sr_session, hardware_controller, playback_transition_coordinator, spotify_playerctl_last_trigger_at
 
     logger.info("Starting FXRoute... build_id=%s", _read_build_id())
     try:
@@ -5143,11 +5154,11 @@ async def lifespan(app: FastAPI):
         except MPVNotInstalledError as exc:
             logger.error("Failed to start MPV: %s", exc)
 
-        music_library_manager = MusicLibraryManager(settings.MUSIC_ROOT)
-        library_scanner = _library_scanner_for(music_library_manager.active_root)
-        library_scanner.prepare_scan_status()
+        runtime.music_library.manager = MusicLibraryManager(settings.MUSIC_ROOT)
+        runtime.music_library.scanner = _library_scanner_for(runtime.music_library.manager.active_root)
+        runtime.music_library.scanner.prepare_scan_status()
         runtime.library_scan_task = _create_library_refresh_task(
-            library_scanner,
+            runtime.music_library.scanner,
             name="initial-library-scan",
         )
         logger.info("Library scanner initialized; initial scan running in background")
@@ -5309,7 +5320,7 @@ async def lifespan(app: FastAPI):
 
 
 async def _shutdown_lifespan_resources() -> None:
-    global settings, library_scanner, downloader, dsp_manager, measurement_store, measurement_sr_session, hardware_controller, playback_transition_coordinator
+    global settings, downloader, dsp_manager, measurement_store, measurement_sr_session, hardware_controller, playback_transition_coordinator
 
     async def cleanup(label: str, operation) -> None:
         nonlocal cleanup_cancelled
@@ -5379,8 +5390,8 @@ async def _shutdown_lifespan_resources() -> None:
     runtime.lifecycle_background_tasks.clear()
     if downloader is not None:
         await cleanup("downloader", lambda: asyncio.to_thread(downloader.shutdown))
-    if library_scanner is not None:
-        library_scanner.cancel_refresh()
+    if runtime.music_library.scanner is not None:
+        runtime.music_library.scanner.cancel_refresh()
     refresh_tasks = [task for task in runtime.library_refresh_tasks if not task.done()]
     if refresh_tasks:
         await cleanup(
@@ -5404,7 +5415,6 @@ async def _shutdown_lifespan_resources() -> None:
 
     runtime.reset()
     settings = None
-    library_scanner = None
     downloader = None
     dsp_manager = None
     measurement_store = None
@@ -5566,7 +5576,8 @@ async def play_track(req: PlayRequest):
         queue_candidate = playback_queue.cleared_queue_candidate(track_info)
     else:
         preserve_queue_order = bool(req.queue_track_ids) and list(req.queue_track_ids) == active_queue_ids
-        tracks = await _drain_worker(library_scanner.get_tracks) if library_scanner is not None else None
+        scanner = runtime.music_library.scanner
+        tracks = await _drain_worker(scanner.get_tracks) if scanner is not None else None
         queue_candidate = playback_queue.queue.prepare_local_queue(
             req.track_id,
             req.queue_track_ids,
@@ -5854,7 +5865,8 @@ async def sync_playback_selection(request: Request):
     if not isinstance(queue_track_ids, list):
         raise HTTPException(status_code=400, detail="Invalid JSON, expected {\"queue_track_ids\": <list>}")
 
-    tracks = await _drain_worker(library_scanner.get_tracks) if library_scanner is not None else None
+    scanner = runtime.music_library.scanner
+    tracks = await _drain_worker(scanner.get_tracks) if scanner is not None else None
     playback = playback_queue.queue.sync_active_local_queue_selection(
         queue_track_ids=queue_track_ids,
         shuffle=bool(body.get("shuffle", False)),
@@ -6495,35 +6507,38 @@ async def _transfer_volume_ownership_for_preset(manager, preset_name: str) -> No
 
 @app.get("/api/library/status")
 async def library_status():
-    global library_scanner
-    if library_scanner:
-        return library_scanner.status()
+    scanner = runtime.music_library.scanner
+    if scanner:
+        return scanner.status()
     return {"scanning": False, "track_count": 0, "error": "Library scanner not initialized"}
 
 
 @app.get("/api/music-libraries")
 async def list_music_libraries():
-    if music_library_manager is None:
+    manager = runtime.music_library.manager
+    if manager is None:
         raise HTTPException(status_code=503, detail="Music libraries are not initialized")
-    return await asyncio.to_thread(music_library_manager.status)
+    return await asyncio.to_thread(manager.status)
 
 
 @app.post("/api/music-libraries/manual")
 async def add_manual_music_library(request: Request):
-    if music_library_manager is None:
+    manager = runtime.music_library.manager
+    if manager is None:
         raise HTTPException(status_code=503, detail="Music libraries are not initialized")
     try:
         body = await request.json()
-        entry = music_library_manager.add_manual_url(str(body.get("url") or ""))
+        entry = manager.add_manual_url(str(body.get("url") or ""))
     except (ValueError, TypeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"entry": entry, **await asyncio.to_thread(music_library_manager.status)}
+    return {"entry": entry, **await asyncio.to_thread(manager.status)}
 
 
 @app.post("/api/music-libraries/select")
 async def select_music_library(request: Request):
-    global library_scanner
-    if music_library_manager is None or library_scanner is None:
+    manager = runtime.music_library.manager
+    scanner = runtime.music_library.scanner
+    if manager is None or scanner is None:
         raise HTTPException(status_code=503, detail="Music libraries are not initialized")
     try:
         body = await request.json()
@@ -6534,12 +6549,12 @@ async def select_music_library(request: Request):
         if _playback_transition_is_active():
             raise HTTPException(status_code=409, detail="A playback transition is in progress")
         try:
-            root = await asyncio.to_thread(music_library_manager.activate, library_id)
+            root = await asyncio.to_thread(manager.activate, library_id)
         except (ValueError, FileNotFoundError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        if root == library_scanner.music_root:
-            return music_library_manager.status()
-        library_scanner.cancel_refresh()
+        if root == scanner.music_root:
+            return manager.status()
+        scanner.cancel_refresh()
         active_refreshes = [task for task in runtime.library_refresh_tasks if not task.done()]
         if active_refreshes:
             await asyncio.gather(*active_refreshes, return_exceptions=True)
@@ -6549,23 +6564,23 @@ async def select_music_library(request: Request):
             playback_state.current_track_info = None
             playback_state.last_track_info = None
         playback_queue.queue.reset()
-        library_scanner = _library_scanner_for(root, library_id)
-        library_scanner.prepare_scan_status()
-        runtime.library_scan_task = _create_library_refresh_task(library_scanner, name="selected-library-scan")
-        return music_library_manager.status()
+        runtime.music_library.scanner = _library_scanner_for(root, library_id)
+        runtime.music_library.scanner.prepare_scan_status()
+        runtime.library_scan_task = _create_library_refresh_task(runtime.music_library.scanner, name="selected-library-scan")
+        return manager.status()
 
 
 @app.post("/api/library/refresh")
 async def refresh_library():
-    global library_scanner
-    if library_scanner:
-        if not library_scanner.scanning:
-            library_scanner.prepare_scan_status()
+    scanner = runtime.music_library.scanner
+    if scanner:
+        if not scanner.scanning:
+            scanner.prepare_scan_status()
             _create_library_refresh_task(
-                library_scanner,
+                scanner,
                 name="manual-library-refresh",
             )
-        return {"status": "scanning", **library_scanner.status()}
+        return {"status": "scanning", **scanner.status()}
     return {"status": "error", "message": "Library scanner not initialized"}
 
 @app.post("/api/download")

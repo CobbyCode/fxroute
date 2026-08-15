@@ -112,7 +112,7 @@ class PlaylistIOExportTests(unittest.TestCase):
         ]
         scanner = SimpleNamespace(get_tracks=lambda refresh=True, **kwargs: tracks)
         playlist = SimpleNamespace(id="p1", name="My Mix", track_ids=["t3", "t1", "missing", "t2"])
-        with patch.object(main, "settings", self.settings), patch.object(main, "library_scanner", scanner):
+        with patch.object(main, "settings", self.settings), patch.object(main.runtime.music_library, "scanner", scanner):
             content = playlist_io.build_m3u_for_playlist(playlist, tracks, self.music_root)
         self.assertEqual(
             content,
@@ -126,7 +126,7 @@ class PlaylistIOExportTests(unittest.TestCase):
         tracks = [make_track("t1", self.music_root / "album" / "untitled.flac", title=None, duration=5)]
         scanner = SimpleNamespace(get_tracks=lambda refresh=True, **kwargs: tracks)
         playlist = SimpleNamespace(id="p1", name="P", track_ids=["t1"])
-        with patch.object(main, "settings", self.settings), patch.object(main, "library_scanner", scanner):
+        with patch.object(main, "settings", self.settings), patch.object(main.runtime.music_library, "scanner", scanner):
             content = playlist_io.build_m3u_for_playlist(playlist, tracks, self.music_root)
         self.assertIn("#EXTINF:5,untitled\nalbum/untitled.flac", content)
 
@@ -255,7 +255,7 @@ class PlaylistIOApiTests(unittest.IsolatedAsyncioTestCase):
         playlist = SimpleNamespace(id="p1", name="My Mix", track_ids=["t1"])
         with (
             patch.object(main, "settings", self.settings),
-            patch.object(main, "library_scanner", scanner),
+            patch.object(main.runtime.music_library, "scanner", scanner),
             patch.object(library_api, "get_playlists", return_value=[playlist]),
         ):
             response = await library_api.export_playlist("p1")
@@ -265,7 +265,7 @@ class PlaylistIOApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.body.decode(), "#EXTM3U\n#EXTINF:240,Artist - Song\nalbum/song.flac\n")
 
     async def test_export_api_404_for_unknown_playlist(self):
-        with patch.object(main, "settings", self.settings), patch.object(main, "library_scanner", SimpleNamespace(get_tracks=lambda refresh=True, **kwargs: [])), patch.object(library_api, "get_playlists", return_value=[]):
+        with patch.object(main, "settings", self.settings), patch.object(main.runtime.music_library, "scanner", SimpleNamespace(get_tracks=lambda refresh=True, **kwargs: [])), patch.object(library_api, "get_playlists", return_value=[]):
             with self.assertRaises(library_api.HTTPException) as ctx:
                 await library_api.export_playlist("missing")
         self.assertEqual(ctx.exception.status_code, 404)
@@ -293,7 +293,7 @@ class PlaylistIOApiTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch.object(main, "settings", self.settings),
-            patch.object(main, "library_scanner", scanner),
+            patch.object(main.runtime.music_library, "scanner", scanner),
             patch("playlist_io.save_playlist", return_value=saved) as save,
         ):
             payload = await library_api.upload_track(file=FakeUpload(b"#EXTM3U\nalbum/song.flac\n"))
@@ -327,7 +327,7 @@ class PlaylistIOApiTests(unittest.IsolatedAsyncioTestCase):
             async def close(self):
                 return None
 
-        with patch.object(main, "settings", self.settings), patch.object(main, "library_scanner", scanner):
+        with patch.object(main, "settings", self.settings), patch.object(main.runtime.music_library, "scanner", scanner):
             with self.assertRaises(library_api.HTTPException) as ctx:
                 await library_api.upload_track(file=FakeUpload())
         self.assertEqual(ctx.exception.status_code, 400)

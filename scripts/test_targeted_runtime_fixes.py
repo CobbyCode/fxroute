@@ -212,10 +212,10 @@ class QueueCallbackOwnershipTests(unittest.IsolatedAsyncioTestCase):
                 setattr(main.runtime if hasattr(main.runtime, name) else main.playback_state if hasattr(main.playback_state, name) else main, name, value)
 
     def test_selected_queue_order_is_exact_and_deduplicated(self):
-        original_scanner = main.library_scanner
+        original_scanner = main.runtime.music_library.scanner
         saved_queue = queue_state()
         try:
-            main.library_scanner = SimpleNamespace(
+            main.runtime.music_library.scanner = SimpleNamespace(
                 get_tracks=lambda: [_FakeTrack("a"), _FakeTrack("b"), _FakeTrack("c")],
             )
             playback_queue.queue.tracks = [{"id": "old"}]
@@ -246,7 +246,7 @@ class QueueCallbackOwnershipTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(candidate.shuffle)
             self.assertEqual(playback_queue.queue.tracks, [{"id": "old"}])
         finally:
-            main.library_scanner = original_scanner
+            main.runtime.music_library.scanner = original_scanner
             restore_queue_state(saved_queue)
 
 
@@ -287,7 +287,7 @@ class ApiPlayQueueOrderTests(unittest.IsolatedAsyncioTestCase):
         originals = {
             name: (getattr(main.runtime, name) if hasattr(main.runtime, name) else getattr(main.playback_state, name) if hasattr(main.playback_state, name) else getattr(main, name))
             for name in (
-                "player_instance", "library_scanner", "current_track_info",
+                "player_instance", "music_library", "current_track_info",
                 "last_track_info", "last_radio_track_info", "current_footer_owner",
                 "peak_monitor",
                 "source_transition_lock",
@@ -297,7 +297,7 @@ class ApiPlayQueueOrderTests(unittest.IsolatedAsyncioTestCase):
         }
         self._saved_queue = queue_state()
         main.runtime.player_instance = _FakePlayer()
-        main.library_scanner = SimpleNamespace(
+        main.runtime.music_library.scanner = SimpleNamespace(
             get_tracks=lambda: [_FakeTrack("a"), _FakeTrack("b"), _FakeTrack("c")],
         )
         main.playback_state.current_track_info = None

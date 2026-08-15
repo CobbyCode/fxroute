@@ -65,7 +65,7 @@ class _FakePlayer:
 
 class QueueNavigationTransactionalTests(unittest.IsolatedAsyncioTestCase):
     GLOBALS = (
-        "player_instance", "library_scanner", "current_track_info",
+        "player_instance", "music_library", "current_track_info",
         "last_track_info", "current_footer_owner",
     )
 
@@ -74,7 +74,7 @@ class QueueNavigationTransactionalTests(unittest.IsolatedAsyncioTestCase):
         originals = {name: (getattr(main.runtime, name) if hasattr(main.runtime, name) else getattr(main.playback_state, name) if hasattr(main.playback_state, name) else getattr(main, name)) for name in self.GLOBALS}
         self._saved_queue = queue_state()
         main.runtime.player_instance = _FakePlayer()
-        main.library_scanner = _Scanner(["a", "b", "c", "d"])
+        main.runtime.music_library.scanner = _Scanner(["a", "b", "c", "d"])
         main.playback_state.current_track_info = dict(queue_a[index])
         main.playback_state.last_track_info = dict(queue_a[index])
         main.playback_state.current_footer_owner = "local"

@@ -78,7 +78,7 @@ class _Station:
 
 class PlayQueueTransactionalTests(unittest.IsolatedAsyncioTestCase):
     GLOBALS = (
-        "player_instance", "library_scanner", "current_track_info",
+        "player_instance", "music_library", "current_track_info",
         "last_track_info", "last_radio_track_info", "current_footer_owner",
     )
 
@@ -87,7 +87,7 @@ class PlayQueueTransactionalTests(unittest.IsolatedAsyncioTestCase):
         originals = {name: (getattr(main.runtime, name) if hasattr(main.runtime, name) else getattr(main.playback_state, name) if hasattr(main.playback_state, name) else getattr(main, name)) for name in self.GLOBALS}
         self._saved_queue = queue_state()
         main.runtime.player_instance = _FakePlayer()
-        main.library_scanner = _Scanner(["a", "b", "c", "d"])
+        main.runtime.music_library.scanner = _Scanner(["a", "b", "c", "d"])
         main.playback_state.current_track_info = dict(queue_a[index]) if queue_a and index >= 0 else None
         main.playback_state.last_track_info = dict(queue_a[index]) if queue_a and index >= 0 else None
         main.playback_state.last_radio_track_info = None
@@ -228,7 +228,7 @@ class PlayQueueTransactionalTests(unittest.IsolatedAsyncioTestCase):
             main.runtime.player_instance.state["playing"] = True
             main.runtime.player_instance.state["paused"] = False
             with self._patch_context(lambda _request: self.fail("Coordinator must not run")), patch.object(
-                main.library_scanner, "get_tracks"
+                main.runtime.music_library.scanner, "get_tracks"
             ) as scan:
                 result = await self._play(track_id="c", queue_track_ids=["a", "b", "c"])
 
@@ -280,7 +280,7 @@ class PlayQueueTransactionalTests(unittest.IsolatedAsyncioTestCase):
         originals = self._install([_track("a"), _track("b"), _track("c")], index=0)
         requests = []
         try:
-            main.library_scanner = _Scanner(["a", "b", "c", "d", "e", "f"])
+            main.runtime.music_library.scanner = _Scanner(["a", "b", "c", "d", "e", "f"])
 
             async def succeed(request):
                 requests.append(request)
@@ -432,7 +432,7 @@ class QueueSelectionTransactionalTests(unittest.IsolatedAsyncioTestCase):
     """/api/playback/selection: prepare candidate, commit it, keep track dict."""
 
     GLOBALS = (
-        "player_instance", "library_scanner", "current_track_info",
+        "player_instance", "music_library", "current_track_info",
         "last_track_info", "current_footer_owner",
     )
 
@@ -441,7 +441,7 @@ class QueueSelectionTransactionalTests(unittest.IsolatedAsyncioTestCase):
         originals = {name: (getattr(main.runtime, name) if hasattr(main.runtime, name) else getattr(main.playback_state, name) if hasattr(main.playback_state, name) else getattr(main, name)) for name in self.GLOBALS}
         self._saved_queue = queue_state()
         main.runtime.player_instance = _FakePlayer()
-        main.library_scanner = _Scanner(["a", "b", "c", "d"])
+        main.runtime.music_library.scanner = _Scanner(["a", "b", "c", "d"])
         main.runtime.player_instance.state["current_file"] = queue_a[index]["url"]
         main.playback_state.current_track_info = dict(queue_a[index])
         main.playback_state.last_track_info = dict(queue_a[index])

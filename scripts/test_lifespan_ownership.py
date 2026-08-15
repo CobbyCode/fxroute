@@ -56,6 +56,18 @@ class FakeMeasurementSession:
 
 
 class LifespanOwnershipTests(unittest.IsolatedAsyncioTestCase):
+    async def test_music_library_runtime_reset_clears_services_and_switch_lock(self):
+        owner = main.runtime.music_library
+        owner.manager = object()
+        owner.scanner = object()
+        owner.switch_lock = asyncio.Lock()
+
+        main.runtime.reset()
+
+        self.assertIsNone(owner.manager)
+        self.assertIsNone(owner.scanner)
+        self.assertIsNone(owner.switch_lock)
+
     async def test_startup_failure_is_raised_and_prior_player_is_stopped(self):
         player = FakePlayer()
         settings = SimpleNamespace(MUSIC_ROOT=pathlib.Path("/music"), download_dir=pathlib.Path("/downloads"))
