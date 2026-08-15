@@ -17,6 +17,7 @@ from hybrid_measurement import (
     sum_complex_points,
 )
 from measurement import MeasurementStore
+from measurement_persistence import MeasurementPersistence
 
 
 class HybridMeasurementAnalysisTests(unittest.TestCase):
@@ -52,6 +53,7 @@ class HybridMeasurementAnalysisTests(unittest.TestCase):
     def test_direct_analysis_survives_final_measurement_payload(self):
         with tempfile.TemporaryDirectory() as home:
             store = MeasurementStore(home=Path(home))
+            self.assertIsInstance(store._persistence, MeasurementPersistence)
             measurement = store._build_measurement_from_analysis(
                 self._analysis_payload(),
                 input_device={"id": "mic", "label": "Mic"},
