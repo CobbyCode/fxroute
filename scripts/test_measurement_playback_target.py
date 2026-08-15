@@ -20,6 +20,7 @@ from measurement import (
     MEASUREMENT_SCOPE_RAW_HELPER,
     MeasurementStore,
 )
+from measurement_routing import MeasurementRouting
 
 
 def stereo_overview():
@@ -44,6 +45,7 @@ class MeasurementPlaybackTargetTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.store = MeasurementStore(home=pathlib.Path(self._tmp.name))
+        self.assertIsInstance(self.store._routing, MeasurementRouting)
 
     def tearDown(self):
         self._tmp.cleanup()
