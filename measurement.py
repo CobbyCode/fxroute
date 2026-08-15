@@ -1171,6 +1171,7 @@ class MeasurementStore:
             reference_capture=reference_capture,
             capture_channels=capture_channels,
             electrical_reference_channel_index=electrical_reference_channel_index,
+            capture_path=capture_path,
             **kwargs,
         )
 
