@@ -21,6 +21,7 @@ from measurement_constants import (
     SWEEP_V2_TAIL_SECONDS,
     TRACE_COLORS,
 )
+from measurement_signal import build_inverse_sweep
 
 logger = logging.getLogger(__name__)
 
@@ -444,7 +445,7 @@ class MeasurementRepeatRunner:
                 reference_sweep = pb_data[_lead_in_samp:_lead_in_samp + _sweep_samp].astype(np.float64)
                 start_hz = float(side_meta[0].get("start_hz") or SWEEP_START_HZ)
                 end_hz = float(side_meta[0].get("end_hz") or SWEEP_END_HZ)
-                inverse_sweep = self._store._build_inverse_sweep(
+                inverse_sweep = build_inverse_sweep(
                     reference_sweep,
                     sample_rate=sr,
                     duration_seconds=_sweep_sec,
