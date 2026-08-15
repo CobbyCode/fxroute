@@ -66,19 +66,35 @@ class _ScriptedRunner:
 
 
 CAN_SUSPEND_YES = """\
+method return time=1700000000.000000 serial=15 reply_serial=2
+   string "yes"
+"""
+
+CAN_SUSPEND_YES_LEGACY = """\
 method_return time=1700000000.000000 serial=15 reply_serial=2
    variant       string "yes"
 """
 
 CAN_SUSPEND_NO = """\
-method_return time=1700000000.000000 serial=15 reply_serial=2
-   variant       string "no"
+method return time=1700000000.000000 serial=15 reply_serial=2
+   string "no"
 """
 
 CAN_POWEROFF_CHALLENGE = """\
-method_return time=1700000000.000000 serial=15 reply_serial=2
-   variant       string "challenge"
+method return time=1700000000.000000 serial=15 reply_serial=2
+   string "challenge"
 """
+
+CAN_POWEROFF_YES = """\
+method return time=1700000000.000000 serial=16 reply_serial=2
+   string "yes"
+"""
+
+UNKNOWN_METHOD = (
+    "Error org.freedesktop.DBus.Error.UnknownMethod: "
+    "Method 'CanSuspend' with interface 'org.freedesktop.login1.Manager' "
+    "not found.\n"
+)
 
 SERVICE_UNKNOWN = (
     "Error org.freedesktop.DBus.Error.ServiceUnknown: "
@@ -110,6 +126,9 @@ class CapabilityTests(unittest.TestCase):
         power._power_backend = self._previous_backend
 
     def test_both_yes(self):
+        # Modern logind: capability probes are direct method calls.
+        # Each probe runs once; the method reply shape (bare `string "..."`)
+        # reaches the parser without a leftover `variant` prefix.
         runner = _ScriptedRunner([
             (0, CAN_SUSPEND_YES, ""),
             (0, CAN_POWEROFF_CHALLENGE, ""),
@@ -123,14 +142,83 @@ class CapabilityTests(unittest.TestCase):
         self.assertEqual(caps.power_off, "challenge")
         self.assertIsNone(caps.unavailable_reason)
         self.assertEqual(len(runner.calls), 2)
+        names = [self._probe_method_name(args) for args in runner.calls]
+        self.assertEqual(names, ["CanSuspend", "CanPowerOff"])
         for args in runner.calls:
             self.assertEqual(args[0], "dbus-send")
             self.assertIn("--system", args)
             self.assertIn("--print-reply", args)
             self.assertIn("--dest=org.freedesktop.login1", args)
             self.assertIn("/org/freedesktop/login1", args)
-            self.assertIn("org.freedesktop.DBus.Properties.Get", args)
-            self.assertIn("string:org.freedesktop.login1.Manager", args)
+            # The property-form Get MUST NOT appear on the happy path:
+            # the modern method form is always tried first and only
+            # falls back on UnknownMethod / UnknownProperty replies.
+            self.assertNotIn("org.freedesktop.DBus.Properties.Get", args)
+
+    def test_legacy_property_form_fallback(self):
+        # Older logind: the method probe errors with UnknownMethod and
+        # the runner falls back to ``Properties.Get`` whose reply uses
+        # the ``variant string "..."`` shape.
+        runner = _ScriptedRunner([
+            (1, "", UNKNOWN_METHOD),
+            (0, CAN_SUSPEND_YES_LEGACY, ""),
+            (1, "", UNKNOWN_METHOD),
+            (0, CAN_SUSPEND_YES_LEGACY, ""),
+        ])
+        power.set_backend(power.PowerBackend(runner=runner))
+
+        caps = _run(power.get_capabilities())
+
+        self.assertTrue(caps.available)
+        self.assertEqual(caps.suspend, "yes")
+        self.assertEqual(caps.power_off, "yes")
+        self.assertEqual(len(runner.calls), 4)
+        # First two are the suspend probe (method then property);
+        # the next two are the power_off probe (same fallback path).
+        self.assertEqual(
+            self._probe_method_name(runner.calls[0]), "CanSuspend"
+        )
+        self.assertIn(
+            "org.freedesktop.DBus.Properties.Get", runner.calls[1]
+        )
+        self.assertEqual(
+            self._probe_method_name(runner.calls[2]), "CanPowerOff"
+        )
+        self.assertIn(
+            "org.freedesktop.DBus.Properties.Get", runner.calls[3]
+        )
+
+    def test_method_form_failure_with_no_legacy_fallback(self):
+        # When the method probe fails for any reason that is neither
+        # UnknownMethod nor UnknownProperty, the property-form fallback
+        # is skipped (we cannot read the capability cleanly, so collapse
+        # to "unavailable" rather than risk a stale answer).
+        runner = _ScriptedRunner([
+            (1, "", PERMISSION_DENIED),
+            (1, "", PERMISSION_DENIED),
+        ])
+        power.set_backend(power.PowerBackend(runner=runner))
+
+        caps = _run(power.get_capabilities())
+
+        self.assertFalse(caps.available)
+        self.assertEqual(caps.suspend, "unavailable")
+        self.assertEqual(caps.power_off, "unavailable")
+        # Only the method probes ran; the fallback path was skipped.
+        self.assertEqual(len(runner.calls), 2)
+        for args in runner.calls:
+            self.assertNotIn(
+                "org.freedesktop.DBus.Properties.Get", args
+            )
+
+    @staticmethod
+    def _probe_method_name(args):
+        """Return the managed method name embedded in a dbus-send arg."""
+
+        for token in args:
+            if token.startswith("org.freedesktop.login1.Manager.Can"):
+                return token.rsplit(".", 1)[-1]
+        return None
 
     def test_suspend_no_and_power_off_unknown(self):
         runner = _ScriptedRunner([

@@ -37,33 +37,54 @@ from fastapi.testclient import TestClient
 
 
 CAN_SUSPEND_YES = """\
-method_return time=1700000000.000000 serial=15 reply_serial=2
-   variant       string "yes"
+method return time=1700000000.000000 serial=15 reply_serial=2
+   string "yes"
 """
 
 CAN_SUSPEND_NO = """\
-method_return time=1700000000.000000 serial=15 reply_serial=2
-   variant       string "no"
+method return time=1700000000.000000 serial=15 reply_serial=2
+   string "no"
 """
 
 CAN_POWEROFF_YES = """\
-method_return time=1700000000.000000 serial=16 reply_serial=2
-   variant       string "yes"
+method return time=1700000000.000000 serial=16 reply_serial=2
+   string "yes"
 """
 
 CAN_POWEROFF_CHALLENGE = """\
-method_return time=1700000000.000000 serial=16 reply_serial=2
-   variant       string "challenge"
+method return time=1700000000.000000 serial=16 reply_serial=2
+   string "challenge"
 """
 
 
 def _can_reply(value: str) -> str:
-    """Build a fake dbus-send Get reply for a given logind CanX value."""
+    """Build a fake dbus-send method reply for a given logind CanX value.
+
+    Modern logind's ``Manager.Can{X}`` is a method that returns a bare
+    ``string "<value>"`` on stdout.  The capability parser accepts both
+    this shape and the older ``Properties.Get`` variant-form reply.
+    """
+
+    return (
+        'method return time=1700000000.000000 serial=17 reply_serial=2\n'
+        f'   string "{value}"\n'
+    )
+
+
+def _can_reply_legacy(value: str) -> str:
+    """Build the legacy ``Properties.Get`` reply shape for fallback tests."""
 
     return (
         'method_return time=1700000000.000000 serial=17 reply_serial=2\n'
         f'   variant       string "{value}"\n'
     )
+
+
+UNKNOWN_METHOD = (
+    "Error org.freedesktop.DBus.Error.UnknownMethod: "
+    "Method 'CanSuspend' with interface 'org.freedesktop.login1.Manager' "
+    "not found.\n"
+)
 
 SERVICE_UNKNOWN = (
     "Error org.freedesktop.DBus.Error.ServiceUnknown: "

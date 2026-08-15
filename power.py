@@ -241,17 +241,72 @@ class PowerBackend:
 
     # -- internal helpers -------------------------------------------------
 
+    # Names that, in modern logind (systemd >= 256), were demoted from
+    # ``Manager`` properties to ``Manager`` methods returning ``out s``.
+    # FXRoute always probes via the *method* form first and only falls
+    # back to ``Properties.Get`` when logind reports ``UnknownMethod``;
+    # on older systemd the property form succeeds, on modern logind the
+    # method form succeeds - either path lands on the same parser.
+    _LOGIND_METHOD_CAPABILITY_NAMES = frozenset({"CanSuspend", "CanPowerOff"})
+
     async def _query_logind_property(self, name: str) -> Optional[str]:
-        """Call ``org.freedesktop.DBus.Properties.Get`` and parse the result.
+        """Probe a textual logind capability (``yes``/``no``/``challenge``).
+
+        Logind's ``CanX`` capability surface changed shape across
+        systemd versions:
+
+        * systemd < 256 -- ``CanSuspend`` / ``CanPowerOff`` are
+          ``Manager`` *properties*; reading them via
+          ``org.freedesktop.DBus.Properties.Get`` returns ``yes/no/etc``.
+        * systemd >= 256 -- the same names became ``Manager`` *methods*
+          with an ``out s result`` signature.  Reading them via
+          ``Properties.Get`` errors out with ``UnknownProperty``.
+
+        FXRoute always tries the method form first (works on modern
+        logind; errors with ``UnknownMethod`` on older ones) and falls
+        back to the property form so the capability surface stays
+        consistent on every supported distro.
 
         Returns:
             * the textual value returned by login1 (``"yes"``, ``"no"``,
-              ``"challenge"``) when the property was reachable.
-            * ``None`` when dbus-send / login1 is unreachable so the
-              capability endpoint can collapse to "unavailable".
+              ``"challenge"``, ``"inhibited"``, ...) when reachable.
+            * ``None`` when both calls and the Caller service are
+              unreachable, so the capability endpoint can collapse to
+              "unavailable".
         """
 
-        args = (
+        method_args = (
+            self._dbus_send_path,
+            "--system",
+            "--print-reply",
+            "--dest=" + _LOGIND_DESTINATION,
+            _LOGIND_OBJECT_PATH,
+            f"{_LOGIND_MANAGER_IFACE}.{name}",
+        )
+        try:
+            method_result = await self._runner(
+                *method_args, timeout=_DBUS_SEND_TIMEOUT_SECONDS
+            )
+        except FileNotFoundError:
+            return None
+        if method_result.returncode == 0:
+            return _parse_dbus_string_variant(method_result.stdout)
+
+        method_error, _ = _parse_dbus_error(
+            method_result.stderr or method_result.stdout
+        )
+        # Modern logind: success via method.  Older logind: method
+        # call returns ``UnknownMethod`` and we have to read the
+        # property via ``Properties.Get`` instead.  Both UnknownProperty
+        # (modern) and UnknownMethod (older) plus runtime errors
+        # collapse into a single ``None`` so the frontend stays tidy.
+        if method_error not in (
+            "org.freedesktop.DBus.Error.UnknownMethod",
+            "org.freedesktop.DBus.Error.UnknownProperty",
+        ) and name in self._LOGIND_METHOD_CAPABILITY_NAMES:
+            return None
+
+        property_args = (
             self._dbus_send_path,
             "--system",
             "--print-reply",
@@ -262,16 +317,14 @@ class PowerBackend:
             f"string:{name}",
         )
         try:
-            result = await self._runner(*args, timeout=_DBUS_SEND_TIMEOUT_SECONDS)
+            property_result = await self._runner(
+                *property_args, timeout=_DBUS_SEND_TIMEOUT_SECONDS
+            )
         except FileNotFoundError:
             return None
-        if result.returncode != 0:
-            # An unreachable login1 returns a nonzero exit code with an
-            # ``Error org.freedesktop.DBus.Error.ServiceUnknown``-style
-            # message on stdout.  The frontend only needs to know that the
-            # property could not be read.
+        if property_result.returncode != 0:
             return None
-        return _parse_dbus_string_variant(result.stdout)
+        return _parse_dbus_string_variant(property_result.stdout)
 
     async def _invoke_logind_action(self, action: str) -> PowerCallResult:
         """Trigger a single logind action through ``dbus-send``.
@@ -345,7 +398,7 @@ class PowerBackend:
 
 
 _DBUS_STRING_VARIANT_RE = re.compile(
-    r"^\s*variant\s+string\s+\"([^\"\\]*(?:\\.[^\"\\]*)*)\"\s*$",
+    r"^\s*(?:variant\s+)?string\s+\"([^\"\\]*(?:\\.[^\"\\]*)*)\"\s*$",
     re.MULTILINE,
 )
 _DBUS_ERROR_NAME_RE = re.compile(r"Error\s+([A-Za-z0-9_.]+)\s*:\s*(.*)$")
@@ -353,10 +406,12 @@ _DBUS_ERROR_NAME_BARE_RE = re.compile(r"^\s*([A-Za-z0-9_.]+)\s*:\s*(.*)$")
 
 
 def _parse_dbus_string_variant(payload: str) -> Optional[str]:
-    """Extract a single ``variant string "..."`` from a dbus-send reply.
+    """Extract the value of a single ``string "..."`` from a dbus-send reply.
 
-    The reply always starts with ``method_return`` followed by the
-    variant.  Login1 never reports anything else for these property
+    Covers both the bare ``string "yes"`` shape returned by direct
+    method calls (``Manager.CanSuspend``) and the prefixed
+    ``variant string "yes"`` shape returned by ``Properties.Get`` on
+    older systemd.  Login1 never reports anything else for these
     reads, so a single match is enough.
     """
 

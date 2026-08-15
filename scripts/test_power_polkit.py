@@ -468,5 +468,50 @@ class PolkitRenderSmokeTests(unittest.TestCase):
         )
 
 
+class ProbeArchitectureTests(unittest.TestCase):
+    """The capability probe MUST run as a direct ``Manager.Can{X}`` method
+    call (modern logind) and only fall back to ``Properties.Get`` when
+    logind reports ``UnknownMethod`` -- so the same code path works on
+    systemd >= 256 as well as on older distros like Debian Bookworm."""
+
+    def test_query_logind_property_prefers_direct_method_call(self):
+        # The method-form args tuple MUST be assembled first, the property
+        # form comes after the rcode-0 success shortcut.
+        power_src = (Path(__file__).resolve().parents[1] / "power.py").read_text()
+        method_idx = power_src.find('f"{_LOGIND_MANAGER_IFACE}.{name}"')
+        prop_idx = power_src.find('_DBUS_PROPERTIES_IFACE + ".Get"')
+        self.assertGreater(prop_idx, 0)
+        self.assertGreater(prop_idx, method_idx)
+        # The capability probe list MUST be limited to CanSuspend / CanPowerOff.
+        names_match = re.search(
+            r"_LOGIND_METHOD_CAPABILITY_NAMES\s*=\s*frozenset\(\{(.*?)\}\)",
+            power_src,
+        )
+        self.assertIsNotNone(names_match)
+        names = {n.strip().strip('"').strip("'") for n in names_match.group(1).split(",")}
+        self.assertSetEqual(names, {"CanSuspend", "CanPowerOff"})
+
+    def test_fallback_only_runs_on_unknown_method_or_unknown_property(self):
+        # The fallback MUST NOT trigger on a transient PermissionDenied.
+        power_src = (Path(__file__).resolve().parents[1] / "power.py").read_text()
+        # Use DOTALL so the (.*?) crosses the multi-line tuple body.
+        snippet = re.search(
+            r"if method_error not in \((.*?)\) and name in",
+            power_src,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(snippet)
+        names = {n.strip().strip('"').strip("'")
+                 for n in re.findall(r'"org\.freedesktop\.[^"]+"',
+                                     snippet.group(1))}
+        self.assertSetEqual(
+            names,
+            {
+                "org.freedesktop.DBus.Error.UnknownMethod",
+                "org.freedesktop.DBus.Error.UnknownProperty",
+            },
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
