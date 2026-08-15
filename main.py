@@ -1064,9 +1064,6 @@ async def _run_locked_worker(lock: asyncio.Lock, func: Callable[..., Any], *args
     async with lock:
         return await _drain_worker(func, *args, **kwargs)
 playback_transition_coordinator: PlaybackTransitionCoordinator | None = None
-external_input_loopback_module_id = None
-external_input_loopback_source_name = None
-bluetooth_input_source_name = None
 bluetooth_monitor_task = None
 bluetooth_agent_process = None
 spotify_playerctl_watch_task = None
@@ -1143,6 +1140,24 @@ class SilentActiveRecoveryState:
 
 
 silent_active_recovery_state = SilentActiveRecoveryState()
+
+
+@dataclass
+class InputRoutingState:
+    """Single authoritative owner of the Bluetooth/external-input routing bookkeeping.
+
+    Owns the currently-linked Bluetooth input source name and the
+    external-input loopback module id / source name used for external-input
+    monitoring.  Mutated only by the Bluetooth/external-input enable, disable
+    and clear helpers, the Bluetooth monitor loop and lifespan shutdown.
+    """
+
+    bluetooth_input_source_name: Optional[str] = None
+    external_input_loopback_module_id: Optional[int] = None
+    external_input_loopback_source_name: Optional[str] = None
+
+
+input_routing_state = InputRoutingState()
 radio_metadata_service = RadioMetadataService()
 # queue_advancing is a reentrancy/dispatch guard for
 # on_player_state_change and deliberately not queue state: the queue
@@ -4748,25 +4763,23 @@ async def _disconnect_external_input_source(source_name: str | None) -> None:
 
 
 async def _disable_external_input_loopback() -> None:
-    global external_input_loopback_module_id, external_input_loopback_source_name
-    previous_source = external_input_loopback_source_name
-    if external_input_loopback_module_id is not None:
+    previous_source = input_routing_state.external_input_loopback_source_name
+    if input_routing_state.external_input_loopback_module_id is not None:
         try:
-            await _run_pactl_command("unload-module", str(external_input_loopback_module_id))
-            logger.info("Disabled legacy external-input loopback module %s", external_input_loopback_module_id)
+            await _run_pactl_command("unload-module", str(input_routing_state.external_input_loopback_module_id))
+            logger.info("Disabled legacy external-input loopback module %s", input_routing_state.external_input_loopback_module_id)
         except Exception as exc:
-            logger.warning("Failed to unload legacy external-input loopback module %s: %s", external_input_loopback_module_id, exc)
+            logger.warning("Failed to unload legacy external-input loopback module %s: %s", input_routing_state.external_input_loopback_module_id, exc)
     await _disconnect_external_input_source(previous_source)
-    external_input_loopback_module_id = None
-    external_input_loopback_source_name = None
+    input_routing_state.external_input_loopback_module_id = None
+    input_routing_state.external_input_loopback_source_name = None
 
 
 async def _ensure_external_input_loopback(source_name: str) -> None:
-    global external_input_loopback_module_id, external_input_loopback_source_name
     normalized = (source_name or "").strip()
     if not normalized:
         raise RuntimeError("Missing source name for external-input monitoring")
-    if external_input_loopback_source_name == normalized:
+    if input_routing_state.external_input_loopback_source_name == normalized:
         return
     await _disable_external_input_loopback()
     try:
@@ -4777,8 +4790,8 @@ async def _ensure_external_input_loopback(source_name: str) -> None:
     except BaseException:
         await _disconnect_external_input_source(normalized)
         raise
-    external_input_loopback_module_id = None
-    external_input_loopback_source_name = normalized
+    input_routing_state.external_input_loopback_module_id = None
+    input_routing_state.external_input_loopback_source_name = normalized
     logger.info("Enabled direct external-input monitoring from %s to fxroute_dsp_sink", normalized)
 
 
@@ -4852,9 +4865,8 @@ async def _ensure_bluetooth_audio_agent() -> None:
 
 
 async def _clear_bluetooth_input_monitoring_links() -> None:
-    global bluetooth_input_source_name
-    previous_source = bluetooth_input_source_name
-    bluetooth_input_source_name = None
+    previous_source = input_routing_state.bluetooth_input_source_name
+    input_routing_state.bluetooth_input_source_name = None
     await _disconnect_bluetooth_input_source(previous_source)
 
 
@@ -4890,11 +4902,10 @@ async def _disable_bluetooth_input_monitoring() -> None:
 
 
 async def _ensure_bluetooth_input_loopback(source_name: str) -> None:
-    global bluetooth_input_source_name
     normalized = (source_name or "").strip()
     if not normalized:
         raise RuntimeError("Missing Bluetooth source name for monitoring")
-    if bluetooth_input_source_name == normalized:
+    if input_routing_state.bluetooth_input_source_name == normalized:
         return
     await _clear_bluetooth_input_monitoring_links()
     try:
@@ -4902,7 +4913,7 @@ async def _ensure_bluetooth_input_loopback(source_name: str) -> None:
     except BaseException:
         await _disconnect_bluetooth_input_source(normalized)
         raise
-    bluetooth_input_source_name = normalized
+    input_routing_state.bluetooth_input_source_name = normalized
     logger.info("Enabled Bluetooth input monitoring from %s to fxroute_dsp_sink", normalized)
 
 
@@ -4951,7 +4962,7 @@ async def _bluetooth_input_monitor_loop() -> None:
             if overview.get("mode") == SOURCE_MODE_BLUETOOTH_INPUT:
                 overview = await _sync_bluetooth_input_monitoring(overview)
                 await sync_peak_monitor_for_source_mode_state(overview)
-            elif bluetooth_input_source_name:
+            elif input_routing_state.bluetooth_input_source_name:
                 await _disable_bluetooth_input_monitoring()
                 await sync_peak_monitor_for_source_mode_state(overview)
         except asyncio.CancelledError:
@@ -5155,7 +5166,7 @@ async def _spotify_playerctl_watch_loop() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan: startup and shutdown."""
-    global settings, library_scanner, music_library_manager, library_scan_task, downloader, dsp_manager, measurement_store, measurement_sr_session, measurement_watchdog_task, hardware_controller, playback_transition_coordinator, external_input_loopback_module_id, external_input_loopback_source_name, bluetooth_input_source_name, bluetooth_monitor_task, bluetooth_agent_process, spotify_playerctl_watch_task, spotify_playerctl_detect_task, spotify_state_refresh_task, spotify_state_poll_task, spotify_playerctl_last_trigger_at
+    global settings, library_scanner, music_library_manager, library_scan_task, downloader, dsp_manager, measurement_store, measurement_sr_session, measurement_watchdog_task, hardware_controller, playback_transition_coordinator, bluetooth_monitor_task, bluetooth_agent_process, spotify_playerctl_watch_task, spotify_playerctl_detect_task, spotify_state_refresh_task, spotify_state_poll_task, spotify_playerctl_last_trigger_at
 
     logger.info("Starting FXRoute... build_id=%s", _read_build_id())
     try:
@@ -5337,7 +5348,7 @@ async def lifespan(app: FastAPI):
 
 
 async def _shutdown_lifespan_resources() -> None:
-    global settings, library_scanner, library_scan_task, downloader, dsp_manager, measurement_store, measurement_sr_session, measurement_watchdog_task, hardware_controller, playback_transition_coordinator, external_input_loopback_module_id, external_input_loopback_source_name, bluetooth_input_source_name, bluetooth_monitor_task, bluetooth_agent_process, spotify_playerctl_watch_task, spotify_playerctl_detect_task, spotify_state_refresh_task, spotify_state_poll_task
+    global settings, library_scanner, library_scan_task, downloader, dsp_manager, measurement_store, measurement_sr_session, measurement_watchdog_task, hardware_controller, playback_transition_coordinator, bluetooth_monitor_task, bluetooth_agent_process, spotify_playerctl_watch_task, spotify_playerctl_detect_task, spotify_state_refresh_task, spotify_state_poll_task
 
     async def cleanup(label: str, operation) -> None:
         nonlocal cleanup_cancelled
@@ -5420,10 +5431,10 @@ async def _shutdown_lifespan_resources() -> None:
         await cleanup("player", lambda: asyncio.to_thread(runtime.player_instance.stop))
     if runtime.dsp_runtime is not None:
         await cleanup("subwoofer-runtime", runtime.dsp_runtime.stop)
-    if bluetooth_agent_process is not None or bluetooth_input_source_name is not None:
+    if bluetooth_agent_process is not None or input_routing_state.bluetooth_input_source_name is not None:
         await cleanup("bluetooth-input", _disable_bluetooth_input_monitoring)
     await cleanup("bluetooth-receiver", lambda: asyncio.to_thread(set_bluetooth_receiver_enabled, False))
-    if external_input_loopback_module_id is not None or external_input_loopback_source_name is not None:
+    if input_routing_state.external_input_loopback_module_id is not None or input_routing_state.external_input_loopback_source_name is not None:
         await cleanup("external-input", _disable_external_input_loopback)
     if runtime.peak_monitor is not None:
         await cleanup("peak-monitor", runtime.peak_monitor.stop)
@@ -5441,9 +5452,9 @@ async def _shutdown_lifespan_resources() -> None:
     measurement_watchdog_task = None
     hardware_controller = None
     playback_transition_coordinator = None
-    external_input_loopback_module_id = None
-    external_input_loopback_source_name = None
-    bluetooth_input_source_name = None
+    input_routing_state.external_input_loopback_module_id = None
+    input_routing_state.external_input_loopback_source_name = None
+    input_routing_state.bluetooth_input_source_name = None
     bluetooth_monitor_task = None
     bluetooth_agent_process = None
     spotify_playerctl_watch_task = None
