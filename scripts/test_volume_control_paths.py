@@ -40,13 +40,13 @@ class _FakePeakMonitor:
 
 class SilentActiveLiveVolumeTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        self.original_silent_attempts = dict(main.silent_active_recovery_attempts)
-        main.silent_active_recovery_attempts.clear()
+        self.original_silent_attempts = dict(main.silent_active_recovery_state.recovery_attempts)
+        main.silent_active_recovery_state.recovery_attempts.clear()
         self.original_cache = system_volume._status_volume_cache
 
     async def asyncTearDown(self):
-        main.silent_active_recovery_attempts.clear()
-        main.silent_active_recovery_attempts.update(self.original_silent_attempts)
+        main.silent_active_recovery_state.recovery_attempts.clear()
+        main.silent_active_recovery_state.recovery_attempts.update(self.original_silent_attempts)
         system_volume._status_volume_cache = self.original_cache
 
     def _patches(self):

@@ -20,7 +20,7 @@ import tempfile
 import playback_queue
 import samplerate_orchestration
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, List, Mapping, Optional
 from urllib.parse import quote, unquote, urlparse
@@ -1074,9 +1074,11 @@ spotify_playerctl_detect_task = None
 spotify_state_refresh_task = None
 spotify_state_poll_task = None
 spotify_playerctl_last_trigger_at = 0.0
+# Measurement-window heartbeat timestamp: set by
+# /api/power/measurement-heartbeat, read only via _is_measurement_window_open().
+# It is measurement-window/power state, not silent-active recovery, so it
+# stays a plain module scalar rather than joining SilentActiveRecoveryState.
 last_measurement_window_seen_at = 0.0
-silent_active_recovery_attempts: set[str] = set()
-silent_active_watch_tasks: dict[str, asyncio.Task] = {}
 lifecycle_background_tasks: set[asyncio.Task] = set()
 library_refresh_tasks: set[asyncio.Task] = set()
 # Wait primitive for ended callbacks: set once no playback transition
@@ -1122,6 +1124,25 @@ class RadioReconnectState:
 
 
 radio_reconnect_state = RadioReconnectState()
+
+
+@dataclass
+class SilentActiveRecoveryState:
+    """Single authoritative owner of the silent-active watch/recovery bookkeeping.
+
+    Owns the in-flight watch tasks (keyed by source/url signature) and the
+    set of signatures already diagnosed as silent-active (recovery is
+    log-only; the set still dedupes repeat triggers for the same
+    signature).  Mutated only by _schedule_silent_active_watch,
+    _silent_active_watch_after_settle, _check_and_recover_silent_active
+    and lifespan shutdown.
+    """
+
+    watch_tasks: dict[str, asyncio.Task] = field(default_factory=dict)
+    recovery_attempts: set[str] = field(default_factory=set)
+
+
+silent_active_recovery_state = SilentActiveRecoveryState()
 radio_metadata_service = RadioMetadataService()
 # queue_advancing is a reentrancy/dispatch guard for
 # on_player_state_change and deliberately not queue state: the queue
@@ -2260,14 +2281,14 @@ def _schedule_silent_active_watch(
 ) -> None:
     if not signature:
         return
-    existing = silent_active_watch_tasks.get(signature)
+    existing = silent_active_recovery_state.watch_tasks.get(signature)
     if existing and not existing.done():
         return
     task = asyncio.create_task(
         _silent_active_watch_after_settle(source=source, signature=signature, track=track, spotify_state=spotify_state),
         name=f"silent-active-watch:{source}",
     )
-    silent_active_watch_tasks[signature] = task
+    silent_active_recovery_state.watch_tasks[signature] = task
 
 
 def _create_lifecycle_background_task(coro, *, name: str) -> asyncio.Task:
@@ -2318,9 +2339,9 @@ async def _silent_active_watch_after_settle(
     except Exception as exc:
         logger.warning("Silent-active watch failed: source=%s signature=%s error=%s", source, signature, exc)
     finally:
-        task = silent_active_watch_tasks.get(signature)
+        task = silent_active_recovery_state.watch_tasks.get(signature)
         if task is asyncio.current_task():
-            silent_active_watch_tasks.pop(signature, None)
+            silent_active_recovery_state.watch_tasks.pop(signature, None)
 
 
 async def _check_and_recover_silent_active(
@@ -2330,7 +2351,7 @@ async def _check_and_recover_silent_active(
     track: dict | None = None,
     spotify_state: dict | None = None,
 ) -> None:
-    if signature in silent_active_recovery_attempts:
+    if signature in silent_active_recovery_state.recovery_attempts:
         return
     if not runtime.peak_monitor:
         return
@@ -2436,10 +2457,10 @@ async def _check_and_recover_silent_active(
     # breaking normal library starts by reloading mid-playback, which then
     # triggered "Stopping peak monitor" via the buffering pause state.
     # Existing peak-monitor / link-watch / owner logic remains the source
-    # of truth for state corrections. silent_active_recovery_attempts is
-    # still recorded so duplicate triggers for the same source/url are
-    # naturally suppressed by the existing dedupe path.
-    silent_active_recovery_attempts.add(signature)
+    # of truth for state corrections. recovery_attempts is still recorded so
+    # duplicate triggers for the same source/url are naturally suppressed by
+    # the existing dedupe path.
+    silent_active_recovery_state.recovery_attempts.add(signature)
     logger.warning(
         "SILENT-ACTIVE-DIAG recovery_suppressed: would_have_recovered source=%s signature=%s vu_db=%s action=log_only",
         source, signature, vu_db,
@@ -5347,7 +5368,7 @@ async def _shutdown_lifespan_resources() -> None:
         spotify_state_refresh_task,
         spotify_state_poll_task,
         radio_reconnect_state.task,
-        *silent_active_watch_tasks.values(),
+        *silent_active_recovery_state.watch_tasks.values(),
         *lifecycle_background_tasks,
     ]
     tasks = list({task for task in owned_tasks if task is not None and not task.done()})
@@ -5361,7 +5382,7 @@ async def _shutdown_lifespan_resources() -> None:
                     logger.warning("Background task failed during cleanup: task=%s error=%s", task.get_name(), result)
 
         await cleanup("background-tasks", drain_background_tasks)
-    silent_active_watch_tasks.clear()
+    silent_active_recovery_state.watch_tasks.clear()
     lifecycle_background_tasks.clear()
 
     if runtime.player_instance is not None:

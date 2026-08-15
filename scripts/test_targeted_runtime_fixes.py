@@ -586,7 +586,7 @@ class SilentActiveDiagnosisTests(unittest.IsolatedAsyncioTestCase):
             name: (getattr(main.runtime, name) if hasattr(main.runtime, name) else getattr(main.playback_state, name) if hasattr(main.playback_state, name) else getattr(main, name))
             for name in (
                 "peak_monitor", "player_instance", "current_track_info",
-                "current_footer_owner", "silent_active_recovery_attempts",
+                "current_footer_owner", "silent_active_recovery_state",
                 "dsp_preset_load_lock", "_current_track_matches",
                 "_is_local_playback_active", "_list_mpv_sink_inputs",
                 "_active_unmuted_sink_inputs", "get_output_volume_safe",
@@ -602,7 +602,7 @@ class SilentActiveDiagnosisTests(unittest.IsolatedAsyncioTestCase):
         )
         main.playback_state.current_track_info = {"id": "t1", "title": "T1", "url": "/music/t1.flac", "source": "local"}
         main.playback_state.current_footer_owner = "local"
-        main.silent_active_recovery_attempts = set()
+        main.silent_active_recovery_state = main.SilentActiveRecoveryState()
         main.runtime.dsp_preset_load_lock = None
         main._current_track_matches = lambda track: True
         main._is_local_playback_active = lambda state: True
@@ -644,7 +644,7 @@ class SilentActiveDiagnosisTests(unittest.IsolatedAsyncioTestCase):
             joined = "\n".join(captured.output)
             self.assertIn("Silent-active playback detected", joined)
             self.assertIn("recovery_suppressed", joined)
-            self.assertIn("sig-fresh", main.silent_active_recovery_attempts)
+            self.assertIn("sig-fresh", main.silent_active_recovery_state.recovery_attempts)
         finally:
             self._restore(originals)
 
