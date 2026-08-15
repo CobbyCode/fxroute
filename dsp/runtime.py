@@ -471,7 +471,12 @@ class DSPRuntime:
         hot_update = self._can_hot_update(DSPRuntimeConfig.from_overview(overview))
         settle_seconds = 0.0 if hot_update else settle_seconds
         async with self._measurement_scope_lock:
-            await self.set_output_gain_db(guard)
+            if self._control_socket is not None:
+                # Pin a running engine to the guard before the rebuild so it
+                # never sits at full gain during the transition.  On the first
+                # start no engine exists yet and the rebuild applies the guard
+                # through initial_output_gain_db before any audio link exists.
+                await self.set_output_gain_db(guard)
             try:
                 await self._sync(overview, initial_output_gain_db=guard,
                                  extras_override=candidate_extras)

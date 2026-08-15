@@ -448,6 +448,7 @@ class DSPRuntimeConfigTests(unittest.TestCase):
 
         async def exercise():
             runtime = DSPRuntime(self.manager)
+            runtime._control_socket = unittest.mock.Mock()
             runtime.set_output_gain_db = lambda value: record_async(events, ("gain", value))
             runtime._sync = lambda overview, **kwargs: record_async(
                 events, ("sync", kwargs["initial_output_gain_db"]))
@@ -467,11 +468,41 @@ class DSPRuntimeConfigTests(unittest.TestCase):
             ("gain", -18), ("sync", -18), ("ramp", -18, 0.0), ("apply", "new"),
         ])
 
+    def test_guarded_rebuild_on_cold_runtime_pins_guard_through_sync(self):
+        # The first native start must behave like every later rebuild: the
+        # guard cannot be written to a nonexistent engine, so it must reach
+        # the engine through the sync initial gain and the ramp.  Without
+        # this the first mode switch started the engine at 0 dB with no ramp.
+        events = []
+
+        async def exercise():
+            runtime = DSPRuntime(self.manager)
+            self.assertIsNone(runtime._control_socket)
+            runtime.set_output_gain_db = lambda value: record_async(events, ("gain", value))
+            runtime._sync = lambda overview, **kwargs: record_async(
+                events, ("sync", kwargs["initial_output_gain_db"]))
+            runtime.ramp_output_gain_db = lambda start, target, **kwargs: record_async(
+                events, ("ramp", start, target))
+            await runtime.guarded_rebuild(
+                self.overview("stereo"), guard_db=-18,
+                apply_candidate=lambda: events.append(("apply", "new")),
+                apply_previous=lambda: events.append(("apply", "old")),
+                settle_seconds=0)
+
+        async def record_async(target, event):
+            target.append(event)
+
+        asyncio.run(exercise())
+        self.assertEqual(events, [
+            ("sync", -18), ("ramp", -18, 0.0), ("apply", "new"),
+        ])
+
     def test_guarded_rebuild_rolls_back_previous_state_on_failure(self):
         events = []
 
         async def exercise():
             runtime = DSPRuntime(self.manager)
+            runtime._control_socket = unittest.mock.Mock()
             runtime.set_output_gain_db = lambda value: record(("gain", value))
             sync_count = 0
             async def sync(_overview, **kwargs):
@@ -501,6 +532,7 @@ class DSPRuntimeConfigTests(unittest.TestCase):
     def test_guarded_rebuild_preserves_original_error_when_rollback_fails(self):
         async def exercise():
             runtime = DSPRuntime(self.manager)
+            runtime._control_socket = unittest.mock.Mock()
             runtime.set_output_gain_db = lambda _value: complete()
             async def sync(_overview, **_kwargs):
                 raise RuntimeError("candidate failed")
