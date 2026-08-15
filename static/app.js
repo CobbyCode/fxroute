@@ -138,7 +138,6 @@ let state = {
         autoSubMeasurements: [],
         statusText: 'Sweep ready. Calibration file is optional.',
         measurementSampleRate: '48000',
-        measurementSampleRate: '48000',
         assistMode: 'peq',
         convolverAssistant: {
             targetCurve: 'neutral',

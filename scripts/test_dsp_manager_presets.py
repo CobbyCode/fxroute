@@ -44,7 +44,6 @@ class DSPManagerPresetTests(unittest.TestCase):
             handle.writeframes(b"\x00\x00\x00\x40")
         self.manager.create_convolver_preset("Room IR", ir.name)
         self.manager.load_preset("Room IR")
-        self.assertFalse(self.manager.active_preset_requires_samplerate_reload(44100))
         texts = [self.manager.compile_engine_text(
             [{"name": "FL", "source": 0}, {"name": "FR", "source": 1}],
             sample_rate_hz=rate,

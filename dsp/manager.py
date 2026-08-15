@@ -1060,12 +1060,6 @@ class DSPManager:
         return {**self.create_peq_preset(preset_name, definition, extras),
                 "import_source": {"left": left["source"], "right": right["source"]}}
 
-    def active_preset_requires_samplerate_reload(self,
-                                                 sample_rate_hz: Optional[int] = None) -> bool:
-        del sample_rate_hz
-        # The native convolver resamples its source IR to the DSP stream rate.
-        return False
-
     def get_status(self) -> dict:
         presets = self.list_presets()
         return {"available": True, "mode": "native", "runtime": {"owner": "fxroute"},

@@ -521,11 +521,6 @@ class PlaybackOrchestrator:
             links_reconciled = True
         else:
             needs_preset = not diagnosis.get("ee_ports")
-            if request.rate_change and not needs_preset and manager is not None:
-                check = getattr(manager, "active_preset_requires_samplerate_reload", None)
-                if callable(check):
-                    try: needs_preset = bool(await asyncio.to_thread(check, target_rate))
-                    except Exception as exc: logger.warning("Coordinator could not inspect active preset for convolver sample-rate reload: %s", exc)
             if request.operation == "output-mode-switch" and manager is not None:
                 compare = manager.load_compare_state(); side = compare.get("activeSide") if compare.get("activeSide") in {"A", "B"} else None
                 target = compare.get("presetA") if side == "A" else compare.get("presetB") if side == "B" else None

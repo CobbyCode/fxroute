@@ -368,14 +368,15 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
         self.assertLess(events.index("graph-readback"), events.index("commit-readback"))
         self.assertLess(events.index("commit-readback"), events.index("gate.set:False"))
 
-    async def test_measurement_entry_convolver_preset_sync_respects_held_session_lock(self):
-        """Convolver preset reload inside the measurement entry must not
-        re-enter the sample-rate session lock the entry already owns.
+    async def test_measurement_entry_preset_sync_respects_held_session_lock(self):
+        """Preset sync inside the measurement entry must not re-enter the
+        sample-rate session lock the entry already owns.
 
-        A convolver preset needs a samplerate-triggered reload during the
-        entry; the nested preset-load runtime sync must carry the held-lock
-        marker exactly like the entry's direct helper syncs.  Without it the
-        entry deadlocks on its own session lock before the first sweep.
+        When the entry needs a preset sync (the DSP output ports are
+        missing), the nested preset-load runtime sync must carry the
+        held-lock marker exactly like the entry's direct helper syncs.
+        Without it the entry deadlocks on its own session lock before the
+        first sweep.
         """
         helper = HelperDouble(active=True, rate=48000)
         overview = {
@@ -389,7 +390,7 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
             "fxroute_dsp_sink:monitor_FR -> fxroute_dsp:input_2": True,
         }
         initial = {
-            "ee_ports": True,
+            "ee_ports": False,
             "helper_ports": True,
             "links": {
                 "fxroute_dsp_sink:monitor_FL -> fxroute_dsp:input_1": False,
@@ -430,9 +431,6 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
 
             def get_active_preset(self):
                 return "Conv L HybAlign Test 194030"
-
-            def active_preset_requires_samplerate_reload(self, _sample_rate_hz=None):
-                return True
 
             def load_global_extras(self):
                 return {
@@ -561,9 +559,6 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
 
             def get_active_preset(self):
                 return "Conv L HybAlign Test 194030"
-
-            def active_preset_requires_samplerate_reload(self, _sample_rate_hz=None):
-                return True
 
             def load_global_extras(self):
                 return {
@@ -1297,49 +1292,6 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["helper_rebuilt"])
         self.assertFalse(result["links_reconciled"])
         self.assertEqual(helper.reconcile_calls, 0)
-
-    async def test_rate_change_reloads_only_when_active_convolver_requires_it(self):
-        helper = HelperDouble(active=False, rate=None)
-        overview = {
-            "output_mode": {
-                "mode": "subwoofer-2.2",
-                "effective_output_key": OUTPUT_KEY,
-            }
-        }
-        calls = {"preset": 0, "sync": 0}
-
-        class ConvolverManager:
-            def active_preset_requires_samplerate_reload(self, _rate):
-                return True
-
-        async def sync(**_kwargs):
-            calls["sync"] += 1
-            helper.active = True
-            helper.rate = 48000
-
-        async def pw_link(*_args):
-            return _links_text("subwoofer-2.2")
-
-        request = TransitionRequest(
-            operation="play",
-            source="local",
-            target_rate=48000,
-            target_url="/music/target.flac",
-            should_play=True,
-            rate_change=True,
-            reload_source=True,
-        )
-        with patch.object(main, "get_audio_output_overview", return_value=overview), patch.object(
-            main, "_run_pw_link_command", side_effect=pw_link
-        ), patch.object(main.runtime, "dsp_runtime", helper), patch.object(
-            main.dsp_orchestrator,
-            "sync_preset_for_playback_samplerate",
-            side_effect=lambda **_kwargs: calls.__setitem__("preset", calls["preset"] + 1),
-        ), patch.object(main.dsp_orchestrator, "sync_runtime", side_effect=sync), patch.object(
-            main, "dsp_manager", ConvolverManager()
-        ):
-            await main._coordinator_establish_effects_and_helper(request)
-        self.assertEqual(calls, {"preset": 1, "sync": 1})
 
     async def test_graph_only_rejects_missing_non_bypass_graph(self):
         helper = HelperDouble(active=True, rate=48000)
