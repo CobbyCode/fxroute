@@ -159,6 +159,7 @@ class MPVWrapper:
             "duration": 0.0,
             "volume": 100,
             "current_file": None,
+            "file_loaded": False,
             "playlist_pos": None,
             "ended": False,
             "error": None,
@@ -458,6 +459,18 @@ class MPVWrapper:
             elif name == "path":
                 current_file = data or None
                 if self._state.get("current_file") != current_file:
+                    if current_file is None and self._state.get("playing") and self._last_end_reason not in {"eof", "error"}:
+                        # mpv cleared an active source without an end-file or
+                        # an explicit app stop: the "silent-but-playing" race.
+                        # Capture full context so the next occurrence is debuggable.
+                        logger.warning(
+                            "MPV unexpectedly cleared the active source: path=%s paused=%s position=%.3f duration=%.3f end_reason=%s",
+                            self._state.get("current_file"),
+                            self._state.get("paused"),
+                            float(self._state.get("position") or 0.0),
+                            float(self._state.get("duration") or 0.0),
+                            self._last_end_reason,
+                        )
                     self._state["current_file"] = current_file
                     self._state["position"] = 0.0
                     self._state["duration"] = 0.0
@@ -465,6 +478,7 @@ class MPVWrapper:
                         self._state["ended"] = self._last_end_reason in {"eof", "error"}
                         self._state["end_reason"] = self._last_end_reason
                         self._state["end_entry_id"] = self._last_end_entry_id
+                        self._state["file_loaded"] = False
                         self._state["playing"] = False
                     else:
                         self._state["ended"] = False
@@ -482,11 +496,21 @@ class MPVWrapper:
             elif name == "idle-active":
                 idle_active = bool(data)
                 if idle_active and self._state.get("current_file") is not None:
+                    if self._state.get("playing") and self._last_end_reason not in {"eof", "error"}:
+                        logger.warning(
+                            "MPV unexpectedly unloaded the active source: path=%s paused=%s position=%.3f duration=%.3f end_reason=%s",
+                            self._state.get("current_file"),
+                            self._state.get("paused"),
+                            float(self._state.get("position") or 0.0),
+                            float(self._state.get("duration") or 0.0),
+                            self._last_end_reason,
+                        )
                     self._state["playing"] = False
                     self._state["paused"] = False
                     self._state["position"] = 0.0
                     self._state["duration"] = 0.0
                     self._state["current_file"] = None
+                    self._state["file_loaded"] = False
                     self._state["playlist_pos"] = None
                     self._state["ended"] = self._last_end_reason in {"eof", "error"}
                     self._state["end_reason"] = self._last_end_reason
@@ -499,6 +523,14 @@ class MPVWrapper:
                     if self._state.get("playing") != next_playing:
                         self._state["playing"] = next_playing
                         changed = True
+
+        elif event_name == "file-loaded":
+            # mpv's canonical "file is loaded" event.  It fires for every file
+            # or stream that opens, including live/unknown-duration sources
+            # that never report a positive ``duration``.
+            if not self._state.get("file_loaded"):
+                self._state["file_loaded"] = True
+                changed = True
 
         elif event_name == "end-file":
             # MPV IPC provides reason and playlist_entry_id (since mpv 0.33);
@@ -537,6 +569,7 @@ class MPVWrapper:
             self._state["playing"] = not bool(start_paused)
             self._state["paused"] = bool(start_paused)
             self._state["current_file"] = path
+            self._state["file_loaded"] = False
             self._state["position"] = 0.0
             self._state["duration"] = 0.0
             self._state["ended"] = False
@@ -574,6 +607,7 @@ class MPVWrapper:
             self._state["position"] = 0.0
             self._state["duration"] = 0.0
             self._state["current_file"] = None
+            self._state["file_loaded"] = False
             self._state["playlist_pos"] = None
             self._state["ended"] = False
             self._state["end_reason"] = None

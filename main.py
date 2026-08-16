@@ -1485,14 +1485,15 @@ async def _wait_for_player_current_file(expected_url: str | None, timeout_ms: in
     while time.monotonic() <= deadline:
         state = runtime.player_instance.state
         # ``loadfile`` sets ``current_file`` optimistically before mpv has
-        # actually opened the file; ``duration`` is only reported by the mpv
-        # property observer once the file/stream is loaded.  Requiring a
-        # positive duration prevents a transition from seeking (or otherwise
-        # mutating) a not-yet-loaded source, which mpv rejects with
-        # "error running command".
-        if (
-            state.get("current_file") == expected_url
-            and float(state.get("duration") or 0.0) > 0.0
+        # actually opened the file, so the file path alone is not enough: a
+        # follow-up seek (or other mutation) would race the load and mpv
+        # rejects it with "error running command".  The source is ready once
+        # mpv reports a positive ``duration`` (known-length files/streams) or
+        # fires the ``file-loaded`` event (live/unknown-length streams that
+        # never report a duration).
+        if state.get("current_file") == expected_url and (
+            float(state.get("duration") or 0.0) > 0.0
+            or bool(state.get("file_loaded"))
         ):
             return True
         await asyncio.sleep(PIPEWIRE_HANDOFF_POLL_INTERVAL_MS / 1000)
@@ -3218,6 +3219,21 @@ async def toggle_playback():
                 "playback": build_playback_payload(new_state),
             }
         target_rate = _coordinator_target_rate(source, active_track)
+        rate_change = _coordinator_rate_change(target_rate)
+        if not rate_change and target_rate is not None:
+            # Same-rate resume is transport-only: the committed source, rate
+            # and graph are unchanged while paused, so a full Coordinator
+            # transition (gate close, quiet, effects/graph re-verification) is
+            # pure latency and makes the footer flash.  Unpause directly,
+            # symmetric to the pause fast path above.
+            runtime.player_instance.set_pause(False)
+            new_state = runtime.player_instance.state
+            _mark_player_state_authoritative(new_state)
+            _mark_playback_intent_changed()
+            return {
+                "status": "playing" if not new_state.get("paused") else "paused",
+                "playback": build_playback_payload(new_state),
+            }
         request = TransitionRequest(
             operation="resume",
             source=source,
@@ -3225,8 +3241,8 @@ async def toggle_playback():
             target_url=str(active_track.get("url") or state.get("current_file") or ""),
             target_track=active_track,
             should_play=True,
-            rate_change=_coordinator_rate_change(target_rate),
-            reload_source=(target_rate is None or _coordinator_rate_change(target_rate)),
+            rate_change=rate_change,
+            reload_source=(target_rate is None or rate_change),
             detail="toggle-resume",
             **((playback_queue.queue.native_request_fields()) if source == "local" else {}),
         )
@@ -3304,7 +3320,7 @@ async def stop_playback():
     except Exception:
         status = None
     samplerate.clear_auto_policy_force_rate(
-        int((status or {}).get("active_rate") or 0) or 0,
+        int((status or {}).get("active_rate") or 0),
         status=status,
         idle=True,
     )

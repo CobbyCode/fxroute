@@ -1305,6 +1305,16 @@ class FxrouteTransitionRuntime(TransitionRuntime):
         set_volume = getattr(self._player, "set_volume", None) if self._deps.player_is_running() else None
         if callable(set_volume):
             set_volume(volume)
+            # set_volume short-circuits when the cached state already matches,
+            # which can mask a muted MPV if the async listener state is stale.
+            # Re-assert the volume directly at the audible commit boundary so a
+            # silent source cannot commit unnoticed.
+            set_property = getattr(self._player, "set_property", None)
+            if callable(set_property):
+                try:
+                    set_property("volume", max(0, min(100, int(volume))))
+                except Exception as exc:
+                    logger.warning("Playback transition source volume re-assert failed: %s", exc)
         logger.info(
             "Playback transition source volume=%s transition_id=%s",
             volume,
@@ -1323,27 +1333,52 @@ class FxrouteTransitionRuntime(TransitionRuntime):
         except Exception:
             rate = {}
         state = dict(self._player.state if self._player else {})
+        get_property = getattr(self._player, "get_property", None)
+        live_mpv: dict[str, Any] = {}
+        if callable(get_property):
+            # The cached state is driven by the async mpv event listener and can
+            # lag a pause/unload/volume change mpv already applied.  Read live
+            # IPC at the commit boundary so a source that was re-paused or
+            # unmuted after start cannot commit silently.
+            for prop in ("pause", "idle-active", "volume"):
+                try:
+                    live_mpv[prop] = get_property(prop)
+                except Exception:
+                    pass
         if request.source != "spotify":
             if request.target_url and state.get("current_file") != request.target_url:
                 raise RuntimeError(
                     f"MPV current_file mismatch: expected={request.target_url} actual={state.get('current_file')}"
                 )
-            if request.should_play and (state.get("paused") or not state.get("playing")):
-                raise RuntimeError("MPV is not actually playing at transition commit")
-            if not request.should_play and not state.get("paused"):
-                raise RuntimeError("MPV pause state was not confirmed at transition commit")
+            live_paused = live_mpv.get("pause")
+            live_idle = live_mpv.get("idle-active")
+            if isinstance(live_paused, bool) and isinstance(live_idle, bool):
+                if request.should_play and (live_paused is not False or live_idle is not False):
+                    raise RuntimeError("MPV is not actually playing at transition commit (live IPC)")
+                if not request.should_play and live_paused is not True:
+                    raise RuntimeError("MPV pause state was not confirmed at transition commit (live IPC)")
+            else:
+                if request.should_play and (state.get("paused") or not state.get("playing")):
+                    raise RuntimeError("MPV is not actually playing at transition commit")
+                if not request.should_play and not state.get("paused"):
+                    raise RuntimeError("MPV pause state was not confirmed at transition commit")
+            live_volume = live_mpv.get("volume")
+            if isinstance(live_volume, (int, float)):
+                live_volume = int(round(float(live_volume)))
+            else:
+                live_volume = state.get("volume")
             if require_source_volume and request.operation == "measurement-restore":
-                if request.source in {"local", "radio"} and state.get("volume") != 100:
+                if request.source in {"local", "radio"} and live_volume != 100:
                     raise RuntimeError(
-                        f"MPV source volume was not restored: {state.get('volume')}"
+                        f"MPV source volume was not restored: {live_volume}"
                     )
             elif (
                 require_source_volume
                 and request.should_play
-                and state.get("volume") is not None
-                and state.get("volume") != 100
+                and live_volume is not None
+                and live_volume != 100
             ):
-                raise RuntimeError(f"MPV source volume was not restored: {state.get('volume')}")
+                raise RuntimeError(f"MPV source volume was not restored: {live_volume}")
         else:
             spotify_state = await self._deps.get_spotify_ui_state()
             expected_status = "Playing" if request.should_play else "Paused"

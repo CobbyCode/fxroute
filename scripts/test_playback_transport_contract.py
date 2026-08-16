@@ -30,6 +30,7 @@ class PlayerDouble:
             "volume": 73,
         }
         self.pause = Mock(side_effect=self._toggle_pause)
+        self.set_pause = Mock(side_effect=self._set_pause)
         self.stop_playback = Mock()
 
     @property
@@ -40,6 +41,10 @@ class PlayerDouble:
         paused = not bool(self._state.get("paused"))
         self._state["paused"] = paused
         self._state["playing"] = not paused
+
+    def _set_pause(self, paused: bool) -> None:
+        self._state["paused"] = bool(paused)
+        self._state["playing"] = not bool(paused)
 
 
 class TransportContractTests(unittest.IsolatedAsyncioTestCase):
@@ -79,7 +84,7 @@ class TransportContractTests(unittest.IsolatedAsyncioTestCase):
         player.pause.assert_called_once_with()
         coordinator.assert_not_awaited()
 
-    async def test_local_toggle_resume_remains_a_coordinator_play(self):
+    async def test_local_toggle_rate_change_resume_remains_a_coordinator_play(self):
         player = PlayerDouble(paused=True)
         async def run(request):
             player._state["paused"] = False
@@ -88,25 +93,46 @@ class TransportContractTests(unittest.IsolatedAsyncioTestCase):
 
         commit = Mock()
         track = {"source": "radio", "url": "https://radio.example/live", "sample_rate_hz": 44100}
-        request_rate_change = Mock(return_value=False)
         run_mock = AsyncMock(side_effect=run)
         with patch.object(main.runtime, "player_instance", player), patch.object(
             main.playback_state, "current_track_info", track
         ), patch.object(main, "_can_send_play_command", return_value=True), patch.object(
             main, "_run_coordinated_transition", run_mock
-        ), patch.object(main, "_coordinator_rate_change", request_rate_change), patch.object(
+        ), patch.object(main, "_coordinator_target_rate", return_value=44100), patch.object(
+            main, "_coordinator_rate_change", return_value=True
+        ), patch.object(
             main, "_commit_coordinated_track", commit
         ), patch.object(main, "build_playback_payload", side_effect=self._payload):
             result = await main.toggle_playback()
 
         self.assertEqual(result["status"], "playing")
         player.pause.assert_not_called()
+        player.set_pause.assert_not_called()
         request = run_mock.await_args.args[0]
         self.assertIsInstance(request, TransitionRequest)
         self.assertEqual(request.operation, "resume")
         self.assertEqual(request.source, "radio")
         self.assertTrue(request.should_play)
         commit.assert_called_once()
+
+    async def test_local_toggle_same_rate_resume_is_transport_only(self):
+        player = PlayerDouble(paused=True)
+        coordinator = AsyncMock(side_effect=AssertionError("resume entered coordinator"))
+        track = {"source": "local", "url": "/music/current.flac", "sample_rate_hz": 44100}
+        with patch.object(main.runtime, "player_instance", player), patch.object(
+            main.playback_state, "current_track_info", track
+        ), patch.object(main, "_can_send_play_command", return_value=True), patch.object(
+            main, "_coordinator_target_rate", return_value=44100
+        ), patch.object(main, "_coordinator_rate_change", return_value=False), patch.object(
+            main, "_run_coordinated_transition", coordinator
+        ), patch.object(main, "build_playback_payload", side_effect=self._payload), patch.object(
+            main, "_mark_player_state_authoritative"
+        ), patch.object(main, "_mark_playback_intent_changed"):
+            result = await main.toggle_playback()
+
+        self.assertEqual(result["status"], "playing")
+        player.set_pause.assert_called_once_with(False)
+        coordinator.assert_not_awaited()
 
     async def test_spotify_transport_commands_do_not_touch_local_context(self):
         player = PlayerDouble()
