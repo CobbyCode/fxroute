@@ -3102,6 +3102,8 @@ async def play_track(req: PlayRequest):
     )
     try:
         result = await _run_coordinated_transition(request)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except PlaybackTransitionFailure as exc:
         # The committed queue state was never touched: the candidate is only
         # published after a successful commit below.  MPV's native playlist
@@ -3219,6 +3221,8 @@ async def toggle_playback():
         )
         try:
             result = await _run_coordinated_transition(request)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         except PlaybackTransitionFailure as exc:
             raise _transition_error_http(exc) from exc
         if was_paused:
@@ -3253,6 +3257,8 @@ async def toggle_playback():
     )
     try:
         result = await _run_coordinated_transition(request)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except PlaybackTransitionFailure as exc:
         raise _transition_error_http(exc) from exc
     if _sample_rate_policy_is_auto() and source in {"local", "radio"} and isinstance(result.target_rate, int) and result.target_rate > 0:
@@ -4299,6 +4305,8 @@ async def api_spotify_play():
     )
     try:
         result = await _run_coordinated_transition(request)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except PlaybackTransitionFailure as exc:
         raise _transition_error_http(exc) from exc
     # After the coordinator commit the Spotify source is already the
@@ -4340,6 +4348,8 @@ async def api_spotify_toggle():
     )
     try:
         result = await _run_coordinated_transition(request)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except PlaybackTransitionFailure as exc:
         raise _transition_error_http(exc) from exc
     # Same ownership contract as api_spotify_play: footer and token are

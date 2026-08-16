@@ -13,12 +13,15 @@ from uuid import uuid4
 
 from .cleanup import _TransitionCleanupMixin
 from .gate import _OutputGateMixin
+from audio.samplerate.constants import FXROUTE_MAX_PROCESSING_RATE
+
 from .models import (
     OutputGateState,
     RecoveryExecutor,
     RecoveryValidator,
     TransitionRequest,
     TransitionResult,
+    UnsupportedTransitionRateError,
 )
 from .protocol import TransitionRuntime
 from .readbacks import stable_graph_readbacks
@@ -151,6 +154,50 @@ class PlaybackTransitionCoordinator(_TransitionCleanupMixin, _OutputGateMixin):
     def _request_expects_audible_output(request: TransitionRequest) -> bool:
         """Return whether a committed request must leave the output audible."""
         return bool(request.should_play or request.operation == "measurement-entry")
+
+    @staticmethod
+    def _validate_transition_target_rate(request: TransitionRequest) -> None:
+        """Reject a target rate the selected output or FXRoute cannot carry.
+
+        Runs before any transition state is mutated so the rejection can
+        propagate to the API caller as a clean HTTP 400.  Fails open when the
+        capability list is unavailable so a discovery hiccup never blocks
+        playback.  Rate-neutral operations (measurement, output-mode switch,
+        graph repair) carry the current committed rate by contract and are
+        not rate-targeted, so they are exempt.
+        """
+        if request.operation in {
+            "measurement-entry",
+            "measurement-restore",
+            "output-mode-switch",
+            "graph-reconcile",
+        }:
+            return
+        target_rate = request.target_rate
+        if not isinstance(target_rate, int) or target_rate <= 0:
+            return
+        if target_rate > FXROUTE_MAX_PROCESSING_RATE:
+            raise UnsupportedTransitionRateError(
+                f"FXRoute supports sample rates up to {FXROUTE_MAX_PROCESSING_RATE} Hz; "
+                f"cannot switch to {target_rate} Hz"
+            )
+        overview = request.audio_overview or {}
+        selected = overview.get("selected_output") or overview.get("current_output") or {}
+        supported = [
+            rate
+            for rate in (selected.get("supported_rates") or [])
+            if isinstance(rate, int) and rate > 0
+        ]
+        if not supported:
+            # Capability unknown (no selected output or enumeration failed):
+            # do not block on a list we cannot trust.
+            return
+        if target_rate not in supported:
+            maximum = max(supported)
+            raise UnsupportedTransitionRateError(
+                f"Selected output does not support sample rate {target_rate} Hz "
+                f"(maximum {maximum} Hz)"
+            )
 
     async def _stage(
         self,
@@ -547,6 +594,7 @@ class PlaybackTransitionCoordinator(_TransitionCleanupMixin, _OutputGateMixin):
                         active_request,
                         audio_overview=dict(snapshot["audio_overview"]),
                     )
+                self._validate_transition_target_rate(active_request)
                 if (
                     active_request.operation == "sample-rate-policy"
                     and active_request.reload_source
@@ -632,6 +680,14 @@ class PlaybackTransitionCoordinator(_TransitionCleanupMixin, _OutputGateMixin):
                                 and snapshot_force_rate in {None, 0, active_request.target_rate}
                             ),
                         )
+                    # Re-validate against the resolved rate.  The output gate
+                    # is already closed and the old source quieted at this
+                    # point, so a rejection must run the failure-restore
+                    # machinery instead of propagating raw.
+                    try:
+                        self._validate_transition_target_rate(active_request)
+                    except UnsupportedTransitionRateError as exc:
+                        raise RuntimeError(str(exc)) from exc
                     await self._stage(
                         stages,
                         "target-rate",
@@ -659,6 +715,11 @@ class PlaybackTransitionCoordinator(_TransitionCleanupMixin, _OutputGateMixin):
                 return await self._execute_standard_path(
                     stages, active_request, effects_state, audible_output=audible_output
                 )
+            except UnsupportedTransitionRateError:
+                # Rejected before any transition state was mutated: surface
+                # the clean rate/policy error to the caller instead of
+                # running the failure-restore machinery.
+                raise
             except asyncio.CancelledError as exc:
                 raise await self._fail_transition(
                     stages,

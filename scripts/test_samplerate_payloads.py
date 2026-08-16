@@ -76,6 +76,116 @@ id 56, type PipeWire:Interface:Node/3
         )
 
 
+class EffectiveSupportedRatesTests(unittest.TestCase):
+    """FXRoute DSP capability capping (max 384 kHz) of device rate lists."""
+
+    def test_lists_below_the_cap_stay_unchanged(self):
+        self.assertEqual(
+            samplerate.effective_supported_rates([44100, 48000, 96000]),
+            [44100, 48000, 96000],
+        )
+        self.assertEqual(
+            samplerate.effective_supported_rates([44100, 48000, 88200, 96000, 176400, 192000]),
+            [44100, 48000, 88200, 96000, 176400, 192000],
+        )
+        self.assertEqual(
+            samplerate.effective_supported_rates([44100, 48000, 352800, 384000]),
+            [44100, 48000, 352800, 384000],
+        )
+
+    def test_rates_above_384_khz_are_removed(self):
+        self.assertEqual(
+            samplerate.effective_supported_rates(
+                [44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000, 705600, 768000]
+            ),
+            [44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000],
+        )
+        # 705600/768000 are never offered as FXRoute-supported.
+        self.assertNotIn(705600, samplerate.effective_supported_rates([44100, 705600, 768000]))
+        self.assertNotIn(768000, samplerate.effective_supported_rates([44100, 705600, 768000]))
+
+    def test_non_positive_and_non_int_entries_are_filtered(self):
+        self.assertEqual(
+            samplerate.effective_supported_rates([44100, 0, -1, 768000, "48000", 48000.0]),
+            [44100],
+        )
+
+
+class OutputOverviewRateCapabilityTests(unittest.TestCase):
+    """The output overview keeps the native capability while capping what FXRoute offers."""
+
+    def _overview(self, rate_ceiling: int) -> dict:
+        metadata = "key:'clock.rate' value:'44100'\nkey:'clock.force-rate' value:'0'\n"
+        wpctl = (
+            "id 57, name:alsa_output.usb-DAC\n"
+            '\t* node.name = "alsa_output.usb-DAC"\n'
+            '\t* node.description = "Test DAC"\n'
+        )
+        pactl_short = "57\talsa_output.usb-DAC\tPipeWire\ts32le 2ch 44100Hz\tRUNNING\n"
+        pactl_detailed = (
+            "Sink #57\n"
+            "\tState: RUNNING\n"
+            "\tName: alsa_output.usb-DAC\n"
+            "\tDescription: Test DAC\n"
+            "\tSample Specification: s32le 2ch 44100Hz\n"
+        )
+        pw_cli_ls = 'id 57, type PipeWire:Interface:Node/3\n    node.name = "alsa_output.usb-DAC"\n'
+        enum_format = f"""Prop: key Spa:Pod:Object:Param:Format:Audio:rate (65539), flags 00000000
+  Choice: type Spa:Enum:Choice:Range, flags 00000000 28 4
+    Int 44100
+    Int 44100
+    Int {rate_ceiling}
+"""
+        status = {
+            "available": True,
+            "sink": {"id": 57, "name": "alsa_output.usb-DAC", "description": "Test DAC"},
+            "relevant_sink": {"name": "alsa_output.usb-DAC"},
+            "notes": [],
+        }
+        with patch.object(
+            samplerate.overview, "get_samplerate_status", return_value=status
+        ), patch.object(
+            samplerate.overview, "get_bluetooth_audio_overview", return_value={"available": False}
+        ), patch.object(
+            samplerate.overview,
+            "_run_command",
+            side_effect=[pactl_short, pactl_detailed, pw_cli_ls, enum_format],
+        ):
+            return samplerate.get_audio_output_overview()
+
+    def test_native_capability_preserved_and_effective_list_capped(self):
+        overview = self._overview(rate_ceiling=768000)
+        output = overview["outputs"][0]
+        # Hardware discovery stays intact: the full native list is reported.
+        self.assertEqual(
+            output["native_supported_rates"],
+            [44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000, 705600, 768000],
+        )
+        # FXRoute-effective list stops at the DSP processing maximum.
+        self.assertEqual(
+            output["supported_rates"],
+            [44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000],
+        )
+        self.assertNotIn(705600, output["supported_rates"])
+        self.assertNotIn(768000, output["supported_rates"])
+        # The selected-output payload (what the API/UI consume) is the capped list.
+        self.assertEqual(
+            overview["selected_output"]["supported_rates"], output["supported_rates"]
+        )
+
+    def test_device_with_lower_native_max_is_not_artificially_raised(self):
+        overview = self._overview(rate_ceiling=192000)
+        output = overview["outputs"][0]
+        self.assertEqual(
+            output["supported_rates"],
+            [44100, 48000, 88200, 96000, 176400, 192000],
+        )
+        self.assertEqual(
+            output["native_supported_rates"],
+            [44100, 48000, 88200, 96000, 176400, 192000],
+        )
+
+
 class OverviewSampleRateTests(unittest.TestCase):
     def test_priority_output_mode_over_selected_output_over_top_level(self):
         overview = {

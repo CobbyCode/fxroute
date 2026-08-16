@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 
 from audio.samplerate.constants import (
     COMMAND_TIMEOUT_SECONDS,
+    FXROUTE_MAX_PROCESSING_RATE,
     NON_SELECTABLE_INPUT_KEYS,
     NON_SELECTABLE_OUTPUT_KEYS,
     OUTPUT_MODE_STEREO,
@@ -39,6 +40,7 @@ from audio.samplerate.constants import (
     SOURCE_MODE_APP_PLAYBACK,
     SOURCE_MODE_BLUETOOTH_INPUT,
     SOURCE_MODE_EXTERNAL_INPUT,
+    effective_supported_rates,
 )
 
 from audio.samplerate.parsing import (
@@ -155,6 +157,7 @@ from audio.samplerate.alignment import (
 
 __all__ = [
     "COMMAND_TIMEOUT_SECONDS",
+    "FXROUTE_MAX_PROCESSING_RATE",
     "NON_SELECTABLE_INPUT_KEYS",
     "NON_SELECTABLE_OUTPUT_KEYS",
     "OUTPUT_MODE_STEREO",
@@ -179,6 +182,7 @@ __all__ = [
     "clear_auto_policy_force_rate",
     "disconnect_connected_bluetooth_audio_sources",
     "effective_playback_rate",
+    "effective_supported_rates",
     "ensure_playback_samplerate_force",
     "ensure_rate_renegotiation_trigger_file",
     "get_audio_output_overview",

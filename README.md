@@ -65,7 +65,7 @@ It runs on mini PCs, desktops, ARM boards, and dedicated stereo systems. It comb
   gain verification for 2.1 and 2.2 output modes; confirmed AutoGain searches
   can use up to ±6 dB while four final Stage outputs are checked against
   −1 dBFS
-- automatic or fixed sample-rate playback handling for local files, radio, Spotify, and Bluetooth handoff cases
+- automatic or fixed sample-rate playback handling for local files, radio, Spotify, and Bluetooth handoff cases; FXRoute supports sample rates up to 384 kHz, subject to the capabilities of the selected audio device
 - rich now-playing and cover detail views for local, radio, and Spotify
   playback, including stream tech lines (codec/bitrate/sample rate) and
   tag-info blocks

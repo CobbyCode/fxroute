@@ -14,6 +14,15 @@ RecoveryValidator = Callable[[], Awaitable[bool]]
 RecoveryExecutor = Callable[[], Awaitable[Any]]
 
 
+class UnsupportedTransitionRateError(ValueError):
+    """A transition target rate exceeds the selected output or FXRoute capability.
+
+    Raised before any transition state is mutated, so it propagates to the
+    API caller unchanged (mapped to HTTP 400 like the other rate/policy
+    errors) without running the failure-restore machinery.
+    """
+
+
 class PlaybackTransitionFailure(RuntimeError):
     """A transition failed before its readback contract was committed."""
 

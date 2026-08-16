@@ -2,12 +2,14 @@
 
 """Single-owner playback transition coordination.
 
-This package deliberately contains no FXRoute imports.  The application
-supplies the runtime adapter, while the coordinator owns transition
-serialization, the hardware-output gate contract, commit ordering, and
-failure latching.  Keeping the state machine independent makes the safety
-rules testable without MPV, PipeWire, the FXRoute DSP engine, or a live
-hardware sink.
+This package deliberately contains no FXRoute runtime imports.  The
+application supplies the runtime adapter, while the coordinator owns
+transition serialization, the hardware-output gate contract, commit
+ordering, and failure latching.  Keeping the state machine independent
+makes the safety rules testable without MPV, PipeWire, the FXRoute DSP
+engine, or a live hardware sink.  The one exception is the pure processing-
+rate constant imported from ``audio.samplerate.constants`` (a stdlib-only
+leaf module), used by the pre-transition rate capability guard.
 
 The public import surface stays ``from playback.transition import ...``;
 the implementation is split into focused modules:
@@ -32,6 +34,7 @@ from playback.transition.models import (
     RecoveryValidator,
     TransitionRequest,
     TransitionResult,
+    UnsupportedTransitionRateError,
 )
 from playback.transition.protocol import TransitionRuntime
 from playback.transition.readbacks import stable_graph_readbacks
@@ -43,4 +46,5 @@ __all__ = [
     "PlaybackTransitionFailure",
     "TransitionRequest",
     "TransitionResult",
+    "UnsupportedTransitionRateError",
 ]

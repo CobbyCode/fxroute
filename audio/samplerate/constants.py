@@ -2,6 +2,8 @@
 
 """Shared constants of the PipeWire samplerate and audio-selection domain."""
 
+from collections.abc import Iterable
+
 
 NON_SELECTABLE_OUTPUT_KEYS = {"fxroute_dsp_sink"}
 NON_SELECTABLE_INPUT_KEYS: set[str] = set()
@@ -20,6 +22,27 @@ SAMPLE_RATE_CANDIDATES = [
 ]
 PIPEWIRE_DEFAULT_RATE_OPTIONS = SAMPLE_RATE_CANDIDATES
 PIPEWIRE_ALLOWED_RATES = SAMPLE_RATE_CANDIDATES
+
+# Maximum sample rate the FXRoute DSP chain can process.  This is an FXRoute
+# processing limit (the LV2 plugins, including the LSP limiter, refuse rates
+# above 384 kHz), not a hardware or PipeWire limit: a device reporting a
+# higher native rate keeps that capability in ``native_supported_rates`` but
+# FXRoute never advertises or switches above this cap.
+FXROUTE_MAX_PROCESSING_RATE = 384000
+
+
+def effective_supported_rates(rates: Iterable[int]) -> list[int]:
+    """Cap a device rate list at the FXRoute DSP processing maximum.
+
+    The native device capability stays available to callers that need it
+    (see ``native_supported_rates``); the returned list is what FXRoute can
+    actually process and therefore what the API and UI may offer.
+    """
+    return [
+        rate
+        for rate in rates
+        if isinstance(rate, int) and 0 < rate <= FXROUTE_MAX_PROCESSING_RATE
+    ]
 
 
 # Conservative bound for every pactl/wpctl/pw-cli/pw-metadata/bluetoothctl

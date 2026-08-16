@@ -366,6 +366,8 @@ Select **Stereo**, **2.1 Subwoofer**, or **2.2 Subwoofer** under **Output Mode**
 
 Select a supported rate instead of **Auto** to fix the PipeWire playback graph and hardware output to that rate. The current rate appears in the playback bar. FXRoute rejects a fixed rate that the selected output does not support. Changing the policy can restart the audio path, so stop playback first when possible and check the output after the change.
 
+The maximum processing sample rate is 384 kHz. Lower device-specific limits are detected automatically, so the rate list may end below 384 kHz for a given output device.
+
 Use a fixed rate when the DAC, DSP chain, or external hardware needs one clock. Use Auto when sources with different native rates should play without forcing conversion to one rate.
 
 ### Maintenance updates

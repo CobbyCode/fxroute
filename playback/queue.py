@@ -330,6 +330,8 @@ class PlaybackQueue:
         )
         try:
             result = await self._deps.run_transition(request)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         except PlaybackTransitionFailure as exc:
             raise self._deps.transition_error_http(exc) from exc
         if not getattr(result, "committed", False):
@@ -543,6 +545,8 @@ class PlaybackQueue:
                     native_queue_loop=bool(self.loop),
                     native_queue_shuffle=False,
                 ))
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
             except PlaybackTransitionFailure:
                 raise
             if not getattr(result, "committed", False):

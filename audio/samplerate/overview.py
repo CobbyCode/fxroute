@@ -11,6 +11,7 @@ from .bluetooth import get_bluetooth_audio_overview
 from .constants import (
     NON_SELECTABLE_INPUT_KEYS,
     NON_SELECTABLE_OUTPUT_KEYS,
+    effective_supported_rates,
     OUTPUT_MODE_STEREO,
     OUTPUT_MODE_SUBWOOFER_21,
     OUTPUT_MODE_SUBWOOFER_22,
@@ -137,17 +138,20 @@ def get_audio_output_overview() -> dict[str, Any]:
         details = sink_details.get(name or "", {})
         label = _build_sink_output_label(name, details, default_label if name == default_name and default_label else None)
         profile = _bluetooth_profile_from_node_name(name)
-        supported_rates: list[int] = []
+        native_supported_rates: list[int] = []
         node_id = node_ids.get(str(name or ""))
         if node_id is not None:
             try:
-                supported_rates = _parse_enum_format_supported_rates(
+                native_supported_rates = _parse_enum_format_supported_rates(
                     _run_command(["pw-cli", "enum-params", str(node_id), "EnumFormat"])
                 )
             except Exception as exc:
                 notes.append(f"Sample-rate capabilities unavailable for {label}: {exc}")
-        if not supported_rates and sink.get("active_rate") in SAMPLE_RATE_CANDIDATES:
-            supported_rates = [sink["active_rate"]]
+        if not native_supported_rates and sink.get("active_rate") in SAMPLE_RATE_CANDIDATES:
+            native_supported_rates = [sink["active_rate"]]
+        # native_supported_rates is the raw hardware/PipeWire capability;
+        # supported_rates is capped at the FXRoute DSP processing maximum and
+        # is the only list the API/UI may offer for FXRoute playback.
         explicit_outputs.append({
             "id": sink.get("id"),
             "key": name,
@@ -156,7 +160,8 @@ def get_audio_output_overview() -> dict[str, Any]:
             "sample_spec": details.get("sample_spec") or sink.get("sample_spec"),
             "channels": _parse_sample_spec_channels(details.get("sample_spec")) or sink.get("channels"),
             "active_rate": sink.get("active_rate"),
-            "supported_rates": supported_rates,
+            "supported_rates": effective_supported_rates(native_supported_rates),
+            "native_supported_rates": native_supported_rates,
             "state": details.get("state") or sink.get("state"),
             "is_default": name == default_name,
             "is_current": name == current_name,
