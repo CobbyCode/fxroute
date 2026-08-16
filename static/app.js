@@ -625,6 +625,12 @@ const elements = {
     seekDuration: document.getElementById('seek-duration'),
     volumeSlider: document.getElementById('volume-slider'),
     volumeDisplay: document.getElementById('volume-display'),
+    btnTrackFavorite: document.getElementById('btn-track-favorite'),
+    btnShuffle: document.getElementById('btn-shuffle'),
+    btnRepeat: document.getElementById('btn-repeat'),
+    btnMute: document.getElementById('btn-mute'),
+    meterBarL: document.getElementById('meter-bar-l'),
+    meterBarR: document.getElementById('meter-bar-r'),
     splCalibrationOpen: document.getElementById('measurement-spl-calibration-open'),
     splCalibrationPanel: document.getElementById('spl-calibration-panel'),
     splCalibrationClose: document.getElementById('spl-calibration-close'),
@@ -2460,6 +2466,7 @@ function setupPlaybackControls() {
     elements.btnPlayPause.addEventListener('click', globalTogglePlayback);
     if (elements.btnNext) elements.btnNext.addEventListener('click', globalNext);
     if (elements.btnClearQueue) elements.btnClearQueue.addEventListener('click', clearQueue);
+    if (elements.btnTrackFavorite) elements.btnTrackFavorite.addEventListener('click', toggleTrackFavorite);
     if (elements.libraryShuffleBtn) elements.libraryShuffleBtn.addEventListener('click', toggleLibraryShuffle);
     if (elements.libraryLoopBtn) elements.libraryLoopBtn.addEventListener('click', toggleLibraryLoop);
     elements.volumeSlider.addEventListener('input', handleVolumeChange);
@@ -2663,6 +2670,7 @@ function renderVolumeControlsFromActualVolume(actualVolume) {
     const sliderValue = actualVolumeToSliderValue(actualVolume);
     elements.volumeSlider.value = sliderValue;
     elements.volumeDisplay.textContent = `${sliderValue}%`;
+    updateVolumeSliderFill();
 }
 
 function setLocalVolume(sliderValue) {
@@ -2671,6 +2679,7 @@ function setLocalVolume(sliderValue) {
     state.playback.volume = actualVolume;
     elements.volumeSlider.value = clampedSliderValue;
     elements.volumeDisplay.textContent = `${clampedSliderValue}%`;
+    updateVolumeSliderFill();
 }
 function queueVolumeSend(volume, immediate = false) {
     pendingVolume = volume;
@@ -3721,6 +3730,8 @@ function updatePlaybackUI() {
     renderQueueUI();
     renderSamplerateUI();
     renderPeakWarningBadge();
+    renderTrackFavoriteBtn();
+    renderStereoMeter();
     // Volume
     if (!volumeGestureActive && !volumeRequestInFlight && pendingVolume === null) {
         renderVolumeControlsFromActualVolume(volume);
@@ -3775,9 +3786,121 @@ function stopPlaybackPositionPoll() {
     }
 }
 function updatePlayPauseButton(playbackState) {
-    elements.btnPlayPause.textContent = playbackState === 'playing' ? '⏸' : '▶';
+    const playing = playbackState === 'playing';
+    const iconPlay = elements.btnPlayPause?.querySelector('.icon-play');
+    const iconPause = elements.btnPlayPause?.querySelector('.icon-pause');
+    if (iconPlay) iconPlay.style.display = playing ? 'none' : '';
+    if (iconPause) iconPause.style.display = playing ? '' : 'none';
     const hasPlayableContext = !!(state.playback.current_track || getLastRadioTrack());
     elements.btnPlayPause.disabled = playbackActionInFlight || (!hasPlayableContext && playbackState === 'stopped');
+}
+
+/* ---- Play/Pause icon helper (used by Spotify footer too) ---- */
+function setPlayPauseIcon(playing) {
+    const iconPlay = elements.btnPlayPause?.querySelector('.icon-play');
+    const iconPause = elements.btnPlayPause?.querySelector('.icon-pause');
+    if (iconPlay) iconPlay.style.display = playing ? 'none' : '';
+    if (iconPause) iconPause.style.display = playing ? '' : 'none';
+}
+
+/* ---- Track Favorite (footer) ---- */
+let _footerTrackFavoriteInFlight = false;
+function renderTrackFavoriteBtn() {
+    if (!elements.btnTrackFavorite) return;
+    const track = state.playback.current_track;
+    if (!track || track.source !== 'local') {
+        elements.btnTrackFavorite.classList.add('hidden');
+        return;
+    }
+    elements.btnTrackFavorite.classList.remove('hidden');
+    const fav = !!track.favorite;
+    elements.btnTrackFavorite.textContent = fav ? '♥' : '♡';
+    elements.btnTrackFavorite.classList.toggle('is-fav', fav);
+    elements.btnTrackFavorite.setAttribute('aria-pressed', fav ? 'true' : 'false');
+    elements.btnTrackFavorite.title = fav ? 'Remove from favorites' : 'Add to favorites';
+}
+async function toggleTrackFavorite() {
+    const track = state.playback.current_track;
+    if (!track || track.source !== 'local' || _footerTrackFavoriteInFlight) return;
+    const nextFav = !track.favorite;
+    _footerTrackFavoriteInFlight = true;
+    try {
+        const resp = await fetch(`/api/tracks/${encodeURIComponent(track.id)}/favorite`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ favorite: nextFav }),
+        });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.detail || 'Failed to update favorite');
+        track.favorite = !!data.favorite;
+        /* sync library cache */
+        const stored = state.library?.tracks?.find(t => t.id === track.id);
+        if (stored) stored.favorite = track.favorite;
+        renderTrackFavoriteBtn();
+        showToast(track.favorite ? 'Added to favorites' : 'Removed from favorites', 'success');
+    } catch (e) {
+        showToast(e.message || 'Failed to update favorite', 'error');
+    } finally {
+        _footerTrackFavoriteInFlight = false;
+    }
+}
+
+/* ---- L/R Stereo Meter ---- */
+const METER_DB_MIN = -60;
+const METER_DB_MAX = 0;
+function vuToMeterPercent(db) {
+    if (db === null || db === undefined || !Number.isFinite(db)) return 0;
+    const clamped = Math.max(METER_DB_MIN, Math.min(METER_DB_MAX, db));
+    return ((clamped - METER_DB_MIN) / (METER_DB_MAX - METER_DB_MIN)) * 100;
+}
+function vuToMeterColor(db) {
+    if (db === null || db === undefined || !Number.isFinite(db)) return '#333';
+    if (db < -20) return '#22c55e';
+    if (db < -10) return '#84cc16';
+    if (db < -6) return '#eab308';
+    if (db < -3) return '#f97316';
+    return '#ef4444';
+}
+function renderStereoMeter() {
+    if (!elements.meterBarL || !elements.meterBarR) return;
+    const warning = state.playback.output_peak_warning || {};
+    const vuL = warning.vu_db_l;
+    const vuR = warning.vu_db_r;
+    const playbackActive = window.__footerSource === 'spotify'
+        ? window.__spotifyLastData?.status === 'Playing'
+        : !!state.playback.playing && !state.playback.paused;
+    const showMeter = playbackActive && warning.vu_fresh === true
+        && (vuL !== null || vuR !== null);
+    _renderMeterBar(elements.meterBarL, showMeter ? vuL : null);
+    _renderMeterBar(elements.meterBarR, showMeter ? vuR : null);
+}
+function _renderMeterBar(barEl, vuDb) {
+    const pct = vuToMeterPercent(vuDb);
+    const color = vuToMeterColor(vuDb);
+    const existing = barEl.querySelector('.meter-bar-fill');
+    if (existing) {
+        existing.style.width = `${pct}%`;
+        existing.style.background = color;
+    } else {
+        barEl.innerHTML = `<div class="meter-bar-fill" style="width:${pct}%;background:${color}"></div>`;
+    }
+}
+
+/* ---- Volume slider visible fill ---- */
+function updateVolumeSliderFill() {
+    const slider = elements.volumeSlider;
+    if (!slider) return;
+    const pct = Number(slider.value) || 0;
+    const c = 'rgba(110, 231, 183, 0.9)';
+    const bg = `linear-gradient(to right, ${c} 0%, ${c} ${pct}%, rgba(255,255,255,0.1) ${pct}%, rgba(255,255,255,0.1) 100%)`;
+    slider.style.background = bg;
+}
+function updateSeekSliderFill() {
+    const slider = elements.seekSlider;
+    if (!slider) return;
+    const pct = slider.max > 0 ? (Number(slider.value) / Number(slider.max)) * 100 : 0;
+    const c = 'var(--accent)';
+    slider.style.background = `linear-gradient(to right, ${c} 0%, ${c} ${pct}%, rgba(255,255,255,0.1) ${pct}%, rgba(255,255,255,0.1) 100%)`;
 }
 function highlightActiveTrack() {
     if (window.__footerSource === 'spotify') {
@@ -13657,6 +13780,7 @@ function updateSeekUI() {
             elements.seekSlider.value = 0;
         }
     }
+    updateSeekSliderFill();
 }
 // Utilities
 function escapeHtml(text) {
@@ -14176,7 +14300,7 @@ function updateFooterForSpotify(data) {
         setFooterProgressState(false);
         if (elements.btnPlayPause) {
             elements.btnPlayPause.disabled = true;
-            elements.btnPlayPause.textContent = '▶';
+            setPlayPauseIcon(false);
         }
         if (elements.btnPrevious) elements.btnPrevious.classList.add('hidden');
         if (elements.btnNext) elements.btnNext.classList.add('hidden');
@@ -14184,6 +14308,8 @@ function updateFooterForSpotify(data) {
         if (elements.queueStatus) elements.queueStatus.classList.add('hidden');
         if (elements.samplerateStatus) elements.samplerateStatus.classList.add('hidden');
         renderPeakWarningBadge(false);
+        renderTrackFavoriteBtn();
+        renderStereoMeter();
         const titleEl = document.getElementById('track-title');
         const artistEl = document.getElementById('track-artist');
         const scTitle = document.getElementById('sc-title');
@@ -14210,7 +14336,7 @@ function updateFooterForSpotify(data) {
     document.body.classList.add('source-local');
     if (elements.btnPlayPause) {
         elements.btnPlayPause.disabled = false;
-        elements.btnPlayPause.textContent = data.status === 'Playing' ? '⏸' : '▶';
+        setPlayPauseIcon(data.status === 'Playing');
     }
     if (elements.btnPrevious) { elements.btnPrevious.classList.remove('hidden'); elements.btnPrevious.disabled = false; }
     if (elements.btnNext) { elements.btnNext.classList.remove('hidden'); elements.btnNext.disabled = false; }

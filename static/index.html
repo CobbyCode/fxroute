@@ -12,7 +12,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=0.9.11">
     <link rel="manifest" href="/static/site.webmanifest?v=0.9.11">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/static/style.css?v=0.9.13">
+    <link rel="stylesheet" href="/static/style.css?v=0.9.14">
 </head>
 <body>
     <!-- Offline indicator -->
@@ -1232,31 +1232,42 @@
 
     <!-- Playback bar (fixed bottom) -->
     <footer id="playback-bar" class="playback-bar">
-        <div class="track-info">
+        <!-- Left: Cover + Track info -->
+        <div class="pb-left">
             <div class="playback-visual">
                 <img id="playback-cover" class="playback-cover hidden" alt="" />
                 <span id="playback-eq" class="playback-eq">
-                    <span class="peak-wave" aria-hidden="true">
-                        <span class="wave-bar"></span><span class="wave-bar"></span><span class="wave-bar"></span><span class="wave-bar"></span><span class="wave-bar"></span>
-                    </span>
                     <span class="peak-label" aria-hidden="true">PEAK</span>
                 </span>
             </div>
-            <div class="track-fallback">
-                <span id="track-title" class="track-title placeholder">Not playing</span>
+            <div class="pb-track-info">
+                <div class="pb-track-row">
+                    <span id="track-title" class="track-title placeholder">Not playing</span>
+                    <button id="btn-track-favorite" class="btn-track-fav hidden" type="button" aria-label="Toggle track favorite" aria-pressed="false" title="Add to favorites">♡</button>
+                </div>
                 <div id="track-artist" class="track-artist"></div>
             </div>
         </div>
-        <div class="playback-center">
-            <div class="song-info">
-                <span class="sc-artist" id="sc-artist"></span>
-                <span class="sc-title" id="sc-title"></span>
-                <span class="sc-album" id="sc-album"></span>
-            </div>
-            <div class="playback-meta-row">
-                <div id="samplerate-status" class="samplerate-status hidden">44.1 kHz</div>
-                <div id="queue-status" class="queue-status hidden">Queue 1 / 1</div>
-                <div id="output-level-badge" class="output-level-badge hidden">-60 dB</div>
+
+        <!-- Center: Transport + Seek -->
+        <div class="pb-center">
+            <div class="transport-controls">
+                <button id="btn-shuffle" class="transport-icon-btn" type="button" aria-label="Shuffle" aria-pressed="false" title="Shuffle">
+                    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg>
+                </button>
+                <button id="btn-previous" class="transport-icon-btn" disabled aria-label="Previous">
+                    <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/></svg>
+                </button>
+                <button id="btn-play-pause" class="btn-play-pause" disabled aria-label="Play or pause">
+                    <svg class="icon-play" viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+                    <svg class="icon-pause" viewBox="0 0 24 24" width="22" height="22" fill="currentColor" style="display:none"><path d="M6 4h4v16H6zM14 4h4v16h-4z"/></svg>
+                </button>
+                <button id="btn-next" class="transport-icon-btn" disabled aria-label="Next">
+                    <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M16 6h2v12h-2zM4 18l8.5-6L4 6z"/></svg>
+                </button>
+                <button id="btn-repeat" class="transport-icon-btn" type="button" aria-label="Repeat" aria-pressed="false" title="Repeat">
+                    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
+                </button>
             </div>
             <div class="seek-row hidden">
                 <span id="seek-current" class="seek-time">0:00</span>
@@ -1272,27 +1283,48 @@
                 >
                 <span id="seek-duration" class="seek-time">0:00</span>
             </div>
-        </div>
-        <div class="controls">
-            <div class="transport-controls">
-                <button id="btn-previous" class="control-btn control-btn-secondary hidden" disabled aria-label="Previous">⏮</button>
-                <button id="btn-play-pause" class="control-btn" disabled aria-label="Play or pause">▶</button>
-                <button id="btn-next" class="control-btn control-btn-secondary hidden" disabled aria-label="Next">⏭</button>
-                <button id="btn-clear-queue" class="control-btn control-btn-clear hidden" disabled title="Clear queue" aria-label="Clear queue">✕</button>
+            <div class="playback-meta-row">
+                <div id="samplerate-status" class="samplerate-status hidden">44.1 kHz</div>
+                <div id="queue-status" class="queue-status hidden">Queue 1 / 1</div>
+                <div id="output-level-badge" class="output-level-badge hidden">-60 dB</div>
             </div>
-            <label class="volume-control" for="volume-slider">
-                <span class="volume-icon" aria-hidden="true">VOL</span>
-                <input
-                    type="range"
-                    id="volume-slider"
-                    min="0"
-                    max="100"
-                    value="100"
-                    class="volume-slider"
-                    aria-label="Volume"
-                >
+        </div>
+
+        <!-- Right: Meter + Volume -->
+        <div class="pb-right">
+            <div class="stereo-meter" id="stereo-meter">
+                <div class="meter-channels">
+                    <div class="meter-channel">
+                        <span class="meter-label">L</span>
+                        <div class="meter-bar" id="meter-bar-l"></div>
+                    </div>
+                    <div class="meter-channel">
+                        <span class="meter-label">R</span>
+                        <div class="meter-bar" id="meter-bar-r"></div>
+                    </div>
+                </div>
+                <div class="meter-scale">
+                    <span>-60</span><span>-40</span><span>-20</span><span>-10</span><span>-6</span><span>-3</span><span>0</span>
+                </div>
+            </div>
+            <div class="volume-section">
+                <button class="volume-icon-btn" type="button" aria-label="Mute" id="btn-mute">
+                    <svg class="vol-on" viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 8.5v7a4.49 4.49 0 0 0 2.5-3.5zM14 3.23v2.06a7 7 0 0 1 0 13.42v2.06A9 9 0 0 0 14 3.23z"/></svg>
+                    <svg class="vol-off" viewBox="0 0 24 24" width="18" height="18" fill="currentColor" style="display:none"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 8.5v7a4.49 4.49 0 0 0 2.5-3.5zM14 3.23v2.06a7 7 0 0 1 0 13.42v2.06A9 9 0 0 0 14 3.23z"/><line x1="23" y1="9" x2="17" y2="15" stroke="currentColor" stroke-width="2"/><line x1="17" y1="9" x2="23" y2="15" stroke="currentColor" stroke-width="2"/></svg>
+                </button>
+                <div class="volume-slider-wrap">
+                    <input
+                        type="range"
+                        id="volume-slider"
+                        min="0"
+                        max="100"
+                        value="100"
+                        class="volume-slider"
+                        aria-label="Volume"
+                    >
+                </div>
                 <span id="volume-display" class="volume-display">100%</span>
-            </label>
+            </div>
         </div>
     </footer>
 
