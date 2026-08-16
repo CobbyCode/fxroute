@@ -176,6 +176,18 @@ class MonitorTarget:
     serial: int = 0
 
 
+@dataclass(frozen=True)
+class StereoChunkMetrics:
+    """Joint and per-channel peak/RMS for one frame-aligned stereo chunk."""
+
+    peak: float
+    rms: float
+    peak_l: float
+    rms_l: float
+    peak_r: float
+    rms_r: float
+
+
 class DSPPeakMonitor:
     def __init__(self, on_change: Optional[Callable[[dict], Awaitable[None]]] = None):
         self.on_change = on_change
@@ -196,6 +208,17 @@ class DSPPeakMonitor:
         self._settle_until = 0.0
         self._settle_timeout_count = 0
         self._settle_rearmed = False
+        self._hold_until_l = 0.0
+        self._hold_until_r = 0.0
+        self._last_over_at_l: Optional[float] = None
+        self._last_over_at_r: Optional[float] = None
+        self._consecutive_hits_l = 0
+        self._consecutive_hits_r = 0
+        self._vu_db_l: Optional[float] = None
+        self._vu_db_r: Optional[float] = None
+        self._last_vu_update_at_l: Optional[float] = None
+        self._last_vu_update_at_r: Optional[float] = None
+        self._pending_frame_bytes: bytes = b""
 
     async def start(self):
         if self._task and not self._task.done():
@@ -283,6 +306,17 @@ class DSPPeakMonitor:
         self._last_audio_sample_at = None
         self._last_vu_emit_at = 0.0
         self._settle_rearmed = False
+        self._hold_until_l = 0.0
+        self._hold_until_r = 0.0
+        self._last_over_at_l = None
+        self._last_over_at_r = None
+        self._consecutive_hits_l = 0
+        self._consecutive_hits_r = 0
+        self._vu_db_l = None
+        self._vu_db_r = None
+        self._last_vu_update_at_l = None
+        self._last_vu_update_at_r = None
+        self._pending_frame_bytes = b""
         logger.info("Peak monitor stop completed in %.3fs (had_task=%s had_proc=%s)", time.monotonic() - stop_started_at, had_task, had_proc)
 
     def snapshot(self) -> dict:
@@ -299,6 +333,12 @@ class DSPPeakMonitor:
             "hold_ms": hold_ms,
             "threshold": PEAK_THRESHOLD,
             "vu_db": round(self._vu_db, 1) if self._vu_db is not None else None,
+            "vu_db_l": round(self._vu_db_l, 1) if self._vu_db_l is not None else None,
+            "vu_db_r": round(self._vu_db_r, 1) if self._vu_db_r is not None else None,
+            "detected_l": now < self._hold_until_l,
+            "detected_r": now < self._hold_until_r,
+            "hold_ms_l": max(0, int((self._hold_until_l - now) * 1000)),
+            "hold_ms_r": max(0, int((self._hold_until_r - now) * 1000)),
             "vu_fresh": bool(sample_age_ms is not None and sample_age_ms <= int(CAPTURE_NO_DATA_TIMEOUT * 1000)),
             "vu_age_ms": sample_age_ms,
             "target": {
@@ -308,6 +348,8 @@ class DSPPeakMonitor:
                 "serial": self._target.serial,
             } if self._target else None,
             "last_over_at": self._last_over_at,
+            "last_over_at_l": self._last_over_at_l,
+            "last_over_at_r": self._last_over_at_r,
             "last_error": self._last_error,
         }
 
@@ -379,6 +421,7 @@ class DSPPeakMonitor:
         capture_rate = _resolve_capture_rate()
         self._capture_node_name = capture_node_name
         self._last_audio_sample_at = None
+        self._pending_frame_bytes = b""
         cmd = [
             "pw-record",
             "--target",
@@ -436,19 +479,41 @@ class DSPPeakMonitor:
                 if chunk:
                     last_data_at = now
                     self._last_audio_sample_at = now
-                    peak = self._chunk_peak(chunk)
-                    rms = self._chunk_rms(chunk)
-                    self._update_vu_db(self._linear_to_db(rms), now)
-                    if peak >= PEAK_THRESHOLD:
-                        self._consecutive_hits += 1
-                        if self._consecutive_hits >= CONSECUTIVE_HITS_REQUIRED:
-                            was_detected = now < self._hold_until
-                            self._hold_until = now + HOLD_SECONDS
-                            if not was_detected:
-                                self._last_over_at = time.time()
-                                await self._emit_if_changed(force=True)
-                    else:
-                        self._consecutive_hits = 0
+                    frames_bytes = self._align_stereo_frames(chunk)
+                    if frames_bytes:
+                        metrics = self._stereo_metrics(frames_bytes)
+                        self._update_vu_db(self._linear_to_db(metrics.rms), now)
+                        self._update_vu_db_l(self._linear_to_db(metrics.rms_l), now)
+                        self._update_vu_db_r(self._linear_to_db(metrics.rms_r), now)
+                        (
+                            self._consecutive_hits,
+                            self._hold_until,
+                            joint_transitioned,
+                        ) = self._update_peak_detection(
+                            metrics.peak, now, self._consecutive_hits, self._hold_until
+                        )
+                        (
+                            self._consecutive_hits_l,
+                            self._hold_until_l,
+                            left_transitioned,
+                        ) = self._update_peak_detection(
+                            metrics.peak_l, now, self._consecutive_hits_l, self._hold_until_l
+                        )
+                        (
+                            self._consecutive_hits_r,
+                            self._hold_until_r,
+                            right_transitioned,
+                        ) = self._update_peak_detection(
+                            metrics.peak_r, now, self._consecutive_hits_r, self._hold_until_r
+                        )
+                        if joint_transitioned:
+                            self._last_over_at = time.time()
+                        if left_transitioned:
+                            self._last_over_at_l = time.time()
+                        if right_transitioned:
+                            self._last_over_at_r = time.time()
+                        if joint_transitioned:
+                            await self._emit_if_changed(force=True)
                 elif self._proc.returncode is not None:
                     break
                 else:
@@ -494,14 +559,35 @@ class DSPPeakMonitor:
                     if now - last_data_at >= no_data_timeout:
                         raise RuntimeError("Peak monitor received no audio data while pw-record remained running")
                     self._update_vu_db(VU_FLOOR_DB, now)
+                    self._update_vu_db_l(VU_FLOOR_DB, now)
+                    self._update_vu_db_r(VU_FLOOR_DB, now)
+                hold_expired = False
                 if self._hold_until and now >= self._hold_until:
                     self._hold_until = 0.0
+                    hold_expired = True
+                if self._hold_until_l and now >= self._hold_until_l:
+                    self._hold_until_l = 0.0
+                    hold_expired = True
+                if self._hold_until_r and now >= self._hold_until_r:
+                    self._hold_until_r = 0.0
+                    hold_expired = True
+                if hold_expired:
                     await self._emit_if_changed(force=True)
                 elif now - self._last_vu_emit_at >= VU_EMIT_INTERVAL:
                     self._last_vu_emit_at = now
                     await self._emit_if_changed()
-            if self._hold_until and time.monotonic() >= self._hold_until:
+            now_exit = time.monotonic()
+            exit_hold_expired = False
+            if self._hold_until and now_exit >= self._hold_until:
                 self._hold_until = 0.0
+                exit_hold_expired = True
+            if self._hold_until_l and now_exit >= self._hold_until_l:
+                self._hold_until_l = 0.0
+                exit_hold_expired = True
+            if self._hold_until_r and now_exit >= self._hold_until_r:
+                self._hold_until_r = 0.0
+                exit_hold_expired = True
+            if exit_hold_expired:
                 await self._emit_if_changed(force=True)
             if self._proc.returncode is None:
                 await self._proc.wait()
@@ -515,6 +601,8 @@ class DSPPeakMonitor:
                 raise RuntimeError((stderr.decode(errors="ignore").strip() or f"pw-record exited with {self._proc.returncode}"))
         finally:
             self._consecutive_hits = 0
+            self._consecutive_hits_l = 0
+            self._consecutive_hits_r = 0
             if self._proc and self._proc.returncode is None:
                 self._proc.terminate()
                 try:
@@ -756,16 +844,34 @@ class DSPPeakMonitor:
         return selected
 
     def _update_vu_db(self, target_db: float, now: float):
+        self._vu_db, self._last_vu_update_at = self._smooth_vu_db(
+            self._vu_db, self._last_vu_update_at, target_db, now
+        )
+
+    def _update_vu_db_l(self, target_db: float, now: float):
+        self._vu_db_l, self._last_vu_update_at_l = self._smooth_vu_db(
+            self._vu_db_l, self._last_vu_update_at_l, target_db, now
+        )
+
+    def _update_vu_db_r(self, target_db: float, now: float):
+        self._vu_db_r, self._last_vu_update_at_r = self._smooth_vu_db(
+            self._vu_db_r, self._last_vu_update_at_r, target_db, now
+        )
+
+    @staticmethod
+    def _smooth_vu_db(
+        current_db: Optional[float],
+        last_update_at: Optional[float],
+        target_db: float,
+        now: float,
+    ) -> tuple[float, float]:
         target_db = max(VU_FLOOR_DB, min(6.0, target_db))
-        if self._vu_db is None or self._last_vu_update_at is None:
-            self._vu_db = target_db
-            self._last_vu_update_at = now
-            return
-        elapsed = max(0.001, now - self._last_vu_update_at)
-        tau = VU_ATTACK_SECONDS if target_db > self._vu_db else VU_RELEASE_SECONDS
+        if current_db is None or last_update_at is None:
+            return target_db, now
+        elapsed = max(0.001, now - last_update_at)
+        tau = VU_ATTACK_SECONDS if target_db > current_db else VU_RELEASE_SECONDS
         alpha = 1.0 - math.exp(-elapsed / tau)
-        self._vu_db = self._vu_db + ((target_db - self._vu_db) * alpha)
-        self._last_vu_update_at = now
+        return current_db + ((target_db - current_db) * alpha), now
 
     @staticmethod
     def _linear_to_db(value: float) -> float:
@@ -773,39 +879,88 @@ class DSPPeakMonitor:
             return VU_FLOOR_DB
         return 20.0 * math.log10(value)
 
-    @staticmethod
-    def _chunk_peak(chunk: bytes) -> float:
-        if len(chunk) < 4:
-            return 0.0
-        usable = len(chunk) - (len(chunk) % 4)
+    def _align_stereo_frames(self, chunk: bytes) -> bytes:
+        """Buffer ``chunk`` and return the complete stereo frames available.
+
+        PipeWire ``stdout.read()`` may end in the middle of an interleaved
+        stereo frame; the trailing partial frame (fewer than 8 bytes) stays
+        buffered for the next read so L/R never swap across arbitrary chunk
+        boundaries.
+        """
+        self._pending_frame_bytes += chunk
+        usable = len(self._pending_frame_bytes) - (len(self._pending_frame_bytes) % 8)
         if usable <= 0:
-            return 0.0
+            return b""
+        frames = self._pending_frame_bytes[:usable]
+        self._pending_frame_bytes = self._pending_frame_bytes[usable:]
+        return frames
+
+    @staticmethod
+    def _stereo_metrics(frame_bytes: bytes) -> StereoChunkMetrics:
+        """Joint and per-channel peak/RMS for interleaved f32 stereo frames.
+
+        ``frame_bytes`` must be a multiple of 8 bytes (complete L/R frames).
+        Joint peak is the max absolute sample across both channels; joint RMS
+        is over all samples, matching the pre-stereo single-stream behavior.
+        """
         peak = 0.0
-        for (sample,) in struct.iter_unpack("<f", chunk[:usable]):
+        sum_squares = 0.0
+        count = 0
+        peak_l = 0.0
+        sum_squares_l = 0.0
+        count_l = 0
+        peak_r = 0.0
+        sum_squares_r = 0.0
+        count_r = 0
+        for idx, (sample,) in enumerate(struct.iter_unpack("<f", frame_bytes)):
             if not math.isfinite(sample):
                 continue
             value = abs(sample)
+            square = float(sample) * float(sample)
             if value > peak:
                 peak = value
-        return peak
+            sum_squares += square
+            count += 1
+            if idx % 2 == 0:
+                if value > peak_l:
+                    peak_l = value
+                sum_squares_l += square
+                count_l += 1
+            else:
+                if value > peak_r:
+                    peak_r = value
+                sum_squares_r += square
+                count_r += 1
+        return StereoChunkMetrics(
+            peak=peak,
+            rms=math.sqrt(sum_squares / count) if count else 0.0,
+            peak_l=peak_l,
+            rms_l=math.sqrt(sum_squares_l / count_l) if count_l else 0.0,
+            peak_r=peak_r,
+            rms_r=math.sqrt(sum_squares_r / count_r) if count_r else 0.0,
+        )
 
     @staticmethod
-    def _chunk_rms(chunk: bytes) -> float:
-        if len(chunk) < 4:
-            return 0.0
-        usable = len(chunk) - (len(chunk) % 4)
-        if usable <= 0:
-            return 0.0
-        sum_squares = 0.0
-        count = 0
-        for (sample,) in struct.iter_unpack("<f", chunk[:usable]):
-            if not math.isfinite(sample):
-                continue
-            sum_squares += float(sample) * float(sample)
-            count += 1
-        if count <= 0:
-            return 0.0
-        return math.sqrt(sum_squares / count)
+    def _update_peak_detection(
+        peak: float,
+        now: float,
+        consecutive_hits: int,
+        hold_until: float,
+    ) -> tuple[int, float, bool]:
+        """Advance the consecutive-hit/hold peak detector for one channel.
+
+        Returns ``(consecutive_hits, hold_until, transitioned)`` where
+        ``transitioned`` is True only when a fresh false->true hold starts.
+        """
+        if peak >= PEAK_THRESHOLD:
+            consecutive_hits += 1
+            if consecutive_hits >= CONSECUTIVE_HITS_REQUIRED:
+                was_detected = now < hold_until
+                hold_until = now + HOLD_SECONDS
+                return consecutive_hits, hold_until, not was_detected
+        else:
+            consecutive_hits = 0
+        return consecutive_hits, hold_until, False
 
 
 @dataclass(frozen=True)

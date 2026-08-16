@@ -2102,10 +2102,18 @@ def build_playback_payload(
         "hold_ms": 0,
         "threshold": 1.0,
         "vu_db": None,
+        "vu_db_l": None,
+        "vu_db_r": None,
+        "detected_l": False,
+        "detected_r": False,
+        "hold_ms_l": 0,
+        "hold_ms_r": 0,
         "vu_fresh": False,
         "vu_age_ms": None,
         "target": None,
         "last_over_at": None,
+        "last_over_at_l": None,
+        "last_over_at_r": None,
         "last_error": None,
     }
     if playback_transition_coordinator:
