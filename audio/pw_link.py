@@ -3,14 +3,16 @@
 
 Stateless helpers moved out of ``main.py``.  No imports from ``main`` or
 other project modules (stdlib only), so every consumer (transition
-orchestration, Bluetooth/external-input routing, silent-active diagnosis)
-uses the same bounded command path.
+orchestration, Bluetooth/external-input routing, silent-active diagnosis,
+the update lifecycle) uses the same bounded command path.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import signal
 
 logger = logging.getLogger(__name__)
 
@@ -40,19 +42,51 @@ async def stop_command_child(proc, grace_seconds: float) -> None:
             await proc.wait()
 
 
-async def stop_command_child_cancellation_safe(proc, grace_seconds: float) -> bool:
-    """Stop and drain a command child shielded from caller cancellation.
+async def stop_process_group(proc, communicate_task, *, grace_seconds: float) -> None:
+    """Terminally stop a process group and drain its pipe task.
+
+    SIGTERM to the whole group -> fixed grace period -> SIGKILL to the
+    whole group -> drain the single communicate() task -> reap the shell.
+
+    The group SIGKILL runs unconditionally after the grace period, even
+    when the shell itself already exited: a descendant that ignores
+    SIGTERM can outlive its parent while still belonging to the group
+    (proven by the update lifecycle diagnosis).  ProcessLookupError from
+    killpg simply means the group is already completely gone.
+    """
+    if proc is None:
+        return
+    pgid = proc.pid
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    await asyncio.sleep(grace_seconds)
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    try:
+        await asyncio.wait_for(communicate_task, timeout=grace_seconds)
+    except asyncio.TimeoutError:
+        logger.warning("Process-group pipes did not close after SIGKILL; reaping shell directly")
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=grace_seconds)
+        except asyncio.TimeoutError:
+            pass
+
+
+async def _run_stop_shielded(stop_operation, *, cleanup_log: str) -> bool:
+    """Run a stop operation shielded from caller cancellation.
 
     Runs the actual stop in its own task behind ``asyncio.shield``: even a
-    second cancellation during the grace period cannot interrupt the
-    terminate/grace/kill/pipe-drain sequence, so no child can be orphaned by
-    caller cancellation.  Returns True when the caller was cancelled while
-    draining; the caller must then propagate CancelledError (it wins over
-    any timeout failure).  Cleanup errors are best-effort and swallowed.
+    second cancellation during the grace period cannot interrupt the stop
+    sequence, so no child can be orphaned by caller cancellation.  Returns
+    True when the caller was cancelled while draining; the caller must then
+    propagate CancelledError (it wins over any timeout failure).  Cleanup
+    errors are best-effort and swallowed.
     """
-    if proc is None or proc.returncode is not None:
-        return False
-    cleanup_task = asyncio.create_task(stop_command_child(proc, grace_seconds))
+    cleanup_task = asyncio.create_task(stop_operation)
     cancelled = False
     while not cleanup_task.done():
         try:
@@ -62,8 +96,36 @@ async def stop_command_child_cancellation_safe(proc, grace_seconds: float) -> bo
     try:
         cleanup_task.result()
     except Exception:
-        logger.debug("FXRoute command child cleanup failed", exc_info=True)
+        logger.debug(cleanup_log)
     return cancelled
+
+
+async def stop_command_child_cancellation_safe(proc, grace_seconds: float) -> bool:
+    """Stop and drain a command child shielded from caller cancellation.
+
+    Same contract as ``stop_command_child``; the stop sequence runs in its
+    own task behind ``asyncio.shield`` (see ``_run_stop_shielded``).
+    """
+    if proc is None or proc.returncode is not None:
+        return False
+    return await _run_stop_shielded(
+        stop_command_child(proc, grace_seconds),
+        cleanup_log="FXRoute command child cleanup failed",
+    )
+
+
+async def stop_process_group_cancellation_safe(proc, communicate_task, *, grace_seconds: float) -> bool:
+    """Stop a process group and drain it shielded from caller cancellation.
+
+    Same contract as ``stop_process_group``; the stop sequence runs in its
+    own task behind ``asyncio.shield`` (see ``_run_stop_shielded``).
+    """
+    if proc is None:
+        return False
+    return await _run_stop_shielded(
+        stop_process_group(proc, communicate_task, grace_seconds=grace_seconds),
+        cleanup_log="FXRoute update process-group cleanup failed",
+    )
 
 
 async def stop_pw_link_process(proc) -> None:

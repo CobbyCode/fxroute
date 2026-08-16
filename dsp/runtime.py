@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping, Sequence
 
+from audio.pw_link import stop_command_child_cancellation_safe
+
 DSP_NODE_NAME = "fxroute_dsp"
 DSP_INGRESS_MONITOR_NODE = "fxroute_dsp_sink"
 DSP_INGRESS_PORTS = ("monitor_FL", "monitor_FR")
@@ -88,53 +90,6 @@ def _finite_number(value: Any, default: float = 0.0) -> float:
         return default
     return parsed if math.isfinite(parsed) else default
 
-
-async def _stop_command_child(proc, grace_seconds: float) -> None:
-    """Terminate a still-running command child and drain it terminally.
-
-    terminate -> bounded communicate() (drains stdout+stderr) -> if the
-    child ignores SIGTERM: kill -> bounded communicate().  Process and both
-    pipes are thereby always worked off terminally; a final wait() guards
-    against a pathological case where even the killed child's pipes never
-    close.  Already-exited processes are handled cheaply.
-    """
-    if proc is None or proc.returncode is not None:
-        return
-    proc.terminate()
-    try:
-        await asyncio.wait_for(proc.communicate(), timeout=grace_seconds)
-    except asyncio.TimeoutError:
-        proc.kill()
-        try:
-            await asyncio.wait_for(proc.communicate(), timeout=grace_seconds)
-        except asyncio.TimeoutError:
-            await proc.wait()
-
-
-async def _stop_command_child_cancellation_safe(proc, grace_seconds: float) -> bool:
-    """Stop and drain a command child shielded from caller cancellation.
-
-    Runs the actual stop in its own task behind ``asyncio.shield``: even a
-    second cancellation during the grace period cannot interrupt the
-    terminate/grace/kill/pipe-drain sequence, so no child can be orphaned by
-    caller cancellation.  Returns True when the caller was cancelled while
-    draining; the caller must then propagate CancelledError (it wins over
-    any timeout failure).
-    """
-    if proc is None or proc.returncode is not None:
-        return False
-    cleanup_task = asyncio.create_task(_stop_command_child(proc, grace_seconds))
-    cancelled = False
-    while not cleanup_task.done():
-        try:
-            await asyncio.shield(cleanup_task)
-        except asyncio.CancelledError:
-            cancelled = True
-    try:
-        cleanup_task.result()
-    except Exception:
-        logger.debug("DSP runtime command child cleanup failed", exc_info=True)
-    return cancelled
 
 
 @dataclass(frozen=True)
@@ -869,7 +824,7 @@ class DSPRuntime:
             # timeout as a command failure exactly like a nonzero exit.
             # If the caller is cancelled while the cleanup drains, the
             # cancellation wins over the timeout failure.
-            if await _stop_command_child_cancellation_safe(
+            if await stop_command_child_cancellation_safe(
                 process, grace_seconds=RUNTIME_COMMAND_TERMINATE_GRACE_SECONDS
             ):
                 raise asyncio.CancelledError
@@ -883,7 +838,7 @@ class DSPRuntime:
             # shielded cleanup terminates/kills/drains it even under further
             # cancellation, then the original cancellation is re-raised so
             # the lock holders release ownership.
-            await _stop_command_child_cancellation_safe(
+            await stop_command_child_cancellation_safe(
                 process, grace_seconds=RUNTIME_COMMAND_TERMINATE_GRACE_SECONDS
             )
             raise

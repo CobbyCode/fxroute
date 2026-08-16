@@ -8,7 +8,6 @@ import logging
 import os
 import re
 import shutil
-import signal
 import time
 import weakref
 import asyncio
@@ -136,7 +135,7 @@ async def _run_update_script(timeout: float, *args: str) -> dict:
             asyncio.shield(communicate_task), timeout=timeout
         )
     except asyncio.TimeoutError:
-        if await _stop_update_process_group_cancellation_safe(
+        if await pw_link.stop_process_group_cancellation_safe(
             proc, communicate_task, grace_seconds=_UPDATE_TERMINATE_GRACE_SECONDS
         ):
             raise asyncio.CancelledError
@@ -151,7 +150,7 @@ async def _run_update_script(timeout: float, *args: str) -> dict:
             + f"\nUpdate command timed out after {int(timeout)} seconds",
         }
     except asyncio.CancelledError:
-        await _stop_update_process_group_cancellation_safe(
+        await pw_link.stop_process_group_cancellation_safe(
             proc, communicate_task, grace_seconds=_UPDATE_TERMINATE_GRACE_SECONDS
         )
         raise
@@ -160,68 +159,6 @@ async def _run_update_script(timeout: float, *args: str) -> dict:
         "stdout": stdout.decode(errors="replace"),
         "stderr": stderr.decode(errors="replace"),
     }
-
-
-async def _stop_update_process_group(proc, communicate_task, *, grace_seconds: float) -> None:
-    """Terminally stop the update process group.
-
-    SIGTERM to the whole group -> fixed grace period -> SIGKILL to the
-    whole group -> drain the single communicate() task -> reap the shell.
-
-    The group SIGKILL runs unconditionally after the grace period, even
-    when the shell itself already exited: a descendant that ignores
-    SIGTERM can outlive its parent while still belonging to the group
-    (proven by the update lifecycle diagnosis).  ProcessLookupError from
-    killpg simply means the group is already completely gone.
-    """
-    if proc is None:
-        return
-    pgid = proc.pid
-    try:
-        os.killpg(pgid, signal.SIGTERM)
-    except ProcessLookupError:
-        pass
-    await asyncio.sleep(grace_seconds)
-    try:
-        os.killpg(pgid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
-    try:
-        await asyncio.wait_for(communicate_task, timeout=grace_seconds)
-    except asyncio.TimeoutError:
-        logger.warning("Update process-group pipes did not close after SIGKILL; reaping shell directly")
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=grace_seconds)
-        except asyncio.TimeoutError:
-            pass
-
-
-async def _stop_update_process_group_cancellation_safe(proc, communicate_task, *, grace_seconds: float) -> bool:
-    """Run the update process-group cleanup shielded from caller cancellation.
-
-    A second cancellation during the grace period cannot interrupt the
-    TERM/grace/KILL/pipe-drain sequence, so no update child can be
-    orphaned by caller cancellation.  Returns True when the caller was
-    cancelled while draining; the caller must then propagate
-    CancelledError (it wins over any timeout failure).  Cleanup errors are
-    best-effort and swallowed.
-    """
-    if proc is None:
-        return False
-    cleanup_task = asyncio.create_task(
-        _stop_update_process_group(proc, communicate_task, grace_seconds=grace_seconds)
-    )
-    cancelled = False
-    while not cleanup_task.done():
-        try:
-            await asyncio.shield(cleanup_task)
-        except asyncio.CancelledError:
-            cancelled = True
-    try:
-        cleanup_task.result()
-    except Exception:
-        logger.debug("FXRoute update process-group cleanup failed", exc_info=True)
-    return cancelled
 
 
 _update_operation_lock: Optional[asyncio.Lock] = None
