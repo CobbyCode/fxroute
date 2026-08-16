@@ -130,9 +130,10 @@ class OwnershipStructureTests(unittest.TestCase):
         self.assertNotIn("_reclean_guarded", watcher)
 
     def test_coordinator_module_exists_and_owns_gate_state(self):
-        coordinator = (ROOT / "playback/transition.py").read_text()
+        coordinator = (ROOT / "playback" / "transition" / "coordinator.py").read_text()
+        models = (ROOT / "playback" / "transition" / "models.py").read_text()
         self.assertIn("class PlaybackTransitionCoordinator", coordinator)
-        self.assertIn("class OutputGateState", coordinator)
+        self.assertIn("class OutputGateState", models)
         self.assertIn("failure_latched", coordinator)
         self.assertIn("output-gate-restore", coordinator)
 

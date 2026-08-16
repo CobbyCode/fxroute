@@ -83,7 +83,7 @@ class DspPackagingTests(unittest.TestCase):
         self.assertIn('find "$source_dir" -type f -newer "$binary"', script)
 
     def test_runtime_integration_uses_fxroute_owned_nodes(self):
-        transition = (ROOT / "playback/transition.py").read_text()
+        transition = (ROOT / "playback/transition/models.py").read_text()
         peak_monitor = (ROOT / "dsp/peak_monitor.py").read_text()
         samplerate = (ROOT / "audio/samplerate.py").read_text()
         self.assertIn('DSP_TRANSPORT_SINK = "fxroute_dsp_sink"', transition)
