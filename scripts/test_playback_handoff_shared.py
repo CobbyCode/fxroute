@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import main
 import audio.pw_link as pw_link_mod
 import audio.samplerate as samplerate
+import playback.orchestration as playback_orchestration
 from dsp.runtime import CommandResult, PipeWireLink
 from playback.transition import PlaybackTransitionCoordinator, PlaybackTransitionFailure, TransitionRequest
 from playback_transition_test_support import MainCoreTransitionRuntime, make_transition_runtime
@@ -133,7 +134,7 @@ class CanonicalGraphTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(main.runtime, "dsp_runtime", runtime), patch.object(
             pw_link_mod, "run_pw_link_command", side_effect=pw_link
         ), patch.object(main, "get_audio_output_overview", return_value=overview):
-            return await main._playback_graph_diagnosis(
+            return await playback_orchestration.configured().playback_graph_diagnosis(
                 overview,
                 source=source,
                 target_rate=target_rate,
@@ -208,7 +209,7 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
             side_effect=lambda **_kwargs: calls.__setitem__("sync", calls["sync"] + 1),
         ):
             with self.assertRaisesRegex(RuntimeError, "graph-only reconciliation"):
-                await main._coordinator_establish_effects_and_helper(request)
+                await playback_orchestration.configured().establish_effects_and_helper(request)
         self.assertEqual(helper.reconcile_calls, 0)
         self.assertEqual(calls, {"preset": 0, "sync": 0})
         self.assertTrue(link_state["direct"])
@@ -250,7 +251,7 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
                 ), patch.object(main.dsp_orchestrator, "sync_runtime", side_effect=sync), patch.object(
                     main, "dsp_manager", None
                 ):
-                    await main._coordinator_establish_effects_and_helper(request)
+                    await playback_orchestration.configured().establish_effects_and_helper(request)
                 self.assertEqual(calls, {"preset": 0, "sync": 1})
                 self.assertEqual(helper.reconcile_calls, 1)
 
@@ -315,13 +316,13 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
         ), patch.object(
             samplerate, "get_current_pipewire_force_rate", return_value=48000
         ), patch.object(
-            main, "_playback_graph_diagnosis", new=AsyncMock(side_effect=[initial, stable])
+            playback_orchestration.configured(), "playback_graph_diagnosis", new=AsyncMock(side_effect=[initial, stable])
         ), patch.object(
-            main, "_wait_for_dsp_output_ports", new=AsyncMock(return_value=True)
+            playback_orchestration.configured(), "wait_for_dsp_output_ports", new=AsyncMock(return_value=True)
         ), patch.object(
             main.dsp_orchestrator, "sync_runtime", side_effect=sync_helper
         ), patch.object(
-            main, "_coordinator_reconcile_subwoofer_links_only", reconciler
+            playback_orchestration.configured(), "reconcile_subwoofer_links_only", reconciler
         ), patch.object(main.runtime, "dsp_runtime", helper), patch.object(
             main, "dsp_manager", None
         ):
@@ -469,15 +470,15 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
         ), patch.object(
             samplerate, "ensure_playback_samplerate_force", side_effect=force_rate
         ), patch.object(
-            main, "_playback_graph_diagnosis", new=AsyncMock(side_effect=[initial, stable, stable, stable])
+            playback_orchestration.configured(), "playback_graph_diagnosis", new=AsyncMock(side_effect=[initial, stable, stable, stable])
         ), patch.object(
-            main, "_wait_for_dsp_output_ports", new=AsyncMock(return_value=True)
+            playback_orchestration.configured(), "wait_for_dsp_output_ports", new=AsyncMock(return_value=True)
         ), patch.object(
             samplerate, "reconcile_transition_sink_rate", new=AsyncMock(return_value=True)
         ), patch.object(
             main.dsp_orchestrator, "sync_runtime", side_effect=sync_helper
         ), patch.object(
-            main, "_coordinator_reconcile_subwoofer_links_only", reconciler
+            playback_orchestration.configured(), "reconcile_subwoofer_links_only", reconciler
         ), patch.object(main.runtime, "dsp_runtime", helper), patch.object(
             main, "dsp_manager", ConvolverManagerStub()
         ), patch.object(main, "get_output_volume", return_value=33), patch.object(
@@ -587,20 +588,20 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
             reload_source=False,
         )
         with patch.object(main, "get_audio_output_overview", return_value=overview), patch.object(
-            main, "_playback_graph_diagnosis", new=AsyncMock(side_effect=[initial, stable])
+            playback_orchestration.configured(), "playback_graph_diagnosis", new=AsyncMock(side_effect=[initial, stable])
         ), patch.object(
-            main, "_wait_for_dsp_output_ports", new=AsyncMock(return_value=True)
+            playback_orchestration.configured(), "wait_for_dsp_output_ports", new=AsyncMock(return_value=True)
         ), patch.object(
             main.dsp_orchestrator, "sync_runtime", side_effect=sync_helper
         ), patch.object(
-            main, "_coordinator_reconcile_subwoofer_links_only", reconciler
+            playback_orchestration.configured(), "reconcile_subwoofer_links_only", reconciler
         ), patch.object(main.runtime, "dsp_runtime", helper), patch.object(
             main, "dsp_manager", ConvolverManagerStub()
         ), patch.object(main, "get_output_volume", return_value=33), patch.object(
             main, "set_output_volume", return_value=33
         ), patch.object(main.manager, "broadcast", new=AsyncMock()):
             result = await asyncio.wait_for(
-                main._coordinator_establish_effects_and_helper(request),
+                playback_orchestration.configured().establish_effects_and_helper(request),
                 timeout=0.5,
             )
 
@@ -654,13 +655,13 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(main.runtime, "dsp_runtime", helper), patch.object(
             main, "dsp_manager", None
         ), patch.object(
-            main, "_wait_for_dsp_output_ports", new=AsyncMock(return_value=True)
+            playback_orchestration.configured(), "wait_for_dsp_output_ports", new=AsyncMock(return_value=True)
         ), patch.object(
-            main, "_playback_graph_diagnosis", new=AsyncMock(side_effect=diagnose)
+            playback_orchestration.configured(), "playback_graph_diagnosis", new=AsyncMock(side_effect=diagnose)
         ), patch.object(main.dsp_orchestrator, "sync_runtime", side_effect=sync_helper), patch.object(
-            main, "_coordinator_reconcile_subwoofer_links_only", side_effect=reconcile
+            playback_orchestration.configured(), "reconcile_subwoofer_links_only", side_effect=reconcile
         ) as reconciler:
-            result = await main._coordinator_establish_effects_and_helper(request)
+            result = await playback_orchestration.configured().establish_effects_and_helper(request)
 
         self.assertTrue(result["graph_complete"])
         self.assertTrue(result["links_reconciled"])
@@ -711,9 +712,9 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(main, "persist_audio_output_mode", return_value={}), patch.object(
             main, "dsp_manager", None
         ), patch.object(main.dsp_orchestrator, "sync_runtime", side_effect=sync_helper), patch.object(
-            main, "_coordinator_reconcile_subwoofer_links_only", side_effect=reconcile
+            playback_orchestration.configured(), "reconcile_subwoofer_links_only", side_effect=reconcile
         ) as reconciler, patch.object(
-            main, "_playback_graph_diagnosis", new=AsyncMock(side_effect=diagnose)
+            playback_orchestration.configured(), "playback_graph_diagnosis", new=AsyncMock(side_effect=diagnose)
         ):
             await runtime.rollback_output_mode_runtime(request, snapshot)
 
@@ -826,7 +827,7 @@ class StereoRateTransitionRegressionTests(unittest.IsolatedAsyncioTestCase):
                 pw_link_mod, "run_pw_link_command",
                 side_effect=lambda *_args: _links_text("stereo", source=False),
             ):
-                result = await main._coordinator_establish_effects_and_helper(request)
+                result = await playback_orchestration.configured().establish_effects_and_helper(request)
 
             snapshot = runtime.snapshot()
             self.assertTrue(result["graph_complete"])
@@ -864,7 +865,7 @@ class RecoveryCoordinatorDouble:
         return bool(
             commit_context_id
             and not self.transition_active
-            and main._coordinator_commit_context_id() == commit_context_id
+            and playback_orchestration.configured().coordinator_commit_context_id() == commit_context_id
         )
 
     async def run_recovery(self, **kwargs):
@@ -901,10 +902,10 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
             "force_rate": 48000,
         }):
             diagnosis = {"signature": "2.2|bypass"}
-            await main._request_coordinated_recovery(
+            await playback_orchestration.configured().request_coordinated_recovery(
                 track, "watcher", graph_only=True, diagnosis=diagnosis
             )
-            await main._request_coordinated_recovery(
+            await playback_orchestration.configured().request_coordinated_recovery(
                 track, "watcher-repeat", graph_only=True, diagnosis=diagnosis
             )
 
@@ -939,7 +940,7 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
             "active_rate": 44100,
             "force_rate": 44100,
         }):
-            await main._request_coordinated_recovery(
+            await playback_orchestration.configured().request_coordinated_recovery(
                 track, "watcher", diagnosis={"signature": "2.2|missing"}
             )
 
@@ -971,7 +972,7 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
         ), patch.object(main.playback_state, "current_track_info", dict(track)), patch.object(
             main, "_run_coordinated_transition", run
         ):
-            await main._request_coordinated_recovery(track, "radio-watcher")
+            await playback_orchestration.configured().request_coordinated_recovery(track, "radio-watcher")
 
         run.assert_not_awaited()
 
@@ -993,9 +994,9 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(main, "playback_transition_coordinator", RecoveryCoordinatorDouble()), patch.object(
             main.runtime, "player_instance", PlayerDouble()
         ), patch.object(main, "_run_coordinated_transition", run), patch.object(
-            main, "_coordinator_commit_context_id", side_effect=("tr-before", "tr-after")
+            playback_orchestration.configured(), "coordinator_commit_context_id", side_effect=("tr-before", "tr-after")
         ):
-            await main._request_coordinated_recovery(track, "local-watcher")
+            await playback_orchestration.configured().request_coordinated_recovery(track, "local-watcher")
 
         run.assert_not_awaited()
 
@@ -1030,14 +1031,14 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
             main, "get_samplerate_status", return_value={"active_rate": 48000, "force_rate": 48000}
         ):
             diagnosis = {"signature": "rate:44100->48000"}
-            await main._request_coordinated_recovery(track, "spotify-watcher", diagnosis=diagnosis)
+            await playback_orchestration.configured().request_coordinated_recovery(track, "spotify-watcher", diagnosis=diagnosis)
             # A failed attempt must not suppress an immediate retry of the same key.
-            await main._request_coordinated_recovery(track, "spotify-watcher-repeat", diagnosis=diagnosis)
+            await playback_orchestration.configured().request_coordinated_recovery(track, "spotify-watcher-repeat", diagnosis=diagnosis)
             coordinator.last_result = SimpleNamespace(
                 committed=True,
                 transition_id="tr-later-success",
             )
-            await main._request_coordinated_recovery(track, "spotify-watcher-after-commit", diagnosis=diagnosis)
+            await playback_orchestration.configured().request_coordinated_recovery(track, "spotify-watcher-after-commit", diagnosis=diagnosis)
 
         self.assertEqual(len(requests), 3)
 
@@ -1077,8 +1078,8 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
             main, "get_samplerate_status", return_value={"active_rate": 48000, "force_rate": 48000}
         ):
             diagnosis = {"signature": "rate:44100->48000"}
-            await main._request_coordinated_recovery(track, "watcher", diagnosis=diagnosis)
-            await main._request_coordinated_recovery(track, "watcher-repeat", diagnosis=diagnosis)
+            await playback_orchestration.configured().request_coordinated_recovery(track, "watcher", diagnosis=diagnosis)
+            await playback_orchestration.configured().request_coordinated_recovery(track, "watcher-repeat", diagnosis=diagnosis)
 
         self.assertEqual(len(requests), 2)
 
@@ -1185,10 +1186,10 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
             main.dsp_orchestrator, "sync_preset_for_playback_samplerate",
             side_effect=lambda **_kwargs: calls.__setitem__("preset", calls["preset"] + 1),
         ), patch.object(
-            main, "_repair_stereo_output_links_once",
+            playback_orchestration.configured(), "repair_stereo_output_links_once",
             side_effect=lambda _diagnosis: calls.__setitem__("repair", calls["repair"] + 1),
         ):
-            await main._coordinator_establish_effects_and_helper(request)
+            await playback_orchestration.configured().establish_effects_and_helper(request)
         self.assertEqual(calls, {"preset": 0, "repair": 0})
 
     async def test_same_rate_source_switch_quiets_without_releasing_mpv_stream(self):
@@ -1285,7 +1286,7 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
             main.dsp_orchestrator, "sync_runtime",
             side_effect=AssertionError("same-rate helper rebuild"),
         ):
-            result = await main._coordinator_establish_effects_and_helper(request)
+            result = await playback_orchestration.configured().establish_effects_and_helper(request)
 
         self.assertFalse(result["dsp_reinitialized"])
         self.assertFalse(result["helper_rebuilt"])
@@ -1315,7 +1316,7 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
             side_effect=lambda *_args: _links_text("subwoofer-2.2", direct=False, complete=False),
         ), patch.object(main.runtime, "dsp_runtime", helper):
             with self.assertRaisesRegex(RuntimeError, "graph-only reconciliation"):
-                await main._coordinator_establish_effects_and_helper(request)
+                await playback_orchestration.configured().establish_effects_and_helper(request)
 
 
 
@@ -1347,7 +1348,7 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
         ), patch.object(main, "get_audio_output_overview", return_value={
             "output_mode": {"mode": "subwoofer-2.2", "effective_output_key": OUTPUT_KEY}
         }):
-            result = await main._coordinator_reconcile_post_start_graph(request)
+            result = await playback_orchestration.configured().reconcile_post_start_graph(request)
 
         self.assertTrue(result["graph_complete"])
         self.assertEqual(helper.reconcile_calls, 0)

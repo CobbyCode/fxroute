@@ -13,6 +13,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 import main
 import audio.pw_link as pw_link_mod
+import playback.orchestration as playback_orchestration
 from playback.transition import PlaybackTransitionCoordinator, PlaybackTransitionFailure, TransitionRequest
 from playback_transition_test_support import MainCoreTransitionRuntime
 
@@ -97,7 +98,7 @@ class PostStartGraphReconcileTests(unittest.IsolatedAsyncioTestCase):
 
         async def reconcile(request):
             events.append("post-start-graph-reconcile")
-            return await main._coordinator_reconcile_post_start_graph(request)
+            return await playback_orchestration.configured().reconcile_post_start_graph(request)
 
         runtime.reconcile_post_start_graph = reconcile
         coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
@@ -106,7 +107,7 @@ class PostStartGraphReconcileTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(main, "get_samplerate_status", return_value={
             "active_rate": 48000,
             "force_rate": 48000,
-        }), patch.object(main, "_playback_graph_diagnosis", diagnosis), patch.object(
+        }), patch.object(playback_orchestration.configured(), "playback_graph_diagnosis", diagnosis), patch.object(
             pw_link_mod, "connect_ports", relink
         ):
             result = await coordinator.execute(_request())
@@ -163,7 +164,7 @@ class PostStartGraphReconcileTests(unittest.IsolatedAsyncioTestCase):
 
         async def reconcile(request):
             events.append("post-start-graph-reconcile")
-            return await main._coordinator_reconcile_post_start_graph(request)
+            return await playback_orchestration.configured().reconcile_post_start_graph(request)
 
         runtime.reconcile_post_start_graph = reconcile
         coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
@@ -172,7 +173,7 @@ class PostStartGraphReconcileTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(main, "get_samplerate_status", return_value={
             "active_rate": 48000,
             "force_rate": 48000,
-        }), patch.object(main, "_playback_graph_diagnosis", diagnosis), patch.object(
+        }), patch.object(playback_orchestration.configured(), "playback_graph_diagnosis", diagnosis), patch.object(
             pw_link_mod, "connect_ports", relink
         ):
             with self.assertRaises(PlaybackTransitionFailure) as caught:

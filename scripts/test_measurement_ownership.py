@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
+import playback.orchestration as playback_orchestration
 import measurement.session as measurement_session
 
 
@@ -26,11 +27,8 @@ class MeasurementOwnershipTests(unittest.IsolatedAsyncioTestCase):
                 "dsp_runtime",
                 "_is_measurement_window_open",
                 "_run_coordinated_transition",
-                "_recovery_context_is_valid",
                 "_coordinator_target_rate",
                 "_coordinator_rate_change",
-                "_coordinator_commit_context_id",
-                "_playback_graph_diagnosis",
                 "get_audio_output_overview",
                 "get_samplerate_status",
             )
@@ -96,7 +94,7 @@ class MeasurementOwnershipTests(unittest.IsolatedAsyncioTestCase):
             with patch.object(main, "measurement_sr_session", session), patch.object(
                 main, "playback_transition_coordinator", coordinator
             ), patch.object(main, "_run_coordinated_transition", run):
-                await main._request_coordinated_recovery(track, "measurement-ownership-test")
+                await playback_orchestration.configured().request_coordinated_recovery(track, "measurement-ownership-test")
             self.assertFalse(coordinator.gate.closed)
 
         run.assert_not_awaited()
@@ -125,8 +123,8 @@ class MeasurementOwnershipTests(unittest.IsolatedAsyncioTestCase):
 
         with patch.object(main, "measurement_sr_session", session), patch.object(
             main.samplerate_drift, "observe", observe_drift
-        ), patch.object(main, "_playback_graph_diagnosis", diagnose), patch.object(
-            main, "_request_coordinated_recovery", recovery
+        ), patch.object(playback_orchestration.configured(), "playback_graph_diagnosis", diagnose), patch.object(
+            playback_orchestration.configured(), "request_coordinated_recovery", recovery
         ), patch.object(main, "asyncio") as asyncio_module:
             asyncio_module.sleep = one_tick_then_cancel
             task = asyncio.create_task(main.dsp_orchestrator.runtime_link_watch_loop())
@@ -168,7 +166,7 @@ class MeasurementOwnershipTests(unittest.IsolatedAsyncioTestCase):
             main, "playback_transition_coordinator", coordinator
         ), patch.object(
             main, "get_samplerate_status", return_value={"active_rate": 48000, "force_rate": 48000}
-        ), patch.object(main, "_playback_graph_diagnosis", diagnosis), patch.object(
+        ), patch.object(playback_orchestration.configured(), "playback_graph_diagnosis", diagnosis), patch.object(
             main, "measurement_store", None
         ), patch.object(
             main, "get_audio_output_overview", return_value={"output_mode": {}}
@@ -208,9 +206,9 @@ class MeasurementOwnershipTests(unittest.IsolatedAsyncioTestCase):
             main.playback_state, "current_track_info", dict(track)
         ), patch.object(main, "_coordinator_target_rate", return_value=44100), patch.object(
             main, "_coordinator_rate_change", return_value=False
-        ), patch.object(main, "_recovery_context_is_valid", new=AsyncMock(return_value=True)
+        ), patch.object(playback_orchestration.configured(), "recovery_context_is_valid", new=AsyncMock(return_value=True)
         ), patch.object(main, "_run_coordinated_transition", run):
-            await main._request_coordinated_recovery(track, "post-measurement-watcher")
+            await playback_orchestration.configured().request_coordinated_recovery(track, "post-measurement-watcher")
 
         run.assert_awaited_once()
         self.assertFalse(session.owns_audio_graph)

@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 import main
+import playback.orchestration as playback_orchestration
 import audio.samplerate as samplerate
 from playback.runtime import FxrouteTransitionRuntime
 from playback.transition import PlaybackTransitionCoordinator, TransitionRequest
@@ -114,7 +115,7 @@ class MainCoreTransitionRuntime:
             return {"dsp_reinitialized": False, "helper_rebuilt": False}
         if not self.use_core:
             return {"dsp_reinitialized": False, "helper_rebuilt": False}
-        return await main._coordinator_establish_effects_and_helper(
+        return await playback_orchestration.configured().establish_effects_and_helper(
             request,
             ee_port_timeout_ms=(
                 self.ee_port_timeout_ms

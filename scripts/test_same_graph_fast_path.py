@@ -217,6 +217,19 @@ class SameGraphFastPathCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(runtime.volume, 100)
         self.assertTrue(runtime.playing)
 
+    async def test_fast_path_restores_source_volume_before_unpause(self):
+        # The fast path never closes the hardware gate, so MPV volume is the
+        # only mute.  It must return to 100 before the target unpauses, or the
+        # track start plays at volume 0 and silently consumes its opening
+        # frames.
+        runtime = FastPathFakeRuntime(fast_path_eligible=True)
+        coordinator = make_coordinator(runtime)
+        result = await coordinator.execute(make_request())
+        self.assertTrue(result.committed)
+        volume_idx = runtime.events.index("source-volume:100")
+        start_idx = runtime.events.index("start")
+        self.assertLess(volume_idx, start_idx, "source volume must restore before target start")
+
     async def test_rate_change_uses_full_path(self):
         runtime = FastPathFakeRuntime(fast_path_eligible=True)
         coordinator = make_coordinator(runtime)

@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
+import playback.orchestration as playback_orchestration
 from playback_transition_test_support import make_transition_runtime
 from playback.transition import TransitionRequest
 
@@ -47,7 +48,7 @@ class SpotifyEntrySamplerateTests(unittest.IsolatedAsyncioTestCase):
                 "get_samplerate_status",
                 return_value={"active_rate": hardware_rate, "force_rate": hardware_rate},
             ),
-            patch.object(main, "_playback_graph_links_complete", new=AsyncMock(return_value=True)),
+            patch.object(playback_orchestration.configured(), "playback_graph_links_complete", new=AsyncMock(return_value=True)),
             patch.object(
                 main,
                 "get_audio_output_overview",
@@ -298,7 +299,7 @@ class SpotifyEntrySamplerateTests(unittest.IsolatedAsyncioTestCase):
         ), patch.object(
             main, "get_samplerate_status", return_value={"active_rate": 48000, "force_rate": 48000}
         ):
-            await main._request_coordinated_recovery(
+            await playback_orchestration.configured().request_coordinated_recovery(
                 track,
                 "spotify-samplerate-watcher",
                 reload_source=True,

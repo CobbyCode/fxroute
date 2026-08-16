@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import audio.samplerate as samplerate
 import main
+import playback.orchestration as playback_orchestration
 
 
 class _CoordinatorDouble:
@@ -52,7 +53,7 @@ class CoordinatorRecoveryTests(unittest.IsolatedAsyncioTestCase):
         ), patch.object(
             main, "_run_coordinated_transition", run
         ):
-            await main._request_coordinated_recovery(track, "status-drift-repair")
+            await playback_orchestration.configured().request_coordinated_recovery(track, "status-drift-repair")
 
         self.assertEqual(len(coordinator.requests), 1)
         request = coordinator.requests[0]
@@ -66,7 +67,7 @@ class CoordinatorRecoveryTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(main, "playback_transition_coordinator", coordinator), patch.object(
             main, "_run_coordinated_transition", AsyncMock()
         ) as run:
-            await main._request_coordinated_recovery(
+            await playback_orchestration.configured().request_coordinated_recovery(
                 {"source": "local", "url": "/music/a.flac", "sample_rate_hz": 44100},
                 "status-drift-repair",
             )
@@ -101,7 +102,7 @@ class CoordinatorRecoveryTests(unittest.IsolatedAsyncioTestCase):
             samplerate,
             "get_samplerate_status",
             return_value={"active_rate": 44100, "force_rate": 44100},
-        ), patch.object(main, "_request_coordinated_recovery", recovery), patch.object(
+        ), patch.object(playback_orchestration.configured(), "request_coordinated_recovery", recovery), patch.object(
             main.asyncio, "sleep", new=AsyncMock()
         ):
             await main.spotify_playerctl_watch._event_detect_check("playerctl:Playing")
@@ -128,7 +129,7 @@ class CoordinatorRecoveryTests(unittest.IsolatedAsyncioTestCase):
             samplerate,
             "get_samplerate_status",
             return_value={"active_rate": 48000, "force_rate": 48000},
-        ), patch.object(main, "_request_coordinated_recovery", recovery), patch.object(
+        ), patch.object(playback_orchestration.configured(), "request_coordinated_recovery", recovery), patch.object(
             main.asyncio, "sleep", new=AsyncMock()
         ):
             await main.spotify_playerctl_watch._event_detect_check("playerctl:Playing")
@@ -155,7 +156,7 @@ class CoordinatorRecoveryTests(unittest.IsolatedAsyncioTestCase):
             samplerate,
             "get_samplerate_status",
             return_value={"active_rate": 48000, "force_rate": 48000},
-        ), patch.object(main, "_request_coordinated_recovery", recovery), patch.object(
+        ), patch.object(playback_orchestration.configured(), "request_coordinated_recovery", recovery), patch.object(
             main.asyncio, "sleep", new=AsyncMock()
         ):
             await main.spotify_playerctl_watch._event_detect_check("playerctl:Playing")
@@ -182,7 +183,7 @@ class CoordinatorRecoveryTests(unittest.IsolatedAsyncioTestCase):
             samplerate,
             "get_samplerate_status",
             return_value={"active_rate": 44100, "force_rate": 44100},
-        ), patch.object(main, "_request_coordinated_recovery", recovery), patch.object(
+        ), patch.object(playback_orchestration.configured(), "request_coordinated_recovery", recovery), patch.object(
             main.asyncio, "sleep", new=AsyncMock()
         ):
             await main.spotify_playerctl_watch._event_detect_check("playerctl:Playing")

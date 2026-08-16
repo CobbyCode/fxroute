@@ -272,14 +272,15 @@ class PlaybackTransitionCoordinator(_TransitionCleanupMixin, _OutputGateMixin):
         """
         stages.gate_required = False
         await self._stage(stages, "quiet-old-source", lambda: self.runtime.quiet_old_source(request))
-        stages.target_prepare_started = True
         await self._stage(stages, "target-source-prepare", lambda: self.runtime.prepare_target_source(request))
-        await self._stage(stages, "target-source-start", lambda: self.runtime.start_target_source(request))
         if request.should_play:
+            # The fast path never closes the hardware output gate, so MPV
+            # source volume is the only mute.  Restore it before unpausing so
+            # the track does not start at volume 0 and silently consume its
+            # opening frames.
             await self._stage(stages, "source-volume-restore", lambda: self.runtime.set_source_volume(100, stages.transition_id))
-        verifier = getattr(self.runtime, "verify_same_graph_commit", None)
-        if not callable(verifier):
-            raise RuntimeError("same-graph fast-path commit verifier is unavailable")
+        await self._stage(stages, "target-source-start", lambda: self.runtime.start_target_source(request))
+        verifier = self.runtime.verify_same_graph_commit
         state = await self._stage(stages, "commit-readback", lambda: verifier(request))
         if not bool(state.get("committed", True)):
             raise RuntimeError("fast-path readback did not satisfy commit contract")
@@ -348,10 +349,7 @@ class PlaybackTransitionCoordinator(_TransitionCleanupMixin, _OutputGateMixin):
             if isinstance(committed_mode, Mapping):
                 state = {**dict(state), **dict(committed_mode)}
         elif request.operation == "sample-rate-policy":
-            committer = getattr(self.runtime, "commit_sample_rate_policy", None)
-            if not callable(committer):
-                raise RuntimeError("Sample-rate policy persistence is unavailable")
-            committed_policy = await self._stage(stages, "sample-rate-policy-persist", lambda: committer(request))
+            committed_policy = await self._stage(stages, "sample-rate-policy-persist", lambda: self.runtime.commit_sample_rate_policy(request))
             if isinstance(committed_policy, Mapping):
                 state = {**dict(state), **dict(committed_policy)}
 
@@ -382,7 +380,6 @@ class PlaybackTransitionCoordinator(_TransitionCleanupMixin, _OutputGateMixin):
     ) -> TransitionResult:
         """Run the standard source handoff path (Local, Radio, Spotify,
         recovery, restore)."""
-        stages.target_prepare_started = True
         await self._stage(stages, "target-source-prepare", lambda: self.runtime.prepare_target_source(request))
 
         if stages.gate_required:
@@ -466,10 +463,7 @@ class PlaybackTransitionCoordinator(_TransitionCleanupMixin, _OutputGateMixin):
             raise RuntimeError("transition readback did not satisfy commit contract")
 
         if request.operation == "sample-rate-policy":
-            committer = getattr(self.runtime, "commit_sample_rate_policy", None)
-            if not callable(committer):
-                raise RuntimeError("Sample-rate policy persistence is unavailable")
-            committed_policy = await self._stage(stages, "sample-rate-policy-persist", lambda: committer(request))
+            committed_policy = await self._stage(stages, "sample-rate-policy-persist", lambda: self.runtime.commit_sample_rate_policy(request))
             if isinstance(committed_policy, Mapping):
                 state = {**dict(state), **dict(committed_policy)}
 

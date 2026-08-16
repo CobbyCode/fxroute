@@ -22,6 +22,7 @@ sys.path.insert(0, str(ROOT))
 import main
 import measurement.session as measurement_session
 import audio.samplerate as samplerate
+import playback.orchestration as playback_orchestration
 
 
 class SampleRatePolicyTests(unittest.TestCase):
@@ -266,7 +267,7 @@ class SampleRatePolicyTransitionTests(unittest.IsolatedAsyncioTestCase):
         }
         overview = {"selected_output": {"supported_rates": [44100, 48000]}}
         with patch.object(main, "get_audio_output_overview", return_value=overview), patch.object(
-            main, "_coordinator_current_playback_context", new=AsyncMock(return_value=context)
+            playback_orchestration.configured(), "current_playback_context", new=AsyncMock(return_value=context)
         ), patch.object(
             main, "_get_player_audio_samplerate", return_value=active_rate
         ), patch.object(

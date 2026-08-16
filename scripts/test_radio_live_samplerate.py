@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
+import playback.orchestration as playback_orchestration
 import audio.pw_link as pw_link_mod
 import audio.samplerate as samplerate
 from playback_transition_test_support import run_main_handoff_through_coordinator
@@ -67,7 +68,7 @@ class SamplerateDriftWatcherTests(unittest.IsolatedAsyncioTestCase):
             "get_samplerate_status",
             return_value={"active_rate": 48000, "force_rate": 48000},
         ), patch.object(
-            main, "_request_coordinated_recovery", recovery
+            playback_orchestration.configured(), "request_coordinated_recovery", recovery
         ):
             await main.samplerate_drift.observe()
             recovery.assert_not_awaited()
@@ -87,7 +88,7 @@ class SamplerateDriftWatcherTests(unittest.IsolatedAsyncioTestCase):
             main,
             "get_samplerate_status",
             return_value={"active_rate": 44100, "force_rate": 44100},
-        ), patch.object(main, "_request_coordinated_recovery", recovery):
+        ), patch.object(playback_orchestration.configured(), "request_coordinated_recovery", recovery):
             await main.samplerate_drift.observe()
             recovery.assert_not_awaited()
             await main.samplerate_drift.observe()
@@ -103,7 +104,7 @@ class SamplerateDriftWatcherTests(unittest.IsolatedAsyncioTestCase):
             main,
             "get_samplerate_status",
             return_value={"active_rate": 44100, "force_rate": None},
-        ), patch.object(main, "_request_coordinated_recovery", recovery):
+        ), patch.object(playback_orchestration.configured(), "request_coordinated_recovery", recovery):
             await main.samplerate_drift.observe()
             await main.samplerate_drift.observe()
 
@@ -112,7 +113,7 @@ class SamplerateDriftWatcherTests(unittest.IsolatedAsyncioTestCase):
     async def test_stable_mismatch_resets_when_source_changes(self):
         recovery = AsyncMock()
         with patch.object(main, "_get_player_audio_samplerate", return_value=48000), patch.object(
-            main, "_request_coordinated_recovery", recovery
+            playback_orchestration.configured(), "request_coordinated_recovery", recovery
         ):
             await main.samplerate_drift.observe()
             main.playback_state.current_track_info = {
@@ -129,7 +130,7 @@ class SamplerateDriftWatcherTests(unittest.IsolatedAsyncioTestCase):
     async def test_active_transition_or_measurement_never_requests_recovery(self):
         recovery = AsyncMock()
         with patch.object(main, "_get_player_audio_samplerate", return_value=48000), patch.object(
-            main, "_request_coordinated_recovery", recovery
+            playback_orchestration.configured(), "request_coordinated_recovery", recovery
         ):
             main.playback_transition_coordinator.transition_active = True
             await main.samplerate_drift.observe()

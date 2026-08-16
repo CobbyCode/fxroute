@@ -20,6 +20,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
+import playback.orchestration as playback_orchestration
 import audio.samplerate as samplerate
 from playback_transition_test_support import make_transition_runtime
 import measurement.session as measurement_session
@@ -143,7 +144,7 @@ async def main_async() -> None:
         )
         with mock.patch.object(main, "get_samplerate_status", return_value=stuck_status(48000, 48000)), \
              mock.patch.object(main, "dsp_manager", FakeEffectsManager()), \
-             mock.patch.object(main, "_playback_graph_diagnosis", new=fake_diagnosis), \
+             mock.patch.object(playback_orchestration.configured(), "playback_graph_diagnosis", new=fake_diagnosis), \
              mock.patch.object(runtime, "_read_and_validate_effects_runtime", new=mock.AsyncMock(return_value={})):
             await runtime.stabilize_effects_after_rate_change(
                 switch_request, dsp_reinitialized=True
@@ -162,7 +163,7 @@ async def main_async() -> None:
     reconcile_10_mock = mock.AsyncMock(side_effect=reconcile_10)
     with mock.patch.object(main, "get_samplerate_status", return_value=status_10), \
          mock.patch.object(main, "playback_transition_coordinator", mock.Mock(transition_blocked=False)), \
-         mock.patch.object(main, "_playback_graph_diagnosis", new=mock.AsyncMock(return_value={"links_complete": True, "signature": "sig"})), \
+         mock.patch.object(playback_orchestration.configured(), "playback_graph_diagnosis", new=mock.AsyncMock(return_value={"links_complete": True, "signature": "sig"})), \
          mock.patch.object(samplerate, "reconcile_transition_sink_rate", new=reconcile_10_mock) as reconcile, \
          mock.patch.object(main, "get_audio_output_overview", return_value={"output_mode": {}}):
         await measurement_session._measurement_entry_preflight(48000)
@@ -173,7 +174,7 @@ async def main_async() -> None:
     # 11. Measurement preflight: reconcile failure keeps the fast-fail error.
     with mock.patch.object(main, "get_samplerate_status", return_value=stuck_status(44100, 48000)), \
          mock.patch.object(main, "playback_transition_coordinator", mock.Mock(transition_blocked=False)), \
-         mock.patch.object(main, "_playback_graph_diagnosis", new=mock.AsyncMock(return_value={"links_complete": True, "signature": "sig"})), \
+         mock.patch.object(playback_orchestration.configured(), "playback_graph_diagnosis", new=mock.AsyncMock(return_value={"links_complete": True, "signature": "sig"})), \
          mock.patch.object(samplerate, "reconcile_transition_sink_rate", new=mock.AsyncMock(return_value=False)), \
          mock.patch.object(main, "get_audio_output_overview", return_value={"output_mode": {}}):
         try:
@@ -204,16 +205,16 @@ async def main_async() -> None:
             "links": links,
         }
 
-    assert main._measurement_session_link_loss_is_repairable(
+    assert playback_orchestration.configured().measurement_session_link_loss_is_repairable(
         stereo_diagnosis(links_present=False), target_rate=48000
     ) is True, "stereo EE->hardware link drift must be repairable"
-    assert main._measurement_session_link_loss_is_repairable(
+    assert playback_orchestration.configured().measurement_session_link_loss_is_repairable(
         stereo_diagnosis(links_present=True), target_rate=48000
     ) is False, "complete graph is not a link loss"
-    assert main._measurement_session_link_loss_is_repairable(
+    assert playback_orchestration.configured().measurement_session_link_loss_is_repairable(
         stereo_diagnosis(links_present=False, ee_ports=False), target_rate=48000
     ) is False, "missing EE ports are not a link-only loss"
-    assert main._measurement_session_link_loss_is_repairable(
+    assert playback_orchestration.configured().measurement_session_link_loss_is_repairable(
         stereo_diagnosis(links_present=False, aligned=False), target_rate=48000
     ) is False, "rate mismatch is not a link-only loss"
 
@@ -222,9 +223,9 @@ async def main_async() -> None:
     async def fake_repair_stereo(diagnosis):
         reconciler_calls.append(diagnosis.get("mode"))
     repair_stereo_mock = mock.AsyncMock(side_effect=fake_repair_stereo)
-    with mock.patch.object(main, "_playback_graph_diagnosis", new=mock.AsyncMock(return_value=stereo_diagnosis(False))), \
-         mock.patch.object(main, "_repair_stereo_output_links_once", new=repair_stereo_mock) as repair, \
-         mock.patch.object(main, "_coordinator_reconcile_subwoofer_links_only", new=mock.AsyncMock()) as sub_repair:
+    with mock.patch.object(playback_orchestration.configured(), "playback_graph_diagnosis", new=mock.AsyncMock(return_value=stereo_diagnosis(False))), \
+         mock.patch.object(playback_orchestration.configured(), "repair_stereo_output_links_once", new=repair_stereo_mock) as repair, \
+         mock.patch.object(playback_orchestration.configured(), "reconcile_subwoofer_links_only", new=mock.AsyncMock()) as sub_repair:
         await runtime.reconcile_measurement_session_graph(48000)
         repair.assert_awaited_once()
         sub_repair.assert_not_awaited()
@@ -269,7 +270,7 @@ async def main_async() -> None:
     with mock.patch.object(main, "get_samplerate_status", return_value=stuck_status(44100, 44100)), \
          mock.patch.object(main.runtime, "player_instance", fake_player), \
          mock.patch.object(main, "dsp_manager", fake_apply), \
-         mock.patch.object(main, "_playback_graph_links_complete", new=mock.AsyncMock(return_value=True)), \
+         mock.patch.object(playback_orchestration.configured(), "playback_graph_links_complete", new=mock.AsyncMock(return_value=True)), \
          mock.patch.object(main, "get_audio_output_overview", return_value={"output_mode": {"mode": "stereo"}}), \
          mock.patch.object(runtime, "_read_and_validate_effects_runtime", new=drifting_read):
         result = await runtime._verify_transition(play_request, require_source_volume=True)
@@ -284,7 +285,7 @@ async def main_async() -> None:
     with mock.patch.object(main, "get_samplerate_status", return_value=stuck_status(44100, 44100)), \
          mock.patch.object(main.runtime, "player_instance", fake_player), \
          mock.patch.object(main, "dsp_manager", fake_apply2), \
-         mock.patch.object(main, "_playback_graph_links_complete", new=mock.AsyncMock(return_value=True)), \
+         mock.patch.object(playback_orchestration.configured(), "playback_graph_links_complete", new=mock.AsyncMock(return_value=True)), \
          mock.patch.object(main, "get_audio_output_overview", return_value={"output_mode": {"mode": "stereo"}}), \
          mock.patch.object(runtime, "_read_and_validate_effects_runtime", new=always_failing):
         try:
@@ -308,8 +309,8 @@ async def main_async() -> None:
         repair_calls.append(diagnosis.get("mode"))
     with mock.patch.object(main, "get_samplerate_status", return_value=stuck_status(48000, 48000)), \
          mock.patch.object(main, "dsp_manager", FakeEffectsManager()), \
-         mock.patch.object(main, "_playback_graph_diagnosis", new=fake_diagnosis_seq), \
-         mock.patch.object(main, "_repair_stereo_output_links_once", new=fake_repair_stereo_seq) as repair, \
+         mock.patch.object(playback_orchestration.configured(), "playback_graph_diagnosis", new=fake_diagnosis_seq), \
+         mock.patch.object(playback_orchestration.configured(), "repair_stereo_output_links_once", new=fake_repair_stereo_seq) as repair, \
          mock.patch.object(runtime, "_read_and_validate_effects_runtime", new=mock.AsyncMock(return_value={})):
         await runtime.stabilize_effects_after_rate_change(
             switch_request, dsp_reinitialized=True
@@ -319,8 +320,8 @@ async def main_async() -> None:
     # 17. DSP stabilization: persistent link loss still fails.
     with mock.patch.object(main, "get_samplerate_status", return_value=stuck_status(48000, 48000)), \
          mock.patch.object(main, "dsp_manager", FakeEffectsManager()), \
-         mock.patch.object(main, "_playback_graph_diagnosis", new=mock.AsyncMock(return_value=stereo_diagnosis(links_present=False))), \
-         mock.patch.object(main, "_repair_stereo_output_links_once", new=mock.AsyncMock()), \
+         mock.patch.object(playback_orchestration.configured(), "playback_graph_diagnosis", new=mock.AsyncMock(return_value=stereo_diagnosis(links_present=False))), \
+         mock.patch.object(playback_orchestration.configured(), "repair_stereo_output_links_once", new=mock.AsyncMock()), \
          mock.patch.object(runtime, "_read_and_validate_effects_runtime", new=mock.AsyncMock(return_value={})):
         try:
             await runtime.stabilize_effects_after_rate_change(

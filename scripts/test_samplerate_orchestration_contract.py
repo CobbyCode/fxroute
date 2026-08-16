@@ -12,6 +12,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
+import playback.orchestration as playback_orchestration
 import audio.pw_link as pw_link_mod
 import audio.samplerate as samplerate
 import measurement.session as measurement_session
@@ -239,7 +240,7 @@ class SamplerateOrchestrationContractTests(unittest.IsolatedAsyncioTestCase):
         ), patch.object(main.playback_state, "current_track_info", dict(track)), patch.object(
             main, "_run_coordinated_transition", run
         ):
-            await main._request_coordinated_recovery(track, "status-drift-repair")
+            await playback_orchestration.configured().request_coordinated_recovery(track, "status-drift-repair")
 
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0].operation, "recovery")

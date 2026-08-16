@@ -173,6 +173,22 @@ class FakeRuntime:
     async def pause_source_after_failure(self, request):
         await self._stage("pause-after-failure")
 
+    async def reconcile_post_start_graph(self, request):
+        await self._stage("reconcile-post-start-graph")
+        return {"graph_complete": True, "committed": True}
+
+    def target_source_staged(self, request):
+        return False
+
+    async def abort_failed_transition(self, request, snapshot, *, target_staged):
+        return None
+
+    async def publish_restored_source(self, request):
+        self.events.append("publish-restored-source")
+
+    async def normalize_queue_after_native_loss(self):
+        self.events.append("normalize-queue-after-native-loss")
+
 
 class MeasurementSessionRuntime:
     def __init__(self, graphs):

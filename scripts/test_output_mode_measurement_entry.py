@@ -15,8 +15,10 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 import main
+import playback.orchestration as playback_orchestration
 import audio.pw_link as pw_link_mod
 import audio.samplerate as samplerate
+import playback.orchestration as playback_orchestration
 from playback_transition_test_support import make_transition_runtime
 import measurement.session as measurement_session
 import audio.samplerate as samplerate
@@ -171,7 +173,7 @@ class TransactionRuntime:
 
     async def reconcile_post_start_graph(self, _request):
         if self.real_reconcile:
-            result = await main._coordinator_reconcile_post_start_graph(_request)
+            result = await playback_orchestration.configured().reconcile_post_start_graph(_request)
         else:
             result = {"graph_complete": True}
         if _request.source == "spotify" and _request.should_play:
@@ -445,7 +447,7 @@ class CoordinatorTransactionTests(unittest.IsolatedAsyncioTestCase):
         stable["source_links_complete"] = True
         stable["links_complete"] = True
         stable["signature"] = "spotify-source-stable"
-        with patch.object(main, "_playback_graph_diagnosis", new=AsyncMock(side_effect=[initial, stable, stable])) as diagnosis, patch.object(
+        with patch.object(playback_orchestration.configured(), "playback_graph_diagnosis", new=AsyncMock(side_effect=[initial, stable, stable])) as diagnosis, patch.object(
             pw_link_mod, "connect_ports", new=AsyncMock()
         ) as relink:
             result = await coordinator.execute(_request("output-mode-switch", source="spotify"))
@@ -528,14 +530,14 @@ class CoordinatorTransactionTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(main.runtime, "dsp_runtime", SimpleNamespace()), patch.object(
             main, "dsp_manager", None
         ), patch.object(
-            main, "_playback_graph_diagnosis", new=AsyncMock(side_effect=[incomplete, incomplete, complete])
-        ), patch.object(main.dsp_orchestrator, "sync_runtime", new=AsyncMock()        ), patch.object(main, "_wait_for_dsp_output_ports", new=AsyncMock(return_value=True)), patch.object(
+            playback_orchestration.configured(), "playback_graph_diagnosis", new=AsyncMock(side_effect=[incomplete, incomplete, complete])
+        ), patch.object(main.dsp_orchestrator, "sync_runtime", new=AsyncMock()        ), patch.object(playback_orchestration.configured(), "wait_for_dsp_output_ports", new=AsyncMock(return_value=True)), patch.object(
             samplerate, "reconcile_transition_sink_rate", new=AsyncMock(return_value=True)
         ), patch.object(
-            main, "_coordinator_reconcile_subwoofer_links_only", new=AsyncMock()
+            playback_orchestration.configured(), "reconcile_subwoofer_links_only", new=AsyncMock()
         ), patch.object(pw_link_mod, "connect_ports", new=AsyncMock()
         ), patch.object(main.asyncio, "sleep", new=AsyncMock()):
-            result = await main._coordinator_establish_effects_and_helper(request)
+            result = await playback_orchestration.configured().establish_effects_and_helper(request)
 
         self.assertTrue(result["graph_complete"])
 
@@ -593,13 +595,13 @@ class CoordinatorTransactionTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(main.runtime, "dsp_runtime", None), patch.object(
             main, "dsp_manager", None
         ), patch.object(
-            main, "_playback_graph_diagnosis", new=AsyncMock(side_effect=[incomplete, incomplete, complete])
-        ), patch.object(main.dsp_orchestrator, "sync_runtime", new=AsyncMock()        ), patch.object(main, "_wait_for_dsp_output_ports", new=AsyncMock(return_value=True)), patch.object(
+            playback_orchestration.configured(), "playback_graph_diagnosis", new=AsyncMock(side_effect=[incomplete, incomplete, complete])
+        ), patch.object(main.dsp_orchestrator, "sync_runtime", new=AsyncMock()        ), patch.object(playback_orchestration.configured(), "wait_for_dsp_output_ports", new=AsyncMock(return_value=True)), patch.object(
             samplerate, "reconcile_transition_sink_rate", new=AsyncMock(return_value=True)
         ), patch.object(
             pw_link_mod, "connect_ports", new=AsyncMock()
         ), patch.object(main.asyncio, "sleep", new=AsyncMock()):
-            result = await main._coordinator_establish_effects_and_helper(request)
+            result = await playback_orchestration.configured().establish_effects_and_helper(request)
 
         self.assertTrue(result["graph_complete"])
         self.assertTrue(result["links_reconciled"])
@@ -708,7 +710,7 @@ class EntryBoundaryTests(unittest.IsolatedAsyncioTestCase):
         ), patch.object(main, "get_samplerate_status", return_value={
             "active_rate": 48000,
             "force_rate": 48000,
-        }), patch.object(main, "_playback_graph_diagnosis", new=AsyncMock(return_value={
+        }), patch.object(playback_orchestration.configured(), "playback_graph_diagnosis", new=AsyncMock(return_value={
             "links_complete": True,
             "signature": "stable",
         })), patch.object(main, "get_audio_output_overview", return_value={"output_mode": {}}):
@@ -743,7 +745,7 @@ class EntryBoundaryTests(unittest.IsolatedAsyncioTestCase):
                 "force_rate": 48000,
             }
         ), patch.object(
-            main, "_playback_graph_diagnosis", new=diagnosis
+            playback_orchestration.configured(), "playback_graph_diagnosis", new=diagnosis
         ), patch.object(main, "get_audio_output_overview", return_value={"output_mode": {}}):
             await measurement_session._measurement_entry_preflight(
                 48000,
@@ -798,7 +800,7 @@ class EntryBoundaryTests(unittest.IsolatedAsyncioTestCase):
                 "force_rate": 48000,
             }
         ), patch.object(
-            main, "_playback_graph_diagnosis", new=AsyncMock(return_value=diagnosis)
+            playback_orchestration.configured(), "playback_graph_diagnosis", new=AsyncMock(return_value=diagnosis)
         ), patch.object(main, "get_audio_output_overview", return_value={"output_mode": {}}):
             await measurement_session._measurement_entry_preflight(48000)
 
@@ -875,7 +877,7 @@ class MeasurementSessionRuntimeReadbackTests(unittest.IsolatedAsyncioTestCase):
             "get_samplerate_status",
             return_value={"active_rate": 48000, "force_rate": 48000},
         ), patch.object(
-            main, "_playback_graph_diagnosis", new=AsyncMock(return_value=diagnosis)
+            playback_orchestration.configured(), "playback_graph_diagnosis", new=AsyncMock(return_value=diagnosis)
         ):
             readback = await runtime.read_measurement_session_graph(48000)
 
@@ -886,7 +888,7 @@ class MeasurementSessionRuntimeReadbackTests(unittest.IsolatedAsyncioTestCase):
         invalid_rate["active_rate"] = 44100
         invalid_rate["measurement_rate_aligned"] = False
         self.assertFalse(
-            main._measurement_session_link_loss_is_repairable(
+            playback_orchestration.configured().measurement_session_link_loss_is_repairable(
                 invalid_rate,
                 target_rate=48000,
             )
@@ -896,7 +898,7 @@ class MeasurementSessionRuntimeReadbackTests(unittest.IsolatedAsyncioTestCase):
         invalid_helper_link["links"] = dict(readback["links"])
         invalid_helper_link["links"]["unknown:output -> unknown:input"] = False
         self.assertFalse(
-            main._measurement_session_link_loss_is_repairable(
+            playback_orchestration.configured().measurement_session_link_loss_is_repairable(
                 invalid_helper_link,
                 target_rate=48000,
             )

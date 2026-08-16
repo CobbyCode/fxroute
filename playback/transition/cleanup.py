@@ -65,8 +65,7 @@ class _TransitionCleanupMixin:
             # active Spotify source does not release within the existing
             # bound, the restore fails and the failure latch stays.
             if failed_request.source == "spotify":
-                release = getattr(self.runtime, "wait_for_pipewire_spotify_release", None)
-                if not callable(release) or not await release():
+                if not await self.runtime.wait_for_pipewire_spotify_release():
                     logger.warning(
                         "Failed-transition source restore aborted: active Spotify sink "
                         "input did not quiesce before the old source restore"
@@ -115,21 +114,19 @@ class _TransitionCleanupMixin:
             # production edge after the earlier effects/helper stage.
             # Reconcile that bounded link-only drift while the gate is still
             # closed, before the existing staged commit readback.
-            reconciler = getattr(self.runtime, "reconcile_post_start_graph", None)
-            if callable(reconciler):
-                post_state = await self._stage(
-                    stages,
-                    "restore-post-start-reconcile",
-                    lambda: reconciler(restore_request),
+            post_state = await self._stage(
+                stages,
+                "restore-post-start-reconcile",
+                lambda: self.runtime.reconcile_post_start_graph(restore_request),
+            )
+            if not isinstance(post_state, Mapping) or not post_state.get(
+                "graph_complete", False
+            ):
+                logger.warning(
+                    "Failed-transition source restore aborted: post-start graph "
+                    "reconciliation did not confirm a complete graph"
                 )
-                if not isinstance(post_state, Mapping) or not post_state.get(
-                    "graph_complete", False
-                ):
-                    logger.warning(
-                        "Failed-transition source restore aborted: post-start graph "
-                        "reconciliation did not confirm a complete graph"
-                    )
-                    return False
+                return False
             graph_state = await self._stage(
                 stages,
                 "restore-staged-readback",
@@ -165,15 +162,10 @@ class _TransitionCleanupMixin:
             if restore_request.should_play and bool(
                 restore_request.rate_change or effects_state.get("dsp_reinitialized")
             ):
-                stabilizer = getattr(
-                    self.runtime, "stabilize_effects_after_rate_change", None
-                )
-                if not callable(stabilizer):
-                    raise RuntimeError("post-start DSP stabilization is not available")
                 dsp_state = await self._stage(
                     stages,
                     "restore-dsp-stabilize",
-                    lambda: stabilizer(
+                    lambda: self.runtime.stabilize_effects_after_rate_change(
                         restore_request,
                         dsp_reinitialized=bool(effects_state.get("dsp_reinitialized")),
                     ),
@@ -225,7 +217,6 @@ class _TransitionCleanupMixin:
         *,
         transition_id: str,
         gate_required: bool,
-        target_prepare_started: bool,
     ) -> bool:
         """Run the authoritative uncommitted-transition cleanup contract.
 
@@ -246,15 +237,13 @@ class _TransitionCleanupMixin:
         except Exception:
             pass
         if request.operation == "output-mode-switch":
-            rollback = getattr(self.runtime, "rollback_output_mode_runtime", None)
-            if callable(rollback):
-                try:
-                    await rollback(request, snapshot)
-                except Exception:
-                    logger.warning(
-                        "Output-mode runtime rollback failed; keeping the failure gate latched",
-                        exc_info=True,
-                    )
+            try:
+                await self.runtime.rollback_output_mode_runtime(request, snapshot)
+            except Exception:
+                logger.warning(
+                    "Output-mode runtime rollback failed; keeping the failure gate latched",
+                    exc_info=True,
+                )
         if request.source in {"local", "radio"}:
             # The source was attenuated to 0 during the quiet stage.
             # A failed transition must not leave it muted forever:
@@ -267,45 +256,32 @@ class _TransitionCleanupMixin:
                 except Exception:
                     pass
         target_staged = False
-        staged_detector = getattr(self.runtime, "target_source_staged", None)
-        if callable(staged_detector):
-            try:
-                target_staged = bool(staged_detector(request))
-            except Exception:
-                target_staged = False
-        elif (
-            target_prepare_started
-            and request.source in {"local", "radio"}
-            and request.reload_source
-        ):
-            # A minimal test/runtime adapter may not expose the concrete
-            # staging marker. Once its mutating prepare stage started,
-            # prefer invalidation over old/new metadata mix.
-            target_staged = True
-        aborter = getattr(self.runtime, "abort_failed_transition", None)
+        try:
+            target_staged = bool(self.runtime.target_source_staged(request))
+        except Exception:
+            target_staged = False
         abort_recovered_source = False
         verdict: Any = None
-        if callable(aborter):
-            try:
-                # Strict verdict contract: only an explicit restore request
-                # from the abort hook means the previously committed source
-                # must be physically restored (test adapters and None returns
-                # must keep the failure latch).  A transition that never
-                # closed the output gate (same-graph fast path) cannot
-                # re-confirm a gate it does not own: the restore then runs
-                # without boundary re-checks, exactly like the fast path
-                # itself ran.
-                verdict = await aborter(
-                    request,
-                    snapshot,
-                    target_staged=target_staged,
-                )
-            except Exception:
-                logger.warning(
-                    "Playback transition abort cleanup failed",
-                    exc_info=True,
-                )
-                verdict = None
+        try:
+            # Strict verdict contract: only an explicit restore request
+            # from the abort hook means the previously committed source
+            # must be physically restored (test adapters and None returns
+            # must keep the failure latch).  A transition that never
+            # closed the output gate (same-graph fast path) cannot
+            # re-confirm a gate it does not own: the restore then runs
+            # without boundary re-checks, exactly like the fast path
+            # itself ran.
+            verdict = await self.runtime.abort_failed_transition(
+                request,
+                snapshot,
+                target_staged=target_staged,
+            )
+        except Exception:
+            logger.warning(
+                "Playback transition abort cleanup failed",
+                exc_info=True,
+            )
+            verdict = None
         restore_request = (
             verdict.get("restore")
             if isinstance(verdict, Mapping)
@@ -321,15 +297,13 @@ class _TransitionCleanupMixin:
             )
             restored_track = dict(restore_request.target_track or {})
             if abort_recovered_source:
-                publisher = getattr(self.runtime, "publish_restored_source", None)
-                if callable(publisher):
-                    try:
-                        await publisher(restore_request)
-                    except Exception:
-                        logger.warning(
-                            "Restored-source metadata publish failed",
-                            exc_info=True,
-                        )
+                try:
+                    await self.runtime.publish_restored_source(restore_request)
+                except Exception:
+                    logger.warning(
+                        "Restored-source metadata publish failed",
+                        exc_info=True,
+                    )
                 logger.warning(
                     "Failed %s transition restored committed %s source for retry: "
                     "track_id=%s url=%s",
@@ -345,15 +319,13 @@ class _TransitionCleanupMixin:
                     request.operation,
                     restored_track.get("source"),
                 )
-                normalizer = getattr(self.runtime, "normalize_queue_after_native_loss", None)
-                if callable(normalizer):
-                    try:
-                        await normalizer()
-                    except Exception:
-                        logger.warning(
-                            "Restore-failure queue normalization failed",
-                            exc_info=True,
-                        )
+                try:
+                    await self.runtime.normalize_queue_after_native_loss()
+                except Exception:
+                    logger.warning(
+                        "Restore-failure queue normalization failed",
+                        exc_info=True,
+                    )
         if not gate_required:
             # No output gate was ever closed by this transition; nothing is
             # latched and the reported failure state reflects that.
@@ -393,7 +365,6 @@ class _TransitionCleanupMixin:
         *,
         transition_id: str,
         gate_required: bool,
-        target_prepare_started: bool,
     ) -> asyncio.Task:
         """Start the shared cleanup contract as an independently cancellable task."""
         return asyncio.create_task(
@@ -402,7 +373,6 @@ class _TransitionCleanupMixin:
                 snapshot,
                 transition_id=transition_id,
                 gate_required=gate_required,
-                target_prepare_started=target_prepare_started,
             ),
             name="playback-transition-cleanup",
         )
@@ -494,7 +464,6 @@ class _TransitionCleanupMixin:
             snapshot,
             transition_id=transition_id,
             gate_required=stages.gate_required,
-            target_prepare_started=stages.target_prepare_started,
         )
         failure_latched, cancelled_exc = await self._drain_cleanup_task(
             cleanup_task,

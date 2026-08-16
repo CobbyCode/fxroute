@@ -31,6 +31,7 @@ from playback.transition import PlaybackTransitionCoordinator, TransitionRequest
 
 import audio.samplerate as samplerate
 import main
+import playback.orchestration as playback_orchestration
 import dsp.api as dsp_api
 
 dsp_api.configure_dsp_api(main._make_dsp_api_deps())
@@ -254,7 +255,7 @@ async def _recovery_valid(
                 main.playback_state, "current_track_info",
                 {"source": "radio", "url": RADIO_URL},
             ):
-        return await main._recovery_context_is_valid(request)
+        return await playback_orchestration.configured().recovery_context_is_valid(request)
 
 
 async def _link_watcher_latch_reentry() -> None:
@@ -579,9 +580,16 @@ async def _mode_switch_reapplies_compare_after_runtime_sync() -> None:
         stack.enter_context(mock.patch.multiple(
             main,
             dsp_manager=ee_manager,
-            _playback_graph_diagnosis=mock.AsyncMock(return_value=complete_graph),
-            _wait_for_dsp_output_ports=wait_for_ports,
-            _repair_stereo_output_links_once=mock.AsyncMock(),
+        ))
+        stack.enter_context(mock.patch.object(
+            playback_orchestration.configured(), "playback_graph_diagnosis",
+            mock.AsyncMock(return_value=complete_graph),
+        ))
+        stack.enter_context(mock.patch.object(
+            playback_orchestration.configured(), "wait_for_dsp_output_ports", wait_for_ports
+        ))
+        stack.enter_context(mock.patch.object(
+            playback_orchestration.configured(), "repair_stereo_output_links_once", mock.AsyncMock()
         ))
         stack.enter_context(mock.patch.object(
             samplerate, "reconcile_transition_sink_rate", mock.AsyncMock(return_value=True)
@@ -590,7 +598,7 @@ async def _mode_switch_reapplies_compare_after_runtime_sync() -> None:
         stack.enter_context(mock.patch.object(
             main.dsp_orchestrator, "sync_runtime", mock.AsyncMock(side_effect=sync_runtime)
         ))
-        result = await main._coordinator_establish_effects_and_helper(request)
+        result = await playback_orchestration.configured().establish_effects_and_helper(request)
 
     assert result["preset_reloaded"] is True
     assert events == [

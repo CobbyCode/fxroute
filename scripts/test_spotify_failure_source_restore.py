@@ -36,6 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import playback.queue as playback_queue
 import main
+import playback.orchestration as playback_orchestration
 from playback_queue_test_support import queue_state, restore_queue_state
 from playback_transition_test_support import make_transition_runtime
 from playback.transition import (
@@ -635,7 +636,7 @@ class PositionRestoreOrderTests(unittest.IsolatedAsyncioTestCase):
             side_effect=lambda path: player.set_pause(True) or player._state.update(current_file=path),
         ), patch.object(
             main, "_wait_for_player_current_file", AsyncMock(return_value=True)
-        ), patch.object(main, "_ensure_mpv_to_dsp_links", AsyncMock(return_value=True)):
+        ), patch.object(playback_orchestration.configured(), "_ensure_mpv_to_dsp_links", AsyncMock(return_value=True)):
             request = TransitionRequest(
                 operation="replay",
                 source="local",
@@ -674,7 +675,7 @@ class PositionRestoreOrderTests(unittest.IsolatedAsyncioTestCase):
             side_effect=lambda path: player.set_pause(True) or player._state.update(current_file=path),
         ), patch.object(
             main, "_wait_for_player_current_file", AsyncMock(return_value=True)
-        ), patch.object(main, "_ensure_mpv_to_dsp_links", AsyncMock(return_value=True)):
+        ), patch.object(playback_orchestration.configured(), "_ensure_mpv_to_dsp_links", AsyncMock(return_value=True)):
             request = TransitionRequest(
                 operation="replay",
                 source="local",

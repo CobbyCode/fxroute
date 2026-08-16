@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import playback.queue as playback_queue
 import main
+import playback.orchestration as playback_orchestration
 import audio.system_volume as system_volume
 from playback_queue_test_support import queue_state, restore_queue_state
 from playback_transition_test_support import make_transition_runtime
@@ -170,7 +171,7 @@ class NativeQueueRuntimeTests(unittest.IsolatedAsyncioTestCase):
             native_queue_shuffle=True,
         )
         with patch.object(main.runtime, "player_instance", fake), \
-             patch.object(main, "_ensure_mpv_to_dsp_links", new=_true_async):
+             patch.object(playback_orchestration.configured(), "_ensure_mpv_to_dsp_links", new=_true_async):
             runtime = make_transition_runtime()
             await runtime.prepare_target_source(request)
 

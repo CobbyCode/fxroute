@@ -784,7 +784,7 @@ playback_state = PlaybackState()
 radio_reconnect = RadioReconnect(RadioReconnectDependencies(
     get_player_instance=lambda: runtime.player_instance,
     get_playback_state=lambda: playback_state,
-    request_coordinated_recovery=lambda *args, **kwargs: _request_coordinated_recovery(*args, **kwargs),
+    request_coordinated_recovery=lambda *args, **kwargs: playback_orchestration.configured().request_coordinated_recovery(*args, **kwargs),
 ))
 
 silent_active_recovery = SilentActiveRecovery(SilentActiveDependencies(
@@ -827,14 +827,14 @@ bluetooth_input = BluetoothInputMonitor(BluetoothInputDependencies(
 samplerate_drift = SamplerateDriftObserver(SamplerateDriftDependencies(
     get_current_track_info=lambda: playback_state.current_track_info,
     get_player_instance=lambda: runtime.player_instance,
-    coordinator_source_rate=lambda *args, **kwargs: _coordinator_source_rate(*args, **kwargs),
+    coordinator_source_rate=lambda *args, **kwargs: playback_orchestration.configured().coordinator_source_rate(*args, **kwargs),
     get_player_audio_samplerate=lambda: _get_player_audio_samplerate(),
     get_samplerate_status=lambda: get_samplerate_status(),
     playback_transition_is_active=lambda: _playback_transition_is_active(),
     is_measurement_window_open=lambda: _is_measurement_window_open(),
     measurement_session_active=lambda: measurement_sr_session is not None and measurement_sr_session.active,
-    measurement_audio_graph_owned=lambda: _measurement_audio_graph_owned(),
-    request_coordinated_recovery=lambda *args, **kwargs: _request_coordinated_recovery(*args, **kwargs),
+    measurement_audio_graph_owned=lambda: playback_orchestration.configured().measurement_audio_graph_owned(),
+    request_coordinated_recovery=lambda *args, **kwargs: playback_orchestration.configured().request_coordinated_recovery(*args, **kwargs),
 ))
 
 spotify_playerctl_watch = SpotifyPlayerctlWatch(SpotifyWatchDependencies(
@@ -842,7 +842,7 @@ spotify_playerctl_watch = SpotifyPlayerctlWatch(SpotifyWatchDependencies(
     get_spotify_ui_state=lambda *args, **kwargs: get_spotify_ui_state(*args, **kwargs),
     list_spotify_sink_inputs=lambda: _list_spotify_sink_inputs(),
     spotify_sink_input_observation=lambda *args, **kwargs: _spotify_sink_input_observation(*args, **kwargs),
-    request_coordinated_recovery=lambda *args, **kwargs: _request_coordinated_recovery(*args, **kwargs),
+    request_coordinated_recovery=lambda *args, **kwargs: playback_orchestration.configured().request_coordinated_recovery(*args, **kwargs),
     schedule_spotify_state_refresh=lambda reason: _schedule_spotify_state_refresh(reason),
 ))
 radio_metadata_service = RadioMetadataService()
@@ -901,8 +901,8 @@ def _make_measurement_services() -> MeasurementServices:
         reconcile_transition_sink_rate=lambda *a, measurement_blocks_rate=_measurement_blocks_playback_rate, **k: samplerate.reconcile_transition_sink_rate(
             *a, measurement_blocks_rate=measurement_blocks_rate, **k
         ),
-        playback_graph_diagnosis=lambda *a, **k: _playback_graph_diagnosis(*a, **k),
-        log_playback_graph_diagnosis=lambda *a, **k: _log_playback_graph_diagnosis(*a, **k),
+        playback_graph_diagnosis=lambda *a, **k: playback_orchestration.configured().playback_graph_diagnosis(*a, **k),
+        log_playback_graph_diagnosis=lambda *a, **k: playback_orchestration.configured().log_playback_graph_diagnosis(*a, **k),
         measurement_restore_intent_matches_live_state=lambda *a, **k: _measurement_restore_intent_matches_live_state(*a, **k),
         spotify_snapshot_identity_values=lambda *a, **k: _spotify_snapshot_identity_values(*a, **k),
         spotify_target_track_from_state=lambda *a, **k: _spotify_target_track_from_state(*a, **k),
@@ -970,7 +970,7 @@ def make_playback_runtime_deps() -> PlaybackRuntimeDependencies:
         reconcile_transition_sink_rate=lambda *a, measurement_blocks_rate=_measurement_blocks_playback_rate, **k: samplerate.reconcile_transition_sink_rate(
             *a, measurement_blocks_rate=measurement_blocks_rate, **k
         ),
-        coordinator_source_rate=lambda *a, **k: _coordinator_source_rate(*a, **k),
+        coordinator_source_rate=lambda *a, **k: playback_orchestration.configured().coordinator_source_rate(*a, **k),
         coordinator_target_rate=lambda *a, **k: _coordinator_target_rate(*a, **k),
         spotify_pause=lambda *a, **k: spotify_pause(*a, **k),
         get_spotify_ui_state=lambda *a, **k: get_spotify_ui_state(*a, **k),
@@ -981,21 +981,21 @@ def make_playback_runtime_deps() -> PlaybackRuntimeDependencies:
         mark_player_state_authoritative=lambda *a, **k: _mark_player_state_authoritative(*a, **k),
         spotify_snapshot_identity_values=lambda *a, **k: _spotify_snapshot_identity_values(*a, **k),
         measurement_restore_intent_matches_live_state=lambda *a, **k: _measurement_restore_intent_matches_live_state(*a, **k),
-        measurement_audio_graph_owned=lambda: _measurement_audio_graph_owned(),
+        measurement_audio_graph_owned=lambda: playback_orchestration.configured().measurement_audio_graph_owned(),
         dsp_mutation_lock=lambda: _dsp_mutation_lock(),
         drain_worker=lambda *a, **k: _drain_worker(*a, **k),
         load_dsp_preset=lambda *a, **k: _load_dsp_preset(*a, **k),
         sync_dsp_runtime=lambda *a, **k: dsp_orchestrator.sync_runtime(*a, **k),
         helper_argument_sample_rate=dsp_orchestration.helper_argument_sample_rate,
-        playback_graph_diagnosis=lambda *a, **k: _playback_graph_diagnosis(*a, **k),
-        measurement_session_link_loss_is_repairable=lambda *a, **k: _measurement_session_link_loss_is_repairable(*a, **k),
-        coordinator_reconcile_subwoofer_links_only=lambda *a, **k: _coordinator_reconcile_subwoofer_links_only(*a, **k),
-        repair_stereo_output_links_once=lambda *a, **k: _repair_stereo_output_links_once(*a, **k),
-        coordinator_establish_effects_and_helper=lambda *a, **k: _coordinator_establish_effects_and_helper(*a, **k),
-        ensure_mpv_to_dsp_links=lambda *a, **k: _ensure_mpv_to_dsp_links(*a, **k),
-        playback_graph_links_complete=lambda *a, **k: _playback_graph_links_complete(*a, **k),
-        log_playback_graph_diagnosis=lambda *a, **k: _log_playback_graph_diagnosis(*a, **k),
-        coordinator_reconcile_post_start_graph=lambda *a, **k: _coordinator_reconcile_post_start_graph(*a, **k),
+        playback_graph_diagnosis=lambda *a, **k: playback_orchestration.configured().playback_graph_diagnosis(*a, **k),
+        measurement_session_link_loss_is_repairable=lambda *a, **k: playback_orchestration.configured().measurement_session_link_loss_is_repairable(*a, **k),
+        coordinator_reconcile_subwoofer_links_only=lambda *a, **k: playback_orchestration.configured().reconcile_subwoofer_links_only(*a, **k),
+        repair_stereo_output_links_once=lambda *a, **k: playback_orchestration.configured().repair_stereo_output_links_once(*a, **k),
+        coordinator_establish_effects_and_helper=lambda *a, **k: playback_orchestration.configured().establish_effects_and_helper(*a, **k),
+        ensure_mpv_to_dsp_links=lambda *a, **k: playback_orchestration.configured()._ensure_mpv_to_dsp_links(*a, **k),
+        playback_graph_links_complete=lambda *a, **k: playback_orchestration.configured().playback_graph_links_complete(*a, **k),
+        log_playback_graph_diagnosis=lambda *a, **k: playback_orchestration.configured().log_playback_graph_diagnosis(*a, **k),
+        coordinator_reconcile_post_start_graph=lambda *a, **k: playback_orchestration.configured().reconcile_post_start_graph(*a, **k),
     )
 
 
@@ -1536,11 +1536,6 @@ def _library_scanner_for(root: Path, library_id: str = "local") -> LibraryScanne
         config_dir / f"library-metadata-covers-{cache_key}",
     )
     return LibraryScanner(root, metadata_store=store)
-
-
-async def _wait_for_dsp_output_ports(timeout_ms):
-    return await playback_orchestration.configured().wait_for_dsp_output_ports(timeout_ms)
-
 
 
 async def _spotify_intent_matches_live_state(
@@ -2788,12 +2783,12 @@ def _make_dsp_orchestration_deps() -> DspOrchestrationDeps:
         broadcast=lambda message: manager.broadcast(message),
         wait_for_samplerate_alignment=lambda *args, **kwargs: samplerate.wait_for_samplerate_alignment(*args, **kwargs),
         wait_for_selected_output_effective_rate=lambda *args, **kwargs: _wait_for_selected_output_effective_rate(*args, **kwargs),
-        measurement_audio_graph_owned=lambda: _measurement_audio_graph_owned(),
+        measurement_audio_graph_owned=lambda: playback_orchestration.configured().measurement_audio_graph_owned(),
         observe_playback_samplerate_drift=lambda: samplerate_drift.observe(),
         playback_transition_is_active=lambda: _playback_transition_is_active(),
         coordinator_target_rate=lambda *args, **kwargs: _coordinator_target_rate(*args, **kwargs),
-        playback_graph_diagnosis=lambda *args, **kwargs: _playback_graph_diagnosis(*args, **kwargs),
-        request_coordinated_recovery=lambda *args, **kwargs: _request_coordinated_recovery(*args, **kwargs),
+        playback_graph_diagnosis=lambda *args, **kwargs: playback_orchestration.configured().playback_graph_diagnosis(*args, **kwargs),
+        request_coordinated_recovery=lambda *args, **kwargs: playback_orchestration.configured().request_coordinated_recovery(*args, **kwargs),
         create_lifecycle_background_task=lambda coro, *, name: _create_lifecycle_background_task(coro, name=name),
         peak_monitor_restart_settle_ms=PEAK_MONITOR_RESTART_SETTLE_MS,
         sleep=lambda delay: asyncio.sleep(delay),
@@ -2825,8 +2820,6 @@ def _make_playback_orchestration_deps() -> playback_orchestration.PlaybackOrches
         is_local_playback_active=_is_local_playback_active,
         is_spotify_playback_active=_is_spotify_playback_active,
         spotify_target_track=_spotify_target_track_from_state,
-        source_rate=lambda source, track=None: playback_orchestration.configured().coordinator_source_rate(source, track),
-        get_target_rate=lambda source, track=None: playback_orchestration.configured().coordinator_target_rate(source, track),
         sample_rate_policy_is_auto=lambda: samplerate.load_sample_rate_policy().get("mode") == "auto",
         get_player_queue_fields=lambda: playback_queue.queue.native_request_fields(),
         run_pw_link_command=lambda *args: pw_link.run_pw_link_command(*args),
@@ -2845,52 +2838,29 @@ def _make_playback_orchestration_deps() -> playback_orchestration.PlaybackOrches
         post_start_readbacks=POST_START_GRAPH_STABILITY_READBACKS,
         output_mode_subwoofer_modes=frozenset(OUTPUT_MODE_SUBWOOFER_MODES),
         output_mode_stereo=OUTPUT_MODE_STEREO,
-        playback_graph_diagnosis=lambda *args, **kwargs: _playback_graph_diagnosis(*args, **kwargs),
-        transition_sample_rate_policy=lambda *args, **kwargs: playback_orchestration.configured().transition_sample_rate_policy(*args, **kwargs),
         get_dsp_snapshot=lambda: runtime.dsp_runtime.snapshot() if runtime.dsp_runtime is not None else {},
-        wait_for_dsp_ports=lambda timeout_ms: _wait_for_dsp_output_ports(timeout_ms),
         mpv_source_ports_present=lambda: _mpv_source_ports_present(),
         mpv_link_repair_timeout_ms=MPV_LINK_REPAIR_TIMEOUT_MS,
         source_port_readiness_timeout_ms=RADIO_SOURCE_PORT_READINESS_TIMEOUT_MS,
-        reconcile_subwoofer_links=lambda: _coordinator_reconcile_subwoofer_links_only(),
-         # Let the extracted owner use the supplied low-level PipeWire
-         # primitives; do not route this dependency through its public wrapper.
-         repair_stereo_output_links=None,
-        current_context_override=lambda: _coordinator_current_playback_context(),
-        rate_change_override=lambda target_rate: _coordinator_rate_change(target_rate),
+        # Let the extracted owner use the supplied low-level PipeWire
+        # primitives; do not route this dependency through its public wrapper.
+        repair_stereo_output_links=None,
     )
 
 
 playback_orchestration.configure(_make_playback_orchestration_deps())
 
-# Bound orchestration entry points retained for application wiring and legacy
-# internal callers; implementations live in playback/orchestration.py.
-_coordinator_source_rate = playback_orchestration.configured().coordinator_source_rate
+# Bound orchestration entry points retained for legacy internal callers in
+# main.py; implementations live in playback/orchestration.py.  Subsystem wiring
+# reaches the orchestrator directly via playback_orchestration.configured().
 _coordinator_target_rate = playback_orchestration.configured().coordinator_target_rate
 _sample_rate_policy_is_auto = playback_orchestration.configured().sample_rate_policy_is_auto
 _transition_sample_rate_policy = playback_orchestration.configured().transition_sample_rate_policy
 _coordinator_current_playback_context = playback_orchestration.configured().current_playback_context
 _coordinator_rate_change = playback_orchestration.configured().coordinator_rate_change
 _playback_transition_is_active = playback_orchestration.configured().transition_is_active
-_coordinator_commit_context_id = playback_orchestration.configured().coordinator_commit_context_id
-_recovery_context_is_valid = playback_orchestration.configured().recovery_context_is_valid
 _run_coordinated_transition = playback_orchestration.configured().run_coordinated_transition
-_measurement_audio_graph_owned = playback_orchestration.configured().measurement_audio_graph_owned
-_request_coordinated_recovery = playback_orchestration.configured().request_coordinated_recovery
 _playback_transition_context_is_current = playback_orchestration.configured().playback_transition_context_is_current
-_wait_for_dsp_output_ports = playback_orchestration.configured().wait_for_dsp_output_ports
-_playback_graph_diagnosis = playback_orchestration.configured().playback_graph_diagnosis
-_missing_playback_graph_links = playback_orchestration.configured().missing_playback_graph_links
-_measurement_session_link_loss_is_repairable = playback_orchestration.configured().measurement_session_link_loss_is_repairable
-_log_playback_graph_diagnosis = playback_orchestration.configured().log_playback_graph_diagnosis
-_repair_stereo_output_links_once = playback_orchestration.configured().repair_stereo_output_links_once
-_coordinator_reconcile_subwoofer_links_only = playback_orchestration.configured().reconcile_subwoofer_links_only
-_post_start_graph_links_are_repairable = playback_orchestration.configured().post_start_graph_links_are_repairable
-_relink_missing_production_links = playback_orchestration.configured().relink_missing_production_links
-_coordinator_reconcile_post_start_graph = playback_orchestration.configured().reconcile_post_start_graph
-_coordinator_establish_effects_and_helper = playback_orchestration.configured().establish_effects_and_helper
-_playback_graph_links_complete = playback_orchestration.configured().playback_graph_links_complete
-_ensure_mpv_to_dsp_links = playback_orchestration.configured()._ensure_mpv_to_dsp_links
 
 
 app = FastAPI(lifespan=lifespan)

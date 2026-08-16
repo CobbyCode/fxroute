@@ -14,10 +14,9 @@ logger = logging.getLogger(__name__)
 class _TransitionStages:
     """Transition stage tracker owned by one ``execute`` run.
 
-    Records per-stage timing and the failure-stage label, and carries the two
-    cleanup inputs shared by the stage sub-paths: ``gate_required`` (whether
-    this transition ever closed the output gate) and
-    ``target_prepare_started`` (whether a mutating target prepare stage ran).
+    Records per-stage timing and the failure-stage label, and carries the
+    cleanup input shared by the stage sub-paths: ``gate_required`` (whether
+    this transition ever closed the output gate).
     """
 
     def __init__(self, transition_id: str) -> None:
@@ -27,7 +26,6 @@ class _TransitionStages:
         self._stage_started = self.transition_started
         self._timings: dict[str, float] = {}
         self.gate_required = False
-        self.target_prepare_started = False
 
     def enter(self, name: str) -> None:
         """Enter the next stage, closing the timing of the current one."""

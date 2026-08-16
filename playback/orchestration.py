@@ -48,8 +48,6 @@ class PlaybackOrchestrationDeps:
     is_local_playback_active: Callable[[dict | None], bool]
     is_spotify_playback_active: Callable[[dict | None], bool]
     spotify_target_track: Callable[[Mapping[str, Any]], dict[str, Any]]
-    source_rate: Callable[[str, Mapping[str, Any] | None], int | None]
-    get_target_rate: Callable[[str, Mapping[str, Any] | None], int | None]
     sample_rate_policy_is_auto: Callable[[], bool]
     get_player_queue_fields: Callable[[], dict]
     run_pw_link_command: Callable[..., Awaitable[str]]
@@ -66,18 +64,11 @@ class PlaybackOrchestrationDeps:
     post_start_readbacks: int
     output_mode_subwoofer_modes: frozenset[str]
     output_mode_stereo: str
-    playback_graph_diagnosis: Callable[..., Awaitable[dict]]
     mpv_source_ports_present: Callable[[], Awaitable[bool]] | None = None
     mpv_link_repair_timeout_ms: int = 1500
     source_port_readiness_timeout_ms: int = 4500
-    log_diagnosis: Callable[..., None] | None = None
-    transition_sample_rate_policy: Callable[..., Awaitable[None]] | None = None
     get_dsp_snapshot: Callable[[], Mapping[str, Any]] | None = None
-    wait_for_dsp_ports: Callable[[int], Awaitable[bool]] | None = None
-    reconcile_subwoofer_links: Callable[[], Awaitable[None]] | None = None
     repair_stereo_output_links: Callable[[dict], Awaitable[None]] | None = None
-    current_context_override: Callable[[], Awaitable[dict[str, Any]]] | None = None
-    rate_change_override: Callable[[int | None], bool] | None = None
 
 
 class PlaybackOrchestrator:
@@ -85,22 +76,6 @@ class PlaybackOrchestrator:
 
     def __init__(self, deps: PlaybackOrchestrationDeps):
         self._deps = deps
-        # Names of the override seams currently executing.  A production
-        # override re-enters the owning method, so the guard makes the
-        # re-entrant call fall through to the owned implementation instead
-        # of recursing through the override forever.
-        self._active_overrides: set[str] = set()
-
-    def _enter_override(self, name: str) -> bool:
-        """Mark one override seam active; False when it is already active."""
-        if name in self._active_overrides:
-            return False
-        self._active_overrides.add(name)
-        return True
-
-    def _exit_override(self, name: str) -> None:
-        """Clear one override seam guard."""
-        self._active_overrides.discard(name)
 
     def coordinator_source_rate(self, source: str, track: Mapping[str, Any] | None = None) -> int | None:
         track = track or {}
@@ -118,11 +93,6 @@ class PlaybackOrchestrator:
         return samplerate.load_sample_rate_policy().get("mode") == "auto"
 
     async def current_playback_context(self) -> dict[str, Any]:
-        if self._deps.current_context_override is not None and self._enter_override("current-context"):
-            try:
-                return await self._deps.current_context_override()
-            finally:
-                self._exit_override("current-context")
         state = self._deps.get_playback_state()
         player = self._deps.get_runtime_player()
         local_state = dict(player.state if player else {})
@@ -148,11 +118,6 @@ class PlaybackOrchestrator:
         return {"source": "local", "target_url": None, "target_track": {}, "should_play": False, "spotify": spotify}
 
     def coordinator_rate_change(self, target_rate: int | None) -> bool:
-        if self._deps.rate_change_override is not None and self._enter_override("rate-change"):
-            try:
-                return self._deps.rate_change_override(target_rate)
-            finally:
-                self._exit_override("rate-change")
         if not isinstance(target_rate, int) or target_rate <= 0:
             return False
         try:
@@ -339,11 +304,6 @@ class PlaybackOrchestrator:
         return all(port in text for port in ("fxroute_dsp:input_1", "fxroute_dsp:input_2", "fxroute_dsp:output_1", "fxroute_dsp:output_2"))
 
     async def wait_for_dsp_output_ports(self, timeout_ms: int) -> bool:
-        if self._deps.wait_for_dsp_ports is not None and self._enter_override("wait-for-dsp-ports"):
-            try:
-                return await self._deps.wait_for_dsp_ports(timeout_ms)
-            finally:
-                self._exit_override("wait-for-dsp-ports")
         loop = asyncio.get_running_loop()
         deadline = loop.time() + max(timeout_ms, 0) / 1000
         while True:
@@ -355,13 +315,6 @@ class PlaybackOrchestrator:
 
     async def playback_graph_diagnosis(self, audio_overview: dict | None = None, *, source: str | None = None,
                                        target_rate: int | None = None, require_source: bool = False) -> dict:
-        # Keep the application boundary patchable for focused integration tests;
-        # the guarded fallback below remains the owning implementation.
-        if self._deps.playback_graph_diagnosis is not None and self._enter_override("graph-diagnosis"):
-            try:
-                return await self._deps.playback_graph_diagnosis(audio_overview, source=source, target_rate=target_rate, require_source=require_source)
-            finally:
-                self._exit_override("graph-diagnosis")
         result = {"mode": None, "output_key": "", "ee_ports": False, "helper_ports": None,
                   "helper_active": None, "helper_rate": None, "helper_rate_matches": None,
                   "links": {}, "source_links": {}, "source_links_complete": None,
@@ -446,12 +399,6 @@ class PlaybackOrchestrator:
                 await self._deps.connect_ports((source,), target)
 
     async def reconcile_subwoofer_links_only(self) -> None:
-        if self._deps.reconcile_subwoofer_links is not None and self._enter_override("subwoofer-links"):
-            try:
-                await self._deps.reconcile_subwoofer_links()
-            finally:
-                self._exit_override("subwoofer-links")
-            return
         runtime = self._deps.get_dsp_runtime()
         reconcile = getattr(runtime, "reclean_direct_dsp_links", None) if runtime is not None else None
         if not callable(reconcile):
