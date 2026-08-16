@@ -85,7 +85,7 @@ class DspPackagingTests(unittest.TestCase):
     def test_runtime_integration_uses_fxroute_owned_nodes(self):
         transition = (ROOT / "playback/transition/models.py").read_text()
         peak_monitor = (ROOT / "dsp/peak_monitor.py").read_text()
-        samplerate = (ROOT / "audio/samplerate.py").read_text()
+        samplerate = (ROOT / "audio/samplerate/constants.py").read_text()
         self.assertIn('DSP_TRANSPORT_SINK = "fxroute_dsp_sink"', transition)
         self.assertIn('DSP_OUTPUT_NODE_NAME = "fxroute_dsp"', peak_monitor)
         self.assertIn('"fxroute_dsp_sink"', samplerate)

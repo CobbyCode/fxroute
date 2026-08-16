@@ -38,7 +38,7 @@ class SampleRatePolicyTests(unittest.TestCase):
     def test_policy_persistence_defaults_to_auto_and_validates_candidates(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "sample-rate-policy.json"
-            with patch.object(samplerate, "_sample_rate_policy_path", return_value=path):
+            with patch.object(samplerate.persistence, "_sample_rate_policy_path", return_value=path):
                 self.assertEqual(samplerate.load_sample_rate_policy(), {"mode": "auto", "rate": None})
                 samplerate.persist_sample_rate_policy({"mode": "fixed", "rate": 768000})
                 self.assertEqual(samplerate.load_sample_rate_policy(), {"mode": "fixed", "rate": 768000})
@@ -233,13 +233,13 @@ class MainWrapperParityTests(unittest.TestCase):
     def test_coordinator_target_rate_uses_persisted_policy(self):
         track = {"sample_rate_hz": 44100}
         with patch.object(
-            samplerate,
+            samplerate.persistence,
             "load_sample_rate_policy",
             return_value={"mode": "fixed", "rate": 48000},
         ):
             self.assertEqual(main._coordinator_target_rate("local", track), 48000)
         with patch.object(
-            samplerate,
+            samplerate.persistence,
             "load_sample_rate_policy",
             return_value={"mode": "auto", "rate": None},
         ):
@@ -374,8 +374,8 @@ class AutoPolicyForceRateClearTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_clear_helper_writes_zero_for_auto_at_default(self):
         written = []
-        with patch.object(samplerate, "set_pipewire_force_rate", side_effect=lambda rate: written.append(rate)), \
-             patch.object(samplerate, "load_sample_rate_policy", return_value={"mode": "auto", "rate": None}):
+        with patch.object(samplerate.alignment, "set_pipewire_force_rate", side_effect=lambda rate: written.append(rate)), \
+             patch.object(samplerate.alignment, "load_sample_rate_policy", return_value={"mode": "auto", "rate": None}):
             self.assertTrue(
                 samplerate.clear_auto_policy_force_rate(44100, status=self._status(44100, 44100))
             )
@@ -383,8 +383,8 @@ class AutoPolicyForceRateClearTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_clear_helper_skips_non_default_target(self):
         written = []
-        with patch.object(samplerate, "set_pipewire_force_rate", side_effect=lambda rate: written.append(rate)), \
-             patch.object(samplerate, "load_sample_rate_policy", return_value={"mode": "auto", "rate": None}):
+        with patch.object(samplerate.alignment, "set_pipewire_force_rate", side_effect=lambda rate: written.append(rate)), \
+             patch.object(samplerate.alignment, "load_sample_rate_policy", return_value={"mode": "auto", "rate": None}):
             self.assertFalse(
                 samplerate.clear_auto_policy_force_rate(48000, status=self._status(48000, 48000))
             )
@@ -395,8 +395,8 @@ class AutoPolicyForceRateClearTests(unittest.IsolatedAsyncioTestCase):
         # active source, a pin at a non-default rate (e.g. a high-res track
         # that just stopped) is stale and must not linger in the payload.
         written = []
-        with patch.object(samplerate, "set_pipewire_force_rate", side_effect=lambda rate: written.append(rate)), \
-             patch.object(samplerate, "load_sample_rate_policy", return_value={"mode": "auto", "rate": None}):
+        with patch.object(samplerate.alignment, "set_pipewire_force_rate", side_effect=lambda rate: written.append(rate)), \
+             patch.object(samplerate.alignment, "load_sample_rate_policy", return_value={"mode": "auto", "rate": None}):
             self.assertTrue(
                 samplerate.clear_auto_policy_force_rate(
                     96000, status=self._status(96000, 96000), idle=True,
@@ -407,8 +407,8 @@ class AutoPolicyForceRateClearTests(unittest.IsolatedAsyncioTestCase):
     async def test_clear_helper_idle_still_respects_fixed_policy(self):
         # idle only relaxes the default-rate guard; the auto-policy gate stays.
         written = []
-        with patch.object(samplerate, "set_pipewire_force_rate", side_effect=lambda rate: written.append(rate)), \
-             patch.object(samplerate, "load_sample_rate_policy", return_value={"mode": "fixed", "rate": 96000}):
+        with patch.object(samplerate.alignment, "set_pipewire_force_rate", side_effect=lambda rate: written.append(rate)), \
+             patch.object(samplerate.alignment, "load_sample_rate_policy", return_value={"mode": "fixed", "rate": 96000}):
             self.assertFalse(
                 samplerate.clear_auto_policy_force_rate(
                     96000, status=self._status(96000, 96000), idle=True,
@@ -418,8 +418,8 @@ class AutoPolicyForceRateClearTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_clear_helper_skips_fixed_policy(self):
         written = []
-        with patch.object(samplerate, "set_pipewire_force_rate", side_effect=lambda rate: written.append(rate)), \
-             patch.object(samplerate, "load_sample_rate_policy", return_value={"mode": "fixed", "rate": 44100}):
+        with patch.object(samplerate.alignment, "set_pipewire_force_rate", side_effect=lambda rate: written.append(rate)), \
+             patch.object(samplerate.alignment, "load_sample_rate_policy", return_value={"mode": "fixed", "rate": 44100}):
             self.assertFalse(
                 samplerate.clear_auto_policy_force_rate(44100, status=self._status(44100, 44100))
             )
@@ -430,8 +430,8 @@ class AutoPolicyForceRateClearTests(unittest.IsolatedAsyncioTestCase):
         # policy-change transition applies its rate; the in-flight policy must
         # drive the clear decision.
         written = []
-        with patch.object(samplerate, "set_pipewire_force_rate", side_effect=lambda rate: written.append(rate)), \
-             patch.object(samplerate, "load_sample_rate_policy", return_value={"mode": "fixed", "rate": 48000}):
+        with patch.object(samplerate.alignment, "set_pipewire_force_rate", side_effect=lambda rate: written.append(rate)), \
+             patch.object(samplerate.alignment, "load_sample_rate_policy", return_value={"mode": "fixed", "rate": 48000}):
             self.assertTrue(
                 samplerate.clear_auto_policy_force_rate(
                     44100,
@@ -442,7 +442,7 @@ class AutoPolicyForceRateClearTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(written, [0])
 
     async def test_clear_helper_status_read_failure_is_safe(self):
-        with patch.object(samplerate, "get_samplerate_status", side_effect=RuntimeError("no pipewire")):
+        with patch.object(samplerate.alignment, "get_samplerate_status", side_effect=RuntimeError("no pipewire")):
             self.assertFalse(samplerate.clear_auto_policy_force_rate(44100))
 
     async def test_commit_sample_rate_policy_clears_force_for_auto_at_default(self):
@@ -556,14 +556,14 @@ class StopRouteForceRateClearTests(unittest.IsolatedAsyncioTestCase):
         )
         pactl = "73\talsa_output.test\tPipeWire\ts32le 4ch 44100Hz\tRUNNING\n"
         pw_cli = "default.clock.rate = 44100\n"
-        with patch.object(samplerate, "_run_command", side_effect=[pw_metadata, wpctl, pactl, pw_cli]), \
-             patch.object(samplerate, "load_sample_rate_policy", return_value={"mode": "auto", "rate": None}):
+        with patch.object(samplerate.overview, "_run_command", side_effect=[pw_metadata, wpctl, pactl, pw_cli]), \
+             patch.object(samplerate.overview, "load_sample_rate_policy", return_value={"mode": "auto", "rate": None}):
             status = samplerate.get_samplerate_status()
         self.assertEqual(status["mode"], "auto")
         self.assertEqual(status["force_rate"], 44100)
 
-        with patch.object(samplerate, "_run_command", side_effect=[pw_metadata, wpctl, pactl, pw_cli]), \
-             patch.object(samplerate, "load_sample_rate_policy", return_value={"mode": "fixed", "rate": 48000}):
+        with patch.object(samplerate.overview, "_run_command", side_effect=[pw_metadata, wpctl, pactl, pw_cli]), \
+             patch.object(samplerate.overview, "load_sample_rate_policy", return_value={"mode": "fixed", "rate": 48000}):
             status = samplerate.get_samplerate_status()
         self.assertEqual(status["mode"], "fixed")
 

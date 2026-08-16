@@ -15,7 +15,7 @@ import audio.samplerate as samplerate
 class SamplerateCommandTimeoutTests(unittest.TestCase):
     def test_successful_command_passes_timeout(self):
         result = subprocess.CompletedProcess([], 0, stdout="42\n", stderr="")
-        with mock.patch("audio.samplerate.subprocess.run", return_value=result) as run:
+        with mock.patch("audio.samplerate.parsing.subprocess.run", return_value=result) as run:
             self.assertEqual(samplerate._run_command(["wpctl", "status"]), "42\n")
         run.assert_called_once()
         self.assertEqual(
@@ -24,13 +24,13 @@ class SamplerateCommandTimeoutTests(unittest.TestCase):
 
     def test_nonzero_exit_raises_runtime_error(self):
         result = subprocess.CompletedProcess([], 1, stdout="", stderr="boom")
-        with mock.patch("audio.samplerate.subprocess.run", return_value=result):
+        with mock.patch("audio.samplerate.parsing.subprocess.run", return_value=result):
             with self.assertRaisesRegex(RuntimeError, "boom"):
                 samplerate._run_command(["pactl", "info"])
 
     def test_hung_command_raises_timeout_error(self):
         with mock.patch(
-            "audio.samplerate.subprocess.run",
+            "audio.samplerate.parsing.subprocess.run",
             side_effect=subprocess.TimeoutExpired(["bluetoothctl", "info"], 5.0),
         ):
             with self.assertRaisesRegex(RuntimeError, "timed out"):

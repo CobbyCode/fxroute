@@ -44,9 +44,9 @@ async def main_async() -> None:
     )
 
     # 2. Reconcile: already aligned -> no force write, no trigger
-    with mock.patch.object(samplerate, "get_samplerate_status", return_value=stuck_status(48000, 48000)) as status, \
-         mock.patch.object(samplerate, "ensure_playback_samplerate_force", new=mock.AsyncMock(return_value=True)) as force, \
-         mock.patch.object(samplerate, "trigger_idle_sink_renegotiation", new=mock.AsyncMock(return_value=True)) as trigger:
+    with mock.patch.object(samplerate.alignment, "get_samplerate_status", return_value=stuck_status(48000, 48000)) as status, \
+         mock.patch.object(samplerate.alignment, "ensure_playback_samplerate_force", new=mock.AsyncMock(return_value=True)) as force, \
+         mock.patch.object(samplerate.alignment, "trigger_idle_sink_renegotiation", new=mock.AsyncMock(return_value=True)) as trigger:
         assert await samplerate.reconcile_transition_sink_rate(48000, reason="test") is True
         status.assert_called_once()
         force.assert_not_awaited()
@@ -58,9 +58,9 @@ async def main_async() -> None:
         status_3.update(stuck_status(48000, 48000))
         return True
     trigger_3_mock = mock.AsyncMock(side_effect=trigger_3)
-    with mock.patch.object(samplerate, "get_samplerate_status", return_value=status_3), \
-         mock.patch.object(samplerate, "ensure_playback_samplerate_force", new=mock.AsyncMock(return_value=False)) as force, \
-         mock.patch.object(samplerate, "trigger_idle_sink_renegotiation", new=trigger_3_mock) as trigger:
+    with mock.patch.object(samplerate.alignment, "get_samplerate_status", return_value=status_3), \
+         mock.patch.object(samplerate.alignment, "ensure_playback_samplerate_force", new=mock.AsyncMock(return_value=False)) as force, \
+         mock.patch.object(samplerate.alignment, "trigger_idle_sink_renegotiation", new=trigger_3_mock) as trigger:
         assert await samplerate.reconcile_transition_sink_rate(48000, reason="test") is True
         force.assert_awaited_once()
         trigger.assert_awaited_once_with(48000)
@@ -71,17 +71,17 @@ async def main_async() -> None:
         status_4.update(stuck_status(48000, 48000))
         return True
     force_4_mock = mock.AsyncMock(side_effect=force_4)
-    with mock.patch.object(samplerate, "get_samplerate_status", return_value=status_4), \
-         mock.patch.object(samplerate, "ensure_playback_samplerate_force", new=force_4_mock) as force, \
-         mock.patch.object(samplerate, "trigger_idle_sink_renegotiation", new=mock.AsyncMock(return_value=True)) as trigger:
+    with mock.patch.object(samplerate.alignment, "get_samplerate_status", return_value=status_4), \
+         mock.patch.object(samplerate.alignment, "ensure_playback_samplerate_force", new=force_4_mock) as force, \
+         mock.patch.object(samplerate.alignment, "trigger_idle_sink_renegotiation", new=mock.AsyncMock(return_value=True)) as trigger:
         assert await samplerate.reconcile_transition_sink_rate(48000, reason="test") is True
         force.assert_awaited_once()
         trigger.assert_not_awaited()
 
     # 5. Reconcile: stuck sink, force AND trigger fail -> False (verifier still raises)
-    with mock.patch.object(samplerate, "get_samplerate_status", return_value=stuck_status(44100, 48000)), \
-         mock.patch.object(samplerate, "ensure_playback_samplerate_force", new=mock.AsyncMock(return_value=False)), \
-         mock.patch.object(samplerate, "trigger_idle_sink_renegotiation", new=mock.AsyncMock(return_value=False)):
+    with mock.patch.object(samplerate.alignment, "get_samplerate_status", return_value=stuck_status(44100, 48000)), \
+         mock.patch.object(samplerate.alignment, "ensure_playback_samplerate_force", new=mock.AsyncMock(return_value=False)), \
+         mock.patch.object(samplerate.alignment, "trigger_idle_sink_renegotiation", new=mock.AsyncMock(return_value=False)):
         assert await samplerate.reconcile_transition_sink_rate(48000, reason="test") is False
 
     runtime = make_transition_runtime()

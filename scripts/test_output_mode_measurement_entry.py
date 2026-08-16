@@ -831,7 +831,10 @@ class EntryBoundaryTests(unittest.IsolatedAsyncioTestCase):
     def test_sample_rate_policy_reuses_settings_selector_and_coordinator(self):
         index = (pathlib.Path(__file__).resolve().parents[1] / "static" / "index.html").read_text()
         app = (pathlib.Path(__file__).resolve().parents[1] / "static" / "app.js").read_text()
-        samplerate_source = (pathlib.Path(__file__).resolve().parents[1] / "audio/samplerate.py").read_text()
+        samplerate_source = "\n".join(
+            path.read_text()
+            for path in sorted((pathlib.Path(__file__).resolve().parents[1] / "audio" / "samplerate").glob("*.py"))
+        )
         orchestration_source = (pathlib.Path(__file__).resolve().parents[1] / "playback/orchestration.py").read_text()
         self.assertIn("settings-samplerate-select", index)
         self.assertIn("Sample Rate", index)
@@ -910,8 +913,8 @@ class OutputModePersistenceSplitTests(unittest.TestCase):
                     "available": True,
                 }
             }
-            with patch.object(samplerate, "_audio_output_mode_path", return_value=path), patch.object(
-                samplerate, "get_audio_output_overview", return_value=overview
+            with patch.object(samplerate.overview, "_audio_output_mode_path", return_value=path), patch.object(
+                samplerate.overview, "get_audio_output_overview", return_value=overview
             ):
                 target = samplerate.prepare_audio_output_mode("stereo")
                 self.assertFalse(path.exists())
