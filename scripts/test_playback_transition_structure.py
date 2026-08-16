@@ -76,7 +76,7 @@ class OwnershipStructureTests(unittest.TestCase):
             "_ensure_playback_samplerate_force",
             "dsp_orchestrator.sync_preset_for_playback_samplerate",
             "dsp_orchestrator.sync_runtime",
-            "_ensure_mpv_to_dsp_links",
+            "ensure_mpv_to_dsp_links",
             "_set_hardware_sink_mute",
         )
         for name in (
@@ -131,8 +131,8 @@ class OwnershipStructureTests(unittest.TestCase):
         self.assertNotIn("async def run_pw_link_command", main)
         self.assertIn("self._deps.run_pw_link_command", orchestration)
         self.assertNotIn("Build the effects/helper graph inside the Coordinator-owned gate", main)
-        self.assertNotIn("def _ensure_mpv_to_dsp_links", main)
-        self.assertIn("def _ensure_mpv_to_dsp_links", orchestration)
+        self.assertNotIn("def ensure_mpv_to_dsp_links", main)
+        self.assertIn("def ensure_mpv_to_dsp_links", orchestration)
 
     def test_status_never_commits_playing_while_transition_is_active(self):
         body = function_source("build_playback_payload")

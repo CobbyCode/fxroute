@@ -78,7 +78,7 @@ MUTATION_CALL_NAMES = {
     "sync_runtime",
     "sync_runtime_at_rate",
     "_sync_dsp_runtime_for_measurement_sweep",
-    "_ensure_mpv_to_dsp_links",
+    "ensure_mpv_to_dsp_links",
     "_repair_stereo_output_links_once",
     "_set_hardware_sink_mute",
     "load_preset",
@@ -222,7 +222,7 @@ def _reason(context: str, name: str) -> str | None:
             "establish_effects_and_helper", "relink_missing_production_links",
             "repair_stereo_output_links_once", "reconcile_subwoofer_links_only",
             "rollback_output_mode_runtime",
-            "_ensure_mpv_to_dsp_links",
+            "ensure_mpv_to_dsp_links",
         }
         or "_sync_locked" in context
     ):

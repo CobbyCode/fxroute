@@ -992,7 +992,7 @@ def make_playback_runtime_deps() -> PlaybackRuntimeDependencies:
         coordinator_reconcile_subwoofer_links_only=lambda *a, **k: playback_orchestration.configured().reconcile_subwoofer_links_only(*a, **k),
         repair_stereo_output_links_once=lambda *a, **k: playback_orchestration.configured().repair_stereo_output_links_once(*a, **k),
         coordinator_establish_effects_and_helper=lambda *a, **k: playback_orchestration.configured().establish_effects_and_helper(*a, **k),
-        ensure_mpv_to_dsp_links=lambda *a, **k: playback_orchestration.configured()._ensure_mpv_to_dsp_links(*a, **k),
+        ensure_mpv_to_dsp_links=lambda *a, **k: playback_orchestration.configured().ensure_mpv_to_dsp_links(*a, **k),
         playback_graph_links_complete=lambda *a, **k: playback_orchestration.configured().playback_graph_links_complete(*a, **k),
         log_playback_graph_diagnosis=lambda *a, **k: playback_orchestration.configured().log_playback_graph_diagnosis(*a, **k),
         coordinator_reconcile_post_start_graph=lambda *a, **k: playback_orchestration.configured().reconcile_post_start_graph(*a, **k),

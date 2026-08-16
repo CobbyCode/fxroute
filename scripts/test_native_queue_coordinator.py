@@ -171,7 +171,7 @@ class NativeQueueRuntimeTests(unittest.IsolatedAsyncioTestCase):
             native_queue_shuffle=True,
         )
         with patch.object(main.runtime, "player_instance", fake), \
-             patch.object(playback_orchestration.configured(), "_ensure_mpv_to_dsp_links", new=_true_async):
+             patch.object(playback_orchestration.configured(), "ensure_mpv_to_dsp_links", new=_true_async):
             runtime = make_transition_runtime()
             await runtime.prepare_target_source(request)
 

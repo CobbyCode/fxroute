@@ -551,7 +551,7 @@ class PlaybackOrchestrator:
     async def playback_graph_links_complete(self, audio_overview: dict | None = None, *, source: str | None = None, target_rate: int | None = None, require_source: bool = False) -> bool:
         return (await self.playback_graph_diagnosis(audio_overview, source=source, target_rate=target_rate, require_source=require_source))["links_complete"]
 
-    async def _ensure_mpv_to_dsp_links(self, timeout_ms: int | None = None) -> bool:
+    async def ensure_mpv_to_dsp_links(self, timeout_ms: int | None = None) -> bool:
         """Wait for MPV source ports, then reconcile only missing ingress links."""
         if self._deps.mpv_source_ports_present is None:
             raise RuntimeError("MPV source-port readiness is not configured")

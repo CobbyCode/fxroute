@@ -636,7 +636,7 @@ class PositionRestoreOrderTests(unittest.IsolatedAsyncioTestCase):
             side_effect=lambda path: player.set_pause(True) or player._state.update(current_file=path),
         ), patch.object(
             main, "_wait_for_player_current_file", AsyncMock(return_value=True)
-        ), patch.object(playback_orchestration.configured(), "_ensure_mpv_to_dsp_links", AsyncMock(return_value=True)):
+        ), patch.object(playback_orchestration.configured(), "ensure_mpv_to_dsp_links", AsyncMock(return_value=True)):
             request = TransitionRequest(
                 operation="replay",
                 source="local",
@@ -675,7 +675,7 @@ class PositionRestoreOrderTests(unittest.IsolatedAsyncioTestCase):
             side_effect=lambda path: player.set_pause(True) or player._state.update(current_file=path),
         ), patch.object(
             main, "_wait_for_player_current_file", AsyncMock(return_value=True)
-        ), patch.object(playback_orchestration.configured(), "_ensure_mpv_to_dsp_links", AsyncMock(return_value=True)):
+        ), patch.object(playback_orchestration.configured(), "ensure_mpv_to_dsp_links", AsyncMock(return_value=True)):
             request = TransitionRequest(
                 operation="replay",
                 source="local",
