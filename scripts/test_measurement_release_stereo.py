@@ -43,17 +43,22 @@ class _FakeRuntime:
 
 class StereoMeasurementReleaseTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
-        self._saved = {
-            "dsp_runtime": main.runtime.dsp_runtime,
-            "_wait_for_selected_output_effective_rate": main._wait_for_selected_output_effective_rate,
-            "wait_for_samplerate_alignment": samplerate.wait_for_samplerate_alignment,
-            "get_audio_output_overview": main.get_audio_output_overview,
-            "get_samplerate_status": main.get_samplerate_status,
-        }
+        # Each entry records the exact target module/attribute so tearDown
+        # restores to the owner the value was captured from.  Inferring the
+        # target by name is wrong here: get_samplerate_status and
+        # get_audio_output_overview also exist on audio.samplerate, so a
+        # hasattr-based lookup would restore onto samplerate and leave the
+        # main-level patch leaked into later tests in the same process.
+        self._saved = [
+            (main.runtime, "dsp_runtime", main.runtime.dsp_runtime),
+            (main, "_wait_for_selected_output_effective_rate", main._wait_for_selected_output_effective_rate),
+            (samplerate, "wait_for_samplerate_alignment", samplerate.wait_for_samplerate_alignment),
+            (main, "get_audio_output_overview", main.get_audio_output_overview),
+            (main, "get_samplerate_status", main.get_samplerate_status),
+        ]
 
     async def asyncTearDown(self) -> None:
-        for name, value in self._saved.items():
-            target = samplerate if hasattr(samplerate, name) else main.runtime if hasattr(main.runtime, name) else main
+        for target, name, value in self._saved:
             setattr(target, name, value)
 
     async def test_stereo_release_resyncs_runtime_at_restore_rate(self) -> None:

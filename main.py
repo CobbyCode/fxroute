@@ -802,6 +802,19 @@ silent_active_recovery = SilentActiveRecovery(SilentActiveDependencies(
     current_track_matches=lambda track: _current_track_matches(track),
 ))
 
+peak_monitor_coordinator = PeakMonitorCoordinator(PeakMonitorCoordinatorDeps(
+    get_peak_monitor=lambda: runtime.peak_monitor,
+    get_player_state=lambda: runtime.player_instance.state if runtime.player_instance else {},
+    get_current_track_info=lambda: playback_state.current_track_info,
+    broadcast=lambda message: manager.broadcast(message),
+    get_spotify_ui_state=lambda *args, **kwargs: get_spotify_ui_state(*args, **kwargs),
+    get_audio_source_overview=lambda: get_audio_source_overview(),
+    capture_transition_epoch=lambda *a, **k: _capture_playback_transition_epoch(*a, **k),
+    transition_context_is_current=lambda *a, **k: _playback_transition_context_is_current(*a, **k),
+    transition_is_active=lambda: _playback_transition_is_active(),
+    sleep=lambda delay: asyncio.sleep(delay),
+))
+
 external_input = ExternalInputRouting(ExternalInputRoutingDependencies(
     get_audio_source_overview=lambda: get_audio_source_overview(),
 ))
@@ -2123,20 +2136,6 @@ async def _read_status_player_detail(reader: Callable[[], Any], default: Any) ->
 
 async def on_peak_monitor_change(snapshot: dict):
     await manager.broadcast({"type": "playback_peak_warning", "data": snapshot})
-
-
-peak_monitor_coordinator = PeakMonitorCoordinator(PeakMonitorCoordinatorDeps(
-    get_peak_monitor=lambda: runtime.peak_monitor,
-    get_player_state=lambda: runtime.player_instance.state if runtime.player_instance else {},
-    get_current_track_info=lambda: playback_state.current_track_info,
-    broadcast=lambda message: manager.broadcast(message),
-    get_spotify_ui_state=lambda *args, **kwargs: get_spotify_ui_state(*args, **kwargs),
-    get_audio_source_overview=lambda: get_audio_source_overview(),
-    capture_transition_epoch=lambda *a, **k: _capture_playback_transition_epoch(*a, **k),
-    transition_context_is_current=lambda *a, **k: _playback_transition_context_is_current(*a, **k),
-    transition_is_active=lambda: _playback_transition_is_active(),
-    sleep=lambda delay: asyncio.sleep(delay),
-))
 
 
 # Callback functions

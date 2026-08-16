@@ -295,11 +295,11 @@ class PowerBackend:
         method_error, _ = _parse_dbus_error(
             method_result.stderr or method_result.stdout
         )
-        # Modern logind: success via method.  Older logind: method
-        # call returns ``UnknownMethod`` and we have to read the
-        # property via ``Properties.Get`` instead.  Both UnknownProperty
-        # (modern) and UnknownMethod (older) plus runtime errors
-        # collapse into a single ``None`` so the frontend stays tidy.
+        # Modern logind: success via method.  Older logind: the method
+        # call returns ``UnknownMethod`` and we read the property via
+        # ``Properties.Get`` instead; ``UnknownProperty`` is a defensive
+        # fallthrough for the same reason.  Any other method-form failure
+        # collapses into a single ``None`` so the frontend stays tidy.
         if method_error not in (
             "org.freedesktop.DBus.Error.UnknownMethod",
             "org.freedesktop.DBus.Error.UnknownProperty",
