@@ -108,6 +108,10 @@ class TransitionRequest:
     output_mode_target: Mapping[str, Any] = field(default_factory=dict)
     output_mode_config: Mapping[str, Any] = field(default_factory=dict)
     sample_rate_policy: Mapping[str, Any] = field(default_factory=dict)
+    # Runtime-captured output overview, frozen at transition start and reused
+    # by every graph-diagnosis stage so the expensive pactl/pw-cli enumeration
+    # runs once per transition instead of once per readback.
+    audio_overview: Mapping[str, Any] = field(default_factory=dict)
     # Measurement restore is still a normal Coordinator transition, but its
     # caller may carry a position and an intent token captured before the
     # measurement window.  The runtime validates that token immediately
@@ -1027,6 +1031,34 @@ class PlaybackTransitionCoordinator:
                 )
                 raise failure from exc
 
+    async def _evaluate_same_graph_fast_path(
+        self, request: TransitionRequest, snapshot: Mapping[str, Any]
+    ) -> bool:
+        """Return whether this play can switch inside the unchanged graph.
+
+        The gate may stay open only when the previous transition committed,
+        the gate is open and not latched, and the runtime confirms the switch
+        keeps source, rate, output mode, DSP state and graph topology intact.
+        Any uncertainty falls back to the full transition.
+        """
+        if self.gate.closed or self.gate.failure_latched:
+            return False
+        if self.last_error is not None:
+            return False
+        if self.last_result is None or not self.last_result.committed:
+            return False
+        evaluator = getattr(self.runtime, "evaluate_same_graph_fast_path", None)
+        if not callable(evaluator):
+            return False
+        try:
+            return bool(await evaluator(request, snapshot))
+        except Exception as exc:
+            logger.warning(
+                "Same-graph fast-path evaluation failed; using full transition: %s",
+                exc,
+            )
+            return False
+
     async def execute(self, request: TransitionRequest) -> TransitionResult:
         """Run one transition and commit only after complete readback."""
 
@@ -1134,6 +1166,15 @@ class PlaybackTransitionCoordinator:
                     )
                 snapshot = await self.runtime.read_transition_snapshot(request)
                 if (
+                    not active_request.audio_overview
+                    and isinstance(snapshot, Mapping)
+                    and snapshot.get("audio_overview")
+                ):
+                    active_request = replace(
+                        active_request,
+                        audio_overview=dict(snapshot["audio_overview"]),
+                    )
+                if (
                     active_request.operation == "sample-rate-policy"
                     and active_request.reload_source
                     and active_request.source == "local"
@@ -1155,6 +1196,52 @@ class PlaybackTransitionCoordinator:
                     and not await restore_validator(active_request, snapshot)
                 ):
                     return await skip_measurement_restore("intent-changed-before-gate")
+                fast_path = await self._evaluate_same_graph_fast_path(
+                    active_request, snapshot
+                )
+                if fast_path:
+                    # A semantically identical-graph track switch: committed
+                    # source, rate, output mode, DSP state and graph topology
+                    # are unchanged, so the transport switches inside the open
+                    # graph without the output gate or graph re-verification.
+                    # A failure here still runs the shared cleanup with
+                    # gate_required=False (no gate was ever closed).
+                    gate_required = False
+                    enter_stage("quiet-old-source")
+                    await self.runtime.quiet_old_source(active_request)
+                    enter_stage("target-source-prepare")
+                    target_prepare_started = True
+                    await self.runtime.prepare_target_source(active_request)
+                    enter_stage("target-source-start")
+                    await self.runtime.start_target_source(active_request)
+                    if active_request.should_play:
+                        enter_stage("source-volume-restore")
+                        await self.runtime.set_source_volume(100, transition_id)
+                    enter_stage("commit-readback")
+                    verifier = getattr(
+                        self.runtime, "verify_same_graph_commit", None
+                    )
+                    if not callable(verifier):
+                        raise RuntimeError(
+                            "same-graph fast-path commit verifier is unavailable"
+                        )
+                    state = await verifier(active_request)
+                    if not bool(state.get("committed", True)):
+                        raise RuntimeError(
+                            "fast-path readback did not satisfy commit contract"
+                        )
+                    result = TransitionResult(
+                        transition_id=transition_id,
+                        committed=True,
+                        source=active_request.source,
+                        target_rate=active_request.target_rate,
+                        state=dict(state),
+                    )
+                    self._record_result(result)
+                    self.last_error = None
+                    log_timing("committed")
+                    return result
+
                 if gate_required:
                     enter_stage("output-gate-close")
                     await self._close_gate(

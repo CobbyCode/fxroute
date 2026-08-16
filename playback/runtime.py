@@ -169,6 +169,7 @@ class PlaybackRuntimeDependencies:
     mark_player_state_authoritative: Callable[..., None]
     spotify_snapshot_identity_values: Callable[..., set]
     measurement_restore_intent_matches_live_state: Callable[..., Awaitable[bool]]
+    measurement_audio_graph_owned: Callable[[], bool]
 
     # DSP / worker helpers (main.py)
     dsp_mutation_lock: Callable[[], Any]
@@ -302,6 +303,10 @@ class FxrouteTransitionRuntime(TransitionRuntime):
                 else None
             )
             snapshot["spotify"] = await self._deps.get_spotify_ui_state()
+        else:
+            # Frozen once per transition; the graph-diagnosis stages reuse it
+            # instead of re-running the full pactl/pw-cli output enumeration.
+            snapshot["audio_overview"] = copy.deepcopy(self._deps.get_audio_output_overview())
         return snapshot
 
     def target_source_staged(self, request: TransitionRequest) -> bool:
@@ -1333,6 +1338,11 @@ class FxrouteTransitionRuntime(TransitionRuntime):
         except Exception:
             rate = {}
         state = dict(self._player.state if self._player else {})
+        overview = (
+            dict(request.audio_overview)
+            if request.audio_overview
+            else self._deps.get_audio_output_overview()
+        )
         get_property = getattr(self._player, "get_property", None)
         live_mpv: dict[str, Any] = {}
         if callable(get_property):
@@ -1408,6 +1418,7 @@ class FxrouteTransitionRuntime(TransitionRuntime):
             if rate.get("force_rate") not in {None, 0, request.target_rate}:
                 raise RuntimeError(f"force-rate mismatch at commit: {rate.get('force_rate')}")
         graph_complete = await self._deps.playback_graph_links_complete(
+            audio_overview=overview,
             source=request.source,
             target_rate=request.target_rate,
             require_source=True,
@@ -1417,7 +1428,7 @@ class FxrouteTransitionRuntime(TransitionRuntime):
 
         helper_rate = None
         try:
-            output_mode = (self._deps.get_audio_output_overview().get("output_mode") or {}).get("mode")
+            output_mode = (overview.get("output_mode") or {}).get("mode")
             if output_mode in OUTPUT_MODE_SUBWOOFER_MODES:
                 if self._dsp_runtime is None:
                     raise RuntimeError("subwoofer helper runtime is not available at commit")
@@ -1795,6 +1806,108 @@ class FxrouteTransitionRuntime(TransitionRuntime):
 
     async def verify_committed_transition(self, request: TransitionRequest) -> dict[str, Any]:
         return await self._verify_transition(request, require_source_volume=True)
+
+    async def evaluate_same_graph_fast_path(
+        self, request: TransitionRequest, snapshot: Mapping[str, Any]
+    ) -> bool:
+        """Return whether a local play can switch inside the committed graph.
+
+        Every caller of the Coordinator expects a semantically identical-graph
+        track switch to stay transport-only: same mpv instance (ports persist),
+        same sample rate, same output mode, healthy DSP and a complete
+        canonical graph.  Any case that can change the graph or whose state is
+        not provably safe falls back to the full transition.
+        """
+        if request.operation != "play":
+            return False
+        if request.source != "local":
+            return False
+        if not request.should_play:
+            return False
+        if request.rate_change or request.graph_only or request.output_mode_target:
+            return False
+        if request.recovery_commit_context_id or request.native_queue:
+            return False
+        if not request.reload_source:
+            return False
+        target_rate = request.target_rate
+        if not isinstance(target_rate, int) or target_rate <= 0:
+            return False
+        if snapshot.get("active_rate") != target_rate:
+            return False
+        if snapshot.get("force_rate") not in {None, 0, target_rate}:
+            return False
+        current_track = dict(snapshot.get("current_track") or {})
+        if current_track.get("source") != "local":
+            return False
+        player_state = dict(snapshot.get("player") or {})
+        if not player_state.get("current_file") or player_state.get("ended"):
+            return False
+        if self._deps.measurement_audio_graph_owned():
+            return False
+        if not request.audio_overview:
+            return False
+        try:
+            # One cheap diagnosis reusing the transition-frozen overview: the
+            # canonical graph must still be fully wired (ingress, source and
+            # output links, DSP active at the target rate, no bypass).
+            diagnosis = await self._deps.playback_graph_diagnosis(
+                audio_overview=dict(request.audio_overview),
+                source="local",
+                target_rate=target_rate,
+                require_source=True,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Same-graph fast-path graph check failed; using full transition: %s",
+                exc,
+            )
+            return False
+        return bool(diagnosis.get("links_complete"))
+
+    async def verify_same_graph_commit(self, request: TransitionRequest) -> dict[str, Any]:
+        """Lightweight commit readback for the same-graph fast path.
+
+        The graph was verified healthy before the switch and nothing in this
+        path mutates it, so only the player state is read back: the target
+        must be loaded and audible at the committed volume.
+        """
+        state = dict(self._player.state if self._player else {})
+        if request.target_url and state.get("current_file") != request.target_url:
+            raise RuntimeError(
+                f"MPV current_file mismatch: expected={request.target_url} actual={state.get('current_file')}"
+            )
+        get_property = getattr(self._player, "get_property", None)
+        live_mpv: dict[str, Any] = {}
+        if callable(get_property):
+            for prop in ("pause", "idle-active", "volume"):
+                try:
+                    live_mpv[prop] = get_property(prop)
+                except Exception:
+                    pass
+        live_paused = live_mpv.get("pause")
+        live_idle = live_mpv.get("idle-active")
+        if isinstance(live_paused, bool) and isinstance(live_idle, bool):
+            if live_paused is not False or live_idle is not False:
+                raise RuntimeError(
+                    "MPV is not actually playing at fast-path commit (live IPC)"
+                )
+        else:
+            if state.get("paused") or not state.get("playing"):
+                raise RuntimeError("MPV is not actually playing at fast-path commit")
+        live_volume = live_mpv.get("volume")
+        if isinstance(live_volume, (int, float)):
+            live_volume = int(round(float(live_volume)))
+        else:
+            live_volume = state.get("volume")
+        if live_volume is not None and live_volume != 100:
+            raise RuntimeError(f"MPV source volume was not restored: {live_volume}")
+        return {
+            "committed": True,
+            "player": state,
+            "fast_path": True,
+            "graph_complete": True,
+        }
 
     async def pause_source_after_failure(self, request: TransitionRequest) -> None:
         if request.source == "spotify":

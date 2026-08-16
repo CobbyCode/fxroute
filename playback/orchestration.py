@@ -479,7 +479,11 @@ class PlaybackOrchestrator:
         target_rate = request.target_rate
         if not isinstance(target_rate, int) or target_rate <= 0:
             return {"graph_complete": True, "post_start_graph_reconciled": False, "post_start_graph_links_relinked": False}
-        overview = copy.deepcopy(request.output_mode_target) if request.operation == "output-mode-switch" and request.output_mode_target else None
+        overview = (
+            copy.deepcopy(request.output_mode_target)
+            if request.operation == "output-mode-switch" and request.output_mode_target
+            else (dict(request.audio_overview) if request.audio_overview else None)
+        )
         graph_source = request.source if request.target_url or request.should_play else None
         include_source = graph_source is not None
         diagnosis = await self.playback_graph_diagnosis(overview, source=graph_source, target_rate=target_rate, require_source=include_source)
@@ -509,7 +513,11 @@ class PlaybackOrchestrator:
         if not isinstance(target_rate, int) or target_rate <= 0:
             return empty
         timeout = self._deps.dsp_port_timeout_ms if ee_port_timeout_ms is None else ee_port_timeout_ms
-        overview = copy.deepcopy(request.output_mode_target) if request.output_mode_target else self._deps.get_audio_output_overview()
+        overview = (
+            copy.deepcopy(request.output_mode_target)
+            if request.output_mode_target
+            else (dict(request.audio_overview) if request.audio_overview else self._deps.get_audio_output_overview())
+        )
         mode = (overview.get("output_mode") or {}).get("mode")
         diagnosis = await self.playback_graph_diagnosis(overview, target_rate=target_rate)
         preset_reloaded = helper_rebuilt = links_reconciled = False

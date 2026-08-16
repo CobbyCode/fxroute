@@ -980,6 +980,7 @@ def make_playback_runtime_deps() -> PlaybackRuntimeDependencies:
         mark_player_state_authoritative=lambda *a, **k: _mark_player_state_authoritative(*a, **k),
         spotify_snapshot_identity_values=lambda *a, **k: _spotify_snapshot_identity_values(*a, **k),
         measurement_restore_intent_matches_live_state=lambda *a, **k: _measurement_restore_intent_matches_live_state(*a, **k),
+        measurement_audio_graph_owned=lambda: _measurement_audio_graph_owned(),
         dsp_mutation_lock=lambda: _dsp_mutation_lock(),
         drain_worker=lambda *a, **k: _drain_worker(*a, **k),
         load_dsp_preset=lambda *a, **k: _load_dsp_preset(*a, **k),
