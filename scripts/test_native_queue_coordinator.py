@@ -249,11 +249,12 @@ class NativeQueueCallbackTests(unittest.IsolatedAsyncioTestCase):
         names = (
             "current_track_info", "last_track_info", "latest_player_state_seq_seen",
             "queue_advancing", "manager", "peak_monitor", "source_transition_lock",
-            "playback_transition_coordinator", "sync_peak_monitor_for_playback_state",
+            "playback_transition_coordinator",
              "build_playback_payload",
             "playback_intent_generation",
         )
         originals = {name: (getattr(main.runtime, name) if hasattr(main.runtime, name) else getattr(main.playback_state, name) if hasattr(main.playback_state, name) else getattr(main, name)) for name in names}
+        original_sync_playback = main.peak_monitor_coordinator.sync_playback_state
         saved_queue = queue_state()
         try:
             tracks = [_track("a", 48000), _track("b", 48000), _track("c", 48000), _track("d", 48000), _track("e", 48000)]
@@ -269,7 +270,7 @@ class NativeQueueCallbackTests(unittest.IsolatedAsyncioTestCase):
             main.runtime.peak_monitor = None
             main.runtime.source_transition_lock = None
             main.playback_transition_coordinator = SimpleNamespace(transition_active=False)
-            main.sync_peak_monitor_for_playback_state = _noop_async
+            main.peak_monitor_coordinator.sync_playback_state = _noop_async
             main.build_playback_payload = lambda state: state
 
             await main.on_player_state_change({
@@ -286,6 +287,7 @@ class NativeQueueCallbackTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(playback_queue.queue.index, 4)
             self.assertEqual(main.playback_state.current_track_info["id"], "e")
         finally:
+            main.peak_monitor_coordinator.sync_playback_state = original_sync_playback
             restore_queue_state(saved_queue)
             for name, value in originals.items():
                 setattr(main.runtime if hasattr(main.runtime, name) else main.playback_state if hasattr(main.playback_state, name) else main, name, value)
@@ -295,10 +297,10 @@ class NativeQueueCallbackTests(unittest.IsolatedAsyncioTestCase):
             "current_track_info", "last_track_info",
             "latest_player_state_seq_seen", "queue_advancing", "manager",
             "peak_monitor", "source_transition_lock", "playback_transition_coordinator",
-            "sync_peak_monitor_for_playback_state",
             "build_playback_payload", "playback_intent_generation",
         )
         originals = {name: (getattr(main.runtime, name) if hasattr(main.runtime, name) else getattr(main.playback_state, name) if hasattr(main.playback_state, name) else getattr(main, name)) for name in names}
+        original_sync_playback = main.peak_monitor_coordinator.sync_playback_state
         saved_queue = queue_state()
         try:
             playback_queue.queue.tracks = [_track("a", 48000), _track("b", 48000), _track("c", 48000)]
@@ -313,7 +315,7 @@ class NativeQueueCallbackTests(unittest.IsolatedAsyncioTestCase):
             main.runtime.peak_monitor = None
             main.runtime.source_transition_lock = None
             main.playback_transition_coordinator = SimpleNamespace(transition_active=False)
-            main.sync_peak_monitor_for_playback_state = _noop_async
+            main.peak_monitor_coordinator.sync_playback_state = _noop_async
             main.build_playback_payload = lambda state: state
 
             for seq, track_id in enumerate(("b", "c"), start=1):
@@ -331,6 +333,7 @@ class NativeQueueCallbackTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(playback_queue.queue.index, expected_index)
                 self.assertEqual(main.playback_state.current_track_info["id"], track_id)
         finally:
+            main.peak_monitor_coordinator.sync_playback_state = original_sync_playback
             restore_queue_state(saved_queue)
             for name, value in originals.items():
                 setattr(main.runtime if hasattr(main.runtime, name) else main.playback_state if hasattr(main.playback_state, name) else main, name, value)
@@ -477,11 +480,12 @@ class NativeQueueShuffleParityTests(unittest.IsolatedAsyncioTestCase):
             "queue_advancing", "latest_player_state_seq_seen",
             "playback_transition_coordinator", "get_samplerate_status",
             "_run_coordinated_transition", "manager", "peak_monitor",
-            "source_transition_lock", "sync_peak_monitor_for_playback_state",
+            "source_transition_lock",
              "build_playback_payload",
             "playback_intent_generation",
         )
         originals = {name: (getattr(main.runtime, name) if hasattr(main.runtime, name) else getattr(main.playback_state, name) if hasattr(main.playback_state, name) else getattr(main, name)) for name in names}
+        original_sync_playback = main.peak_monitor_coordinator.sync_playback_state
         saved_queue = queue_state()
         try:
             main.runtime.player_instance = fake
@@ -507,7 +511,7 @@ class NativeQueueShuffleParityTests(unittest.IsolatedAsyncioTestCase):
             main.manager = SimpleNamespace(broadcast=_noop_async)
             main.runtime.peak_monitor = None
             main.runtime.source_transition_lock = None
-            main.sync_peak_monitor_for_playback_state = _noop_async
+            main.peak_monitor_coordinator.sync_playback_state = _noop_async
             main.build_playback_payload = lambda state: state
 
             async def apply_transition(request):
@@ -576,6 +580,7 @@ class NativeQueueShuffleParityTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(fake.playlist[fake.state["playlist_pos"]], "/music/d.flac")
             self.assertEqual(fake.state["position"], 37.5)
         finally:
+            main.peak_monitor_coordinator.sync_playback_state = original_sync_playback
             restore_queue_state(saved_queue)
             for name, value in originals.items():
                 setattr(main.runtime if hasattr(main.runtime, name) else main.playback_state if hasattr(main.playback_state, name) else main, name, value)

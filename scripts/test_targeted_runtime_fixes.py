@@ -162,9 +162,9 @@ class QueueCallbackOwnershipTests(unittest.IsolatedAsyncioTestCase):
             "queue_advancing", "playback_transition_epoch",
             "latest_player_state_seq_seen", "source_transition_lock", "manager",
             "peak_monitor", "build_playback_payload",
-            "sync_peak_monitor_for_playback_state",
         )
         originals = {name: (getattr(main.runtime, name) if hasattr(main.runtime, name) else getattr(main.playback_state, name) if hasattr(main.playback_state, name) else getattr(main, name)) for name in names}
+        original_sync_playback = main.peak_monitor_coordinator.sync_playback_state
         saved_queue = queue_state()
         try:
             playback_queue.queue.tracks = [
@@ -187,7 +187,7 @@ class QueueCallbackOwnershipTests(unittest.IsolatedAsyncioTestCase):
             async def no_peak_sync(*_args, **_kwargs):
                 return None
 
-            main.sync_peak_monitor_for_playback_state = no_peak_sync
+            main.peak_monitor_coordinator.sync_playback_state = no_peak_sync
 
             await main.on_player_state_change({
                 "_seq": 1, "current_file": "/music/a.flac", "playlist_pos": 1,
@@ -206,6 +206,7 @@ class QueueCallbackOwnershipTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(main.playback_state.current_track_info["url"], "/music/a.flac")
             self.assertEqual(playback_queue.queue.index, 0)
         finally:
+            main.peak_monitor_coordinator.sync_playback_state = original_sync_playback
             restore_queue_state(saved_queue)
             for name, value in originals.items():
                 setattr(main.runtime if hasattr(main.runtime, name) else main.playback_state if hasattr(main.playback_state, name) else main, name, value)

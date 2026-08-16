@@ -1,4 +1,10 @@
-"""Post-DSP peak monitor using the FXRoute native engine output node."""
+"""Post-DSP peak monitor using the FXRoute native engine output node.
+
+Hosts the capture process mechanics (:class:`DSPPeakMonitor`) and the
+application-level state machine (:class:`PeakMonitorCoordinator`) that
+starts/stops/relinks it based on the committed playback, Spotify and
+source-mode context.
+"""
 
 from __future__ import annotations
 
@@ -9,9 +15,10 @@ import struct
 import time
 from dataclasses import dataclass
 from itertools import count
-from typing import Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional
 
-from audio.samplerate import get_samplerate_status
+import playback.state as playback_state
+from audio.samplerate import SOURCE_MODE_BLUETOOTH_INPUT, get_samplerate_status
 
 logger = logging.getLogger(__name__)
 
@@ -25,11 +32,14 @@ LINK_RETRY_ATTEMPTS = 12
 LINK_RETRY_INTERVAL = 0.12
 # Hard bound for every short-lived pw-cli/pw-link command: one hanging call
 # must never beat the LINK_DISCOVERY_TIMEOUT deadline or stall the monitor
-# task / relink path (which runs under peak_monitor_transition_lock).
+# task / relink path (which runs under the peak-monitor coordinator lock).
 PEAK_MONITOR_COMMAND_TIMEOUT_SECONDS = 3.0
 # Grace between terminate and kill when a bounded command child ignores
 # SIGTERM; matches the project subprocess-stop convention.
 PEAK_MONITOR_COMMAND_TERMINATE_GRACE_SECONDS = 1.0
+# Grace before the monitor process is stopped/kept-alive after playback,
+# Spotify or source-mode activity ends (pause/resume glitch avoidance).
+PEAK_MONITOR_INACTIVE_GRACE_MS = 450
 ERROR_RETRY_INTERVAL = 0.35
 RESTART_SETTLE_SECONDS = 0.1
 CONSECUTIVE_HITS_REQUIRED = 2
@@ -766,3 +776,232 @@ class DSPPeakMonitor:
         if count <= 0:
             return 0.0
         return math.sqrt(sum_squares / count)
+
+
+@dataclass(frozen=True)
+class PeakMonitorCoordinatorDeps:
+    """Application services injected from main.py.
+
+    All entries resolve the current runtime state at call time, so tests
+    that patch ``main.runtime`` / ``main.playback_state`` attributes observe
+    the patched services.
+    """
+
+    get_peak_monitor: Callable[[], Any]
+    get_player_state: Callable[[], dict]
+    get_current_track_info: Callable[[], Any]
+    broadcast: Callable[[dict], Awaitable[Any]]
+    get_spotify_ui_state: Callable[..., Awaitable[Any]]
+    get_audio_source_overview: Callable[[], dict]
+    capture_transition_epoch: Callable[[], int | None]
+    transition_context_is_current: Callable[[int | None], bool]
+    transition_is_active: Callable[[], bool]
+    sleep: Callable[[float], Awaitable[None]]
+
+
+class PeakMonitorCoordinator:
+    """Own the peak-monitor state machine (armed/signature/lock).
+
+    Decides when the :class:`DSPPeakMonitor` process is started, stopped or
+    relinked based on the committed playback, Spotify and source-mode
+    context.  The mutable state (``armed``, ``signature``, ``lock``) and the
+    three sync entry points moved here from ``main.py`` so the monitor
+    lifecycle has a single owner; ``main.py`` keeps thin wrappers for the
+    existing dependency wiring and test patching contract.
+    """
+
+    def __init__(self, deps: PeakMonitorCoordinatorDeps) -> None:
+        self._deps = deps
+        self.armed = False
+        self.signature: Any = None
+        self.lock: asyncio.Lock | None = None
+
+    def reset(self) -> None:
+        """Clear the coordination state at startup.
+
+        The lock is dropped so it rebinds to the running event loop; armed
+        is cleared so the first playback/Spotify/source sync re-arms the
+        monitor.
+        """
+        self.armed = False
+        self.signature = None
+        self.lock = None
+
+    def set_signature(self, value: Any) -> None:
+        """Forget the committed context so the next sync performs a restart."""
+        self.signature = value
+
+    def _peak_monitor(self) -> Any:
+        return self._deps.get_peak_monitor()
+
+    def _get_lock(self) -> asyncio.Lock:
+        if self.lock is None:
+            self.lock = asyncio.Lock()
+        return self.lock
+
+    async def _broadcast_snapshot(self) -> None:
+        peak_monitor = self._peak_monitor()
+        if peak_monitor is None:
+            return
+        await self._deps.broadcast(
+            {"type": "playback_peak_warning", "data": peak_monitor.snapshot()}
+        )
+
+    async def sync_playback_state(
+        self,
+        state: dict,
+        transition_generation: int | None = None,
+    ) -> None:
+        if self._peak_monitor() is None:
+            return
+        if transition_generation is None:
+            transition_generation = self._deps.capture_transition_epoch()
+        if not self._deps.transition_context_is_current(transition_generation):
+            return
+        async with self._get_lock():
+            if not self._deps.transition_context_is_current(transition_generation):
+                return
+            is_active_playback = playback_state.is_local_playback_active(state)
+            current_track = self._deps.get_current_track_info()
+            source = (current_track or {}).get("source") or "unknown"
+            state_matches_track = playback_state.playback_state_matches_track(
+                state, current_track
+            )
+            if is_active_playback and not state_matches_track and self.armed:
+                logger.info(
+                    "Skipping peak monitor resync during unsettled player transition: source=%s state_file=%s track_url=%s track_id=%s",
+                    source,
+                    state.get("current_file"),
+                    (current_track or {}).get("url"),
+                    (current_track or {}).get("id"),
+                )
+                return
+            desired_signature = f"player:{source}:{state.get('current_file') or ''}" if is_active_playback else None
+
+            if is_active_playback:
+                # Resume from pause/inactive with same source:
+                # only restart the peak monitor — do NOT reload the DSP
+                # preset or repair the output graph, which causes an audible crack.
+                if not self.armed and self.signature == desired_signature:
+                    self.armed = True
+                    logger.info(
+                        "Repairing peak monitor links after pause (same source, relink only): %s",
+                        desired_signature,
+                    )
+                    # Peak monitor process was kept running but PipeWire links are
+                    # dropped during pause. Repair links without restarting the
+                    # pw-record process to avoid audible cracks.
+                    relinked = await self._peak_monitor().relink()
+                    if not relinked:
+                        logger.warning(
+                            "Peak monitor relink failed; falling back to full restart: %s",
+                            desired_signature,
+                        )
+                        await self._peak_monitor().restart()
+                    await self._broadcast_snapshot()
+                elif self.signature != desired_signature:
+                    self.armed = True
+                    self.signature = desired_signature
+                    if not self._deps.transition_context_is_current(transition_generation):
+                        return
+                    logger.info(
+                        "Restarting peak monitor on committed playback context change; production graph remains coordinator-owned: %s",
+                        desired_signature,
+                    )
+                    await self._peak_monitor().restart()
+                    await self._broadcast_snapshot()
+            elif (
+                not is_active_playback
+                and self.armed
+                and str(self.signature or "").startswith("player:")
+            ):
+                await self._deps.sleep(PEAK_MONITOR_INACTIVE_GRACE_MS / 1000)
+                refreshed_player_state = self._deps.get_player_state()
+                if playback_state.is_local_playback_active(refreshed_player_state):
+                    return
+                spotify_state = await self._deps.get_spotify_ui_state()
+                if spotify_state.get("available") and spotify_state.get("status") == "Playing":
+                    return
+                # Keep the peak monitor process running through pauses to avoid
+                # pw-record restart + PipeWire link glitches on resume.
+                # Mark as not armed so the resume path will trigger relink().
+                logger.info(
+                    "Peak monitor pausing (process stays alive, armed=False): signature=%s",
+                    self.signature,
+                )
+                self.armed = False
+                # self.signature is preserved for same-source resume detection.
+
+    async def sync_spotify_state(self, data: dict) -> None:
+        if self._peak_monitor() is None:
+            return
+        async with self._get_lock():
+            player_state = self._deps.get_player_state()
+            is_spotify_playing = playback_state.is_spotify_playback_active(data)
+            desired_signature = "spotify:playing" if is_spotify_playing else None
+
+            if is_spotify_playing and (not self.armed or self.signature != desired_signature):
+                if self._deps.transition_is_active():
+                    logger.info("Delaying peak monitor restart while Spotify samplerate recovery is active")
+                    return
+                self.armed = True
+                self.signature = desired_signature
+                logger.info(
+                    "Starting peak monitor for committed Spotify playback; rate/graph mutations remain coordinator-owned",
+                )
+                await self._peak_monitor().restart()
+                await self._broadcast_snapshot()
+            elif (
+                not is_spotify_playing
+                and self.armed
+                and str(self.signature or "").startswith("spotify:")
+            ):
+                if self._deps.transition_is_active():
+                    logger.info("Keeping peak monitor armed while Spotify samplerate recovery is active")
+                    return
+                await self._deps.sleep(PEAK_MONITOR_INACTIVE_GRACE_MS / 1000)
+                refreshed_player_state = self._deps.get_player_state()
+                refreshed_spotify_state = await self._deps.get_spotify_ui_state()
+                if self._deps.transition_is_active():
+                    logger.info("Keeping peak monitor armed while Spotify samplerate recovery is still active")
+                    return
+                if playback_state.is_local_playback_active(refreshed_player_state):
+                    return
+                if playback_state.is_spotify_playback_active(refreshed_spotify_state):
+                    return
+                logger.info("Stopping peak monitor because Spotify is no longer actively playing")
+                await self._peak_monitor().stop()
+                self.armed = False
+                self.signature = None
+                await self._broadcast_snapshot()
+
+    async def sync_source_mode_state(self, source_overview: dict | None = None) -> None:
+        if self._peak_monitor() is None:
+            return
+        async with self._get_lock():
+            overview = source_overview or self._deps.get_audio_source_overview()
+            bluetooth = overview.get("bluetooth") or {}
+            is_bt_streaming = bool(
+                overview.get("mode") == SOURCE_MODE_BLUETOOTH_INPUT
+                and bluetooth.get("state") == "streaming"
+                and bluetooth.get("connected_device")
+            )
+            desired_signature = None
+            if is_bt_streaming:
+                desired_signature = f"bluetooth:{bluetooth.get('connected_device')}:{bluetooth.get('active_codec') or ''}"
+
+            if is_bt_streaming and (not self.armed or self.signature != desired_signature):
+                self.armed = True
+                self.signature = desired_signature
+                logger.info("Starting peak monitor for active Bluetooth input: %s", desired_signature)
+                await self._peak_monitor().restart()
+                await self._broadcast_snapshot()
+            elif (not is_bt_streaming) and self.armed and str(self.signature or "").startswith("bluetooth:"):
+                player_state = self._deps.get_player_state()
+                spotify_state = await self._deps.get_spotify_ui_state()
+                if not playback_state.is_local_playback_active(player_state) and not playback_state.is_spotify_playback_active(spotify_state):
+                    logger.info("Stopping peak monitor because Bluetooth input is no longer actively streaming")
+                    await self._peak_monitor().stop()
+                    self.armed = False
+                    self.signature = None
+                    await self._broadcast_snapshot()

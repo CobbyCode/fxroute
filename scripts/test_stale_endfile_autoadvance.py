@@ -107,7 +107,7 @@ class StaleEndfileOwnershipTests(unittest.IsolatedAsyncioTestCase):
             patch.object(main, "_coordinator_rate_change", lambda _r: False),
             patch.object(main, "_sample_rate_policy_is_auto", lambda: False),
             patch.object(main.radio_reconnect, "schedule", lambda _s: None),
-            patch.object(main, "sync_peak_monitor_for_playback_state", no_peak_sync),
+            patch.object(main.peak_monitor_coordinator, "sync_playback_state", no_peak_sync),
             patch.object(main, "build_playback_payload", lambda state: dict(state)),
             patch.object(main, "manager", self.manager),
             patch.object(main.runtime, "player_instance", SimpleNamespace(state={})),
