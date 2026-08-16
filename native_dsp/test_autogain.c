@@ -80,6 +80,26 @@ static int wait_for_gain(fx_autogain *gain, double minimum) {
     return 0;
 }
 
+static int wait_for_gain_settled(fx_autogain *gain, unsigned stable_reads) {
+    /* The worker publishes asynchronously; a single read can catch a
+     * mid-convergence transient.  Return only once the published gain is
+     * identical across consecutive reads, i.e. the worker drained the ring
+     * and the measurement settled. */
+    double previous = -1.0;
+    unsigned stable = 0;
+    for (unsigned attempt = 0; attempt < 500000U; attempt++) {
+        double current = fx_autogain_get_measurement(gain).gain;
+        if (isfinite(current) && current == previous) {
+            if (++stable >= stable_reads) return 1;
+        } else {
+            stable = 0;
+            previous = current;
+        }
+        sched_yield();
+    }
+    return 0;
+}
+
 static int wait_for_integrated(fx_autogain *gain, double expected, double tolerance) {
     for (unsigned attempt = 0; attempt < 500000U; attempt++) {
         double actual = fx_autogain_get_measurement(gain).integrated_lufs;
@@ -205,6 +225,8 @@ static void test_peak_safety_freezes_previous_gain(void) {
     fx_autogain *gain = make_gain(FX_AUTOGAIN_MOMENTARY, -12.0, -70.0, 15U);
     run_seconds(gain, 0.02, 1U, left, right, out_left, out_right, &phase);
     check(wait_for_gain(gain, 1.0), "quiet material is measured asynchronously");
+    check(wait_for_gain_settled(gain, 8U),
+          "quiet material measurement settles before the peak-safety snapshot");
     double safe_gain = fx_autogain_get_measurement(gain).gain;
     check(safe_gain > 1.0, "quiet material establishes positive gain");
     fill_sine(left, right, BLOCK, 0.02, &phase);
