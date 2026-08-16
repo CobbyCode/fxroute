@@ -119,6 +119,58 @@ async def main_async() -> None:
         else:
             raise AssertionError("establish_target_rate must raise when the rate never settles")
 
+    # 8b. establish_target_rate: an unpinned sink already reading a
+    #     non-default target is NOT a no-op.  The graph rebuild renegotiates
+    #     an unpinned sink to the default, so the target must be anchored
+    #     (pinned) before the helper stage runs.
+    with mock.patch.object(main, "get_samplerate_status", return_value={
+        "status": "ok", "active_rate": 96000, "force_rate": 0,
+        "clock_rate": 96000, "mode": "auto", "default_rate": 44100,
+    }), \
+         mock.patch.object(samplerate, "ensure_playback_samplerate_force", new=mock.AsyncMock(return_value=True)) as force, \
+         mock.patch.object(samplerate, "trigger_idle_sink_renegotiation", new=mock.AsyncMock(return_value=True)) as trigger:
+        await runtime.establish_target_rate(TransitionRequest(
+            operation="play", source="local", target_rate=96000,
+        ))
+        force.assert_awaited_once()
+        assert force.await_args.args[0] == 96000
+        trigger.assert_not_awaited()
+
+    # 8c. establish_target_rate: an unpinned sink at the graph default stays
+    #     a no-op (an unpinned sink settles at the default, so the reading is
+    #     already stable through the rebuild).
+    with mock.patch.object(main, "get_samplerate_status", return_value={
+        "status": "ok", "active_rate": 44100, "force_rate": 0,
+        "clock_rate": 44100, "mode": "auto", "default_rate": 44100,
+    }), \
+         mock.patch.object(samplerate, "ensure_playback_samplerate_force", new=mock.AsyncMock(return_value=True)) as force, \
+         mock.patch.object(samplerate, "trigger_idle_sink_renegotiation", new=mock.AsyncMock(return_value=True)) as trigger:
+        await runtime.establish_target_rate(TransitionRequest(
+            operation="play", source="local", target_rate=44100,
+        ))
+        force.assert_not_awaited()
+        trigger.assert_not_awaited()
+
+    # 8d. verify_output_mode_runtime (production verifier): the output-mode
+    #     graph readback deep-copies the target overview.  Regression for the
+    #     missing ``copy`` import left by the runtime package split, which
+    #     crashed every output-mode-switch and fixed-rate policy transition
+    #     with a NameError in stage output-mode-graph-readback.
+    output_mode_request = TransitionRequest(
+        operation="output-mode-switch", source="local", target_rate=48000,
+        target_url=None, should_play=False,
+        output_mode_target={
+            "output_mode": {"mode": "stereo", "effective_output_key": "hw:test-sink"},
+            "selected_output": {"key": "hw:test-sink"},
+        },
+    )
+    with mock.patch.object(main, "get_samplerate_status", return_value=stuck_status(48000, 48000)), \
+         mock.patch.object(playback_orchestration.configured(), "playback_graph_diagnosis", new=mock.AsyncMock(return_value={"links_complete": True, "signature": "sig"})):
+        result = await runtime.verify_output_mode_runtime(output_mode_request)
+    assert result.get("committed") is True
+    assert result.get("output_mode_graph") is True
+    assert result.get("active_rate") == 48000
+
     # 9. DSP stabilization: output-mode switch without playback must not gate
     #    the graph readback on source links (mpv has no ports when idle).
     class FakeEffectsManager:

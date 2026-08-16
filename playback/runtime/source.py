@@ -186,13 +186,29 @@ class _RuntimeSourceMixin:
         except Exception:
             status = {}
         if samplerate.playback_rate_aligned(status, request.target_rate):
-            logger.info(
-                "Playback transition target-rate no-op: rate=%s operation=%s source=%s",
-                request.target_rate,
-                request.operation,
-                request.source,
-            )
-            return
+            # The no-op is only safe while the target rate is actually
+            # anchored: the force pin already holds it, or it equals the graph
+            # default (an unpinned sink renegotiates to the default whenever
+            # the graph rebuilds, so a non-default unpinned reading is not
+            # stable through the rest of the transition).  Otherwise the pin
+            # must be applied now, or the helper/sink can diverge from the
+            # frozen target after a stopped output switch.
+            force_rate = status.get("force_rate")
+            default_rate = status.get("default_rate")
+            if force_rate == request.target_rate or (
+                force_rate in {None, 0}
+                and isinstance(default_rate, int)
+                and request.target_rate == default_rate
+            ):
+                logger.info(
+                    "Playback transition target-rate no-op: rate=%s operation=%s source=%s force=%s default=%s",
+                    request.target_rate,
+                    request.operation,
+                    request.source,
+                    force_rate,
+                    default_rate,
+                )
+                return
         aligned = await self._deps.ensure_playback_samplerate_force(
             request.target_rate,
             f"coordinator:{request.operation}:{request.source}",
