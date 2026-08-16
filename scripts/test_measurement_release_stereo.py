@@ -24,6 +24,7 @@ from unittest.mock import AsyncMock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
+import audio.samplerate as samplerate
 
 
 class _FakeRuntime:
@@ -45,14 +46,15 @@ class StereoMeasurementReleaseTests(unittest.IsolatedAsyncioTestCase):
         self._saved = {
             "dsp_runtime": main.runtime.dsp_runtime,
             "_wait_for_selected_output_effective_rate": main._wait_for_selected_output_effective_rate,
-            "_wait_for_samplerate_alignment": main._wait_for_samplerate_alignment,
+            "wait_for_samplerate_alignment": samplerate.wait_for_samplerate_alignment,
             "get_audio_output_overview": main.get_audio_output_overview,
             "get_samplerate_status": main.get_samplerate_status,
         }
 
     async def asyncTearDown(self) -> None:
         for name, value in self._saved.items():
-            setattr(main.runtime if hasattr(main.runtime, name) else main, name, value)
+            target = samplerate if hasattr(samplerate, name) else main.runtime if hasattr(main.runtime, name) else main
+            setattr(target, name, value)
 
     async def test_stereo_release_resyncs_runtime_at_restore_rate(self) -> None:
         """Stereo release re-syncs the DSP from 48 kHz back to 44.1 kHz."""
@@ -70,7 +72,7 @@ class StereoMeasurementReleaseTests(unittest.IsolatedAsyncioTestCase):
         main._wait_for_selected_output_effective_rate = AsyncMock(
             return_value=(True, {"output_mode": {"mode": main.OUTPUT_MODE_STEREO}})
         )
-        main._wait_for_samplerate_alignment = AsyncMock(return_value=True)
+        samplerate.wait_for_samplerate_alignment = AsyncMock(return_value=True)
 
         sync_reasons = []
 
@@ -90,7 +92,7 @@ class StereoMeasurementReleaseTests(unittest.IsolatedAsyncioTestCase):
             main._wait_for_selected_output_effective_rate.assert_awaited_once_with(
                 44_100, timeout_ms=3500
             )
-            main._wait_for_samplerate_alignment.assert_awaited_once_with(
+            samplerate.wait_for_samplerate_alignment.assert_awaited_once_with(
                 44_100, timeout_ms=3500
             )
 

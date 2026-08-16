@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
 import audio.pw_link as pw_link_mod
+import audio.samplerate as samplerate
 from dsp.runtime import CommandResult, PipeWireLink
 from playback.transition import PlaybackTransitionCoordinator, PlaybackTransitionFailure, TransitionRequest
 from playback_transition_test_support import MainCoreTransitionRuntime, make_transition_runtime
@@ -312,7 +313,7 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
         ), patch.object(
             main, "get_samplerate_status", return_value={"active_rate": 48000, "force_rate": 48000}
         ), patch.object(
-            main, "_get_current_pipewire_force_rate", return_value=48000
+            samplerate, "get_current_pipewire_force_rate", return_value=48000
         ), patch.object(
             main, "_playback_graph_diagnosis", new=AsyncMock(side_effect=[initial, stable])
         ), patch.object(
@@ -464,15 +465,15 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
         ), patch.object(
             main, "get_samplerate_status", side_effect=read_status
         ), patch.object(
-            main, "_get_current_pipewire_force_rate", return_value=96000
+            samplerate, "get_current_pipewire_force_rate", return_value=96000
         ), patch.object(
-            main, "_ensure_playback_samplerate_force", side_effect=force_rate
+            samplerate, "ensure_playback_samplerate_force", side_effect=force_rate
         ), patch.object(
             main, "_playback_graph_diagnosis", new=AsyncMock(side_effect=[initial, stable, stable, stable])
         ), patch.object(
             main, "_wait_for_dsp_output_ports", new=AsyncMock(return_value=True)
         ), patch.object(
-            main, "_reconcile_transition_sink_rate", new=AsyncMock(return_value=True)
+            samplerate, "reconcile_transition_sink_rate", new=AsyncMock(return_value=True)
         ), patch.object(
             main.dsp_orchestrator, "sync_runtime", side_effect=sync_helper
         ), patch.object(

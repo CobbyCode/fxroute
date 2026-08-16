@@ -333,12 +333,12 @@ class SampleRatePolicyTransitionTests(unittest.IsolatedAsyncioTestCase):
             expected = 48000 if snapshot and snapshot.get("config") else None
             self.assertEqual(main.helper_argument_sample_rate(snapshot), expected)
 
-    def test_overview_with_rate_wrapper_matches(self):
-        overview = {"selected_output": {"key": "out1"}, "current_output": {"key": "out1"}}
-        self.assertEqual(
-            main._audio_output_overview_with_effective_rate(overview, 48000),
-            samplerate.audio_output_overview_with_effective_rate(overview, 48000),
-        )
+    def test_overview_with_rate_normalizes_output_mode(self):
+        overview = {"output_mode": {"mode": "stereo"}, "selected_output": {"key": "out1"}, "current_output": {"key": "out1"}}
+        result = samplerate.audio_output_overview_with_effective_rate(overview, 48000)
+        self.assertEqual(result["output_mode"]["effective_output_rate"], 48000)
+        self.assertEqual(result["selected_output"]["active_rate"], 48000)
+        self.assertEqual(result["current_output"]["active_rate"], 48000)
 
     def test_snapshot_summary_wrapper_matches(self):
         snapshot = {"active": True, "config": {"sample_rate": 48000}, "stage": "x"}

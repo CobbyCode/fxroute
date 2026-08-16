@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 import main
+import audio.samplerate as samplerate
 from playback.runtime import FxrouteTransitionRuntime
 from playback.transition import PlaybackTransitionCoordinator, TransitionRequest
 
@@ -97,7 +98,7 @@ class MainCoreTransitionRuntime:
             status = {}
         if main.samplerate.playback_rate_aligned(status, request.target_rate):
             return
-        aligned = await main._ensure_playback_samplerate_force(
+        aligned = await samplerate.ensure_playback_samplerate_force(
             request.target_rate,
             self.detail,
             policy=main.samplerate_orchestration.RADIO_POLICY,

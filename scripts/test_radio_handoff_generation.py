@@ -9,6 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
+import audio.samplerate as samplerate
 
 
 class FakePeakMonitor:
@@ -37,7 +38,6 @@ class PlaybackTransitionGenerationTests(unittest.IsolatedAsyncioTestCase):
         names = (
             "peak_monitor", "manager",
             "playback_transition_epoch", "current_track_info",
-            "_wait_for_samplerate_alignment",
             "dsp_manager", "player_instance", "dsp_runtime",
             "_wait_for_player_current_file",
         )
@@ -55,7 +55,8 @@ class PlaybackTransitionGenerationTests(unittest.IsolatedAsyncioTestCase):
         main.playback_state.current_track_info = {
             "id": "local-track", "source": "local", "url": "/music/local.flac"
         }
-        main._wait_for_samplerate_alignment = lambda _rate: async_value(True)
+        self._samplerate_wait_original = samplerate.wait_for_samplerate_alignment
+        samplerate.wait_for_samplerate_alignment = lambda _rate: async_value(True)
         main.dsp_orchestrator.sync_preset_for_playback_samplerate = lambda **_kwargs: async_value(None)
         main.dsp_manager = object()
         main.runtime.player_instance = type("Player", (), {"_running": True})()
@@ -63,6 +64,7 @@ class PlaybackTransitionGenerationTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         for name, value in self.originals.items():
             setattr(main.runtime if hasattr(main.runtime, name) else main.playback_state if hasattr(main.playback_state, name) else main, name, value)
+        samplerate.wait_for_samplerate_alignment = self._samplerate_wait_original
         coordinator = main.peak_monitor_coordinator
         coordinator.armed, coordinator.signature, coordinator.lock = self._coordinator_state
         main.dsp_orchestrator.sync_preset_for_playback_samplerate = self._sync_preset_original

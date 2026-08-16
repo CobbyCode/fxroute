@@ -581,8 +581,10 @@ async def _mode_switch_reapplies_compare_after_runtime_sync() -> None:
             dsp_manager=ee_manager,
             _playback_graph_diagnosis=mock.AsyncMock(return_value=complete_graph),
             _wait_for_dsp_output_ports=wait_for_ports,
-            _reconcile_transition_sink_rate=mock.AsyncMock(return_value=True),
             _repair_stereo_output_links_once=mock.AsyncMock(),
+        ))
+        stack.enter_context(mock.patch.object(
+            samplerate, "reconcile_transition_sink_rate", mock.AsyncMock(return_value=True)
         ))
         stack.enter_context(mock.patch.multiple(main.runtime, dsp_preset_load_lock=asyncio.Lock()))
         stack.enter_context(mock.patch.object(

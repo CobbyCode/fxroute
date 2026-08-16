@@ -20,6 +20,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
+import audio.samplerate as samplerate
 from playback_transition_test_support import make_transition_runtime
 import measurement.session as measurement_session
 from playback.transition import TransitionRequest
@@ -38,15 +39,15 @@ def stuck_status(active_rate: int, force_rate: int) -> dict:
 
 async def main_async() -> None:
     # 1. Trigger file naming
-    assert main._rate_renegotiation_trigger_path(48000).name == (
+    assert samplerate.rate_renegotiation_trigger_path(48000).name == (
         "fxroute-rate-renegotiation-trigger-48000.wav"
     )
 
     # 2. Reconcile: already aligned -> no force write, no trigger
-    with mock.patch.object(main, "get_samplerate_status", return_value=stuck_status(48000, 48000)) as status, \
-         mock.patch.object(main, "_ensure_playback_samplerate_force", new=mock.AsyncMock(return_value=True)) as force, \
-         mock.patch.object(main, "_trigger_idle_sink_renegotiation", new=mock.AsyncMock(return_value=True)) as trigger:
-        assert await main._reconcile_transition_sink_rate(48000, reason="test") is True
+    with mock.patch.object(samplerate, "get_samplerate_status", return_value=stuck_status(48000, 48000)) as status, \
+         mock.patch.object(samplerate, "ensure_playback_samplerate_force", new=mock.AsyncMock(return_value=True)) as force, \
+         mock.patch.object(samplerate, "trigger_idle_sink_renegotiation", new=mock.AsyncMock(return_value=True)) as trigger:
+        assert await samplerate.reconcile_transition_sink_rate(48000, reason="test") is True
         status.assert_called_once()
         force.assert_not_awaited()
         trigger.assert_not_awaited()
@@ -57,10 +58,10 @@ async def main_async() -> None:
         status_3.update(stuck_status(48000, 48000))
         return True
     trigger_3_mock = mock.AsyncMock(side_effect=trigger_3)
-    with mock.patch.object(main, "get_samplerate_status", return_value=status_3), \
-         mock.patch.object(main, "_ensure_playback_samplerate_force", new=mock.AsyncMock(return_value=False)) as force, \
-         mock.patch.object(main, "_trigger_idle_sink_renegotiation", new=trigger_3_mock) as trigger:
-        assert await main._reconcile_transition_sink_rate(48000, reason="test") is True
+    with mock.patch.object(samplerate, "get_samplerate_status", return_value=status_3), \
+         mock.patch.object(samplerate, "ensure_playback_samplerate_force", new=mock.AsyncMock(return_value=False)) as force, \
+         mock.patch.object(samplerate, "trigger_idle_sink_renegotiation", new=trigger_3_mock) as trigger:
+        assert await samplerate.reconcile_transition_sink_rate(48000, reason="test") is True
         force.assert_awaited_once()
         trigger.assert_awaited_once_with(48000)
 
@@ -70,18 +71,18 @@ async def main_async() -> None:
         status_4.update(stuck_status(48000, 48000))
         return True
     force_4_mock = mock.AsyncMock(side_effect=force_4)
-    with mock.patch.object(main, "get_samplerate_status", return_value=status_4), \
-         mock.patch.object(main, "_ensure_playback_samplerate_force", new=force_4_mock) as force, \
-         mock.patch.object(main, "_trigger_idle_sink_renegotiation", new=mock.AsyncMock(return_value=True)) as trigger:
-        assert await main._reconcile_transition_sink_rate(48000, reason="test") is True
+    with mock.patch.object(samplerate, "get_samplerate_status", return_value=status_4), \
+         mock.patch.object(samplerate, "ensure_playback_samplerate_force", new=force_4_mock) as force, \
+         mock.patch.object(samplerate, "trigger_idle_sink_renegotiation", new=mock.AsyncMock(return_value=True)) as trigger:
+        assert await samplerate.reconcile_transition_sink_rate(48000, reason="test") is True
         force.assert_awaited_once()
         trigger.assert_not_awaited()
 
     # 5. Reconcile: stuck sink, force AND trigger fail -> False (verifier still raises)
-    with mock.patch.object(main, "get_samplerate_status", return_value=stuck_status(44100, 48000)), \
-         mock.patch.object(main, "_ensure_playback_samplerate_force", new=mock.AsyncMock(return_value=False)), \
-         mock.patch.object(main, "_trigger_idle_sink_renegotiation", new=mock.AsyncMock(return_value=False)):
-        assert await main._reconcile_transition_sink_rate(48000, reason="test") is False
+    with mock.patch.object(samplerate, "get_samplerate_status", return_value=stuck_status(44100, 48000)), \
+         mock.patch.object(samplerate, "ensure_playback_samplerate_force", new=mock.AsyncMock(return_value=False)), \
+         mock.patch.object(samplerate, "trigger_idle_sink_renegotiation", new=mock.AsyncMock(return_value=False)):
+        assert await samplerate.reconcile_transition_sink_rate(48000, reason="test") is False
 
     runtime = make_transition_runtime()
 
@@ -93,23 +94,23 @@ async def main_async() -> None:
         return True
     trigger_6_mock = mock.AsyncMock(side_effect=trigger_6)
     with mock.patch.object(main, "get_samplerate_status", return_value=status_6), \
-         mock.patch.object(main, "_ensure_playback_samplerate_force", new=mock.AsyncMock(return_value=False)), \
-         mock.patch.object(main, "_trigger_idle_sink_renegotiation", new=trigger_6_mock) as trigger:
+         mock.patch.object(samplerate, "ensure_playback_samplerate_force", new=mock.AsyncMock(return_value=False)), \
+         mock.patch.object(samplerate, "trigger_idle_sink_renegotiation", new=trigger_6_mock) as trigger:
         await runtime.establish_target_rate(request)
         trigger.assert_awaited_once_with(48000)
 
     # 7. establish_target_rate: aligned -> force/trigger untouched
     with mock.patch.object(main, "get_samplerate_status", return_value=stuck_status(48000, 48000)), \
-         mock.patch.object(main, "_ensure_playback_samplerate_force", new=mock.AsyncMock(return_value=True)) as force, \
-         mock.patch.object(main, "_trigger_idle_sink_renegotiation", new=mock.AsyncMock(return_value=True)) as trigger:
+         mock.patch.object(samplerate, "ensure_playback_samplerate_force", new=mock.AsyncMock(return_value=True)) as force, \
+         mock.patch.object(samplerate, "trigger_idle_sink_renegotiation", new=mock.AsyncMock(return_value=True)) as trigger:
         await runtime.establish_target_rate(request)
         force.assert_not_awaited()
         trigger.assert_not_awaited()
 
     # 8. establish_target_rate: still stuck after trigger -> original error
     with mock.patch.object(main, "get_samplerate_status", return_value=stuck_status(44100, 48000)), \
-         mock.patch.object(main, "_ensure_playback_samplerate_force", new=mock.AsyncMock(return_value=False)), \
-         mock.patch.object(main, "_trigger_idle_sink_renegotiation", new=mock.AsyncMock(return_value=False)):
+         mock.patch.object(samplerate, "ensure_playback_samplerate_force", new=mock.AsyncMock(return_value=False)), \
+         mock.patch.object(samplerate, "trigger_idle_sink_renegotiation", new=mock.AsyncMock(return_value=False)):
         try:
             await runtime.establish_target_rate(request)
         except RuntimeError as exc:
@@ -162,16 +163,18 @@ async def main_async() -> None:
     with mock.patch.object(main, "get_samplerate_status", return_value=status_10), \
          mock.patch.object(main, "playback_transition_coordinator", mock.Mock(transition_blocked=False)), \
          mock.patch.object(main, "_playback_graph_diagnosis", new=mock.AsyncMock(return_value={"links_complete": True, "signature": "sig"})), \
-         mock.patch.object(main, "_reconcile_transition_sink_rate", new=reconcile_10_mock) as reconcile, \
+         mock.patch.object(samplerate, "reconcile_transition_sink_rate", new=reconcile_10_mock) as reconcile, \
          mock.patch.object(main, "get_audio_output_overview", return_value={"output_mode": {}}):
         await measurement_session._measurement_entry_preflight(48000)
-        reconcile.assert_awaited_once_with(48000, reason="measurement-entry-preflight")
+        reconcile.assert_awaited_once_with(
+            48000, reason="measurement-entry-preflight", measurement_blocks_rate=mock.ANY
+        )
 
     # 11. Measurement preflight: reconcile failure keeps the fast-fail error.
     with mock.patch.object(main, "get_samplerate_status", return_value=stuck_status(44100, 48000)), \
          mock.patch.object(main, "playback_transition_coordinator", mock.Mock(transition_blocked=False)), \
          mock.patch.object(main, "_playback_graph_diagnosis", new=mock.AsyncMock(return_value={"links_complete": True, "signature": "sig"})), \
-         mock.patch.object(main, "_reconcile_transition_sink_rate", new=mock.AsyncMock(return_value=False)), \
+         mock.patch.object(samplerate, "reconcile_transition_sink_rate", new=mock.AsyncMock(return_value=False)), \
          mock.patch.object(main, "get_audio_output_overview", return_value={"output_mode": {}}):
         try:
             await measurement_session._measurement_entry_preflight(48000)
@@ -330,41 +333,30 @@ async def main_async() -> None:
 
     # 18. Playback rate lock applies only while a measurement job is running;
     #     an open-but-idle measurement window must not block play.
-    class FakeSrSession:
-        def __init__(self, active, jobs, spl_jobs, auto_sub):
-            self.active = active
-            self.measurement_rate = 48000
-            self.active_manual_job_ids = jobs
-            self.active_spl_job_ids = spl_jobs
-            self.active_auto_sub_job_id = auto_sub
+    def make_sr_session(active, jobs, spl_jobs, auto_sub):
+        session = measurement_session.MeasurementSampleRateSession()
+        session.active = active
+        session.measurement_rate = 48000
+        session.active_manual_job_ids = jobs
+        session.active_spl_job_ids = spl_jobs
+        session.active_auto_sub_job_id = auto_sub
+        return session
 
-        @property
-        def has_active_jobs(self):
-            return bool(
-                self.active_manual_job_ids
-                or self.active_spl_job_ids
-                or self.active_auto_sub_job_id is not None
-            )
-
-    idle_session = FakeSrSession(active=True, jobs=set(), spl_jobs=set(), auto_sub=None)
-    with mock.patch.object(main, "measurement_sr_session", idle_session):
-        assert main._measurement_session_blocks_playback_rate(44100) is False, (
-            "idle open measurement window must not block playback rate changes"
-        )
-    busy_session = FakeSrSession(active=True, jobs={"sweep-1"}, spl_jobs=set(), auto_sub=None)
-    with mock.patch.object(main, "measurement_sr_session", busy_session):
-        assert main._measurement_session_blocks_playback_rate(44100) is True, (
-            "running sweep must block playback rate changes"
-        )
-    spl_session = FakeSrSession(active=True, jobs=set(), spl_jobs={"spl-calibration"}, auto_sub=None)
-    with mock.patch.object(main, "measurement_sr_session", spl_session):
-        assert main._measurement_session_blocks_playback_rate(44100) is True, (
-            "running SPL noise must block playback rate changes"
-        )
-    with mock.patch.object(main, "measurement_sr_session", idle_session):
-        assert main._measurement_session_blocks_playback_rate(48000) is False, (
-            "same-rate requests are never blocked"
-        )
+    idle_session = make_sr_session(active=True, jobs=set(), spl_jobs=set(), auto_sub=None)
+    assert idle_session.blocks_playback_rate(44100) is None, (
+        "idle open measurement window must not block playback rate changes"
+    )
+    busy_session = make_sr_session(active=True, jobs={"sweep-1"}, spl_jobs=set(), auto_sub=None)
+    assert busy_session.blocks_playback_rate(44100) == 48000, (
+        "running sweep must block playback rate changes"
+    )
+    spl_session = make_sr_session(active=True, jobs=set(), spl_jobs={"spl-calibration"}, auto_sub=None)
+    assert spl_session.blocks_playback_rate(44100) == 48000, (
+        "running SPL noise must block playback rate changes"
+    )
+    assert idle_session.blocks_playback_rate(48000) is None, (
+        "same-rate requests are never blocked"
+    )
 
     # 19. Output-mode switch lock is job-scoped: an open-but-idle measurement
     #     window must not block the stereo <-> subwoofer switch.

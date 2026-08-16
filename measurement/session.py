@@ -164,6 +164,21 @@ class MeasurementSampleRateSession:
             or self.active_auto_sub_job_id is not None
         )
 
+    def blocks_playback_rate(self, expected_rate: Optional[int]) -> Optional[int]:
+        """Return the blocking measurement rate for a playback-rate change, if any.
+
+        An active measurement session with at least one running job owns the
+        hardware rate; playback reconciliation to a different rate must be
+        deferred until the session releases.  An open-but-idle window (no
+        running sweep/auto-sub/SPL job) must not block playback rate changes;
+        the next measurement entry/preflight re-establishes its rate.
+        """
+        if not self.active or not self.has_active_jobs:
+            return None
+        if not isinstance(expected_rate, int) or expected_rate == self.measurement_rate:
+            return None
+        return self.measurement_rate
+
     def capture_entry_epoch(self) -> int:
         """Return the current measurement entry-invalidation epoch.
 

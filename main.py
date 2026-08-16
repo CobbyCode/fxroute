@@ -406,288 +406,18 @@ async def _wait_for_spotify_sink_input_samplerate(
     )
 
 
+def _measurement_blocks_playback_rate(expected_rate: Optional[int]) -> Optional[int]:
+    """Resolve the session-owned playback-rate block decision for samplerate deps.
 
-
-
-
-
-
-
-
-async def _wait_for_samplerate_alignment(expected_rate: Optional[int], timeout_ms: int = PEAK_MONITOR_RATE_MATCH_TIMEOUT_MS) -> bool:
-    if not expected_rate or expected_rate <= 0:
-        return False
-    deadline = time.monotonic() + max(timeout_ms, 0) / 1000
-    while time.monotonic() <= deadline:
-        try:
-            samplerate_status = get_samplerate_status()
-        except Exception:
-            samplerate_status = {}
-        sink_rate = samplerate_status.get("active_rate")
-        if isinstance(sink_rate, int) and sink_rate == expected_rate:
-            return True
-        await asyncio.sleep(PIPEWIRE_HANDOFF_POLL_INTERVAL_MS / 1000)
-    return False
-
-
-# ── Centralized Sink Suspend/Resume ──
-_last_sink_suspend_at: float = 0.0
-_last_sink_suspend_reason: str = ""
-_SINK_SUSPEND_COOLDOWN_SECONDS: float = 3.0
-
-async def _suspend_resume_playback_sink(*, reason: str = "", output_key: str | None = None, force: bool = False) -> bool:
-    """Central sink suspend/resume to force PipeWire rate re-negotiation.
-
-    Args:
-        reason: diagnostic label for logging
-        output_key: pactl sink name; resolved from overview if None
-        force: bypass cooldown
-
-    Returns True if suspend/resume completed.
+    The active-and-jobs decision lives on ``MeasurementSampleRateSession``
+    (``blocks_playback_rate``); this is only the injection bridge that guards
+    the not-yet-created session and delegates to the owner.
     """
-    global _last_sink_suspend_at, _last_sink_suspend_reason
-    now = time.monotonic()
-    elapsed = now - _last_sink_suspend_at
-    if not force and _last_sink_suspend_at > 0 and elapsed < _SINK_SUSPEND_COOLDOWN_SECONDS:
-        logger.warning(
-            "Sink suspend/resume SKIPPED (cooldown %.1fs): reason=%s last_reason=%s",
-            elapsed, reason, _last_sink_suspend_reason,
-        )
-        return False
-    if output_key is None:
-        overview = get_audio_output_overview()
-        output_mode = overview.get("output_mode") or {}
-        output_key = str(output_mode.get("effective_output_key") or "").strip()
-    if not output_key:
-        logger.warning("Sink suspend/resume SKIPPED: no output_key (reason=%s)", reason)
-        return False
-    logger.info("Sink suspend/resume START: reason=%s output_key=%s", reason, output_key)
-    try:
-        _pulse_suspend_sink_for_samplerate(output_key, reason)
-    except Exception as exc:
-        logger.error("Sink suspend/resume FAILED: reason=%s output_key=%s error=%s", reason, output_key, exc)
-        return False
-    _last_sink_suspend_at = time.monotonic()
-    _last_sink_suspend_reason = reason
-    logger.info("Sink suspend/resume DONE: reason=%s output_key=%s", reason, output_key)
-    return True
-
-
-
-def _set_pipewire_force_rate(rate: int) -> None:
-    completed = subprocess.run(
-        ["pw-metadata", "-n", "settings", "0", "clock.force-rate", str(rate)],
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=1.5,
-    )
-    if completed.returncode != 0:
-        stderr = (completed.stderr or "").strip()
-        raise RuntimeError(stderr or f"pw-metadata clock.force-rate {rate} failed")
-
-
-
-
-
-
-def _get_current_pipewire_force_rate() -> Optional[int]:
-    try:
-        status = get_samplerate_status()
-    except Exception:
+    if measurement_sr_session is None:
         return None
-    force_rate = status.get("force_rate") if isinstance(status, dict) else None
-    return force_rate if isinstance(force_rate, int) and force_rate > 0 else 0
+    return measurement_sr_session.blocks_playback_rate(expected_rate)
 
 
-def _measurement_session_blocks_playback_rate(expected_rate: Optional[int]) -> bool:
-    if measurement_sr_session is None or not measurement_sr_session.active:
-        return False
-    if not isinstance(expected_rate, int) or expected_rate == measurement_sr_session.measurement_rate:
-        return False
-    # An open-but-idle measurement window (no running sweep/auto-sub/SPL
-    # job) must not block playback rate changes; the next measurement
-    # entry/preflight re-establishes its rate.
-    return measurement_sr_session.has_active_jobs
-
-
-async def _ensure_playback_samplerate_force(
-    expected_rate: Optional[int],
-    reason: str,
-    *,
-    allow_measurement_session: bool = False,
-    policy: samplerate_orchestration.PlaybackRateReconcilePolicy = samplerate_orchestration.DEFAULT_POLICY,
-) -> bool:
-    if not isinstance(expected_rate, int) or expected_rate <= 0:
-        return False
-    if not allow_measurement_session and _measurement_session_blocks_playback_rate(expected_rate):
-        logger.info(
-            "Playback samplerate repair deferred to active measurement session: "
-            "reason=%s playback_rate=%s measurement_rate=%s",
-            reason,
-            expected_rate,
-            measurement_sr_session.measurement_rate,
-        )
-        return False
-
-    initial_status: dict = {}
-    pulse_attempted = False
-    pulse_succeeded = False
-
-    def read_status() -> dict:
-        nonlocal initial_status
-        try:
-            initial_status = get_samplerate_status()
-        except Exception:
-            initial_status = {}
-        return initial_status
-
-    def write_force_rate(rate: int) -> None:
-        _set_pipewire_force_rate(rate)
-        logger.info(
-            "Playback samplerate force-rate applied: reason=%s expected_rate=%s active_rate=%s previous_force_rate=%s",
-            reason,
-            expected_rate,
-            initial_status.get("active_rate"),
-            initial_status.get("force_rate"),
-        )
-
-    async def wait_for_alignment(rate: int, timeout_ms: int) -> bool:
-        return await _wait_for_samplerate_alignment(rate, timeout_ms=timeout_ms)
-
-    async def pulse_sink(pulse_reason: str) -> bool:
-        nonlocal pulse_attempted, pulse_succeeded
-        pulse_attempted = True
-        pulse_succeeded = await _suspend_resume_playback_sink(
-            reason=pulse_reason, force=True,
-        )
-        return pulse_succeeded
-
-    aligned = await samplerate_orchestration.reconcile_playback_samplerate(
-        expected_rate=expected_rate,
-        reason=reason,
-        policy=policy,
-        read_status=read_status,
-        write_force_rate=write_force_rate,
-        wait_for_alignment=wait_for_alignment,
-        pulse_sink=pulse_sink,
-    )
-
-    initial_active_rate = initial_status.get("active_rate")
-
-    if policy is samplerate_orchestration.DEFAULT_POLICY and not aligned:
-        if isinstance(initial_active_rate, int) and initial_active_rate != expected_rate:
-            logger.info(
-                "Radio samplerate sink suspend/resume SKIPPED: reason=%s "
-                "(only for radio-start/restart paths)",
-                reason,
-            )
-    elif policy is samplerate_orchestration.RADIO_POLICY and pulse_attempted:
-        if aligned:
-            logger.info(
-                "Radio samplerate sink suspend/resume succeeded: reason=%s expected_rate=%s",
-                reason, expected_rate,
-            )
-        else:
-            logger.warning(
-                "Radio samplerate sink suspend/resume did not change rate: reason=%s expected_rate=%s",
-                reason, expected_rate,
-            )
-    return aligned
-
-
-_RATE_RENEGOTIATION_TRIGGER_WAIT_MS = 2500
-
-
-def _rate_renegotiation_trigger_path(sample_rate: int) -> Path:
-    return Path(tempfile.gettempdir()) / f"fxroute-rate-renegotiation-trigger-{sample_rate}.wav"
-
-
-def _ensure_rate_renegotiation_trigger_file(sample_rate: int) -> Path | None:
-    """Generate (once) a short silent stream used to wake an idle hardware sink.
-
-    A fully idle/suspended hardware sink ignores ``clock.force-rate`` writes
-    and suspend/resume pulses; the only proven renegotiation trigger is a
-    brief silent stream, after which the sink keeps the forced rate.
-    """
-    path = _rate_renegotiation_trigger_path(sample_rate)
-    if path.exists():
-        return path
-    try:
-        generated = subprocess.run(
-            [
-                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-                "-f", "lavfi", "-i", f"anullsrc=r={sample_rate}:cl=stereo",
-                "-t", "0.8", "-c:a", "pcm_s16le", str(path),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    except Exception as exc:
-        logger.warning("Rate renegotiation trigger generation failed: %s", exc)
-        return None
-    if generated.returncode != 0:
-        logger.warning(
-            "Rate renegotiation trigger generation failed: %s",
-            (generated.stderr or "").strip(),
-        )
-        return None
-    return path
-
-
-async def _trigger_idle_sink_renegotiation(sample_rate: int) -> bool:
-    """Renegotiate an idle/suspended sink to the forced rate with a silent stream."""
-    path = _ensure_rate_renegotiation_trigger_file(sample_rate)
-    if path is None:
-        return False
-    try:
-        subprocess.Popen(
-            ["pw-play", "--volume=0", str(path)],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-    except Exception as exc:
-        logger.warning("Rate renegotiation trigger playback failed: %s", exc)
-        return False
-    logger.info(
-        "Rate renegotiation trigger played: rate=%s (silent stream, volume 0)",
-        sample_rate,
-    )
-    return await _wait_for_samplerate_alignment(
-        sample_rate, timeout_ms=_RATE_RENEGOTIATION_TRIGGER_WAIT_MS
-    )
-
-
-async def _reconcile_transition_sink_rate(target_rate: int, *, reason: str) -> bool:
-    """Re-establish the hardware sink rate before a transition stage commits.
-
-    The effects/helper graph rebuild inside a transition can leave the sink
-    suspended at the configured default rate while ``clock.force-rate`` already
-    points at the target.  A suspended sink ignores force-rate writes and
-    suspend/resume pulses; the bounded fallback below plays a short silent
-    stream, the only proven renegotiation trigger on an idle graph.
-    """
-    try:
-        status = dict(get_samplerate_status())
-    except Exception:
-        status = {}
-    if samplerate.playback_rate_aligned(status, target_rate):
-        return True
-    aligned = await _ensure_playback_samplerate_force(
-        target_rate,
-        reason=f"coordinator-{reason}",
-        policy=samplerate_orchestration.RADIO_POLICY,
-    )
-    if not aligned:
-        aligned = await _trigger_idle_sink_renegotiation(target_rate)
-    if not aligned:
-        return False
-    try:
-        status = dict(get_samplerate_status())
-    except Exception:
-        status = {}
-    return bool(samplerate.playback_rate_aligned(status, target_rate))
 
 
 def _is_local_playback_active(state: dict | None) -> bool:
@@ -1148,19 +878,23 @@ def _make_measurement_services() -> MeasurementServices:
         coordinator_current_playback_context=lambda *a, **k: _coordinator_current_playback_context(*a, **k),
         begin_playback_transition_attempt=lambda *a, **k: _begin_playback_transition_attempt(*a, **k),
         end_playback_transition_attempt=lambda *a, **k: _end_playback_transition_attempt(*a, **k),
-        get_current_pipewire_force_rate=lambda *a, **k: _get_current_pipewire_force_rate(*a, **k),
-        set_pipewire_force_rate=lambda *a, **k: _set_pipewire_force_rate(*a, **k),
-        ensure_playback_samplerate_force=lambda *a, **k: _ensure_playback_samplerate_force(*a, **k),
-        wait_for_samplerate_alignment=lambda *a, **k: _wait_for_samplerate_alignment(*a, **k),
-        reconcile_transition_sink_rate=lambda *a, **k: _reconcile_transition_sink_rate(*a, **k),
+        get_current_pipewire_force_rate=lambda *a, **k: samplerate.get_current_pipewire_force_rate(*a, **k),
+        set_pipewire_force_rate=lambda *a, **k: samplerate.set_pipewire_force_rate(*a, **k),
+        ensure_playback_samplerate_force=lambda *a, measurement_blocks_rate=_measurement_blocks_playback_rate, **k: samplerate.ensure_playback_samplerate_force(
+            *a, measurement_blocks_rate=measurement_blocks_rate, **k
+        ),
+        wait_for_samplerate_alignment=lambda *a, **k: samplerate.wait_for_samplerate_alignment(*a, **k),
+        reconcile_transition_sink_rate=lambda *a, measurement_blocks_rate=_measurement_blocks_playback_rate, **k: samplerate.reconcile_transition_sink_rate(
+            *a, measurement_blocks_rate=measurement_blocks_rate, **k
+        ),
         playback_graph_diagnosis=lambda *a, **k: _playback_graph_diagnosis(*a, **k),
         log_playback_graph_diagnosis=lambda *a, **k: _log_playback_graph_diagnosis(*a, **k),
         measurement_restore_intent_matches_live_state=lambda *a, **k: _measurement_restore_intent_matches_live_state(*a, **k),
         spotify_snapshot_identity_values=lambda *a, **k: _spotify_snapshot_identity_values(*a, **k),
         spotify_target_track_from_state=lambda *a, **k: _spotify_target_track_from_state(*a, **k),
         get_player_audio_samplerate=lambda *a, **k: _get_player_audio_samplerate(*a, **k),
-        pulse_suspend_sink_for_samplerate=lambda *a, **k: _pulse_suspend_sink_for_samplerate(*a, **k),
-        audio_output_overview_with_effective_rate=lambda *a, **k: _audio_output_overview_with_effective_rate(*a, **k),
+        pulse_suspend_sink_for_samplerate=lambda *a, **k: samplerate.pulse_suspend_sink_for_samplerate(*a, **k),
+        audio_output_overview_with_effective_rate=lambda *a, **k: samplerate.audio_output_overview_with_effective_rate(*a, **k),
         spotify_prearm_sample_rate_hz=SPOTIFY_PREARM_SAMPLE_RATE_HZ,
         pipewire_handoff_poll_interval_ms=PIPEWIRE_HANDOFF_POLL_INTERVAL_MS,
     )
@@ -1214,10 +948,14 @@ def make_playback_runtime_deps() -> PlaybackRuntimeDependencies:
         wait_for_spotify_sink_input_samplerate=lambda *a, **k: _wait_for_spotify_sink_input_samplerate(*a, **k),
         get_samplerate_status=lambda *a, **k: get_samplerate_status(*a, **k),
         get_audio_output_overview=lambda *a, **k: get_audio_output_overview(*a, **k),
-        ensure_playback_samplerate_force=lambda *a, **k: _ensure_playback_samplerate_force(*a, **k),
+        ensure_playback_samplerate_force=lambda *a, measurement_blocks_rate=_measurement_blocks_playback_rate, **k: samplerate.ensure_playback_samplerate_force(
+            *a, measurement_blocks_rate=measurement_blocks_rate, **k
+        ),
         persist_audio_output_mode=lambda *a, **k: persist_audio_output_mode(*a, **k),
-        trigger_idle_sink_renegotiation=lambda *a, **k: _trigger_idle_sink_renegotiation(*a, **k),
-        reconcile_transition_sink_rate=lambda *a, **k: _reconcile_transition_sink_rate(*a, **k),
+        trigger_idle_sink_renegotiation=lambda *a, **k: samplerate.trigger_idle_sink_renegotiation(*a, **k),
+        reconcile_transition_sink_rate=lambda *a, measurement_blocks_rate=_measurement_blocks_playback_rate, **k: samplerate.reconcile_transition_sink_rate(
+            *a, measurement_blocks_rate=measurement_blocks_rate, **k
+        ),
         coordinator_source_rate=lambda *a, **k: _coordinator_source_rate(*a, **k),
         coordinator_target_rate=lambda *a, **k: _coordinator_target_rate(*a, **k),
         spotify_pause=lambda *a, **k: spotify_pause(*a, **k),
@@ -1857,28 +1595,7 @@ async def _measurement_restore_intent_matches_live_state(
 
 
 
-def _audio_output_overview_with_effective_rate(overview: dict, effective_rate: int) -> dict:
-    """Thin wrapper: overview payload normalization lives in samplerate (REFACTOR-003)."""
-    return samplerate.audio_output_overview_with_effective_rate(overview, effective_rate)
 
-
-def _pulse_suspend_sink_for_samplerate(output_key: str, reason: str) -> None:
-    if not output_key:
-        return
-    for suspend in ("1", "0"):
-        completed = subprocess.run(
-            ["pactl", "suspend-sink", output_key, suspend],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=1.5,
-        )
-        if completed.returncode != 0:
-            stderr = (completed.stderr or "").strip()
-            raise RuntimeError(stderr or f"pactl suspend-sink {output_key} {suspend} failed")
-        if suspend == "1":
-            time.sleep(0.3)
-    logger.info("Measurement samplerate sink pulse completed: output=%s reason=%s", output_key, reason)
 
 
 
@@ -3059,7 +2776,7 @@ def _make_dsp_orchestration_deps() -> DspOrchestrationDeps:
         sync_peak_monitor_for_spotify_state=peak_monitor_coordinator.sync_spotify_state,
         load_dsp_preset=lambda *args, **kwargs: _load_dsp_preset(*args, **kwargs),
         broadcast=lambda message: manager.broadcast(message),
-        wait_for_samplerate_alignment=lambda *args, **kwargs: _wait_for_samplerate_alignment(*args, **kwargs),
+        wait_for_samplerate_alignment=lambda *args, **kwargs: samplerate.wait_for_samplerate_alignment(*args, **kwargs),
         wait_for_selected_output_effective_rate=lambda *args, **kwargs: _wait_for_selected_output_effective_rate(*args, **kwargs),
         measurement_audio_graph_owned=lambda: _measurement_audio_graph_owned(),
         observe_playback_samplerate_drift=lambda: samplerate_drift.observe(),
@@ -3108,7 +2825,9 @@ def _make_playback_orchestration_deps() -> playback_orchestration.PlaybackOrches
         helper_argument_sample_rate=dsp_orchestration.helper_argument_sample_rate,
         sync_preset_for_samplerate=lambda *args, **kwargs: dsp_orchestrator.sync_preset_for_playback_samplerate(*args, **kwargs),
         sync_runtime=lambda *args, **kwargs: dsp_orchestrator.sync_runtime(*args, **kwargs),
-        reconcile_sink_rate=lambda *args, **kwargs: _reconcile_transition_sink_rate(*args, **kwargs),
+        reconcile_sink_rate=lambda *args, measurement_blocks_rate=_measurement_blocks_playback_rate, **kwargs: samplerate.reconcile_transition_sink_rate(
+            *args, measurement_blocks_rate=measurement_blocks_rate, **kwargs
+        ),
         load_dsp_preset=lambda *args, **kwargs: _load_dsp_preset(*args, **kwargs),
         sleep=lambda delay: asyncio.sleep(delay),
         pipewire_poll_interval_ms=PIPEWIRE_HANDOFF_POLL_INTERVAL_MS,

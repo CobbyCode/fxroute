@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import audio.samplerate as samplerate
 import measurement.autosub as autosub
 import main
 import measurement.session as measurement_session
@@ -48,17 +49,16 @@ class _TestAudioHarness:
             target = module
         self._saved[(module.__name__, name)] = (target, getattr(target, name))
 
+    def _remember_samplerate(self, name: str) -> None:
+        self._saved[("audio.samplerate", name)] = (samplerate, getattr(samplerate, name))
+
     def __enter__(self):
         m = main
         ms = measurement_session
         for name in (
             "get_samplerate_status",
-            "_set_pipewire_force_rate",
-            "_get_current_pipewire_force_rate",
             "_coordinator_current_playback_context",
             "_run_coordinated_transition",
-            "_ensure_playback_samplerate_force",
-            "_wait_for_samplerate_alignment",
             "playback_transition_coordinator",
             "current_track_info",
             "player_instance",
@@ -66,19 +66,26 @@ class _TestAudioHarness:
             "_end_playback_transition_attempt",
         ):
             self._remember(m, name)
+        for name in (
+            "set_pipewire_force_rate",
+            "get_current_pipewire_force_rate",
+            "ensure_playback_samplerate_force",
+            "wait_for_samplerate_alignment",
+        ):
+            self._remember_samplerate(name)
         self._remember(ms, "_capture_playback_state_before_measurement")
         self._remember(ms.samplerate, "load_sample_rate_policy")
         m.get_samplerate_status = self._get_samplerate_status
-        m._set_pipewire_force_rate = self._set_force
-        m._get_current_pipewire_force_rate = lambda: self.force_rate
+        samplerate.set_pipewire_force_rate = self._set_force
+        samplerate.get_current_pipewire_force_rate = lambda: self.force_rate
         m._coordinator_current_playback_context = self._playback_context
         m._run_coordinated_transition = self._run_transition
         self._sync_runtime_at_rate_patch = patch.object(
             m.dsp_orchestrator, "sync_runtime_at_rate", self._noop
         )
         self._sync_runtime_at_rate_patch.start()
-        m._ensure_playback_samplerate_force = self._noop
-        m._wait_for_samplerate_alignment = self._noop
+        samplerate.ensure_playback_samplerate_force = self._noop
+        samplerate.wait_for_samplerate_alignment = self._noop
         m.playback_transition_coordinator = None
         m.playback_state.current_track_info = None
         m.runtime.player_instance = None

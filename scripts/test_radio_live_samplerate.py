@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
 import audio.pw_link as pw_link_mod
+import audio.samplerate as samplerate
 from playback_transition_test_support import run_main_handoff_through_coordinator
 
 
@@ -246,7 +247,7 @@ class RadioPostLoadHandoffTests(unittest.IsolatedAsyncioTestCase):
 
         with rate_mock, patch.object(
             main, "get_samplerate_status", side_effect=lambda: dict(status)
-        ), patch.object(main, "_ensure_playback_samplerate_force", force), patch.object(
+        ), patch.object(samplerate, "ensure_playback_samplerate_force", force), patch.object(
             main.dsp_orchestrator, "sync_preset_for_playback_samplerate", preset_sync
         ), patch.object(main.dsp_orchestrator, "sync_runtime", helper_sync), patch.object(
             main.runtime, "dsp_runtime", type("NativeRuntime", (), {
@@ -256,7 +257,7 @@ class RadioPostLoadHandoffTests(unittest.IsolatedAsyncioTestCase):
                 }
             })()
         ), patch.object(
-            main, "_get_current_pipewire_force_rate", lambda: 0
+            samplerate, "get_current_pipewire_force_rate", lambda: 0
         ), patch.object(pw_link_mod, "run_pw_link_command", ee_ports_present), patch.object(
             main, "get_audio_output_overview",
             return_value={"output_mode": {"mode": "stereo", "effective_output_key": "alsa_output.pci-0000_00_1f.3.analog-stereo"}},

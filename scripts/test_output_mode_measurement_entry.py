@@ -16,6 +16,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 import main
 import audio.pw_link as pw_link_mod
+import audio.samplerate as samplerate
 from playback_transition_test_support import make_transition_runtime
 import measurement.session as measurement_session
 import audio.samplerate as samplerate
@@ -528,9 +529,9 @@ class CoordinatorTransactionTests(unittest.IsolatedAsyncioTestCase):
             main, "dsp_manager", None
         ), patch.object(
             main, "_playback_graph_diagnosis", new=AsyncMock(side_effect=[incomplete, incomplete, complete])
-        ), patch.object(main.dsp_orchestrator, "sync_runtime", new=AsyncMock()), patch.object(
-            main, "_wait_for_dsp_output_ports", new=AsyncMock(return_value=True)
-        ), patch.object(main, "_reconcile_transition_sink_rate", new=AsyncMock(return_value=True)), patch.object(
+        ), patch.object(main.dsp_orchestrator, "sync_runtime", new=AsyncMock()        ), patch.object(main, "_wait_for_dsp_output_ports", new=AsyncMock(return_value=True)), patch.object(
+            samplerate, "reconcile_transition_sink_rate", new=AsyncMock(return_value=True)
+        ), patch.object(
             main, "_coordinator_reconcile_subwoofer_links_only", new=AsyncMock()
         ), patch.object(pw_link_mod, "connect_ports", new=AsyncMock()
         ), patch.object(main.asyncio, "sleep", new=AsyncMock()):
@@ -593,9 +594,9 @@ class CoordinatorTransactionTests(unittest.IsolatedAsyncioTestCase):
             main, "dsp_manager", None
         ), patch.object(
             main, "_playback_graph_diagnosis", new=AsyncMock(side_effect=[incomplete, incomplete, complete])
-        ), patch.object(main.dsp_orchestrator, "sync_runtime", new=AsyncMock()), patch.object(
-            main, "_wait_for_dsp_output_ports", new=AsyncMock(return_value=True)
-        ), patch.object(main, "_reconcile_transition_sink_rate", new=AsyncMock(return_value=True)), patch.object(
+        ), patch.object(main.dsp_orchestrator, "sync_runtime", new=AsyncMock()        ), patch.object(main, "_wait_for_dsp_output_ports", new=AsyncMock(return_value=True)), patch.object(
+            samplerate, "reconcile_transition_sink_rate", new=AsyncMock(return_value=True)
+        ), patch.object(
             pw_link_mod, "connect_ports", new=AsyncMock()
         ), patch.object(main.asyncio, "sleep", new=AsyncMock()):
             result = await main._coordinator_establish_effects_and_helper(request)

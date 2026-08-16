@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
 import audio.pw_link as pw_link_mod
+import audio.samplerate as samplerate
 import measurement.session as measurement_session
 import audio.samplerate_orchestration as samplerate_orchestration
 from playback_transition_test_support import run_main_handoff_through_coordinator
@@ -73,10 +74,10 @@ class SamplerateOrchestrationContractTests(unittest.IsolatedAsyncioTestCase):
 
         main.playback_state.playback_transition_epoch = 40
         with patch.object(main, "get_samplerate_status", samplerate_status), patch.object(
-            main, "_ensure_playback_samplerate_force", ensure_force
+            samplerate, "ensure_playback_samplerate_force", ensure_force
         ), patch.object(main.dsp_orchestrator, "sync_preset_for_playback_samplerate", preset_sync), patch.object(
             main.dsp_orchestrator, "sync_runtime", helper_sync
-        ), patch.object(main, "_get_current_pipewire_force_rate", lambda: status["force_rate"]), patch.object(
+        ), patch.object(samplerate, "get_current_pipewire_force_rate", lambda: status["force_rate"]), patch.object(
             pw_link_mod, "run_pw_link_command", pw_link
         ), patch.object(
             main,
