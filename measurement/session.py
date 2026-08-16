@@ -23,6 +23,7 @@ from fastapi.responses import FileResponse
 
 import audio.samplerate as samplerate
 import audio.samplerate_orchestration as samplerate_orchestration
+from http_errors import bad_request
 from measurement.store import (
     MEASUREMENT_DEFAULT_SAMPLE_RATE,
     measurement_setup_settings_from_payload,
@@ -1190,7 +1191,7 @@ async def upload_measurement_calibration(calibration_file: UploadFile = File(...
     try:
         return measurement_store.upload_calibration_file(filename, data)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise bad_request(exc)
 
 
 @router.get("/api/measurements/calibrations/{calibration_id}/export")
@@ -1201,7 +1202,7 @@ async def export_measurement_calibration(calibration_id: str):
     try:
         path, filename = measurement_store.get_calibration_file_for_export(calibration_id)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise bad_request(exc)
     except KeyError:
         raise HTTPException(status_code=404, detail="Calibration file not found")
     return FileResponse(path, filename=filename, media_type="text/plain")
@@ -1230,7 +1231,7 @@ async def delete_measurement_calibration(calibration_id: str):
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise bad_request(exc)
     except KeyError:
         raise HTTPException(status_code=404, detail="Calibration file not found")
 
@@ -1248,7 +1249,7 @@ async def upload_measurement_house_curve(house_curve_file: UploadFile = File(...
     try:
         return measurement_store.upload_house_curve_file(filename, data)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise bad_request(exc)
 
 
 @router.get("/api/measurements/house-curves/{house_curve_id}/export")
@@ -1259,7 +1260,7 @@ async def export_measurement_house_curve(house_curve_id: str):
     try:
         path, filename = measurement_store.get_house_curve_file_for_export(house_curve_id)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise bad_request(exc)
     except KeyError:
         raise HTTPException(status_code=404, detail="House curve file not found")
     return FileResponse(path, filename=filename, media_type="text/plain")
@@ -1273,7 +1274,7 @@ async def delete_measurement_house_curve(house_curve_id: str):
     try:
         return measurement_store.delete_house_curve_file(house_curve_id)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise bad_request(exc)
     except KeyError:
         raise HTTPException(status_code=404, detail="House curve file not found")
 
@@ -1421,7 +1422,7 @@ async def start_measurement(
             detail="Measurement start was cancelled because the measurement window was closed",
         )
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise bad_request(exc)
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
     return {"status": "ok", "job": job}
@@ -1481,7 +1482,7 @@ async def start_lr_repeat_measurement(
             detail="Measurement start was cancelled because the measurement window was closed",
         )
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise bad_request(exc)
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
     return {"status": "ok", "job": job}
@@ -1546,7 +1547,7 @@ async def save_measurement(request: Request):
         saved = measurement_store.save_measurement(body)
     except ValueError as exc:
         logger.warning("Measurement save rejected: id=%s error=%s", measurement_id, exc)
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise bad_request(exc)
     except Exception:
         logger.exception("Measurement save failed: id=%s name=%s", measurement_id, measurement_name)
         raise
@@ -1578,7 +1579,7 @@ async def merge_measurements(request: Request):
     except KeyError:
         raise HTTPException(status_code=404, detail="Measurement not found")
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise bad_request(exc)
     except Exception:
         logger.exception("Measurement merge failed: ids=%s name=%s", measurement_ids, name)
         raise HTTPException(status_code=500, detail="Failed to merge selected measurements")
@@ -1593,7 +1594,7 @@ async def delete_measurement(measurement_id: str):
     try:
         measurement_store.delete_measurement(measurement_id)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise bad_request(exc)
     except KeyError:
         raise HTTPException(status_code=404, detail="Measurement not found")
     return {"status": "ok", "deleted": measurement_id}

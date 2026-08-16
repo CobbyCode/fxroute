@@ -14,6 +14,7 @@ from uuid import uuid4
 
 from fastapi import File, Form, HTTPException, UploadFile
 
+from http_errors import bad_request
 from audio.samplerate import (
     OUTPUT_MODE_SUBWOOFER_21,
     OUTPUT_MODE_SUBWOOFER_22,
@@ -105,7 +106,7 @@ async def start_auto_sub_optimize(
     try:
         input_id = measurement_store.resolve_capture_input_id(input_id=input_id, input_key=input_key)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise bad_request(exc) from exc
     if not _auto_sub_lock:
         _auto_sub_lock = asyncio.Lock()
 

@@ -30,6 +30,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from config import get_settings
+from http_errors import bad_request
 from library.sources import MusicLibraryManager
 from radio.metadata import RadioMetadataService
 
@@ -3111,7 +3112,7 @@ async def play_track(req: PlayRequest):
     try:
         result = await _run_coordinated_transition(request)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise bad_request(exc) from exc
     except PlaybackTransitionFailure as exc:
         # The committed queue state was never touched: the candidate is only
         # published after a successful commit below.  MPV's native playlist
@@ -3230,7 +3231,7 @@ async def toggle_playback():
         try:
             result = await _run_coordinated_transition(request)
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise bad_request(exc) from exc
         except PlaybackTransitionFailure as exc:
             raise _transition_error_http(exc) from exc
         if was_paused:
@@ -3266,7 +3267,7 @@ async def toggle_playback():
     try:
         result = await _run_coordinated_transition(request)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise bad_request(exc) from exc
     except PlaybackTransitionFailure as exc:
         raise _transition_error_http(exc) from exc
     if _sample_rate_policy_is_auto() and source in {"local", "radio"} and isinstance(result.target_rate, int) and result.target_rate > 0:
@@ -3778,7 +3779,7 @@ async def save_audio_samplerate_policy(request: Request):
         body = await request.json()
         policy = normalize_sample_rate_policy(body.get("mode"), body.get("rate"))
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise bad_request(exc) from exc
     except Exception:
         raise HTTPException(status_code=400, detail='Invalid JSON body, expected {"mode": "auto"|"fixed", "rate": <number?>}')
 
@@ -3786,7 +3787,7 @@ async def save_audio_samplerate_policy(request: Request):
         await _transition_sample_rate_policy(policy, detail="api-audio-samplerate-policy")
         return get_samplerate_status()
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise bad_request(exc) from exc
     except PlaybackTransitionFailure as exc:
         raise _transition_error_http(exc) from exc
     except RuntimeError as exc:
@@ -3862,7 +3863,7 @@ async def save_audio_output_selection_route(request: Request):
         await dsp_orchestrator.refresh_peak_monitor_after_effects_change("audio-output-switch")
         return result
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise bad_request(exc)
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=f"Failed to switch audio output: {exc}")
 
@@ -3983,7 +3984,7 @@ async def save_audio_output_mode_route(request: Request):
         await dsp_orchestrator.refresh_peak_monitor_after_effects_change("audio-output-mode-switch")
         return result
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise bad_request(exc)
     except PlaybackTransitionFailure as exc:
         raise _transition_error_http(exc) from exc
     except RuntimeError as exc:
@@ -4048,7 +4049,7 @@ async def save_audio_source_selection_route(request: Request):
         await peak_monitor_coordinator.sync_source_mode_state(result)
         return result
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise bad_request(exc)
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=f"Failed to save source mode: {exc}")
 
@@ -4200,7 +4201,7 @@ async def add_manual_music_library(request: Request):
         body = await request.json()
         entry = manager.add_manual_url(str(body.get("url") or ""))
     except (ValueError, TypeError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise bad_request(exc) from exc
     return {"entry": entry, **await asyncio.to_thread(manager.status)}
 
 
@@ -4221,7 +4222,7 @@ async def select_music_library(request: Request):
         try:
             root = await asyncio.to_thread(manager.activate, library_id)
         except (ValueError, FileNotFoundError) as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise bad_request(exc) from exc
         if root == scanner.music_root:
             return manager.status()
         scanner.cancel_refresh()
@@ -4314,7 +4315,7 @@ async def api_spotify_play():
     try:
         result = await _run_coordinated_transition(request)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise bad_request(exc) from exc
     except PlaybackTransitionFailure as exc:
         raise _transition_error_http(exc) from exc
     # After the coordinator commit the Spotify source is already the
@@ -4357,7 +4358,7 @@ async def api_spotify_toggle():
     try:
         result = await _run_coordinated_transition(request)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise bad_request(exc) from exc
     except PlaybackTransitionFailure as exc:
         raise _transition_error_http(exc) from exc
     # Same ownership contract as api_spotify_play: footer and token are

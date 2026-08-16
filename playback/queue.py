@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Optional
 
 from fastapi import HTTPException
+from http_errors import bad_request
 from playback.transition import PlaybackTransitionFailure, TransitionRequest
 
 logger = logging.getLogger(__name__)
@@ -331,7 +332,7 @@ class PlaybackQueue:
         try:
             result = await self._deps.run_transition(request)
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise bad_request(exc) from exc
         except PlaybackTransitionFailure as exc:
             raise self._deps.transition_error_http(exc) from exc
         if not getattr(result, "committed", False):
@@ -546,7 +547,7 @@ class PlaybackQueue:
                     native_queue_shuffle=False,
                 ))
             except ValueError as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
+                raise bad_request(exc) from exc
             except PlaybackTransitionFailure:
                 raise
             if not getattr(result, "committed", False):

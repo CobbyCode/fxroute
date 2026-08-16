@@ -19,6 +19,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Request
 
+from http_errors import bad_request
 from measurement.session import MeasurementEntryInvalidated
 from audio.samplerate import get_audio_output_overview
 
@@ -1255,7 +1256,7 @@ async def apply_spl_calibration(request: Request):
     try:
         adjustment = _calculate_spl_required_adjustment(measured)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise bad_request(exc) from exc
     await _stop_active_operation()
     ee_manager = _dependencies().require_dsp_manager()
     run_mutation = _dependencies().run_dsp_mutation

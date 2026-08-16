@@ -26,6 +26,7 @@ from starlette.background import BackgroundTask
 
 import audio.volume_contract as volume_contract
 import zip_album
+from http_errors import bad_request
 from dsp.effects_extras import (
     is_pure_loudness_strength_change,
     is_runtime_autogain_loudness_change,
@@ -202,7 +203,7 @@ def _raise_dsp_http_error(exc: Exception) -> None:
     if isinstance(exc, FileNotFoundError):
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     if isinstance(exc, ValueError):
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise bad_request(exc) from exc
     if isinstance(exc, RuntimeError):
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     raise exc
