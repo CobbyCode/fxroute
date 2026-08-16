@@ -82,6 +82,12 @@ struct fxdsp {
     unsigned rate, inputs, outputs;
     route routes[MAX_ROUTES];
     unsigned route_count;
+    /* Routes grouped by output channel (CSR) so the mixing loop skips the
+     * per-sample output-match scan: routes[] indices for output o live in
+     * route_order[route_start[o] .. route_start[o + 1]).  Live matrix updates
+     * only rewrite gains, never the route set, so this stays valid at runtime. */
+    unsigned route_order[MAX_ROUTES];
+    unsigned route_start[FXDSP_MAX_CHANNELS + 1];
     output_state out[FXDSP_MAX_CHANNELS];
     dsp_stage stages[MAX_STAGES];
     unsigned stage_count;
@@ -495,6 +501,18 @@ fxdsp *fxdsp_load(const char *path, char *error, size_t error_size) {
     fclose(file); file=NULL;
     if (!d->rate || d->inputs<1 || d->inputs>32 || d->outputs<1 || d->outputs>32) { fail(error,error_size,"inputs/outputs must be 1..32"); goto bad; }
     for(unsigned r=0;r<d->route_count;r++) if(d->routes[r].in>=d->inputs||d->routes[r].out>=d->outputs){fail(error,error_size,"matrix index out of range");goto bad;}
+    {
+        unsigned tally[FXDSP_MAX_CHANNELS] = {0};
+        unsigned cursor[FXDSP_MAX_CHANNELS];
+        for (unsigned r = 0; r < d->route_count; r++) tally[d->routes[r].out]++;
+        d->route_start[0] = 0;
+        for (unsigned o = 0; o < d->outputs; o++) d->route_start[o + 1] = d->route_start[o] + tally[o];
+        for (unsigned o = 0; o < d->outputs; o++) cursor[o] = d->route_start[o];
+        for (unsigned r = 0; r < d->route_count; r++) {
+            unsigned o = d->routes[r].out;
+            d->route_order[cursor[o]++] = r;
+        }
+    }
     d->fft_reverse=calloc(CONV_BLOCK*2,sizeof *d->fft_reverse);d->fft_roots=calloc(CONV_BLOCK,sizeof *d->fft_roots);
     if(!d->fft_reverse||!d->fft_roots){fail(error,error_size,"out of memory");goto bad;}
     for(unsigned i=0;i<CONV_BLOCK*2;i++){unsigned value=i,reversed=0;for(unsigned bit=0;bit<9;bit++){reversed=(reversed<<1)|(value&1);value>>=1;}d->fft_reverse[i]=reversed;}
@@ -798,8 +816,10 @@ void fxdsp_process_tapped(fxdsp *d, const float *const *input, float *const *out
         unsigned routed=1U-source;
         for(unsigned channel=0;channel<d->outputs;channel++) for(size_t n=0;n<count;n++) {
             float value=0.0f;
-            for(unsigned route_index=0;route_index<d->route_count;route_index++)
-                if(d->routes[route_index].out==channel)value+=d->scratch[source][d->routes[route_index].in][n]*d->routes[route_index].gain;
+            for(unsigned order=d->route_start[channel];order<d->route_start[channel+1];order++) {
+                const route *r=&d->routes[d->route_order[order]];
+                value+=d->scratch[source][r->in][n]*r->gain;
+            }
             for(unsigned filter=0;filter<d->out[channel].filter_count;filter++) value=run_biquad(&d->out[channel].filters[filter],value);
             d->scratch[routed][channel][n]=isfinite(value)?value:0.0f;
         }

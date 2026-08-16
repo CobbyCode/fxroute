@@ -16,6 +16,9 @@ unsigned fxdsp_rate(const fxdsp *dsp);
 void fxdsp_process(fxdsp *dsp, const float *const *input, float *const *output, size_t frames);
 void fxdsp_process_tapped(fxdsp *dsp, const float *const *input, float *const *output,
                           float *const *post_effect, size_t frames);
+/* Read accumulated peak/RMS for an output.  Only safe when the graph is not
+ * processed concurrently (offline/single-thread use); the live engine reads
+ * peaks through the atomic fxdsp_peaks instead. */
 void fxdsp_meter(const fxdsp *dsp, unsigned output, float *peak, float *rms);
 void fxdsp_set_mute(fxdsp *dsp, uint32_t mask, int muted);
 void fxdsp_set_effect_bypass(fxdsp *dsp, int bypassed);

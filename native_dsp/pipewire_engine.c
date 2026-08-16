@@ -55,8 +55,15 @@ static int fxdsp_swap_config(struct engine *engine, const char *path, float gain
         return 0;
     }
     fxdsp_set_output_gain_db(candidate, gain_db);
-    previous = atomic_exchange_explicit(&engine->dsp, candidate, memory_order_acq_rel);
-    while (atomic_load_explicit(&engine->processing, memory_order_acquire) != 0)
+    /* Epoch reclamation: the processing counter and the dsp pointer must be
+     * seq_cst.  A reader (on_process) increments the counter, then loads the
+     * pointer; the writer swaps the pointer, then drains the counter before
+     * freeing the previous graph.  With weaker ordering a reader that already
+     * loaded the old pointer is not guaranteed to have published its in-flight
+     * flag to the writer, so the writer could free the graph under it on
+     * weakly ordered cores (use-after-free). */
+    previous = atomic_exchange_explicit(&engine->dsp, candidate, memory_order_seq_cst);
+    while (atomic_load_explicit(&engine->processing, memory_order_seq_cst) != 0)
         sched_yield();
     fxdsp_free(previous);
     return 1;
@@ -165,8 +172,10 @@ static void stop_control(struct engine *engine) {
 
 static void on_process(void *data, struct spa_io_position *position) {
     struct engine *engine = data;
-    atomic_fetch_add_explicit(&engine->processing, 1, memory_order_acquire);
-    fxdsp *dsp = atomic_load_explicit(&engine->dsp, memory_order_acquire);
+    /* seq_cst pairs with the writer's drain in fxdsp_swap_config so a reader
+     * that loaded the previous graph keeps the writer from freeing it. */
+    atomic_fetch_add_explicit(&engine->processing, 1, memory_order_seq_cst);
+    fxdsp *dsp = atomic_load_explicit(&engine->dsp, memory_order_seq_cst);
     uint32_t frames = position && position->clock.duration ? position->clock.duration : 1024;
     const float *input[FXDSP_MAX_CHANNELS];
     float *output[FXDSP_MAX_CHANNELS];
@@ -191,12 +200,12 @@ static void on_process(void *data, struct spa_io_position *position) {
             if (output[i]) memset(output[i], 0, frames * sizeof *output[i]);
         for (unsigned i = 0; i < 2; i++)
             if (post_effect[i]) memset(post_effect[i], 0, frames * sizeof *post_effect[i]);
-        atomic_fetch_sub_explicit(&engine->processing, 1, memory_order_release);
+        atomic_fetch_sub_explicit(&engine->processing, 1, memory_order_seq_cst);
         return;
     }
     fxdsp_process_tapped(dsp, input, output,
                          post_effect[0] && post_effect[1] ? post_effect : NULL, frames);
-    atomic_fetch_sub_explicit(&engine->processing, 1, memory_order_release);
+    atomic_fetch_sub_explicit(&engine->processing, 1, memory_order_seq_cst);
 }
 
 static const struct pw_filter_events filter_events = {
