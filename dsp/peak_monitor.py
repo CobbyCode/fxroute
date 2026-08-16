@@ -18,7 +18,7 @@ from itertools import count
 from typing import Any, Awaitable, Callable, Optional
 
 import playback.state as playback_state
-from audio.samplerate import SOURCE_MODE_BLUETOOTH_INPUT, get_samplerate_status
+from audio.samplerate import SOURCE_MODE_BLUETOOTH_INPUT, authoritative_sample_rate, get_samplerate_status
 
 logger = logging.getLogger(__name__)
 
@@ -460,12 +460,23 @@ class DSPPeakMonitor:
                         if self._capture_armed_under_settle and not self._settle_rearmed:
                             self._settle_timeout_count += 1
                             if self._settle_timeout_count >= SETTLE_REARM_MIN_TIMEOUTS:
-                                self._settle_rearmed = True
-                                self._settle_until = 0.0
-                                raise RuntimeError(
-                                    "Peak monitor capture degraded after rebuild settle; "
-                                    "rearming for a clean stream"
-                                )
+                                if await self._rate_change_in_progress():
+                                    # The graph is still renegotiating a new
+                                    # rate (sink rate lags the authoritative
+                                    # rate, e.g. a rate-change transition that
+                                    # also rebuilt the DSP).  Rearming now
+                                    # would relaunch the capture at the stale
+                                    # rate only to be re-armed again once the
+                                    # node is recreated at the new rate; wait
+                                    # for the sink to settle first.
+                                    self._settle_timeout_count = 0
+                                else:
+                                    self._settle_rearmed = True
+                                    self._settle_until = 0.0
+                                    raise RuntimeError(
+                                        "Peak monitor capture degraded after rebuild settle; "
+                                        "rearming for a clean stream"
+                                    )
                     if now - last_target_check_at >= TARGET_RECHECK_INTERVAL:
                         last_target_check_at = now
                         try:
@@ -512,6 +523,25 @@ class DSPPeakMonitor:
                     self._proc.kill()
             self._proc = None
             self._capture_node_name = None
+
+    async def _rate_change_in_progress(self) -> bool:
+        """True while the sink rate lags the authoritative rate.
+
+        During a rate-change transition the DSP node is recreated at the new
+        rate shortly after the force-rate is applied; the sink's active rate
+        lags the authoritative rate until the renegotiation completes.  The
+        settle-rearm defers while this is true so the fresh capture launches
+        at the settled rate instead of the stale pre-transition rate.
+        """
+        try:
+            status = get_samplerate_status()
+        except Exception:
+            return False
+        authoritative = authoritative_sample_rate(status)
+        sink_rate = status.get("active_rate")
+        if not isinstance(authoritative, int) or authoritative <= 0:
+            return False
+        return not isinstance(sink_rate, int) or sink_rate != authoritative
 
     async def _link_capture_stream(self, target: MonitorTarget, capture_node_name: str):
         discovery_started_at = time.monotonic()

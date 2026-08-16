@@ -52,6 +52,7 @@ class PeakMonitorRebuildSurvivalTests(unittest.IsolatedAsyncioTestCase):
         self.procs = [_FakeProc(), _FakeProc()]
         self.created = []
         self.serial_state = {"value": 100}
+        self.samplerate_status = {"force_rate": 0, "active_rate": 44100}
         self.discovery_patcher = patch.object(
             self.monitor, "_discover_target",
             new=AsyncMock(side_effect=self._discover),
@@ -60,17 +61,22 @@ class PeakMonitorRebuildSurvivalTests(unittest.IsolatedAsyncioTestCase):
             "dsp.peak_monitor.asyncio.create_subprocess_exec",
             new=AsyncMock(side_effect=self._spawn),
         )
+        self.status_patcher = patch(
+            "dsp.peak_monitor.get_samplerate_status",
+            side_effect=lambda: dict(self.samplerate_status),
+        )
         self.interval_patcher = patch.object(peak_monitor, "TARGET_RECHECK_INTERVAL", 0.1)
         self.timeout_patcher = patch.object(peak_monitor, "CAPTURE_NO_DATA_TIMEOUT", 0.6)
         self.retry_patcher = patch.object(peak_monitor, "ERROR_RETRY_INTERVAL", 0.05)
         self.discovery_patcher.start()
         self.exec_patcher.start()
+        self.status_patcher.start()
         self.interval_patcher.start()
         self.timeout_patcher.start()
         self.retry_patcher.start()
 
     async def asyncTearDown(self):
-        for patcher in (self.discovery_patcher, self.exec_patcher,
+        for patcher in (self.discovery_patcher, self.exec_patcher, self.status_patcher,
                         self.interval_patcher, self.timeout_patcher, self.retry_patcher):
             patcher.stop()
         self.monitor._running = False
@@ -206,6 +212,47 @@ class PeakMonitorRebuildSurvivalTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(monitor._proc, self.procs[1])
         self.assertEqual(monitor._settle_until, 0.0)
         self.assertTrue(monitor._settle_rearmed)
+
+        await self._feed(self.procs[1])
+        self.assertTrue(monitor.snapshot()["vu_fresh"])
+
+    async def test_settle_rearm_defers_while_rate_change_in_progress(self):
+        # A degraded capture armed under the settle grace, with the graph still
+        # renegotiating a new rate (sink lags the force-rate): the rearm must
+        # not relaunch at the stale rate.  It defers until the sink aligns on
+        # the authoritative rate, then re-arms once.
+        monitor = self.monitor
+        monitor._settle_until = time.monotonic() + 0.8
+        monitor._target = MonitorTarget("fxroute_dsp", 77, "fxroute_dsp", serial=100)
+        # Mid-transition: force-rate already points at 48000, sink still 44100.
+        self.samplerate_status = {"force_rate": 48000, "active_rate": 44100}
+        task = asyncio.create_task(monitor._run())
+        monitor._task = task
+        await self._wait_for(lambda: len(self.created) == 1)
+
+        # Degraded stream: feed briefly inside the grace, then go silent so
+        # post-grace cycles accumulate settle timeouts.
+        async def feed_then_stop():
+            deadline = time.monotonic() + 0.75
+            while time.monotonic() < deadline:
+                self.procs[0].stdout.feed_data(_audio_chunk())
+                await asyncio.sleep(0.05)
+
+        feeder = asyncio.create_task(feed_then_stop())
+        await asyncio.sleep(1.2)
+        feeder.cancel()
+
+        # Still misaligned: the rearm was deferred, so no second process yet
+        # and the settle flag is not set.
+        self.assertEqual(len(self.created), 1)
+        self.assertFalse(monitor._settle_rearmed)
+
+        # The sink settles on the new rate; the deferred rearm now fires.
+        self.samplerate_status = {"force_rate": 48000, "active_rate": 48000}
+        await self._wait_for(lambda: len(self.created) >= 2, timeout=3.0)
+        self.assertTrue(monitor._settle_rearmed)
+        self.assertEqual(monitor._settle_until, 0.0)
+        self.assertIs(monitor._proc, self.procs[1])
 
         await self._feed(self.procs[1])
         self.assertTrue(monitor.snapshot()["vu_fresh"])
