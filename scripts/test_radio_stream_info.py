@@ -11,7 +11,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from playback.player import normalize_stream_info
+from playback.stream_info import normalize_stream_info
 
 
 class StreamInfoNormalizationTests(unittest.TestCase):

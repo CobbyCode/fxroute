@@ -7,74 +7,21 @@ import inspect
 import json
 import logging
 import os
-import re
-import signal
 import socket
 import subprocess
 import threading
 import time
 from typing import Any, Dict, Optional
 
-logger = logging.getLogger(__name__)
+from playback.mpv_process import _stop_orphan_mpv_processes
 
-# Grace window between SIGTERM and SIGKILL when cleaning up orphan mpv
-# processes; the process-listing loop polls inside this window.
-_ORPHAN_SIGTERM_GRACE_SECONDS = 2.0
+logger = logging.getLogger(__name__)
 
 # Bounded backoff for the mpv event-listener reconnect: the listener never
 # spins in a tight loop. After a broken socket/read it waits, then retries,
 # doubling up to the cap until the connection is established again.
 LISTENER_RECONNECT_DELAY_INITIAL = 0.2
 LISTENER_RECONNECT_DELAY_MAX = 5.0
-
-# Normalization of live stream facts (mpv property values, not URL guesses).
-LOSSLESS_CODECS = {"flac", "alac", "ape", "wavpack", "tta"}
-STREAM_CODEC_LABELS = {
-    "aac": "AAC", "mp3": "MP3", "flac": "FLAC", "vorbis": "Vorbis",
-    "opus": "Opus", "alac": "ALAC", "pcm": "PCM",
-}
-# Decoded sample format -> source bit depth for lossless codecs (ffmpeg
-# decoder convention: 16-bit FLAC decodes to s16, 24-bit to s32, 32-bit to s64;
-# PCM depth is parsed from the codec name instead).
-FORMAT_BIT_DEPTH = {"s16": 16, "s24": 24, "s32": 24, "s64": 32}
-
-
-def _bit_depth_from_codec_name(codec_name: str) -> Optional[int]:
-    """Parse an explicit bit depth from the mpv codec name (e.g. PCM)."""
-    m = re.search(r"(\d+)-bit", codec_name)
-    return int(m.group(1)) if m else None
-
-
-def normalize_stream_info(raw: dict) -> Optional[dict]:
-    """Reduce raw mpv stream audio facts to the compact display form.
-
-    Only values mpv actually delivered are kept. Unknown parts are omitted
-    entirely; no placeholder text and no URL/file-extension guessing.
-    """
-    if not raw:
-        return None
-    codec_name = str(raw.get("codec") or "").strip()
-    short = codec_name.split()[0].lower() if codec_name else ""
-    if not short:
-        # No format anchor: a bare bitrate would produce a misleading line.
-        return None
-    info: dict = {"codec": STREAM_CODEC_LABELS.get(short, short.upper())}
-    if short in LOSSLESS_CODECS:
-        info["profile"] = "Lossless"
-    bitrate = raw.get("bitrate_bps")
-    if isinstance(bitrate, (int, float)) and bitrate > 0:
-        info["bitrate_kbps"] = int(round(bitrate / 1000))
-    samplerate = raw.get("samplerate_hz")
-    if isinstance(samplerate, int) and samplerate > 0:
-        info["samplerate_hz"] = samplerate
-    # Bit depth: explicit in PCM codec names; for lossless codecs derive from
-    # the decoded sample format. Lossy decodes (floatp) have no source depth.
-    depth = _bit_depth_from_codec_name(codec_name)
-    if depth is None and short in LOSSLESS_CODECS:
-        depth = FORMAT_BIT_DEPTH.get(str(raw.get("format") or ""))
-    if depth and depth > 0:
-        info["bit_depth"] = depth
-    return info if info else None
 
 
 class MPVError(Exception):
@@ -83,69 +30,6 @@ class MPVError(Exception):
 
 class MPVNotInstalledError(MPVError):
     """MPV is not installed on the system."""
-
-
-def _is_fxroute_mpv_cmdline(cmdline: str, socket_path: str) -> bool:
-    """True only for FXRoute-owned mpv processes.
-
-    FXRoute starts mpv with an exact argument pattern; any other mpv
-    invocation (user players, different IPC socket) must never match, so a
-    cleanup can never kill an unrelated mpv process.
-    """
-    marker = f"mpv --idle=yes --input-ipc-server={socket_path} "
-    return cmdline.startswith(marker)
-
-
-def _fxroute_mpv_pids(socket_path: str) -> list[int]:
-    """Return PIDs of running FXRoute-owned mpv processes via /proc scan."""
-    pids: list[int] = []
-    try:
-        entries = os.listdir("/proc")
-    except OSError:
-        return pids
-    for entry in entries:
-        if not entry.isdigit():
-            continue
-        try:
-            with open(f"/proc/{entry}/cmdline", "rb") as handle:
-                raw = handle.read()
-        except OSError:
-            continue
-        cmdline = raw.replace(b"\x00", b" ").decode("utf-8", "replace").strip()
-        if _is_fxroute_mpv_cmdline(cmdline, socket_path):
-            pids.append(int(entry))
-    return sorted(pids)
-
-
-def _stop_orphan_mpv_processes(socket_path: str, own_pid: int | None = None) -> None:
-    """Terminate FXRoute-owned mpv processes left behind by killed service runs.
-
-    A hard service kill (or a crashed Python) leaves the mpv child alive;
-    on the next start those orphans compete for the same IPC socket and
-    PipeWire node name.  Only processes whose cmdline matches the exact
-    FXRoute mpv pattern are touched, never unrelated user mpv processes.
-    """
-    remaining = [pid for pid in _fxroute_mpv_pids(socket_path) if pid != own_pid]
-    if not remaining:
-        return
-    logger.info("Found orphan FXRoute mpv processes (pids: %s), cleaning up", ", ".join(map(str, remaining)))
-    for pid in remaining:
-        try:
-            os.kill(pid, signal.SIGTERM)
-        except (ProcessLookupError, PermissionError):
-            pass
-    deadline = time.monotonic() + _ORPHAN_SIGTERM_GRACE_SECONDS
-    while time.monotonic() < deadline:
-        remaining = [pid for pid in _fxroute_mpv_pids(socket_path) if pid != own_pid]
-        if not remaining:
-            return
-        time.sleep(0.1)
-    logger.warning("Orphan FXRoute mpv processes ignored SIGTERM (pids: %s), killing", ", ".join(map(str, remaining)))
-    for pid in remaining:
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            pass
 
 
 class MPVWrapper:

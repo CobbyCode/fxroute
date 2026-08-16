@@ -506,7 +506,8 @@ def _get_authoritative_footer_owner(player_state: dict | None = None, spotify_st
 from models import (
     PlayRequest,
 )
-from playback.player import get_player, MPVNotInstalledError, normalize_stream_info
+from playback.player import get_player, MPVNotInstalledError
+from playback.stream_info import normalize_stream_info
 from radio.api import _station_api_payload, router as radio_api_router
 from radio.stations import get_stations
 import audio.sink_inputs as sink_inputs
