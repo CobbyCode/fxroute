@@ -28,6 +28,7 @@ import asyncio
 import pathlib
 import sys
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
@@ -392,7 +393,13 @@ class ActionEndpointTests(_PowerTestCase):
         backend = power.PowerBackend(runner=hang)
         previous = power.set_backend(backend)
         try:
-            resp = self._client.get("/api/system/power")
+            # Shrink the real 10 s subsystem timeout so the hung-logind
+            # assertion completes in milliseconds instead of waiting out
+            # the production constant.
+            with mock.patch.object(
+                power, "_SYSTEM_POWER_CAPABILITIES_TIMEOUT_SECONDS", 0.2
+            ):
+                resp = self._client.get("/api/system/power")
         finally:
             power.set_backend(previous)
         self.assertEqual(resp.status_code, 503)

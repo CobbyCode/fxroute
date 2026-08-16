@@ -1348,6 +1348,35 @@ class PlaybackTransitionCoordinator:
                 )
                 raise failure from exc
 
+    async def _restore_output_gate(
+        self,
+        stages: _TransitionStages,
+        *,
+        audible_output: bool,
+        after_physical_restore: Callable[[], Awaitable[None]] | None = None,
+    ) -> None:
+        """Run the shared output-gate restore tail after a staged commit.
+
+        Both commit paths finish the same way: re-confirm the still-closed
+        gate, hold the settled state, then physically restore the gate.  A
+        transition that never closed the gate (``gate_required`` False) is a
+        no-op, matching the fast path that runs without gate ownership.
+        """
+        if not stages.gate_required:
+            return
+        await self._stage(
+            stages,
+            "before-output-gate-restore",
+            lambda: self.ensure_output_gate_closed(stages.transition_id, stage="before-output-gate-restore"),
+        )
+        stages.enter("output-gate-restore")
+        await self._hold_gate_after_verification()
+        await self._restore_gate(
+            stages.transition_id,
+            audible_output=audible_output,
+            after_physical_restore=after_physical_restore,
+        )
+
     async def _evaluate_same_graph_fast_path(
         self, request: TransitionRequest, snapshot: Mapping[str, Any]
     ) -> bool:
@@ -1551,29 +1580,21 @@ class PlaybackTransitionCoordinator:
             if isinstance(committed_policy, Mapping):
                 state = {**dict(state), **dict(committed_policy)}
 
-        if stages.gate_required:
-            after_physical_restore = None
-            if request.operation == "output-mode-switch":
-                finalizer = getattr(self.runtime, "finalize_output_mode_graph_after_gate_open", None)
-                if callable(finalizer):
-                    async def finalize_graph() -> None:
-                        final_graph = await self._stage(stages, "post-gate-output-mode-graph", lambda: finalizer(request))
-                        if not isinstance(final_graph, Mapping) or not final_graph.get("graph_complete", False):
-                            raise RuntimeError("output-mode graph changed when the output gate opened")
+        after_physical_restore = None
+        if request.operation == "output-mode-switch":
+            finalizer = getattr(self.runtime, "finalize_output_mode_graph_after_gate_open", None)
+            if callable(finalizer):
+                async def finalize_graph() -> None:
+                    final_graph = await self._stage(stages, "post-gate-output-mode-graph", lambda: finalizer(request))
+                    if not isinstance(final_graph, Mapping) or not final_graph.get("graph_complete", False):
+                        raise RuntimeError("output-mode graph changed when the output gate opened")
 
-                    after_physical_restore = finalize_graph
-            await self._stage(
-                stages,
-                "before-output-gate-restore",
-                lambda: self.ensure_output_gate_closed(stages.transition_id, stage="before-output-gate-restore"),
-            )
-            stages.enter("output-gate-restore")
-            await self._hold_gate_after_verification()
-            await self._restore_gate(
-                stages.transition_id,
-                audible_output=audible_output,
-                after_physical_restore=after_physical_restore,
-            )
+                after_physical_restore = finalize_graph
+        await self._restore_output_gate(
+            stages,
+            audible_output=audible_output,
+            after_physical_restore=after_physical_restore,
+        )
         return self._finish_committed(stages, request, state, effects_state=effects_state)
 
     async def _execute_standard_path(
@@ -1677,15 +1698,7 @@ class PlaybackTransitionCoordinator:
             if isinstance(committed_policy, Mapping):
                 state = {**dict(state), **dict(committed_policy)}
 
-        if stages.gate_required:
-            await self._stage(
-                stages,
-                "before-output-gate-restore",
-                lambda: self.ensure_output_gate_closed(stages.transition_id, stage="before-output-gate-restore"),
-            )
-            stages.enter("output-gate-restore")
-            await self._hold_gate_after_verification()
-            await self._restore_gate(stages.transition_id, audible_output=audible_output)
+        await self._restore_output_gate(stages, audible_output=audible_output)
         return self._finish_committed(
             stages,
             request,
@@ -1848,71 +1861,91 @@ class PlaybackTransitionCoordinator:
                 return await self._execute_standard_path(
                     stages, active_request, effects_state, audible_output=audible_output
                 )
-            except asyncio.CancelledError:
-                cleanup_task = self._start_cleanup_task(
+            except asyncio.CancelledError as exc:
+                raise await self._fail_transition(
+                    stages,
                     active_request,
                     snapshot,
                     transition_id=transition_id,
-                    gate_required=stages.gate_required,
-                    target_prepare_started=stages.target_prepare_started,
+                    cancelled=True,
+                    failure=exc,
                 )
-                failure_latched, cancelled_exc = await self._drain_cleanup_task(
-                    cleanup_task,
-                    transition_id=transition_id,
-                    gate_required=stages.gate_required,
-                )
-                self.last_error = {
-                    "ok": False,
-                    "transition_id": transition_id,
-                    "stage": stages.stage,
-                    "failure_latched": bool(failure_latched),
-                    "cancelled": True,
-                    "message": f"Playback transition cancelled at {stages.stage}",
-                }
-                stages.log("cancelled")
-                raise
             except Exception as exc:
-                cleanup_task = self._start_cleanup_task(
+                raise await self._fail_transition(
+                    stages,
                     active_request,
                     snapshot,
                     transition_id=transition_id,
-                    gate_required=stages.gate_required,
-                    target_prepare_started=stages.target_prepare_started,
-                )
-                failure_latched, cancelled_exc = await self._drain_cleanup_task(
-                    cleanup_task,
-                    transition_id=transition_id,
-                    gate_required=stages.gate_required,
-                )
-                if cancelled_exc is not None:
-                    # A cancellation arrived while the failure cleanup was
-                    # still draining.  The cleanup ran to its terminal state;
-                    # the cancellation wins over the original stage failure
-                    # as the caller control flow, never a rewritten failure.
-                    self.last_error = {
-                        "ok": False,
-                        "transition_id": transition_id,
-                        "stage": stages.stage,
-                        "failure_latched": bool(failure_latched),
-                        "cancelled": True,
-                        "message": (
-                            "Playback transition cancelled during failure "
-                            f"cleanup at {stages.stage}"
-                        ),
-                    }
-                    stages.log("cancelled")
-                    raise cancelled_exc
-                error = PlaybackTransitionFailure(
-                    f"Playback transition failed at {stages.stage}: {exc}",
-                    transition_id=transition_id,
-                    stage=stages.stage,
-                    failure_latched=bool(failure_latched),
-                )
-                self.last_error = error.as_status()
-                stages.log("failed")
-                raise error from exc
+                    cancelled=False,
+                    failure=exc,
+                ) from exc
 
+    async def _fail_transition(
+        self,
+        stages: _TransitionStages,
+        request: TransitionRequest,
+        snapshot: Mapping[str, Any],
+        *,
+        transition_id: str,
+        cancelled: bool,
+        failure: BaseException,
+    ) -> BaseException:
+        """Run the shared uncommitted-transition cleanup and record the
+        terminal error; returns the exception the caller must re-raise.
 
+        The stage-failure and cancellation paths converge here so both leave
+        the same terminal state: start the independent cleanup task, drain it
+        to completion while surviving further cancellation, then record the
+        error and stage timing.  A cancellation that arrived while the
+        cleanup was still draining wins over the original stage failure as
+        the caller control flow, never a rewritten failure.
+        """
+        cleanup_task = self._start_cleanup_task(
+            request,
+            snapshot,
+            transition_id=transition_id,
+            gate_required=stages.gate_required,
+            target_prepare_started=stages.target_prepare_started,
+        )
+        failure_latched, cancelled_exc = await self._drain_cleanup_task(
+            cleanup_task,
+            transition_id=transition_id,
+            gate_required=stages.gate_required,
+        )
+        if cancelled:
+            self.last_error = {
+                "ok": False,
+                "transition_id": transition_id,
+                "stage": stages.stage,
+                "failure_latched": bool(failure_latched),
+                "cancelled": True,
+                "message": f"Playback transition cancelled at {stages.stage}",
+            }
+            stages.log("cancelled")
+            return failure
+        if cancelled_exc is not None:
+            self.last_error = {
+                "ok": False,
+                "transition_id": transition_id,
+                "stage": stages.stage,
+                "failure_latched": bool(failure_latched),
+                "cancelled": True,
+                "message": (
+                    "Playback transition cancelled during failure "
+                    f"cleanup at {stages.stage}"
+                ),
+            }
+            stages.log("cancelled")
+            return cancelled_exc
+        error = PlaybackTransitionFailure(
+            f"Playback transition failed at {stages.stage}: {failure}",
+            transition_id=transition_id,
+            stage=stages.stage,
+            failure_latched=bool(failure_latched),
+        )
+        self.last_error = error.as_status()
+        stages.log("failed")
+        return error
 
     async def restore_measurement(
         self,

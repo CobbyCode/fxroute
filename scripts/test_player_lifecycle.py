@@ -74,12 +74,15 @@ class MPVCmdlineTests(unittest.TestCase):
         with unittest.mock.patch("playback.player._fxroute_mpv_pids",
                                  side_effect=lambda _socket: [1, 2] if not signalled else [2]):
             with unittest.mock.patch("playback.player.os.kill") as mock_kill:
-                def recording_kill(pid, sig):
-                    signalled.append((pid, sig))
-                    if sig == signal.SIGTERM and pid == 1:
-                        raise ProcessLookupError(pid)
-                mock_kill.side_effect = recording_kill
-                _stop_orphan_mpv_processes(SOCKET, own_pid=None)
+                with unittest.mock.patch(
+                    "playback.player._ORPHAN_SIGTERM_GRACE_SECONDS", 0.01
+                ):
+                    def recording_kill(pid, sig):
+                        signalled.append((pid, sig))
+                        if sig == signal.SIGTERM and pid == 1:
+                            raise ProcessLookupError(pid)
+                    mock_kill.side_effect = recording_kill
+                    _stop_orphan_mpv_processes(SOCKET, own_pid=None)
         self.assertIn((1, signal.SIGTERM), signalled)
         self.assertIn((2, signal.SIGTERM), signalled)
         self.assertIn((2, signal.SIGKILL), signalled)
@@ -89,8 +92,11 @@ class MPVCmdlineTests(unittest.TestCase):
         signalled = []
         with unittest.mock.patch("playback.player._fxroute_mpv_pids", return_value=[7, 8]):
             with unittest.mock.patch("playback.player.os.kill") as mock_kill:
-                mock_kill.side_effect = lambda pid, sig: signalled.append((pid, sig))
-                _stop_orphan_mpv_processes(SOCKET, own_pid=7)
+                with unittest.mock.patch(
+                    "playback.player._ORPHAN_SIGTERM_GRACE_SECONDS", 0.01
+                ):
+                    mock_kill.side_effect = lambda pid, sig: signalled.append((pid, sig))
+                    _stop_orphan_mpv_processes(SOCKET, own_pid=7)
         self.assertEqual(signalled, [(8, signal.SIGTERM), (8, signal.SIGKILL)])
 
     def test_orphan_cleanup_noop_when_no_orphans(self):

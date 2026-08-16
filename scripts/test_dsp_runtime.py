@@ -765,7 +765,12 @@ class DSPRuntimeLifecycleTests(unittest.TestCase):
             await runtime._stop_orphan_helpers()
 
         pattern = r"/usr/bin/fxroute\-dsp\s"
-        asyncio.run(exercise())
+        # The assertion is the signal sequence, not the real 0.5 s grace
+        # window; shrink it so the test does not sleep twice per run.
+        with unittest.mock.patch(
+            "dsp.runtime.RUNTIME_ORPHAN_KILL_GRACE_SECONDS", 0.01
+        ):
+            asyncio.run(exercise())
         self.assertEqual(commands[0], ("pgrep", "-f", pattern))
         self.assertTrue(all("123" not in str(command) for command in commands[1:]),
                         "own process must never be signalled")
@@ -799,7 +804,12 @@ class DSPRuntimeLifecycleTests(unittest.TestCase):
                                  command_runner=run)
             await runtime._stop_orphan_helpers()
 
-        asyncio.run(exercise())
+        # The assertion is the terminate-then-kill sequence, not the real
+        # 0.5 s grace window; shrink it so the test does not sleep per run.
+        with unittest.mock.patch(
+            "dsp.runtime.RUNTIME_ORPHAN_KILL_GRACE_SECONDS", 0.01
+        ):
+            asyncio.run(exercise())
         self.assertEqual([command[0] for command in commands], ["pgrep", "pgrep"])
 
     def test_engine_stderr_drain_keeps_bounded_tail(self):

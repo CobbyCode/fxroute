@@ -178,7 +178,8 @@ class SplNoiseRoutingTests(unittest.TestCase):
              patch.object(
                  spl_calibration.subprocess, "run",
                  return_value=FakeRunResult(stdout=""),
-             ):
+             ), \
+             patch.object(spl_calibration, "SPL_NOISE_LINK_TIMEOUT_SECONDS", 0.2):
             with self.assertRaises(RuntimeError):
                 _start_spl_calibration_noise(op)
         self.assertEqual(terminated, [True])

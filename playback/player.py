@@ -17,6 +17,10 @@ from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
+# Grace window between SIGTERM and SIGKILL when cleaning up orphan mpv
+# processes; the process-listing loop polls inside this window.
+_ORPHAN_SIGTERM_GRACE_SECONDS = 2.0
+
 # Bounded backoff for the mpv event-listener reconnect: the listener never
 # spins in a tight loop. After a broken socket/read it waits, then retries,
 # doubling up to the cap until the connection is established again.
@@ -130,7 +134,7 @@ def _stop_orphan_mpv_processes(socket_path: str, own_pid: int | None = None) -> 
             os.kill(pid, signal.SIGTERM)
         except (ProcessLookupError, PermissionError):
             pass
-    deadline = time.monotonic() + 2.0
+    deadline = time.monotonic() + _ORPHAN_SIGTERM_GRACE_SECONDS
     while time.monotonic() < deadline:
         remaining = [pid for pid in _fxroute_mpv_pids(socket_path) if pid != own_pid]
         if not remaining:
