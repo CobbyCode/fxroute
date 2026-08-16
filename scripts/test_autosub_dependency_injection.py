@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """AutoSub resolves all application dependencies through injection.
 
-Proves measurement/autosub.py no longer imports main.py: the native DSP runtime, the
+Proves the measurement.autosub package no longer imports main.py: the native DSP runtime, the
 measurement store, the measurement sample-rate session and the DSP manager
 are all read through the injected ``AutoSubDependencies`` accessors.  This
 module imports only ``autosub`` (plus the stdlib); it never imports ``main``,

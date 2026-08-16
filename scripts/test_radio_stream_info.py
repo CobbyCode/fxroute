@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for radio stream_info normalization (playback/player.normalize_stream_info).
+"""Tests for radio stream_info normalization (playback/stream_info.normalize_stream_info).
 
 Fixtures are live-measured mpv property values from Radio Paradise, FIP,
 SomaFM and KEXP streams (2026-08-02).  The tests assert that only values mpv

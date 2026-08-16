@@ -174,7 +174,7 @@ run_production_build() {
 
   log "No package.json found; FXRoute has no separate frontend build step."
   log "Validating Python files instead."
-  "$REPO_PATH/.venv/bin/python3" -m py_compile main.py config.py models.py safe_http.py uploads.py zip_album.py downloader.py install_info.py measurement/analyzer.py measurement/audio.py measurement/autosub.py measurement/capture_policy.py measurement/constants.py measurement/file_store.py measurement/host_capture.py measurement/hybrid.py measurement/job_runner.py measurement/persistence.py measurement/repeat_runner.py measurement/routing.py measurement/session.py measurement/signal.py measurement/spl_calibration.py measurement/store.py playback/orchestration.py playback/player.py playback/queue.py playback/runtime.py playback/spotify.py playback/state.py playback/transition.py dsp/api.py dsp/effects_extras.py dsp/manager.py dsp/orchestration.py dsp/peak_monitor.py dsp/persistence.py dsp/runtime.py library/api.py library/core.py library/metadata.py library/playlist_io.py library/playlists.py library/sources.py radio/api.py radio/metadata.py radio/stations.py audio/bluez_agent.py audio/samplerate.py audio/samplerate_orchestration.py audio/sink_inputs.py audio/system_volume.py audio/volume_contract.py
+  "$REPO_PATH/.venv/bin/python3" -m compileall -q main.py config.py models.py safe_http.py uploads.py zip_album.py downloader.py install_info.py measurement playback dsp library radio audio
 }
 
 build_native_dsp_if_needed() {

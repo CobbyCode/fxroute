@@ -95,7 +95,7 @@ NEW_LAYOUT_MARKERS = (
     "dsp/runtime.py",
     "library/core.py",
     "radio/stations.py",
-    "audio/samplerate.py",
+    "audio/samplerate/__init__.py",
     "measurement/store.py",
 )
 

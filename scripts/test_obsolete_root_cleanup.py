@@ -54,7 +54,7 @@ MOCK_PACKAGE_FILES = (
     "dsp/runtime.py",
     "library/core.py",
     "radio/stations.py",
-    "audio/samplerate.py",
+    "audio/samplerate/__init__.py",
     "measurement/store.py",
 )
 
