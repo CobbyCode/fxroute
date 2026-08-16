@@ -14,7 +14,7 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Mapping
+from typing import Any, Awaitable, Callable
 from uuid import uuid4
 
 from .models import DSP_TRANSPORT_SINK, OutputGateState
