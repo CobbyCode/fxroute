@@ -46,6 +46,9 @@ CONSECUTIVE_HITS_REQUIRED = 2
 CAPTURE_NODE_NAME = "fxroute_peak_capture"
 DSP_OUTPUT_NODE_NAME = "fxroute_dsp"
 CAPTURE_NODE_SEQUENCE = count(1)
+# Meter channel attribute suffixes.  "" is the joint (both-channel) meter that
+# keeps the pre-stereo contract; "_l"/"_r" are the per-channel stereo meters.
+METER_CHANNEL_SUFFIXES = ("", "_l", "_r")
 VU_FLOOR_DB = -60.0
 VU_ATTACK_SECONDS = 0.18
 VU_RELEASE_SECONDS = 0.85
@@ -482,37 +485,26 @@ class DSPPeakMonitor:
                     frames_bytes = self._align_stereo_frames(chunk)
                     if frames_bytes:
                         metrics = self._stereo_metrics(frames_bytes)
-                        self._update_vu_db(self._linear_to_db(metrics.rms), now)
-                        self._update_vu_db_l(self._linear_to_db(metrics.rms_l), now)
-                        self._update_vu_db_r(self._linear_to_db(metrics.rms_r), now)
-                        (
-                            self._consecutive_hits,
-                            self._hold_until,
-                            joint_transitioned,
-                        ) = self._update_peak_detection(
-                            metrics.peak, now, self._consecutive_hits, self._hold_until
-                        )
-                        (
-                            self._consecutive_hits_l,
-                            self._hold_until_l,
-                            left_transitioned,
-                        ) = self._update_peak_detection(
-                            metrics.peak_l, now, self._consecutive_hits_l, self._hold_until_l
-                        )
-                        (
-                            self._consecutive_hits_r,
-                            self._hold_until_r,
-                            right_transitioned,
-                        ) = self._update_peak_detection(
-                            metrics.peak_r, now, self._consecutive_hits_r, self._hold_until_r
-                        )
-                        if joint_transitioned:
-                            self._last_over_at = time.time()
-                        if left_transitioned:
-                            self._last_over_at_l = time.time()
-                        if right_transitioned:
-                            self._last_over_at_r = time.time()
-                        if joint_transitioned:
+                        for channel in METER_CHANNEL_SUFFIXES:
+                            self._update_vu_db(
+                                self._linear_to_db(getattr(metrics, f"rms{channel}")),
+                                now,
+                                channel=channel,
+                            )
+                        transitioned_by_channel: dict[str, bool] = {}
+                        for channel in METER_CHANNEL_SUFFIXES:
+                            peak = getattr(metrics, f"peak{channel}")
+                            hits = getattr(self, f"_consecutive_hits{channel}")
+                            hold = getattr(self, f"_hold_until{channel}")
+                            hits, hold, transitioned = self._update_peak_detection(
+                                peak, now, hits, hold
+                            )
+                            setattr(self, f"_consecutive_hits{channel}", hits)
+                            setattr(self, f"_hold_until{channel}", hold)
+                            transitioned_by_channel[channel] = transitioned
+                            if transitioned:
+                                setattr(self, f"_last_over_at{channel}", time.time())
+                        if transitioned_by_channel[""]:
                             await self._emit_if_changed(force=True)
                 elif self._proc.returncode is not None:
                     break
@@ -558,36 +550,14 @@ class DSPPeakMonitor:
                     )
                     if now - last_data_at >= no_data_timeout:
                         raise RuntimeError("Peak monitor received no audio data while pw-record remained running")
-                    self._update_vu_db(VU_FLOOR_DB, now)
-                    self._update_vu_db_l(VU_FLOOR_DB, now)
-                    self._update_vu_db_r(VU_FLOOR_DB, now)
-                hold_expired = False
-                if self._hold_until and now >= self._hold_until:
-                    self._hold_until = 0.0
-                    hold_expired = True
-                if self._hold_until_l and now >= self._hold_until_l:
-                    self._hold_until_l = 0.0
-                    hold_expired = True
-                if self._hold_until_r and now >= self._hold_until_r:
-                    self._hold_until_r = 0.0
-                    hold_expired = True
-                if hold_expired:
+                    for channel in METER_CHANNEL_SUFFIXES:
+                        self._update_vu_db(VU_FLOOR_DB, now, channel=channel)
+                if self._expire_holds(now):
                     await self._emit_if_changed(force=True)
                 elif now - self._last_vu_emit_at >= VU_EMIT_INTERVAL:
                     self._last_vu_emit_at = now
                     await self._emit_if_changed()
-            now_exit = time.monotonic()
-            exit_hold_expired = False
-            if self._hold_until and now_exit >= self._hold_until:
-                self._hold_until = 0.0
-                exit_hold_expired = True
-            if self._hold_until_l and now_exit >= self._hold_until_l:
-                self._hold_until_l = 0.0
-                exit_hold_expired = True
-            if self._hold_until_r and now_exit >= self._hold_until_r:
-                self._hold_until_r = 0.0
-                exit_hold_expired = True
-            if exit_hold_expired:
+            if self._expire_holds(time.monotonic()):
                 await self._emit_if_changed(force=True)
             if self._proc.returncode is None:
                 await self._proc.wait()
@@ -843,20 +813,19 @@ class DSPPeakMonitor:
         logger.info("Peak monitor target discovery selected %s (id=%s) in %.3fs from %d candidate(s)", selected.source_name, selected.source_id, time.monotonic() - discover_started_at, len(candidates))
         return selected
 
-    def _update_vu_db(self, target_db: float, now: float):
-        self._vu_db, self._last_vu_update_at = self._smooth_vu_db(
-            self._vu_db, self._last_vu_update_at, target_db, now
-        )
+    def _update_vu_db(self, target_db: float, now: float, *, channel: str = "") -> None:
+        """Smooth one meter channel toward ``target_db``.
 
-    def _update_vu_db_l(self, target_db: float, now: float):
-        self._vu_db_l, self._last_vu_update_at_l = self._smooth_vu_db(
-            self._vu_db_l, self._last_vu_update_at_l, target_db, now
+        ``channel`` is one of :data:`METER_CHANNEL_SUFFIXES` ("" = joint,
+        "_l"/"_r" = stereo L/R).
+        """
+        value_attr = f"_vu_db{channel}"
+        update_attr = f"_last_vu_update_at{channel}"
+        value, updated_at = self._smooth_vu_db(
+            getattr(self, value_attr), getattr(self, update_attr), target_db, now
         )
-
-    def _update_vu_db_r(self, target_db: float, now: float):
-        self._vu_db_r, self._last_vu_update_at_r = self._smooth_vu_db(
-            self._vu_db_r, self._last_vu_update_at_r, target_db, now
-        )
+        setattr(self, value_attr, value)
+        setattr(self, update_attr, updated_at)
 
     @staticmethod
     def _smooth_vu_db(
@@ -961,6 +930,16 @@ class DSPPeakMonitor:
         else:
             consecutive_hits = 0
         return consecutive_hits, hold_until, False
+
+    def _expire_holds(self, now: float) -> bool:
+        """Clear any elapsed peak-hold; True when at least one expired."""
+        expired = False
+        for channel in METER_CHANNEL_SUFFIXES:
+            hold_attr = f"_hold_until{channel}"
+            if getattr(self, hold_attr) and now >= getattr(self, hold_attr):
+                setattr(self, hold_attr, 0.0)
+                expired = True
+        return expired
 
 
 @dataclass(frozen=True)
