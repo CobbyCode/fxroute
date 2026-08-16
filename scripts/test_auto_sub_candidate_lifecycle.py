@@ -26,11 +26,11 @@ class AutoSubCandidateLifecycleTests(unittest.IsolatedAsyncioTestCase):
         async def wait(delay):
             events.append(("sleep", delay))
 
-        with patch.object(autosub, "set_audio_output_mode", side_effect=apply), \
-             patch.object(autosub, "_dsp_runtime", return_value=object()), \
-             patch.object(autosub, "_auto_sub_sync_dsp_runtime", new=AsyncMock()) as sync, \
-             patch.object(autosub, "get_audio_output_overview", return_value=live), \
-             patch.object(autosub.asyncio, "sleep", side_effect=wait):
+        with patch.object(autosub.candidates, "set_audio_output_mode", side_effect=apply), \
+             patch.object(autosub.candidates, "_dsp_runtime", return_value=object()), \
+             patch.object(autosub.candidates, "_auto_sub_sync_dsp_runtime", new=AsyncMock()) as sync, \
+             patch.object(autosub.candidates, "get_audio_output_overview", return_value=live), \
+             patch.object(autosub.candidates.asyncio, "sleep", side_effect=wait):
             result = await autosub._auto_sub_apply_candidate(
                 output_mode="subwoofer-2.2",
                 global_config={"crossover_frequency_hz": 80},
@@ -47,10 +47,10 @@ class AutoSubCandidateLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_apply_failure_returns_false_without_claiming_verification(self):
         verify = AsyncMock()
-        with patch.object(autosub, "set_audio_output_mode", side_effect=RuntimeError("write failed")), \
-             patch.object(autosub, "_dsp_runtime", return_value=AsyncMock()), \
-             patch.object(autosub.logger, "exception"), \
-             patch.object(autosub, "asyncio") as asyncio_mock:
+        with patch.object(autosub.candidates, "set_audio_output_mode", side_effect=RuntimeError("write failed")), \
+             patch.object(autosub.candidates, "_dsp_runtime", return_value=AsyncMock()), \
+             patch.object(autosub.candidates.logger, "exception"), \
+             patch.object(autosub.candidates, "asyncio") as asyncio_mock:
             result = await autosub._auto_sub_apply_candidate(
                 output_mode="subwoofer-2.1",
                 global_config={},

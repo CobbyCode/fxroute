@@ -313,11 +313,11 @@ class MeasurementEntryEpochTests(unittest.IsolatedAsyncioTestCase):
             "message": "",
         }
         autosub._AUTO_SUB_JOBS[job_id] = job
-        autosub._auto_sub_lock = asyncio.Lock()
-        await autosub._auto_sub_lock.acquire()
+        if not autosub._auto_sub_lock.locked():
+            await autosub._auto_sub_lock.acquire()
         try:
             with patch.object(main, "measurement_sr_session", self.session), patch.object(
-                autosub, "_finish_auto_sub_worker", new=AsyncMock()
+                autosub.runners, "_finish_auto_sub_worker", new=AsyncMock()
             ) as finish:
                 await autosub._run_auto_sub_22_optimize(
                     job_id=job_id,

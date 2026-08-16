@@ -90,7 +90,7 @@ class AutoSubDependencyInjectionTests(unittest.IsolatedAsyncioTestCase):
         runtime = FakeDSPRuntime()
         _configure(dsp_runtime=runtime)
         persisted = overview_21()
-        with patch.object(autosub, "get_audio_output_overview", return_value=overview_21()):
+        with patch.object(autosub.candidates, "get_audio_output_overview", return_value=overview_21()):
             await autosub._auto_sub_sync_dsp_runtime(
                 output_mode="subwoofer-2.1", persisted_overview=persisted)
         runtime.sync.assert_awaited_once()
@@ -101,7 +101,7 @@ class AutoSubDependencyInjectionTests(unittest.IsolatedAsyncioTestCase):
         _configure(dsp_runtime=first)
         _configure(dsp_runtime=replacement)
         persisted = overview_21()
-        with patch.object(autosub, "get_audio_output_overview", return_value=overview_21()):
+        with patch.object(autosub.candidates, "get_audio_output_overview", return_value=overview_21()):
             await autosub._auto_sub_sync_dsp_runtime(
                 output_mode="subwoofer-2.1", persisted_overview=persisted)
         replacement.sync.assert_awaited_once()
@@ -109,7 +109,7 @@ class AutoSubDependencyInjectionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_none_dsp_runtime_is_a_noop(self):
         _configure(dsp_runtime=None)
-        with patch.object(autosub, "get_audio_output_overview", return_value=overview_21()):
+        with patch.object(autosub.candidates, "get_audio_output_overview", return_value=overview_21()):
             await autosub._auto_sub_sync_dsp_runtime(
                 output_mode="subwoofer-2.1", persisted_overview=overview_21())
 

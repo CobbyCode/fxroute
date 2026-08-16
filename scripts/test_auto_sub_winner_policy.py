@@ -53,7 +53,7 @@ class AutoSubWinnerPolicyTests(unittest.TestCase):
             self._matrix_candidate(1.0, 1.0),
         ]
 
-        with patch.object(autosub, "score_sub_alignment_candidates", side_effect=self._matrix_scores(0.800, 0.805)):
+        with patch.object(autosub.scoring, "score_sub_alignment_candidates", side_effect=self._matrix_scores(0.800, 0.805)):
             result = autosub._score_auto_sub_matrix_candidates(
                 candidates,
                 crossover_hz=80,
@@ -71,7 +71,7 @@ class AutoSubWinnerPolicyTests(unittest.TestCase):
             self._matrix_candidate(1.0, 1.0),
         ]
 
-        with patch.object(autosub, "score_sub_alignment_candidates", side_effect=self._matrix_scores(0.800, 0.811)):
+        with patch.object(autosub.scoring, "score_sub_alignment_candidates", side_effect=self._matrix_scores(0.800, 0.811)):
             result = autosub._score_auto_sub_matrix_candidates(
                 candidates,
                 crossover_hz=80,

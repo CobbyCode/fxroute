@@ -86,7 +86,7 @@ class AutoSubSyncRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_21_sync_receives_live_overview_dict_with_candidate(self):
         persisted = overview_21(2.34, level=-3.0)
-        with patch.object(autosub, "get_audio_output_overview", return_value=overview_21(2.34, level=-3.0)):
+        with patch.object(autosub.candidates, "get_audio_output_overview", return_value=overview_21(2.34, level=-3.0)):
             await autosub._auto_sub_sync_dsp_runtime(
                 output_mode="subwoofer-2.1", persisted_overview=persisted)
         self.assertEqual(self.runtime.sync.await_count, 1)
@@ -99,7 +99,7 @@ class AutoSubSyncRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_21_stale_incumbent_alignment_is_rejected_before_sync(self):
         persisted = overview_21(2.34)
         live = overview_21(0.0)
-        with patch.object(autosub, "get_audio_output_overview", return_value=live):
+        with patch.object(autosub.candidates, "get_audio_output_overview", return_value=live):
             with self.assertRaises(RuntimeError) as raised:
                 await autosub._auto_sub_sync_dsp_runtime(
                     output_mode="subwoofer-2.1", persisted_overview=persisted)
@@ -109,7 +109,7 @@ class AutoSubSyncRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_21_level_mismatch_is_rejected_before_sync(self):
         persisted = overview_21(2.34, level=-3.0)
         live = overview_21(2.34, level=-1.0)
-        with patch.object(autosub, "get_audio_output_overview", return_value=live):
+        with patch.object(autosub.candidates, "get_audio_output_overview", return_value=live):
             with self.assertRaises(RuntimeError) as raised:
                 await autosub._auto_sub_sync_dsp_runtime(
                     output_mode="subwoofer-2.1", persisted_overview=persisted)
@@ -119,7 +119,7 @@ class AutoSubSyncRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_21_crossover_mismatch_is_rejected_before_sync(self):
         persisted = overview_21(2.34, fc=80)
         live = overview_21(2.34, fc=100)
-        with patch.object(autosub, "get_audio_output_overview", return_value=live):
+        with patch.object(autosub.candidates, "get_audio_output_overview", return_value=live):
             with self.assertRaises(RuntimeError) as raised:
                 await autosub._auto_sub_sync_dsp_runtime(
                     output_mode="subwoofer-2.1", persisted_overview=persisted)
@@ -129,7 +129,7 @@ class AutoSubSyncRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_21_polarity_mismatch_is_rejected_before_sync(self):
         persisted = overview_21(2.34, polarity="invert")
         live = overview_21(2.34, polarity="normal")
-        with patch.object(autosub, "get_audio_output_overview", return_value=live):
+        with patch.object(autosub.candidates, "get_audio_output_overview", return_value=live):
             with self.assertRaises(RuntimeError) as raised:
                 await autosub._auto_sub_sync_dsp_runtime(
                     output_mode="subwoofer-2.1", persisted_overview=persisted)
@@ -139,7 +139,7 @@ class AutoSubSyncRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_22_sub2_alignment_mismatch_is_rejected_before_sync(self):
         persisted = overview_22(3.12, -1.56)
         live = overview_22(3.12, 0.0)
-        with patch.object(autosub, "get_audio_output_overview", return_value=live):
+        with patch.object(autosub.candidates, "get_audio_output_overview", return_value=live):
             with self.assertRaises(RuntimeError) as raised:
                 await autosub._auto_sub_sync_dsp_runtime(
                     output_mode="subwoofer-2.2", persisted_overview=persisted)
@@ -149,7 +149,7 @@ class AutoSubSyncRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_22_stereo_mode_mismatch_is_rejected_before_sync(self):
         persisted = overview_22(3.12, -1.56, mode="subwoofer-2.2-stereo")
         live = overview_22(3.12, -1.56, mode="subwoofer-2.2")
-        with patch.object(autosub, "get_audio_output_overview", return_value=live):
+        with patch.object(autosub.candidates, "get_audio_output_overview", return_value=live):
             with self.assertRaises(RuntimeError) as raised:
                 await autosub._auto_sub_sync_dsp_runtime(
                     output_mode="subwoofer-2.2-stereo",
@@ -160,21 +160,21 @@ class AutoSubSyncRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_22_sub2_invert_polarity_is_accepted_and_synced(self):
         persisted = overview_22(3.12, -1.56, polarity2="invert")
         live = overview_22(3.12, -1.56, polarity2="invert")
-        with patch.object(autosub, "get_audio_output_overview", return_value=live):
+        with patch.object(autosub.candidates, "get_audio_output_overview", return_value=live):
             await autosub._auto_sub_sync_dsp_runtime(
                 output_mode="subwoofer-2.2", persisted_overview=persisted)
         self.runtime.sync.assert_awaited_once()
 
     async def test_runtime_none_is_a_noop(self):
         main.runtime.dsp_runtime = None
-        with patch.object(autosub, "get_audio_output_overview", return_value=overview_21(2.34)):
+        with patch.object(autosub.candidates, "get_audio_output_overview", return_value=overview_21(2.34)):
             await autosub._auto_sub_sync_dsp_runtime(
                 output_mode="subwoofer-2.1", persisted_overview=overview_21(2.34))
         self.runtime.sync.assert_not_awaited()
 
     async def test_sync_arg_is_never_the_dataclass_instance(self):
         persisted = overview_21(1.56)
-        with patch.object(autosub, "get_audio_output_overview", return_value=overview_21(1.56)):
+        with patch.object(autosub.candidates, "get_audio_output_overview", return_value=overview_21(1.56)):
             await autosub._auto_sub_sync_dsp_runtime(
                 output_mode="subwoofer-2.1", persisted_overview=persisted)
         received = self.runtime.sync.await_args.args[0]
