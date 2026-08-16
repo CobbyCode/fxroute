@@ -934,7 +934,7 @@ def _set_runtime_track_context(current: dict, last: dict) -> None:
 
 
 def make_playback_runtime_deps() -> PlaybackRuntimeDependencies:
-    """Late-bound wiring for ``FxrouteTransitionRuntime`` (playback/runtime.py).
+    """Late-bound wiring for ``FxrouteTransitionRuntime`` (playback/runtime/).
 
     Every accessor resolves the current runtime state at call time, so
     production wiring and test mocks observe the same attributes (same

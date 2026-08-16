@@ -29,7 +29,7 @@ PACKAGE_DIRS = ("measurement", "playback", "dsp", "library", "radio", "audio")
 DECOUPLED_MODULES = tuple(
     str(path.relative_to(ROOT))
     for package in PACKAGE_DIRS
-    for path in sorted((ROOT / package).glob("*.py"))
+    for path in sorted((ROOT / package).rglob("*.py"))
     if path.name != "__init__.py"
 )
 MAIN_GLOBALS = {
@@ -77,6 +77,57 @@ def check_no_main_imports(path: Path) -> None:
             errors.append(f"{path.name}:{node.lineno} imports runtime state from main.py")
         elif isinstance(node, ast.Import) and any(alias.name == "main" for alias in node.names):
             errors.append(f"{path.name}:{node.lineno} imports main.py")
+
+
+def check_runtime_adapter_mixin_order() -> None:
+    """The runtime adapter must compose its mixins before the TransitionRuntime
+    protocol base: a protocol stub in the MRO would shadow every concrete mixin
+    implementation and silently no-op the adapter."""
+    adapter_path = ROOT / "playback" / "runtime" / "adapter.py"
+    adapter_tree = ast.parse(adapter_path.read_text(encoding="utf-8"))
+    adapter_class = next(
+        (n for n in ast.walk(adapter_tree)
+         if isinstance(n, ast.ClassDef) and n.name == "FxrouteTransitionRuntime"),
+        None,
+    )
+    if adapter_class is None:
+        errors.append("playback/runtime/adapter.py: FxrouteTransitionRuntime missing")
+        return
+    base_names = []
+    for base in adapter_class.bases:
+        if isinstance(base, ast.Name):
+            base_names.append(base.id)
+        elif isinstance(base, ast.Attribute):
+            base_names.append(base.attr)
+    if "TransitionRuntime" not in base_names:
+        return
+    protocol_index = base_names.index("TransitionRuntime")
+    if not any(name.startswith("_Runtime") for name in base_names[:protocol_index]):
+        errors.append(
+            "playback/runtime/adapter.py: no mixin base before TransitionRuntime; "
+            "protocol stubs would shadow the implementations"
+        )
+    protocol_path = ROOT / "playback" / "transition" / "protocol.py"
+    protocol_tree = ast.parse(protocol_path.read_text(encoding="utf-8"))
+    protocol_methods: set[str] = set()
+    for node in ast.walk(protocol_tree):
+        if isinstance(node, ast.ClassDef) and node.name == "TransitionRuntime":
+            protocol_methods = {
+                item.name for item in node.body
+                if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+            }
+    implemented: set[str] = set()
+    for file_name in ("mute.py", "snapshot.py", "source.py", "verification.py", "output_mode.py"):
+        tree = ast.parse((ROOT / "playback" / "runtime" / file_name).read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef) and node.name.startswith("_Runtime"):
+                implemented.update(
+                    item.name for item in node.body
+                    if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+                )
+    missing = sorted(protocol_methods - implemented)
+    if missing:
+        errors.append(f"playback/runtime/adapter.py: protocol methods not implemented by mixins: {missing}")
 
 
 def check_duplicate_class_methods(path: Path) -> None:
@@ -182,6 +233,8 @@ for path in ROOT.glob("*.py"):
 
 for mod in DECOUPLED_MODULES:
     check_no_main_imports(ROOT / mod)
+
+check_runtime_adapter_mixin_order()
 
 if errors:
     print("ROUTER STRUCTURE CHECK FAILED")

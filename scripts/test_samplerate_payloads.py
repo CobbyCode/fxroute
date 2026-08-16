@@ -449,7 +449,7 @@ class AutoPolicyForceRateClearTests(unittest.IsolatedAsyncioTestCase):
         # The persist stage runs after the guarded commit readback (graph
         # stable at the target), so clearing the pin there is safe where a
         # mid-transition clear is not.
-        import playback.runtime as playback_runtime
+        import playback.runtime.output_mode as playback_runtime_output_mode
         from playback.transition import TransitionRequest
         from playback_transition_test_support import make_transition_runtime
 
@@ -462,7 +462,7 @@ class AutoPolicyForceRateClearTests(unittest.IsolatedAsyncioTestCase):
         )
         cleared = []
         with patch.object(
-            playback_runtime, "persist_sample_rate_policy",
+            playback_runtime_output_mode, "persist_sample_rate_policy",
             return_value={"mode": "auto", "rate": None},
         ) as persist, patch.object(
             samplerate, "clear_auto_policy_force_rate",
@@ -477,7 +477,7 @@ class AutoPolicyForceRateClearTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(kwargs["app_policy"], {"mode": "auto", "rate": None})
 
     async def test_commit_sample_rate_policy_keeps_force_for_fixed(self):
-        import playback.runtime as playback_runtime
+        import playback.runtime.output_mode as playback_runtime_output_mode
         from playback.transition import TransitionRequest
         from playback_transition_test_support import make_transition_runtime
 
@@ -489,7 +489,7 @@ class AutoPolicyForceRateClearTests(unittest.IsolatedAsyncioTestCase):
             sample_rate_policy={"mode": "fixed", "rate": 48000},
         )
         with patch.object(
-            playback_runtime, "persist_sample_rate_policy",
+            playback_runtime_output_mode, "persist_sample_rate_policy",
             return_value={"mode": "fixed", "rate": 48000},
         ), patch.object(
             samplerate, "clear_auto_policy_force_rate", new=AsyncMock()

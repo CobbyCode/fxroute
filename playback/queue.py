@@ -769,7 +769,7 @@ def configure_playback_queue(deps: PlaybackQueueDependencies) -> PlaybackQueue:
 
     Production calls this exactly once at import time; the instance becomes
     the single owner of the queue state shared by API handlers, the player
-    callback and ``playback/runtime.py``.
+    callback and ``playback/runtime/``.
     """
     global queue
     queue = PlaybackQueue(deps)

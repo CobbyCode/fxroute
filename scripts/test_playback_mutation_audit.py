@@ -22,7 +22,22 @@ ROOT = Path(__file__).resolve().parents[1]
 # extracted AutoSub module.  Playback entrypoints and single-owner paths live
 # only in main.py; all files are parsed for direct mutation calls so the
 # extraction cannot create an audit coverage gap.
-AUDIT_FILES = ("main.py", "playback/orchestration.py", "playback/runtime.py", "playback/queue.py", "measurement/autosub.py", "measurement/session.py", "dsp/api.py")
+AUDIT_FILES = (
+    "main.py",
+    "playback/orchestration.py",
+    "playback/runtime/deps.py",
+    "playback/runtime/helpers.py",
+    "playback/runtime/mute.py",
+    "playback/runtime/snapshot.py",
+    "playback/runtime/source.py",
+    "playback/runtime/verification.py",
+    "playback/runtime/output_mode.py",
+    "playback/runtime/adapter.py",
+    "playback/queue.py",
+    "measurement/autosub.py",
+    "measurement/session.py",
+    "dsp/api.py",
+)
 SOURCES = {name: (ROOT / name).read_text() for name in AUDIT_FILES}
 TREES = {name: ast.parse(source) for name, source in SOURCES.items()}
 MAIN_SOURCE = SOURCES["main.py"]
@@ -348,7 +363,7 @@ def main() -> int:
         elif isinstance(node, ast.Import) and any(alias.name == "main" for alias in node.names):
             errors.append("playback/queue.py imports main.py")
 
-    runtime_tree = TREES["playback/runtime.py"]
+    runtime_tree = TREES["playback/runtime/deps.py"]
     runtime_fields: set[str] = set()
     for class_node in (
         node for node in ast.walk(runtime_tree) if isinstance(node, ast.ClassDef)
