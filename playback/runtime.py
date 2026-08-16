@@ -1624,6 +1624,18 @@ class FxrouteTransitionRuntime(TransitionRuntime):
         if not request.sample_rate_policy:
             raise RuntimeError("sample-rate transition has no durable policy")
         policy = persist_sample_rate_policy(request.sample_rate_policy)
+        if policy.get("mode") == "auto":
+            # The guarded readback already verified the graph is stable at the
+            # target.  A leftover force-rate pin at the graph default (written
+            # by the target-rate stage) would keep the samplerate status
+            # payload reporting mode=fixed under an auto policy.  Clearing the
+            # pin here, after commit, is safe: the graph holds the default
+            # rate without it.  Mid-transition clears are deliberately avoided:
+            # the DSP helper may still be rebuilding at the old rate and would
+            # pull the sink away from the freshly cleared pin.
+            samplerate.clear_auto_policy_force_rate(
+                request.target_rate, app_policy=policy
+            )
         return {"sample_rate_policy": policy}
 
     async def rollback_output_mode_runtime(

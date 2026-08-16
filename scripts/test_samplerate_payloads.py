@@ -352,5 +352,149 @@ class SampleRatePolicyTransitionTests(unittest.IsolatedAsyncioTestCase):
         )
 
 
+class AutoPolicyForceRateClearTests(unittest.IsolatedAsyncioTestCase):
+    """An auto policy must not leave a leftover force-rate pin at the graph default.
+
+    The live force-rate is the status payload's ``mode`` source (0 -> auto),
+    so a leftover pin after a fixed -> auto restore keeps reporting
+    ``mode=fixed`` while the persisted policy is auto.  Once the sink sits at
+    the graph default under an auto policy, the pin is cleared.
+    """
+
+    def _status(self, active_rate: int, force_rate: int, default_rate: int = 44100) -> dict:
+        return {
+            "status": "ok",
+            "available": True,
+            "mode": "fixed" if force_rate else "auto",
+            "policy": {"mode": "auto", "rate": None},
+            "force_rate": force_rate,
+            "active_rate": active_rate,
+            "default_rate": default_rate,
+        }
+
+    async def test_clear_helper_writes_zero_for_auto_at_default(self):
+        written = []
+        with patch.object(samplerate, "set_pipewire_force_rate", side_effect=lambda rate: written.append(rate)), \
+             patch.object(samplerate, "load_sample_rate_policy", return_value={"mode": "auto", "rate": None}):
+            self.assertTrue(
+                samplerate.clear_auto_policy_force_rate(44100, status=self._status(44100, 44100))
+            )
+        self.assertEqual(written, [0])
+
+    async def test_clear_helper_skips_non_default_target(self):
+        written = []
+        with patch.object(samplerate, "set_pipewire_force_rate", side_effect=lambda rate: written.append(rate)), \
+             patch.object(samplerate, "load_sample_rate_policy", return_value={"mode": "auto", "rate": None}):
+            self.assertFalse(
+                samplerate.clear_auto_policy_force_rate(48000, status=self._status(48000, 48000))
+            )
+        self.assertEqual(written, [])
+
+    async def test_clear_helper_skips_fixed_policy(self):
+        written = []
+        with patch.object(samplerate, "set_pipewire_force_rate", side_effect=lambda rate: written.append(rate)), \
+             patch.object(samplerate, "load_sample_rate_policy", return_value={"mode": "fixed", "rate": 44100}):
+            self.assertFalse(
+                samplerate.clear_auto_policy_force_rate(44100, status=self._status(44100, 44100))
+            )
+        self.assertEqual(written, [])
+
+    async def test_clear_helper_in_flight_policy_wins_over_persisted(self):
+        # The persisted policy is still the old fixed one while a fixed -> auto
+        # policy-change transition applies its rate; the in-flight policy must
+        # drive the clear decision.
+        written = []
+        with patch.object(samplerate, "set_pipewire_force_rate", side_effect=lambda rate: written.append(rate)), \
+             patch.object(samplerate, "load_sample_rate_policy", return_value={"mode": "fixed", "rate": 48000}):
+            self.assertTrue(
+                samplerate.clear_auto_policy_force_rate(
+                    44100,
+                    app_policy={"mode": "auto", "rate": None},
+                    status=self._status(44100, 44100),
+                )
+            )
+        self.assertEqual(written, [0])
+
+    async def test_clear_helper_status_read_failure_is_safe(self):
+        with patch.object(samplerate, "get_samplerate_status", side_effect=RuntimeError("no pipewire")):
+            self.assertFalse(samplerate.clear_auto_policy_force_rate(44100))
+
+    async def test_commit_sample_rate_policy_clears_force_for_auto_at_default(self):
+        # The persist stage runs after the guarded commit readback (graph
+        # stable at the target), so clearing the pin there is safe where a
+        # mid-transition clear is not.
+        import playback.runtime as playback_runtime
+        from playback.transition import TransitionRequest
+        from playback_transition_test_support import make_transition_runtime
+
+        runtime = make_transition_runtime()
+        request = TransitionRequest(
+            operation="sample-rate-policy",
+            source="radio",
+            target_rate=44100,
+            sample_rate_policy={"mode": "auto", "rate": None},
+        )
+        cleared = []
+        with patch.object(
+            playback_runtime, "persist_sample_rate_policy",
+            return_value={"mode": "auto", "rate": None},
+        ) as persist, patch.object(
+            samplerate, "clear_auto_policy_force_rate",
+            side_effect=lambda *a, **k: cleared.append((a, k)) or True,
+        ):
+            result = await runtime.commit_sample_rate_policy(request)
+        persist.assert_called_once_with({"mode": "auto", "rate": None})
+        self.assertEqual(result["sample_rate_policy"]["mode"], "auto")
+        self.assertEqual(len(cleared), 1)
+        args, kwargs = cleared[0]
+        self.assertEqual(args[0], 44100)
+        self.assertEqual(kwargs["app_policy"], {"mode": "auto", "rate": None})
+
+    async def test_commit_sample_rate_policy_keeps_force_for_fixed(self):
+        import playback.runtime as playback_runtime
+        from playback.transition import TransitionRequest
+        from playback_transition_test_support import make_transition_runtime
+
+        runtime = make_transition_runtime()
+        request = TransitionRequest(
+            operation="sample-rate-policy",
+            source="radio",
+            target_rate=48000,
+            sample_rate_policy={"mode": "fixed", "rate": 48000},
+        )
+        with patch.object(
+            playback_runtime, "persist_sample_rate_policy",
+            return_value={"mode": "fixed", "rate": 48000},
+        ), patch.object(
+            samplerate, "clear_auto_policy_force_rate", new=AsyncMock()
+        ) as clear:
+            result = await runtime.commit_sample_rate_policy(request)
+        self.assertEqual(result["sample_rate_policy"]["mode"], "fixed")
+        clear.assert_not_awaited()
+
+    def test_status_mode_follows_persisted_policy(self):
+        # mode is a payload summary of the persisted policy.  A leftover
+        # force-rate pin at the graph default (force_rate 44100 == default)
+        # must not make an auto policy report mode=fixed.
+        pw_metadata = "key:'clock.rate' value:'44100'\nkey:'clock.force-rate' value:'44100'\n"
+        wpctl = (
+            "id 73, name:alsa_output.test\n"
+            "\t* node.name = \"alsa_output.test\"\n"
+            "\t* node.description = \"Test Sink\"\n"
+        )
+        pactl = "73\talsa_output.test\tPipeWire\ts32le 4ch 44100Hz\tRUNNING\n"
+        pw_cli = "default.clock.rate = 44100\n"
+        with patch.object(samplerate, "_run_command", side_effect=[pw_metadata, wpctl, pactl, pw_cli]), \
+             patch.object(samplerate, "load_sample_rate_policy", return_value={"mode": "auto", "rate": None}):
+            status = samplerate.get_samplerate_status()
+        self.assertEqual(status["mode"], "auto")
+        self.assertEqual(status["force_rate"], 44100)
+
+        with patch.object(samplerate, "_run_command", side_effect=[pw_metadata, wpctl, pactl, pw_cli]), \
+             patch.object(samplerate, "load_sample_rate_policy", return_value={"mode": "fixed", "rate": 48000}):
+            status = samplerate.get_samplerate_status()
+        self.assertEqual(status["mode"], "fixed")
+
+
 if __name__ == "__main__":
     unittest.main()

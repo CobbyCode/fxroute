@@ -1962,7 +1962,12 @@ def get_samplerate_status() -> dict[str, Any]:
     return {
         "status": "ok",
         "available": True,
-        "mode": "auto" if force_rate == 0 else "fixed",
+        # The mode field mirrors the persisted policy, not the live pin: a
+        # leftover force-rate at the graph default (harmless, and only ever
+        # written by the reconciliation) must not make an auto policy report
+        # mode=fixed.  Consumers decide from ``policy``; ``mode`` stays a
+        # payload summary of the intended mode.
+        "mode": policy.get("mode", "auto"),
         "policy": policy,
         "force_rate": force_rate,
         "configured_default_rate": configured_default_rate,
@@ -2171,6 +2176,51 @@ async def suspend_resume_playback_sink(
     _last_sink_suspend_at = time.monotonic()
     _last_sink_suspend_reason = reason
     logger.info("Sink suspend/resume DONE: reason=%s output_key=%s", reason, output_key)
+    return True
+
+
+def clear_auto_policy_force_rate(
+    expected_rate: int,
+    *,
+    app_policy: Mapping[str, Any] | None = None,
+    status: Mapping[str, Any] | None = None,
+) -> bool:
+    """Clear the live force-rate when an auto policy holds the graph at its default rate.
+
+    With an auto policy the force-rate is only needed to pin a target that
+    differs from the graph default.  A leftover pin (e.g. after a
+    fixed -> auto policy restore) otherwise keeps the samplerate status
+    payload reporting ``mode=fixed`` while the persisted policy is auto.
+
+    ``app_policy`` carries the in-flight policy of a policy-change transition
+    (the persisted policy is still the old one at rate-application time); it
+    defaults to the persisted policy.  ``status`` avoids a re-read when the
+    caller already holds a fresh samplerate status (the ``default_rate`` field
+    is stable across the reconciliation, so a pre-write snapshot is safe).
+    """
+    policy = dict(app_policy) if app_policy else load_sample_rate_policy()
+    if policy.get("mode") != "auto":
+        return False
+    if status is None:
+        try:
+            status = get_samplerate_status()
+        except Exception:
+            return False
+    default_rate = status.get("default_rate")
+    if not isinstance(default_rate, int) or expected_rate != default_rate:
+        return False
+    try:
+        set_pipewire_force_rate(0)
+    except Exception as exc:
+        logger.warning(
+            "Auto-policy force-rate clear failed: default_rate=%s error=%s",
+            default_rate, exc,
+        )
+        return False
+    logger.info(
+        "Auto-policy force-rate cleared at default rate=%s (expected=%s)",
+        default_rate, expected_rate,
+    )
     return True
 
 
