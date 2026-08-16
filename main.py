@@ -2676,9 +2676,9 @@ async def _shutdown_lifespan_resources() -> None:
         await cleanup("background-tasks", drain_background_tasks)
     # Watcher subsystems own their task lifecycles; stopping them cancels
     # their in-flight tasks and releases their state.
-    spotify_playerctl_watch.stop()
-    radio_reconnect.stop()
-    silent_active_recovery.stop()
+    await cleanup("spotify-watch", spotify_playerctl_watch.stop)
+    await cleanup("radio-reconnect", radio_reconnect.stop)
+    await cleanup("silent-active-recovery", silent_active_recovery.stop)
     runtime.lifecycle_background_tasks.clear()
 
     if runtime.player_instance is not None:
