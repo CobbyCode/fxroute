@@ -19,6 +19,7 @@ venv/
 
 # Runtime / temp
 /tmp/
+temp/
 *.sock
 media/cache/
 
