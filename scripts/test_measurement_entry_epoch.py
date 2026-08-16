@@ -317,7 +317,7 @@ class MeasurementEntryEpochTests(unittest.IsolatedAsyncioTestCase):
             await autosub._auto_sub_lock.acquire()
         try:
             with patch.object(main, "measurement_sr_session", self.session), patch.object(
-                autosub.runners, "_finish_auto_sub_worker", new=AsyncMock()
+                autosub.runners.optimize_22, "_finish_auto_sub_worker", new=AsyncMock()
             ) as finish:
                 await autosub._run_auto_sub_22_optimize(
                     job_id=job_id,

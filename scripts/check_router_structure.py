@@ -20,7 +20,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-MODULES = ("measurement/spl_calibration.py", "library/api.py", "measurement/autosub/deps.py", "measurement/autosub/candidates.py", "measurement/autosub/scoring.py", "measurement/autosub/jobs.py", "measurement/autosub/measurement.py", "measurement/autosub/runners.py", "measurement/session.py")
+MODULES = ("measurement/spl_calibration.py", "library/api.py", "measurement/autosub/deps.py", "measurement/autosub/candidates.py", "measurement/autosub/scoring.py", "measurement/autosub/jobs.py", "measurement/autosub/measurement.py", "measurement/autosub/runners/start.py", "measurement/autosub/runners/optimize_22.py", "measurement/autosub/runners/optimize_22_stereo.py", "measurement/autosub/runners/optimize.py", "measurement/session.py")
 # Every production module under the subsystem packages must stay free of
 # main.py imports; discovered from the package layout so new modules are
 # covered automatically.  __init__.py files are intentionally empty and

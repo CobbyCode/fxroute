@@ -39,7 +39,10 @@ AUDIT_FILES = (
     "measurement/autosub/scoring.py",
     "measurement/autosub/jobs.py",
     "measurement/autosub/measurement.py",
-    "measurement/autosub/runners.py",
+    "measurement/autosub/runners/start.py",
+    "measurement/autosub/runners/optimize_22.py",
+    "measurement/autosub/runners/optimize_22_stereo.py",
+    "measurement/autosub/runners/optimize.py",
     "measurement/session.py",
     "dsp/api.py",
 )
