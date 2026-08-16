@@ -724,8 +724,14 @@ class PlaybackTransitionCoordinator:
                 # means the previously committed source was physically
                 # restored (test adapters and None returns must keep the
                 # failure latch).
+                # A transition that never closed the output gate (same-graph
+                # fast path) cannot re-confirm a gate it does not own: pass no
+                # gate guard so the abort's source restore runs without the
+                # boundary re-check, exactly like the fast path itself ran.
                 gate_guard = (
-                    lambda stage: self.ensure_output_gate_closed(
+                    None
+                    if not gate_required
+                    else lambda stage: self.ensure_output_gate_closed(
                         transition_id, stage=stage
                     )
                 )

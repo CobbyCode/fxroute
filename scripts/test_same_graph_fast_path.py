@@ -59,7 +59,7 @@ def make_request(
 class FastPathFakeRuntime:
     """Coordinator runtime with a controllable fast-path decision."""
 
-    def __init__(self, *, fast_path_eligible=True):
+    def __init__(self, *, fast_path_eligible=True, fail_stage=None):
         self.events = []
         self.muted = False
         self.dsp_muted = False
@@ -69,9 +69,13 @@ class FastPathFakeRuntime:
         self.playing = True
         self.volume = 100
         self.fast_path_eligible = fast_path_eligible
+        self.fail_stage = fail_stage
+        self.abort_ensure_gate_closed = "unset"
 
     async def _stage(self, name):
         self.events.append(name)
+        if self.fail_stage == name:
+            raise RuntimeError(f"fail {name}")
 
     async def read_hardware_mute(self):
         self.events.append(f"read-mute:{self.muted}")
@@ -179,10 +183,11 @@ class FastPathFakeRuntime:
 
     async def abort_failed_transition(self, request, snapshot, *, target_staged, ensure_gate_closed=None):
         await self._stage("abort")
-        return None
+        self.abort_ensure_gate_closed = ensure_gate_closed
+        return True
 
     def target_source_staged(self, request):
-        return False
+        return True
 
 
 def make_coordinator(runtime, *, committed=True):
@@ -280,6 +285,31 @@ class SameGraphFastPathCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         result = await coordinator.execute(make_request())
         self.assertTrue(result.committed)
         self.assertNotIn("evaluate-fast-path", runtime.events)
+
+    async def test_failed_fast_path_restores_without_gate_guard(self):
+        runtime = FastPathFakeRuntime(fast_path_eligible=True, fail_stage="verify-fast")
+        coordinator = make_coordinator(runtime)
+        with self.assertRaises(PlaybackTransitionFailure):
+            await coordinator.execute(make_request())
+        # The gate was never closed by the fast path, so the abort must not
+        # receive a gate-ownership guard; the restore runs ungated.
+        self.assertIsNone(runtime.abort_ensure_gate_closed)
+        self.assertFalse(coordinator.gate.closed)
+        self.assertFalse(coordinator.gate.failure_latched)
+        self.assertIn("abort", runtime.events)
+        self.assertIn("verify-fast", runtime.events)
+        # The abort reported a restored source, so the shared cleanup does not
+        # latch and the open gate stays open.
+        self.assertEqual(coordinator.last_error["ok"], False)
+
+    async def test_full_path_failure_still_passes_gate_guard(self):
+        runtime = FastPathFakeRuntime(fast_path_eligible=False, fail_stage="verify-graph")
+        coordinator = make_coordinator(runtime)
+        with self.assertRaises(PlaybackTransitionFailure):
+            await coordinator.execute(make_request())
+        # The full path closed the gate, so the abort must re-confirm it.
+        self.assertTrue(callable(runtime.abort_ensure_gate_closed))
+        self.assertIn("abort", runtime.events)
 
 
 class _PlayerDouble:
