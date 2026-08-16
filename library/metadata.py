@@ -155,6 +155,7 @@ class LibraryMetadataStore:
                     disc_number INTEGER,
                     duration REAL,
                     sample_rate_hz INTEGER,
+                    favorite INTEGER NOT NULL DEFAULT 0,
                     play_count INTEGER NOT NULL DEFAULT 0,
                     last_played_at TEXT,
                     last_seen_at TEXT,
@@ -164,8 +165,10 @@ class LibraryMetadataStore:
             )
             self._ensure_column(conn, "tracks", "play_count", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column(conn, "tracks", "last_played_at", "TEXT")
+            self._ensure_column(conn, "tracks", "favorite", "INTEGER NOT NULL DEFAULT 0")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_tracks_missing_since ON tracks(missing_since)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_tracks_play_count ON tracks(play_count DESC, last_played_at DESC)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_tracks_favorite_play_count ON tracks(favorite DESC, play_count DESC, last_played_at DESC)")
 
     def _ensure_column(self, conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
         existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
@@ -559,6 +562,24 @@ class LibraryMetadataStore:
                 if missing_ts <= cutoff:
                     conn.execute("DELETE FROM tracks WHERE rel_path = ?", (row["rel_path"],))
 
+    def set_track_favorite(self, track_id: str, favorite: bool) -> dict[str, Any]:
+        """Persist a local track's favorite state without touching play stats."""
+        track_id = str(track_id or "").strip()
+        if not track_id:
+            return {"track_id": track_id, "favorite": bool(favorite)}
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE tracks SET favorite = ? WHERE track_id = ? AND missing_since IS NULL",
+                (1 if favorite else 0, track_id),
+            )
+            row = conn.execute(
+                "SELECT track_id, favorite FROM tracks WHERE track_id = ? AND missing_since IS NULL",
+                (track_id,),
+            ).fetchone()
+        if row:
+            return {"track_id": row["track_id"], "favorite": bool(row["favorite"])}
+        return {"track_id": track_id, "favorite": bool(favorite)}
+
     def increment_track_play_count(self, track_id: str) -> None:
         track_id = str(track_id or "").strip()
         if not track_id:
@@ -583,10 +604,11 @@ class LibraryMetadataStore:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT track_id, play_count, last_played_at
+                SELECT track_id, play_count, last_played_at, favorite
                 FROM tracks
-                WHERE missing_since IS NULL AND COALESCE(play_count, 0) > 0
-                ORDER BY play_count DESC, COALESCE(last_played_at, '') DESC, title COLLATE NOCASE
+                WHERE missing_since IS NULL
+                  AND (favorite = 1 OR COALESCE(play_count, 0) > 0)
+                ORDER BY favorite DESC, play_count DESC, COALESCE(last_played_at, '') DESC, title COLLATE NOCASE
                 LIMIT ?
                 """,
                 (safe_limit,),

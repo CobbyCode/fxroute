@@ -32,6 +32,7 @@ class Track:
     duration: Optional[float] = None  # seconds
     path: Optional[Path] = None  # for local files
     sample_rate_hz: Optional[int] = None
+    favorite: bool = False  # user-starred track, independent of album favorite
 
     def to_dict(self):
         return {
@@ -49,6 +50,7 @@ class Track:
             "duration": self.duration,
             "path": str(self.path) if self.path else None,
             "sample_rate_hz": self.sample_rate_hz,
+            "favorite": self.favorite,
         }
 
 

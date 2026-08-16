@@ -569,6 +569,7 @@ class LibraryScanner:
             duration=float(cached["duration"]) if cached.get("duration") is not None else None,
             path=filepath,
             sample_rate_hz=int(cached["sample_rate_hz"]) if cached.get("sample_rate_hz") else None,
+            favorite=bool(cached.get("favorite")),
         )
 
     def _track_cache_payload(self, track: Track, rel_path: str, stat: os.stat_result) -> Dict[str, Any]:
@@ -824,6 +825,15 @@ class LibraryScanner:
     def set_album_favorite(self, album_id: str, favorite: bool) -> Dict[str, Any]:
         return self.metadata_store.set_album_favorite(album_id, favorite)
 
+    def set_track_favorite(self, track_id: str, favorite: bool) -> Dict[str, Any]:
+        """Persist a track favorite and keep the in-memory track cache in sync."""
+        result = self.metadata_store.set_track_favorite(track_id, favorite)
+        favorite_value = bool(result.get("favorite"))
+        for track in self._track_cache:
+            if track.id == track_id:
+                track.favorite = favorite_value
+        return result
+
     def get_album_discover(self, album_id: str, force: bool = False) -> Dict[str, Any]:
         return self.metadata_store.get_album_discover(album_id, force=force)
 
@@ -840,6 +850,7 @@ class LibraryScanner:
             payload = track.to_dict()
             payload["play_count"] = int(stat.get("play_count") or 0)
             payload["last_played_at"] = stat.get("last_played_at")
+            payload["favorite"] = bool(stat.get("favorite"))
             result.append(payload)
         return result
 

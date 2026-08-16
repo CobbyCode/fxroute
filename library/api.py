@@ -421,6 +421,21 @@ async def set_album_favorite(album_id: str, request: Request):
     return {"status": "ok", "album_id": album_id, "favorite": bool(metadata.get("favorite"))}
 
 
+@router.post("/api/tracks/{track_id:path}/favorite")
+async def set_track_favorite(track_id: str, request: Request):
+    """Persist a local track's favorite state independently of its album."""
+    library_scanner, _settings = _library_runtime()
+    if not library_scanner:
+        raise HTTPException(status_code=503, detail="Library not available")
+    tracks = await _run_blocking(library_scanner.get_tracks, authoritative=True)
+    if track_id not in {track.id for track in tracks}:
+        raise HTTPException(status_code=404, detail="Track not found")
+    body = await request.json()
+    favorite = bool(body.get("favorite"))
+    result = library_scanner.set_track_favorite(track_id, favorite)
+    return {"status": "ok", "track_id": track_id, "favorite": bool(result.get("favorite"))}
+
+
 @router.get("/api/albums/{album_id}/discover")
 async def get_album_discover(album_id: str, refresh: bool = False):
     """Return cached similar-music suggestions for an album."""
