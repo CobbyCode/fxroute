@@ -187,6 +187,7 @@ class SharedPreparePathTests(unittest.IsolatedAsyncioTestCase):
                 "playing": False,
                 "ended": False,
                 "position": 0.0,
+                "duration": 0.0,
                 "volume": 100,
                 "playlist_pos": None,
             }
@@ -200,6 +201,9 @@ class SharedPreparePathTests(unittest.IsolatedAsyncioTestCase):
         def loadfile(self, path, mode="replace", start_paused=None):
             self.calls.append(("loadfile", path, mode, start_paused))
             self.state["current_file"] = path
+            # A real mpv reports a positive duration once the file/stream is
+            # actually loaded; the readiness wait requires it.
+            self.state["duration"] = 300.0
             self.state["paused"] = True if start_paused is None else bool(start_paused)
             self.state["playing"] = False
 

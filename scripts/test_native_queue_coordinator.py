@@ -73,6 +73,7 @@ class _QueuePlayer:
             "playing": False,
             "ended": False,
             "position": 0.0,
+            "duration": 0.0,
             "volume": 100,
             "playlist_pos": None,
         }
@@ -91,6 +92,8 @@ class _QueuePlayer:
         else:
             self.playlist = [path]
             self.state["current_file"] = path
+            # A real mpv reports a positive duration once the file is loaded.
+            self.state["duration"] = 300.0
             self.state["paused"] = True if start_paused is None else bool(start_paused)
             self.state["playing"] = False
 
@@ -99,6 +102,7 @@ class _QueuePlayer:
         self.state["playlist_pos"] = index
         if 0 <= index < len(self.playlist):
             self.state["current_file"] = self.playlist[index]
+            self.state["duration"] = 300.0
 
     def move_playlist_entry(self, old_index, new_index):
         self.calls.append(("playlist-move", old_index, new_index))

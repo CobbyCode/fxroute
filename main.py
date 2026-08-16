@@ -1484,7 +1484,16 @@ async def _wait_for_player_current_file(expected_url: str | None, timeout_ms: in
     deadline = time.monotonic() + max(timeout_ms, 0) / 1000
     while time.monotonic() <= deadline:
         state = runtime.player_instance.state
-        if state.get("current_file") == expected_url:
+        # ``loadfile`` sets ``current_file`` optimistically before mpv has
+        # actually opened the file; ``duration`` is only reported by the mpv
+        # property observer once the file/stream is loaded.  Requiring a
+        # positive duration prevents a transition from seeking (or otherwise
+        # mutating) a not-yet-loaded source, which mpv rejects with
+        # "error running command".
+        if (
+            state.get("current_file") == expected_url
+            and float(state.get("duration") or 0.0) > 0.0
+        ):
             return True
         await asyncio.sleep(PIPEWIRE_HANDOFF_POLL_INTERVAL_MS / 1000)
     return False
