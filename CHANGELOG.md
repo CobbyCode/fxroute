@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.9.12 (2026-08-16)
+
+### Native DSP engine
+- Replaced the EasyEffects processing backend with the integrated native DSP
+  engine, restoring full effect, routing and measurement parity and fixing
+  lifecycle and topology regressions.
+- Made DSP graph swaps epoch-safe, grouped routes by output channel, and
+  preserved DSP state across live updates.
+- Unified volume ownership in one state machine and redesigned the playback
+  peak indicator as a fixed-size chip with a pre-master Peak/VU tap and split
+  Loudness master gain.
+
+### Playback & handoffs
+- Added a same-graph fast path that switches same-rate local tracks without
+  closing the output gate or re-verifying the graph (~0.5 s instead of ~4 s),
+  and restored failed fast-path sources without a gate it never held.
+- Hardened mpv handoff commits with live IPC readback, waited for mpv file
+  load before seeking, and added a same-rate resume fast path.
+- Held the optimistic radio station highlight across play transitions.
+
+### System & security
+- Added systemd-logind suspend/shutdown with a narrowly scoped polkit rule
+  and probed capabilities as methods.
+- Closed the SSRF DNS-rebinding gap and rejected truncated DSP replies.
+- Provisioned LV2 DSP plugins and hardened headless installer paths.
+
+### Maintainability
+- Packaged Measurement, Playback, DSP, Library, Radio and Audio subsystems
+  into their own packages and extracted runtime watchers, orchestration and
+  DSP HTTP API from main.py, with explicit resource ownership.
+- Consolidated samplerate reconciliation, peak monitor state and
+  cancellation-safe process shutdown; no user-facing behavior change was
+  intended beyond the native DSP engine switch.
+
 ## 0.9.11 (2026-08-13)
 
 - Refined Advanced Measurement UI wording and documentation.
