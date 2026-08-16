@@ -10,7 +10,7 @@ Verifies that scripts/fxroute_obsolete_root_cleanup.py:
 - is idempotent (running twice is harmless);
 - skips removal when the new package layout is not fully installed;
 - the manifest is authoritative: it covers every root module renamed into
-  a package by the migration commits and none of the eight intentionally
+  a package by the migration commits and none of the nine intentionally
   remaining root Python modules.
 """
 
@@ -28,6 +28,7 @@ HELPER = ROOT / "scripts" / "fxroute_obsolete_root_cleanup.py"
 REMAINING_ROOT_MODULES = (
     "config.py",
     "downloader.py",
+    "http_errors.py",
     "install_info.py",
     "main.py",
     "models.py",
@@ -201,7 +202,7 @@ class ObsoleteRootManifestCompletenessTests(unittest.TestCase):
         overlap = sorted(set(cleanup.OBSOLETE_ROOT_MODULES) & set(REMAINING_ROOT_MODULES))
         self.assertEqual(overlap, [], f"manifest must not list remaining modules: {overlap}")
 
-    def test_remaining_root_modules_are_the_expected_eight(self):
+    def test_remaining_root_modules_are_the_expected_nine(self):
         tracked = subprocess.run(
             ["git", "-C", str(ROOT), "ls-files", "*.py"],
             capture_output=True,
