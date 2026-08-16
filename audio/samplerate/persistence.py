@@ -338,6 +338,8 @@ def _build_audio_output_mode_payload(
         for other_key in other_storage_keys:
             if other_key in existing:
                 payload[other_key] = existing[other_key]
+        if "device_modes" in existing:
+            payload["device_modes"] = existing["device_modes"]
         # Preserve existing 2.1 subwoofer block for BC. The 2.2 save owns the
         # global fields, so keep the legacy block's crossover/highpass in sync
         # with the top-level 2.2 payload; otherwise a later 2.1 migration (or
@@ -364,6 +366,8 @@ def _build_audio_output_mode_payload(
         for bc_key in ("subwoofers", "subwoofers_22", "subwoofers_22_stereo"):
             if bc_key in existing:
                 payload[bc_key] = existing[bc_key]
+        if "device_modes" in existing:
+            payload["device_modes"] = existing["device_modes"]
 
     return payload
 
@@ -384,4 +388,22 @@ def _load_raw_audio_output_mode() -> dict[str, Any]:
         return json.loads(path.read_text())
     except Exception:
         return {}
+
+def _load_device_output_modes() -> dict[str, str]:
+    """Load the last-valid-mode map per selected output device key.
+
+    The map is a hint only: callers must still verify that the currently
+    recognized device can carry the remembered mode and degrade otherwise.
+    Only known modes with non-empty string keys are returned.
+    """
+    device_modes = _load_raw_audio_output_mode().get("device_modes")
+    if not isinstance(device_modes, dict):
+        return {}
+    valid_modes = {OUTPUT_MODE_STEREO, *OUTPUT_MODE_SUBWOOFER_MODES}
+    return {
+        str(key): str(value)
+        for key, value in device_modes.items()
+        if isinstance(key, str) and key.strip()
+        and isinstance(value, str) and value in valid_modes
+    }
 

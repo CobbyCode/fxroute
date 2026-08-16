@@ -2078,7 +2078,12 @@ async function saveAudioOutputSelection(key) {
             output_mode: data.output_mode || state.settings.audioOutputs.output_mode,
         };
         renderSettingsPanel();
-        showToast('Audio output updated', 'success');
+        const modeAdjustment = data.output_mode?.mode_adjustment;
+        if (modeAdjustment?.message) {
+            showToast(modeAdjustment.message, 'info');
+        } else {
+            showToast('Audio output updated', 'success');
+        }
     } catch (error) {
         state.settings.audioOutputs.pendingSelectionKey = null;
         renderSettingsPanel();

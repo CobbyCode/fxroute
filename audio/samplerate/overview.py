@@ -13,6 +13,7 @@ from .constants import (
     NON_SELECTABLE_OUTPUT_KEYS,
     OUTPUT_MODE_STEREO,
     OUTPUT_MODE_SUBWOOFER_21,
+    OUTPUT_MODE_SUBWOOFER_22,
     OUTPUT_MODE_SUBWOOFER_22_STEREO,
     OUTPUT_MODE_SUBWOOFER_MODES,
     PIPEWIRE_DEFAULT_RATE_OPTIONS,
@@ -46,6 +47,7 @@ from .persistence import (
     _load_audio_output_mode,
     _load_audio_output_selection,
     _load_audio_source_selection,
+    _load_device_output_modes,
     _load_pipewire_clock_rate_config,
     _save_audio_output_selection,
     _save_audio_source_selection,
@@ -353,6 +355,15 @@ def get_audio_source_overview() -> dict[str, Any]:
         "notes": notes,
     }
 
+def _output_mode_label(mode: str) -> str:
+    if mode == OUTPUT_MODE_SUBWOOFER_21:
+        return "2.1"
+    if mode == OUTPUT_MODE_SUBWOOFER_22_STEREO:
+        return "2.2 Stereo Bass"
+    if mode == OUTPUT_MODE_SUBWOOFER_22:
+        return "2.2"
+    return "Stereo"
+
 def set_audio_output_selection(key: str) -> dict[str, Any]:
     normalized_key = (key or "").strip()
     if not normalized_key:
@@ -372,20 +383,53 @@ def set_audio_output_selection(key: str) -> dict[str, Any]:
         and policy.get("rate") not in (selected_output.get("supported_rates") or [])
     ):
         raise ValueError("Selected output does not support the configured fixed sample rate")
-    output_mode = _load_audio_output_mode()
-    if output_mode.get("mode") in OUTPUT_MODE_SUBWOOFER_MODES and (selected_output.get("channels") or 0) < 4:
-        label = (
-            "2.1"
-            if output_mode.get("mode") == OUTPUT_MODE_SUBWOOFER_21
-            else "2.2 Stereo Bass"
-            if output_mode.get("mode") == OUTPUT_MODE_SUBWOOFER_22_STEREO
-            else "2.2"
-        )
-        raise ValueError(f"{label} Subwoofer requires a selected multichannel output with at least 4 channels")
+
+    # A deliberate device switch wins over the current output mode: derive the
+    # mode this device can actually carry instead of refusing the switch.  A
+    # subwoofer mode on a stereo-only device falls back to Stereo, and a mode
+    # remembered for this device is restored when the device can carry it.
+    valid_modes = {OUTPUT_MODE_STEREO, *OUTPUT_MODE_SUBWOOFER_MODES}
+    channels = int(selected_output.get("channels") or 0)
+    current_mode = _load_audio_output_mode()
+    current_mode_name = str(current_mode.get("mode") or OUTPUT_MODE_STEREO).strip()
+    candidate_mode = (_load_device_output_modes().get(normalized_key) or current_mode_name)
+    if candidate_mode not in valid_modes:
+        candidate_mode = OUTPUT_MODE_STEREO
+    effective_mode = candidate_mode
+    if effective_mode in OUTPUT_MODE_SUBWOOFER_MODES and channels < 4:
+        effective_mode = OUTPUT_MODE_STEREO
+    mode_changed = effective_mode != current_mode_name
 
     _set_default_sink(selected_output["name"])
     _save_audio_output_selection(selected_output["key"])
-    return get_audio_output_overview()
+    if mode_changed:
+        persist_audio_output_mode(_build_audio_output_mode_payload(effective_mode))
+
+    overview = get_audio_output_overview()
+    if mode_changed:
+        reason = (
+            "device-channel-capacity"
+            if candidate_mode in OUTPUT_MODE_SUBWOOFER_MODES and channels < 4
+            else "device-remembered-mode"
+        )
+        if reason == "device-channel-capacity":
+            message = (
+                f"Output mode switched to {_output_mode_label(effective_mode)} — "
+                f"selected device supports {channels} channels."
+            )
+        else:
+            message = (
+                f"Output mode restored to {_output_mode_label(effective_mode)} — "
+                "last used with this device."
+            )
+        overview["output_mode"]["mode_adjustment"] = {
+            "adjusted": True,
+            "previous_mode": current_mode_name,
+            "mode": effective_mode,
+            "reason": reason,
+            "message": message,
+        }
+    return overview
 
 def prepare_audio_output_mode(
     mode: str,
@@ -424,11 +468,20 @@ def prepare_audio_output_mode(
     return {"overview": overview, "config": saved}
 
 def persist_audio_output_mode(config: Mapping[str, Any]) -> dict[str, Any]:
-    """Persist a previously validated output-mode target after graph commit."""
+    """Persist a previously validated output-mode target after graph commit.
+
+    The mode is also remembered as the last valid mode of the currently
+    selected output device so a later device switch can restore it.
+    """
     payload = dict(config or {})
     mode = str(payload.get("mode") or "").strip()
     if mode not in {OUTPUT_MODE_STEREO, *OUTPUT_MODE_SUBWOOFER_MODES}:
         raise ValueError(f"Unknown output mode: {mode}")
+    device_key = (_load_audio_output_selection() or {}).get("selected_key")
+    if device_key:
+        device_modes = dict(_load_device_output_modes())
+        device_modes[device_key] = mode
+        payload["device_modes"] = device_modes
     path = _audio_output_mode_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2) + "\n")

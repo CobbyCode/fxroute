@@ -86,6 +86,7 @@ from audio.samplerate.persistence import (
     _load_audio_output_mode,
     _load_audio_output_selection,
     _load_audio_source_selection,
+    _load_device_output_modes,
     _load_pipewire_clock_rate_config,
     _load_raw_audio_output_mode,
     _normalize_single_sub_config,
