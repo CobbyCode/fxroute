@@ -279,6 +279,7 @@ let pendingPlaybackRequestId = 0;
 let nowPlayingCueTimer = null;
 let nowPlayingCueCoverAbort = null;
 let pendingFooterSingleTrackStart = null;
+let pendingOptimisticTrack = null;
 let lastRadioTrack = null;
 let pauseActionRequestId = 0;
 const FOOTER_SINGLE_TRACK_START_LOCK_MS = 5000;
@@ -2756,6 +2757,11 @@ function clearPendingFooterSingleTrackStart(requestId = null) {
     if (requestId !== null && pendingFooterSingleTrackStart.requestId !== requestId) return;
     pendingFooterSingleTrackStart = null;
 }
+function clearPendingOptimisticTrack(requestId = null) {
+    if (!pendingOptimisticTrack) return;
+    if (requestId !== null && pendingOptimisticTrack.requestId !== requestId) return;
+    pendingOptimisticTrack = null;
+}
 function getLibraryPlaybackContext(playback = state.playback) {
     const currentTrack = playback?.current_track;
     const queue = playback?.queue || {};
@@ -3773,11 +3779,15 @@ function highlightActiveTrack() {
         document.querySelectorAll('.station-card.active, .track-item.active').forEach(item => item.classList.remove('active'));
         return;
     }
+    // A play request holds its optimistic target until the server confirms the
+    // commit, so a stale pre-commit WebSocket push cannot bounce the highlight
+    // back to the previous station while the transition is still running.
+    const displayTrack = pendingOptimisticTrack?.track || state.playback.current_track;
     // Radio stations
     document.querySelectorAll('.station-card').forEach(card => {
         const stationId = card.dataset.stationId;
-        const activeStationId = state.playback.current_track && state.playback.current_track.source === 'radio'
-            ? state.playback.current_track.id.replace(/^radio_/, '')
+        const activeStationId = displayTrack && displayTrack.source === 'radio'
+            ? displayTrack.id.replace(/^radio_/, '')
             : null;
         if (activeStationId && activeStationId === stationId) {
             card.classList.add('active');
@@ -3788,7 +3798,7 @@ function highlightActiveTrack() {
     // Library tracks
     document.querySelectorAll('.track-item').forEach(item => {
         const trackId = item.dataset.trackId;
-        if (state.playback.current_track && state.playback.current_track.id === trackId) {
+        if (displayTrack && displayTrack.id === trackId) {
             item.classList.add('active');
         } else {
             item.classList.remove('active');
@@ -5198,6 +5208,7 @@ async function playRadio(stationId) {
     };
     rememberLastRadioTrack(optimisticRadioTrack);
     state.playback.current_track = optimisticRadioTrack;
+    pendingOptimisticTrack = { requestId, track: optimisticRadioTrack };
     state.playback.live_title = null;
     state.playback.radio_metadata = null;
     state.playback.playing = true;
@@ -5219,6 +5230,7 @@ async function playRadio(stationId) {
         if (!resp.ok) throw new Error(formatTransitionErrorDetail(data.detail, 'Play command failed'));
         if (requestId !== pendingPlaybackRequestId) return;
         playbackActionInFlight = false;
+        clearPendingOptimisticTrack(requestId);
         if (data.playback) {
             mergePlaybackState(data.playback);
         }
@@ -5238,6 +5250,7 @@ async function playRadio(stationId) {
     } catch (e) {
         if (requestId !== pendingPlaybackRequestId) return;
         playbackActionInFlight = false;
+        clearPendingOptimisticTrack(requestId);
         state.playback.playing = false;
         state.playback.paused = false;
         updatePlaybackUI();
@@ -5268,6 +5281,7 @@ async function playLocal(trackId) {
     armFooterContentFreeze();
     libraryModeSyncArmed = true;
     state.playback.current_track = track;
+    pendingOptimisticTrack = { requestId, track };
     state.playback.live_title = null;
     state.playback.playing = true;
     state.playback.paused = false;
@@ -5307,6 +5321,7 @@ async function playLocal(trackId) {
         if (!resp.ok) throw new Error(formatTransitionErrorDetail(data.detail, 'Play command failed'));
         if (requestId !== pendingPlaybackRequestId) return;
         playbackActionInFlight = false;
+        clearPendingOptimisticTrack(requestId);
         let playedTrack = track;
         if (data.playback) {
             mergePlaybackState(data.playback);
@@ -5320,6 +5335,7 @@ async function playLocal(trackId) {
     } catch (e) {
         if (requestId !== pendingPlaybackRequestId) return;
         playbackActionInFlight = false;
+        clearPendingOptimisticTrack(requestId);
         clearPendingFooterSingleTrackStart(requestId);
         libraryModeSyncArmed = false;
         state.playback.playing = false;
