@@ -14,7 +14,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -390,6 +390,32 @@ class AutoPolicyForceRateClearTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual(written, [])
 
+    async def test_clear_helper_idle_clears_non_default_pin(self):
+        # The stop path clears any leftover pin under an auto policy: with no
+        # active source, a pin at a non-default rate (e.g. a high-res track
+        # that just stopped) is stale and must not linger in the payload.
+        written = []
+        with patch.object(samplerate, "set_pipewire_force_rate", side_effect=lambda rate: written.append(rate)), \
+             patch.object(samplerate, "load_sample_rate_policy", return_value={"mode": "auto", "rate": None}):
+            self.assertTrue(
+                samplerate.clear_auto_policy_force_rate(
+                    96000, status=self._status(96000, 96000), idle=True,
+                )
+            )
+        self.assertEqual(written, [0])
+
+    async def test_clear_helper_idle_still_respects_fixed_policy(self):
+        # idle only relaxes the default-rate guard; the auto-policy gate stays.
+        written = []
+        with patch.object(samplerate, "set_pipewire_force_rate", side_effect=lambda rate: written.append(rate)), \
+             patch.object(samplerate, "load_sample_rate_policy", return_value={"mode": "fixed", "rate": 96000}):
+            self.assertFalse(
+                samplerate.clear_auto_policy_force_rate(
+                    96000, status=self._status(96000, 96000), idle=True,
+                )
+            )
+        self.assertEqual(written, [])
+
     async def test_clear_helper_skips_fixed_policy(self):
         written = []
         with patch.object(samplerate, "set_pipewire_force_rate", side_effect=lambda rate: written.append(rate)), \
@@ -471,6 +497,52 @@ class AutoPolicyForceRateClearTests(unittest.IsolatedAsyncioTestCase):
             result = await runtime.commit_sample_rate_policy(request)
         self.assertEqual(result["sample_rate_policy"]["mode"], "fixed")
         clear.assert_not_awaited()
+
+class StopRouteForceRateClearTests(unittest.IsolatedAsyncioTestCase):
+    """The stop route clears a leftover force-rate pin under an auto policy.
+
+    After playback stops there is no active source, so a force-rate left by the
+    last source rate is stale: the live samplerate payload would keep reporting
+    the pin (and its mode summary would mismatch the auto policy).  The route
+    clears it with the idle flag; fixed policies keep their pin by design.
+    """
+
+    def _player(self) -> SimpleNamespace:
+        return SimpleNamespace(
+            _running=True,
+            stop_playback=Mock(),
+            state={},
+        )
+
+    async def test_stop_route_clears_leftover_force_rate_when_auto(self) -> None:
+        player = self._player()
+        with patch.object(main.runtime, "player_instance", player), \
+             patch.object(main, "_mark_playback_intent_changed"), \
+             patch.object(main, "_mark_player_state_authoritative"), \
+             patch.object(main.playback_state, "current_track_info", None), \
+             patch.object(main.radio_reconnect, "reset"), \
+             patch.object(main.playback_queue.queue, "reset"), \
+             patch.object(main.playback_queue.queue, "reset_mpv_loop_state"), \
+             patch.object(main, "get_samplerate_status", return_value={"active_rate": 96000}), \
+             patch.object(samplerate, "clear_auto_policy_force_rate", return_value=True) as clear:
+            result = await main.stop_playback()
+        self.assertEqual(result["status"], "stopped")
+        clear.assert_called_once_with(96000, status={"active_rate": 96000}, idle=True)
+
+    async def test_stop_route_tolerates_status_read_failure(self) -> None:
+        player = self._player()
+        with patch.object(main.runtime, "player_instance", player), \
+             patch.object(main, "_mark_playback_intent_changed"), \
+             patch.object(main, "_mark_player_state_authoritative"), \
+             patch.object(main.playback_state, "current_track_info", None), \
+             patch.object(main.radio_reconnect, "reset"), \
+             patch.object(main.playback_queue.queue, "reset"), \
+             patch.object(main.playback_queue.queue, "reset_mpv_loop_state"), \
+             patch.object(main, "get_samplerate_status", side_effect=RuntimeError("no pipewire")), \
+             patch.object(samplerate, "clear_auto_policy_force_rate", return_value=False) as clear:
+            result = await main.stop_playback()
+        self.assertEqual(result["status"], "stopped")
+        clear.assert_called_once_with(0, status=None, idle=True)
 
     def test_status_mode_follows_persisted_policy(self):
         # mode is a payload summary of the persisted policy.  A leftover

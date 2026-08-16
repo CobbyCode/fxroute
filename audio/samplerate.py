@@ -2184,6 +2184,7 @@ def clear_auto_policy_force_rate(
     *,
     app_policy: Mapping[str, Any] | None = None,
     status: Mapping[str, Any] | None = None,
+    idle: bool = False,
 ) -> bool:
     """Clear the live force-rate when an auto policy holds the graph at its default rate.
 
@@ -2197,6 +2198,11 @@ def clear_auto_policy_force_rate(
     defaults to the persisted policy.  ``status`` avoids a re-read when the
     caller already holds a fresh samplerate status (the ``default_rate`` field
     is stable across the reconciliation, so a pre-write snapshot is safe).
+
+    ``idle`` marks an explicit stop/idle path: there is no active source, so
+    any leftover pin is stale and is cleared regardless of the current rate
+    (the default-rate guard below only applies to live playback, where a
+    non-default pin is what keeps the sink on the source rate).
     """
     policy = dict(app_policy) if app_policy else load_sample_rate_policy()
     if policy.get("mode") != "auto":
@@ -2206,20 +2212,21 @@ def clear_auto_policy_force_rate(
             status = get_samplerate_status()
         except Exception:
             return False
-    default_rate = status.get("default_rate")
-    if not isinstance(default_rate, int) or expected_rate != default_rate:
-        return False
+    if not idle:
+        default_rate = status.get("default_rate")
+        if not isinstance(default_rate, int) or expected_rate != default_rate:
+            return False
     try:
         set_pipewire_force_rate(0)
     except Exception as exc:
         logger.warning(
             "Auto-policy force-rate clear failed: default_rate=%s error=%s",
-            default_rate, exc,
+            status.get("default_rate"), exc,
         )
         return False
     logger.info(
-        "Auto-policy force-rate cleared at default rate=%s (expected=%s)",
-        default_rate, expected_rate,
+        "Auto-policy force-rate cleared at default rate=%s (expected=%s idle=%s)",
+        status.get("default_rate"), expected_rate, idle,
     )
     return True
 

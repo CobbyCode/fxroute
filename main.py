@@ -3285,6 +3285,20 @@ async def stop_playback():
     playback_queue.queue.reset_mpv_loop_state()
     runtime.player_instance.stop_playback()
     _mark_player_state_authoritative(runtime.player_instance.state)
+    # Playback is idle: a force-rate pin left by the last source rate is stale
+    # under an auto policy and would keep the live samplerate payload pinned to
+    # that rate (and previously misreported mode=fixed).  Clear it so the
+    # graph is unpinned and the payload reflects the auto policy.  Fixed
+    # policies keep their pin (they intentionally hold the configured rate).
+    try:
+        status = get_samplerate_status()
+    except Exception:
+        status = None
+    samplerate.clear_auto_policy_force_rate(
+        int((status or {}).get("active_rate") or 0) or 0,
+        status=status,
+        idle=True,
+    )
     return {"status": "stopped"}
 
 @app.post("/api/volume")
@@ -3828,7 +3842,7 @@ async def save_audio_output_selection_route(request: Request):
 
     try:
         result = set_audio_output_selection(output_key)
-        await dsp_orchestrator.sync_runtime(result, reason="output-selection")
+        await dsp_orchestrator.sync_runtime(result, reason="output-selection", retry_on_stale=True)
         result = with_subwoofer_derived_delays(result)
         if runtime.dsp_runtime is not None:
             result["output_mode"] = {
@@ -3883,7 +3897,7 @@ async def save_audio_output_mode_route(request: Request):
             previous_overview = get_audio_output_overview()
             result = persist_audio_output_mode(target["config"])
             if runtime.dsp_runtime is None:
-                await dsp_orchestrator.sync_runtime(result, reason="output-mode-params")
+                await dsp_orchestrator.sync_runtime(result, reason="output-mode-params", retry_on_stale=True)
             else:
                 try:
                     await runtime.dsp_runtime.guarded_rebuild(

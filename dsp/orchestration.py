@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
@@ -21,6 +22,12 @@ import audio.samplerate as samplerate
 from dsp.runtime import BassManagementConfig
 
 logger = logging.getLogger(__name__)
+
+# Bounds for the post-stale retry: wait at most this long for the sink rate to
+# settle on the authoritative rate, then re-attempt the DSP sync with fresh
+# live state (the stale overview that suppressed the first attempt is dropped).
+STALE_SYNC_RETRY_DEADLINE_S = 30.0
+STALE_SYNC_RETRY_POLL_S = 1.0
 
 
 @dataclass(frozen=True)
@@ -79,8 +86,9 @@ def with_subwoofer_derived_delays(overview: dict) -> dict:
 class DspOrchestrator:
     """Coordinate native DSP runtime sync, link watching, and peak refresh."""
 
-    def __init__(self, deps: DspOrchestrationDeps):
+    def __init__(self, deps: DspOrchestrationDeps, *, stale_retry_deadline_s: float = STALE_SYNC_RETRY_DEADLINE_S):
         self._deps = deps
+        self._stale_retry_deadline_s = stale_retry_deadline_s
 
     async def sync_runtime(
         self,
@@ -89,12 +97,20 @@ class DspOrchestrator:
         reason: str = "unspecified",
         _rate_lock_held: bool = False,
         target_overview: dict | None = None,
+        retry_on_stale: bool = False,
     ) -> dict:
         """Synchronize the native helper from one live, lock-protected rate.
 
         An overview passed by a transition/release caller is only a stale-check
         token. The actual helper config is rebuilt after the final live PipeWire
         read, so a delayed caller cannot restart a helper with its old target.
+
+        When ``retry_on_stale`` is set and the stale-check suppresses the
+        restart because the caller's requested rate does not match the live
+        authoritative rate, a bounded background task re-attempts the sync once
+        the sink settles on the authoritative rate. This closes the gap where a
+        user-initiated output switch during rate-pinned playback persisted the
+        selection but left the graph linked to the previous card forever.
         """
         overview_was_supplied = audio_overview is not None
         overview = audio_overview or self._deps.get_audio_output_overview()
@@ -138,6 +154,14 @@ class DspOrchestrator:
                     "Native DSP sync stale; restart suppressed: reason=%s requested_rate=%s authoritative_rate=%s",
                     reason, requested_rate, authoritative_rate,
                 )
+                if retry_on_stale:
+                    self._deps.create_lifecycle_background_task(
+                        self._sync_after_stale_settle(
+                            reason=reason,
+                            requested_rate=requested_rate,
+                        ),
+                        name=f"dsp-sync-retry:{reason}",
+                    )
                 return overview
             current_overview = samplerate.audio_output_overview_with_effective_rate(
                 current_overview, authoritative_rate,
@@ -172,6 +196,50 @@ class DspOrchestrator:
             return await _sync_locked()
         async with measurement_sr_session.lock:
             return await _sync_locked()
+
+    async def _sync_after_stale_settle(
+        self,
+        *,
+        reason: str,
+        requested_rate: int,
+    ) -> None:
+        """Re-attempt a suppressed DSP sync once the sink rate settles.
+
+        The original overview is deliberately dropped: it carried the stale
+        requested rate. The retry reads the live overview again, so the helper
+        is rebuilt from current state at whatever rate the graph settled on.
+        """
+        deadline = time.monotonic() + self._stale_retry_deadline_s
+        while time.monotonic() <= deadline:
+            try:
+                samplerate_status = self._deps.get_samplerate_status()
+            except Exception as exc:
+                logger.warning(
+                    "DSP sync retry skipped: authoritative samplerate unavailable reason=%s error=%s",
+                    reason, exc,
+                )
+                return
+            authoritative_rate = samplerate.authoritative_sample_rate(samplerate_status)
+            sink_rate = samplerate_status.get("active_rate")
+            if (
+                isinstance(authoritative_rate, int)
+                and authoritative_rate > 0
+                and sink_rate == authoritative_rate
+            ):
+                logger.info(
+                    "DSP sync retry after stale suppression: reason=%s requested_rate=%s settled_rate=%s",
+                    reason, requested_rate, authoritative_rate,
+                )
+                # No overview is passed: the fresh live state decides the rate,
+                # so the stale branch (which compares a caller-provided requested
+                # rate) cannot re-trigger and this retry runs exactly once.
+                await self.sync_runtime(reason=f"{reason}-retry-after-stale")
+                return
+            await self._deps.sleep(STALE_SYNC_RETRY_POLL_S)
+        logger.warning(
+            "DSP sync retry gave up: sink never settled on authoritative rate reason=%s requested_rate=%s",
+            reason, requested_rate,
+        )
 
     async def sync_runtime_at_rate(self, target_rate: int, *, _rate_lock_held: bool = False) -> None:
         """Re-sync through the central live-rate helper path after a rate transition."""
