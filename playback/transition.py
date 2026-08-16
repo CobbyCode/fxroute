@@ -55,6 +55,33 @@ class PlaybackTransitionFailure(RuntimeError):
         }
 
 
+async def stable_graph_readbacks(
+    read: Callable[[], Awaitable[Mapping[str, Any]]],
+    *,
+    count: int = 2,
+) -> tuple[list[Mapping[str, Any]], list[str], bool]:
+    """Collect ``count`` graph readbacks and evaluate canonical stability.
+
+    Stability means every readback reports ``links_complete`` and all
+    readbacks share one signature.  Returns ``(readbacks, signatures,
+    stable)``; callers own the failure handling so each transition keeps its
+    specific message and logging.
+    """
+    readbacks: list[Mapping[str, Any]] = []
+    for _ in range(count):
+        readback = await read()
+        if not isinstance(readback, Mapping):
+            raise RuntimeError("stable graph readback was not a mapping")
+        readbacks.append(readback)
+    signatures = [str(item.get("signature")) for item in readbacks]
+    stable = bool(
+        len(readbacks) == count
+        and all(item.get("links_complete") for item in readbacks)
+        and len(set(signatures)) == 1
+    )
+    return readbacks, signatures, stable
+
+
 @dataclass
 class OutputGateState:
     """Persistent ownership state for the FXRoute hardware-output gate."""
@@ -135,6 +162,65 @@ class TransitionResult:
     state: Mapping[str, Any]
 
 
+class _TransitionStages:
+    """Transition stage tracker owned by one ``execute`` run.
+
+    Records per-stage timing and the failure-stage label, and carries the two
+    cleanup inputs shared by the stage sub-paths: ``gate_required`` (whether
+    this transition ever closed the output gate) and
+    ``target_prepare_started`` (whether a mutating target prepare stage ran).
+    """
+
+    def __init__(self, transition_id: str) -> None:
+        self.transition_id = transition_id
+        self.transition_started = time.monotonic()
+        self.stage = "snapshot"
+        self._stage_started = self.transition_started
+        self._timings: dict[str, float] = {}
+        self.gate_required = False
+        self.target_prepare_started = False
+
+    def enter(self, name: str) -> None:
+        """Enter the next stage, closing the timing of the current one."""
+        now = time.monotonic()
+        self._timings[self.stage] = self._timings.get(self.stage, 0.0) + (
+            now - self._stage_started
+        )
+        self.stage = name
+        self._stage_started = now
+
+    def log(self, outcome: str) -> None:
+        """Record the final stage timing and log the transition outcome."""
+        now = time.monotonic()
+        self._timings[self.stage] = self._timings.get(self.stage, 0.0) + (
+            now - self._stage_started
+        )
+        details = ",".join(
+            f"{name}={duration * 1000:.1f}ms"
+            for name, duration in self._timings.items()
+        )
+        total_ms = (now - self.transition_started) * 1000
+        if outcome == "committed":
+            logger.info(
+                "Playback transition timing: transition_id=%s "
+                "outcome=committed total_ms=%.1f stages=%s",
+                self.transition_id,
+                total_ms,
+                details,
+            )
+        else:
+            logger.warning(
+                "Playback transition timing: transition_id=%s "
+                "outcome=failed stage=%s stage_ms=%.1f total_ms=%.1f "
+                "stages=%s",
+                self.transition_id,
+                self.stage,
+                self._timings.get(self.stage, 0.0) * 1000,
+                total_ms,
+                details,
+            )
+
+
 class TransitionRuntime(Protocol):
     """Application-owned operations invoked only by the coordinator."""
 
@@ -197,14 +283,19 @@ class TransitionRuntime(Protocol):
         snapshot: Mapping[str, Any] | None,
         *,
         target_staged: bool,
-        ensure_gate_closed: Callable[..., Awaitable[None]] | None = None,
-    ) -> bool | None:
-        """Finish a failed handoff; return True only when the previously
-        committed source was fully restored (Coordinator then restores the
-        output gate instead of latching a failure).  ``ensure_gate_closed``
-        is the Coordinator-bound output-gate boundary check that a restoring
-        abort must call between its critical stages."""
+    ) -> dict[str, Any] | None:
+        """Decide the failed-handoff outcome.  None keeps the committed
+        context unchanged; ``{"restore": <request>}`` asks the Coordinator to
+        physically restore the committed source through its own stages;
+        ``{"invalidate": True}`` reports a staged target that was already
+        stopped and invalidated."""
         ...
+
+    async def wait_for_pipewire_spotify_release(self) -> bool: ...
+
+    async def publish_restored_source(self, request: TransitionRequest) -> None: ...
+
+    async def normalize_queue_after_native_loss(self) -> None: ...
 
     async def verify_measurement_entry(
         self, request: TransitionRequest
@@ -652,6 +743,196 @@ class PlaybackTransitionCoordinator:
             # structured status still records the output gate as latched.
             pass
 
+    async def _restore_committed_source(
+        self,
+        failed_request: TransitionRequest,
+        restore_request: TransitionRequest,
+        *,
+        transition_id: str,
+        gate_required: bool,
+    ) -> bool:
+        """Physically restore the previously committed source through the
+        Coordinator's own transition stages (never a nested transition).
+
+        Runs the same bounded stage sequence as a normal Local/Radio handoff
+        under the still-closed output gate: old rate, effects and helper for
+        the old rate, source/queue transport (including a committed native
+        MPV playlist), post-start graph reconcile, staged graph readback,
+        source volume 100, DSP stabilization when the failed Spotify
+        transition reinitialized the DSP, and a final commit readback that
+        must positively confirm source volume 100.  Between the critical
+        stages the physical output gate is re-confirmed.  Returns True only
+        when the old source is confirmed in its previous transport state on
+        the complete old graph; any stage failure keeps the failure latch.
+        """
+        stages = _TransitionStages(transition_id)
+        stages.gate_required = gate_required
+
+        def boundary(stage: str) -> str | None:
+            """Return the gate-confirmation label only when the gate is owned."""
+            return stage if gate_required else None
+
+        try:
+            # A verify failure after a successful Spotify start can leave the
+            # Spotify sink input active while the old rate and graph are
+            # restored.  Quiesce it through the existing bounded release
+            # helper before any old-graph stage touches the graph; if the
+            # active Spotify source does not release within the existing
+            # bound, the restore fails and the failure latch stays.
+            if failed_request.source == "spotify":
+                release = getattr(self.runtime, "wait_for_pipewire_spotify_release", None)
+                if not callable(release) or not await release():
+                    logger.warning(
+                        "Failed-transition source restore aborted: active Spotify sink "
+                        "input did not quiesce before the old source restore"
+                    )
+                    return False
+            # The Coordinator-owned hardware gate must be physically closed
+            # before ANY mutating restore stage (rate, effects/helper, MPV,
+            # graph, volume) runs: the original Spotify transition may itself
+            # have failed at output-gate-close, leaving the gate unverified.
+            if gate_required:
+                await self.ensure_output_gate_closed(
+                    transition_id,
+                    stage="failed-transition-restore-before-rate",
+                )
+            await self._stage(
+                stages,
+                "restore-rate",
+                lambda: self.runtime.establish_target_rate(restore_request),
+                gate_check=boundary("failed-transition-restore-after-rate"),
+            )
+            effects_state: Mapping[str, Any] = {}
+            effects_result = await self._stage(
+                stages,
+                "restore-effects-helper",
+                lambda: self.runtime.establish_effects_and_helper(restore_request),
+                gate_check=boundary("failed-transition-restore-after-effects-helper"),
+            )
+            if isinstance(effects_result, Mapping):
+                effects_state = dict(effects_result)
+            await self._stage(
+                stages,
+                "restore-prepare",
+                lambda: self.runtime.prepare_target_source(restore_request),
+            )
+            if gate_required:
+                await self.ensure_output_gate_closed(
+                    transition_id,
+                    stage="failed-transition-restore-before-start",
+                )
+            await self._stage(
+                stages,
+                "restore-start",
+                lambda: self.runtime.start_target_source(restore_request),
+            )
+            # Source creation can recreate PipeWire ports and lose a
+            # production edge after the earlier effects/helper stage.
+            # Reconcile that bounded link-only drift while the gate is still
+            # closed, before the existing staged commit readback.
+            reconciler = getattr(self.runtime, "reconcile_post_start_graph", None)
+            if callable(reconciler):
+                post_state = await self._stage(
+                    stages,
+                    "restore-post-start-reconcile",
+                    lambda: reconciler(restore_request),
+                )
+                if not isinstance(post_state, Mapping) or not post_state.get(
+                    "graph_complete", False
+                ):
+                    logger.warning(
+                        "Failed-transition source restore aborted: post-start graph "
+                        "reconciliation did not confirm a complete graph"
+                    )
+                    return False
+            graph_state = await self._stage(
+                stages,
+                "restore-staged-readback",
+                lambda: self.runtime.verify_transition_graph(restore_request),
+            )
+            if not bool(graph_state.get("committed", True)):
+                logger.warning(
+                    "Failed-transition source restore aborted: staged graph readback "
+                    "did not satisfy the graph contract"
+                )
+                return False
+            # The source-volume invariant holds for Local/Radio regardless of
+            # the pre-transition transport state: after a successful restore
+            # MPV source volume is always 100 (also for a previously paused
+            # source, which the failed handoff left at volume 0).  The volume
+            # restore happens only under a confirmed closed gate.  After the
+            # volume and the optional DSP stabilization the gate is confirmed
+            # again (same sequence as the normal Coordinator: before-volume
+            # gate -> volume 100 -> optional DSP -> gate re-check -> final
+            # commit readback).
+            if gate_required:
+                await self.ensure_output_gate_closed(
+                    transition_id,
+                    stage="failed-transition-restore-before-volume",
+                )
+            await self._stage(
+                stages,
+                "restore-volume",
+                lambda: self.runtime.set_source_volume(100, transition_id),
+            )
+            # DSP stabilization is not artificially forced for paused
+            # restores; it keeps its existing rate/DSP-reinit condition.
+            if restore_request.should_play and bool(
+                restore_request.rate_change or effects_state.get("dsp_reinitialized")
+            ):
+                stabilizer = getattr(
+                    self.runtime, "stabilize_effects_after_rate_change", None
+                )
+                if not callable(stabilizer):
+                    raise RuntimeError("post-start DSP stabilization is not available")
+                dsp_state = await self._stage(
+                    stages,
+                    "restore-dsp-stabilize",
+                    lambda: stabilizer(
+                        restore_request,
+                        dsp_reinitialized=bool(effects_state.get("dsp_reinitialized")),
+                    ),
+                )
+                if not isinstance(dsp_state, Mapping) or not dsp_state.get(
+                    "stabilized", False
+                ):
+                    logger.warning(
+                        "Failed-transition source restore aborted: DSP stabilization "
+                        "was not confirmed"
+                    )
+                    return False
+            if gate_required:
+                await self.ensure_output_gate_closed(
+                    transition_id,
+                    stage="failed-transition-restore-after-dsp",
+                )
+            final_state = await self._stage(
+                stages,
+                "restore-commit-readback",
+                lambda: self.runtime.verify_committed_transition(restore_request),
+            )
+            if not bool(final_state.get("committed", True)):
+                logger.warning(
+                    "Failed-transition source restore aborted: final commit readback "
+                    "did not satisfy the commit contract"
+                )
+                return False
+            try:
+                source_volume = int(final_state.get("source_volume"))
+            except (TypeError, ValueError):
+                source_volume = None
+            if source_volume != 100:
+                logger.warning(
+                    "Failed-transition source restore aborted: final commit readback "
+                    "did not positively confirm source volume 100: volume=%s",
+                    final_state.get("source_volume"),
+                )
+                return False
+            return True
+        except Exception as exc:
+            logger.warning("Failed-transition source restore failed: %s", exc)
+            return False
+
     async def _cleanup_uncommitted_transition(
         self,
         request: TransitionRequest,
@@ -718,36 +999,76 @@ class PlaybackTransitionCoordinator:
             target_staged = True
         aborter = getattr(self.runtime, "abort_failed_transition", None)
         abort_recovered_source = False
+        verdict: Any = None
         if callable(aborter):
             try:
-                # Strict identity: only an explicit True from the abort hook
-                # means the previously committed source was physically
-                # restored (test adapters and None returns must keep the
-                # failure latch).
-                # A transition that never closed the output gate (same-graph
-                # fast path) cannot re-confirm a gate it does not own: pass no
-                # gate guard so the abort's source restore runs without the
-                # boundary re-check, exactly like the fast path itself ran.
-                gate_guard = (
-                    None
-                    if not gate_required
-                    else lambda stage: self.ensure_output_gate_closed(
-                        transition_id, stage=stage
-                    )
+                # Strict verdict contract: only an explicit restore request
+                # from the abort hook means the previously committed source
+                # must be physically restored (test adapters and None returns
+                # must keep the failure latch).  A transition that never
+                # closed the output gate (same-graph fast path) cannot
+                # re-confirm a gate it does not own: the restore then runs
+                # without boundary re-checks, exactly like the fast path
+                # itself ran.
+                verdict = await aborter(
+                    request,
+                    snapshot,
+                    target_staged=target_staged,
                 )
-                abort_recovered_source = (
-                    await aborter(
-                        request,
-                        snapshot,
-                        target_staged=target_staged,
-                        ensure_gate_closed=gate_guard,
-                    )
-                ) is True
             except Exception:
                 logger.warning(
                     "Playback transition abort cleanup failed",
                     exc_info=True,
                 )
+                verdict = None
+        restore_request = (
+            verdict.get("restore")
+            if isinstance(verdict, Mapping)
+            and isinstance(verdict.get("restore"), TransitionRequest)
+            else None
+        )
+        if restore_request is not None:
+            abort_recovered_source = await self._restore_committed_source(
+                request,
+                restore_request,
+                transition_id=transition_id,
+                gate_required=gate_required,
+            )
+            restored_track = dict(restore_request.target_track or {})
+            if abort_recovered_source:
+                publisher = getattr(self.runtime, "publish_restored_source", None)
+                if callable(publisher):
+                    try:
+                        await publisher(restore_request)
+                    except Exception:
+                        logger.warning(
+                            "Restored-source metadata publish failed",
+                            exc_info=True,
+                        )
+                logger.warning(
+                    "Failed %s transition restored committed %s source for retry: "
+                    "track_id=%s url=%s",
+                    request.operation,
+                    restored_track.get("source"),
+                    restored_track.get("id"),
+                    restored_track.get("url"),
+                )
+            else:
+                logger.warning(
+                    "Failed %s transition could not restore the committed source; "
+                    "keeping the failure gate latched: source=%s",
+                    request.operation,
+                    restored_track.get("source"),
+                )
+                normalizer = getattr(self.runtime, "normalize_queue_after_native_loss", None)
+                if callable(normalizer):
+                    try:
+                        await normalizer()
+                    except Exception:
+                        logger.warning(
+                            "Restore-failure queue normalization failed",
+                            exc_info=True,
+                        )
         if not gate_required:
             # No output gate was ever closed by this transition; nothing is
             # latched and the reported failure state reflects that.
@@ -963,20 +1284,10 @@ class PlaybackTransitionCoordinator:
                 await reconciler(target_rate)
 
                 stage = "measurement-session-stable-readback"
-                readbacks: list[Mapping[str, Any]] = []
-                for _ in range(2):
-                    readback = await reader(target_rate)
-                    if not isinstance(readback, Mapping):
-                        raise RuntimeError(
-                            "measurement session stable graph readback was not a mapping"
-                        )
-                    readbacks.append(readback)
-                signatures = [str(readback.get("signature")) for readback in readbacks]
-                if not (
-                    len(readbacks) == 2
-                    and all(readback.get("links_complete") for readback in readbacks)
-                    and len(set(signatures)) == 1
-                ):
+                readbacks, signatures, stable = await stable_graph_readbacks(
+                    lambda: reader(target_rate)
+                )
+                if not stable:
                     raise RuntimeError(
                         "measurement session graph did not reach two stable canonical readbacks"
                     )
@@ -1065,62 +1376,333 @@ class PlaybackTransitionCoordinator:
             )
             return False
 
+    async def _stage(
+        self,
+        stages: _TransitionStages,
+        name: str,
+        action: Callable[[], Awaitable[Any]],
+        *,
+        gate_check: str | None = None,
+    ) -> Any:
+        """Run one transition stage, record its timing and optionally confirm
+        the output gate afterwards (``gate_check`` names the confirmation
+        boundary)."""
+        stages.enter(name)
+        result = await action()
+        if gate_check is not None:
+            await self.ensure_output_gate_closed(stages.transition_id, stage=gate_check)
+        return result
+
+    async def _skip_measurement_restore(
+        self,
+        stages: _TransitionStages,
+        request: TransitionRequest,
+        reason: str,
+    ) -> TransitionResult:
+        """Discard a stale measurement snapshot without mutating playback."""
+        if stages.gate_required and self.gate.closed:
+            await self._restore_gate(stages.transition_id)
+        result = TransitionResult(
+            transition_id=stages.transition_id,
+            committed=False,
+            source=request.source,
+            target_rate=request.target_rate,
+            state={
+                "committed": False,
+                "skipped": True,
+                "reason": reason,
+            },
+        )
+        self._record_result(result)
+        self.last_error = None
+        logger.info(
+            "Measurement playback restore skipped before source load: "
+            "transition_id=%s reason=%s",
+            stages.transition_id,
+            reason,
+        )
+        return result
+
+    def _finish_committed(
+        self,
+        stages: _TransitionStages,
+        request: TransitionRequest,
+        state: Mapping[str, Any],
+        *,
+        effects_state: Mapping[str, Any] | None = None,
+        post_start_graph_state: Mapping[str, Any] | None = None,
+        dsp_state: Mapping[str, Any] | None = None,
+    ) -> TransitionResult:
+        """Record and return the committed result of one transition run."""
+        result_state = dict(state)
+        if effects_state:
+            result_state["effects_graph"] = dict(effects_state)
+        if post_start_graph_state:
+            result_state["post_start_graph"] = dict(post_start_graph_state)
+        if dsp_state:
+            result_state["effects_dsp"] = dict(dsp_state)
+        result = TransitionResult(
+            transition_id=stages.transition_id,
+            committed=True,
+            source=request.source,
+            target_rate=request.target_rate,
+            state=result_state,
+        )
+        self._record_result(result)
+        self.last_error = None
+        stages.log("committed")
+        return result
+
+    async def _execute_same_graph_fast_path(
+        self,
+        stages: _TransitionStages,
+        request: TransitionRequest,
+    ) -> TransitionResult:
+        """Switch the transport inside the unchanged open graph (fast path).
+
+        A semantically identical-graph track switch: committed source, rate,
+        output mode, DSP state and graph topology are unchanged, so the
+        transport switches without the output gate or graph re-verification.
+        A failure here still runs the shared cleanup with gate_required=False
+        (no gate was ever closed).
+        """
+        stages.gate_required = False
+        await self._stage(stages, "quiet-old-source", lambda: self.runtime.quiet_old_source(request))
+        stages.target_prepare_started = True
+        await self._stage(stages, "target-source-prepare", lambda: self.runtime.prepare_target_source(request))
+        await self._stage(stages, "target-source-start", lambda: self.runtime.start_target_source(request))
+        if request.should_play:
+            await self._stage(stages, "source-volume-restore", lambda: self.runtime.set_source_volume(100, stages.transition_id))
+        verifier = getattr(self.runtime, "verify_same_graph_commit", None)
+        if not callable(verifier):
+            raise RuntimeError("same-graph fast-path commit verifier is unavailable")
+        state = await self._stage(stages, "commit-readback", lambda: verifier(request))
+        if not bool(state.get("committed", True)):
+            raise RuntimeError("fast-path readback did not satisfy commit contract")
+        return self._finish_committed(stages, request, state)
+
+    async def _execute_graph_commit_path(
+        self,
+        stages: _TransitionStages,
+        request: TransitionRequest,
+        snapshot: Mapping[str, Any],
+        effects_state: Mapping[str, Any],
+        *,
+        audible_output: bool,
+    ) -> TransitionResult:
+        """Run the graph-commit-only branches (measurement entry, output-mode
+        switch, sample-rate policy without source reload)."""
+        if request.operation == "measurement-entry":
+            verifier = getattr(self.runtime, "verify_measurement_entry", None)
+            if callable(verifier):
+                state = await self._stage(stages, "measurement-entry-graph-readback", lambda: verifier(request))
+            else:
+                state = await self._stage(stages, "measurement-entry-graph-readback", lambda: self.runtime.verify_transition_graph(request))
+            if not bool(state.get("committed", True)):
+                raise RuntimeError("measurement entry readback did not satisfy graph contract")
+        else:
+            # The target graph is not committed until the old transport has
+            # been put back under the still-closed gate.  Starting Spotify
+            # here is intentional: its newly-created sink ports are part of
+            # the same final source-graph commit.
+            restorer = getattr(self.runtime, "restore_output_mode_transport", None)
+            if not callable(restorer):
+                raise RuntimeError("Coordinator output-mode transport restore is unavailable")
+            await self._stage(
+                stages,
+                "output-mode-transport-restore",
+                lambda: restorer(request, snapshot, stages.transition_id),
+                gate_check="after-output-mode-transport-restore",
+            )
+            post_start_reconciler = getattr(self.runtime, "reconcile_post_start_graph", None)
+            if not callable(post_start_reconciler):
+                raise RuntimeError("Coordinator output-mode graph reconciliation is unavailable")
+            post_start_state = await self._stage(stages, "post-start-graph-reconcile", lambda: post_start_reconciler(request))
+            if not isinstance(post_start_state, Mapping) or not post_start_state.get("graph_complete", False):
+                raise RuntimeError("output-mode post-start graph reconciliation did not confirm a complete graph")
+            post_start_graph_state = dict(post_start_state)
+            verifier = getattr(self.runtime, "verify_output_mode_runtime", None)
+            if not callable(verifier):
+                raise RuntimeError("Coordinator output-mode runtime verifier is unavailable")
+            state = await self._stage(stages, "output-mode-graph-readback", lambda: verifier(request))
+            if not bool(state.get("committed", True)):
+                raise RuntimeError("output-mode graph readback did not satisfy commit contract")
+
+        if effects_state.get("dsp_reinitialized") or request.operation == "output-mode-switch":
+            stabilizer = getattr(self.runtime, "stabilize_effects_after_rate_change", None)
+            if not callable(stabilizer):
+                raise RuntimeError("post-transition DSP stabilization is not available")
+            dsp_state = await self._stage(stages, "effects-dsp-stabilize", lambda: stabilizer(request, dsp_reinitialized=True))
+            if not isinstance(dsp_state, Mapping) or not dsp_state.get("stabilized", False):
+                raise RuntimeError("post-transition DSP stabilization was not confirmed")
+
+        if request.operation == "output-mode-switch":
+            committer = getattr(self.runtime, "commit_output_mode_runtime", None)
+            if not callable(committer):
+                raise RuntimeError("Coordinator output-mode persistence is unavailable")
+            committed_mode = await self._stage(stages, "output-mode-persist", lambda: committer(request))
+            if isinstance(committed_mode, Mapping):
+                state = {**dict(state), **dict(committed_mode)}
+        elif request.operation == "sample-rate-policy":
+            committer = getattr(self.runtime, "commit_sample_rate_policy", None)
+            if not callable(committer):
+                raise RuntimeError("Sample-rate policy persistence is unavailable")
+            committed_policy = await self._stage(stages, "sample-rate-policy-persist", lambda: committer(request))
+            if isinstance(committed_policy, Mapping):
+                state = {**dict(state), **dict(committed_policy)}
+
+        if stages.gate_required:
+            after_physical_restore = None
+            if request.operation == "output-mode-switch":
+                finalizer = getattr(self.runtime, "finalize_output_mode_graph_after_gate_open", None)
+                if callable(finalizer):
+                    async def finalize_graph() -> None:
+                        final_graph = await self._stage(stages, "post-gate-output-mode-graph", lambda: finalizer(request))
+                        if not isinstance(final_graph, Mapping) or not final_graph.get("graph_complete", False):
+                            raise RuntimeError("output-mode graph changed when the output gate opened")
+
+                    after_physical_restore = finalize_graph
+            await self._stage(
+                stages,
+                "before-output-gate-restore",
+                lambda: self.ensure_output_gate_closed(stages.transition_id, stage="before-output-gate-restore"),
+            )
+            stages.enter("output-gate-restore")
+            await self._hold_gate_after_verification()
+            await self._restore_gate(
+                stages.transition_id,
+                audible_output=audible_output,
+                after_physical_restore=after_physical_restore,
+            )
+        return self._finish_committed(stages, request, state, effects_state=effects_state)
+
+    async def _execute_standard_path(
+        self,
+        stages: _TransitionStages,
+        request: TransitionRequest,
+        effects_state: Mapping[str, Any],
+        *,
+        audible_output: bool,
+    ) -> TransitionResult:
+        """Run the standard source handoff path (Local, Radio, Spotify,
+        recovery, restore)."""
+        stages.target_prepare_started = True
+        await self._stage(stages, "target-source-prepare", lambda: self.runtime.prepare_target_source(request))
+
+        if stages.gate_required:
+            # The target starts muted at both boundaries: hardware is still
+            # gated and MPV source volume is explicitly zero.
+            await self._stage(
+                stages,
+                "before-target-source-start-gate",
+                lambda: self.ensure_output_gate_closed(stages.transition_id, stage="before-target-source-start"),
+            )
+        await self._stage(stages, "target-source-start", lambda: self.runtime.start_target_source(request))
+
+        post_start_graph_state: Mapping[str, Any] = {}
+        dsp_state: Mapping[str, Any] = {}
+        if stages.gate_required:
+            # Source creation can recreate PipeWire ports and lose a
+            # production edge after the earlier effects/helper stage.
+            # Reconcile that bounded link-only drift while the gate is still
+            # closed, before the existing staged commit readback.
+            post_start_reconciler = getattr(self.runtime, "reconcile_post_start_graph", None)
+            if callable(post_start_reconciler):
+                post_start_state = await self._stage(stages, "post-start-graph-reconcile", lambda: post_start_reconciler(request))
+                if not isinstance(post_start_state, Mapping) or not post_start_state.get("graph_complete", False):
+                    raise RuntimeError("post-start graph reconciliation did not confirm a complete graph")
+                post_start_graph_state = dict(post_start_state)
+
+            # The graph must be read back while the output gate is still
+            # closed and the target source is still at volume 0.  Only after
+            # this staged commit succeeds may source volume and the hardware
+            # gate be restored.
+            staged_verifier = getattr(self.runtime, "verify_transition_graph", None)
+            if callable(staged_verifier):
+                state = await self._stage(stages, "staged-graph-readback", lambda: staged_verifier(request))
+            else:
+                state = await self._stage(stages, "staged-graph-readback", lambda: self.runtime.verify_committed_transition(request))
+            if not bool(state.get("committed", True)):
+                raise RuntimeError("staged transition readback did not satisfy graph contract")
+
+            restore_source_volume = bool(
+                not request.graph_only
+                and (
+                    request.should_play
+                    or (
+                        request.operation == "measurement-restore"
+                        and request.source in {"local", "radio"}
+                    )
+                )
+            )
+            if restore_source_volume:
+                await self._stage(
+                    stages,
+                    "before-source-volume-gate",
+                    lambda: self.ensure_output_gate_closed(stages.transition_id, stage="before-source-volume-restore"),
+                )
+                await self._stage(stages, "source-volume-restore", lambda: self.runtime.set_source_volume(100, stages.transition_id))
+
+                dsp_required = bool(request.rate_change or effects_state.get("dsp_reinitialized"))
+                if dsp_required:
+                    stabilizer = getattr(self.runtime, "stabilize_effects_after_rate_change", None)
+                    if not callable(stabilizer):
+                        raise RuntimeError("post-start DSP stabilization is not available")
+                    dsp_state = await self._stage(
+                        stages,
+                        "effects-dsp-stabilize",
+                        lambda: stabilizer(request, dsp_reinitialized=bool(effects_state.get("dsp_reinitialized"))),
+                    )
+                    if not isinstance(dsp_state, Mapping) or not dsp_state.get("stabilized", False):
+                        raise RuntimeError("post-start DSP stabilization was not confirmed")
+
+                await self._stage(
+                    stages,
+                    "after-dsp-stabilization-gate",
+                    lambda: self.ensure_output_gate_closed(stages.transition_id, stage="after-dsp-stabilization"),
+                )
+                state = await self._stage(stages, "commit-readback", lambda: self.runtime.verify_committed_transition(request))
+        else:
+            if request.should_play:
+                await self._stage(stages, "source-volume-restore", lambda: self.runtime.set_source_volume(100, stages.transition_id))
+            state = await self._stage(stages, "commit-readback", lambda: self.runtime.verify_committed_transition(request))
+        if not bool(state.get("committed", True)):
+            raise RuntimeError("transition readback did not satisfy commit contract")
+
+        if request.operation == "sample-rate-policy":
+            committer = getattr(self.runtime, "commit_sample_rate_policy", None)
+            if not callable(committer):
+                raise RuntimeError("Sample-rate policy persistence is unavailable")
+            committed_policy = await self._stage(stages, "sample-rate-policy-persist", lambda: committer(request))
+            if isinstance(committed_policy, Mapping):
+                state = {**dict(state), **dict(committed_policy)}
+
+        if stages.gate_required:
+            await self._stage(
+                stages,
+                "before-output-gate-restore",
+                lambda: self.ensure_output_gate_closed(stages.transition_id, stage="before-output-gate-restore"),
+            )
+            stages.enter("output-gate-restore")
+            await self._hold_gate_after_verification()
+            await self._restore_gate(stages.transition_id, audible_output=audible_output)
+        return self._finish_committed(
+            stages,
+            request,
+            state,
+            effects_state=effects_state,
+            post_start_graph_state=post_start_graph_state,
+            dsp_state=dsp_state,
+        )
+
     async def execute(self, request: TransitionRequest) -> TransitionResult:
         """Run one transition and commit only after complete readback."""
-
         transition_id = f"tr-{uuid4().hex}"
         async with self.lock:
-            stage = "snapshot"
-            transition_started = time.monotonic()
-            stage_started = transition_started
-            stage_timings: dict[str, float] = {}
-
-            def enter_stage(name: str) -> None:
-                nonlocal stage, stage_started
-                now = time.monotonic()
-                stage_timings[stage] = stage_timings.get(stage, 0.0) + (
-                    now - stage_started
-                )
-                stage = name
-                stage_started = now
-
-            def log_timing(outcome: str) -> None:
-                now = time.monotonic()
-                stage_timings[stage] = stage_timings.get(stage, 0.0) + (
-                    now - stage_started
-                )
-                details = ",".join(
-                    f"{name}={duration * 1000:.1f}ms"
-                    for name, duration in stage_timings.items()
-                )
-                total_ms = (now - transition_started) * 1000
-                if outcome == "committed":
-                    logger.info(
-                        "Playback transition timing: transition_id=%s "
-                        "outcome=committed total_ms=%.1f stages=%s",
-                        transition_id,
-                        total_ms,
-                        details,
-                    )
-                else:
-                    logger.warning(
-                        "Playback transition timing: transition_id=%s "
-                        "outcome=failed stage=%s stage_ms=%.1f total_ms=%.1f "
-                        "stages=%s",
-                        transition_id,
-                        stage,
-                        stage_timings.get(stage, 0.0) * 1000,
-                        total_ms,
-                        details,
-                    )
-
+            stages = _TransitionStages(transition_id)
             active_request = request
-            effects_state: Mapping[str, Any] = {}
-            post_start_graph_state: Mapping[str, Any] = {}
-            dsp_state: Mapping[str, Any] = {}
             snapshot: Mapping[str, Any] = {}
-            target_prepare_started = False
-            gate_required = bool(
+            stages.gate_required = bool(
                 request.rate_change
                 or request.reload_source
                 or request.operation in {
@@ -1139,32 +1721,6 @@ class PlaybackTransitionCoordinator:
                 }
             )
             audible_output = self._request_expects_audible_output(request)
-
-            async def skip_measurement_restore(reason: str) -> TransitionResult:
-                """Discard a stale measurement snapshot without mutating playback."""
-                if gate_required and self.gate.closed:
-                    await self._restore_gate(transition_id)
-                result = TransitionResult(
-                    transition_id=transition_id,
-                    committed=False,
-                    source=active_request.source,
-                    target_rate=active_request.target_rate,
-                    state={
-                        "committed": False,
-                        "skipped": True,
-                        "reason": reason,
-                    },
-                )
-                self._record_result(result)
-                self.last_error = None
-                logger.info(
-                    "Measurement playback restore skipped before source load: "
-                    "transition_id=%s reason=%s",
-                    transition_id,
-                    reason,
-                )
-                return result
-
             try:
                 if not await self._reconcile_startup_gate_locked():
                     raise RuntimeError(
@@ -1201,62 +1757,23 @@ class PlaybackTransitionCoordinator:
                     and callable(restore_validator)
                     and not await restore_validator(active_request, snapshot)
                 ):
-                    return await skip_measurement_restore("intent-changed-before-gate")
+                    return await self._skip_measurement_restore(
+                        stages, active_request, "intent-changed-before-gate"
+                    )
                 fast_path = await self._evaluate_same_graph_fast_path(
                     active_request, snapshot
                 )
                 if fast_path:
-                    # A semantically identical-graph track switch: committed
-                    # source, rate, output mode, DSP state and graph topology
-                    # are unchanged, so the transport switches inside the open
-                    # graph without the output gate or graph re-verification.
-                    # A failure here still runs the shared cleanup with
-                    # gate_required=False (no gate was ever closed).
-                    gate_required = False
-                    enter_stage("quiet-old-source")
-                    await self.runtime.quiet_old_source(active_request)
-                    enter_stage("target-source-prepare")
-                    target_prepare_started = True
-                    await self.runtime.prepare_target_source(active_request)
-                    enter_stage("target-source-start")
-                    await self.runtime.start_target_source(active_request)
-                    if active_request.should_play:
-                        enter_stage("source-volume-restore")
-                        await self.runtime.set_source_volume(100, transition_id)
-                    enter_stage("commit-readback")
-                    verifier = getattr(
-                        self.runtime, "verify_same_graph_commit", None
-                    )
-                    if not callable(verifier):
-                        raise RuntimeError(
-                            "same-graph fast-path commit verifier is unavailable"
-                        )
-                    state = await verifier(active_request)
-                    if not bool(state.get("committed", True)):
-                        raise RuntimeError(
-                            "fast-path readback did not satisfy commit contract"
-                        )
-                    result = TransitionResult(
-                        transition_id=transition_id,
-                        committed=True,
-                        source=active_request.source,
-                        target_rate=active_request.target_rate,
-                        state=dict(state),
-                    )
-                    self._record_result(result)
-                    self.last_error = None
-                    log_timing("committed")
-                    return result
+                    return await self._execute_same_graph_fast_path(stages, active_request)
 
-                if gate_required:
-                    enter_stage("output-gate-close")
-                    await self._close_gate(
-                        transition_id,
-                        audible_output=audible_output,
+                if stages.gate_required:
+                    await self._stage(
+                        stages,
+                        "output-gate-close",
+                        lambda: self._close_gate(stages.transition_id, audible_output=audible_output),
                     )
 
-                enter_stage("quiet-old-source")
-                await self.runtime.quiet_old_source(request)
+                await self._stage(stages, "quiet-old-source", lambda: self.runtime.quiet_old_source(request))
 
                 if (
                     active_request.operation == "measurement-restore"
@@ -1264,18 +1781,19 @@ class PlaybackTransitionCoordinator:
                     and callable(restore_validator)
                     and not await restore_validator(active_request, snapshot)
                 ):
-                    return await skip_measurement_restore("intent-changed-after-quiet")
+                    return await self._skip_measurement_restore(
+                        stages, active_request, "intent-changed-after-quiet"
+                    )
 
-                if gate_required and not active_request.graph_only:
+                if stages.gate_required and not active_request.graph_only:
                     # Radio streams expose their decoded rate only after a
-                    # paused target stream exists.  The adapter may stage
-                    # that target under the already-closed gate and return
-                    # the authoritative rate; all following stages then use
-                    # the resolved immutable request.
-                    enter_stage("target-rate-resolve")
+                    # paused target stream exists.  The adapter may stage that
+                    # target under the already-closed gate and return the
+                    # authoritative rate; all following stages then use the
+                    # resolved immutable request.
                     resolver = getattr(self.runtime, "resolve_target_rate", None)
                     if callable(resolver):
-                        resolved_rate = await resolver(active_request)
+                        resolved_rate = await self._stage(stages, "target-rate-resolve", lambda: resolver(active_request))
                         if isinstance(resolved_rate, int) and resolved_rate > 0:
                             active_request = replace(
                                 active_request,
@@ -1291,9 +1809,9 @@ class PlaybackTransitionCoordinator:
                         isinstance(active_request.target_rate, int)
                         and isinstance(snapshot_active_rate, int)
                     ):
-                        # A radio's initial configured fallback (usually
-                        # 44.1 kHz) may be replaced by its decoded live rate
-                        # while the target is staged.  Recompute the actual
+                        # A radio's initial configured fallback (usually 44.1
+                        # kHz) may be replaced by its decoded live rate while
+                        # the target is staged.  Recompute the actual
                         # transition after that resolution so an already
                         # aligned 48 kHz stream does not rebuild EE/helper.
                         active_request = replace(
@@ -1303,370 +1821,68 @@ class PlaybackTransitionCoordinator:
                                 and snapshot_force_rate in {None, 0, active_request.target_rate}
                             ),
                         )
-                    enter_stage("target-rate")
-                    await self.runtime.establish_target_rate(active_request)
-                    await self.ensure_output_gate_closed(
-                        transition_id,
-                        stage="after-target-rate",
+                    await self._stage(
+                        stages,
+                        "target-rate",
+                        lambda: self.runtime.establish_target_rate(active_request),
+                        gate_check="after-target-rate",
                     )
 
-                enter_stage("effects-helper-links")
-                effects_result = await self.runtime.establish_effects_and_helper(
-                    active_request
+                effects_state: Mapping[str, Any] = {}
+                effects_result = await self._stage(
+                    stages,
+                    "effects-helper-links",
+                    lambda: self.runtime.establish_effects_and_helper(active_request),
+                    gate_check="after-effects-helper-links" if stages.gate_required else None,
                 )
                 if isinstance(effects_result, Mapping):
                     effects_state = dict(effects_result)
-                if gate_required:
-                    await self.ensure_output_gate_closed(
-                        transition_id,
-                        stage="after-effects-helper-links",
-                    )
 
                 if active_request.operation in {"measurement-entry", "output-mode-switch"} or (
                     active_request.operation == "sample-rate-policy"
                     and not active_request.reload_source
                 ):
-                    if active_request.operation == "measurement-entry":
-                        enter_stage("measurement-entry-graph-readback")
-                        verifier = getattr(self.runtime, "verify_measurement_entry", None)
-                        if callable(verifier):
-                            state = await verifier(active_request)
-                        else:
-                            state = await self.runtime.verify_transition_graph(active_request)
-                        if not bool(state.get("committed", True)):
-                            raise RuntimeError(
-                                "measurement entry readback did not satisfy graph contract"
-                            )
-                    else:
-                        # The target graph is not committed until the old
-                        # transport has been put back under the still-closed
-                        # gate.  Starting Spotify here is intentional: its
-                        # newly-created sink ports are part of the same final
-                        # source-graph commit.
-                        enter_stage("output-mode-transport-restore")
-                        restorer = getattr(self.runtime, "restore_output_mode_transport", None)
-                        if not callable(restorer):
-                            raise RuntimeError(
-                                "Coordinator output-mode transport restore is unavailable"
-                            )
-                        await restorer(active_request, snapshot, transition_id)
-                        await self.ensure_output_gate_closed(
-                            transition_id,
-                            stage="after-output-mode-transport-restore",
-                        )
-
-                        enter_stage("post-start-graph-reconcile")
-                        post_start_reconciler = getattr(
-                            self.runtime, "reconcile_post_start_graph", None
-                        )
-                        if not callable(post_start_reconciler):
-                            raise RuntimeError(
-                                "Coordinator output-mode graph reconciliation is unavailable"
-                            )
-                        post_start_state = await post_start_reconciler(active_request)
-                        if (
-                            not isinstance(post_start_state, Mapping)
-                            or not post_start_state.get("graph_complete", False)
-                        ):
-                            raise RuntimeError(
-                                "output-mode post-start graph reconciliation did not confirm a complete graph"
-                            )
-                        post_start_graph_state = dict(post_start_state)
-
-                        enter_stage("output-mode-graph-readback")
-                        verifier = getattr(self.runtime, "verify_output_mode_runtime", None)
-                        if not callable(verifier):
-                            raise RuntimeError(
-                                "Coordinator output-mode runtime verifier is unavailable"
-                            )
-                        state = await verifier(active_request)
-                        if not bool(state.get("committed", True)):
-                            raise RuntimeError(
-                                "output-mode graph readback did not satisfy commit contract"
-                            )
-
-                    if (
-                        effects_state.get("dsp_reinitialized")
-                        or active_request.operation == "output-mode-switch"
-                    ):
-                        enter_stage("effects-dsp-stabilize")
-                        stabilizer = getattr(
-                            self.runtime, "stabilize_effects_after_rate_change", None
-                        )
-                        if not callable(stabilizer):
-                            raise RuntimeError(
-                                "post-transition DSP stabilization is not available"
-                            )
-                        dsp_state = await stabilizer(
-                            active_request,
-                            dsp_reinitialized=True,
-                        )
-                        if not isinstance(dsp_state, Mapping) or not dsp_state.get(
-                            "stabilized", False
-                        ):
-                            raise RuntimeError(
-                                "post-transition DSP stabilization was not confirmed"
-                            )
-
-                    if active_request.operation == "output-mode-switch":
-                        enter_stage("output-mode-persist")
-                        committer = getattr(self.runtime, "commit_output_mode_runtime", None)
-                        if not callable(committer):
-                            raise RuntimeError(
-                                "Coordinator output-mode persistence is unavailable"
-                            )
-                        committed_mode = await committer(active_request)
-                        if isinstance(committed_mode, Mapping):
-                            state = {**dict(state), **dict(committed_mode)}
-                    elif active_request.operation == "sample-rate-policy":
-                        enter_stage("sample-rate-policy-persist")
-                        committer = getattr(self.runtime, "commit_sample_rate_policy", None)
-                        if not callable(committer):
-                            raise RuntimeError("Sample-rate policy persistence is unavailable")
-                        committed_policy = await committer(active_request)
-                        if isinstance(committed_policy, Mapping):
-                            state = {**dict(state), **dict(committed_policy)}
-
-                    if gate_required:
-                        after_physical_restore = None
-                        if active_request.operation == "output-mode-switch":
-                            finalizer = getattr(
-                                self.runtime,
-                                "finalize_output_mode_graph_after_gate_open",
-                                None,
-                            )
-                            if callable(finalizer):
-                                async def finalize_graph() -> None:
-                                    enter_stage("post-gate-output-mode-graph")
-                                    final_graph = await finalizer(active_request)
-                                    if (
-                                        not isinstance(final_graph, Mapping)
-                                        or not final_graph.get("graph_complete", False)
-                                    ):
-                                        raise RuntimeError(
-                                            "output-mode graph changed when the output gate opened"
-                                        )
-
-                                after_physical_restore = finalize_graph
-                        enter_stage("before-output-gate-restore")
-                        await self.ensure_output_gate_closed(
-                            transition_id,
-                            stage="before-output-gate-restore",
-                        )
-                        enter_stage("output-gate-restore")
-                        await self._hold_gate_after_verification()
-                        await self._restore_gate(
-                            transition_id,
-                            audible_output=audible_output,
-                            after_physical_restore=after_physical_restore,
-                        )
-
-                    result_state = dict(state)
-                    if effects_state:
-                        result_state["effects_graph"] = dict(effects_state)
-                    result = TransitionResult(
-                        transition_id=transition_id,
-                        committed=True,
-                        source=active_request.source,
-                        target_rate=active_request.target_rate,
-                        state=result_state,
+                    return await self._execute_graph_commit_path(
+                        stages, active_request, snapshot, effects_state, audible_output=audible_output
                     )
-                    self._record_result(result)
-                    self.last_error = None
-                    log_timing("committed")
-                    return result
-
-                enter_stage("target-source-prepare")
-                target_prepare_started = True
-                await self.runtime.prepare_target_source(active_request)
-
-                if gate_required:
-                    # The target starts muted at both boundaries: hardware is
-                    # still gated and MPV source volume is explicitly zero.
-                    enter_stage("before-target-source-start-gate")
-                    await self.ensure_output_gate_closed(
-                        transition_id,
-                        stage="before-target-source-start",
-                    )
-                enter_stage("target-source-start")
-                await self.runtime.start_target_source(active_request)
-
-                if gate_required:
-                    # Source creation can recreate PipeWire ports and lose a
-                    # production edge after the earlier effects/helper stage.
-                    # Reconcile that bounded link-only drift while the gate is
-                    # still closed, before the existing staged commit readback.
-                    enter_stage("post-start-graph-reconcile")
-                    post_start_reconciler = getattr(
-                        self.runtime, "reconcile_post_start_graph", None
-                    )
-                    if callable(post_start_reconciler):
-                        post_start_state = await post_start_reconciler(active_request)
-                        if (
-                            not isinstance(post_start_state, Mapping)
-                            or not post_start_state.get("graph_complete", False)
-                        ):
-                            raise RuntimeError(
-                                "post-start graph reconciliation did not confirm a complete graph"
-                            )
-                        post_start_graph_state = dict(post_start_state)
-
-                    # The graph must be read back while the output gate is
-                    # still closed and the target source is still at volume 0.
-                    # Only after this staged commit succeeds may source
-                    # volume and the hardware gate be restored.
-                    enter_stage("staged-graph-readback")
-                    staged_verifier = getattr(self.runtime, "verify_transition_graph", None)
-                    if callable(staged_verifier):
-                        state = await staged_verifier(active_request)
-                    else:
-                        state = await self.runtime.verify_committed_transition(active_request)
-                    if not bool(state.get("committed", True)):
-                        raise RuntimeError("staged transition readback did not satisfy graph contract")
-
-                    restore_source_volume = bool(
-                        not active_request.graph_only
-                        and (
-                            active_request.should_play
-                            or (
-                                active_request.operation == "measurement-restore"
-                                and active_request.source in {"local", "radio"}
-                            )
-                        )
-                    )
-                    if restore_source_volume:
-                        enter_stage("before-source-volume-gate")
-                        await self.ensure_output_gate_closed(
-                            transition_id,
-                            stage="before-source-volume-restore",
-                        )
-                        enter_stage("source-volume-restore")
-                        await self.runtime.set_source_volume(100, transition_id)
-
-                        dsp_required = bool(
-                            active_request.rate_change
-                            or effects_state.get("dsp_reinitialized")
-                        )
-                        if dsp_required:
-                            enter_stage("effects-dsp-stabilize")
-                            stabilizer = getattr(
-                                self.runtime, "stabilize_effects_after_rate_change", None
-                            )
-                            if not callable(stabilizer):
-                                raise RuntimeError(
-                                    "post-start DSP stabilization is not available"
-                                )
-                            dsp_state = await stabilizer(
-                                active_request,
-                                dsp_reinitialized=bool(
-                                    effects_state.get("dsp_reinitialized")
-                                ),
-                            )
-                            if not isinstance(dsp_state, Mapping) or not dsp_state.get(
-                                "stabilized", False
-                            ):
-                                raise RuntimeError(
-                                    "post-start DSP stabilization was not confirmed"
-                                )
-
-                        enter_stage("after-dsp-stabilization-gate")
-                        await self.ensure_output_gate_closed(
-                            transition_id,
-                            stage="after-dsp-stabilization",
-                        )
-                        enter_stage("commit-readback")
-                        state = await self.runtime.verify_committed_transition(active_request)
-                else:
-                    if active_request.should_play:
-                        if gate_required:
-                            enter_stage("before-source-volume-gate")
-                            await self.ensure_output_gate_closed(
-                                transition_id,
-                                stage="before-source-volume-restore",
-                            )
-                        enter_stage("source-volume-restore")
-                        await self.runtime.set_source_volume(100, transition_id)
-
-                    enter_stage("commit-readback")
-                    state = await self.runtime.verify_committed_transition(active_request)
-                if not bool(state.get("committed", True)):
-                    raise RuntimeError("transition readback did not satisfy commit contract")
-
-                if active_request.operation == "sample-rate-policy":
-                    enter_stage("sample-rate-policy-persist")
-                    committer = getattr(self.runtime, "commit_sample_rate_policy", None)
-                    if not callable(committer):
-                        raise RuntimeError("Sample-rate policy persistence is unavailable")
-                    committed_policy = await committer(active_request)
-                    if isinstance(committed_policy, Mapping):
-                        state = {**dict(state), **dict(committed_policy)}
-
-                if gate_required:
-                    enter_stage("before-output-gate-restore")
-                    await self.ensure_output_gate_closed(
-                        transition_id,
-                        stage="before-output-gate-restore",
-                    )
-                    enter_stage("output-gate-restore")
-                    await self._hold_gate_after_verification()
-                    await self._restore_gate(
-                        transition_id,
-                        audible_output=audible_output,
-                    )
-
-                result_state = dict(state)
-                if effects_state:
-                    result_state["effects_graph"] = dict(effects_state)
-                if post_start_graph_state:
-                    result_state["post_start_graph"] = dict(post_start_graph_state)
-                if dsp_state:
-                    result_state["effects_dsp"] = dict(dsp_state)
-                result = TransitionResult(
-                    transition_id=transition_id,
-                    committed=True,
-                    source=active_request.source,
-                    target_rate=active_request.target_rate,
-                    state=result_state,
+                return await self._execute_standard_path(
+                    stages, active_request, effects_state, audible_output=audible_output
                 )
-                self._record_result(result)
-                self.last_error = None
-                log_timing("committed")
-                return result
             except asyncio.CancelledError:
                 cleanup_task = self._start_cleanup_task(
                     active_request,
                     snapshot,
                     transition_id=transition_id,
-                    gate_required=gate_required,
-                    target_prepare_started=target_prepare_started,
+                    gate_required=stages.gate_required,
+                    target_prepare_started=stages.target_prepare_started,
                 )
                 failure_latched, cancelled_exc = await self._drain_cleanup_task(
                     cleanup_task,
                     transition_id=transition_id,
-                    gate_required=gate_required,
+                    gate_required=stages.gate_required,
                 )
                 self.last_error = {
                     "ok": False,
                     "transition_id": transition_id,
-                    "stage": stage,
+                    "stage": stages.stage,
                     "failure_latched": bool(failure_latched),
                     "cancelled": True,
-                    "message": f"Playback transition cancelled at {stage}",
+                    "message": f"Playback transition cancelled at {stages.stage}",
                 }
-                log_timing("cancelled")
+                stages.log("cancelled")
                 raise
             except Exception as exc:
                 cleanup_task = self._start_cleanup_task(
                     active_request,
                     snapshot,
                     transition_id=transition_id,
-                    gate_required=gate_required,
-                    target_prepare_started=target_prepare_started,
+                    gate_required=stages.gate_required,
+                    target_prepare_started=stages.target_prepare_started,
                 )
                 failure_latched, cancelled_exc = await self._drain_cleanup_task(
                     cleanup_task,
                     transition_id=transition_id,
-                    gate_required=gate_required,
+                    gate_required=stages.gate_required,
                 )
                 if cancelled_exc is not None:
                     # A cancellation arrived while the failure cleanup was
@@ -1676,25 +1892,27 @@ class PlaybackTransitionCoordinator:
                     self.last_error = {
                         "ok": False,
                         "transition_id": transition_id,
-                        "stage": stage,
+                        "stage": stages.stage,
                         "failure_latched": bool(failure_latched),
                         "cancelled": True,
                         "message": (
                             "Playback transition cancelled during failure "
-                            f"cleanup at {stage}"
+                            f"cleanup at {stages.stage}"
                         ),
                     }
-                    log_timing("cancelled")
+                    stages.log("cancelled")
                     raise cancelled_exc
                 error = PlaybackTransitionFailure(
-                    f"Playback transition failed at {stage}: {exc}",
+                    f"Playback transition failed at {stages.stage}: {exc}",
                     transition_id=transition_id,
-                    stage=stage,
+                    stage=stages.stage,
                     failure_latched=bool(failure_latched),
                 )
                 self.last_error = error.as_status()
-                log_timing("failed")
+                stages.log("failed")
                 raise error from exc
+
+
 
     async def restore_measurement(
         self,

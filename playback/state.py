@@ -59,8 +59,8 @@ class PlaybackState:
     * ``playback_intent_generation`` advances on user playback actions and is
       compared against captured measurement-restore intent tokens.
     * ``playback_context_commit_id`` is published only at the application
-      commit boundary (source/track change); ``coordinator_last_successful_commit_id``
-      mirrors the Coordinator's newest successful commit (any operation).
+      commit boundary (source/track change); the Coordinator owns its own
+      ``last_successful_commit_id`` for every committed operation.
     """
 
     current_track_info: dict[str, Any] | None = None
@@ -73,7 +73,6 @@ class PlaybackState:
     playback_transition_epoch: int = 0
     playback_transition_pending_attempts: int = 0
     playback_context_commit_id: str | None = None
-    coordinator_last_successful_commit_id: str | None = None
     latest_player_state_seq_seen: int = 0
 
     def mark_playback_intent_changed(self) -> None:

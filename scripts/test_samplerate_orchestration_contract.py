@@ -237,8 +237,8 @@ class SamplerateOrchestrationContractTests(unittest.IsolatedAsyncioTestCase):
                 "ended": False,
             })
         ), patch.object(main.playback_state, "current_track_info", dict(track)), patch.object(
-            main.playback_state, "coordinator_last_successful_commit_id", "tr-status-repair"
-        ), patch.object(main, "_run_coordinated_transition", run):
+            main, "_run_coordinated_transition", run
+        ):
             await main._request_coordinated_recovery(track, "status-drift-repair")
 
         self.assertEqual(len(calls), 1)

@@ -77,7 +77,7 @@ def _track_entry(track_id: str) -> dict:
 
 
 class FailedTransitionAbortTests(unittest.IsolatedAsyncioTestCase):
-    async def test_failed_local_rate_transition_restores_committed_local_context(self):
+    async def test_failed_local_rate_transition_requests_committed_local_restore(self):
         player = PlayerDouble("/music/failed.flac", playing=True)
         committed = _track_entry("old")
         queue = [committed, _track_entry("next")]
@@ -87,20 +87,10 @@ class FailedTransitionAbortTests(unittest.IsolatedAsyncioTestCase):
             playback_queue.queue.original = [dict(track) for track in queue]
             playback_queue.queue.index = 0
             playback_queue.queue.mode = "app_replace"
-            async def restore_source(*_args, **_kwargs):
-                main.playback_state.current_track_info = dict(committed)
-                return True
-
             with patch.object(main.runtime, "player_instance", player), patch.object(
                 main.playback_state, "current_track_info", None
-            ), patch.object(main.playback_state, "last_radio_track_info", {"source": "radio", "id": "old-radio"}), patch.object(
-                main.playback_state, "current_footer_owner", "local"
-            ), patch.object(main, "_mark_player_state_authoritative"), patch.object(
-                main.FxrouteTransitionRuntime,
-                "_restore_committed_source_after_failed_transition",
-                side_effect=restore_source,
-            ) as restore:
-                restored = await make_transition_runtime().abort_failed_transition(
+            ), patch.object(main, "get_samplerate_status", return_value={"active_rate": 44_100}):
+                verdict = await make_transition_runtime().abort_failed_transition(
                     local_request("/music/failed.flac"),
                     {
                         "player": {
@@ -115,9 +105,16 @@ class FailedTransitionAbortTests(unittest.IsolatedAsyncioTestCase):
                     },
                     target_staged=True,
                 )
-                self.assertTrue(restored)
-                restore.assert_awaited_once()
-                self.assertEqual(main.playback_state.current_track_info, committed)
+
+                self.assertIsNotNone(verdict)
+                restore = verdict["restore"]
+                self.assertEqual(restore.operation, "replay")
+                self.assertEqual(restore.source, "local")
+                self.assertEqual(restore.target_url, "/music/old.flac")
+                self.assertEqual(restore.target_rate, 44_100)
+                self.assertTrue(restore.should_play)
+                self.assertTrue(restore.rate_change)
+                self.assertEqual(restore.restore_position, 42.0)
                 self.assertEqual(playback_queue.queue.tracks, queue)
                 self.assertEqual(playback_queue.queue.index, 0)
         finally:
@@ -154,7 +151,7 @@ class FailedTransitionAbortTests(unittest.IsolatedAsyncioTestCase):
             ), patch.object(main.playback_state, "last_track_info", retry), patch.object(
                 main.playback_state, "current_footer_owner", "local"
             ), patch.object(main, "_mark_player_state_authoritative"):
-                await make_transition_runtime().abort_failed_transition(
+                verdict = await make_transition_runtime().abort_failed_transition(
                     local_request("/music/new.flac"),
                     {
                         "player": {"current_file": "/music/old.flac"},
@@ -165,6 +162,7 @@ class FailedTransitionAbortTests(unittest.IsolatedAsyncioTestCase):
 
                 # A failed transition must never discard the previously working
                 # committed queue; only the active track context is invalidated.
+                self.assertEqual(verdict, {"invalidate": True})
                 self.assertIsNone(main.playback_state.current_track_info)
                 self.assertEqual(main.playback_state.last_track_info, retry)
                 self.assertEqual(playback_queue.queue.tracks, queue)
@@ -196,7 +194,7 @@ class FailedTransitionAbortTests(unittest.IsolatedAsyncioTestCase):
             ), patch.object(
                 playback_queue.queue, "reset_mpv_loop_state"
             ), patch.object(main, "_mark_player_state_authoritative"):
-                await make_transition_runtime().abort_failed_transition(
+                verdict = await make_transition_runtime().abort_failed_transition(
                     local_request("/music/new.flac"),
                     {
                         "player": {"current_file": "/music/old.flac"},
@@ -208,6 +206,7 @@ class FailedTransitionAbortTests(unittest.IsolatedAsyncioTestCase):
                 # The staged failure replaced MPV's playlist, so the retained
                 # committed queue must not keep a false native_mpv ownership
                 # claim; the app-owned mode keeps it navigable via transitions.
+                self.assertEqual(verdict, {"invalidate": True})
                 self.assertEqual(playback_queue.queue.tracks, queue)
                 self.assertEqual(playback_queue.queue.index, 1)
                 self.assertEqual(playback_queue.queue.mode, "app_replace")
@@ -236,7 +235,7 @@ class FailedTransitionAbortTests(unittest.IsolatedAsyncioTestCase):
             ), patch.object(
                 playback_queue.queue, "reset_mpv_loop_state"
             ), patch.object(main, "_mark_player_state_authoritative"):
-                await make_transition_runtime().abort_failed_transition(
+                verdict = await make_transition_runtime().abort_failed_transition(
                     local_request("/music/new.flac"),
                     {
                         "player": {"current_file": "/music/old.flac"},
@@ -248,6 +247,7 @@ class FailedTransitionAbortTests(unittest.IsolatedAsyncioTestCase):
                 # Cleanup failure must not leave a false native_mpv ownership
                 # claim over an untrusted playlist: the retained queue data and
                 # index stay, the mode is normalized to app-owned navigation.
+                self.assertEqual(verdict, {"invalidate": True})
                 self.assertEqual(playback_queue.queue.tracks, queue)
                 self.assertEqual(playback_queue.queue.index, 1)
                 self.assertEqual(playback_queue.queue.mode, "app_replace")
@@ -291,7 +291,7 @@ class FailedTransitionAbortTests(unittest.IsolatedAsyncioTestCase):
                     rate_change=True,
                     reload_source=True,
                 )
-                await make_transition_runtime().abort_failed_transition(
+                verdict = await make_transition_runtime().abort_failed_transition(
                     request,
                     {
                         "player": {"current_file": "/music/old.flac"},
@@ -300,6 +300,7 @@ class FailedTransitionAbortTests(unittest.IsolatedAsyncioTestCase):
                     target_staged=False,
                 )
 
+                self.assertIsNone(verdict)
                 self.assertEqual(main.playback_state.current_track_info, current)
                 self.assertEqual(playback_queue.queue.tracks, queue)
         finally:
@@ -328,7 +329,7 @@ class FailedTransitionAbortTests(unittest.IsolatedAsyncioTestCase):
                     rate_change=False,
                     reload_source=False,
                 )
-                await make_transition_runtime().abort_failed_transition(
+                verdict = await make_transition_runtime().abort_failed_transition(
                     request,
                     {
                         "player": {"current_file": "/music/old.flac"},
@@ -337,6 +338,7 @@ class FailedTransitionAbortTests(unittest.IsolatedAsyncioTestCase):
                     target_staged=False,
                 )
 
+                self.assertIsNone(verdict)
                 self.assertEqual(main.playback_state.current_track_info, current)
                 self.assertEqual(playback_queue.queue.tracks, queue)
         finally:

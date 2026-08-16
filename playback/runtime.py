@@ -31,7 +31,7 @@ from urllib.parse import unquote
 import audio.samplerate as samplerate
 import audio.samplerate_orchestration as samplerate_orchestration
 from playback.queue import PlaybackQueue
-from playback.transition import TransitionRequest, TransitionRuntime
+from playback.transition import TransitionRequest, TransitionRuntime, stable_graph_readbacks
 from audio.samplerate import (
     OUTPUT_MODE_STEREO,
     OUTPUT_MODE_SUBWOOFER_MODES,
@@ -317,67 +317,59 @@ class FxrouteTransitionRuntime(TransitionRuntime):
             and self._staged_target_url == request.target_url
         )
 
+    async def wait_for_pipewire_spotify_release(self) -> bool:
+        """Quiesce an active Spotify sink input within the bounded release."""
+        return bool(await self._deps.wait_for_pipewire_spotify_release())
+
     async def abort_failed_transition(
         self,
         request: TransitionRequest,
         snapshot: Mapping[str, Any] | None,
         *,
         target_staged: bool,
-        ensure_gate_closed: Callable[..., Awaitable[None]] | None = None,
-    ) -> bool | None:
-        """Finish a failed MPV handoff without mixing old and new context.
+    ) -> dict[str, Any] | None:
+        """Decide the failed-handoff outcome and perform primitive cleanup.
 
         The Coordinator has already attenuated and paused the source before it
-        calls this hook. If MPV still exposes the exact pre-transition file,
-        the committed context remains valid and nothing is invalidated.  Once
-        a new target was staged (or the old file disappeared), stop the
-        physical target and invalidate only the active track metadata, while
-        preserving ``last_track_info`` and the committed queue state: a failed
-        transition must never discard the previously working queue.
+        calls this hook.  Returns None when the committed context is unchanged
+        (MPV still exposes the exact pre-transition file): nothing is
+        invalidated and no restore runs.  Returns ``{"restore": <request>}``
+        when the previously committed Local/Radio source must be physically
+        restored; the Coordinator then runs that request through its own
+        transition stages under the still-closed output gate.  Returns
+        ``{"invalidate": True}`` after stopping a staged target and
+        invalidating only the active track metadata, while preserving
+        ``last_track_info`` and the committed queue state: a failed transition
+        must never discard the previously working queue.
         """
-
         snapshot_track = dict((snapshot or {}).get("current_track") or {})
         previous_state = dict((snapshot or {}).get("player") or {})
         if request.source not in {"local", "radio"}:
             if request.source != "spotify":
-                return
+                return None
             # A failed Spotify handoff already quieted and stopped the
             # previously committed Local/Radio source and cleared its track
             # context before the Spotify start was verified (quiet_old_source
-            # -> self._deps.pause_local_playback_for_spotify_broadcast).  Restore the
-            # pre-transition committed source physically (sample rate, MPV
-            # load, pause/play state, volume) from the Coordinator snapshot
-            # so a failed Spotify start never loses both sources.  The
-            # committed queue, last_track_info and radio-reconnect state were
-            # never touched by the handoff and stay as they are.  On success
-            # this returns True so the Coordinator restores the output gate
-            # instead of latching a failure; on restore failure the existing
-            # failure latch keeps the safe state.
+            # -> self._deps.pause_local_playback_for_spotify_broadcast).  Ask
+            # the Coordinator to restore the pre-transition committed source
+            # physically (sample rate, MPV load, pause/play state, volume) so
+            # a failed Spotify start never loses both sources.  The committed
+            # queue, last_track_info and radio-reconnect state were never
+            # touched by the handoff and stay as they are.  On success the
+            # Coordinator restores the output gate instead of latching a
+            # failure; on restore failure the existing failure latch keeps
+            # the safe state.
             if snapshot_track.get("source") in {"local", "radio"} and bool(
                 previous_state.get("current_file")
                 or previous_state.get("playing")
                 or previous_state.get("paused")
                 or previous_state.get("ended")
             ):
-                restored = await self._restore_committed_source_after_failed_transition(
-                    request,
-                    snapshot,
-                    previous_state,
-                    snapshot_track,
-                    ensure_gate_closed=ensure_gate_closed,
+                restore_request = self._build_restore_request(
+                    request, snapshot, previous_state, snapshot_track
                 )
-                if restored:
-                    self._deps.set_current_track_info(dict(snapshot_track))
-                    self._deps.set_footer_owner("local")
-                    self._deps.mark_player_state_authoritative(self._player.state if self._player else {})
-                    logger.warning(
-                        "Spotify handoff failed; restored committed %s source for retry: "
-                        "track_id=%s url=%s",
-                        snapshot_track.get("source"),
-                        snapshot_track.get("id"),
-                        snapshot_track.get("url"),
-                    )
-                    return True
+                if restore_request is not None:
+                    return {"restore": restore_request}
                 logger.warning(
                     "Spotify handoff failed and the committed %s source could not be "
                     "restored; keeping the failure gate latched: track_id=%s url=%s",
@@ -385,9 +377,8 @@ class FxrouteTransitionRuntime(TransitionRuntime):
                     snapshot_track.get("id"),
                     snapshot_track.get("url"),
                 )
-            return
+            return None
 
-        previous_state = dict((snapshot or {}).get("player") or {})
         current_state = dict(self._player.state if self._player else {})
         previous_file = previous_state.get("current_file")
         current_file = current_state.get("current_file")
@@ -400,7 +391,6 @@ class FxrouteTransitionRuntime(TransitionRuntime):
         if previous_context_unchanged:
             live_track = self._deps.get_current_track_info() or {}
             if current_file and live_track.get("url") not in {None, current_file}:
-                snapshot_track = dict((snapshot or {}).get("current_track") or {})
                 if snapshot_track.get("url") == current_file:
                     self._deps.set_current_track_info(snapshot_track)
                 else:
@@ -409,27 +399,25 @@ class FxrouteTransitionRuntime(TransitionRuntime):
                 # The committed queue and track context stay valid: MPV still
                 # exposes the exact pre-transition file and a staged queue
                 # candidate was never published.  Nothing to invalidate.
-                return
+                return None
 
         if snapshot_track.get("source") in {"local", "radio"} and previous_state.get("current_file"):
-            restored = await self._restore_committed_source_after_failed_transition(
-                request,
-                snapshot,
-                previous_state,
-                snapshot_track,
-                ensure_gate_closed=ensure_gate_closed,
+            restore_request = self._build_restore_request(
+                request, snapshot, previous_state, snapshot_track
             )
-            if restored:
-                self._deps.set_current_track_info(snapshot_track)
-                self._deps.set_footer_owner("local")
-                self._deps.mark_player_state_authoritative(self._player.state if self._player else {})
-                return True
+            if restore_request is not None:
+                return {"restore": restore_request}
 
         # The target was staged, the old file disappeared, or the active
         # metadata no longer matches MPV. Stop the physical target first and
         # then invalidate only the active context. last_track_info is
         # deliberately untouched so the caller can offer a retry.  The
         # committed queue state is preserved.
+        self._stop_staged_target_and_invalidate()
+        return {"invalidate": True}
+
+    def _stop_staged_target_and_invalidate(self) -> None:
+        """Stop a staged MPV target and invalidate only the active context."""
         if self._deps.player_is_running():
             try:
                 set_volume = getattr(self._player, "set_volume", None)
@@ -461,38 +449,25 @@ class FxrouteTransitionRuntime(TransitionRuntime):
         self._deps.set_footer_owner("local")
         self._deps.mark_player_state_authoritative(self._player.state if self._player else {})
 
-    async def _restore_committed_source_after_failed_transition(
+    def _build_restore_request(
         self,
         request: TransitionRequest,
-        snapshot: Mapping[str, Any],
+        snapshot: Mapping[str, Any] | None,
         previous_state: Mapping[str, Any],
         track: Mapping[str, Any],
-        *,
-        ensure_gate_closed: Callable[..., Awaitable[None]] | None = None,
-    ) -> bool:
-        """Physically restore the previously committed Local/Radio source and
-        its full playback graph after a failed source transition.
+    ) -> TransitionRequest | None:
+        """Build the Coordinator restore request for the committed source.
 
-        Runs the same bounded low-level Coordinator stage primitives that a
-        normal Local/Radio transition executes under the still-closed output
-        gate (never a nested Coordinator transition): old rate, effects and
-        helper for the old rate, source/queue transport (including a
-        committed native MPV playlist), post-start graph reconcile, staged
-        graph readback, DSP stabilization when the failed Spotify transition
-        reinitialized the DSP, and a final commit readback.  Between the
-        critical stages the Coordinator-bound ``ensure_gate_closed`` boundary
-        check re-confirms the physical output gate.  Returns True only when
-        the old source is confirmed in its previous transport state on the
-        complete old graph; any stage failure keeps the failure latch.
+        The committed native-queue request fields are the single canonical
+        source for both the restore decision and the carried playlist: a
+        committed native queue was already validated for homogeneity at
+        commit time, so the canonical gate is equivalent here.  Returns None
+        when the committed source is not physically restorable.
         """
         source = str(track.get("source") or "")
         target_url = str(track.get("url") or previous_state.get("current_file") or "")
         if source not in {"local", "radio"} or not target_url:
-            return False
-        # The committed native-queue request fields are the single canonical
-        # source for both the restore decision and the carried playlist: a
-        # committed native queue was already validated for homogeneity at
-        # commit time, so the canonical gate is equivalent here.
+            return None
         native_fields = self._deps.queue().native_request_fields()
         native_committed = bool(native_fields)
         # The authoritative restore rate comes from the previously committed
@@ -514,7 +489,7 @@ class FxrouteTransitionRuntime(TransitionRuntime):
                 source,
                 target_url,
             )
-            return False
+            return None
         # rate_change is not a blind copy of the failed request: it must
         # cover both a real rate/DSP switch performed by the failed Spotify
         # handoff and a live state that currently differs from the committed
@@ -542,7 +517,7 @@ class FxrouteTransitionRuntime(TransitionRuntime):
             and previous_position > 0
             else None
         )
-        restore_request = TransitionRequest(
+        return TransitionRequest(
             operation="replay",
             source=source,
             target_rate=restore_target_rate,
@@ -559,113 +534,20 @@ class FxrouteTransitionRuntime(TransitionRuntime):
             native_queue_loop=bool(native_fields.get("native_queue_loop")) if native_committed else False,
             detail="failed-transition-restore",
         )
-        restored = False
-        try:
-            # A verify failure after a successful Spotify start can leave the
-            # Spotify sink input active while the old rate and graph are
-            # restored.  Quiesce it through the existing bounded release
-            # helper before any old-graph stage touches the graph; if the
-            # active Spotify source does not release within the existing
-            # bound, the restore fails and the failure latch stays.
-            if request.source == "spotify" and not await self._deps.wait_for_pipewire_spotify_release():
-                logger.warning(
-                    "Failed-transition source restore aborted: active Spotify sink "
-                    "input did not quiesce before the old source restore"
-                )
-                return False
-            # The Coordinator-owned hardware gate must be physically closed
-            # before ANY mutating restore stage (rate, effects/helper, MPV,
-            # graph, volume) runs: the original Spotify transition may itself
-            # have failed at output-gate-close, leaving the gate unverified.
-            if ensure_gate_closed is not None:
-                await ensure_gate_closed(stage="failed-transition-restore-before-rate")
-            await self.establish_target_rate(restore_request)
-            if ensure_gate_closed is not None:
-                await ensure_gate_closed(stage="failed-transition-restore-after-rate")
-            effects_state: dict[str, Any] = {}
-            effects_result = await self.establish_effects_and_helper(restore_request)
-            if isinstance(effects_result, Mapping):
-                effects_state = dict(effects_result)
-            dsp_reinitialized = bool(effects_state.get("dsp_reinitialized"))
-            if ensure_gate_closed is not None:
-                await ensure_gate_closed(stage="failed-transition-restore-after-effects-helper")
-            await self.prepare_target_source(restore_request)
-            if ensure_gate_closed is not None:
-                await ensure_gate_closed(stage="failed-transition-restore-before-start")
-            await self.start_target_source(restore_request)
-            reconciler = getattr(self, "reconcile_post_start_graph", None)
-            if callable(reconciler):
-                post_state = await reconciler(restore_request)
-                if not isinstance(post_state, Mapping) or not post_state.get(
-                    "graph_complete", False
-                ):
-                    logger.warning(
-                        "Failed-transition source restore aborted: post-start graph "
-                        "reconciliation did not confirm a complete graph"
-                    )
-                    return False
-            graph_state = await self.verify_transition_graph(restore_request)
-            if not bool(graph_state.get("committed", True)):
-                logger.warning(
-                    "Failed-transition source restore aborted: staged graph readback "
-                    "did not satisfy the graph contract"
-                )
-                return False
-            # The source-volume invariant holds for Local/Radio regardless of
-            # the pre-transition transport state: after a successful restore
-            # MPV source volume is always 100 (also for a previously paused
-            # source, which the failed handoff left at volume 0).  The volume
-            # restore happens only under a confirmed closed gate.  After the
-            # volume and the optional DSP stabilization the gate is confirmed
-            # again (same sequence as the normal Coordinator: before-volume
-            # gate -> volume 100 -> optional DSP -> gate re-check -> final
-            # commit readback).
-            if ensure_gate_closed is not None:
-                await ensure_gate_closed(stage="failed-transition-restore-before-volume")
-            await self.set_source_volume(100, "failed-transition-restore")
-            # DSP stabilization is not artificially forced for paused
-            # restores; it keeps its existing rate/DSP-reinit condition.
-            if restore_request.should_play and (restore_rate_change or dsp_reinitialized):
-                dsp_state = await self.stabilize_effects_after_rate_change(
-                    restore_request, dsp_reinitialized=dsp_reinitialized
-                )
-                if not isinstance(dsp_state, Mapping) or not dsp_state.get(
-                    "stabilized", False
-                ):
-                    logger.warning(
-                        "Failed-transition source restore aborted: DSP stabilization "
-                        "was not confirmed"
-                    )
-                    return False
-            if ensure_gate_closed is not None:
-                await ensure_gate_closed(stage="failed-transition-restore-after-dsp")
-            final_state = await self.verify_committed_transition(restore_request)
-            if not bool(final_state.get("committed", True)):
-                logger.warning(
-                    "Failed-transition source restore aborted: final commit readback "
-                    "did not satisfy the commit contract"
-                )
-                return False
-            try:
-                source_volume = int(final_state.get("source_volume"))
-            except (TypeError, ValueError):
-                source_volume = None
-            if source_volume != 100:
-                logger.warning(
-                    "Failed-transition source restore aborted: final commit readback "
-                    "did not positively confirm source volume 100: volume=%s",
-                    final_state.get("source_volume"),
-                )
-                return False
-            restored = True
-        except Exception as exc:
-            logger.warning("Failed-transition source restore failed: %s", exc)
-        if not restored and native_committed:
-            # The native playlist could not be reconstructed; normalize to
-            # the existing app-owned navigation so no later jump targets a
-            # phantom MPV playlist (same contract as the staged abort path).
-            self._deps.queue().normalize_after_native_loss()
-        return restored
+
+    async def publish_restored_source(self, request: TransitionRequest) -> None:
+        """Publish a Coordinator-confirmed restored source as active context."""
+        track = dict(request.target_track or {})
+        if not track:
+            return
+        self._deps.set_current_track_info(track)
+        self._deps.set_footer_owner("local")
+        self._deps.mark_player_state_authoritative(self._player.state if self._player else {})
+
+    async def normalize_queue_after_native_loss(self) -> None:
+        """Normalize the retained queue to app-owned navigation after a
+        failed native-playlist restore."""
+        self._deps.queue().normalize_after_native_loss()
 
     async def validate_measurement_restore_intent(
         self,
@@ -1326,6 +1208,72 @@ class FxrouteTransitionRuntime(TransitionRuntime):
             transition_id,
         )
 
+    def _live_mpv_commit_state(self, state: Mapping[str, Any]) -> dict[str, Any]:
+        """Read live MPV IPC props (pause, idle-active, volume) for commit validation.
+
+        The cached state is driven by the async mpv event listener and can lag
+        a pause/unload/volume change mpv already applied.  Read live IPC at the
+        commit boundary so a source that was re-paused or unmuted after start
+        cannot commit silently.  Small test adapters without ``get_property``
+        keep the cached-state fallback path.
+        """
+        get_property = getattr(self._player, "get_property", None)
+        live_mpv: dict[str, Any] = {}
+        if callable(get_property):
+            for prop in ("pause", "idle-active", "volume"):
+                try:
+                    live_mpv[prop] = get_property(prop)
+                except Exception:
+                    pass
+        return live_mpv
+
+    def _verify_mpv_live_commit(
+        self,
+        request: TransitionRequest,
+        state: Mapping[str, Any],
+        live_mpv: Mapping[str, Any],
+        *,
+        require_playing: bool,
+        require_source_volume: bool,
+        stage_label: str,
+    ) -> int | None:
+        """Confirm MPV live state at a commit boundary.
+
+        Shared by the standard commit verifier and the same-graph fast path:
+        checks the current_file identity, the live pause/idle state (falling
+        back to the cached state for small test adapters) and the restored
+        source volume.  Returns the effective live volume, or None when
+        unavailable.
+        """
+        if request.target_url and state.get("current_file") != request.target_url:
+            raise RuntimeError(
+                f"MPV current_file mismatch: expected={request.target_url} actual={state.get('current_file')}"
+            )
+        live_paused = live_mpv.get("pause")
+        live_idle = live_mpv.get("idle-active")
+        if isinstance(live_paused, bool) and isinstance(live_idle, bool):
+            if require_playing and (live_paused is not False or live_idle is not False):
+                raise RuntimeError(f"MPV is not actually playing at {stage_label} (live IPC)")
+            if not require_playing and live_paused is not True:
+                raise RuntimeError(f"MPV pause state was not confirmed at {stage_label} (live IPC)")
+        else:
+            if require_playing and (state.get("paused") or not state.get("playing")):
+                raise RuntimeError(f"MPV is not actually playing at {stage_label}")
+            if not require_playing and not state.get("paused"):
+                raise RuntimeError(f"MPV pause state was not confirmed at {stage_label}")
+        live_volume = live_mpv.get("volume")
+        if isinstance(live_volume, (int, float)):
+            live_volume = int(round(float(live_volume)))
+        else:
+            live_volume = state.get("volume")
+        if require_source_volume:
+            if request.operation == "measurement-restore" and request.source in {"local", "radio"}:
+                if live_volume != 100:
+                    raise RuntimeError(f"MPV source volume was not restored: {live_volume}")
+            elif request.should_play and live_volume is not None and live_volume != 100:
+                raise RuntimeError(f"MPV source volume was not restored: {live_volume}")
+        return live_volume
+
     async def _verify_transition(
         self,
         request: TransitionRequest,
@@ -1343,52 +1291,16 @@ class FxrouteTransitionRuntime(TransitionRuntime):
             if request.audio_overview
             else self._deps.get_audio_output_overview()
         )
-        get_property = getattr(self._player, "get_property", None)
-        live_mpv: dict[str, Any] = {}
-        if callable(get_property):
-            # The cached state is driven by the async mpv event listener and can
-            # lag a pause/unload/volume change mpv already applied.  Read live
-            # IPC at the commit boundary so a source that was re-paused or
-            # unmuted after start cannot commit silently.
-            for prop in ("pause", "idle-active", "volume"):
-                try:
-                    live_mpv[prop] = get_property(prop)
-                except Exception:
-                    pass
+        live_mpv = self._live_mpv_commit_state(state)
         if request.source != "spotify":
-            if request.target_url and state.get("current_file") != request.target_url:
-                raise RuntimeError(
-                    f"MPV current_file mismatch: expected={request.target_url} actual={state.get('current_file')}"
-                )
-            live_paused = live_mpv.get("pause")
-            live_idle = live_mpv.get("idle-active")
-            if isinstance(live_paused, bool) and isinstance(live_idle, bool):
-                if request.should_play and (live_paused is not False or live_idle is not False):
-                    raise RuntimeError("MPV is not actually playing at transition commit (live IPC)")
-                if not request.should_play and live_paused is not True:
-                    raise RuntimeError("MPV pause state was not confirmed at transition commit (live IPC)")
-            else:
-                if request.should_play and (state.get("paused") or not state.get("playing")):
-                    raise RuntimeError("MPV is not actually playing at transition commit")
-                if not request.should_play and not state.get("paused"):
-                    raise RuntimeError("MPV pause state was not confirmed at transition commit")
-            live_volume = live_mpv.get("volume")
-            if isinstance(live_volume, (int, float)):
-                live_volume = int(round(float(live_volume)))
-            else:
-                live_volume = state.get("volume")
-            if require_source_volume and request.operation == "measurement-restore":
-                if request.source in {"local", "radio"} and live_volume != 100:
-                    raise RuntimeError(
-                        f"MPV source volume was not restored: {live_volume}"
-                    )
-            elif (
-                require_source_volume
-                and request.should_play
-                and live_volume is not None
-                and live_volume != 100
-            ):
-                raise RuntimeError(f"MPV source volume was not restored: {live_volume}")
+            self._verify_mpv_live_commit(
+                request,
+                state,
+                live_mpv,
+                require_playing=request.should_play,
+                require_source_volume=require_source_volume,
+                stage_label="transition commit",
+            )
         else:
             spotify_state = await self._deps.get_spotify_ui_state()
             expected_status = "Playing" if request.should_play else "Paused"
@@ -1521,16 +1433,13 @@ class FxrouteTransitionRuntime(TransitionRuntime):
                 f"expected={request.target_rate} actual={status.get('force_rate')}"
             )
 
-        readbacks: list[dict[str, Any]] = []
-        for _ in range(2):
-            readbacks.append(
-                await self._deps.playback_graph_diagnosis(
-                    target_rate=request.target_rate,
-                    require_source=False,
-                )
+        readbacks, signatures, stable = await stable_graph_readbacks(
+            lambda: self._deps.playback_graph_diagnosis(
+                target_rate=request.target_rate,
+                require_source=False,
             )
-        signatures = [str(item.get("signature")) for item in readbacks]
-        if not all(item.get("links_complete") for item in readbacks) or len(set(signatures)) != 1:
+        )
+        if not stable:
             final = readbacks[-1] if readbacks else {}
             self._deps.log_playback_graph_diagnosis(
                 final,
@@ -1591,22 +1500,19 @@ class FxrouteTransitionRuntime(TransitionRuntime):
                 f"expected={target_rate} actual={rate.get('force_rate')}"
             )
 
-        readbacks: list[dict[str, Any]] = []
-        for _ in range(2):
-            readbacks.append(
-                await self._deps.playback_graph_diagnosis(
-                    target_overview,
-                    source=(
-                        request.source
-                        if request.target_url or request.should_play
-                        else None
-                    ),
-                    target_rate=target_rate,
-                    require_source=bool(request.target_url or request.should_play),
-                )
+        readbacks, signatures, stable = await stable_graph_readbacks(
+            lambda: self._deps.playback_graph_diagnosis(
+                target_overview,
+                source=(
+                    request.source
+                    if request.target_url or request.should_play
+                    else None
+                ),
+                target_rate=target_rate,
+                require_source=bool(request.target_url or request.should_play),
             )
-        signatures = [str(item.get("signature")) for item in readbacks]
-        if not all(item.get("links_complete") for item in readbacks) or len(set(signatures)) != 1:
+        )
+        if not stable:
             final = readbacks[-1] if readbacks else {}
             self._deps.log_playback_graph_diagnosis(
                 final,
@@ -1730,15 +1636,14 @@ class FxrouteTransitionRuntime(TransitionRuntime):
         request: TransitionRequest,
         _old_mode: Any,
     ) -> None:
-        readbacks = [
-            await self._deps.playback_graph_diagnosis(
+        readbacks, _, stable = await stable_graph_readbacks(
+            lambda: self._deps.playback_graph_diagnosis(
                 request.output_mode_target,
                 target_rate=request.target_rate,
                 require_source=False,
             )
-            for _ in range(2)
-        ]
-        if not all(item.get("links_complete") for item in readbacks) or len({str(item.get("signature")) for item in readbacks}) != 1:
+        )
+        if not stable:
             raise RuntimeError("previous output-mode graph could not be restored")
 
     async def restore_output_mode_transport(
@@ -1870,38 +1775,20 @@ class FxrouteTransitionRuntime(TransitionRuntime):
 
         The graph was verified healthy before the switch and nothing in this
         path mutates it, so only the player state is read back: the target
-        must be loaded and audible at the committed volume.
+        must be loaded and audible at the committed volume.  The shared live
+        IPC validation is the same contract as the standard commit verifier;
+        the fast path never re-runs the graph diagnosis.
         """
         state = dict(self._player.state if self._player else {})
-        if request.target_url and state.get("current_file") != request.target_url:
-            raise RuntimeError(
-                f"MPV current_file mismatch: expected={request.target_url} actual={state.get('current_file')}"
-            )
-        get_property = getattr(self._player, "get_property", None)
-        live_mpv: dict[str, Any] = {}
-        if callable(get_property):
-            for prop in ("pause", "idle-active", "volume"):
-                try:
-                    live_mpv[prop] = get_property(prop)
-                except Exception:
-                    pass
-        live_paused = live_mpv.get("pause")
-        live_idle = live_mpv.get("idle-active")
-        if isinstance(live_paused, bool) and isinstance(live_idle, bool):
-            if live_paused is not False or live_idle is not False:
-                raise RuntimeError(
-                    "MPV is not actually playing at fast-path commit (live IPC)"
-                )
-        else:
-            if state.get("paused") or not state.get("playing"):
-                raise RuntimeError("MPV is not actually playing at fast-path commit")
-        live_volume = live_mpv.get("volume")
-        if isinstance(live_volume, (int, float)):
-            live_volume = int(round(float(live_volume)))
-        else:
-            live_volume = state.get("volume")
-        if live_volume is not None and live_volume != 100:
-            raise RuntimeError(f"MPV source volume was not restored: {live_volume}")
+        live_mpv = self._live_mpv_commit_state(state)
+        self._verify_mpv_live_commit(
+            request,
+            state,
+            live_mpv,
+            require_playing=True,
+            require_source_volume=True,
+            stage_label="fast-path commit",
+        )
         return {
             "committed": True,
             "player": state,

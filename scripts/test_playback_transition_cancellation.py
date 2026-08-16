@@ -137,7 +137,7 @@ class FakeRuntime:
 
     async def verify_committed_transition(self, request):
         await self._maybe_block("commit-readback")
-        return {"committed": True, "active_rate": self.rate}
+        return {"committed": True, "active_rate": self.rate, "source_volume": self.volume}
 
     async def stabilize_effects_after_rate_change(
         self, request, *, dsp_reinitialized=False
@@ -161,15 +161,29 @@ class FakeRuntime:
     def target_source_staged(self, request):
         return self.staged
 
-    async def abort_failed_transition(
-        self, request, snapshot, *, target_staged, ensure_gate_closed=None
-    ):
+    async def abort_failed_transition(self, request, snapshot, *, target_staged):
         self.abort_calls.append({"target_staged": target_staged})
         self.events.append("abort-failed-transition")
         if self.block_abort:
             self.abort_entered.set()
             await self.abort_release.wait()
-        return self.abort_result
+        if not self.abort_result:
+            return None
+        # The restore is a fresh bounded sequence for the committed source;
+        # it must not re-hit the original failure's block/fail stage.
+        self.block_stage = None
+        self.fail_stage = None
+        return {"restore": TransitionRequest(
+            operation="replay",
+            source="local",
+            target_rate=self.rate,
+            target_url="/music/old.flac",
+            target_track={"source": "local", "url": "/music/old.flac"},
+            should_play=True,
+            rate_change=False,
+            reload_source=True,
+            detail="failed-transition-restore",
+        )}
 
 
 def request():

@@ -70,7 +70,6 @@ class FastPathFakeRuntime:
         self.volume = 100
         self.fast_path_eligible = fast_path_eligible
         self.fail_stage = fail_stage
-        self.abort_ensure_gate_closed = "unset"
 
     async def _stage(self, name):
         self.events.append(name)
@@ -172,7 +171,7 @@ class FastPathFakeRuntime:
 
     async def verify_committed_transition(self, request):
         await self._stage("verify")
-        return {"committed": True, "active_rate": self.rate}
+        return {"committed": True, "active_rate": self.rate, "source_volume": self.volume}
 
     async def verify_transition_graph(self, request):
         await self._stage("verify-graph")
@@ -181,10 +180,9 @@ class FastPathFakeRuntime:
     async def pause_source_after_failure(self, request):
         await self._stage("pause-after-failure")
 
-    async def abort_failed_transition(self, request, snapshot, *, target_staged, ensure_gate_closed=None):
+    async def abort_failed_transition(self, request, snapshot, *, target_staged):
         await self._stage("abort")
-        self.abort_ensure_gate_closed = ensure_gate_closed
-        return True
+        return None
 
     def target_source_staged(self, request):
         return True
@@ -288,28 +286,45 @@ class SameGraphFastPathCoordinatorTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_failed_fast_path_restores_without_gate_guard(self):
         runtime = FastPathFakeRuntime(fast_path_eligible=True, fail_stage="verify-fast")
+
+        async def abort(request, snapshot, *, target_staged):
+            await runtime._stage("abort")
+            return {"restore": TransitionRequest(
+                operation="replay",
+                source="local",
+                target_rate=44_100,
+                target_url="/music/target.flac",
+                target_track={"source": "local", "url": "/music/target.flac"},
+                should_play=True,
+                rate_change=False,
+                reload_source=True,
+                detail="failed-transition-restore",
+            )}
+
+        runtime.abort_failed_transition = abort
         coordinator = make_coordinator(runtime)
         with self.assertRaises(PlaybackTransitionFailure):
             await coordinator.execute(make_request())
-        # The gate was never closed by the fast path, so the abort must not
-        # receive a gate-ownership guard; the restore runs ungated.
-        self.assertIsNone(runtime.abort_ensure_gate_closed)
+        # The gate was never closed by the fast path, so the Coordinator
+        # restore runs ungated (no boundary re-checks); the restored source
+        # leaves the open gate open without a latch.
         self.assertFalse(coordinator.gate.closed)
         self.assertFalse(coordinator.gate.failure_latched)
         self.assertIn("abort", runtime.events)
         self.assertIn("verify-fast", runtime.events)
-        # The abort reported a restored source, so the shared cleanup does not
-        # latch and the open gate stays open.
+        # The restore ran the standard source handoff stages.
+        self.assertIn("rate", runtime.events)
+        self.assertIn("verify", runtime.events)
         self.assertEqual(coordinator.last_error["ok"], False)
 
-    async def test_full_path_failure_still_passes_gate_guard(self):
+    async def test_full_path_failure_still_runs_abort_cleanup(self):
         runtime = FastPathFakeRuntime(fast_path_eligible=False, fail_stage="verify-graph")
         coordinator = make_coordinator(runtime)
         with self.assertRaises(PlaybackTransitionFailure):
             await coordinator.execute(make_request())
-        # The full path closed the gate, so the abort must re-confirm it.
-        self.assertTrue(callable(runtime.abort_ensure_gate_closed))
+        # The full path closed the gate; the abort verdict keeps the latch.
         self.assertIn("abort", runtime.events)
+        self.assertTrue(coordinator.gate.failure_latched)
 
 
 class _PlayerDouble:

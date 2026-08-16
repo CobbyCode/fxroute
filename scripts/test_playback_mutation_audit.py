@@ -203,7 +203,6 @@ def _reason(context: str, name: str) -> str | None:
             "repair_stereo_output_links_once", "reconcile_subwoofer_links_only",
             "rollback_output_mode_runtime",
             "_ensure_mpv_to_dsp_links",
-            "_restore_committed_source_after_failed_transition",
         }
         or "_sync_locked" in context
     ):

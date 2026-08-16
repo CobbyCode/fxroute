@@ -186,6 +186,7 @@ class MeasurementOwnershipTests(unittest.IsolatedAsyncioTestCase):
         session = main.MeasurementSampleRateSession()
         class Coordinator:
             transition_active = False
+            last_successful_commit_id = "tr-after-release"
 
             async def run_recovery(self, **kwargs):
                 if await kwargs["validate"]():
@@ -209,7 +210,6 @@ class MeasurementOwnershipTests(unittest.IsolatedAsyncioTestCase):
             main, "_coordinator_rate_change", return_value=False
         ), patch.object(main, "_recovery_context_is_valid", new=AsyncMock(return_value=True)
         ), patch.object(main, "_run_coordinated_transition", run):
-            main.playback_state.coordinator_last_successful_commit_id = "tr-after-release"
             await main._request_coordinated_recovery(track, "post-measurement-watcher")
 
         run.assert_awaited_once()

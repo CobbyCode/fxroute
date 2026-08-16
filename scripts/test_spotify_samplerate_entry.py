@@ -288,8 +288,6 @@ class SpotifyEntrySamplerateTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(main, "playback_transition_coordinator", CoordinatorDouble()), patch.object(
             main, "_run_coordinated_transition", run
         ), patch.object(
-            main.playback_state, "coordinator_last_successful_commit_id", "tr-spotify-recovery"
-        ), patch.object(
             main, "get_spotify_ui_state", new=AsyncMock(
                 return_value={
                     "status": "Playing",

@@ -16,9 +16,10 @@ import main
 
 
 class _CoordinatorDouble:
-    def __init__(self, *, active: bool = False, target_rate: int | None = None):
+    def __init__(self, *, active: bool = False, target_rate: int | None = None, commit_id: str | None = None):
         self.transition_active = active
         self.target_rate = target_rate
+        self.last_successful_commit_id = commit_id
         self.requests = []
 
     async def run_recovery(self, **kwargs):
@@ -31,7 +32,7 @@ class _CoordinatorDouble:
 
 class CoordinatorRecoveryTests(unittest.IsolatedAsyncioTestCase):
     async def test_radio_recovery_submits_one_coordinator_request(self):
-        coordinator = _CoordinatorDouble(target_rate=48000)
+        coordinator = _CoordinatorDouble(target_rate=48000, commit_id="tr-radio")
 
         class PlayerDouble:
             state = {
@@ -48,7 +49,7 @@ class CoordinatorRecoveryTests(unittest.IsolatedAsyncioTestCase):
         track = {"source": "radio", "url": "https://radio.example/live", "sample_rate_hz": 44100}
         with patch.object(main, "playback_transition_coordinator", coordinator), patch.object(
             main.runtime, "player_instance", PlayerDouble()
-        ), patch.object(main.playback_state, "coordinator_last_successful_commit_id", "tr-radio"), patch.object(
+        ), patch.object(
             main, "_run_coordinated_transition", run
         ):
             await main._request_coordinated_recovery(track, "status-drift-repair")

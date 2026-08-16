@@ -2508,7 +2508,6 @@ async def lifespan(app: FastAPI):
             FxrouteTransitionRuntime(make_playback_runtime_deps()),
             gate_state_path=_playback_gate_state_path(),
         )
-        playback_state.coordinator_last_successful_commit_id = None
         startup_gate_reconciled = await playback_transition_coordinator.reconcile_startup_gate()
         logger.info(
             "Playback transition startup gate reconciled: success=%s status=%s",

@@ -20,7 +20,7 @@ from typing import Any, Awaitable, Callable, Mapping
 import playback.queue
 import playback.state
 import audio.samplerate as samplerate
-from playback.transition import PlaybackTransitionFailure, TransitionRequest
+from playback.transition import PlaybackTransitionFailure, TransitionRequest, stable_graph_readbacks
 
 logger = logging.getLogger(__name__)
 
@@ -157,11 +157,13 @@ class PlaybackOrchestrator:
         return bool(coordinator is not None and coordinator.transition_active)
 
     def coordinator_commit_context_id(self) -> str | None:
-        state = self._deps.get_playback_state()
-        context_id = getattr(self._deps.get_coordinator(), "last_successful_commit_id", None)
-        if context_id:
-            state.coordinator_last_successful_commit_id = str(context_id)
-        return state.coordinator_last_successful_commit_id
+        """Return the Coordinator's latest committed transition identity.
+
+        The Coordinator is the single owner of the commit token (it advances
+        on every committed operation).  Watcher recovery requests read it
+        directly instead of caching a mirror in the playback state.
+        """
+        return getattr(self._deps.get_coordinator(), "last_successful_commit_id", None)
 
     def measurement_audio_graph_owned(self) -> bool:
         session = self._deps.get_measurement_session()
@@ -178,10 +180,7 @@ class PlaybackOrchestrator:
         epoch = self._deps.begin_transition_attempt()
         request = replace(request, attempt_epoch=epoch)
         try:
-            result = await coordinator.execute(request)
-            if getattr(result, "committed", False) and getattr(result, "transition_id", None):
-                self._deps.get_playback_state().coordinator_last_successful_commit_id = str(result.transition_id)
-            return result
+            return await coordinator.execute(request)
         finally:
             self._deps.end_transition_attempt()
 
@@ -498,9 +497,10 @@ class PlaybackOrchestrator:
                 self.log_playback_graph_diagnosis(diagnosis, target_rate=target_rate, reason=f"post-start-{request.operation}", detail=request.detail)
                 raise RuntimeError("post-start graph readback was incomplete without link-only drift")
         relinked = await self.relink_missing_production_links(diagnosis, include_source=include_source)
-        readbacks = [await self.playback_graph_diagnosis(overview, source=graph_source, target_rate=target_rate, require_source=include_source) for _ in range(self._deps.post_start_readbacks)]
-        signatures = [str(item.get("signature")) for item in readbacks]
-        stable = bool(len(readbacks) == self._deps.post_start_readbacks and all(item.get("links_complete") for item in readbacks) and len(set(signatures)) == 1)
+        readbacks, signatures, stable = await stable_graph_readbacks(
+            lambda: self.playback_graph_diagnosis(overview, source=graph_source, target_rate=target_rate, require_source=include_source),
+            count=self._deps.post_start_readbacks,
+        )
         if not stable:
             final = readbacks[-1] if readbacks else diagnosis
             self.log_playback_graph_diagnosis(final, target_rate=target_rate, reason=f"post-start-{request.operation}", detail=request.detail)

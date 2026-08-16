@@ -81,13 +81,14 @@ def snapshot_with(track: dict, *, current_file: str | None, playing: bool = True
     return {
         "player": {"current_file": current_file, "playing": playing, "paused": not playing},
         "current_track": dict(track),
+        "active_rate": track.get("sample_rate_hz"),
     }
 
 
 class SpotifyHandoffFailureRestoreTests(unittest.IsolatedAsyncioTestCase):
     """abort_failed_transition restores the pre-transition Local/Radio context."""
 
-    async def test_local_spotify_failure_restores_local_context_and_keeps_queue(self):
+    async def test_local_spotify_failure_requests_and_publishes_local_restore(self):
         player = PlayerDouble(None, playing=False)  # state after the quiet stage
         track = local_track()
         retry = {"source": "local", "url": "/music/retry.flac", "id": "retry"}
@@ -99,20 +100,26 @@ class SpotifyHandoffFailureRestoreTests(unittest.IsolatedAsyncioTestCase):
             playback_queue.queue.original = [dict(item) for item in queue]
             playback_queue.queue.index = 0
             playback_queue.queue.mode = "app_replace"
-            with patch.object(
-                main.FxrouteTransitionRuntime,
-                "_restore_committed_source_after_failed_transition",
-                AsyncMock(return_value=True),
-            ), patch.object(main.runtime, "player_instance", player), patch.object(
+            with patch.object(main.runtime, "player_instance", player), patch.object(
                 main.playback_state, "current_track_info", None
             ), patch.object(main.playback_state, "last_track_info", dict(retry)), patch.object(
                 main.playback_state, "current_footer_owner", "spotify"
-            ), patch.object(main, "_mark_player_state_authoritative", mark_authoritative):
-                await make_transition_runtime().abort_failed_transition(
+            ), patch.object(main, "_mark_player_state_authoritative", mark_authoritative), patch.object(
+                main, "get_samplerate_status", return_value={"active_rate": 48_000}
+            ):
+                runtime = make_transition_runtime()
+                verdict = await runtime.abort_failed_transition(
                     spotify_request(),
                     snapshot_with(track, current_file="/music/old.flac"),
                     target_staged=False,
                 )
+
+                self.assertIsNotNone(verdict)
+                restore = verdict["restore"]
+                self.assertEqual(restore.source, "local")
+                self.assertEqual(restore.target_url, "/music/old.flac")
+                self.assertEqual(restore.target_rate, 48_000)
+                await runtime.publish_restored_source(restore)
 
                 self.assertEqual(main.playback_state.current_track_info, track)
                 self.assertEqual(main.playback_state.current_footer_owner, "local")
@@ -125,14 +132,10 @@ class SpotifyHandoffFailureRestoreTests(unittest.IsolatedAsyncioTestCase):
 
         mark_authoritative.assert_called_once()
 
-    async def test_radio_spotify_failure_restores_radio_context_and_reconnect_state(self):
+    async def test_radio_spotify_failure_requests_and_publishes_radio_restore(self):
         player = PlayerDouble(None, playing=False)
         track = radio_track()
-        with patch.object(
-            main.FxrouteTransitionRuntime,
-                "_restore_committed_source_after_failed_transition",
-            AsyncMock(return_value=True),
-        ), patch.object(main.runtime, "player_instance", player), patch.object(
+        with patch.object(main.runtime, "player_instance", player), patch.object(
             main.playback_state, "current_track_info", None
         ), patch.object(main.playback_state, "last_track_info", dict(track)), patch.object(
             main.playback_state, "current_footer_owner", "spotify"
@@ -140,12 +143,21 @@ class SpotifyHandoffFailureRestoreTests(unittest.IsolatedAsyncioTestCase):
             main.radio_reconnect, "url", "https://radio.example/live"
         ), patch.object(main.radio_reconnect, "active_since", 5.0), patch.object(
             main, "_mark_player_state_authoritative"
+        ), patch.object(
+            main, "get_samplerate_status", return_value={"active_rate": 44_100}
         ):
-            await make_transition_runtime().abort_failed_transition(
+            runtime = make_transition_runtime()
+            verdict = await runtime.abort_failed_transition(
                 spotify_request(),
                 snapshot_with(track, current_file=None, playing=False),
                 target_staged=False,
             )
+
+            self.assertIsNotNone(verdict)
+            restore = verdict["restore"]
+            self.assertEqual(restore.source, "radio")
+            self.assertEqual(restore.target_url, "https://radio.example/live")
+            await runtime.publish_restored_source(restore)
 
             self.assertEqual(main.playback_state.current_track_info, track)
             self.assertEqual(main.playback_state.current_footer_owner, "local")
@@ -153,28 +165,29 @@ class SpotifyHandoffFailureRestoreTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(main.radio_reconnect.url, "https://radio.example/live")
             self.assertEqual(main.radio_reconnect.active_since, 5.0)
 
-    async def test_spotify_verify_failure_after_start_attempt_restores_context(self):
+    async def test_spotify_verify_failure_after_start_attempt_requests_restore(self):
         player = PlayerDouble(None, playing=False)
         track = local_track()
-        with patch.object(
-            main.FxrouteTransitionRuntime,
-                "_restore_committed_source_after_failed_transition",
-            AsyncMock(return_value=True),
-        ), patch.object(main.runtime, "player_instance", player), patch.object(
+        with patch.object(main.runtime, "player_instance", player), patch.object(
             main.playback_state, "current_track_info", None
         ), patch.object(main.playback_state, "current_footer_owner", "spotify"), patch.object(
             main, "_mark_player_state_authoritative"
+        ), patch.object(
+            main, "get_samplerate_status", return_value={"active_rate": 48_000}
         ):
-            await make_transition_runtime().abort_failed_transition(
+            runtime = make_transition_runtime()
+            verdict = await runtime.abort_failed_transition(
                 spotify_request(),
                 snapshot_with(track, current_file="/music/old.flac", playing=False),
                 target_staged=False,
             )
 
-            # The abort hook is stage-independent: a commit-verify failure
-            # after the Spotify start attempt restores the old context too.
-            self.assertEqual(main.playback_state.current_track_info, track)
-            self.assertEqual(main.playback_state.current_footer_owner, "local")
+            # The abort verdict is stage-independent: a commit-verify failure
+            # after the Spotify start attempt requests the old context too.
+            self.assertIsNotNone(verdict)
+            restore = verdict["restore"]
+            self.assertEqual(restore.source, "local")
+            self.assertFalse(restore.should_play)
 
     async def test_spotify_failure_without_prior_local_context_restores_nothing(self):
         player = PlayerDouble(None, playing=False)
@@ -183,31 +196,33 @@ class SpotifyHandoffFailureRestoreTests(unittest.IsolatedAsyncioTestCase):
         ), patch.object(main.playback_state, "current_footer_owner", "spotify"), patch.object(
             main, "_mark_player_state_authoritative"
         ):
-            await make_transition_runtime().abort_failed_transition(
+            verdict = await make_transition_runtime().abort_failed_transition(
                 spotify_request(),
                 {"player": {}, "current_track": {"source": "spotify"}},
                 target_staged=False,
             )
 
+            self.assertIsNone(verdict)
             self.assertIsNone(main.playback_state.current_track_info)
             self.assertEqual(main.playback_state.current_footer_owner, "spotify")
 
     async def test_restore_with_missing_player_does_not_crash(self):
         track = local_track()
-        with patch.object(
-            main.FxrouteTransitionRuntime,
-                "_restore_committed_source_after_failed_transition",
-            AsyncMock(return_value=True),
-        ), patch.object(main.runtime, "player_instance", None), patch.object(
+        with patch.object(main.runtime, "player_instance", None), patch.object(
             main.playback_state, "current_track_info", None
         ), patch.object(main.playback_state, "current_footer_owner", "spotify"), patch.object(
             main, "_mark_player_state_authoritative"
+        ), patch.object(
+            main, "get_samplerate_status", return_value={"active_rate": 48_000}
         ):
-            await make_transition_runtime().abort_failed_transition(
+            runtime = make_transition_runtime()
+            verdict = await runtime.abort_failed_transition(
                 spotify_request(),
                 snapshot_with(track, current_file="/music/old.flac"),
                 target_staged=False,
             )
+            self.assertIsNotNone(verdict)
+            await runtime.publish_restored_source(verdict["restore"])
             self.assertEqual(main.playback_state.current_track_info, track)
             self.assertEqual(main.playback_state.current_footer_owner, "local")
 
@@ -215,13 +230,8 @@ class SpotifyHandoffFailureRestoreTests(unittest.IsolatedAsyncioTestCase):
         player = PlayerDouble(None, playing=False)
         track = local_track()
         run_mock = AsyncMock(return_value=SimpleNamespace(target_rate=48000))
-        restore_ready = AsyncMock(return_value=True)
         commit = Mock()
-        with patch.object(
-            main.FxrouteTransitionRuntime,
-                "_restore_committed_source_after_failed_transition",
-            restore_ready,
-        ), patch.object(main.runtime, "player_instance", player), patch.object(
+        with patch.object(main.runtime, "player_instance", player), patch.object(
             main.playback_state, "current_track_info", None
         ), patch.object(main.playback_state, "current_footer_owner", "spotify"), patch.object(
             main, "_can_send_play_command", return_value=True
@@ -229,12 +239,17 @@ class SpotifyHandoffFailureRestoreTests(unittest.IsolatedAsyncioTestCase):
             main, "_coordinator_rate_change", lambda *a, **k: False
         ), patch.object(main, "_run_coordinated_transition", run_mock), patch.object(
             main, "_commit_coordinated_track", commit
-        ), patch.object(main, "build_playback_payload", side_effect=dict):
-            await make_transition_runtime().abort_failed_transition(
+        ), patch.object(main, "build_playback_payload", side_effect=dict), patch.object(
+            main, "get_samplerate_status", return_value={"active_rate": 48_000}
+        ):
+            runtime = make_transition_runtime()
+            verdict = await runtime.abort_failed_transition(
                 spotify_request(),
                 snapshot_with(track, current_file="/music/old.flac"),
                 target_staged=False,
             )
+            self.assertIsNotNone(verdict)
+            await runtime.publish_restored_source(verdict["restore"])
             self.assertEqual(main.playback_state.current_track_info, track)
             self.assertEqual(main.playback_state.current_footer_owner, "local")
 
