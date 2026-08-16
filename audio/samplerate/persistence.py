@@ -14,7 +14,7 @@ from .constants import (
     OUTPUT_MODE_SUBWOOFER_21,
     OUTPUT_MODE_SUBWOOFER_22_MODES,
     OUTPUT_MODE_SUBWOOFER_22_STEREO,
-    OUTPUT_MODE_SUBWOOFER_MODES,
+    OUTPUT_MODES,
     SAMPLE_RATE_CANDIDATES,
     SOURCE_MODE_APP_PLAYBACK,
     SOURCE_MODE_BLUETOOTH_INPUT,
@@ -290,7 +290,7 @@ def _build_audio_output_mode_payload(
     subwoofer: dict[str, Any] | None = None,
     subwoofers: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    valid_modes = {OUTPUT_MODE_STEREO, *OUTPUT_MODE_SUBWOOFER_MODES}
+    valid_modes = OUTPUT_MODES
     normalized_mode = mode if mode in valid_modes else OUTPUT_MODE_STEREO
 
     # Load existing config to preserve the other mode's block
@@ -399,7 +399,7 @@ def _load_device_output_modes() -> dict[str, str]:
     device_modes = _load_raw_audio_output_mode().get("device_modes")
     if not isinstance(device_modes, dict):
         return {}
-    valid_modes = {OUTPUT_MODE_STEREO, *OUTPUT_MODE_SUBWOOFER_MODES}
+    valid_modes = OUTPUT_MODES
     return {
         str(key): str(value)
         for key, value in device_modes.items()

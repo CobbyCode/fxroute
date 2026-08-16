@@ -17,6 +17,7 @@ from .constants import (
     OUTPUT_MODE_SUBWOOFER_22,
     OUTPUT_MODE_SUBWOOFER_22_STEREO,
     OUTPUT_MODE_SUBWOOFER_MODES,
+    OUTPUT_MODES,
     PIPEWIRE_DEFAULT_RATE_OPTIONS,
     SAMPLE_RATE_CANDIDATES,
     SOURCE_MODE_APP_PLAYBACK,
@@ -393,7 +394,7 @@ def set_audio_output_selection(key: str) -> dict[str, Any]:
     # mode this device can actually carry instead of refusing the switch.  A
     # subwoofer mode on a stereo-only device falls back to Stereo, and a mode
     # remembered for this device is restored when the device can carry it.
-    valid_modes = {OUTPUT_MODE_STEREO, *OUTPUT_MODE_SUBWOOFER_MODES}
+    valid_modes = OUTPUT_MODES
     channels = int(selected_output.get("channels") or 0)
     current_mode = _load_audio_output_mode()
     current_mode_name = str(current_mode.get("mode") or OUTPUT_MODE_STEREO).strip()
@@ -449,7 +450,7 @@ def prepare_audio_output_mode(
     the guarded runtime can stage the new topology before persistence.
     """
     normalized_mode = (mode or OUTPUT_MODE_STEREO).strip()
-    valid_modes = {OUTPUT_MODE_STEREO, *OUTPUT_MODE_SUBWOOFER_MODES}
+    valid_modes = OUTPUT_MODES
     if normalized_mode not in valid_modes:
         raise ValueError(f"Unknown output mode: {mode}")
     if normalized_mode in OUTPUT_MODE_SUBWOOFER_MODES:
@@ -480,7 +481,7 @@ def persist_audio_output_mode(config: Mapping[str, Any]) -> dict[str, Any]:
     """
     payload = dict(config or {})
     mode = str(payload.get("mode") or "").strip()
-    if mode not in {OUTPUT_MODE_STEREO, *OUTPUT_MODE_SUBWOOFER_MODES}:
+    if mode not in OUTPUT_MODES:
         raise ValueError(f"Unknown output mode: {mode}")
     device_key = (_load_audio_output_selection() or {}).get("selected_key")
     if device_key:
