@@ -52,6 +52,9 @@ class LibraryApiRuntime:
     get_scanner: Callable[[], Any]
     get_settings: Callable[[], Any]
     run_blocking: Optional[Callable[..., Any]] = None
+    # Optional hook: mirror a persisted track favorite into live playback/queue
+    # track dicts (footer heart, queue rows) so status polls stay in sync.
+    sync_track_favorite: Optional[Callable[[str, bool], None]] = None
 
 
 _runtime: LibraryApiRuntime | None = None
@@ -433,7 +436,11 @@ async def set_track_favorite(track_id: str, request: Request):
     body = await request.json()
     favorite = bool(body.get("favorite"))
     result = library_scanner.set_track_favorite(track_id, favorite)
-    return {"status": "ok", "track_id": track_id, "favorite": bool(result.get("favorite"))}
+    favorite_value = bool(result.get("favorite"))
+    runtime = _runtime
+    if runtime is not None and runtime.sync_track_favorite is not None:
+        runtime.sync_track_favorite(track_id, favorite_value)
+    return {"status": "ok", "track_id": track_id, "favorite": favorite_value}
 
 
 @router.get("/api/albums/{album_id}/discover")

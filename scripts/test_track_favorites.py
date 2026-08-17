@@ -259,6 +259,19 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(resp, {"status": "ok", "track_id": "local_album/a.flac", "favorite": True})
         self.assertTrue(self.scanner.get_tracks()[0].favorite)
 
+    async def test_route_syncs_playback_track_favorite(self):
+        """The runtime hook must mirror a persisted favorite into live playback dicts."""
+        synced = []
+        configure_runtime(LibraryApiRuntime(
+            get_scanner=lambda: self.scanner,
+            get_settings=lambda: None,
+            sync_track_favorite=lambda track_id, favorite: synced.append((track_id, favorite)),
+        ))
+        await set_track_favorite_route("local_album/a.flac", _FakeRequest({"favorite": True}))
+        self.assertEqual(synced, [("local_album/a.flac", True)])
+        await set_track_favorite_route("local_album/a.flac", _FakeRequest({"favorite": False}))
+        self.assertEqual(synced[-1], ("local_album/a.flac", False))
+
         resp = await set_track_favorite_route("local_album/a.flac", _FakeRequest({"favorite": False}))
         self.assertEqual(resp["favorite"], False)
 

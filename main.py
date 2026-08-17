@@ -853,10 +853,29 @@ radio_metadata_service = RadioMetadataService()
 # loop) lives exclusively in playback.queue.PlaybackQueue.
 queue_advancing = False
 
+def _sync_playback_track_favorite(track_id: str, favorite: bool) -> None:
+    """Mirror a persisted track favorite into live playback/queue track dicts.
+
+    The library mutation updates the scanner's in-memory Track objects, but
+    the currently playing track and the queue hold independent dict copies;
+    without this the next status/WS poll would revert the footer heart.
+    """
+    if playback_state.current_track_info and playback_state.current_track_info.get("id") == track_id:
+        playback_state.current_track_info["favorite"] = favorite
+    if playback_state.last_track_info and playback_state.last_track_info.get("id") == track_id:
+        playback_state.last_track_info["favorite"] = favorite
+    queue = playback_queue.queue
+    if queue is not None:
+        for track in queue.tracks:
+            if track.get("id") == track_id:
+                track["favorite"] = favorite
+
+
 configure_library_api_runtime(LibraryApiRuntime(
     get_scanner=lambda: runtime.music_library.scanner,
     get_settings=lambda: settings,
     run_blocking=_drain_worker,
+    sync_track_favorite=_sync_playback_track_favorite,
 ))
 spl_calibration.configure_runtime(spl_calibration.SplCalibrationDependencies(
     get_measurement_store=lambda: measurement_store,
