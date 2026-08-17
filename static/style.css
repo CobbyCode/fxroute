@@ -7345,3 +7345,34 @@ body {
         min-width: 2.35rem;
     }
 }
+
+/* ============================================================
+   Playback footer refinement v6 — freeze wide-desktop volume geometry
+   ============================================================ */
+/* On wide desktops the footer's fourth grid track can grow much wider than
+   the control itself needs. Keep the volume cluster anchored near the meter,
+   let the slider gain a little useful length, and stop the percentage readout
+   from drifting to the far-right edge as the viewport expands. Tablet/mobile
+   geometry is intentionally unchanged. */
+@media (min-width: 1181px) {
+    .playback-bar .controls {
+        width: min(100%, 360px);
+        max-width: 360px;
+        justify-self: start;
+        margin-left: 0;
+        margin-right: 0;
+    }
+
+    .volume-control {
+        width: 100%;
+        max-width: 360px;
+        grid-template-columns: 24px minmax(160px, 1fr) 2.5rem;
+        column-gap: .42rem;
+    }
+
+    .volume-slider {
+        width: 100%;
+        max-width: none;
+        min-width: 0;
+    }
+}
