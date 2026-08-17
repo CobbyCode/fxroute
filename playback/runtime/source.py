@@ -78,8 +78,8 @@ class _RuntimeSourceMixin:
 
         if source_policy.is_external_source(request.source):
             # An external renderer claims playback: pause any active MPV
-            # source, and (for qobuz) any active Spotify renderer, so exactly
-            # one source produces audio after the claim.
+            # source and any other active external renderer (Spotify or
+            # qbzd), so exactly one source produces audio after the claim.
             local_state = dict(self._player.state if self._player else {})
             local_track = self._deps.get_current_track_info() or {}
             if (
@@ -94,6 +94,14 @@ class _RuntimeSourceMixin:
                     if not await self._deps.wait_for_pipewire_spotify_release():
                         raise RuntimeError(
                             "active Spotify sink input did not quiesce before Qobuz handoff"
+                        )
+            elif request.source == "spotify":
+                qobuz_state = await self._deps.get_qobuz_ui_state()
+                if self._deps.is_qobuz_playback_active(qobuz_state):
+                    await self._deps.qobuz_pause()
+                    if not await self._deps.wait_for_pipewire_qobuz_release():
+                        raise RuntimeError(
+                            "active qbzd sink input did not quiesce before Spotify handoff"
                         )
             return
 
