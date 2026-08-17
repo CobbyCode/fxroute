@@ -195,6 +195,8 @@
         <!-- Main navigation. Streaming providers come first and may be hidden dynamically. -->
         <nav class="tabs" aria-label="Primary" role="tablist">
             <button class="tab-btn" data-tab="spotify" hidden style="display:none" role="tab" id="tab-btn-spotify" aria-controls="tab-spotify" aria-selected="false"><span class="tab-glyph" aria-hidden="true">♪</span><span>Spotify</span></button>
+            <button class="tab-btn" data-tab="qobuz" hidden style="display:none" role="tab" id="tab-btn-qobuz" aria-controls="tab-qobuz" aria-selected="false"><span class="tab-glyph" aria-hidden="true">◈</span><span>Qobuz</span></button>
+            <button class="tab-btn" data-tab="tidal" hidden style="display:none" role="tab" id="tab-btn-tidal" aria-controls="tab-tidal" aria-selected="false"><span class="tab-glyph" aria-hidden="true">≋</span><span>TIDAL</span></button>
             <button class="tab-btn active" data-tab="radio" role="tab" id="tab-btn-radio" aria-controls="tab-radio" aria-selected="true"><span class="tab-glyph" aria-hidden="true">▣</span><span>Radio</span></button>
             <button class="tab-btn" data-tab="library" role="tab" id="tab-btn-library" aria-controls="tab-library" aria-selected="false"><span class="tab-glyph" aria-hidden="true">♫</span><span>Library</span></button>
             <button class="tab-btn" data-tab="effects" role="tab" id="tab-btn-effects" aria-controls="tab-effects" aria-selected="false"><span class="tab-glyph" aria-hidden="true">⌁</span><span>DSP</span></button>
@@ -796,49 +798,19 @@
                 </div>
             </div>
 
-            <!-- Spotify tab -->
+            <!-- Spotify tab (shared streaming components) -->
             <div id="tab-spotify" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-spotify">
-                <div class="spotify-shell">
-                    <!-- Unavailable state -->
-                    <div id="spotify-unavailable" class="spotify-unavailable" style="display:none">
-                        <div class="spotify-unavailable-icon">🎵</div>
-                        <h2 class="section-title">Spotify</h2>
-                        <p id="spotify-unavailable-msg" class="spotify-unavailable-msg">Spotify is not available.</p>
-                    </div>
+                <div class="streaming-shell" data-provider="spotify"></div>
+            </div>
 
-                    <!-- Player -->
-                    <div id="spotify-player" class="spotify-player" style="display:none">
-                        <div class="spotify-cover-row">
-                            <img id="spotify-cover" class="spotify-cover" src="" alt="Cover art">
-                        </div>
-                        <div class="spotify-info">
-                            <div id="spotify-title" class="spotify-title">—</div>
-                            <div id="spotify-artist" class="spotify-artist">—</div>
-                            <div id="spotify-album" class="spotify-album">—</div>
-                        </div>
-                        <div class="spotify-controls">
-                            <button id="spotify-prev" class="spotify-btn" title="Previous">⏮</button>
-                            <button id="spotify-toggle" class="spotify-btn spotify-btn-main" title="Play / Pause">▶</button>
-                            <button id="spotify-next" class="spotify-btn" title="Next">⏭</button>
-                        </div>
-                        <div id="spotify-secondary-controls" class="spotify-secondary-controls">
-                            <button id="spotify-shuffle" class="spotify-btn-sm" title="Shuffle">
-                                <span class="spotify-btn-sm-icon">⇄</span>
-                                <span class="spotify-btn-sm-label">Shuffle</span>
-                            </button>
-                            <button id="spotify-loop" class="spotify-btn-sm" title="Loop">
-                                <span id="spotify-loop-icon" class="spotify-btn-sm-icon">🔁</span>
-                                <span id="spotify-loop-label" class="spotify-btn-sm-label">Loop</span>
-                            </button>
-                        </div>
-                        <div class="spotify-progress-row">
-                            <span id="spotify-time-current" class="spotify-time">0:00</span>
-                            <input type="range" id="spotify-progress" class="spotify-progress" min="0" max="100" value="0" step="0.1">
-                            <span id="spotify-time-total" class="spotify-time">0:00</span>
-                        </div>
-                        <div id="spotify-status" class="spotify-status-line"></div>
-                    </div>
-                </div>
+            <!-- Qobuz tab (shared streaming components) -->
+            <div id="tab-qobuz" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-qobuz">
+                <div class="streaming-shell" data-provider="qobuz"></div>
+            </div>
+
+            <!-- TIDAL tab (shared streaming components) -->
+            <div id="tab-tidal" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-tidal">
+                <div class="streaming-shell" data-provider="tidal"></div>
             </div>
         </section>
 
@@ -1349,6 +1321,7 @@
     <script src="/static/measurement_dsp.js?v=0.9.11"></script>
     <script src="/static/hybrid_measurement.js?v=0.9.11"></script>
     <script src="/static/radio.js?v=0.9.11"></script>
-    <script src="/static/app.js?v=0.9.28"></script>
+    <script src="/static/app.js?v=0.9.29"></script>
+    <script src="/static/streaming.js?v=0.9.1"></script>
 </body>
 </html>

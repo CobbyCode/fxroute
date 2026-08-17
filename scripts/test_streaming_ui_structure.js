@@ -1,0 +1,88 @@
+#!/usr/bin/env node
+// SPDX-License-Identifier: AGPL-3.0-only
+// Structural checks for the shared streaming UI.
+//
+// These verify the new UI is capability-driven rather than branching on
+// provider identity for general controls, and that the served page shell
+// actually wires up the three provider tabs and the streaming module.
+
+const assert = require('assert/strict');
+const fs = require('fs');
+const path = require('path');
+
+const js = fs.readFileSync(path.join(__dirname, '..', 'static', 'streaming.js'), 'utf8');
+const html = fs.readFileSync(path.join(__dirname, '..', 'static', 'index.html'), 'utf8');
+
+// --- capability-gated rendering -------------------------------------------------
+// The shared now-playing card must read `caps.<name>` for every control
+// cluster, so a provider with a different capability surface renders the same
+// way without any `if (provider === ...)` branching in the render path.
+const requiredCapabilityGates = [
+    'caps.transport',
+    'caps.seek',
+    'caps.shuffle',
+    'caps.loop',
+    'caps.progress',
+    'caps.cover',
+    'caps.audio_format',
+    'caps.bit_depth',
+    'caps.sample_rate',
+];
+for (const gate of requiredCapabilityGates) {
+    assert.ok(js.includes(gate), `streaming.js must gate rendering on ${gate}`);
+}
+
+// --- no provider-identity branching in the renderer -----------------------------
+// The render path (renderNowPlaying) must not hard-code provider ids. Provider
+// ids may only appear in the transport adapter map and in provider-specific
+// content dispatch, so extract renderNowPlaying and check it stays identity-free.
+function extractFunction(source, name) {
+    const match = new RegExp(`function\\s+${name}\\s*\\(`).exec(source);
+    assert.ok(match, `missing ${name}`);
+    const brace = source.indexOf('{', match.index);
+    let depth = 0, quote = '', escaped = false;
+    for (let i = brace; i < source.length; i += 1) {
+        const c = source[i];
+        if (quote) {
+            if (escaped) escaped = false;
+            else if (c === '\\') escaped = true;
+            else if (c === quote) quote = '';
+            continue;
+        }
+        if ('\'"`'.includes(c)) quote = c;
+        else if (c === '{') depth += 1;
+        else if (c === '}' && --depth === 0) return source.slice(match.index, i + 1);
+    }
+    throw new Error(`unterminated ${name}`);
+}
+
+const renderNowPlaying = extractFunction(js, 'renderNowPlaying');
+assert.ok(!/providerId\s*===/.test(renderNowPlaying), 'renderNowPlaying must not branch on provider id');
+assert.ok(!/\bproviderId\s*==/.test(renderNowPlaying), 'renderNowPlaying must not branch on provider id');
+
+// The provider ids are confined to the transport adapter map.
+assert.ok(/const TRANSPORT\s*=/.test(js), 'transport adapter map must exist');
+assert.ok(js.includes("spotify: { kind: 'app'"), 'spotify transport adapter');
+assert.ok(js.includes("qobuz: { kind: 'remote'"), 'qobuz transport adapter');
+assert.ok(js.includes("tidal: { kind: 'native'"), 'tidal transport adapter');
+
+// --- quality formatting is capability-gated -------------------------------------
+const formatQuality = extractFunction(js, 'formatQuality');
+assert.ok(formatQuality.includes('caps.audio_format'));
+assert.ok(formatQuality.includes('caps.bit_depth'));
+assert.ok(formatQuality.includes('caps.sample_rate'));
+
+// --- served shell wires the three provider tabs + the module ----------------------
+for (const provider of ['spotify', 'qobuz', 'tidal']) {
+    assert.ok(html.includes(`data-provider="${provider}"`), `index.html must ship a ${provider} shell`);
+    assert.ok(html.includes(`data-tab="${provider}"`), `index.html must ship a ${provider} tab button`);
+    assert.ok(html.includes(`id="tab-${provider}"`), `index.html must ship a ${provider} tab panel`);
+}
+assert.ok(html.includes('/static/streaming.js?v='), 'index.html must include streaming.js');
+
+// --- TIDAL login flow is present (PKCE default + device alternative) --------------
+assert.ok(js.includes('auth/pkce'), 'PKCE login endpoint used');
+assert.ok(js.includes('auth/device'), 'device login endpoint used');
+assert.ok(js.includes('Device login — limited to AAC 320 kbps'), 'device login is labelled as limited');
+
+console.log('PASS  scripts/test_streaming_ui_structure.js');

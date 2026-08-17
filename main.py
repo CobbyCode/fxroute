@@ -4525,8 +4525,19 @@ async def api_streaming_provider_search(provider_id: str, q: str = "", types: st
 
 
 @app.get("/api/streaming/{provider_id}/favorites")
-async def api_streaming_provider_favorites(provider_id: str, limit: int = 50):
-    fn = _provider_catalog_method(provider_id, "favorites")
+async def api_streaming_provider_favorites(
+    provider_id: str, limit: int = 50, type: str = "tracks"
+):
+    """Favorites for one catalog category (tracks/albums/artists)."""
+    category = (type or "tracks").strip().lower()
+    method_name = {
+        "tracks": "favorites",
+        "albums": "favorites_albums",
+        "artists": "favorites_artists",
+    }.get(category)
+    if method_name is None:
+        raise HTTPException(status_code=400, detail=f"unsupported favorites category: {type}")
+    fn = _provider_catalog_method(provider_id, method_name)
     try:
         return await fn(limit)
     except Exception as exc:
@@ -4547,6 +4558,15 @@ async def api_streaming_provider_playlist_tracks(provider_id: str, playlist_id: 
     fn = _provider_catalog_method(provider_id, "playlist_tracks")
     try:
         return await fn(playlist_id)
+    except Exception as exc:
+        raise _tidal_http_error(exc) from exc
+
+
+@app.get("/api/streaming/{provider_id}/albums/{album_id}/tracks")
+async def api_streaming_provider_album_tracks(provider_id: str, album_id: str):
+    fn = _provider_catalog_method(provider_id, "get_album_tracks")
+    try:
+        return await fn(album_id)
     except Exception as exc:
         raise _tidal_http_error(exc) from exc
 

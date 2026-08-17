@@ -104,6 +104,15 @@ class QobuzProvider(StreamingProvider):
     async def backend(self) -> str | None:
         return QOBUZ_BACKEND if backend.qbzd_installed() else None
 
+    async def is_authenticated(self) -> bool | None:
+        """Return whether qbzd has a logged-in Qobuz account."""
+        if not backend.qbzd_installed():
+            return False
+        status = await backend.get_json(self._base_url, "/api/status")
+        if status is None:
+            return False
+        return (status.get("auth") or {}).get("state") == "logged_in"
+
     async def status(self) -> dict:
         result: dict[str, Any] = {
             "available": await self.is_available(),

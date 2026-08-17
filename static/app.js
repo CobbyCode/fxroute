@@ -667,6 +667,16 @@ document.addEventListener('DOMContentLoaded', () => {
             extractDroppedUrl,
         });
     } catch(e) { console.error('radio module initialization crashed:', e); }
+    try {
+        window.FXRouteStreaming.init({
+            showToast,
+            escapeHtml,
+            formatTime,
+            formatRateKhz,
+            spotifyCommand,
+            spotifySeek,
+        });
+    } catch(e) { console.error('streaming module initialization crashed:', e); }
     try { setupLibraryActions(); } catch(e) { console.error('setupLibraryActions crashed:', e); }
     try { setupDownloadActions(); } catch(e) { console.error('setupDownloadActions crashed:', e); }
     try { setupEffectsActions(); } catch(e) { console.error('setupEffectsActions crashed:', e); }
@@ -927,6 +937,7 @@ function handleWebSocketMessage(msg) {
             // Reset action guard so this client doesn't block its own UI from server state.
             playbackActionInFlight = false;
             updatePlaybackUI();
+            window.FXRouteStreaming?.notifyPlayback(data);
             if (data?.current_track?.source === 'local' && nextSamplerateSignature !== previousSamplerateSignature) {
                 triggerSamplerateBurstPolling();
             }
@@ -2052,7 +2063,7 @@ function nonAppSourceModeActive() {
 
 function applySourceModeUiState() {
     const nonAppSourceActive = nonAppSourceModeActive();
-    ['radio', 'spotify', 'library'].forEach((tabId) => {
+    ['radio', 'spotify', 'qobuz', 'tidal', 'library'].forEach((tabId) => {
         const tabButton = document.querySelector(`.tab-btn[data-tab="${tabId}"]`);
         const tabPanel = document.getElementById(`tab-${tabId}`);
         if (tabButton) tabButton.classList.toggle('hidden', nonAppSourceActive);
@@ -2061,7 +2072,7 @@ function applySourceModeUiState() {
     if (elements.playbackBar) {
         elements.playbackBar.classList.toggle('hidden', nonAppSourceActive);
     }
-    if (nonAppSourceActive && ['radio', 'spotify', 'library'].includes(window.__visibleTab)) {
+    if (nonAppSourceActive && ['radio', 'spotify', 'qobuz', 'tidal', 'library'].includes(window.__visibleTab)) {
         switchTab('effects');
     }
 }
@@ -2346,6 +2357,7 @@ function switchTab(tabId) {
     });
     elements.tabPanels.forEach(p => p.classList.toggle('active', p.id === `tab-${tabId}`));
     window.__visibleTab = tabId;
+    window.FXRouteStreaming?.onTabVisible(tabId);
     if (tabId === 'effects') {
         requestSubwooferPreviewRedrawFromState();
     }
@@ -14089,122 +14101,13 @@ function handleIncomingSpotifyState(data, options = {}) {
 }
 
 function renderSpotify(data) {
-    const el = spotifyElements;
-    if (!el.unavailable || !el.player) return;
-
-    const caps = data.capabilities || {};
-
-    // ---- Tab visibility: hide tab entirely if Spotify not installed ----
-    setSpotifyUiVisibility(data.installed === true);
-    if (data.installed !== true) {
-        updateGlobalControlsForSource();
-        return;
+    // The Spotify tab now renders through the shared capability-driven
+    // streaming card (window.FXRouteStreaming). Footer ownership and the
+    // playerctl transport stay here; only the tab-internal now-playing card
+    // moved to the shared component so Spotify/Qobuz/TIDAL render identically.
+    if (window.FXRouteStreaming && typeof window.FXRouteStreaming.renderProvider === 'function') {
+        window.FXRouteStreaming.renderProvider('spotify', data);
     }
-
-    // ---- Available check (playerctl missing) ----
-    if (!data.available) {
-        el.unavailable.style.display = '';
-        el.player.style.display = 'none';
-        el.unavailableMsg.textContent = 'playerctl is not installed. Install it to control Spotify.';
-        updateGlobalControlsForSource();
-        return;
-    }
-
-    // ---- Spotify installed but not running ----
-    if (data.status === 'Stopped' && !data.title) {
-        el.unavailable.style.display = '';
-        el.player.style.display = 'none';
-        el.unavailableMsg.textContent = 'Spotify is not running.';
-        updateGlobalControlsForSource();
-        return;
-    }
-
-    // ---- Normal state ----
-    el.unavailable.style.display = 'none';
-    el.player.style.display = '';
-
-    // Cover art — only update src if changed
-    if (data.artUrl) {
-        if (el.cover.src !== data.artUrl) el.cover.src = data.artUrl;
-        el.cover.style.display = '';
-    } else {
-        el.cover.style.display = 'none';
-    }
-
-    // Track info
-    if (el.title.textContent !== (data.title || '—')) el.title.textContent = data.title || '—';
-    if (el.artist.textContent !== (data.artist || '—')) el.artist.textContent = data.artist || '—';
-    if (el.album.textContent !== (data.album || '—')) el.album.textContent = data.album || '—';
-
-    // Play/Pause
-    const playing = data.status === 'Playing';
-    const icon = playing ? '⏸' : '▶';
-    if (el.toggle.textContent !== icon) {
-        el.toggle.textContent = icon;
-        el.toggle.title = playing ? 'Pause' : 'Play';
-    }
-
-    // Shuffle (capability-gated)
-    if (el.shuffle) {
-        el.shuffle.style.display = caps.shuffle ? '' : 'none';
-        el.shuffle.classList.toggle('active', !!data.shuffle);
-        el.shuffle.title = data.shuffle ? 'Shuffle on' : 'Shuffle off';
-        el.shuffle.setAttribute('aria-pressed', data.shuffle ? 'true' : 'false');
-    }
-
-    // Loop (capability-gated)
-    if (el.loop) {
-        el.loop.style.display = caps.loop ? '' : 'none';
-        const loopVal = data.loop || 'none';
-        const loopActive = loopVal !== 'none';
-        el.loop.classList.toggle('active', loopActive);
-        el.loop.dataset.mode = loopVal;
-        el.loop.setAttribute('aria-pressed', loopActive ? 'true' : 'false');
-        if (loopVal === 'track') {
-            if (el.loopIcon) el.loopIcon.textContent = '🔂';
-            if (el.loopLabel) el.loopLabel.textContent = 'Loop';
-            el.loop.title = 'Loop: track';
-        } else if (loopVal === 'playlist') {
-            if (el.loopIcon) el.loopIcon.textContent = '🔁';
-            if (el.loopLabel) el.loopLabel.textContent = 'Loop';
-            el.loop.title = 'Loop: playlist';
-        } else {
-            if (el.loopIcon) el.loopIcon.textContent = '🔁';
-            if (el.loopLabel) el.loopLabel.textContent = 'Loop';
-            el.loop.title = 'Loop: off';
-        }
-    }
-
-    // Secondary controls row
-    if (el.secondaryControls) {
-        el.secondaryControls.style.display = (caps.shuffle || caps.loop) ? '' : 'none';
-    }
-
-    // Progress / seek (capability-gated, don't update while seeking)
-    if (caps.progress && el.progress && !_spotifySeeking) {
-        const pos = Number(data.position || 0);
-        const dur = Number(data.duration || 0);
-        const pct = dur > 0 ? Math.max(0, Math.min(100, (pos / dur) * 100)) : 0;
-        el.progress.value = pct;
-        el.progress.max = 100;
-        if (el.timeCurrent) el.timeCurrent.textContent = formatTime(pos);
-        if (el.timeTotal) el.timeTotal.textContent = formatTime(dur);
-        _spotifyLastPositionUpdateAt = Date.now();
-    }
-    if (el.progress) {
-        el.progress.style.display = caps.seek ? '' : 'none';
-    }
-    if (el.timeCurrent) el.timeCurrent.style.display = caps.progress ? '' : 'none';
-    if (el.timeTotal) el.timeTotal.style.display = caps.progress ? '' : 'none';
-
-    // Status line
-    const statusBits = [];
-    if (data.status) statusBits.push(data.status.toLowerCase());
-    if (caps.shuffle) statusBits.push(data.shuffle ? 'shuffle on' : 'shuffle off');
-    if (caps.loop) statusBits.push(`loop ${data.loop || 'none'}`);
-    const statusText = statusBits.join(' · ');
-    if (el.statusLine.textContent !== statusText) el.statusLine.textContent = statusText;
-    // Update global footer controls when spotify data changes
     updateGlobalControlsForSource();
 }
 

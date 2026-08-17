@@ -62,6 +62,15 @@ class StreamingProvider(ABC):
     async def status(self) -> dict:
         """Return the normalized provider/playback state as a dict."""
 
+    async def is_authenticated(self) -> bool | None:
+        """Return whether the provider's account is connected.
+
+        ``None`` means "not applicable" (a provider without an account, e.g.
+        Spotify which only controls an external player).  Providers with a
+        login (Qobuz, TIDAL) override this to report the real auth state.
+        """
+        return None
+
     async def describe(self) -> dict:
         """Serializable provider summary for the generic API/UI layer."""
         return {
@@ -70,6 +79,7 @@ class StreamingProvider(ABC):
             "implemented": self.implemented,
             "available": await self.is_available(),
             "installed": self.is_installed(),
+            "authenticated": await self.is_authenticated(),
             "backend": await self.backend(),
             "capabilities": self.capabilities().to_dict(),
         }

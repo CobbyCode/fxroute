@@ -221,6 +221,28 @@ def favorites_tracks(limit: int = 50) -> list[dict]:
     return [normalize_track(t) for t in tracks]
 
 
+def favorites_albums(limit: int = 50) -> list[dict]:
+    """Return the user's favorited albums (normalized)."""
+    _require_tidalapi()
+    session = _session()
+    try:
+        albums = session.user.favorites.albums(limit=limit)
+    except Exception as exc:  # noqa: BLE001
+        raise auth.TidalAuthError(f"TIDAL favorite albums failed: {exc}") from exc
+    return [normalize_album(a) for a in albums]
+
+
+def favorites_artists(limit: int = 50) -> list[dict]:
+    """Return the user's favorited artists (normalized)."""
+    _require_tidalapi()
+    session = _session()
+    try:
+        artists = session.user.favorites.artists(limit=limit)
+    except Exception as exc:  # noqa: BLE001
+        raise auth.TidalAuthError(f"TIDAL favorite artists failed: {exc}") from exc
+    return [normalize_artist(a) for a in artists]
+
+
 def user_playlists() -> list[dict]:
     """Return the user's own TIDAL playlists (normalized)."""
     _require_tidalapi()

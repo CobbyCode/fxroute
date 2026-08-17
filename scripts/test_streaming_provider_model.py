@@ -102,6 +102,13 @@ class RegistryTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(described["qobuz"]["implemented"])
         self.assertTrue(described["tidal"]["implemented"])
 
+    async def test_describe_includes_authenticated_field(self):
+        described = {p["id"]: p for p in await streaming.describe_providers()}
+        for provider_id in ("spotify", "qobuz", "tidal"):
+            self.assertIn("authenticated", described[provider_id])
+        # Spotify controls an external player and has no FXRoute-side account.
+        self.assertIsNone(described["spotify"]["authenticated"])
+
     def test_get_provider_returns_instance_and_unknown_is_none(self):
         self.assertIsInstance(streaming.get_provider("spotify"), SpotifyProvider)
         self.assertIsNone(streaming.get_provider("unknown"))
