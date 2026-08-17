@@ -212,6 +212,48 @@ class MeasurementInputPersistenceTests(unittest.TestCase):
         self.assertFalse(selection["configured"])
         self.assertFalse(selection["unavailable"])
 
+    def test_rediscovered_device_clears_unavailable_state(self):
+        settings = {
+            "selectedInputId": "pw-source-54",
+            "selectedInputKey": measurement_input_persistent_id(self._umik("pw-source-54")),
+        }
+
+        missing = resolve_measurement_input_selection([], settings)
+        self.assertTrue(missing["unavailable"])
+        self.assertEqual(missing["input_id"], "")
+
+        rediscovered = self._umik("pw-source-65")
+        rediscovered["persistent_id"] = measurement_input_persistent_id(rediscovered)
+        found = resolve_measurement_input_selection([rediscovered], settings)
+
+        self.assertFalse(found["unavailable"])
+        self.assertEqual(found["input_id"], "pw-source-65")
+
+    def test_switching_between_two_present_devices_never_marks_unavailable(self):
+        first = self._umik("pw-source-54")
+        first["persistent_id"] = measurement_input_persistent_id(first)
+        second = {
+            "id": "pw-source-70",
+            "device_serial": "OTHER-456",
+            "node_name": "alsa_input.usb-Other_Microphone.analog-stereo",
+        }
+        second["persistent_id"] = measurement_input_persistent_id(second)
+        inputs = [first, second]
+
+        selection = resolve_measurement_input_selection(
+            inputs,
+            {"selectedInputId": "pw-source-54", "selectedInputKey": first["persistent_id"]},
+        )
+        self.assertEqual(selection["input_id"], "pw-source-54")
+        self.assertFalse(selection["unavailable"])
+
+        selection = resolve_measurement_input_selection(
+            inputs,
+            {"selectedInputId": "pw-source-70", "selectedInputKey": second["persistent_id"]},
+        )
+        self.assertEqual(selection["input_id"], "pw-source-70")
+        self.assertFalse(selection["unavailable"])
+
     def test_rate_options_follow_selected_input_capabilities(self):
         input_item = {"supported_rates": [44100, 48000]}
         self.assertEqual(resolve_measurement_sample_rate(input_item, {}), 48000)

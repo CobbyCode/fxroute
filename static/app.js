@@ -8926,9 +8926,45 @@ async function fetchMeasurements() {
     }
 }
 
+function measurementInputAvailabilityMessage() {
+    const measurementState = state.measurement || {};
+    if (measurementState.startInFlight || measurementState.activeJobId) return '';
+    if (measurementState.selectedInputUnavailable) {
+        return 'The selected measurement microphone is currently unavailable. Reconnect it or deliberately select another input.';
+    }
+    if (!measurementState.hostCaptureAvailable) {
+        return (measurementState.inputs || []).length
+            ? 'No available capture source is ready right now.'
+            : 'No PipeWire capture sources are currently visible on this host.';
+    }
+    return '';
+}
+
+function measurementSetupStatusText() {
+    const measurementState = state.measurement || {};
+    return measurementInputAvailabilityMessage() || measurementState.statusText || describeMeasurementScope();
+}
+
+function applyMeasurementInputSelection(inputId) {
+    state.measurement.selectedInputId = String(inputId || '');
+    const selectedInput = getSelectedMeasurementInput();
+    state.measurement.selectedInputKey = selectedInput?.persistentId || '';
+    state.measurement.selectedInputConfigured = !!selectedInput;
+    state.measurement.selectedInputUnavailable = false;
+    normalizeMeasurementInputChannelSelections();
+    void saveMeasurementSetupSettings({
+        selectedInputId: state.measurement.selectedInputId,
+        selectedInputKey: state.measurement.selectedInputKey,
+        selectedMicInputChannel: state.measurement.selectedMicInputChannel || '1',
+        selectedReferenceInputChannel: state.measurement.selectedReferenceInputChannel || '',
+    });
+    renderMeasurementPanel();
+}
+
 async function fetchMeasurementInputs() {
     state.measurement.inputsLoading = true;
     renderMeasurementPanel();
+    const revisionAtStart = measurementSettingsRevision;
     try {
         const resp = await fetch('/api/measurements/inputs');
         if (!resp.ok) throw new Error('Failed to fetch measurement inputs');
@@ -8948,31 +8984,30 @@ async function fetchMeasurementInputs() {
         const previousInputId = state.measurement.selectedInputId;
         const previousInputKey = state.measurement.selectedInputKey;
         const selection = data.selection && typeof data.selection === 'object' ? data.selection : {};
+        // A settings save that started while this request was in flight means
+        // the response reflects pre-change settings; its selection snapshot is
+        // stale and must not clobber a deliberate re-selection.
+        const selectionStale = measurementSettingsRevision !== revisionAtStart;
         state.measurement.inputs = inputs;
-        state.measurement.selectedInputId = String(selection.input_id || '');
-        state.measurement.selectedInputKey = String(selection.persistent_id || previousInputKey || '');
-        state.measurement.selectedInputConfigured = !!selection.configured;
-        state.measurement.selectedInputUnavailable = !!selection.unavailable;
+        state.measurement.hostCaptureAvailable = !!data.capture_available && !!inputs.length;
+        state.measurement.captureAvailable = state.measurement.hostCaptureAvailable;
+        state.measurement.modeNote = measurementModeNoteText();
+        if (!selectionStale) {
+            state.measurement.selectedInputId = String(selection.input_id || '');
+            state.measurement.selectedInputKey = String(selection.persistent_id || previousInputKey || '');
+            state.measurement.selectedInputConfigured = !!selection.configured;
+            state.measurement.selectedInputUnavailable = !!selection.unavailable;
+        }
         const selectedMeasurementInput = inputs.find(input => input.id === state.measurement.selectedInputId);
         if (selectedMeasurementInput?.measurementSampleRate > 0) {
             state.measurement.measurementSampleRate = String(selectedMeasurementInput.measurementSampleRate);
         }
         normalizeMeasurementInputChannelSelections();
-        state.measurement.hostCaptureAvailable = !!data.capture_available && !!inputs.length;
-        state.measurement.captureAvailable = state.measurement.hostCaptureAvailable;
-        state.measurement.modeNote = measurementModeNoteText();
-        if (!state.measurement.startInFlight && !state.measurement.activeJobId) {
-            if (state.measurement.selectedInputUnavailable) {
-                state.measurement.statusText = 'The selected measurement microphone is currently unavailable. Reconnect it or deliberately select another input.';
-            } else if (!state.measurement.hostCaptureAvailable) {
-                state.measurement.statusText = inputs.length
-                    ? 'No available capture source is ready right now.'
-                    : 'No PipeWire capture sources are currently visible on this host.';
-            } else {
-                state.measurement.statusText = describeMeasurementScope(data.scope_note);
-            }
+        if (!selectionStale && !state.measurement.startInFlight && !state.measurement.activeJobId
+            && !state.measurement.selectedInputUnavailable && state.measurement.hostCaptureAvailable) {
+            state.measurement.statusText = describeMeasurementScope(data.scope_note);
         }
-        if (state.measurement.selectedInputId && (
+        if (!selectionStale && state.measurement.selectedInputId && (
             !state.measurement.selectedInputConfigured
             || previousInputId !== state.measurement.selectedInputId
             || previousInputKey !== state.measurement.selectedInputKey
@@ -8986,12 +9021,14 @@ async function fetchMeasurementInputs() {
     } catch (error) {
         console.error('fetchMeasurementInputs failed', error);
         state.measurement.inputs = [];
-        state.measurement.selectedInputId = '';
-        state.measurement.selectedInputUnavailable = state.measurement.selectedInputConfigured;
         state.measurement.hostCaptureAvailable = false;
         state.measurement.captureAvailable = false;
         state.measurement.modeNote = measurementModeNoteText();
-        state.measurement.statusText = error.message || 'Failed to load capture inputs';
+        if (measurementSettingsRevision === revisionAtStart) {
+            state.measurement.selectedInputId = '';
+            state.measurement.selectedInputUnavailable = state.measurement.selectedInputConfigured;
+            state.measurement.statusText = error.message || 'Failed to load capture inputs';
+        }
     } finally {
         state.measurement.inputsLoading = false;
         renderMeasurementPanel();
@@ -11001,7 +11038,7 @@ function renderMeasurementPanel() {
         elements.measurementClearBtn.title = frequencyView ? '' : 'Only available in frequency view.';
     }
     if (elements.measurementSetupStatus) {
-        elements.measurementSetupStatus.textContent = measurementState.statusText || describeMeasurementScope();
+        elements.measurementSetupStatus.textContent = measurementSetupStatusText();
     }
     if (elements.measurementSummary) {
         if (!frequencyView) {
@@ -11519,19 +11556,7 @@ function setupMeasurementActions() {
         elements.measurementInputSelect.addEventListener('pointerdown', scanMeasurementInputsOnceForSelect);
         elements.measurementInputSelect.addEventListener('focus', scanMeasurementInputsOnceForSelect);
         elements.measurementInputSelect.addEventListener('change', (event) => {
-            state.measurement.selectedInputId = event.target.value || '';
-            const selectedInput = getSelectedMeasurementInput();
-            state.measurement.selectedInputKey = selectedInput?.persistentId || '';
-            state.measurement.selectedInputConfigured = !!selectedInput;
-            state.measurement.selectedInputUnavailable = false;
-            normalizeMeasurementInputChannelSelections();
-            void saveMeasurementSetupSettings({
-                selectedInputId: state.measurement.selectedInputId,
-                selectedInputKey: state.measurement.selectedInputKey,
-                selectedMicInputChannel: state.measurement.selectedMicInputChannel || '1',
-                selectedReferenceInputChannel: state.measurement.selectedReferenceInputChannel || '',
-            });
-            renderMeasurementPanel();
+            applyMeasurementInputSelection(event.target.value || '');
         });
     }
     if (elements.measurementInputRefreshBtn) {
