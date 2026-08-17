@@ -2339,7 +2339,11 @@ function closeLibraryImportPanel() {
 
 function switchTab(tabId) {
     closeLibraryImportPanel();
-    elements.tabs.forEach(t => t.classList.toggle('active', t.dataset.tab === tabId));
+    elements.tabs.forEach(t => {
+        const active = t.dataset.tab === tabId;
+        t.classList.toggle('active', active);
+        t.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
     elements.tabPanels.forEach(p => p.classList.toggle('active', p.id === `tab-${tabId}`));
     window.__visibleTab = tabId;
     if (tabId === 'effects') {
@@ -14023,6 +14027,7 @@ function setSpotifyUiVisibility(installed) {
         spotifyElements.tabBtn.hidden = !available;
         spotifyElements.tabBtn.style.display = available ? '' : 'none';
         spotifyElements.tabBtn.classList.toggle('hidden', !visible);
+        spotifyElements.tabBtn.setAttribute('aria-selected', visible && window.__visibleTab === 'spotify' ? 'true' : 'false');
     }
     if (tabPanel) {
         tabPanel.hidden = !available;

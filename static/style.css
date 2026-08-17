@@ -74,6 +74,26 @@ html {
     background: rgba(110, 231, 183, 0.18);
     color: var(--text-primary);
 }
+/* Visually hidden skip link, revealed on keyboard focus. */
+.skip-link {
+    position: absolute;
+    top: -40px;
+    left: 0.75rem;
+    z-index: 2000;
+    padding: 0.6rem 0.9rem;
+    border-radius: var(--radius-sm);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-strong);
+    color: var(--accent);
+    font-weight: 600;
+    font-size: 0.88rem;
+    text-decoration: none;
+    box-shadow: 0 8px 24px var(--shadow);
+    transition: top 0.15s var(--ease);
+}
+.skip-link:focus-visible {
+    top: 0.75rem;
+}
 body {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", Roboto, Oxygen, Ubuntu, "Cantarell", sans-serif;
     background: var(--bg-primary);
@@ -369,6 +389,10 @@ body {
 .tab-btn:hover {
     background: var(--bg-hover);
     color: var(--text-primary);
+}
+.tab-btn:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
 }
 .tab-btn.active {
     color: var(--accent);

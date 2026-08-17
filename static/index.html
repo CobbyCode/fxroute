@@ -12,9 +12,11 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=0.9.11">
     <link rel="manifest" href="/static/site.webmanifest?v=0.9.11">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/static/style.css?v=0.9.41">
+    <link rel="stylesheet" href="/static/style.css?v=0.9.42">
 </head>
 <body>
+    <a class="skip-link" href="#tab-content">Skip to content</a>
+
     <!-- Offline indicator -->
     <div id="offline-indicator" class="offline-indicator hidden">
         Disconnected from server
@@ -191,17 +193,17 @@
         </div>
 
         <!-- Main navigation. Streaming providers come first and may be hidden dynamically. -->
-        <nav class="tabs" aria-label="Primary">
-            <button class="tab-btn" data-tab="spotify" hidden style="display:none"><span class="tab-glyph" aria-hidden="true">♪</span><span>Spotify</span></button>
-            <button class="tab-btn active" data-tab="radio"><span class="tab-glyph" aria-hidden="true">▣</span><span>Radio</span></button>
-            <button class="tab-btn" data-tab="library"><span class="tab-glyph" aria-hidden="true">♫</span><span>Library</span></button>
-            <button class="tab-btn" data-tab="effects"><span class="tab-glyph" aria-hidden="true">⌁</span><span>DSP</span></button>
+        <nav class="tabs" aria-label="Primary" role="tablist">
+            <button class="tab-btn" data-tab="spotify" hidden style="display:none" role="tab" id="tab-btn-spotify" aria-controls="tab-spotify" aria-selected="false"><span class="tab-glyph" aria-hidden="true">♪</span><span>Spotify</span></button>
+            <button class="tab-btn active" data-tab="radio" role="tab" id="tab-btn-radio" aria-controls="tab-radio" aria-selected="true"><span class="tab-glyph" aria-hidden="true">▣</span><span>Radio</span></button>
+            <button class="tab-btn" data-tab="library" role="tab" id="tab-btn-library" aria-controls="tab-library" aria-selected="false"><span class="tab-glyph" aria-hidden="true">♫</span><span>Library</span></button>
+            <button class="tab-btn" data-tab="effects" role="tab" id="tab-btn-effects" aria-controls="tab-effects" aria-selected="false"><span class="tab-glyph" aria-hidden="true">⌁</span><span>DSP</span></button>
         </nav>
 
         <!-- Tab content -->
-        <section id="tab-content" class="tab-content">
+        <section id="tab-content" class="tab-content" tabindex="-1">
             <!-- Radio tab -->
-            <div id="tab-radio" class="tab-panel active">
+            <div id="tab-radio" class="tab-panel active" role="tabpanel" aria-labelledby="tab-btn-radio">
                 <section class="radio-panel">
                     <div class="radio-panel-header">
                         <h2 class="section-title">Radio</h2>
@@ -331,7 +333,7 @@
             </div>
 
             <!-- Library tab -->
-            <div id="tab-library" class="tab-panel">
+            <div id="tab-library" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-library">
                 <div class="library-header">
                     <div class="library-title-block">
                         <h2 class="section-title">Library</h2>
@@ -438,7 +440,7 @@
             </div>
 
             <!-- Effects tab -->
-            <div id="tab-effects" class="tab-panel">
+            <div id="tab-effects" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-effects">
                 <div class="effects-shell">
                     <div class="library-header effects-header">
                         <div class="effects-heading-block">
@@ -795,7 +797,7 @@
             </div>
 
             <!-- Spotify tab -->
-            <div id="tab-spotify" class="tab-panel">
+            <div id="tab-spotify" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-spotify">
                 <div class="spotify-shell">
                     <!-- Unavailable state -->
                     <div id="spotify-unavailable" class="spotify-unavailable" style="display:none">
@@ -1347,6 +1349,6 @@
     <script src="/static/measurement_dsp.js?v=0.9.11"></script>
     <script src="/static/hybrid_measurement.js?v=0.9.11"></script>
     <script src="/static/radio.js?v=0.9.11"></script>
-    <script src="/static/app.js?v=0.9.27"></script>
+    <script src="/static/app.js?v=0.9.28"></script>
 </body>
 </html>
