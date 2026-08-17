@@ -6276,9 +6276,12 @@ body {
 /* Responsive refinements for portrait tablets and empty playback state. */
 .station-card.active::after { display: none; }
 
+/* ============================================================
+   Playback footer refinement — consolidated survivors
+   (verbatim rules previously spread across the v1-v4 blocks)
+   ============================================================ */
 @media (max-width: 1100px) and (orientation: portrait) {
-    .playback-bar {
-        width: calc(100% - 18px);
+    .playback-bar { width: calc(100% - 18px);
         grid-template-columns: minmax(0, 1fr) 150px;
         grid-template-areas:
             "track meter"
@@ -6286,72 +6289,36 @@ body {
             "volume volume";
         gap: .58rem .85rem;
         min-height: 0;
-        padding: .72rem .9rem .78rem;
-    }
-    .playback-bar .track-info { max-width: none; }
-    .playback-meter { width: 140px; justify-self: end; }
-    .volume-control {
-        width: min(650px, 100%);
+        padding: .72rem .9rem .78rem; }
+    .volume-control { width: min(650px, 100%);
         margin-inline: auto;
-        grid-template-columns: 24px minmax(200px, 1fr) 3rem;
-    }
+        grid-template-columns: 24px minmax(200px, 1fr) 3rem; }
 }
 
 @media (max-width: 600px) {
-    .playback-bar:not(.has-media) {
-        grid-template-areas:
+    .playback-bar:not(.has-media) { grid-template-areas:
             "track track"
-            "volume volume";
-    }
-    .playback-bar:not(.has-media) .playback-center,
-    .playback-bar:not(.has-media) .playback-meter {
-        display: none;
-    }
+            "volume volume"; }
+    .playback-bar:not(.has-media) .playback-center, .playback-bar:not(.has-media) .playback-meter { display: none; }
 }
 
-/* ============================================================
-   Playback footer refinement — compact meter + secondary modes
-   ============================================================ */
-@media (min-width: 1181px) {
-    .playback-bar {
-        grid-template-columns: minmax(240px, 1fr) minmax(430px, 1.8fr) minmax(126px, .5fr) minmax(245px, .9fr);
-        gap: clamp(.9rem, 1.45vw, 1.45rem);
-    }
-}
-
-.transport-controls {
-    gap: .34rem;
-}
-.control-btn-mode {
-    width: 32px;
+.control-btn-mode { width: 32px;
     height: 32px;
     border-color: transparent;
     background: transparent;
     color: rgba(160,160,172,.72);
     box-shadow: none;
     font-size: .9rem;
-    font-weight: 700;
-}
-.control-btn-mode:hover:not(:disabled),
-.control-btn-mode:focus-visible:not(:disabled) {
-    color: var(--text-primary);
+    font-weight: 700; }
+.control-btn-mode:hover:not(:disabled), .control-btn-mode:focus-visible:not(:disabled) { color: var(--text-primary);
     border-color: rgba(255,255,255,.065);
     background: rgba(255,255,255,.04);
-    box-shadow: none;
-}
-.control-btn-mode.active {
-    color: var(--accent);
+    box-shadow: none; }
+.control-btn-mode.active { color: var(--accent);
     border-color: rgba(110,231,183,.16);
-    background: rgba(110,231,183,.055);
-}
-.control-btn-mode:disabled {
-    opacity: .28;
-}
-
-/* The level readout is centered between the L/R rows instead of sitting
-   above them. This keeps the meter visually quiet and vertically centered. */
-.playback-meter {
-    display: grid;
+    background: rgba(110,231,183,.055); }
+.control-btn-mode:disabled { opacity: .28; }
+.playback-meter { display: grid;
     grid-template-columns: .65rem minmax(0, 1fr) auto;
     grid-template-rows: repeat(2, 7px);
     align-content: center;
@@ -6362,137 +6329,58 @@ body {
     max-width: 170px;
     justify-self: center;
     align-self: center;
-    opacity: .48;
-}
+    opacity: .48; }
 .playback-meter.is-active { opacity: .94; }
 .meter-row { display: contents; }
 .meter-row[data-channel="left"] .meter-channel { grid-column: 1; grid-row: 1; }
 .meter-row[data-channel="left"] .meter-segments { grid-column: 2; grid-row: 1; }
 .meter-row[data-channel="right"] .meter-channel { grid-column: 1; grid-row: 2; }
 .meter-row[data-channel="right"] .meter-segments { grid-column: 2; grid-row: 2; }
-.meter-channel {
-    font-size: .54rem;
+.meter-channel { font-size: .54rem;
     color: rgba(160,160,172,.68);
-    text-align: center;
-}
-.meter-segments {
-    min-width: 84px;
+    text-align: center; }
+.meter-segments { min-width: 84px;
     max-width: 118px;
     gap: 2px;
-    align-self: center;
-}
-.meter-segments i {
-    height: 5px;
-    border-radius: 999px;
-}
-.output-level-badge {
-    grid-column: 3;
+    align-self: center; }
+.meter-segments i { height: 5px;
+    border-radius: 999px; }
+.output-level-badge { grid-column: 3;
     grid-row: 1 / 3;
     align-self: center;
     min-width: 3.2rem;
     padding-left: .18rem;
     justify-content: flex-start;
     font-size: .62rem;
-    color: rgba(160,160,172,.78);
-}
+    color: rgba(160,160,172,.78); }
+.volume-display { padding-right: .05rem; }
 
-.volume-control {
-    grid-template-columns: 24px minmax(132px, 1fr) 2.55rem;
-    gap: .52rem;
-}
-.volume-display {
-    padding-right: .05rem;
-}
-
-@media (max-width: 1180px) {
-    .playback-meter {
-        max-width: 152px;
-        justify-self: center;
-    }
-    .meter-segments { min-width: 78px; max-width: 108px; }
-    .output-level-badge { min-width: 2.9rem; font-size: .59rem; }
-    .transport-controls { gap: .28rem; }
-    .control-btn-mode { width: 30px; height: 30px; font-size: .84rem; }
-}
-
-@media (max-width: 900px) {
-    .playback-meter {
-        width: 136px;
-        max-width: 136px;
-        justify-self: end;
-    }
-    .output-level-badge { display: none !important; }
-    .meter-segments { min-width: 88px; max-width: 104px; }
-}
-
-@media (max-width: 600px) {
-    .transport-controls { gap: .36rem; }
-    .control-btn-mode { width: 30px; height: 30px; }
-    .playback-meter { width: 104px; max-width: 104px; }
-    .meter-segments { min-width: 72px; max-width: 86px; gap: 1.5px; }
-}
-
-
-/* ============================================================
-   Playback footer refinement v2 — optical alignment pass
-   ============================================================ */
 @media (min-width: 1181px) {
-    .playback-bar {
-        grid-template-columns: minmax(240px, 1fr) minmax(420px, 1.7fr) minmax(180px, .68fr) minmax(280px, 1fr);
-        gap: clamp(.9rem, 1.35vw, 1.35rem);
-    }
+    .playback-bar { grid-template-columns: minmax(240px, 1fr) minmax(420px, 1.7fr) minmax(180px, .68fr) minmax(280px, 1fr);
+        gap: clamp(.9rem, 1.35vw, 1.35rem); }
 }
 
-/* Keep every transport glyph on one optical center line. */
-.transport-controls {
-    align-items: center;
+.transport-controls { align-items: center;
     min-height: 52px;
-    gap: .32rem;
-}
-.control-btn,
-.control-btn-secondary,
-.control-btn-mode,
-.control-btn-clear {
-    padding: 0;
+    gap: .32rem; }
+.control-btn, .control-btn-secondary, .control-btn-mode, .control-btn-clear { padding: 0;
     line-height: 1;
     align-self: center;
-    vertical-align: middle;
-}
-.control-btn {
-    width: 52px;
-    height: 52px;
-    font-size: 1.16rem;
-}
-.control-btn-secondary {
-    width: 36px;
+    vertical-align: middle; }
+.control-btn-secondary { width: 36px;
     height: 36px;
-    font-size: .94rem;
-}
-.control-btn-mode {
-    width: 30px;
+    font-size: .94rem; }
+.control-btn-mode { width: 30px;
     height: 30px;
-    font-size: .84rem;
-}
-.control-btn-clear {
-    width: 30px;
+    font-size: .84rem; }
+.control-btn-clear { width: 30px;
     height: 30px;
     font-size: .78rem;
-    margin-left: .08rem;
-}
-
-/* Favorite belongs visually to the upper edge of the copy block, not its middle. */
-.track-copy-main {
-    align-items: start;
-}
-.track-favorite-btn {
-    align-self: start;
-    margin-top: -.16rem;
-}
-
-/* Stereo meter: two compact rows centered around the same horizontal axis as volume.
-   The shared dB readout sits in its own column, vertically between L and R. */
-.playback-meter {
-    grid-template-columns: .65rem minmax(94px, 118px) 3.35rem;
+    margin-left: .08rem; }
+.track-copy-main { align-items: start; }
+.track-favorite-btn { align-self: start;
+    margin-top: -.16rem; }
+.playback-meter { grid-template-columns: .65rem minmax(94px, 118px) 3.35rem;
     grid-template-rows: 5px 5px;
     width: max-content;
     max-width: none;
@@ -6502,19 +6390,13 @@ body {
     align-content: center;
     align-items: center;
     justify-self: center;
-    align-self: center;
-}
-.meter-segments {
-    width: 112px;
+    align-self: center; }
+.meter-segments { width: 112px;
     min-width: 94px;
     max-width: 118px;
-    gap: 2px;
-}
-.meter-segments i {
-    height: 5px;
-}
-.output-level-badge {
-    grid-column: 3;
+    gap: 2px; }
+.meter-segments i { height: 5px; }
+.output-level-badge { grid-column: 3;
     grid-row: 1 / 3;
     align-self: center;
     justify-self: start;
@@ -6525,125 +6407,32 @@ body {
     justify-content: center;
     text-align: center;
     line-height: 1;
-    white-space: nowrap;
-}
-
-/* Equal visual air on both sides of the volume slider: icon ↔ slider ↔ percentage. */
-.volume-control {
-    grid-template-columns: 24px minmax(160px, 1fr) max-content;
-    gap: .58rem;
-    width: 100%;
-}
-.volume-slider {
-    min-width: 160px;
-}
-.volume-display {
-    justify-content: flex-start;
+    white-space: nowrap; }
+.volume-display { justify-content: flex-start;
     min-width: 2.25rem;
     text-align: left;
-    padding: 0;
-}
+    padding: 0; }
 
 @media (max-width: 1180px) {
-    .transport-controls { min-height: 50px; gap: .28rem; }
-    .control-btn { width: 50px; height: 50px; }
-    .control-btn-secondary { width: 35px; height: 35px; }
-    .control-btn-mode,
-    .control-btn-clear { width: 29px; height: 29px; }
-
-    .playback-meter {
-        grid-template-columns: .65rem minmax(82px, 104px) 3rem;
-        width: max-content;
-        max-width: none;
-        column-gap: .42rem;
-    }
-    .meter-segments { width: 100px; min-width: 82px; max-width: 104px; }
-    .output-level-badge {
-        width: 3rem;
+    .output-level-badge { width: 3rem;
         min-width: 3rem;
         margin-left: .04rem;
-        font-size: .59rem;
-    }
-    .volume-control {
-        grid-template-columns: 22px minmax(116px, 1fr) max-content;
-        gap: .48rem;
-    }
-    .volume-slider { min-width: 116px; }
+        font-size: .59rem; }
 }
 
-@media (max-width: 900px) {
-    .playback-meter {
-        width: 136px;
-        max-width: 136px;
-        grid-template-columns: .65rem minmax(88px, 104px);
-        justify-self: end;
-    }
-    .output-level-badge { display: none !important; }
-}
-
-@media (max-width: 600px) {
-    .track-favorite-btn { margin-top: -.08rem; }
-    .transport-controls { gap: .32rem; }
-    .control-btn { width: 48px; height: 48px; }
-    .control-btn-secondary { width: 36px; height: 36px; }
-    .control-btn-mode,
-    .control-btn-clear { width: 28px; height: 28px; }
-    .volume-control {
-        grid-template-columns: 22px minmax(120px, 1fr) max-content;
-        gap: .46rem;
-    }
-}
-
-/* ============================================================
-   Playback footer refinement v3 — responsive composition pass
-   ============================================================ */
-/* Desktop: keep the footer low and calm; pull the dB readout back toward
-   the meter and reserve enough room for the whole volume cluster. */
 @media (min-width: 1181px) {
-    .playback-bar {
-        grid-template-columns:
-            minmax(280px, 1.05fr)
-            minmax(500px, 1.72fr)
-            minmax(168px, .58fr)
-            minmax(320px, .98fr);
-        column-gap: clamp(.9rem, 1.25vw, 1.3rem);
-    }
-    .playback-meter {
-        grid-template-columns: .62rem 112px 2.7rem;
+    .playback-meter { grid-template-columns: .62rem 112px 2.7rem;
         column-gap: .3rem;
-        justify-self: center;
-    }
-    .output-level-badge {
-        width: 2.7rem;
+        justify-self: center; }
+    .output-level-badge { width: 2.7rem;
         min-width: 2.7rem;
         margin-left: 0;
         justify-content: flex-start;
-        text-align: left;
-    }
-    .playback-bar .controls {
-        width: 100%;
-        max-width: 390px;
-        justify-self: end;
-        padding-right: .35rem;
-    }
-    .volume-control {
-        width: 100%;
-        grid-template-columns: 24px minmax(190px, 1fr) 2.4rem;
-        gap: .56rem;
-    }
-    .volume-slider { min-width: 0; }
-    .volume-display {
-        min-width: 2.4rem;
-        justify-content: flex-start;
-    }
+        text-align: left; }
 }
 
-/* Tablet / compact desktop: stay essentially one horizontal player.
-   Track + transport span both rows; meter and volume form a compact
-   right-hand stack instead of turning the footer into three tall bands. */
 @media (min-width: 701px) and (max-width: 1180px) {
-    .playback-bar {
-        width: calc(100% - 16px);
+    .playback-bar { width: calc(100% - 16px);
         min-height: 104px;
         grid-template-columns:
             minmax(220px, .95fr)
@@ -6657,98 +6446,35 @@ body {
         row-gap: .22rem;
         align-items: center;
         padding: .66rem .82rem;
-        border-radius: 20px;
-    }
-    .playback-bar .track-info {
-        grid-template-columns: 60px minmax(0, 1fr);
+        border-radius: 20px; }
+    .playback-bar .track-info { grid-template-columns: 60px minmax(0, 1fr);
         gap: .7rem;
-        max-width: none;
-    }
-    .playback-visual {
-        width: 60px;
+        max-width: none; }
+    .playback-visual { width: 60px;
         height: 60px;
-        border-radius: 12px;
-    }
+        border-radius: 12px; }
     .track-copy { gap: .28rem; }
-    .playback-center {
-        width: 100%;
+    .playback-center { width: 100%;
         gap: .32rem;
-        align-self: center;
-    }
-    .transport-controls {
-        min-height: 46px;
-        gap: .28rem;
-    }
-    .control-btn {
-        width: 48px;
-        height: 48px;
-        font-size: 1.08rem;
-    }
-    .control-btn-secondary {
-        width: 34px;
-        height: 34px;
-        font-size: .9rem;
-    }
-    .control-btn-mode,
-    .control-btn-clear {
-        width: 28px;
-        height: 28px;
-        font-size: .8rem;
-    }
-    .seek-row {
-        grid-template-columns: 2.65rem minmax(100px, 1fr) 2.65rem;
-        gap: .42rem;
-    }
-    .playback-meter {
-        width: max-content;
-        max-width: none;
-        grid-template-columns: .6rem minmax(82px, 100px) 2.55rem;
-        grid-template-rows: 5px 5px;
-        column-gap: .28rem;
-        row-gap: .48rem;
-        justify-self: center;
-        align-self: end;
-        margin-bottom: .14rem;
-    }
-    .meter-segments {
-        width: 98px;
-        min-width: 82px;
-        max-width: 100px;
-    }
-    .output-level-badge {
-        display: inline-flex !important;
+        align-self: center; }
+    .seek-row { grid-template-columns: 2.65rem minmax(100px, 1fr) 2.65rem;
+        gap: .42rem; }
+    .output-level-badge { display: inline-flex !important;
         width: 2.55rem;
         min-width: 2.55rem;
         margin: 0;
         justify-content: flex-start;
         text-align: left;
-        font-size: .58rem;
-    }
-    .playback-bar .controls {
-        width: 100%;
-        max-width: 245px;
-        justify-self: center;
-        align-self: start;
-        padding: 0;
-        margin-top: .14rem;
-    }
-    .volume-control {
-        width: 100%;
+        font-size: .58rem; }
+    .volume-control { width: 100%;
         grid-template-columns: 21px minmax(0, 1fr) 2.25rem;
-        gap: .46rem;
-    }
-    .volume-slider { min-width: 0; }
-    .volume-display {
-        min-width: 2.25rem;
-        justify-content: flex-start;
-    }
+        gap: .46rem; }
+    .volume-display { min-width: 2.25rem;
+        justify-content: flex-start; }
 }
 
-/* Phone: deliberately recompose instead of shrinking the tablet footer.
-   One compact info row, one transport/seek block, one volume row. */
 @media (max-width: 700px) {
-    .playback-bar {
-        bottom: 6px;
+    .playback-bar { bottom: 6px;
         width: calc(100% - 12px);
         min-height: 0;
         grid-template-columns: minmax(0, 1fr) 112px;
@@ -6761,51 +6487,32 @@ body {
         row-gap: .38rem;
         align-items: center;
         padding: .58rem .68rem .62rem;
-        border-radius: 18px;
-    }
-    .playback-bar .track-info {
-        grid-template-columns: 50px minmax(0, 1fr);
+        border-radius: 18px; }
+    .playback-bar .track-info { grid-template-columns: 50px minmax(0, 1fr);
         gap: .6rem;
         max-width: none;
-        align-self: center;
-    }
-    .playback-visual {
-        width: 50px;
+        align-self: center; }
+    .playback-visual { width: 50px;
         height: 50px;
-        border-radius: 11px;
-    }
+        border-radius: 11px; }
     .track-copy { gap: .18rem; }
     .track-copy-main { gap: .25rem; }
-    .playback-bar .track-title,
-    .playback-bar .song-info .sc-title {
-        font-size: .86rem;
-        line-height: 1.15;
-    }
-    .playback-bar .track-artist,
-    .playback-bar .song-info .sc-artist {
-        display: block;
-        font-size: .68rem;
-    }
+    .playback-bar .track-title, .playback-bar .song-info .sc-title { font-size: .86rem;
+        line-height: 1.15; }
+    .playback-bar .track-artist, .playback-bar .song-info .sc-artist { display: block;
+        font-size: .68rem; }
     .playback-bar .song-info .sc-album { display: none !important; }
-    .track-favorite-btn {
-        width: 28px;
+    .track-favorite-btn { width: 28px;
         height: 28px;
         margin-top: -.08rem;
-        font-size: 1.08rem;
-    }
-    .playback-meta-row {
-        gap: .25rem;
+        font-size: 1.08rem; }
+    .playback-meta-row { gap: .25rem;
         min-height: 1rem;
-        margin-top: 0;
-    }
-    .samplerate-status,
-    .queue-status {
-        min-height: 1rem;
+        margin-top: 0; }
+    .samplerate-status, .queue-status { min-height: 1rem;
         padding: .06rem .38rem;
-        font-size: .56rem;
-    }
-    .playback-meter {
-        width: 108px;
+        font-size: .56rem; }
+    .playback-meter { width: 108px;
         max-width: 108px;
         grid-template-columns: .55rem minmax(68px, 88px);
         grid-template-rows: 4px 4px;
@@ -6814,186 +6521,64 @@ body {
         justify-self: end;
         align-self: center;
         min-height: 22px;
-        margin: 0;
-    }
-    .meter-segments {
-        width: 86px;
-        min-width: 68px;
-        max-width: 88px;
-        gap: 1.5px;
-    }
-    .meter-segments i { height: 4px; }
-    .output-level-badge { display: none !important; }
-    .playback-center {
-        width: 100%;
+        margin: 0; }
+    .playback-center { width: 100%;
         gap: .24rem;
         align-self: start;
-        margin: 0;
-    }
-    .transport-controls {
-        min-height: 44px;
+        margin: 0; }
+    .seek-row { grid-template-columns: 2.45rem minmax(0, 1fr) 2.45rem;
         gap: .34rem;
-        margin: 0;
-    }
-    .control-btn {
-        width: 44px;
-        height: 44px;
-        font-size: 1rem;
-    }
-    .control-btn-secondary {
-        width: 31px;
-        height: 31px;
-        font-size: .82rem;
-    }
-    .control-btn-mode,
-    .control-btn-clear {
-        width: 26px;
-        height: 26px;
-        font-size: .74rem;
-    }
-    .seek-row {
-        grid-template-columns: 2.45rem minmax(0, 1fr) 2.45rem;
-        gap: .34rem;
-        margin: 0;
-    }
+        margin: 0; }
     .seek-time { font-size: .59rem; }
     .seek-slider { min-width: 0; }
-    .playback-bar .controls {
-        width: min(100%, 410px);
+    .playback-bar .controls { width: min(100%, 410px);
         max-width: none;
         justify-self: center;
         padding: 0;
-        margin: 0;
-    }
-    .volume-control {
-        width: 100%;
+        margin: 0; }
+    .volume-control { width: 100%;
         grid-template-columns: 20px minmax(0, 1fr) 2.2rem;
-        gap: .48rem;
-    }
-    .volume-icon {
-        width: 20px;
-        height: 20px;
-    }
+        gap: .48rem; }
+    .volume-icon { width: 20px;
+        height: 20px; }
     .volume-icon svg { width: 18px; height: 18px; }
-    .volume-slider {
-        min-width: 0;
-        height: 5px;
-    }
+    .volume-slider { min-width: 0;
+        height: 5px; }
     .volume-slider::-webkit-slider-thumb { width: 17px; height: 17px; }
     .volume-slider::-moz-range-thumb { width: 17px; height: 17px; }
-    .volume-display {
-        min-width: 2.2rem;
+    .volume-display { min-width: 2.2rem;
         justify-content: flex-start;
-        font-size: .64rem;
-    }
+        font-size: .64rem; }
 }
 
 @media (max-width: 360px) {
-    .playback-bar {
-        grid-template-columns: minmax(0, 1fr) 94px;
-        column-gap: .4rem;
-        padding-inline: .56rem;
-    }
-    .playback-meter { width: 92px; max-width: 92px; }
-    .meter-segments { width: 72px; min-width: 62px; max-width: 74px; }
     .playback-bar .track-info { grid-template-columns: 46px minmax(0,1fr); gap: .5rem; }
     .playback-visual { width: 46px; height: 46px; }
 }
 
-/* ============================================================
-   Playback footer refinement v4 — spacing + compact responsive meter
-   ============================================================ */
 .meter-segment-hidden { display: none !important; }
 
-/* Desktop: preserve the successful composition, but give volume a safe
-   right inset and pull the shared dB readout closer to the stereo meter. */
 @media (min-width: 1181px) {
-    .transport-controls {
-        min-height: 48px;
-    }
-    .control-btn {
-        width: 48px;
-        height: 48px;
-        font-size: 1.08rem;
-    }
-    .control-btn-secondary {
-        width: 35px;
-        height: 35px;
-    }
-    .control-btn-mode,
-    .control-btn-clear {
-        width: 29px;
-        height: 29px;
-    }
-
-    .playback-meter {
-        grid-template-columns: .62rem 112px 2.48rem;
-        column-gap: .18rem;
-    }
-    .output-level-badge {
-        width: 2.48rem;
+    .playback-meter { grid-template-columns: .62rem 112px 2.48rem;
+        column-gap: .18rem; }
+    .output-level-badge { width: 2.48rem;
         min-width: 2.48rem;
-        margin-left: -.04rem;
-    }
-
-    .playback-bar .controls {
-        width: 100%;
-        max-width: 370px;
-        justify-self: end;
-        padding-right: 1rem;
-    }
-    .volume-control {
-        grid-template-columns: 24px minmax(0, 1fr) 2.4rem;
+        margin-left: -.04rem; }
+    .volume-control { grid-template-columns: 24px minmax(0, 1fr) 2.4rem;
         gap: .56rem;
-        width: 100%;
-    }
-    .volume-slider { min-width: 0; }
+        width: 100%; }
 }
 
-/* Tablet / compact desktop: a little more vertical breathing room and a
-   smaller 8-segment meter. Transport remains dominant; volume stays long. */
 @media (min-width: 701px) and (max-width: 1180px) {
-    .playback-bar {
-        min-height: 118px;
-        grid-template-columns:
-            minmax(210px, .9fr)
-            minmax(300px, 1.28fr)
-            minmax(210px, .84fr);
-        grid-template-rows: minmax(44px, auto) minmax(44px, auto);
-        grid-template-areas:
-            "track transport meter"
-            "track transport volume";
-        column-gap: clamp(.72rem, 1.25vw, 1rem);
-        row-gap: .42rem;
-        padding: .76rem .86rem .8rem;
-    }
-    .playback-center {
-        gap: .5rem;
-        align-self: center;
-    }
-    .transport-controls {
-        min-height: 44px;
-        gap: .3rem;
-    }
-    .control-btn {
-        width: 44px;
-        height: 44px;
-        font-size: 1rem;
-    }
-    .control-btn-secondary {
-        width: 33px;
+    .transport-controls { min-height: 44px;
+        gap: .3rem; }
+    .control-btn-secondary { width: 33px;
         height: 33px;
-        font-size: .86rem;
-    }
-    .control-btn-mode,
-    .control-btn-clear {
-        width: 27px;
+        font-size: .86rem; }
+    .control-btn-mode, .control-btn-clear { width: 27px;
         height: 27px;
-        font-size: .76rem;
-    }
-
-    .playback-meter {
-        width: max-content;
+        font-size: .76rem; }
+    .playback-meter { width: max-content;
         max-width: none;
         grid-template-columns: .58rem 82px;
         grid-template-rows: 4px 4px;
@@ -7001,38 +6586,27 @@ body {
         row-gap: .42rem;
         justify-self: center;
         align-self: end;
-        margin: 0 0 .22rem;
-    }
-    .meter-segments {
-        grid-template-columns: repeat(8, minmax(3px, 1fr));
+        margin: 0 0 .22rem; }
+    .meter-segments { grid-template-columns: repeat(8, minmax(3px, 1fr));
         width: 82px;
         min-width: 82px;
         max-width: 82px;
-        gap: 1.7px;
-    }
+        gap: 1.7px; }
     .meter-segments i { height: 4px; }
     .output-level-badge { display: none !important; }
-
-    .playback-bar .controls {
-        width: min(100%, 235px);
+    .playback-bar .controls { width: min(100%, 235px);
         max-width: 235px;
         justify-self: center;
         align-self: start;
         margin-top: .22rem;
-        padding: 0;
-    }
-    .volume-control {
-        grid-template-columns: 20px minmax(0, 1fr) 2.25rem;
-        gap: .42rem;
-    }
+        padding: 0; }
+    .volume-control { grid-template-columns: 20px minmax(0, 1fr) 2.25rem;
+        gap: .42rem; }
     .volume-slider { min-width: 0; }
 }
 
-/* Phone: intentionally taller and calmer. Keep a real but simplified
-   six-segment stereo meter; no dB readout. */
 @media (max-width: 700px) {
-    .playback-bar {
-        grid-template-columns: minmax(0, 1fr) 84px;
+    .playback-bar { grid-template-columns: minmax(0, 1fr) 84px;
         grid-template-rows: auto auto auto;
         grid-template-areas:
             "track meter"
@@ -7040,38 +6614,19 @@ body {
             "volume volume";
         column-gap: .6rem;
         row-gap: .58rem;
-        padding: .72rem .7rem .78rem;
-    }
-    .playback-center {
-        gap: .46rem;
-        align-self: center;
-    }
-    .transport-controls {
-        min-height: 42px;
-        gap: .32rem;
-    }
-    .control-btn {
-        width: 42px;
-        height: 42px;
-        font-size: .96rem;
-    }
-    .control-btn-secondary {
-        width: 30px;
+        padding: .72rem .7rem .78rem; }
+    .playback-center { gap: .46rem;
+        align-self: center; }
+    .transport-controls { min-height: 42px;
+        gap: .32rem; }
+    .control-btn-secondary { width: 30px;
         height: 30px;
-        font-size: .8rem;
-    }
-    .control-btn-mode,
-    .control-btn-clear {
-        width: 25px;
+        font-size: .8rem; }
+    .control-btn-mode, .control-btn-clear { width: 25px;
         height: 25px;
-        font-size: .72rem;
-    }
-    .seek-row {
-        gap: .38rem;
-    }
-
-    .playback-meter {
-        width: 84px;
+        font-size: .72rem; }
+    .seek-row { gap: .38rem; }
+    .playback-meter { width: 84px;
         max-width: 84px;
         grid-template-columns: .52rem 62px;
         grid-template-rows: 4px 4px;
@@ -7079,48 +6634,31 @@ body {
         row-gap: .4rem;
         justify-self: end;
         align-self: center;
-        min-height: 20px;
-    }
+        min-height: 20px; }
     .meter-channel { font-size: .5rem; }
-    .meter-segments {
-        grid-template-columns: repeat(6, minmax(3px, 1fr));
+    .meter-segments { grid-template-columns: repeat(6, minmax(3px, 1fr));
         width: 62px;
         min-width: 62px;
         max-width: 62px;
-        gap: 1.6px;
-    }
-    .meter-segments i {
-        height: 4px;
-        border-radius: 999px;
-    }
+        gap: 1.6px; }
+    .meter-segments i { height: 4px;
+        border-radius: 999px; }
     .output-level-badge { display: none !important; }
-
-    .playback-bar .controls {
-        width: min(100%, 410px);
-        margin-top: .06rem;
-    }
-    .volume-control {
-        grid-template-columns: 20px minmax(0, 1fr) 2.2rem;
-        gap: .44rem;
-    }
+    .volume-control { grid-template-columns: 20px minmax(0, 1fr) 2.2rem;
+        gap: .44rem; }
 }
 
 @media (max-width: 360px) {
-    .playback-bar {
-        grid-template-columns: minmax(0, 1fr) 78px;
-        row-gap: .52rem;
-    }
-    .playback-meter {
-        width: 78px;
+    .playback-bar { grid-template-columns: minmax(0, 1fr) 78px;
+        row-gap: .52rem; }
+    .playback-meter { width: 78px;
         max-width: 78px;
-        grid-template-columns: .5rem 57px;
-    }
-    .meter-segments {
-        width: 57px;
+        grid-template-columns: .5rem 57px; }
+    .meter-segments { width: 57px;
         min-width: 57px;
-        max-width: 57px;
-    }
+        max-width: 57px; }
 }
+
 
 /* ============================================================
    Playback footer refinement v5 — anchored volume + spacing pass
