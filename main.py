@@ -562,8 +562,7 @@ def _build_power_state_payload() -> dict:
 
 
 def _is_qobuz_playback_active(state: dict | None) -> bool:
-    state = state or {}
-    return bool(state.get("available") and state.get("status") == "Playing")
+    return playback_state_helpers.is_external_playback_active(state)
 
 
 def _has_local_footer_context(state: dict | None) -> bool:
@@ -940,6 +939,7 @@ peak_monitor_coordinator = PeakMonitorCoordinator(PeakMonitorCoordinatorDeps(
     get_current_track_info=lambda: playback_state.current_track_info,
     broadcast=lambda message: manager.broadcast(message),
     get_spotify_ui_state=lambda *args, **kwargs: get_spotify_ui_state(*args, **kwargs),
+    get_qobuz_ui_state=lambda *args, **kwargs: get_qobuz_ui_state(*args, **kwargs),
     get_audio_source_overview=lambda: get_audio_source_overview(),
     capture_transition_epoch=lambda *a, **k: _capture_playback_transition_epoch(*a, **k),
     transition_context_is_current=lambda *a, **k: _playback_transition_context_is_current(*a, **k),
@@ -2223,6 +2223,7 @@ def _qobuz_target_track_from_state(state: Mapping[str, Any]) -> dict[str, Any]:
 async def broadcast_qobuz_state(data=None):
     data = await get_qobuz_ui_state(data)
     playback_state.latest_qobuz_state = data
+    await peak_monitor_coordinator.sync_qobuz_state(data)
     await manager.broadcast({"type": "qobuz", "data": data})
     return data
 
@@ -2240,8 +2241,12 @@ async def _claim_qobuz_playback(detail: str = "qobuz-claim") -> dict:
     Runs a single Coordinator transition that pauses the previous source(s),
     establishes the qbzd rate/graph and commits ``playback_owner=qobuz``.
     Paused/stopped qbzd states never claim.
+
+    The no-op guard checks the *committed* owner, not the display resolver:
+    the read-only derived owner is only a fallback for display and must never
+    suppress the commit that makes the owner persist across a pause.
     """
-    if _resolve_playback_owner() == "qobuz":
+    if playback_state.current_playback_owner == "qobuz":
         return await get_qobuz_ui_state()
     qobuz_state = await get_qobuz_ui_state()
     if not _is_qobuz_playback_active(qobuz_state):
@@ -2276,8 +2281,12 @@ async def _claim_spotify_playback(detail: str = "spotify-claim") -> dict:
 
     Triggered by the MPRIS watcher on a real Playing event (Spotify Connect
     started playback on another device), independent of the visible tab.
+
+    The no-op guard checks the *committed* owner, not the display resolver:
+    the read-only derived owner is only a fallback for display and must never
+    suppress the commit that makes the owner persist across a pause.
     """
-    if _resolve_playback_owner() == "spotify":
+    if playback_state.current_playback_owner == "spotify":
         return await get_spotify_ui_state()
     data = await get_spotify_ui_state()
     if not _is_spotify_playback_active(data):
@@ -2859,6 +2868,8 @@ async def lifespan(app: FastAPI):
         runtime.source_transition_lock = asyncio.Lock()
         playback_state.latest_spotify_state = await get_spotify_ui_state()
         await peak_monitor_coordinator.sync_spotify_state(playback_state.latest_spotify_state)
+        playback_state.latest_qobuz_state = await get_qobuz_ui_state()
+        await peak_monitor_coordinator.sync_qobuz_state(playback_state.latest_qobuz_state)
         logger.info("DSP output peak monitor initialized")
 
         try:
@@ -3074,8 +3085,10 @@ def _make_dsp_orchestration_deps() -> DspOrchestrationDeps:
         peak_monitor_playback_armed=lambda: peak_monitor_coordinator.armed,
         set_peak_monitor_context_signature=peak_monitor_coordinator.set_signature,
         get_spotify_ui_state=lambda *args, **kwargs: get_spotify_ui_state(*args, **kwargs),
+        get_qobuz_ui_state=lambda *args, **kwargs: get_qobuz_ui_state(*args, **kwargs),
         sync_peak_monitor_for_playback_state=peak_monitor_coordinator.sync_playback_state,
         sync_peak_monitor_for_spotify_state=peak_monitor_coordinator.sync_spotify_state,
+        sync_peak_monitor_for_qobuz_state=peak_monitor_coordinator.sync_qobuz_state,
         load_dsp_preset=lambda *args, **kwargs: _load_dsp_preset(*args, **kwargs),
         broadcast=lambda message: manager.broadcast(message),
         wait_for_samplerate_alignment=lambda *args, **kwargs: samplerate.wait_for_samplerate_alignment(*args, **kwargs),

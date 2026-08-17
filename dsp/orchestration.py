@@ -45,8 +45,10 @@ class DspOrchestrationDeps:
     peak_monitor_playback_armed: Callable[[], bool]
     set_peak_monitor_context_signature: Callable[[Any], None]
     get_spotify_ui_state: Callable[..., Awaitable[Any]]
+    get_qobuz_ui_state: Callable[..., Awaitable[Any]]
     sync_peak_monitor_for_playback_state: Callable[..., Awaitable[Any]]
     sync_peak_monitor_for_spotify_state: Callable[..., Awaitable[Any]]
+    sync_peak_monitor_for_qobuz_state: Callable[..., Awaitable[Any]]
     load_dsp_preset: Callable[..., Awaitable[Any]]
     broadcast: Callable[[dict], Awaitable[Any]]
     wait_for_samplerate_alignment: Callable[..., Awaitable[bool]]
@@ -386,10 +388,12 @@ class DspOrchestrator:
         player_instance = self._deps.get_player_instance()
         player_state = player_instance.state if player_instance else {}
         spotify_state = await self._deps.get_spotify_ui_state()
+        qobuz_state = await self._deps.get_qobuz_ui_state()
         is_local_playing = playback_state.is_local_playback_active(player_state)
-        is_spotify_playing = bool(spotify_state.get("available") and spotify_state.get("status") == "Playing")
+        is_spotify_playing = playback_state.is_external_playback_active(spotify_state)
+        is_qobuz_playing = playback_state.is_external_playback_active(qobuz_state)
 
-        if not is_local_playing and not is_spotify_playing:
+        if not is_local_playing and not is_spotify_playing and not is_qobuz_playing:
             return
 
         logger.info("Refreshing peak monitor after %s", reason)
@@ -398,6 +402,8 @@ class DspOrchestrator:
 
         if is_spotify_playing:
             await self._deps.sync_peak_monitor_for_spotify_state(spotify_state)
+        elif is_qobuz_playing:
+            await self._deps.sync_peak_monitor_for_qobuz_state(qobuz_state)
         elif is_local_playing:
             await self._deps.sync_peak_monitor_for_playback_state(player_state)
 

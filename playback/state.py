@@ -24,9 +24,22 @@ def is_local_playback_active(state: dict | None) -> bool:
     return bool(state.get("current_file") and not state.get("paused") and not state.get("ended"))
 
 
-def is_spotify_playback_active(state: dict | None) -> bool:
+def is_external_playback_active(state: dict | None) -> bool:
+    """Return whether an external renderer (spotify/qobuz) reports Playing.
+
+    Both external renderers publish the same flat normalized state shape, so
+    the activity check is shared: an external source owns playback only while
+    it is available and reports ``status == "Playing"``. Paused/Stopped never
+    count as active.
+    """
     state = state or {}
     return bool(state.get("available") and state.get("status") == "Playing")
+
+
+def is_spotify_playback_active(state: dict | None) -> bool:
+    """Return whether Spotify reports Playing (alias of the shared external
+    renderer activity check; Spotify and Qobuz publish the same shape)."""
+    return is_external_playback_active(state)
 
 
 def playback_state_matches_track(state: dict | None, track: dict | None) -> bool:

@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: AGPL-3.0-only
-// Tests for the Spotify cover detail card meta builder in static/app.js.
+// Tests for the streaming cover detail card meta builder in static/app.js.
 // Verifies source/title/artist/album/tech only use fields actually delivered
-// by the Spotify status payload — never invented technical values — and that
-// the artwork resolution mirrors the footer (spotifyArtworkItem).
+// by the provider status payload — never invented technical values — and that
+// the artwork resolution mirrors the footer (streamingArtworkItem) with the
+// actual provider as the artwork source (Spotify vs Qobuz).
 
 const assert = require('assert/strict');
 const fs = require('fs');
@@ -40,12 +41,12 @@ vm.runInContext(extractFunction('trackCoverUrl'), sandbox);
 vm.runInContext(extractFunction('trackCoverKnownAvailable'), sandbox);
 vm.runInContext(extractFunction('playbackArtworkUrl'), sandbox);
 vm.runInContext(extractFunction('playbackArtworkKnownAvailable'), sandbox);
-vm.runInContext(extractFunction('spotifyArtworkItem'), sandbox);
-vm.runInContext(extractFunction('coverDetailSpotifyMeta'), sandbox);
+vm.runInContext(extractFunction('streamingArtworkItem'), sandbox);
+vm.runInContext(extractFunction('coverDetailStreamingMeta'), sandbox);
 vm.runInContext(extractFunction('mergeSpotifyState'), sandbox);
 
-const meta = sandbox.coverDetailSpotifyMeta;
-const artwork = sandbox.spotifyArtworkItem;
+const meta = sandbox.coverDetailStreamingMeta;
+const artwork = sandbox.streamingArtworkItem;
 const artUrl = sandbox.playbackArtworkUrl;
 const artKnown = sandbox.playbackArtworkKnownAvailable;
 const merge = sandbox.mergeSpotifyState;
@@ -66,7 +67,7 @@ function check(name, actual, expected) {
     passed += 1;
 }
 
-// ---- coverDetailSpotifyMeta ----
+// ---- coverDetailStreamingMeta ----
 
 check('null payload -> all empty', meta(null), { source: '', title: '', artist: '', album: '', tech: '' });
 check('undefined payload -> all empty', meta(undefined), { source: '', title: '', artist: '', album: '', tech: '' });
@@ -101,10 +102,10 @@ check('technical fields never leak into tech', meta({
     volume: 31,
 }), { source: 'SPOTIFY', title: 'T', artist: 'A', album: 'B', tech: '' });
 
-// ---- artwork resolution (mirrors footer via spotifyArtworkItem) ----
+// ---- artwork resolution (mirrors footer via streamingArtworkItem) ----
 
 const withArt = artwork({ artUrl: 'https://i.scdn.co/image/abc', artwork_url: 'https://i.scdn.co/image/abc' });
-check('spotifyArtworkItem with artUrl', withArt, {
+check('streamingArtworkItem with artUrl (spotify default)', withArt, {
     source: 'spotify',
     artwork_available: true,
     artwork_url: 'https://i.scdn.co/image/abc',
@@ -114,7 +115,7 @@ check('artwork URL resolves for spotify item', artUrl(withArt), 'https://i.scdn.
 check('artwork known available for spotify item', artKnown(withArt), true);
 
 const withoutArt = artwork({});
-check('spotifyArtworkItem without artUrl', withoutArt, {
+check('streamingArtworkItem without artUrl', withoutArt, {
     source: 'spotify',
     artwork_available: false,
     artwork_url: '',
@@ -122,6 +123,33 @@ check('spotifyArtworkItem without artUrl', withoutArt, {
 });
 check('artwork URL empty without artUrl', artUrl(withoutArt), '');
 check('artwork not known available without artUrl', artKnown(withoutArt), false);
+
+// Qobuz artwork must never be classified as Spotify: the actual provider is
+// the artwork source.
+const qobuzWithArt = artwork({ artUrl: 'https://static.qobuz.com/cover.jpg' }, 'qobuz');
+check('streamingArtworkItem classifies Qobuz artwork as qobuz', qobuzWithArt, {
+    source: 'qobuz',
+    artwork_available: true,
+    artwork_url: 'https://static.qobuz.com/cover.jpg',
+    artwork_source: 'qobuz',
+});
+check('Qobuz artwork URL resolves', artUrl(qobuzWithArt), 'https://static.qobuz.com/cover.jpg');
+
+const qobuzWithoutArt = artwork({}, 'qobuz');
+check('streamingArtworkItem without Qobuz artUrl keeps qobuz source', qobuzWithoutArt, {
+    source: 'qobuz',
+    artwork_available: false,
+    artwork_url: '',
+    artwork_source: 'none',
+});
+
+check('coverDetailStreamingMeta labels Qobuz source', meta({ title: 'T', artist: 'A', album: 'B' }, 'qobuz'), {
+    source: 'QOBUZ',
+    title: 'T',
+    artist: 'A',
+    album: 'B',
+    tech: '',
+});
 
 // artUrl alias artUrl wins over artwork_url (same as footer: artwork_url || artUrl)
 const both = artwork({ artwork_url: 'https://i.scdn.co/image/main', artUrl: 'https://i.scdn.co/image/main' });

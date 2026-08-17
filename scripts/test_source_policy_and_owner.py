@@ -143,6 +143,34 @@ class PlaybackOwnerTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(self.main.playback_state.current_playback_owner, "tidal")
 
+    async def test_qobuz_claim_commits_owner_despite_readonly_derivation(self):
+        # qbzd playing externally while nothing is committed: the claim must
+        # COMMIT the owner instead of short-circuiting on the read-only
+        # derived owner (which disappears again on pause).
+        playing = {
+            "available": True, "status": "Playing", "title": "T", "artist": "A",
+            "album": "B", "trackId": "123", "artUrl": "http://x/c.jpg", "sample_rate": 44100,
+        }
+        committed = type("Result", (), {"committed": True, "transition_id": "t1"})()
+        with mock.patch.object(self.main, "get_qobuz_ui_state", new=mock.AsyncMock(return_value=playing)), mock.patch.object(
+            self.main, "_run_coordinated_transition", new=mock.AsyncMock(return_value=committed)
+        ) as run, mock.patch.object(
+            self.main, "broadcast_qobuz_state", new=mock.AsyncMock(return_value=playing)
+        ):
+            await self.main._claim_qobuz_playback("qbzd-playing")
+        run.assert_awaited_once()
+        self.assertEqual(self.main.playback_state.current_playback_owner, "qobuz")
+
+    async def test_qobuz_claim_noop_when_already_committed(self):
+        self.main._set_playback_owner("qobuz")
+        with mock.patch.object(self.main, "get_qobuz_ui_state", new=mock.AsyncMock()) as get, mock.patch.object(
+            self.main, "_run_coordinated_transition", new=mock.AsyncMock()
+        ) as run:
+            await self.main._claim_qobuz_playback("qbzd-playing")
+        run.assert_not_awaited()
+        get.assert_awaited_once()
+        self.assertEqual(self.main.playback_state.current_playback_owner, "qobuz")
+
 
 if __name__ == "__main__":
     unittest.main()

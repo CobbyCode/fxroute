@@ -3,9 +3,23 @@
 
 Owns the bounded watch loop that observes the qbzd control-plane state and
 claims FXRoute playback ownership on a Playing rising edge (Qobuz Connect
-started playback on another device). It reacts to state transitions rather
-than polling transport actions, coalesces duplicate claims, and backs off on
-repeat failures so a broken daemon cannot busy-loop the event loop.
+started playback on another device). It coalesces duplicate claims and backs
+off on repeat failures so a broken daemon cannot busy-loop the event loop.
+
+Transport source: qbzd exposes an SSE endpoint (``GET /api/events``, the same
+stream the ``qbzd watch`` CLI consumes) that documents
+``PlaybackStateChanged``/``TrackStarted`` events. Live verification on qbzd
+2.0.2 (.104) shows that endpoint holding the connection open but emitting no
+events for pause/play or volume transitions, so it is not stable enough to be
+the ownership-claim source yet. This watcher therefore reads the qbzd state
+via the injected ``broadcast_qobuz_state`` accessor (server-side HTTP read,
+never a UI poll) on a bounded 2s interval and derives the Playing rising edge
+from consecutive states. It is structured so that swapping the state accessor
+for a parsed ``/api/events`` stream is a drop-in change once qbzd emits events
+reliably.
+
+Claiming is a no-op when qobuz already owns playback, and paused/stopped
+states never claim, so an FXRoute-induced pause cannot ping-pong ownership.
 
 No imports from ``main``: the claim entry point and the state accessors are
 injected by the composition root.

@@ -308,6 +308,9 @@ let lastDownloadStatus = null;
 let spotifyVolumeTimer = null;
 let spotifyVolumeRequestInFlight = false;
 let pendingSpotifyVolume = null;
+let qobuzVolumeTimer = null;
+let qobuzVolumeRequestInFlight = false;
+let pendingQobuzVolume = null;
 let libraryModeSyncArmed = false;
 let lastLibraryPlaybackContextSignature = null;
 let libraryModeRequestInFlight = false;
@@ -966,7 +969,7 @@ function handleWebSocketMessage(msg) {
             if (data && data.available && (data.status === 'Playing' || data.status === 'Paused' || data.title)) {
                 reconcileFooterSource();
                 if (window.__footerSource === 'qobuz') {
-                    updateFooterForSpotify(data);
+                    updateFooterForStreamingOwner(data);
                 }
             }
             break;
@@ -2323,14 +2326,28 @@ async function fetchAudioSourceOverview() {
 // Source model (three separate concepts)
 // ---------------------------------------------------------------------------
 // __visibleTab    = which tab the user is looking at ('radio','spotify','library','effects')
-// __footerSource  = which source the footer displays ('local' or 'spotify')
+// __footerSource  = which source the footer displays ('local', 'spotify' or 'qobuz')
 // Transport/volume controls route based on the effective playback owner, not the visible tab.
 // Footer renders based on __footerSource. Tab switch does NOT change footer or playback.
 
 window.__visibleTab = 'radio';
 window.__footerSource = 'local';
 window.__qobuzLastData = null;
-window.__spotifySeeking = false;
+window.__streamingSeeking = false;
+
+function isStreamingFooterSource(source) {
+    return source === 'spotify' || source === 'qobuz';
+}
+
+// Last normalized state for the external renderer (Spotify/Qobuz) currently
+// shown in the footer, or null when a native source (local/radio/tidal) owns
+// the footer. The footer renderer never branches on the provider identity
+// beyond this data lookup.
+function streamingFooterData() {
+    if (window.__footerSource === 'spotify') return window.__spotifyLastData;
+    if (window.__footerSource === 'qobuz') return window.__qobuzLastData;
+    return null;
+}
 
 function clearLibraryImportFeedbackIfIdle() {
     const uploadActive = state.upload && state.upload.status === 'uploading';
@@ -2388,7 +2405,7 @@ function switchTab(tabId) {
 }
 
 function getBackendFooterOwner(playback = state.playback, spotify = window.__spotifyLastData) {
-    const owner = playback?.playback_owner || spotify?.playback_owner || null;
+    const owner = playback?.playback_owner || spotify?.playback_owner || window.__qobuzLastData?.playback_owner || null;
     if (owner === 'local' || owner === 'radio' || owner === 'tidal') return 'local';
     if (owner === 'spotify' || owner === 'qobuz') return owner;
     return null;
@@ -2400,7 +2417,7 @@ function getEffectivePlaybackControlSource() {
     if (spotifyPlayingOwnsFooter()) return 'spotify';
     if (localPlaybackHasFooterContext(state.playback) || localEndedPlaybackHasFooterContext(state.playback)) return 'local';
     if (spotifyPausedHasFooterContext()) return 'spotify';
-    return window.__footerSource === 'spotify' ? 'spotify' : 'local';
+    return isStreamingFooterSource(window.__footerSource) ? window.__footerSource : 'local';
 }
 
 function globalTogglePlayback() {
@@ -2437,19 +2454,20 @@ function globalNext() {
 }
 
 function globalSeekChange() {
-    if (window.__footerSource === 'spotify') {
-        const spotifyData = window.__spotifyLastData;
-        if (spotifyData && spotifyData.duration) window.__spotifySeeking = true;
+    if (isStreamingFooterSource(window.__footerSource)) {
+        const streamingData = streamingFooterData();
+        if (streamingData && streamingData.duration) window.__streamingSeeking = true;
     }
 }
 
 function globalSeekEnd() {
-    if (window.__footerSource === 'spotify') {
-        window.__spotifySeeking = false;
-        const spotifyData = window.__spotifyLastData;
-        if (spotifyData && spotifyData.duration) {
-            const posSec = (parseFloat(elements.seekSlider.value) / 1000) * spotifyData.duration;
-            spotifySeek(posSec);
+    if (isStreamingFooterSource(window.__footerSource)) {
+        window.__streamingSeeking = false;
+        const streamingData = streamingFooterData();
+        if (streamingData && streamingData.duration) {
+            const posSec = (parseFloat(elements.seekSlider.value) / 1000) * streamingData.duration;
+            if (window.__footerSource === 'qobuz') qobuzSeek(posSec);
+            else spotifySeek(posSec);
         }
     }
 }
@@ -2539,8 +2557,13 @@ function setupPlaybackControls() {
         const sliderValue = parseInt(e.target.value, 10);
         const actualVolume = sliderVolumeToActualVolume(sliderValue);
         volumeGestureActive = false;
-        if (getEffectivePlaybackControlSource() === 'spotify') {
+        const volumeSource = getEffectivePlaybackControlSource();
+        if (volumeSource === 'spotify') {
             queueSpotifyVolumeSend(actualVolume, true);
+            return;
+        }
+        if (volumeSource === 'qobuz') {
+            queueQobuzVolumeSend(actualVolume, true);
             return;
         }
         queueVolumeSend(actualVolume, true);
@@ -2572,16 +2595,17 @@ function renderFooterModeButtons() {
     const loopBtn = elements.footerLoopBtn;
     if (!shuffleBtn && !loopBtn) return;
 
-    if (window.__footerSource === 'spotify') {
-        const data = window.__spotifyLastData || {};
+    if (isStreamingFooterSource(window.__footerSource)) {
+        const data = streamingFooterData() || {};
         const caps = data.capabilities || {};
         const hasMedia = !!(data.available && (data.title || data.artist || data.album || data.status !== 'Stopped'));
         const showShuffle = hasMedia && !!caps.shuffle;
         const showLoop = hasMedia && !!caps.loop;
+        const transportInFlight = window.__footerSource === 'spotify' && _spotifyCommandInFlight;
         if (shuffleBtn) {
             shuffleBtn.classList.toggle('hidden', !showShuffle);
             shuffleBtn.classList.toggle('active', showShuffle && !!data.shuffle);
-            shuffleBtn.disabled = !showShuffle || _spotifyCommandInFlight;
+            shuffleBtn.disabled = !showShuffle || transportInFlight;
             shuffleBtn.setAttribute('aria-pressed', showShuffle && data.shuffle ? 'true' : 'false');
             shuffleBtn.title = data.shuffle ? 'Shuffle on' : 'Shuffle off';
         }
@@ -2590,7 +2614,7 @@ function renderFooterModeButtons() {
             const loopActive = loopMode !== 'none';
             loopBtn.classList.toggle('hidden', !showLoop);
             loopBtn.classList.toggle('active', showLoop && loopActive);
-            loopBtn.disabled = !showLoop || _spotifyCommandInFlight;
+            loopBtn.disabled = !showLoop || transportInFlight;
             loopBtn.setAttribute('aria-pressed', showLoop && loopActive ? 'true' : 'false');
             loopBtn.textContent = loopMode === 'track' ? '↻¹' : '↻';
             loopBtn.title = loopMode === 'track' ? 'Repeat track' : (loopMode === 'playlist' ? 'Repeat playlist' : 'Repeat off');
@@ -3098,6 +3122,55 @@ async function sendSpotifyVolume() {
     updatePlaybackUI();
 }
 
+function queueQobuzVolumeSend(volume, immediate = false) {
+    pendingQobuzVolume = volume;
+    clearTimeout(qobuzVolumeTimer);
+    if (immediate) {
+        void sendQobuzVolume();
+        return;
+    }
+    qobuzVolumeTimer = setTimeout(() => {
+        void sendQobuzVolume();
+    }, VOLUME_SEND_DEBOUNCE_MS);
+}
+
+async function sendQobuzVolume() {
+    if (qobuzVolumeRequestInFlight || pendingQobuzVolume === null) return;
+    qobuzVolumeRequestInFlight = true;
+    while (pendingQobuzVolume !== null) {
+        const nextVolume = pendingQobuzVolume;
+        pendingQobuzVolume = null;
+        try {
+            const resp = await fetch('/api/streaming/qobuz/volume', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ volume: nextVolume }),
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) throw new Error(data.detail || 'Qobuz volume change failed');
+            if (data) {
+                window.__qobuzLastData = data;
+                reconcileFooterSource();
+                if (window.__footerSource === 'qobuz') updateFooterForStreamingOwner(data);
+            }
+            lastConfirmedVolume = typeof data.volume === 'number' ? data.volume : nextVolume;
+            state.playback.volume = lastConfirmedVolume;
+            volumeSyncGraceUntil = Date.now() + VOLUME_SYNC_GRACE_MS;
+            if (!volumeGestureActive && pendingQobuzVolume === null) {
+                optimisticVolume = null;
+            }
+        } catch (e) {
+            pendingQobuzVolume = null;
+            volumeGestureActive = false;
+            optimisticVolume = null;
+            showToast(e.message || 'Failed to set Qobuz volume', 'error');
+            break;
+        }
+    }
+    qobuzVolumeRequestInFlight = false;
+    updatePlaybackUI();
+}
+
 async function handleVolumeChange(e) {
     const sliderValue = parseInt(e.target.value, 10);
     const actualVolume = sliderVolumeToActualVolume(sliderValue);
@@ -3106,8 +3179,13 @@ async function handleVolumeChange(e) {
     volumeSyncGraceUntil = Date.now() + VOLUME_SYNC_GRACE_MS;
     setLocalVolume(sliderValue);
     showVolumeDisplayTemporarily();
-    if (getEffectivePlaybackControlSource() === 'spotify') {
+    const volumeSource = getEffectivePlaybackControlSource();
+    if (volumeSource === 'spotify') {
         queueSpotifyVolumeSend(actualVolume);
+        return;
+    }
+    if (volumeSource === 'qobuz') {
+        queueQobuzVolumeSend(actualVolume);
         return;
     }
     queueVolumeSend(actualVolume);
@@ -3160,7 +3238,7 @@ function triggerSamplerateBurstPolling() {
     });
 }
 async function fetchMetadata() {
-    if (!state.playback.playing && !state.playback.paused && window.__footerSource !== 'spotify') return;
+    if (!state.playback.playing && !state.playback.paused && !isStreamingFooterSource(window.__footerSource)) return;
     try {
         const resp = await fetch('/api/status');
         if (!resp.ok) return;
@@ -3376,8 +3454,8 @@ function renderPeakWarningBadge(activeOverride = null) {
     const title = warning.target?.description || warning.target?.source_name || 'DSP output monitor';
     const vuDb = Number.isFinite(Number(warning.vu_db)) ? Number(warning.vu_db) : null;
     const playbackActive = activeOverride === null
-        ? (window.__footerSource === 'spotify'
-            ? window.__spotifyLastData?.status === 'Playing'
+        ? (isStreamingFooterSource(window.__footerSource)
+            ? streamingFooterData()?.status === 'Playing'
             : !!state.playback.playing && !state.playback.paused)
         : !!activeOverride;
     const showVu = !!warning.available && warning.vu_fresh === true
@@ -3413,11 +3491,11 @@ function renderQueueUI() {
         }
     }
 
-    if (elements.btnPrevious && window.__footerSource !== 'spotify') {
+    if (elements.btnPrevious && !isStreamingFooterSource(window.__footerSource)) {
         elements.btnPrevious.classList.toggle('hidden', !hasQueue);
         elements.btnPrevious.disabled = playbackActionInFlight || !hasQueue || queueIndex <= 0;
     }
-    if (elements.btnNext && window.__footerSource !== 'spotify') {
+    if (elements.btnNext && !isStreamingFooterSource(window.__footerSource)) {
         elements.btnNext.classList.toggle('hidden', !hasQueue);
         elements.btnNext.disabled = playbackActionInFlight || !hasQueue || queueIndex < 0 || (queueIndex >= queue.count - 1 && !queue.loop && !queue.shuffle);
     }
@@ -3688,12 +3766,13 @@ function coverDetailMeta(playback, playlists) {
     return { source, title, artist, album, tech };
 }
 
-function coverDetailSpotifyMeta(data) {
-    // Spotify detail card meta: only fields actually delivered by the
-    // Spotify status payload — never invented technical values.
+function coverDetailStreamingMeta(data, source = 'spotify') {
+    // External-renderer detail card meta: only fields actually delivered by
+    // the provider's normalized status payload — never invented technical
+    // values. The source label reflects the actual provider.
     if (!data) return { source: '', title: '', artist: '', album: '', tech: '' };
     return {
-        source: 'SPOTIFY',
+        source: source === 'qobuz' ? 'QOBUZ' : 'SPOTIFY',
         title: data.title || '',
         artist: data.artist || '',
         album: data.album || '',
@@ -3775,12 +3854,15 @@ let coverDetailQueueSignature = null;
 function renderCoverDetailCard() {
     const playback = state.playback || {};
     const track = playback.current_track || null;
-    // Spotify owns the footer (and thus the detail card) from the Spotify
-    // poll state; /api/status carries no Spotify track. Mirror the footer
-    // source so the card shows the same data as the footer.
-    const spotifyData = getEffectivePlaybackControlSource() === 'spotify' ? (window.__spotifyLastData || null) : null;
+    // An external renderer (Spotify/Qobuz) owns the footer (and thus the
+    // detail card) from its streaming state; /api/status carries no external
+    // track. Mirror the footer source so the card shows the same data.
+    const streamingSource = getEffectivePlaybackControlSource();
+    const streamingData = streamingSource === 'spotify'
+        ? (window.__spotifyLastData || null)
+        : streamingSource === 'qobuz' ? (window.__qobuzLastData || null) : null;
     // Meta block: source/playlist, current title, artist, album, tech line.
-    const meta = spotifyData ? coverDetailSpotifyMeta(spotifyData) : coverDetailMeta(playback, state.playlists);
+    const meta = streamingData ? coverDetailStreamingMeta(streamingData, streamingSource) : coverDetailMeta(playback, state.playlists);
     setCoverDetailText(elements.coverDetailSource, meta.source);
     setCoverDetailText(elements.coverDetailTitle, meta.title);
     setCoverDetailText(elements.coverDetailArtist, meta.artist);
@@ -3799,10 +3881,11 @@ function renderCoverDetailCard() {
     const isRadio = track && track.source === 'radio';
     const radioMetadata = isRadio ? playback.radio_metadata : null;
     const providerCover = radioMetadata && !radioMetadata.stale ? radioMetadata.cover_url : '';
-    // Spotify artwork mirrors the footer artwork resolution (spotifyArtworkItem);
-    // the radio/library branches are unchanged.
-    const coverItem = spotifyData
-        ? spotifyArtworkItem(spotifyData)
+    // Streaming artwork mirrors the footer artwork resolution
+    // (streamingArtworkItem) with the actual provider as source; the
+    // radio/library branches are unchanged.
+    const coverItem = streamingData
+        ? streamingArtworkItem(streamingData, streamingSource)
         : (providerCover
             ? { ...track, artwork_available: true, artwork_url: providerCover, artwork_fallback_url: track?.artwork_url || '' }
             : track);
@@ -3884,12 +3967,13 @@ function updatePlaybackUI() {
         _spotifyPollGeneration++;
         stopSpotifyPoll();
     }
-    // When Spotify owns the footer, local UI must NOT touch footer elements at all.
-    // Refresh from Spotify truth and return — the Spotify poll owns the footer exclusively.
-    if (window.__footerSource === 'spotify') {
+    // When an external renderer (Spotify/Qobuz) owns the footer, local UI must
+    // NOT touch footer elements at all. Refresh from the owner's normalized
+    // state and return — the streaming state owns the footer exclusively.
+    if (isStreamingFooterSource(window.__footerSource)) {
         stopPlaybackPositionPoll();
-        const spData = window.__spotifyLastData;
-        if (!freezeActive && spData) updateFooterForSpotify(spData);
+        const streamingData = streamingFooterData();
+        if (!freezeActive && streamingData) updateFooterForStreamingOwner(streamingData);
         highlightActiveTrack();
         return;
     }
@@ -3977,33 +4061,34 @@ function updatePlaybackUI() {
     // Keep the cover detail card in sync while it is open
     if (isCoverDetailOpen()) renderCoverDetailCard();
     // Start/stop position polling for local playback
-    if (playing && window.__footerSource !== 'spotify') {
+    if (playing && !isStreamingFooterSource(window.__footerSource)) {
         startPlaybackPositionPoll();
     } else {
         stopPlaybackPositionPoll();
     }
 }
 function startPlaybackPositionPoll() {
-    if (window.__footerSource === 'spotify') return;
+    if (isStreamingFooterSource(window.__footerSource)) return;
     if (playbackPositionPollTimer !== null) return;
     playbackPositionPollTimer = setInterval(async () => {
         try {
-            if (window.__footerSource === 'spotify') {
+            if (isStreamingFooterSource(window.__footerSource)) {
                 stopPlaybackPositionPoll();
                 return;
             }
             const resp = await fetch('/api/status');
             if (!resp.ok) return;
             const data = await resp.json();
-            if (window.__footerSource === 'spotify' || getBackendFooterOwner(data) === 'spotify') {
-                if (getBackendFooterOwner(data) === 'spotify') {
-                    setFooterSource('spotify', 'local-poll-backend-owner-spotify');
+            const backendOwner = getBackendFooterOwner(data);
+            if (isStreamingFooterSource(window.__footerSource) || isStreamingFooterSource(backendOwner)) {
+                if (isStreamingFooterSource(backendOwner)) {
+                    setFooterSource(backendOwner, 'local-poll-backend-owner-streaming');
                 }
                 stopPlaybackPositionPoll();
                 return;
             }
             mergePlaybackState(data);
-            if (window.__footerSource === 'spotify') {
+            if (isStreamingFooterSource(window.__footerSource)) {
                 stopPlaybackPositionPoll();
                 return;
             }
@@ -13588,13 +13673,13 @@ function playbackArtworkKnownAvailable(item) {
     if (item.artwork_available === false) return false;
     return trackCoverKnownAvailable(item) || !!(item.artwork_url || item.artUrl || item.image);
 }
-function spotifyArtworkItem(data) {
+function streamingArtworkItem(data, source = 'spotify') {
     const artworkUrl = data?.artwork_url || data?.artUrl || '';
     return {
-        source: 'spotify',
+        source: source,
         artwork_available: !!artworkUrl,
         artwork_url: artworkUrl || '',
-        artwork_source: artworkUrl ? 'spotify' : 'none',
+        artwork_source: artworkUrl ? source : 'none',
     };
 }
 function updatePlaybackCover(track) {
@@ -13822,17 +13907,18 @@ function initSeek() {
 function seekStart() {
     if (elements.playbackBar?.classList.contains('progress-readonly')) return;
     seekDragging = true;
-    if (window.__footerSource === 'spotify') window.__spotifySeeking = true;
+    if (isStreamingFooterSource(window.__footerSource)) window.__streamingSeeking = true;
 }
 function seekEnd() {
     if (elements.playbackBar?.classList.contains('progress-readonly')) return;
     seekDragging = false;
-    if (window.__footerSource === 'spotify') {
-        window.__spotifySeeking = false;
-        const spotifyData = window.__spotifyLastData;
-        if (spotifyData && spotifyData.duration) {
-            const posSec = (parseInt(elements.seekSlider.value, 10) / 1000) * spotifyData.duration;
-            spotifySeek(posSec);
+    if (isStreamingFooterSource(window.__footerSource)) {
+        window.__streamingSeeking = false;
+        const streamingData = streamingFooterData();
+        if (streamingData && streamingData.duration) {
+            const posSec = (parseInt(elements.seekSlider.value, 10) / 1000) * streamingData.duration;
+            if (window.__footerSource === 'qobuz') qobuzSeek(posSec);
+            else spotifySeek(posSec);
         }
         return;
     }
@@ -13845,9 +13931,9 @@ function seekChange() {
     if (elements.playbackBar?.classList.contains('progress-readonly')) return;
     const pos = parseInt(elements.seekSlider.value, 10) || 0;
     setRangeProgress(elements.seekSlider, pos / 1000);
-    if (window.__footerSource === 'spotify') {
-        const spotifyData = window.__spotifyLastData;
-        const duration = spotifyData?.duration || 0;
+    if (isStreamingFooterSource(window.__footerSource)) {
+        const streamingData = streamingFooterData();
+        const duration = streamingData?.duration || 0;
         const current = (pos / 1000) * duration;
         if (elements.seekCurrent) elements.seekCurrent.textContent = formatTime(current);
         return;
@@ -14127,7 +14213,7 @@ function handleIncomingSpotifyState(data, options = {}) {
     }
 
     if (renderFooter && window.__footerSource === 'spotify') {
-        updateFooterForSpotify(mergedData);
+        updateFooterForStreamingOwner(mergedData);
     }
     if (renderTab) {
         const spotifyTab = document.getElementById('tab-spotify');
@@ -14151,7 +14237,7 @@ function renderSpotify(data) {
 function updateGlobalControlsForSource() {
     if (window.__footerSource !== 'spotify') return;
     const data = window.__spotifyLastData;
-    if (data) updateFooterForSpotify(data);
+    if (data) updateFooterForStreamingOwner(data);
 }
 
 // ---------------------------------------------------------------------------
@@ -14190,12 +14276,27 @@ async function qobuzCommand(action) {
         }
         window.__qobuzLastData = data;
         reconcileFooterSource();
-        updateFooterForSpotify(data);
+        updateFooterForStreamingOwner(data);
         return data;
     } catch (e) {
         showToast('Qobuz transport failed', 'error');
         return null;
     }
+}
+
+async function qobuzSeek(positionSec) {
+    try {
+        const resp = await fetch('/api/streaming/qobuz/seek', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ position: positionSec }),
+        });
+        const data = await resp.json().catch(() => null);
+        if (data) {
+            window.__qobuzLastData = data;
+            if (window.__footerSource === 'qobuz') updateFooterForStreamingOwner(data);
+        }
+    } catch { /* ignore */ }
 }
 
 async function spotifyCommand(action) {
@@ -14324,17 +14425,21 @@ function startSpotifyPoll() {
     }, 1000);
 }
 
-// Footer update for Spotify source — single source of truth
-function updateFooterForSpotify(data) {
-    if (window.__footerSource !== 'spotify' && window.__footerSource !== 'qobuz') return;
+// Footer update for an external streaming owner (Spotify or Qobuz) — single
+// source of truth for the shared normalized streaming state shape.
+function updateFooterForStreamingOwner(data) {
+    if (!isStreamingFooterSource(window.__footerSource)) return;
     if (footerContentFreezeActive()) return;
     const hasMedia = !!(data?.available && (data.title || data.artist || data.album || data.status !== 'Stopped'));
     renderTrackFavoriteButton(null);
-    updatePlaybackCover(hasMedia ? spotifyArtworkItem(data) : null);
+    updatePlaybackCover(hasMedia ? streamingArtworkItem(data, window.__footerSource) : null);
     elements.playbackBar?.classList.toggle('has-media', hasMedia);
     elements.playbackBar?.classList.toggle('is-playing', hasMedia && data.status === 'Playing');
     elements.playbackBar?.classList.toggle('is-paused', hasMedia && data.status === 'Paused');
-    if (typeof data.volume === 'number' && !volumeGestureActive && !spotifyVolumeRequestInFlight && pendingSpotifyVolume === null) {
+    const streamingVolumeIdle = window.__footerSource === 'qobuz'
+        ? (!qobuzVolumeRequestInFlight && pendingQobuzVolume === null)
+        : (!spotifyVolumeRequestInFlight && pendingSpotifyVolume === null);
+    if (typeof data.volume === 'number' && !volumeGestureActive && streamingVolumeIdle) {
         state.playback.volume = data.volume;
         renderVolumeControlsFromActualVolume(data.volume);
     }
@@ -14415,7 +14520,7 @@ function updateFooterForSpotify(data) {
             elements.seekDuration.textContent = '0:00';
             elements.seekSlider.value = 0;
             setRangeProgress(elements.seekSlider, 0);
-        } else if (!window.__spotifySeeking) {
+        } else if (!window.__streamingSeeking) {
             elements.seekCurrent.textContent = formatTime(pos);
             elements.seekDuration.textContent = formatTime(dur);
             elements.seekSlider.value = Math.round((pos / dur) * 1000);

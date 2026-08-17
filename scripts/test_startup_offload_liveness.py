@@ -184,6 +184,8 @@ def _lifespan_patches(slow_player, slow_effects):
         mock.patch.object(main, "start_volume_read_monitor", lambda: asyncio.create_task(asyncio.sleep(0.01))),
         mock.patch.object(main, "get_spotify_ui_state", mock.AsyncMock(return_value={})),
         mock.patch.object(main.peak_monitor_coordinator, "sync_spotify_state", mock.AsyncMock()),
+        mock.patch.object(main, "get_qobuz_ui_state", mock.AsyncMock(return_value={})),
+        mock.patch.object(main.peak_monitor_coordinator, "sync_qobuz_state", mock.AsyncMock()),
         mock.patch.object(main, "apply_persisted_audio_output_selection", return_value=None),
         mock.patch.object(main.samplerate, "load_sample_rate_policy", return_value={"mode": "auto"}),
         mock.patch.object(main.dsp_orchestrator, "sync_runtime", mock.AsyncMock()),

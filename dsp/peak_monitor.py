@@ -956,6 +956,7 @@ class PeakMonitorCoordinatorDeps:
     get_current_track_info: Callable[[], Any]
     broadcast: Callable[[dict], Awaitable[Any]]
     get_spotify_ui_state: Callable[..., Awaitable[Any]]
+    get_qobuz_ui_state: Callable[..., Awaitable[Any]]
     get_audio_source_overview: Callable[[], dict]
     capture_transition_epoch: Callable[[], int | None]
     transition_context_is_current: Callable[[int | None], bool]
@@ -1096,48 +1097,79 @@ class PeakMonitorCoordinator:
                 self.armed = False
                 # self.signature is preserved for same-source resume detection.
 
-    async def sync_spotify_state(self, data: dict) -> None:
-        if self._peak_monitor() is None:
+    async def _external_ui_state_for(self, source: str) -> dict:
+        """Resolve the live UI state for an external renderer by source id."""
+        if source == "qobuz":
+            return await self._deps.get_qobuz_ui_state()
+        return await self._deps.get_spotify_ui_state()
+
+    async def sync_external_state(self, source: str, data: dict) -> None:
+        """Arm/stop the peak monitor for an external renderer's activity.
+
+        ``source`` is ``spotify`` or ``qobuz``; both publish the same
+        normalized state shape, so the shared external-renderer activity check
+        from ``playback.state`` drives the state machine and only the
+        signature/log text is source-specific.
+        """
+        if source not in {"spotify", "qobuz"} or self._peak_monitor() is None:
             return
         async with self._get_lock():
-            player_state = self._deps.get_player_state()
-            is_spotify_playing = playback_state.is_spotify_playback_active(data)
-            desired_signature = "spotify:playing" if is_spotify_playing else None
+            is_playing = playback_state.is_external_playback_active(data)
+            desired_signature = f"{source}:playing" if is_playing else None
 
-            if is_spotify_playing and (not self.armed or self.signature != desired_signature):
+            if is_playing and (not self.armed or self.signature != desired_signature):
                 if self._deps.transition_is_active():
-                    logger.info("Delaying peak monitor restart while Spotify samplerate recovery is active")
+                    logger.info(
+                        "Delaying peak monitor restart while %s samplerate recovery is active",
+                        source,
+                    )
                     return
                 self.armed = True
                 self.signature = desired_signature
                 logger.info(
-                    "Starting peak monitor for committed Spotify playback; rate/graph mutations remain coordinator-owned",
+                    "Starting peak monitor for committed %s playback; rate/graph mutations remain coordinator-owned",
+                    source,
                 )
                 await self._peak_monitor().restart()
                 await self._broadcast_snapshot()
             elif (
-                not is_spotify_playing
+                not is_playing
                 and self.armed
-                and str(self.signature or "").startswith("spotify:")
+                and str(self.signature or "").startswith(f"{source}:")
             ):
                 if self._deps.transition_is_active():
-                    logger.info("Keeping peak monitor armed while Spotify samplerate recovery is active")
+                    logger.info(
+                        "Keeping peak monitor armed while %s samplerate recovery is active",
+                        source,
+                    )
                     return
                 await self._deps.sleep(PEAK_MONITOR_INACTIVE_GRACE_MS / 1000)
                 refreshed_player_state = self._deps.get_player_state()
-                refreshed_spotify_state = await self._deps.get_spotify_ui_state()
+                refreshed_external = await self._external_ui_state_for(source)
                 if self._deps.transition_is_active():
-                    logger.info("Keeping peak monitor armed while Spotify samplerate recovery is still active")
+                    logger.info(
+                        "Keeping peak monitor armed while %s samplerate recovery is still active",
+                        source,
+                    )
                     return
                 if playback_state.is_local_playback_active(refreshed_player_state):
                     return
-                if playback_state.is_spotify_playback_active(refreshed_spotify_state):
+                if playback_state.is_external_playback_active(refreshed_external):
                     return
-                logger.info("Stopping peak monitor because Spotify is no longer actively playing")
+                logger.info(
+                    "Stopping peak monitor because %s is no longer actively playing",
+                    source,
+                )
                 await self._peak_monitor().stop()
                 self.armed = False
                 self.signature = None
                 await self._broadcast_snapshot()
+
+    async def sync_spotify_state(self, data: dict) -> None:
+        await self.sync_external_state("spotify", data)
+
+    async def sync_qobuz_state(self, data: dict) -> None:
+        await self.sync_external_state("qobuz", data)
 
     async def sync_source_mode_state(self, source_overview: dict | None = None) -> None:
         if self._peak_monitor() is None:
