@@ -4611,7 +4611,7 @@ input[type="number"]::-webkit-outer-spin-button {
     display: flex;
     align-items: center;
     gap: 0.35rem;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     min-height: 1.25rem;
 }
 .playback-meta-row:not(:has(> :not(.hidden):not(:empty))) { display: none; }
@@ -4627,6 +4627,10 @@ input[type="number"]::-webkit-outer-spin-button {
     font-weight: 680;
     line-height: 1;
     white-space: nowrap;
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 .samplerate-status { background: rgba(148,163,184,.10); color: var(--text-secondary); }
 .queue-status { background: rgba(110,231,183,.08); color: var(--accent); }
