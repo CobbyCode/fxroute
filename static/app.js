@@ -624,9 +624,11 @@ const elements = {
     playbackEq: document.getElementById('playback-eq'),
     connDot: document.getElementById('connection-dot'),
     connText: document.getElementById('connection-text'),
+    footerShuffleBtn: document.getElementById('footer-shuffle'),
     btnPrevious: document.getElementById('btn-previous'),
     btnPlayPause: document.getElementById('btn-play-pause'),
     btnNext: document.getElementById('btn-next'),
+    footerLoopBtn: document.getElementById('footer-loop'),
     btnClearQueue: document.getElementById('btn-clear-queue'),
     queueStatus: document.getElementById('queue-status'),
     samplerateStatus: document.getElementById('samplerate-status'),
@@ -2469,9 +2471,11 @@ function setupPlaybackControls() {
         console.error('Playback controls are missing in the DOM');
         return;
     }
+    if (elements.footerShuffleBtn) elements.footerShuffleBtn.addEventListener('click', toggleFooterShuffle);
     if (elements.btnPrevious) elements.btnPrevious.addEventListener('click', globalPrevious);
     elements.btnPlayPause.addEventListener('click', globalTogglePlayback);
     if (elements.btnNext) elements.btnNext.addEventListener('click', globalNext);
+    if (elements.footerLoopBtn) elements.footerLoopBtn.addEventListener('click', toggleFooterLoop);
     if (elements.btnClearQueue) elements.btnClearQueue.addEventListener('click', clearQueue);
     if (elements.trackFavoriteBtn) elements.trackFavoriteBtn.addEventListener('click', toggleCurrentTrackFavorite);
     if (elements.libraryShuffleBtn) elements.libraryShuffleBtn.addEventListener('click', toggleLibraryShuffle);
@@ -2531,6 +2535,75 @@ function getSelectedPlayableTrackIds() {
 function getSelectedDownloadTrackIds() {
     return getTrackIdsInLibraryOrder(state.library.selectedTrackIds || []);
 }
+function renderFooterModeButtons() {
+    const shuffleBtn = elements.footerShuffleBtn;
+    const loopBtn = elements.footerLoopBtn;
+    if (!shuffleBtn && !loopBtn) return;
+
+    if (window.__footerSource === 'spotify') {
+        const data = window.__spotifyLastData || {};
+        const caps = data.capabilities || {};
+        const hasMedia = !!(data.available && (data.title || data.artist || data.album || data.status !== 'Stopped'));
+        const showShuffle = hasMedia && !!caps.shuffle;
+        const showLoop = hasMedia && !!caps.loop;
+        if (shuffleBtn) {
+            shuffleBtn.classList.toggle('hidden', !showShuffle);
+            shuffleBtn.classList.toggle('active', showShuffle && !!data.shuffle);
+            shuffleBtn.disabled = !showShuffle || _spotifyCommandInFlight;
+            shuffleBtn.setAttribute('aria-pressed', showShuffle && data.shuffle ? 'true' : 'false');
+            shuffleBtn.title = data.shuffle ? 'Shuffle on' : 'Shuffle off';
+        }
+        if (loopBtn) {
+            const loopMode = String(data.loop || 'none');
+            const loopActive = loopMode !== 'none';
+            loopBtn.classList.toggle('hidden', !showLoop);
+            loopBtn.classList.toggle('active', showLoop && loopActive);
+            loopBtn.disabled = !showLoop || _spotifyCommandInFlight;
+            loopBtn.setAttribute('aria-pressed', showLoop && loopActive ? 'true' : 'false');
+            loopBtn.textContent = loopMode === 'track' ? '↻¹' : '↻';
+            loopBtn.title = loopMode === 'track' ? 'Repeat track' : (loopMode === 'playlist' ? 'Repeat playlist' : 'Repeat off');
+        }
+        return;
+    }
+
+    const track = state.playback.current_track;
+    const localActive = !!(track && track.source === 'local');
+    const queue = state.playback.queue || {};
+    const showShuffle = localActive && Number(queue.count || 0) > 1;
+    const showLoop = localActive;
+    if (shuffleBtn) {
+        shuffleBtn.classList.toggle('hidden', !showShuffle);
+        shuffleBtn.classList.toggle('active', showShuffle && !!state.library.shuffle);
+        shuffleBtn.disabled = !showShuffle || libraryModeRequestInFlight;
+        shuffleBtn.setAttribute('aria-pressed', showShuffle && state.library.shuffle ? 'true' : 'false');
+        shuffleBtn.title = state.library.shuffle ? 'Shuffle on' : 'Shuffle off';
+    }
+    if (loopBtn) {
+        loopBtn.classList.toggle('hidden', !showLoop);
+        loopBtn.classList.toggle('active', showLoop && !!state.library.loop);
+        loopBtn.disabled = !showLoop || libraryModeRequestInFlight;
+        loopBtn.setAttribute('aria-pressed', showLoop && state.library.loop ? 'true' : 'false');
+        loopBtn.textContent = '↻';
+        loopBtn.title = state.library.loop ? 'Repeat on' : 'Repeat off';
+    }
+}
+
+function toggleFooterShuffle() {
+    if (window.__footerSource === 'spotify') {
+        void spotifyCommand('shuffle');
+        return;
+    }
+    void toggleLibraryShuffle();
+}
+
+function toggleFooterLoop() {
+    if (window.__footerSource === 'spotify') {
+        void spotifyCommand('loop');
+        return;
+    }
+    void toggleLibraryLoop();
+}
+
 function renderLibraryModeButtons() {
     const localActive = !!(state.playback.current_track && state.playback.current_track.source === 'local');
     const queue = state.playback.queue || {};
@@ -2548,6 +2621,7 @@ function renderLibraryModeButtons() {
         elements.libraryLoopBtn.disabled = libraryModeRequestInFlight || !loopAvailable;
         elements.libraryLoopBtn.title = loopAvailable ? 'Loop queue or track' : 'Loop requires active local playback';
     }
+    renderFooterModeButtons();
 }
 
 async function toggleLibraryShuffle() {
@@ -14267,6 +14341,7 @@ function updateFooterForSpotify(data) {
         renderVolumeControlsFromActualVolume(data.volume);
     }
     if (!hasMedia) {
+        renderFooterModeButtons();
         setFooterProgressState(false);
         if (elements.btnPlayPause) {
             elements.btnPlayPause.disabled = true;
@@ -14360,6 +14435,7 @@ function updateFooterForSpotify(data) {
         elements.samplerateStatus.classList.toggle('hidden', !samplerateLine);
     }
     renderPeakWarningBadge(data.status === 'Playing');
+    renderFooterModeButtons();
 }
 
 // Spotify tab internal UI (cover, controls inside the tab)

@@ -12,7 +12,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=0.9.11">
     <link rel="manifest" href="/static/site.webmanifest?v=0.9.11">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/static/style.css?v=0.9.24">
+    <link rel="stylesheet" href="/static/style.css?v=0.9.25">
 </head>
 <body>
     <!-- Offline indicator -->
@@ -345,8 +345,6 @@
                         </p>
                     </div>
                     <div class="library-toolbar">
-                        <button id="library-shuffle" class="btn-secondary btn-icon-toggle" title="Shuffle queue" aria-label="Shuffle queue" aria-pressed="false">🔀</button>
-                        <button id="library-loop" class="btn-secondary btn-icon-toggle" title="Loop queue" aria-label="Loop queue" aria-pressed="false">🔁</button>
                         <button id="toggle-import" class="btn-secondary">Import</button>
                         <button id="refresh-library" class="btn-secondary btn-icon" title="Refresh library" aria-label="Refresh library">⟳</button>
                         <button id="download-selected-tracks" class="btn-secondary btn-icon hidden" title="Download selected" aria-label="Download selected"><span class="btn-spinner" aria-hidden="true"></span>⬇</button>
@@ -1259,9 +1257,11 @@
 
         <div class="playback-center">
             <div class="transport-controls">
+                <button id="footer-shuffle" class="control-btn control-btn-mode hidden" type="button" aria-label="Shuffle" aria-pressed="false" title="Shuffle">⇄</button>
                 <button id="btn-previous" class="control-btn control-btn-secondary hidden" disabled aria-label="Previous">⏮</button>
                 <button id="btn-play-pause" class="control-btn" disabled aria-label="Play or pause">▶</button>
                 <button id="btn-next" class="control-btn control-btn-secondary hidden" disabled aria-label="Next">⏭</button>
+                <button id="footer-loop" class="control-btn control-btn-mode hidden" type="button" aria-label="Repeat" aria-pressed="false" title="Repeat">↻</button>
                 <button id="btn-clear-queue" class="control-btn control-btn-clear hidden" disabled title="Clear queue" aria-label="Clear queue">✕</button>
             </div>
             <div class="seek-row hidden">
@@ -1281,16 +1281,13 @@
         </div>
 
         <div id="playback-meter" class="playback-meter" aria-label="Stereo output level">
-            <div class="meter-topline">
-                <span class="meter-caption">LEVEL</span>
-                <div id="output-level-badge" class="output-level-badge hidden">-60 dB</div>
-            </div>
             <div class="meter-row" data-channel="left">
                 <span class="meter-channel">L</span>
                 <span id="meter-l" class="meter-segments" aria-hidden="true">
                     <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
                 </span>
             </div>
+            <div id="output-level-badge" class="output-level-badge hidden">-60 dB</div>
             <div class="meter-row" data-channel="right">
                 <span class="meter-channel">R</span>
                 <span id="meter-r" class="meter-segments" aria-hidden="true">
@@ -1354,6 +1351,6 @@
     <script src="/static/measurement_dsp.js?v=0.9.11"></script>
     <script src="/static/hybrid_measurement.js?v=0.9.11"></script>
     <script src="/static/radio.js?v=0.9.11"></script>
-    <script src="/static/app.js?v=0.9.20"></script>
+    <script src="/static/app.js?v=0.9.21"></script>
 </body>
 </html>

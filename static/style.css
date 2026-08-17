@@ -6311,3 +6311,128 @@ body {
         display: none;
     }
 }
+
+/* ============================================================
+   Playback footer refinement — compact meter + secondary modes
+   ============================================================ */
+@media (min-width: 1181px) {
+    .playback-bar {
+        grid-template-columns: minmax(240px, 1fr) minmax(430px, 1.8fr) minmax(126px, .5fr) minmax(245px, .9fr);
+        gap: clamp(.9rem, 1.45vw, 1.45rem);
+    }
+}
+
+.transport-controls {
+    gap: .34rem;
+}
+.control-btn-mode {
+    width: 32px;
+    height: 32px;
+    border-color: transparent;
+    background: transparent;
+    color: rgba(160,160,172,.72);
+    box-shadow: none;
+    font-size: .9rem;
+    font-weight: 700;
+}
+.control-btn-mode:hover:not(:disabled),
+.control-btn-mode:focus-visible:not(:disabled) {
+    color: var(--text-primary);
+    border-color: rgba(255,255,255,.065);
+    background: rgba(255,255,255,.04);
+    box-shadow: none;
+}
+.control-btn-mode.active {
+    color: var(--accent);
+    border-color: rgba(110,231,183,.16);
+    background: rgba(110,231,183,.055);
+}
+.control-btn-mode:disabled {
+    opacity: .28;
+}
+
+/* The level readout is centered between the L/R rows instead of sitting
+   above them. This keeps the meter visually quiet and vertically centered. */
+.playback-meter {
+    display: grid;
+    grid-template-columns: .65rem minmax(0, 1fr) auto;
+    grid-template-rows: repeat(2, 7px);
+    align-content: center;
+    align-items: center;
+    column-gap: .38rem;
+    row-gap: .34rem;
+    width: 100%;
+    max-width: 170px;
+    justify-self: center;
+    align-self: center;
+    opacity: .48;
+}
+.playback-meter.is-active { opacity: .94; }
+.meter-topline,
+.meter-caption { display: none !important; }
+.meter-row { display: contents; }
+.meter-row[data-channel="left"] .meter-channel { grid-column: 1; grid-row: 1; }
+.meter-row[data-channel="left"] .meter-segments { grid-column: 2; grid-row: 1; }
+.meter-row[data-channel="right"] .meter-channel { grid-column: 1; grid-row: 2; }
+.meter-row[data-channel="right"] .meter-segments { grid-column: 2; grid-row: 2; }
+.meter-channel {
+    font-size: .54rem;
+    color: rgba(160,160,172,.68);
+    text-align: center;
+}
+.meter-segments {
+    min-width: 84px;
+    max-width: 118px;
+    gap: 2px;
+    align-self: center;
+}
+.meter-segments i {
+    height: 5px;
+    border-radius: 999px;
+}
+.output-level-badge {
+    grid-column: 3;
+    grid-row: 1 / 3;
+    align-self: center;
+    min-width: 3.2rem;
+    padding-left: .18rem;
+    justify-content: flex-start;
+    font-size: .62rem;
+    color: rgba(160,160,172,.78);
+}
+
+.volume-control {
+    grid-template-columns: 24px minmax(132px, 1fr) 2.55rem;
+    gap: .52rem;
+}
+.volume-display {
+    padding-right: .05rem;
+}
+
+@media (max-width: 1180px) {
+    .playback-meter {
+        max-width: 152px;
+        justify-self: center;
+    }
+    .meter-segments { min-width: 78px; max-width: 108px; }
+    .output-level-badge { min-width: 2.9rem; font-size: .59rem; }
+    .transport-controls { gap: .28rem; }
+    .control-btn-mode { width: 30px; height: 30px; font-size: .84rem; }
+}
+
+@media (max-width: 900px) {
+    .playback-meter {
+        width: 136px;
+        max-width: 136px;
+        justify-self: end;
+    }
+    .output-level-badge { display: none !important; }
+    .meter-segments { min-width: 88px; max-width: 104px; }
+}
+
+@media (max-width: 600px) {
+    .transport-controls { gap: .36rem; }
+    .control-btn-mode { width: 30px; height: 30px; }
+    .playback-meter { width: 104px; max-width: 104px; }
+    .meter-segments { min-width: 72px; max-width: 86px; gap: 1.5px; }
+}
