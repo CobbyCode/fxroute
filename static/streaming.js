@@ -55,6 +55,7 @@
             favoritesType: 'tracks',
             detailId: null,
             detailTitle: '',
+            contentKey: null,   // availability/auth mode last rendered into .streaming-content
         },
     };
 
@@ -562,17 +563,29 @@
     // TIDAL content (auth + catalog). Qobuz/Spotify have no catalog here yet.
     // -----------------------------------------------------------------------
     function renderTidalContent(entry, data) {
+        // Provider content must not be rebuilt on every status refresh: a
+        // poll/transport/playback nudge calls renderProvider frequently, and
+        // rebuilding here would wipe the user's search/favorites/playlists
+        // view and any in-progress login input. Rebuild only when the content
+        // mode actually changes (first render, availability, or login state);
+        // navigation between browse sections renders directly via
+        // renderTidalBrowse() / renderTidalLogin().
         const els = entry.els;
-        if (data.available === false || data.installed !== true) {
+        const unavailable = data.available === false || data.installed !== true;
+        const key = unavailable ? 'unavailable' : (data.authenticated === true ? 'browse' : 'login');
+        if (key === 'unavailable') {
             els.content.hidden = true;
+            state.tidal.contentKey = key;
             return;
         }
         els.content.hidden = false;
-        if (data.authenticated !== true) {
+        if (state.tidal.contentKey === key) return;
+        state.tidal.contentKey = key;
+        if (data.authenticated === true) {
+            renderTidalBrowse(entry);
+        } else {
             renderTidalLogin(entry);
-            return;
         }
-        renderTidalBrowse(entry);
     }
 
     // -- login -----------------------------------------------------------------
@@ -921,7 +934,7 @@
         state.tidal.detailId = id;
         state.tidal.detailTitle = title;
         const entry = entryFor('tidal');
-        if (entry) renderTidalContent(entry, state.lastData.tidal || {});
+        if (entry) renderTidalBrowse(entry);
     }
 
     function openTidalPlaylist(id, title) {
@@ -929,7 +942,7 @@
         state.tidal.detailId = id;
         state.tidal.detailTitle = title;
         const entry = entryFor('tidal');
-        if (entry) renderTidalContent(entry, state.lastData.tidal || {});
+        if (entry) renderTidalBrowse(entry);
     }
 
     function renderTidalAlbum(content) {
