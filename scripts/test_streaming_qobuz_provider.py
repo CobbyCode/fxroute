@@ -41,7 +41,7 @@ def _now_playing_payload(**overrides):
         "track": {
             "id": 42, "title": "T", "artist": "A", "album": "L",
             "duration_secs": 200, "artwork_url": "https://art/q.jpg",
-            "hires": True, "bit_depth": 24, "sample_rate": 96000.0, "source": "qobuz",
+            "hires": True, "bit_depth": 24, "sample_rate": 96.0, "source": "qobuz",
         },
     }
     payload.update(overrides)
@@ -112,12 +112,29 @@ class QobuzStatusNormalizationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status["artUrl"], "https://art/q.jpg")
         self.assertEqual(status["duration"], 200.0)
         self.assertEqual(status["position"], 30.0)
-        self.assertEqual(status["sample_rate"], 96000)
+        self.assertEqual(status["sample_rate"], 96000)  # 96.0 kHz -> Hz
         self.assertEqual(status["bit_depth"], 24)
         self.assertEqual(status["audio_format"], "flac")
         self.assertTrue(status["shuffle"])
         self.assertEqual(status["loop"], "playlist")
         self.assertEqual(status["volume"], 80)
+
+    async def test_khz_sample_rate_normalized_and_lowres_still_flac(self):
+        provider = QobuzProvider()
+        payload = _now_playing_payload(
+            track={"id": 7, "title": "N", "artist": "X", "album": "Y",
+                   "duration_secs": 200, "artwork_url": "", "hires": False,
+                   "bit_depth": 16, "sample_rate": 44.1, "source": "qobuz"},
+        )
+        getter = _fake_get({"/api/status": _status_payload(), "/api/now-playing": payload})
+        with mock.patch("streaming.qobuz.backend.qbzd_installed", return_value=True), \
+             mock.patch("streaming.qobuz.backend.is_reachable", new=_reachable(True)), \
+             mock.patch("streaming.qobuz.backend.get_json", side_effect=getter):
+            status = await provider.status()
+
+        self.assertEqual(status["sample_rate"], 44100)  # 44.1 kHz -> Hz
+        self.assertEqual(status["bit_depth"], 16)
+        self.assertEqual(status["audio_format"], "flac")
 
     async def test_unauthenticated_state_falls_back_to_status_summary(self):
         provider = QobuzProvider()
@@ -135,7 +152,7 @@ class QobuzStatusNormalizationTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(status["connected"])
         self.assertEqual(status["status"], "Playing")
         self.assertEqual(status["trackId"], "")
-        self.assertEqual(status["sample_rate"], 96000)  # from /api/status audio
+        self.assertEqual(status["sample_rate"], 96000)  # from /api/status audio (Hz)
         self.assertEqual(status["bit_depth"], 24)
 
     async def test_unavailable_qbzd_reports_stopped_without_network(self):

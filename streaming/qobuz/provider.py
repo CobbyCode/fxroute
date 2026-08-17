@@ -34,6 +34,27 @@ def _int_or_none(value: Any) -> int | None:
         return None
 
 
+def _sample_rate_hz(value: Any) -> int | None:
+    """Normalize a qbzd sample-rate value to Hz.
+
+    ``/api/now-playing`` reports track sample rates in kHz (44.1, 88.2, 192)
+    while ``/api/status`` reports the negotiated stream rate in Hz (44100).
+    Values below 1000 are kHz and are scaled up; audio sample rates never
+    legitimately fall below 1000 Hz, so the distinction is unambiguous.
+    """
+    try:
+        if value is None:
+            return None
+        rate = float(value)
+    except (TypeError, ValueError):
+        return None
+    if rate <= 0:
+        return None
+    if rate < 1000:
+        rate *= 1000
+    return int(rate)
+
+
 def _id_str(value: Any) -> str:
     return "" if value is None else str(value)
 
@@ -144,9 +165,11 @@ class QobuzProvider(StreamingProvider):
             result["trackId"] = _id_str(track.get("id"))
             result["artUrl"] = track.get("artwork_url") or ""
             result["duration"] = float(track.get("duration_secs") or 0)
-            result["sample_rate"] = _int_or_none(track.get("sample_rate"))
+            result["sample_rate"] = _sample_rate_hz(track.get("sample_rate"))
             result["bit_depth"] = _int_or_none(track.get("bit_depth"))
-            result["audio_format"] = "flac" if track.get("hires") else None
+            # Qobuz streams FLAC at every quality tier; the ``hires`` flag
+            # only distinguishes 16/24-bit (reported as ``bit_depth``).
+            result["audio_format"] = "flac"
         else:
             result["title"] = status_playback.get("title") or ""
             result["artist"] = status_playback.get("artist") or ""
@@ -166,7 +189,7 @@ class QobuzProvider(StreamingProvider):
         # The negotiated stream rate/depth from /api/status audio fill any
         # track-level gap (both are present while a stream is open).
         if result["sample_rate"] is None:
-            result["sample_rate"] = _int_or_none(audio.get("sample_rate"))
+            result["sample_rate"] = _sample_rate_hz(audio.get("sample_rate"))
         if result["bit_depth"] is None:
             result["bit_depth"] = _int_or_none(audio.get("bit_depth"))
 
