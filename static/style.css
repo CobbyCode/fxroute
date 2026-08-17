@@ -7126,3 +7126,222 @@ body {
         max-width: 57px;
     }
 }
+
+/* ============================================================
+   Playback footer refinement v5 — anchored volume + spacing pass
+   ============================================================ */
+/* Desktop: return the volume cluster to the known-good geometry from the
+   uploaded reference. The percentage position is the anchor; the slider
+   grows only inside its own bounded grid track and can no longer push the
+   readout outside the footer. */
+@media (min-width: 1181px) {
+    .playback-bar {
+        grid-template-columns:
+            minmax(220px, .95fr)
+            minmax(390px, 1.65fr)
+            minmax(145px, .62fr)
+            minmax(220px, .82fr);
+        column-gap: clamp(.9rem, 1.35vw, 1.35rem);
+    }
+
+    .playback-center {
+        gap: .68rem;
+    }
+    .transport-controls {
+        min-height: 46px;
+        margin-top: -1px;
+    }
+    .control-btn {
+        width: 46px;
+        height: 46px;
+        font-size: 1.04rem;
+    }
+    .control-btn-secondary {
+        width: 34px;
+        height: 34px;
+    }
+    .control-btn-mode,
+    .control-btn-clear {
+        width: 28px;
+        height: 28px;
+    }
+
+    .playback-bar .controls {
+        width: 100%;
+        max-width: none;
+        min-width: 0;
+        justify-self: stretch;
+        padding-right: 0;
+    }
+    .volume-control {
+        width: 100%;
+        min-width: 0;
+        grid-template-columns: 24px minmax(130px, 1fr) 2.5rem;
+        column-gap: .42rem;
+    }
+    .volume-slider {
+        width: 100%;
+        min-width: 0;
+    }
+    .volume-display {
+        width: 2.5rem;
+        min-width: 2.5rem;
+        justify-content: flex-end;
+        text-align: right;
+        padding: 0;
+    }
+}
+
+/* Tablet / compact desktop: give the transport real vertical breathing room,
+   keep the album/queue chip inside the track-copy column, and preserve a
+   compact right-side meter/volume stack. */
+@media (min-width: 701px) and (max-width: 1180px) {
+    .playback-bar {
+        min-height: 126px;
+        grid-template-columns:
+            minmax(250px, .96fr)
+            minmax(280px, 1.18fr)
+            minmax(190px, .78fr);
+        grid-template-rows: minmax(50px, auto) minmax(46px, auto);
+        grid-template-areas:
+            "track transport meter"
+            "track transport volume";
+        column-gap: clamp(.72rem, 1.2vw, 1rem);
+        row-gap: .58rem;
+        padding: .8rem .9rem .84rem;
+    }
+
+    .playback-bar .track-info {
+        min-width: 0;
+    }
+    .track-copy,
+    .track-copy-main,
+    .playback-meta-row {
+        min-width: 0;
+        max-width: 100%;
+    }
+    .playback-meta-row {
+        overflow: hidden;
+    }
+    .samplerate-status {
+        max-width: calc(100% - 3rem);
+        flex: 1 1 auto;
+    }
+    .queue-status {
+        flex: 0 0 auto;
+    }
+
+    .playback-center {
+        align-self: center;
+        gap: .68rem;
+    }
+    .transport-controls {
+        min-height: 42px;
+        margin: 0;
+    }
+    .control-btn {
+        width: 42px;
+        height: 42px;
+        font-size: .96rem;
+    }
+    .control-btn-secondary {
+        width: 32px;
+        height: 32px;
+    }
+    .control-btn-mode,
+    .control-btn-clear {
+        width: 26px;
+        height: 26px;
+    }
+    .seek-row {
+        min-width: 0;
+        margin-top: .02rem;
+    }
+
+    .playback-meter {
+        align-self: end;
+        margin-bottom: .2rem;
+    }
+    .playback-bar .controls {
+        align-self: start;
+        margin-top: .2rem;
+    }
+}
+
+/* Phone: keep the six-segment stereo meter, but give transport/seek/volume
+   more air. Seek and volume use identical outer gutters so both slider tracks
+   share the same center line and width. */
+@media (max-width: 700px) {
+    .playback-bar {
+        row-gap: .66rem;
+        padding: .76rem .7rem .82rem;
+    }
+
+    .playback-center {
+        gap: .72rem;
+    }
+    .transport-controls {
+        min-height: 40px;
+        margin: 0;
+    }
+    .control-btn {
+        width: 40px;
+        height: 40px;
+        font-size: .92rem;
+    }
+    .control-btn-secondary {
+        width: 29px;
+        height: 29px;
+    }
+    .control-btn-mode,
+    .control-btn-clear {
+        width: 24px;
+        height: 24px;
+    }
+
+    .seek-row,
+    .volume-control {
+        width: 100%;
+        grid-template-columns: 2.55rem minmax(0, 1fr) 2.55rem;
+        column-gap: .4rem;
+    }
+    .seek-time {
+        text-align: center;
+    }
+    .seek-slider,
+    .volume-slider {
+        width: 100%;
+        min-width: 0;
+    }
+    .volume-icon {
+        justify-self: center;
+    }
+    .volume-display {
+        width: 2.55rem;
+        min-width: 2.55rem;
+        justify-content: flex-end;
+        text-align: right;
+        padding-right: .08rem;
+    }
+    .playback-bar .controls {
+        width: min(100%, 430px);
+        justify-self: center;
+        margin-top: 0;
+    }
+}
+
+@media (max-width: 360px) {
+    .playback-bar {
+        row-gap: .6rem;
+        padding-inline: .6rem;
+    }
+    .seek-row,
+    .volume-control {
+        grid-template-columns: 2.35rem minmax(0, 1fr) 2.35rem;
+        column-gap: .34rem;
+    }
+    .volume-display {
+        width: 2.35rem;
+        min-width: 2.35rem;
+    }
+}
