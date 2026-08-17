@@ -54,6 +54,34 @@ class StreamingHiddenCssTests(unittest.TestCase):
         self.assertIn("els.nowPlaying.hidden = true", streaming_js)
         self.assertIn("els.empty.hidden = false", streaming_js)
 
+    def test_provider_layout_has_compact_desktop_and_footer_safe_area(self):
+        self.assertIsNotNone(
+            re.search(
+                r"\.streaming-now-playing:not\(\.streaming-now-playing-compact\).*?max-width:",
+                CSS,
+                re.DOTALL,
+            ),
+            "Spotify/Qobuz now-playing needs a bounded desktop width",
+        )
+        self.assertIsNotNone(
+            re.search(
+                r"\.streaming-now-playing:not\(\.streaming-now-playing-compact\).*?margin:\s*[^;]+auto",
+                CSS,
+                re.DOTALL,
+            ),
+            "Spotify/Qobuz now-playing must be horizontally centered",
+        )
+        self.assertIsNotNone(
+            re.search(
+                r"\.streaming-now-playing-compact.*?\.streaming-controls",
+                CSS,
+                re.DOTALL,
+            ),
+            "Tidal compact now-playing must suppress duplicated transport controls",
+        )
+        self.assertIn("padding-bottom: var(--playback-footer-space)", CSS)
+        self.assertIn(".streaming-content", CSS)
+
 
 if __name__ == "__main__":
     unittest.main()

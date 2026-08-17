@@ -402,7 +402,7 @@ body {
 }
 /* Tab content */
 .tab-content {
-    padding: 1rem 1.25rem 1.5rem;
+    padding: 1rem 1.25rem calc(1.5rem + var(--playback-footer-space));
     max-width: 1100px;
     margin: 0 auto;
     min-height: 350px;
@@ -5365,7 +5365,7 @@ input[type="number"]::-webkit-outer-spin-button {
         font-size: 0.82rem;
     }
     .tab-content {
-        padding: 0.75rem 0.75rem 1rem;
+        padding: 0.75rem 0.75rem calc(1rem + var(--playback-footer-space));
     }
     .radio-panel {
         padding: 0.9rem;
@@ -6316,7 +6316,7 @@ body {
 .tab-btn.active .tab-glyph { color: var(--accent); }
 .tab-content {
     max-width: 1500px;
-    padding: 1.35rem clamp(1rem,2.2vw,2rem) 2rem;
+    padding: 1.35rem clamp(1rem,2.2vw,2rem) calc(2rem + var(--playback-footer-space));
 }
 .radio-panel {
     padding: clamp(1rem,1.7vw,1.45rem);
@@ -6394,7 +6394,7 @@ body {
     .brand-subtitle { font-size: .52rem; }
     .tabs { justify-content: space-between; }
     .tab-btn { flex: 1 0 auto; min-width: 86px; min-height: 44px; padding: .48rem .62rem; }
-    .tab-content { padding: 1rem .75rem 1.5rem; }
+    .tab-content { padding: 1rem .75rem calc(1.5rem + var(--playback-footer-space)); }
     .radio-panel { padding: .9rem; border-radius: 18px; }
     .radio-panel-header { gap: .65rem; }
     .stations-grid { grid-template-columns: repeat(2, minmax(0,1fr)); gap: .72rem; }
@@ -7054,12 +7054,12 @@ body {
    Streaming provider tabs (Spotify / Qobuz / TIDAL)
    ========================================================================= */
 .streaming-shell {
-    padding: 0.5rem 0.25rem;
+    padding: 0.7rem 0.25rem;
 }
 .streaming-provider {
     display: flex;
     flex-direction: column;
-    gap: 0.9rem;
+    gap: 0.65rem;
 }
 
 /* The shared hidden contract for every streaming component: the per-element
@@ -7071,10 +7071,13 @@ body {
 }
 
 .streaming-status-line {
-    font-size: 0.74rem;
+    align-self: center;
+    width: min(100%, 760px);
+    padding: 0 0.35rem;
+    font-size: 0.7rem;
     color: var(--text-muted);
     letter-spacing: 0.03em;
-    text-align: center;
+    text-align: left;
     min-height: 1em;
 }
 
@@ -7084,7 +7087,9 @@ body {
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    padding: 3rem 1.25rem;
+    width: min(100%, 760px);
+    margin: 0 auto;
+    padding: 1.5rem 1.25rem;
     text-align: center;
     background: var(--bg-surface);
     border: 1px solid var(--border);
@@ -7119,20 +7124,50 @@ body {
 
 /* Now-playing card */
 .streaming-now-playing {
+    width: 100%;
     background: var(--bg-surface);
     border: 1px solid var(--border);
     border-top: 3px solid var(--accent);
     border-radius: var(--radius-lg);
-    padding: 1.25rem;
+    padding: 1rem;
     display: grid;
-    grid-template-columns: 200px minmax(0, 1fr);
+    grid-template-columns: 164px minmax(0, 1fr);
     grid-template-areas:
         "cover meta"
         "cover controls"
         "cover secondary"
         "progress progress";
-    gap: 0.85rem;
+    gap: 0.75rem;
     align-items: center;
+}
+.streaming-now-playing:not(.streaming-now-playing-compact) {
+    max-width: 760px;
+    margin: 0 auto;
+}
+.streaming-now-playing-compact {
+    max-width: 760px;
+    margin: 0 auto;
+    grid-template-columns: 64px minmax(0, 1fr);
+    grid-template-areas: "cover meta";
+    padding: 0.7rem 0.85rem;
+    border-top-width: 1px;
+    gap: 0.75rem;
+}
+.streaming-now-playing-compact .streaming-cover {
+    width: 64px;
+    height: 64px;
+    box-shadow: none;
+}
+.streaming-now-playing-compact .streaming-meta {
+    align-self: center;
+}
+.streaming-now-playing-compact .streaming-controls,
+.streaming-now-playing-compact .streaming-secondary,
+.streaming-now-playing-compact .streaming-progress-row {
+    display: none !important;
+}
+.streaming-now-playing-compact .streaming-quality {
+    margin-top: 0.3rem;
 }
 .streaming-cover-wrap {
     grid-area: cover;
@@ -7140,8 +7175,8 @@ body {
     justify-content: center;
 }
 .streaming-cover {
-    width: 200px;
-    height: 200px;
+    width: 164px;
+    height: 164px;
     border-radius: var(--radius-md);
     object-fit: cover;
     background: var(--bg-elevated);
@@ -7316,6 +7351,7 @@ body {
     display: flex;
     flex-direction: column;
     gap: 0.9rem;
+    width: 100%;
 }
 
 /* Auth */
@@ -7364,28 +7400,42 @@ body {
 .streaming-browse { display: flex; flex-direction: column; gap: 0.75rem; }
 .streaming-browse-tabs {
     display: flex;
-    gap: 0.35rem;
+    gap: 0.3rem;
     flex-wrap: wrap;
-    border-bottom: 1px solid var(--border);
-    padding-bottom: 0.4rem;
+    border-bottom: 1px solid var(--border-strong);
+    padding-bottom: 0.5rem;
 }
 .streaming-browse-tab {
     background: transparent;
-    border: none;
-    color: var(--text-muted);
-    font-size: 0.85rem;
-    font-weight: 600;
-    padding: 0.4rem 0.7rem;
+    border: 1px solid transparent;
+    color: var(--text-secondary);
+    font-size: 0.88rem;
+    font-weight: 650;
+    padding: 0.45rem 0.8rem;
     border-radius: var(--radius-sm);
     cursor: pointer;
     transition: color 0.15s, background 0.15s;
 }
 .streaming-browse-tab:hover { color: var(--text-secondary); background: var(--bg-hover); }
-.streaming-browse-tab.is-active { color: var(--accent); background: var(--accent-dim); }
+.streaming-browse-tab.is-active { color: var(--accent); background: var(--accent-dim); border-color: rgba(110, 231, 183, 0.2); }
 
 .streaming-search { display: flex; flex-direction: column; gap: 0.7rem; }
-.streaming-search-row { display: flex; gap: 0.5rem; align-items: center; }
-.streaming-search-input { flex: 1; min-width: 0; }
+.streaming-search-row { display: flex; gap: 0.5rem; align-items: center; width: min(100%, 760px); }
+.streaming-search-input {
+    flex: 1;
+    min-width: 0;
+    height: 44px;
+    padding: 0.55rem 0.8rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-input);
+    color: var(--text-primary);
+    font: inherit;
+    outline: none;
+    transition: border-color 0.15s var(--ease), box-shadow 0.15s var(--ease);
+}
+.streaming-search-input::placeholder { color: var(--text-muted); }
+.streaming-search-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-dim); }
 
 .streaming-chip-row { display: flex; gap: 0.35rem; flex-wrap: wrap; }
 .streaming-chip {
@@ -7393,8 +7443,8 @@ body {
     border: 1px solid var(--border);
     color: var(--text-muted);
     border-radius: 999px;
-    padding: 0.28rem 0.75rem;
-    font-size: 0.8rem;
+    padding: 0.25rem 0.7rem;
+    font-size: 0.76rem;
     cursor: pointer;
     transition: color 0.15s, border-color 0.15s, background 0.15s;
 }
@@ -7498,7 +7548,7 @@ body {
     white-space: nowrap;
 }
 
-/* Mobile: stack the now-playing card vertically, keep touch targets large. */
+/* Mobile: stack Spotify/Qobuz, while Tidal keeps its compact summary row. */
 @media (max-width: 760px) {
     .streaming-now-playing {
         grid-template-columns: 1fr;
@@ -7516,6 +7566,18 @@ body {
     .streaming-artist,
     .streaming-album { text-align: center; }
     .streaming-cover { width: 160px; height: 160px; }
+    .streaming-now-playing-compact {
+        grid-template-columns: 56px minmax(0, 1fr);
+        grid-template-areas: "cover meta";
+        justify-items: stretch;
+        text-align: left;
+        padding: 0.65rem 0.7rem;
+    }
+    .streaming-now-playing-compact .streaming-cover { width: 56px; height: 56px; }
+    .streaming-now-playing-compact .streaming-meta { width: auto; align-self: center; }
+    .streaming-now-playing-compact .streaming-title,
+    .streaming-now-playing-compact .streaming-artist,
+    .streaming-now-playing-compact .streaming-album { text-align: left; }
     .streaming-result-album { display: none; }
     .streaming-btn,
     .streaming-result-play { min-width: 44px; min-height: 44px; }

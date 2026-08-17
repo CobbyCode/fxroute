@@ -214,10 +214,12 @@ const baseCaps = {
 
     const stopped = { installed: true, available: true, authenticated: true, capabilities: baseCaps, status: 'Stopped', title: '', artist: '', album: '', artUrl: '', shuffle: false, loop: 'none', position: 0, duration: 0 };
     sandbox.window.FXRouteStreaming.renderProvider('tidal', stopped);
-    assert.equal(shells.tidal.querySelector('.streaming-empty').hidden, false,
-        'stopped render must show the empty state');
+    assert.equal(shells.tidal.querySelector('.streaming-empty').hidden, true,
+        'idle TIDAL must not show a large empty player card');
     assert.equal(shells.tidal.querySelector('.streaming-now-playing').hidden, true,
-        'stopped render must hide the now-playing card (no ghost transport)');
+        'idle TIDAL must hide the now-playing card (no ghost transport)');
+    assert.ok(shells.tidal.querySelector('.streaming-content').innerHTML.includes('streaming-browse'),
+        'idle TIDAL must keep Browse immediately available');
 }
 
 console.log('PASS  scripts/test_streaming_ui_actions.js');

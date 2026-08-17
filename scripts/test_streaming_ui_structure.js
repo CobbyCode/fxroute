@@ -12,6 +12,7 @@ const path = require('path');
 
 const js = fs.readFileSync(path.join(__dirname, '..', 'static', 'streaming.js'), 'utf8');
 const html = fs.readFileSync(path.join(__dirname, '..', 'static', 'index.html'), 'utf8');
+const css = fs.readFileSync(path.join(__dirname, '..', 'static', 'style.css'), 'utf8');
 
 // --- capability-gated rendering -------------------------------------------------
 // The shared now-playing card must read `caps.<name>` for every control
@@ -84,5 +85,33 @@ assert.ok(html.includes('/static/streaming.js?v='), 'index.html must include str
 assert.ok(js.includes('auth/pkce'), 'PKCE login endpoint used');
 assert.ok(js.includes('auth/device'), 'device login endpoint used');
 assert.ok(js.includes('Device login — limited to AAC 320 kbps'), 'device login is labelled as limited');
+
+// --- streaming UI hierarchy --------------------------------------------------
+assert.ok(js.includes("tidal: { name: 'Tidal', canConnect: true, catalog: true }"),
+    'Tidal visible provider name and catalog role must be explicit');
+assert.ok(js.includes('streaming-now-playing-compact'),
+    'Tidal now-playing must have a compact presentation state');
+assert.ok(js.includes("state.tidal.searchQuery = query"),
+    'executed Tidal searches must record the query');
+assert.ok(js.includes("state.tidal.searchQuery = ''"),
+    'clearing Tidal search must reset the executed query');
+assert.ok(js.includes("Search Tidal for music."),
+    'Tidal search must have a neutral initial/cleared state');
+assert.ok(js.includes("results.innerHTML = '<p class=\"streaming-note\">Search Tidal for music.</p>'"),
+    'empty Tidal search must remove old results and show the neutral state');
+
+// The compact Tidal card must not duplicate the global footer transport.
+const compactNowPlaying = js.slice(js.indexOf('function renderNowPlaying'), js.indexOf('function showEmpty'));
+assert.ok(compactNowPlaying.includes('meta.catalog'),
+    'catalog providers must use the compact now-playing path');
+
+// The served navigation changes visible copy only, not the provider id.
+assert.ok(html.includes('data-tab="tidal"') && html.includes('<span>Tidal</span>'),
+    'Tidal navigation must use title case while retaining its tidal tab id');
+assert.ok(!html.includes('<span>TIDAL</span>'), 'served navigation must not use all-caps TIDAL');
+
+// Footer clearance is part of the streaming content layout contract.
+assert.ok(css.includes('.tab-content') && css.includes('padding: 1rem 1.25rem calc(1.5rem + var(--playback-footer-space))'),
+    'tab content must reserve the centralized footer safe area');
 
 console.log('PASS  scripts/test_streaming_ui_structure.js');

@@ -36,7 +36,7 @@
     const PROVIDER_META = {
         spotify: { name: 'Spotify', canConnect: false },
         qobuz: { name: 'Qobuz', canConnect: false },
-        tidal: { name: 'TIDAL', canConnect: true },
+        tidal: { name: 'Tidal', canConnect: true, catalog: true },
     };
 
     const POLL_INTERVAL_MS = 2000;
@@ -51,6 +51,7 @@
         tidal: {
             view: null,         // 'login' | 'browse' | 'album' | 'playlist'
             searchQuery: '',
+            searchExecuted: false,
             searchType: 'tracks',
             favoritesType: 'tracks',
             detailId: null,
@@ -241,6 +242,21 @@
         const els = entry.els;
         const caps = data.capabilities || {};
         const meta = PROVIDER_META[providerId] || { name: entry.providerLabel() || providerId, canConnect: false };
+        const catalogProvider = meta.catalog === true;
+        els.nowPlaying.classList.toggle('streaming-now-playing-compact', catalogProvider);
+
+        // Catalog providers keep browse/search available and do not show a
+        // large empty player when idle, disconnected, or unavailable.
+        if (catalogProvider && (
+            data.installed !== true ||
+            data.available === false ||
+            data.authenticated === false ||
+            ((data.status === 'Stopped' || !data.status) && !data.title)
+        )) {
+            els.empty.hidden = true;
+            els.nowPlaying.hidden = true;
+            return;
+        }
 
         // Not installed / not available.
         if (data.installed !== true) {
@@ -757,7 +773,7 @@
                     chip('tracks', 'Tracks', true) + chip('albums', 'Albums', false) +
                     chip('artists', 'Artists', false) + chip('playlists', 'Playlists', false) +
                 '</div>' +
-                '<div class="streaming-results" id="tidal-search-results"></div>' +
+                '<div class="streaming-results" id="tidal-search-results"><p class="streaming-note">Search Tidal for music.</p></div>' +
             '</div>';
 
         body.querySelectorAll('#tidal-search-types .streaming-chip').forEach((chipEl) => {
@@ -769,8 +785,15 @@
 
         const doSearch = async () => {
             const query = (body.querySelector('#tidal-search-input').value || '').trim();
-            if (!query) return;
             const results = body.querySelector('#tidal-search-results');
+            if (!query) {
+                state.tidal.searchQuery = '';
+                state.tidal.searchExecuted = false;
+                results.innerHTML = '<p class="streaming-note">Search Tidal for music.</p>';
+                return;
+            }
+            state.tidal.searchQuery = query;
+            state.tidal.searchExecuted = true;
             results.innerHTML = '<p class="streaming-note">Searching…</p>';
             try {
                 const resp = await fetch('/api/streaming/tidal/search?q=' + encodeURIComponent(query) + '&types=' + encodeURIComponent(state.tidal.searchType) + '&limit=25');
@@ -782,7 +805,16 @@
             }
         };
         body.querySelector('#tidal-search-btn').addEventListener('click', doSearch);
-        body.querySelector('#tidal-search-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') doSearch(); });
+        body.querySelector('#tidal-search-input').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                doSearch();
+            } else if (e.key === 'Escape') {
+                e.preventDefault();
+                body.querySelector('#tidal-search-input').value = '';
+                doSearch();
+            }
+        });
     }
 
     function chip(type, label, active) {
