@@ -287,7 +287,6 @@ body {
     color: var(--accent);
 }
 @media (max-width: 540px) {
-    .power-btn { width: 38px; height: 38px; }
     .power-btn-icon { width: 20px; height: 20px; }
 }
 /* ============================================================
@@ -1666,6 +1665,7 @@ body {
     font-size: 0.85rem;
     color: var(--text-muted);
     margin: 0.4rem 0 0.75rem;
+    animation: pulse 1.5s ease-in-out infinite;
 }
 .track-item {
     display: flex;
@@ -6291,6 +6291,12 @@ body {
     border-radius: 11px;
 }
 
+/* Mobile touch targets: keep the header power button tappable on narrow
+   screens (base 38px, refreshed at all widths below). */
+@media (max-width: 540px) {
+    .power-btn { width: 44px; height: 44px; }
+}
+
 @media (min-width: 940px) {
     .tabs {
         width: max-content;
@@ -6311,7 +6317,7 @@ body {
     .brand-title { font-size: 1.08rem; }
     .brand-subtitle { font-size: .52rem; }
     .tabs { justify-content: space-between; }
-    .tab-btn { flex: 1 0 auto; min-width: 86px; padding: .48rem .62rem; }
+    .tab-btn { flex: 1 0 auto; min-width: 86px; min-height: 44px; padding: .48rem .62rem; }
     .tab-content { padding: 1rem .75rem 1.5rem; }
     .radio-panel { padding: .9rem; border-radius: 18px; }
     .radio-panel-header { gap: .65rem; }
