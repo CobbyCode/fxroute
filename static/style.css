@@ -4539,12 +4539,15 @@ input[type="number"]::-webkit-outer-spin-button {
 .track-copy-main {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-rows: auto;
     align-items: center;
     gap: 0.55rem;
     min-width: 0;
 }
 .track-fallback,
 .playback-bar .song-info {
+    grid-column: 1;
+    grid-row: 1;
     min-width: 0;
     display: grid;
     gap: 0.08rem;
@@ -4579,6 +4582,8 @@ input[type="number"]::-webkit-outer-spin-button {
 .playback-bar .song-info .sc-artist { font-size: 0.76rem; font-weight: 590; }
 .playback-bar .song-info .sc-album { font-size: 0.7rem; color: var(--text-muted); }
 .track-favorite-btn {
+    grid-column: 2;
+    grid-row: 1;
     width: 34px;
     height: 34px;
     display: inline-grid;
