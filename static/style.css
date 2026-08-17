@@ -9,7 +9,7 @@
     --bg-input:      #1c1c20;
     --text-primary:   #ececf0;
     --text-secondary: #a0a0ac;
-    --text-muted:     #6e6e7a;
+    --text-muted:     #848490;
     --accent:        #6ee7b7;   /* fresh teal */
     --accent-dim:    rgba(110, 231, 183, 0.12);
     --accent-hover:  #4dd8a0;
@@ -232,7 +232,7 @@ body {
     min-width: 168px;
     background: var(--bg-elevated);
     border: 1px solid var(--border-strong);
-    border-radius: 12px;
+    border-radius: var(--radius-md);
     box-shadow: 0 18px 36px -18px var(--shadow);
     padding: 0.35rem;
     display: flex;
@@ -1247,7 +1247,7 @@ body {
     flex-direction: column;
     gap: 0.78rem;
     padding: 0.95rem;
-    border-radius: 16px;
+    border-radius: var(--radius-lg);
     border: 1px solid var(--border);
     background: rgba(255,255,255,0.015);
 }
@@ -2246,7 +2246,7 @@ body {
     min-height: 470px;
     overflow: hidden;
     border: 1px solid var(--border);
-    border-radius: 20px;
+    border-radius: var(--radius-xl);
     background:
         radial-gradient(circle at 50% 78%, color-mix(in srgb, var(--accent) 11%, transparent), transparent 34%),
         linear-gradient(160deg, var(--bg-elevated), var(--bg-surface));
@@ -2329,7 +2329,7 @@ body {
     width: 24px;
     height: 54px;
     border: 2px solid var(--border);
-    border-radius: 12px;
+    border-radius: var(--radius-md);
     background: var(--bg-surface);
 }
 .hybrid-seat-arm-left { left: 0; }
@@ -2363,7 +2363,7 @@ body {
     flex-direction: column;
     padding: 1.25rem;
     border: 1px solid var(--border);
-    border-radius: 20px;
+    border-radius: var(--radius-xl);
     background: var(--bg-surface);
 }
 .hybrid-progress-row { display: flex; justify-content: space-between; color: var(--text-secondary); font-size: 0.8rem; }
@@ -2372,7 +2372,7 @@ body {
 .hybrid-instruction.is-move::before { content: 'Move microphone'; display: block; margin-bottom: 0.3rem; color: var(--accent); font-size: 0.72rem; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; }
 .hybrid-instruction:not(.is-move):not(.is-complete)::before { content: 'Keep microphone here'; display: block; margin-bottom: 0.3rem; color: var(--success); font-size: 0.72rem; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; }
 .hybrid-active { color: var(--text-secondary); }
-.hybrid-status { min-height: 3rem; margin-top: auto; padding: 0.8rem; border-radius: 12px; background: var(--bg-elevated); color: var(--text-secondary); }
+.hybrid-status { min-height: 3rem; margin-top: auto; padding: 0.8rem; border-radius: var(--radius-md); background: var(--bg-elevated); color: var(--text-secondary); }
 .hybrid-status.is-busy::before {
     content: '';
     display: inline-block;
@@ -2969,7 +2969,7 @@ body {
         min-height: auto;
         max-height: calc(100dvh - 1rem);
         padding: 0.85rem;
-        border-radius: 16px;
+        border-radius: var(--radius-lg);
         overflow-x: hidden;
     }
 
@@ -3096,14 +3096,14 @@ body {
         width: min(100%, calc(100vw - 1rem));
         max-height: calc(100dvh - 1rem);
         padding: 0.85rem;
-        border-radius: 16px;
+        border-radius: var(--radius-lg);
     }
 
     .hybrid-measurement-dialog {
         width: min(100%, calc(100vw - 1rem));
         max-height: calc(100dvh - 1rem);
         padding: 0.85rem;
-        border-radius: 16px;
+        border-radius: var(--radius-lg);
     }
 
     .hybrid-wizard-grid { grid-template-columns: 1fr; }
@@ -3656,7 +3656,7 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     overflow: hidden;
     padding: 0.7rem;
     border: 1px solid rgba(148, 163, 184, 0.18);
-    border-radius: 8px;
+    border-radius: var(--radius-sm);
     background: rgba(15, 23, 42, 0.38);
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.025);
 }
@@ -3729,7 +3729,7 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     min-width: 0;
     padding: 0.48rem 0.65rem;
     border: 1px solid rgba(148, 163, 184, 0.14);
-    border-radius: 8px;
+    border-radius: var(--radius-sm);
     background: rgba(15, 23, 42, 0.28);
     text-align: center;
     color: var(--text-secondary);
@@ -4982,7 +4982,7 @@ input[type="number"]::-webkit-outer-spin-button {
         border-radius: 18px;
     }
     .playback-bar .track-info { grid-template-columns: 56px minmax(0,1fr); gap: .65rem; }
-    .playback-visual { width: 56px; height: 56px; border-radius: 12px; }
+    .playback-visual { width: 56px; height: 56px; border-radius: var(--radius-md); }
     .playback-bar .song-info .sc-album { display: none !important; }
     .track-favorite-btn { width: 32px; height: 32px; }
     .playback-meta-row { margin-top: -.05rem; }
@@ -5852,7 +5852,7 @@ input[type="number"]::-webkit-outer-spin-button {
         min-height: auto;
         max-height: calc(100dvh - 1rem);
         padding: 0.85rem;
-        border-radius: 16px;
+        border-radius: var(--radius-lg);
         overflow-x: hidden;
     }
 
@@ -6201,9 +6201,9 @@ body {
     backdrop-filter: blur(14px);
     -webkit-backdrop-filter: blur(14px);
 }
-.brand-mark { width: 42px; height: 42px; border-radius: 12px; }
+.brand-mark { width: 42px; height: 42px; border-radius: var(--radius-md); }
 .brand-title { font-size: 1.22rem; }
-.power-btn { width: 38px; height: 38px; border-radius: 12px; background: rgba(255,255,255,.03); }
+.power-btn { width: 38px; height: 38px; border-radius: var(--radius-md); background: rgba(255,255,255,.03); }
 .tabs {
     position: relative;
     z-index: 4;
@@ -6219,7 +6219,7 @@ body {
     min-height: 42px;
     padding: .52rem .9rem;
     color: #9999a6;
-    border-radius: 12px;
+    border-radius: var(--radius-md);
     font-size: .9rem;
     font-weight: 560;
 }
@@ -6501,13 +6501,13 @@ body {
         row-gap: .22rem;
         align-items: center;
         padding: .66rem .82rem;
-        border-radius: 20px; }
+        border-radius: var(--radius-xl); }
     .playback-bar .track-info { grid-template-columns: 60px minmax(0, 1fr);
         gap: .7rem;
         max-width: none; }
     .playback-visual { width: 60px;
         height: 60px;
-        border-radius: 12px; }
+        border-radius: var(--radius-md); }
     .track-copy { gap: .28rem; }
     .playback-center { width: 100%;
         gap: .32rem;
@@ -6965,5 +6965,15 @@ body {
         width: 100%;
         max-width: none;
         min-width: 0;
+    }
+}
+
+/* Respect reduced-motion preference: collapse animations and transitions. */
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
     }
 }
