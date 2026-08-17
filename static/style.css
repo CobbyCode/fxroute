@@ -51,6 +51,29 @@ html {
     -webkit-text-size-adjust: 100%;
     text-size-adjust: 100%;
 }
+/* Global dark scrollbars for the page and unscoped scroll areas. */
+* {
+    scrollbar-width: thin;
+    scrollbar-color: var(--bg-hover) transparent;
+}
+*::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+*::-webkit-scrollbar-track {
+    background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+    background: var(--bg-hover);
+    border-radius: 4px;
+}
+*::-webkit-scrollbar-thumb:hover {
+    background: var(--border-strong);
+}
+::selection {
+    background: rgba(110, 231, 183, 0.18);
+    color: var(--text-primary);
+}
 body {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", Roboto, Oxygen, Ubuntu, "Cantarell", sans-serif;
     background: var(--bg-primary);
@@ -240,6 +263,13 @@ body {
     gap: 0.1rem;
     z-index: 80;
 }
+/* Keep the open power menu above transient toasts: the header's
+   backdrop-filter creates a stacking context that would otherwise trap
+   the menu below the fixed toast layer. */
+.header:has(.power-menu:not(.hidden)) {
+    position: relative;
+    z-index: 1006;
+}
 .power-menu-item {
     display: flex;
     align-items: center;
@@ -302,6 +332,17 @@ body {
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
     scrollbar-width: none;
+}
+.tabs.can-scroll::after {
+    content: '';
+    position: sticky;
+    right: 0;
+    margin-left: auto;
+    flex-shrink: 0;
+    align-self: stretch;
+    width: 44px;
+    pointer-events: none;
+    background: linear-gradient(90deg, transparent, var(--bg-surface));
 }
 .tabs::-webkit-scrollbar { display: none; }
 .tab-btn {

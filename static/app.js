@@ -648,6 +648,10 @@ document.addEventListener('DOMContentLoaded', () => {
     try { updatePowerButtonConnectionState(); } catch(e) { console.error('updatePowerButtonConnectionState crashed:', e); }
     try { setupWebSocket(); } catch(e) { console.error('setupWebSocket crashed:', e); }
     try { setupTabNavigation(); } catch(e) { console.error('setupTabNavigation crashed:', e); }
+    try {
+        updateTabsScrollAffordance();
+        window.addEventListener('resize', updateTabsScrollAffordance);
+    } catch(e) { console.error('updateTabsScrollAffordance crashed:', e); }
     try { setupPlaybackControls(); } catch(e) { console.error('setupPlaybackControls crashed:', e); }
     try { initPlaybackFooterLayout(); } catch(e) { console.error('initPlaybackFooterLayout crashed:', e); }
     try { setupSettingsActions(); } catch(e) { console.error('setupSettingsActions crashed:', e); }
@@ -999,6 +1003,13 @@ function setupTabNavigation() {
             switchTab(tabId);
         });
     });
+}
+
+function updateTabsScrollAffordance() {
+    const nav = document.querySelector('.tabs');
+    if (!nav) return;
+    const canScroll = nav.scrollWidth > nav.clientWidth + 2;
+    nav.classList.toggle('can-scroll', canScroll);
 }
 
 function setupSettingsActions() {
@@ -14017,6 +14028,7 @@ function setSpotifyUiVisibility(installed) {
         tabPanel.hidden = !available;
         tabPanel.classList.toggle('hidden', !visible);
     }
+    updateTabsScrollAffordance();
     if (!visible && window.__visibleTab === 'spotify') {
         switchTab('radio');
     }
