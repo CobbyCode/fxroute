@@ -368,6 +368,31 @@ class QuietSourceContractTests(unittest.IsolatedAsyncioTestCase):
         player.set_volume.assert_not_called()
         player.set_pause.assert_not_called()
 
+    async def test_qobuz_claim_pauses_active_spotify(self):
+        player = SimpleNamespace(state={"current_file": None, "playing": False, "paused": True})
+        pause_spotify = AsyncMock()
+        request = TransitionRequest(
+            operation="qobuz-play",
+            source="qobuz",
+            target_rate=44100,
+            target_url=None,
+            should_play=True,
+            reload_source=True,
+        )
+        with patch.object(main.runtime, "player_instance", player), patch.object(
+            main.playback_state, "current_track_info", None
+        ), patch.object(main, "get_spotify_ui_state", new=AsyncMock(return_value={
+            "available": True, "status": "Playing"
+        })), patch.object(main, "_is_spotify_playback_active", return_value=True), patch.object(
+            main, "pause_spotify_for_local_playback_broadcast", pause_spotify
+        ), patch.object(
+            main, "_wait_for_pipewire_spotify_release", new=AsyncMock(return_value=True)
+        ) as release:
+            await make_transition_runtime().quiet_old_source(request)
+
+        pause_spotify.assert_awaited_once()
+        release.assert_awaited_once()
+
     async def test_spotify_claim_pauses_active_qobuz(self):
         player = SimpleNamespace(state={"current_file": None, "playing": False, "paused": True})
         qobuz_pause = AsyncMock()

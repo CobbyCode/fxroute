@@ -2404,8 +2404,13 @@ function switchTab(tabId) {
     }
 }
 
-function getBackendFooterOwner(playback = state.playback, spotify = window.__spotifyLastData) {
-    const owner = playback?.playback_owner || spotify?.playback_owner || window.__qobuzLastData?.playback_owner || null;
+function getBackendFooterOwner(playback = state.playback) {
+    // Single authoritative owner truth: the backend publishes playback_owner
+    // on the playback broadcast after every successful source commit.
+    // Provider status payloads deliver metadata/transport state only; their
+    // playback_owner copies are never consulted here, so the footer never
+    // has to choose between copies of different ages.
+    const owner = playback?.playback_owner || null;
     if (owner === 'local' || owner === 'radio' || owner === 'tidal') return 'local';
     if (owner === 'spotify' || owner === 'qobuz') return owner;
     return null;

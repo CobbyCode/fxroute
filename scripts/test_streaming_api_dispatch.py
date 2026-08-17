@@ -167,8 +167,10 @@ class GenericTransportActionTests(unittest.TestCase):
     def test_transport_action_dispatches_by_capability(self):
         provider = _FakeProvider()
         provider.toggle = lambda: self._status()
+        # A non-Qobuz provider id exercises the generic capability dispatch;
+        # qobuz play/toggle is routed through the source handoff instead.
         with mock.patch.object(main_module.streaming, "get_provider", return_value=provider):
-            resp = self.client.post("/api/streaming/qobuz/toggle")
+            resp = self.client.post("/api/streaming/fake/toggle")
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json()["status"], "Paused")
 
@@ -177,6 +179,133 @@ class GenericTransportActionTests(unittest.TestCase):
         with mock.patch.object(main_module.streaming, "get_provider", return_value=provider):
             resp = self.client.post("/api/streaming/qobuz/bogus")
         self.assertEqual(resp.status_code, 404)
+
+    def test_qobuz_toggle_playing_is_transport_only(self):
+        playing = {"available": True, "status": "Playing", "trackId": "7"}
+        with mock.patch.object(
+            main_module.streaming, "get_provider", return_value=_FakeProvider()
+        ), mock.patch.object(
+            main_module, "get_qobuz_ui_state", new=mock.AsyncMock(return_value=playing)
+        ), mock.patch.object(
+            main_module, "_is_qobuz_playback_active", return_value=True
+        ), mock.patch.object(
+            main_module, "qobuz_pause", new=mock.AsyncMock(return_value={"status": "Paused"})
+        ) as pause, mock.patch.object(
+            main_module, "broadcast_qobuz_state", new=mock.AsyncMock(side_effect=lambda d: d)
+        ), mock.patch.object(
+            main_module, "_run_coordinated_transition", new=mock.AsyncMock()
+        ) as run:
+            resp = self.client.post("/api/streaming/qobuz/toggle")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["status"], "Paused")
+        pause.assert_awaited_once()
+        run.assert_not_awaited()
+
+
+class QobuzUiStartHandoffTests(unittest.IsolatedAsyncioTestCase):
+    """Qobuz UI play/toggle must ride the authoritative source handoff and
+    publish the committed owner on the playback broadcast, mirroring the
+    Spotify endpoints instead of the raw provider transport."""
+
+    async def asyncSetUp(self):
+        self._orig_owner = main_module.playback_state.current_playback_owner
+        main_module.playback_state.current_playback_owner = None
+        self.committed = type(
+            "Result", (),
+            {"committed": True, "transition_id": "tr-qobuz-1"},
+        )()
+
+    async def asyncTearDown(self):
+        main_module.playback_state.current_playback_owner = self._orig_owner
+
+    def _paused_state(self):
+        return {
+            "available": True, "status": "Paused", "title": "T", "artist": "A",
+            "album": "B", "trackId": "123", "artUrl": "http://x/c.jpg",
+            "sample_rate": 88200,
+        }
+
+    def _patches(self, action, state):
+        return [
+            mock.patch.object(
+                main_module, "get_qobuz_ui_state", new=mock.AsyncMock(return_value=state)
+            ),
+            mock.patch.object(
+                main_module, "_is_qobuz_playback_active",
+                return_value=state.get("status") == "Playing",
+            ),
+            mock.patch.object(
+                main_module, "qobuz_pause", new=mock.AsyncMock(return_value={"status": "Paused"})
+            ),
+            mock.patch.object(
+                main_module, "broadcast_qobuz_state",
+                new=mock.AsyncMock(
+                    side_effect=lambda *a, **k: a[0] if a else state
+                ),
+            ),
+            mock.patch.object(
+                main_module, "_run_coordinated_transition",
+                new=mock.AsyncMock(return_value=self.committed),
+            ),
+            mock.patch.object(
+                main_module.manager, "broadcast", new=mock.AsyncMock(),
+            ),
+            mock.patch.object(
+                main_module, "build_playback_payload",
+                return_value={"playback_owner": "qobuz"},
+            ),
+        ]
+
+    async def test_toggle_from_paused_commits_qobuz_through_coordinator(self):
+        state = self._paused_state()
+        patches = self._patches("toggle", state)
+        with patches[0], patches[1], patches[2], patches[3], patches[4] as run, \
+                patches[5] as manager, patches[6]:
+            result = await main_module._qobuz_ui_start_action("toggle")
+        run.assert_awaited_once()
+        request = run.await_args.args[0]
+        self.assertEqual(request.source, "qobuz")
+        self.assertEqual(request.operation, "qobuz-toggle")
+        self.assertTrue(request.should_play)
+        self.assertTrue(request.reload_source)
+        self.assertEqual(request.target_rate, 88200)
+        self.assertEqual(main_module.playback_state.current_playback_owner, "qobuz")
+        playback_call = next(
+            c for c in manager.await_args_list
+            if c.args[0].get("type") == "playback"
+        )
+        self.assertEqual(
+            playback_call.args[0]["data"]["playback_owner"], "qobuz"
+        )
+        self.assertEqual(result["status"], "Paused")
+
+    async def test_play_from_paused_commits_qobuz_through_coordinator(self):
+        state = self._paused_state()
+        patches = self._patches("play", state)
+        with patches[0], patches[1], patches[2], patches[3], patches[4] as run, \
+                patches[5] as manager, patches[6]:
+            await main_module._qobuz_ui_start_action("play")
+        run.assert_awaited_once()
+        request = run.await_args.args[0]
+        self.assertEqual(request.operation, "qobuz-play")
+        self.assertEqual(main_module.playback_state.current_playback_owner, "qobuz")
+        playback_call = next(
+            c for c in manager.await_args_list
+            if c.args[0].get("type") == "playback"
+        )
+        self.assertEqual(
+            playback_call.args[0]["data"]["playback_owner"], "qobuz"
+        )
+
+    async def test_toggle_from_playing_never_runs_coordinator(self):
+        state = dict(self._paused_state(), status="Playing")
+        patches = self._patches("toggle", state)
+        with patches[0], patches[1], patches[2] as pause, patches[3], \
+                patches[4] as run, patches[5], patches[6]:
+            await main_module._qobuz_ui_start_action("toggle")
+        pause.assert_awaited_once()
+        run.assert_not_awaited()
+        self.assertIsNone(main_module.playback_state.current_playback_owner)
 
 
 if __name__ == "__main__":

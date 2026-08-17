@@ -65,6 +65,7 @@ class PlaybackRuntimeDependencies:
     # Qobuz / qbzd external-renderer helpers (main.py)
     get_qobuz_ui_state: Callable[..., Awaitable[dict]]
     is_qobuz_playback_active: Callable[..., bool]
+    qobuz_play: Callable[..., Awaitable[Any]]
     qobuz_pause: Callable[..., Awaitable[Any]]
     wait_for_pipewire_qobuz_release: Callable[..., Awaitable[bool]]
     wait_for_qobuz_sink_input_samplerate: Callable[..., Awaitable[Any]]

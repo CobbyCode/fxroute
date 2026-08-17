@@ -1137,6 +1137,7 @@ def make_playback_runtime_deps() -> PlaybackRuntimeDependencies:
         pause_local_playback_for_spotify_broadcast=lambda *a, **k: pause_local_playback_for_spotify_broadcast(*a, **k),
         get_qobuz_ui_state=lambda *a, **k: get_qobuz_ui_state(*a, **k),
         is_qobuz_playback_active=lambda *a, **k: _is_qobuz_playback_active(*a, **k),
+        qobuz_play=lambda *a, **k: qobuz_play(*a, **k),
         qobuz_pause=lambda *a, **k: qobuz_pause(*a, **k),
         wait_for_pipewire_qobuz_release=lambda *a, **k: _wait_for_pipewire_qobuz_release(*a, **k),
         wait_for_qobuz_sink_input_samplerate=lambda *a, **k: _wait_for_qobuz_sink_input_samplerate(*a, **k),
@@ -1228,6 +1229,24 @@ def _publish_playback_context_commit(commit_token: str | None) -> None:
     but old playback globals (or vice versa).
     """
     playback_state.publish_playback_context_commit(commit_token)
+
+
+async def _publish_committed_playback_owner(owner: str, transition_id: str | None) -> None:
+    """Commit the authoritative owner and publish it on the playback channel.
+
+    Runs after a successful source handoff commit.  The playback broadcast is
+    the single authoritative owner channel for the browser: provider status
+    payloads carry ``playback_owner`` for display only and must never be the
+    freshest copy the frontend resolves against.  Publishing here keeps the
+    owner and the committed context token on the same broadcast path.
+    """
+    playback_state.current_playback_owner = owner
+    _publish_playback_context_commit(transition_id)
+    player_state = runtime.player_instance.state if runtime.player_instance else None
+    await manager.broadcast({
+        "type": "playback",
+        "data": build_playback_payload(player_state),
+    })
 
 
 async def _wait_playback_transition_settled() -> None:
@@ -2271,8 +2290,7 @@ async def _claim_qobuz_playback(detail: str = "qobuz-claim") -> dict:
         return qobuz_state
     if not getattr(result, "committed", False):
         return qobuz_state
-    playback_state.current_playback_owner = "qobuz"
-    _publish_playback_context_commit(getattr(result, "transition_id", None))
+    await _publish_committed_playback_owner("qobuz", getattr(result, "transition_id", None))
     return await broadcast_qobuz_state()
 
 
@@ -2308,8 +2326,7 @@ async def _claim_spotify_playback(detail: str = "spotify-claim") -> dict:
         return data
     if not getattr(result, "committed", False):
         return data
-    playback_state.current_playback_owner = "spotify"
-    _publish_playback_context_commit(getattr(result, "transition_id", None))
+    await _publish_committed_playback_owner("spotify", getattr(result, "transition_id", None))
     return await broadcast_spotify_state()
 
 
@@ -4805,17 +4822,62 @@ _STREAMING_TRANSPORT_ACTIONS = {
 }
 
 
+async def _qobuz_ui_start_action(action: str) -> dict:
+    """Start Qobuz playback from the FXRoute UI through the source handoff.
+
+    An action that brings Qobuz out of Paused/Stopped rides the same
+    authoritative coordinator path as a Qobuz Connect claim: quiet the
+    previous owner, establish rate/graph, start qbzd, commit
+    ``playback_owner=qobuz`` and publish it on the playback broadcast.
+    Toggling an already-playing Qobuz owner is transport-only.  The 2s Qobuz
+    Connect watcher stays responsible exclusively for external Connect
+    claims; a UI start never waits for it.
+    """
+    qobuz_state = await get_qobuz_ui_state()
+    if action == "toggle" and _is_qobuz_playback_active(qobuz_state):
+        data = await qobuz_pause()
+        return await broadcast_qobuz_state(data)
+    track = _qobuz_target_track_from_state(qobuz_state)
+    target_rate = _qobuz_target_rate(qobuz_state)
+    request = TransitionRequest(
+        operation="qobuz-play" if action == "play" else "qobuz-toggle",
+        source="qobuz",
+        target_rate=target_rate,
+        target_url=str(track.get("id") or ""),
+        target_track=track,
+        should_play=True,
+        rate_change=_coordinator_rate_change(target_rate),
+        reload_source=True,
+        detail=f"api-streaming-qobuz-{action}",
+    )
+    try:
+        result = await _run_coordinated_transition(request)
+    except ValueError as exc:
+        raise bad_request(exc) from exc
+    except PlaybackTransitionFailure as exc:
+        raise _transition_error_http(exc) from exc
+    if not getattr(result, "committed", False):
+        return await broadcast_qobuz_state()
+    await _publish_committed_playback_owner("qobuz", getattr(result, "transition_id", None))
+    return await broadcast_qobuz_state()
+
+
 @app.post("/api/streaming/{provider_id}/{action}")
 async def api_streaming_provider_action(provider_id: str, action: str, request: Request):
     """Generic provider transport action, dispatched by capability.
 
     This is the provider-level transport contract (no FXRoute source
     transition). The existing ``/api/spotify/*`` endpoints keep their source
-    handoff semantics for Spotify; other providers are driven through here.
+    handoff semantics for Spotify.  Qobuz start actions (``play``/``toggle``
+    out of Paused/Stopped) are routed through the authoritative source
+    handoff instead of the raw provider transport; all other Qobuz actions
+    stay transport-only on the provider.
     """
     provider = streaming.get_provider(provider_id)
     if provider is None:
         raise HTTPException(status_code=404, detail=f"unknown streaming provider: {provider_id}")
+    if provider_id == "qobuz" and action in ("play", "toggle"):
+        return await _qobuz_ui_start_action(action)
     if action == "seek":
         try:
             body = await request.json()
@@ -5011,10 +5073,10 @@ async def api_spotify_play():
     # After the coordinator commit the Spotify source is already the
     # committed playback context; the subsequent state read is
     # telemetry/UI refresh and not part of the ownership boundary.
-    # Publish synchronously before any further await so the ended waiter
-    # never sees a window with a new token and an old footer.
-    playback_state.current_playback_owner = "spotify"
-    _publish_playback_context_commit(getattr(result, "transition_id", None))
+    # Publish the authoritative owner synchronously before any further await
+    # so the ended waiter never sees a window with a new token and an old
+    # footer, and the browser resolves the owner on the playback channel.
+    await _publish_committed_playback_owner("spotify", getattr(result, "transition_id", None))
     playback_state.latest_spotify_state = await get_spotify_ui_state()
     return await broadcast_spotify_state(playback_state.latest_spotify_state)
 
@@ -5051,11 +5113,10 @@ async def api_spotify_toggle():
         raise bad_request(exc) from exc
     except PlaybackTransitionFailure as exc:
         raise _transition_error_http(exc) from exc
-    # Same ownership contract as api_spotify_play: footer and token are
-    # published synchronously after the commit, before the Spotify state
-    # is read or broadcast.
-    playback_state.current_playback_owner = "spotify"
-    _publish_playback_context_commit(getattr(result, "transition_id", None))
+    # Same ownership contract as api_spotify_play: the authoritative owner
+    # and token are published synchronously after the commit, before the
+    # Spotify state is read or broadcast.
+    await _publish_committed_playback_owner("spotify", getattr(result, "transition_id", None))
     data = await get_spotify_ui_state()
     return await broadcast_spotify_state(data)
 

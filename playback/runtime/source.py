@@ -27,6 +27,11 @@ from playback.transition import TransitionRequest
 from .deps import PlaybackRuntimeDependencies
 from .helpers import RADIO_EXPECTED_SAMPLE_RATE_HZ, SOURCE_HANDOFF_SETTLE_MS
 
+# qbzd reinitializes its PipeWire stream after a pause-suspend before it
+# reports Playing (~1.15s measured on .104); the start boundary waits bounded
+# for the real Playing edge instead of trusting one immediate status read.
+QOBUZ_PLAYING_CONFIRM_TIMEOUT_S = 3.0
+
 logger = logging.getLogger(__name__)
 
 
@@ -400,9 +405,29 @@ class _RuntimeSourceMixin:
                 raise RuntimeError(f"Spotify did not enter Playing state: {data}")
             return
         if request.source == "qobuz":
-            qobuz_state = await self._deps.get_qobuz_ui_state()
-            if request.should_play and qobuz_state.get("status") not in {"Playing", "playing"}:
-                raise RuntimeError(f"Qobuz did not enter Playing state: {qobuz_state}")
+            if request.should_play:
+                # UI starts ride the same start boundary as Spotify: actually
+                # start qbzd (a no-op when a Connect claim already plays),
+                # then validate the Playing state before the commit.
+                await self._deps.qobuz_play()
+                # qbzd resumes asynchronously: after a pause-suspend the audio
+                # thread reinitializes the PipeWire stream (~1s) before it
+                # reports Playing, so a single immediate status read would see
+                # the stale Paused state and abort the handoff.  Wait bounded
+                # for the real Playing edge instead, mirroring the MPV IPC
+                # readback loop below.
+                deadline = time.monotonic() + QOBUZ_PLAYING_CONFIRM_TIMEOUT_S
+                last_state: dict[str, Any] = {}
+                while time.monotonic() <= deadline:
+                    qobuz_state = await self._deps.get_qobuz_ui_state()
+                    last_state = qobuz_state
+                    if qobuz_state.get("status") in {"Playing", "playing"}:
+                        break
+                    await asyncio.sleep(0.05)
+                if last_state.get("status") not in {"Playing", "playing"}:
+                    raise RuntimeError(f"Qobuz did not enter Playing state: {last_state}")
+            else:
+                qobuz_state = await self._deps.get_qobuz_ui_state()
             return
         if not self._deps.player_is_running():
             raise RuntimeError("MPV player is not available")

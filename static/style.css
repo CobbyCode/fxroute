@@ -7062,6 +7062,14 @@ body {
     gap: 0.9rem;
 }
 
+/* The shared hidden contract for every streaming component: the per-element
+   display rules below (flex/grid) must never override the JS-toggled hidden
+   attribute, otherwise empty state and now-playing card show at the same
+   time. Scoped to the streaming shell, provider-neutral. */
+.streaming-provider [hidden] {
+    display: none !important;
+}
+
 .streaming-status-line {
     font-size: 0.74rem;
     color: var(--text-muted);

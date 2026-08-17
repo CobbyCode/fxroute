@@ -201,4 +201,23 @@ const baseCaps = {
     assert.ok(content.innerHTML.includes('streaming-browse'), 'auth change must rebuild the browse surface');
 }
 
+// --- 3. empty state and now-playing card are mutually exclusive ------------
+
+{
+    const { sandbox, shells } = runStreaming();
+    const playing = { installed: true, available: true, authenticated: true, capabilities: baseCaps, status: 'Playing', title: 't', artist: 'a', album: 'b', artUrl: 'http://x/c.jpg', shuffle: false, loop: 'none', position: 0, duration: 100 };
+    sandbox.window.FXRouteStreaming.renderProvider('qobuz', playing);
+    assert.equal(shells.qobuz.querySelector('.streaming-empty').hidden, true,
+        'now-playing render must hide the empty state');
+    assert.equal(shells.qobuz.querySelector('.streaming-now-playing').hidden, false,
+        'now-playing render must show the now-playing card');
+
+    const stopped = { installed: true, available: true, authenticated: true, capabilities: baseCaps, status: 'Stopped', title: '', artist: '', album: '', artUrl: '', shuffle: false, loop: 'none', position: 0, duration: 0 };
+    sandbox.window.FXRouteStreaming.renderProvider('tidal', stopped);
+    assert.equal(shells.tidal.querySelector('.streaming-empty').hidden, false,
+        'stopped render must show the empty state');
+    assert.equal(shells.tidal.querySelector('.streaming-now-playing').hidden, true,
+        'stopped render must hide the now-playing card (no ghost transport)');
+}
+
 console.log('PASS  scripts/test_streaming_ui_actions.js');

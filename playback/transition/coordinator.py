@@ -571,6 +571,8 @@ class PlaybackTransitionCoordinator(_TransitionCleanupMixin, _OutputGateMixin):
                     "queue",
                     "spotify-play",
                     "spotify-toggle",
+                    "qobuz-play",
+                    "qobuz-toggle",
                     "measurement-restore",
                     "measurement-entry",
                     "output-mode-switch",
