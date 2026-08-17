@@ -3197,12 +3197,46 @@ function updateTrackFavoriteCaches(trackId, favorite) {
     (state.library.albumDetail?.tracks || []).forEach(apply);
 }
 
-async function toggleCurrentTrackFavorite() {
-    const track = state.playback.current_track;
-    if (!track || track.source !== 'local' || !track.id || trackFavoriteRequestInFlight) return;
+function findTrackById(trackId) {
+    if (!trackId) return null;
+    if (state.playback.current_track?.id === trackId) return state.playback.current_track;
+    return (state.library.albumDetail?.tracks || []).find(track => track?.id === trackId)
+        || (state.library.tracks || []).find(track => track?.id === trackId)
+        || null;
+}
+
+function syncTrackFavoriteRowButtons(trackId = null) {
+    document.querySelectorAll('.track-row-favorite[data-track-favorite]').forEach(button => {
+        const id = button.dataset.trackFavorite || '';
+        if (trackId && id !== trackId) return;
+        const track = findTrackById(id);
+        const favorite = !!track?.favorite;
+        button.textContent = favorite ? '♥' : '♡';
+        button.classList.toggle('active', favorite);
+        button.setAttribute('aria-pressed', favorite ? 'true' : 'false');
+        button.setAttribute('aria-label', favorite ? 'Remove track from favorites' : 'Add track to favorites');
+        button.title = favorite ? 'Remove from favorites' : 'Add to favorites';
+        button.disabled = trackFavoriteRequestInFlight;
+    });
+}
+
+function bindTrackFavoriteRowButtons(root) {
+    root?.querySelectorAll('.track-row-favorite[data-track-favorite]').forEach(button => {
+        button.addEventListener('click', async (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            await toggleTrackFavoriteById(button.dataset.trackFavorite || '');
+        });
+    });
+}
+
+async function toggleTrackFavoriteById(trackId) {
+    const track = findTrackById(trackId);
+    if (!track || !track.id || trackFavoriteRequestInFlight) return;
     const nextFavorite = !track.favorite;
     trackFavoriteRequestInFlight = true;
-    renderTrackFavoriteButton(track);
+    renderTrackFavoriteButton(state.playback.current_track);
+    syncTrackFavoriteRowButtons();
     try {
         const resp = await fetch(`/api/tracks/${encodeURIComponent(track.id)}/favorite`, {
             method: 'POST',
@@ -3213,13 +3247,20 @@ async function toggleCurrentTrackFavorite() {
         if (!resp.ok) throw new Error(data.detail || 'Failed to update track favorite');
         updateTrackFavoriteCaches(track.id, !!data.favorite);
         renderTrackFavoriteButton(state.playback.current_track);
-        if (state.library.viewMode === 'tracks') renderLibraryView();
+        syncTrackFavoriteRowButtons(track.id);
     } catch (error) {
         showToast(error.message || 'Failed to update track favorite', 'error');
     } finally {
         trackFavoriteRequestInFlight = false;
         renderTrackFavoriteButton(state.playback.current_track);
+        syncTrackFavoriteRowButtons();
     }
+}
+
+async function toggleCurrentTrackFavorite() {
+    const track = state.playback.current_track;
+    if (!track || track.source !== 'local' || !track.id) return;
+    await toggleTrackFavoriteById(track.id);
 }
 
 function meterLitCount(db, segmentCount) {
@@ -4327,6 +4368,12 @@ function renderTracks() {
                     <div class="track-title">${escapeHtml(track.title)}</div>
                     ${subline ? `<div class="track-artist">${escapeHtml(subline)}</div>` : ''}
                 </button>
+                <button class="track-row-favorite ${track.favorite ? 'active' : ''}"
+                        data-track-favorite="${escapeHtml(track.id)}"
+                        type="button"
+                        aria-pressed="${track.favorite ? 'true' : 'false'}"
+                        aria-label="${track.favorite ? 'Remove track from favorites' : 'Add track to favorites'}"
+                        title="${track.favorite ? 'Remove from favorites' : 'Add to favorites'}">${track.favorite ? '♥' : '♡'}</button>
             </div>
         `;
     }).join('');
@@ -4360,6 +4407,7 @@ function renderTracks() {
             playLocal(item.dataset.trackId);
         });
     });
+    bindTrackFavoriteRowButtons(elements.tracksList);
 
     elements.tracksList.querySelectorAll('.track-play-button[data-playlist-id]').forEach(item => {
         item.addEventListener('click', async (e) => {
@@ -4719,6 +4767,12 @@ function renderAlbumDetailTracks() {
                 <div class="track-title">${title}</div>
                 ${meta ? `<div class="track-artist">${escapeHtml(meta)}</div>` : ''}
             </button>
+            <button class="track-row-favorite ${track.favorite ? 'active' : ''}"
+                    data-track-favorite="${escapeHtml(track.id)}"
+                    type="button"
+                    aria-pressed="${track.favorite ? 'true' : 'false'}"
+                    aria-label="${track.favorite ? 'Remove track from favorites' : 'Add track to favorites'}"
+                    title="${track.favorite ? 'Remove from favorites' : 'Add to favorites'}">${track.favorite ? '♥' : '♡'}</button>
             ${duration ? `<span class="track-duration">${duration}</span>` : ''}
         </div>`;
     }).join('');
@@ -4729,6 +4783,7 @@ function renderAlbumDetailTracks() {
             playTrackInAlbum(trackId, albumContext);
         });
     });
+    bindTrackFavoriteRowButtons(elements.albumDetailTracks);
 }
 
 function updateAlbumFavoriteButton(album) {

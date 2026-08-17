@@ -1784,6 +1784,55 @@ body {
     text-overflow: ellipsis;
     white-space: nowrap;
 }
+/* Per-track favorite action shared by Tracks and Album detail rows. */
+.track-row-favorite {
+    align-self: stretch;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 38px;
+    min-width: 38px;
+    min-height: 44px;
+    flex: 0 0 38px;
+    border: 0;
+    background: transparent;
+    color: var(--text-muted);
+    font: inherit;
+    font-size: 1.08rem;
+    line-height: 1;
+    cursor: pointer;
+    border-radius: 10px;
+    transition: color .15s var(--ease), background .15s var(--ease), transform .12s var(--ease);
+    -webkit-tap-highlight-color: transparent;
+}
+.track-row-favorite:hover,
+.track-row-favorite:focus-visible {
+    color: var(--accent);
+    background: rgba(110,231,183,0.07);
+    outline: none;
+}
+.track-row-favorite:active {
+    transform: scale(.92);
+}
+.track-row-favorite.active {
+    color: #6ee7a8;
+    text-shadow: 0 0 10px rgba(110,231,183,.18);
+}
+.track-row-favorite:disabled {
+    opacity: .45;
+    cursor: wait;
+}
+.album-detail-tracks .track-row-favorite {
+    margin-left: .1rem;
+}
+@media (max-width: 640px) {
+    .track-row-favorite {
+        width: 34px;
+        min-width: 34px;
+        flex-basis: 34px;
+        font-size: 1rem;
+    }
+}
 /* ============================================================
    Download / import shared
    ============================================================ */
