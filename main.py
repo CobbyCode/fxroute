@@ -531,7 +531,6 @@ from audio.external_input import ExternalInputRouting, ExternalInputRoutingDepen
 from playback.radio_reconnect import RadioReconnect, RadioReconnectDependencies
 from playback.silent_active import SilentActiveDependencies, SilentActiveRecovery
 from playback.spotify_watch import (
-    SPOTIFY_PREARM_SAMPLE_RATE_HZ,
     SPOTIFY_SINK_INPUT_RATE_STABILITY_POLLS,
     SpotifyPlayerctlWatch,
     SpotifyWatchDependencies,
@@ -587,9 +586,10 @@ from audio.samplerate import (
     set_audio_source_selection,
     set_bluetooth_receiver_enabled,
 )
-from playback.spotify import (
-    playerctl_available,
-    spotify_installed,
+import streaming
+from streaming.spotify.mpris import playerctl_available, spotify_installed
+from streaming.spotify.provider import (
+    SPOTIFY_PREARM_SAMPLE_RATE_HZ,
     get_status as spotify_get_status,
     pause as spotify_pause,
     next_track as spotify_next,
@@ -4305,6 +4305,20 @@ async def download_status():
     if downloader and downloader.active_download:
         return downloader.active_download
     return {"status": "idle"}
+
+
+# ---------------------------------------------------------------------------
+# Streaming providers (generic provider registry)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/streaming/providers")
+async def api_streaming_providers():
+    """List registered streaming providers with their capability surface.
+
+    The generic foundation for a future streaming tab: the UI reads
+    ``capabilities`` instead of branching on provider identity.
+    """
+    return {"providers": streaming.describe_providers()}
 
 
 # ---------------------------------------------------------------------------

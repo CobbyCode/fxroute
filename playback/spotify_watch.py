@@ -5,7 +5,7 @@ Owns the watch loop, the coalesced detect task and the 1s trigger throttle,
 together with the mismatch-detection behavior moved out of ``main.py``.
 No imports from ``main``: the recovery and state-refresh entry points are
 injected by the composition root; the Spotify client helpers come from
-``playback.spotify``.
+``streaming.spotify``.
 """
 
 from __future__ import annotations
@@ -18,11 +18,11 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 import audio.samplerate as samplerate
-from playback.spotify import _stop_process, spotify_installed
+from streaming.spotify.mpris import _stop_process, spotify_installed
+from streaming.spotify.provider import SPOTIFY_PREARM_SAMPLE_RATE_HZ
 
 logger = logging.getLogger(__name__)
 
-SPOTIFY_PREARM_SAMPLE_RATE_HZ = 44100
 SPOTIFY_SINK_INPUT_RATE_STABILITY_POLLS = 2
 
 

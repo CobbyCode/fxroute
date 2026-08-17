@@ -20,7 +20,7 @@ from audio.samplerate import (
     OUTPUT_MODE_SUBWOOFER_MODES,
     persist_sample_rate_policy,
 )
-from playback.spotify import play as spotify_play
+from streaming.spotify.provider import play as spotify_play
 from playback.transition import TransitionRequest, stable_graph_readbacks
 
 from .deps import PlaybackRuntimeDependencies

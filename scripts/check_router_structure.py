@@ -25,7 +25,7 @@ MODULES = ("measurement/spl_calibration.py", "library/api.py", "measurement/auto
 # main.py imports; discovered from the package layout so new modules are
 # covered automatically.  __init__.py files are intentionally empty and
 # excluded from the scan.
-PACKAGE_DIRS = ("measurement", "playback", "dsp", "library", "radio", "audio")
+PACKAGE_DIRS = ("measurement", "playback", "dsp", "library", "radio", "audio", "streaming")
 DECOUPLED_MODULES = tuple(
     str(path.relative_to(ROOT))
     for package in PACKAGE_DIRS

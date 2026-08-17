@@ -428,7 +428,7 @@ class PlayerctlCleanupTests(unittest.IsolatedAsyncioTestCase):
     timeout or cancellation: no orphaned processes."""
 
     async def test_run_terminates_process_on_timeout(self):
-        from playback.spotify import _run
+        from streaming.spotify.mpris import _run
 
         class FakeProc:
             def __init__(self):
@@ -461,8 +461,8 @@ class PlayerctlCleanupTests(unittest.IsolatedAsyncioTestCase):
         async def fake_spawn(*_a, **_k):
             return fake
 
-        with patch("playback.spotify._find_playerctl", return_value="/usr/bin/playerctl"), \
-             patch("playback.spotify.asyncio.create_subprocess_exec", new=fake_spawn):
+        with patch("streaming.spotify.mpris._find_playerctl", return_value="/usr/bin/playerctl"), \
+             patch("streaming.spotify.mpris.asyncio.create_subprocess_exec", new=fake_spawn):
             result = await _run("--player=spotify", "metadata", timeout=0.05)
         self.assertIsNone(result)
         self.assertTrue(fake.terminated)
@@ -470,7 +470,7 @@ class PlayerctlCleanupTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(fake.wait_calls, 1)
 
     async def test_run_escalates_to_kill_when_terminate_fails_to_stop(self):
-        from playback.spotify import _run
+        from streaming.spotify.mpris import _run
 
         class StubbornProc:
             def __init__(self):
@@ -500,8 +500,8 @@ class PlayerctlCleanupTests(unittest.IsolatedAsyncioTestCase):
         async def fake_spawn(*_a, **_k):
             return fake
 
-        with patch("playback.spotify._find_playerctl", return_value="/usr/bin/playerctl"), \
-             patch("playback.spotify.asyncio.create_subprocess_exec", new=fake_spawn):
+        with patch("streaming.spotify.mpris._find_playerctl", return_value="/usr/bin/playerctl"), \
+             patch("streaming.spotify.mpris.asyncio.create_subprocess_exec", new=fake_spawn):
             result = await _run("--player=spotify", "metadata", timeout=0.05)
         self.assertIsNone(result)
         self.assertTrue(fake.terminated)

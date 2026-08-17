@@ -16,7 +16,7 @@ from urllib.parse import unquote
 
 import audio.samplerate as samplerate
 import audio.samplerate_orchestration as samplerate_orchestration
-from playback.spotify import (
+from streaming.spotify.provider import (
     play as spotify_play,
     next_track as spotify_next,
     previous as spotify_previous,
