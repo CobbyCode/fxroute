@@ -83,21 +83,21 @@ class FooterResponsiveLayoutTests(unittest.TestCase):
         self.assertIn('<div class="seek-row hidden">', markup)
         self.assertIn("setFooterProgressState(hasProgress, radioTimed)", APP)
 
-    def test_mobile_separates_seek_meter_and_volume(self):
+    def test_phone_recomposes_into_three_rows(self):
         self.assertRegex(
             CSS,
-            r"@media \(max-width: 600px\)[\s\S]*?grid-template-areas:\s*"
-            r'\s*"track track"\s*"transport transport"\s*"meter volume"',
+            r"@media \(max-width: 700px\)[\s\S]*?grid-template-areas:\s*"
+            r'\s*"track meter"\s*"transport transport"\s*"volume volume"',
         )
         self.assertIn(".playback-bar:not(.has-media)", CSS)
         self.assertIn(".playback-bar:not(.has-media) .playback-center", CSS)
 
-    def test_portrait_tablet_gets_roomier_multiline_footer(self):
+    def test_compact_tablet_spans_two_rows(self):
         self.assertRegex(
             CSS,
-            r"@media \(max-width: 1100px\) and \(orientation: portrait\)"
-            r"[\s\S]*?\"track meter\"[\s\S]*?\"transport transport\""
-            r"[\s\S]*?\"volume volume\"",
+            r"@media \(min-width: 701px\) and \(max-width: 1180px\)"
+            r"[\s\S]*?grid-template-areas:\s*"
+            r'\s*"track transport meter"\s*"track transport volume"',
         )
 
     def test_page_end_clearance_tracks_real_footer_height(self):

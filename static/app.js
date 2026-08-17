@@ -370,7 +370,6 @@ const elements = {
     settingsHardwareAutoOnBtn: document.getElementById('settings-hardware-auto-on'),
     settingsHardwareAutoOffBtn: document.getElementById('settings-hardware-auto-off'),
     settingsCertificateLink: document.getElementById('settings-certificate-link'),
-    settingsMaintenanceSummary: document.getElementById('settings-maintenance-summary'),
     settingsMaintenanceStatus: document.getElementById('settings-maintenance-status'),
     settingsMaintenanceCurrent: document.getElementById('settings-maintenance-current'),
     settingsMaintenanceLatestRow: document.getElementById('settings-maintenance-latest-row'),
@@ -386,8 +385,6 @@ const elements = {
     tabs: document.querySelectorAll('.tab-btn'),
     tabPanels: document.querySelectorAll('.tab-panel'),
     toggleImportBtn: document.getElementById('toggle-import'),
-    libraryShuffleBtn: document.getElementById('library-shuffle'),
-    libraryLoopBtn: document.getElementById('library-loop'),
     libraryImportPanel: document.getElementById('library-import-panel'),
     refreshLibraryBtn: document.getElementById('refresh-library'),
     libraryViewTracksBtn: document.getElementById('library-view-tracks'),
@@ -419,12 +416,9 @@ const elements = {
     downloadUrlDropArea: document.getElementById('download-url-drop-area'),
     downloadUrlHint: document.getElementById('download-url-detail'),
     downloadUrl: document.getElementById('download-url'),
-    downloadBtn: document.getElementById('download-btn'),
     cancelDownloadBtn: document.getElementById('cancel-download'),
     uploadTrackFile: document.getElementById('upload-track-file'),
-    uploadTrackBtn: document.getElementById('upload-track-btn'),
     downloadStatus: document.getElementById('download-status'),
-    refreshEffectsBtn: document.getElementById('refresh-effects'),
     effectsInfo: document.getElementById('effects-info'),
     // elements.effectsPresetStatus removed — preset status is now shown in the compare row
     effectsDeleteBtn: document.getElementById('effects-delete'),
@@ -510,7 +504,6 @@ const elements = {
     measurementConvolverSampleRate: document.getElementById('measurement-convolver-sample-rate'),
     measurementConvolverPhaseMode: document.getElementById('measurement-convolver-phase-mode'),
     measurementConvolverIrLength: document.getElementById('measurement-convolver-ir-length'),
-    measurementConvolverQuality: document.getElementById('measurement-convolver-quality'),
     measurementConvolverPresetName: document.getElementById('measurement-convolver-preset-name'),
     measurementConvolverSummary: document.getElementById('measurement-convolver-summary'),
     measurementConvolverWarnings: document.getElementById('measurement-convolver-warnings'),
@@ -592,7 +585,6 @@ const elements = {
     effectsPeqDisclosureMeta: document.querySelector('#effects-peq-disclosure .effects-disclosure-meta'),
     effectsPeqPresetName: document.getElementById('effects-peq-preset-name'),
     effectsPeqModeSelect: document.getElementById('effects-peq-mode-select'),
-    effectsPeqLoadAfterCreate: document.getElementById('effects-peq-load-after-create'),
     effectsPeqAddBandBtn: document.getElementById('effects-peq-add-band'),
     effectsPeqLeftBands: document.getElementById('effects-peq-left-bands'),
     effectsPeqRightBands: document.getElementById('effects-peq-right-bands'),
@@ -621,7 +613,6 @@ const elements = {
     playbackMeter: document.getElementById('playback-meter'),
     meterLeft: document.getElementById('meter-l'),
     meterRight: document.getElementById('meter-r'),
-    playbackEq: document.getElementById('playback-eq'),
     connDot: document.getElementById('connection-dot'),
     connText: document.getElementById('connection-text'),
     footerShuffleBtn: document.getElementById('footer-shuffle'),
@@ -633,7 +624,6 @@ const elements = {
     queueStatus: document.getElementById('queue-status'),
     samplerateStatus: document.getElementById('samplerate-status'),
     outputLevelBadge: document.getElementById('output-level-badge'),
-    peakWarningBadge: document.getElementById('peak-warning-badge'),
     seekSlider: document.getElementById('seek-slider'),
     seekRow: document.querySelector('.seek-row'),
     seekCurrent: document.getElementById('seek-current'),
@@ -1609,9 +1599,6 @@ function renderMaintenancePanel() {
         || !!maintenance.restartPending
         || (!!maintenance.hasError && !maintenance.userCollapsedDetails)
         || !!maintenance.dirtyBlock;
-    if (elements.settingsMaintenanceSummary) {
-        elements.settingsMaintenanceSummary.textContent = maintenanceStatusText(maintenance);
-    }
     if (elements.settingsMaintenanceStatus) {
         elements.settingsMaintenanceStatus.textContent = maintenanceStatusText(maintenance);
     }
@@ -2478,8 +2465,6 @@ function setupPlaybackControls() {
     if (elements.footerLoopBtn) elements.footerLoopBtn.addEventListener('click', toggleFooterLoop);
     if (elements.btnClearQueue) elements.btnClearQueue.addEventListener('click', clearQueue);
     if (elements.trackFavoriteBtn) elements.trackFavoriteBtn.addEventListener('click', toggleCurrentTrackFavorite);
-    if (elements.libraryShuffleBtn) elements.libraryShuffleBtn.addEventListener('click', toggleLibraryShuffle);
-    if (elements.libraryLoopBtn) elements.libraryLoopBtn.addEventListener('click', toggleLibraryLoop);
     elements.volumeSlider.addEventListener('input', handleVolumeChange);
     if (elements.playbackCover) elements.playbackCover.addEventListener('click', toggleCoverDetailCard);
     if (elements.coverDetailBackdrop) elements.coverDetailBackdrop.addEventListener('click', closeCoverDetailCard);
@@ -2605,22 +2590,6 @@ function toggleFooterLoop() {
 }
 
 function renderLibraryModeButtons() {
-    const localActive = !!(state.playback.current_track && state.playback.current_track.source === 'local');
-    const queue = state.playback.queue || {};
-    const shuffleAvailable = localActive && Number(queue.count || 0) > 1;
-    const loopAvailable = localActive;
-    if (elements.libraryShuffleBtn) {
-        elements.libraryShuffleBtn.classList.toggle('active', !!state.library.shuffle);
-        elements.libraryShuffleBtn.setAttribute('aria-pressed', state.library.shuffle ? 'true' : 'false');
-        elements.libraryShuffleBtn.disabled = libraryModeRequestInFlight || !shuffleAvailable;
-        elements.libraryShuffleBtn.title = shuffleAvailable ? 'Shuffle queue' : 'Shuffle requires an active local queue';
-    }
-    if (elements.libraryLoopBtn) {
-        elements.libraryLoopBtn.classList.toggle('active', !!state.library.loop);
-        elements.libraryLoopBtn.setAttribute('aria-pressed', state.library.loop ? 'true' : 'false');
-        elements.libraryLoopBtn.disabled = libraryModeRequestInFlight || !loopAvailable;
-        elements.libraryLoopBtn.title = loopAvailable ? 'Loop queue or track' : 'Loop requires active local playback';
-    }
     renderFooterModeButtons();
 }
 
@@ -3308,7 +3277,6 @@ function formatOutputLevelBadgeDb(level) {
 
 function renderPeakWarningBadge(activeOverride = null) {
     const warning = state.playback.output_peak_warning || {};
-    const showPeak = !!warning.detected;
     const title = warning.target?.description || warning.target?.source_name || 'DSP output monitor';
     const vuDb = Number.isFinite(Number(warning.vu_db)) ? Number(warning.vu_db) : null;
     const playbackActive = activeOverride === null
@@ -3318,11 +3286,6 @@ function renderPeakWarningBadge(activeOverride = null) {
         : !!activeOverride;
     const showVu = !!warning.available && warning.vu_fresh === true
         && playbackActive && vuDb !== null;
-
-    if (elements.peakWarningBadge) {
-        elements.peakWarningBadge.classList.toggle('hidden', !showPeak);
-        elements.peakWarningBadge.title = showPeak ? `Post-DSP output peak detected on ${title}` : '';
-    }
 
     if (elements.outputLevelBadge) {
         elements.outputLevelBadge.classList.toggle('hidden', !showVu);
@@ -5142,7 +5105,6 @@ function uploadTrackFile() {
     }
     const formData = new FormData();
     formData.append('file', file);
-    if (elements.uploadTrackBtn) elements.uploadTrackBtn.disabled = true;
     const filename = file.name;
     state.upload = { filename, status_text: `Uploading ${filename}… 0%`, progress_percent: 0, status: 'uploading' };
     updateDownloadUI();
@@ -5180,14 +5142,12 @@ function uploadTrackFile() {
             updateDownloadUI();
             showToast(msg, 'error');
         }
-        if (elements.uploadTrackBtn) elements.uploadTrackBtn.disabled = false;
     });
     xhr.addEventListener('error', () => {
         resetUploadAreaSelection('upload-track-file');
         state.upload = { filename, status_text: 'Upload failed', progress_percent: 0, status: 'error' };
         updateDownloadUI();
         showToast('Upload failed', 'error');
-        if (elements.uploadTrackBtn) elements.uploadTrackBtn.disabled = false;
     });
     xhr.send(formData);
 }
@@ -5799,7 +5759,6 @@ function clearEffectsPeqStatusOnCollapse() {
 }
 
 function setupEffectsActions() {
-    if (elements.refreshEffectsBtn) elements.refreshEffectsBtn.addEventListener('click', fetchEffects);
     if (elements.splCalibrationOpen) elements.splCalibrationOpen.addEventListener('click', openSplCalibration);
     if (elements.splCalibrationClose) elements.splCalibrationClose.addEventListener('click', closeSplCalibration);
     if (elements.splCalibrationPanel?.querySelector('.manage-overlay-backdrop')) {
@@ -6267,14 +6226,10 @@ function handleDownloadStatusTransition(dl) {
 function updateDownloadUI() {
     const dl = state.upload || state.download;
     if (!elements.downloadStatus || !elements.cancelDownloadBtn) return;
-    const setDownloadButtonDisabled = (disabled) => {
-        if (elements.downloadBtn) elements.downloadBtn.disabled = disabled;
-    };
     if (!dl) {
         elements.downloadStatus.innerHTML = '';
         elements.downloadStatus.classList.add('hidden');
         elements.cancelDownloadBtn.classList.add('hidden');
-        setDownloadButtonDisabled(false);
         return;
     }
     let html = '';
@@ -6295,20 +6250,16 @@ function updateDownloadUI() {
         `;
         if (!isUpload) {
             elements.cancelDownloadBtn.classList.remove('hidden');
-            setDownloadButtonDisabled(true);
         }
     } else if (dl.status === 'complete') {
         html = `<div style="color: var(--success);">${escapeHtml(dl.status_text || (state.upload ? 'Upload complete' : 'Download complete'))}</div>`;
         elements.cancelDownloadBtn.classList.add('hidden');
-        setDownloadButtonDisabled(false);
     } else if (dl.status === 'error') {
         html = `<div style="color: var(--danger);"><strong>${state.upload ? 'Upload failed' : 'Download failed'}</strong><br>${escapeHtml(dl.error || dl.status_text || 'Unknown error')}</div>`;
         elements.cancelDownloadBtn.classList.add('hidden');
-        setDownloadButtonDisabled(false);
     } else if (dl.status === 'cancelled') {
         html = `<div style="color: var(--text-secondary);">${state.upload ? 'Upload cancelled' : 'Download cancelled'}</div>`;
         elements.cancelDownloadBtn.classList.add('hidden');
-        setDownloadButtonDisabled(false);
     }
     elements.downloadStatus.innerHTML = html;
     elements.downloadStatus.classList.toggle('hidden', !html.trim());
@@ -11282,11 +11233,6 @@ function renderMeasurementPanel() {
     if (elements.measurementConvolverSampleRate) elements.measurementConvolverSampleRate.value = String(measurementState.measurementSampleRate || '48000');
     if (elements.measurementConvolverPhaseMode) elements.measurementConvolverPhaseMode.value = conv.phaseMode;
     if (elements.measurementConvolverIrLength) elements.measurementConvolverIrLength.value = String(conv.irLength);
-    if (elements.measurementConvolverQuality) {
-        const optionsHtml = measurementConvolverTypeOptions.map((option) => `<option value="${escapeHtml(option.key)}" ${conv.quality === option.key ? 'selected' : ''}>${escapeHtml(option.label)}</option>`).join('');
-        if (elements.measurementConvolverQuality.innerHTML !== optionsHtml) elements.measurementConvolverQuality.innerHTML = optionsHtml;
-        elements.measurementConvolverQuality.value = conv.quality;
-    }
     const convolverSourceSelection = getMeasurementConvolverSourceSelectionState();
     const convAnalyses = ['left', 'right'].map((side) => analyzeMeasurementConvolverSide(side));
     const left = convAnalyses[0];
@@ -11721,7 +11667,7 @@ function setupMeasurementActions() {
     if (elements.measurementCustomHouseCurveCreateBtn) {
         elements.measurementCustomHouseCurveCreateBtn.addEventListener('click', () => { void createCustomHouseCurve(); });
     }
-    [elements.measurementConvolverTarget, elements.measurementConvolverRangeStart, elements.measurementConvolverRangeEnd, elements.measurementConvolverMaxBoost, elements.measurementConvolverMaxCut, elements.measurementConvolverDipGuard, elements.measurementConvolverSampleRate, elements.measurementConvolverPhaseMode, elements.measurementConvolverIrLength, elements.measurementConvolverQuality].forEach((input) => {
+    [elements.measurementConvolverTarget, elements.measurementConvolverRangeStart, elements.measurementConvolverRangeEnd, elements.measurementConvolverMaxBoost, elements.measurementConvolverMaxCut, elements.measurementConvolverDipGuard, elements.measurementConvolverSampleRate, elements.measurementConvolverPhaseMode, elements.measurementConvolverIrLength].forEach((input) => {
         if (!input) return;
         const commit = () => {
             setMeasurementActiveEditor('none');
@@ -11886,7 +11832,6 @@ function resetPeqDraft() {
     state.dsp.peqDraft = getDefaultPeqDraft();
     if (elements.effectsPeqPresetName) elements.effectsPeqPresetName.value = '';
     if (elements.effectsPeqModeSelect) elements.effectsPeqModeSelect.value = 'IIR';
-    if (elements.effectsPeqLoadAfterCreate) elements.effectsPeqLoadAfterCreate.checked = false;
     renderPeqBands();
 }
 function addPeqBandPair() {
@@ -14346,10 +14291,6 @@ function updateFooterForSpotify(data) {
     elements.playbackBar?.classList.toggle('has-media', hasMedia);
     elements.playbackBar?.classList.toggle('is-playing', hasMedia && data.status === 'Playing');
     elements.playbackBar?.classList.toggle('is-paused', hasMedia && data.status === 'Paused');
-    if (elements.playbackEq) {
-        elements.playbackEq.classList.remove('peak-alert');
-        elements.playbackEq.title = '';
-    }
     if (typeof data.volume === 'number' && !volumeGestureActive && !spotifyVolumeRequestInFlight && pendingSpotifyVolume === null) {
         state.playback.volume = data.volume;
         renderVolumeControlsFromActualVolume(data.volume);

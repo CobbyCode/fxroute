@@ -397,6 +397,20 @@ body {
 .radio-panel-header .section-title {
     margin: 0;
 }
+/* Narrow panels: put the search on its own row so the action buttons on the
+   right never push the header past the viewport (base grid keeps a 420px
+   search minimum, which overflows at 601-660px). Mirrors the <=600px rules. */
+@media (max-width: 700px) {
+    .radio-panel-header {
+        grid-template-columns: 1fr auto;
+    }
+    .radio-search-field {
+        display: block;
+        grid-column: 1 / -1;
+        grid-row: 2;
+        max-width: none;
+    }
+}
 .radio-search-field {
     width: 100%;
     max-width: 820px;
@@ -4769,20 +4783,6 @@ input[type="number"]::-webkit-outer-spin-button {
     transition: opacity .15s var(--ease);
 }
 .playback-meter.is-active { opacity: 1; }
-.meter-topline {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: .45rem;
-    min-height: 0;
-}
-.meter-caption {
-    color: var(--text-muted);
-    font-size: .56rem;
-    font-weight: 780;
-    letter-spacing: .12em;
-    line-height: 1;
-}
 .output-level-badge {
     display: inline-flex;
     align-items: center;
@@ -4878,7 +4878,6 @@ input[type="number"]::-webkit-outer-spin-button {
     .playback-visual { width: 64px; height: 64px; }
     .volume-control { grid-template-columns: 22px minmax(108px,1fr) 2.3rem; gap: .42rem; }
     .volume-slider { min-width: 108px; }
-    .meter-caption { display: none; }
 }
 
 @media (max-width: 900px) {
@@ -4896,7 +4895,6 @@ input[type="number"]::-webkit-outer-spin-button {
     }
     .playback-bar .track-info { max-width: none; }
     .playback-meter { width: 132px; justify-self: end; }
-    .meter-topline { display: none; }
     .playback-center { gap: .36rem; }
     .transport-controls { min-height: 48px; }
     .control-btn { width: 50px; height: 50px; }
@@ -6292,7 +6290,6 @@ body {
     }
     .playback-bar .track-info { max-width: none; }
     .playback-meter { width: 140px; justify-self: end; }
-    .meter-topline { display: none; }
     .volume-control {
         width: min(650px, 100%);
         margin-inline: auto;
@@ -6368,8 +6365,6 @@ body {
     opacity: .48;
 }
 .playback-meter.is-active { opacity: .94; }
-.meter-topline,
-.meter-caption { display: none !important; }
 .meter-row { display: contents; }
 .meter-row[data-channel="left"] .meter-channel { grid-column: 1; grid-row: 1; }
 .meter-row[data-channel="left"] .meter-segments { grid-column: 2; grid-row: 1; }
@@ -7199,9 +7194,9 @@ body {
     .playback-bar {
         min-height: 126px;
         grid-template-columns:
-            minmax(250px, .96fr)
-            minmax(280px, 1.18fr)
-            minmax(190px, .78fr);
+            minmax(220px, .96fr)
+            minmax(240px, 1.18fr)
+            minmax(170px, .78fr);
         grid-template-rows: minmax(50px, auto) minmax(46px, auto);
         grid-template-areas:
             "track transport meter"
