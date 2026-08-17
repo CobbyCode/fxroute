@@ -31,6 +31,14 @@ let state = {
             hold_ms: 0,
             threshold: 1.0,
             vu_db: null,
+            vu_db_l: null,
+            vu_db_r: null,
+            detected_l: false,
+            detected_r: false,
+            hold_ms_l: 0,
+            hold_ms_r: 0,
+            last_over_at_l: null,
+            last_over_at_r: null,
             vu_fresh: false,
             vu_age_ms: null,
             target: null,
@@ -288,6 +296,7 @@ let volumeDisplayTimer = null;
 let volumeRequestInFlight = false;
 let pendingVolume = null;
 let volumeGestureActive = false;
+let trackFavoriteRequestInFlight = false;
 let effectsImportInFlight = false;
 let peqCreateInFlight = false;
 let convolverCreateInFlight = false;
@@ -608,6 +617,10 @@ const elements = {
     coverDetailExtraLine2: document.getElementById('cover-detail-extra-line2'),
     trackTitle: document.getElementById('track-title'),
     trackArtist: document.getElementById('track-artist'),
+    trackFavoriteBtn: document.getElementById('track-favorite-btn'),
+    playbackMeter: document.getElementById('playback-meter'),
+    meterLeft: document.getElementById('meter-l'),
+    meterRight: document.getElementById('meter-r'),
     playbackEq: document.getElementById('playback-eq'),
     connDot: document.getElementById('connection-dot'),
     connText: document.getElementById('connection-text'),
@@ -2460,6 +2473,7 @@ function setupPlaybackControls() {
     elements.btnPlayPause.addEventListener('click', globalTogglePlayback);
     if (elements.btnNext) elements.btnNext.addEventListener('click', globalNext);
     if (elements.btnClearQueue) elements.btnClearQueue.addEventListener('click', clearQueue);
+    if (elements.trackFavoriteBtn) elements.trackFavoriteBtn.addEventListener('click', toggleCurrentTrackFavorite);
     if (elements.libraryShuffleBtn) elements.libraryShuffleBtn.addEventListener('click', toggleLibraryShuffle);
     if (elements.libraryLoopBtn) elements.libraryLoopBtn.addEventListener('click', toggleLibraryLoop);
     elements.volumeSlider.addEventListener('input', handleVolumeChange);
@@ -2659,10 +2673,17 @@ function actualVolumeToSliderValue(actualVolume) {
     return Math.round(Math.pow(normalized, 1 / VOLUME_CURVE_GAMMA) * 100);
 }
 
+function setRangeProgress(input, fraction) {
+    if (!input) return;
+    const percent = Math.max(0, Math.min(100, Number(fraction) * 100));
+    input.style.setProperty('--range-progress', `${percent}%`);
+}
+
 function renderVolumeControlsFromActualVolume(actualVolume) {
     const sliderValue = actualVolumeToSliderValue(actualVolume);
     elements.volumeSlider.value = sliderValue;
     elements.volumeDisplay.textContent = `${sliderValue}%`;
+    setRangeProgress(elements.volumeSlider, sliderValue / 100);
 }
 
 function setLocalVolume(sliderValue) {
@@ -2671,6 +2692,7 @@ function setLocalVolume(sliderValue) {
     state.playback.volume = actualVolume;
     elements.volumeSlider.value = clampedSliderValue;
     elements.volumeDisplay.textContent = `${clampedSliderValue}%`;
+    setRangeProgress(elements.volumeSlider, clampedSliderValue / 100);
 }
 function queueVolumeSend(volume, immediate = false) {
     pendingVolume = volume;
@@ -3103,6 +3125,90 @@ function renderSamplerateUI() {
     elements.samplerateStatus.classList.remove('hidden');
 }
 
+function renderTrackFavoriteButton(track = state.playback.current_track) {
+    const button = elements.trackFavoriteBtn;
+    if (!button) return;
+    const available = !!(track && track.source === 'local' && track.id);
+    button.classList.toggle('hidden', !available);
+    button.disabled = !available || trackFavoriteRequestInFlight;
+    if (!available) {
+        button.textContent = '♡';
+        button.classList.remove('active');
+        button.setAttribute('aria-pressed', 'false');
+        return;
+    }
+    const favorite = !!track.favorite;
+    button.textContent = favorite ? '♥' : '♡';
+    button.classList.toggle('active', favorite);
+    button.setAttribute('aria-pressed', favorite ? 'true' : 'false');
+    button.setAttribute('aria-label', favorite ? 'Remove track from favorites' : 'Add track to favorites');
+    button.title = favorite ? 'Remove track from favorites' : 'Add track to favorites';
+}
+
+function updateTrackFavoriteCaches(trackId, favorite) {
+    const apply = (track) => {
+        if (track && track.id === trackId) track.favorite = !!favorite;
+    };
+    apply(state.playback.current_track);
+    (state.library.tracks || []).forEach(apply);
+    (state.library.albumDetail?.tracks || []).forEach(apply);
+}
+
+async function toggleCurrentTrackFavorite() {
+    const track = state.playback.current_track;
+    if (!track || track.source !== 'local' || !track.id || trackFavoriteRequestInFlight) return;
+    const nextFavorite = !track.favorite;
+    trackFavoriteRequestInFlight = true;
+    renderTrackFavoriteButton(track);
+    try {
+        const resp = await fetch(`/api/tracks/${encodeURIComponent(track.id)}/favorite`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ favorite: nextFavorite }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || 'Failed to update track favorite');
+        updateTrackFavoriteCaches(track.id, !!data.favorite);
+        renderTrackFavoriteButton(state.playback.current_track);
+        if (state.library.viewMode === 'tracks') renderLibraryView();
+    } catch (error) {
+        showToast(error.message || 'Failed to update track favorite', 'error');
+    } finally {
+        trackFavoriteRequestInFlight = false;
+        renderTrackFavoriteButton(state.playback.current_track);
+    }
+}
+
+function meterLitCount(db, segmentCount) {
+    const value = Number(db);
+    if (!Number.isFinite(value)) return 0;
+    const normalized = Math.max(0, Math.min(1, (value + 60) / 60));
+    if (normalized <= 0) return 0;
+    return Math.max(1, Math.min(segmentCount, Math.round(normalized * segmentCount)));
+}
+
+function renderMeterChannel(container, db, detected) {
+    if (!container) return;
+    const segments = Array.from(container.querySelectorAll('i'));
+    const lit = meterLitCount(db, segments.length);
+    segments.forEach((segment, index) => {
+        const isLit = index < lit;
+        segment.classList.toggle('is-lit', isLit);
+        segment.classList.toggle('is-warn', isLit && index >= Math.max(0, segments.length - 4));
+        segment.classList.toggle('is-hot', isLit && index >= Math.max(0, segments.length - 2));
+        segment.classList.toggle('is-peak', !!detected && index === segments.length - 1);
+    });
+}
+
+function renderStereoMeter(warning, active) {
+    if (!elements.playbackMeter) return;
+    const fresh = !!warning?.available && warning?.vu_fresh === true && !!active;
+    elements.playbackMeter.classList.toggle('is-active', fresh);
+    elements.playbackMeter.classList.toggle('is-peak', !!(warning?.detected_l || warning?.detected_r || warning?.detected));
+    renderMeterChannel(elements.meterLeft, fresh ? warning?.vu_db_l : null, fresh && !!warning?.detected_l);
+    renderMeterChannel(elements.meterRight, fresh ? warning?.vu_db_r : null, fresh && !!warning?.detected_r);
+}
+
 function formatOutputLevelBadgeDb(level) {
     const rounded = Math.round(Number(level));
     if (!Number.isFinite(rounded)) return '';
@@ -3117,6 +3223,13 @@ function renderPeakWarningBadge(activeOverride = null) {
     const showPeak = !!warning.detected;
     const title = warning.target?.description || warning.target?.source_name || 'DSP output monitor';
     const vuDb = Number.isFinite(Number(warning.vu_db)) ? Number(warning.vu_db) : null;
+    const playbackActive = activeOverride === null
+        ? (window.__footerSource === 'spotify'
+            ? window.__spotifyLastData?.status === 'Playing'
+            : !!state.playback.playing && !state.playback.paused)
+        : !!activeOverride;
+    const showVu = !!warning.available && warning.vu_fresh === true
+        && playbackActive && vuDb !== null;
 
     if (elements.peakWarningBadge) {
         elements.peakWarningBadge.classList.toggle('hidden', !showPeak);
@@ -3124,37 +3237,13 @@ function renderPeakWarningBadge(activeOverride = null) {
     }
 
     if (elements.outputLevelBadge) {
-        // `detected` is the short peak-alert hold, not sample validity.  The
-        // VU badge needs a recent real capture sample and active playback;
-        // otherwise the technical -60 dB floor must remain invisible.
-        const playbackActive = activeOverride === null
-            ? (window.__footerSource === 'spotify'
-                ? window.__spotifyLastData?.status === 'Playing'
-                : !!state.playback.playing && !state.playback.paused)
-            : !!activeOverride;
-        const showVu = !!warning.available && warning.vu_fresh === true
-            && playbackActive && vuDb !== null;
-        if (playbackActive) {
-            // A peak monitor restart briefly emits snapshots without a target
-            // or a fresh sample (available=false / vu_db=null /
-            // vu_fresh=false).  Keep the badge slot geometrically stable in
-            // that window instead of collapsing the footer layout, but never
-            // display a stale numeric value: the badge is hidden visually and
-            // its text is emptied until a fresh sample arrives.
-            elements.outputLevelBadge.classList.toggle('hidden', false);
-            elements.outputLevelBadge.style.visibility = showVu ? '' : 'hidden';
-        } else {
-            elements.outputLevelBadge.classList.toggle('hidden', !showVu);
-            elements.outputLevelBadge.style.visibility = '';
-        }
+        elements.outputLevelBadge.classList.toggle('hidden', !showVu);
+        elements.outputLevelBadge.style.visibility = '';
         elements.outputLevelBadge.textContent = showVu ? formatOutputLevelBadgeDb(vuDb) : '';
         elements.outputLevelBadge.title = showVu ? `Post-DSP output level (slow VU) on ${title}` : '';
     }
 
-    if (elements.playbackEq) {
-        elements.playbackEq.classList.toggle('peak-alert', showPeak);
-        elements.playbackEq.title = showPeak ? `Post-DSP output peak detected on ${title}` : '';
-    }
+    renderStereoMeter(warning, playbackActive);
 }
 function renderQueueUI() {
     const queue = state.playback.queue || {};
@@ -3696,6 +3785,7 @@ function updatePlaybackUI() {
             if (elements.trackArtist) elements.trackArtist.style.display = '';
         }
     }
+    renderTrackFavoriteButton(current_track);
     const activeRadioMetadata = isRadio ? state.playback.radio_metadata : null;
     const providerCover = activeRadioMetadata && !activeRadioMetadata.stale ? activeRadioMetadata.cover_url : '';
     updatePlaybackCover(providerCover ? {
@@ -13589,6 +13679,7 @@ function seekEnd() {
 function seekChange() {
     if (elements.playbackBar?.classList.contains('progress-readonly')) return;
     const pos = parseInt(elements.seekSlider.value, 10) || 0;
+    setRangeProgress(elements.seekSlider, pos / 1000);
     if (window.__footerSource === 'spotify') {
         const spotifyData = window.__spotifyLastData;
         const duration = spotifyData?.duration || 0;
@@ -13646,6 +13737,7 @@ function updateSeekUI() {
         elements.seekCurrent.textContent = '0:00';
         elements.seekDuration.textContent = '0:00';
         elements.seekSlider.value = 0;
+        setRangeProgress(elements.seekSlider, 0);
         return;
     }
     elements.seekDuration.textContent = formatTime(duration);
@@ -13656,6 +13748,7 @@ function updateSeekUI() {
         } else {
             elements.seekSlider.value = 0;
         }
+        setRangeProgress(elements.seekSlider, Number(elements.seekSlider.value || 0) / 1000);
     }
 }
 // Utilities
@@ -14160,6 +14253,7 @@ function updateFooterForSpotify(data) {
     if (window.__footerSource !== 'spotify') return;
     if (footerContentFreezeActive()) return;
     const hasMedia = !!(data?.available && (data.title || data.artist || data.album || data.status !== 'Stopped'));
+    renderTrackFavoriteButton(null);
     updatePlaybackCover(hasMedia ? spotifyArtworkItem(data) : null);
     elements.playbackBar?.classList.toggle('has-media', hasMedia);
     elements.playbackBar?.classList.toggle('is-playing', hasMedia && data.status === 'Playing');
@@ -14247,10 +14341,12 @@ function updateFooterForSpotify(data) {
             elements.seekCurrent.textContent = '0:00';
             elements.seekDuration.textContent = '0:00';
             elements.seekSlider.value = 0;
+            setRangeProgress(elements.seekSlider, 0);
         } else if (!window.__spotifySeeking) {
             elements.seekCurrent.textContent = formatTime(pos);
             elements.seekDuration.textContent = formatTime(dur);
             elements.seekSlider.value = Math.round((pos / dur) * 1000);
+            setRangeProgress(elements.seekSlider, Number(elements.seekSlider.value || 0) / 1000);
         }
     }
     if (elements.samplerateStatus) {

@@ -12,7 +12,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=0.9.11">
     <link rel="manifest" href="/static/site.webmanifest?v=0.9.11">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/static/style.css?v=0.9.13">
+    <link rel="stylesheet" href="/static/style.css?v=0.9.21">
 </head>
 <body>
     <!-- Offline indicator -->
@@ -194,12 +194,12 @@
             </section>
         </div>
 
-        <!-- Tabs -->
-        <nav class="tabs">
-            <button class="tab-btn active" data-tab="radio">📻 Radio</button>
-            <button class="tab-btn" data-tab="spotify" hidden style="display:none">🎵 Spotify</button>
-            <button class="tab-btn" data-tab="library">🎶 Library</button>
-            <button class="tab-btn" data-tab="effects">🎛 DSP</button>
+        <!-- Main navigation. Streaming providers come first and may be hidden dynamically. -->
+        <nav class="tabs" aria-label="Primary">
+            <button class="tab-btn" data-tab="spotify" hidden style="display:none"><span class="tab-glyph" aria-hidden="true">♪</span><span>Spotify</span></button>
+            <button class="tab-btn active" data-tab="radio"><span class="tab-glyph" aria-hidden="true">▣</span><span>Radio</span></button>
+            <button class="tab-btn" data-tab="library"><span class="tab-glyph" aria-hidden="true">♫</span><span>Library</span></button>
+            <button class="tab-btn" data-tab="effects"><span class="tab-glyph" aria-hidden="true">⌁</span><span>DSP</span></button>
         </nav>
 
         <!-- Tab content -->
@@ -1235,28 +1235,34 @@
         <div class="track-info">
             <div class="playback-visual">
                 <img id="playback-cover" class="playback-cover hidden" alt="" />
-                <span id="playback-eq" class="playback-eq">
-                    <span class="peak-wave" aria-hidden="true">
-                        <span class="wave-bar"></span><span class="wave-bar"></span><span class="wave-bar"></span><span class="wave-bar"></span><span class="wave-bar"></span>
-                    </span>
-                    <span class="peak-label" aria-hidden="true">PEAK</span>
-                </span>
+                <span class="playback-cover-placeholder" aria-hidden="true">FX</span>
             </div>
-            <div class="track-fallback">
-                <span id="track-title" class="track-title placeholder">Not playing</span>
-                <div id="track-artist" class="track-artist"></div>
+            <div class="track-copy">
+                <div class="track-copy-main">
+                    <div class="track-fallback">
+                        <span id="track-title" class="track-title placeholder">Not playing</span>
+                        <div id="track-artist" class="track-artist"></div>
+                    </div>
+                    <div class="song-info">
+                        <span class="sc-artist" id="sc-artist"></span>
+                        <span class="sc-title" id="sc-title"></span>
+                        <span class="sc-album" id="sc-album"></span>
+                    </div>
+                    <button id="track-favorite-btn" class="track-favorite-btn hidden" type="button" aria-label="Add track to favorites" aria-pressed="false" title="Add track to favorites">♡</button>
+                </div>
+                <div class="playback-meta-row">
+                    <div id="samplerate-status" class="samplerate-status hidden">44.1 kHz</div>
+                    <div id="queue-status" class="queue-status hidden">1 / 1</div>
+                </div>
             </div>
         </div>
+
         <div class="playback-center">
-            <div class="song-info">
-                <span class="sc-artist" id="sc-artist"></span>
-                <span class="sc-title" id="sc-title"></span>
-                <span class="sc-album" id="sc-album"></span>
-            </div>
-            <div class="playback-meta-row">
-                <div id="samplerate-status" class="samplerate-status hidden">44.1 kHz</div>
-                <div id="queue-status" class="queue-status hidden">Queue 1 / 1</div>
-                <div id="output-level-badge" class="output-level-badge hidden">-60 dB</div>
+            <div class="transport-controls">
+                <button id="btn-previous" class="control-btn control-btn-secondary hidden" disabled aria-label="Previous">⏮</button>
+                <button id="btn-play-pause" class="control-btn" disabled aria-label="Play or pause">▶</button>
+                <button id="btn-next" class="control-btn control-btn-secondary hidden" disabled aria-label="Next">⏭</button>
+                <button id="btn-clear-queue" class="control-btn control-btn-clear hidden" disabled title="Clear queue" aria-label="Clear queue">✕</button>
             </div>
             <div class="seek-row hidden">
                 <span id="seek-current" class="seek-time">0:00</span>
@@ -1273,15 +1279,34 @@
                 <span id="seek-duration" class="seek-time">0:00</span>
             </div>
         </div>
-        <div class="controls">
-            <div class="transport-controls">
-                <button id="btn-previous" class="control-btn control-btn-secondary hidden" disabled aria-label="Previous">⏮</button>
-                <button id="btn-play-pause" class="control-btn" disabled aria-label="Play or pause">▶</button>
-                <button id="btn-next" class="control-btn control-btn-secondary hidden" disabled aria-label="Next">⏭</button>
-                <button id="btn-clear-queue" class="control-btn control-btn-clear hidden" disabled title="Clear queue" aria-label="Clear queue">✕</button>
+
+        <div id="playback-meter" class="playback-meter" aria-label="Stereo output level">
+            <div class="meter-topline">
+                <span class="meter-caption">LEVEL</span>
+                <div id="output-level-badge" class="output-level-badge hidden">-60 dB</div>
             </div>
+            <div class="meter-row" data-channel="left">
+                <span class="meter-channel">L</span>
+                <span id="meter-l" class="meter-segments" aria-hidden="true">
+                    <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+                </span>
+            </div>
+            <div class="meter-row" data-channel="right">
+                <span class="meter-channel">R</span>
+                <span id="meter-r" class="meter-segments" aria-hidden="true">
+                    <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+                </span>
+            </div>
+        </div>
+
+        <div class="controls">
             <label class="volume-control" for="volume-slider">
-                <span class="volume-icon" aria-hidden="true">VOL</span>
+                <span class="volume-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" focusable="false">
+                        <path d="M4 10v4h4l5 4V6L8 10H4Z" fill="currentColor"></path>
+                        <path d="M16 9.2a4 4 0 0 1 0 5.6M18.5 6.8a7.3 7.3 0 0 1 0 10.4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"></path>
+                    </svg>
+                </span>
                 <input
                     type="range"
                     id="volume-slider"
@@ -1329,6 +1354,6 @@
     <script src="/static/measurement_dsp.js?v=0.9.11"></script>
     <script src="/static/hybrid_measurement.js?v=0.9.11"></script>
     <script src="/static/radio.js?v=0.9.11"></script>
-    <script src="/static/app.js?v=0.9.18"></script>
+    <script src="/static/app.js?v=0.9.20"></script>
 </body>
 </html>

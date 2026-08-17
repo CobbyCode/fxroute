@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Static regression checks for the data-driven responsive playback footer."""
+"""Static regression checks for the responsive playback footer."""
 
 from pathlib import Path
 import re
@@ -35,33 +35,40 @@ def footer_markup() -> str:
 
 
 class FooterResponsiveLayoutTests(unittest.TestCase):
-    def test_footer_uses_intrinsic_grid_instead_of_fixed_height(self):
+    def test_footer_has_four_priority_zones(self):
         playback_bar = rule(".playback-bar")
-        self.assertIn('grid-template-areas: "visual content controls"', playback_bar)
-        self.assertIn("min-height: 100px", playback_bar)
+        self.assertIn('grid-template-areas: "track transport meter volume"', playback_bar)
+        self.assertIn("min-height: 112px", playback_bar)
         self.assertNotRegex(playback_bar, r"(?m)^\s*height\s*:")
-        self.assertIn("width: min(1560px, calc(100% - 16px))", playback_bar)
+        self.assertIn("width: min(1560px, calc(100% - 20px))", playback_bar)
 
-    def test_cover_and_activity_share_one_visual_unit(self):
+    def test_cover_and_track_favorite_are_in_track_zone(self):
         markup = footer_markup()
-        visual = re.search(
-            r'<div class="playback-visual">(.*?)</div>', markup, re.DOTALL
-        )
-        self.assertIsNotNone(visual)
-        self.assertIn('id="playback-cover"', visual.group(1))
-        self.assertIn('id="playback-eq"', visual.group(1))
-        overlay = rule(
-            ".playback-visual:has(.playback-cover:not(.hidden)) .playback-eq"
-        )
-        self.assertIn("position: absolute", overlay)
-        self.assertIn("right: 3px", overlay)
-        self.assertIn("bottom: 3px", overlay)
-        visual_with_cover = rule(
-            ".playback-visual:has(.playback-cover:not(.hidden))"
-        )
-        self.assertIn("overflow: hidden", visual_with_cover)
+        self.assertEqual(markup.count('id="playback-cover"'), 1)
+        self.assertEqual(markup.count('id="track-favorite-btn"'), 1)
+        self.assertIn("renderTrackFavoriteButton(current_track)", APP)
+        self.assertIn("toggleCurrentTrackFavorite", APP)
+        self.assertIn("/favorite`,", APP)
 
-    def test_optional_metadata_and_progress_start_collapsed(self):
+    def test_stereo_meter_uses_real_backend_fields(self):
+        markup = footer_markup()
+        self.assertEqual(markup.count('id="meter-l"'), 1)
+        self.assertEqual(markup.count('id="meter-r"'), 1)
+        self.assertIn("warning?.vu_db_l", APP)
+        self.assertIn("warning?.vu_db_r", APP)
+        self.assertIn("warning?.detected_l", APP)
+        self.assertIn("warning?.detected_r", APP)
+        self.assertNotIn('id="playback-eq"', markup)
+
+    def test_progress_and_volume_have_explicit_active_fill(self):
+        self.assertIn("--range-progress", CSS)
+        self.assertIn("background: linear-gradient(to right", CSS)
+        self.assertIn("setRangeProgress(elements.seekSlider", APP)
+        self.assertIn("setRangeProgress(elements.volumeSlider", APP)
+        self.assertIn('aria-label="Playback position"', footer_markup())
+        self.assertIn('aria-label="Volume"', footer_markup())
+
+    def test_track_metadata_remains_data_driven(self):
         markup = footer_markup()
         for element_id in (
             "sc-artist",
@@ -75,55 +82,30 @@ class FooterResponsiveLayoutTests(unittest.TestCase):
             self.assertIn(f'id="{element_id}"', markup)
         self.assertIn('<div class="seek-row hidden">', markup)
         self.assertIn("setFooterProgressState(hasProgress, radioTimed)", APP)
-        self.assertNotIn("radio-has-progress", CSS)
-        self.assertNotIn("seekRow.style.display", APP)
 
-    def test_progress_is_a_separate_inset_grid(self):
-        seek = rule(".playback-center .seek-row")
-        self.assertIn("display: grid", seek)
-        self.assertIn("grid-template-columns:", seek)
-        self.assertIn("border-radius:", seek)
-        self.assertIn("background:", seek)
-        self.assertNotIn("margin-top: auto", seek)
-
-    def test_tablet_keeps_visual_and_metadata_on_the_same_row(self):
-        tablet_blocks = re.findall(
-            r"@media \(max-width: 980px\) \{(.*?)(?=\n\}\n)", CSS, re.DOTALL
-        )
-        block = next(
-            (candidate for candidate in tablet_blocks if ".playback-bar" in candidate),
-            "",
-        )
-        self.assertTrue(block, "Missing playback footer tablet block")
-        self.assertIn('"visual content"', block)
-        self.assertIn('"controls controls"', block)
-        self.assertIn("grid-template-columns: minmax(0, auto) minmax(0, 1fr)", block)
-
-    def test_mobile_collapses_absent_media_without_source_rules(self):
-        self.assertIn(".playback-bar:not(.has-media)", CSS)
-        self.assertIn(".playback-bar:not(.has-media) .playback-center", CSS)
-        self.assertIn("elements.playbackBar?.classList.toggle('has-media'", APP)
-        self.assertNotIn(".source-radio .playback-bar", CSS)
+    def test_mobile_separates_seek_meter_and_volume(self):
         self.assertRegex(
             CSS,
-            r"@media \(max-width: 560px\)[\s\S]*?"
-            r"\.playback-meta-row\s*\{[^}]*justify-content:\s*center",
+            r"@media \(max-width: 600px\)[\s\S]*?grid-template-areas:\s*"
+            r'\s*"track track"\s*"transport transport"\s*"meter volume"',
         )
+        self.assertIn(".playback-bar:not(.has-media)", CSS)
+        self.assertIn(".playback-bar:not(.has-media) .playback-center", CSS)
 
-    def test_volume_has_a_long_track_and_transient_readout(self):
-        volume = rule(".volume-slider")
-        self.assertIn("width: clamp(145px, 14vw, 210px)", volume)
-        self.assertIn("min-width: 145px", volume)
-        self.assertIn("showVolumeDisplayTemporarily()", APP)
-        self.assertIn(".controls.is-adjusting-volume .volume-display", CSS)
-        self.assertIn('aria-label="Volume"', footer_markup())
+    def test_portrait_tablet_gets_roomier_multiline_footer(self):
+        self.assertRegex(
+            CSS,
+            r"@media \(max-width: 1100px\) and \(orientation: portrait\)"
+            r"[\s\S]*?\"track meter\"[\s\S]*?\"transport transport\""
+            r"[\s\S]*?\"volume volume\"",
+        )
 
     def test_page_end_clearance_tracks_real_footer_height(self):
         self.assertIn("padding-bottom: var(--playback-footer-space)", rule("body"))
         self.assertIn("new ResizeObserver(schedulePlaybackFooterSpaceSync)", APP)
         self.assertIn("rect.height + bottomInset + 16", APP)
 
-    def test_all_control_ids_and_seek_accessibility_are_preserved(self):
+    def test_all_control_ids_are_preserved_once(self):
         markup = footer_markup()
         for element_id in (
             "btn-previous",
@@ -134,7 +116,6 @@ class FooterResponsiveLayoutTests(unittest.TestCase):
             "seek-slider",
         ):
             self.assertEqual(markup.count(f'id="{element_id}"'), 1)
-        self.assertIn('aria-label="Playback position"', markup)
 
 
 if __name__ == "__main__":
