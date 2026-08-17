@@ -3,8 +3,9 @@
 """Streaming provider layer.
 
 Owns the provider-agnostic models, capability declarations and the registry.
-Spotify Desktop and spotifyd are both the ``spotify`` provider; Qobuz and
-TIDAL are declared providers whose backends are not implemented yet.
+Spotify Desktop and spotifyd are both the ``spotify`` provider; Qobuz is
+implemented via the ``qbzd`` daemon; TIDAL is a declared provider whose
+backend is not implemented yet.
 """
 
 from streaming.base.capabilities import CAPABILITY_NAMES, Capabilities
@@ -39,8 +40,8 @@ def get_provider(provider_id: str) -> StreamingProvider | None:
     return registry.get(provider_id)
 
 
-def describe_providers() -> list[dict]:
-    return registry.describe_all()
+async def describe_providers() -> list[dict]:
+    return await registry.describe_all()
 
 
 __all__ = [

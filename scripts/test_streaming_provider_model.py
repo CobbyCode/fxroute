@@ -4,7 +4,7 @@
 
 Covers the provider/capability model, the Spotify backend detection and the
 metadata normalization of the playerctl status read. No real playerctl or
-MPRIS is required; the low-level ``_run`` helper is patched.
+MPRIS is required; the low-level ``_run``/``list_players`` helpers are patched.
 """
 
 import asyncio
@@ -19,7 +19,12 @@ sys.path.insert(0, str(ROOT))
 import streaming
 from streaming.base.capabilities import CAPABILITY_NAMES, Capabilities
 from streaming.base.models import PlaybackState, ProviderState, Track
-from streaming.spotify.mpris import detect_backend, player_name, spotify_installed
+from streaming.spotify.mpris import (
+    detect_backend,
+    detect_running_backend,
+    player_name,
+    spotify_installed,
+)
 from streaming.spotify.provider import SpotifyProvider
 
 
@@ -87,44 +92,61 @@ class ModelsTests(unittest.TestCase):
         self.assertEqual(payload["volume"], 75)
 
 
-class RegistryTests(unittest.TestCase):
-    def test_registry_lists_declared_providers_with_implemented_flag(self):
-        described = {p["id"]: p for p in streaming.describe_providers()}
+class RegistryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_registry_lists_providers_with_implemented_flag(self):
+        described = {p["id"]: p for p in await streaming.describe_providers()}
         self.assertIn("spotify", described)
         self.assertIn("qobuz", described)
         self.assertIn("tidal", described)
         self.assertTrue(described["spotify"]["implemented"])
-        self.assertFalse(described["qobuz"]["implemented"])
+        self.assertTrue(described["qobuz"]["implemented"])
         self.assertFalse(described["tidal"]["implemented"])
-        # Declared providers never claim to be available or working.
-        self.assertFalse(described["qobuz"]["available"])
-        self.assertFalse(described["tidal"]["available"])
 
     def test_get_provider_returns_instance_and_unknown_is_none(self):
         self.assertIsInstance(streaming.get_provider("spotify"), SpotifyProvider)
         self.assertIsNone(streaming.get_provider("unknown"))
 
+    async def test_unimplemented_provider_reports_unavailable(self):
+        tidal = streaming.get_provider("tidal")
+        described = await tidal.describe()
+        self.assertFalse(described["implemented"])
+        self.assertFalse(described["available"])
+        self.assertFalse(described["installed"])
+        self.assertIsNone(described["backend"])
 
-class SpotifyBackendTests(unittest.TestCase):
-    def test_detect_backend_prefers_desktop(self):
-        with mock.patch("streaming.spotify.mpris._spotify_desktop_installed", return_value=True), \
+
+class SpotifyBackendTests(unittest.IsolatedAsyncioTestCase):
+    async def test_running_backend_prefers_desktop_when_only_desktop(self):
+        with mock.patch("streaming.spotify.mpris.list_players", new=_players(["spotify"])):
+            self.assertEqual(await detect_running_backend(), "desktop")
+
+    async def test_running_backend_prefers_spotifyd_when_only_spotifyd(self):
+        with mock.patch("streaming.spotify.mpris.list_players", new=_players(["spotifyd"])):
+            self.assertEqual(await detect_running_backend(), "spotifyd")
+
+    async def test_running_backend_desktop_wins_when_both_running(self):
+        with mock.patch("streaming.spotify.mpris.list_players", new=_players(["spotify", "spotifyd"])):
+            self.assertEqual(await detect_running_backend(), "desktop")
+
+    async def test_running_backend_none_when_none_running(self):
+        with mock.patch("streaming.spotify.mpris.list_players", new=_players([])):
+            self.assertIsNone(await detect_running_backend())
+
+    async def test_detect_backend_falls_back_to_install_profile(self):
+        with mock.patch("streaming.spotify.mpris.list_players", new=_players([])), \
+             mock.patch("streaming.spotify.mpris._spotify_desktop_installed", return_value=False), \
              mock.patch("streaming.spotify.mpris._spotifyd_installed", return_value=True):
-            self.assertEqual(detect_backend(), "desktop")
+            self.assertEqual(await detect_backend(), "spotifyd")
 
-    def test_detect_backend_falls_back_to_spotifyd(self):
-        with mock.patch("streaming.spotify.mpris._spotify_desktop_installed", return_value=False), \
-             mock.patch("streaming.spotify.mpris._spotifyd_installed", return_value=True):
-            self.assertEqual(detect_backend(), "spotifyd")
-
-    def test_detect_backend_none_when_neither_installed(self):
-        with mock.patch("streaming.spotify.mpris._spotify_desktop_installed", return_value=False), \
+    async def test_detect_backend_none_when_neither_installed(self):
+        with mock.patch("streaming.spotify.mpris.list_players", new=_players([])), \
+             mock.patch("streaming.spotify.mpris._spotify_desktop_installed", return_value=False), \
              mock.patch("streaming.spotify.mpris._spotifyd_installed", return_value=False):
-            self.assertIsNone(detect_backend())
+            self.assertIsNone(await detect_backend())
 
     def test_player_name_maps_backends(self):
         self.assertEqual(player_name("desktop"), "spotify")
         self.assertEqual(player_name("spotifyd"), "spotifyd")
-        # Unknown/absent backend stays on the desktop player for compatibility.
         self.assertEqual(player_name(None), "spotify")
 
     def test_spotify_installed_is_union_of_backends(self):
@@ -170,11 +192,12 @@ class SpotifyStatusNormalizationTests(unittest.IsolatedAsyncioTestCase):
 
         provider = SpotifyProvider()
         with mock.patch("streaming.spotify.mpris.playerctl_available", return_value=True), \
-             mock.patch("streaming.spotify.mpris._run", side_effect=fake_run), \
-             mock.patch("streaming.spotify.mpris.detect_backend", return_value="desktop"):
+             mock.patch("streaming.spotify.mpris.list_players", new=_players(["spotify"])), \
+             mock.patch("streaming.spotify.mpris._run", side_effect=fake_run):
             status = await provider.status()
 
         self.assertEqual(status["source"], "spotify")
+        self.assertEqual(status["backend"], "desktop")
         self.assertEqual(status["status"], "Playing")
         self.assertEqual(status["artist"], "Artist Name")
         self.assertEqual(status["title"], "Track Title")
@@ -197,6 +220,12 @@ class SpotifyStatusNormalizationTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(status["available"])
         self.assertEqual(status["status"], "Stopped")
         self.assertEqual(status["source"], "spotify")
+
+
+def _players(names):
+    async def fake_list_players(timeout=2.0):
+        return list(names)
+    return fake_list_players
 
 
 if __name__ == "__main__":

@@ -7,8 +7,8 @@ detection. This is the only module that talks to playerctl; the provider and
 the rest of the application see a small helper surface.
 
 Spotify Desktop and spotifyd both implement the single ``spotify`` provider:
-the MPRIS player name is selected here, based on which backend is installed,
-and never leaks into the UI/API.
+the MPRIS player name is selected here from the players that are actually
+running (with an install-profile fallback), and never leaks into the UI/API.
 """
 
 from __future__ import annotations
@@ -24,6 +24,10 @@ logger = logging.getLogger(__name__)
 # publishes ``spotify``; spotifyd publishes ``spotifyd``.
 SPOTIFY_DESKTOP_PLAYER = "spotify"
 SPOTIFYD_PLAYER = "spotifyd"
+
+# Bounded timeout for the running-player discovery subprocess; a stuck
+# playerctl must not stall a status read.
+PLAYER_LIST_TIMEOUT_SECONDS = 2.0
 
 _playerctl_path: str | None = None
 
@@ -67,24 +71,70 @@ def spotify_installed() -> bool:
     return _spotify_desktop_installed() or _spotifyd_installed()
 
 
-def detect_backend() -> str | None:
-    """Return the Spotify backend to target, or None when none is installed.
+def player_name(backend: str | None) -> str:
+    """Map a backend name to the playerctl MPRIS player name."""
+    return SPOTIFYD_PLAYER if backend == "spotifyd" else SPOTIFY_DESKTOP_PLAYER
 
-    Desktop is preferred on desktop systems; spotifyd is used when it is the
-    only installed backend (headless/ARM). Dynamic detection of the running
-    MPRIS player is intentionally left out: the two backends are exclusive by
-    install profile, and a sync subprocess must not run on the hot status path.
+
+async def list_players(timeout: float = PLAYER_LIST_TIMEOUT_SECONDS) -> list[str]:
+    """Return the MPRIS player names currently visible to playerctl.
+
+    Discovery is the single source of truth for "which player is running".
+    A missing playerctl, a non-zero exit or a timeout yields an empty list.
     """
+    cmd = _find_playerctl()
+    if cmd is None:
+        return []
+    proc: asyncio.subprocess.Process | None = None
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            cmd,
+            "-l",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        if proc.returncode != 0:
+            return []
+        return [line.strip() for line in stdout.decode(errors="ignore").splitlines() if line.strip()]
+    except (asyncio.TimeoutError, OSError) as exc:
+        logger.debug("playerctl -l failed: %s", exc)
+        return []
+    finally:
+        await _stop_process(proc)
+
+
+async def detect_running_backend(timeout: float = PLAYER_LIST_TIMEOUT_SECONDS) -> str | None:
+    """Return the Spotify backend whose MPRIS player is actually running.
+
+    * exactly one running player -> that backend;
+    * both running -> desktop wins deterministically (documented, stable);
+    * none running -> None.
+    """
+    players = set(await list_players(timeout))
+    if SPOTIFY_DESKTOP_PLAYER in players:
+        return "desktop"
+    if SPOTIFYD_PLAYER in players:
+        return "spotifyd"
+    return None
+
+
+async def detect_backend(timeout: float = PLAYER_LIST_TIMEOUT_SECONDS) -> str | None:
+    """Return the Spotify backend to target.
+
+    The running MPRIS player is authoritative. When nothing is running, fall
+    back to the install profile so a desktop client that is installed but not
+    running still reports ``Stopped`` instead of unavailable (preserving the
+    existing desktop behavior).
+    """
+    running = await detect_running_backend(timeout)
+    if running is not None:
+        return running
     if _spotify_desktop_installed():
         return "desktop"
     if _spotifyd_installed():
         return "spotifyd"
     return None
-
-
-def player_name(backend: str | None) -> str:
-    """Map a backend name to the playerctl MPRIS player name."""
-    return SPOTIFYD_PLAYER if backend == "spotifyd" else SPOTIFY_DESKTOP_PLAYER
 
 
 async def _stop_process(proc: asyncio.subprocess.Process | None) -> None:

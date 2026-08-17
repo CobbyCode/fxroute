@@ -587,6 +587,7 @@ from audio.samplerate import (
     set_bluetooth_receiver_enabled,
 )
 import streaming
+from streaming.spotify import mpris as spotify_mpris
 from streaming.spotify.mpris import playerctl_available, spotify_installed
 from streaming.spotify.provider import (
     SPOTIFY_PREARM_SAMPLE_RATE_HZ,
@@ -2410,22 +2411,10 @@ async def _spotify_state_poll_loop() -> None:
 
 
 async def _spotify_player_present(timeout: float = 0.8) -> bool:
+    """Return whether any Spotify backend player is running (desktop or spotifyd)."""
     try:
-        import shutil
-        pc = shutil.which("playerctl")
-        if not pc:
-            return False
-        proc = await asyncio.create_subprocess_exec(
-            pc,
-            "-l",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-        if proc.returncode != 0:
-            return False
-        players = stdout.decode(errors="ignore").splitlines()
-        return any(player.strip().lower() == "spotify" for player in players)
+        players = set(await spotify_mpris.list_players(timeout=timeout))
+        return bool({spotify_mpris.SPOTIFY_DESKTOP_PLAYER, spotify_mpris.SPOTIFYD_PLAYER} & players)
     except Exception:
         return False
 
@@ -2446,7 +2435,8 @@ async def pause_spotify_for_local_playback_broadcast():
         import shutil
         pc = shutil.which("playerctl")
         if pc:
-            proc = await asyncio.create_subprocess_exec(pc, "--player=spotify", "pause")
+            player = spotify_mpris.player_name(await spotify_mpris.detect_backend())
+            proc = await asyncio.create_subprocess_exec(pc, f"--player={player}", "pause")
             await asyncio.wait_for(proc.communicate(), timeout=3)
     except Exception:
         pass
@@ -4316,9 +4306,57 @@ async def api_streaming_providers():
     """List registered streaming providers with their capability surface.
 
     The generic foundation for a future streaming tab: the UI reads
-    ``capabilities`` instead of branching on provider identity.
+    ``capabilities`` instead of branching on provider identity. Providers
+    that are declared but not implemented report ``implemented=false`` and
+    ``available=false`` and must never render as a usable service.
     """
-    return {"providers": streaming.describe_providers()}
+    return {"providers": await streaming.describe_providers()}
+
+
+@app.get("/api/streaming/{provider_id}/status")
+async def api_streaming_provider_status(provider_id: str):
+    """Normalized provider/playback state for one registered provider."""
+    provider = streaming.get_provider(provider_id)
+    if provider is None:
+        raise HTTPException(status_code=404, detail=f"unknown streaming provider: {provider_id}")
+    return await provider.status()
+
+
+_STREAMING_TRANSPORT_ACTIONS = {
+    "play", "pause", "toggle", "next", "previous", "shuffle", "repeat",
+}
+
+
+@app.post("/api/streaming/{provider_id}/{action}")
+async def api_streaming_provider_action(provider_id: str, action: str, request: Request):
+    """Generic provider transport action, dispatched by capability.
+
+    This is the provider-level transport contract (no FXRoute source
+    transition). The existing ``/api/spotify/*`` endpoints keep their source
+    handoff semantics for Spotify; other providers are driven through here.
+    """
+    provider = streaming.get_provider(provider_id)
+    if provider is None:
+        raise HTTPException(status_code=404, detail=f"unknown streaming provider: {provider_id}")
+    if action == "seek":
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        return await provider.seek(float(body.get("position", 0)))
+    if action == "volume":
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        return await provider.set_volume(float(body.get("volume", 100)))
+    if action not in _STREAMING_TRANSPORT_ACTIONS:
+        raise HTTPException(status_code=404, detail=f"unknown streaming action: {action}")
+    method = getattr(provider, action)
+    try:
+        return await method()
+    except streaming.ProviderNotImplemented as exc:
+        raise HTTPException(status_code=501, detail=str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------

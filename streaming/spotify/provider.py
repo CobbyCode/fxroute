@@ -5,7 +5,8 @@
 Controls an already-running local Spotify player through playerctl / MPRIS.
 Spotify Desktop and spotifyd are both implementations of this single
 ``spotify`` provider; the backend is selected inside
-:mod:`streaming.spotify.mpris` and never reaches the UI/API.
+:mod:`streaming.spotify.mpris` from the players actually running (with an
+install-profile fallback) and never reaches the UI/API.
 
 No Spotify Web API / OAuth / secondary client.
 """
@@ -47,24 +48,22 @@ class SpotifyProvider(StreamingProvider):
             cover=True,
         )
 
-    def is_available(self) -> bool:
-        return mpris.playerctl_available()
-
     def is_installed(self) -> bool:
         return mpris.spotify_installed()
 
-    def backend(self) -> str | None:
-        return mpris.detect_backend()
+    async def is_available(self) -> bool:
+        return mpris.playerctl_available()
 
-    def _player(self) -> str:
-        return mpris.player_name(self.backend())
+    async def backend(self) -> str | None:
+        return await mpris.detect_backend()
 
     async def _run_player(self, *args: str, timeout: float = 4.0) -> str | None:
-        return await mpris._run(f"--player={self._player()}", *args, timeout=timeout)
+        player = mpris.player_name(await self.backend())
+        return await mpris._run(f"--player={player}", *args, timeout=timeout)
 
     async def status(self) -> dict:
         result: dict[str, Any] = {
-            "available": self.is_available(),
+            "available": await self.is_available(),
             "installed": self.is_installed(),
             "source": self.provider_id,
             "capabilities": self.capabilities().to_dict(),
@@ -84,11 +83,17 @@ class SpotifyProvider(StreamingProvider):
         if not result["available"]:
             return result
 
-        backend = self.backend()
+        # Resolve the backend once and reuse it for every playerctl read so a
+        # single status call runs one discovery subprocess, not one per field.
+        backend = await self.backend()
         if backend:
             result["backend"] = backend
+        player = mpris.player_name(backend)
 
-        meta = await self._run_player(
+        async def run(*args: str, timeout: float = 4.0) -> str | None:
+            return await mpris._run(f"--player={player}", *args, timeout=timeout)
+
+        meta = await run(
             "metadata", "--format",
             "{{status}}|{{artist}}|{{title}}|{{album}}|{{mpris:length}}|{{mpris:trackid}}",
         )
@@ -112,27 +117,27 @@ class SpotifyProvider(StreamingProvider):
         if len(parts) >= 6:
             result["trackId"] = parts[5]
 
-        art = await self._run_player("metadata", "mpris:artUrl")
+        art = await run("metadata", "mpris:artUrl")
         if art:
             result["artUrl"] = art
 
-        shuffle_val = await self._run_player("shuffle")
+        shuffle_val = await run("shuffle")
         result["shuffle"] = shuffle_val == "On"
 
-        loop_val = await self._run_player("loop")
+        loop_val = await run("loop")
         if loop_val in ("Track", "Playlist"):
             result["loop"] = loop_val.lower()
         else:
             result["loop"] = "none"
 
-        pos_str = await self._run_player("position")
+        pos_str = await run("position")
         if pos_str:
             try:
                 result["position"] = float(pos_str)
             except (ValueError, TypeError):
                 pass
 
-        volume_str = await self._run_player("volume")
+        volume_str = await run("volume")
         if volume_str:
             try:
                 result["volume"] = max(0, min(100, round(float(volume_str) * 100)))

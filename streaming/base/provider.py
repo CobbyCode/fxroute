@@ -3,9 +3,14 @@
 """Provider abstraction and registry for the streaming layer.
 
 A provider implements :class:`StreamingProvider`. A provider that is declared
-but not yet built (Qobuz, TIDAL before their backends exist) subclasses
+but not yet built (TIDAL before its backend exists) subclasses
 :class:`DeclaredStreamingProvider`, which reports its capabilities and an
 unavailable status without pretending to work.
+
+Availability and backend are async: they probe runtime state (the running
+MPRIS player for Spotify, the qbzd control plane for Qobuz), so they must not
+block the event loop. Installation is a cheap sync filesystem/`shutil.which`
+check.
 """
 
 from __future__ import annotations
@@ -42,30 +47,30 @@ class StreamingProvider(ABC):
         """Return the provider's declared capability surface."""
 
     @abstractmethod
-    def is_available(self) -> bool:
-        """Return whether the provider's transport backend is reachable."""
-
-    @abstractmethod
     def is_installed(self) -> bool:
         """Return whether any backend for this provider is installed."""
 
     @abstractmethod
-    def backend(self) -> str | None:
-        """Return the active backend name, or None when none is installed."""
+    async def is_available(self) -> bool:
+        """Return whether the provider's transport backend is reachable."""
+
+    @abstractmethod
+    async def backend(self) -> str | None:
+        """Return the active backend name, or None when none is available."""
 
     @abstractmethod
     async def status(self) -> dict:
         """Return the normalized provider/playback state as a dict."""
 
-    def describe(self) -> dict:
+    async def describe(self) -> dict:
         """Serializable provider summary for the generic API/UI layer."""
         return {
             "id": self.provider_id,
             "name": self.display_name,
             "implemented": self.implemented,
-            "available": self.is_available(),
+            "available": await self.is_available(),
             "installed": self.is_installed(),
-            "backend": self.backend(),
+            "backend": await self.backend(),
             "capabilities": self.capabilities().to_dict(),
         }
 
@@ -106,13 +111,13 @@ class DeclaredStreamingProvider(StreamingProvider):
 
     implemented: ClassVar[bool] = False
 
-    def is_available(self) -> bool:
-        return False
-
     def is_installed(self) -> bool:
         return False
 
-    def backend(self) -> str | None:
+    async def is_available(self) -> bool:
+        return False
+
+    async def backend(self) -> str | None:
         return None
 
     async def status(self) -> dict:
@@ -140,5 +145,8 @@ class ProviderRegistry:
     def providers(self) -> list[StreamingProvider]:
         return list(self._providers.values())
 
-    def describe_all(self) -> list[dict]:
-        return [provider.describe() for provider in self.providers()]
+    async def describe_all(self) -> list[dict]:
+        described: list[dict] = []
+        for provider in self.providers():
+            described.append(await provider.describe())
+        return described

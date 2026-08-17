@@ -1,0 +1,212 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+
+"""Qobuz streaming provider backed by qbzd.
+
+qbzd is QBZ's headless Qobuz daemon: it plays audio, exposes a Qobuz Connect
+endpoint, publishes MPRIS and serves a small HTTP control plane. FXRoute talks
+to the control plane only; qbzd-specific JSON never leaves this module — it is
+normalized into the same flat wire shape Spotify already publishes.
+"""
+
+from __future__ import annotations
+
+from typing import Any, ClassVar
+
+from streaming.base.capabilities import Capabilities
+from streaming.base.provider import StreamingProvider
+from streaming.qobuz import backend
+
+QOBUZ_BACKEND = "qbzd"
+
+# qbzd repeat modes -> FXRoute loop vocabulary (Spotify parity: none/track/playlist).
+_REPEAT_TO_LOOP = {"off": "none", "all": "playlist", "one": "track"}
+# Cycle order for the repeat toggle: off -> one -> all -> off.
+_LOOP_TO_REPEAT = {"none": "off", "track": "one", "playlist": "all"}
+_LOOP_CYCLE = {"none": "track", "track": "playlist", "playlist": "none"}
+
+
+def _int_or_none(value: Any) -> int | None:
+    try:
+        if value is None:
+            return None
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _id_str(value: Any) -> str:
+    return "" if value is None else str(value)
+
+
+def _normalize_state(state: Any, is_playing: Any) -> str:
+    s = str(state or "").strip().lower()
+    if s in {"playing", "loading"} or is_playing is True:
+        return "Playing"
+    if s == "paused":
+        return "Paused"
+    return "Stopped"
+
+
+class QobuzProvider(StreamingProvider):
+    """Qobuz playback via the qbzd daemon control plane."""
+
+    provider_id: ClassVar[str] = "qobuz"
+    display_name: ClassVar[str] = "Qobuz"
+
+    def __init__(self, base_url: str | None = None) -> None:
+        self._base_url = base_url or backend.default_base_url()
+
+    def capabilities(self) -> Capabilities:
+        # Implemented now: transport + now-playing (metadata, position, cover)
+        # and the stream info qbzd exposes. Catalog (search/favorites/
+        # playlists/...) is deliberately not declared yet: no provider methods
+        # exist for it in this step.
+        return Capabilities(
+            transport=True,
+            seek=True,
+            shuffle=True,
+            loop=True,
+            progress=True,
+            volume=True,
+            cover=True,
+            audio_format=True,
+            sample_rate=True,
+            bit_depth=True,
+        )
+
+    def is_installed(self) -> bool:
+        return backend.qbzd_installed()
+
+    async def is_available(self) -> bool:
+        return backend.qbzd_installed() and await backend.is_reachable(self._base_url)
+
+    async def backend(self) -> str | None:
+        return QOBUZ_BACKEND if backend.qbzd_installed() else None
+
+    async def status(self) -> dict:
+        result: dict[str, Any] = {
+            "available": await self.is_available(),
+            "installed": self.is_installed(),
+            "source": self.provider_id,
+            "backend": await self.backend(),
+            "authenticated": False,
+            "connected": False,
+            "capabilities": self.capabilities().to_dict(),
+            "status": "Stopped",
+            "artist": "",
+            "title": "",
+            "album": "",
+            "trackId": "",
+            "artUrl": "",
+            "shuffle": False,
+            "loop": "none",
+            "position": 0.0,
+            "duration": 0.0,
+            "volume": 100,
+            "sample_rate": None,
+            "bit_depth": None,
+            "audio_format": None,
+            "qconnect": None,
+        }
+
+        # A missing daemon/binary must short-circuit before any HTTP call.
+        if not result["available"]:
+            return result
+
+        status = await backend.get_json(self._base_url, "/api/status")
+        if status is None:
+            return result
+
+        auth = status.get("auth") or {}
+        qconnect = status.get("qconnect") or {}
+        status_playback = status.get("playback") or {}
+        audio = status.get("audio") or {}
+
+        result["authenticated"] = auth.get("state") == "logged_in"
+        result["connected"] = bool(qconnect.get("session_active"))
+        result["qconnect"] = {
+            "enabled": bool(qconnect.get("enabled")),
+            "device_name": qconnect.get("device_name"),
+            "session_active": bool(qconnect.get("session_active")),
+            "state": qconnect.get("state"),
+        }
+
+        # Now-playing is auth-gated and carries the rich track object; when
+        # unauthenticated, fall back to the summary fields from /api/status.
+        now = await backend.get_json(self._base_url, "/api/now-playing")
+        track = (now or {}).get("track")
+        np_playback = (now or {}).get("playback") or {}
+
+        if isinstance(track, dict):
+            result["title"] = track.get("title") or ""
+            result["artist"] = track.get("artist") or ""
+            result["album"] = track.get("album") or ""
+            result["trackId"] = _id_str(track.get("id"))
+            result["artUrl"] = track.get("artwork_url") or ""
+            result["duration"] = float(track.get("duration_secs") or 0)
+            result["sample_rate"] = _int_or_none(track.get("sample_rate"))
+            result["bit_depth"] = _int_or_none(track.get("bit_depth"))
+            result["audio_format"] = "flac" if track.get("hires") else None
+        else:
+            result["title"] = status_playback.get("title") or ""
+            result["artist"] = status_playback.get("artist") or ""
+            result["trackId"] = _id_str(status_playback.get("track_id"))
+            result["duration"] = float(status_playback.get("duration") or 0)
+
+        playback = np_playback if np_playback else status_playback
+        result["status"] = _normalize_state(status_playback.get("state"), playback.get("is_playing"))
+        result["position"] = float(playback.get("position") or 0)
+        result["shuffle"] = bool(playback.get("shuffle"))
+        result["loop"] = _REPEAT_TO_LOOP.get(str(playback.get("repeat") or "off"), "none")
+
+        volume = playback.get("volume")
+        if isinstance(volume, (int, float)):
+            result["volume"] = max(0, min(100, round(float(volume) * 100)))
+
+        # The negotiated stream rate/depth from /api/status audio fill any
+        # track-level gap (both are present while a stream is open).
+        if result["sample_rate"] is None:
+            result["sample_rate"] = _int_or_none(audio.get("sample_rate"))
+        if result["bit_depth"] is None:
+            result["bit_depth"] = _int_or_none(audio.get("bit_depth"))
+
+        return result
+
+    async def play(self) -> dict:
+        await backend.post_json(self._base_url, "/api/playback/play")
+        return await self.status()
+
+    async def pause(self) -> dict:
+        await backend.post_json(self._base_url, "/api/playback/pause")
+        return await self.status()
+
+    async def toggle(self) -> dict:
+        await backend.post_json(self._base_url, "/api/playback/toggle")
+        return await self.status()
+
+    async def next(self) -> dict:
+        await backend.post_json(self._base_url, "/api/playback/next")
+        return await self.status()
+
+    async def previous(self) -> dict:
+        await backend.post_json(self._base_url, "/api/playback/previous")
+        return await self.status()
+
+    async def shuffle(self) -> dict:
+        await backend.post_json(self._base_url, "/api/playback/shuffle", {"mode": "toggle"})
+        return await self.status()
+
+    async def repeat(self) -> dict:
+        current = await self.status()
+        next_loop = _LOOP_CYCLE.get(str(current.get("loop") or "none"), "none")
+        await backend.post_json(self._base_url, "/api/playback/repeat", {"mode": _LOOP_TO_REPEAT[next_loop]})
+        return await self.status()
+
+    async def seek(self, position_sec: float) -> dict:
+        await backend.post_json(self._base_url, "/api/playback/seek", {"position": max(0, int(position_sec))})
+        return await self.status()
+
+    async def set_volume(self, percent: float) -> dict:
+        normalized = max(0.0, min(1.0, percent / 100.0))
+        await backend.post_json(self._base_url, "/api/playback/volume", {"volume": normalized})
+        return await self.status()
