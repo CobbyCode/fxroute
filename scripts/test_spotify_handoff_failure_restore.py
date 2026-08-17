@@ -103,7 +103,7 @@ class SpotifyHandoffFailureRestoreTests(unittest.IsolatedAsyncioTestCase):
             with patch.object(main.runtime, "player_instance", player), patch.object(
                 main.playback_state, "current_track_info", None
             ), patch.object(main.playback_state, "last_track_info", dict(retry)), patch.object(
-                main.playback_state, "current_footer_owner", "spotify"
+                main.playback_state, "current_playback_owner", "spotify"
             ), patch.object(main, "_mark_player_state_authoritative", mark_authoritative), patch.object(
                 main, "get_samplerate_status", return_value={"active_rate": 48_000}
             ):
@@ -122,7 +122,7 @@ class SpotifyHandoffFailureRestoreTests(unittest.IsolatedAsyncioTestCase):
                 await runtime.publish_restored_source(restore)
 
                 self.assertEqual(main.playback_state.current_track_info, track)
-                self.assertEqual(main.playback_state.current_footer_owner, "local")
+                self.assertEqual(main.playback_state.current_playback_owner, "local")
                 self.assertEqual(main.playback_state.last_track_info, retry)
                 self.assertEqual(playback_queue.queue.tracks, queue)
                 self.assertEqual(playback_queue.queue.index, 0)
@@ -138,7 +138,7 @@ class SpotifyHandoffFailureRestoreTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(main.runtime, "player_instance", player), patch.object(
             main.playback_state, "current_track_info", None
         ), patch.object(main.playback_state, "last_track_info", dict(track)), patch.object(
-            main.playback_state, "current_footer_owner", "spotify"
+            main.playback_state, "current_playback_owner", "spotify"
         ), patch.object(main.radio_reconnect, "attempts", 2), patch.object(
             main.radio_reconnect, "url", "https://radio.example/live"
         ), patch.object(main.radio_reconnect, "active_since", 5.0), patch.object(
@@ -160,7 +160,7 @@ class SpotifyHandoffFailureRestoreTests(unittest.IsolatedAsyncioTestCase):
             await runtime.publish_restored_source(restore)
 
             self.assertEqual(main.playback_state.current_track_info, track)
-            self.assertEqual(main.playback_state.current_footer_owner, "local")
+            self.assertEqual(main.playback_state.current_playback_owner, "radio")
             self.assertEqual(main.radio_reconnect.attempts, 2)
             self.assertEqual(main.radio_reconnect.url, "https://radio.example/live")
             self.assertEqual(main.radio_reconnect.active_since, 5.0)
@@ -170,7 +170,7 @@ class SpotifyHandoffFailureRestoreTests(unittest.IsolatedAsyncioTestCase):
         track = local_track()
         with patch.object(main.runtime, "player_instance", player), patch.object(
             main.playback_state, "current_track_info", None
-        ), patch.object(main.playback_state, "current_footer_owner", "spotify"), patch.object(
+        ), patch.object(main.playback_state, "current_playback_owner", "spotify"), patch.object(
             main, "_mark_player_state_authoritative"
         ), patch.object(
             main, "get_samplerate_status", return_value={"active_rate": 48_000}
@@ -193,7 +193,7 @@ class SpotifyHandoffFailureRestoreTests(unittest.IsolatedAsyncioTestCase):
         player = PlayerDouble(None, playing=False)
         with patch.object(main.runtime, "player_instance", player), patch.object(
             main.playback_state, "current_track_info", None
-        ), patch.object(main.playback_state, "current_footer_owner", "spotify"), patch.object(
+        ), patch.object(main.playback_state, "current_playback_owner", "spotify"), patch.object(
             main, "_mark_player_state_authoritative"
         ):
             verdict = await make_transition_runtime().abort_failed_transition(
@@ -204,13 +204,13 @@ class SpotifyHandoffFailureRestoreTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertIsNone(verdict)
             self.assertIsNone(main.playback_state.current_track_info)
-            self.assertEqual(main.playback_state.current_footer_owner, "spotify")
+            self.assertEqual(main.playback_state.current_playback_owner, "spotify")
 
     async def test_restore_with_missing_player_does_not_crash(self):
         track = local_track()
         with patch.object(main.runtime, "player_instance", None), patch.object(
             main.playback_state, "current_track_info", None
-        ), patch.object(main.playback_state, "current_footer_owner", "spotify"), patch.object(
+        ), patch.object(main.playback_state, "current_playback_owner", "spotify"), patch.object(
             main, "_mark_player_state_authoritative"
         ), patch.object(
             main, "get_samplerate_status", return_value={"active_rate": 48_000}
@@ -224,7 +224,7 @@ class SpotifyHandoffFailureRestoreTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNotNone(verdict)
             await runtime.publish_restored_source(verdict["restore"])
             self.assertEqual(main.playback_state.current_track_info, track)
-            self.assertEqual(main.playback_state.current_footer_owner, "local")
+            self.assertEqual(main.playback_state.current_playback_owner, "local")
 
     async def test_restored_local_context_is_replayable_through_toggle(self):
         player = PlayerDouble(None, playing=False)
@@ -233,7 +233,7 @@ class SpotifyHandoffFailureRestoreTests(unittest.IsolatedAsyncioTestCase):
         commit = Mock()
         with patch.object(main.runtime, "player_instance", player), patch.object(
             main.playback_state, "current_track_info", None
-        ), patch.object(main.playback_state, "current_footer_owner", "spotify"), patch.object(
+        ), patch.object(main.playback_state, "current_playback_owner", "spotify"), patch.object(
             main, "_can_send_play_command", return_value=True
         ), patch.object(main, "_coordinator_target_rate", lambda *a, **k: 48000), patch.object(
             main, "_coordinator_rate_change", lambda *a, **k: False
@@ -251,7 +251,7 @@ class SpotifyHandoffFailureRestoreTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNotNone(verdict)
             await runtime.publish_restored_source(verdict["restore"])
             self.assertEqual(main.playback_state.current_track_info, track)
-            self.assertEqual(main.playback_state.current_footer_owner, "local")
+            self.assertEqual(main.playback_state.current_playback_owner, "local")
 
             result = await main.toggle_playback()
 
@@ -274,7 +274,7 @@ class SpotifySuccessfulCommitSemanticsTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(main, "_run_coordinated_transition", run_mock), patch.object(
             main, "_coordinator_target_rate", lambda *a, **k: 48000
         ), patch.object(main, "_coordinator_rate_change", lambda *a, **k: True), patch.object(
-            main.playback_state, "current_footer_owner", "local"
+            main.playback_state, "current_playback_owner", "local"
         ), patch.object(main.playback_state, "latest_spotify_state", None), patch.object(
             main, "get_spotify_ui_state", AsyncMock(return_value=spotify_state)
         ), patch.object(main, "broadcast_spotify_state", broadcast):
@@ -286,7 +286,7 @@ class SpotifySuccessfulCommitSemanticsTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(request.source, "spotify")
             self.assertEqual(request.operation, "spotify-play")
             self.assertTrue(request.should_play)
-            self.assertEqual(main.playback_state.current_footer_owner, "spotify")
+            self.assertEqual(main.playback_state.current_playback_owner, "spotify")
             broadcast.assert_awaited_once_with(spotify_state)
 
 

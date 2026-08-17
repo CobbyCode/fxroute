@@ -66,7 +66,7 @@ class _FakePlayer:
 class QueueNavigationTransactionalTests(unittest.IsolatedAsyncioTestCase):
     GLOBALS = (
         "player_instance", "music_library", "current_track_info",
-        "last_track_info", "current_footer_owner",
+        "last_track_info", "current_playback_owner",
     )
 
     def _install(self, queue_a: list[dict], *, index: int, mode: str = "app_replace",
@@ -77,7 +77,7 @@ class QueueNavigationTransactionalTests(unittest.IsolatedAsyncioTestCase):
         main.runtime.music_library.scanner = _Scanner(["a", "b", "c", "d"])
         main.playback_state.current_track_info = dict(queue_a[index])
         main.playback_state.last_track_info = dict(queue_a[index])
-        main.playback_state.current_footer_owner = "local"
+        main.playback_state.current_playback_owner = "local"
         playback_queue.queue.tracks = [dict(track) for track in queue_a]
         playback_queue.queue.original = [dict(track) for track in queue_a]
         playback_queue.queue.index = index

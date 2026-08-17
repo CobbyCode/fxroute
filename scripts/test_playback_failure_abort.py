@@ -149,7 +149,7 @@ class FailedTransitionAbortTests(unittest.IsolatedAsyncioTestCase):
             with patch.object(main.runtime, "player_instance", player), patch.object(
                 main.playback_state, "current_track_info", current
             ), patch.object(main.playback_state, "last_track_info", retry), patch.object(
-                main.playback_state, "current_footer_owner", "local"
+                main.playback_state, "current_playback_owner", "local"
             ), patch.object(main, "_mark_player_state_authoritative"):
                 verdict = await make_transition_runtime().abort_failed_transition(
                     local_request("/music/new.flac"),
@@ -188,7 +188,7 @@ class FailedTransitionAbortTests(unittest.IsolatedAsyncioTestCase):
             with patch.object(main.runtime, "player_instance", player), patch.object(
                 main.playback_state, "current_track_info", dict(queue[1])
             ), patch.object(main.playback_state, "last_track_info", dict(queue[1])), patch.object(
-                main.playback_state, "current_footer_owner", "local"
+                main.playback_state, "current_playback_owner", "local"
             ), patch.object(
                 playback_queue.queue, "reduce_native_playlist_to_current"
             ), patch.object(
@@ -228,7 +228,7 @@ class FailedTransitionAbortTests(unittest.IsolatedAsyncioTestCase):
             with patch.object(main.runtime, "player_instance", player), patch.object(
                 main.playback_state, "current_track_info", dict(queue[1])
             ), patch.object(main.playback_state, "last_track_info", dict(queue[1])), patch.object(
-                main.playback_state, "current_footer_owner", "local"
+                main.playback_state, "current_playback_owner", "local"
             ), patch.object(
                 playback_queue.queue, "reduce_native_playlist_to_current",
                 side_effect=RuntimeError("IPC communication failed: timed out"),

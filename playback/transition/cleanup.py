@@ -17,6 +17,7 @@ from typing import Any, Mapping
 from .models import PlaybackTransitionFailure, TransitionRequest
 from .protocol import TransitionRuntime
 from .stages import _TransitionStages
+import playback.source_policy as source_policy
 
 logger = logging.getLogger(__name__)
 
@@ -244,7 +245,7 @@ class _TransitionCleanupMixin:
                     "Output-mode runtime rollback failed; keeping the failure gate latched",
                     exc_info=True,
                 )
-        if request.source in {"local", "radio", "tidal"}:
+        if source_policy.is_mpv_source(request.source):
             # The source was attenuated to 0 during the quiet stage.
             # A failed transition must not leave it muted forever:
             # restore the pre-transition source volume from the snapshot.

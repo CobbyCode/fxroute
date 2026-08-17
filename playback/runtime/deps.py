@@ -30,7 +30,7 @@ class PlaybackRuntimeDependencies:
     set_current_track_info: Callable[[dict | None], None]
     get_playback_intent_generation: Callable[[], int]
     get_transition_epoch: Callable[[], int]
-    set_footer_owner: Callable[[str], None]
+    set_playback_owner: Callable[[str | None], None]
     queue: Callable[[], PlaybackQueue]
 
     # Player / transport primitives (main.py)
@@ -61,6 +61,13 @@ class PlaybackRuntimeDependencies:
     has_local_footer_context: Callable[..., bool]
     pause_spotify_for_local_playback_broadcast: Callable[[], Awaitable[None]]
     pause_local_playback_for_spotify_broadcast: Callable[[], Awaitable[None]]
+
+    # Qobuz / qbzd external-renderer helpers (main.py)
+    get_qobuz_ui_state: Callable[..., Awaitable[dict]]
+    is_qobuz_playback_active: Callable[..., bool]
+    qobuz_pause: Callable[..., Awaitable[Any]]
+    wait_for_pipewire_qobuz_release: Callable[..., Awaitable[bool]]
+    wait_for_qobuz_sink_input_samplerate: Callable[..., Awaitable[Any]]
     mark_player_state_authoritative: Callable[..., None]
     spotify_snapshot_identity_values: Callable[..., set]
     measurement_restore_intent_matches_live_state: Callable[..., Awaitable[bool]]

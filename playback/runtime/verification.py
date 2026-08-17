@@ -15,6 +15,7 @@ from typing import Any, Mapping
 
 import audio.samplerate as samplerate
 from audio.samplerate import OUTPUT_MODE_STEREO, OUTPUT_MODE_SUBWOOFER_MODES
+import playback.source_policy as source_policy
 from playback.transition import TransitionRequest, stable_graph_readbacks
 
 from .deps import PlaybackRuntimeDependencies
@@ -322,7 +323,7 @@ class _RuntimeVerificationMixin:
         else:
             live_volume = state.get("volume")
         if require_source_volume:
-            if request.operation == "measurement-restore" and request.source in {"local", "radio", "tidal"}:
+            if request.operation == "measurement-restore" and source_policy.is_mpv_source(request.source):
                 if live_volume != 100:
                     raise RuntimeError(f"MPV source volume was not restored: {live_volume}")
             elif request.should_play and live_volume is not None and live_volume != 100:
@@ -347,7 +348,7 @@ class _RuntimeVerificationMixin:
             else self._deps.get_audio_output_overview()
         )
         live_mpv = self._live_mpv_commit_state(state)
-        if request.source != "spotify":
+        if source_policy.is_mpv_source(request.source):
             self._verify_mpv_live_commit(
                 request,
                 state,
@@ -356,15 +357,23 @@ class _RuntimeVerificationMixin:
                 require_source_volume=require_source_volume,
                 stage_label="transition commit",
             )
-        else:
+        elif request.source == "spotify":
             spotify_state = await self._deps.get_spotify_ui_state()
             expected_status = "Playing" if request.should_play else "Paused"
             if request.should_play and spotify_state.get("status") != expected_status:
                 raise RuntimeError(f"Spotify status was not confirmed: {spotify_state.get('status')}")
             if not request.should_play and spotify_state.get("status") == "Playing":
                 raise RuntimeError("Spotify pause state was not confirmed at transition commit")
+        elif request.source == "qobuz":
+            qobuz_state = await self._deps.get_qobuz_ui_state()
+            expected_status = "Playing" if request.should_play else "Paused"
+            if request.should_play and qobuz_state.get("status") != expected_status:
+                raise RuntimeError(f"Qobuz status was not confirmed: {qobuz_state.get('status')}")
+            if not request.should_play and qobuz_state.get("status") == "Playing":
+                raise RuntimeError("Qobuz pause state was not confirmed at transition commit")
 
         spotify_stream_rate = None
+        qobuz_stream_rate = None
         if request.source == "spotify" and request.should_play:
             source_rate = self._deps.coordinator_source_rate("spotify", request.target_track)
             spotify_stream_rate = await self._deps.wait_for_spotify_sink_input_samplerate(expected_rate=source_rate)
@@ -375,6 +384,17 @@ class _RuntimeVerificationMixin:
                 raise RuntimeError(
                     "Spotify stream rate mismatch at commit: "
                     f"expected={source_rate} actual={spotify_stream_rate}"
+                )
+        if request.source == "qobuz" and request.should_play:
+            source_rate = self._deps.coordinator_source_rate("qobuz", request.target_track)
+            qobuz_stream_rate = await self._deps.wait_for_qobuz_sink_input_samplerate(expected_rate=source_rate)
+            if (
+                isinstance(source_rate, int)
+                and qobuz_stream_rate != source_rate
+            ):
+                raise RuntimeError(
+                    "Qobuz stream rate mismatch at commit: "
+                    f"expected={source_rate} actual={qobuz_stream_rate}"
                 )
 
         if isinstance(request.target_rate, int) and request.target_rate > 0:
@@ -506,7 +526,7 @@ class _RuntimeVerificationMixin:
                 "measurement entry canonical graph did not reach two stable readbacks"
             )
 
-        if request.source in {"local", "radio", "tidal"} and request.target_url:
+        if source_policy.is_mpv_source(request.source) and request.target_url:
             state = dict(self._player.state if self._player else {})
             if state.get("current_file") != request.target_url:
                 raise RuntimeError(
@@ -519,6 +539,10 @@ class _RuntimeVerificationMixin:
             spotify_state = await self._deps.get_spotify_ui_state()
             if spotify_state.get("status") == "Playing":
                 raise RuntimeError("Spotify was not left paused for measurement")
+        elif request.source == "qobuz":
+            qobuz_state = await self._deps.get_qobuz_ui_state()
+            if qobuz_state.get("status") == "Playing":
+                raise RuntimeError("Qobuz was not left paused for measurement")
 
         return {
             "committed": True,
@@ -589,7 +613,7 @@ class _RuntimeVerificationMixin:
                     f"expected={source_rate} actual={spotify_stream_rate}"
                 )
 
-        if request.source in {"local", "radio", "tidal"} and request.target_url:
+        if source_policy.is_mpv_source(request.source) and request.target_url:
             state = dict(self._player.state if self._player else {})
             if state.get("current_file") != request.target_url:
                 raise RuntimeError(
@@ -606,6 +630,12 @@ class _RuntimeVerificationMixin:
                 raise RuntimeError("Spotify did not resume for output-mode commit")
             if not request.should_play and spotify_state.get("status") == "Playing":
                 raise RuntimeError("Spotify was not left paused for output-mode commit")
+        elif request.source == "qobuz":
+            qobuz_state = await self._deps.get_qobuz_ui_state()
+            if request.should_play and qobuz_state.get("status") != "Playing":
+                raise RuntimeError("Qobuz did not resume for output-mode commit")
+            if not request.should_play and qobuz_state.get("status") == "Playing":
+                raise RuntimeError("Qobuz was not left paused for output-mode commit")
 
         return {
             "committed": True,

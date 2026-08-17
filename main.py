@@ -266,13 +266,27 @@ def _list_spotify_sink_inputs() -> list[dict]:
     ]
 
 
-def _spotify_sink_input_observation(
+def _list_qobuz_sink_inputs() -> list[dict]:
+    """Return PipeWire sink inputs produced by the qbzd renderer."""
+    result: list[dict] = []
+    for entry in _list_sink_inputs():
+        properties = entry.get("properties") or {}
+        haystack = " ".join(
+            str(properties.get(key) or "")
+            for key in ("application.name", "application.id", "node.name", "media.name")
+        ).lower()
+        if "qobuz" in haystack or "qbzd" in haystack:
+            result.append(entry)
+    return result
+
+
+def _sink_input_observation(
     entries: list[dict],
     *,
     expected_rate: int | None = None,
     preferred_identity: object | None = None,
 ) -> tuple[object, int] | None:
-    """Select one Spotify sink input and retain an identity for stability checks."""
+    """Select one active sink input and retain an identity for stability checks."""
     candidates: list[tuple[object, int]] = []
     for entry in entries:
         corked = entry.get("corked")
@@ -327,6 +341,34 @@ def _spotify_sink_input_observation(
     elif preferred is not None:
         selected_identity, selected_rate = preferred
     return selected_identity, selected_rate
+
+
+def _spotify_sink_input_observation(
+    entries: list[dict],
+    *,
+    expected_rate: int | None = None,
+    preferred_identity: object | None = None,
+) -> tuple[object, int] | None:
+    """Select one active Spotify sink input (identity + rate)."""
+    return _sink_input_observation(
+        entries,
+        expected_rate=expected_rate,
+        preferred_identity=preferred_identity,
+    )
+
+
+def _qobuz_sink_input_observation(
+    entries: list[dict],
+    *,
+    expected_rate: int | None = None,
+    preferred_identity: object | None = None,
+) -> tuple[object, int] | None:
+    """Select one active qbzd sink input (identity + rate)."""
+    return _sink_input_observation(
+        entries,
+        expected_rate=expected_rate,
+        preferred_identity=preferred_identity,
+    )
 
 
 async def _wait_for_sink_input_release(list_fn, timeout_ms: int) -> bool:
@@ -407,6 +449,62 @@ async def _wait_for_spotify_sink_input_samplerate(
     )
 
 
+async def _wait_for_pipewire_qobuz_release(
+    timeout_ms: int = PIPEWIRE_HANDOFF_RELEASE_TIMEOUT_MS,
+) -> bool:
+    """Quiesce an active qbzd sink input before a guarded graph transition."""
+    def active_qobuz_inputs() -> list[dict]:
+        return _active_unmuted_sink_inputs(_list_qobuz_sink_inputs())
+
+    return await _wait_for_sink_input_release(active_qobuz_inputs, timeout_ms)
+
+
+async def _wait_for_qobuz_sink_input_samplerate(
+    *,
+    expected_rate: int | None = None,
+    timeout_ms: int = SPOTIFY_SINK_INPUT_RATE_TIMEOUT_MS,
+) -> int:
+    """Read a stable qbzd stream rate before an entry transition commits."""
+    if not isinstance(expected_rate, int) or expected_rate <= 0:
+        raise RuntimeError(f"Qobuz entry has no valid expected samplerate: {expected_rate}")
+    poll_interval_ms = max(PIPEWIRE_HANDOFF_POLL_INTERVAL_MS, 1)
+    max_polls = max(1, math.ceil(max(timeout_ms, 0) / poll_interval_ms) + 1)
+    last_observation: tuple[object, int] | None = None
+    stable_polls = 0
+    last_rate: int | None = None
+    for poll_index in range(max_polls):
+        try:
+            observation = _qobuz_sink_input_observation(
+                _list_qobuz_sink_inputs(),
+                expected_rate=expected_rate,
+                preferred_identity=(last_observation[0] if last_observation else None),
+            )
+        except Exception:
+            observation = None
+        if observation is not None:
+            identity, rate = observation
+            last_rate = rate
+            if rate == expected_rate and observation == last_observation:
+                stable_polls += 1
+            elif rate == expected_rate:
+                stable_polls = 1
+            else:
+                stable_polls = 0
+            last_observation = (identity, rate)
+            if rate == expected_rate and stable_polls >= SPOTIFY_SINK_INPUT_RATE_STABILITY_POLLS:
+                return rate
+        else:
+            last_observation = None
+            stable_polls = 0
+        if poll_index + 1 < max_polls:
+            await asyncio.sleep(poll_interval_ms / 1000)
+    raise RuntimeError(
+        "qbzd sink-input samplerate did not become readable and stable "
+        f"at the expected rate within {timeout_ms} ms "
+        f"(expected={expected_rate} last={last_rate})"
+    )
+
+
 def _measurement_blocks_playback_rate(expected_rate: Optional[int]) -> Optional[int]:
     """Resolve the session-owned playback-rate block decision for samplerate deps.
 
@@ -437,7 +535,12 @@ def _is_measurement_window_open() -> bool:
 def _build_power_state_payload() -> dict:
     local_state = runtime.player_instance.state if runtime.player_instance else {}
     spotify_state = playback_state.latest_spotify_state or {}
-    playback_active = _is_local_playback_active(local_state) or _is_spotify_playback_active(spotify_state)
+    qobuz_state = playback_state.latest_qobuz_state or {}
+    playback_active = (
+        _is_local_playback_active(local_state)
+        or _is_spotify_playback_active(spotify_state)
+        or _is_qobuz_playback_active(qobuz_state)
+    )
     measurement_window_open = _is_measurement_window_open()
     if measurement_window_open:
         reason = "measurement_window"
@@ -453,11 +556,16 @@ def _build_power_state_payload() -> dict:
     }
 
 
+def _is_qobuz_playback_active(state: dict | None) -> bool:
+    state = state or {}
+    return bool(state.get("available") and state.get("status") == "Playing")
+
+
 def _has_local_footer_context(state: dict | None) -> bool:
     state = state or {}
     track = playback_state.current_track_info or state.get("current_track") or {}
     source = (track or {}).get("source")
-    if source not in {"local", "radio", "tidal"}:
+    if not source_policy.is_mpv_source(source):
         return False
     return bool(
         state.get("current_file")
@@ -467,39 +575,48 @@ def _has_local_footer_context(state: dict | None) -> bool:
     )
 
 
-def _get_authoritative_footer_owner(player_state: dict | None = None, spotify_state: dict | None = None) -> str:
+def _derive_playback_owner_readonly(
+    player_state: dict | None = None,
+    spotify_state: dict | None = None,
+    qobuz_state: dict | None = None,
+) -> str | None:
+    """Resolve a read-only owner fallback from the live active sources.
+
+    Used only when no owner has been committed yet (e.g. right after boot,
+    before the external watchers have claimed).  Never mutates the committed
+    owner: a status/metadata read must not change ownership.
+    """
     player_state = player_state or (runtime.player_instance.state if runtime.player_instance else {})
     spotify_state = spotify_state or playback_state.latest_spotify_state or {}
+    qobuz_state = qobuz_state or playback_state.latest_qobuz_state or {}
+    if _is_spotify_playback_active(spotify_state):
+        return "spotify"
+    if _is_qobuz_playback_active(qobuz_state):
+        return "qobuz"
+    if _is_local_playback_active(player_state):
+        track = playback_state.current_track_info or {}
+        source = (track or {}).get("source")
+        return source if source_policy.is_mpv_source(source) else "local"
+    return None
 
-    # A loaded/paused MPV file is only fallback context.  First resolve the
-    # sources that are actually producing audio; otherwise a paused Local
-    # track would mask a currently playing Spotify client (and vice versa).
-    local_active = _is_local_playback_active(player_state)
-    spotify_active = _is_spotify_playback_active(spotify_state)
-    if spotify_active and not local_active:
-        playback_state.current_footer_owner = "spotify"
-        return playback_state.current_footer_owner
-    if local_active and not spotify_active:
-        playback_state.current_footer_owner = "local"
-        return playback_state.current_footer_owner
 
-    if local_active and spotify_active:
-        # This is an inconsistent dual-active readback.  Keep the already
-        # committed owner when possible; it is deterministic and avoids a UI
-        # flip while the two source states converge.
-        if playback_state.current_footer_owner in {"local", "spotify"}:
-            return playback_state.current_footer_owner
-        playback_state.current_footer_owner = "spotify"
-        return playback_state.current_footer_owner
+def _resolve_playback_owner() -> str | None:
+    """Return the authoritative playback owner.
 
-    # Neither source is active.  The committed owner is the first fallback;
-    # only an unowned loaded MPV context may establish a local fallback.
-    if playback_state.current_footer_owner in {"local", "spotify"}:
-        return playback_state.current_footer_owner
-    if _has_local_footer_context(player_state):
-        playback_state.current_footer_owner = "local"
-        return playback_state.current_footer_owner
-    return playback_state.current_footer_owner or "local"
+    The committed ``current_playback_owner`` is authoritative and only changes
+    on a real playback intent (native play) or an external source claim.
+    Pausing keeps the owner.  When nothing is committed yet, a read-only
+    fallback is derived from the live active sources for display only; it is
+    never persisted.
+    """
+    owner = playback_state.current_playback_owner
+    if owner:
+        return owner
+    return _derive_playback_owner_readonly()
+
+
+def _set_playback_owner(source: str | None) -> None:
+    playback_state.current_playback_owner = source
 
 
 
@@ -514,6 +631,7 @@ from radio.stations import get_stations
 import audio.sink_inputs as sink_inputs
 import playback.state as playback_state_helpers
 from playback.state import PlaybackState
+import playback.source_policy as source_policy
 import audio.samplerate as samplerate
 from library.core import (
     LibraryScanner,
@@ -534,6 +652,10 @@ from playback.spotify_watch import (
     SPOTIFY_SINK_INPUT_RATE_STABILITY_POLLS,
     SpotifyPlayerctlWatch,
     SpotifyWatchDependencies,
+)
+from playback.qobuz_watch import (
+    QobuzPlayerWatch,
+    QobuzWatchDependencies,
 )
 from dsp.orchestration import (
     DspOrchestrationDeps,
@@ -795,7 +917,7 @@ silent_active_recovery = SilentActiveRecovery(SilentActiveDependencies(
     get_peak_monitor=lambda: runtime.peak_monitor,
     get_player_instance=lambda: runtime.player_instance,
     get_current_track_info=lambda: playback_state.current_track_info,
-    get_current_footer_owner=lambda: playback_state.current_footer_owner,
+    get_current_playback_owner=lambda: _resolve_playback_owner(),
     get_spotify_ui_state=lambda *args, **kwargs: get_spotify_ui_state(*args, **kwargs),
     list_mpv_sink_inputs=lambda: _list_mpv_sink_inputs(),
     list_spotify_sink_inputs=lambda: _list_spotify_sink_inputs(),
@@ -848,6 +970,13 @@ spotify_playerctl_watch = SpotifyPlayerctlWatch(SpotifyWatchDependencies(
     spotify_sink_input_observation=lambda *args, **kwargs: _spotify_sink_input_observation(*args, **kwargs),
     request_coordinated_recovery=lambda *args, **kwargs: playback_orchestration.configured().request_coordinated_recovery(*args, **kwargs),
     schedule_spotify_state_refresh=lambda reason: _schedule_spotify_state_refresh(reason),
+    claim_spotify_playback=lambda *args, **kwargs: _claim_spotify_playback(*args, **kwargs),
+))
+qobuz_player_watch = QobuzPlayerWatch(QobuzWatchDependencies(
+    get_playback_state=lambda: playback_state,
+    broadcast_qobuz_state=lambda *args, **kwargs: broadcast_qobuz_state(*args, **kwargs),
+    is_qobuz_playback_active=lambda *args, **kwargs: _is_qobuz_playback_active(*args, **kwargs),
+    claim_qobuz_playback=lambda *args, **kwargs: _claim_qobuz_playback(*args, **kwargs),
 ))
 radio_metadata_service = RadioMetadataService()
 # queue_advancing is a reentrancy/dispatch guard for
@@ -949,8 +1078,8 @@ def _set_runtime_current_track_info(value: dict | None) -> None:
     playback_state.current_track_info = value
 
 
-def _set_runtime_current_footer_owner(value: str) -> None:
-    playback_state.current_footer_owner = value
+def _set_runtime_playback_owner(value: str | None) -> None:
+    playback_state.current_playback_owner = value
 
 
 def _set_runtime_track_context(current: dict, last: dict) -> None:
@@ -972,7 +1101,7 @@ def make_playback_runtime_deps() -> PlaybackRuntimeDependencies:
         set_current_track_info=_set_runtime_current_track_info,
         get_playback_intent_generation=lambda: playback_state.playback_intent_generation,
         get_transition_epoch=lambda: playback_state.playback_transition_epoch,
-        set_footer_owner=_set_runtime_current_footer_owner,
+        set_playback_owner=_set_runtime_playback_owner,
         queue=lambda: playback_queue.queue,
         player_is_running=lambda *a, **k: _player_is_running(*a, **k),
         load_player_paused=lambda *a, **k: _load_player_paused(*a, **k),
@@ -1001,6 +1130,11 @@ def make_playback_runtime_deps() -> PlaybackRuntimeDependencies:
         has_local_footer_context=lambda *a, **k: _has_local_footer_context(*a, **k),
         pause_spotify_for_local_playback_broadcast=lambda *a, **k: pause_spotify_for_local_playback_broadcast(*a, **k),
         pause_local_playback_for_spotify_broadcast=lambda *a, **k: pause_local_playback_for_spotify_broadcast(*a, **k),
+        get_qobuz_ui_state=lambda *a, **k: get_qobuz_ui_state(*a, **k),
+        is_qobuz_playback_active=lambda *a, **k: _is_qobuz_playback_active(*a, **k),
+        qobuz_pause=lambda *a, **k: qobuz_pause(*a, **k),
+        wait_for_pipewire_qobuz_release=lambda *a, **k: _wait_for_pipewire_qobuz_release(*a, **k),
+        wait_for_qobuz_sink_input_samplerate=lambda *a, **k: _wait_for_qobuz_sink_input_samplerate(*a, **k),
         mark_player_state_authoritative=lambda *a, **k: _mark_player_state_authoritative(*a, **k),
         spotify_snapshot_identity_values=lambda *a, **k: _spotify_snapshot_identity_values(*a, **k),
         measurement_restore_intent_matches_live_state=lambda *a, **k: _measurement_restore_intent_matches_live_state(*a, **k),
@@ -1232,7 +1366,7 @@ def _commit_coordinated_track(
     _mark_playback_intent_changed()
     playback_state.current_track_info = track
     playback_state.last_track_info = track
-    playback_state.current_footer_owner = "spotify" if source == "spotify" else "local"
+    playback_state.current_playback_owner = source if source_policy.is_known_source(source) else None
     if source == "radio":
         playback_state.last_radio_track_info = dict(track)
     if source == "local":
@@ -2035,12 +2169,134 @@ async def get_spotify_ui_state(data: Optional[dict] = None) -> dict:
     source_volume = status.get("volume") if isinstance(status.get("volume"), (int, float)) else None
     status["source_volume"] = int(round(float(source_volume))) if source_volume is not None else None
     status["volume"] = get_output_volume_safe(status.get("source_volume") or 100)
-    status["footer_owner"] = _get_authoritative_footer_owner(spotify_state=status)
+    status["playback_owner"] = _resolve_playback_owner()
     art_url = str(status.get("artwork_url") or status.get("artUrl") or "").strip()
     status["artwork_available"] = bool(art_url)
     status["artwork_url"] = art_url or None
     status["artwork_source"] = "spotify" if art_url else "none"
     return status
+
+
+async def get_qobuz_ui_state(data: Optional[dict] = None) -> dict:
+    """Return the normalized qbzd provider state (owner is never derived from
+    a status read; it is attached for the UI payload only)."""
+    provider = streaming.get_provider("qobuz")
+    status = dict(data or await provider.status())
+    status["playback_owner"] = _resolve_playback_owner()
+    playback_state.latest_qobuz_state = status
+    return status
+
+
+async def qobuz_play() -> dict:
+    provider = streaming.get_provider("qobuz")
+    data = await provider.play()
+    playback_state.latest_qobuz_state = data
+    return data
+
+
+async def qobuz_pause() -> dict:
+    provider = streaming.get_provider("qobuz")
+    data = await provider.pause()
+    playback_state.latest_qobuz_state = data
+    return data
+
+
+async def _qobuz_target_track_from_state(state: Mapping[str, Any]) -> dict[str, Any]:
+    track_id = state.get("trackId") or state.get("id")
+    return {
+        "source": "qobuz",
+        "id": track_id,
+        "url": track_id,
+        "title": state.get("title"),
+        "artist": state.get("artist"),
+        "album": state.get("album"),
+        "artUrl": state.get("artUrl"),
+        "sample_rate_hz": state.get("sample_rate"),
+    }
+
+
+async def broadcast_qobuz_state(data=None):
+    data = await get_qobuz_ui_state(data)
+    playback_state.latest_qobuz_state = data
+    await manager.broadcast({"type": "qobuz", "data": data})
+    return data
+
+
+def _qobuz_target_rate(qobuz_state: Mapping[str, Any]) -> int:
+    source_rate = qobuz_state.get("sample_rate")
+    if isinstance(source_rate, int) and source_rate > 0:
+        return samplerate.effective_playback_rate(source_rate)
+    return samplerate.effective_playback_rate(44100)
+
+
+async def _claim_qobuz_playback(detail: str = "qobuz-claim") -> dict:
+    """Claim FXRoute playback ownership for an already-playing qbzd renderer.
+
+    Runs a single Coordinator transition that pauses the previous source(s),
+    establishes the qbzd rate/graph and commits ``playback_owner=qobuz``.
+    Paused/stopped qbzd states never claim.
+    """
+    if _resolve_playback_owner() == "qobuz":
+        return await get_qobuz_ui_state()
+    qobuz_state = await get_qobuz_ui_state()
+    if not _is_qobuz_playback_active(qobuz_state):
+        return qobuz_state
+    track = _qobuz_target_track_from_state(qobuz_state)
+    target_rate = _qobuz_target_rate(qobuz_state)
+    request = TransitionRequest(
+        operation="qobuz-claim",
+        source="qobuz",
+        target_rate=target_rate,
+        target_url=str(track.get("id") or ""),
+        target_track=track,
+        should_play=True,
+        rate_change=_coordinator_rate_change(target_rate),
+        reload_source=False,
+        detail=detail,
+    )
+    try:
+        result = await _run_coordinated_transition(request)
+    except (ValueError, PlaybackTransitionFailure) as exc:
+        logger.warning("Qobuz claim transition failed: %s", getattr(exc, "detail", exc) or exc)
+        return qobuz_state
+    if not getattr(result, "committed", False):
+        return qobuz_state
+    playback_state.current_playback_owner = "qobuz"
+    _publish_playback_context_commit(getattr(result, "transition_id", None))
+    return await broadcast_qobuz_state()
+
+
+async def _claim_spotify_playback(detail: str = "spotify-claim") -> dict:
+    """Claim FXRoute playback ownership for an already-playing Spotify renderer.
+
+    Triggered by the MPRIS watcher on a real Playing event (Spotify Connect
+    started playback on another device), independent of the visible tab.
+    """
+    if _resolve_playback_owner() == "spotify":
+        return await get_spotify_ui_state()
+    data = await get_spotify_ui_state()
+    if not _is_spotify_playback_active(data):
+        return data
+    target_rate = _coordinator_target_rate("spotify")
+    request = TransitionRequest(
+        operation="spotify-claim",
+        source="spotify",
+        target_rate=target_rate,
+        should_play=True,
+        rate_change=_coordinator_rate_change(target_rate),
+        reload_source=True,
+        detail=detail,
+    )
+    try:
+        result = await _run_coordinated_transition(request)
+    except (ValueError, PlaybackTransitionFailure) as exc:
+        logger.warning("Spotify claim transition failed: %s", getattr(exc, "detail", exc) or exc)
+        return data
+    if not getattr(result, "committed", False):
+        return data
+    playback_state.current_playback_owner = "spotify"
+    _publish_playback_context_commit(getattr(result, "transition_id", None))
+    return await broadcast_spotify_state()
 
 
 def _radio_artwork_url_for_track(track: dict) -> str:
@@ -2105,7 +2361,7 @@ def build_playback_payload(
     global dsp_manager
     player_state = dict(state or (runtime.player_instance.state if runtime.player_instance else {}))
     source_volume = player_state.get("volume") if isinstance(player_state.get("volume"), (int, float)) else None
-    if playback_state.current_track_info and playback_state.current_track_info.get("source") in {"local", "radio", "tidal"}:
+    if playback_state.current_track_info and source_policy.is_mpv_source(playback_state.current_track_info.get("source")):
         player_state["source_volume"] = int(round(float(source_volume))) if source_volume is not None else None
     elif source_volume is not None:
         player_state["source_volume"] = int(round(float(source_volume)))
@@ -2120,7 +2376,7 @@ def build_playback_payload(
             _effective_track = None
     player_state["current_track"] = _playback_track_with_artwork_fields(_effective_track)
     player_state["queue"] = playback_queue.queue.payload()
-    player_state["footer_owner"] = _get_authoritative_footer_owner(player_state=player_state)
+    player_state["playback_owner"] = _resolve_playback_owner()
 
     live_title = None
     if include_live_metadata and runtime.player_instance and playback_state.current_track_info and playback_state.current_track_info.get("source") == "radio":
@@ -2415,7 +2671,7 @@ async def _spotify_state_poll_loop() -> None:
         try:
             await _refresh_spotify_state_from_mpris("poll-fallback")
             state = playback_state.latest_spotify_state or {}
-            active = bool(state.get("available") and (state.get("status") == "Playing" or playback_state.current_footer_owner == "spotify"))
+            active = bool(state.get("available") and (state.get("status") == "Playing" or playback_state.current_playback_owner == "spotify"))
             await asyncio.sleep(SPOTIFY_STATE_POLL_INTERVAL_SECONDS if active else SPOTIFY_STATE_IDLE_POLL_INTERVAL_SECONDS)
         except asyncio.CancelledError:
             raise
@@ -2434,14 +2690,13 @@ async def _spotify_player_present(timeout: float = 0.8) -> bool:
 
 
 async def pause_spotify_for_local_playback_broadcast():
-    playback_state.current_footer_owner = "local"
     if not await _spotify_player_present():
         playback_state.latest_spotify_state = {
             "available": playerctl_available(),
             "installed": spotify_installed(),
             "source": "spotify",
             "status": "Stopped",
-            "footer_owner": "local",
+            "playback_owner": None,
         }
         await manager.broadcast({"type": "spotify", "data": playback_state.latest_spotify_state})
         return
@@ -2461,7 +2716,6 @@ async def pause_spotify_for_local_playback_broadcast():
 
 
 async def pause_local_playback_for_spotify_broadcast():
-    playback_state.current_footer_owner = "spotify"
     try:
         if runtime.player_instance and runtime.player_instance._running:
             runtime.player_instance.stop_playback()
@@ -2645,6 +2899,11 @@ async def lifespan(app: FastAPI):
             spotify_playerctl_watch.run_watch_loop(),
             name="spotify-playerctl-watch",
         )
+        logger.info("Starting Qobuz qbzd claim watch task")
+        qobuz_player_watch.watch_task = asyncio.create_task(
+            qobuz_player_watch.run_watch_loop(),
+            name="qobuz-qbzd-claim-watch",
+        )
         logger.info("Starting Spotify metadata poll fallback task")
         runtime.spotify_state_poll_task = asyncio.create_task(
             _spotify_state_poll_loop(),
@@ -2709,6 +2968,7 @@ async def _shutdown_lifespan_resources() -> None:
     # Watcher subsystems own their task lifecycles; stopping them cancels
     # their in-flight tasks and releases their state.
     await cleanup("spotify-watch", spotify_playerctl_watch.stop)
+    await cleanup("qobuz-watch", qobuz_player_watch.stop)
     await cleanup("radio-reconnect", radio_reconnect.stop)
     await cleanup("silent-active-recovery", silent_active_recovery.stop)
     runtime.lifecycle_background_tasks.clear()
@@ -3130,7 +3390,7 @@ async def play_track(req: PlayRequest):
         }
 
     source = str(req.source or "local")
-    if source not in {"local", "radio", "tidal"}:
+    if not source_policy.is_mpv_source(source):
         raise HTTPException(status_code=400, detail=f"Unsupported playback source: {source}")
 
     active_queue_ids = [item.get("id") for item in playback_queue.queue.tracks]
@@ -3268,7 +3528,7 @@ async def play_track(req: PlayRequest):
                 "Failed to trim native playlist after committed play transition",
                 exc_info=True,
             )
-    if source in {"local", "radio", "tidal"} and isinstance(result.target_rate, int) and result.target_rate > 0:
+    if source_policy.is_mpv_source(source) and isinstance(result.target_rate, int) and result.target_rate > 0:
         track_info["sample_rate_hz"] = result.target_rate
 
     playback_queue.queue.commit(queue_candidate)
@@ -3304,8 +3564,71 @@ async def pause_playback():
     }
 
 
+async def _spotify_global_control(action: str, request: Request | None = None) -> dict:
+    """Global transport for a Spotify-owned playback context."""
+    if action == "toggle":
+        data = await get_spotify_ui_state()
+        if data.get("status") == "Playing":
+            data = await spotify_pause()
+        else:
+            data = await spotify_play()
+        return await broadcast_spotify_state(data)
+    if action == "next":
+        return await broadcast_spotify_state(await spotify_next())
+    if action == "previous":
+        return await broadcast_spotify_state(await spotify_previous())
+    if action == "seek":
+        body = await request.json() if request is not None else {}
+        return await broadcast_spotify_state(await spotify_seek_to(float(body.get("position", 0))))
+    if action == "shuffle":
+        return await broadcast_spotify_state(await spotify_shuffle_toggle())
+    if action == "loop":
+        return await broadcast_spotify_state(await spotify_loop_cycle())
+    return {}
+
+
+async def _qobuz_global_control(action: str, request: Request | None = None) -> dict:
+    """Global transport for a Qobuz-owned playback context."""
+    provider = streaming.get_provider("qobuz")
+    if action == "toggle":
+        data = await get_qobuz_ui_state()
+        if data.get("status") == "Playing":
+            data = await qobuz_pause()
+        else:
+            data = await qobuz_play()
+        return await broadcast_qobuz_state(data)
+    if action == "next":
+        return await broadcast_qobuz_state(await provider.next())
+    if action == "previous":
+        return await broadcast_qobuz_state(await provider.previous())
+    if action == "seek":
+        body = await request.json() if request is not None else {}
+        return await broadcast_qobuz_state(await provider.seek(float(body.get("position", 0))))
+    if action == "shuffle":
+        return await broadcast_qobuz_state(await provider.shuffle())
+    if action == "loop":
+        return await broadcast_qobuz_state(await provider.repeat())
+    return {}
+
+
+async def _route_global_control(action: str, request: Request | None = None) -> dict | None:
+    """Route a global transport action to the authoritative owner's adapter.
+
+    Returns None when the action must fall through to the native MPV path.
+    """
+    owner = _resolve_playback_owner()
+    if owner == "spotify":
+        return await _spotify_global_control(action, request)
+    if owner == "qobuz":
+        return await _qobuz_global_control(action, request)
+    return None
+
+
 @app.post("/api/playback/toggle")
 async def toggle_playback():
+    routed = await _route_global_control("toggle")
+    if routed is not None:
+        return routed
     if not runtime.player_instance or not runtime.player_instance._running:
         raise HTTPException(status_code=503, detail="Player not available")
     if _playback_transition_is_active():
@@ -3316,7 +3639,7 @@ async def toggle_playback():
 
     state = dict(runtime.player_instance.state)
     active_track = dict(playback_state.current_track_info or {})
-    if state.get("current_file") and not state.get("ended") and active_track.get("source") in {"local", "radio", "tidal"}:
+    if state.get("current_file") and not state.get("ended") and source_policy.is_mpv_source(active_track.get("source")):
         was_paused = bool(state.get("paused"))
         source = str(active_track.get("source"))
         if not was_paused:
@@ -3365,7 +3688,7 @@ async def toggle_playback():
         except PlaybackTransitionFailure as exc:
             raise _transition_error_http(exc) from exc
         if was_paused:
-            if _sample_rate_policy_is_auto() and source in {"local", "radio", "tidal"} and isinstance(result.target_rate, int) and result.target_rate > 0:
+            if _sample_rate_policy_is_auto() and source_policy.is_mpv_source(source) and isinstance(result.target_rate, int) and result.target_rate > 0:
                 active_track["sample_rate_hz"] = result.target_rate
             _commit_coordinated_track(
                 active_track, source=source, commit_token=getattr(result, "transition_id", None)
@@ -3400,7 +3723,7 @@ async def toggle_playback():
         raise bad_request(exc) from exc
     except PlaybackTransitionFailure as exc:
         raise _transition_error_http(exc) from exc
-    if _sample_rate_policy_is_auto() and source in {"local", "radio", "tidal"} and isinstance(result.target_rate, int) and result.target_rate > 0:
+    if _sample_rate_policy_is_auto() and source_policy.is_mpv_source(source) and isinstance(result.target_rate, int) and result.target_rate > 0:
         replay_track["sample_rate_hz"] = result.target_rate
     _commit_coordinated_track(
         replay_track, source=source, commit_token=getattr(result, "transition_id", None)
@@ -3421,6 +3744,7 @@ async def stop_playback():
         playback_state.last_radio_track_info = dict(playback_state.current_track_info)
     _mark_playback_intent_changed()
     playback_state.current_track_info = None
+    playback_state.current_playback_owner = None
     radio_reconnect.reset()
     playback_queue.queue.reset()
     playback_queue.queue.reset_mpv_loop_state()
@@ -3468,6 +3792,9 @@ async def set_volume(request: Request):
 
 @app.post("/api/playback/next")
 async def next_playback():
+    routed = await _route_global_control("next")
+    if routed is not None:
+        return routed
     if not runtime.player_instance or not runtime.player_instance._running:
         raise HTTPException(status_code=503, detail="Player not available")
     if len(playback_queue.queue.tracks) <= 1:
@@ -3491,6 +3818,9 @@ async def next_playback():
 
 @app.post("/api/playback/previous")
 async def previous_playback():
+    routed = await _route_global_control("previous")
+    if routed is not None:
+        return routed
     if not runtime.player_instance or not runtime.player_instance._running:
         raise HTTPException(status_code=503, detail="Player not available")
     if len(playback_queue.queue.tracks) <= 1:
@@ -3540,6 +3870,9 @@ async def sync_playback_selection(request: Request):
 
 @app.post("/api/playback/shuffle")
 async def set_playback_shuffle(request: Request):
+    routed = await _route_global_control("shuffle", request)
+    if routed is not None:
+        return routed
     if not runtime.player_instance or not runtime.player_instance._running:
         raise HTTPException(status_code=503, detail="Player not available")
     try:
@@ -3568,6 +3901,9 @@ async def set_playback_shuffle(request: Request):
 
 @app.post("/api/playback/loop")
 async def set_playback_loop(request: Request):
+    routed = await _route_global_control("loop", request)
+    if routed is not None:
+        return routed
     if not runtime.player_instance or not runtime.player_instance._running:
         raise HTTPException(status_code=503, detail="Player not available")
     try:
@@ -3586,6 +3922,9 @@ async def set_playback_loop(request: Request):
 
 @app.post("/api/playback/seek")
 async def seek_playback(request: Request):
+    routed = await _route_global_control("seek", request)
+    if routed is not None:
+        return routed
     if not runtime.player_instance or not runtime.player_instance._running:
         raise HTTPException(status_code=503, detail="Player not available")
     if _playback_transition_is_active():
@@ -3891,8 +4230,8 @@ async def system_restore():
 async def audio_samplerate_status():
     status = await asyncio.to_thread(get_samplerate_status)
     logger.info(
-        "audio_samplerate_status entry: footer_owner=%s active_rate=%s sink_state=%s",
-        playback_state.current_footer_owner,
+        "audio_samplerate_status entry: playback_owner=%s active_rate=%s sink_state=%s",
+        playback_state.current_playback_owner,
         status.get("active_rate"),
         (status.get("relevant_sink") or {}).get("state"),
     )
@@ -4656,7 +4995,7 @@ async def api_spotify_play():
     # telemetry/UI refresh and not part of the ownership boundary.
     # Publish synchronously before any further await so the ended waiter
     # never sees a window with a new token and an old footer.
-    playback_state.current_footer_owner = "spotify"
+    playback_state.current_playback_owner = "spotify"
     _publish_playback_context_commit(getattr(result, "transition_id", None))
     playback_state.latest_spotify_state = await get_spotify_ui_state()
     return await broadcast_spotify_state(playback_state.latest_spotify_state)
@@ -4697,7 +5036,7 @@ async def api_spotify_toggle():
     # Same ownership contract as api_spotify_play: footer and token are
     # published synchronously after the commit, before the Spotify state
     # is read or broadcast.
-    playback_state.current_footer_owner = "spotify"
+    playback_state.current_playback_owner = "spotify"
     _publish_playback_context_commit(getattr(result, "transition_id", None))
     data = await get_spotify_ui_state()
     return await broadcast_spotify_state(data)

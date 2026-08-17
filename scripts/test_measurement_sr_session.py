@@ -45,7 +45,7 @@ class _TestSession:
         self._orig_get_player_audio_samplerate = main._get_player_audio_samplerate
         self._orig_get_spotify_ui_state = main.get_spotify_ui_state
         self._orig_latest_spotify_state = main.playback_state.latest_spotify_state
-        self._orig_current_footer_owner = main.playback_state.current_footer_owner
+        self._orig_current_playback_owner = main.playback_state.current_playback_owner
         self._orig_playback_intent_generation = main.playback_state.playback_intent_generation
         self._orig_playback_transition_coordinator = main.playback_transition_coordinator
         self._orig_run_coordinated_transition = main._run_coordinated_transition
@@ -204,7 +204,7 @@ class _TestSession:
         main._get_player_audio_samplerate = self._orig_get_player_audio_samplerate
         main.get_spotify_ui_state = self._orig_get_spotify_ui_state
         main.playback_state.latest_spotify_state = self._orig_latest_spotify_state
-        main.playback_state.current_footer_owner = self._orig_current_footer_owner
+        main.playback_state.current_playback_owner = self._orig_current_playback_owner
         main.playback_state.playback_intent_generation = self._orig_playback_intent_generation
         main.playback_transition_coordinator = self._orig_playback_transition_coordinator
         main._run_coordinated_transition = self._orig_run_coordinated_transition

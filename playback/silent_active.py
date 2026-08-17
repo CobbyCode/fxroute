@@ -20,6 +20,7 @@ from audio import sink_inputs
 from audio.samplerate import OUTPUT_MODE_STEREO, get_audio_output_overview
 from audio.system_volume import get_output_volume
 from dsp.runtime import _contains_link
+import playback.source_policy as source_policy
 from playback.state import is_local_playback_active, is_spotify_playback_active
 
 logger = logging.getLogger(__name__)
@@ -35,7 +36,7 @@ class SilentActiveDependencies:
     get_peak_monitor: Callable[[], Any]
     get_player_instance: Callable[[], Any]
     get_current_track_info: Callable[[], dict[str, Any] | None]
-    get_current_footer_owner: Callable[[], str]
+    get_current_playback_owner: Callable[[], str | None]
     get_spotify_ui_state: Callable[..., Any]
     list_mpv_sink_inputs: Callable[[], list[dict]]
     list_spotify_sink_inputs: Callable[[], list[dict]]
@@ -198,8 +199,8 @@ class SilentActiveRecovery:
         player_instance = deps.get_player_instance()
         player_state = player_instance.state if player_instance and player_instance._running else {}
         live_track = deps.get_current_track_info() or {}
-        owner = deps.get_current_footer_owner() or source
-        if source in {"local", "radio", "tidal"}:
+        owner = deps.get_current_playback_owner() or source
+        if source_policy.is_mpv_source(source):
             if not track or not deps.current_track_matches(track):
                 return
             if not is_local_playback_active(player_state):

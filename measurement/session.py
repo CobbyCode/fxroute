@@ -34,6 +34,7 @@ from uploads import (
     UploadTooLargeError,
     read_upload,
 )
+import playback.source_policy as source_policy
 from playback.transition import TransitionRequest
 from audio.samplerate import (
     OUTPUT_MODE_SUBWOOFER_22,
@@ -397,7 +398,7 @@ class MeasurementSampleRateSession:
         force_rate_owned = True
         coordinator_attempted = False
         playback_restore_via_coordinator = bool(
-            playback_source in {"local", "radio", "spotify", "tidal"}
+            playback_source in {"local", "radio", "spotify", "tidal", "qobuz"}
             and playback_target_rate
             and snapshot_is_current
         )
@@ -406,7 +407,7 @@ class MeasurementSampleRateSession:
             attempt_epoch = _begin_playback_transition_attempt()
             track = dict(
                 (playback_snapshot.get("track_info") or {})
-                if playback_source == "spotify"
+                if playback_source in {"spotify", "qobuz"}
                 else (current_track_info or {})
             )
             track.update({
@@ -518,7 +519,7 @@ class MeasurementSampleRateSession:
                             playback_target_rate, timeout_ms=3500,
                         )
 
-                measurement_only_restore = not playback_target_rate or playback_source not in {"local", "radio", "spotify", "tidal"}
+                measurement_only_restore = not playback_target_rate or playback_source not in {"local", "radio", "spotify", "tidal", "qobuz"}
                 if rate_ready and not coordinator_attempted and measurement_only_restore:
                     await dsp_orchestrator.sync_runtime_at_rate(runtime_restore_rate, _rate_lock_held=True)
                 else:
@@ -636,10 +637,50 @@ def _capture_playback_state_before_measurement(
             effective_rate,
         )
         return
+    if context.get("source") == "qobuz":
+        qobuz_state = dict(context.get("target_track") or {})
+        track_id = str(
+            context.get("target_url")
+            or qobuz_state.get("trackId")
+            or qobuz_state.get("id")
+            or ""
+        ).strip()
+        if not track_id:
+            return
+        source_rate = qobuz_state.get("sample_rate")
+        effective_rate = (
+            samplerate.effective_playback_rate(int(source_rate))
+            if isinstance(source_rate, int) and source_rate > 0
+            else samplerate.effective_playback_rate(44100)
+        )
+        was_playing = bool(context.get("should_play"))
+        _playback_state_before_measurement = {
+            "source": "qobuz",
+            "track_info": dict(qobuz_state),
+            "url": track_id,
+            "path": track_id,
+            "current_file": None,
+            "id": track_id,
+            "qobuz_identity": track_id,
+            "title": qobuz_state.get("title"),
+            "expected_rate": effective_rate,
+            "position": 0.0,
+            "was_paused": not was_playing,
+            "was_playing": was_playing,
+            "intent_generation": playback_intent_generation,
+        }
+        if measurement_sr_session is not None:
+            measurement_sr_session._playback_captured = True
+        logger.info(
+            "PLAYBACK-CAPTURE-DIAG Qobuz state captured before measurement: id=%s expected_rate=%s",
+            track_id,
+            effective_rate,
+        )
+        return
     if not current_track_info:
         return
     source = current_track_info.get("source")
-    if source not in {"radio", "local", "tidal"}:
+    if not source_policy.is_mpv_source(source):
         return
     if not _player() or not _player()._running:
         return

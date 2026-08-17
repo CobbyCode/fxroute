@@ -961,6 +961,15 @@ function handleWebSocketMessage(msg) {
                 }
             }
             break;
+        case 'qobuz':
+            window.__qobuzLastData = data || null;
+            if (data && data.available && (data.status === 'Playing' || data.status === 'Paused' || data.title)) {
+                reconcileFooterSource();
+                if (window.__footerSource === 'qobuz') {
+                    updateFooterForSpotify(data);
+                }
+            }
+            break;
         case 'playback_peak_warning':
             state.playback.output_peak_warning = data || state.playback.output_peak_warning;
             renderPeakWarningBadge();
@@ -2320,6 +2329,7 @@ async function fetchAudioSourceOverview() {
 
 window.__visibleTab = 'radio';
 window.__footerSource = 'local';
+window.__qobuzLastData = null;
 window.__spotifySeeking = false;
 
 function clearLibraryImportFeedbackIfIdle() {
@@ -2378,8 +2388,10 @@ function switchTab(tabId) {
 }
 
 function getBackendFooterOwner(playback = state.playback, spotify = window.__spotifyLastData) {
-    const owner = playback?.footer_owner || spotify?.footer_owner || null;
-    return owner === 'spotify' || owner === 'local' ? owner : null;
+    const owner = playback?.playback_owner || spotify?.playback_owner || null;
+    if (owner === 'local' || owner === 'radio' || owner === 'tidal') return 'local';
+    if (owner === 'spotify' || owner === 'qobuz') return owner;
+    return null;
 }
 
 function getEffectivePlaybackControlSource() {
@@ -2392,24 +2404,33 @@ function getEffectivePlaybackControlSource() {
 }
 
 function globalTogglePlayback() {
-    if (getEffectivePlaybackControlSource() === 'spotify') {
+    const source = getEffectivePlaybackControlSource();
+    if (source === 'spotify') {
         spotifyCommand('toggle');
+    } else if (source === 'qobuz') {
+        qobuzCommand('toggle');
     } else {
         togglePlayback();
     }
 }
 
 function globalPrevious() {
-    if (getEffectivePlaybackControlSource() === 'spotify') {
+    const source = getEffectivePlaybackControlSource();
+    if (source === 'spotify') {
         spotifyCommand('previous');
+    } else if (source === 'qobuz') {
+        qobuzCommand('previous');
     } else {
         previousInQueue();
     }
 }
 
 function globalNext() {
-    if (getEffectivePlaybackControlSource() === 'spotify') {
+    const source = getEffectivePlaybackControlSource();
+    if (source === 'spotify') {
         spotifyCommand('next');
+    } else if (source === 'qobuz') {
+        qobuzCommand('next');
     } else {
         nextInQueue();
     }
@@ -2604,12 +2625,20 @@ function toggleFooterShuffle() {
         void spotifyCommand('shuffle');
         return;
     }
+    if (window.__footerSource === 'qobuz') {
+        void qobuzCommand('shuffle');
+        return;
+    }
     void toggleLibraryShuffle();
 }
 
 function toggleFooterLoop() {
     if (window.__footerSource === 'spotify') {
         void spotifyCommand('loop');
+        return;
+    }
+    if (window.__footerSource === 'qobuz') {
+        void qobuzCommand('repeat');
         return;
     }
     void toggleLibraryLoop();
@@ -3476,6 +3505,10 @@ function reconcileFooterSource() {
         setFooterSource('spotify', 'backend-footer-owner-spotify');
         return;
     }
+    if (backendOwner === 'qobuz') {
+        setFooterSource('qobuz', 'backend-footer-owner-qobuz');
+        return;
+    }
     if (spotifyPlayingOwnsFooter()) {
         setFooterSource('spotify', 'spotify-playing');
         return;
@@ -3519,7 +3552,7 @@ function syncFooterOwnershipFromPlayback(playback = state.playback) {
             liveTitle: playback?.live_title || null,
             playing: !!playback?.playing,
             paused: !!playback?.paused,
-            footerOwner: playback?.footer_owner || null,
+            playbackOwner: playback?.playback_owner || null,
         },
     });
     const backendOwner = getBackendFooterOwner(playback);
@@ -3534,6 +3567,10 @@ function syncFooterOwnershipFromPlayback(playback = state.playback) {
     }
     if (backendOwner === 'spotify') {
         setFooterSource('spotify', 'sync-playback-backend-owner-spotify');
+        return;
+    }
+    if (backendOwner === 'qobuz') {
+        setFooterSource('qobuz', 'sync-playback-backend-owner-qobuz');
         return;
     }
     if (spotifyPlayingOwnsFooter()) {
@@ -14143,6 +14180,24 @@ async function forceSpotifyRefreshBurst() {
     }
 }
 
+async function qobuzCommand(action) {
+    try {
+        const resp = await fetch(`/api/streaming/qobuz/${action}`, { method: 'POST' });
+        const data = await resp.json().catch(() => null);
+        if (!resp.ok || !data) {
+            showToast('Qobuz transport failed', 'error');
+            return data;
+        }
+        window.__qobuzLastData = data;
+        reconcileFooterSource();
+        updateFooterForSpotify(data);
+        return data;
+    } catch (e) {
+        showToast('Qobuz transport failed', 'error');
+        return null;
+    }
+}
+
 async function spotifyCommand(action) {
     if (_spotifyCommandInFlight) return;
     const interactiveTakeover = ['play', 'toggle', 'next', 'previous'].includes(action);
@@ -14271,7 +14326,7 @@ function startSpotifyPoll() {
 
 // Footer update for Spotify source — single source of truth
 function updateFooterForSpotify(data) {
-    if (window.__footerSource !== 'spotify') return;
+    if (window.__footerSource !== 'spotify' && window.__footerSource !== 'qobuz') return;
     if (footerContentFreezeActive()) return;
     const hasMedia = !!(data?.available && (data.title || data.artist || data.album || data.status !== 'Stopped'));
     renderTrackFavoriteButton(null);

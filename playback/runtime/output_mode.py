@@ -21,6 +21,7 @@ from audio.samplerate import (
     persist_sample_rate_policy,
 )
 from streaming.spotify.provider import play as spotify_play
+import playback.source_policy as source_policy
 from playback.transition import TransitionRequest, stable_graph_readbacks
 
 from .deps import PlaybackRuntimeDependencies
@@ -126,7 +127,7 @@ class _RuntimeOutputModeMixin:
         snapshot = snapshot or {}
         previous_player = dict(snapshot.get("player") or {})
         previous_spotify = dict(snapshot.get("spotify") or {})
-        if request.source in {"local", "radio", "tidal"} and self._deps.player_is_running():
+        if source_policy.is_mpv_source(request.source) and self._deps.player_is_running():
             previous_volume = previous_player.get("volume")
             if isinstance(previous_volume, (int, float)):
                 await self.set_source_volume(int(round(previous_volume)), transition_id)
@@ -149,6 +150,14 @@ class _RuntimeOutputModeMixin:
                     raise RuntimeError("Spotify did not resume after output-mode commit")
             else:
                 await self._deps.spotify_pause()
+        elif request.source == "qobuz":
+            should_play = (snapshot.get("qobuz") or {}).get("status") == "Playing"
+            if should_play:
+                data = await self._deps.get_qobuz_ui_state()
+                if data.get("status") not in {"Playing", "playing"}:
+                    raise RuntimeError("Qobuz did not resume after output-mode commit")
+            else:
+                await self._deps.qobuz_pause()
 
     async def reconcile_post_start_graph(self, request: TransitionRequest) -> dict[str, Any]:
         """Run the bounded final graph reconciliation before staged commit."""

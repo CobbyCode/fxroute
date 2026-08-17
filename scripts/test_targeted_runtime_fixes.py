@@ -288,7 +288,7 @@ class ApiPlayQueueOrderTests(unittest.IsolatedAsyncioTestCase):
             name: (getattr(main.runtime, name) if hasattr(main.runtime, name) else getattr(main.playback_state, name) if hasattr(main.playback_state, name) else getattr(main, name))
             for name in (
                 "player_instance", "music_library", "current_track_info",
-                "last_track_info", "last_radio_track_info", "current_footer_owner",
+                "last_track_info", "last_radio_track_info", "current_playback_owner",
                 "peak_monitor",
                 "source_transition_lock",
                 "playback_transition_epoch",
@@ -303,7 +303,7 @@ class ApiPlayQueueOrderTests(unittest.IsolatedAsyncioTestCase):
         main.playback_state.current_track_info = None
         main.playback_state.last_track_info = None
         main.playback_state.last_radio_track_info = None
-        main.playback_state.current_footer_owner = "local"
+        main.playback_state.current_playback_owner = "local"
         playback_queue.queue.tracks = []
         playback_queue.queue.original = []
         playback_queue.queue.index = -1
@@ -586,7 +586,7 @@ class SilentActiveDiagnosisTests(unittest.IsolatedAsyncioTestCase):
             name: (getattr(main.runtime, name) if hasattr(main.runtime, name) else getattr(main.playback_state, name) if hasattr(main.playback_state, name) else getattr(main, name))
             for name in (
                 "peak_monitor", "player_instance", "current_track_info",
-                "current_footer_owner", "silent_active_recovery",
+                "current_playback_owner", "silent_active_recovery",
                 "dsp_preset_load_lock", "_current_track_matches",
                 "_list_mpv_sink_inputs", "get_output_volume_safe",
                 "_run_debug_command", "_is_measurement_window_open",
@@ -599,7 +599,7 @@ class SilentActiveDiagnosisTests(unittest.IsolatedAsyncioTestCase):
             state={"current_file": "/music/t1.flac", "paused": False, "ended": False, "volume": 100},
         )
         main.playback_state.current_track_info = {"id": "t1", "title": "T1", "url": "/music/t1.flac", "source": "local"}
-        main.playback_state.current_footer_owner = "local"
+        main.playback_state.current_playback_owner = "local"
         main.silent_active_recovery.recovery_attempts.clear()
         main.silent_active_recovery.watch_tasks.clear()
         main.runtime.dsp_preset_load_lock = None

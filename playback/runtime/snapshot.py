@@ -14,6 +14,7 @@ from typing import Any, Mapping
 
 import audio.samplerate as samplerate
 from audio.samplerate import OUTPUT_MODE_STEREO, OUTPUT_MODE_SUBWOOFER_MODES
+import playback.source_policy as source_policy
 from playback.transition import TransitionRequest
 
 from .deps import PlaybackRuntimeDependencies
@@ -96,7 +97,7 @@ class _RuntimeSnapshotMixin:
     def target_source_staged(self, request: TransitionRequest) -> bool:
         """Report whether this transition has staged a new MPV target."""
         return bool(
-            request.source in {"local", "radio", "tidal"}
+            source_policy.is_mpv_source(request.source)
             and request.target_url
             and self._staged_target_url == request.target_url
         )
@@ -128,8 +129,8 @@ class _RuntimeSnapshotMixin:
         """
         snapshot_track = dict((snapshot or {}).get("current_track") or {})
         previous_state = dict((snapshot or {}).get("player") or {})
-        if request.source not in {"local", "radio", "tidal"}:
-            if request.source != "spotify":
+        if not source_policy.is_mpv_source(request.source):
+            if request.source != "spotify" and request.source != "qobuz":
                 return None
             # A failed Spotify handoff already quieted and stopped the
             # previously committed Local/Radio source and cleared its track
@@ -143,7 +144,7 @@ class _RuntimeSnapshotMixin:
             # Coordinator restores the output gate instead of latching a
             # failure; on restore failure the existing failure latch keeps
             # the safe state.
-            if snapshot_track.get("source") in {"local", "radio", "tidal"} and bool(
+            if source_policy.is_mpv_source(snapshot_track.get("source")) and bool(
                 previous_state.get("current_file")
                 or previous_state.get("playing")
                 or previous_state.get("paused")
@@ -185,7 +186,7 @@ class _RuntimeSnapshotMixin:
                 # candidate was never published.  Nothing to invalidate.
                 return None
 
-        if snapshot_track.get("source") in {"local", "radio", "tidal"} and previous_state.get("current_file"):
+        if source_policy.is_mpv_source(snapshot_track.get("source")) and previous_state.get("current_file"):
             restore_request = self._build_restore_request(
                 request, snapshot, previous_state, snapshot_track
             )
@@ -230,7 +231,7 @@ class _RuntimeSnapshotMixin:
             self._deps.queue().normalize_after_native_loss()
 
         self._deps.set_current_track_info(None)
-        self._deps.set_footer_owner("local")
+        self._deps.set_playback_owner(None)
         self._deps.mark_player_state_authoritative(self._player.state if self._player else {})
 
     def _build_restore_request(
@@ -250,7 +251,7 @@ class _RuntimeSnapshotMixin:
         """
         source = str(track.get("source") or "")
         target_url = str(track.get("url") or previous_state.get("current_file") or "")
-        if source not in {"local", "radio", "tidal"} or not target_url:
+        if not source_policy.is_mpv_source(source) or not target_url:
             return None
         native_fields = self._deps.queue().native_request_fields()
         native_committed = bool(native_fields)
@@ -325,7 +326,8 @@ class _RuntimeSnapshotMixin:
         if not track:
             return
         self._deps.set_current_track_info(track)
-        self._deps.set_footer_owner("local")
+        source = str(track.get("source") or request.source)
+        self._deps.set_playback_owner(source if source_policy.is_known_source(source) else None)
         self._deps.mark_player_state_authoritative(self._player.state if self._player else {})
 
     async def normalize_queue_after_native_loss(self) -> None:

@@ -14,6 +14,7 @@ from uuid import uuid4
 from .cleanup import _TransitionCleanupMixin
 from .gate import _OutputGateMixin
 from audio.samplerate.constants import FXROUTE_MAX_PROCESSING_RATE
+import playback.source_policy as source_policy
 
 from .models import (
     OutputGateState,
@@ -471,7 +472,7 @@ class PlaybackTransitionCoordinator(_TransitionCleanupMixin, _OutputGateMixin):
                     request.should_play
                     or (
                         request.operation == "measurement-restore"
-                        and request.source in {"local", "radio", "tidal"}
+                        and source_policy.is_mpv_source(request.source)
                     )
                 )
             )

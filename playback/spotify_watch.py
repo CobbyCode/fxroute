@@ -36,6 +36,7 @@ class SpotifyWatchDependencies:
     spotify_sink_input_observation: Callable[..., Any]
     request_coordinated_recovery: Callable[..., Any]
     schedule_spotify_state_refresh: Callable[[str], None]
+    claim_spotify_playback: Callable[[str], Any]
 
 
 class SpotifyPlayerctlWatch:
@@ -130,7 +131,7 @@ class SpotifyPlayerctlWatch:
                     mismatch_signature = None
                     mismatch_readbacks = 0
                     logger.info(
-                        "Spotify detect watcher: reason=%s probe=%s/%s status=%s spotify_inputs=%s spotify_rate=%s sink_rate=%s footer_owner=%s title=%s",
+                        "Spotify detect watcher: reason=%s probe=%s/%s status=%s spotify_inputs=%s spotify_rate=%s sink_rate=%s playback_owner=%s title=%s",
                         reason,
                         index + 1,
                         len(burst_delays),
@@ -138,7 +139,7 @@ class SpotifyPlayerctlWatch:
                         len(spotify_inputs),
                         spotify_rate,
                         sink_rate,
-                        deps.get_playback_state().current_footer_owner,
+                        deps.get_playback_state().current_playback_owner,
                         spotify_state.get("title"),
                     )
                     break
@@ -148,14 +149,14 @@ class SpotifyPlayerctlWatch:
                 if last_snapshot is not None:
                     status, inputs_count, spotify_rate, sink_rate = last_snapshot
                     logger.info(
-                        "Spotify detect watcher final: reason=%s probes=%s status=%s spotify_inputs=%s spotify_rate=%s sink_rate=%s footer_owner=%s",
+                        "Spotify detect watcher final: reason=%s probes=%s status=%s spotify_inputs=%s spotify_rate=%s sink_rate=%s playback_owner=%s",
                         reason,
                         len(burst_delays),
                         status,
                         inputs_count,
                         spotify_rate,
                         sink_rate,
-                        deps.get_playback_state().current_footer_owner,
+                        deps.get_playback_state().current_playback_owner,
                     )
         except asyncio.CancelledError:
             raise
@@ -217,6 +218,14 @@ class SpotifyPlayerctlWatch:
                     status, _, tail = text.partition("|")
                     if status == "Playing":
                         self.schedule_detect(f"playerctl:{tail or 'playing'}")
+                        # A real MPRIS Playing event is an external source
+                        # claim (Spotify Connect started playback). Fire and
+                        # forget: the claim is a no-op when spotify already
+                        # owns playback.
+                        asyncio.create_task(
+                            self._deps.claim_spotify_playback("playerctl-playing"),
+                            name="spotify-external-claim",
+                        )
                     self._deps.schedule_spotify_state_refresh(f"playerctl:{tail or status or 'metadata'}")
                 stderr = b""
                 if proc.stderr:

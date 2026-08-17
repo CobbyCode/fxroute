@@ -127,7 +127,7 @@ class StaleEndfileOwnershipTests(unittest.IsolatedAsyncioTestCase):
         main.queue_advancing = False
         main.playback_state.current_track_info = dict(playback_queue.queue.tracks[0])
         main.playback_state.last_track_info = dict(playback_queue.queue.tracks[0])
-        main.playback_state.current_footer_owner = "local"
+        main.playback_state.current_playback_owner = "local"
         main.playback_state.latest_player_state_seq_seen = 0
         main.playback_state.playback_transition_epoch = 0
         main.playback_state.playback_transition_pending_attempts = 0
@@ -229,7 +229,7 @@ class StaleEndfileOwnershipTests(unittest.IsolatedAsyncioTestCase):
         # the old local track, the queue stays committed.  Only the
         # commit token changes.
         main.playback_state.playback_context_commit_id = "commit-spotify"
-        main.playback_state.current_footer_owner = "spotify"
+        main.playback_state.current_playback_owner = "spotify"
 
         await main.on_player_state_change(
             _ended_snapshot(), event_commit_id=COMMIT_A
@@ -509,7 +509,7 @@ class StaleEndfileOwnershipTests(unittest.IsolatedAsyncioTestCase):
         async def blocking_spotify_state(data=None):
             entered.set()
             await release.wait()
-            return {"status": "Playing", "footer_owner": "spotify"}
+            return {"status": "Playing", "playback_owner": "spotify"}
 
         async def spotify_transition(request):
             self.transition_requests.append(request)
@@ -533,7 +533,7 @@ class StaleEndfileOwnershipTests(unittest.IsolatedAsyncioTestCase):
             play_task = asyncio.create_task(main.api_spotify_play())
             await asyncio.wait_for(entered.wait(), timeout=5)
             self.assertEqual(main._current_playback_commit_id(), COMMIT_B)
-            self.assertEqual(main.playback_state.current_footer_owner, "spotify")
+            self.assertEqual(main.playback_state.current_playback_owner, "spotify")
             release.set()
             main._end_playback_transition_attempt()
             await asyncio.gather(play_task, eof_task)
@@ -550,10 +550,10 @@ class StaleEndfileOwnershipTests(unittest.IsolatedAsyncioTestCase):
         async def spotify_state(data=None):
             state_calls.append(data)
             if len(state_calls) == 1:
-                return {"status": "Paused", "footer_owner": "local"}
+                return {"status": "Paused", "playback_owner": "local"}
             entered.set()
             await release.wait()
-            return {"status": "Playing", "footer_owner": "spotify"}
+            return {"status": "Playing", "playback_owner": "spotify"}
 
         async def spotify_transition(request):
             self.transition_requests.append(request)
@@ -577,7 +577,7 @@ class StaleEndfileOwnershipTests(unittest.IsolatedAsyncioTestCase):
             toggle_task = asyncio.create_task(main.api_spotify_toggle())
             await asyncio.wait_for(entered.wait(), timeout=5)
             self.assertEqual(main._current_playback_commit_id(), COMMIT_B)
-            self.assertEqual(main.playback_state.current_footer_owner, "spotify")
+            self.assertEqual(main.playback_state.current_playback_owner, "spotify")
             release.set()
             main._end_playback_transition_attempt()
             await asyncio.gather(toggle_task, eof_task)

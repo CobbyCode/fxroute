@@ -45,7 +45,8 @@ class PlaybackState:
     """Single authoritative owner of the mutable playback/transition state.
 
     One instance owns the playback context (current/last track snapshots,
-    Spotify UI state, footer ownership) together with the transition state
+    Spotify UI state, authoritative playback owner) together with the
+    transition state
     machine (intent generation, attempt epoch, pending-attempt counter and
     the published commit tokens).  ``main.py`` keeps thin wrappers around the
     state-machine methods so the existing dependency wiring and test patching
@@ -67,7 +68,11 @@ class PlaybackState:
     last_track_info: dict[str, Any] | None = None
     last_radio_track_info: dict[str, Any] | None = None
     latest_spotify_state: dict[str, Any] | None = None
-    current_footer_owner: str = "local"
+    latest_qobuz_state: dict[str, Any] | None = None
+    # Authoritative playback owner: which source currently owns playback.
+    # ``None`` means idle/no committed owner. Pausing does not clear it; only
+    # a real new playback intent / external source claim changes it.
+    current_playback_owner: str | None = None
 
     playback_intent_generation: int = 0
     playback_transition_epoch: int = 0

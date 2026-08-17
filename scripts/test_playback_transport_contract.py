@@ -220,8 +220,10 @@ class FooterOwnershipContractTests(unittest.TestCase):
         local_track = {"source": "local", "url": "/music/paused.flac"}
         with patch.object(main.runtime, "player_instance", player), patch.object(
             main.playback_state, "current_track_info", local_track
-        ), patch.object(main.playback_state, "current_footer_owner", "local"):
-            owner = main._get_authoritative_footer_owner(
+        ), patch.object(main.playback_state, "latest_spotify_state", None), patch.object(
+            main.playback_state, "latest_qobuz_state", None
+        ):
+            owner = main._derive_playback_owner_readonly(
                 spotify_state={"available": True, "status": "Playing"}
             )
 
@@ -239,8 +241,10 @@ class FooterOwnershipContractTests(unittest.TestCase):
         local_track = {"source": "local", "url": "/music/active.flac"}
         with patch.object(main.runtime, "player_instance", player), patch.object(
             main.playback_state, "current_track_info", local_track
-        ), patch.object(main.playback_state, "current_footer_owner", "spotify"):
-            owner = main._get_authoritative_footer_owner(
+        ), patch.object(main.playback_state, "latest_spotify_state", None), patch.object(
+            main.playback_state, "latest_qobuz_state", None
+        ):
+            owner = main._derive_playback_owner_readonly(
                 spotify_state={"available": True, "status": "Paused"}
             )
 

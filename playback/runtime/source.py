@@ -16,6 +16,7 @@ from urllib.parse import unquote
 
 import audio.samplerate as samplerate
 import audio.samplerate_orchestration as samplerate_orchestration
+import playback.source_policy as source_policy
 from streaming.spotify.provider import (
     play as spotify_play,
     next_track as spotify_next,
@@ -39,18 +40,25 @@ class _RuntimeSourceMixin:
             # A graph-only reconciliation must not pause, reload, or otherwise
             # disturb the source.  The coordinator still owns the output gate.
             return
-        if request.source == "spotify":
-            if request.operation == "recovery" and request.reload_source and request.should_play:
-                # A Spotify samplerate recovery must release the old sink
-                # input before the Coordinator changes the hardware rate and
-                # starts Spotify again.  This is intentionally kept inside
-                # the Coordinator-owned quiet stage.
-                await self._deps.spotify_pause()
-                released = await self._deps.wait_for_pipewire_spotify_release()
-                if not released:
-                    await asyncio.sleep(SOURCE_HANDOFF_SETTLE_MS / 1000)
-                return
-            if request.operation in {"measurement-entry", "output-mode-switch", "sample-rate-policy"}:
+        if request.source == "spotify" and request.operation == "recovery" and request.reload_source and request.should_play:
+            # A Spotify samplerate recovery must release the old sink input
+            # before the Coordinator changes the hardware rate and starts
+            # Spotify again.  This is intentionally kept inside the
+            # Coordinator-owned quiet stage.
+            await self._deps.spotify_pause()
+            released = await self._deps.wait_for_pipewire_spotify_release()
+            if not released:
+                await asyncio.sleep(SOURCE_HANDOFF_SETTLE_MS / 1000)
+            return
+
+        if (
+            request.operation in {"measurement-entry", "output-mode-switch", "sample-rate-policy"}
+            and source_policy.is_external_source(request.source)
+        ):
+            # Guarded graph transitions pause an external owner's own renderer
+            # instead of performing a cross-source handoff. Native MPV sources
+            # keep the normal quiet/release path below.
+            if request.source == "spotify":
                 spotify_state = await self._deps.get_spotify_ui_state()
                 if self._deps.is_spotify_playback_active(spotify_state):
                     await self._deps.spotify_pause()
@@ -58,17 +66,39 @@ class _RuntimeSourceMixin:
                         raise RuntimeError(
                             "active Spotify sink input did not quiesce before guarded graph transition"
                         )
-                return
+            elif request.source == "qobuz":
+                qobuz_state = await self._deps.get_qobuz_ui_state()
+                if self._deps.is_qobuz_playback_active(qobuz_state):
+                    await self._deps.qobuz_pause()
+                    if not await self._deps.wait_for_pipewire_qobuz_release():
+                        raise RuntimeError(
+                            "active qbzd sink input did not quiesce before guarded graph transition"
+                        )
+            return
+
+        if source_policy.is_external_source(request.source):
+            # An external renderer claims playback: pause any active MPV
+            # source, and (for qobuz) any active Spotify renderer, so exactly
+            # one source produces audio after the claim.
             local_state = dict(self._player.state if self._player else {})
             local_track = self._deps.get_current_track_info() or {}
             if (
-                local_track.get("source") in {"local", "radio", "tidal"}
+                source_policy.is_mpv_source(local_track.get("source"))
                 and self._deps.has_local_footer_context(local_state)
             ):
                 await self._deps.pause_local_playback_for_spotify_broadcast()
+            if request.source == "qobuz":
+                spotify_state = await self._deps.get_spotify_ui_state()
+                if self._deps.is_spotify_playback_active(spotify_state):
+                    await self._deps.pause_spotify_for_local_playback_broadcast()
+                    if not await self._deps.wait_for_pipewire_spotify_release():
+                        raise RuntimeError(
+                            "active Spotify sink input did not quiesce before Qobuz handoff"
+                        )
             return
-        if request.source not in {"local", "radio", "tidal"}:
-            return
+
+        # A native MPV source claims playback: pause any active external
+        # renderer (Spotify or qbzd).
         spotify_state = await self._deps.get_spotify_ui_state()
         if self._deps.is_spotify_playback_active(spotify_state):
             await self._deps.pause_spotify_for_local_playback_broadcast()
@@ -79,6 +109,13 @@ class _RuntimeSourceMixin:
             if not await self._deps.wait_for_pipewire_spotify_release():
                 raise RuntimeError(
                     "active Spotify sink input did not quiesce before MPV handoff"
+                )
+        qobuz_state = await self._deps.get_qobuz_ui_state()
+        if self._deps.is_qobuz_playback_active(qobuz_state):
+            await self._deps.qobuz_pause()
+            if not await self._deps.wait_for_pipewire_qobuz_release():
+                raise RuntimeError(
+                    "active qbzd sink input did not quiesce before MPV handoff"
                 )
         if not self._deps.player_is_running():
             return
@@ -237,7 +274,7 @@ class _RuntimeSourceMixin:
     async def prepare_target_source(self, request: TransitionRequest) -> None:
         if request.graph_only:
             return
-        if request.source == "spotify":
+        if source_policy.is_external_source(request.source):
             return
         if not self._deps.player_is_running():
             raise RuntimeError("MPV player is not available")
@@ -354,6 +391,11 @@ class _RuntimeSourceMixin:
             if request.should_play and data.get("status") not in {"Playing", "playing"}:
                 raise RuntimeError(f"Spotify did not enter Playing state: {data}")
             return
+        if request.source == "qobuz":
+            qobuz_state = await self._deps.get_qobuz_ui_state()
+            if request.should_play and qobuz_state.get("status") not in {"Playing", "playing"}:
+                raise RuntimeError(f"Qobuz did not enter Playing state: {qobuz_state}")
+            return
         if not self._deps.player_is_running():
             raise RuntimeError("MPV player is not available")
         self._player.set_pause(not request.should_play)
@@ -444,6 +486,12 @@ class _RuntimeSourceMixin:
         if request.source == "spotify":
             try:
                 await self._deps.spotify_pause()
+            except Exception:
+                pass
+            return
+        if request.source == "qobuz":
+            try:
+                await self._deps.qobuz_pause()
             except Exception:
                 pass
             return

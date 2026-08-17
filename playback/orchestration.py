@@ -18,6 +18,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Awaitable, Callable, Mapping
 
 import playback.queue
+import playback.source_policy as source_policy
 import playback.state
 import audio.samplerate as samplerate
 from playback.transition import PlaybackTransitionFailure, TransitionRequest, stable_graph_readbacks
@@ -92,6 +93,21 @@ class PlaybackOrchestrator:
     def sample_rate_policy_is_auto(self) -> bool:
         return samplerate.load_sample_rate_policy().get("mode") == "auto"
 
+    def _qobuz_playback_active(self, qobuz: Mapping[str, Any]) -> bool:
+        return bool(qobuz.get("available") and qobuz.get("status") == "Playing")
+
+    def _qobuz_target_track(self, qobuz: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            "source": "qobuz",
+            "id": qobuz.get("trackId") or qobuz.get("id"),
+            "url": qobuz.get("trackId") or qobuz.get("id"),
+            "title": qobuz.get("title"),
+            "artist": qobuz.get("artist"),
+            "album": qobuz.get("album"),
+            "artUrl": qobuz.get("artUrl"),
+            "sample_rate_hz": qobuz.get("sample_rate"),
+        }
+
     async def current_playback_context(self) -> dict[str, Any]:
         state = self._deps.get_playback_state()
         player = self._deps.get_runtime_player()
@@ -100,21 +116,30 @@ class PlaybackOrchestrator:
         spotify = await self._deps.get_spotify_ui_state()
         local_active = self._deps.is_local_playback_active(local_state)
         spotify_active = self._deps.is_spotify_playback_active(spotify)
-        if local_active and local_track.get("source") in {"local", "radio", "tidal"}:
+        if local_active and source_policy.is_mpv_source(local_track.get("source")):
             return {"source": local_track.get("source"), "target_url": local_state.get("current_file"),
                     "target_track": local_track, "should_play": True, "spotify": spotify}
         if spotify_active:
             track_id = spotify.get("trackId") or spotify.get("url")
             return {"source": "spotify", "target_url": str(track_id or "") or None,
                     "target_track": self._deps.spotify_target_track(spotify), "should_play": True, "spotify": spotify}
-        if local_track.get("source") in {"local", "radio", "tidal"} and local_state.get("current_file"):
+        qobuz = dict(state.latest_qobuz_state or {})
+        if self._qobuz_playback_active(qobuz):
+            track_id = qobuz.get("trackId") or qobuz.get("id")
+            return {"source": "qobuz", "target_url": str(track_id or "") or None,
+                    "target_track": self._qobuz_target_track(qobuz), "should_play": True, "spotify": spotify}
+        if source_policy.is_mpv_source(local_track.get("source")) and local_state.get("current_file"):
             return {"source": local_track.get("source"), "target_url": local_state.get("current_file"),
                     "target_track": local_track,
                     "should_play": bool(local_state.get("playing") and not local_state.get("paused")),
                     "spotify": spotify}
-        if state.current_footer_owner == "spotify" and spotify.get("trackId"):
+        owner = state.current_playback_owner
+        if owner == "spotify" and spotify.get("trackId"):
             return {"source": "spotify", "target_url": str(spotify["trackId"]),
                     "target_track": self._deps.spotify_target_track(spotify), "should_play": False, "spotify": spotify}
+        if owner == "qobuz" and qobuz.get("trackId"):
+            return {"source": "qobuz", "target_url": str(qobuz["trackId"]),
+                    "target_track": self._qobuz_target_track(qobuz), "should_play": False, "spotify": spotify}
         return {"source": "local", "target_url": None, "target_track": {}, "should_play": False, "spotify": spotify}
 
     def coordinator_rate_change(self, target_rate: int | None) -> bool:
@@ -201,7 +226,7 @@ class PlaybackOrchestrator:
         if self.measurement_audio_graph_owned() or self._deps.get_coordinator() is None or not track:
             return
         source = str(track.get("source") or "")
-        if source not in {"local", "radio", "spotify", "tidal"}:
+        if not source_policy.is_known_source(source):
             return
         target_rate = self.coordinator_target_rate(source, track)
         if not isinstance(target_rate, int) or target_rate <= 0:
@@ -211,6 +236,9 @@ class PlaybackOrchestrator:
                 should_play = (await self._deps.get_spotify_ui_state()).get("status") == "Playing"
             except Exception:
                 should_play = False
+        elif source == "qobuz":
+            qobuz = dict(self._deps.get_playback_state().latest_qobuz_state or {})
+            should_play = bool(qobuz.get("available") and qobuz.get("status") == "Playing")
         else:
             player = self._deps.get_runtime_player()
             state = dict(player.state if player else {})
@@ -248,7 +276,7 @@ class PlaybackOrchestrator:
             if (
                 getattr(result, "committed", False)
                 and self._deps.sample_rate_policy_is_auto()
-                and source in {"local", "radio", "tidal"}
+                and source_policy.is_mpv_source(source)
                 and isinstance(getattr(result, "target_rate", None), int)
                 and result.target_rate > 0
             ):
@@ -275,7 +303,7 @@ class PlaybackOrchestrator:
         context = await self.current_playback_context()
         source = str(context.get("source") or "local")
         source_rate = self.coordinator_source_rate(source, context.get("target_track"))
-        if source in {"local", "radio", "tidal"} and context.get("target_url"):
+        if source_policy.is_mpv_source(source) and context.get("target_url"):
             live_rate = self._deps.get_player_audio_samplerate()
             if isinstance(live_rate, int) and live_rate > 0:
                 source_rate = live_rate
@@ -290,7 +318,7 @@ class PlaybackOrchestrator:
             operation="sample-rate-policy", source=source, target_rate=target_rate,
             target_url=context.get("target_url"), target_track=dict(context.get("target_track") or {}),
             should_play=bool(context.get("should_play")), rate_change=rate_change,
-            reload_source=bool(rate_change and source in {"local", "radio", "spotify", "tidal"} and context.get("target_url")),
+            reload_source=bool(rate_change and source_policy.is_known_source(source) and context.get("target_url")),
             detail=detail, output_mode_target=dict(overview), sample_rate_policy=dict(policy),
             **(self._deps.get_player_queue_fields() if source == "local" else {}),
         )
@@ -334,9 +362,8 @@ class PlaybackOrchestrator:
             link_text = await self._deps.run_pw_link_command("-l")
         except Exception:
             return result
-        source_node = "spotify" if source == "spotify" else "mpv" if source in {"local", "radio", "tidal"} else None
+        source_ports = source_policy.graph_port_names(source) or ()
         source_targets = ("fxroute_dsp_sink:playback_FL", "fxroute_dsp_sink:playback_FR")
-        source_ports = tuple(f"{source_node}:output_{channel}" for channel in ("FL", "FR")) if source_node else ()
         snapshot = dict(self._deps.get_dsp_snapshot() or {}) if self._deps.get_dsp_snapshot else {}
         output_count = 4 if mode in self._deps.output_mode_subwoofer_modes else 2
         channels = ("FL", "FR", "RL", "RR")[:output_count]
@@ -349,8 +376,20 @@ class PlaybackOrchestrator:
         result["helper_rate"] = self._deps.helper_argument_sample_rate(snapshot)
         result["helper_rate_matches"] = bool(result["helper_active"] and (target_rate is None or result["helper_rate"] == target_rate))
         result["source_links"] = {f"{p} -> {t}": self._deps.contains_link(link_text, p, t) for p, t in zip(source_ports, source_targets)}
-        result["source_links_complete"] = all(result["source_links"].values()) if source_node else (False if require_source else None)
-        result["direct_source_to_hw_present"] = any(self._deps.contains_link(link_text, f"{node}:output_{channel}", f"{output_key}:playback_{channel}") for node in ("mpv", "spotify") for channel in ("FL", "FR", "RL", "RR"))
+        result["source_links_complete"] = all(result["source_links"].values()) if source_ports else (False if require_source else None)
+        # A source that reaches the hardware directly (not via the DSP) is a
+        # bypass. Check every modeled source node and both port naming schemes
+        # (MPV/Spotify use ``output_<ch>``, the qbzd ALSA node uses
+        # ``playback_<ch>``).
+        bypass_ports: list[str] = []
+        for node in dict.fromkeys(source_policy.GRAPH_NODE_BY_SOURCE.values()):
+            for channel in ("FL", "FR", "RL", "RR"):
+                bypass_ports.extend((f"{node}:output_{channel}", f"{node}:playback_{channel}"))
+        result["direct_source_to_hw_present"] = any(
+            self._deps.contains_link(link_text, port, f"{output_key}:playback_{channel}")
+            for port in bypass_ports
+            for channel in ("FL", "FR", "RL", "RR")
+        )
         result["links"] = {
             **{f"{p} -> {t}": self._deps.contains_link(link_text, p, t) for p, t in zip(ingress_sources, ingress_targets)},
             **{f"{p} -> {output_key}:playback_{c}": self._deps.contains_link(link_text, p, f"{output_key}:playback_{c}") for p, c in zip(dsp_ports, channels)},

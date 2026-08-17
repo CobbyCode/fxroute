@@ -30,6 +30,7 @@ from typing import Any, Awaitable, Callable, Optional
 
 from fastapi import HTTPException
 from http_errors import bad_request
+import playback.source_policy as source_policy
 from playback.transition import PlaybackTransitionFailure, TransitionRequest
 
 logger = logging.getLogger(__name__)
@@ -350,7 +351,7 @@ class PlaybackQueue:
         if not getattr(result, "committed", False):
             raise HTTPException(status_code=500, detail="Playback transition was not committed")
         rate_updated = False
-        if self._deps.sample_rate_policy_is_auto() and source in {"local", "radio", "tidal"} and isinstance(result.target_rate, int) and result.target_rate > 0:
+        if self._deps.sample_rate_policy_is_auto() and source_policy.is_mpv_source(source) and isinstance(result.target_rate, int) and result.target_rate > 0:
             next_track["sample_rate_hz"] = result.target_rate
             rate_updated = True
         if queue_candidate is not None:

@@ -79,7 +79,7 @@ class _Station:
 class PlayQueueTransactionalTests(unittest.IsolatedAsyncioTestCase):
     GLOBALS = (
         "player_instance", "music_library", "current_track_info",
-        "last_track_info", "last_radio_track_info", "current_footer_owner",
+        "last_track_info", "last_radio_track_info", "current_playback_owner",
     )
 
     def _install(self, queue_a: list[dict], *, index: int, mode: str = "app_replace",
@@ -91,7 +91,7 @@ class PlayQueueTransactionalTests(unittest.IsolatedAsyncioTestCase):
         main.playback_state.current_track_info = dict(queue_a[index]) if queue_a and index >= 0 else None
         main.playback_state.last_track_info = dict(queue_a[index]) if queue_a and index >= 0 else None
         main.playback_state.last_radio_track_info = None
-        main.playback_state.current_footer_owner = "local"
+        main.playback_state.current_playback_owner = "local"
         playback_queue.queue.tracks = [dict(track) for track in queue_a]
         playback_queue.queue.original = [dict(track) for track in queue_a]
         playback_queue.queue.index = index
@@ -433,7 +433,7 @@ class QueueSelectionTransactionalTests(unittest.IsolatedAsyncioTestCase):
 
     GLOBALS = (
         "player_instance", "music_library", "current_track_info",
-        "last_track_info", "current_footer_owner",
+        "last_track_info", "current_playback_owner",
     )
 
     def _install(self, queue_a: list[dict], *, index: int, mode: str = "app_replace",
@@ -445,7 +445,7 @@ class QueueSelectionTransactionalTests(unittest.IsolatedAsyncioTestCase):
         main.runtime.player_instance.state["current_file"] = queue_a[index]["url"]
         main.playback_state.current_track_info = dict(queue_a[index])
         main.playback_state.last_track_info = dict(queue_a[index])
-        main.playback_state.current_footer_owner = "local"
+        main.playback_state.current_playback_owner = "local"
         playback_queue.queue.tracks = [dict(track) for track in queue_a]
         playback_queue.queue.original = [dict(track) for track in queue_a]
         playback_queue.queue.index = index
