@@ -100,14 +100,14 @@ class PlaybackOrchestrator:
         spotify = await self._deps.get_spotify_ui_state()
         local_active = self._deps.is_local_playback_active(local_state)
         spotify_active = self._deps.is_spotify_playback_active(spotify)
-        if local_active and local_track.get("source") in {"local", "radio"}:
+        if local_active and local_track.get("source") in {"local", "radio", "tidal"}:
             return {"source": local_track.get("source"), "target_url": local_state.get("current_file"),
                     "target_track": local_track, "should_play": True, "spotify": spotify}
         if spotify_active:
             track_id = spotify.get("trackId") or spotify.get("url")
             return {"source": "spotify", "target_url": str(track_id or "") or None,
                     "target_track": self._deps.spotify_target_track(spotify), "should_play": True, "spotify": spotify}
-        if local_track.get("source") in {"local", "radio"} and local_state.get("current_file"):
+        if local_track.get("source") in {"local", "radio", "tidal"} and local_state.get("current_file"):
             return {"source": local_track.get("source"), "target_url": local_state.get("current_file"),
                     "target_track": local_track,
                     "should_play": bool(local_state.get("playing") and not local_state.get("paused")),
@@ -201,7 +201,7 @@ class PlaybackOrchestrator:
         if self.measurement_audio_graph_owned() or self._deps.get_coordinator() is None or not track:
             return
         source = str(track.get("source") or "")
-        if source not in {"local", "radio", "spotify"}:
+        if source not in {"local", "radio", "spotify", "tidal"}:
             return
         target_rate = self.coordinator_target_rate(source, track)
         if not isinstance(target_rate, int) or target_rate <= 0:
@@ -248,7 +248,7 @@ class PlaybackOrchestrator:
             if (
                 getattr(result, "committed", False)
                 and self._deps.sample_rate_policy_is_auto()
-                and source in {"local", "radio"}
+                and source in {"local", "radio", "tidal"}
                 and isinstance(getattr(result, "target_rate", None), int)
                 and result.target_rate > 0
             ):
@@ -275,7 +275,7 @@ class PlaybackOrchestrator:
         context = await self.current_playback_context()
         source = str(context.get("source") or "local")
         source_rate = self.coordinator_source_rate(source, context.get("target_track"))
-        if source in {"local", "radio"} and context.get("target_url"):
+        if source in {"local", "radio", "tidal"} and context.get("target_url"):
             live_rate = self._deps.get_player_audio_samplerate()
             if isinstance(live_rate, int) and live_rate > 0:
                 source_rate = live_rate
@@ -290,7 +290,7 @@ class PlaybackOrchestrator:
             operation="sample-rate-policy", source=source, target_rate=target_rate,
             target_url=context.get("target_url"), target_track=dict(context.get("target_track") or {}),
             should_play=bool(context.get("should_play")), rate_change=rate_change,
-            reload_source=bool(rate_change and source in {"local", "radio", "spotify"} and context.get("target_url")),
+            reload_source=bool(rate_change and source in {"local", "radio", "spotify", "tidal"} and context.get("target_url")),
             detail=detail, output_mode_target=dict(overview), sample_rate_policy=dict(policy),
             **(self._deps.get_player_queue_fields() if source == "local" else {}),
         )
@@ -334,7 +334,7 @@ class PlaybackOrchestrator:
             link_text = await self._deps.run_pw_link_command("-l")
         except Exception:
             return result
-        source_node = "spotify" if source == "spotify" else "mpv" if source in {"local", "radio"} else None
+        source_node = "spotify" if source == "spotify" else "mpv" if source in {"local", "radio", "tidal"} else None
         source_targets = ("fxroute_dsp_sink:playback_FL", "fxroute_dsp_sink:playback_FR")
         source_ports = tuple(f"{source_node}:output_{channel}" for channel in ("FL", "FR")) if source_node else ()
         snapshot = dict(self._deps.get_dsp_snapshot() or {}) if self._deps.get_dsp_snapshot else {}

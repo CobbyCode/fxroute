@@ -35,7 +35,7 @@ def playback_state_matches_track(state: dict | None, track: dict | None) -> bool
     source = track.get("source")
     current_file = state.get("current_file")
     track_url = track.get("url")
-    if source in {"local", "radio"} and current_file and track_url and current_file != track_url:
+    if source in {"local", "radio", "tidal"} and current_file and track_url and current_file != track_url:
         return False
     return True
 

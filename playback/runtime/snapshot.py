@@ -96,7 +96,7 @@ class _RuntimeSnapshotMixin:
     def target_source_staged(self, request: TransitionRequest) -> bool:
         """Report whether this transition has staged a new MPV target."""
         return bool(
-            request.source in {"local", "radio"}
+            request.source in {"local", "radio", "tidal"}
             and request.target_url
             and self._staged_target_url == request.target_url
         )
@@ -128,7 +128,7 @@ class _RuntimeSnapshotMixin:
         """
         snapshot_track = dict((snapshot or {}).get("current_track") or {})
         previous_state = dict((snapshot or {}).get("player") or {})
-        if request.source not in {"local", "radio"}:
+        if request.source not in {"local", "radio", "tidal"}:
             if request.source != "spotify":
                 return None
             # A failed Spotify handoff already quieted and stopped the
@@ -143,7 +143,7 @@ class _RuntimeSnapshotMixin:
             # Coordinator restores the output gate instead of latching a
             # failure; on restore failure the existing failure latch keeps
             # the safe state.
-            if snapshot_track.get("source") in {"local", "radio"} and bool(
+            if snapshot_track.get("source") in {"local", "radio", "tidal"} and bool(
                 previous_state.get("current_file")
                 or previous_state.get("playing")
                 or previous_state.get("paused")
@@ -185,7 +185,7 @@ class _RuntimeSnapshotMixin:
                 # candidate was never published.  Nothing to invalidate.
                 return None
 
-        if snapshot_track.get("source") in {"local", "radio"} and previous_state.get("current_file"):
+        if snapshot_track.get("source") in {"local", "radio", "tidal"} and previous_state.get("current_file"):
             restore_request = self._build_restore_request(
                 request, snapshot, previous_state, snapshot_track
             )
@@ -250,7 +250,7 @@ class _RuntimeSnapshotMixin:
         """
         source = str(track.get("source") or "")
         target_url = str(track.get("url") or previous_state.get("current_file") or "")
-        if source not in {"local", "radio"} or not target_url:
+        if source not in {"local", "radio", "tidal"} or not target_url:
             return None
         native_fields = self._deps.queue().native_request_fields()
         native_committed = bool(native_fields)

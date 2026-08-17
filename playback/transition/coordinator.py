@@ -471,7 +471,7 @@ class PlaybackTransitionCoordinator(_TransitionCleanupMixin, _OutputGateMixin):
                     request.should_play
                     or (
                         request.operation == "measurement-restore"
-                        and request.source in {"local", "radio"}
+                        and request.source in {"local", "radio", "tidal"}
                     )
                 )
             )

@@ -457,7 +457,7 @@ def _has_local_footer_context(state: dict | None) -> bool:
     state = state or {}
     track = playback_state.current_track_info or state.get("current_track") or {}
     source = (track or {}).get("source")
-    if source not in {"local", "radio"}:
+    if source not in {"local", "radio", "tidal"}:
         return False
     return bool(
         state.get("current_file")
@@ -587,6 +587,8 @@ from audio.samplerate import (
     set_bluetooth_receiver_enabled,
 )
 import streaming
+from streaming.tidal import auth as tidal_auth
+from streaming.tidal import playback as tidal_playback
 from streaming.spotify import mpris as spotify_mpris
 from streaming.spotify.mpris import playerctl_available, spotify_installed
 from streaming.spotify.provider import (
@@ -1035,7 +1037,13 @@ playback_queue.configure_playback_queue(playback_queue.PlaybackQueueDependencies
     transition_error_http=lambda exc: _transition_error_http(exc),
     get_tracks=lambda: runtime.music_library.scanner.get_tracks(),
     build_playback_payload=lambda *a, **k: build_playback_payload(*a, **k),
+    resolve_stream_url=lambda track: _resolve_tidal_stream_url(track),
 ))
+
+# Bind the native TIDAL provider's now-playing reflection to the FXRoute
+# playback owner (MPV -> fxroute_dsp_sink), so /api/streaming/tidal/status
+# mirrors the committed tidal source without owning its own transport.
+streaming.get_provider("tidal").configure(lambda: build_playback_payload())
 
 
 def _begin_playback_transition_attempt() -> int:
@@ -2062,6 +2070,12 @@ def _playback_track_with_artwork_fields(track_info: Optional[dict]) -> Optional[
         track["artwork_url"] = artwork_url or None
         track["artwork_source"] = "radio" if artwork_url else "none"
         return track
+    if source == "tidal":
+        art_url = str(track.get("art_url") or track.get("artUrl") or "").strip()
+        track["artwork_available"] = bool(art_url)
+        track["artwork_url"] = art_url or None
+        track["artwork_source"] = "tidal" if art_url else "none"
+        return track
     if source != "local" or not track_id:
         track["artwork_available"] = False
         track["artwork_url"] = None
@@ -2091,7 +2105,7 @@ def build_playback_payload(
     global dsp_manager
     player_state = dict(state or (runtime.player_instance.state if runtime.player_instance else {}))
     source_volume = player_state.get("volume") if isinstance(player_state.get("volume"), (int, float)) else None
-    if playback_state.current_track_info and playback_state.current_track_info.get("source") in {"local", "radio"}:
+    if playback_state.current_track_info and playback_state.current_track_info.get("source") in {"local", "radio", "tidal"}:
         player_state["source_volume"] = int(round(float(source_volume))) if source_volume is not None else None
     elif source_volume is not None:
         player_state["source_volume"] = int(round(float(source_volume)))
@@ -2248,7 +2262,7 @@ async def on_player_state_change(state: dict, event_commit_id: str | None = None
         and state.get("ended")
         and not state.get("current_file")
         and playback_state.current_track_info
-        and playback_state.current_track_info.get("source") == "local"
+        and playback_state.current_track_info.get("source") in {"local", "tidal"}
         and playback_queue.queue.mode != "native_mpv"
     ):
         queue_advancing = True
@@ -3028,6 +3042,80 @@ async def apple_touch_icon_root():
 @app.get("/site.webmanifest")
 async def site_webmanifest_root():
     return FileResponse(STATIC_DIR / "site.webmanifest", media_type="application/manifest+json")
+
+
+def _tidal_provider():
+    """Return the registered TIDAL provider."""
+    return streaming.get_provider("tidal")
+
+
+async def _resolve_tidal_track(track_id: str) -> dict:
+    """Resolve TIDAL metadata + a playable stream URL into a track dict.
+
+    The stream URL is resolved as late as possible here (the play boundary)
+    and is never persisted back into the catalog/queue metadata.
+    """
+    provider = _tidal_provider()
+    try:
+        meta = await provider.get_track(track_id)
+        stream = await provider.resolve_stream(track_id)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=404, detail=f"TIDAL track unavailable: {exc}") from exc
+    return {
+        "id": str(meta.get("id") or track_id),
+        "title": meta.get("title") or "",
+        "artist": meta.get("artist") or "",
+        "album": meta.get("album") or "",
+        "art_url": meta.get("art_url") or "",
+        "duration": float(meta.get("duration") or 0),
+        "source": "tidal",
+        "url": stream.get("url") or "",
+        "sample_rate_hz": stream.get("sample_rate"),
+        "bit_depth": stream.get("bit_depth"),
+        "audio_format": stream.get("audio_format"),
+    }
+
+
+async def _resolve_tidal_track_meta(track_id: str) -> dict:
+    """Resolve TIDAL metadata only (no stream URL) for a queue entry."""
+    provider = _tidal_provider()
+    meta = await provider.get_track(track_id)
+    return {
+        "id": str(meta.get("id") or track_id),
+        "title": meta.get("title") or "",
+        "artist": meta.get("artist") or "",
+        "album": meta.get("album") or "",
+        "art_url": meta.get("art_url") or "",
+        "duration": float(meta.get("duration") or 0),
+        "source": "tidal",
+        "url": "",
+    }
+
+
+async def _resolve_tidal_stream_url(track: dict) -> str | None:
+    """Resolve a TIDAL queue entry's stream URL, updating its audio info in place.
+
+    Called by the queue just before a transition so short-lived stream URLs
+    are always freshly resolved at play time.
+    """
+    provider = _tidal_provider()
+    track_id = str(track.get("id") or "")
+    if not track_id:
+        return None
+    try:
+        stream = await provider.resolve_stream(track_id)
+    except Exception as exc:
+        logger.warning("TIDAL stream resolution failed for %s: %s", track_id, exc)
+        return None
+    track["url"] = stream.get("url") or ""
+    track["sample_rate_hz"] = stream.get("sample_rate")
+    track["bit_depth"] = stream.get("bit_depth")
+    track["audio_format"] = stream.get("audio_format")
+    return track["url"] or None
+
+
 @app.post("/api/play")
 async def play_track(req: PlayRequest):
     if not runtime.player_instance or not runtime.player_instance._running:
@@ -3042,7 +3130,7 @@ async def play_track(req: PlayRequest):
         }
 
     source = str(req.source or "local")
-    if source not in {"local", "radio"}:
+    if source not in {"local", "radio", "tidal"}:
         raise HTTPException(status_code=400, detail=f"Unsupported playback source: {source}")
 
     active_queue_ids = [item.get("id") for item in playback_queue.queue.tracks]
@@ -3081,6 +3169,39 @@ async def play_track(req: PlayRequest):
         if not track_info:
             raise HTTPException(status_code=404, detail="Radio station not found")
         queue_candidate = playback_queue.cleared_queue_candidate(track_info)
+    elif source == "tidal":
+        if not await _tidal_provider().is_authenticated():
+            raise HTTPException(status_code=401, detail="TIDAL is not authenticated")
+        track_info = await _resolve_tidal_track(req.track_id)
+        queue_ids = [str(item) for item in (req.queue_track_ids or [])]
+        if not queue_ids:
+            queue_ids = [str(req.track_id)]
+        elif str(req.track_id) not in queue_ids:
+            queue_ids.insert(0, str(req.track_id))
+        queue_tracks: list[dict] = []
+        for tidal_id in queue_ids:
+            if str(tidal_id) == str(req.track_id):
+                queue_tracks.append(track_info)
+            else:
+                try:
+                    queue_tracks.append(await _resolve_tidal_track_meta(tidal_id))
+                except HTTPException as exc:
+                    logger.warning("TIDAL queue track %s skipped: %s", tidal_id, exc.detail)
+        multi_track = len(queue_tracks) > 1
+        track_index = next(
+            (index for index, item in enumerate(queue_tracks) if str(item.get("id")) == str(req.track_id)),
+            -1,
+        )
+        queue_candidate = playback_queue.QueueCandidate(
+            queue=[dict(item) for item in queue_tracks] if multi_track else [],
+            original=[dict(item) for item in queue_tracks] if multi_track else [],
+            index=track_index if multi_track else -1,
+            mode="app_replace",
+            loop=bool(req.loop),
+            shuffle=bool(req.shuffle),
+            single_track_loop=bool(req.loop) and not multi_track,
+            track=track_info,
+        )
     else:
         preserve_queue_order = bool(req.queue_track_ids) and list(req.queue_track_ids) == active_queue_ids
         scanner = runtime.music_library.scanner
@@ -3147,7 +3268,7 @@ async def play_track(req: PlayRequest):
                 "Failed to trim native playlist after committed play transition",
                 exc_info=True,
             )
-    if source in {"local", "radio"} and isinstance(result.target_rate, int) and result.target_rate > 0:
+    if source in {"local", "radio", "tidal"} and isinstance(result.target_rate, int) and result.target_rate > 0:
         track_info["sample_rate_hz"] = result.target_rate
 
     playback_queue.queue.commit(queue_candidate)
@@ -3195,7 +3316,7 @@ async def toggle_playback():
 
     state = dict(runtime.player_instance.state)
     active_track = dict(playback_state.current_track_info or {})
-    if state.get("current_file") and not state.get("ended") and active_track.get("source") in {"local", "radio"}:
+    if state.get("current_file") and not state.get("ended") and active_track.get("source") in {"local", "radio", "tidal"}:
         was_paused = bool(state.get("paused"))
         source = str(active_track.get("source"))
         if not was_paused:
@@ -3244,7 +3365,7 @@ async def toggle_playback():
         except PlaybackTransitionFailure as exc:
             raise _transition_error_http(exc) from exc
         if was_paused:
-            if _sample_rate_policy_is_auto() and source in {"local", "radio"} and isinstance(result.target_rate, int) and result.target_rate > 0:
+            if _sample_rate_policy_is_auto() and source in {"local", "radio", "tidal"} and isinstance(result.target_rate, int) and result.target_rate > 0:
                 active_track["sample_rate_hz"] = result.target_rate
             _commit_coordinated_track(
                 active_track, source=source, commit_token=getattr(result, "transition_id", None)
@@ -3279,7 +3400,7 @@ async def toggle_playback():
         raise bad_request(exc) from exc
     except PlaybackTransitionFailure as exc:
         raise _transition_error_http(exc) from exc
-    if _sample_rate_policy_is_auto() and source in {"local", "radio"} and isinstance(result.target_rate, int) and result.target_rate > 0:
+    if _sample_rate_policy_is_auto() and source in {"local", "radio", "tidal"} and isinstance(result.target_rate, int) and result.target_rate > 0:
         replay_track["sample_rate_hz"] = result.target_rate
     _commit_coordinated_track(
         replay_track, source=source, commit_token=getattr(result, "transition_id", None)
@@ -3536,7 +3657,7 @@ async def get_status():
             state["radio_metadata"] = None
         # Live stream facts from mpv (codec/bitrate/samplerate/depth) for the
         # tech line.  Read-only; never derived from URLs or catalog fields.
-        if track.get("source") in ("radio", "local") and state.get("current_file"):
+        if track.get("source") in ("radio", "local", "tidal") and state.get("current_file"):
             state["stream_info"] = normalize_stream_info(
                 await _read_status_player_detail(runtime.player_instance.get_stream_audio_info, {})
             )
@@ -4357,6 +4478,127 @@ async def api_streaming_provider_action(provider_id: str, action: str, request: 
         return await method()
     except streaming.ProviderNotImplemented as exc:
         raise HTTPException(status_code=501, detail=str(exc)) from exc
+
+
+# ---------------------------------------------------------------------------
+# TIDAL (native provider: auth + catalog; playback rides /api/play source=tidal)
+# ---------------------------------------------------------------------------
+
+def _streaming_provider(provider_id: str):
+    provider = streaming.get_provider(provider_id)
+    if provider is None:
+        raise HTTPException(status_code=404, detail=f"unknown streaming provider: {provider_id}")
+    return provider
+
+
+def _tidal_http_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, tidal_auth.TidalAuthError):
+        return HTTPException(status_code=401, detail=str(exc))
+    if isinstance(exc, tidal_playback.TidalStreamError):
+        status = {
+            tidal_playback.KIND_AUTH: 401,
+            tidal_playback.KIND_RIGHTS: 403,
+            tidal_playback.KIND_UNAVAILABLE: 404,
+            tidal_playback.KIND_NETWORK: 502,
+            tidal_playback.KIND_UNSUPPORTED: 501,
+        }.get(exc.kind, 500)
+        return HTTPException(status_code=status, detail=str(exc))
+    return HTTPException(status_code=500, detail=str(exc))
+
+
+def _provider_catalog_method(provider_id: str, name: str):
+    provider = _streaming_provider(provider_id)
+    fn = getattr(provider, name, None)
+    if not callable(fn):
+        raise HTTPException(status_code=501, detail=f"provider {provider_id} does not implement {name}")
+    return fn
+
+
+@app.get("/api/streaming/{provider_id}/search")
+async def api_streaming_provider_search(provider_id: str, q: str = "", types: str | None = None, limit: int = 25):
+    fn = _provider_catalog_method(provider_id, "search")
+    type_list = [t.strip() for t in (types or "").split(",") if t.strip()]
+    try:
+        return await fn(q, type_list, limit)
+    except Exception as exc:
+        raise _tidal_http_error(exc) from exc
+
+
+@app.get("/api/streaming/{provider_id}/favorites")
+async def api_streaming_provider_favorites(provider_id: str, limit: int = 50):
+    fn = _provider_catalog_method(provider_id, "favorites")
+    try:
+        return await fn(limit)
+    except Exception as exc:
+        raise _tidal_http_error(exc) from exc
+
+
+@app.get("/api/streaming/{provider_id}/playlists")
+async def api_streaming_provider_playlists(provider_id: str):
+    fn = _provider_catalog_method(provider_id, "playlists")
+    try:
+        return await fn()
+    except Exception as exc:
+        raise _tidal_http_error(exc) from exc
+
+
+@app.get("/api/streaming/{provider_id}/playlists/{playlist_id}/tracks")
+async def api_streaming_provider_playlist_tracks(provider_id: str, playlist_id: str):
+    fn = _provider_catalog_method(provider_id, "playlist_tracks")
+    try:
+        return await fn(playlist_id)
+    except Exception as exc:
+        raise _tidal_http_error(exc) from exc
+
+
+@app.post("/api/streaming/tidal/auth/device")
+async def api_tidal_start_device_login():
+    provider = _streaming_provider("tidal")
+    try:
+        return await provider.start_device_login()
+    except Exception as exc:
+        raise _tidal_http_error(exc) from exc
+
+
+@app.post("/api/streaming/tidal/auth/device/finish")
+async def api_tidal_finish_device_login():
+    provider = _streaming_provider("tidal")
+    try:
+        return await provider.finish_device_login()
+    except Exception as exc:
+        raise _tidal_http_error(exc) from exc
+
+
+@app.post("/api/streaming/tidal/auth/pkce")
+async def api_tidal_pkce_login_url():
+    provider = _streaming_provider("tidal")
+    try:
+        return {"url": await provider.pkce_login_url()}
+    except Exception as exc:
+        raise _tidal_http_error(exc) from exc
+
+
+@app.post("/api/streaming/tidal/auth/pkce/finish")
+async def api_tidal_finish_pkce_login(request: Request):
+    provider = _streaming_provider("tidal")
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    redirect_url = str(body.get("redirect_url") or body.get("url") or "")
+    if not redirect_url:
+        raise HTTPException(status_code=400, detail="redirect_url is required")
+    try:
+        return await provider.finish_pkce_login(redirect_url)
+    except Exception as exc:
+        raise _tidal_http_error(exc) from exc
+
+
+@app.post("/api/streaming/tidal/auth/logout")
+async def api_tidal_logout():
+    provider = _streaming_provider("tidal")
+    await provider.logout()
+    return {"authenticated": False}
 
 
 # ---------------------------------------------------------------------------

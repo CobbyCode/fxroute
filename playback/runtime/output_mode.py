@@ -126,7 +126,7 @@ class _RuntimeOutputModeMixin:
         snapshot = snapshot or {}
         previous_player = dict(snapshot.get("player") or {})
         previous_spotify = dict(snapshot.get("spotify") or {})
-        if request.source in {"local", "radio"} and self._deps.player_is_running():
+        if request.source in {"local", "radio", "tidal"} and self._deps.player_is_running():
             previous_volume = previous_player.get("volume")
             if isinstance(previous_volume, (int, float)):
                 await self.set_source_volume(int(round(previous_volume)), transition_id)

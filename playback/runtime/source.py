@@ -62,12 +62,12 @@ class _RuntimeSourceMixin:
             local_state = dict(self._player.state if self._player else {})
             local_track = self._deps.get_current_track_info() or {}
             if (
-                local_track.get("source") in {"local", "radio"}
+                local_track.get("source") in {"local", "radio", "tidal"}
                 and self._deps.has_local_footer_context(local_state)
             ):
                 await self._deps.pause_local_playback_for_spotify_broadcast()
             return
-        if request.source not in {"local", "radio"}:
+        if request.source not in {"local", "radio", "tidal"}:
             return
         spotify_state = await self._deps.get_spotify_ui_state()
         if self._deps.is_spotify_playback_active(spotify_state):

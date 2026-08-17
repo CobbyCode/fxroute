@@ -100,16 +100,18 @@ class RegistryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("tidal", described)
         self.assertTrue(described["spotify"]["implemented"])
         self.assertTrue(described["qobuz"]["implemented"])
-        self.assertFalse(described["tidal"]["implemented"])
+        self.assertTrue(described["tidal"]["implemented"])
 
     def test_get_provider_returns_instance_and_unknown_is_none(self):
         self.assertIsInstance(streaming.get_provider("spotify"), SpotifyProvider)
         self.assertIsNone(streaming.get_provider("unknown"))
 
-    async def test_unimplemented_provider_reports_unavailable(self):
+    async def test_tidal_without_dependency_reports_implemented_but_unavailable(self):
+        # tidalapi is not installed in the test environment: TIDAL is now a
+        # real provider (implemented=True) but not usable (available=False).
         tidal = streaming.get_provider("tidal")
         described = await tidal.describe()
-        self.assertFalse(described["implemented"])
+        self.assertTrue(described["implemented"])
         self.assertFalse(described["available"])
         self.assertFalse(described["installed"])
         self.assertIsNone(described["backend"])

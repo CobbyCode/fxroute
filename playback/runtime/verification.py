@@ -322,7 +322,7 @@ class _RuntimeVerificationMixin:
         else:
             live_volume = state.get("volume")
         if require_source_volume:
-            if request.operation == "measurement-restore" and request.source in {"local", "radio"}:
+            if request.operation == "measurement-restore" and request.source in {"local", "radio", "tidal"}:
                 if live_volume != 100:
                     raise RuntimeError(f"MPV source volume was not restored: {live_volume}")
             elif request.should_play and live_volume is not None and live_volume != 100:
@@ -506,7 +506,7 @@ class _RuntimeVerificationMixin:
                 "measurement entry canonical graph did not reach two stable readbacks"
             )
 
-        if request.source in {"local", "radio"} and request.target_url:
+        if request.source in {"local", "radio", "tidal"} and request.target_url:
             state = dict(self._player.state if self._player else {})
             if state.get("current_file") != request.target_url:
                 raise RuntimeError(
@@ -589,7 +589,7 @@ class _RuntimeVerificationMixin:
                     f"expected={source_rate} actual={spotify_stream_rate}"
                 )
 
-        if request.source in {"local", "radio"} and request.target_url:
+        if request.source in {"local", "radio", "tidal"} and request.target_url:
             state = dict(self._player.state if self._player else {})
             if state.get("current_file") != request.target_url:
                 raise RuntimeError(

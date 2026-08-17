@@ -72,7 +72,7 @@ class SamplerateDriftObserver:
 
         track = dict(deps.get_current_track_info() or {})
         source = str(track.get("source") or "")
-        if source not in {"local", "radio"}:
+        if source not in {"local", "radio", "tidal"}:
             self.reset()
             return
 

@@ -91,6 +91,10 @@ class PlaybackQueueDependencies:
     transition_error_http: Callable[[PlaybackTransitionFailure], HTTPException]
     get_tracks: Callable[[], list]
     build_playback_payload: Callable[..., dict]
+    # Resolves a playable stream URL for a native-provider queue entry just
+    # before its transition (TIDAL URLs are short-lived).  Returns the URL or
+    # None when the track cannot be played.  Optional; wired by main.py.
+    resolve_stream_url: Callable[[dict], Awaitable[str | None]] | None = None
 
 
 def can_use_native_local_queue(tracks: list[dict]) -> bool:
@@ -312,11 +316,19 @@ class PlaybackQueue:
                 self.index = index
                 self._deps.set_track_context(next_track, next_track)
                 return True
+        source = str(next_track.get("source") or "local")
+        # Native streaming providers (TIDAL) carry short-lived stream URLs;
+        # resolve them as late as possible, right before the transition.
+        if source == "tidal" and self._deps.resolve_stream_url is not None:
+            resolved = await self._deps.resolve_stream_url(next_track)
+            if not resolved:
+                self.reset()
+                return False
+            next_track["url"] = resolved
         target_url = str(next_track.get("url") or "")
         if not target_url:
             self.reset()
             return False
-        source = str(next_track.get("source") or "local")
         target_rate = self._deps.coordinator_target_rate(source, next_track)
         request = TransitionRequest(
             operation="queue",
@@ -338,7 +350,7 @@ class PlaybackQueue:
         if not getattr(result, "committed", False):
             raise HTTPException(status_code=500, detail="Playback transition was not committed")
         rate_updated = False
-        if self._deps.sample_rate_policy_is_auto() and source in {"local", "radio"} and isinstance(result.target_rate, int) and result.target_rate > 0:
+        if self._deps.sample_rate_policy_is_auto() and source in {"local", "radio", "tidal"} and isinstance(result.target_rate, int) and result.target_rate > 0:
             next_track["sample_rate_hz"] = result.target_rate
             rate_updated = True
         if queue_candidate is not None:
@@ -569,7 +581,7 @@ class PlaybackQueue:
         return True
 
     def set_loop(self, enabled: bool) -> bool:
-        has_local_track = bool(self._deps.get_current_track_info() and self._deps.get_current_track_info().get("source") == "local")
+        has_local_track = bool(self._deps.get_current_track_info() and self._deps.get_current_track_info().get("source") in {"local", "tidal"})
         if not has_local_track:
             self.loop = False
             self.single_track_loop = False

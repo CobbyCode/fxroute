@@ -244,7 +244,7 @@ class _TransitionCleanupMixin:
                     "Output-mode runtime rollback failed; keeping the failure gate latched",
                     exc_info=True,
                 )
-        if request.source in {"local", "radio"}:
+        if request.source in {"local", "radio", "tidal"}:
             # The source was attenuated to 0 during the quiet stage.
             # A failed transition must not leave it muted forever:
             # restore the pre-transition source volume from the snapshot.

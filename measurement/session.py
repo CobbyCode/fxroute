@@ -397,7 +397,7 @@ class MeasurementSampleRateSession:
         force_rate_owned = True
         coordinator_attempted = False
         playback_restore_via_coordinator = bool(
-            playback_source in {"local", "radio", "spotify"}
+            playback_source in {"local", "radio", "spotify", "tidal"}
             and playback_target_rate
             and snapshot_is_current
         )
@@ -518,7 +518,7 @@ class MeasurementSampleRateSession:
                             playback_target_rate, timeout_ms=3500,
                         )
 
-                measurement_only_restore = not playback_target_rate or playback_source not in {"local", "radio", "spotify"}
+                measurement_only_restore = not playback_target_rate or playback_source not in {"local", "radio", "spotify", "tidal"}
                 if rate_ready and not coordinator_attempted and measurement_only_restore:
                     await dsp_orchestrator.sync_runtime_at_rate(runtime_restore_rate, _rate_lock_held=True)
                 else:
@@ -639,7 +639,7 @@ def _capture_playback_state_before_measurement(
     if not current_track_info:
         return
     source = current_track_info.get("source")
-    if source not in {"radio", "local"}:
+    if source not in {"radio", "local", "tidal"}:
         return
     if not _player() or not _player()._running:
         return
@@ -658,8 +658,8 @@ def _capture_playback_state_before_measurement(
             logger.warning("PLAYBACK-CAPTURE-DIAG could not read player audio samplerate: %s", exc)
         if not isinstance(expected_rate, int) or expected_rate <= 0:
             expected_rate = None
-    elif source == "local":
-        # For local tracks, use the track metadata sample rate
+    elif source in {"local", "tidal"}:
+        # For local and TIDAL tracks, use the track metadata sample rate
         expected_rate = current_track_info.get("sample_rate_hz")
     if not isinstance(expected_rate, int) or expected_rate <= 0:
         logger.warning(

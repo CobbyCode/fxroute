@@ -199,7 +199,7 @@ class SilentActiveRecovery:
         player_state = player_instance.state if player_instance and player_instance._running else {}
         live_track = deps.get_current_track_info() or {}
         owner = deps.get_current_footer_owner() or source
-        if source in {"local", "radio"}:
+        if source in {"local", "radio", "tidal"}:
             if not track or not deps.current_track_matches(track):
                 return
             if not is_local_playback_active(player_state):

@@ -4,8 +4,8 @@
 
 Owns the provider-agnostic models, capability declarations and the registry.
 Spotify Desktop and spotifyd are both the ``spotify`` provider; Qobuz is
-implemented via the ``qbzd`` daemon; TIDAL is a declared provider whose
-backend is not implemented yet.
+implemented via the ``qbzd`` daemon; TIDAL is a native provider via
+``tidalapi`` whose playback rides the shared FXRoute owner.
 """
 
 from streaming.base.capabilities import CAPABILITY_NAMES, Capabilities
