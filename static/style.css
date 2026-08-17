@@ -6436,3 +6436,165 @@ body {
     .playback-meter { width: 104px; max-width: 104px; }
     .meter-segments { min-width: 72px; max-width: 86px; gap: 1.5px; }
 }
+
+
+/* ============================================================
+   Playback footer refinement v2 — optical alignment pass
+   ============================================================ */
+@media (min-width: 1181px) {
+    .playback-bar {
+        grid-template-columns: minmax(240px, 1fr) minmax(420px, 1.7fr) minmax(180px, .68fr) minmax(280px, 1fr);
+        gap: clamp(.9rem, 1.35vw, 1.35rem);
+    }
+}
+
+/* Keep every transport glyph on one optical center line. */
+.transport-controls {
+    align-items: center;
+    min-height: 52px;
+    gap: .32rem;
+}
+.control-btn,
+.control-btn-secondary,
+.control-btn-mode,
+.control-btn-clear {
+    padding: 0;
+    line-height: 1;
+    align-self: center;
+    vertical-align: middle;
+}
+.control-btn {
+    width: 52px;
+    height: 52px;
+    font-size: 1.16rem;
+}
+.control-btn-secondary {
+    width: 36px;
+    height: 36px;
+    font-size: .94rem;
+}
+.control-btn-mode {
+    width: 30px;
+    height: 30px;
+    font-size: .84rem;
+}
+.control-btn-clear {
+    width: 30px;
+    height: 30px;
+    font-size: .78rem;
+    margin-left: .08rem;
+}
+
+/* Favorite belongs visually to the upper edge of the copy block, not its middle. */
+.track-copy-main {
+    align-items: start;
+}
+.track-favorite-btn {
+    align-self: start;
+    margin-top: -.16rem;
+}
+
+/* Stereo meter: two compact rows centered around the same horizontal axis as volume.
+   The shared dB readout sits in its own column, vertically between L and R. */
+.playback-meter {
+    grid-template-columns: .65rem minmax(94px, 118px) 3.35rem;
+    grid-template-rows: 5px 5px;
+    width: max-content;
+    max-width: none;
+    min-height: 28px;
+    column-gap: .52rem;
+    row-gap: .5rem;
+    align-content: center;
+    align-items: center;
+    justify-self: center;
+    align-self: center;
+}
+.meter-segments {
+    width: 112px;
+    min-width: 94px;
+    max-width: 118px;
+    gap: 2px;
+}
+.meter-segments i {
+    height: 5px;
+}
+.output-level-badge {
+    grid-column: 3;
+    grid-row: 1 / 3;
+    align-self: center;
+    justify-self: start;
+    width: 3.35rem;
+    min-width: 3.35rem;
+    padding: 0;
+    margin-left: .08rem;
+    justify-content: center;
+    text-align: center;
+    line-height: 1;
+    white-space: nowrap;
+}
+
+/* Equal visual air on both sides of the volume slider: icon ↔ slider ↔ percentage. */
+.volume-control {
+    grid-template-columns: 24px minmax(160px, 1fr) max-content;
+    gap: .58rem;
+    width: 100%;
+}
+.volume-slider {
+    min-width: 160px;
+}
+.volume-display {
+    justify-content: flex-start;
+    min-width: 2.25rem;
+    text-align: left;
+    padding: 0;
+}
+
+@media (max-width: 1180px) {
+    .transport-controls { min-height: 50px; gap: .28rem; }
+    .control-btn { width: 50px; height: 50px; }
+    .control-btn-secondary { width: 35px; height: 35px; }
+    .control-btn-mode,
+    .control-btn-clear { width: 29px; height: 29px; }
+
+    .playback-meter {
+        grid-template-columns: .65rem minmax(82px, 104px) 3rem;
+        width: max-content;
+        max-width: none;
+        column-gap: .42rem;
+    }
+    .meter-segments { width: 100px; min-width: 82px; max-width: 104px; }
+    .output-level-badge {
+        width: 3rem;
+        min-width: 3rem;
+        margin-left: .04rem;
+        font-size: .59rem;
+    }
+    .volume-control {
+        grid-template-columns: 22px minmax(116px, 1fr) max-content;
+        gap: .48rem;
+    }
+    .volume-slider { min-width: 116px; }
+}
+
+@media (max-width: 900px) {
+    .playback-meter {
+        width: 136px;
+        max-width: 136px;
+        grid-template-columns: .65rem minmax(88px, 104px);
+        justify-self: end;
+    }
+    .output-level-badge { display: none !important; }
+}
+
+@media (max-width: 600px) {
+    .track-favorite-btn { margin-top: -.08rem; }
+    .transport-controls { gap: .32rem; }
+    .control-btn { width: 48px; height: 48px; }
+    .control-btn-secondary { width: 36px; height: 36px; }
+    .control-btn-mode,
+    .control-btn-clear { width: 28px; height: 28px; }
+    .volume-control {
+        grid-template-columns: 22px minmax(120px, 1fr) max-content;
+        gap: .46rem;
+    }
+}
