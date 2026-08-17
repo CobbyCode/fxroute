@@ -613,8 +613,6 @@ const elements = {
     playbackMeter: document.getElementById('playback-meter'),
     meterLeft: document.getElementById('meter-l'),
     meterRight: document.getElementById('meter-r'),
-    connDot: document.getElementById('connection-dot'),
-    connText: document.getElementById('connection-text'),
     footerShuffleBtn: document.getElementById('footer-shuffle'),
     btnPrevious: document.getElementById('btn-previous'),
     btnPlayPause: document.getElementById('btn-play-pause'),
@@ -647,6 +645,7 @@ const elements = {
 };
 // Initialization
 document.addEventListener('DOMContentLoaded', () => {
+    try { updatePowerButtonConnectionState(); } catch(e) { console.error('updatePowerButtonConnectionState crashed:', e); }
     try { setupWebSocket(); } catch(e) { console.error('setupWebSocket crashed:', e); }
     try { setupTabNavigation(); } catch(e) { console.error('setupTabNavigation crashed:', e); }
     try { setupPlaybackControls(); } catch(e) { console.error('setupPlaybackControls crashed:', e); }
@@ -767,7 +766,7 @@ function connectWebSocket() {
             clearTimeout(offlineIndicatorTimer);
             offlineIndicatorTimer = null;
         }
-        updateConnectionBadge(true);
+        updatePowerButtonConnectionState();
         elements.offlineIndicator.classList.add('hidden');
         stopMetadataPolling();
         startPeakStatusPolling();
@@ -812,7 +811,7 @@ function scheduleOfflineIndicator() {
     offlineIndicatorTimer = setTimeout(() => {
         offlineIndicatorTimer = null;
         if (state.wsConnected) return;
-        updateConnectionBadge(false);
+        updatePowerButtonConnectionState();
         elements.offlineIndicator.classList.remove('hidden');
     }, CONFIG.offlineIndicatorDelay);
 }
@@ -13481,23 +13480,12 @@ async function deleteEffectsPreset() {
         elements.effectsDeleteBtn.disabled = false;
     }
 }
-function updateOfflineIndicator() {
-    updateConnectionBadge(state.wsConnected);
-    if (state.wsConnected) {
-        elements.offlineIndicator.classList.add('hidden');
-    } else {
-        elements.offlineIndicator.classList.remove('hidden');
-    }
-}
-function updateConnectionBadge(online) {
-    if (!elements.connDot || !elements.connText) return;
-    if (online) {
-        elements.connDot.className = 'connection-dot online';
-        elements.connText.textContent = 'Online';
-    } else {
-        elements.connDot.className = 'connection-dot offline';
-        elements.connText.textContent = 'Offline';
-    }
+function updatePowerButtonConnectionState() {
+    if (!elements.powerMenuToggle) return;
+    const online = !!state.wsConnected;
+    elements.powerMenuToggle.classList.toggle('is-online', online);
+    elements.powerMenuToggle.title = online ? 'FXRoute online' : 'FXRoute offline';
+    elements.powerMenuToggle.setAttribute('aria-label', online ? 'System power (online)' : 'System power (offline)');
 }
 function showToast(message, type = 'info') {
     const toast = document.createElement('div');
@@ -14575,8 +14563,6 @@ async function handlePowerAction(action) {
     }
     const endpoint = isShutdown ? '/api/system/power/power-off' : '/api/system/power/suspend';
     const pendingLabel = isShutdown ? 'Shutting down…' : 'Suspending…';
-    const previousText = elements.connectionText ? elements.connectionText.textContent : null;
-    if (elements.connectionText) elements.connectionText.textContent = pendingLabel;
 
     try {
         const resp = await fetch(endpoint, { method: 'POST' });
@@ -14584,22 +14570,12 @@ async function handlePowerAction(action) {
             const detail = await resp.json().catch(() => ({}));
             const message = (detail && detail.detail) || `Power action failed (${resp.status})`;
             showToast(message, 'error');
-            // The host is not going away; restore the badge immediately.
-            if (elements.connectionText && previousText !== null) {
-                elements.connectionText.textContent = previousText;
-            }
             return;
         }
         // Expect the host to drop the websocket within a few seconds.
         showToast(pendingLabel, 'info');
-        if (elements.connDot) {
-            elements.connDot.className = 'connection-dot offline';
-        }
     } catch (e) {
         showToast(e && e.message ? e.message : 'Power action failed', 'error');
-        if (elements.connectionText && previousText !== null) {
-            elements.connectionText.textContent = previousText;
-        }
     } finally {
         if (button) {
             button.dataset.pending = 'false';

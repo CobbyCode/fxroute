@@ -168,31 +168,7 @@ body {
     text-transform: uppercase;
 }
 
-/* Connection badge */
-.connection-badge {
-    display: flex;
-    align-items: center;
-    gap: 0.35rem;
-    font-size: 0.74rem;
-    color: var(--text-secondary);
-    font-weight: 500;
-    padding: 0.32rem 0.6rem;
-    border-radius: 18px;
-    background: var(--bg-elevated);
-    border: 1px solid var(--border);
-    white-space: nowrap;
-    flex-shrink: 0;
-}
-.connection-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    flex-shrink: 0;
-}
-.connection-dot.online  { background: var(--success); box-shadow: 0 0 6px rgba(52,211,153,0.4); }
-.connection-dot.offline { background: var(--danger);  box-shadow: 0 0 6px rgba(248,113,113,0.4); }
-
-/* Header-right cluster: status badge + power button */
+/* Header-right cluster: power button */
 .header-status {
     display: flex;
     align-items: center;
@@ -239,6 +215,10 @@ body {
     width: 18px;
     height: 18px;
     display: block;
+}
+.power-btn.is-online .power-btn-icon {
+    color: var(--success);
+    filter: drop-shadow(0 0 4px rgba(52,211,153,0.35));
 }
 .power-menu {
     position: absolute;
@@ -6199,13 +6179,6 @@ body {
 }
 .brand-mark { width: 42px; height: 42px; border-radius: 12px; }
 .brand-title { font-size: 1.22rem; }
-.connection-badge {
-    min-height: 32px;
-    padding: .3rem .58rem;
-    background: rgba(255,255,255,.035);
-    border-color: rgba(255,255,255,.065);
-}
-.connection-dot { width: 7px; height: 7px; }
 .power-btn { width: 38px; height: 38px; border-radius: 12px; background: rgba(255,255,255,.03); }
 .tabs {
     position: relative;
@@ -6313,7 +6286,6 @@ body {
     .brand-mark { width: 38px; height: 38px; }
     .brand-title { font-size: 1.08rem; }
     .brand-subtitle { font-size: .52rem; }
-    .connection-badge { padding: .28rem .48rem; font-size: .7rem; }
     .tabs { justify-content: space-between; }
     .tab-btn { flex: 1 0 auto; min-width: 86px; padding: .48rem .62rem; }
     .tab-content { padding: 1rem .75rem 1.5rem; }
@@ -6326,8 +6298,6 @@ body {
 
 @media (max-width: 420px) {
     .header-status { gap: .32rem; }
-    .connection-badge #connection-text { display: none; }
-    .connection-badge { width: 30px; height: 30px; padding: 0; justify-content: center; }
     .tabs { gap: .12rem; padding-inline: .38rem; }
     .tab-btn { min-width: 74px; font-size: .78rem; gap: .22rem; }
     .tab-glyph { width: .8rem; font-size: .8rem; }
