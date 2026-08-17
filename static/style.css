@@ -29,6 +29,9 @@
     --action-gap-mobile: 8px;
     --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
     --playback-footer-space: 142px;
+    /* Native form controls (select option popups, autofill, scrollbars)
+       follow the dark theme instead of the system light scheme. */
+    color-scheme: dark;
 }
 
 @media (max-width: 420px) {
@@ -3334,9 +3337,17 @@ body {
     box-sizing: border-box;
 }
 
-.compare-select option {
+/* All native select option lists follow the dark theme. color-scheme: dark
+   on :root makes Chromium render the popup dark; these tokens keep the
+   option text readable and the selected option distinct regardless. */
+select option {
     background: var(--bg-input);
     color: var(--text-primary);
+}
+
+select option:checked {
+    background: var(--bg-elevated);
+    color: var(--accent);
 }
 
 .effects-compare-active-badge {
