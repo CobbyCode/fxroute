@@ -3261,16 +3261,30 @@ function meterLitCount(db, segmentCount) {
     return Math.max(1, Math.min(segmentCount, Math.round(normalized * segmentCount)));
 }
 
+function responsiveMeterSegmentCount() {
+    if (window.matchMedia('(max-width: 700px)').matches) return 6;
+    if (window.matchMedia('(max-width: 1180px)').matches) return 8;
+    return 12;
+}
+
 function renderMeterChannel(container, db, detected) {
     if (!container) return;
     const segments = Array.from(container.querySelectorAll('i'));
-    const lit = meterLitCount(db, segments.length);
+    const visibleCount = Math.min(segments.length, responsiveMeterSegmentCount());
+    const visibleSegments = segments.slice(0, visibleCount);
+    const lit = meterLitCount(db, visibleCount);
     segments.forEach((segment, index) => {
+        const visible = index < visibleCount;
+        segment.classList.toggle('meter-segment-hidden', !visible);
+        if (!visible) {
+            segment.classList.remove('is-lit', 'is-warn', 'is-hot', 'is-peak');
+            return;
+        }
         const isLit = index < lit;
         segment.classList.toggle('is-lit', isLit);
-        segment.classList.toggle('is-warn', isLit && index >= Math.max(0, segments.length - 4));
-        segment.classList.toggle('is-hot', isLit && index >= Math.max(0, segments.length - 2));
-        segment.classList.toggle('is-peak', !!detected && index === segments.length - 1);
+        segment.classList.toggle('is-warn', isLit && index >= Math.max(0, visibleCount - 3));
+        segment.classList.toggle('is-hot', isLit && index >= Math.max(0, visibleCount - 1));
+        segment.classList.toggle('is-peak', !!detected && index === visibleSegments.length - 1);
     });
 }
 

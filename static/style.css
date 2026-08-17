@@ -6904,3 +6904,225 @@ body {
     .playback-bar .track-info { grid-template-columns: 46px minmax(0,1fr); gap: .5rem; }
     .playback-visual { width: 46px; height: 46px; }
 }
+
+/* ============================================================
+   Playback footer refinement v4 — spacing + compact responsive meter
+   ============================================================ */
+.meter-segment-hidden { display: none !important; }
+
+/* Desktop: preserve the successful composition, but give volume a safe
+   right inset and pull the shared dB readout closer to the stereo meter. */
+@media (min-width: 1181px) {
+    .transport-controls {
+        min-height: 48px;
+    }
+    .control-btn {
+        width: 48px;
+        height: 48px;
+        font-size: 1.08rem;
+    }
+    .control-btn-secondary {
+        width: 35px;
+        height: 35px;
+    }
+    .control-btn-mode,
+    .control-btn-clear {
+        width: 29px;
+        height: 29px;
+    }
+
+    .playback-meter {
+        grid-template-columns: .62rem 112px 2.48rem;
+        column-gap: .18rem;
+    }
+    .output-level-badge {
+        width: 2.48rem;
+        min-width: 2.48rem;
+        margin-left: -.04rem;
+    }
+
+    .playback-bar .controls {
+        width: 100%;
+        max-width: 370px;
+        justify-self: end;
+        padding-right: 1rem;
+    }
+    .volume-control {
+        grid-template-columns: 24px minmax(0, 1fr) 2.4rem;
+        gap: .56rem;
+        width: 100%;
+    }
+    .volume-slider { min-width: 0; }
+}
+
+/* Tablet / compact desktop: a little more vertical breathing room and a
+   smaller 8-segment meter. Transport remains dominant; volume stays long. */
+@media (min-width: 701px) and (max-width: 1180px) {
+    .playback-bar {
+        min-height: 118px;
+        grid-template-columns:
+            minmax(210px, .9fr)
+            minmax(300px, 1.28fr)
+            minmax(210px, .84fr);
+        grid-template-rows: minmax(44px, auto) minmax(44px, auto);
+        grid-template-areas:
+            "track transport meter"
+            "track transport volume";
+        column-gap: clamp(.72rem, 1.25vw, 1rem);
+        row-gap: .42rem;
+        padding: .76rem .86rem .8rem;
+    }
+    .playback-center {
+        gap: .5rem;
+        align-self: center;
+    }
+    .transport-controls {
+        min-height: 44px;
+        gap: .3rem;
+    }
+    .control-btn {
+        width: 44px;
+        height: 44px;
+        font-size: 1rem;
+    }
+    .control-btn-secondary {
+        width: 33px;
+        height: 33px;
+        font-size: .86rem;
+    }
+    .control-btn-mode,
+    .control-btn-clear {
+        width: 27px;
+        height: 27px;
+        font-size: .76rem;
+    }
+
+    .playback-meter {
+        width: max-content;
+        max-width: none;
+        grid-template-columns: .58rem 82px;
+        grid-template-rows: 4px 4px;
+        column-gap: .26rem;
+        row-gap: .42rem;
+        justify-self: center;
+        align-self: end;
+        margin: 0 0 .22rem;
+    }
+    .meter-segments {
+        grid-template-columns: repeat(8, minmax(3px, 1fr));
+        width: 82px;
+        min-width: 82px;
+        max-width: 82px;
+        gap: 1.7px;
+    }
+    .meter-segments i { height: 4px; }
+    .output-level-badge { display: none !important; }
+
+    .playback-bar .controls {
+        width: min(100%, 235px);
+        max-width: 235px;
+        justify-self: center;
+        align-self: start;
+        margin-top: .22rem;
+        padding: 0;
+    }
+    .volume-control {
+        grid-template-columns: 20px minmax(0, 1fr) 2.25rem;
+        gap: .42rem;
+    }
+    .volume-slider { min-width: 0; }
+}
+
+/* Phone: intentionally taller and calmer. Keep a real but simplified
+   six-segment stereo meter; no dB readout. */
+@media (max-width: 700px) {
+    .playback-bar {
+        grid-template-columns: minmax(0, 1fr) 84px;
+        grid-template-rows: auto auto auto;
+        grid-template-areas:
+            "track meter"
+            "transport transport"
+            "volume volume";
+        column-gap: .6rem;
+        row-gap: .58rem;
+        padding: .72rem .7rem .78rem;
+    }
+    .playback-center {
+        gap: .46rem;
+        align-self: center;
+    }
+    .transport-controls {
+        min-height: 42px;
+        gap: .32rem;
+    }
+    .control-btn {
+        width: 42px;
+        height: 42px;
+        font-size: .96rem;
+    }
+    .control-btn-secondary {
+        width: 30px;
+        height: 30px;
+        font-size: .8rem;
+    }
+    .control-btn-mode,
+    .control-btn-clear {
+        width: 25px;
+        height: 25px;
+        font-size: .72rem;
+    }
+    .seek-row {
+        gap: .38rem;
+    }
+
+    .playback-meter {
+        width: 84px;
+        max-width: 84px;
+        grid-template-columns: .52rem 62px;
+        grid-template-rows: 4px 4px;
+        column-gap: .22rem;
+        row-gap: .4rem;
+        justify-self: end;
+        align-self: center;
+        min-height: 20px;
+    }
+    .meter-channel { font-size: .5rem; }
+    .meter-segments {
+        grid-template-columns: repeat(6, minmax(3px, 1fr));
+        width: 62px;
+        min-width: 62px;
+        max-width: 62px;
+        gap: 1.6px;
+    }
+    .meter-segments i {
+        height: 4px;
+        border-radius: 999px;
+    }
+    .output-level-badge { display: none !important; }
+
+    .playback-bar .controls {
+        width: min(100%, 410px);
+        margin-top: .06rem;
+    }
+    .volume-control {
+        grid-template-columns: 20px minmax(0, 1fr) 2.2rem;
+        gap: .44rem;
+    }
+}
+
+@media (max-width: 360px) {
+    .playback-bar {
+        grid-template-columns: minmax(0, 1fr) 78px;
+        row-gap: .52rem;
+    }
+    .playback-meter {
+        width: 78px;
+        max-width: 78px;
+        grid-template-columns: .5rem 57px;
+    }
+    .meter-segments {
+        width: 57px;
+        min-width: 57px;
+        max-width: 57px;
+    }
+}
