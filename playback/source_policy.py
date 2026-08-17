@@ -30,9 +30,9 @@ ENGINE_BY_SOURCE = {
 }
 
 # PipeWire node-name prefix used to identify the producing node in graph
-# diagnosis. MPV and the Spotify client expose ``<node>:output_FL`` output
-# ports; qbzd is an ALSA-backed node whose ports are named
-# ``alsa_playback.qbzd:playback_FL``.
+# diagnosis. Every modeled source exposes ``<node>:output_FL`` output ports:
+# MPV, the Spotify client and the qbzd ALSA node alike (live-verified:
+# ``alsa_playback.qbzd:output_FL``).
 GRAPH_NODE_BY_SOURCE = {
     "local": "mpv",
     "radio": "mpv",
@@ -41,10 +41,7 @@ GRAPH_NODE_BY_SOURCE = {
     "qobuz": "alsa_playback.qbzd",
 }
 
-# Port naming per engine. MPV/Spotify use ``output_<ch>``; the qbzd ALSA node
-# uses ``playback_<ch>``.
-_MPV_OUTPUT_CHANNELS = ("FL", "FR")
-_QBZD_OUTPUT_CHANNELS = ("FL", "FR")
+_OUTPUT_CHANNELS = ("FL", "FR")
 
 
 def is_known_source(source: str | None) -> bool:
@@ -81,17 +78,13 @@ def graph_port_names(source: str | None) -> tuple[str, str] | None:
 
     ``None`` for an unknown source. The channel set is stereo for every
     modeled source; subwoofer topologies derive their four channels from the
-    DSP stage, never from the source.
+    DSP stage, never from the source. All modeled renderers (mpv, spotify,
+    qbzd) expose ``output_FL``/``output_FR`` ports.
     """
     node = graph_node_for(source)
     if not node:
         return None
-    if source == "qobuz":
-        return (
-            f"{node}:playback_{_QBZD_OUTPUT_CHANNELS[0]}",
-            f"{node}:playback_{_QBZD_OUTPUT_CHANNELS[1]}",
-        )
     return (
-        f"{node}:output_{_MPV_OUTPUT_CHANNELS[0]}",
-        f"{node}:output_{_MPV_OUTPUT_CHANNELS[1]}",
+        f"{node}:output_{_OUTPUT_CHANNELS[0]}",
+        f"{node}:output_{_OUTPUT_CHANNELS[1]}",
     )

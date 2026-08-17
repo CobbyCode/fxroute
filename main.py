@@ -44,6 +44,11 @@ UPDATE_SCRIPT = BASE_DIR / "scripts" / "update_fxroute.sh"
 PLAY_COMMAND_COOLDOWN_MS = 400
 LOCAL_TRACK_SWITCH_SETTLE_MS = 260
 PIPEWIRE_HANDOFF_RELEASE_TIMEOUT_MS = 1800
+# qbzd fully disconnects its ALSA stream on pause instead of corking it like
+# Spotify Desktop, and that release takes ~2.2 s (live-measured). It therefore
+# gets its own, longer bounded release budget so an MPV handoff does not fail
+# while the previous Qobuz stream is still draining.
+PIPEWIRE_QOBUZ_RELEASE_TIMEOUT_MS = 4000
 PIPEWIRE_HANDOFF_POLL_INTERVAL_MS = 50
 # Bounded window for the idempotent MPV->DSP ingress link reconciliation
 # after the source ports appeared (link creation plus readback confirm).
@@ -450,7 +455,7 @@ async def _wait_for_spotify_sink_input_samplerate(
 
 
 async def _wait_for_pipewire_qobuz_release(
-    timeout_ms: int = PIPEWIRE_HANDOFF_RELEASE_TIMEOUT_MS,
+    timeout_ms: int = PIPEWIRE_QOBUZ_RELEASE_TIMEOUT_MS,
 ) -> bool:
     """Quiesce an active qbzd sink input before a guarded graph transition."""
     def active_qobuz_inputs() -> list[dict]:
@@ -2201,7 +2206,7 @@ async def qobuz_pause() -> dict:
     return data
 
 
-async def _qobuz_target_track_from_state(state: Mapping[str, Any]) -> dict[str, Any]:
+def _qobuz_target_track_from_state(state: Mapping[str, Any]) -> dict[str, Any]:
     track_id = state.get("trackId") or state.get("id")
     return {
         "source": "qobuz",
