@@ -675,7 +675,6 @@ document.addEventListener('DOMContentLoaded', () => {
             showToast,
             escapeHtml,
             formatTime,
-            formatRateKhz,
             spotifyCommand,
             spotifySeek,
         });
@@ -1249,6 +1248,26 @@ function formatRadioStreamLine(streamInfo, effectiveOutputRate = null) {
         parts.push(`${(displayedRate / 1000).toFixed(1).replace(/\.0$/, '')} kHz`);
     }
     return parts.join(' · ');
+}
+
+function formatStreamingMetaLine(data) {
+    // Streaming owners render through the same meta-tag renderer as
+    // library/radio: only facts the provider actually delivered are shown.
+    // Qobuz/TIDAL contribute real stream facts (audio_format/bit_depth/
+    // sample_rate); Spotify delivers none, so its tag is the resolved rate
+    // alone — never an invented codec or bit depth.
+    const info = data || {};
+    if (info.audio_format || info.bit_depth || info.sample_rate) {
+        return formatRadioStreamLine({
+            codec: info.audio_format ? String(info.audio_format).toUpperCase() : '',
+            bit_depth: info.bit_depth,
+            samplerate_hz: info.sample_rate,
+        });
+    }
+    const samplerate = state.samplerate || {};
+    return samplerate.available && samplerate.active_rate
+        ? formatRateKhz(samplerate.active_rate)
+        : '';
 }
 
 function buildAudioOutputModeRequest(mode, settings = null, options = {}) {
@@ -3283,7 +3302,7 @@ function renderSamplerateUI() {
     // Keep source codec/bitrate facts, but the kHz value always describes the
     // effective graph/hardware output rate.
     const activeSource = state.playback.current_track?.source;
-    if (activeSource === 'radio' || activeSource === 'local') {
+    if (activeSource === 'radio' || activeSource === 'local' || activeSource === 'tidal') {
         const streamLine = formatRadioStreamLine(state.playback.stream_info, state.samplerate?.active_rate);
         if (streamLine) {
             elements.samplerateStatus.textContent = streamLine;
@@ -14533,12 +14552,9 @@ function updateFooterForStreamingOwner(data) {
         }
     }
     if (elements.samplerateStatus) {
-        // Spotify has no stream_info; the footer badge shows the resolved
-        // active hardware rate only (no radio stream line, no policy label).
-        const samplerate = state.samplerate || {};
-        const samplerateLine = samplerate.available && samplerate.active_rate
-            ? formatRateKhz(samplerate.active_rate)
-            : '';
+        // Shared library/radio meta-tag renderer: Qobuz contributes its real
+        // stream facts, Spotify only the resolved rate (no invented format).
+        const samplerateLine = formatStreamingMetaLine(data);
         elements.samplerateStatus.textContent = samplerateLine;
         elements.samplerateStatus.classList.toggle('hidden', !samplerateLine);
     }

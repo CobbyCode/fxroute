@@ -19,7 +19,6 @@
     let showToast = function () {};
     let escapeHtml = function (v) { return String(v == null ? '' : v); };
     let formatTime = function () { return '0:00'; };
-    let formatRateKhz = function () { return ''; };
     let initialized = false;
 
     // Provider -> transport backend adapter. The rendering is capability
@@ -71,7 +70,6 @@
         if (typeof api.showToast === 'function') showToast = api.showToast;
         if (typeof api.escapeHtml === 'function') escapeHtml = api.escapeHtml;
         if (typeof api.formatTime === 'function') formatTime = api.formatTime;
-        if (typeof api.formatRateKhz === 'function') formatRateKhz = api.formatRateKhz;
         buildProviderDom();
         void loadProviders();
     }
@@ -132,7 +130,6 @@
                             '<div class="streaming-title"></div>' +
                             '<div class="streaming-artist"></div>' +
                             '<div class="streaming-album"></div>' +
-                            '<div class="streaming-quality"></div>' +
                             '<div class="streaming-queue" hidden></div>' +
                         '</div>' +
                         '<div class="streaming-controls">' +
@@ -177,7 +174,6 @@
                 title: root.querySelector('.streaming-title'),
                 artist: root.querySelector('.streaming-artist'),
                 album: root.querySelector('.streaming-album'),
-                quality: root.querySelector('.streaming-quality'),
                 queueInfo: root.querySelector('.streaming-queue'),
                 controls: root.querySelector('.streaming-controls'),
                 prev: root.querySelector('[data-action="previous"]'),
@@ -303,11 +299,6 @@
         els.album.textContent = data.album || '';
         els.album.style.display = data.album ? '' : 'none';
 
-        // Quality (audio_format / bit_depth / sample_rate), capability-gated.
-        const qualityText = formatQuality(data, caps);
-        els.quality.hidden = !qualityText;
-        els.quality.textContent = qualityText;
-
         // Queue continuation (count + next up), data-driven from the provider
         // status; no capability flag needed and no provider-identity branch.
         const queueText = formatQueueInfo(data);
@@ -394,18 +385,6 @@
     function connectMessage(providerId) {
         if (providerId === 'qobuz') return 'Sign in to Qobuz through qbzd to start playback.';
         return 'Connect your TIDAL account to browse and play music.';
-    }
-
-    function formatQuality(data, caps) {
-        caps = caps || {};
-        const parts = [];
-        if (caps.audio_format && data.audio_format) parts.push(String(data.audio_format).toUpperCase());
-        if (caps.bit_depth && data.bit_depth) parts.push(data.bit_depth + ' bit');
-        if (caps.sample_rate && data.sample_rate) {
-            const rate = formatRateKhz(data.sample_rate);
-            if (rate) parts.push(rate);
-        }
-        return parts.join(' · ');
     }
 
     // Queue continuation line ("3/28 · Next: Survival of the Fittest"), purely

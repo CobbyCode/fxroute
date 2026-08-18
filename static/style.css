@@ -396,7 +396,7 @@ body {
     color: var(--accent);
     background: var(--accent-dim);
     font-weight: 600;
-    box-shadow: inset 0 -2px 0 var(--accent), 0 0 12px rgba(110, 231, 183, 0.06);
+    box-shadow: inset 0 -2px 0 var(--accent), inset 0 0 12px rgba(110, 231, 183, 0.07);
 }
 /* Tab content */
 .tab-content {
@@ -6299,10 +6299,12 @@ body {
 }
 .tab-btn[data-tab="spotify"] .tab-glyph { color: #4ed68b; }
 .tab-btn[data-tab="radio"] .tab-glyph { color: #7fe2b7; }
+/* The active accent stays inside the tab: an inset bottom line and an inner
+   glow, with no outer glow bleeding toward the brand lockup / first tab. */
 .tab-btn.active {
     color: #f3f3f5;
     background: rgba(110,231,183,.09);
-    box-shadow: inset 0 -2px 0 rgba(110,231,183,.9), 0 8px 24px rgba(0,0,0,.08);
+    box-shadow: inset 0 -2px 0 rgba(110,231,183,.9), inset 0 0 14px rgba(110,231,183,.10);
 }
 .tab-btn.active .tab-glyph { color: var(--accent); }
 .tab-content {
@@ -7144,9 +7146,9 @@ body {
 }
 
 /* Now-playing card — the shared player composition for Spotify/Qobuz. A
-   compact, centered single-column player: cover on top, metadata with the
-   quality badge sitting just above the transport, and a progress bar that
-   stops well short of the card edges. */
+   compact, centered single-column player: cover on top, metadata, transport
+   and a progress bar that stops well short of the card edges. Quality facts
+   live in the global footer meta-tag, not in the card. */
 .streaming-now-playing {
     width: 100%;
     max-width: 560px;
@@ -7212,21 +7214,6 @@ body {
     white-space: nowrap;
     margin-top: 0.2rem;
 }
-.streaming-quality {
-    display: inline-flex;
-    margin-top: 0.55rem;
-    font-size: 0.76rem;
-    font-weight: 600;
-    letter-spacing: 0.02em;
-    color: var(--accent);
-    background: var(--accent-dim);
-    border: 1px solid var(--accent);
-    border-radius: 999px;
-    padding: 0.15rem 0.65rem;
-    max-width: 100%;
-    box-sizing: border-box;
-}
-
 /* Transport */
 .streaming-controls {
     grid-area: controls;

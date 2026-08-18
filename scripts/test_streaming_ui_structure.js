@@ -25,9 +25,6 @@ const requiredCapabilityGates = [
     'caps.loop',
     'caps.progress',
     'caps.cover',
-    'caps.audio_format',
-    'caps.bit_depth',
-    'caps.sample_rate',
 ];
 for (const gate of requiredCapabilityGates) {
     assert.ok(js.includes(gate), `streaming.js must gate rendering on ${gate}`);
@@ -67,11 +64,19 @@ assert.ok(js.includes("spotify: { kind: 'app'"), 'spotify transport adapter');
 assert.ok(js.includes("qobuz: { kind: 'remote'"), 'qobuz transport adapter');
 assert.ok(js.includes("tidal: { kind: 'native'"), 'tidal transport adapter');
 
-// --- quality formatting is capability-gated -------------------------------------
-const formatQuality = extractFunction(js, 'formatQuality');
-assert.ok(formatQuality.includes('caps.audio_format'));
-assert.ok(formatQuality.includes('caps.bit_depth'));
-assert.ok(formatQuality.includes('caps.sample_rate'));
+// --- quality facts live in the shared footer meta-tag, not in the card --------
+// The now-playing card must no longer carry its own quality badge: the stream
+// facts render once, in the global footer, through the same meta-tag renderer
+// as library/radio (app.js formatStreamingMetaLine -> formatRadioStreamLine).
+assert.ok(!js.includes('.streaming-quality'),
+    'streaming card must not render a quality badge');
+assert.ok(!js.includes('formatQuality'),
+    'streaming module must not own a quality formatter');
+const appJs = fs.readFileSync(path.join(__dirname, '..', 'static', 'app.js'), 'utf8');
+assert.ok(appJs.includes('function formatStreamingMetaLine('),
+    'app.js must host the shared streaming footer meta renderer');
+assert.ok(appJs.includes("formatStreamingMetaLine(data)"),
+    'streaming footer must render through the shared meta-tag renderer');
 
 // --- queue continuation line is data-driven ----------------------------------
 // The queue line (count + next up) must render from normalized provider data
