@@ -5204,6 +5204,19 @@ async def api_streaming_provider_album_favorite(provider_id: str, album_id: str,
         raise _tidal_http_error(exc) from exc
 
 
+@app.post("/api/streaming/{provider_id}/playlists/{playlist_id}/favorite")
+async def api_streaming_provider_playlist_favorite(provider_id: str, playlist_id: str, request: Request):
+    fn = _provider_catalog_method(provider_id, "set_playlist_favorite")
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    try:
+        return await fn(playlist_id, bool(body.get("favorite", False)))
+    except Exception as exc:
+        raise _tidal_http_error(exc) from exc
+
+
 @app.post("/api/streaming/tidal/auth/device")
 async def api_tidal_start_device_login():
     provider = _streaming_provider("tidal")

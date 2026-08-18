@@ -355,16 +355,19 @@ class StreamResolutionTests(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class FakeFavorites:
-    """Fake ``session.user.favorites`` with track/album add/remove recording."""
+    """Fake ``session.user.favorites`` with track/album/playlist add/remove recording."""
 
-    def __init__(self, tracks=None, albums=None, artists=None):
+    def __init__(self, tracks=None, albums=None, artists=None, playlists=None):
         self._tracks = list(tracks or [])
         self._albums = list(albums or [])
         self._artists = list(artists or [])
+        self._playlists = list(playlists or [])
         self.added_tracks: list[str] = []
         self.removed_tracks: list[str] = []
         self.added_albums: list[str] = []
         self.removed_albums: list[str] = []
+        self.added_playlists: list[str] = []
+        self.removed_playlists: list[str] = []
 
     def tracks(self, limit=50, offset=0, **kw):
         return self._tracks[offset:offset + limit]
@@ -375,11 +378,17 @@ class FakeFavorites:
     def artists(self, limit=50, offset=0, **kw):
         return self._artists[offset:offset + limit]
 
+    def playlists(self, limit=50, offset=0, **kw):
+        return self._playlists[offset:offset + limit]
+
     def tracks_paginated(self, **kw):
         return self._tracks
 
     def albums_paginated(self, **kw):
         return self._albums
+
+    def playlists_paginated(self, **kw):
+        return self._playlists
 
     def add_track(self, track_id):
         self.added_tracks.append(str(track_id))
@@ -397,6 +406,14 @@ class FakeFavorites:
         self.removed_albums.append(str(album_id))
         return True
 
+    def add_playlist(self, playlist_id):
+        self.added_playlists.append(str(playlist_id))
+        return True
+
+    def remove_playlist(self, playlist_id):
+        self.removed_playlists.append(str(playlist_id))
+        return True
+
 
 def _favorites_session(favorites):
     return SimpleNamespace(user=SimpleNamespace(id=1, favorites=favorites))
@@ -412,18 +429,33 @@ class CatalogFavoritesTests(unittest.TestCase):
             mock.patch.object(auth.manager, "session", return_value=session),
         )
 
-    def test_favorite_state_returns_track_and_album_ids(self):
+    def test_favorite_state_returns_track_album_and_playlist_ids(self):
         from streaming.tidal import catalog
 
         favorites = FakeFavorites(
             tracks=[SimpleNamespace(id=11), SimpleNamespace(id=22)],
             albums=[SimpleNamespace(id="a1")],
+            playlists=[SimpleNamespace(id="pl-1")],
         )
         p1, p2 = self._patch(_favorites_session(favorites))
         with p1, p2:
             state = catalog.favorite_state()
         self.assertEqual(state["tracks"], ["11", "22"])
         self.assertEqual(state["albums"], ["a1"])
+        self.assertEqual(state["playlists"], ["pl-1"])
+
+    def test_set_playlist_favorite_add_and_remove(self):
+        from streaming.tidal import catalog
+
+        favorites = FakeFavorites()
+        p1, p2 = self._patch(_favorites_session(favorites))
+        with p1, p2:
+            added = catalog.set_playlist_favorite("pl-9", True)
+            removed = catalog.set_playlist_favorite("pl-9", False)
+        self.assertEqual(added, {"type": "playlist", "id": "pl-9", "favorite": True})
+        self.assertEqual(removed, {"type": "playlist", "id": "pl-9", "favorite": False})
+        self.assertEqual(favorites.added_playlists, ["pl-9"])
+        self.assertEqual(favorites.removed_playlists, ["pl-9"])
 
     def test_favorite_state_paginates_beyond_one_page_via_paginated_helper(self):
         # The paginated helper must yield the full collection (120 > one 50-item

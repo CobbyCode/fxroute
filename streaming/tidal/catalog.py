@@ -273,12 +273,13 @@ def _favorite_items(favorites: Any, kind: str, page_size: int = 50) -> list:
 
 
 def favorite_state() -> dict:
-    """Return the user's favorited track/album ids (authoritative heart state).
+    """Return the user's favorited track/album/playlist ids (heart state).
 
     TIDAL only stamps ``user_date_added`` on items returned from the favorites
     listing, never on search/lookup results, so the UI cannot derive heart
     state from the catalog payload.  This is the single source of truth for
-    which tracks/albums are favorited; the UI compares ids against it.
+    which tracks/albums/playlists are favorited; the UI compares ids against
+    it.  Playlist ids are the same UUIDs the playlists endpoints return.
     """
     _require_tidalapi()
     session = _session()
@@ -286,11 +287,13 @@ def favorite_state() -> dict:
         favorites = session.user.favorites
         tracks = _favorite_items(favorites, "tracks")
         albums = _favorite_items(favorites, "albums")
+        playlists = _favorite_items(favorites, "playlists")
     except Exception as exc:  # noqa: BLE001
         raise auth.TidalAuthError(f"TIDAL favorite state failed: {exc}") from exc
     return {
         "tracks": [_id_str(getattr(t, "id", None)) for t in tracks],
         "albums": [_id_str(getattr(a, "id", None)) for a in albums],
+        "playlists": [_id_str(getattr(p, "id", None)) for p in playlists],
     }
 
 
@@ -320,6 +323,23 @@ def set_album_favorite(album_id: str, favorite: bool) -> dict:
     if not ok:
         raise auth.TidalAuthError("TIDAL album favorite update failed")
     return {"type": "album", "id": str(album_id), "favorite": bool(favorite)}
+
+
+def set_playlist_favorite(playlist_id: str, favorite: bool) -> dict:
+    """Add/remove a playlist from the user's TIDAL favorites."""
+    _require_tidalapi()
+    session = _session()
+    try:
+        favorites = session.user.favorites
+        if favorite:
+            ok = favorites.add_playlist(str(playlist_id))
+        else:
+            ok = favorites.remove_playlist(str(playlist_id))
+    except Exception as exc:  # noqa: BLE001
+        raise auth.TidalAuthError(f"TIDAL playlist favorite update failed: {exc}") from exc
+    if not ok:
+        raise auth.TidalAuthError("TIDAL playlist favorite update failed")
+    return {"type": "playlist", "id": str(playlist_id), "favorite": bool(favorite)}
 
 
 def get_album(album_id: str) -> dict:

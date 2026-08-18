@@ -198,6 +198,18 @@ assert.ok(js.includes("data-browse=\"favorites\"") && js.includes("data-browse=\
 assert.ok(js.includes('/api/streaming/tidal/favorites?type=') && js.includes('/api/streaming/tidal/playlists'),
     'favorite albums and real playlists must be fetched from distinct endpoints');
 
+// Playlists are favoritable like tracks/albums: heart on every playlist row,
+// state tracked in the same authoritative favorites/ids payload, and write-back
+// through the generic favorite endpoint.
+assert.ok(js.includes("favoriteButtonHtml('playlists', item.id)"),
+    'playlist rows (search + playlists view) must render a favorite heart');
+assert.ok(js.includes("playlists: new Set((data.playlists || []).map(String))"),
+    'favorites/ids must feed playlist hearts alongside tracks/albums');
+assert.ok(js.includes("playlists: new Set()"),
+    'favorite state must track playlists from the start');
+assert.ok(js.includes("'/api/streaming/tidal/' + type + '/' + encodeURIComponent(idStr) + '/favorite'"),
+    'playlist hearts must write back through the generic favorite endpoint');
+
 // Quality label mapping is honest: only the real Tidal tier, no invented
 // codec/bit-depth/sample-rate at album level.
 const tidalQualityLabel = new Function('return ' + extractFunction(js, 'tidalQualityLabel'))();

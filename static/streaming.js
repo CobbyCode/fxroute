@@ -58,7 +58,7 @@
             detailArt: '',
             contentKey: null,   // availability/auth mode last rendered into .streaming-content
             browseSection: 'search',
-            favoriteIds: { tracks: new Set(), albums: new Set() },
+            favoriteIds: { tracks: new Set(), albums: new Set(), playlists: new Set() },
             favoriteIdsPromise: null,
         },
     };
@@ -923,8 +923,10 @@
                 '<div class="streaming-result-info">' +
                     '<div class="streaming-result-title">' + escapeHtml(item.name) + '</div>' +
                     '<div class="streaming-result-sub">' + (item.track_count ? item.track_count + ' tracks' : '') + '</div>' +
-                '</div>';
+                '</div>' +
+                favoriteButtonHtml('playlists', item.id);
             li.addEventListener('click', () => openTidalPlaylist(item.id, item.name, item.art_url));
+            bindTidalFavoriteButtons(li);
         }
         return li;
     }
@@ -943,6 +945,7 @@
                 state.tidal.favoriteIds = {
                     tracks: new Set((data.tracks || []).map(String)),
                     albums: new Set((data.albums || []).map(String)),
+                    playlists: new Set((data.playlists || []).map(String)),
                 };
                 return state.tidal.favoriteIds;
             })();
@@ -1013,8 +1016,9 @@
             showToast(data.favorite ? 'Added to favorites' : 'Removed from favorites', 'success');
             // The favorites list must stay authoritative: refresh it so an
             // unfavorited item leaves and a newly favorited item appears.
-            if (state.tidal.browseSection === 'favorites' && state.tidal.view !== 'album' && state.tidal.view !== 'playlist') {
-                loadTidalFavorites();
+            if (state.tidal.view !== 'album' && state.tidal.view !== 'playlist') {
+                if (state.tidal.browseSection === 'favorites') loadTidalFavorites();
+                else if (state.tidal.browseSection === 'playlists') renderTidalBrowseSection('playlists');
             }
         } catch (err) {
             showToast(friendlyError(err?.message || err), 'error');
@@ -1083,8 +1087,10 @@
                     '<div class="streaming-result-info">' +
                         '<div class="streaming-result-title">' + escapeHtml(item.name) + '</div>' +
                         '<div class="streaming-result-sub">' + (item.track_count ? item.track_count + ' tracks' : '') + '</div>' +
-                    '</div>';
+                    '</div>' +
+                    favoriteButtonHtml('playlists', item.id);
                 li.addEventListener('click', () => openTidalPlaylist(item.id, item.name, item.art_url));
+                bindTidalFavoriteButtons(li);
                 list.appendChild(li);
             }
             results.innerHTML = '';
