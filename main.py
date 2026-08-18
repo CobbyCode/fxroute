@@ -3473,15 +3473,33 @@ async def play_track(req: PlayRequest):
             queue_ids = [str(req.track_id)]
         elif str(req.track_id) not in queue_ids:
             queue_ids.insert(0, str(req.track_id))
+        # Resolve remaining queue metadata concurrently; each entry is an
+        # independent TIDAL API round trip and serial resolution dominated
+        # album/playlist start latency.
+        other_ids = [str(tidal_id) for tidal_id in queue_ids if str(tidal_id) != str(req.track_id)]
+
+        async def _resolve_tidal_meta_safe(tidal_id: str) -> dict | None:
+            try:
+                return await _resolve_tidal_track_meta(tidal_id)
+            except HTTPException as exc:
+                logger.warning("TIDAL queue track %s skipped: %s", tidal_id, exc.detail)
+                return None
+
+        resolved_meta = (
+            await asyncio.gather(*(_resolve_tidal_meta_safe(t) for t in other_ids))
+            if other_ids
+            else []
+        )
+        resolved_by_id = dict(zip(other_ids, resolved_meta))
         queue_tracks: list[dict] = []
         for tidal_id in queue_ids:
-            if str(tidal_id) == str(req.track_id):
+            key = str(tidal_id)
+            if key == str(req.track_id):
                 queue_tracks.append(track_info)
             else:
-                try:
-                    queue_tracks.append(await _resolve_tidal_track_meta(tidal_id))
-                except HTTPException as exc:
-                    logger.warning("TIDAL queue track %s skipped: %s", tidal_id, exc.detail)
+                entry = resolved_by_id.get(key)
+                if entry is not None:
+                    queue_tracks.append(entry)
         multi_track = len(queue_tracks) > 1
         track_index = next(
             (index for index, item in enumerate(queue_tracks) if str(item.get("id")) == str(req.track_id)),

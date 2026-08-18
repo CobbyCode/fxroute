@@ -142,30 +142,65 @@ class StreamInfoNormalizationTests(unittest.TestCase):
         self.assertEqual(playback._format_from_codecs(""), "aac")
 
 
+_SAMPLE_MPD = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<MPD xmlns="urn:mpeg:dash:schema:mpd:2011">'
+    '<Period><AdaptationSet contentType="audio"><Representation codecs="flac">'
+    '<SegmentTemplate timescale="44100" initialization="https://cdn/init.mp4" '
+    'media="https://cdn/$Number$.mp4">'
+    '<SegmentTimeline><S d="176128" r="2"/><S d="37504"/></SegmentTimeline>'
+    '</SegmentTemplate></Representation></AdaptationSet></Period></MPD>'
+)
+
+
+def _fake_http_download(url, dest, **kwargs):
+    """Emulate a CDN fetch: write a per-URL marker body."""
+    name = str(url).rsplit("/", 1)[-1]
+    dest.write_bytes(b"BODY:%s:" % name.encode())
+
+
 class StreamResolutionTests(unittest.TestCase):
-    def test_download_dash_requires_ffmpeg(self):
-        with mock.patch.object(playback.shutil, "which", return_value=None):
-            with self.assertRaises(playback.TidalStreamError) as ctx:
-                playback._download_dash("<?xml?><MPD/>")
+    def test_dash_template_parses_init_media_and_count(self):
+        init_url, media_url, count = playback._dash_template(_SAMPLE_MPD)
+        self.assertEqual(init_url, "https://cdn/init.mp4")
+        self.assertEqual(media_url, "https://cdn/$Number$.mp4")
+        self.assertEqual(count, 4)  # 3 repeated S + 1 final S
+
+    def test_dash_template_rejects_unsupported_manifest(self):
+        with self.assertRaises(playback.TidalStreamError) as ctx:
+            playback._dash_template("<?xml?><MPD/>")
         self.assertEqual(ctx.exception.kind, playback.KIND_UNSUPPORTED)
 
-    def test_download_dash_runs_ffmpeg_and_returns_output(self):
-        fake_run = mock.Mock(returncode=0, stderr="")
+    def test_download_dash_concatenates_init_and_segments_in_order(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(playback, "_http_download", side_effect=_fake_http_download):
+            out = playback._download_dash(_SAMPLE_MPD, directory=Path(tmp))
+            self.assertTrue(out.endswith(".mp4"))
+            data = Path(out).read_bytes()
+        self.assertEqual(
+            data,
+            b"BODY:init.mp4:" + b"".join(b"BODY:%d.mp4:" % n for n in range(1, 5)),
+        )
 
-        def _fake_run(cmd, **kwargs):
-            # Real ffmpeg materializes the output file; emulate it.
-            out_arg = cmd[-1]
-            Path(out_arg).write_bytes(b"flac-in-mp4")
-            return fake_run
+    def test_download_dash_cache_hit_reuses_fresh_file(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(playback, "_http_download", side_effect=_fake_http_download) as fetch:
+            first = playback._download_dash(_SAMPLE_MPD, directory=Path(tmp), cache_key="track-1-44100-16")
+            second = playback._download_dash(_SAMPLE_MPD, directory=Path(tmp), cache_key="track-1-44100-16")
+            self.assertEqual(first, second)
+            # Only the first call materializes (init + 4 segments).
+            self.assertEqual(fetch.call_count, 5)
+
+    def test_download_dash_segment_failure_is_network_error(self):
+        def _fail(url, dest, **kwargs):
+            raise playback.urllib.error.URLError("boom")
 
         with tempfile.TemporaryDirectory() as tmp, \
-             mock.patch.object(playback.shutil, "which", return_value="/usr/bin/ffmpeg"), \
-             mock.patch.object(playback.subprocess, "run", side_effect=_fake_run) as run:
-            out = playback._download_dash("<?xml?><MPD/>", directory=Path(tmp))
-            self.assertTrue(out.endswith(".mp4"))
-            self.assertTrue(Path(out).exists())
-            cmd = run.call_args.args[0]
-            self.assertIn("-protocol_whitelist", cmd)
+             mock.patch.object(playback, "_http_download", side_effect=_fail):
+            with self.assertRaises(playback.TidalStreamError) as ctx:
+                playback._download_dash(_SAMPLE_MPD, directory=Path(tmp))
+        self.assertEqual(ctx.exception.kind, playback.KIND_NETWORK)
+        self.assertFalse(any(Path(tmp).glob(".*tidal-*-parts")) or any(Path(tmp).glob("tidal-*.mp4")))
 
     def test_direct_url_preferred(self):
         track = FakeTrack(track_id=7, url="https://cdn/7.flac")
