@@ -243,15 +243,115 @@ def favorites_artists(limit: int = 50) -> list[dict]:
     return [normalize_artist(a) for a in artists]
 
 
-def user_playlists() -> list[dict]:
-    """Return the user's own TIDAL playlists (normalized)."""
+def _favorite_items(favorites: Any, kind: str, limit: int = 200) -> list:
+    """Return all favorited items of ``kind`` (``tracks``/``albums``).
+
+    Prefer the paginated helper when tidalapi offers it; otherwise fall back
+    to a single large-page fetch.  Both return plain ``tidalapi`` objects that
+    the caller normalizes.
+    """
+    paginated = getattr(favorites, f"{kind}_paginated", None)
+    if callable(paginated):
+        try:
+            return list(paginated() or [])
+        except TypeError:
+            pass
+    plain = getattr(favorites, kind, None)
+    if callable(plain):
+        return list(plain(limit=limit) or [])
+    return []
+
+
+def favorite_state() -> dict:
+    """Return the user's favorited track/album ids (authoritative heart state).
+
+    TIDAL only stamps ``user_date_added`` on items returned from the favorites
+    listing, never on search/lookup results, so the UI cannot derive heart
+    state from the catalog payload.  This is the single source of truth for
+    which tracks/albums are favorited; the UI compares ids against it.
+    """
     _require_tidalapi()
     session = _session()
     try:
-        playlists = session.user.playlists()
+        favorites = session.user.favorites
+        tracks = _favorite_items(favorites, "tracks")
+        albums = _favorite_items(favorites, "albums")
+    except Exception as exc:  # noqa: BLE001
+        raise auth.TidalAuthError(f"TIDAL favorite state failed: {exc}") from exc
+    return {
+        "tracks": [_id_str(getattr(t, "id", None)) for t in tracks],
+        "albums": [_id_str(getattr(a, "id", None)) for a in albums],
+    }
+
+
+def set_track_favorite(track_id: str, favorite: bool) -> dict:
+    """Add/remove a track from the user's TIDAL favorites."""
+    _require_tidalapi()
+    session = _session()
+    try:
+        favorites = session.user.favorites
+        ok = favorites.add_track(str(track_id)) if favorite else favorites.remove_track(str(track_id))
+    except Exception as exc:  # noqa: BLE001
+        raise auth.TidalAuthError(f"TIDAL track favorite update failed: {exc}") from exc
+    if not ok:
+        raise auth.TidalAuthError("TIDAL track favorite update failed")
+    return {"type": "track", "id": str(track_id), "favorite": bool(favorite)}
+
+
+def set_album_favorite(album_id: str, favorite: bool) -> dict:
+    """Add/remove an album from the user's TIDAL favorites."""
+    _require_tidalapi()
+    session = _session()
+    try:
+        favorites = session.user.favorites
+        ok = favorites.add_album(str(album_id)) if favorite else favorites.remove_album(str(album_id))
+    except Exception as exc:  # noqa: BLE001
+        raise auth.TidalAuthError(f"TIDAL album favorite update failed: {exc}") from exc
+    if not ok:
+        raise auth.TidalAuthError("TIDAL album favorite update failed")
+    return {"type": "album", "id": str(album_id), "favorite": bool(favorite)}
+
+
+def get_album(album_id: str) -> dict:
+    """Fetch one TIDAL album by id and normalize it (title/artist/year/quality)."""
+    _require_tidalapi()
+    session = _session()
+    try:
+        album = session.album(album_id)
+    except Exception as exc:  # noqa: BLE001
+        raise auth.TidalAuthError(f"TIDAL album {album_id} lookup failed: {exc}") from exc
+    return normalize_album(album)
+
+
+def user_playlists(limit: int = 200) -> list[dict]:
+    """Return the user's own + favorited TIDAL playlists (normalized, deduped).
+
+    ``session.user.playlists()`` returns only playlists the user created, so
+    playlists saved from the TIDAL app (editorial/user playlists in the
+    favorites collection) would be invisible.  ``playlist_and_favorite_playlists``
+    returns both in one list; dedupe on id in case a playlist is both owned
+    and favorited.
+    """
+    _require_tidalapi()
+    session = _session()
+    try:
+        page_size = 50
+        seen: dict[str, dict] = {}
+        offset = 0
+        while True:
+            items = session.user.playlist_and_favorite_playlists(offset=offset, limit=page_size)
+            for item in items:
+                normalized = normalize_playlist(item)
+                key = normalized["id"] or normalized["name"]
+                seen.setdefault(key, normalized)
+            if len(items) < page_size:
+                break
+            offset += page_size
+            if offset >= limit:
+                break
     except Exception as exc:  # noqa: BLE001
         raise auth.TidalAuthError(f"TIDAL playlists failed: {exc}") from exc
-    return [normalize_playlist(p) for p in playlists]
+    return list(seen.values())
 
 
 def playlist_tracks(playlist_id: str) -> list[dict]:

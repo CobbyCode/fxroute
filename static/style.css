@@ -7591,6 +7591,44 @@ body {
     text-overflow: ellipsis;
     white-space: nowrap;
 }
+.streaming-detail-artist {
+    max-width: 100%;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.streaming-detail-facts {
+    max-width: 100%;
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.streaming-detail-fav { display: flex; }
+
+/* Track/album favorite heart (Tidal). Shared across search results, album and
+   playlist track lists, and the album header. */
+.streaming-fav {
+    flex: 0 0 auto;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 0.95rem;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: color 0.12s, border-color 0.12s, background 0.12s;
+}
+.streaming-fav:hover,
+.streaming-fav.is-active { color: var(--accent); border-color: var(--accent); }
 
 /* Mobile: tighten the Spotify/Qobuz player; Tidal browse stays compact and the
    search row may wrap so the button never overflows the viewport. */

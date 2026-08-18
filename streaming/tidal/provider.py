@@ -152,6 +152,18 @@ class TidalProvider(StreamingProvider):
     async def favorites_artists(self, limit: int = 50) -> list[dict]:
         return await _to_thread(catalog.favorites_artists, limit)
 
+    async def favorite_state(self) -> dict:
+        return await _to_thread(catalog.favorite_state)
+
+    async def set_track_favorite(self, track_id: str, favorite: bool) -> dict:
+        return await _to_thread(catalog.set_track_favorite, track_id, favorite)
+
+    async def set_album_favorite(self, album_id: str, favorite: bool) -> dict:
+        return await _to_thread(catalog.set_album_favorite, album_id, favorite)
+
+    async def get_album(self, album_id: str) -> dict:
+        return await _to_thread(catalog.get_album, album_id)
+
     async def playlists(self) -> list[dict]:
         return await _to_thread(catalog.user_playlists)
 

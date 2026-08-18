@@ -354,6 +354,143 @@ class StreamResolutionTests(unittest.TestCase):
 # catalog normalization
 # ---------------------------------------------------------------------------
 
+class FakeFavorites:
+    """Fake ``session.user.favorites`` with track/album add/remove recording."""
+
+    def __init__(self, tracks=None, albums=None, artists=None):
+        self._tracks = list(tracks or [])
+        self._albums = list(albums or [])
+        self._artists = list(artists or [])
+        self.added_tracks: list[str] = []
+        self.removed_tracks: list[str] = []
+        self.added_albums: list[str] = []
+        self.removed_albums: list[str] = []
+
+    def tracks(self, limit=50, offset=0, **kw):
+        return self._tracks[offset:offset + limit]
+
+    def albums(self, limit=50, offset=0, **kw):
+        return self._albums[offset:offset + limit]
+
+    def artists(self, limit=50, offset=0, **kw):
+        return self._artists[offset:offset + limit]
+
+    def tracks_paginated(self, **kw):
+        return self._tracks
+
+    def albums_paginated(self, **kw):
+        return self._albums
+
+    def add_track(self, track_id):
+        self.added_tracks.append(str(track_id))
+        return True
+
+    def remove_track(self, track_id):
+        self.removed_tracks.append(str(track_id))
+        return True
+
+    def add_album(self, album_id):
+        self.added_albums.append(str(album_id))
+        return True
+
+    def remove_album(self, album_id):
+        self.removed_albums.append(str(album_id))
+        return True
+
+
+def _favorites_session(favorites):
+    return SimpleNamespace(user=SimpleNamespace(id=1, favorites=favorites))
+
+
+class CatalogFavoritesTests(unittest.TestCase):
+    """Track/album favorites, favorite-state ids, album metadata and the
+    own+favorited playlists merge all read/write the real tidalapi collection."""
+
+    def _patch(self, session):
+        return (
+            mock.patch.object(auth, "tidalapi_available", return_value=True),
+            mock.patch.object(auth.manager, "session", return_value=session),
+        )
+
+    def test_favorite_state_returns_track_and_album_ids(self):
+        from streaming.tidal import catalog
+
+        favorites = FakeFavorites(
+            tracks=[SimpleNamespace(id=11), SimpleNamespace(id=22)],
+            albums=[SimpleNamespace(id="a1")],
+        )
+        p1, p2 = self._patch(_favorites_session(favorites))
+        with p1, p2:
+            state = catalog.favorite_state()
+        self.assertEqual(state["tracks"], ["11", "22"])
+        self.assertEqual(state["albums"], ["a1"])
+
+    def test_set_track_favorite_add_and_remove(self):
+        from streaming.tidal import catalog
+
+        favorites = FakeFavorites()
+        p1, p2 = self._patch(_favorites_session(favorites))
+        with p1, p2:
+            added = catalog.set_track_favorite("99", True)
+            removed = catalog.set_track_favorite("99", False)
+        self.assertEqual(added, {"type": "track", "id": "99", "favorite": True})
+        self.assertEqual(removed, {"type": "track", "id": "99", "favorite": False})
+        self.assertEqual(favorites.added_tracks, ["99"])
+        self.assertEqual(favorites.removed_tracks, ["99"])
+
+    def test_set_album_favorite_add_and_remove(self):
+        from streaming.tidal import catalog
+
+        favorites = FakeFavorites()
+        p1, p2 = self._patch(_favorites_session(favorites))
+        with p1, p2:
+            added = catalog.set_album_favorite("a1", True)
+            removed = catalog.set_album_favorite("a1", False)
+        self.assertEqual(added, {"type": "album", "id": "a1", "favorite": True})
+        self.assertEqual(removed, {"type": "album", "id": "a1", "favorite": False})
+        self.assertEqual(favorites.added_albums, ["a1"])
+        self.assertEqual(favorites.removed_albums, ["a1"])
+
+    def test_get_album_normalizes_year_quality_artist(self):
+        from streaming.tidal import catalog
+
+        album = SimpleNamespace(
+            id=123, name="Album", title="Album",
+            artist=SimpleNamespace(name="Artist"),
+            num_tracks=10, audio_quality="LOSSLESS", available=True, year=1996,
+            image=lambda size=640: "https://c/123.jpg",
+        )
+        session = _favorites_session(FakeFavorites())
+        session.album = lambda album_id: album
+        p1, p2 = self._patch(session)
+        with p1, p2:
+            data = catalog.get_album("123")
+        self.assertEqual(data["title"], "Album")
+        self.assertEqual(data["artist"], "Artist")
+        self.assertEqual(data["year"], 1996)
+        self.assertEqual(data["audio_quality"], "LOSSLESS")
+        self.assertEqual(data["num_tracks"], 10)
+
+    def test_user_playlists_merges_own_and_favorited_deduped(self):
+        from streaming.tidal import catalog
+
+        def make_pl(pid, name):
+            return SimpleNamespace(
+                id=pid, name=name, num_tracks=3, description="",
+                square_picture=lambda size=640: "", image=None, picture=None,
+            )
+
+        items = [make_pl("u1", "Own"), make_pl("f1", "Favorited"), make_pl("u1", "Own dup")]
+        session = _favorites_session(FakeFavorites())
+        session.user.playlist_and_favorite_playlists = (
+            lambda offset=0, limit=50: items if offset == 0 else []
+        )
+        p1, p2 = self._patch(session)
+        with p1, p2:
+            result = catalog.user_playlists()
+        self.assertEqual(sorted(p["id"] for p in result), ["f1", "u1"])
+
+
 class CatalogNormalizationTests(unittest.TestCase):
     def test_normalize_track(self):
         from streaming.tidal import catalog

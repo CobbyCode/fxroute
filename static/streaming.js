@@ -57,6 +57,9 @@
             detailTitle: '',
             detailArt: '',
             contentKey: null,   // availability/auth mode last rendered into .streaming-content
+            browseSection: 'search',
+            favoriteIds: { tracks: new Set(), albums: new Set() },
+            favoriteIdsPromise: null,
         },
     };
 
@@ -790,6 +793,7 @@
     function renderTidalBrowseSection(section) {
         const body = document.getElementById('tidal-browse-body');
         if (!body) return;
+        state.tidal.browseSection = section;
         if (section === 'search') renderTidalSearch(body);
         else if (section === 'favorites') renderTidalFavorites(body);
         else if (section === 'playlists') renderTidalPlaylists(body);
@@ -833,6 +837,7 @@
                 const resp = await fetch('/api/streaming/tidal/search?q=' + encodeURIComponent(query) + '&types=' + encodeURIComponent(state.tidal.searchType) + '&limit=25');
                 if (!resp.ok) throw new Error(await errorDetail(resp));
                 const data = await resp.json();
+                try { await loadTidalFavoriteIds(); } catch (e) { /* hearts render unfilled until state loads */ }
                 renderTidalSearchResults(results, data);
             } catch (err) {
                 results.innerHTML = '<p class="streaming-note">' + escapeHtml(friendlyError(err?.message || err)) + '</p>';
@@ -891,17 +896,21 @@
                     '<div class="streaming-result-sub">' + escapeHtml(item.artist || '') + '</div>' +
                 '</div>' +
                 '<div class="streaming-result-album">' + escapeHtml(item.album || '') + '</div>' +
+                favoriteButtonHtml('tracks', item.id) +
                 '<div class="streaming-result-duration">' + formatTime(item.duration) + '</div>';
             li.querySelector('.streaming-result-play').addEventListener('click', () => playTidalTracks([item.id], item.id));
             li.addEventListener('click', () => playTidalTracks([item.id], item.id));
+            bindTidalFavoriteButtons(li);
         } else if (type === 'albums') {
             li.innerHTML =
                 '<div class="streaming-result-cover">' + coverImg(item.art_url) + '</div>' +
                 '<div class="streaming-result-info">' +
                     '<div class="streaming-result-title">' + escapeHtml(item.title) + '</div>' +
                     '<div class="streaming-result-sub">' + escapeHtml(item.artist || '') + '</div>' +
-                '</div>';
+                '</div>' +
+                favoriteButtonHtml('albums', item.id);
             li.addEventListener('click', () => openTidalAlbum(item.id, item.title, item.art_url));
+            bindTidalFavoriteButtons(li);
         } else if (type === 'artists') {
             li.innerHTML =
                 '<div class="streaming-result-cover">' + coverImg(item.art_url) + '</div>' +
@@ -922,6 +931,94 @@
 
     function coverImg(url) {
         return url ? '<img src="' + escapeHtml(url) + '" alt="" loading="lazy" />' : '';
+    }
+
+    // -- favorites (authoritative TIDAL state; no FXRoute shadow) -------------
+    function loadTidalFavoriteIds(force) {
+        if (!state.tidal.favoriteIdsPromise || force) {
+            state.tidal.favoriteIdsPromise = (async () => {
+                const resp = await fetch('/api/streaming/tidal/favorites/ids');
+                if (!resp.ok) throw new Error(await errorDetail(resp));
+                const data = await resp.json();
+                state.tidal.favoriteIds = {
+                    tracks: new Set((data.tracks || []).map(String)),
+                    albums: new Set((data.albums || []).map(String)),
+                };
+                return state.tidal.favoriteIds;
+            })();
+        }
+        return state.tidal.favoriteIdsPromise;
+    }
+
+    function isTidalFavorite(type, id) {
+        const set = state.tidal.favoriteIds[type];
+        return !!(set && set.has(String(id)));
+    }
+
+    function tidalQualityLabel(quality) {
+        const q = String(quality || '').toUpperCase();
+        if (q === 'HI_RES_LOSSLESS' || q === 'HI_RES') return 'Hi-Res Lossless';
+        if (q === 'LOSSLESS') return 'Lossless';
+        if (q === 'HIGH') return 'High';
+        if (q === 'LOW') return 'Low';
+        return q;
+    }
+
+    function favoriteButtonHtml(type, id) {
+        const active = isTidalFavorite(type, id);
+        return '<button type="button" class="streaming-fav' + (active ? ' is-active' : '') + '" ' +
+            'data-fav-type="' + type + '" data-fav-id="' + escapeHtml(id) + '" ' +
+            'aria-pressed="' + (active ? 'true' : 'false') + '" ' +
+            'aria-label="' + (active ? 'Remove from favorites' : 'Add to favorites') + '" ' +
+            'title="' + (active ? 'Remove from favorites' : 'Add to favorites') + '">' +
+            (active ? '♥' : '♡') + '</button>';
+    }
+
+    function bindTidalFavoriteButtons(container) {
+        container.querySelectorAll('.streaming-fav').forEach((btn) => {
+            btn.addEventListener('click', (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                toggleTidalFavorite(btn.dataset.favType, btn.dataset.favId);
+            });
+        });
+    }
+
+    function syncTidalFavoriteButtons(type, idStr) {
+        const active = state.tidal.favoriteIds[type].has(idStr);
+        document.querySelectorAll('.streaming-fav[data-fav-type="' + type + '"][data-fav-id="' + idStr + '"]').forEach((btn) => {
+            btn.classList.toggle('is-active', active);
+            btn.innerHTML = active ? '♥' : '♡';
+            btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+            btn.setAttribute('aria-label', active ? 'Remove from favorites' : 'Add to favorites');
+            btn.title = active ? 'Remove from favorites' : 'Add to favorites';
+        });
+    }
+
+    async function toggleTidalFavorite(type, id) {
+        const idStr = String(id);
+        const current = isTidalFavorite(type, idStr);
+        const next = !current;
+        try {
+            const resp = await fetch('/api/streaming/tidal/' + type + '/' + encodeURIComponent(idStr) + '/favorite', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ favorite: next }),
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) throw new Error(data.detail || 'Failed to update favorite');
+            if (data.favorite) state.tidal.favoriteIds[type].add(idStr);
+            else state.tidal.favoriteIds[type].delete(idStr);
+            syncTidalFavoriteButtons(type, idStr);
+            showToast(data.favorite ? 'Added to favorites' : 'Removed from favorites', 'success');
+            // The favorites list must stay authoritative: refresh it so an
+            // unfavorited item leaves and a newly favorited item appears.
+            if (state.tidal.browseSection === 'favorites' && state.tidal.view !== 'album' && state.tidal.view !== 'playlist') {
+                loadTidalFavorites();
+            }
+        } catch (err) {
+            showToast(friendlyError(err?.message || err), 'error');
+        }
     }
 
     // -- favorites ------------------------------------------------------------
@@ -948,6 +1045,9 @@
         const type = state.tidal.favoritesType;
         results.innerHTML = '<p class="streaming-note">Loading…</p>';
         try {
+            // Re-read the real TIDAL favorite state so external app changes
+            // appear on refresh (no shadow state).
+            await loadTidalFavoriteIds(true);
             const resp = await fetch('/api/streaming/tidal/favorites?type=' + encodeURIComponent(type) + '&limit=50');
             if (!resp.ok) throw new Error(await errorDetail(resp));
             const items = await resp.json();
@@ -1019,6 +1119,8 @@
     }
 
     function renderTidalAlbum(content) {
+        // No "Play album" button: albums open into a read-first track list that
+        // mirrors the library album view (cover once, facts, then tracks).
         content.innerHTML =
             '<div class="streaming-detail">' +
                 '<div class="streaming-detail-header">' +
@@ -1026,13 +1128,58 @@
                     '<div class="streaming-detail-main">' +
                         '<button type="button" class="btn-ghost" id="tidal-detail-back">← Back</button>' +
                         '<h3 class="streaming-detail-title">' + escapeHtml(state.tidal.detailTitle) + '</h3>' +
-                        '<button type="button" class="btn-primary" id="tidal-detail-play">Play album</button>' +
+                        '<div class="streaming-detail-artist" id="tidal-album-artist"></div>' +
+                        '<div class="streaming-detail-facts" id="tidal-album-facts"></div>' +
+                        '<div class="streaming-detail-fav" id="tidal-album-fav"></div>' +
                     '</div>' +
                 '</div>' +
                 '<div class="streaming-results" id="tidal-detail-results"><p class="streaming-note">Loading…</p></div>' +
             '</div>';
         content.querySelector('#tidal-detail-back').addEventListener('click', () => { state.tidal.view = null; renderTidalBrowse(entryFor('tidal')); });
-        loadTidalAlbumTracks(content);
+        loadTidalAlbum(content);
+    }
+
+    function renderTidalAlbumMeta(content, meta) {
+        const favEl = content.querySelector('#tidal-album-fav');
+        if (meta) {
+            const titleEl = content.querySelector('.streaming-detail-title');
+            if (titleEl) titleEl.textContent = meta.title || state.tidal.detailTitle;
+            if (meta.art_url) {
+                const cover = content.querySelector('.streaming-detail-cover');
+                if (cover) cover.innerHTML = coverImg(meta.art_url);
+            }
+            const artistEl = content.querySelector('#tidal-album-artist');
+            if (artistEl) artistEl.textContent = meta.artist || '';
+            const facts = [
+                meta.year ? String(meta.year) : '',
+                tidalQualityLabel(meta.audio_quality),
+                meta.num_tracks ? (meta.num_tracks + ' tracks') : '',
+            ].filter(Boolean).join(' · ');
+            const factsEl = content.querySelector('#tidal-album-facts');
+            if (factsEl) factsEl.textContent = facts;
+        }
+        if (favEl) {
+            favEl.innerHTML = favoriteButtonHtml('albums', state.tidal.detailId);
+            bindTidalFavoriteButtons(favEl);
+        }
+    }
+
+    async function loadTidalAlbum(content) {
+        const results = content.querySelector('#tidal-detail-results');
+        try {
+            const [metaResp, tracksResp] = await Promise.all([
+                fetch('/api/streaming/tidal/albums/' + encodeURIComponent(state.tidal.detailId)),
+                fetch('/api/streaming/tidal/albums/' + encodeURIComponent(state.tidal.detailId) + '/tracks'),
+            ]);
+            try { await loadTidalFavoriteIds(); } catch (e) { /* hearts degrade to unfilled */ }
+            const meta = metaResp.ok ? await metaResp.json().catch(() => null) : null;
+            if (!tracksResp.ok) throw new Error(await errorDetail(tracksResp));
+            const items = await tracksResp.json();
+            renderTidalAlbumMeta(content, meta);
+            renderDetailTracks(results, items, null);
+        } catch (err) {
+            results.innerHTML = '<p class="streaming-note">' + escapeHtml(friendlyError(err?.message || err)) + '</p>';
+        }
     }
 
     function renderTidalPlaylist(content) {
@@ -1070,6 +1217,7 @@
             const resp = await fetch('/api/streaming/tidal/playlists/' + encodeURIComponent(state.tidal.detailId) + '/tracks');
             if (!resp.ok) throw new Error(await errorDetail(resp));
             const items = await resp.json();
+            try { await loadTidalFavoriteIds(); } catch (e) { /* hearts degrade to unfilled */ }
             renderDetailTracks(results, items, content.querySelector('#tidal-detail-play'));
         } catch (err) {
             results.innerHTML = '<p class="streaming-note">' + escapeHtml(friendlyError(err?.message || err)) + '</p>';
@@ -1100,10 +1248,12 @@
                     '<div class="streaming-result-title">' + escapeHtml(item.title) + '</div>' +
                     '<div class="streaming-result-sub">' + escapeHtml(item.artist || '') + '</div>' +
                 '</div>' +
+                favoriteButtonHtml('tracks', item.id) +
                 '<div class="streaming-result-duration">' + formatTime(item.duration) + '</div>';
             const trackId = String(item.id);
             li.querySelector('.streaming-result-play').addEventListener('click', () => playTidalTracks(ids, trackId));
             li.addEventListener('click', () => playTidalTracks(ids, trackId));
+            bindTidalFavoriteButtons(li);
             list.appendChild(li);
         });
         container.appendChild(list);

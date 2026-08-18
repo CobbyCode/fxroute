@@ -5159,6 +5159,51 @@ async def api_streaming_provider_album_tracks(provider_id: str, album_id: str):
         raise _tidal_http_error(exc) from exc
 
 
+@app.get("/api/streaming/{provider_id}/albums/{album_id}")
+async def api_streaming_provider_album(provider_id: str, album_id: str):
+    fn = _provider_catalog_method(provider_id, "get_album")
+    try:
+        return await fn(album_id)
+    except Exception as exc:
+        raise _tidal_http_error(exc) from exc
+
+
+@app.get("/api/streaming/{provider_id}/favorites/ids")
+async def api_streaming_provider_favorite_ids(provider_id: str):
+    """Authoritative favorited track/album ids for the heart state."""
+    fn = _provider_catalog_method(provider_id, "favorite_state")
+    try:
+        return await fn()
+    except Exception as exc:
+        raise _tidal_http_error(exc) from exc
+
+
+@app.post("/api/streaming/{provider_id}/tracks/{track_id}/favorite")
+async def api_streaming_provider_track_favorite(provider_id: str, track_id: str, request: Request):
+    fn = _provider_catalog_method(provider_id, "set_track_favorite")
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    try:
+        return await fn(track_id, bool(body.get("favorite", False)))
+    except Exception as exc:
+        raise _tidal_http_error(exc) from exc
+
+
+@app.post("/api/streaming/{provider_id}/albums/{album_id}/favorite")
+async def api_streaming_provider_album_favorite(provider_id: str, album_id: str, request: Request):
+    fn = _provider_catalog_method(provider_id, "set_album_favorite")
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    try:
+        return await fn(album_id, bool(body.get("favorite", False)))
+    except Exception as exc:
+        raise _tidal_http_error(exc) from exc
+
+
 @app.post("/api/streaming/tidal/auth/device")
 async def api_tidal_start_device_login():
     provider = _streaming_provider("tidal")

@@ -170,4 +170,42 @@ assert.ok(!html.includes('<span>TIDAL</span>'), 'served navigation must not use 
 assert.ok(css.includes('.tab-content') && css.includes('padding: 1rem 1.25rem calc(1.5rem + var(--playback-footer-space))'),
     'tab content must reserve the centralized footer safe area');
 
+// --- TIDAL album view mirrors the library (no Play Album, facts + tracks) ------
+assert.ok(!js.includes('>Play album<'),
+    'Tidal album view must not offer a Play Album button');
+assert.ok(js.includes('>Play playlist<'),
+    'Tidal playlist view keeps its Play playlist button');
+assert.ok(js.includes('streaming-detail-artist') && js.includes('streaming-detail-facts'),
+    'Tidal album view must bundle artist + facts next to the cover');
+assert.ok(js.includes("fetch('/api/streaming/tidal/albums/' + encodeURIComponent(state.tidal.detailId))"),
+    'Tidal album view must fetch album metadata for title/artist/year/quality');
+assert.ok(js.includes('tidalQualityLabel'),
+    'Tidal album view must map the real audio_quality to a display label');
+assert.ok(css.includes('.streaming-detail-facts') && css.includes('.streaming-fav'),
+    'album facts and favorite heart styles must ship in style.css');
+
+// --- TIDAL track/album favorites (real state, no shadow) ---------------------
+assert.ok(js.includes("'/api/streaming/tidal/favorites/ids'"),
+    'heart state must come from the authoritative favorites/ids endpoint');
+assert.ok(js.includes('favoriteButtonHtml') && js.includes('data-fav-type') && js.includes('data-fav-id'),
+    'tracks and albums must render a favorite heart button');
+assert.ok(js.includes('set_track_favorite') === false && js.includes('/favorite'),
+    'the heart must write back through the provider favorite endpoint');
+assert.ok(js.includes("chip('tracks', 'Tracks', true) + chip('albums', 'Albums', false) + chip('artists', 'Artists', false)"),
+    'Favorites must offer tracks/albums/artists categories');
+assert.ok(js.includes("data-browse=\"favorites\"") && js.includes("data-browse=\"playlists\""),
+    'Favorites and Playlists must be separate browse tabs');
+assert.ok(js.includes('/api/streaming/tidal/favorites?type=') && js.includes('/api/streaming/tidal/playlists'),
+    'favorite albums and real playlists must be fetched from distinct endpoints');
+
+// Quality label mapping is honest: only the real Tidal tier, no invented
+// codec/bit-depth/sample-rate at album level.
+const tidalQualityLabel = new Function('return ' + extractFunction(js, 'tidalQualityLabel'))();
+assert.equal(tidalQualityLabel('LOSSLESS'), 'Lossless');
+assert.equal(tidalQualityLabel('HI_RES_LOSSLESS'), 'Hi-Res Lossless');
+assert.equal(tidalQualityLabel('HIGH'), 'High');
+assert.equal(tidalQualityLabel('LOW'), 'Low');
+assert.equal(tidalQualityLabel(''), '');
+assert.equal(tidalQualityLabel(null), '');
+
 console.log('PASS  scripts/test_streaming_ui_structure.js');
