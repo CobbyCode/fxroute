@@ -90,6 +90,17 @@ def normalize_album(album: Any) -> dict:
     }
 
 
+# TIDAL picture UUID -> CDN URL template (same one tidalapi uses for
+# album/playlist images). 480px is a valid artist resolution in tidalapi
+# (160/320/480/750); 640 is album-only and 403s for artists.
+_ARTIST_IMAGE_SIZE = 480
+_TIDAL_IMAGE_URL = "https://resources.tidal.com/images/%s/%ix%i.jpg"
+# tidalapi's DEFAULT_ARTIST_IMG is substituted when TIDAL has no picture;
+# the current CDN does not serve it (403), so it must not be emitted as a
+# broken URL — the frontend renders its neutral placeholder instead.
+_TIDAL_DEFAULT_ARTIST_IMG = "1e01cdb6-f15d-4d8b-8440-a047976c1cac"
+
+
 def normalize_artist(artist: Any) -> dict:
     """Normalize a tidalapi Artist into a plain dict."""
     return {
@@ -100,13 +111,29 @@ def normalize_artist(artist: Any) -> dict:
 
 
 def _artist_image_url(artist: Any) -> str:
+    """Resolve a TIDAL artist picture URL without extra requests.
+
+    tidalapi parses ``Artist.picture`` as a UUID string (search and favorites
+    results always carry it), so the URL is formatted directly from the UUID.
+    A callable ``picture``/``image`` helper (other tidalapi versions) is only
+    invoked while a picture is already known: the detail-fetch fallback inside
+    ``image()`` would otherwise fire one request per artist (N+1), which is
+    never wanted for list rows. Artists without a real picture (tidalapi's
+    default placeholder UUID) yield an empty URL so the UI shows its neutral
+    placeholder instead of a broken image.
+    """
     try:
         picture = getattr(artist, "picture", None)
-        if callable(picture):
-            return str(picture(640))
-        image = getattr(artist, "image", None)
-        if callable(image):
-            return str(image(640))
+        if isinstance(picture, str) and picture:
+            if picture == _TIDAL_DEFAULT_ARTIST_IMG:
+                return ""
+            return _TIDAL_IMAGE_URL % (picture.replace("-", "/"), _ARTIST_IMAGE_SIZE, _ARTIST_IMAGE_SIZE)
+        if picture:
+            if callable(picture):
+                return str(picture(_ARTIST_IMAGE_SIZE))
+            image = getattr(artist, "image", None)
+            if callable(image):
+                return str(image(_ARTIST_IMAGE_SIZE))
     except Exception:
         pass
     return ""

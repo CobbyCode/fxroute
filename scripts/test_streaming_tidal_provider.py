@@ -602,6 +602,64 @@ class CatalogNormalizationTests(unittest.TestCase):
         self.assertEqual(data["track_count"], 12)
         self.assertEqual(data["art_url"], "https://c/p.jpg")
 
+    def test_normalize_artist_builds_url_from_picture_uuid(self):
+        from streaming.tidal import catalog
+
+        artist = SimpleNamespace(
+            id=3674176,
+            name="Aphrodite",
+            picture="46f7f1c9-709a-4f5b-852b-34d67c3914c8",
+        )
+        data = catalog.normalize_artist(artist)
+        self.assertEqual(data["id"], "3674176")
+        self.assertEqual(data["name"], "Aphrodite")
+        self.assertEqual(
+            data["art_url"],
+            "https://resources.tidal.com/images/46f7f1c9/709a/4f5b/852b/34d67c3914c8/480x480.jpg",
+        )
+
+    def test_normalize_artist_without_picture_never_fetches_detail(self):
+        # A list row must never trigger tidalapi's per-artist detail fetch
+        # (the N+1 path inside Artist.image()): no picture -> empty URL.
+        from streaming.tidal import catalog
+
+        calls = []
+
+        def image(size=480):
+            calls.append(size)
+            return "https://example.invalid/artist"
+
+        artist = SimpleNamespace(id=1, name="No Pic", picture=None, image=image)
+        data = catalog.normalize_artist(artist)
+        self.assertEqual(data["art_url"], "")
+        self.assertEqual(calls, [], "artist list rows must never trigger a detail fetch")
+
+    def test_normalize_artist_default_placeholder_yields_empty_url(self):
+        # tidalapi substitutes its DEFAULT_ARTIST_IMG UUID when TIDAL has no
+        # picture; the CDN does not serve it (403), so it must not be emitted
+        # as a broken image URL.
+        from streaming.tidal import catalog
+
+        artist = SimpleNamespace(
+            id=1,
+            name="Placeholder",
+            picture="1e01cdb6-f15d-4d8b-8440-a047976c1cac",
+        )
+        data = catalog.normalize_artist(artist)
+        self.assertEqual(data["art_url"], "")
+
+    def test_normalize_artist_callable_picture_fallback(self):
+        # Other tidalapi versions expose picture as a size-taking accessor.
+        from streaming.tidal import catalog
+
+        artist = SimpleNamespace(
+            id=1,
+            name="Callable",
+            picture=lambda size=480: f"https://example.invalid/{size}.jpg",
+        )
+        data = catalog.normalize_artist(artist)
+        self.assertEqual(data["art_url"], "https://example.invalid/480.jpg")
+
     def test_search_normalizes_tracks(self):
         from streaming.tidal import catalog
 
@@ -621,6 +679,36 @@ class CatalogNormalizationTests(unittest.TestCase):
             result = catalog.search("query", types=["tracks"])
         self.assertEqual(len(result["tracks"]), 2)
         self.assertEqual(result["tracks"][0]["id"], "1")
+
+    def test_search_normalizes_artists(self):
+        from streaming.tidal import catalog
+
+        fake_mod = _fake_tidalapi_module()
+        session = FakeSession()
+
+        class _Results(dict):
+            pass
+
+        def fake_search(query, models=None, limit=50):
+            return _Results({
+                "artists": [
+                    SimpleNamespace(id=3674176, name="Aphrodite", picture="46f7f1c9-709a-4f5b-852b-34d67c3914c8"),
+                    SimpleNamespace(id=12615, name="Dillinja", picture=None),
+                ]
+            })
+
+        session.search = fake_search
+        with mock.patch.object(auth, "tidalapi", fake_mod), \
+             mock.patch.object(auth.manager, "session", return_value=session), \
+             mock.patch.dict(sys.modules, {"tidalapi": fake_mod}):
+            result = catalog.search("aphrodite", types=["artists"])
+        artists = result["artists"]
+        self.assertEqual(len(artists), 2)
+        self.assertEqual(
+            artists[0]["art_url"],
+            "https://resources.tidal.com/images/46f7f1c9/709a/4f5b/852b/34d67c3914c8/480x480.jpg",
+        )
+        self.assertEqual(artists[1]["art_url"], "")
 
 
 # ---------------------------------------------------------------------------

@@ -1081,7 +1081,11 @@
     }
 
     function coverImg(url) {
-        return url ? '<img src="' + escapeHtml(url) + '" alt="" loading="lazy" />' : '';
+        if (!url) return '';
+        // A cover that fails to load (stale/missing TIDAL picture) removes
+        // itself so the row falls back to the neutral :empty placeholder
+        // instead of showing a broken-image icon.
+        return '<img src="' + escapeHtml(url) + '" alt="" loading="lazy" onerror="this.remove()" />';
     }
 
     // -- favorites (authoritative TIDAL state; no FXRoute shadow) -------------

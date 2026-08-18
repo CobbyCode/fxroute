@@ -414,6 +414,14 @@ assert.ok(albumTracksRender.includes('class="track-fav'),
     'library album rows must use the shared track-fav favorite class');
 assert.ok(albumTracksRender.includes('.track-play'),
     'library album rows must bind the shared round play button');
+// Result covers fall back to a neutral placeholder: a failed image removes
+// itself so the CSS :empty tile (e.g. TIDAL artists without a picture) shows
+// instead of a broken-image icon or an empty box.
+assert.ok(js.includes('onerror="this.remove()"'),
+    'result covers must self-remove on image load failure');
+assert.ok(css.includes('.streaming-result-cover:empty'),
+    'empty result covers must render the neutral placeholder tile');
+
 // The shared row CSS ships once (grouped with the Tidal equivalents).
 for (const cls of ['.track-index', '.track-play', '.track-info', '.track-sub', '.track-fav']) {
     assert.ok(css.includes(cls), `shared track-row CSS must ship ${cls}`);
