@@ -165,6 +165,69 @@ class QobuzStatusNormalizationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status["source"], "qobuz")
 
 
+class QobuzStreamFactsStabilityTests(unittest.IsolatedAsyncioTestCase):
+    async def test_stream_facts_survive_transient_now_playing_gap(self):
+        # A transient now-playing gap (pause/transition) must not degrade a
+        # complete track's quality data: the footer tag would collapse from
+        # 'FLAC · 24 bit · 44.1 kHz' to the bare rate.
+        provider = QobuzProvider()
+        first = _fake_get({"/api/status": _status_payload(), "/api/now-playing": _now_playing_payload()})
+        with mock.patch("streaming.qobuz.backend.qbzd_installed", return_value=True), \
+             mock.patch("streaming.qobuz.backend.is_reachable", new=_reachable(True)), \
+             mock.patch("streaming.qobuz.backend.get_json", side_effect=first):
+            status = await provider.status()
+        self.assertEqual(status["trackId"], "42")
+        self.assertEqual(status["sample_rate"], 96000)
+        self.assertEqual(status["bit_depth"], 24)
+        self.assertEqual(status["audio_format"], "flac")
+
+        # Same track, but now-playing loses the track and /api/status audio
+        # has no rate/depth either: the known facts must be restored.
+        gap = _fake_get({
+            "/api/status": _status_payload(
+                audio={"backend": "pipewire", "device_open": True},
+                playback={"state": "playing", "title": "T", "artist": "A", "track_id": 42,
+                          "duration": 200, "position": 30, "volume": 0.8, "muted": False},
+            ),
+            "/api/now-playing": None,
+        })
+        with mock.patch("streaming.qobuz.backend.qbzd_installed", return_value=True), \
+             mock.patch("streaming.qobuz.backend.is_reachable", new=_reachable(True)), \
+             mock.patch("streaming.qobuz.backend.get_json", side_effect=gap):
+            status = await provider.status()
+        self.assertEqual(status["trackId"], "42")
+        self.assertEqual(status["sample_rate"], 96000)
+        self.assertEqual(status["bit_depth"], 24)
+        self.assertEqual(status["audio_format"], "flac")
+
+    async def test_stream_facts_never_borrowed_across_tracks(self):
+        provider = QobuzProvider()
+        first = _fake_get({"/api/status": _status_payload(), "/api/now-playing": _now_playing_payload()})
+        with mock.patch("streaming.qobuz.backend.qbzd_installed", return_value=True), \
+             mock.patch("streaming.qobuz.backend.is_reachable", new=_reachable(True)), \
+             mock.patch("streaming.qobuz.backend.get_json", side_effect=first):
+            await provider.status()
+
+        # A gap that reports a *different* track id must not borrow the
+        # previous track's facts.
+        gap = _fake_get({
+            "/api/status": _status_payload(
+                audio={"backend": "pipewire", "device_open": True},
+                playback={"state": "playing", "title": "B", "artist": "B-A", "track_id": 55,
+                          "duration": 200, "position": 30, "volume": 0.8, "muted": False},
+            ),
+            "/api/now-playing": None,
+        })
+        with mock.patch("streaming.qobuz.backend.qbzd_installed", return_value=True), \
+             mock.patch("streaming.qobuz.backend.is_reachable", new=_reachable(True)), \
+             mock.patch("streaming.qobuz.backend.get_json", side_effect=gap):
+            status = await provider.status()
+        self.assertEqual(status["trackId"], "55")
+        self.assertIsNone(status["sample_rate"])
+        self.assertIsNone(status["bit_depth"])
+        self.assertIsNone(status["audio_format"])
+
+
 class QobuzTransportDispatchTests(unittest.IsolatedAsyncioTestCase):
     async def test_transport_posts_correct_routes_and_bodies(self):
         provider = QobuzProvider()

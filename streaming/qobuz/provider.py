@@ -76,6 +76,10 @@ class QobuzProvider(StreamingProvider):
 
     def __init__(self, base_url: str | None = None) -> None:
         self._base_url = base_url or backend.default_base_url()
+        # Last known stream facts (trackId, sample_rate, bit_depth,
+        # audio_format) so a transient now-playing gap during a pause or
+        # transition never degrades a complete track's quality data.
+        self._stream_facts: tuple = ("", None, None, None)
 
     def capabilities(self) -> Capabilities:
         # Implemented now: transport + now-playing (metadata, position, cover)
@@ -223,6 +227,17 @@ class QobuzProvider(StreamingProvider):
             result["sample_rate"] = _sample_rate_hz(audio.get("sample_rate"))
         if result["bit_depth"] is None:
             result["bit_depth"] = _int_or_none(audio.get("bit_depth"))
+
+        # Keep the last known stream facts per track: a transient
+        # now-playing gap (pause/transition) must not degrade a complete
+        # track's quality data, otherwise the footer tag collapses to the
+        # bare rate. Facts are only restored while the track identity is
+        # stable; a gap without a track id never borrows another track's.
+        track_id = result.get("trackId") or ""
+        if result.get("audio_format") or result.get("sample_rate") or result.get("bit_depth"):
+            self._stream_facts = (track_id, result["sample_rate"], result["bit_depth"], result["audio_format"])
+        elif track_id and track_id == self._stream_facts[0]:
+            result["sample_rate"], result["bit_depth"], result["audio_format"] = self._stream_facts[1], self._stream_facts[2], self._stream_facts[3]
 
         # Queue context: count, 1-based current position and the first upcoming
         # track. Kept compact; FXRoute never needs the full Connect queue.

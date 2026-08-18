@@ -1279,32 +1279,6 @@ function formatStreamingMetaLine(data) {
         : '';
 }
 
-function renderStreamingFooterMeta(data) {
-    // Stable footer quality tag for external streaming owners. A provider gap
-    // (e.g. the qbzd status briefly loses the stream facts during a pause
-    // transition) must not shrink the tag mid-track, so the last full quality
-    // line is kept until the track identity actually changes.
-    const info = data || {};
-    const trackKey = [
-        info.source || '',
-        info.trackId || info.trackid || '',
-        info.title || '',
-        info.artist || '',
-    ].join('|');
-    const hasProviderFacts = !!(info.audio_format || info.bit_depth || info.sample_rate);
-    if (hasProviderFacts) {
-        const line = formatStreamingMetaLine(info);
-        window.__streamingMetaStable = { trackKey, line };
-        return line;
-    }
-    const stable = window.__streamingMetaStable || { trackKey: '', line: '' };
-    if (trackKey && trackKey === stable.trackKey && stable.line) {
-        return stable.line;
-    }
-    window.__streamingMetaStable = { trackKey: '', line: '' };
-    return formatStreamingMetaLine(info);
-}
-
 function buildAudioOutputModeRequest(mode, settings = null, options = {}) {
     const nextMode = normalizeOutputModeName(mode);
     if (options.modeOnly) {
@@ -14589,9 +14563,9 @@ function updateFooterForStreamingOwner(data) {
     if (elements.samplerateStatus) {
         // Shared library/radio meta-tag renderer: Qobuz contributes its real
         // stream facts, Spotify only the resolved rate (no invented format).
-        // The line is stabilized per track so a transient provider gap does
-        // not make the pill twitch mid-track (e.g. during a pause).
-        const samplerateLine = renderStreamingFooterMeta(data);
+        // No UI-side caching: the backend keeps the track's stream facts
+        // complete across transient gaps, so the payload is authoritative.
+        const samplerateLine = formatStreamingMetaLine(data);
         elements.samplerateStatus.textContent = samplerateLine;
         elements.samplerateStatus.classList.toggle('hidden', !samplerateLine);
     }

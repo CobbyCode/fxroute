@@ -41,24 +41,17 @@ function extractFunction(name) {
 
 const sandbox = {
     state: { samplerate: { available: true, active_rate: 44100 } },
-    window: {},
 };
 vm.createContext(sandbox);
 vm.runInContext(extractFunction('formatRadioStreamLine'), sandbox);
 vm.runInContext(extractFunction('formatRateKhz'), sandbox);
 vm.runInContext(extractFunction('formatStreamingMetaLine'), sandbox);
-vm.runInContext(extractFunction('renderStreamingFooterMeta'), sandbox);
 
 const format = sandbox.formatStreamingMetaLine;
-const renderStable = sandbox.renderStreamingFooterMeta;
 
 let passed = 0;
 function check(label, input, expected) {
     assert.equal(format(input), expected, `formatStreamingMetaLine: ${label}`);
-    passed += 1;
-}
-function checkStable(label, input, expected) {
-    assert.equal(renderStable(input), expected, `renderStreamingFooterMeta: ${label}`);
     passed += 1;
 }
 
@@ -85,28 +78,16 @@ check('null payload', null, '44.1 kHz');
 check('undefined payload', undefined, '44.1 kHz');
 
 // The streaming footer must reuse the library/radio renderer, not a parallel
-// formatting path.
-assert.ok(appJs.includes("renderStreamingFooterMeta(data)"),
+// formatting path, and must not cache last-rendered strings client-side: the
+// backend keeps the track's stream facts complete across transient gaps, so
+// the payload is authoritative (see playback/stream_info.StreamInfoLedger and
+// the Qobuz provider's sticky stream facts).
+assert.ok(appJs.includes("formatStreamingMetaLine(data)"),
     'updateFooterForStreamingOwner must render through the shared renderer');
-assert.ok(appJs.includes("formatStreamingMetaLine(info)"),
-    'the stable footer meta renderer must call the shared quality renderer');
-
-// A transient provider gap must not shrink the footer tag mid-track: the
-// last full quality line is kept until the track identity changes.
-sandbox.window.__streamingMetaStable = null;
-const qobuzTrack = { source: 'qobuz', trackId: '107361972', title: 'Sidonie', artist: 'Scratchophone Orchestra', audio_format: 'flac', bit_depth: 16, sample_rate: 44100 };
-checkStable('full line rendered first', qobuzTrack, 'FLAC · 16 bit · 44.1 kHz');
-const gap = { source: 'qobuz', trackId: '107361972', title: 'Sidonie', artist: 'Scratchophone Orchestra' };
-checkStable('same-track provider gap keeps the full line', gap, 'FLAC · 16 bit · 44.1 kHz');
-const nextTrack = { source: 'qobuz', trackId: '107361973', title: 'Miss Annie', artist: 'Jive Me', audio_format: 'flac', bit_depth: 24, sample_rate: 44100 };
-checkStable('new track renders its own facts', nextTrack, 'FLAC · 24 bit · 44.1 kHz');
-const gapNext = { source: 'qobuz', trackId: '107361973', title: 'Miss Annie', artist: 'Jive Me' };
-checkStable('same-track gap on the new track keeps its line', gapNext, 'FLAC · 24 bit · 44.1 kHz');
-
-// A different track without facts must not inherit the previous line.
-sandbox.window.__streamingMetaStable = { trackKey: 'qobuz|old|Old|Artist', line: 'FLAC · 24 bit · 44.1 kHz' };
-checkStable('different track without facts falls back to the rate',
-    { source: 'qobuz', trackId: 'new', title: 'New', artist: 'A' }, '44.1 kHz');
+assert.ok(!appJs.includes('renderStreamingFooterMeta'),
+    'no UI-side remember-last-string caching of the footer meta tag');
+assert.ok(!appJs.includes('__streamingMetaStable'),
+    'no client-side stable-string cache for the footer meta tag');
 
 // TIDAL (native playback) shares the radio/local footer branch.
 const renderSamplerate = extractFunction('renderSamplerateUI');

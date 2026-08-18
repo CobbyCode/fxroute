@@ -629,7 +629,7 @@ from models import (
     PlayRequest,
 )
 from playback.player import get_player, MPVNotInstalledError
-from playback.stream_info import normalize_stream_info
+from playback.stream_info import StreamInfoLedger, normalize_stream_info
 from radio.api import _station_api_payload, router as radio_api_router
 from radio.stations import get_stations
 import audio.sink_inputs as sink_inputs
@@ -913,6 +913,11 @@ def _playback_settled_event() -> asyncio.Event:
 # transition epoch/pending attempts and the published commit tokens).
 # See playback_state.PlaybackState for the field relationships.
 playback_state = PlaybackState()
+
+# Last known MPV stream facts per track, so rate/status refreshes never
+# degrade a complete radio/local/TIDAL track's quality data during a
+# transient telemetry gap (see playback.stream_info.StreamInfoLedger).
+stream_info_ledger = StreamInfoLedger()
 
 
 radio_reconnect = RadioReconnect(RadioReconnectDependencies(
@@ -4129,12 +4134,21 @@ async def get_status():
             state["radio_metadata"] = None
         # Live stream facts from mpv (codec/bitrate/samplerate/depth) for the
         # tech line.  Read-only; never derived from URLs or catalog fields.
-        if track.get("source") in ("radio", "local", "tidal") and state.get("current_file"):
-            state["stream_info"] = normalize_stream_info(
+        # A transient read gap (empty current_file, bounded property read
+        # failure) must not degrade a complete track's facts to nothing, so
+        # the ledger keeps the last known facts while the track identity is
+        # stable — the footer meta-tag stays complete across rate/status
+        # refreshes instead of collapsing to the bare rate.
+        if track.get("source") in ("radio", "local", "tidal"):
+            raw = (
                 await _read_status_player_detail(runtime.player_instance.get_stream_audio_info, {})
+                if state.get("current_file")
+                else None
             )
+            state["stream_info"] = stream_info_ledger.resolve(track, raw)
         else:
             state["stream_info"] = None
+            stream_info_ledger.reset()
         state["system"] = {"version": _read_version_file()}
         return state
     return {"running": False, "system": {"version": _read_version_file()}}

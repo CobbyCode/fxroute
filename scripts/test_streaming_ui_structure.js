@@ -77,6 +77,8 @@ assert.ok(appJs.includes('function formatStreamingMetaLine('),
     'app.js must host the shared streaming footer meta renderer');
 assert.ok(appJs.includes("formatStreamingMetaLine(data)"),
     'streaming footer must render through the shared meta-tag renderer');
+assert.ok(!appJs.includes('renderStreamingFooterMeta'),
+    'no UI-side remember-last-string caching of the footer meta tag');
 
 // --- queue continuation line is data-driven ----------------------------------
 // The queue line (count + next up) must render from normalized provider data

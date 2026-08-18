@@ -55,3 +55,54 @@ def normalize_stream_info(raw: dict) -> Optional[dict]:
     if depth and depth > 0:
         info["bit_depth"] = depth
     return info if info else None
+
+
+def _stream_track_key(track: Optional[dict]) -> tuple:
+    """Track identity for stream facts: (source, id) for mpv sources only."""
+    if not isinstance(track, dict):
+        return ()
+    source = str(track.get("source") or "")
+    if source not in ("radio", "local", "tidal"):
+        return ()
+    return (source, str(track.get("id") or ""))
+
+
+class StreamInfoLedger:
+    """Keep the last known stream facts for the current track.
+
+    A transient MPV telemetry gap (empty ``current_file`` during a transition,
+    a failed or bounded property read) must never degrade a complete track's
+    quality facts to nothing — the footer meta-tag would collapse from
+    ``FLAC · 24 bit · 44.1 kHz`` to the bare rate. Facts are bound to the
+    track identity and reset when the track or source changes, so a stale
+    track can never inherit another track's facts.
+    """
+
+    def __init__(self) -> None:
+        self._key: tuple = ()
+        self._info: Optional[dict] = None
+
+    def resolve(self, track: Optional[dict], raw: Optional[dict]) -> Optional[dict]:
+        """Return stream facts for ``track`` from raw MPV telemetry, falling
+        back to the last known facts only while the track identity is stable."""
+        info = normalize_stream_info(raw)
+        key = _stream_track_key(track)
+        if not key:
+            # No track identity (non-mpv source, empty track): never surface
+            # unattributed facts and never keep the previous track's.
+            self._key = ()
+            self._info = None
+            return None
+        if info is not None:
+            self._key = key
+            self._info = info
+            return info
+        if key == self._key and self._info is not None:
+            return self._info
+        self._key = ()
+        self._info = None
+        return None
+
+    def reset(self) -> None:
+        self._key = ()
+        self._info = None
