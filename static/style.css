@@ -6282,6 +6282,22 @@ body {
 }
 .brand-mark { width: 42px; height: 42px; border-radius: var(--radius-md); }
 .brand-title { font-size: 1.22rem; }
+/* Desktop-only brand scale-down (test, ~12%): the whole logo lockup shrinks
+   uniformly so the first nav tab keeps more clearance from the brand without
+   touching the nav buttons or rebalancing the header. If 12% feels too much,
+   step back to ~8-10% by adjusting the values below. */
+@media (min-width: 761px) {
+    .brand-lockup { gap: 0.56rem; }
+    .brand-mark {
+        width: 37px;
+        height: 37px;
+        border-radius: 10px;
+        font-size: 0.84rem;
+    }
+    .brand-text-block { gap: 0.1rem; }
+    .brand-title { font-size: 1.07rem; }
+    .brand-subtitle { font-size: 0.51rem; }
+}
 .power-btn { width: 38px; height: 38px; border-radius: var(--radius-md); background: rgba(255,255,255,.03); }
 .tabs {
     position: relative;
