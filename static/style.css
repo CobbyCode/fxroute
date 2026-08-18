@@ -7143,27 +7143,30 @@ body {
     justify-content: center;
 }
 
-/* Now-playing card — the shared player composition for Spotify/Qobuz. Cover
-   left, metadata + transport right, progress full width, bounded and centered
-   on desktop. */
+/* Now-playing card — the shared player composition for Spotify/Qobuz. A
+   compact, centered single-column player: cover on top, metadata with the
+   quality badge sitting just above the transport, and a progress bar that
+   stops well short of the card edges. */
 .streaming-now-playing {
     width: 100%;
-    max-width: 960px;
+    max-width: 560px;
     margin: 0 auto;
     background: var(--bg-surface);
     border: 1px solid var(--border);
     border-top: 3px solid var(--accent);
     border-radius: var(--radius-lg);
-    padding: 1.5rem 1.75rem;
+    padding: 1.5rem 1.5rem 1.7rem;
     display: grid;
-    grid-template-columns: 240px minmax(0, 1fr);
+    grid-template-columns: 1fr;
     grid-template-areas:
-        "cover meta"
-        "cover controls"
-        "cover secondary"
-        "progress progress";
-    gap: 0.9rem 1.5rem;
-    align-items: center;
+        "cover"
+        "meta"
+        "controls"
+        "secondary"
+        "progress";
+    justify-items: center;
+    text-align: center;
+    gap: 0.7rem;
 }
 .streaming-cover-wrap {
     grid-area: cover;
@@ -7171,8 +7174,8 @@ body {
     justify-content: center;
 }
 .streaming-cover {
-    width: 240px;
-    height: 240px;
+    width: 200px;
+    height: 200px;
     border-radius: var(--radius-md);
     object-fit: cover;
     background: var(--bg-elevated);
@@ -7181,10 +7184,11 @@ body {
 .streaming-meta {
     grid-area: meta;
     min-width: 0;
+    width: 100%;
     align-self: center;
 }
 .streaming-title {
-    font-size: 1.3rem;
+    font-size: 1.25rem;
     font-weight: 700;
     color: var(--text-primary);
     overflow: hidden;
@@ -7192,7 +7196,7 @@ body {
     white-space: nowrap;
 }
 .streaming-artist {
-    font-size: 1rem;
+    font-size: 0.95rem;
     color: var(--text-secondary);
     overflow: hidden;
     text-overflow: ellipsis;
@@ -7210,7 +7214,7 @@ body {
 }
 .streaming-quality {
     display: inline-flex;
-    margin-top: 0.6rem;
+    margin-top: 0.55rem;
     font-size: 0.76rem;
     font-weight: 600;
     letter-spacing: 0.02em;
@@ -7218,8 +7222,9 @@ body {
     background: var(--accent-dim);
     border: 1px solid var(--accent);
     border-radius: 999px;
-    padding: 0.15rem 0.6rem;
+    padding: 0.15rem 0.65rem;
     max-width: 100%;
+    box-sizing: border-box;
 }
 
 /* Transport */
@@ -7227,8 +7232,8 @@ body {
     grid-area: controls;
     display: flex;
     align-items: center;
-    gap: 1rem;
-    align-self: start;
+    justify-content: center;
+    gap: 1.15rem;
 }
 .streaming-btn {
     background: var(--bg-elevated);
@@ -7261,9 +7266,9 @@ body {
     grid-area: secondary;
     display: flex;
     align-items: center;
+    justify-content: center;
     gap: 0.7rem;
     flex-wrap: wrap;
-    align-self: start;
 }
 .streaming-btn-sm {
     background: transparent;
@@ -7301,6 +7306,7 @@ body {
     align-items: center;
     gap: 0.5rem;
     width: 100%;
+    max-width: 360px;
     padding-top: 0.15rem;
 }
 .streaming-time {
@@ -7567,7 +7573,7 @@ body {
     white-space: nowrap;
 }
 
-/* Mobile: stack the Spotify/Qobuz player; Tidal browse stays compact and the
+/* Mobile: tighten the Spotify/Qobuz player; Tidal browse stays compact and the
    search row may wrap so the button never overflows the viewport. */
 @media (max-width: 760px) {
     .streaming-provider-player {
@@ -7575,22 +7581,9 @@ body {
         justify-content: flex-start;
     }
     .streaming-now-playing {
-        grid-template-columns: 1fr;
-        grid-template-areas:
-            "cover"
-            "meta"
-            "controls"
-            "secondary"
-            "progress";
-        justify-items: center;
-        text-align: center;
-        padding: 1.15rem 1rem;
-        gap: 0.9rem;
+        padding: 1.15rem 1rem 1.3rem;
+        gap: 0.75rem;
     }
-    .streaming-meta { align-self: center; width: 100%; }
-    .streaming-title,
-    .streaming-artist,
-    .streaming-album { text-align: center; }
     .streaming-cover { width: 180px; height: 180px; }
     .streaming-search-row { flex-wrap: wrap; }
     .streaming-detail-header { flex-direction: column; align-items: center; text-align: center; }
