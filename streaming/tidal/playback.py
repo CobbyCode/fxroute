@@ -33,6 +33,7 @@ import logging
 import os
 import shutil
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -54,11 +55,28 @@ KIND_NETWORK = "network"
 KIND_UNSUPPORTED = "unsupported"
 
 _DASH_MAX_AGE_SEC = 3600.0
-_DASH_DOWNLOAD_TIMEOUT = 300.0
 _DASH_FETCH_WORKERS = 16
 _DASH_FETCH_RETRIES = 2
 _DASH_USER_AGENT = "Mozilla/5.0"
 _MPD_NS = "{urn:mpeg:dash:schema:mpd:2011}"
+
+# Per-key materialization locks.  Two requests resolving the same track
+# concurrently (double-click play, two clients) must not write the same part
+# files or the same cache entry at once; the lock serializes the second caller
+# onto a re-checked cache hit.  Keyed by (directory, cache name) so distinct
+# tracks and distinct cache directories never contend.
+_MATERIALIZE_GUARD = threading.Lock()
+_MATERIALIZE_LOCKS: dict[tuple[str, str], threading.Lock] = {}
+
+
+def _materialize_lock(directory: Path, name: str) -> threading.Lock:
+    key = (str(directory), name)
+    with _MATERIALIZE_GUARD:
+        lock = _MATERIALIZE_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _MATERIALIZE_LOCKS[key] = lock
+        return lock
 
 
 class TidalStreamError(RuntimeError):
@@ -86,8 +104,21 @@ def _prune_old_files(directory: Path) -> None:
     try:
         now = time.time()
         for entry in directory.iterdir():
-            if entry.is_file() and now - entry.stat().st_mtime > _DASH_MAX_AGE_SEC:
-                _safe_unlink(entry)
+            try:
+                stale = now - entry.stat().st_mtime > _DASH_MAX_AGE_SEC
+            except OSError:
+                continue
+            if not stale:
+                continue
+            try:
+                if entry.is_file():
+                    _safe_unlink(entry)
+                elif entry.is_dir() and entry.name.startswith(".tidal-"):
+                    # Leftover temp directories from a hard-killed
+                    # materialization; finished runs always clean their own.
+                    shutil.rmtree(entry, ignore_errors=True)
+            except OSError:
+                pass
     except OSError:
         pass
 
@@ -123,12 +154,14 @@ def _dash_template(manifest: str) -> tuple[str, str, int]:
 
 
 def _segment_url(template: str, number: int) -> str:
-    """Expand a DASH media template for one segment number."""
+    """Expand a DASH media template for one segment number.
+
+    TIDAL always uses ``$Number$``; any other template form is rejected
+    explicitly instead of being mis-expanded into a wrong URL (a ``$Time$``
+    template cannot be satisfied with a segment ordinal).
+    """
     if "$Number$" in template:
         return template.replace("$Number$", str(number))
-    if "$Time$" in template:
-        # TIDAL uses $Number$; a $Time$ template gets a best-effort position.
-        return template.replace("$Time$", str(number))
     raise TidalStreamError(KIND_UNSUPPORTED, "unsupported DASH media template")
 
 
@@ -164,17 +197,18 @@ def _materialize_dash(
     count: int,
     *,
     directory: Path,
-    name: str,
+    destination: Path,
 ) -> Path:
-    """Fetch init + all segments concurrently and concatenate them in order.
+    """Fetch init + all segments concurrently and publish them atomically.
 
     Every media segment is an independent fMP4 fragment (``styp``/``moof``
     boxes), so the playable file is the init segment followed by each media
-    segment in order.  Returns the path MPV should play.
+    segment in order.  Downloads and concatenation happen in a unique
+    temporary directory; ``os.replace`` publishes the complete file onto
+    ``destination``, so the cache path never holds a partial, torn or
+    concurrently written file.  Returns ``destination`` on success.
     """
-    tmp_root = directory / f".{name}-parts"
-    tmp_root.mkdir(parents=True, exist_ok=True)
-    out_path = directory / f"{name}.mp4"
+    tmp_root = Path(tempfile.mkdtemp(prefix=".tidal-", dir=str(directory)))
     try:
         init_tmp = tmp_root / "init.mp4"
         try:
@@ -193,19 +227,28 @@ def _materialize_dash(
                 number = futures[future]
                 future.result()  # re-raise fetch failures
                 part_files[number] = tmp_root / f"seg-{number:05d}.mp4"
-        with out_path.open("wb") as out:
+        tmp_out = tmp_root / "out.mp4"
+        with tmp_out.open("wb") as out:
             for src in [init_tmp] + [part_files[number] for number in sorted(part_files)]:
                 with src.open("rb") as handle:
                     shutil.copyfileobj(handle, out, length=1 << 16)
+        os.replace(tmp_out, destination)
         logger.info(
             "TIDAL DASH materialized: segments=%s output=%s size=%s",
             count,
-            out_path,
-            out_path.stat().st_size,
+            destination,
+            destination.stat().st_size,
         )
-        return out_path
+        return destination
     finally:
         shutil.rmtree(tmp_root, ignore_errors=True)
+
+
+def _cache_entry_fresh(path: Path) -> bool:
+    try:
+        return path.exists() and time.time() - path.stat().st_mtime < _DASH_MAX_AGE_SEC
+    except OSError:
+        return False
 
 
 def _download_dash(
@@ -221,6 +264,11 @@ def _download_dash(
     ~5x faster on .104).  A content-stable ``cache_key`` (track id + quality)
     reuses a fresh materialization on repeat plays.
 
+    Concurrent resolutions of the same cache key are serialized by a per-key
+    lock, and the cache is re-checked after acquiring it, so only one caller
+    ever materializes for a key.  Atomic ``os.replace`` publishing guarantees
+    the cache path only ever holds a complete, valid file.
+
     Returns the path MPV should play.  Raises :class:`TidalStreamError` when
     the manifest is unsupported or a segment download fails.
     """
@@ -232,25 +280,13 @@ def _download_dash(
     digest = hashlib.sha1(cache_key.encode("utf-8") if cache_key else manifest.encode("utf-8")).hexdigest()[:12]
     name = f"tidal-{digest}"
     cached = directory / f"{name}.mp4"
-    try:
-        if (
-            cache_key
-            and cached.exists()
-            and time.time() - cached.stat().st_mtime < _DASH_MAX_AGE_SEC
-        ):
+    with _materialize_lock(directory, name):
+        if cache_key and _cache_entry_fresh(cached):
             logger.info("TIDAL DASH cache hit: %s", cached)
             return str(cached)
-    except OSError:
-        pass
-
-    out_path = _materialize_dash(init_url, media_url, count, directory=directory, name=name)
-    if cache_key and out_path != cached:
-        try:
-            os.replace(out_path, cached)
-            return str(cached)
-        except OSError:
-            return str(out_path)
-    return str(out_path)
+        return str(_materialize_dash(
+            init_url, media_url, count, directory=directory, destination=cached
+        ))
 
 
 def _format_from_codecs(codecs: str) -> str:

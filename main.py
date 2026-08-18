@@ -4847,14 +4847,23 @@ async def _qobuz_ui_start_action(action: str) -> dict:
     authoritative coordinator path as a Qobuz Connect claim: quiet the
     previous owner, establish rate/graph, start qbzd, commit
     ``playback_owner=qobuz`` and publish it on the playback broadcast.
-    Toggling an already-playing Qobuz owner is transport-only.  The 2s Qobuz
-    Connect watcher stays responsible exclusively for external Connect
-    claims; a UI start never waits for it.
+    Toggling an already-playing Qobuz owner is transport-only, and replaying
+    (``play``) an already-playing committed Qobuz owner is a no-op that never
+    re-runs the handoff.  The 2s Qobuz Connect watcher stays responsible
+    exclusively for external Connect claims; a UI start never waits for it.
     """
     qobuz_state = await get_qobuz_ui_state()
     if action == "toggle" and _is_qobuz_playback_active(qobuz_state):
         data = await qobuz_pause()
         return await broadcast_qobuz_state(data)
+    if (
+        action == "play"
+        and playback_state.current_playback_owner == "qobuz"
+        and _is_qobuz_playback_active(qobuz_state)
+    ):
+        # Qobuz is already the committed, playing owner: a repeated play would
+        # re-handoff a live renderer and unnecessarily perturb the stream.
+        return qobuz_state
     track = _qobuz_target_track_from_state(qobuz_state)
     target_rate = _qobuz_target_rate(qobuz_state)
     request = TransitionRequest(

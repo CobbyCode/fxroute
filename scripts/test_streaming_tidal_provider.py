@@ -12,6 +12,8 @@ import asyncio
 import json
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -200,7 +202,98 @@ class StreamResolutionTests(unittest.TestCase):
             with self.assertRaises(playback.TidalStreamError) as ctx:
                 playback._download_dash(_SAMPLE_MPD, directory=Path(tmp))
         self.assertEqual(ctx.exception.kind, playback.KIND_NETWORK)
-        self.assertFalse(any(Path(tmp).glob(".*tidal-*-parts")) or any(Path(tmp).glob("tidal-*.mp4")))
+        self.assertEqual(list(Path(tmp).glob("tidal-*.mp4")), [])
+        self.assertEqual(list(Path(tmp).glob(".tidal-*")), [])
+
+    def test_materialization_failure_leaves_no_cache_entry(self):
+        # A failure partway through segment downloads (here: an HTTP error on
+        # segment 3) must not leave a partial or misleading cache entry: no
+        # tidal-*.mp4 file exists to be served by a later cache hit, and no
+        # temporary part directories survive.
+        def _fail(url, dest, **kwargs):
+            if str(url).endswith("/3.mp4"):
+                raise playback.urllib.error.HTTPError(url, 403, "Forbidden", None, None)
+            _fake_http_download(url, dest, **kwargs)
+
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(playback, "_http_download", side_effect=_fail):
+            with self.assertRaises(playback.TidalStreamError) as ctx:
+                playback._download_dash(_SAMPLE_MPD, directory=Path(tmp), cache_key="track-1-44100-16")
+        self.assertEqual(ctx.exception.kind, playback.KIND_NETWORK)
+        self.assertEqual(list(Path(tmp).glob("tidal-*.mp4")), [])
+        self.assertEqual(list(Path(tmp).glob(".tidal-*")), [])
+
+    def test_parallel_same_key_materializes_once(self):
+        # Two concurrent resolutions of the same cache key (double-click play,
+        # two clients) must serialize on a per-key lock: exactly one caller
+        # downloads init + segments and publishes the cache entry atomically,
+        # and the second caller is a cache hit.  The final file must be intact,
+        # never torn or interleaved.
+        start = threading.Barrier(2)
+
+        def slow_download(url, dest, **kwargs):
+            name = str(url).rsplit("/", 1)[-1]
+            time.sleep(0.02)
+            dest.write_bytes(b"BODY:%s:" % name.encode())
+
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(playback, "_http_download", side_effect=slow_download) as fetch:
+            results: list[str] = []
+            errors: list[Exception] = []
+
+            def run():
+                try:
+                    start.wait()  # both callers enter _download_dash together
+                    results.append(
+                        playback._download_dash(_SAMPLE_MPD, directory=Path(tmp), cache_key="shared-key")
+                    )
+                except Exception as exc:  # noqa: BLE001 - report thread failures
+                    errors.append(exc)
+
+            threads = [threading.Thread(target=run) for _ in range(2)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(5)
+
+            self.assertEqual(errors, [])
+            self.assertEqual(len(results), 2)
+            self.assertEqual(results[0], results[1])
+            # One materialization only: init + 4 segments, not two full downloads.
+            self.assertEqual(fetch.call_count, 5)
+            self.assertEqual(
+                Path(results[0]).read_bytes(),
+                b"BODY:init.mp4:" + b"".join(b"BODY:%d.mp4:" % n for n in range(1, 5)),
+            )
+
+    def test_different_cache_keys_materialize_separately(self):
+        # Distinct cache keys must materialize independently into their own
+        # cache entries without clobbering each other.
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(playback, "_http_download", side_effect=_fake_http_download) as fetch:
+            first = playback._download_dash(_SAMPLE_MPD, directory=Path(tmp), cache_key="track-a")
+            second = playback._download_dash(_SAMPLE_MPD, directory=Path(tmp), cache_key="track-b")
+            self.assertNotEqual(first, second)
+            self.assertEqual(fetch.call_count, 10)  # two full materializations
+            cache_files = sorted(p.name for p in Path(tmp).glob("tidal-*.mp4"))
+            self.assertEqual(len(cache_files), 2)
+            self.assertEqual(Path(first).read_bytes(), Path(second).read_bytes())
+
+    def test_time_media_template_is_unsupported(self):
+        # Only $Number$ templates are supported; a $Time$ template must be
+        # rejected explicitly instead of being mis-expanded into a wrong URL.
+        with self.assertRaises(playback.TidalStreamError) as ctx:
+            playback._segment_url("https://cdn/$Time$.mp4", 3)
+        self.assertEqual(ctx.exception.kind, playback.KIND_UNSUPPORTED)
+        self.assertEqual(
+            playback._segment_url("https://cdn/$Number$.mp4", 3),
+            "https://cdn/3.mp4",
+        )
+
+    def test_download_timeout_constant_removed(self):
+        # The whole-materialization timeout of the removed ffmpeg path must not
+        # linger as dead configuration.
+        self.assertFalse(hasattr(playback, "_DASH_DOWNLOAD_TIMEOUT"))
 
     def test_direct_url_preferred(self):
         track = FakeTrack(track_id=7, url="https://cdn/7.flac")

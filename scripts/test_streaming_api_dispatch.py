@@ -307,6 +307,36 @@ class QobuzUiStartHandoffTests(unittest.IsolatedAsyncioTestCase):
         run.assert_not_awaited()
         self.assertIsNone(main_module.playback_state.current_playback_owner)
 
+    async def test_play_while_qobuz_owner_active_is_noop(self):
+        # A repeated play for the committed, already-playing Qobuz owner must
+        # be idempotent: no source handoff, no coordinator transition, no
+        # pause, no playback re-broadcast.
+        state = dict(self._paused_state(), status="Playing")
+        main_module.playback_state.current_playback_owner = "qobuz"
+        patches = self._patches("play", state)
+        with patches[0], patches[1], patches[2] as pause, patches[3], \
+                patches[4] as run, patches[5] as manager, patches[6]:
+            result = await main_module._qobuz_ui_start_action("play")
+        run.assert_not_awaited()
+        pause.assert_not_awaited()
+        manager.assert_not_awaited()
+        self.assertEqual(result["status"], "Playing")
+        self.assertEqual(main_module.playback_state.current_playback_owner, "qobuz")
+
+    async def test_play_after_pause_still_resumes_through_coordinator(self):
+        # Idempotency applies only to an already active Qobuz owner: a paused
+        # committed owner must still resume through the authoritative handoff.
+        state = self._paused_state()
+        main_module.playback_state.current_playback_owner = "qobuz"
+        patches = self._patches("play", state)
+        with patches[0], patches[1], patches[2], patches[3], patches[4] as run, \
+                patches[5] as manager, patches[6]:
+            await main_module._qobuz_ui_start_action("play")
+        run.assert_awaited_once()
+        request = run.await_args.args[0]
+        self.assertEqual(request.operation, "qobuz-play")
+        self.assertTrue(request.should_play)
+
 
 if __name__ == "__main__":
     unittest.main()
