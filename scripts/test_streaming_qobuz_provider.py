@@ -200,6 +200,51 @@ class QobuzStreamFactsStabilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status["bit_depth"], 24)
         self.assertEqual(status["audio_format"], "flac")
 
+    async def test_consecutive_full_and_reduced_readings_stay_complete(self):
+        # The canonical footer state must stay fully complete across a sequence
+        # of full and reduced readings of the *same* track. A partial reading
+        # (e.g. /api/status audio still reports a rate but the now-playing
+        # track is gone, so audio_format/bit_depth vanish) must never erase a
+        # field the previous complete reading already delivered.
+        provider = QobuzProvider()
+
+        async def read(now_playing, status_payload):
+            getter = _fake_get({
+                "/api/status": status_payload,
+                "/api/now-playing": now_playing,
+            })
+            with mock.patch("streaming.qobuz.backend.qbzd_installed", return_value=True), \
+                 mock.patch("streaming.qobuz.backend.is_reachable", new=_reachable(True)), \
+                 mock.patch("streaming.qobuz.backend.get_json", side_effect=getter):
+                return await provider.status()
+
+        full_np = _now_playing_payload()
+        full_status = _status_payload()
+
+        # Reduced reading: now-playing gone, but /api/status audio still
+        # reports the negotiated rate while the track id is unchanged. This is
+        # the exact shape that used to degrade the footer to the bare rate.
+        reduced_np = None
+        reduced_status = _status_payload(
+            audio={"backend": "pipewire", "sample_rate": 96000, "bit_depth": None, "device_open": True},
+            playback={"state": "playing", "title": "T", "artist": "A", "track_id": 42,
+                      "duration": 200, "position": 30, "volume": 0.8, "muted": False},
+        )
+
+        sequence = [
+            (full_np, full_status),
+            (reduced_np, reduced_status),
+            (full_np, full_status),
+            (reduced_np, reduced_status),
+            (reduced_np, reduced_status),
+        ]
+        for index, (np_payload, status_payload) in enumerate(sequence):
+            status = await read(np_payload, status_payload)
+            self.assertEqual(status["trackId"], "42", f"step {index}")
+            self.assertEqual(status["sample_rate"], 96000, f"step {index}")
+            self.assertEqual(status["bit_depth"], 24, f"step {index}")
+            self.assertEqual(status["audio_format"], "flac", f"step {index}")
+
     async def test_stream_facts_never_borrowed_across_tracks(self):
         provider = QobuzProvider()
         first = _fake_get({"/api/status": _status_payload(), "/api/now-playing": _now_playing_payload()})

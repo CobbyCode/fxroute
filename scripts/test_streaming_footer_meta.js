@@ -93,6 +93,12 @@ assert.ok(!appJs.includes('__streamingMetaStable'),
 const renderSamplerate = extractFunction('renderSamplerateUI');
 assert.ok(/activeSource === 'radio' \|\| activeSource === 'local' \|\| activeSource === 'tidal'/.test(renderSamplerate),
     'renderSamplerateUI must treat tidal like radio/local stream facts');
+// A general samplerate/rate refresh must never overwrite the footer pill
+// while a streaming source owns it: renderSamplerateUI must early-return for
+// streaming footer owners (the Qobuz flicker was this path writing the bare
+// hardware rate over the full 'FLAC · 16 bit · 44.1 kHz' line).
+assert.ok(/isStreamingFooterSource\(window\.__footerSource\)\s*\)\s*\{[\s\S]*?return;/.test(renderSamplerate),
+    'renderSamplerateUI must not touch the footer pill while a streaming source owns it');
 
 // One shared footer pill element for all sources.
 const footerMatch = html.match(/<footer id="playback-bar" class="playback-bar">[\s\S]*?<\/footer>/);

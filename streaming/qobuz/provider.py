@@ -228,16 +228,26 @@ class QobuzProvider(StreamingProvider):
         if result["bit_depth"] is None:
             result["bit_depth"] = _int_or_none(audio.get("bit_depth"))
 
-        # Keep the last known stream facts per track: a transient
-        # now-playing gap (pause/transition) must not degrade a complete
-        # track's quality data, otherwise the footer tag collapses to the
-        # bare rate. Facts are only restored while the track identity is
-        # stable; a gap without a track id never borrows another track's.
+        # Keep the last known stream facts per track, field by field: a
+        # transient now-playing gap (pause/transition) must not degrade a
+        # complete track's quality data, otherwise the footer tag collapses to
+        # the bare rate. A same-track reading fills any gap from the remembered
+        # fact, but a partial reading never erases a known field (audio_format
+        # in particular is only ever set by the now-playing track object). Facts
+        # are never borrowed across tracks or when the track id is unknown.
         track_id = result.get("trackId") or ""
-        if result.get("audio_format") or result.get("sample_rate") or result.get("bit_depth"):
+        if track_id != self._stream_facts[0]:
+            # Track changed (or no id): remember exactly this reading.
             self._stream_facts = (track_id, result["sample_rate"], result["bit_depth"], result["audio_format"])
-        elif track_id and track_id == self._stream_facts[0]:
-            result["sample_rate"], result["bit_depth"], result["audio_format"] = self._stream_facts[1], self._stream_facts[2], self._stream_facts[3]
+        else:
+            prev_rate, prev_depth, prev_fmt = self._stream_facts[1], self._stream_facts[2], self._stream_facts[3]
+            if result["sample_rate"] is None:
+                result["sample_rate"] = prev_rate
+            if result["bit_depth"] is None:
+                result["bit_depth"] = prev_depth
+            if result["audio_format"] is None:
+                result["audio_format"] = prev_fmt
+            self._stream_facts = (track_id, result["sample_rate"], result["bit_depth"], result["audio_format"])
 
         # Queue context: count, 1-based current position and the first upcoming
         # track. Kept compact; FXRoute never needs the full Connect queue.

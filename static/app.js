@@ -3308,6 +3308,20 @@ async function fetchMetadata() {
 }
 function renderSamplerateUI() {
     if (!elements.samplerateStatus) return;
+    // A streaming source (Spotify/Qobuz) owns the footer pill exclusively via
+    // updateFooterForStreamingOwner. The general samplerate poll runs
+    // independently (every SAMPLERATE_POLL_INTERVAL_MS) and must never
+    // overwrite the provider's quality line with the bare hardware rate — that
+    // is the Qobuz footer flicker between "FLAC · 16 bit · 44.1 kHz" and
+    // "44.1 kHz". No state is cached here: this path simply does not own the
+    // pill while a streaming source does.
+    if (isStreamingFooterSource(window.__footerSource)) {
+        footerDebug('samplerate-ui-streaming-owner', {
+            skipped: true,
+            owner: window.__footerSource,
+        });
+        return;
+    }
     // Keep source codec/bitrate facts, but the kHz value always describes the
     // effective graph/hardware output rate.
     const activeSource = state.playback.current_track?.source;
@@ -14564,6 +14578,15 @@ function updateFooterForStreamingOwner(data) {
         // stream facts, Spotify only the resolved rate (no invented format).
         // No UI-side caching: the backend keeps the track's stream facts
         // complete across transient gaps, so the payload is authoritative.
+        footerDebug('streaming-footer-meta', {
+            owner: window.__footerSource,
+            source: data?.source || null,
+            trackId: data?.trackId || null,
+            audio_format: data?.audio_format ?? null,
+            bit_depth: data?.bit_depth ?? null,
+            bitrate: data?.bitrate ?? data?.bitrate_kbps ?? null,
+            sample_rate: data?.sample_rate ?? null,
+        });
         const samplerateLine = formatStreamingMetaLine(data);
         elements.samplerateStatus.textContent = samplerateLine;
         elements.samplerateStatus.classList.toggle('hidden', !samplerateLine);

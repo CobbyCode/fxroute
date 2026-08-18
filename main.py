@@ -2317,9 +2317,52 @@ def _qobuz_target_track_from_state(state: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+_qobuz_footer_meta_log_state: tuple | None = None
+
+
+def _qobuz_footer_meta_log(data: Mapping[str, Any]) -> None:
+    """Log the Qobuz footer quality fields whenever they change.
+
+    Deduplicated on (track, audio_format, bit_depth, bitrate, sample_rate) so
+    the 2s qbzd watch loop does not spam the journal; only transitions (a
+    field appearing, disappearing or changing value) are emitted. This is the
+    instrumentation that identifies a degrading update path at the state
+    boundary.
+    """
+    global _qobuz_footer_meta_log_state
+    try:
+        signature = (
+            data.get("trackId"),
+            data.get("audio_format"),
+            data.get("bit_depth"),
+            data.get("bitrate"),
+            data.get("sample_rate"),
+        )
+    except Exception:
+        return
+    if signature == _qobuz_footer_meta_log_state:
+        return
+    _qobuz_footer_meta_log_state = signature
+    logger.info(
+        "qobuz-footer-meta owner=%s source=%s track=%s audio_format=%s "
+        "bit_depth=%s bitrate=%s sample_rate=%s",
+        data.get("playback_owner"),
+        data.get("source"),
+        data.get("trackId"),
+        data.get("audio_format"),
+        data.get("bit_depth"),
+        data.get("bitrate"),
+        data.get("sample_rate"),
+    )
+
+
 async def broadcast_qobuz_state(data=None):
     data = await get_qobuz_ui_state(data)
     playback_state.latest_qobuz_state = data
+    # Degraded-state instrumentation: log owner/source and the incoming
+    # quality fields whenever they change, so a path that drops provider facts
+    # (audio_format/bit_depth/sample_rate) is identifiable in the journal.
+    _qobuz_footer_meta_log(data)
     await peak_monitor_coordinator.sync_qobuz_state(data)
     await manager.broadcast({"type": "qobuz", "data": data})
     return data
