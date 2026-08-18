@@ -72,12 +72,14 @@ class StreamingHiddenCssTests(unittest.TestCase):
         self.assertRegex(
             cover.group(1), r"height:\s*2\d\dpx", "desktop cover must be generous (200px+)"
         )
-        # Player pages get a centered vertical stage.
+        # Player pages get a top-anchored stage: the card starts under the
+        # status line on every player page, so Spotify and Qobuz share the
+        # same vertical geometry regardless of their metadata heights.
         player = re.search(
             r"^[ \t]*\.streaming-provider-player\s*\{([^}]+)\}", CSS, re.MULTILINE
         )
         self.assertIsNotNone(player, "missing .streaming-provider-player rule")
-        self.assertIn("justify-content: center", player.group(1))
+        self.assertIn("justify-content: flex-start", player.group(1))
         self.assertIn("padding-bottom: var(--playback-footer-space)", CSS)
         self.assertIn(".streaming-content", CSS)
         streaming_js = (ROOT / "static" / "streaming.js").read_text(encoding="utf-8")
