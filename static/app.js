@@ -3773,7 +3773,7 @@ function isCoverDetailOpen() {
     return !!(elements.coverDetailCard && !elements.coverDetailCard.classList.contains('hidden'));
 }
 
-function coverDetailMeta(playback, playlists) {
+function coverDetailMeta(playback) {
     // Returns { source, title, artist, album, tech } for the cover detail
     // card. Only uses data already present in the status payload — never
     // invents entries. The source label is the provider identity (Local /
@@ -3907,7 +3907,7 @@ function renderCoverDetailCard() {
         ? (window.__spotifyLastData || null)
         : streamingSource === 'qobuz' ? (window.__qobuzLastData || null) : null;
     // Meta block: source/playlist, current title, artist, album, tech line.
-    const meta = streamingData ? coverDetailStreamingMeta(streamingData, streamingSource) : coverDetailMeta(playback, state.playlists);
+    const meta = streamingData ? coverDetailStreamingMeta(streamingData, streamingSource) : coverDetailMeta(playback);
     setCoverDetailText(elements.coverDetailSource, meta.source);
     setCoverDetailText(elements.coverDetailTitle, meta.title);
     setCoverDetailText(elements.coverDetailArtist, meta.artist);

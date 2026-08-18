@@ -234,12 +234,14 @@ class QobuzProvider(StreamingProvider):
         # the bare rate. A same-track reading fills any gap from the remembered
         # fact, but a partial reading never erases a known field (audio_format
         # in particular is only ever set by the now-playing track object). Facts
-        # are never borrowed across tracks or when the track id is unknown.
+        # are never borrowed across tracks, and an unattributed reading (no
+        # track id at all) neither restores nor clobbers the remembered facts:
+        # the next attributable reading of the same track still fills its gaps.
         track_id = result.get("trackId") or ""
-        if track_id != self._stream_facts[0]:
-            # Track changed (or no id): remember exactly this reading.
+        if track_id and track_id != self._stream_facts[0]:
+            # Track changed: remember exactly this reading.
             self._stream_facts = (track_id, result["sample_rate"], result["bit_depth"], result["audio_format"])
-        else:
+        elif track_id and track_id == self._stream_facts[0]:
             prev_rate, prev_depth, prev_fmt = self._stream_facts[1], self._stream_facts[2], self._stream_facts[3]
             if result["sample_rate"] is None:
                 result["sample_rate"] = prev_rate

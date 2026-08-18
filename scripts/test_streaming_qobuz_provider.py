@@ -245,6 +245,57 @@ class QobuzStreamFactsStabilityTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(status["bit_depth"], 24, f"step {index}")
             self.assertEqual(status["audio_format"], "flac", f"step {index}")
 
+    async def test_unattributed_reading_never_clobbers_remembered_facts(self):
+        # A reading with no track id at all (now-playing gone and /api/status
+        # track_id empty) must not erase the remembered facts of the track that
+        # just played: the next attributable partial reading of the same track
+        # must still restore the full facts instead of degrading to the rate.
+        provider = QobuzProvider()
+        first = _fake_get({"/api/status": _status_payload(), "/api/now-playing": _now_playing_payload()})
+        with mock.patch("streaming.qobuz.backend.qbzd_installed", return_value=True), \
+             mock.patch("streaming.qobuz.backend.is_reachable", new=_reachable(True)), \
+             mock.patch("streaming.qobuz.backend.get_json", side_effect=first):
+            status = await provider.status()
+        self.assertEqual(status["trackId"], "42")
+        self.assertEqual(status["audio_format"], "flac")
+
+        # Unattributed gap: no now-playing and /api/status reports no track id.
+        anonymous = _fake_get({
+            "/api/status": _status_payload(
+                audio={"backend": "pipewire", "device_open": True},
+                playback={"state": "playing", "title": None, "artist": None, "track_id": None,
+                          "duration": None, "position": None, "volume": 0.8, "muted": False},
+            ),
+            "/api/now-playing": None,
+        })
+        with mock.patch("streaming.qobuz.backend.qbzd_installed", return_value=True), \
+             mock.patch("streaming.qobuz.backend.is_reachable", new=_reachable(True)), \
+             mock.patch("streaming.qobuz.backend.get_json", side_effect=anonymous):
+            status = await provider.status()
+        self.assertEqual(status["trackId"], "")
+        self.assertIsNone(status["sample_rate"])
+        self.assertIsNone(status["bit_depth"])
+        self.assertIsNone(status["audio_format"])
+
+        # Same track again, but only the negotiated rate is available: the
+        # remembered facts must survive the anonymous reading in between.
+        partial = _fake_get({
+            "/api/status": _status_payload(
+                audio={"backend": "pipewire", "sample_rate": 96000, "bit_depth": None, "device_open": True},
+                playback={"state": "playing", "title": "T", "artist": "A", "track_id": 42,
+                          "duration": 200, "position": 30, "volume": 0.8, "muted": False},
+            ),
+            "/api/now-playing": None,
+        })
+        with mock.patch("streaming.qobuz.backend.qbzd_installed", return_value=True), \
+             mock.patch("streaming.qobuz.backend.is_reachable", new=_reachable(True)), \
+             mock.patch("streaming.qobuz.backend.get_json", side_effect=partial):
+            status = await provider.status()
+        self.assertEqual(status["trackId"], "42")
+        self.assertEqual(status["sample_rate"], 96000)
+        self.assertEqual(status["bit_depth"], 24)
+        self.assertEqual(status["audio_format"], "flac")
+
     async def test_stream_facts_never_borrowed_across_tracks(self):
         provider = QobuzProvider()
         first = _fake_get({"/api/status": _status_payload(), "/api/now-playing": _now_playing_payload()})
