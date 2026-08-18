@@ -7646,6 +7646,35 @@ body {
 .streaming-fav:hover,
 .streaming-fav.is-active { color: var(--accent); border-color: var(--accent); }
 
+/* Tidal album detail mirrors the library album view: right-aligned toolbar
+   back button (library class), 160px cover, title/artist/facts in library
+   typography, and a star favorite (library class) in the title row. Scoped to
+   the album detail so the playlist detail keeps its own compact layout. */
+.tidal-album-toolbar {
+    display: flex;
+    align-items: center;
+}
+.tidal-album-header .streaming-detail-cover {
+    width: 160px;
+    height: 160px;
+    border-radius: 14px;
+}
+.tidal-album-meta { gap: 0.3rem; }
+.tidal-album-title-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.45rem;
+    min-width: 0;
+    max-width: 100%;
+}
+.tidal-album-title-row .streaming-detail-title {
+    flex: 0 1 auto;
+    min-width: 0;
+}
+.tidal-album-title { font-size: 1.4rem; font-weight: 700; }
+.tidal-album-artist { font-size: 1rem; color: var(--text-secondary); margin: 0; }
+.tidal-album-facts { font-size: 0.86rem; color: var(--text-secondary); line-height: 1.35; margin: 0; }
+
 /* Mobile: tighten the Spotify/Qobuz player; Tidal browse stays compact and the
    search row may wrap so the button never overflows the viewport. */
 @media (max-width: 760px) {
@@ -7665,6 +7694,7 @@ body {
     .streaming-result-album { display: none; }
     .streaming-btn,
     .streaming-result-play { min-width: 44px; min-height: 44px; }
+    .tidal-album-header .streaming-detail-cover { width: 96px; height: 96px; }
 }
 
 /* Respect reduced-motion preference: collapse animations and transitions. */

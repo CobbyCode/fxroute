@@ -184,6 +184,20 @@ assert.ok(js.includes('tidalQualityLabel'),
 assert.ok(css.includes('.streaming-detail-facts') && css.includes('.streaming-fav'),
     'album facts and favorite heart styles must ship in style.css');
 
+// The album header reuses the library's back button and star favorite and
+// scales the cover to library proportions; the playlist view keeps its own
+// compact layout untouched.
+assert.ok(js.includes('class="album-detail-back"'),
+    'Tidal album back button must reuse the library back style');
+assert.ok(js.includes('albumFavoriteStarHtml') && js.includes('album-favorite-toggle'),
+    'Tidal album favorite must be a library-style star, not a heart');
+assert.ok(js.includes("'★' : '☆'"),
+    'the album star must render filled/outline like the library');
+assert.ok(js.includes('tidal-album-detail'),
+    'Tidal album detail must be scoped so the playlist view stays untouched');
+assert.ok(css.includes('.tidal-album-header .streaming-detail-cover') && /width: 160px/.test(css),
+    'Tidal album cover must match the library 160px proportion');
+
 // --- TIDAL track/album favorites (real state, no shadow) ---------------------
 assert.ok(js.includes("'/api/streaming/tidal/favorites/ids'"),
     'heart state must come from the authoritative favorites/ids endpoint');
