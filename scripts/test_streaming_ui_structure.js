@@ -237,4 +237,80 @@ assert.equal(tidalQualityLabel('LOW'), 'Low');
 assert.equal(tidalQualityLabel(''), '');
 assert.equal(tidalQualityLabel(null), '');
 
+// --- unified detail views: back button + shared header grid -----------------
+// Both the library album detail and the Tidal album/playlist details use the
+// same '← Back' label, and the Tidal back button lives inside the shared
+// detail header (no separate toolbar row above it).
+assert.ok(html.includes('← Back') && html.includes('id="album-detail-back"'),
+    'library album detail must use the shared ← Back label');
+assert.ok(js.includes('← Back'), 'Tidal detail views must use the shared ← Back label');
+assert.ok(!js.includes('tidal-detail-toolbar'),
+    'Tidal detail must not keep a separate toolbar row above the header');
+const albumRender = extractFunction(js, 'renderTidalAlbum');
+const playlistRender = extractFunction(js, 'renderTidalPlaylist');
+for (const fn of [albumRender, playlistRender]) {
+    assert.ok(fn.includes('class="album-detail-back"'),
+        'Tidal detail back button must reuse the library back style');
+    assert.ok(fn.indexOf('album-detail-back') > fn.indexOf('streaming-detail-header'),
+        'Tidal back button must be inside the detail header');
+}
+// The shared header grid places cover / meta / back in one row on wide
+// screens. On narrow ones the hero stays compact side by side (cover left,
+// meta right) and only the back button moves to its own line; the hero is
+// never stacked vertically or centered.
+assert.ok(/grid-template-areas:\s*"cover meta back"/.test(css),
+    'detail header must be a cover/meta/back grid row');
+assert.ok(css.includes('"back back"') && css.includes('"cover meta"'),
+    'narrow detail header must keep cover/meta side by side with back on its own line');
+assert.ok(!/"back"\s*"cover"\s*"meta"/.test(css),
+    'narrow detail header must not stack back/cover/meta vertically');
+
+// --- status line is a main-surface-only detail ------------------------------
+// The permanent Connected status stays on the main catalog surface; detail
+// views hide it (real errors still render via the login surface and line).
+assert.ok(js.includes('function isTidalDetailView'),
+    'streaming must have an explicit detail-view guard for the status line');
+assert.ok(js.includes("state.tidal.view === 'album' || state.tidal.view === 'playlist'"),
+    'album/playlist must count as detail views for the status line');
+const statusRender = extractFunction(js, 'renderStatusLine');
+assert.ok(statusRender.includes('applyCatalogStatusLine'),
+    'catalog status must render through the shared status-line helper');
+const browseRender = extractFunction(js, 'renderTidalBrowse');
+assert.ok(browseRender.includes('applyCatalogStatusLine'),
+    'navigating into/out of detail views must sync the status line immediately');
+
+// --- one shared detail track row for library and Tidal ----------------------
+// The shared row builder lives in app.js and is handed to streaming.js via
+// the init api, so both render the same index/play/title/sub/fav/duration row.
+assert.ok(appJs.includes('function detailTrackRowHtml('),
+    'app.js must host the shared detail track-row builder');
+assert.ok(appJs.includes('trackRowHtml: detailTrackRowHtml'),
+    'app.js must pass the shared row builder to streaming.js');
+assert.ok(js.includes('trackRowHtml({'), 'streaming.js must render detail rows via the shared builder');
+assert.ok(js.includes("favoriteButtonHtml('tracks', item.id, 'track-fav')"),
+    'Tidal detail rows must use the shared track-fav favorite class');
+// Library album detail rows: track number, round play button, artist-only sub
+// line in album context, shared favorite class.
+const albumTracksRender = extractFunction(appJs, 'renderAlbumDetailTracks');
+assert.ok(albumTracksRender.includes('detailTrackRowHtml({'),
+    'library album rows must render via the shared row builder');
+assert.ok(albumTracksRender.includes('index: index + 1'),
+    'library album rows must show track numbers');
+assert.ok(albumTracksRender.includes('track.artist'),
+    'library album rows must keep an artist sub line');
+assert.ok(!albumTracksRender.includes('[track.artist, track.album]'),
+    'library album rows must not repeat the album name in album context');
+assert.ok(albumTracksRender.includes('class="track-fav'),
+    'library album rows must use the shared track-fav favorite class');
+assert.ok(albumTracksRender.includes('.track-play'),
+    'library album rows must bind the shared round play button');
+// The shared row CSS ships once (grouped with the Tidal equivalents).
+for (const cls of ['.track-index', '.track-play', '.track-info', '.track-sub', '.track-fav']) {
+    assert.ok(css.includes(cls), `shared track-row CSS must ship ${cls}`);
+}
+assert.ok(css.includes('.streaming-result-play,') && css.includes('.track-play'),
+    'round play button must be one grouped CSS rule');
+assert.ok(css.includes('.streaming-result-duration,') && css.includes('.track-duration'),
+    'duration must be one grouped CSS rule');
+
 console.log('PASS  scripts/test_streaming_ui_structure.js');

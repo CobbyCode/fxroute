@@ -19,6 +19,9 @@
     let showToast = function () {};
     let escapeHtml = function (v) { return String(v == null ? '' : v); };
     let formatTime = function () { return '0:00'; };
+    // Shared detail track-row builder, supplied by app.js so the library album
+    // detail and the Tidal album/playlist details render the same row.
+    let trackRowHtml = function () { return ''; };
     let initialized = false;
 
     // Provider -> transport backend adapter. The rendering is capability
@@ -73,6 +76,7 @@
         if (typeof api.showToast === 'function') showToast = api.showToast;
         if (typeof api.escapeHtml === 'function') escapeHtml = api.escapeHtml;
         if (typeof api.formatTime === 'function') formatTime = api.formatTime;
+        if (typeof api.trackRowHtml === 'function') trackRowHtml = api.trackRowHtml;
         buildProviderDom();
         void loadProviders();
     }
@@ -254,20 +258,35 @@
         return PROVIDER_META.tidal.name;
     }
 
-    function renderStatusLine(providerId, entry, data) {
+    // The permanent Connected status belongs on the main catalog surface only;
+    // detail views keep a clean header. Real problems stay visible: while not
+    // authenticated the line (and the login surface) still render.
+    function isTidalDetailView() {
+        return state.tidal.view === 'album' || state.tidal.view === 'playlist';
+    }
+
+    // Catalog providers keep the standalone line; the in-tab player card is
+    // not rendered for them (the footer is the player). Shared by the status
+    // render path and by browse/detail navigation, so the line reflects the
+    // current view immediately instead of waiting for the next poll.
+    function applyCatalogStatusLine(entry, providerId, data) {
         const bits = buildStatusBits(providerId, data);
+        entry.els.statusLine.textContent = bits.join(' · ');
+        entry.els.statusLine.title = '';
+        const healthyDetail = providerId === 'tidal' && isTidalDetailView() && data.authenticated === true;
+        entry.els.statusLine.hidden = bits.length === 0 || healthyDetail;
+    }
+
+    function renderStatusLine(providerId, entry, data) {
         const catalogProvider = PROVIDER_META[providerId]?.catalog === true;
         if (catalogProvider) {
-            // Catalog providers keep the standalone line; the in-tab player
-            // card is not rendered for them (the footer is the player).
-            entry.els.statusLine.hidden = bits.length === 0;
-            entry.els.statusLine.textContent = bits.join(' · ');
-            entry.els.statusLine.title = '';
+            applyCatalogStatusLine(entry, providerId, data);
             return;
         }
         // Player providers integrate the status into the card as a small
         // top-right chip; the standalone line above the card is gone. The
         // provider/backend detail stays available via the chip tooltip.
+        const bits = buildStatusBits(providerId, data);
         const text = bits.length ? '● ' + bits.join(' · ') : '';
         entry.els.statusChip.hidden = !text;
         entry.els.statusChip.textContent = text;
@@ -771,6 +790,9 @@
     // -- browse (search / favorites / playlists) ------------------------------
     function renderTidalBrowse(entry) {
         const content = entry.els.content;
+        // Keep the status line consistent while navigating between the main
+        // surface and detail views (the poll refreshes it as well).
+        applyCatalogStatusLine(entry, 'tidal', state.lastData.tidal || {});
         if (state.tidal.view === 'album') { renderTidalAlbum(content); return; }
         if (state.tidal.view === 'playlist') { renderTidalPlaylist(content); return; }
         content.innerHTML =
@@ -967,9 +989,12 @@
         return q;
     }
 
-    function favoriteButtonHtml(type, id) {
+    function favoriteButtonHtml(type, id, className) {
+        // Detail track rows pass 'track-fav' so they share the library row
+        // favorite visual; other lists keep the .streaming-fav heart.
+        const cls = className || 'streaming-fav';
         const active = isTidalFavorite(type, id);
-        return '<button type="button" class="streaming-fav' + (active ? ' is-active' : '') + '" ' +
+        return '<button type="button" class="' + cls + (active ? ' is-active' : '') + '" ' +
             'data-fav-type="' + type + '" data-fav-id="' + escapeHtml(id) + '" ' +
             'aria-pressed="' + (active ? 'true' : 'false') + '" ' +
             'aria-label="' + (active ? 'Remove from favorites' : 'Add to favorites') + '" ' +
@@ -978,7 +1003,7 @@
     }
 
     function bindTidalFavoriteButtons(container) {
-        container.querySelectorAll('.streaming-fav').forEach((btn) => {
+        container.querySelectorAll('.streaming-fav, .track-fav').forEach((btn) => {
             btn.addEventListener('click', (event) => {
                 event.preventDefault();
                 event.stopPropagation();
@@ -989,7 +1014,7 @@
 
     function syncTidalFavoriteButtons(type, idStr) {
         const active = state.tidal.favoriteIds[type].has(idStr);
-        document.querySelectorAll('.streaming-fav[data-fav-type="' + type + '"][data-fav-id="' + idStr + '"]').forEach((btn) => {
+        document.querySelectorAll('.streaming-fav[data-fav-type="' + type + '"][data-fav-id="' + idStr + '"], .track-fav[data-fav-type="' + type + '"][data-fav-id="' + idStr + '"]').forEach((btn) => {
             btn.classList.toggle('is-active', active);
             btn.innerHTML = active ? '♥' : '♡';
             btn.setAttribute('aria-pressed', active ? 'true' : 'false');
@@ -1162,14 +1187,11 @@
     }
 
     function renderTidalAlbum(content) {
-        // Mirrors the library album detail: back button in a right-aligned
-        // toolbar, cover + title/artist/facts beside it, star favorite in the
-        // title row, then the compact track list. No "Play album" button.
+        // Mirrors the library album detail: cover + title/artist/facts beside
+        // it, star favorite in the title row, shared back button in the header
+        // row, then the compact track list. No "Play album" button.
         content.innerHTML =
             '<div class="streaming-detail tidal-detail">' +
-                '<div class="tidal-detail-toolbar">' +
-                    '<button type="button" class="album-detail-back" id="tidal-detail-back">← Back</button>' +
-                '</div>' +
                 '<div class="streaming-detail-header tidal-detail-header">' +
                     detailCoverHtml('tidal-detail-cover') +
                     '<div class="streaming-detail-main tidal-detail-meta">' +
@@ -1180,6 +1202,7 @@
                         '<p class="streaming-detail-artist tidal-detail-artist" id="tidal-album-artist"></p>' +
                         '<div class="streaming-detail-facts tidal-detail-facts" id="tidal-album-facts"></div>' +
                     '</div>' +
+                    '<button type="button" class="album-detail-back" id="tidal-detail-back">← Back</button>' +
                 '</div>' +
                 '<div class="streaming-results" id="tidal-detail-results"><p class="streaming-note">Loading…</p></div>' +
             '</div>';
@@ -1232,9 +1255,6 @@
         // its Play playlist action and shows the track count as the facts line.
         content.innerHTML =
             '<div class="streaming-detail tidal-detail">' +
-                '<div class="tidal-detail-toolbar">' +
-                    '<button type="button" class="album-detail-back" id="tidal-detail-back">← Back</button>' +
-                '</div>' +
                 '<div class="streaming-detail-header tidal-detail-header">' +
                     detailCoverHtml('tidal-detail-cover') +
                     '<div class="streaming-detail-main tidal-detail-meta">' +
@@ -1245,6 +1265,7 @@
                         '<div class="streaming-detail-facts tidal-detail-facts" id="tidal-playlist-facts"></div>' +
                         '<button type="button" class="btn-primary" id="tidal-detail-play">Play playlist</button>' +
                     '</div>' +
+                    '<button type="button" class="album-detail-back" id="tidal-detail-back">← Back</button>' +
                 '</div>' +
                 '<div class="streaming-results" id="tidal-detail-results"><p class="streaming-note">Loading…</p></div>' +
             '</div>';
@@ -1300,17 +1321,15 @@
         items.forEach((item, index) => {
             const li = document.createElement('li');
             li.className = 'streaming-result';
-            li.innerHTML =
-                '<span class="streaming-result-index">' + (index + 1) + '</span>' +
-                '<button type="button" class="streaming-result-play" title="Play">▶</button>' +
-                '<div class="streaming-result-info">' +
-                    '<div class="streaming-result-title">' + escapeHtml(item.title) + '</div>' +
-                    '<div class="streaming-result-sub">' + escapeHtml(item.artist || '') + '</div>' +
-                '</div>' +
-                favoriteButtonHtml('tracks', item.id) +
-                '<div class="streaming-result-duration">' + formatTime(item.duration) + '</div>';
+            li.innerHTML = trackRowHtml({
+                index: index + 1,
+                title: escapeHtml(item.title),
+                sub: escapeHtml(item.artist || ''),
+                favoriteButton: favoriteButtonHtml('tracks', item.id, 'track-fav'),
+                duration: formatTime(item.duration),
+            });
             const trackId = String(item.id);
-            li.querySelector('.streaming-result-play').addEventListener('click', () => playTidalTracks(ids, trackId));
+            li.querySelector('.track-play').addEventListener('click', () => playTidalTracks(ids, trackId));
             li.addEventListener('click', () => playTidalTracks(ids, trackId));
             bindTidalFavoriteButtons(li);
             list.appendChild(li);

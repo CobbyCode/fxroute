@@ -62,8 +62,26 @@ function shellEl(providerId) {
     const el = makeEl();
     el['data-provider'] = providerId;
     const memo = {};
+    // Browse tabs are real interactive elements in the shim so detail views
+    // can be entered by clicking the Playlists tab.
+    const tabs = ['search', 'favorites', 'playlists'].map((name) => {
+        const t = makeEl();
+        t.dataset.browse = name;
+        return t;
+    });
     el.querySelector = (sel) => {
-        if (!memo[sel]) memo[sel] = makeEl();
+        if (!memo[sel]) {
+            memo[sel] = makeEl();
+            memo[sel].querySelectorAll = (inner) => {
+                if (inner === '.streaming-browse-tab') return tabs;
+                return [];
+            };
+            memo[sel].querySelector = (inner) => {
+                const key = sel + ' ' + inner;
+                if (!memo[key]) memo[key] = makeEl();
+                return memo[key];
+            };
+        }
         return memo[sel];
     };
     return el;
@@ -74,6 +92,8 @@ function buildDom() {
     const shells = {};
     const tabButtons = {};
     const tabPanels = {};
+    const byId = {};
+    const createdEls = [];
     for (const pid of providers) {
         shells[pid] = shellEl(pid);
         tabButtons[pid] = makeEl();
@@ -91,15 +111,21 @@ function buildDom() {
         },
         getElementById(id) {
             const m = id.match(/^tab-(\w+)$/);
-            return m ? tabPanels[m[1]] : null;
+            if (m) return tabPanels[m[1]];
+            if (!byId[id]) byId[id] = makeEl();
+            return byId[id];
         },
-        createElement() { return makeEl(); },
+        createElement() {
+            const el = makeEl();
+            createdEls.push(el);
+            return el;
+        },
     };
-    return { document, shells, tabButtons, tabPanels };
+    return { document, shells, tabButtons, tabPanels, createdEls };
 }
 
 function runStreaming() {
-    const { document, shells } = buildDom();
+    const { document, shells, createdEls } = buildDom();
     const fetchCalls = [];
     const spotifyCommandCalls = [];
     const spotifySeekCalls = [];
@@ -115,7 +141,12 @@ function runStreaming() {
         clearInterval: () => {},
         fetch: async (url, opts) => {
             fetchCalls.push({ url: String(url), opts: opts || {} });
-            return { ok: true, json: async () => ({}) };
+            const u = String(url);
+            let body = {};
+            if (u === '/api/streaming/tidal/playlists') {
+                body = [{ id: 'pl-1', name: 'Test Playlist', art_url: '', track_count: 2 }];
+            }
+            return { ok: true, json: async () => body };
         },
         console,
         Date,
@@ -135,11 +166,16 @@ function runStreaming() {
         escapeHtml: (v) => String(v),
         formatTime: () => '0:00',
         formatRateKhz: (v) => String(v),
+        trackRowHtml: ({ index, title, sub, favoriteButton, duration }) =>
+            `<span class="track-index">${index}</span><button class="track-play">▶</button>` +
+            `<div class="track-info"><div class="track-title">${title}</div>` +
+            (sub ? `<div class="track-sub">${sub}</div>` : '') + `</div>` +
+            favoriteButton + (duration ? `<span class="track-duration">${duration}</span>` : ''),
         spotifyCommand: (...a) => { spotifyCommandCalls.push(a); return Promise.resolve(); },
         spotifySeek: (...a) => { spotifySeekCalls.push(a); return Promise.resolve(); },
     };
     sandbox.window.FXRouteStreaming.init(api);
-    return { sandbox, shells, fetchCalls, spotifyCommandCalls, spotifySeekCalls };
+    return { sandbox, shells, fetchCalls, spotifyCommandCalls, spotifySeekCalls, createdEls };
 }
 
 const baseCaps = {
@@ -147,6 +183,7 @@ const baseCaps = {
     audio_format: true, bit_depth: true, sample_rate: true,
 };
 
+async function main() {
 // --- 1. transport buttons are bound to real actions -------------------------
 
 {
@@ -233,4 +270,38 @@ const baseCaps = {
         'playing TIDAL must keep Browse as the main content');
 }
 
+// --- 4. Tidal detail views hide the standalone status line ----------------
+
+{
+    const { sandbox, shells, createdEls } = runStreaming();
+    const tidalData = { installed: true, available: true, authenticated: true, capabilities: baseCaps, status: 'Stopped', title: '', artist: '', album: '', artUrl: '', shuffle: false, loop: 'none', position: 0, duration: 0 };
+
+    sandbox.window.FXRouteStreaming.renderProvider('tidal', tidalData);
+    const statusLine = shells.tidal.querySelector('.streaming-status-line');
+    const content = shells.tidal.querySelector('.streaming-content');
+    assert.equal(statusLine.hidden, false, 'main browse surface must show the status line');
+    assert.equal(statusLine.textContent, 'Tidal · Connected', 'status line must show the provider + Connected');
+
+    // Open the Playlists tab and click a playlist row to enter a detail view.
+    const tabs = content.querySelectorAll('.streaming-browse-tab');
+    tabs.find((t) => t.dataset.browse === 'playlists').click();
+    // renderTidalPlaylists fetches asynchronously; let the microtasks run.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const playlistRow = createdEls.find((el) => el.className === 'streaming-result');
+    assert.ok(playlistRow, 'a playlist row must be created for the playlists tab');
+    playlistRow.click();
+    assert.ok(content.innerHTML.includes('tidal-detail'), 'playlist detail view must render');
+    assert.equal(statusLine.hidden, true, 'detail view must hide the standalone status line');
+
+    // Leaving the detail view restores the status line immediately.
+    content.querySelector('#tidal-detail-back').click();
+    assert.equal(statusLine.hidden, false, 'back navigation must restore the status line');
+}
+
 console.log('PASS  scripts/test_streaming_ui_actions.js');
+}
+
+main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+});

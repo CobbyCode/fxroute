@@ -12,7 +12,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=0.9.11">
     <link rel="manifest" href="/static/site.webmanifest?v=0.9.11">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/static/style.css?v=0.9.59">
+    <link rel="stylesheet" href="/static/style.css?v=0.9.64">
 </head>
 <body>
     <a class="skip-link" href="#tab-content">Skip to content</a>
@@ -392,6 +392,7 @@
                                 id="library-search"
                                 class="url-input library-search-input"
                                 placeholder="Search folder, artist, track…"
+                                aria-label="Search the music library"
                                 data-placeholder-full="Search folder, artist, track…"
                                 data-placeholder-compact="Search…"
                                 data-placeholder-albums-full="Search album, artist, genre, year…"
@@ -417,7 +418,6 @@
                         >
                         <button id="save-playlist" class="btn-secondary">Save</button>
                     </div>
-                    <button id="album-detail-back" class="album-detail-back hidden" type="button" aria-label="Back to albums">← Albums</button>
                 </div>
                 <div id="library-folder-path" class="library-folder-path hidden"></div>
                 <div class="loading">Loading library…</div>
@@ -434,6 +434,7 @@
                             <p id="album-detail-artist" class="album-detail-artist"></p>
                             <p id="album-detail-count" class="album-detail-count"></p>
                         </div>
+                        <button id="album-detail-back" class="album-detail-back" type="button" aria-label="Back">← Back</button>
                     </div>
                     <div id="album-detail-tracks" class="album-detail-tracks tracks-list"></div>
                     <div id="album-discover" class="album-discover hidden"></div>
@@ -1321,7 +1322,7 @@
     <script src="/static/measurement_dsp.js?v=0.9.11"></script>
     <script src="/static/hybrid_measurement.js?v=0.9.11"></script>
     <script src="/static/radio.js?v=0.9.11"></script>
-    <script src="/static/app.js?v=0.9.40"></script>
-    <script src="/static/streaming.js?v=0.9.12"></script>
+    <script src="/static/app.js?v=0.9.42"></script>
+    <script src="/static/streaming.js?v=0.9.13"></script>
 </body>
 </html>
