@@ -84,7 +84,7 @@ assert.ok(html.includes('/static/streaming.js?v='), 'index.html must include str
 // --- TIDAL login flow is present (PKCE default + device alternative) --------------
 assert.ok(js.includes('auth/pkce'), 'PKCE login endpoint used');
 assert.ok(js.includes('auth/device'), 'device login endpoint used');
-assert.ok(js.includes('Device login — limited to AAC 320 kbps'), 'device login is labelled as limited');
+assert.ok(js.includes('Device login (limited to AAC 320 kbps)'), 'device login is labelled as limited');
 
 // --- streaming UI hierarchy --------------------------------------------------
 assert.ok(js.includes("tidal: { name: 'Tidal', canConnect: true, catalog: true }"),

@@ -619,7 +619,7 @@
                 '<p class="streaming-auth-hint">For Lossless and Hi-Res, use the secure browser login.</p>' +
                 '<div class="streaming-auth-actions">' +
                     '<button type="button" class="btn-primary" id="tidal-auth-pkce">Start TIDAL Login</button>' +
-                    '<button type="button" class="btn-ghost" id="tidal-auth-device">Device login — limited to AAC 320 kbps</button>' +
+                    '<button type="button" class="btn-ghost" id="tidal-auth-device">Device login (limited to AAC 320 kbps)</button>' +
                 '</div>' +
             '</div>';
         content.querySelector('#tidal-auth-pkce').addEventListener('click', () => { state.tidal.view = 'pkce'; renderTidalPkce(content); });

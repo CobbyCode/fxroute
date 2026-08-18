@@ -13,8 +13,6 @@
     --accent:        #6ee7b7;   /* fresh teal */
     --accent-dim:    rgba(110, 231, 183, 0.12);
     --accent-hover:  #4dd8a0;
-    --accent-purple: #a78bfa;  /* active/selected highlight */
-    --purple-dim:    rgba(167, 139, 250, 0.12);
     --danger:        #f87171;
     --danger-dim:    rgba(248, 113, 113, 0.12);
     --success:       #34d399;
@@ -868,9 +866,9 @@ body {
     }
 }
 .station-card.active {
-    border-color: var(--accent-purple);
-    background: linear-gradient(180deg, rgba(167,139,250,0.14), rgba(167,139,250,0.06));
-    box-shadow: 0 0 0 1px var(--accent-purple), 0 12px 28px rgba(167, 139, 250, 0.16);
+    border-color: var(--accent);
+    background: linear-gradient(180deg, rgba(110,231,183,0.14), rgba(110,231,183,0.06));
+    box-shadow: 0 0 0 1px var(--accent), 0 12px 28px rgba(110, 231, 183, 0.16);
 }
 .station-card.active::after {
     content: '♫';
@@ -878,7 +876,7 @@ body {
     top: 0.7rem;
     right: 0.8rem;
     font-size: 0.96rem;
-    color: var(--accent-purple);
+    color: var(--accent);
     animation: pulse 1.5s ease-in-out infinite;
 }
 @keyframes pulse {
@@ -1626,7 +1624,7 @@ body {
     position: relative;
 }
 .playlist-item .track-item-icon {
-    color: var(--accent-purple);
+    color: var(--accent);
 }
 .playlist-download-btn,
 .playlist-delete-btn,
@@ -1757,12 +1755,12 @@ body {
 .track-item:hover { background: var(--bg-hover); }
 .track-item.selected { background: rgba(110, 231, 255, 0.08); }
 .track-item.active {
-    background: var(--purple-dim);
-    box-shadow: inset 0 0 0 1px rgba(167, 139, 250, 0.32);
+    background: var(--accent-dim);
+    box-shadow: inset 0 0 0 1px rgba(110, 231, 183, 0.32);
 }
-.track-item.active .track-item-icon { color: var(--accent-purple); }
+.track-item.active .track-item-icon { color: var(--accent); }
 .track-item.active .track-title {
-    color: #f3ecff;
+    color: #f0fff8;
 }
 .track-item.active .track-play-button {
     transform: translateX(1px);
@@ -1949,13 +1947,13 @@ body {
     margin-bottom: 0.75rem;
     padding: 1rem 1rem 0.95rem;
     border-style: solid;
-    background: linear-gradient(180deg, rgba(110,231,183,0.05), rgba(167,139,250,0.04));
+    background: linear-gradient(180deg, rgba(110,231,183,0.05), rgba(110,231,183,0.04));
 }
 .upload-area-url-primary {
     min-height: 124px;
     border-width: 2px;
     border-style: dashed;
-    background: linear-gradient(180deg, rgba(110,231,183,0.08), rgba(167,139,250,0.05));
+    background: linear-gradient(180deg, rgba(110,231,183,0.08), rgba(110,231,183,0.05));
 }
 .upload-area-file-primary {
     min-height: 124px;
@@ -1964,7 +1962,7 @@ body {
     min-height: 112px;
     border-width: 2px;
     border-style: dashed;
-    background: linear-gradient(180deg, rgba(110,231,183,0.08), rgba(167,139,250,0.05));
+    background: linear-gradient(180deg, rgba(110,231,183,0.08), rgba(110,231,183,0.05));
 }
 .upload-area-url .upload-area-icon {
     font-size: 1.1rem;
@@ -3332,7 +3330,7 @@ body {
     }
 }
 .effects-card-manage {
-    border-top-color: var(--accent-purple);
+    border-top-color: var(--accent);
 }
 .effects-card-header {
     margin-bottom: 1.25rem;
@@ -3357,9 +3355,9 @@ body {
     flex-direction: column;
     gap: 0.9rem;
     padding: 1rem;
-    border: 1px solid rgba(167, 139, 250, 0.24);
+    border: 1px solid rgba(110, 231, 183, 0.24);
     border-radius: var(--radius-md);
-    background: linear-gradient(180deg, rgba(167, 139, 250, 0.1), rgba(255,255,255,0.02));
+    background: linear-gradient(180deg, rgba(110, 231, 183, 0.1), rgba(255,255,255,0.02));
 }
 
 .effects-compare-fields {
@@ -3389,7 +3387,7 @@ body {
 }
 
 .effects-compare-slot.is-armed {
-    border-color: rgba(167, 139, 250, 0.34);
+    border-color: rgba(110, 231, 183, 0.34);
 }
 
 @media (max-width: 700px) {
@@ -3464,9 +3462,9 @@ select option:checked {
 }
 
 .effects-compare-active-badge.is-side-b {
-    background: rgba(167, 139, 250, 0.14);
-    border-color: rgba(167, 139, 250, 0.34);
-    color: #e6dcff;
+    background: rgba(110, 231, 183, 0.14);
+    border-color: rgba(110, 231, 183, 0.34);
+    color: #f0fff8;
 }
 
 .effects-compare-actions {

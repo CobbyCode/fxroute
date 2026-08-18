@@ -75,7 +75,7 @@ vm.runInContext(`
 for (const model of ['UMIK-1', 'UMIK-2', 'UMM-6']) {
     assert.equal(
         context.modeLabel({ automatic: { available: true, microphone_model: model } }),
-        `Automatic SPL measurement — ${model} detected`,
+        `Automatic SPL measurement: ${model} detected`,
     );
 }
 assert.equal(context.modeLabel({ automatic: { available: false } }), 'Manual SPL measurement');

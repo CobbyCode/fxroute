@@ -1613,7 +1613,7 @@ function parseUpdateInfo(logText = '') {
 }
 
 function maintenanceStatusText(maintenance = {}) {
-    if (maintenance.dirtyBlock) return 'Local source changes — update disabled';
+    if (maintenance.dirtyBlock) return 'Local source changes. Update disabled';
     if (maintenance.hasError) return 'Update check failed';
     if (maintenance.restartPending) return 'Restarting FXRoute';
     if (maintenance.pending) return maintenance.updateAvailable === true ? 'Updating FXRoute' : 'Checking for updates';
@@ -1712,7 +1712,7 @@ async function checkFxrouteUpdate(options = {}) {
             ...state.settings.maintenance,
             installedVersion: data.installed_version || state.settings.maintenance.installedVersion || '',
             latestSummary: isDirtyBlock
-                ? 'Local source changes detected — update disabled to protect this checkout.'
+                ? 'Local source changes detected. Update disabled to protect this checkout.'
                 : 'Update check failed.',
             detail: errorMsg,
             log: errorMsg,
@@ -1796,7 +1796,7 @@ async function runFxrouteUpdate() {
         state.settings.maintenance.operation = '';
         state.settings.maintenance.installedVersion = data.installed_version || state.settings.maintenance.installedVersion || '';
         state.settings.maintenance.latestSummary = isDirtyBlock
-            ? 'Local source changes detected — update disabled to protect this checkout.'
+            ? 'Local source changes detected. Update disabled to protect this checkout.'
             : 'Update failed.';
         state.settings.maintenance.detail = errorMsg;
         state.settings.maintenance.log = errorMsg;
@@ -1963,7 +1963,7 @@ function renderSettingsPanel() {
     if (elements.settingsSourceSelect) {
         const inputOptions = [
             '<option value="app-playback">App playback</option>',
-            ...sourceInputs.map((input) => `<option value="external-input::${escapeHtml(input.key || '')}">External input — ${escapeHtml(input.label || input.name || 'Unknown input')}</option>`),
+            ...sourceInputs.map((input) => `<option value="external-input::${escapeHtml(input.key || '')}">External input: ${escapeHtml(input.label || input.name || 'Unknown input')}</option>`),
             `<option value="bluetooth-input"${bluetoothSelectable ? '' : ' disabled'}>Bluetooth input</option>`,
         ];
         elements.settingsSourceSelect.innerHTML = inputOptions.join('');
@@ -6177,7 +6177,7 @@ let splCalibrationOperationGeneration = 0;
 
 function splCalibrationModeLabel(data) {
     return data.automatic?.available
-        ? `Automatic SPL measurement — ${data.automatic.microphone_model} detected`
+        ? `Automatic SPL measurement: ${data.automatic.microphone_model} detected`
         : 'Manual SPL measurement';
 }
 
@@ -6858,7 +6858,7 @@ function clearMeasurementConvolverDraftForPhaseChange(previousPhaseMode = '') {
     conv.draft.right = null;
     conv.draft.presetName = '';
     conv.draft.nameTouched = false;
-    conv.draft.notice = 'Phase type changed — take L/R again.';
+    conv.draft.notice = 'Phase type changed. Take L/R again.';
     showMeasurementConvolverFeedback(conv.draft.notice);
     return true;
 }
@@ -7843,7 +7843,7 @@ async function createMeasurementConvolverPresetFromDraft() {
     const drafts = mode === 'both' ? [leftDraft, rightDraft] : [mode === 'right' ? rightDraft : leftDraft];
     const phaseMismatch = getMeasurementConvolverDraftPhaseMismatch(conv);
     if (phaseMismatch) {
-        conv.draft.notice = 'Draft phase does not match selected phase type — take L/R again.';
+        conv.draft.notice = 'Draft phase does not match the selected phase type. Take L/R again.';
         showMeasurementConvolverFeedback(conv.draft.notice);
         showToast(conv.draft.notice, 'warning');
         renderMeasurementPanel();
@@ -10077,7 +10077,7 @@ async function handleAutoSubResult(job) {
         mainParts.push(`Score ${scorePctText} %`);
     }
     if (isWeak) {
-        measurementState.statusText = `AutoSub result weak — check with a normal 2.1 measurement. (${mainParts[0]}, Score ${scorePctText} %)`;
+        measurementState.statusText = `AutoSub result weak. Check with a normal 2.1 measurement. (${mainParts[0]}, Score ${scorePctText} %)`;
     } else {
         measurementState.statusText = mainParts.join(' · ');
     }
@@ -11344,7 +11344,7 @@ function renderMeasurementPanel() {
     const peqDraftRightCount = peq.draft?.rightBands?.length || 0;
     if (elements.measurementPeqDraftSummary) {
         const draftMode = peqDraftLeftCount && peqDraftRightCount ? 'LR draft ready' : (peqDraftRightCount ? 'R draft ready' : (peqDraftLeftCount ? 'L draft ready' : 'no draft staged'));
-        elements.measurementPeqDraftSummary.innerHTML = `<div>Draft — ${escapeHtml(draftMode)} · L: ${peqDraftLeftCount} bands · R: ${peqDraftRightCount} bands</div>`;
+        elements.measurementPeqDraftSummary.innerHTML = `<div>Draft: ${escapeHtml(draftMode)} · L: ${peqDraftLeftCount} bands · R: ${peqDraftRightCount} bands</div>`;
     }
     if (elements.measurementPeqPresetName) {
         const hasDraft = !!peqDraftLeftCount || !!peqDraftRightCount;
@@ -11504,7 +11504,7 @@ function renderMeasurementPanel() {
         if (isCreatingConvolverPreset) {
             draftStatus = 'Creating convolver preset...';
         } else if (draftPhaseMismatch) {
-            draftStatus = 'Draft phase does not match selected phase type — take L/R again.';
+            draftStatus = 'Draft phase does not match the selected phase type. Take L/R again.';
         } else if (leftDraft && rightDraft) {
             const timingDelta = summaryTimingDelta;
             if (timingDelta) {
@@ -11534,7 +11534,7 @@ function renderMeasurementPanel() {
         }
         elements.measurementConvolverSummary.innerHTML = `
             <div><strong>${escapeHtml(curve.label)}</strong> · ${escapeHtml(getMeasurementConvolverTypeLabel(conv.quality))} · Max Boost +${conv.maxBoostDb} dB · Max Cut ${conv.maxCutDb} dB · Dip Guard ${escapeHtml(conv.dipGuard)}</div>
-            <div>Range data — L: ${left ? `${left.points} pts, gain ${formatMeasurementConvolverGain(left.autoGainDb)}` : 'none'} · R: ${right ? `${right.points} pts, gain ${formatMeasurementConvolverGain(right.autoGainDb)}` : 'none'}</div>
+            <div>Range data. L: ${left ? `${left.points} pts, gain ${formatMeasurementConvolverGain(left.autoGainDb)}` : 'none'} · R: ${right ? `${right.points} pts, gain ${formatMeasurementConvolverGain(right.autoGainDb)}` : 'none'}</div>
             <div>${escapeHtml(draftStatus)}</div>
             ${draftDetails.map((detail) => `<div>${escapeHtml(detail)}</div>`).join('')}
         `;
@@ -11550,7 +11550,7 @@ function renderMeasurementPanel() {
             elements.measurementConvolverPresetName.value = nameValue;
         }
         elements.measurementConvolverPresetName.disabled = !hasConvolverDraft || !!draftPhaseMismatch;
-        elements.measurementConvolverPresetName.placeholder = hasConvolverDraft ? 'Preset name' : 'Preview — take L/R/Both to stage';
+        elements.measurementConvolverPresetName.placeholder = hasConvolverDraft ? 'Preset name' : 'Preview. Take L/R/Both to stage';
     }
     if (elements.measurementConvolverWarnings) {
         const warnings = buildMeasurementConvolverWarnings(convAnalyses);
