@@ -5622,10 +5622,10 @@ input[type="number"]::-webkit-outer-spin-button {
 }
 
 /* =========================================================================
-   Spotify tab
+   Spotify tab (legacy rules kept for historical reference; the Spotify tab
+   renders through the shared streaming shell today, so no provider-specific
+   panel offset may exist — Spotify and Qobuz must start at the same height)
    ========================================================================= */
-#tab-spotify { padding-top: 1.5rem; }
-
 .spotify-shell {
     max-width: 380px;
     margin: 0 auto;

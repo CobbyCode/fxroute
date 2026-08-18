@@ -54,6 +54,24 @@ class StreamingHiddenCssTests(unittest.TestCase):
         self.assertIn("els.nowPlaying.hidden = true", streaming_js)
         self.assertIn("els.empty.hidden = false", streaming_js)
 
+    def test_player_panels_have_no_provider_specific_vertical_offset(self):
+        # Spotify and Qobuz must start at the same height: the legacy
+        # `#tab-spotify { padding-top: 1.5rem }` rule would push the Spotify
+        # player below the Qobuz one and is banned.
+        match = re.search(
+            r"^[ \t]*#tab-spotify\s*\{([^}]+)\}", CSS, re.MULTILINE
+        )
+        self.assertIsNone(
+            match,
+            "#tab-spotify must not carry a panel-level offset; player pages "
+            "start at the same height via the shared provider stage",
+        )
+        shell = re.search(
+            r"^[ \t]*\.streaming-shell\s*\{([^}]+)\}", CSS, re.MULTILINE
+        )
+        self.assertIsNotNone(shell, "missing .streaming-shell rule")
+        self.assertNotIn("padding-top", shell.group(1))
+
     def test_provider_layout_has_player_width_and_footer_safe_area(self):
         # The shared player card is bounded, centered, and generous on desktop.
         now_playing = re.search(
