@@ -133,6 +133,7 @@
                             '<div class="streaming-artist"></div>' +
                             '<div class="streaming-album"></div>' +
                             '<div class="streaming-quality"></div>' +
+                            '<div class="streaming-queue" hidden></div>' +
                         '</div>' +
                         '<div class="streaming-controls">' +
                             '<button type="button" class="streaming-btn" data-action="previous" title="Previous">⏮</button>' +
@@ -177,6 +178,7 @@
                 artist: root.querySelector('.streaming-artist'),
                 album: root.querySelector('.streaming-album'),
                 quality: root.querySelector('.streaming-quality'),
+                queueInfo: root.querySelector('.streaming-queue'),
                 controls: root.querySelector('.streaming-controls'),
                 prev: root.querySelector('[data-action="previous"]'),
                 toggle: root.querySelector('[data-action="toggle"]'),
@@ -306,6 +308,12 @@
         els.quality.hidden = !qualityText;
         els.quality.textContent = qualityText;
 
+        // Queue continuation (count + next up), data-driven from the provider
+        // status; no capability flag needed and no provider-identity branch.
+        const queueText = formatQueueInfo(data);
+        els.queueInfo.hidden = !queueText;
+        els.queueInfo.textContent = queueText;
+
         // Transport (capability: transport).
         els.controls.style.display = caps.transport ? '' : 'none';
         if (caps.transport) {
@@ -397,6 +405,19 @@
             const rate = formatRateKhz(data.sample_rate);
             if (rate) parts.push(rate);
         }
+        return parts.join(' · ');
+    }
+
+    // Queue continuation line ("3/28 · Next: Survival of the Fittest"), purely
+    // data-driven from the normalized provider status (queue_len/queue_index/
+    // next_track). A single-track queue renders nothing.
+    function formatQueueInfo(data) {
+        const total = Number(data.queue_len || 0);
+        if (total <= 1) return '';
+        const index = Number(data.queue_index || 1);
+        const parts = [index + '/' + total];
+        const next = data.next_track;
+        if (next && next.title) parts.push('Next: ' + next.title);
         return parts.join(' · ');
     }
 

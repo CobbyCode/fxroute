@@ -136,6 +136,9 @@ class QobuzProvider(StreamingProvider):
             "sample_rate": None,
             "bit_depth": None,
             "audio_format": None,
+            "queue_len": 0,
+            "queue_index": 0,
+            "next_track": None,
             "qconnect": None,
         }
 
@@ -167,6 +170,14 @@ class QobuzProvider(StreamingProvider):
         track = (now or {}).get("track")
         np_playback = (now or {}).get("playback") or {}
 
+        # The full queue state (current/upcoming/history) is exposed by
+        # /api/queue; FXRoute surfaces the count, the current position and the
+        # next track so a Connect queue reads as an expected continuation
+        # instead of a single-track blob. Its current track also carries the
+        # artwork URL that /api/now-playing may transiently lack.
+        queue_state = await backend.get_json(self._base_url, "/api/queue") or {}
+        queue_current = queue_state.get("current_track") if isinstance(queue_state, dict) else None
+
         if isinstance(track, dict):
             result["title"] = track.get("title") or ""
             result["artist"] = track.get("artist") or ""
@@ -185,6 +196,13 @@ class QobuzProvider(StreamingProvider):
             result["trackId"] = _id_str(status_playback.get("track_id"))
             result["duration"] = float(status_playback.get("duration") or 0)
 
+        # Existing metadata must not be dropped on a transient now-playing gap:
+        # the queue snapshot carries the current track's artwork/album.
+        if not result["artUrl"] and isinstance(queue_current, dict):
+            result["artUrl"] = queue_current.get("artwork_url") or ""
+        if not result["album"] and isinstance(queue_current, dict):
+            result["album"] = queue_current.get("album") or ""
+
         playback = np_playback if np_playback else status_playback
         result["status"] = _normalize_state(status_playback.get("state"), playback.get("is_playing"))
         result["position"] = float(playback.get("position") or 0)
@@ -201,6 +219,27 @@ class QobuzProvider(StreamingProvider):
             result["sample_rate"] = _sample_rate_hz(audio.get("sample_rate"))
         if result["bit_depth"] is None:
             result["bit_depth"] = _int_or_none(audio.get("bit_depth"))
+
+        # Queue context: count, 1-based current position and the first upcoming
+        # track. Kept compact; FXRoute never needs the full Connect queue.
+        if isinstance(queue_state, dict):
+            total = queue_state.get("total_tracks")
+            current_index = queue_state.get("current_index")
+            if isinstance(total, int):
+                result["queue_len"] = max(0, total)
+            if isinstance(current_index, int):
+                result["queue_index"] = max(0, current_index)
+            upcoming = queue_state.get("upcoming")
+            if isinstance(upcoming, list) and upcoming:
+                nxt = upcoming[0]
+                if isinstance(nxt, dict):
+                    result["next_track"] = {
+                        "id": _id_str(nxt.get("id")),
+                        "title": nxt.get("title") or "",
+                        "artist": nxt.get("artist") or "",
+                        "album": nxt.get("album") or "",
+                        "artUrl": nxt.get("artwork_url") or "",
+                    }
 
         return result
 

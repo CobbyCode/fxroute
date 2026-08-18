@@ -73,6 +73,27 @@ assert.ok(formatQuality.includes('caps.audio_format'));
 assert.ok(formatQuality.includes('caps.bit_depth'));
 assert.ok(formatQuality.includes('caps.sample_rate'));
 
+// --- queue continuation line is data-driven ----------------------------------
+// The queue line (count + next up) must render from normalized provider data
+// (queue_len/queue_index/next_track) without any provider-identity branch.
+const nowPlayingBody = js.slice(js.indexOf('function renderNowPlaying'), js.indexOf('function showEmpty'));
+assert.ok(nowPlayingBody.includes('formatQueueInfo(data)'),
+    'renderNowPlaying must render the queue info line');
+assert.ok(nowPlayingBody.includes('els.queueInfo'),
+    'renderNowPlaying must write the queue info element');
+assert.ok(js.includes("'<div class=\"streaming-queue\" hidden></div>'"),
+    'now-playing card must carry a queue info element');
+
+const formatQueueInfo = new Function('return ' + extractFunction(js, 'formatQueueInfo'))();
+assert.equal(formatQueueInfo({ queue_len: 7, queue_index: 3, next_track: { title: 'Next One' } }),
+    '3/7 · Next: Next One');
+assert.equal(formatQueueInfo({ queue_len: 7, next_track: {} }), '1/7');
+assert.equal(formatQueueInfo({ queue_len: 7, queue_index: 2, next_track: {} }), '2/7');
+assert.equal(formatQueueInfo({ queue_len: 1 }), '');
+assert.equal(formatQueueInfo({}), '');
+assert.ok(!/providerId/.test(extractFunction(js, 'formatQueueInfo')),
+    'queue info formatting must not branch on provider id');
+
 // --- served shell wires the three provider tabs + the module ----------------------
 for (const provider of ['spotify', 'qobuz', 'tidal']) {
     assert.ok(html.includes(`data-provider="${provider}"`), `index.html must ship a ${provider} shell`);
