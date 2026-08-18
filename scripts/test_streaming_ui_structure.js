@@ -184,19 +184,22 @@ assert.ok(js.includes('tidalQualityLabel'),
 assert.ok(css.includes('.streaming-detail-facts') && css.includes('.streaming-fav'),
     'album facts and favorite heart styles must ship in style.css');
 
-// The album header reuses the library's back button and star favorite and
-// scales the cover to library proportions; the playlist view keeps its own
-// compact layout untouched.
+// Both detail headers (album + playlist) reuse the library's back button and
+// star favorite and scale the cover to library proportions.
 assert.ok(js.includes('class="album-detail-back"'),
-    'Tidal album back button must reuse the library back style');
-assert.ok(js.includes('albumFavoriteStarHtml') && js.includes('album-favorite-toggle'),
-    'Tidal album favorite must be a library-style star, not a heart');
+    'Tidal detail back button must reuse the library back style');
+assert.ok(js.includes('favoriteStarHtml') && js.includes('album-favorite-toggle'),
+    'Tidal detail favorite must be a library-style star, not a heart');
 assert.ok(js.includes("'★' : '☆'"),
-    'the album star must render filled/outline like the library');
-assert.ok(js.includes('tidal-album-detail'),
-    'Tidal album detail must be scoped so the playlist view stays untouched');
-assert.ok(css.includes('.tidal-album-header .streaming-detail-cover') && /width: 160px/.test(css),
-    'Tidal album cover must match the library 160px proportion');
+    'the detail star must render filled/outline like the library');
+assert.ok(js.includes("favoriteStarHtml('albums')") && js.includes("favoriteStarHtml('playlists')"),
+    'album and playlist headers must both carry the star favorite');
+assert.ok(js.includes('tidal-detail'),
+    'Tidal album and playlist detail must share the library-mirroring layout');
+assert.ok(js.includes("favoriteStarHtml('playlists')") && js.includes('tidal-playlist-facts'),
+    'the playlist detail must show a star and a track-count facts line');
+assert.ok(css.includes('.tidal-detail-header .streaming-detail-cover') && /width: 160px/.test(css),
+    'Tidal detail cover must match the library 160px proportion');
 
 // --- TIDAL track/album favorites (real state, no shadow) ---------------------
 assert.ok(js.includes("'/api/streaming/tidal/favorites/ids'"),
