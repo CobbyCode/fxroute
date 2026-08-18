@@ -220,6 +220,17 @@ const baseCaps = {
         'idle TIDAL must hide the now-playing card (no ghost transport)');
     assert.ok(shells.tidal.querySelector('.streaming-content').innerHTML.includes('streaming-browse'),
         'idle TIDAL must keep Browse immediately available');
+
+    // Playing TIDAL must still not render a second in-tab player: the global
+    // footer is the authoritative player, browse stays the main content.
+    const tidalPlaying = { ...stopped, status: 'Playing', title: 'One More Time', artist: 'Daft Punk', album: 'Discovery', artUrl: 'http://x/c.jpg', duration: 100 };
+    sandbox.window.FXRouteStreaming.renderProvider('tidal', tidalPlaying);
+    assert.equal(shells.tidal.querySelector('.streaming-now-playing').hidden, true,
+        'playing TIDAL must not show a duplicate in-tab player (the footer is the player)');
+    assert.equal(shells.tidal.querySelector('.streaming-empty').hidden, true,
+        'playing TIDAL must not show an empty-state card');
+    assert.ok(shells.tidal.querySelector('.streaming-content').innerHTML.includes('streaming-browse'),
+        'playing TIDAL must keep Browse as the main content');
 }
 
 console.log('PASS  scripts/test_streaming_ui_actions.js');

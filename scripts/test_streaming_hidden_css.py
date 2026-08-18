@@ -54,33 +54,34 @@ class StreamingHiddenCssTests(unittest.TestCase):
         self.assertIn("els.nowPlaying.hidden = true", streaming_js)
         self.assertIn("els.empty.hidden = false", streaming_js)
 
-    def test_provider_layout_has_compact_desktop_and_footer_safe_area(self):
-        self.assertIsNotNone(
-            re.search(
-                r"\.streaming-now-playing:not\(\.streaming-now-playing-compact\).*?max-width:",
-                CSS,
-                re.DOTALL,
-            ),
-            "Spotify/Qobuz now-playing needs a bounded desktop width",
+    def test_provider_layout_has_player_width_and_footer_safe_area(self):
+        # The shared player card is bounded, centered, and generous on desktop.
+        now_playing = re.search(
+            r"^[ \t]*\.streaming-now-playing\s*\{([^}]+)\}", CSS, re.MULTILINE
         )
-        self.assertIsNotNone(
-            re.search(
-                r"\.streaming-now-playing:not\(\.streaming-now-playing-compact\).*?margin:\s*[^;]+auto",
-                CSS,
-                re.DOTALL,
-            ),
-            "Spotify/Qobuz now-playing must be horizontally centered",
+        self.assertIsNotNone(now_playing, "missing .streaming-now-playing rule")
+        self.assertIn("max-width:", now_playing.group(1))
+        self.assertIn("margin:", now_playing.group(1))
+        cover = re.search(
+            r"^[ \t]*\.streaming-cover\s*\{([^}]+)\}", CSS, re.MULTILINE
         )
-        self.assertIsNotNone(
-            re.search(
-                r"\.streaming-now-playing-compact.*?\.streaming-controls",
-                CSS,
-                re.DOTALL,
-            ),
-            "Tidal compact now-playing must suppress duplicated transport controls",
+        self.assertIsNotNone(cover, "missing .streaming-cover rule")
+        self.assertRegex(
+            cover.group(1), r"width:\s*2\d\dpx", "desktop cover must be generous (200px+)"
         )
+        self.assertRegex(
+            cover.group(1), r"height:\s*2\d\dpx", "desktop cover must be generous (200px+)"
+        )
+        # Player pages get a centered vertical stage.
+        player = re.search(
+            r"^[ \t]*\.streaming-provider-player\s*\{([^}]+)\}", CSS, re.MULTILINE
+        )
+        self.assertIsNotNone(player, "missing .streaming-provider-player rule")
+        self.assertIn("justify-content: center", player.group(1))
         self.assertIn("padding-bottom: var(--playback-footer-space)", CSS)
         self.assertIn(".streaming-content", CSS)
+        streaming_js = (ROOT / "static" / "streaming.js").read_text(encoding="utf-8")
+        self.assertIn("catalogProvider", streaming_js)
 
 
 if __name__ == "__main__":

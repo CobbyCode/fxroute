@@ -56,6 +56,7 @@
             favoritesType: 'tracks',
             detailId: null,
             detailTitle: '',
+            detailArt: '',
             contentKey: null,   // availability/auth mode last rendered into .streaming-content
         },
     };
@@ -155,6 +156,13 @@
                     '<div class="streaming-content" hidden></div>' +
                 '</div>';
 
+            // Player pages (Spotify/Qobuz) get a centered stage; catalog
+            // providers (TIDAL) keep a full-width browser surface.
+            const providerEl = root.querySelector('.streaming-provider');
+            const isCatalog = PROVIDER_META[providerId]?.catalog === true;
+            providerEl.classList.toggle('streaming-provider-player', !isCatalog);
+            providerEl.classList.toggle('streaming-provider-catalog', isCatalog);
+
             const els = {
                 statusLine: root.querySelector('.streaming-status-line'),
                 empty: root.querySelector('.streaming-empty'),
@@ -220,19 +228,20 @@
     // -----------------------------------------------------------------------
     function renderStatusLine(providerId, entry, data) {
         const bits = [];
-        const backendLabel = backendDisplayName(providerId, data.backend);
-        if (backendLabel) bits.push(backendLabel);
-        if (providerId === 'qobuz' && data.connected) bits.push('Qobuz Connect');
-        if (data.authenticated === true && providerId !== 'spotify') bits.push('Connected');
+        if (providerId === 'spotify') {
+            if (data.backend === 'desktop') bits.push('Spotify Desktop');
+            else if (data.backend === 'spotifyd') bits.push('spotifyd');
+        } else if (providerId === 'qobuz') {
+            // The native control daemon is an implementation detail; surface
+            // only the connect state.
+            if (data.connected) bits.push('Qobuz Connect');
+            if (data.authenticated === true) bits.push('Connected');
+        } else if (providerId === 'tidal') {
+            bits.push(PROVIDER_META.tidal.name);
+            if (data.authenticated === true) bits.push('Connected');
+        }
         entry.els.statusLine.hidden = bits.length === 0;
         entry.els.statusLine.textContent = bits.join(' · ');
-    }
-
-    function backendDisplayName(providerId, backend) {
-        if (!backend) return '';
-        if (providerId === 'spotify' && backend === 'desktop') return 'Spotify Desktop';
-        if (providerId === 'spotify' && backend === 'spotifyd') return 'spotifyd';
-        return backend;
     }
 
     // -----------------------------------------------------------------------
@@ -243,16 +252,11 @@
         const caps = data.capabilities || {};
         const meta = PROVIDER_META[providerId] || { name: entry.providerLabel() || providerId, canConnect: false };
         const catalogProvider = meta.catalog === true;
-        els.nowPlaying.classList.toggle('streaming-now-playing-compact', catalogProvider);
 
-        // Catalog providers keep browse/search available and do not show a
-        // large empty player when idle, disconnected, or unavailable.
-        if (catalogProvider && (
-            data.installed !== true ||
-            data.available === false ||
-            data.authenticated === false ||
-            ((data.status === 'Stopped' || !data.status) && !data.title)
-        )) {
+        // Catalog providers (TIDAL) have no in-tab player: the global footer
+        // is the player, so keep no now-playing card and no empty-player
+        // surface — browse/search stays the focus of the tab.
+        if (catalogProvider) {
             els.empty.hidden = true;
             els.nowPlaying.hidden = true;
             return;
@@ -767,7 +771,7 @@
             '<div class="streaming-search">' +
                 '<div class="streaming-search-row">' +
                     '<input type="search" class="streaming-search-input" id="tidal-search-input" placeholder="Search tracks, albums, artists, playlists…" autocomplete="off" />' +
-                    '<button type="button" class="btn-primary" id="tidal-search-btn">Search</button>' +
+                    '<button type="button" class="btn-secondary" id="tidal-search-btn">Search</button>' +
                 '</div>' +
                 '<div class="streaming-chip-row" id="tidal-search-types" aria-label="Search type">' +
                     chip('tracks', 'Tracks', true) + chip('albums', 'Albums', false) +
@@ -867,7 +871,7 @@
                     '<div class="streaming-result-title">' + escapeHtml(item.title) + '</div>' +
                     '<div class="streaming-result-sub">' + escapeHtml(item.artist || '') + '</div>' +
                 '</div>';
-            li.addEventListener('click', () => openTidalAlbum(item.id, item.title));
+            li.addEventListener('click', () => openTidalAlbum(item.id, item.title, item.art_url));
         } else if (type === 'artists') {
             li.innerHTML =
                 '<div class="streaming-result-cover">' + coverImg(item.art_url) + '</div>' +
@@ -881,7 +885,7 @@
                     '<div class="streaming-result-title">' + escapeHtml(item.name) + '</div>' +
                     '<div class="streaming-result-sub">' + (item.track_count ? item.track_count + ' tracks' : '') + '</div>' +
                 '</div>';
-            li.addEventListener('click', () => openTidalPlaylist(item.id, item.name));
+            li.addEventListener('click', () => openTidalPlaylist(item.id, item.name, item.art_url));
         }
         return li;
     }
@@ -950,7 +954,7 @@
                         '<div class="streaming-result-title">' + escapeHtml(item.name) + '</div>' +
                         '<div class="streaming-result-sub">' + (item.track_count ? item.track_count + ' tracks' : '') + '</div>' +
                     '</div>';
-                li.addEventListener('click', () => openTidalPlaylist(item.id, item.name));
+                li.addEventListener('click', () => openTidalPlaylist(item.id, item.name, item.art_url));
                 list.appendChild(li);
             }
             results.innerHTML = '';
@@ -961,29 +965,39 @@
     }
 
     // -- album / playlist detail ----------------------------------------------
-    function openTidalAlbum(id, title) {
+    function openTidalAlbum(id, title, artUrl) {
         state.tidal.view = 'album';
         state.tidal.detailId = id;
         state.tidal.detailTitle = title;
+        state.tidal.detailArt = artUrl || '';
         const entry = entryFor('tidal');
         if (entry) renderTidalBrowse(entry);
     }
 
-    function openTidalPlaylist(id, title) {
+    function openTidalPlaylist(id, title, artUrl) {
         state.tidal.view = 'playlist';
         state.tidal.detailId = id;
         state.tidal.detailTitle = title;
+        state.tidal.detailArt = artUrl || '';
         const entry = entryFor('tidal');
         if (entry) renderTidalBrowse(entry);
+    }
+
+    function detailCoverHtml() {
+        const art = state.tidal.detailArt || '';
+        return art ? '<div class="streaming-detail-cover">' + coverImg(art) + '</div>' : '';
     }
 
     function renderTidalAlbum(content) {
         content.innerHTML =
             '<div class="streaming-detail">' +
                 '<div class="streaming-detail-header">' +
-                    '<button type="button" class="btn-ghost" id="tidal-detail-back">← Back</button>' +
-                    '<h3 class="streaming-detail-title">' + escapeHtml(state.tidal.detailTitle) + '</h3>' +
-                    '<button type="button" class="btn-primary" id="tidal-detail-play">Play album</button>' +
+                    detailCoverHtml() +
+                    '<div class="streaming-detail-main">' +
+                        '<button type="button" class="btn-ghost" id="tidal-detail-back">← Back</button>' +
+                        '<h3 class="streaming-detail-title">' + escapeHtml(state.tidal.detailTitle) + '</h3>' +
+                        '<button type="button" class="btn-primary" id="tidal-detail-play">Play album</button>' +
+                    '</div>' +
                 '</div>' +
                 '<div class="streaming-results" id="tidal-detail-results"><p class="streaming-note">Loading…</p></div>' +
             '</div>';
@@ -995,9 +1009,12 @@
         content.innerHTML =
             '<div class="streaming-detail">' +
                 '<div class="streaming-detail-header">' +
-                    '<button type="button" class="btn-ghost" id="tidal-detail-back">← Back</button>' +
-                    '<h3 class="streaming-detail-title">' + escapeHtml(state.tidal.detailTitle) + '</h3>' +
-                    '<button type="button" class="btn-primary" id="tidal-detail-play">Play playlist</button>' +
+                    detailCoverHtml() +
+                    '<div class="streaming-detail-main">' +
+                        '<button type="button" class="btn-ghost" id="tidal-detail-back">← Back</button>' +
+                        '<h3 class="streaming-detail-title">' + escapeHtml(state.tidal.detailTitle) + '</h3>' +
+                        '<button type="button" class="btn-primary" id="tidal-detail-play">Play playlist</button>' +
+                    '</div>' +
                 '</div>' +
                 '<div class="streaming-results" id="tidal-detail-results"><p class="streaming-note">Loading…</p></div>' +
             '</div>';

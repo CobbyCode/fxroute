@@ -7062,6 +7062,21 @@ body {
     gap: 0.65rem;
 }
 
+/* Player pages (Spotify/Qobuz) act as a centered stage: the now-playing card
+   sits in the middle of the available viewport instead of clinging to the top
+   above a large empty area. Catalog providers (TIDAL) keep a full-width
+   browser surface. */
+.streaming-provider-player {
+    min-height: calc(100dvh - 18rem);
+    justify-content: center;
+}
+.streaming-provider-catalog .streaming-status-line {
+    width: 100%;
+    align-self: flex-start;
+    text-align: right;
+    letter-spacing: 0.02em;
+}
+
 /* The shared hidden contract for every streaming component: the per-element
    display rules below (flex/grid) must never override the JS-toggled hidden
    attribute, otherwise empty state and now-playing card show at the same
@@ -7072,7 +7087,7 @@ body {
 
 .streaming-status-line {
     align-self: center;
-    width: min(100%, 760px);
+    width: min(100%, 960px);
     padding: 0 0.35rem;
     font-size: 0.7rem;
     color: var(--text-muted);
@@ -7081,13 +7096,28 @@ body {
     min-height: 1em;
 }
 
+/* On player pages the provider status is a small badge tightly coupled to
+   the card header, not a separate content section. */
+.streaming-provider-player .streaming-status-line {
+    width: auto;
+    align-self: center;
+    text-align: center;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 0.2rem 0.8rem;
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    letter-spacing: 0.02em;
+}
+
 /* Empty / not-connected state */
 .streaming-empty {
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    width: min(100%, 760px);
+    width: min(100%, 960px);
     margin: 0 auto;
     padding: 1.5rem 1.25rem;
     text-align: center;
@@ -7122,52 +7152,27 @@ body {
     justify-content: center;
 }
 
-/* Now-playing card */
+/* Now-playing card — the shared player composition for Spotify/Qobuz. Cover
+   left, metadata + transport right, progress full width, bounded and centered
+   on desktop. */
 .streaming-now-playing {
     width: 100%;
+    max-width: 960px;
+    margin: 0 auto;
     background: var(--bg-surface);
     border: 1px solid var(--border);
     border-top: 3px solid var(--accent);
     border-radius: var(--radius-lg);
-    padding: 1rem;
+    padding: 1.5rem 1.75rem;
     display: grid;
-    grid-template-columns: 164px minmax(0, 1fr);
+    grid-template-columns: 240px minmax(0, 1fr);
     grid-template-areas:
         "cover meta"
         "cover controls"
         "cover secondary"
         "progress progress";
-    gap: 0.75rem;
+    gap: 0.9rem 1.5rem;
     align-items: center;
-}
-.streaming-now-playing:not(.streaming-now-playing-compact) {
-    max-width: 760px;
-    margin: 0 auto;
-}
-.streaming-now-playing-compact {
-    max-width: 760px;
-    margin: 0 auto;
-    grid-template-columns: 64px minmax(0, 1fr);
-    grid-template-areas: "cover meta";
-    padding: 0.7rem 0.85rem;
-    border-top-width: 1px;
-    gap: 0.75rem;
-}
-.streaming-now-playing-compact .streaming-cover {
-    width: 64px;
-    height: 64px;
-    box-shadow: none;
-}
-.streaming-now-playing-compact .streaming-meta {
-    align-self: center;
-}
-.streaming-now-playing-compact .streaming-controls,
-.streaming-now-playing-compact .streaming-secondary,
-.streaming-now-playing-compact .streaming-progress-row {
-    display: none !important;
-}
-.streaming-now-playing-compact .streaming-quality {
-    margin-top: 0.3rem;
 }
 .streaming-cover-wrap {
     grid-area: cover;
@@ -7175,8 +7180,8 @@ body {
     justify-content: center;
 }
 .streaming-cover {
-    width: 164px;
-    height: 164px;
+    width: 240px;
+    height: 240px;
     border-radius: var(--radius-md);
     object-fit: cover;
     background: var(--bg-elevated);
@@ -7185,10 +7190,10 @@ body {
 .streaming-meta {
     grid-area: meta;
     min-width: 0;
-    align-self: end;
+    align-self: center;
 }
 .streaming-title {
-    font-size: 1.15rem;
+    font-size: 1.3rem;
     font-weight: 700;
     color: var(--text-primary);
     overflow: hidden;
@@ -7196,25 +7201,25 @@ body {
     white-space: nowrap;
 }
 .streaming-artist {
-    font-size: 0.95rem;
+    font-size: 1rem;
     color: var(--text-secondary);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    margin-top: 0.15rem;
+    margin-top: 0.2rem;
 }
 .streaming-album {
-    font-size: 0.8rem;
+    font-size: 0.85rem;
     color: var(--text-muted);
     opacity: 0.85;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    margin-top: 0.15rem;
+    margin-top: 0.2rem;
 }
 .streaming-quality {
     display: inline-flex;
-    margin-top: 0.5rem;
+    margin-top: 0.6rem;
     font-size: 0.76rem;
     font-weight: 600;
     letter-spacing: 0.02em;
@@ -7397,7 +7402,12 @@ body {
 .streaming-auth-error { color: var(--error, #f87171); font-size: 0.82rem; margin: 0; }
 
 /* Browse (search / favorites / playlists) */
-.streaming-browse { display: flex; flex-direction: column; gap: 0.75rem; }
+.streaming-browse {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    max-width: 1080px;
+}
 .streaming-browse-tabs {
     display: flex;
     gap: 0.3rem;
@@ -7420,7 +7430,8 @@ body {
 .streaming-browse-tab.is-active { color: var(--accent); background: var(--accent-dim); border-color: rgba(110, 231, 183, 0.2); }
 
 .streaming-search { display: flex; flex-direction: column; gap: 0.7rem; }
-.streaming-search-row { display: flex; gap: 0.5rem; align-items: center; width: min(100%, 760px); }
+.streaming-search-row { display: flex; gap: 0.5rem; align-items: center; width: 100%; }
+.streaming-search-row .btn-secondary { flex: 0 0 auto; white-space: nowrap; }
 .streaming-search-input {
     flex: 1;
     min-width: 0;
@@ -7535,11 +7546,28 @@ body {
 .streaming-result-duration { flex: 0 0 auto; font-size: 0.78rem; color: var(--text-muted); font-variant-numeric: tabular-nums; }
 
 .streaming-detail { display: flex; flex-direction: column; gap: 0.7rem; }
-.streaming-detail-header { display: flex; align-items: center; gap: 0.7rem; flex-wrap: wrap; }
-.streaming-detail-title {
+.streaming-detail-header { display: flex; align-items: flex-start; gap: 1rem; }
+.streaming-detail-cover {
+    width: 132px;
+    height: 132px;
+    flex: 0 0 auto;
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    background: var(--bg-elevated);
+    box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+}
+.streaming-detail-cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.streaming-detail-main {
     flex: 1;
     min-width: 0;
-    font-size: 1.05rem;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.5rem;
+}
+.streaming-detail-title {
+    max-width: 100%;
+    font-size: 1.1rem;
     font-weight: 700;
     color: var(--text-primary);
     margin: 0;
@@ -7548,8 +7576,13 @@ body {
     white-space: nowrap;
 }
 
-/* Mobile: stack Spotify/Qobuz, while Tidal keeps its compact summary row. */
+/* Mobile: stack the Spotify/Qobuz player; Tidal browse stays compact and the
+   search row may wrap so the button never overflows the viewport. */
 @media (max-width: 760px) {
+    .streaming-provider-player {
+        min-height: 0;
+        justify-content: flex-start;
+    }
     .streaming-now-playing {
         grid-template-columns: 1fr;
         grid-template-areas:
@@ -7560,24 +7593,18 @@ body {
             "progress";
         justify-items: center;
         text-align: center;
+        padding: 1.15rem 1rem;
+        gap: 0.9rem;
     }
     .streaming-meta { align-self: center; width: 100%; }
     .streaming-title,
     .streaming-artist,
     .streaming-album { text-align: center; }
-    .streaming-cover { width: 160px; height: 160px; }
-    .streaming-now-playing-compact {
-        grid-template-columns: 56px minmax(0, 1fr);
-        grid-template-areas: "cover meta";
-        justify-items: stretch;
-        text-align: left;
-        padding: 0.65rem 0.7rem;
-    }
-    .streaming-now-playing-compact .streaming-cover { width: 56px; height: 56px; }
-    .streaming-now-playing-compact .streaming-meta { width: auto; align-self: center; }
-    .streaming-now-playing-compact .streaming-title,
-    .streaming-now-playing-compact .streaming-artist,
-    .streaming-now-playing-compact .streaming-album { text-align: left; }
+    .streaming-cover { width: 180px; height: 180px; }
+    .streaming-search-row { flex-wrap: wrap; }
+    .streaming-detail-header { flex-direction: column; align-items: center; text-align: center; }
+    .streaming-detail-main { align-items: center; }
+    .streaming-detail-cover { width: 96px; height: 96px; }
     .streaming-result-album { display: none; }
     .streaming-btn,
     .streaming-result-play { min-width: 44px; min-height: 44px; }

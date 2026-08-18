@@ -89,8 +89,8 @@ assert.ok(js.includes('Device login — limited to AAC 320 kbps'), 'device login
 // --- streaming UI hierarchy --------------------------------------------------
 assert.ok(js.includes("tidal: { name: 'Tidal', canConnect: true, catalog: true }"),
     'Tidal visible provider name and catalog role must be explicit');
-assert.ok(js.includes('streaming-now-playing-compact'),
-    'Tidal now-playing must have a compact presentation state');
+assert.ok(js.includes('catalogProvider'),
+    'Tidal must be identified as a catalog provider whose player is the footer');
 assert.ok(js.includes("state.tidal.searchQuery = query"),
     'executed Tidal searches must record the query');
 assert.ok(js.includes("state.tidal.searchQuery = ''"),
@@ -100,10 +100,20 @@ assert.ok(js.includes("Search Tidal for music."),
 assert.ok(js.includes("results.innerHTML = '<p class=\"streaming-note\">Search Tidal for music.</p>'"),
     'empty Tidal search must remove old results and show the neutral state');
 
-// The compact Tidal card must not duplicate the global footer transport.
-const compactNowPlaying = js.slice(js.indexOf('function renderNowPlaying'), js.indexOf('function showEmpty'));
-assert.ok(compactNowPlaying.includes('meta.catalog'),
-    'catalog providers must use the compact now-playing path');
+// Catalog providers must not render a second in-tab now-playing card: the
+// global footer is the authoritative player, so the card stays hidden.
+const nowPlayingRender = js.slice(js.indexOf('function renderNowPlaying'), js.indexOf('function showEmpty'));
+assert.ok(nowPlayingRender.includes('meta.catalog'),
+    'catalog providers must be routed through the catalog flag');
+assert.ok(nowPlayingRender.includes('els.nowPlaying.hidden = true'),
+    'catalog providers must keep the in-tab now-playing card hidden');
+
+// The visible provider status must not surface raw backend identifiers.
+const statusLineRender = extractFunction(js, 'renderStatusLine');
+assert.ok(!statusLineRender.includes('qbzd'), 'status line must not surface the qbzd backend name');
+assert.ok(!statusLineRender.includes('tidalapi'), 'status line must not surface the tidalapi backend name');
+assert.ok(statusLineRender.includes("PROVIDER_META.tidal.name"),
+    'Tidal status must use the visible provider name');
 
 // The served navigation changes visible copy only, not the provider id.
 assert.ok(html.includes('data-tab="tidal"') && html.includes('<span>Tidal</span>'),
